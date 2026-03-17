@@ -2,9 +2,12 @@
 interface Props {
   title: string;
   description?: string;
+  image?: string;
 }
 
-const { title, description = 'make the network optional.' } = Astro.props;
+const { title, description = 'make the network optional.', image = '/og.png' } = Astro.props;
+const ogImageUrl = new URL(image, Astro.site).href;
+const canonicalUrl = Astro.url.href;
 ---
 
 <!doctype html>
@@ -21,6 +24,20 @@ const { title, description = 'make the network optional.' } = Astro.props;
       rel="stylesheet"
     />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="canonical" href={canonicalUrl} />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonicalUrl} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={ogImageUrl} />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImageUrl} />
   </head>
   <body>
     <slot />
