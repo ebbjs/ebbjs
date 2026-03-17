@@ -344,3 +344,29 @@ hr {
   background: var(--color-border);
   border-radius: 2px;
 }
+
+/* ── GitHub CTA ── */
+.github-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.35rem 0.75rem;
+  margin-bottom: 2rem;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.github-cta:hover {
+  color: var(--color-text);
+  border-color: var(--color-text-secondary);
+  text-decoration: none;
+}
+
+.github-cta svg {
+  flex-shrink: 0;
+}
