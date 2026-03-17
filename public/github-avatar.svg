@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Black rounded rectangle background -->
+  <rect width="512" height="512" rx="64" fill="#0c0a09" />
+  <!-- Tilde curve (white) centered in the square -->
+  <path
+    d="M 142 296 C 172 168, 208 168, 256 256 C 304 344, 340 344, 370 216"
+    stroke="#fafaf9"
+    stroke-width="30"
+    stroke-linecap="round"
+    fill="none"
+  />
+  <!-- Left node -->
+  <circle cx="142" cy="296" r="42" fill="#fafaf9" />
+  <!-- Right node -->
+  <circle cx="370" cy="216" r="42" fill="#fafaf9" />
+</svg>

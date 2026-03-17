@@ -1,0 +1,346 @@
+/* ── Reset ── */
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* ── Root & Body ── */
+:root {
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    Oxygen, Ubuntu, Cantarell, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code',
+    Menlo, Consolas, monospace;
+
+  --color-bg: #fafaf9;
+  --color-text: #1c1917;
+  --color-text-secondary: #57534e;
+  --color-border: #e7e5e4;
+  --color-code-bg: #f5f5f4;
+  --color-accent: #0c0a09;
+  --color-link: #1c1917;
+
+  --content-width: 800px;
+  --toc-width: 220px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0c0a09;
+    --color-text: #e7e5e4;
+    --color-text-secondary: #a8a29e;
+    --color-border: #292524;
+    --color-code-bg: #1c1917;
+    --color-accent: #fafaf9;
+    --color-link: #e7e5e4;
+  }
+}
+
+html {
+  font-size: 20px;
+  scroll-behavior: smooth;
+  scroll-padding-top: 2rem;
+}
+
+body {
+  font-family: var(--font-body);
+  color: var(--color-text);
+  background: var(--color-bg);
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Layout ── */
+.page {
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+}
+
+.toc {
+  position: sticky;
+  top: 2rem;
+  align-self: flex-start;
+  width: var(--toc-width);
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
+  padding: 2rem 1.5rem 2rem 0;
+  flex-shrink: 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  border-right: 1px solid var(--color-border);
+  display: none;
+}
+
+@media (min-width: 1100px) {
+  .toc {
+    display: block;
+  }
+}
+
+.toc ol {
+  list-style: none;
+  padding: 0;
+}
+
+.toc li {
+  margin-bottom: 0.35rem;
+}
+
+.toc li li {
+  padding-left: 0.75rem;
+}
+
+.toc li li li {
+  padding-left: 0.75rem;
+}
+
+.toc a {
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.toc a:hover,
+.toc a.active {
+  color: var(--color-text);
+}
+
+.content {
+  width: 100%;
+  max-width: var(--content-width);
+  padding: 3rem 1.5rem 6rem;
+}
+
+@media (min-width: 1100px) {
+  .content {
+    padding-left: 3rem;
+  }
+}
+
+/* ── Typography ── */
+h1 {
+  font-size: 2.25rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  margin-bottom: 0.25rem;
+}
+
+h1 + p {
+  font-size: 1.15rem;
+  color: var(--color-text-secondary);
+  margin-bottom: 2.5rem;
+}
+
+h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-top: 3.5rem;
+  margin-bottom: 1rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--color-border);
+}
+
+h3 {
+  font-size: 1.2rem;
+  font-weight: 600;
+  margin-top: 2.5rem;
+  margin-bottom: 0.75rem;
+}
+
+h4 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-top: 2rem;
+  margin-bottom: 0.5rem;
+}
+
+p {
+  margin-bottom: 1rem;
+}
+
+strong {
+  font-weight: 600;
+}
+
+a {
+  color: var(--color-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* ── Lists ── */
+ul,
+ol {
+  padding-left: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+li {
+  margin-bottom: 0.35rem;
+}
+
+li > ul,
+li > ol {
+  margin-top: 0.35rem;
+  margin-bottom: 0;
+}
+
+/* ── Code ── */
+code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--color-code-bg);
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+}
+
+pre {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  background: var(--color-code-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.5rem;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+/* Override Shiki's inline styles to use our theme */
+pre.astro-code {
+  background-color: var(--color-code-bg) !important;
+  color: var(--color-text) !important;
+}
+
+pre.astro-code span {
+  color: var(--color-text) !important;
+}
+
+/* ── Tables ── */
+.content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1.5rem;
+  font-size: 0.9rem;
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.content thead {
+  text-align: left;
+}
+
+.content th {
+  font-weight: 600;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 2px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.content td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: top;
+}
+
+.content tr:last-child td {
+  border-bottom: none;
+}
+
+/* ── Blockquotes ── */
+blockquote {
+  border-left: 3px solid var(--color-border);
+  padding-left: 1rem;
+  color: var(--color-text-secondary);
+  margin-bottom: 1rem;
+}
+
+/* ── Horizontal rules ── */
+hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 2.5rem 0;
+}
+
+/* ── ToC heading ── */
+.toc-heading {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-secondary);
+  margin-bottom: 0.75rem;
+}
+
+/* ── Mobile ToC toggle ── */
+.toc-mobile-toggle {
+  display: none;
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  z-index: 100;
+  background: var(--color-text);
+  color: var(--color-bg);
+  border: none;
+  border-radius: 50%;
+  width: 48px;
+  height: 48px;
+  font-size: 1.25rem;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  line-height: 1;
+}
+
+@media (max-width: 1099px) {
+  .toc-mobile-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .toc.open {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 99;
+    width: 100%;
+    max-height: 100vh;
+    background: var(--color-bg);
+    padding: 2rem;
+    border-right: none;
+    overflow-y: auto;
+  }
+}
+
+/* ── Scrollbar styling for ToC ── */
+.toc::-webkit-scrollbar {
+  width: 4px;
+}
+
+.toc::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 2px;
+}

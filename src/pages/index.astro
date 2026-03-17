@@ -1,0 +1,19 @@
+---
+import { getEntry, render } from 'astro:content';
+import Layout from '../layouts/Layout.astro';
+import TableOfContents from '../components/TableOfContents.astro';
+import Logo from '../components/Logo.astro';
+
+const entry = await getEntry('docs', 'manifesto');
+const { Content, headings } = await render(entry);
+---
+
+<Layout title="ebb — make the network optional">
+  <div class="page">
+    <TableOfContents headings={headings} />
+    <main class="content">
+      <Logo width={80} />
+      <Content />
+    </main>
+  </div>
+</Layout>

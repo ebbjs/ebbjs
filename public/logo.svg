@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 58" fill="none">
+  <!--
+    ebb logo: tilde curve with node endpoints
+    Two filled circles (nodes) connected by a smooth sinusoidal curve (sync)
+  -->
+  <!-- The tilde curve -->
+  <path
+    d="M 24 41 C 34 0, 45 0, 60 29 C 75 58, 86 58, 96 17"
+    stroke="currentColor"
+    stroke-width="9.5"
+    stroke-linecap="round"
+    fill="none"
+  />
+  <!-- Left node -->
+  <circle cx="24" cy="41" r="13" fill="currentColor" />
+  <!-- Right node -->
+  <circle cx="96" cy="17" r="13" fill="currentColor" />
+</svg>
