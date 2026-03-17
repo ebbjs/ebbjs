@@ -1,13 +1,13 @@
 import { defineConfig } from 'astro/config';
+import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   site: 'https://ebbjs.com',
+  image: { service: { entrypoint: 'astro/assets/services/noop' } },
+  vite: { plugins: [tailwindcss()] },
   markdown: {
     shikiConfig: {
-      themes: {
-        light: 'github-light',
-        dark: 'github-dark',
-      },
+      theme: 'github-dark-default',
     },
   },
 });

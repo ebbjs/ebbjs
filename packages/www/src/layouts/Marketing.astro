@@ -1,0 +1,29 @@
+---
+import Base from './Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+
+interface Props {
+  title: string;
+  description?: string;
+  ogImage?: string;
+}
+
+const { title, description, ogImage } = Astro.props;
+---
+
+<Base title={title} description={description} ogImage={ogImage}>
+  <div class="min-h-screen flex flex-col">
+    <header class="sticky top-0 z-50 border-b border-stone-800 bg-stone-950/80 backdrop-blur-sm">
+      <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-16">
+        <Nav />
+      </div>
+    </header>
+    
+    <main class="flex-1">
+      <slot />
+    </main>
+    
+    <Footer />
+  </div>
+</Base>

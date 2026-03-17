@@ -1,87 +1,31 @@
 ---
-interface Heading {
-  depth: number;
-  slug: string;
-  text: string;
-}
-
 interface Props {
-  headings: Heading[];
+  headings: { depth: number; slug: string; text: string }[];
 }
 
 const { headings } = Astro.props;
 
 // Filter to h2 and h3 only
-const filtered = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
-
-// Build nested structure
-interface TocItem {
-  slug: string;
-  text: string;
-  children: TocItem[];
-}
-
-const toc: TocItem[] = [];
-let currentH2: TocItem | null = null;
-
-for (const h of filtered) {
-  if (h.depth === 2) {
-    currentH2 = { slug: h.slug, text: h.text, children: [] };
-    toc.push(currentH2);
-  } else if (h.depth === 3 && currentH2) {
-    currentH2.children.push({ slug: h.slug, text: h.text, children: [] });
-  }
-}
+const toc = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
 ---
 
-<nav class="toc" id="toc">
-  <div class="toc-heading">On this page</div>
-  <ol>
-    {
-      toc.map((item) => (
+{toc.length > 0 && (
+  <nav class="text-sm">
+    <h2 class="text-xs font-semibold text-stone-400 uppercase tracking-wider mb-3">On this page</h2>
+    <ul class="space-y-2">
+      {toc.map((heading) => (
         <li>
-          <a href={`#${item.slug}`}>{item.text}</a>
-          {item.children.length > 0 && (
-            <ol>
-              {item.children.map((child) => (
-                <li>
-                  <a href={`#${child.slug}`}>{child.text}</a>
-                </li>
-              ))}
-            </ol>
-          )}
+          <a
+            href={`#${heading.slug}`}
+            class:list={[
+              'block text-stone-400 hover:text-stone-200 transition-colors',
+              heading.depth === 3 && 'pl-3'
+            ]}
+          >
+            {heading.text}
+          </a>
         </li>
-      ))
-    }
-  </ol>
-</nav>
-
-<button
-  class="toc-mobile-toggle"
-  id="toc-toggle"
-  aria-label="Toggle table of contents"
->
-  &#9776;
-</button>
-
-<script>
-  const toggle = document.getElementById('toc-toggle');
-  const toc = document.getElementById('toc');
-
-  toggle?.addEventListener('click', () => {
-    toc?.classList.toggle('open');
-    if (toc?.classList.contains('open')) {
-      toggle.innerHTML = '&times;';
-    } else {
-      toggle.innerHTML = '&#9776;';
-    }
-  });
-
-  // Close ToC when a link is clicked (mobile)
-  toc?.querySelectorAll('a').forEach((link) => {
-    link.addEventListener('click', () => {
-      toc.classList.remove('open');
-      if (toggle) toggle.innerHTML = '&#9776;';
-    });
-  });
-</script>
+      ))}
+    </ul>
+  </nav>
+)}

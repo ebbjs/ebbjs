@@ -1,0 +1,28 @@
+---
+const links = [
+  { label: 'Manifesto', href: '/docs/manifesto' },
+  { label: 'Getting Started', href: '/docs/getting-started' },
+];
+
+const currentPath = Astro.url.pathname;
+---
+
+<nav class="space-y-1">
+  <h2 class="text-xs font-semibold text-stone-400 uppercase tracking-wider mb-3">Documentation</h2>
+  {links.map((link) => {
+    const isActive = currentPath === link.href || currentPath === `${link.href}/`;
+    return (
+      <a
+        href={link.href}
+        class:list={[
+          'block py-1.5 text-sm transition-colors border-b-2',
+          isActive 
+            ? 'text-stone-100 font-semibold border-stone-100' 
+            : 'text-stone-400 hover:text-stone-200 border-transparent hover:border-stone-700'
+        ]}
+      >
+        {link.label}
+      </a>
+    );
+  })}
+</nav>

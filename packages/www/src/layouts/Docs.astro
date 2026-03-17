@@ -1,0 +1,64 @@
+---
+import Base from './Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+import Sidebar from '../components/Sidebar.astro';
+import TableOfContents from '../components/TableOfContents.astro';
+
+interface Props {
+  title: string;
+  description?: string;
+  ogImage?: string;
+  headings?: { depth: number; slug: string; text: string }[];
+}
+
+const { title, description, ogImage, headings = [] } = Astro.props;
+---
+
+<Base title={`${title} | ebb`} description={description} ogImage={ogImage}>
+  <div class="min-h-screen flex flex-col">
+    <header class="sticky top-0 z-50 border-b border-stone-800 bg-stone-950/80 backdrop-blur-sm">
+      <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-16">
+        <Nav />
+      </div>
+    </header>
+    
+    <div class="flex-1 mx-auto max-w-7xl w-full px-4 sm:px-6 lg:px-8">
+      <div class="lg:grid lg:grid-cols-[220px_1fr_220px] lg:gap-8">
+        <!-- Sidebar -->
+        <aside class="hidden lg:block py-8">
+          <div class="sticky top-24">
+            <Sidebar />
+          </div>
+        </aside>
+        
+        <!-- Main content -->
+        <main class="py-8 min-w-0">
+          <article>
+            <h1 class="text-4xl font-bold tracking-tight mb-8">{title}</h1>
+            <div class="prose">
+              <slot />
+            </div>
+          </article>
+        </main>
+        
+        <!-- Table of Contents -->
+        {headings.length > 0 && (
+          <aside class="hidden lg:block py-8">
+            <div class="sticky top-24">
+              <TableOfContents headings={headings} />
+            </div>
+          </aside>
+        )}
+      </div>
+    </div>
+    
+    <Footer />
+  </div>
+</Base>
+
+<style>
+  .prose {
+    font-size: 1.125rem;
+  }
+</style>

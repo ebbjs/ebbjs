@@ -34,29 +34,6 @@ Ebb gives you a complete stack for building local-first applications:
 
 Define your models once. Ebb handles syncing them across every node in your system, enforcing permissions, detecting and surfacing conflicts, evolving your schema, and cleaning up after itself.
 
-## Table of Contents
-
-- [Under the hood](#under-the-hood)
-  - [The data model](#the-data-model)
-    - [Entity formats](#entity-formats)
-    - [Relationships](#relationships)
-    - [Groups and membership](#groups-and-membership)
-    - [Actors](#actors)
-  - [Tic tock (HLC)](#tic-tock)
-  - [Sync](#sync)
-    - [Dual timestamp system](#dual-timestamp-system)
-    - [Server-client](#server-client)
-    - [Client failover](#client-failover)
-    - [Server-server](#server-server)
-    - [Client-to-server writes](#client-to-server-writes)
-  - [Permission enforcement](#permission-enforcement)
-  - [Materialization](#materialization)
-  - [The client](#the-client)
-  - [Conflict resolution](#conflict-resolution)
-  - [Garbage collection](#garbage-collection)
-  - [Schema evolution](#schema-evolution)
-  - [Observability & analytics](#observability--analytics)
-
 ## Under the hood
 
 The rest of this document explains how Ebb works — the data model, sync protocol, permission system, and everything else that makes the above possible.
