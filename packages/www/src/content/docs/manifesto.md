@@ -15,15 +15,17 @@ I wanted to build a simple notes app. Users create notes, edit them, share with 
 
 How hard could it be?
 
-I started with Postgres and a WebSocket layer. Then I needed offline writes, so I added a local database and a sync protocol. Then I had to handle what happens when two clients edit the same note, so I started building conflict resolution. Then I needed to control who could see and edit what — in a way that worked even when a client hadn't been online in days — so I started building a permission system. Then I needed to handle clients reconnecting with a backlog of pending writes, so I started building an outbox with retry logic and state tracking. Then I needed schema migrations that wouldn't break offline clients still running the old version.
+I looked at the existing [local-first landscape](https://www.localfirst.fm/landscape). There were tools designed for exactly this problem — but none of them fit.
 
-Months in, I was deep in distributed systems plumbing and hadn't shipped a single feature of the actual notes app.
+PouchDB/CouchDB was the original offline sync stack, but it felt legacy. Non-relational, and on the client you were locked into IndexedDB. RxDB closed some of those gaps, but advanced features required a paid license and the developer experience was complicated. Basic.tech and Jazz were interesting newer projects, but they locked you into idealistic paradigms — federated identity or mandatory end-to-end encryption — that come with their own tradeoffs and perils. And everything else — Zero, Convex, and others — had great developer experience but simply didn't support offline writes.
 
-This is the reality of local-first development today. The tools we reach for — Postgres, MySQL, even SQLite — are excellent at what they were designed for. But they were designed for a world where the server is the source of truth and clients are dumb terminals. The moment you need clients to be autonomous — reading, writing, and resolving conflicts without a server in the loop — you're on your own.
+So I started building my own sync engine on top of ElectricSQL — a custom outbox, a push server, conflict resolution, permission enforcement. Months in, I was deep in distributed systems plumbing and hadn't shipped a single feature of the actual notes app. It shouldn't be this hard.
 
-Ebb exists because that's absurd. Every offline-capable app needs the same set of hard primitives: sync, conflict resolution, permissions, schema evolution, garbage collection. These are solved problems — they just haven't been packaged in a way that TypeScript developers can actually use.
+This is the reality of local-first development today. The ecosystem is growing, but the options that support true offline writes either lock you into non-relational data models, charge for essential features, impose opinionated paradigms about how software should work, or simply don't exist yet. And if you try to assemble the pieces yourself, you end up building a distributed system from scratch. The moment you need clients to be autonomous — reading, writing, and resolving conflicts without a server in the loop — you're on your own.
 
-Ebb packages them. You write application logic, we take care of the rest.
+Ebb exists because that's absurd. Every offline-capable app needs the same set of hard primitives: sync, conflict resolution, permissions, schema evolution, garbage collection. These are solved problems — they just haven't been packaged as tightly integrated primitives.
+
+Ebb packages them so you can write application logic instead of infrastructure.
 
 ## How?
 
