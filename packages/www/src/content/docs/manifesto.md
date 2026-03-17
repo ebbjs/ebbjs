@@ -3,10 +3,6 @@ title: "ebb"
 description: "make the network optional."
 ---
 
-# ebb
-
-Make the network optional.
-
 ## Why?
 
 Ebb was born because building a collaborative, offline-capable app was way too hard.
