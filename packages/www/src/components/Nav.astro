@@ -1,6 +1,48 @@
 ---
 // Shared navigation component used across all pages
 import logoDark from '../assets/logo-dark.svg';
+
+const docsSections = [
+  {
+    label: 'Overview',
+    icon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+    links: [
+      { label: 'Ebb Overview', href: '/docs/overview' },
+      { label: 'Getting Started', href: '/docs/getting-started' },
+    ],
+  },
+  {
+    label: 'Core Concepts',
+    icon: '<path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/>',
+    links: [
+      { label: 'The Data Model', href: '/docs/data-model' },
+      { label: 'Relationships', href: '/docs/relationships' },
+      { label: 'Groups, Membership & Actors', href: '/docs/groups' },
+    ],
+  },
+  {
+    label: 'Architecture',
+    icon: '<rect width="7" height="7" x="14" y="3" rx="1"/><path d="M10 21V8a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5a1 1 0 0 0-1-1H3"/>',
+    links: [
+      { label: 'Hybrid Logical Clocks', href: '/docs/clock' },
+      { label: 'Sync Protocol', href: '/docs/sync' },
+      { label: 'Permission Enforcement', href: '/docs/permissions' },
+      { label: 'Conflict Resolution', href: '/docs/conflicts' },
+    ],
+  },
+  {
+    label: 'Guides',
+    icon: '<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>',
+    links: [
+      { label: 'The Client', href: '/docs/client' },
+      { label: 'Garbage Collection', href: '/docs/garbage-collection' },
+      { label: 'Schema Evolution', href: '/docs/schema-evolution' },
+      { label: 'Observability & Analytics', href: '/docs/observability' },
+    ],
+  },
+];
+
+const currentPath = Astro.url.pathname;
 ---
 
 <div class="flex justify-between items-center w-full h-full">
@@ -9,7 +51,7 @@ import logoDark from '../assets/logo-dark.svg';
     <span class="text-base">ebb</span>
   </a>
   <div class="flex gap-6 items-center">
-    <nav class="hidden md:flex gap-6 items-center">
+    <nav class="hidden lg:flex gap-6 items-center">
       <a href="/docs" class="text-stone-400 no-underline text-sm transition-colors hover:text-stone-50">Docs</a>
       <a href="/devlog" class="text-stone-400 no-underline text-sm transition-colors hover:text-stone-50">Devlog</a>
     </nav>
@@ -24,5 +66,139 @@ import logoDark from '../assets/logo-dark.svg';
       </svg>
       <span class="whitespace-nowrap max-[400px]:hidden">Star on GitHub</span>
     </a>
+    <!-- Hamburger button (mobile only) -->
+    <button
+      id="mobile-menu-open"
+      type="button"
+      class="lg:hidden inline-flex items-center justify-center w-9 h-9 rounded-lg text-stone-400 transition-colors hover:text-stone-50 hover:bg-stone-800"
+      aria-label="Open menu"
+    >
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="4" y1="6" x2="20" y2="6" />
+        <line x1="4" y1="12" x2="20" y2="12" />
+        <line x1="4" y1="18" x2="20" y2="18" />
+      </svg>
+    </button>
   </div>
 </div>
+
+<!-- Full-screen mobile overlay -->
+<div
+  id="mobile-menu-overlay"
+  class="fixed inset-0 z-[60] bg-stone-950 flex flex-col transition-opacity duration-200 opacity-0 pointer-events-none lg:hidden"
+>
+  <!-- Overlay header -->
+  <div class="flex justify-between items-center h-16 px-4 sm:px-6 border-b border-stone-800">
+    <a href="/" class="flex items-center gap-2 no-underline text-stone-50 font-semibold">
+      <img class="h-[1.2rem] w-auto" alt="ebb" src={logoDark.src} width="120" height="58" />
+      <span class="text-base">ebb</span>
+    </a>
+    <button
+      id="mobile-menu-close"
+      type="button"
+      class="inline-flex items-center justify-center w-9 h-9 rounded-lg text-stone-400 transition-colors hover:text-stone-50 hover:bg-stone-800"
+      aria-label="Close menu"
+    >
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18" />
+        <line x1="6" y1="6" x2="18" y2="18" />
+      </svg>
+    </button>
+  </div>
+
+  <!-- Overlay content -->
+  <div class="flex-1 overflow-y-auto px-6 py-6">
+    <!-- Main nav links -->
+    <nav class="space-y-1 mb-6">
+      <a href="/docs" class="block py-3 text-lg font-medium text-stone-200 no-underline transition-colors hover:text-stone-50">Docs</a>
+      <a href="/devlog" class="block py-3 text-lg font-medium text-stone-200 no-underline transition-colors hover:text-stone-50">Devlog</a>
+    </nav>
+
+    <!-- Docs sidebar -->
+    <div class="border-t border-stone-800 pt-6 space-y-6">
+      {docsSections.map((section) => (
+        <div>
+          <h2 class="flex items-center gap-1.5 text-xs font-semibold text-stone-400 uppercase tracking-wider mb-3">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0" aria-hidden="true" set:html={section.icon} />
+            {section.label}
+          </h2>
+          <div class="space-y-1">
+            {section.links.map((link) => {
+              const isActive = currentPath === link.href || currentPath === `${link.href}/`;
+              return (
+                <a
+                  href={link.href}
+                  class:list={[
+                    'block py-2.5 text-base no-underline transition-colors',
+                    isActive
+                      ? 'text-stone-100 font-semibold'
+                      : 'text-stone-400 hover:text-stone-200'
+                  ]}
+                >
+                  {link.label}
+                </a>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <!-- GitHub link -->
+    <div class="mt-6 pt-6 border-t border-stone-800">
+      <a
+        href="https://github.com/ebbjs/ebbjs"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="inline-flex items-center gap-2 px-4 py-2.5 text-sm border border-stone-700 rounded-lg text-stone-50 no-underline transition-colors hover:bg-stone-800"
+      >
+        <svg viewBox="0 0 24 24" class="w-[1.2em] h-[1.2em] shrink-0" fill="currentColor" aria-hidden="true">
+          <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
+        </svg>
+        Star on GitHub
+      </a>
+    </div>
+  </div>
+</div>
+
+<script>
+  function initMobileMenu() {
+    const openBtn = document.getElementById('mobile-menu-open');
+    const closeBtn = document.getElementById('mobile-menu-close');
+    const overlay = document.getElementById('mobile-menu-overlay');
+
+    if (!openBtn || !closeBtn || !overlay) return;
+
+    // Move overlay to document.body so it escapes the header's stacking context
+    if (overlay.parentElement !== document.body) {
+      document.body.appendChild(overlay);
+    }
+
+    function openMenu() {
+      overlay.classList.remove('opacity-0', 'pointer-events-none');
+      overlay.classList.add('opacity-100', 'pointer-events-auto');
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closeMenu() {
+      overlay.classList.remove('opacity-100', 'pointer-events-auto');
+      overlay.classList.add('opacity-0', 'pointer-events-none');
+      document.body.style.overflow = '';
+    }
+
+    openBtn.addEventListener('click', openMenu);
+    closeBtn.addEventListener('click', closeMenu);
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !overlay.classList.contains('pointer-events-none')) {
+        closeMenu();
+      }
+    });
+  }
+
+  // Run on initial load
+  initMobileMenu();
+
+  // Re-run after Astro page transitions (View Transitions)
+  document.addEventListener('astro:after-swap', initMobileMenu);
+</script>
