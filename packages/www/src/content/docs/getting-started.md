@@ -132,5 +132,5 @@ const server = createServer({
 
 ## Next Steps
 
-- Read the [Manifesto](/) to understand ebb's design philosophy
-- Explore the data model and sync protocol in depth
+- Read the [Ebb Overview](/docs/overview) to understand ebb's design philosophy
+- Explore the [data model](/docs/data-model) and [sync protocol](/docs/sync) in depth

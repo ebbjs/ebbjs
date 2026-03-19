@@ -1,28 +1,65 @@
 ---
-const links = [
-  { label: 'Manifesto', href: '/docs/manifesto' },
-  { label: 'Getting Started', href: '/docs/getting-started' },
+const sections = [
+  {
+    label: 'Overview',
+    links: [
+      { label: 'Ebb Overview', href: '/docs/overview' },
+      { label: 'Getting Started', href: '/docs/getting-started' },
+    ],
+  },
+  {
+    label: 'Core Concepts',
+    links: [
+      { label: 'The Data Model', href: '/docs/data-model' },
+      { label: 'Relationships', href: '/docs/relationships' },
+      { label: 'Groups, Membership & Actors', href: '/docs/groups' },
+    ],
+  },
+  {
+    label: 'Architecture',
+    links: [
+      { label: 'Hybrid Logical Clocks', href: '/docs/clock' },
+      { label: 'Sync Protocol', href: '/docs/sync' },
+      { label: 'Permission Enforcement', href: '/docs/permissions' },
+      { label: 'Conflict Resolution', href: '/docs/conflicts' },
+    ],
+  },
+  {
+    label: 'Guides',
+    links: [
+      { label: 'The Client', href: '/docs/client' },
+      { label: 'Garbage Collection', href: '/docs/garbage-collection' },
+      { label: 'Schema Evolution', href: '/docs/schema-evolution' },
+      { label: 'Observability & Analytics', href: '/docs/observability' },
+    ],
+  },
 ];
 
 const currentPath = Astro.url.pathname;
 ---
 
-<nav class="space-y-1">
-  <h2 class="text-xs font-semibold text-stone-400 uppercase tracking-wider mb-3">Documentation</h2>
-  {links.map((link) => {
-    const isActive = currentPath === link.href || currentPath === `${link.href}/`;
-    return (
-      <a
-        href={link.href}
-        class:list={[
-          'block py-1.5 text-sm transition-colors border-b-2',
-          isActive 
-            ? 'text-stone-100 font-semibold border-stone-100' 
-            : 'text-stone-400 hover:text-stone-200 border-transparent hover:border-stone-700'
-        ]}
-      >
-        {link.label}
-      </a>
-    );
-  })}
+<nav class="space-y-5">
+  {sections.map((section) => (
+    <div>
+      <h2 class="text-xs font-semibold text-stone-400 uppercase tracking-wider mb-3">{section.label}</h2>
+      <div class="space-y-1">
+        {section.links.map((link) => {
+          const isActive = currentPath === link.href || currentPath === `${link.href}/`;
+          return (
+            <a
+              href={link.href}
+              class:list={[
+                'block py-1.5 text-sm transition-colors border-b-2',
+                isActive 
+                  ? 'text-stone-100 font-semibold border-stone-100' 
+                  : 'text-stone-400 hover:text-stone-200 border-transparent hover:border-stone-700'
+              ]}
+            >
+              {link.label}
+            </a>
+          );
+        })}
+      </div>
+    </div>
+  ))}
 </nav>

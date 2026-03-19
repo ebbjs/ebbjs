@@ -1,11 +1,14 @@
 ---
 import Marketing from '../layouts/Marketing.astro';
+import CopyCommand from '../components/CopyCommand.astro';
+import AsciiWaveBackground from '../components/AsciiWaveBackground.astro';
 ---
 
 <Marketing title="ebb - make the network optional">
-  <main class="min-h-[calc(100vh-10rem)] flex items-center justify-center px-4">
+  <section class="relative min-h-[calc(100dvh-var(--spacing-nav))] flex items-center justify-center px-4">
+    <AsciiWaveBackground />
     <div class="text-center">
-      <svg class="h-12 w-auto mx-auto mb-8 text-stone-100" viewBox="0 0 120 58" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <svg class="h-16 w-auto mx-auto mb-8 text-stone-100" viewBox="0 0 120 58" fill="none" xmlns="http://www.w3.org/2000/svg">
         <path
           d="M 24 41 C 34 0, 45 0, 60 29 C 75 58, 86 58, 96 17"
           stroke="currentColor"
@@ -17,8 +20,11 @@ import Marketing from '../layouts/Marketing.astro';
         <circle cx="96" cy="17" r="13" fill="currentColor" />
       </svg>
 
-      <h1 class="text-5xl sm:text-6xl font-bold tracking-tight mb-4">ebb</h1>
-      <p class="text-xl sm:text-2xl text-stone-400 mb-10">make the network optional.</p>
+      <h1 class="text-6xl sm:text-8xl font-bold tracking-tight mb-4">ebb</h1>
+      <p class="text-xl sm:text-2xl text-stone-400 mb-5 text-balance max-w-xl">Build collaborative apps that survive airplane mode.</p>
+      <div class="mb-10">
+        <CopyCommand command="npx ebb@latest init" />
+      </div>
 
       <div class="flex flex-col sm:flex-row gap-4 justify-center">
         <a
@@ -42,5 +48,5 @@ import Marketing from '../layouts/Marketing.astro';
         </a>
       </div>
     </div>
-  </main>
+  </section>
 </Marketing>

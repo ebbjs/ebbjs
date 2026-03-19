@@ -3,6 +3,7 @@ import Base from './Base.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
 import TableOfContents from '../components/TableOfContents.astro';
+import AuthorFooter from '../components/AuthorFooter.astro';
 
 interface Props {
   title: string;
@@ -13,6 +14,10 @@ interface Props {
 }
 
 const { title, description, date, ogImage, headings = [] } = Astro.props;
+
+// Filter to h2 and h3 only for TOC
+const tocHeadings = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
+const hasToc = tocHeadings.length > 0;
 
 const formatDate = (date: Date) => {
   return date.toLocaleDateString('en-US', {
@@ -32,9 +37,9 @@ const formatDate = (date: Date) => {
     </header>
     
     <div class="flex-1 mx-auto max-w-7xl w-full px-4 sm:px-6 lg:px-8">
-      <div class="lg:grid lg:grid-cols-[1fr_220px] lg:gap-8 max-w-4xl lg:max-w-none mx-auto">
+      <div class:list={["max-w-4xl mx-auto", hasToc && "lg:grid lg:grid-cols-[1fr_220px] lg:gap-8 lg:max-w-none"]}>
         <!-- Main content -->
-        <main class="py-8 max-w-3xl">
+        <main class="py-8 max-w-3xl mx-auto">
           <article>
             <a href="/devlog" class="inline-flex items-center gap-1 text-stone-400 hover:text-stone-200 text-sm mb-6 transition-colors">
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -43,23 +48,25 @@ const formatDate = (date: Date) => {
               Back to Devlog
             </a>
             
-            <time datetime={date.toISOString()} class="block text-stone-400 text-sm mb-2">
+            <h1 class="text-4xl font-bold tracking-tight mb-2">{title}</h1>
+            
+            <time datetime={date.toISOString()} class="block text-stone-400 text-sm mb-8">
               {formatDate(date)}
             </time>
-            
-            <h1 class="text-4xl font-bold tracking-tight mb-8">{title}</h1>
             
             <div class="prose">
               <slot />
             </div>
+            
+            <AuthorFooter />
           </article>
         </main>
         
         <!-- Table of Contents -->
-        {headings.length > 0 && (
+        {hasToc && (
           <aside class="hidden lg:block py-8">
             <div class="sticky top-24">
-              <TableOfContents headings={headings} />
+              <TableOfContents headings={tocHeadings} />
             </div>
           </aside>
         )}

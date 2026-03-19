@@ -1,0 +1,46 @@
+---
+interface Props {
+  command: string;
+}
+
+const { command } = Astro.props;
+const id = `copy-${Math.random().toString(36).slice(2, 9)}`;
+---
+
+<div class="inline-flex items-center">
+  <pre class="bg-stone-900 px-3 py-2 rounded-l"><code id={`${id}-text`}>{command}</code></pre>
+  <button
+    id={`${id}-btn`}
+    type="button"
+    class="bg-stone-900 px-3 py-2 rounded-r border-l border-stone-700 hover:bg-stone-800 transition-colors"
+    aria-label="Copy to clipboard"
+    data-command={command}
+  >
+    <svg class="copy-icon w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+    </svg>
+    <svg class="check-icon w-5 h-5 hidden text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+    </svg>
+  </button>
+</div>
+
+<script>
+  document.querySelectorAll('[id$="-btn"]').forEach((btn) => {
+    if (!btn.id.startsWith('copy-')) return;
+    btn.addEventListener('click', async () => {
+      const command = btn.getAttribute('data-command');
+      if (command) {
+        await navigator.clipboard.writeText(command);
+        const copyIcon = btn.querySelector('.copy-icon');
+        const checkIcon = btn.querySelector('.check-icon');
+        copyIcon?.classList.add('hidden');
+        checkIcon?.classList.remove('hidden');
+        setTimeout(() => {
+          copyIcon?.classList.remove('hidden');
+          checkIcon?.classList.add('hidden');
+        }, 2000);
+      }
+    });
+  });
+</script>
