@@ -1,0 +1,12 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/db" },
+    { "path": "./packages/client" },
+    { "path": "./packages/server" },
+    { "path": "./packages/core" },
+    { "path": "./packages/yjs" },
+    { "path": "./packages/react" },
+    { "path": "./packages/www" }
+  ]
+}

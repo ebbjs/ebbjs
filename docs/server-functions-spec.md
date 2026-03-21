@@ -13,9 +13,9 @@ This document covers `defineFunction`.
 
 ## Mental Model
 
-A `defineFunction` handler runs **inside the Ebb server process**, collocated with the SQLite database. It receives a `ctx` object — a lightweight interface for reading and writing Ebb data directly, without a network hop.
+A `defineFunction` handler runs **inside the Bun Application Server**, co-located with the shared SQLite database. It receives a `ctx` object — a lightweight interface for reading Ebb data directly from SQLite (no network hop for reads) and writing via HTTP to the Elixir Sync/Storage Server (which handles permission checks, durability, and fan-out).
 
-This is distinct from the **server-side SDK** (specified separately), which is an HTTP/RPC client that talks to the Ebb server over the network. The server-side SDK is for application servers and SSR frameworks. `defineFunction` is for logic that needs to live and run inside Ebb itself.
+This is distinct from the **server-side SDK** (specified separately), which is an HTTP/RPC client that talks to the Ebb server over the network from external processes. The server-side SDK is for application servers and SSR frameworks. `defineFunction` is for logic that needs to live and run inside Ebb itself.
 
 The canonical use case: read from Ebb, call an external service, write results back.
 
@@ -23,18 +23,25 @@ The canonical use case: read from Ebb, call an external service, write results b
 Client dispatches function
         │
         ▼
-Ebb server receives HTTP request
+Bun Application Server receives HTTP request
         │
         ▼
-Authenticate actor, load group memberships
+Authenticate actor (calls auth URL, same as sync handshake)
+        │
+        ▼
+Load group memberships from shared SQLite
+        │
+        ▼
+Lookup active function version from SQLite (function_versions table)
         │
         ▼
 Execute handler in vm sandbox with ctx injected
         │
-        ├── ctx.get / ctx.query → direct SQLite reads, scoped to actor's groups
+        ├── ctx.get / ctx.query → direct SQLite reads (shared DB, scoped to actor's groups)
         │
-        └── ctx.create / ctx.update / ctx.delete → through normal write path
-                                                    (permission checks, Actions, sync)
+        └── ctx.create / ctx.update / ctx.delete → HTTP POST to Elixir server
+                                                    (POST /sync/actions on localhost)
+                                                    (permission checks, fsync, fan-out)
 ```
 
 This makes `defineFunction` the right primitive for:
@@ -123,16 +130,16 @@ export default defineFunction({
 
 ### The `ctx` Object (Function Context)
 
-Handlers receive a `ctx` object — not a full client, but a lightweight interface collocated with the database:
+Handlers receive a `ctx` object — not a full client, but a lightweight interface with direct SQLite reads and HTTP-based writes:
 
 ```ts
 interface FunctionContext {
-  // Read operations — direct SQLite, results scoped to actor's group memberships
+  // Read operations — direct SQLite (shared DB), results scoped to actor's group memberships
   get(id: string): Promise<Entity | null>;
   query<T extends EntityType>(type: T, filter?: QueryFilter): Promise<Entity<T>[]>;
 
-  // Write operations — through normal server write path, permission-checked
-  // Produces Actions and Updates that flow through the sync stream
+  // Write operations — sent to Elixir server via HTTP (POST /sync/actions on localhost)
+  // Elixir handles permission checks, durability (fsync), and fan-out to subscribers
   create<T extends EntityType>(type: T, data: EntityData<T>): Promise<EntityRef>;
   update(entity: EntityRef, patch: Partial<EntityData>): Promise<void>;
   delete(entity: EntityRef): Promise<void>;
@@ -149,10 +156,10 @@ interface FunctionContext {
 
 **Key behaviors:**
 
-- **Reads are direct SQLite** — no network hop, no replica. Results are silently scoped to what the actor can see based on their group memberships, enforced at the query level.
-- **Writes go through the normal server write path** — permission checks run identically to any other write. Writes produce Actions and Updates that flow through the sync stream to other clients.
-- **No Outbox, no conflict detection.** Writes commit immediately. Concurrent writes from other actors resolve via LWW.
-- **No rollback on error.** Writes that have already committed stay committed. If a handler throws mid-execution, writes made before the throw are not undone. Write after external calls succeed, not before.
+- **Reads are direct SQLite** — no network hop. The Bun server reads from the shared SQLite database (materialized entity views + generated column indexes). Results are silently scoped to what the actor can see based on their group memberships, enforced at the query level.
+- **Writes go to the Elixir server via HTTP on localhost** — `POST /sync/actions`. Elixir handles permission checks, assigns GSN, writes to the Action log, fsyncs, and fans out to subscribers. The Bun Materializer then asynchronously updates SQLite. This means a `ctx.create()` followed by a `ctx.get()` for the same entity may not reflect the write yet (small staleness window, typically single-digit ms).
+- **No Outbox, no conflict detection.** Writes commit on the Elixir server immediately. Concurrent writes from other actors resolve via LWW.
+- **No rollback on error.** Writes that have already been accepted by Elixir stay committed. If a handler throws mid-execution, writes made before the throw are not undone. Write after external calls succeed, not before.
 - **`defineAction`s can be called from within a handler**, exactly as they can from client code. Each Action commits immediately and independently when called.
 
 ---
@@ -175,16 +182,16 @@ If the external call fails, nothing was written. If a write fails after a succes
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Request Execution Flow                              │
+│                   Request Execution Flow (Bun Server)                        │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│   HTTP request arrives                                                      │
+│   HTTP request arrives at Bun Application Server                            │
 │        │                                                                    │
 │        ▼                                                                    │
-│   Authenticate actor, load group memberships from DB                        │
+│   Authenticate actor (call auth URL), load group memberships from SQLite    │
 │        │                                                                    │
 │        ▼                                                                    │
-│   Lookup active function version in DB                                      │
+│   Lookup active function version in SQLite (function_versions table)        │
 │        │                                                                    │
 │        ▼                                                                    │
 │   Get compiled script from cache (or compile + cache)                       │
@@ -198,10 +205,13 @@ If the external call fails, nothing was written. If a write fails after a succes
 │        ▼                                                                    │
 │   Execute handler                                                           │
 │        │                                                                    │
+│        ├── ctx.get/query → read from shared SQLite directly                 │
+│        ├── ctx.create/update/delete → POST /sync/actions to Elixir          │
+│        │                                                                    │
 │        ├── success → validate output, return result                         │
 │        │                                                                    │
 │        └── error → return error to caller                                   │
-│                    (writes already committed are not undone;                │
+│                    (writes already committed on Elixir are not undone;      │
 │                     operator rolls back version manually if needed)         │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -247,9 +257,11 @@ No drain or request queuing needed. Atomicity comes from the database row swap. 
 
 ### Why the vm Sandbox
 
-Functions run inside a Node.js `vm` context for one reason: **timeout enforcement**. A rogue infinite loop or hung external call inside a plain async function would block the Node.js event loop, taking down the sync server and all connected clients. The vm sandbox makes it possible to enforce the execution timeout and kill a runaway function without affecting the host process.
+Functions run inside a `vm` context for one reason: **timeout enforcement**. A rogue infinite loop or hung external call inside a plain async function would block the Bun event loop, taking down the Application Server (and with it, the Materializer and all in-flight function executions). The vm sandbox makes it possible to enforce the execution timeout and kill a runaway function without affecting the host process.
 
-The sandbox is *not* a security boundary — function authors are trusted. And it is not what provides zero-downtime deploys — that comes from the version lookup at request time. The sandbox is purely about protecting the host process from misbehaving function code.
+Note: because server functions run in the Bun Application Server (not the Elixir server), a misbehaving function cannot affect the sync protocol, SSE connections, or the storage engine. This is a natural benefit of the two-server architecture.
+
+The sandbox is *not* a security boundary — function authors are trusted. And it is not what provides zero-downtime deploys — that comes from the version lookup at request time. The sandbox is purely about protecting the Bun host process from misbehaving function code.
 
 ---
 
@@ -347,7 +359,7 @@ export default {
 // packages/server/src/functions/store.ts
 
 import { nanoid } from 'nanoid';
-import type { Database } from 'better-sqlite3';
+import type { Database } from 'better-sqlite3'; // shared SQLite database (same DB as materialized entity views)
 
 interface FunctionVersion {
   id: string;
@@ -482,16 +494,17 @@ export class FunctionStore {
 
 export function createFunctionContext(
   actor: Actor,
-  db: Database,
-  writeHandler: ServerWriteHandler,
+  db: Database,            // shared SQLite database (materialized entity views)
+  elixirUrl: string,       // e.g., "http://localhost:4000"
+  authHeaders: Headers,    // forwarded from the original request for Elixir auth
 ): FunctionContext {
-  // Load actor's group memberships once at invocation time
+  // Load actor's group memberships once at invocation time (direct SQLite read)
   const groupIds = loadGroupMemberships(db, actor.id);
 
   return {
     actor,
 
-    // Reads: direct SQLite, silently scoped to actor's groups
+    // Reads: direct SQLite (shared DB), silently scoped to actor's groups
     async get(id: string) {
       return queryEntityScoped(db, id, groupIds);
     },
@@ -499,26 +512,42 @@ export function createFunctionContext(
       return queryEntitiesScoped(db, type, filter, groupIds);
     },
 
-    // Writes: through normal server write path
-    // Permission checks run, Actions and Updates are produced, sync stream is notified
+    // Writes: HTTP POST to Elixir server on localhost
+    // Elixir handles permission checks, assigns GSN, fsyncs, fans out to subscribers
     async create(type, data) {
-      return writeHandler.create(actor, type, data);
+      return postAction(elixirUrl, authHeaders, { method: 'PUT', type, data });
     },
     async update(entity, patch) {
-      return writeHandler.update(actor, entity, patch);
+      return postAction(elixirUrl, authHeaders, { method: 'PATCH', subjectId: entity.id, data: patch });
     },
     async delete(entity) {
-      return writeHandler.delete(actor, entity);
+      return postAction(elixirUrl, authHeaders, { method: 'DELETE', subjectId: entity.id });
     },
     async relate(source, name, target) {
-      return writeHandler.relate(actor, source, name, target);
+      return postAction(elixirUrl, authHeaders, {
+        method: 'PUT', type: 'relationship',
+        data: { source_id: source.id, target_id: target.id, type: source.type, field: name },
+      });
     },
     async unrelate(source, name, target) {
-      return writeHandler.unrelate(actor, source, name, target);
+      // Look up the Relationship entity, then DELETE it
+      const rel = await findRelationship(db, source.id, target.id, name);
+      if (rel) return postAction(elixirUrl, authHeaders, { method: 'DELETE', subjectId: rel.id });
     },
 
     generateId: () => nanoid(),
   };
+}
+
+// Helper: POST an Action to the Elixir server, wait for durability confirmation
+async function postAction(elixirUrl: string, headers: Headers, update: UpdatePayload): Promise<ActionResult> {
+  const res = await fetch(`${elixirUrl}/sync/actions`, {
+    method: 'POST',
+    headers: { ...Object.fromEntries(headers), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ updates: [update] }),
+  });
+  if (!res.ok) throw new ActionError(await res.json());
+  return res.json();
 }
 ```
 
@@ -540,8 +569,8 @@ export class FunctionExecutor {
   constructor(
     private store: FunctionStore,
     private cache: ScriptCache,
-    private db: Database,
-    private writeHandler: ServerWriteHandler,
+    private db: Database,            // shared SQLite database
+    private elixirUrl: string,       // e.g., "http://localhost:4000"
     private config: ExecutorConfig = { timeoutMs: 30000 }
   ) {}
 
@@ -549,8 +578,9 @@ export class FunctionExecutor {
     functionName: string,
     input: unknown,
     actor: Actor,
+    authHeaders: Headers,            // forwarded from the original request
   ): Promise<unknown> {
-    // 1. Lookup active version
+    // 1. Lookup active version (direct SQLite read)
     const version = this.store.getActive(functionName);
     if (!version) {
       throw new Error(`No active version for function: ${functionName}`);
@@ -564,8 +594,8 @@ export class FunctionExecutor {
       this.validateInput(input, JSON.parse(version.input_schema));
     }
 
-    // 4. Create function context (direct reads, write-path writes, group-scoped)
-    const ctx = createFunctionContext(actor, this.db, this.writeHandler);
+    // 4. Create function context (SQLite reads, Elixir HTTP writes, group-scoped)
+    const ctx = createFunctionContext(actor, this.db, this.elixirUrl, authHeaders);
 
     // 5. Execute in vm with timeout
     const result = await this.executeInVm(script, ctx, input);
@@ -576,7 +606,7 @@ export class FunctionExecutor {
     }
 
     return result;
-    // Errors propagate to caller. Writes already committed stay committed.
+    // Errors propagate to caller. Writes already committed on Elixir stay committed.
     // Operator uses `ebb functions rollback` if a bad version needs to be pulled.
   }
 

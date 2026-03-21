@@ -1,8 +1,75 @@
 {
   "name": "ebbjs",
+  "version": "0.0.1",
   "private": true,
+  "author": "Drew Lyton (drewlyton)",
+  "description": "Framework for building reactive, collaborative apps that can work offline.",
   "scripts": {
-    "dev": "pnpm --filter www dev",
-    "build": "pnpm --filter www build"
+    "build": "pnpm --recursive build",
+    "test": "pnpm --recursive test",
+    "cli": "pnpm --filter @ebbjs/cli",
+    "client": "pnpm --filter @ebbjs/client",
+    "core": "pnpm --filter @ebbjs/core",
+    "db": "pnpm --filter @ebbjs/db",
+    "sync": "pnpm --filter @zuko/sync",
+    "log": "pnpm --filter @zuko/log",
+    "server": "pnpm --filter @ebbjs/server",
+    "poc": "pnpm --filter @examples/poc",
+    "react": "pnpm --filter @ebbjs/react",
+    "yjs": "pnpm --filter @ebbjs/yjs",
+    "www": "pnpm --filter @ebbjs/www",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "prepare": "husky",
+    "lint-staged": "lint-staged"
+  },
+  "dependencies": {
+    "nanoid": "^5.1.6",
+    "postgres": "^3.4.8",
+    "typescript": "^5.9.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.2.3",
+    "better-sqlite3": "^12.6.2",
+    "concurrently": "^9.2.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.2",
+    "oxfmt": "^0.32.0",
+    "oxlint": "^1.47.0",
+    "tsx": "^4.21.0",
+    "vite": "^7.1.2",
+    "vite-plugin-checker": "^0.12.0",
+    "vite-plugin-dts": "^4.5.4",
+    "vite-plugin-externalize-deps": "^0.10.0",
+    "vite-tsconfig-paths": "^6.1.1",
+    "vitest": "^4.0.18",
+    "yjs": "^13.6.0"
+  },
+  "lint-staged": {
+    "*.{js,jsx,ts,tsx}": [
+      "oxlint --fix",
+      "oxfmt --write"
+    ]
+  },
+  "engines": {
+    "node": ">=22.8.0"
+  },
+  "packageManager": "pnpm@10.30.1",
+  "pnpm": {
+    "overrides": {
+      "better-auth": "^1.4.17",
+      "better-sqlite3": "^12.6.2",
+      "drizzle-orm": "^0.45.1",
+      "drizzle-zod": "^0.8.3",
+      "yjs": "^13.6.0"
+    },
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
   }
 }
