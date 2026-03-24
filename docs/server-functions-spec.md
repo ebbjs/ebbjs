@@ -1,5 +1,7 @@
 # Server Functions (`defineFunction`)
 
+> **Note:** The data access model for server functions has changed. In `storage-architecture-v2.md`, Bun is a stateless function runtime — `ctx.get()` and `ctx.query()` go through Elixir HTTP endpoints (not direct SQLite reads). `ctx.create/update/delete` continue to go through Elixir via HTTP (unchanged). The `FunctionContext` implementation in this doc should be updated to reflect HTTP-based reads. The rest of this spec (function definition, deployment, versioning, CLI) remains valid.
+
 ## Overview
 
 Ebb provides two distinct primitives for server-side logic:

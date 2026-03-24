@@ -1,5 +1,7 @@
 # Ebb Server Architecture: Storage + Sync
 
+> **Deprecated:** The storage engine sections of this document have been superseded by `storage-architecture-v2.md` (RocksDB + SQLite + on-demand materialization). The **Sync Protocol**, **Fan-out Architecture**, **Presence Broadcasting**, **Server-to-Server Replication**, and **Write Flow** sections remain valid and are referenced by the v2 doc. The **Storage Engine**, **Implementation Plan**, and **OTP Supervision Tree** sections should not be used for implementation decisions.
+
 ## Problem Statement
 
 Ebb needs a server architecture that can:
@@ -28,7 +30,7 @@ The entire server (sync protocol + storage engine) is built in Elixir.
 - Hot code reloading for the entire system
 
 **Why not Rust/Go for the storage layer:**
-We evaluated a Rust NIF (via Rustler) for the storage engine in depth. While Rust offers predictable performance and strong binary manipulation, the NIF boundary created significant coordination complexity: durability notifications, memory-pressure-triggered compaction, and cold-tier index population all required cross-boundary message passing. The complexity cost outweighed the performance benefit at realistic load. If Elixir becomes a bottleneck at extreme scale, the Writer GenServer's message-passing interface can be replaced with a Rust NIF without changing the rest of the system.
+We evaluated a Rust NIF (via Rustler) for the storage engine in depth. While Rust offers predictable performance and strong binary manipulation, the NIF boundary created significant coordination complexity: durability notifications, memory-pressure-triggered compaction, and cold-tier index population all required cross-boundary message passing. The complexity cost outweighed the performance benefit at realistic load. See `docs/rust-nif-optimization.md` for the full evaluation and future optimization path.
 
 ## Architecture Overview
 
@@ -97,7 +99,7 @@ The storage engine has two layers:
 
 Bun is the primary writer (materialized entity views after each batch flush). Elixir writes infrequently (cold-tier Action index during memory pressure eviction, actor records on first authentication). WAL mode supports concurrent readers and these low-frequency Elixir writes without meaningful contention.
 
-The database uses generated columns to automatically extract and index fields from the JSON `data` blob on system entity types (Relationships, GroupMembers). This eliminates the need for separate denormalized tables — SQLite maintains the indexes as Bun writes materialized state.
+The database uses generated columns to automatically extract and index fields from the JSON `data` blob on system entity types (Relationships, GroupMembers). These are primarily used for startup population of the system entity cache and for catch-up query filtering. SQLite maintains the indexes automatically as Bun writes materialized state.
 
 ```sql
 -- SQLite Schema (WAL mode)
@@ -151,7 +153,7 @@ CREATE TABLE actors (
 
 -- Materialized entity state: the current view of every entity.
 -- Written by the Bun Materializer after each batch flush.
--- Read by Bun for server functions and by Elixir for permission checks.
+-- Read by Bun for server functions. System entities are also loaded into ETS on startup for permission checks.
 CREATE TABLE entities (
   id TEXT PRIMARY KEY,              -- entity ID (nanoid with type prefix)
   type TEXT NOT NULL,               -- entity type, e.g., "todo", "group", "groupMember", "relationship"
@@ -164,14 +166,14 @@ CREATE TABLE entities (
   last_gsn INTEGER NOT NULL,        -- GSN of the most recent Action that touched this entity
 
   -- Generated columns: auto-extracted from data blob for Relationship entities.
-  -- Used by Elixir for permission checks and sync routing (entity→Group lookups).
+  -- Used for startup population of the system entity cache and catch-up query filtering.
   source_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.source_id')) STORED,
   target_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.target_id')) STORED,
   rel_type TEXT GENERATED ALWAYS AS (json_extract(data, '$.type')) STORED,    -- relationship type, e.g., "todo"
   rel_field TEXT GENERATED ALWAYS AS (json_extract(data, '$.field')) STORED,  -- relationship field, e.g., "list"
 
   -- Generated columns: auto-extracted from data blob for GroupMember entities.
-  -- Used by Elixir for permission checks (actor→Group→permissions lookups).
+  -- Used for startup population of the system entity cache.
   actor_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.actor_id')) STORED,
   group_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.group_id')) STORED,
   permissions TEXT GENERATED ALWAYS AS (json_extract(data, '$.permissions')) STORED
@@ -181,11 +183,11 @@ CREATE TABLE entities (
 CREATE INDEX idx_entities_type ON entities(type) WHERE deleted_hlc IS NULL;
 CREATE INDEX idx_entities_type_gsn ON entities(type, last_gsn);
 
--- Relationship indexes (for sync routing and permission checks)
+-- Relationship indexes (for catch-up query filtering and startup cache population)
 CREATE INDEX idx_entities_source ON entities(source_id) WHERE type = 'relationship' AND deleted_hlc IS NULL;
 CREATE INDEX idx_entities_target ON entities(target_id) WHERE type = 'relationship' AND deleted_hlc IS NULL;
 
--- GroupMember indexes (for permission checks)
+-- GroupMember indexes (for startup cache population)
 CREATE INDEX idx_entities_actor_group ON entities(actor_id, group_id) WHERE type = 'groupMember' AND deleted_hlc IS NULL;
 
 -- Snapshots: pointer to the last PUT update for each entity.
@@ -235,16 +237,20 @@ CREATE INDEX idx_function_active ON function_versions(name, status) WHERE status
 - **Bun → Elixir (writes):** Server functions (`ctx.create()`, `ctx.update()`, `ctx.delete()`) send Actions via `POST /sync/actions` on localhost. Synchronous request/response — Bun waits for Elixir to confirm durability before returning to the caller. HTTP overhead (~0.5ms round-trip on localhost) is small relative to the ~5ms average fsync wait.
 - **Elixir → Bun (materialization):** The Bun Materializer subscribes to the unfiltered replication stream via `GET /sync/replication?live=sse` — the same endpoint used by peer servers. On each batch of Actions, it materializes entity state using the same JS replay logic the client uses (field-level LWW for JSON entities, Yjs merge for CRDT entities), and writes results to the entities table. Generated columns and indexes are maintained automatically by SQLite. Runs asynchronously — small staleness window (typically single-digit ms) is acceptable.
 
-**System entity cache (race condition mitigation):** Because materialization is async, there's a window where a newly created Group, GroupMember, or Relationship exists in the Action log but not yet in SQLite. If a subsequent Action depends on that system entity for permission checks (e.g., creating a Todo in a just-created Group), the permission check would fail against stale SQLite state.
+**System entity cache:** Elixir maintains a permanent in-memory ETS cache of all system entities (Groups, GroupMembers, Relationships). This cache is the authoritative read source for permission checks and fan-out routing — no permission check ever hits SQLite.
 
-To handle this, Elixir maintains a small in-memory ETS cache of recently-written system entities (Groups, GroupMembers, Relationships only). After each batch flush, the Writer extracts system entity state from the Action payloads and populates this cache — including tombstones for deleted system entities. Permission checks read from the cache first, falling through to SQLite only on cache miss. This ensures that both grants (new GroupMember) and revocations (deleted GroupMember) take effect immediately, before the Materializer has updated SQLite.
+The cache is populated from two sources:
+1. **On startup:** System entities are replayed from the `actions`/`updates` tables — joining Updates with their parent Action's HLC, filtering by system entity types, and replaying in HLC order. Once the Bun Materializer (C9) is running and the `entities` table is populated, startup can optionally switch to the faster path: `SELECT id, data, type, deleted_hlc FROM entities WHERE type IN ('group', 'groupMember', 'relationship')`. The server does not accept connections until startup population completes.
+2. **At runtime:** After each batch flush, the Writer extracts system entity state from Action payloads and updates the cache — including tombstones for deleted system entities. This ensures that both grants (new GroupMember) and revocations (deleted GroupMember) take effect immediately, without waiting for the Materializer.
 
-When the Bun Materializer confirms it has processed up to a given GSN (via a lightweight callback or cursor update), cache entries at or below that GSN are evicted.
+The Bun Materializer still writes system entities to SQLite (for durability and restart recovery), but Elixir never reads system entities from SQLite during normal operation.
 
-The cache is small and bounded: only system entity types (not application entities), only covering the materialization lag window (typically single-digit ms), evicted as soon as the Materializer catches up.
+The cache is bounded by the number of system entities in the application (not by Action history or throughput). For a typical SaaS deployment with 100k entities across 500 Groups with 10k actors, the cache is ~30-50MB — negligible on any server handling thousands of connections.
+
+**Consistency guarantee:** All system entity mutations flow through the Writer GenServer, which is the single point of truth for ETS writes. There is no second path that could update SQLite without also updating ETS. During multi-server replication, replicated Actions containing system entity changes also flow through the Writer (trust-and-apply), so the cache stays consistent across peers.
 
 **Bun Application Server integration:**
-- **Reads:** Bun and Elixir both read the same SQLite database directly. Bun reads for server functions (`ctx.get()`, `ctx.query()`). Elixir reads for permission checks during the write path (system entity cache first, then SQLite via generated column indexes).
+- **Reads:** Bun reads the SQLite database directly for server functions (`ctx.get()`, `ctx.query()`). Elixir reads the system entity cache (ETS) for permission checks during the write path — permission checks never hit SQLite.
 - **Writes:** Bun server sends Actions to Elixir via `POST /sync/actions` on localhost, which routes them through the normal write path (permission checks → Writer GenServer → fsync → fan-out)
 
 ### Action Log File Format
@@ -495,7 +501,7 @@ Request body:
    ```
    The auth endpoint is developer-provided (Clerk, Better Auth, custom JWT validation, etc.). The Elixir sync server is auth-mechanism-agnostic — it just needs an actor ID back.
 
-2. **Load Group memberships:** Query SQLite for Groups this actor belongs to
+2. **Load Group memberships:** Query the system entity cache (ETS) for Groups this actor belongs to
 
 3. **Validate cursors:** For each Group, check if the client's cursor is still valid (cursor ≥ low-water mark)
 
@@ -551,7 +557,7 @@ Response body:
 **CDN collapsing:** Multiple clients catching up on the same Group at the same offset make identical HTTP requests. The CDN caches the response and serves it to all of them — the server handles 1 request instead of N. This is where the Durable Streams protocol's design pays off.
 
 **Server query flow:**
-1. SQLite: "Which Entities belong to Group X?" → `SELECT entity_id FROM relationships WHERE target_id = 'X'`
+1. System entity cache (ETS): "Which Entities belong to Group X?" → look up Relationships where `target_id = 'X'`
 2. ETS: For each entity_id, find GSNs > cursor from `entity_index`
 3. Disk: Seek to file offsets via `gsn_index`, read Action payloads
 4. Return paginated Actions + `Stream-Next-Offset`
@@ -610,7 +616,7 @@ Writer GenServer
 Fan-out Router
   │  1. Read flushed Actions from ETS/disk
   │  2. Parse entity IDs from each Action
-  │  3. Look up affected Groups (system entity cache → SQLite: entity→Group)
+  │  3. Look up affected Groups (system entity cache in ETS: entity→Group)
   │  4. Send Actions to each affected Group process
   │
   ├──→ Group "A" GenServer ──→ [SSE conn 1, SSE conn 2, SSE conn 3]
@@ -621,7 +627,7 @@ Fan-out Router
 **Fan-out Router:**
 - Receives `{:batch_flushed, from_gsn, to_gsn}` from Writer GenServer
 - Reads the flushed Actions, determines affected Groups
-- Group lookup uses the system entity cache first (for newly created Relationships), falling through to SQLite — same pattern as permission checks, avoiding the same Materializer lag race condition
+- Group lookup reads from the system entity cache (ETS) — all Relationships are in memory, so no SQLite access is needed on the fan-out path
 - Dispatches Actions to the appropriate Group GenServers
 - Single process, but its job is lightweight (routing, not delivery)
 
@@ -661,7 +667,7 @@ Request body:
 
 **Server flow:**
 1. Identify actor from authenticated session
-2. Look up Groups for `entity_id` (SQLite)
+2. Look up Groups for `entity_id` (system entity cache in ETS)
 3. Route to each affected Group GenServer
 4. Group GenServer broadcasts to all subscribers except the sender
 
@@ -724,7 +730,7 @@ Each server runs a Replication Manager process per configured peer. A peer serve
 
 2. HTTP handler validates each Action:
     - Structural validation of Action envelope (valid IDs, valid method types, required fields present — not data payload shape)
-    - Permission check (reads materialized Relationships and GroupMembers from SQLite B;
+    - Permission check (reads Relationships and GroupMembers from the system entity cache in ETS;
       for entity creation, parses Group membership from sibling Relationship Updates within the Action)
     - Bootstrap: Group creation is unpermissioned. Any authenticated actor can create a Group.
       The initial Action typically includes the Group PUT, a GroupMember PUT (granting the
@@ -748,7 +754,7 @@ Each server runs a Replication Manager process per configured peer. A peer serve
    - Rejected Actions (or empty = all accepted and durable)
 
 6. Fan-out Router:
-   - Reads flushed Actions, looks up affected Groups (SQLite: entity→Group)
+   - Reads flushed Actions, looks up affected Groups (system entity cache in ETS: entity→Group)
    - Dispatches to Group GenServers
    - Group GenServers push to SSE subscribers
 
@@ -800,9 +806,9 @@ Application Supervisor (one_for_one)
 
 ---
 
-## Implementation Phases
+## Implementation Plan
 
-### Implementation Strategy: SQLite-First
+### Strategy: SQLite-First
 
 The custom append-only Action log with batched fsync, ETS indexes, and segment compaction is the target architecture for high-throughput production use. However, it is also the component with the most implementation unknowns and the least impact on developer experience.
 
@@ -810,75 +816,89 @@ The MVP implements the Writer GenServer interface backed by SQLite. Actions are 
 
 The Writer GenServer's message-passing interface remains identical. The sync protocol, permission system, fan-out, and client SDK are built against this interface and don't change when the storage backend is swapped. This means the custom storage engine can be built later, benchmarked against the SQLite baseline, and swapped in without touching the rest of the system.
 
-### Phase 1: SQLite-Backed Storage + Bun Materializer
-**Goal:** End-to-end write path works. Actions are persisted, materialized, and queryable.
+### Components
 
-**Elixir:**
-- Writer GenServer backed by SQLite (insert Actions/Updates into SQLite tables, assign GSN, WAL mode fsync for durability)
-- ActionReader queries against SQLite (no ETS, no custom file format)
-- SQLite database setup (WAL mode): `actions`, `updates`, `entities`, `snapshots`, `actors`, `function_versions` tables with generated columns and indexes
-- Unfiltered replication SSE endpoint (`GET /sync/replication?live=sse`)
-- System entity cache in ETS (Groups, GroupMembers, Relationships — including tombstones) populated by Writer after each flush, evicted when Materializer catches up
-- Permission check logic: system entity cache → SQLite fallback, structural validation of Action envelope, HLC drift check
-- Intra-Action permission resolution for entity creation (parse Group membership from sibling Relationship Updates)
-- Action write endpoint (`POST /sync/actions`)
+The system breaks down into discrete components with explicit dependencies. Components without dependency relationships between them can be built in parallel.
 
-**Bun:**
-- Bun Materializer process: subscribes to replication SSE stream, materializes entity state (JSON LWW + Yjs), writes to SQLite `entities` table
-- Materializer GSN cursor tracking (so Elixir knows what's been materialized)
+| ID | Component | Description |
+|----|-----------|-------------|
+| C1 | Elixir Project Scaffold | Mix project, OTP application, supervision tree skeleton, dependencies |
+| C2 | SQLite Schema | All tables (WAL mode): `actions`, `updates`, `entities`, `snapshots`, `actors`, `function_versions` with generated columns and indexes |
+| C3 | Writer GenServer | Accepts Actions via message passing, inserts into SQLite, assigns GSN, fsyncs (WAL mode), notifies callers with `{:durable, gsn}` and `{:batch_flushed, from_gsn, to_gsn}` |
+| C4 | ActionReader | Query Actions from SQLite by GSN, by entity, by action ID. Implements the read-path API (`get_actions_for_entities_since`, `get_actions_since`, `get_action_at_gsn`, etc.) |
+| C5 | System Entity Cache | Permanent ETS cache of Groups, GroupMembers, Relationships (including tombstones). On startup: replay from `actions`/`updates` tables. At runtime: Writer updates after each flush |
+| C6 | Permission Checks | Structural validation of Action envelope, ETS-based permission logic, HLC drift check, intra-Action resolution for entity creation (parse Group membership from sibling Relationship Updates) |
+| C7 | Action Write Endpoint | `POST /sync/actions` — HTTP handler that validates, permission-checks, routes to Writer, waits for `{:durable, gsn}`, responds |
+| C8 | Replication SSE Endpoint | `GET /sync/replication?live=sse` — unfiltered stream of all Actions by GSN. Used by peer servers and the Bun Materializer |
+| C9 | Bun Materializer | Subscribes to replication SSE (C8), materializes entity state using JS replay logic (field-level LWW for JSON, Yjs merge for CRDT), writes to SQLite `entities` table. Tracks GSN cursor |
+| C10 | Auth Integration | HTTP callback to developer's auth URL during handshake. Actor auto-creation on first authentication (SQLite `actors` table) |
+| C11 | Handshake Endpoint | `POST /sync/handshake` — authenticate (via C10), validate cursors against low-water mark, load Group memberships from ETS (C5), return Groups with cursor validity |
+| C12 | Catch-up Endpoint | `GET /sync/groups/{id}?offset={gsn}` — per-Group paginated Actions (200 per page), CDN-friendly headers (`Cache-Control`, `ETag`), `Stream-Next-Offset` / `Stream-Up-To-Date` headers |
+| C13 | Fan-out Router + Group GenServers | Router receives `{:batch_flushed}` from Writer, reads Actions, looks up affected Groups via ETS (C5), dispatches to per-Group GenServers. Group GenServers maintain subscriber sets and push to SSE connections |
+| C14 | Live SSE Endpoint | `GET /sync/live?groups=A,B,C&cursors=500,200,800` — single SSE per client, receives Actions from Group GenServers (C13), event-driven reconnection (membership changes, token expiry, safety net timeout) |
+| C15 | Presence | `POST /sync/presence` inbound + broadcasting via Group GenServers (C13). Fire-and-forget, opaque payload, throttled. Not persisted |
+| C16 | Bun Application Server | `defineFunction` execution in vm sandbox, `ctx` object (reads from shared SQLite, writes via `POST /sync/actions`), function store, deployment CLI, version management |
+| C17 | Custom Storage Engine | Append-only binary Action log with batched fsync (10ms / 1000 Actions), ETS indexes (`entity_index`, `gsn_index`, `action_id_index`), crash recovery (CRC32). Replaces C3/C4 internals behind the same interface |
+| C18 | Operational Maturity | File rotation + manifest, segment compaction, index checkpointing, memory management (soft/hard limits, synthetic snapshots), cold-tier SQLite index, server-to-server replication (Replication Manager, dedup, trust-and-apply), replication lag monitoring |
+| C19 | Optimization | Compression, payload format migration (JSON → MessagePack), CDN tuning, performance profiling, optional schema validation in Elixir, evaluate Rust NIF (see `docs/rust-nif-optimization.md`) |
 
-### Phase 2: Sync Protocol
-**Goal:** Clients can authenticate, catch up, and subscribe to live updates.
+### Dependency Graph
 
-- Auth URL integration (HTTP callback to developer's auth server)
-- Actor auto-creation on first authentication (SQLite `actors` table)
-- Handshake endpoint (authenticate, validate cursors, return Groups)
-- Per-Group catch-up HTTP endpoint (with CDN-friendly headers, 200-Action pagination)
-- Single SSE live subscription endpoint (with event-driven reconnection)
-- Fan-out Router + per-Group GenServers (Group lookup via system entity cache → SQLite)
-- Presence broadcasting endpoint
+```
+C1 Elixir Project Scaffold
+└── C2 SQLite Schema
+    ├── C3 Writer GenServer
+    │   ├── C4 ActionReader
+    │   ├── C5 System Entity Cache ─────────────────────┐
+    │   │   └── C6 Permission Checks                    │
+    │   │       └── C7 Action Write Endpoint ◄──────────┘ [C3 + C6]
+    │   ├── C8 Replication SSE Endpoint
+    │   │   └── C9 Bun Materializer ──────────────────── [C8 + entity replay logic in @ebbjs/core]
+    │   │       └── C16 Bun Application Server ───────── [C9 + C7]
+    │   └── C13 Fan-out Router + Group GenServers ────── [C3 + C5]
+    │       ├── C14 Live SSE Endpoint ────────────────── [C13 + C10]
+    │       └── C15 Presence ─────────────────────────── [C13 + C10]
+    └── C10 Auth Integration
+        └── C11 Handshake Endpoint ───────────────────── [C10 + C5]
+            └── C12 Catch-up Endpoint ────────────────── [C11 + C4]
 
-### Phase 3: Bun Application Server
-**Goal:** Server functions can read and write Ebb data.
+C17 Custom Storage Engine ───────────────────────────── [replaces C3 + C4 internals]
+└── C18 Operational Maturity
 
-- Bun↔Elixir write integration: server functions send Actions via `POST /sync/actions` on localhost
-- Function context (`ctx`) reads from shared SQLite directly
-- `defineFunction` execution (vm sandbox, timeout enforcement)
-- Function store, deployment CLI, version management
+C19 Optimization ────────────────────────────────────── [after C17 + C18]
+```
 
-### Phase 4: Custom Storage Engine (Performance)
-**Goal:** Swap SQLite-backed Writer for the high-throughput append-only Action log. 10-100x write performance improvement.
+### Key Observations
 
-This phase replaces the internals behind the Writer GenServer interface. Nothing above the interface changes.
+**The Materializer (C9) is not on the critical path for the sync protocol.** Catch-up (C12) returns Actions (not materialized entities) and resolves Group membership from the ETS cache (C5), not the `entities` table. The Materializer's first hard consumer is the Bun Application Server (C16), where `ctx.get()` and `ctx.query()` read materialized state from SQLite.
 
-- Append-only Action log file format (binary records with CRC32)
-- Writer GenServer with batched fsync (10ms windows or 1000 Actions)
-- ETS indexes (`entity_index`, `gsn_index`, `action_id_index`)
-- Crash recovery (CRC32 validation + truncation)
-- Benchmark against SQLite baseline to verify performance improvement
-- ActionReader queries switch from SQLite to ETS + disk reads
+**System entity cache startup uses Action replay, not the `entities` table.** On startup, C5 replays system entity state from the `actions`/`updates` tables: `SELECT u.subject_id, u.subject_type, u.method, u.data, a.hlc FROM updates u JOIN actions a ON u.action_id = a.id WHERE u.subject_type IN ('group', 'groupMember', 'relationship') ORDER BY a.hlc`. This avoids a dependency on the Materializer for startup recovery. At MVP scale (~1-3k writes/sec), this replay is fast. Once the Materializer (C9) is running and the `entities` table is populated, startup can optionally switch to the faster `SELECT ... FROM entities WHERE type IN (...)` path.
 
-### Phase 5: Operational Maturity
-**Goal:** Production-ready compaction, checkpointing, and multi-server replication.
+**Fan-out (C13) and Auth (C10) are independent.** Fan-out depends on the Writer and ETS cache. Auth depends on the SQLite schema. They can be built in parallel. The Live SSE endpoint (C14) is where they converge.
 
-- File rotation + manifest management
-- Segment rewriting (compaction of old log segments)
-- Index checkpointing (all three ETS tables)
-- Memory management (soft/hard limits, synthetic snapshot compaction)
-- Cold-tier SQLite index population
-- Server-to-server replication (Replication Manager, dedup, trust-and-apply)
-- Replication lag monitoring
-- Storage stats and integrity validation
+**The Custom Storage Engine (C17) is a pure internal swap.** It replaces C3 and C4's internals behind the same message-passing and read-path interfaces. Nothing above those interfaces changes — the sync protocol, permissions, fan-out, and Materializer are unaffected.
 
-### Phase 6: Optimization
-**Goal:** Performance tuning and efficiency improvements as needed.
+### Suggested Build Order
 
-- Compression (if file size becomes an issue)
-- Payload format migration (JSON → MessagePack if needed)
-- CDN integration and cache tuning
-- Performance profiling and tuning
-- Schema validation in Elixir via JSON Schema registry (if bad data proves to be a problem)
-- Evaluate Rust NIF for Writer GenServer if needed
+Given the dependency graph, one efficient ordering is:
+
+**1. Core write path** — C1 → C2 → C3 → C4 → C5 → C6 → C7
+Get Actions flowing end-to-end: write via HTTP, persist to SQLite, permission-checked, durable.
+
+**2. Real-time delivery** — C8, C10, C13, then C14, C15
+Build the replication SSE endpoint and fan-out infrastructure. Auth can be built in parallel with C8/C13. Live SSE and presence come last since they need both fan-out and auth.
+
+**3. Client-facing sync** — C11 → C12
+Handshake and catch-up. Depends on auth (C10) and the read path (C4) being ready.
+
+**4. Materialization** — C9
+Build once the replication SSE endpoint (C8) exists and entity replay logic is implemented in `@ebbjs/core`. Not blocked by the sync protocol.
+
+**5. Server functions** — C16
+Depends on the Materializer (C9) for reads and the write endpoint (C7) for writes.
+
+**6. Performance + operations** — C17 → C18 → C19
+Swap the storage engine internals, add operational tooling, then optimize.
 
 ---
 
@@ -889,15 +909,16 @@ This phase replaces the internals behind the Writer GenServer interface. Nothing
 | **RocksDB/LevelDB** | Adds operational complexity and external dependencies. Append-only file leverages Ebb's specific access patterns (append-only writes, GSN-ordered reads). |
 | **SQLite-only for Actions** | Durability requirement (fsync before ACK) limits to ~1,000-3,000 writes/second. Long sync reads could block writes. |
 | **Bun/Node.js** | Single-threaded event loop struggles with 10k concurrent SSE connections alongside file I/O. Lacks process isolation and supervision. |
-| **Rust NIF + Elixir** | NIF boundary created significant coordination complexity for durability notifications, compaction, and cold-tier indexing. Complexity cost outweighed performance benefit at realistic load. |
-| **Rust for everything** | Strong performance but lacks Elixir's operational resilience (supervision trees, hot code reloading, process isolation). |
+| **Rust NIF + Elixir** | See `docs/rust-nif-optimization.md` |
+| **Rust for everything** | See `docs/rust-nif-optimization.md` |
 
 ## Success Metrics
 
 - 10,000-20,000 Actions/second sustained write load (realistic target)
 - Theoretical ceiling of 100,000 Actions/second with batched fsync
+- Zero SQLite reads on the write hot path (permission checks and fan-out routing served entirely from ETS)
 - Sub-100ms sync query response times
 - 10,000 concurrent client connections per server instance
 - CDN-friendly catch-up reads (cache hit rate > 80% for common Groups)
 - Maintain all Ebb consistency and atomicity guarantees
-- Future optimization path: Writer GenServer → Rust NIF if needed
+- Future optimization path: see `docs/rust-nif-optimization.md`

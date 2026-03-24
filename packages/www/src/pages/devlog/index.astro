@@ -3,8 +3,8 @@ import { getCollection } from 'astro:content';
 import Marketing from '../../layouts/Marketing.astro';
 
 const posts = (await getCollection('devlog'))
-  .filter((post) => !post.data.draft)
-  .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
+.filter((post) => post.data.published)
+.sort((a,b) => b.data.date.getTime() - a.data.date.getTime())
 
 const formatDate = (date: Date) => {
   return date.toLocaleDateString('en-US', {
@@ -16,19 +16,19 @@ const formatDate = (date: Date) => {
 ---
 
 <Marketing title="Devlog | ebb" description="Development updates and notes from building ebb.">
-  <div class="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8 py-12">
+  <div class="mx-auto max-w-3xl py-12">
+    <div class="px-4 sm:px-6 ">
     <h1 class="text-4xl font-bold tracking-tight mb-4">Devlog</h1>
     <p class="text-stone-400 text-lg mb-12">Development updates and notes from building ebb.</p>
-
+</div>
     {posts.length === 0 ? (
       <p class="text-stone-400 italic">No posts yet. Check back soon!</p>
     ) : (
-      <ul class="space-y-4">
+      <div> 
         {posts.map((post) => (
-          <li>
             <a
               href={`/devlog/${post.id}`}
-              class="block p-6 rounded-lg border border-stone-800 hover:border-stone-700 hover:bg-stone-900/50 transition-colors"
+              class="block px-4 sm:px-6 py-6 border-t last:border-b border-stone-800 hover:bg-stone-900/50 transition-colors"
             >
               <time datetime={post.data.date.toISOString()} class="text-sm text-stone-400">
                 {formatDate(post.data.date)}
@@ -36,9 +36,8 @@ const formatDate = (date: Date) => {
               <h2 class="text-xl font-semibold mt-1 mb-2">{post.data.title}</h2>
               <p class="text-stone-400">{post.data.description}</p>
             </a>
-          </li>
         ))}
-      </ul>
+      </div>
     )}
   </div>
 </Marketing>

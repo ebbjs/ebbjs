@@ -2,6 +2,7 @@
 title: "Yet Another Sync Engine?"
 description: "Why I'm building a sync focused framework when the local-first landscape already seems crowded"
 date: 2026-03-18
+published: true
 ---
 
 During Covid, it seemed like everyone and their brother was building "yet another JavaScript framework".
