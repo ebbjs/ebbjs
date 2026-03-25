@@ -41,7 +41,7 @@ const terminalHtml = `<span class="text-stone-300">$</span> <span class="text-st
 
       <!-- Copy -->
       <div data-animate="fade-up" class="opacity-0 order-1 lg:order-2">
-        <span class="font-mono text-sm text-stone-600 block mb-4">02</span>
+        <svg class="w-4 h-4 text-stone-600 block mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
         <h2 class="text-3xl sm:text-4xl font-bold text-stone-100 tracking-tight mb-6 text-balance">Deploy in seconds. Rollback instantly.</h2>
         <p class="text-lg text-stone-400 leading-relaxed mb-8">
           Your server runs two processes: a persistent sync engine and a stateless sidecar. <code class="text-stone-300">ebb deploy</code> ships new code to the sidecar &mdash; the sync engine never restarts. Versions activate atomically, so there's zero downtime. Rolling back is just as fast.
