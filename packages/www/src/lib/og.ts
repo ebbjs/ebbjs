@@ -107,7 +107,7 @@ const COLORS = {
   textPrimary: '#fafaf9',
   textSecondary: '#a8a29e',
   textMuted: '#57534e',
-  asciiText: '#292524',
+  asciiText: '#44403c',
   badgeBg: '#1c1917',
   badgeBorder: '#292524',
   badgeText: '#a8a29e',
@@ -164,8 +164,8 @@ function asciiBackground(gridText: string) {
         props: {
           style: {
             fontFamily: 'JetBrains Mono',
-            fontSize: '14px',
-            lineHeight: '16px',
+            fontSize: '18px',
+            lineHeight: '20px',
             color: COLORS.asciiText,
             margin: 0,
             padding: 0,
@@ -184,13 +184,13 @@ function badge(text: string) {
     props: {
       style: {
         display: 'flex',
-        fontSize: '16px',
+        fontSize: '20px',
         fontWeight: 400,
         color: COLORS.badgeText,
         backgroundColor: COLORS.badgeBg,
         border: `1px solid ${COLORS.badgeBorder}`,
-        borderRadius: '6px',
-        padding: '4px 12px',
+        borderRadius: '8px',
+        padding: '6px 16px',
         fontFamily: 'JetBrains Mono',
       },
       children: text,
@@ -210,9 +210,9 @@ interface OgCardOptions {
  * Build the satori virtual-DOM tree for an OG card.
  */
 export function buildOgCard({ title, subtitle, badge: badgeText }: OgCardOptions) {
-  // Generate ASCII grid sized for 1200x630 at 14px/16px char dimensions
-  const gridCols = Math.ceil(1200 / 8.4); // ~143 cols
-  const gridRows = Math.ceil(630 / 16); // ~40 rows
+  // Generate ASCII grid sized for 1200x630 at 18px/20px char dimensions
+  const gridCols = Math.ceil(1200 / 10.8); // ~111 cols
+  const gridRows = Math.ceil(630 / 20); // ~32 rows
   const asciiGrid = generateAsciiGrid(gridCols, gridRows, DEFAULT_RIPPLES);
 
   const topRow: any[] = [ebbLogo()];
@@ -221,7 +221,7 @@ export function buildOgCard({ title, subtitle, badge: badgeText }: OgCardOptions
   }
 
   // Scale font size down for longer titles
-  const titleFontSize = title.length > 80 ? 36 : title.length > 50 ? 42 : 52;
+  const titleFontSize = title.length > 80 ? 44 : title.length > 50 ? 52 : 64;
 
   const textChildren: any[] = [
     {
@@ -246,10 +246,10 @@ export function buildOgCard({ title, subtitle, badge: badgeText }: OgCardOptions
       type: 'div',
       props: {
         style: {
-          fontSize: '24px',
+          fontSize: '32px',
           fontWeight: 400,
           color: COLORS.textSecondary,
-          marginTop: '16px',
+          marginTop: '20px',
           lineHeight: 1.4,
           lineClamp: 2,
           textWrap: 'balance',
@@ -305,7 +305,7 @@ export function buildOgCard({ title, subtitle, badge: badgeText }: OgCardOptions
                 type: 'div',
                 props: {
                   style: {
-                    fontSize: '16px',
+                    fontSize: '20px',
                     fontWeight: 400,
                     color: COLORS.textMuted,
                     marginTop: '24px',

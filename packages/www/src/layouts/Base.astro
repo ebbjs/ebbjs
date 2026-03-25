@@ -9,7 +9,7 @@ interface Props {
   ogImage?: string;
 }
 
-const { title, description = 'make the network optional.', ogImage } = Astro.props;
+const { title, description = 'The real-time backend for your vibe coded frontend.', ogImage } = Astro.props;
 const canonicalURL = new URL(Astro.url.pathname, Astro.site);
 const ogImageURL = ogImage ? new URL(ogImage, Astro.site) : new URL('/og.png', Astro.site);
 ---
