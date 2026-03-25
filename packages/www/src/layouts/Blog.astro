@@ -4,6 +4,9 @@ import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
 import TableOfContents from '../components/TableOfContents.astro';
 import AuthorFooter from '../components/AuthorFooter.astro';
+import WaitlistForm from '../components/WaitlistForm.astro';
+import AsciiWaveBackground from '../components/AsciiWaveBackground.astro';
+import AsciiDivider from '../components/AsciiDivider.astro';
 
 interface Props {
   title: string;
@@ -59,6 +62,14 @@ const formatDate = (date: Date) => {
             </div>
             
             <AuthorFooter />
+
+            <AsciiDivider />
+            <div class="relative mt-12 pt-12 pb-12 text-center">
+              <AsciiWaveBackground />
+              <h2 class="text-2xl sm:text-3xl font-bold text-stone-100 tracking-tight mb-3">Stay in sync</h2>
+              <p class="text-lg text-stone-400 mb-6">Subscribe to get future devlog posts delivered straight to your inbox.</p>
+              <WaitlistForm id="devlog-post-waitlist" showLinks={false} />
+            </div>
           </article>
         </main>
         

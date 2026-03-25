@@ -5,5 +5,3 @@ dist/
 tsconfig.tsbuildinfo
 .env
 .netlify/
-experiment/
-ebb_server/

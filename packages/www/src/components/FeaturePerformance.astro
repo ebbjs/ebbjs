@@ -40,7 +40,7 @@
           </div>
 
           <!-- Canvas -->
-          <div class="relative min-h-[340px] sm:min-h-[380px]">
+          <div class="relative min-h-[340px] sm:min-h-[380px]" data-rt-canvas>
             <!-- Dot grid background -->
             <div class="absolute inset-0 rt-dotgrid"></div>
 
@@ -67,8 +67,8 @@
             <!-- Circle, bottom-right -->
             <div class="absolute top-[66%] right-[8%] w-14 h-14 sm:w-18 sm:h-18 rounded-full border border-stone-700/50 bg-stone-800/20"></div>
 
-            <!-- Cursor: You (blue) -->
-            <div class="rt-cursor rt-cursor-you absolute pointer-events-none">
+            <!-- Cursor: You (blue) — follows real mouse -->
+            <div class="rt-cursor rt-cursor-you absolute pointer-events-none opacity-0 transition-opacity duration-150" data-rt-you>
               <svg width="16" height="20" viewBox="0 0 16 20" fill="none">
                 <path d="M1 1L1 15.5L5.5 11.5L9.5 19L12 18L8 10.5L14 10L1 1Z" fill="#60a5fa" stroke="#1e3a5f" stroke-width="1" stroke-linejoin="round"/>
               </svg>
@@ -116,19 +116,15 @@
     left: 2px;
   }
 
-  /* You: top-left shape → center shape → bottom-right → top-right → bottom-pill → center-left → top-left */
+  /* You cursor: positioned by JS, no animation */
   .rt-cursor-you {
-    animation: cursor-you 18s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    top: 0;
+    left: 0;
   }
 
-  @keyframes cursor-you {
-    0%, 2%    { top: 16%; left: 22%; }
-    14%, 18%  { top: 42%; left: 45%; }
-    30%, 34%  { top: 70%; left: 78%; }
-    48%, 52%  { top: 14%; left: 72%; }
-    64%, 68%  { top: 74%; left: 48%; }
-    82%, 86%  { top: 40%; left: 18%; }
-    98%, 100% { top: 16%; left: 22%; }
+  /* Hide native cursor when hovering the canvas */
+  [data-rt-canvas].rt-hovering {
+    cursor: none;
   }
 
   /* Alice: bottom-left → top-right → center → bottom-right → top-left → bottom-pill → bottom-left */
@@ -146,7 +142,7 @@
     98%, 100% { top: 68%; left: 18%; }
   }
 
-  /* Bob: top-center → bottom-pill → top-right → bottom-left → center-right → top-left → top-center */
+  /* Bob: top-center -> bottom-pill -> top-right -> bottom-left -> center-right -> top-left -> top-center */
   .rt-cursor-bob {
     animation: cursor-bob 18s cubic-bezier(0.4, 0, 0.2, 1) infinite;
   }
@@ -161,3 +157,28 @@
     98%, 100% { top: 14%; left: 45%; }
   }
 </style>
+
+<script>
+  const canvas = document.querySelector<HTMLElement>('[data-rt-canvas]');
+  const you = document.querySelector<HTMLElement>('[data-rt-you]');
+
+  if (canvas && you) {
+    canvas.addEventListener('mousemove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      you.style.left = `${e.clientX - rect.left}px`;
+      you.style.top = `${e.clientY - rect.top}px`;
+    });
+
+    canvas.addEventListener('mouseenter', () => {
+      canvas.classList.add('rt-hovering');
+      you.classList.remove('opacity-0');
+      you.classList.add('opacity-100');
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      canvas.classList.remove('rt-hovering');
+      you.classList.add('opacity-0');
+      you.classList.remove('opacity-100');
+    });
+  }
+</script>
