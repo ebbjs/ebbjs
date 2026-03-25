@@ -1,0 +1,43 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/croaring"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/croaring.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/croaring-complete.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/croaring-prefix/src/croaring-stamp/croaring-build.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/croaring-prefix/src/croaring-stamp/croaring-configure.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/croaring-prefix/src/croaring-stamp/croaring-download.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/croaring-prefix/src/croaring-stamp/croaring-install.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/croaring-prefix/src/croaring-stamp/croaring-mkdir.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/croaring-prefix/src/croaring-stamp/croaring-patch.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/croaring-prefix/src/croaring-stamp/croaring-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"croaring"
+		],
+		"name" : "croaring"
+	}
+}

@@ -1,0 +1,43 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/rocksdb"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/rocksdb.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/rocksdb-complete.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/rocksdb-prefix/src/rocksdb-stamp/rocksdb-build.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/rocksdb-prefix/src/rocksdb-stamp/rocksdb-configure.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/rocksdb-prefix/src/rocksdb-stamp/rocksdb-download.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/rocksdb-prefix/src/rocksdb-stamp/rocksdb-install.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/rocksdb-prefix/src/rocksdb-stamp/rocksdb-mkdir.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/rocksdb-prefix/src/rocksdb-stamp/rocksdb-patch.rule"
+		},
+		{
+			"file" : "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/rocksdb-prefix/src/rocksdb-stamp/rocksdb-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"rocksdb"
+		],
+		"name" : "rocksdb"
+	}
+}

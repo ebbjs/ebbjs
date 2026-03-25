@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -1,0 +1,1 @@
+cmd='/opt/homebrew/bin/cmake;-DCMAKE_INSTALL_PREFIX=/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/croaring;-DCMAKE_POSITION_INDEPENDENT_CODE=ON;-DCMAKE_BUILD_TYPE=Release;-DBUILD_SHARED_LIBS=OFF;-DENABLE_ROARING_TESTS=OFF;-DROARING_BUILD_STATIC=ON;-GUnix Makefiles;-S;<SOURCE_DIR><SOURCE_SUBDIR>;-B;<BINARY_DIR>'

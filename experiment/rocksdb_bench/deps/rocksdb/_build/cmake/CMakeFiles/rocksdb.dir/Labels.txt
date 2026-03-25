@@ -1,0 +1,13 @@
+# Target labels
+ rocksdb
+# Source files and their labels
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/rocksdb
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/rocksdb.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/rocksdb-complete.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/rocksdb-prefix/src/rocksdb-stamp/rocksdb-build.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/rocksdb-prefix/src/rocksdb-stamp/rocksdb-configure.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/rocksdb-prefix/src/rocksdb-stamp/rocksdb-download.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/rocksdb-prefix/src/rocksdb-stamp/rocksdb-install.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/rocksdb-prefix/src/rocksdb-stamp/rocksdb-mkdir.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/rocksdb-prefix/src/rocksdb-stamp/rocksdb-patch.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/rocksdb-prefix/src/rocksdb-stamp/rocksdb-update.rule

@@ -1,0 +1,19 @@
+# Hashes of file build rules.
+0bb7b72b8eed42464f951a498cf4cabe CMakeFiles/croaring
+f951d132f6c9af11bd6d69e9c4104046 CMakeFiles/croaring-complete
+0bb7b72b8eed42464f951a498cf4cabe CMakeFiles/rocksdb
+bba704b3474b5f93e4685600e6374392 CMakeFiles/rocksdb-complete
+759da568bb1cd6a964f6ebe048a6ad02 croaring-prefix/src/croaring-stamp/croaring-build
+36448e4507c10358c3d92fecdde5da24 croaring-prefix/src/croaring-stamp/croaring-configure
+42f64f641fbf3526465d9f6913798934 croaring-prefix/src/croaring-stamp/croaring-download
+bd594dcae243080cad09e5f941167bfb croaring-prefix/src/croaring-stamp/croaring-install
+b77b5d32d40697a594b99dbe46889781 croaring-prefix/src/croaring-stamp/croaring-mkdir
+40f306311aa10d7d610964e5c337073a croaring-prefix/src/croaring-stamp/croaring-patch
+c1d69c34888ea3f2a0829c8fd446caa1 croaring-prefix/src/croaring-stamp/croaring-update
+dcddaaa5d79146964c16ffc893ee6702 rocksdb-prefix/src/rocksdb-stamp/rocksdb-build
+25efb05f8fff1228b4c271417fdab8fc rocksdb-prefix/src/rocksdb-stamp/rocksdb-configure
+b91ff221302940ee3a94225fb8ebb5f7 rocksdb-prefix/src/rocksdb-stamp/rocksdb-download
+5fcc73f2011108ef61728ca794b3a445 rocksdb-prefix/src/rocksdb-stamp/rocksdb-install
+a9a3bb5af698d2db7b402b9f856293fc rocksdb-prefix/src/rocksdb-stamp/rocksdb-mkdir
+1eee1184292747337c46b845c1768489 rocksdb-prefix/src/rocksdb-stamp/rocksdb-patch
+2664162f384255433ced12579d247154 rocksdb-prefix/src/rocksdb-stamp/rocksdb-update

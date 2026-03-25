@@ -1,0 +1,3362 @@
+
+---
+events:
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineSystem.cmake:12 (find_program)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_UNAME"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "uname"
+    candidate_directories:
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+    searched_directories:
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/uname"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/uname"
+      - "/Users/drew.lyton/.local/bin/uname"
+      - "/Users/drew.lyton/.cargo/bin/uname"
+      - "/Users/drew.lyton/.bun/bin/uname"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/uname"
+      - "/Users/drew.lyton/.rbenv/shims/uname"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/uname"
+      - "/opt/homebrew/bin/uname"
+      - "/opt/homebrew/sbin/uname"
+      - "/usr/local/bin/uname"
+      - "/System/Cryptexes/App/usr/bin/uname"
+    found: "/usr/bin/uname"
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineSystem.cmake:212 (message)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      The system is: Darwin - 24.6.0 - arm64
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeUnixFindMake.cmake:5 (find_program)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_MAKE_PROGRAM"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "gmake"
+      - "make"
+      - "smake"
+    candidate_directories:
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+    searched_directories:
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/gmake"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/gmake"
+      - "/Users/drew.lyton/.local/bin/gmake"
+      - "/Users/drew.lyton/.cargo/bin/gmake"
+      - "/Users/drew.lyton/.bun/bin/gmake"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/gmake"
+      - "/Users/drew.lyton/.rbenv/shims/gmake"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/gmake"
+      - "/opt/homebrew/bin/gmake"
+      - "/opt/homebrew/sbin/gmake"
+      - "/usr/local/bin/gmake"
+      - "/System/Cryptexes/App/usr/bin/gmake"
+      - "/usr/bin/gmake"
+      - "/bin/gmake"
+      - "/usr/sbin/gmake"
+      - "/sbin/gmake"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/gmake"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/gmake"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/gmake"
+      - "/Users/drew.lyton/Library/pnpm/gmake"
+      - "/Applications/Ghostty.app/Contents/MacOS/gmake"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/make"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/make"
+      - "/Users/drew.lyton/.local/bin/make"
+      - "/Users/drew.lyton/.cargo/bin/make"
+      - "/Users/drew.lyton/.bun/bin/make"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/make"
+      - "/Users/drew.lyton/.rbenv/shims/make"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/make"
+      - "/opt/homebrew/bin/make"
+      - "/opt/homebrew/sbin/make"
+      - "/usr/local/bin/make"
+      - "/System/Cryptexes/App/usr/bin/make"
+    found: "/usr/bin/make"
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompiler.cmake:73 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake:64 (_cmake_find_compiler)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_C_COMPILER"
+    description: "C compiler"
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "cc"
+      - "gcc"
+      - "cl"
+      - "bcc"
+      - "xlc"
+      - "icx"
+      - "clang"
+    candidate_directories:
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+    searched_directories:
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/cc"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/cc"
+      - "/Users/drew.lyton/.local/bin/cc"
+      - "/Users/drew.lyton/.cargo/bin/cc"
+      - "/Users/drew.lyton/.bun/bin/cc"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/cc"
+      - "/Users/drew.lyton/.rbenv/shims/cc"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/cc"
+      - "/opt/homebrew/bin/cc"
+      - "/opt/homebrew/sbin/cc"
+      - "/usr/local/bin/cc"
+      - "/System/Cryptexes/App/usr/bin/cc"
+    found: "/usr/bin/cc"
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake:468 (find_file)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake:506 (CMAKE_DETERMINE_COMPILER_ID_WRITE)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake:8 (CMAKE_DETERMINE_COMPILER_ID_BUILD)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake:122 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "file"
+    variable: "src_in"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "CMakeCCompilerId.c.in"
+    candidate_directories:
+      - "/opt/homebrew/share/cmake/Modules/"
+    found: "/opt/homebrew/share/cmake/Modules/CMakeCCompilerId.c.in"
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake:122 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Compiling the C compiler identification source file "CMakeCCompilerId.c" succeeded.
+      Compiler: /usr/bin/cc 
+      Build flags: 
+      Id flags:  
+      
+      The output was:
+      0
+      
+      
+      Compilation of the C compiler identification source "CMakeCCompilerId.c" produced "a.out"
+      
+      The C compiler identification is AppleClang, found in:
+        /Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/4.3.0/CompilerIdC/a.out
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake:296 (message)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake:122 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Detecting C compiler apple sysroot: "/usr/bin/cc" "-E" "apple-sdk.c"
+        # 1 "apple-sdk.c"
+        # 1 "<built-in>" 1
+        # 1 "<built-in>" 3
+        # 424 "<built-in>" 3
+        # 1 "<command line>" 1
+        # 1 "<built-in>" 2
+        # 1 "apple-sdk.c" 2
+        # 1 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityMacros.h" 1 3 4
+        # 86 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityMacros.h" 3 4
+        # 1 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityVersions.h" 1 3 4
+        # 87 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityMacros.h" 2 3 4
+        # 206 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityMacros.h" 3 4
+        # 1 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/Availability.h" 1 3 4
+        # 177 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/Availability.h" 3 4
+        # 1 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityInternal.h" 1 3 4
+        # 178 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/Availability.h" 2 3 4
+        # 1 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityInternalLegacy.h" 1 3 4
+        # 179 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/Availability.h" 2 3 4
+        # 207 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityMacros.h" 2 3 4
+        # 2 "apple-sdk.c" 2
+        
+        
+      Found apple sysroot: /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_AR"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "ar"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+    found: "/usr/bin/ar"
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_RANLIB"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "ranlib"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+    found: "/usr/bin/ranlib"
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_STRIP"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "strip"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+    found: "/usr/bin/strip"
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_LINKER"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "ld"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+    found: "/usr/bin/ld"
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_NM"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "nm"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+    found: "/usr/bin/nm"
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_OBJDUMP"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "objdump"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+    found: "/usr/bin/objdump"
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_OBJCOPY"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "objcopy"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+    searched_directories:
+      - "/usr/bin/objcopy"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/objcopy"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/objcopy"
+      - "/Users/drew.lyton/.local/bin/objcopy"
+      - "/Users/drew.lyton/.cargo/bin/objcopy"
+      - "/Users/drew.lyton/.bun/bin/objcopy"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/objcopy"
+      - "/Users/drew.lyton/.rbenv/shims/objcopy"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/objcopy"
+      - "/opt/homebrew/bin/objcopy"
+      - "/opt/homebrew/sbin/objcopy"
+      - "/usr/local/bin/objcopy"
+      - "/System/Cryptexes/App/usr/bin/objcopy"
+      - "/bin/objcopy"
+      - "/usr/sbin/objcopy"
+      - "/sbin/objcopy"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/objcopy"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/objcopy"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/objcopy"
+      - "/Users/drew.lyton/Library/pnpm/objcopy"
+      - "/Applications/Ghostty.app/Contents/MacOS/objcopy"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_READELF"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "readelf"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+    searched_directories:
+      - "/usr/bin/readelf"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/readelf"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/readelf"
+      - "/Users/drew.lyton/.local/bin/readelf"
+      - "/Users/drew.lyton/.cargo/bin/readelf"
+      - "/Users/drew.lyton/.bun/bin/readelf"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/readelf"
+      - "/Users/drew.lyton/.rbenv/shims/readelf"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/readelf"
+      - "/opt/homebrew/bin/readelf"
+      - "/opt/homebrew/sbin/readelf"
+      - "/usr/local/bin/readelf"
+      - "/System/Cryptexes/App/usr/bin/readelf"
+      - "/bin/readelf"
+      - "/usr/sbin/readelf"
+      - "/sbin/readelf"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/readelf"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/readelf"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/readelf"
+      - "/Users/drew.lyton/Library/pnpm/readelf"
+      - "/Applications/Ghostty.app/Contents/MacOS/readelf"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_DLLTOOL"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "dlltool"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+    searched_directories:
+      - "/usr/bin/dlltool"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/dlltool"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/dlltool"
+      - "/Users/drew.lyton/.local/bin/dlltool"
+      - "/Users/drew.lyton/.cargo/bin/dlltool"
+      - "/Users/drew.lyton/.bun/bin/dlltool"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/dlltool"
+      - "/Users/drew.lyton/.rbenv/shims/dlltool"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/dlltool"
+      - "/opt/homebrew/bin/dlltool"
+      - "/opt/homebrew/sbin/dlltool"
+      - "/usr/local/bin/dlltool"
+      - "/System/Cryptexes/App/usr/bin/dlltool"
+      - "/bin/dlltool"
+      - "/usr/sbin/dlltool"
+      - "/sbin/dlltool"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/dlltool"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/dlltool"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/dlltool"
+      - "/Users/drew.lyton/Library/pnpm/dlltool"
+      - "/Applications/Ghostty.app/Contents/MacOS/dlltool"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_ADDR2LINE"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "addr2line"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+    searched_directories:
+      - "/usr/bin/addr2line"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/addr2line"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/addr2line"
+      - "/Users/drew.lyton/.local/bin/addr2line"
+      - "/Users/drew.lyton/.cargo/bin/addr2line"
+      - "/Users/drew.lyton/.bun/bin/addr2line"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/addr2line"
+      - "/Users/drew.lyton/.rbenv/shims/addr2line"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/addr2line"
+      - "/opt/homebrew/bin/addr2line"
+      - "/opt/homebrew/sbin/addr2line"
+      - "/usr/local/bin/addr2line"
+      - "/System/Cryptexes/App/usr/bin/addr2line"
+      - "/bin/addr2line"
+      - "/usr/sbin/addr2line"
+      - "/sbin/addr2line"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/addr2line"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/addr2line"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/addr2line"
+      - "/Users/drew.lyton/Library/pnpm/addr2line"
+      - "/Applications/Ghostty.app/Contents/MacOS/addr2line"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_TAPI"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "tapi"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+    searched_directories:
+      - "/usr/bin/tapi"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/tapi"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/tapi"
+      - "/Users/drew.lyton/.local/bin/tapi"
+      - "/Users/drew.lyton/.cargo/bin/tapi"
+      - "/Users/drew.lyton/.bun/bin/tapi"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/tapi"
+      - "/Users/drew.lyton/.rbenv/shims/tapi"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/tapi"
+      - "/opt/homebrew/bin/tapi"
+      - "/opt/homebrew/sbin/tapi"
+      - "/usr/local/bin/tapi"
+      - "/System/Cryptexes/App/usr/bin/tapi"
+      - "/bin/tapi"
+      - "/usr/sbin/tapi"
+      - "/sbin/tapi"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/tapi"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/tapi"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/tapi"
+      - "/Users/drew.lyton/Library/pnpm/tapi"
+      - "/Applications/Ghostty.app/Contents/MacOS/tapi"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompiler.cmake:54 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:69 (_cmake_find_compiler)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_CXX_COMPILER"
+    description: "CXX compiler"
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "c++"
+      - "g++"
+      - "cl"
+      - "bcc"
+      - "icpx"
+      - "icx"
+      - "clang++"
+    candidate_directories:
+      - "/usr/bin/"
+    found: "/usr/bin/c++"
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake:468 (find_file)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake:506 (CMAKE_DETERMINE_COMPILER_ID_WRITE)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake:8 (CMAKE_DETERMINE_COMPILER_ID_BUILD)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "file"
+    variable: "src_in"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "CMakeCXXCompilerId.cpp.in"
+    candidate_directories:
+      - "/opt/homebrew/share/cmake/Modules/"
+    found: "/opt/homebrew/share/cmake/Modules/CMakeCXXCompilerId.cpp.in"
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" succeeded.
+      Compiler: /usr/bin/c++ 
+      Build flags: 
+      Id flags:  
+      
+      The output was:
+      0
+      
+      
+      Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "a.out"
+      
+      The CXX compiler identification is AppleClang, found in:
+        /Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/4.3.0/CompilerIdCXX/a.out
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerId.cmake:296 (message)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Detecting CXX compiler apple sysroot: "/usr/bin/c++" "-E" "apple-sdk.cpp"
+        # 1 "apple-sdk.cpp"
+        # 1 "<built-in>" 1
+        # 1 "<built-in>" 3
+        # 439 "<built-in>" 3
+        # 1 "<command line>" 1
+        # 1 "<built-in>" 2
+        # 1 "apple-sdk.cpp" 2
+        # 1 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityMacros.h" 1 3 4
+        # 86 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityMacros.h" 3 4
+        # 1 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityVersions.h" 1 3 4
+        # 87 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityMacros.h" 2 3 4
+        # 206 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityMacros.h" 3 4
+        # 1 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/Availability.h" 1 3 4
+        # 177 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/Availability.h" 3 4
+        # 1 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityInternal.h" 1 3 4
+        # 178 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/Availability.h" 2 3 4
+        # 1 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityInternalLegacy.h" 1 3 4
+        # 179 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/Availability.h" 2 3 4
+        # 207 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityMacros.h" 2 3 4
+        # 2 "apple-sdk.cpp" 2
+        
+        
+      Found apple sysroot: /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/Platform/Darwin.cmake:66 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeSystemSpecificInformation.cmake:32 (include)"
+      - "CMakeLists.txt:3 (project)"
+    mode: "program"
+    variable: "CMAKE_INSTALL_NAME_TOOL"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "install_name_tool"
+    candidate_directories:
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+    searched_directories:
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/install_name_tool"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/install_name_tool"
+      - "/Users/drew.lyton/.local/bin/install_name_tool"
+      - "/Users/drew.lyton/.cargo/bin/install_name_tool"
+      - "/Users/drew.lyton/.bun/bin/install_name_tool"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/install_name_tool"
+      - "/Users/drew.lyton/.rbenv/shims/install_name_tool"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/install_name_tool"
+      - "/opt/homebrew/bin/install_name_tool"
+      - "/opt/homebrew/sbin/install_name_tool"
+      - "/usr/local/bin/install_name_tool"
+      - "/System/Cryptexes/App/usr/bin/install_name_tool"
+    found: "/usr/bin/install_name_tool"
+    search_context:
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:83 (try_compile)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:3 (project)"
+    checks:
+      - "Detecting C compiler ABI info"
+    directories:
+      source: "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-JHpnUP"
+      binary: "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-JHpnUP"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: ""
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_OSX_ARCHITECTURES: ""
+      CMAKE_OSX_DEPLOYMENT_TARGET: ""
+      CMAKE_OSX_SYSROOT: ""
+    buildResult:
+      variable: "CMAKE_C_ABI_COMPILED"
+      cached: true
+      stdout: |
+        Change Dir: '/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-JHpnUP'
+        
+        Run Build Command(s): /opt/homebrew/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_71471/fast
+        /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_71471.dir/build.make CMakeFiles/cmTC_71471.dir/build
+        Building C object CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o
+        /usr/bin/cc   -arch arm64   -v -Wl,-v -MD -MT CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o -MF CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o.d -o CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o -c /opt/homebrew/share/cmake/Modules/CMakeCCompilerABI.c
+        Apple clang version 16.0.0 (clang-1600.0.26.3)
+        Target: arm64-apple-darwin24.6.0
+        Thread model: posix
+        InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
+        clang: warning: -Wl,-v: 'linker' input unused [-Wunused-command-line-argument]
+         "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" -cc1 -triple arm64-apple-macosx15.0.0 -Wundef-prefix=TARGET_OS_ -Wdeprecated-objc-isa-usage -Werror=deprecated-objc-isa-usage -Werror=implicit-function-declaration -emit-obj -mrelax-all -disable-free -clear-ast-before-backend -disable-llvm-verifier -discard-value-names -main-file-name CMakeCCompilerABI.c -mrelocation-model pic -pic-level 2 -mframe-pointer=non-leaf -fno-strict-return -ffp-contract=on -fno-rounding-math -funwind-tables=1 -fobjc-msgsend-selector-stubs -target-sdk-version=15.0 -fvisibility-inlines-hidden-static-local-var -fno-modulemap-allow-subdirectory-search -target-cpu apple-m1 -target-feature +v8.5a -target-feature +aes -target-feature +crc -target-feature +dotprod -target-feature +fp-armv8 -target-feature +fp16fml -target-feature +lse -target-feature +ras -target-feature +rcpc -target-feature +rdm -target-feature +sha2 -target-feature +sha3 -target-feature +neon -target-feature +zcm -target-feature +zcz -target-feature +fullfp16 -target-abi darwinpcs -debugger-tuning=lldb -target-linker-version 1115.7.3 -v -fcoverage-compilation-dir=/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-JHpnUP -resource-dir /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16 -dependency-file CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o.d -skip-unused-modulemap-deps -MT CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o -sys-header-deps -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -I/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include -Wno-reorder-init-list -Wno-implicit-int-float-conversion -Wno-c99-designator -Wno-final-dtor-non-final-class -Wno-extra-semi-stmt -Wno-misleading-indentation -Wno-quoted-include-in-framework-header -Wno-implicit-fallthrough -Wno-enum-enum-conversion -Wno-enum-float-conversion -Wno-elaborated-enum-base -Wno-reserved-identifier -Wno-gnu-folding-constant -fdebug-compilation-dir=/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-JHpnUP -ferror-limit 19 -stack-protector 1 -fstack-check -mdarwin-stkchk-strong-link -fblocks -fencode-extended-block-signature -fregister-global-dtors-with-atexit -fgnuc-version=4.2.1 -fmax-type-align=16 -fcommon -clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation -fno-odr-hash-protocols -clang-vendor-feature=+enableAggressiveVLAFolding -clang-vendor-feature=+revert09abecef7bbf -clang-vendor-feature=+thisNoAlignAttr -clang-vendor-feature=+thisNoNullAttr -clang-vendor-feature=+disableAtImportPrivateFrameworkInImplementationError -D__GCC_HAVE_DWARF2_CFI_ASM=1 -o CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o -x c /opt/homebrew/share/cmake/Modules/CMakeCCompilerABI.c
+        clang -cc1 version 16.0.0 (clang-1600.0.26.3) default target arm64-apple-darwin24.6.0
+        ignoring nonexistent directory "/usr/local/include"
+        ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include"
+        ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks"
+        #include "..." search starts here:
+        #include <...> search starts here:
+         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include
+         /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include
+         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include
+         /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks (framework directory)
+        End of search list.
+        Linking C executable cmTC_71471
+        /opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/cmTC_71471.dir/link.txt --verbose=1
+        Apple clang version 16.0.0 (clang-1600.0.26.3)
+        Target: arm64-apple-darwin24.6.0
+        Thread model: posix
+        InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
+         "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" -demangle -lto_library /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib -dynamic -arch arm64 -platform_version macos 15.0.0 15.0 -syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mllvm -enable-linkonceodr-outlining -o cmTC_71471 -L/usr/local/lib -v CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o -lSystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/lib/darwin/libclang_rt.osx.a
+        @(#)PROGRAM:ld PROJECT:ld-1115.7.3
+        BUILD 13:29:00 Aug  9 2024
+        configured to support archs: armv6 armv7 armv7s arm64 arm64e arm64_32 i386 x86_64 x86_64h armv6m armv7k armv7m armv7em
+        will use ld-classic for: armv6 armv7 armv7s i386 armv6m armv7k armv7m armv7em
+        LTO support using: LLVM version 16.0.0 (static support for 29, runtime is 29)
+        TAPI support using: Apple TAPI version 16.0.0 (tapi-1600.0.11.8)
+        Library search paths:
+        	/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib
+        	/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/swift
+        Framework search paths:
+        	/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks
+        /usr/bin/cc  -arch arm64  -v -Wl,-v CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o -o cmTC_71471
+        
+      exitCode: 0
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:122 (message)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Effective list of requested architectures (possibly empty)  : ""
+      Effective list of architectures found in the ABI info binary: "arm64"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:217 (message)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Parsed C implicit include dir info: rv=done
+        found start of include info
+        found start of implicit include info
+          add: [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include]
+          add: [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include]
+          add: [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
+        end of search list found
+        collapse include dir [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include] ==> [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include]
+        collapse include dir [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include] ==> [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include]
+        collapse include dir [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include] ==> [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
+        implicit include dirs: [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:253 (message)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Parsed C implicit link information:
+        link line regex: [^( *|.*[/\\])(ld[0-9]*(|\\.[a-rt-z][a-z]*|\\.s[a-np-z][a-z]*|\\.so[a-z]+)|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
+        linker tool regex: [^[ 	]*(->|"|[0-9]+>[ 	-]*Build:[ 	0-9]+ ms[ 	]*)?[ 	]*(([^"]*[/\\])?(ld[0-9]*(|\\.[a-rt-z][a-z]*|\\.s[a-np-z][a-z]*|\\.so[a-z]+)))("|,| |$)]
+        ignore line: [Change Dir: '/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-JHpnUP']
+        ignore line: []
+        ignore line: [Run Build Command(s): /opt/homebrew/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_71471/fast]
+        ignore line: [/Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_71471.dir/build.make CMakeFiles/cmTC_71471.dir/build]
+        ignore line: [Building C object CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o]
+        ignore line: [/usr/bin/cc   -arch arm64   -v -Wl -v -MD -MT CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o -MF CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o.d -o CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o -c /opt/homebrew/share/cmake/Modules/CMakeCCompilerABI.c]
+        ignore line: [Apple clang version 16.0.0 (clang-1600.0.26.3)]
+        ignore line: [Target: arm64-apple-darwin24.6.0]
+        ignore line: [Thread model: posix]
+        ignore line: [InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin]
+        ignore line: [clang: warning: -Wl -v: 'linker' input unused [-Wunused-command-line-argument]]
+        ignore line: [ "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" -cc1 -triple arm64-apple-macosx15.0.0 -Wundef-prefix=TARGET_OS_ -Wdeprecated-objc-isa-usage -Werror=deprecated-objc-isa-usage -Werror=implicit-function-declaration -emit-obj -mrelax-all -disable-free -clear-ast-before-backend -disable-llvm-verifier -discard-value-names -main-file-name CMakeCCompilerABI.c -mrelocation-model pic -pic-level 2 -mframe-pointer=non-leaf -fno-strict-return -ffp-contract=on -fno-rounding-math -funwind-tables=1 -fobjc-msgsend-selector-stubs -target-sdk-version=15.0 -fvisibility-inlines-hidden-static-local-var -fno-modulemap-allow-subdirectory-search -target-cpu apple-m1 -target-feature +v8.5a -target-feature +aes -target-feature +crc -target-feature +dotprod -target-feature +fp-armv8 -target-feature +fp16fml -target-feature +lse -target-feature +ras -target-feature +rcpc -target-feature +rdm -target-feature +sha2 -target-feature +sha3 -target-feature +neon -target-feature +zcm -target-feature +zcz -target-feature +fullfp16 -target-abi darwinpcs -debugger-tuning=lldb -target-linker-version 1115.7.3 -v -fcoverage-compilation-dir=/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-JHpnUP -resource-dir /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16 -dependency-file CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o.d -skip-unused-modulemap-deps -MT CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o -sys-header-deps -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -I/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include -Wno-reorder-init-list -Wno-implicit-int-float-conversion -Wno-c99-designator -Wno-final-dtor-non-final-class -Wno-extra-semi-stmt -Wno-misleading-indentation -Wno-quoted-include-in-framework-header -Wno-implicit-fallthrough -Wno-enum-enum-conversion -Wno-enum-float-conversion -Wno-elaborated-enum-base -Wno-reserved-identifier -Wno-gnu-folding-constant -fdebug-compilation-dir=/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-JHpnUP -ferror-limit 19 -stack-protector 1 -fstack-check -mdarwin-stkchk-strong-link -fblocks -fencode-extended-block-signature -fregister-global-dtors-with-atexit -fgnuc-version=4.2.1 -fmax-type-align=16 -fcommon -clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation -fno-odr-hash-protocols -clang-vendor-feature=+enableAggressiveVLAFolding -clang-vendor-feature=+revert09abecef7bbf -clang-vendor-feature=+thisNoAlignAttr -clang-vendor-feature=+thisNoNullAttr -clang-vendor-feature=+disableAtImportPrivateFrameworkInImplementationError -D__GCC_HAVE_DWARF2_CFI_ASM=1 -o CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o -x c /opt/homebrew/share/cmake/Modules/CMakeCCompilerABI.c]
+        ignore line: [clang -cc1 version 16.0.0 (clang-1600.0.26.3) default target arm64-apple-darwin24.6.0]
+        ignore line: [ignoring nonexistent directory "/usr/local/include"]
+        ignore line: [ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include"]
+        ignore line: [ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks"]
+        ignore line: [#include "..." search starts here:]
+        ignore line: [#include <...> search starts here:]
+        ignore line: [ /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include]
+        ignore line: [ /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include]
+        ignore line: [ /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
+        ignore line: [ /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks (framework directory)]
+        ignore line: [End of search list.]
+        ignore line: [Linking C executable cmTC_71471]
+        ignore line: [/opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/cmTC_71471.dir/link.txt --verbose=1]
+        ignore line: [Apple clang version 16.0.0 (clang-1600.0.26.3)]
+        ignore line: [Target: arm64-apple-darwin24.6.0]
+        ignore line: [Thread model: posix]
+        ignore line: [InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin]
+        link line: [ "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" -demangle -lto_library /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib -dynamic -arch arm64 -platform_version macos 15.0.0 15.0 -syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mllvm -enable-linkonceodr-outlining -o cmTC_71471 -L/usr/local/lib -v CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o -lSystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/lib/darwin/libclang_rt.osx.a]
+          arg [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld] ==> ignore
+          arg [-demangle] ==> ignore
+          arg [-lto_library] ==> ignore, skip following value
+          arg [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib] ==> skip value of -lto_library
+          arg [-dynamic] ==> ignore
+          arg [-arch] ==> ignore
+          arg [arm64] ==> ignore
+          arg [-platform_version] ==> ignore
+          arg [macos] ==> ignore
+          arg [15.0.0] ==> ignore
+          arg [15.0] ==> ignore
+          arg [-syslibroot] ==> ignore
+          arg [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk] ==> ignore
+          arg [-mllvm] ==> ignore
+          arg [-enable-linkonceodr-outlining] ==> ignore
+          arg [-o] ==> ignore
+          arg [cmTC_71471] ==> ignore
+          arg [-L/usr/local/lib] ==> dir [/usr/local/lib]
+          arg [-v] ==> ignore
+          arg [CMakeFiles/cmTC_71471.dir/CMakeCCompilerABI.c.o] ==> ignore
+          arg [-lSystem] ==> lib [System]
+          arg [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/lib/darwin/libclang_rt.osx.a] ==> lib [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/lib/darwin/libclang_rt.osx.a]
+        linker tool for 'C': /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+        Library search paths: [;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/swift]
+        Framework search paths: [;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks]
+        remove lib [System]
+        remove lib [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/lib/darwin/libclang_rt.osx.a]
+        collapse library dir [/usr/local/lib] ==> [/usr/local/lib]
+        collapse library dir [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib] ==> [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib]
+        collapse library dir [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/swift] ==> [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/swift]
+        collapse framework dir [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks] ==> [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks]
+        implicit libs: []
+        implicit objs: []
+        implicit dirs: [/usr/local/lib;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/swift]
+        implicit fwks: [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks]
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/Internal/CMakeDetermineLinkerId.cmake:38 (message)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:299 (cmake_determine_linker_id)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Running the C compiler's linker: "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" "-v"
+      @(#)PROGRAM:ld PROJECT:ld-1115.7.3
+      BUILD 13:29:00 Aug  9 2024
+      configured to support archs: armv6 armv7 armv7s arm64 arm64e arm64_32 i386 x86_64 x86_64h armv6m armv7k armv7m armv7em
+      will use ld-classic for: armv6 armv7 armv7s i386 armv6m armv7k armv7m armv7em
+      LTO support using: LLVM version 16.0.0 (static support for 29, runtime is 29)
+      TAPI support using: Apple TAPI version 16.0.0 (tapi-1600.0.11.8)
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:83 (try_compile)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:3 (project)"
+    checks:
+      - "Detecting CXX compiler ABI info"
+    directories:
+      source: "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-MGNQnK"
+      binary: "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-MGNQnK"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_SCAN_FOR_MODULES: "OFF"
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_OSX_ARCHITECTURES: ""
+      CMAKE_OSX_DEPLOYMENT_TARGET: ""
+      CMAKE_OSX_SYSROOT: ""
+    buildResult:
+      variable: "CMAKE_CXX_ABI_COMPILED"
+      cached: true
+      stdout: |
+        Change Dir: '/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-MGNQnK'
+        
+        Run Build Command(s): /opt/homebrew/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_92ef8/fast
+        /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_92ef8.dir/build.make CMakeFiles/cmTC_92ef8.dir/build
+        Building CXX object CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o
+        /usr/bin/c++   -arch arm64   -v -Wl,-v -MD -MT CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o -MF CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o.d -o CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o -c /opt/homebrew/share/cmake/Modules/CMakeCXXCompilerABI.cpp
+        Apple clang version 16.0.0 (clang-1600.0.26.3)
+        Target: arm64-apple-darwin24.6.0
+        Thread model: posix
+        InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
+        clang++: warning: -Wl,-v: 'linker' input unused [-Wunused-command-line-argument]
+        ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/../include/c++/v1"
+         "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" -cc1 -triple arm64-apple-macosx15.0.0 -Wundef-prefix=TARGET_OS_ -Wdeprecated-objc-isa-usage -Werror=deprecated-objc-isa-usage -Werror=implicit-function-declaration -emit-obj -mrelax-all -disable-free -clear-ast-before-backend -disable-llvm-verifier -discard-value-names -main-file-name CMakeCXXCompilerABI.cpp -mrelocation-model pic -pic-level 2 -mframe-pointer=non-leaf -fno-strict-return -ffp-contract=on -fno-rounding-math -funwind-tables=1 -fobjc-msgsend-selector-stubs -target-sdk-version=15.0 -fvisibility-inlines-hidden-static-local-var -fno-modulemap-allow-subdirectory-search -target-cpu apple-m1 -target-feature +v8.5a -target-feature +aes -target-feature +crc -target-feature +dotprod -target-feature +fp-armv8 -target-feature +fp16fml -target-feature +lse -target-feature +ras -target-feature +rcpc -target-feature +rdm -target-feature +sha2 -target-feature +sha3 -target-feature +neon -target-feature +zcm -target-feature +zcz -target-feature +fullfp16 -target-abi darwinpcs -debugger-tuning=lldb -target-linker-version 1115.7.3 -v -fcoverage-compilation-dir=/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-MGNQnK -resource-dir /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16 -dependency-file CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o.d -skip-unused-modulemap-deps -MT CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o -sys-header-deps -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -I/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1 -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include -Wno-reorder-init-list -Wno-implicit-int-float-conversion -Wno-c99-designator -Wno-final-dtor-non-final-class -Wno-extra-semi-stmt -Wno-misleading-indentation -Wno-quoted-include-in-framework-header -Wno-implicit-fallthrough -Wno-enum-enum-conversion -Wno-enum-float-conversion -Wno-elaborated-enum-base -Wno-reserved-identifier -Wno-gnu-folding-constant -fdeprecated-macro -fdebug-compilation-dir=/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-MGNQnK -ferror-limit 19 -stack-protector 1 -fstack-check -mdarwin-stkchk-strong-link -fblocks -fencode-extended-block-signature -fregister-global-dtors-with-atexit -fgnuc-version=4.2.1 -fno-cxx-modules -fcxx-exceptions -fexceptions -fmax-type-align=16 -fcommon -clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation -fno-odr-hash-protocols -clang-vendor-feature=+enableAggressiveVLAFolding -clang-vendor-feature=+revert09abecef7bbf -clang-vendor-feature=+thisNoAlignAttr -clang-vendor-feature=+thisNoNullAttr -clang-vendor-feature=+disableAtImportPrivateFrameworkInImplementationError -D__GCC_HAVE_DWARF2_CFI_ASM=1 -o CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o -x c++ /opt/homebrew/share/cmake/Modules/CMakeCXXCompilerABI.cpp
+        clang -cc1 version 16.0.0 (clang-1600.0.26.3) default target arm64-apple-darwin24.6.0
+        ignoring nonexistent directory "/usr/local/include"
+        ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include"
+        ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks"
+        #include "..." search starts here:
+        #include <...> search starts here:
+         /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1
+         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include
+         /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include
+         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include
+         /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks (framework directory)
+        End of search list.
+        Linking CXX executable cmTC_92ef8
+        /opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/cmTC_92ef8.dir/link.txt --verbose=1
+        Apple clang version 16.0.0 (clang-1600.0.26.3)
+        Target: arm64-apple-darwin24.6.0
+        Thread model: posix
+        InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
+         "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" -demangle -lto_library /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib -dynamic -arch arm64 -platform_version macos 15.0.0 15.0 -syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mllvm -enable-linkonceodr-outlining -o cmTC_92ef8 -L/usr/local/lib -v CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o -lc++ -lSystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/lib/darwin/libclang_rt.osx.a
+        @(#)PROGRAM:ld PROJECT:ld-1115.7.3
+        BUILD 13:29:00 Aug  9 2024
+        configured to support archs: armv6 armv7 armv7s arm64 arm64e arm64_32 i386 x86_64 x86_64h armv6m armv7k armv7m armv7em
+        will use ld-classic for: armv6 armv7 armv7s i386 armv6m armv7k armv7m armv7em
+        LTO support using: LLVM version 16.0.0 (static support for 29, runtime is 29)
+        TAPI support using: Apple TAPI version 16.0.0 (tapi-1600.0.11.8)
+        Library search paths:
+        	/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib
+        	/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/swift
+        Framework search paths:
+        	/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks
+        /usr/bin/c++  -arch arm64  -v -Wl,-v CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_92ef8
+        
+      exitCode: 0
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:122 (message)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Effective list of requested architectures (possibly empty)  : ""
+      Effective list of architectures found in the ABI info binary: "arm64"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:217 (message)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Parsed CXX implicit include dir info: rv=done
+        found start of include info
+        found start of implicit include info
+          add: [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1]
+          add: [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include]
+          add: [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include]
+          add: [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
+        end of search list found
+        collapse include dir [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1] ==> [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1]
+        collapse include dir [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include] ==> [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include]
+        collapse include dir [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include] ==> [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include]
+        collapse include dir [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include] ==> [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
+        implicit include dirs: [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:253 (message)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Parsed CXX implicit link information:
+        link line regex: [^( *|.*[/\\])(ld[0-9]*(|\\.[a-rt-z][a-z]*|\\.s[a-np-z][a-z]*|\\.so[a-z]+)|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
+        linker tool regex: [^[ 	]*(->|"|[0-9]+>[ 	-]*Build:[ 	0-9]+ ms[ 	]*)?[ 	]*(([^"]*[/\\])?(ld[0-9]*(|\\.[a-rt-z][a-z]*|\\.s[a-np-z][a-z]*|\\.so[a-z]+)))("|,| |$)]
+        ignore line: [Change Dir: '/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-MGNQnK']
+        ignore line: []
+        ignore line: [Run Build Command(s): /opt/homebrew/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_92ef8/fast]
+        ignore line: [/Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_92ef8.dir/build.make CMakeFiles/cmTC_92ef8.dir/build]
+        ignore line: [Building CXX object CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o]
+        ignore line: [/usr/bin/c++   -arch arm64   -v -Wl -v -MD -MT CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o -MF CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o.d -o CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o -c /opt/homebrew/share/cmake/Modules/CMakeCXXCompilerABI.cpp]
+        ignore line: [Apple clang version 16.0.0 (clang-1600.0.26.3)]
+        ignore line: [Target: arm64-apple-darwin24.6.0]
+        ignore line: [Thread model: posix]
+        ignore line: [InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin]
+        ignore line: [clang++: warning: -Wl -v: 'linker' input unused [-Wunused-command-line-argument]]
+        ignore line: [ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/../include/c++/v1"]
+        ignore line: [ "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" -cc1 -triple arm64-apple-macosx15.0.0 -Wundef-prefix=TARGET_OS_ -Wdeprecated-objc-isa-usage -Werror=deprecated-objc-isa-usage -Werror=implicit-function-declaration -emit-obj -mrelax-all -disable-free -clear-ast-before-backend -disable-llvm-verifier -discard-value-names -main-file-name CMakeCXXCompilerABI.cpp -mrelocation-model pic -pic-level 2 -mframe-pointer=non-leaf -fno-strict-return -ffp-contract=on -fno-rounding-math -funwind-tables=1 -fobjc-msgsend-selector-stubs -target-sdk-version=15.0 -fvisibility-inlines-hidden-static-local-var -fno-modulemap-allow-subdirectory-search -target-cpu apple-m1 -target-feature +v8.5a -target-feature +aes -target-feature +crc -target-feature +dotprod -target-feature +fp-armv8 -target-feature +fp16fml -target-feature +lse -target-feature +ras -target-feature +rcpc -target-feature +rdm -target-feature +sha2 -target-feature +sha3 -target-feature +neon -target-feature +zcm -target-feature +zcz -target-feature +fullfp16 -target-abi darwinpcs -debugger-tuning=lldb -target-linker-version 1115.7.3 -v -fcoverage-compilation-dir=/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-MGNQnK -resource-dir /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16 -dependency-file CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o.d -skip-unused-modulemap-deps -MT CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o -sys-header-deps -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -I/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1 -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include -Wno-reorder-init-list -Wno-implicit-int-float-conversion -Wno-c99-designator -Wno-final-dtor-non-final-class -Wno-extra-semi-stmt -Wno-misleading-indentation -Wno-quoted-include-in-framework-header -Wno-implicit-fallthrough -Wno-enum-enum-conversion -Wno-enum-float-conversion -Wno-elaborated-enum-base -Wno-reserved-identifier -Wno-gnu-folding-constant -fdeprecated-macro -fdebug-compilation-dir=/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-MGNQnK -ferror-limit 19 -stack-protector 1 -fstack-check -mdarwin-stkchk-strong-link -fblocks -fencode-extended-block-signature -fregister-global-dtors-with-atexit -fgnuc-version=4.2.1 -fno-cxx-modules -fcxx-exceptions -fexceptions -fmax-type-align=16 -fcommon -clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation -fno-odr-hash-protocols -clang-vendor-feature=+enableAggressiveVLAFolding -clang-vendor-feature=+revert09abecef7bbf -clang-vendor-feature=+thisNoAlignAttr -clang-vendor-feature=+thisNoNullAttr -clang-vendor-feature=+disableAtImportPrivateFrameworkInImplementationError -D__GCC_HAVE_DWARF2_CFI_ASM=1 -o CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o -x c++ /opt/homebrew/share/cmake/Modules/CMakeCXXCompilerABI.cpp]
+        ignore line: [clang -cc1 version 16.0.0 (clang-1600.0.26.3) default target arm64-apple-darwin24.6.0]
+        ignore line: [ignoring nonexistent directory "/usr/local/include"]
+        ignore line: [ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include"]
+        ignore line: [ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks"]
+        ignore line: [#include "..." search starts here:]
+        ignore line: [#include <...> search starts here:]
+        ignore line: [ /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1]
+        ignore line: [ /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include]
+        ignore line: [ /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include]
+        ignore line: [ /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
+        ignore line: [ /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks (framework directory)]
+        ignore line: [End of search list.]
+        ignore line: [Linking CXX executable cmTC_92ef8]
+        ignore line: [/opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/cmTC_92ef8.dir/link.txt --verbose=1]
+        ignore line: [Apple clang version 16.0.0 (clang-1600.0.26.3)]
+        ignore line: [Target: arm64-apple-darwin24.6.0]
+        ignore line: [Thread model: posix]
+        ignore line: [InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin]
+        link line: [ "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" -demangle -lto_library /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib -dynamic -arch arm64 -platform_version macos 15.0.0 15.0 -syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mllvm -enable-linkonceodr-outlining -o cmTC_92ef8 -L/usr/local/lib -v CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o -lc++ -lSystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/lib/darwin/libclang_rt.osx.a]
+          arg [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld] ==> ignore
+          arg [-demangle] ==> ignore
+          arg [-lto_library] ==> ignore, skip following value
+          arg [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib] ==> skip value of -lto_library
+          arg [-dynamic] ==> ignore
+          arg [-arch] ==> ignore
+          arg [arm64] ==> ignore
+          arg [-platform_version] ==> ignore
+          arg [macos] ==> ignore
+          arg [15.0.0] ==> ignore
+          arg [15.0] ==> ignore
+          arg [-syslibroot] ==> ignore
+          arg [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk] ==> ignore
+          arg [-mllvm] ==> ignore
+          arg [-enable-linkonceodr-outlining] ==> ignore
+          arg [-o] ==> ignore
+          arg [cmTC_92ef8] ==> ignore
+          arg [-L/usr/local/lib] ==> dir [/usr/local/lib]
+          arg [-v] ==> ignore
+          arg [CMakeFiles/cmTC_92ef8.dir/CMakeCXXCompilerABI.cpp.o] ==> ignore
+          arg [-lc++] ==> lib [c++]
+          arg [-lSystem] ==> lib [System]
+          arg [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/lib/darwin/libclang_rt.osx.a] ==> lib [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/lib/darwin/libclang_rt.osx.a]
+        linker tool for 'CXX': /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+        Library search paths: [;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/swift]
+        Framework search paths: [;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks]
+        remove lib [System]
+        remove lib [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/lib/darwin/libclang_rt.osx.a]
+        collapse library dir [/usr/local/lib] ==> [/usr/local/lib]
+        collapse library dir [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib] ==> [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib]
+        collapse library dir [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/swift] ==> [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/swift]
+        collapse framework dir [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks] ==> [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks]
+        implicit libs: [c++]
+        implicit objs: []
+        implicit dirs: [/usr/local/lib;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/swift]
+        implicit fwks: [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks]
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/Internal/CMakeDetermineLinkerId.cmake:38 (message)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:299 (cmake_determine_linker_id)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:3 (project)"
+    message: |
+      Running the CXX compiler's linker: "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" "-v"
+      @(#)PROGRAM:ld PROJECT:ld-1115.7.3
+      BUILD 13:29:00 Aug  9 2024
+      configured to support archs: armv6 armv7 armv7s arm64 arm64e arm64_32 i386 x86_64 x86_64h armv6m armv7k armv7m armv7em
+      will use ld-classic for: armv6 armv7 armv7s i386 armv6m armv7k armv7m armv7em
+      LTO support using: LLVM version 16.0.0 (static support for 29, runtime is 29)
+      TAPI support using: Apple TAPI version 16.0.0 (tapi-1600.0.11.8)
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake:104 (try_compile)"
+      - "/opt/homebrew/share/cmake/Modules/Internal/CheckCompilerFlag.cmake:18 (cmake_check_source_compiles)"
+      - "/opt/homebrew/share/cmake/Modules/CheckCXXCompilerFlag.cmake:103 (cmake_check_compiler_flag)"
+      - "CMakeLists.txt:75 (CHECK_CXX_COMPILER_FLAG)"
+    checks:
+      - "Performing Test COMPILER_SUPPORTS_CXX20"
+    directories:
+      source: "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-0Ssu6t"
+      binary: "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-0Ssu6t"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_MODULE_PATH: "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/c_src/CMake"
+      CMAKE_OSX_ARCHITECTURES: ""
+      CMAKE_OSX_DEPLOYMENT_TARGET: ""
+      CMAKE_OSX_SYSROOT: ""
+    buildResult:
+      variable: "COMPILER_SUPPORTS_CXX20"
+      cached: true
+      stdout: |
+        Change Dir: '/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-0Ssu6t'
+        
+        Run Build Command(s): /opt/homebrew/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_a3a01/fast
+        /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_a3a01.dir/build.make CMakeFiles/cmTC_a3a01.dir/build
+        Building CXX object CMakeFiles/cmTC_a3a01.dir/src.cxx.o
+        /usr/bin/c++ -DCOMPILER_SUPPORTS_CXX20  -arch arm64   -std=c++20 -MD -MT CMakeFiles/cmTC_a3a01.dir/src.cxx.o -MF CMakeFiles/cmTC_a3a01.dir/src.cxx.o.d -o CMakeFiles/cmTC_a3a01.dir/src.cxx.o -c /Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-0Ssu6t/src.cxx
+        Linking CXX executable cmTC_a3a01
+        /opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/cmTC_a3a01.dir/link.txt --verbose=1
+        /usr/bin/c++  -arch arm64 CMakeFiles/cmTC_a3a01.dir/src.cxx.o -o cmTC_a3a01
+        
+      exitCode: 0
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:86 (find_program)"
+    mode: "program"
+    variable: "MAKE_PROGRAM"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "gmake"
+      - "make"
+      - "DOCS"
+      - "External 'make' executable."
+    candidate_directories:
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/opt/homebrew/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/bin/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/sbin/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/"
+      - "/usr/local/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/"
+      - "/usr/bin/"
+      - "/usr/sbin/"
+      - "/usr/"
+      - "/bin/"
+      - "/sbin/"
+      - "/usr/X11R6/bin/"
+      - "/usr/X11R6/sbin/"
+      - "/usr/X11R6/"
+      - "/usr/pkg/bin/"
+      - "/usr/pkg/sbin/"
+      - "/usr/pkg/"
+      - "/opt/bin/"
+      - "/opt/sbin/"
+      - "/opt/"
+      - "/sw/bin/"
+      - "/sw/sbin/"
+      - "/sw/"
+      - "/opt/local/bin/"
+      - "/opt/local/sbin/"
+      - "/opt/local/"
+      - "/Users/drew.lyton/Applications/"
+      - "/Applications/"
+      - "/Applications/Xcode.app/Contents/Applications/"
+      - "/Applications/Xcode.app/Contents/Developer/Applications/"
+    searched_directories:
+      - "/opt/homebrew/bin/gmake"
+      - "/opt/homebrew/sbin/gmake"
+      - "/opt/homebrew/gmake"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/gmake"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/gmake"
+      - "/Users/drew.lyton/.local/bin/gmake"
+      - "/Users/drew.lyton/.cargo/bin/gmake"
+      - "/Users/drew.lyton/.bun/bin/gmake"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/gmake"
+      - "/Users/drew.lyton/.rbenv/shims/gmake"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/gmake"
+      - "/opt/homebrew/bin/gmake"
+      - "/opt/homebrew/sbin/gmake"
+      - "/usr/local/bin/gmake"
+      - "/System/Cryptexes/App/usr/bin/gmake"
+      - "/usr/bin/gmake"
+      - "/bin/gmake"
+      - "/usr/sbin/gmake"
+      - "/sbin/gmake"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/gmake"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/gmake"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/gmake"
+      - "/Users/drew.lyton/Library/pnpm/gmake"
+      - "/Applications/Ghostty.app/Contents/MacOS/gmake"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/bin/gmake"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/sbin/gmake"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/gmake"
+      - "/usr/local/bin/gmake"
+      - "/usr/local/sbin/gmake"
+      - "/usr/local/gmake"
+      - "/usr/bin/gmake"
+      - "/usr/sbin/gmake"
+      - "/usr/gmake"
+      - "/bin/gmake"
+      - "/sbin/gmake"
+      - "/usr/X11R6/bin/gmake"
+      - "/usr/X11R6/sbin/gmake"
+      - "/usr/X11R6/gmake"
+      - "/usr/pkg/bin/gmake"
+      - "/usr/pkg/sbin/gmake"
+      - "/usr/pkg/gmake"
+      - "/opt/bin/gmake"
+      - "/opt/sbin/gmake"
+      - "/opt/gmake"
+      - "/sw/bin/gmake"
+      - "/sw/sbin/gmake"
+      - "/sw/gmake"
+      - "/opt/local/bin/gmake"
+      - "/opt/local/sbin/gmake"
+      - "/opt/local/gmake"
+      - "/Users/drew.lyton/Applications/gmake"
+      - "/Applications/gmake"
+      - "/Applications/Xcode.app/Contents/Applications/gmake"
+      - "/Applications/Xcode.app/Contents/Developer/Applications/gmake"
+      - "/opt/homebrew/bin/make"
+      - "/opt/homebrew/sbin/make"
+      - "/opt/homebrew/make"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/make"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/make"
+      - "/Users/drew.lyton/.local/bin/make"
+      - "/Users/drew.lyton/.cargo/bin/make"
+      - "/Users/drew.lyton/.bun/bin/make"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/make"
+      - "/Users/drew.lyton/.rbenv/shims/make"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/make"
+      - "/opt/homebrew/bin/make"
+      - "/opt/homebrew/sbin/make"
+      - "/usr/local/bin/make"
+      - "/System/Cryptexes/App/usr/bin/make"
+    found: "/usr/bin/make"
+    search_context:
+      CMAKE_PREFIX_PATH:
+        - "/opt/homebrew"
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr"
+        - "/"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr/X11R6"
+        - "/usr/pkg"
+        - "/opt"
+        - "/sw"
+        - "/opt/local"
+      CMAKE_SYSTEM_APPBUNDLE_PATH:
+        - "/Users/drew.lyton/Applications"
+        - "/Applications"
+        - "/Applications/Xcode.app/Contents/Applications"
+        - "/Applications/Xcode.app/Contents/Developer/Applications"
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake:104 (try_compile)"
+      - "/opt/homebrew/share/cmake/Modules/CheckCSourceCompiles.cmake:103 (cmake_check_source_compiles)"
+      - "/opt/homebrew/share/cmake/Modules/FindThreads.cmake:160 (check_c_source_compiles)"
+      - "/opt/homebrew/share/cmake/Modules/FindThreads.cmake:226 (_threads_check_libc)"
+      - "CMakeLists.txt:109 (find_package)"
+    checks:
+      - "Performing Test CMAKE_HAVE_LIBC_PTHREAD"
+    directories:
+      source: "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-cm7Nv5"
+      binary: "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-cm7Nv5"
+    cmakeVariables:
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_C_FLAGS: ""
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_MODULE_PATH: "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/c_src/CMake"
+      CMAKE_OSX_ARCHITECTURES: ""
+      CMAKE_OSX_DEPLOYMENT_TARGET: ""
+      CMAKE_OSX_SYSROOT: ""
+    buildResult:
+      variable: "CMAKE_HAVE_LIBC_PTHREAD"
+      cached: true
+      stdout: |
+        Change Dir: '/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-cm7Nv5'
+        
+        Run Build Command(s): /opt/homebrew/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_9ee40/fast
+        /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_9ee40.dir/build.make CMakeFiles/cmTC_9ee40.dir/build
+        Building C object CMakeFiles/cmTC_9ee40.dir/src.c.o
+        /usr/bin/cc -DCMAKE_HAVE_LIBC_PTHREAD  -arch arm64 -MD -MT CMakeFiles/cmTC_9ee40.dir/src.c.o -MF CMakeFiles/cmTC_9ee40.dir/src.c.o.d -o CMakeFiles/cmTC_9ee40.dir/src.c.o -c /Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-cm7Nv5/src.c
+        Linking C executable cmTC_9ee40
+        /opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/cmTC_9ee40.dir/link.txt --verbose=1
+        /usr/bin/cc  -arch arm64 CMakeFiles/cmTC_9ee40.dir/src.c.o -o cmTC_9ee40
+        
+      exitCode: 0
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMake/FindLZ4.cmake:7 (find_path)"
+      - "CMakeLists.txt:167 (find_package)"
+    mode: "path"
+    variable: "LZ4_INCLUDE_DIR"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "lz4.h"
+    candidate_directories:
+      - "/opt/homebrew/include/"
+      - "/opt/homebrew/"
+      - "/opt/homebrew/include/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/"
+      - "/usr/local/include/"
+      - "/usr/local/"
+      - "/usr/include/"
+      - "/usr/"
+      - "/include/"
+      - "/usr/X11R6/include/"
+      - "/usr/X11R6/"
+      - "/usr/pkg/include/"
+      - "/usr/pkg/"
+      - "/opt/include/"
+      - "/opt/"
+      - "/sw/include/"
+      - "/sw/"
+      - "/opt/local/include/"
+      - "/opt/local/"
+      - "/usr/include/X11/"
+      - "/Users/drew.lyton/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Network/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/"
+      - "/Library/Frameworks/"
+      - "/Network/Library/Frameworks/"
+      - "/System/Library/Frameworks/"
+    found: "/opt/homebrew/include/"
+    search_context:
+      CMAKE_INCLUDE_PATH:
+        - "/opt/homebrew/include"
+      CMAKE_PREFIX_PATH:
+        - "/opt/homebrew"
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr"
+        - "/"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr/X11R6"
+        - "/usr/pkg"
+        - "/opt"
+        - "/sw"
+        - "/opt/local"
+      CMAKE_SYSTEM_INCLUDE_PATH:
+        - "/usr/include/X11"
+      CMAKE_SYSTEM_FRAMEWORK_PATH:
+        - "~/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Network/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Library/Frameworks"
+        - "/Library/Frameworks"
+        - "/Network/Library/Frameworks"
+        - "/System/Library/Frameworks"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMake/FindLZ4.cmake:8 (find_library)"
+      - "CMakeLists.txt:167 (find_package)"
+    mode: "library"
+    variable: "LZ4_LIBRARY"
+    description: "Path to a library."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "lz4"
+    candidate_directories:
+      - "/opt/homebrew/lib/"
+      - "/opt/homebrew/"
+      - "/opt/homebrew/lib/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/"
+      - "/usr/local/"
+      - "/usr/lib/"
+      - "/usr/"
+      - "/opt/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/"
+      - "/Library/Frameworks/"
+      - "/System/Library/Frameworks/"
+    found: "/opt/homebrew/lib/liblz4.dylib"
+    search_context:
+      CMAKE_LIBRARY_PATH:
+        - "/opt/homebrew/lib"
+      CMAKE_PREFIX_PATH:
+        - "/opt/homebrew"
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr"
+        - "/"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr/X11R6"
+        - "/usr/pkg"
+        - "/opt"
+        - "/sw"
+        - "/opt/local"
+      CMAKE_SYSTEM_LIBRARY_PATH:
+        - "/usr/lib/X11"
+      CMAKE_SYSTEM_FRAMEWORK_PATH:
+        - "~/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Network/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Library/Frameworks"
+        - "/Library/Frameworks"
+        - "/Network/Library/Frameworks"
+        - "/System/Library/Frameworks"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMake/FindSnappy.cmake:7 (find_path)"
+      - "CMakeLists.txt:178 (find_package)"
+    mode: "path"
+    variable: "SNAPPY_INCLUDE_DIR"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "snappy.h"
+    candidate_directories:
+      - "/opt/homebrew/include/"
+      - "/opt/homebrew/"
+      - "/opt/homebrew/include/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/"
+      - "/usr/local/include/"
+      - "/usr/local/"
+      - "/usr/include/"
+      - "/usr/"
+      - "/include/"
+      - "/usr/X11R6/include/"
+      - "/usr/X11R6/"
+      - "/usr/pkg/include/"
+      - "/usr/pkg/"
+      - "/opt/include/"
+      - "/opt/"
+      - "/sw/include/"
+      - "/sw/"
+      - "/opt/local/include/"
+      - "/opt/local/"
+      - "/usr/include/X11/"
+      - "/Users/drew.lyton/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Network/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/"
+      - "/Library/Frameworks/"
+      - "/Network/Library/Frameworks/"
+      - "/System/Library/Frameworks/"
+    found: "/opt/homebrew/include/"
+    search_context:
+      CMAKE_INCLUDE_PATH:
+        - "/opt/homebrew/include"
+      CMAKE_PREFIX_PATH:
+        - "/opt/homebrew"
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr"
+        - "/"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr/X11R6"
+        - "/usr/pkg"
+        - "/opt"
+        - "/sw"
+        - "/opt/local"
+      CMAKE_SYSTEM_INCLUDE_PATH:
+        - "/usr/include/X11"
+      CMAKE_SYSTEM_FRAMEWORK_PATH:
+        - "~/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Network/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Library/Frameworks"
+        - "/Library/Frameworks"
+        - "/Network/Library/Frameworks"
+        - "/System/Library/Frameworks"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMake/FindSnappy.cmake:8 (find_library)"
+      - "CMakeLists.txt:178 (find_package)"
+    mode: "library"
+    variable: "SNAPPY_LIBRARY"
+    description: "Path to a library."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "snappy"
+    candidate_directories:
+      - "/opt/homebrew/lib/"
+      - "/opt/homebrew/"
+      - "/opt/homebrew/lib/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/"
+      - "/usr/local/"
+      - "/usr/lib/"
+      - "/usr/"
+      - "/opt/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/"
+      - "/Library/Frameworks/"
+      - "/System/Library/Frameworks/"
+    found: "/opt/homebrew/lib/libsnappy.dylib"
+    search_context:
+      CMAKE_LIBRARY_PATH:
+        - "/opt/homebrew/lib"
+      CMAKE_PREFIX_PATH:
+        - "/opt/homebrew"
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr"
+        - "/"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr/X11R6"
+        - "/usr/pkg"
+        - "/opt"
+        - "/sw"
+        - "/opt/local"
+      CMAKE_SYSTEM_LIBRARY_PATH:
+        - "/usr/lib/X11"
+      CMAKE_SYSTEM_FRAMEWORK_PATH:
+        - "~/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Network/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Library/Frameworks"
+        - "/Library/Frameworks"
+        - "/Network/Library/Frameworks"
+        - "/System/Library/Frameworks"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMake/FindErlang.cmake:26 (FIND_PROGRAM)"
+      - "CMakeLists.txt:219 (include)"
+    mode: "program"
+    variable: "ERLANG_RUNTIME"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "erl"
+    candidate_directories:
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/opt/homebrew/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/bin/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/sbin/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/"
+      - "/usr/local/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/"
+      - "/usr/bin/"
+      - "/usr/sbin/"
+      - "/usr/"
+      - "/bin/"
+      - "/sbin/"
+      - "/usr/X11R6/bin/"
+      - "/usr/X11R6/sbin/"
+      - "/usr/X11R6/"
+      - "/usr/pkg/bin/"
+      - "/usr/pkg/sbin/"
+      - "/usr/pkg/"
+      - "/opt/bin/"
+      - "/opt/sbin/"
+      - "/opt/"
+      - "/sw/bin/"
+      - "/sw/sbin/"
+      - "/sw/"
+      - "/opt/local/bin/"
+      - "/opt/local/sbin/"
+      - "/opt/local/"
+      - "/Users/drew.lyton/Applications/"
+      - "/Applications/"
+      - "/Applications/Xcode.app/Contents/Applications/"
+      - "/Applications/Xcode.app/Contents/Developer/Applications/"
+      - "/opt/bin/"
+      - "/sw/bin/"
+      - "/opt/local/bin/"
+    found: "/opt/homebrew/bin/erl"
+    search_context:
+      CMAKE_PREFIX_PATH:
+        - "/opt/homebrew"
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr"
+        - "/"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr/X11R6"
+        - "/usr/pkg"
+        - "/opt"
+        - "/sw"
+        - "/opt/local"
+      CMAKE_SYSTEM_APPBUNDLE_PATH:
+        - "/Users/drew.lyton/Applications"
+        - "/Applications"
+        - "/Applications/Xcode.app/Contents/Applications"
+        - "/Applications/Xcode.app/Contents/Developer/Applications"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMake/FindErlang.cmake:31 (FIND_PROGRAM)"
+      - "CMakeLists.txt:219 (include)"
+    mode: "program"
+    variable: "ERLANG_COMPILE"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "erlc"
+    candidate_directories:
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/opt/homebrew/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/bin/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/sbin/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/"
+      - "/usr/local/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/"
+      - "/usr/bin/"
+      - "/usr/sbin/"
+      - "/usr/"
+      - "/bin/"
+      - "/sbin/"
+      - "/usr/X11R6/bin/"
+      - "/usr/X11R6/sbin/"
+      - "/usr/X11R6/"
+      - "/usr/pkg/bin/"
+      - "/usr/pkg/sbin/"
+      - "/usr/pkg/"
+      - "/opt/bin/"
+      - "/opt/sbin/"
+      - "/opt/"
+      - "/sw/bin/"
+      - "/sw/sbin/"
+      - "/sw/"
+      - "/opt/local/bin/"
+      - "/opt/local/sbin/"
+      - "/opt/local/"
+      - "/Users/drew.lyton/Applications/"
+      - "/Applications/"
+      - "/Applications/Xcode.app/Contents/Applications/"
+      - "/Applications/Xcode.app/Contents/Developer/Applications/"
+      - "/opt/bin/"
+      - "/sw/bin/"
+      - "/opt/local/bin/"
+    found: "/opt/homebrew/bin/erlc"
+    search_context:
+      CMAKE_PREFIX_PATH:
+        - "/opt/homebrew"
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr"
+        - "/"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr/X11R6"
+        - "/usr/pkg"
+        - "/opt"
+        - "/sw"
+        - "/opt/local"
+      CMAKE_SYSTEM_APPBUNDLE_PATH:
+        - "/Users/drew.lyton/Applications"
+        - "/Applications"
+        - "/Applications/Xcode.app/Contents/Applications"
+        - "/Applications/Xcode.app/Contents/Developer/Applications"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMake/FindErlang.cmake:65 (FIND_PROGRAM)"
+      - "CMakeLists.txt:219 (include)"
+    mode: "program"
+    variable: "ERLANG_ARCHIVE"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "zip"
+    candidate_directories:
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/opt/homebrew/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/bin/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/sbin/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/"
+      - "/usr/local/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/"
+      - "/usr/bin/"
+      - "/usr/sbin/"
+      - "/usr/"
+      - "/bin/"
+      - "/sbin/"
+      - "/usr/X11R6/bin/"
+      - "/usr/X11R6/sbin/"
+      - "/usr/X11R6/"
+      - "/usr/pkg/bin/"
+      - "/usr/pkg/sbin/"
+      - "/usr/pkg/"
+      - "/opt/bin/"
+      - "/opt/sbin/"
+      - "/opt/"
+      - "/sw/bin/"
+      - "/sw/sbin/"
+      - "/sw/"
+      - "/opt/local/bin/"
+      - "/opt/local/sbin/"
+      - "/opt/local/"
+      - "/Users/drew.lyton/Applications/"
+      - "/Applications/"
+      - "/Applications/Xcode.app/Contents/Applications/"
+      - "/Applications/Xcode.app/Contents/Developer/Applications/"
+      - "/opt/bin/"
+      - "/sw/bin/"
+      - "/opt/local/bin/"
+    searched_directories:
+      - "/opt/homebrew/bin/zip"
+      - "/opt/homebrew/sbin/zip"
+      - "/opt/homebrew/zip"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/zip"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/zip"
+      - "/Users/drew.lyton/.local/bin/zip"
+      - "/Users/drew.lyton/.cargo/bin/zip"
+      - "/Users/drew.lyton/.bun/bin/zip"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/zip"
+      - "/Users/drew.lyton/.rbenv/shims/zip"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/zip"
+      - "/opt/homebrew/bin/zip"
+      - "/opt/homebrew/sbin/zip"
+      - "/usr/local/bin/zip"
+      - "/System/Cryptexes/App/usr/bin/zip"
+    found: "/usr/bin/zip"
+    search_context:
+      CMAKE_PREFIX_PATH:
+        - "/opt/homebrew"
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr"
+        - "/"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr/X11R6"
+        - "/usr/pkg"
+        - "/opt"
+        - "/sw"
+        - "/opt/local"
+      CMAKE_SYSTEM_APPBUNDLE_PATH:
+        - "/Users/drew.lyton/Applications"
+        - "/Applications"
+        - "/Applications/Xcode.app/Contents/Applications"
+        - "/Applications/Xcode.app/Contents/Developer/Applications"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:223 (find_library)"
+    mode: "library"
+    variable: "ERLANG_EI_LIB"
+    description: "Path to a library."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "ei"
+    candidate_directories:
+      - "/opt/homebrew/lib/"
+      - "/opt/homebrew/"
+      - "/opt/homebrew/lib/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/lib/erl_interface-5.6.4/lib/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/"
+      - "/usr/local/"
+      - "/usr/lib/"
+      - "/usr/"
+      - "/opt/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/"
+      - "/Library/Frameworks/"
+      - "/System/Library/Frameworks/"
+    searched_directories:
+      - "/opt/homebrew/lib/"
+      - "/opt/homebrew/"
+      - "/opt/homebrew/lib/"
+    found: "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/lib/erl_interface-5.6.4/lib/libei.a"
+    search_context:
+      CMAKE_LIBRARY_PATH:
+        - "/opt/homebrew/lib"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/lib/erl_interface-5.6.4/lib"
+      CMAKE_PREFIX_PATH:
+        - "/opt/homebrew"
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr"
+        - "/"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr/X11R6"
+        - "/usr/pkg"
+        - "/opt"
+        - "/sw"
+        - "/opt/local"
+      CMAKE_SYSTEM_LIBRARY_PATH:
+        - "/usr/lib/X11"
+      CMAKE_SYSTEM_FRAMEWORK_PATH:
+        - "~/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Network/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Library/Frameworks"
+        - "/Library/Frameworks"
+        - "/Network/Library/Frameworks"
+        - "/System/Library/Frameworks"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:224 (find_library)"
+    mode: "library"
+    variable: "ERLANG_ERL_INTERFACE_LIB"
+    description: "Path to a library."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "erl_interface"
+    candidate_directories:
+      - "/opt/homebrew/lib/"
+      - "/opt/homebrew/"
+      - "/opt/homebrew/lib/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/lib/erl_interface-5.6.4/lib/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/"
+      - "/usr/local/"
+      - "/usr/lib/"
+      - "/usr/"
+      - "/opt/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/"
+      - "/Library/Frameworks/"
+      - "/System/Library/Frameworks/"
+    searched_directories:
+      - "/opt/homebrew/lib/"
+      - "/opt/homebrew/"
+      - "/opt/homebrew/lib/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/lib/erl_interface-5.6.4/lib/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin/"
+      - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin/"
+      - "/Users/drew.lyton/.local/bin/"
+      - "/Users/drew.lyton/.cargo/bin/"
+      - "/Users/drew.lyton/.bun/bin/"
+      - "/Users/drew.lyton/google-cloud-sdk/bin/"
+      - "/Users/drew.lyton/.rbenv/shims/"
+      - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/Users/drew.lyton/Library/pnpm/"
+      - "/Applications/Ghostty.app/Contents/MacOS/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/"
+      - "/usr/local/"
+      - "/usr/lib/"
+      - "/usr/"
+      - "/opt/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks/"
+      - "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/"
+      - "/Library/Frameworks/"
+      - "/System/Library/Frameworks/"
+    found: false
+    search_context:
+      CMAKE_LIBRARY_PATH:
+        - "/opt/homebrew/lib"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/lib/erl_interface-5.6.4/lib"
+      CMAKE_PREFIX_PATH:
+        - "/opt/homebrew"
+      ENV{PATH}:
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/erts-16.3/bin"
+        - "/opt/homebrew/Cellar/erlang/28.4.1/lib/erlang/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/Users/drew.lyton/.local/bin"
+        - "/Users/drew.lyton/Library/pnpm"
+        - "/Users/drew.lyton/.cargo/bin"
+        - "/Users/drew.lyton/.bun/bin"
+        - "/Users/drew.lyton/google-cloud-sdk/bin"
+        - "/Users/drew.lyton/.rbenv/shims"
+        - "/Users/drew.lyton/.nvm/versions/node/v22.22.0/bin"
+        - "/Applications/Ghostty.app/Contents/MacOS"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr"
+        - "/"
+        - "/opt/homebrew"
+        - "/usr/local"
+        - "/usr/X11R6"
+        - "/usr/pkg"
+        - "/opt"
+        - "/sw"
+        - "/opt/local"
+      CMAKE_SYSTEM_LIBRARY_PATH:
+        - "/usr/lib/X11"
+      CMAKE_SYSTEM_FRAMEWORK_PATH:
+        - "~/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Network/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks"
+        - "/Applications/Xcode.app/Contents/Developer/Library/Frameworks"
+        - "/Library/Frameworks"
+        - "/Network/Library/Frameworks"
+        - "/System/Library/Frameworks"
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/Internal/CheckSourceCompiles.cmake:104 (try_compile)"
+      - "/opt/homebrew/share/cmake/Modules/Internal/CheckCompilerFlag.cmake:18 (cmake_check_source_compiles)"
+      - "/opt/homebrew/share/cmake/Modules/CheckCXXCompilerFlag.cmake:103 (cmake_check_compiler_flag)"
+      - "CMakeLists.txt:259 (CHECK_CXX_COMPILER_FLAG)"
+    checks:
+      - "Performing Test HAVE_OMIT_LEAF_FRAME_POINTER"
+    directories:
+      source: "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-2UmMIa"
+      binary: "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-2UmMIa"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: " -W -Wextra -Wall -Wsign-compare -Wshadow -Wno-unused-parameter -Wno-unused-variable -Woverloaded-virtual -Wnon-virtual-dtor -Wno-missing-field-initializers -Wno-strict-aliasing -std=c++20 -fno-omit-frame-pointer"
+      CMAKE_CXX_STDLIB_MODULES_JSON: ""
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_MODULE_PATH: "/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/c_src/CMake"
+      CMAKE_OSX_ARCHITECTURES: ""
+      CMAKE_OSX_DEPLOYMENT_TARGET: ""
+      CMAKE_OSX_SYSROOT: ""
+    buildResult:
+      variable: "HAVE_OMIT_LEAF_FRAME_POINTER"
+      cached: true
+      stdout: |
+        Change Dir: '/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-2UmMIa'
+        
+        Run Build Command(s): /opt/homebrew/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_c82dc/fast
+        /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_c82dc.dir/build.make CMakeFiles/cmTC_c82dc.dir/build
+        Building CXX object CMakeFiles/cmTC_c82dc.dir/src.cxx.o
+        /usr/bin/c++ -DHAVE_OMIT_LEAF_FRAME_POINTER  -W -Wextra -Wall -Wsign-compare -Wshadow -Wno-unused-parameter -Wno-unused-variable -Woverloaded-virtual -Wnon-virtual-dtor -Wno-missing-field-initializers -Wno-strict-aliasing -std=c++20 -fno-omit-frame-pointer  -arch arm64   -momit-leaf-frame-pointer -MD -MT CMakeFiles/cmTC_c82dc.dir/src.cxx.o -MF CMakeFiles/cmTC_c82dc.dir/src.cxx.o.d -o CMakeFiles/cmTC_c82dc.dir/src.cxx.o -c /Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/CMakeScratch/TryCompile-2UmMIa/src.cxx
+        Linking CXX executable cmTC_c82dc
+        /opt/homebrew/bin/cmake -E cmake_link_script CMakeFiles/cmTC_c82dc.dir/link.txt --verbose=1
+        /usr/bin/c++  -W -Wextra -Wall -Wsign-compare -Wshadow -Wno-unused-parameter -Wno-unused-variable -Woverloaded-virtual -Wnon-virtual-dtor -Wno-missing-field-initializers -Wno-strict-aliasing -std=c++20 -fno-omit-frame-pointer  -arch arm64 CMakeFiles/cmTC_c82dc.dir/src.cxx.o -o cmTC_c82dc
+        
+      exitCode: 0
+...

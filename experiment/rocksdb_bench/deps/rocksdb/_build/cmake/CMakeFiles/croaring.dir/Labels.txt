@@ -1,0 +1,13 @@
+# Target labels
+ croaring
+# Source files and their labels
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/croaring
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/croaring.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/CMakeFiles/croaring-complete.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/croaring-prefix/src/croaring-stamp/croaring-build.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/croaring-prefix/src/croaring-stamp/croaring-configure.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/croaring-prefix/src/croaring-stamp/croaring-download.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/croaring-prefix/src/croaring-stamp/croaring-install.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/croaring-prefix/src/croaring-stamp/croaring-mkdir.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/croaring-prefix/src/croaring-stamp/croaring-patch.rule
+/Users/drew.lyton/Projects/loaf/experiment/rocksdb_bench/deps/rocksdb/_build/cmake/croaring-prefix/src/croaring-stamp/croaring-update.rule
