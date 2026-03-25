@@ -48,11 +48,11 @@ const currentPath = Astro.url.pathname;
 <div class="flex justify-between items-center w-full h-full">
   <a href="/" class="flex items-center gap-2 no-underline text-stone-50 font-semibold">
     <img class="h-[1.2rem] w-auto" alt="ebb" src={logoDark.src} width="120" height="58" />
-    <span class="text-base">ebb</span>
+    <span class="text-base font-mono">ebb</span>
   </a>
   <div class="flex gap-6 items-center">
     <nav class="hidden lg:flex gap-6 items-center">
-      <a href="/docs" class="text-stone-400 no-underline text-sm transition-colors hover:text-stone-50">Docs</a>
+      <!-- <a href="/docs" class="text-stone-400 no-underline text-sm transition-colors hover:text-stone-50">Docs</a> -->
       <a href="/devlog" class="text-stone-400 no-underline text-sm transition-colors hover:text-stone-50">Devlog</a>
     </nav>
     <a
@@ -91,7 +91,7 @@ const currentPath = Astro.url.pathname;
   <div class="flex justify-between items-center h-16 px-4 sm:px-6 border-b border-stone-800">
     <a href="/" class="flex items-center gap-2 no-underline text-stone-50 font-semibold">
       <img class="h-[1.2rem] w-auto" alt="ebb" src={logoDark.src} width="120" height="58" />
-      <span class="text-base">ebb</span>
+      <span class="text-base font-mono">ebb</span>
     </a>
     <button
       id="mobile-menu-close"
@@ -110,11 +110,11 @@ const currentPath = Astro.url.pathname;
   <div class="flex-1 overflow-y-auto px-6 py-6">
     <!-- Main nav links -->
     <nav class="space-y-1 mb-6">
-      <a href="/docs" class="block py-3 text-lg font-medium text-stone-200 no-underline transition-colors hover:text-stone-50">Docs</a>
+      <!-- <a href="/docs" class="block py-3 text-lg font-medium text-stone-200 no-underline transition-colors hover:text-stone-50">Docs</a> -->
       <a href="/devlog" class="block py-3 text-lg font-medium text-stone-200 no-underline transition-colors hover:text-stone-50">Devlog</a>
     </nav>
 
-    <!-- Docs sidebar -->
+    <!-- Docs sidebar (commented out while Docs link is hidden)
     <div class="border-t border-stone-800 pt-6 space-y-6">
       {docsSections.map((section) => (
         <div>
@@ -143,8 +143,8 @@ const currentPath = Astro.url.pathname;
         </div>
       ))}
     </div>
+    -->
 
-    <!-- GitHub link -->
     <div class="mt-6 pt-6 border-t border-stone-800">
       <a
         href="https://github.com/ebbjs/ebbjs"

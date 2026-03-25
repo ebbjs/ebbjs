@@ -305,7 +305,7 @@ EntityStore.get("todo_123", actor_id)
                   Iterator on cf_entity_actions prefix "todo_123"
                   where GSN > entity's last_gsn in SQLite
                 → Fetch full Updates from cf_updates
-                → LWW merge in Elixir (field-level HLC comparison)
+                → Per-field typed merge in Elixir (dispatch on each field's type tag)
                 → UPSERT into SQLite (entities table)
                 → Clear dirty bit in ETS
                 → Permission check
@@ -326,7 +326,7 @@ EntityStore.query("todo", filter, actor_id)
   ├── 1. Get dirty entity_ids for type "todo" from ETS dirty_set   ← O(N dirty)
   │
   ├── 2. Batch materialize all dirty "todo" entities               ← parallelizable
-  │      (same flow as get: read RocksDB delta → LWW merge → upsert SQLite → clear dirty)
+  │      (same flow as get: read RocksDB delta → per-field typed merge → upsert SQLite → clear dirty)
   │
   └── 3. SELECT from SQLite with permission JOINs + json_extract filter
          → return entities
@@ -334,24 +334,28 @@ EntityStore.query("todo", filter, actor_id)
 
 ### Materialization Details
 
-**LWW Merge (JSON entities):**
+**Per-field typed merge:**
 
-Each entity's `data` field contains per-field HLC timestamps:
+Each entity's `data` field contains self-describing typed field values. Each field carries a `type` tag that tells the materialization engine which merge function to use:
 
 ```json
 {
   "fields": {
-    "title": {"value": "My Todo", "hlc": 1711234567890000},
-    "completed": {"value": false, "hlc": 1711234567890000}
+    "title":     { "type": "lww", "value": "My Todo", "hlc": 1711234567890000 },
+    "completed": { "type": "lww", "value": false, "hlc": 1711234567890000 },
+    "likes":     { "type": "counter", "value": { "alice": 3, "bob": 1 } },
+    "body":      { "type": "crdt", "value": "<base64 yjs state>" }
   }
 }
 ```
 
-During materialization, incoming PATCH Updates are compared field-by-field. For each field, the value with the higher HLC wins. This is commutative and idempotent — applying the same Updates in any order produces the same result.
+During materialization, incoming PATCH Updates are merged field-by-field. For each field, the merge function is determined by the field's `type` tag:
 
-**Yjs CRDT Merge:**
+- **`lww`** — Last-write-wins. The value with the higher HLC wins. Commutative and idempotent.
+- **`counter`** — G-Counter CRDT. Per-actor counts are merged by taking the max per actor. The total is the sum of all actors' counts. No HLC comparison needed — the merge is commutative and conflict-free.
+- **`crdt`** — Yjs CRDT merge via `y_ex` (Elixir Yjs NIF). Yjs update blobs are merged using Yjs's built-in algorithm. The merged state is stored as a binary blob. Server functions receive the merged blob and decode it via `yjs` on the JS side.
 
-For entities with `format: 'crdt'`, materialization uses `y_ex` (Elixir Yjs NIF) to merge Yjs update blobs. The merged state is stored as a binary blob in the `entities` table. Server functions receive the merged blob and decode it via `yjs` on the JS side.
+The server is schema-agnostic — it reads the `type` tag from the stored field values rather than consulting an external schema registry. The client SDK enforces type consistency (a field declared as `e.counter()` always writes `"type": "counter"` patches).
 
 **Incremental Merge:**
 
@@ -414,8 +418,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS entities (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
-  data TEXT,                        -- JSON blob (current materialized state)
-  format TEXT NOT NULL DEFAULT 'json',  -- 'json' or 'crdt'
+  data TEXT,                        -- JSON blob (current materialized state, with per-field type tags)
   created_hlc INTEGER NOT NULL,
   updated_hlc INTEGER NOT NULL,
   deleted_hlc INTEGER,              -- tombstone marker
@@ -467,6 +470,7 @@ CREATE INDEX IF NOT EXISTS idx_function_active ON function_versions(name, status
 - `snapshots` table → replaced by `last_gsn` on the entities table (incremental merge)
 - `cold_action_index` table → unnecessary (RocksDB handles its own compaction)
 - All indexes on the action/update tables → RocksDB column families serve as indexes
+- `format` column on entities → replaced by per-field `type` tags in the stored `data` blob (merge strategy is now per-field, not per-entity)
 
 ---
 
@@ -516,7 +520,7 @@ for type <- ["group", "groupMember", "relationship"] do
   entity_ids = RocksDB.prefix_iterator(cf_type_entities, type)
 
   for entity_id <- entity_ids do
-    entity = EntityStore.materialize(entity_id)  # RocksDB → LWW merge → SQLite
+    entity = EntityStore.materialize(entity_id)  # RocksDB → per-field typed merge → SQLite
     SystemCache.apply_entity(entity)              # Populate ETS
   end
 end
@@ -576,7 +580,7 @@ The Rust NIF path remains available as a future optimization for >200k Actions/s
 | `ctx.query(type)` + permission JOINs | ~2.3-5.5ms | ~3-8ms |
 | Sync catch-up (GSN range scan) | ~1-5ms per page | N/A (reads RocksDB directly) |
 
-The ~0.2-0.3ms per call is the localhost HTTP round-trip overhead from Bun → Elixir. Clean reads add this on top of the SQLite query time. Dirty reads add the materialization cost (RocksDB read + ETF decode + LWW merge + SQLite upsert), which dominates the HTTP overhead. ETF decode (`:erlang.binary_to_term`) is equally fast as encode (~0.5-2μs per term), so the read path also benefits.
+The ~0.2-0.3ms per call is the localhost HTTP round-trip overhead from Bun → Elixir. Clean reads add this on top of the SQLite query time. Dirty reads add the materialization cost (RocksDB read + ETF decode + per-field typed merge + SQLite upsert), which dominates the HTTP overhead. ETF decode (`:erlang.binary_to_term`) is equally fast as encode (~0.5-2μs per term), so the read path also benefits.
 
 ---
 
@@ -687,6 +691,7 @@ Application Supervisor (one_for_one)
 | Custom Rust NIF (Fjall) | `rocksdb` hex package (existing Erlang NIF) |
 | Bun direct SQLite access | Elixir HTTP endpoints |
 | Async materialization staleness window | Zero-staleness on-demand materialization |
+| Entity-level `format` column (`json`/`crdt`) | Per-field `type` tags in stored data blob (merge strategy per field) |
 
 ---
 
@@ -717,7 +722,7 @@ end
 | C3 | SQLite Schema | Entity cache tables (entities, actors, function_versions) |
 | C4 | Writer GenServers (×2) | WriteBatch across column families, shared atomic GSN assignment, ETS dirty set updates, system entity cache updates, committed GSN watermark advancement |
 | C5 | System Entity Cache + Shared Atomics | ETS tables for group_members and relationships, startup population from RocksDB, `:atomics` for GSN counter and committed watermark |
-| C6 | EntityStore | On-demand materialization: dirty check → RocksDB read → LWW merge → SQLite upsert → clear dirty |
+| C6 | EntityStore | On-demand materialization: dirty check → RocksDB read → per-field typed merge → SQLite upsert → clear dirty |
 | C7 | Permission Checks | Structural validation, HLC drift, ETS-based authorization |
 | C8 | Action Write Endpoint | `POST /sync/actions` — validate, permission-check, write, confirm durability |
 | C9 | Entity Read Endpoints | `GET /entities/{id}`, `POST /entities/query` — for Bun server functions |

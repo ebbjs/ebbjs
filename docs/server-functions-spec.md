@@ -87,18 +87,18 @@ Developers define functions as TypeScript files in a `functions/` directory:
 ```ts
 // functions/proofreadDocument.ts
 import Anthropic from '@anthropic-ai/sdk';
-import { z } from 'zod';
+import { Type } from '@sinclair/typebox';
 import { defineFunction } from '@ebbjs/server';
 
 export default defineFunction({
   name: "proofreadDocument",
 
-  input: z.object({
-    documentId: z.string(),
+  input: Type.Object({
+    documentId: Type.String(),
   }),
 
-  output: z.object({
-    commentCount: z.number(),
+  output: Type.Object({
+    commentCount: Type.Number(),
   }),
 
   async handler(ctx, input) {
@@ -160,7 +160,7 @@ interface FunctionContext {
 
 - **Reads are direct SQLite** — no network hop. The Bun server reads from the shared SQLite database (materialized entity views + generated column indexes). Results are silently scoped to what the actor can see based on their group memberships, enforced at the query level.
 - **Writes go to the Elixir server via HTTP on localhost** — `POST /sync/actions`. Elixir handles permission checks, assigns GSN, writes to the Action log, fsyncs, and fans out to subscribers. The Bun Materializer then asynchronously updates SQLite. This means a `ctx.create()` followed by a `ctx.get()` for the same entity may not reflect the write yet (small staleness window, typically single-digit ms).
-- **No Outbox, no conflict detection.** Writes commit on the Elixir server immediately. Concurrent writes from other actors resolve via LWW.
+- **No Outbox, no conflict detection.** Writes commit on the Elixir server immediately. Concurrent writes from other actors resolve via per-field typed merge (LWW for most fields, CRDT merge for counters and collaborative text).
 - **No rollback on error.** Writes that have already been accepted by Elixir stay committed. If a handler throws mid-execution, writes made before the throw are not undone. Write after external calls succeed, not before.
 - **`defineAction`s can be called from within a handler**, exactly as they can from client code. Each Action commits immediately and independently when called.
 

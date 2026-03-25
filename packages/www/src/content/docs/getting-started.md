@@ -13,26 +13,22 @@ npm install @ebbjs/core @ebbjs/client
 
 ## Define a schema
 
-First, define your models using `defineModel` with a Zod schema:
+First, define your models using `defineModel` with Ebb's typed field builders:
 
 ```ts
-import { defineModel } from "@ebbjs/core";
-import { z } from "zod";
+import { defineModel, defineSchema, e } from "@ebbjs/core";
 
 const todo = defineModel("todo", {
-  schema: z.object({
-    title: z.string(),
-    completed: z.boolean(),
-  }),
-  version: 1,
+  title: e.string(),
+  completed: e.boolean(),
 });
 ```
+
+Each field declares its type and merge strategy. `e.string()` and `e.boolean()` are [LWW fields](/docs/data-model#typed-fields)—concurrent updates to the same field resolve via last-write-wins. Other field types like `e.counter()` and `e.collaborativeText()` use CRDT merge strategies. See the [data model](/docs/data-model#typed-fields) for the full list of field types.
 
 Then wrap your models in a schema with `defineSchema`:
 
 ```ts
-import { defineSchema } from "@ebbjs/core";
-
 const schema = defineSchema({
   todo,
 });

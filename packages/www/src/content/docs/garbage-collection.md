@@ -7,7 +7,7 @@ The [Action](/docs/data-model) log grows indefinitely without intervention. Ebb 
 
 ## Tombstones
 
-When an Entity is deleted via a `DELETE` Update, Ebb doesn't remove it from storage. Instead, the Entity becomes a **tombstone**—a marker that the Entity was deleted. The tombstone retains the Entity's `id`, `type`, deletion timestamp ([HLC](/docs/clock)), and the `actor_id` who deleted it. The `data` blob is cleared.
+When an Entity is deleted via a `DELETE` Update, Ebb doesn't remove it from storage. Instead, the Entity becomes a **tombstone**—a marker that the Entity was deleted. The tombstone retains the Entity's `id`, `type`, deletion timestamp ([HLC](/docs/clock)), and the `actor_id` who deleted it. The `data` field (containing all [typed field](/docs/data-model#typed-fields) values) is cleared.
 
 Tombstones exist for three reasons:
 

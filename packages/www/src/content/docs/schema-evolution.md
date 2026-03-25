@@ -9,7 +9,7 @@ Ebb takes a primitives-based approach: it provides the tools to handle schema ev
 
 ## Schema versions
 
-Each entity type in the ORM declares a version number. When the ORM materializes an entity, it checks the version and runs migration functions to transform old data into the current shape.
+Each entity type declares a version number. When the client materializes an entity, it checks the version and runs migration functions to transform old data into the current shape.
 
 These are "up" migrations only—transforming old data to new. There are no "down" migrations.
 
@@ -31,7 +31,7 @@ Sometimes backward compatibility isn't worth the effort. For breaking changes, y
 
 ## What Ebb provides
 
-- Schema version on entity types in the ORM
+- Schema version on entity types
 - Migration functions (up only) to transform old data on read
 - Optional minimum supported version for breaking changes
 

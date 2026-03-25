@@ -1,0 +1,142 @@
+---
+interface Props {
+  id?: string;
+}
+
+const { id = 'waitlist' } = Astro.props;
+---
+
+<div data-waitlist={id}>
+  <div data-waitlist-form-container>
+    <form data-waitlist-form class="flex flex-col sm:flex-row gap-3 justify-center max-w-md mx-auto">
+      <input
+        type="email"
+        name="email"
+        required
+        placeholder="you@example.com"
+        class="flex-1 px-4 py-3 rounded-lg bg-transparent border border-stone-700 text-stone-100 placeholder:text-stone-500 focus:outline-none focus:border-stone-400 transition-colors"
+      />
+      <button
+        type="submit"
+        class="px-6 py-3 text-sm font-medium rounded-lg bg-white/10 border border-white/20 text-stone-100 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:bg-white/15 hover:shadow-[0_0_20px_rgba(255,255,255,0.15)] transition-all whitespace-nowrap cursor-pointer"
+      >
+        Stay Updated
+      </button>
+    </form>
+    <p data-waitlist-error class="mt-3 text-sm text-red-400 hidden"></p>
+  </div>
+
+  <div data-waitlist-success class="hidden">
+    <p class="text-lg text-stone-300">Check your email to confirm your subscription.</p>
+  </div>
+
+  <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
+    <a
+      href="/devlog"
+      class="text-sm text-stone-400 no-underline transition-colors hover:text-stone-100 font-mono"
+    >
+      Read the devlog &rarr;
+    </a>
+    <span class="hidden sm:inline text-stone-700">&middot;</span>
+    <a
+      href="https://github.com/ebbjs/ebbjs"
+      target="_blank"
+      rel="noopener noreferrer"
+      class="inline-flex items-center gap-2 text-sm text-stone-400 no-underline transition-colors hover:text-stone-100 font-mono"
+    >
+      <svg viewBox="0 0 24 24" class="w-4 h-4 shrink-0" fill="currentColor" aria-hidden="true">
+        <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
+      </svg>
+      Star on GitHub
+    </a>
+  </div>
+</div>
+
+<script>
+  const GHOST_SITE = 'https://www.drewlyton.com';
+  const GHOST_LABELS = ['ebb'];
+
+  async function getIntegrityToken(): Promise<string> {
+    const res = await fetch(`${GHOST_SITE}/members/api/integrity-token/`, {
+      headers: {
+        'app-pragma': 'no-cache',
+        'x-ghost-version': '5.90',
+      },
+    });
+    if (!res.ok) throw new Error('Failed to get integrity token');
+    return res.text();
+  }
+
+  async function signupToGhost(email: string): Promise<void> {
+    const integrityToken = await getIntegrityToken();
+    const res = await fetch(`${GHOST_SITE}/members/api/send-magic-link/`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'app-pragma': 'no-cache',
+        'x-ghost-version': '5.47',
+      },
+      body: JSON.stringify({
+        email,
+        emailType: 'signup',
+        labels: GHOST_LABELS,
+        integrityToken,
+      }),
+    });
+    if (!res.ok) throw new Error('Signup failed');
+  }
+
+  function initWaitlistForm(container: HTMLElement) {
+    const form = container.querySelector('[data-waitlist-form]') as HTMLFormElement;
+    const formContainer = container.querySelector('[data-waitlist-form-container]') as HTMLElement;
+    const successMessage = container.querySelector('[data-waitlist-success]') as HTMLElement;
+    const errorMessage = container.querySelector('[data-waitlist-error]') as HTMLElement;
+
+    if (!form || !formContainer || !successMessage || !errorMessage) return;
+
+    // Autofocus the first visible email input on desktop only (avoids virtual keyboard on mobile)
+    if (container.dataset.waitlist === 'hero-waitlist' && window.matchMedia('(min-width: 640px)').matches) {
+      const emailInput = form.querySelector('input[name="email"]') as HTMLInputElement;
+      emailInput?.focus();
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorMessage.classList.add('hidden');
+
+      const submitBtn = form.querySelector('button[type="submit"]') as HTMLButtonElement;
+      const originalText = submitBtn.textContent;
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Joining...';
+
+      const emailInput = form.querySelector('input[name="email"]') as HTMLInputElement;
+      const email = emailInput?.value?.trim();
+
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        errorMessage.textContent = 'Please provide a valid email address.';
+        errorMessage.classList.remove('hidden');
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalText;
+        return;
+      }
+
+      try {
+        await signupToGhost(email);
+        formContainer.classList.add('hidden');
+        successMessage.classList.remove('hidden');
+      } catch {
+        errorMessage.textContent = 'Something went wrong. Please try again.';
+        errorMessage.classList.remove('hidden');
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalText;
+      }
+    });
+  }
+
+  function initAllWaitlistForms() {
+    document.querySelectorAll<HTMLElement>('[data-waitlist]').forEach(initWaitlistForm);
+  }
+
+  initAllWaitlistForms();
+  document.addEventListener('astro:after-swap', initAllWaitlistForms);
+</script>

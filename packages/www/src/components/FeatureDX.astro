@@ -1,0 +1,276 @@
+---
+// Feature section: Developer experience
+// Interactive code editor with sidebar file switching
+
+const files = [
+  {
+    name: "model.ts",
+    html: `<span class="text-stone-400">import</span> { <span class="text-stone-200">e</span>, <span class="text-stone-200">defineModel</span>, <span class="text-stone-200">defineSchema</span> } <span class="text-stone-400">from</span> <span class="text-stone-400">"@ebbjs/core"</span>;
+
+<span class="text-stone-400">const</span> <span class="text-stone-200">todo</span> = <span class="text-stone-300">defineModel</span>(<span class="text-stone-400">"todo"</span>, {
+  <span class="text-stone-300">schema</span>: e.<span class="text-stone-300">object</span>({
+    <span class="text-stone-300">title</span>: e.<span class="text-stone-300">string</span>(),
+    <span class="text-stone-300">completed</span>: e.<span class="text-stone-300">boolean</span>(),
+  }),
+});
+
+<span class="text-stone-400">export const</span> <span class="text-stone-200">schema</span> = <span class="text-stone-300">defineSchema</span>({
+  <span class="text-stone-300">todo</span>,
+});`,
+  },
+  {
+    name: "client.ts",
+    html: `<span class="text-stone-400">import</span> { <span class="text-stone-200">createClient</span> } <span class="text-stone-400">from</span> <span class="text-stone-400">"@ebbjs/client"</span>;
+<span class="text-stone-400">import</span> { <span class="text-stone-200">schema</span> } <span class="text-stone-400">from</span> <span class="text-stone-400">"./model"</span>;
+
+<span class="text-stone-400">export const</span> <span class="text-stone-200">client</span> = <span class="text-stone-300">createClient</span>({
+  <span class="text-stone-300">serverUrl</span>: <span class="text-stone-400">"http://localhost:3000"</span>,
+  <span class="text-stone-300">schema</span>,
+  <span class="text-stone-300">fetch</span>: {
+    <span class="text-stone-300">headers</span>: {
+      <span class="text-stone-300">Authorization</span>: <span class="text-stone-400">\`Bearer \${<span class="text-stone-300">getToken</span>()}\`</span>,
+    },
+  },
+});`,
+  },
+  {
+    name: "app.ts",
+    html: `<span class="text-stone-400">import</span> { <span class="text-stone-200">client</span> } <span class="text-stone-400">from</span> <span class="text-stone-400">"./client"</span>;
+
+<span class="text-stone-600">// Create</span>
+<span class="text-stone-400">const</span> <span class="text-stone-200">todo</span> = <span class="text-stone-400">await</span> client.todo.<span class="text-stone-300">create</span>(
+  { <span class="text-stone-300">title</span>: <span class="text-stone-400">"Ship it"</span>, <span class="text-stone-300">completed</span>: <span class="text-stone-200">false</span> },
+);
+
+<span class="text-stone-600">// Update</span>
+<span class="text-stone-400">await</span> client.todo.<span class="text-stone-300">update</span>(todo.id, {
+  <span class="text-stone-300">completed</span>: <span class="text-stone-200">true</span>,
+});
+
+<span class="text-stone-600">// Query &mdash; works offline</span>
+<span class="text-stone-400">const</span> <span class="text-stone-200">todos</span> = <span class="text-stone-400">await</span> client.todo
+  .<span class="text-stone-300">find</span>()
+  .<span class="text-stone-300">eq</span>(<span class="text-stone-400">"completed"</span>, <span class="text-stone-200">false</span>)
+  .<span class="text-stone-300">orderBy</span>(<span class="text-stone-400">"createdAt"</span>, <span class="text-stone-400">"desc"</span>);`,
+  },
+];
+---
+
+<section class="w-full py-16 sm:py-24">
+  <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-16 items-start">
+      <!-- Copy -->
+      <div data-animate="fade-up" class="opacity-0">
+        <span class="font-mono text-sm text-stone-600 block mb-4">01</span>
+        <h2 class="text-3xl sm:text-4xl font-bold text-stone-100 tracking-tight mb-6 text-balance">Build apps, not infrastructure</h2>
+        <p class="text-lg text-stone-400 leading-relaxed mb-8">
+          Define your data. Query with a type-safe ORM. React when data changes — online or off.
+        </p>
+        <ul class="space-y-4">
+          <li class="flex items-start gap-3">
+            <span class="font-mono text-stone-600 text-sm mt-0.5 shrink-0">--</span>
+            <span class="text-stone-300">Full type-safety with client-side validation</span>
+          </li>
+          <li class="flex items-start gap-3">
+            <span class="font-mono text-stone-600 text-sm mt-0.5 shrink-0">--</span>
+            <span class="text-stone-300">Declare relationships and permissions</span>
+          </li>
+          <li class="flex items-start gap-3">
+            <span class="font-mono text-stone-600 text-sm mt-0.5 shrink-0">--</span>
+            <span class="text-stone-300">Compose and reuse mutations easily</span>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Interactive code editor -->
+      <div data-animate="fade-up" class="opacity-0 flex items-start justify-center lg:justify-end">
+        <div data-dx-editor class="border border-stone-800 rounded-lg bg-stone-950 w-full lg:min-w-[28rem] overflow-hidden">
+          <!-- Title bar -->
+          <div class="flex items-center gap-2 px-4 py-3 border-b border-stone-800">
+            <span class="w-3 h-3 rounded-full bg-stone-800"></span>
+            <span class="w-3 h-3 rounded-full bg-stone-800"></span>
+            <span class="w-3 h-3 rounded-full bg-stone-800"></span>
+            <span data-dx-title class="font-mono text-xs text-stone-600 ml-2">{files[0].name}</span>
+          </div>
+
+          <!-- Editor body: sidebar + code -->
+          <div class="flex">
+            <!-- Sidebar -->
+            <div class="shrink-0 border-r border-stone-800 py-2 w-[110px] sm:w-[120px]">
+              {files.map((file, i) => (
+                <button
+                  data-dx-tab={i}
+                  class:list={[
+                    "dx-tab group relative w-full text-left px-3 py-1.5 font-mono text-xs transition-colors duration-150 cursor-pointer",
+                    "hover:text-stone-300",
+                    i === 0 ? "text-stone-300 bg-stone-900/60" : "text-stone-600",
+                  ]}
+                >
+                  <span class="relative z-10">{file.name}</span>
+                  {/* Progress bar */}
+                  <span
+                    data-dx-progress={i}
+                    class:list={[
+                      "absolute bottom-0 left-0 h-[2px] bg-stone-700",
+                      i === 0 ? "dx-progress-active" : "w-0",
+                    ]}
+                  />
+                </button>
+              ))}
+            </div>
+
+            <!-- Code pane -->
+            <div class="flex-1 min-w-0 relative min-h-[380px] sm:min-h-[440px]">
+              {files.map((file, i) => (
+                <div
+                  data-dx-panel={i}
+                  class:list={[
+                    "absolute inset-0 p-4 sm:p-6 transition-opacity duration-200",
+                    i === 0 ? "opacity-100" : "opacity-0 pointer-events-none",
+                  ]}
+                >
+                  <pre class="font-mono text-xs sm:text-sm leading-relaxed text-stone-500 select-none overflow-x-hidden" set:html={file.html} />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .dx-progress-active {
+    animation: dx-fill 8s linear forwards;
+  }
+
+  @keyframes dx-fill {
+    from { width: 0%; }
+    to { width: 100%; }
+  }
+
+  /* Pause progress when hovering the entire editor */
+  [data-dx-editor]:hover .dx-progress-active {
+    animation-play-state: paused;
+  }
+
+  /* Locked state: stop all progress animation */
+  [data-dx-editor].dx-locked .dx-progress-active {
+    animation: none;
+    width: 0%;
+  }
+</style>
+
+<script>
+  function initDxEditor() {
+    const editor = document.querySelector<HTMLElement>("[data-dx-editor]");
+    if (!editor) return;
+
+    const tabs = editor.querySelectorAll<HTMLButtonElement>("[data-dx-tab]");
+    const panels = editor.querySelectorAll<HTMLElement>("[data-dx-panel]");
+    const progressBars = editor.querySelectorAll<HTMLElement>("[data-dx-progress]");
+    const titleEl = editor.querySelector<HTMLElement>("[data-dx-title]");
+
+    const fileNames = ["model.ts", "client.ts", "app.ts"];
+    const INTERVAL = 8000;
+
+    let activeIndex = 0;
+    let locked = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let timerStart = 0;
+    let elapsed = 0;
+
+    function activate(index: number) {
+      activeIndex = index;
+
+      // Update tabs
+      tabs.forEach((tab, i) => {
+        if (i === index) {
+          tab.classList.add("text-stone-300", "bg-stone-900/60");
+          tab.classList.remove("text-stone-600");
+        } else {
+          tab.classList.remove("text-stone-300", "bg-stone-900/60");
+          tab.classList.add("text-stone-600");
+        }
+      });
+
+      // Update panels
+      panels.forEach((panel, i) => {
+        if (i === index) {
+          panel.classList.remove("opacity-0", "pointer-events-none");
+          panel.classList.add("opacity-100");
+        } else {
+          panel.classList.add("opacity-0", "pointer-events-none");
+          panel.classList.remove("opacity-100");
+        }
+      });
+
+      // Update progress bars
+      progressBars.forEach((bar, i) => {
+        bar.classList.remove("dx-progress-active");
+        bar.style.width = "0%";
+        if (i === index && !locked) {
+          // Force reflow to restart animation
+          void bar.offsetWidth;
+          bar.classList.add("dx-progress-active");
+        }
+      });
+
+      // Update title
+      if (titleEl) {
+        titleEl.textContent = fileNames[index];
+      }
+    }
+
+    function scheduleNext(remaining = INTERVAL) {
+      clearTimer();
+      if (locked) return;
+      timerStart = Date.now();
+      elapsed = INTERVAL - remaining;
+      timer = setTimeout(() => {
+        if (!locked) {
+          const next = (activeIndex + 1) % fileNames.length;
+          activate(next);
+          scheduleNext();
+        }
+      }, remaining);
+    }
+
+    function clearTimer() {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    }
+
+    // Tab click: lock on the clicked file
+    tabs.forEach((tab, i) => {
+      tab.addEventListener("click", () => {
+        locked = true;
+        editor.classList.add("dx-locked");
+        clearTimer();
+        activate(i);
+      });
+    });
+
+    // Pause/resume rotation on hover (CSS pauses the progress bar animation)
+    editor.addEventListener("mouseenter", () => {
+      if (locked) return;
+      elapsed += Date.now() - timerStart;
+      clearTimer();
+    });
+    editor.addEventListener("mouseleave", () => {
+      if (locked) return;
+      const remaining = Math.max(0, INTERVAL - elapsed);
+      scheduleNext(remaining);
+    });
+
+    // Initialize
+    activate(0);
+    scheduleNext();
+  }
+
+  initDxEditor();
+  document.addEventListener("astro:after-swap", initDxEditor);
+</script>

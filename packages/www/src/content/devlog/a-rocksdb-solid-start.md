@@ -70,7 +70,7 @@ The architecture that emerged is a [CQRS](https://en.wikipedia.org/wiki/Command_
 
 - **RocksDB** handles the write-heavy Action log. It's the source of truth. Every Action, every Update, every index entry gets written atomically via `WriteBatch` across 5 column families.
 - **SQLite** serves as the read-optimized entity cache. It retains everything that makes it great: `json_extract()` predicates, generated columns, partial indexes, permission-scoped JOINs.
-- **On-demand materialization** bridges the two. Entity state is only built when something actually reads it -- not on every write. A dirty set (in ETS) tracks which entities have unprocessed updates. When a read comes in for a dirty entity, the system replays the delta from RocksDB, merges via LWW, upserts into SQLite, and clears the dirty flag.
+- **On-demand materialization** bridges the two. Entity state is only built when something actually reads it -- not on every write. A dirty set (in ETS) tracks which entities have unprocessed updates. When a read comes in for a dirty entity, the system replays the delta from RocksDB, merges each field according to its type (LWW, counter, CRDT), upserts into SQLite, and clears the dirty flag.
 
 This completely decouples write throughput from read patterns. The write path never touches SQLite. The read path only touches RocksDB when an entity has changed since it was last read. Clean reads are pure SQLite lookups.
 

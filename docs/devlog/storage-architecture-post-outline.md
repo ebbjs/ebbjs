@@ -11,7 +11,7 @@
 - Local-first sync framework — think Linear/Figma-style collaboration for any app
 - Clients hold a full replica in SQLite, sync Actions (atomic units of change) through the server
 - Server's job: durable append, permission-scoped fan-out, materialized views for server-side queries
-- The data model: Actions contain Updates, Updates target Entities, Entities belong to Groups. Field-level Last-Writer-Wins (HLC timestamps) resolves conflicts. Yjs CRDTs for rich text.
+- The data model: Actions contain Updates, Updates target Entities, Entities belong to Groups. Each field carries its own type and merge strategy — LWW for most fields, G-Counter for counters, Yjs CRDT for collaborative text.
 
 ---
 
@@ -26,10 +26,10 @@
 
 ## 3. What the Benchmarks Actually Showed
 
-- Built a real benchmark suite (not synthetic — realistic Action shapes, LWW merge, permission JOINs)
+- Built a real benchmark suite (not synthetic — realistic Action shapes, per-field typed merge, permission JOINs)
 - **Finding 1:** Sustained throughput capped at ~5.8k Actions/sec with full indexes, ~9.5k with minimal indexes. Ceiling of ~15k with all durability removed.
 - **Finding 2:** The bottleneck wasn't I/O or WAL checkpointing — it was **B-tree index maintenance**. 7 B-trees updated per INSERT across two tables. Dropping secondary indexes gave +62% throughput instantly.
-- **Finding 3:** Adding synchronous LWW materialization (SELECT → merge → UPSERT per entity) dropped throughput to ~3-4k Actions/sec. The entity upsert on every write was the new ceiling.
+- **Finding 3:** Adding synchronous materialization (SELECT → per-field merge → UPSERT per entity) dropped throughput to ~3-4k Actions/sec. The entity upsert on every write was the new ceiling.
 - **The lesson:** SQLite is a B-tree engine. B-trees are read-optimized. We were fighting the data structure on the write path.
 
 ---
@@ -47,8 +47,8 @@
 ### The SurrealDB Detour
 
 - Briefly evaluated SurrealDB — multi-model (document + graph + relational), live queries, materialized views, embeddable in Rust
-- Appealing on paper: built-in materialized views could handle our LWW merge, graph model fits our permission structure
-- **Why it didn't fit:** Ebb's storage is event-sourced with custom merge semantics. SurrealDB's materialized views only support standard SQL aggregates, not per-field HLC comparison. No fsync control for our durability guarantee. No Elixir SDK. Would require the same Rust NIF work as the custom engine.
+- Appealing on paper: built-in materialized views could handle our field merge, graph model fits our permission structure
+- **Why it didn't fit:** Ebb's storage is event-sourced with custom per-field merge semantics (LWW, counters, CRDTs). SurrealDB's materialized views only support standard SQL aggregates, not typed field dispatch. No fsync control for our durability guarantee. No Elixir SDK. Would require the same Rust NIF work as the custom engine.
 - Fundamental misfit: general-purpose database for a very specific access pattern
 
 ### The Insight: Separate the Write Problem from the Read Problem

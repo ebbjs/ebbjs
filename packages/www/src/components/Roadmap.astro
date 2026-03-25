@@ -1,0 +1,99 @@
+---
+const items = [
+  {
+    title: 'Core storage engine',
+    description: 'RocksDB-backed Action log with dual-writer pipelining and on-demand entity materialization via SQLite.',
+    status: 'in-progress' as const,
+  },
+  {
+    title: 'Sync protocol',
+    description: 'Three-phase sync: handshake, per-group catch-up with CDN-friendly pagination, and live SSE streaming.',
+    status: 'in-progress' as const,
+  },
+  {
+    title: 'Client SDK',
+    description: 'Local-first reactive client with offline writes, outbox, and automatic conflict resolution via typed field merges.',
+    status: 'in-progress' as const,
+  },
+  {
+    title: 'Auth & permissions',
+    description: 'BYO auth integration with group-based access control. Permission checks run against an in-memory cache — never block on disk.',
+    status: 'planned' as const,
+  },
+  {
+    title: 'React bindings',
+    description: 'useQuery, useClient, and EbbProvider hooks for reactive, type-safe data access in React apps.',
+    status: 'planned' as const,
+  },
+  {
+    title: 'Server functions',
+    description: 'defineFunction handlers that run server-side with direct data access. Deploy, version, and roll back with a single CLI command.',
+    status: 'planned' as const,
+  },
+  {
+    title: 'Real-time presence',
+    description: 'Ephemeral cursor and selection broadcasting for live multiplayer — fire-and-forget, not persisted.',
+    status: 'planned' as const,
+  },
+  {
+    title: 'Collaborative text',
+    description: 'Yjs-powered rich text fields with character-level CRDT merge. Works offline, syncs automatically.',
+    status: 'planned' as const,
+  },
+  {
+    title: 'Server-side SDK',
+    description: 'HTTP client for reading and writing ebb data from SSR frameworks, server actions, and external processes.',
+    status: 'planned' as const,
+  },
+  {
+    title: 'Self-hosting',
+    description: 'Run the full sync server on your own infrastructure with a single Docker image.',
+    status: 'planned' as const,
+  },
+  {
+    title: 'CLI tooling',
+    description: 'ebb deploy, function management, schema migrations, and project scaffolding from the command line.',
+    status: 'planned' as const,
+  },
+  {
+    title: 'Observability hooks',
+    description: 'onAction server hook for piping the Action stream to analytics, audit logs, webhooks, or data warehouses.',
+    status: 'planned' as const,
+  },
+];
+
+const statusConfig = {
+  'shipped': { label: 'Shipped', class: 'text-emerald-400 border-emerald-400/30 bg-emerald-400/10' },
+  'in-progress': { label: 'In Progress', class: 'text-amber-400 border-amber-400/30 bg-amber-400/10' },
+  'planned': { label: 'Planned', class: 'text-stone-500 border-stone-700 bg-stone-800/50' },
+};
+---
+
+<section class="w-full pt-12 pb-24 sm:pt-16 sm:pb-32">
+  <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+    <div data-animate="fade-up" class="opacity-0 text-center mb-12 sm:mb-16">
+      <h2 class="text-3xl sm:text-4xl font-bold text-stone-100 tracking-tight mb-4">Roadmap</h2>
+      <p class="text-lg text-stone-400 max-w-xl mx-auto">Where we are and where we're headed.</p>
+    </div>
+
+    <div data-animate="stagger" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+      {items.map((item) => {
+        const config = statusConfig[item.status];
+        return (
+          <div
+            data-animate="fade-up"
+            class="opacity-0 border border-stone-800 rounded-lg bg-stone-900/50 p-5 sm:p-6 flex flex-col gap-3"
+          >
+            <div class="flex items-center justify-between gap-3">
+              <h3 class="font-semibold text-stone-100">{item.title}</h3>
+              <span class={`shrink-0 font-mono text-xs px-2 py-0.5 rounded-full border ${config.class}`}>
+                {config.label}
+              </span>
+            </div>
+            <p class="text-sm text-stone-400 leading-relaxed">{item.description}</p>
+          </div>
+        );
+      })}
+    </div>
+  </div>
+</section>

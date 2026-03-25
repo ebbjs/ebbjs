@@ -81,7 +81,7 @@ The client continues to request and digest these messages, increasing the `curso
 
 1. Actions are stored with both their original HLC (for causal ordering) and a server-assigned GSN (for reliable sync)
 2. Clients can safely request "all Actions with GSN > X" knowing they won't miss any due to network timing
-3. The server streams Actions in GSN order for client sync, but applies their Updates in HLC order for state materialization
+3. The server streams Actions in GSN order for client sync, but applies their Updates in HLC order for state materialization (using each field's [type](/docs/data-model#typed-fields) to dispatch the appropriate merge function)
 4. Client failover requires connecting to a new server and performing a full resync, since GSNs are server-specific (see below)
 
 ## Client failover
