@@ -18,6 +18,7 @@ const { Content, headings } = await render(post);
   title={post.data.title}
   description={post.data.description}
   date={post.data.date}
+  ogImage={`/devlog/${post.id}/og.png`}
   headings={headings}
 >
   <Content />

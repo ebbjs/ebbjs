@@ -14,6 +14,6 @@ const { doc } = Astro.props;
 const { Content, headings } = await render(doc);
 ---
 
-<Docs title={doc.data.title} description={doc.data.description} headings={headings}>
+<Docs title={doc.data.title} description={doc.data.description} ogImage={`/docs/${doc.id}/og.png`} headings={headings}>
   <Content />
 </Docs>
