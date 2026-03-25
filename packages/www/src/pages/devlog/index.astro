@@ -1,9 +1,13 @@
 ---
+export const prerender = false;
+
 import { getCollection } from 'astro:content';
 import Marketing from '../../layouts/Marketing.astro';
 
+const showAll = Astro.url.searchParams.has('all');
+
 const posts = (await getCollection('devlog'))
-.filter((post) => post.data.published)
+.filter((post) => showAll || post.data.published)
 .sort((a,b) => b.data.date.getTime() - a.data.date.getTime())
 
 const formatDate = (date: Date) => {

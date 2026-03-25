@@ -1,6 +1,11 @@
 ---
 const items = [
   {
+    title: 'Complete prototype',
+    description: 'End-to-end proof of concept — local-first writes, sync, and materialization working together across client and server.',
+    status: 'shipped' as const,
+  },
+  {
     title: 'Core storage engine',
     description: 'RocksDB-backed Action log with dual-writer pipelining and on-demand entity materialization via SQLite.',
     status: 'in-progress' as const,
@@ -58,6 +63,11 @@ const items = [
   {
     title: 'Observability hooks',
     description: 'onAction server hook for piping the Action stream to analytics, audit logs, webhooks, or data warehouses.',
+    status: 'planned' as const,
+  },
+  {
+    title: 'Horizontal scaling',
+    description: 'Multi-master replication across nodes for elastic throughput — no single writer bottleneck, automatic conflict resolution at the cluster level.',
     status: 'planned' as const,
   },
 ];

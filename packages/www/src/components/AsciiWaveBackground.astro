@@ -2,32 +2,11 @@
 // Animated ASCII ripple background effect
 ---
 
-<div id="ascii-wave-bg" class="absolute inset-0 -z-10 pointer-events-none overflow-hidden">
-  <pre id="ascii-wave-canvas" class="w-full h-full text-stone-400 opacity-[0.45] text-xs leading-none font-mono select-none"></pre>
+<div data-ascii-wave-bg class="absolute inset-0 -z-10 pointer-events-none overflow-hidden">
+  <pre data-ascii-wave-canvas class="w-full h-full text-stone-400 opacity-[0.45] text-xs leading-none font-mono select-none"></pre>
 </div>
 
 <script>
-  const canvas = document.getElementById('ascii-wave-canvas') as HTMLPreElement;
-  if (!canvas) throw new Error('ASCII wave canvas not found');
-  
-  const container = document.getElementById('ascii-wave-bg') as HTMLDivElement;
-  if (!container) throw new Error('ASCII wave container not found');
-
-  // Characters from small to large dots
-  const chars = [' ', '.', '·', '∘', '•', '●'];
-
-  // Character dimensions (approximate for monospace at text-xs leading-none)
-  const charWidth = 7.2;
-  const charHeight = 12;
-
-  // Ripple parameters
-  const rippleSpeed = 0.1; // How fast ripples expand (in normalized units per frame)
-  const waveWidth = 0.03; // Thickness of the visible ring (thinner = sharper)
-  const rippleLifespan = 5000; // How long a ripple lives (ms)
-  const fadeStart = 0.6; // When ripple starts fading (fraction of lifespan)
-  const minSpawnInterval = 800; // Min time between ripples (ms)
-  const maxSpawnInterval = 1500; // Max time between ripples (ms)
-
   interface Ripple {
     x: number; // Normalized 0-1
     y: number; // Normalized 0-1
@@ -35,134 +14,161 @@
     birth: number; // Timestamp when created
   }
 
-  let cols = 0;
-  let rows = 0;
-  let animationId: number;
-  let lastFrame = 0;
-  const targetFps = 24;
-  const frameInterval = 1000 / targetFps;
+  function initAsciiWave(container: HTMLDivElement) {
+    const canvas = container.querySelector('[data-ascii-wave-canvas]') as HTMLPreElement;
+    if (!canvas) return;
 
-  let ripples: Ripple[] = [];
-  let lastSpawn = 0;
-  let nextSpawnDelay = minSpawnInterval;
+    // Characters from small to large dots
+    const chars = [' ', '.', '·', '∘', '•', '●'];
 
-  function calculateDimensions() {
-    const rect = container.getBoundingClientRect();
-    // Oversize by 1.2x to ensure full coverage, overflow-hidden will clip
-    cols = Math.ceil((rect.width / charWidth) * 1.2);
-    rows = Math.ceil((rect.height / charHeight) * 1.2);
-  }
+    // Character dimensions (approximate for monospace at text-xs leading-none)
+    const charWidth = 7.2;
+    const charHeight = 12;
 
-  function spawnRipple(now: number) {
-    ripples.push({
-      x: Math.random(),
-      y: Math.random(),
-      radius: 0,
-      birth: now,
-    });
-    lastSpawn = now;
-    nextSpawnDelay = minSpawnInterval + Math.random() * (maxSpawnInterval - minSpawnInterval);
-  }
+    // Ripple parameters
+    const rippleSpeed = 0.1; // How fast ripples expand (in normalized units per frame)
+    const waveWidth = 0.03; // Thickness of the visible ring (thinner = sharper)
+    const rippleLifespan = 5000; // How long a ripple lives (ms)
+    const fadeStart = 0.6; // When ripple starts fading (fraction of lifespan)
+    const minSpawnInterval = 800; // Min time between ripples (ms)
+    const maxSpawnInterval = 1500; // Max time between ripples (ms)
 
-  function updateRipples(now: number, delta: number) {
-    // Spawn new ripple if it's time
-    if (now - lastSpawn > nextSpawnDelay) {
-      spawnRipple(now);
+    let cols = 0;
+    let rows = 0;
+    let animationId: number;
+    let lastFrame = 0;
+    const targetFps = 24;
+    const frameInterval = 1000 / targetFps;
+
+    let ripples: Ripple[] = [];
+    let lastSpawn = 0;
+    let nextSpawnDelay = minSpawnInterval;
+
+    function calculateDimensions() {
+      const rect = container.getBoundingClientRect();
+      // Oversize by 1.2x to ensure full coverage, overflow-hidden will clip
+      cols = Math.ceil((rect.width / charWidth) * 1.2);
+      rows = Math.ceil((rect.height / charHeight) * 1.2);
     }
 
-    // Update existing ripples
-    ripples = ripples.filter((ripple) => {
-      const age = now - ripple.birth;
-      if (age > rippleLifespan) return false; // Remove old ripples
+    function spawnRipple(now: number) {
+      ripples.push({
+        x: Math.random(),
+        y: Math.random(),
+        radius: 0,
+        birth: now,
+      });
+      lastSpawn = now;
+      nextSpawnDelay = minSpawnInterval + Math.random() * (maxSpawnInterval - minSpawnInterval);
+    }
 
-      // Expand radius
-      ripple.radius += rippleSpeed * (delta / 1000);
-      return true;
-    });
-  }
+    function updateRipples(now: number, delta: number) {
+      // Spawn new ripple if it's time
+      if (now - lastSpawn > nextSpawnDelay) {
+        spawnRipple(now);
+      }
 
-  function getIntensityAt(nx: number, ny: number, now: number): number {
-    let maxIntensity = 0;
-
-    // Aspect ratio correction (characters are taller than wide)
-    const aspectRatio = (cols * charWidth) / (rows * charHeight);
-
-    for (const ripple of ripples) {
-      // Calculate distance from ripple center (with aspect correction)
-      const dx = (nx - ripple.x) * aspectRatio;
-      const dy = ny - ripple.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-
-      // How close is this point to the ripple's wavefront?
-      const distFromWave = Math.abs(distance - ripple.radius);
-
-      if (distFromWave < waveWidth) {
-        // Calculate base intensity (closer to wavefront = stronger)
-        let intensity = 1 - distFromWave / waveWidth;
-
-        // Apply fade based on ripple age
+      // Update existing ripples
+      ripples = ripples.filter((ripple) => {
         const age = now - ripple.birth;
-        const ageRatio = age / rippleLifespan;
-        if (ageRatio > fadeStart) {
-          const fadeRatio = (ageRatio - fadeStart) / (1 - fadeStart);
-          intensity *= 1 - fadeRatio;
+        if (age > rippleLifespan) return false; // Remove old ripples
+
+        // Expand radius
+        ripple.radius += rippleSpeed * (delta / 1000);
+        return true;
+      });
+    }
+
+    function getIntensityAt(nx: number, ny: number, now: number): number {
+      let maxIntensity = 0;
+
+      // Aspect ratio correction (characters are taller than wide)
+      const aspectRatio = (cols * charWidth) / (rows * charHeight);
+
+      for (const ripple of ripples) {
+        // Calculate distance from ripple center (with aspect correction)
+        const dx = (nx - ripple.x) * aspectRatio;
+        const dy = ny - ripple.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        // How close is this point to the ripple's wavefront?
+        const distFromWave = Math.abs(distance - ripple.radius);
+
+        if (distFromWave < waveWidth) {
+          // Calculate base intensity (closer to wavefront = stronger)
+          let intensity = 1 - distFromWave / waveWidth;
+
+          // Apply fade based on ripple age
+          const age = now - ripple.birth;
+          const ageRatio = age / rippleLifespan;
+          if (ageRatio > fadeStart) {
+            const fadeRatio = (ageRatio - fadeStart) / (1 - fadeStart);
+            intensity *= 1 - fadeRatio;
+          }
+
+          maxIntensity = Math.max(maxIntensity, intensity);
         }
-
-        maxIntensity = Math.max(maxIntensity, intensity);
       }
+
+      return maxIntensity;
     }
 
-    return maxIntensity;
-  }
+    function render(now: number) {
+      let output = '';
 
-  function render(now: number) {
-    let output = '';
-
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        const nx = x / cols;
-        const ny = y / rows;
-        const intensity = getIntensityAt(nx, ny, now);
-        const charIndex = Math.floor(intensity * (chars.length - 1));
-        output += chars[Math.min(charIndex, chars.length - 1)];
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          const nx = x / cols;
+          const ny = y / rows;
+          const intensity = getIntensityAt(nx, ny, now);
+          const charIndex = Math.floor(intensity * (chars.length - 1));
+          output += chars[Math.min(charIndex, chars.length - 1)];
+        }
+        output += '\n';
       }
-      output += '\n';
+
+      canvas.textContent = output;
     }
 
-    canvas.textContent = output;
+    function animate(timestamp: number) {
+      animationId = requestAnimationFrame(animate);
+
+      // Throttle to target FPS
+      const delta = timestamp - lastFrame;
+      if (delta < frameInterval) return;
+      lastFrame = timestamp;
+
+      updateRipples(timestamp, delta);
+      render(timestamp);
+    }
+
+    function init() {
+      calculateDimensions();
+      // Spawn initial ripple immediately
+      spawnRipple(performance.now());
+      animationId = requestAnimationFrame(animate);
+    }
+
+    // Handle resize with ResizeObserver
+    const resizeObserver = new ResizeObserver(() => {
+      calculateDimensions();
+    });
+    resizeObserver.observe(container);
+
+    // Start animation
+    init();
+
+    // Cleanup on page navigation (for Astro view transitions)
+    document.addEventListener('astro:before-swap', () => {
+      cancelAnimationFrame(animationId);
+      resizeObserver.disconnect();
+    });
   }
 
-  function animate(timestamp: number) {
-    animationId = requestAnimationFrame(animate);
-
-    // Throttle to target FPS
-    const delta = timestamp - lastFrame;
-    if (delta < frameInterval) return;
-    lastFrame = timestamp;
-
-    updateRipples(timestamp, delta);
-    render(timestamp);
+  function initAllAsciiWaves() {
+    document.querySelectorAll<HTMLDivElement>('[data-ascii-wave-bg]').forEach(initAsciiWave);
   }
 
-  function init() {
-    calculateDimensions();
-    // Spawn initial ripple immediately
-    spawnRipple(performance.now());
-    animationId = requestAnimationFrame(animate);
-  }
-
-  // Handle resize with ResizeObserver
-  const resizeObserver = new ResizeObserver(() => {
-    calculateDimensions();
-  });
-  resizeObserver.observe(container);
-
-  // Start animation
-  init();
-
-  // Cleanup on page navigation (for Astro view transitions)
-  document.addEventListener('astro:before-swap', () => {
-    cancelAnimationFrame(animationId);
-    resizeObserver.disconnect();
-  });
+  initAllAsciiWaves();
+  document.addEventListener('astro:after-swap', initAllAsciiWaves);
 </script>
