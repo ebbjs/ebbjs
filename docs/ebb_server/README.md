@@ -149,7 +149,7 @@ All IDs use `Nanoid` with type prefixes: `act_` (Action), `upd_` (Update), `a_` 
 
 ### HLC (Hybrid Logical Clock)
 
-HLCs are assigned by the originating node and preserved across replication. The server validates HLC drift (reject Actions with HLC > now + 120 seconds) but does not assign HLCs. HLCs are used for LWW conflict resolution during materialization.
+HLCs are 64-bit integers (upper 48 bits = logical time in ms, lower 16 bits = counter) assigned by the originating node and preserved across replication. The server validates incoming client HLCs: reject if logical time > now + 120s (future drift) or < now - 24h (stale clock). The server does not generate or assign HLCs. HLCs are used for LWW conflict resolution during materialization, with lexicographic update ID comparison as a tiebreaker when HLCs are equal. Replicated Actions skip HLC validation (trust-and-apply). See the [clock spec](../../packages/www/src/content/docs/clock.md) for the full generation algorithm.
 
 ## Constraints and Assumptions
 

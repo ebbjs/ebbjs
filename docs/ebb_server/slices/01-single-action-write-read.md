@@ -8,7 +8,7 @@ A client can POST an Action containing a single entity PUT to the server, receiv
 
 | Component | Interface Subset Used |
 |-----------|----------------------|
-| [RocksDB Store](../components/rocksdb-store.md) | `start_link/1`, `write_batch/1`, `get/2`, `prefix_iterator/2`, key encoding functions |
+| [RocksDB Store](../components/rocksdb-store.md) | `start_link/1`, `write_batch/2`, `get/3`, `prefix_iterator/3`, key encoding functions |
 | [SQLite Store](../components/sqlite-store.md) | `start_link/1`, `upsert_entity/1`, `get_entity/1` |
 | [System Cache](../components/system-cache.md) | `start_link/1`, `claim_gsn_range/1`, `mark_dirty_batch/1`, `is_dirty?/1`, `clear_dirty/1` |
 | [Writer](../components/writer.md) | `start_link/1`, `write_actions/2` (single Writer only -- no WriterRouter yet) |
@@ -70,7 +70,7 @@ A client can POST an Action containing a single entity PUT to the server, receiv
 
 1. **Scaffold the Mix project.** `mix.exs` with dependencies (`rocksdb`, `exqlite`, `msgpax`, `plug_cowboy`, `jason`, `nanoid`). `config/config.exs` with `:data_dir` and `:port`. `EbbServer.Application` with the supervision tree skeleton.
 
-2. **Build RocksDB Store.** `EbbServer.Storage.RocksDB` GenServer -- open database, create 5 column families, store references in `:persistent_term`. Implement key encoding functions. Implement `write_batch/1` and `get/2`. Write unit tests: open/close, write/read round-trip, key encoding correctness.
+2. **Build RocksDB Store.** `EbbServer.Storage.RocksDB` GenServer -- open database, create 5 column families, store references in `:persistent_term` with tuple keys `{atom, name}` for multi-instance support. Implement key encoding functions. Implement `write_batch/2`, `get/3`, and `prefix_iterator/3` (all accept optional `name:` keyword). Write unit tests (`async: true`): open/close, write/read round-trip, key encoding correctness, prefix iteration, durability.
 
 3. **Build SQLite Store.** `EbbServer.Storage.SQLite` GenServer -- open database, run DDL (entities table only for this slice). Implement `upsert_entity/1`, `get_entity/1`, `get_entity_last_gsn/1`. Write unit tests: DDL runs, upsert/get round-trip.
 

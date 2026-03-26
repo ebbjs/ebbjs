@@ -51,7 +51,7 @@ Create `EbbServer.Storage.Writer` as a GenServer. For Slice 1: single instance, 
      end)
    end)
    ```
-4. Commit: `RocksDB.write_batch(ops)`
+4. Commit: `RocksDB.write_batch(ops)` (uses default name — single RocksDB instance in production)
 5. Mark dirty: collect all unique `subject_id` values from all updates, call `SystemCache.mark_dirty_batch(entity_ids)`
 6. Reply: `{:reply, {:ok, {gsn_start, gsn_end}}, state}`
 

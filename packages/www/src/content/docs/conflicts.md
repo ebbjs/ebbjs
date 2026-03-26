@@ -33,7 +33,7 @@ The server doesn't track conflicts—it simply applies all updates using per-fie
 
 **LWW fields** (`e.string()`, `e.number()`, `e.boolean()`):
 1. **Higher HLC wins** - Updates with more recent causal timestamps take precedence
-2. **Tiebreaker** - If [HLC](/docs/clock) timestamps are equal, lexicographic comparison of update IDs determines the winner
+2. **Tiebreaker** - If [HLC](/docs/clock) timestamps are equal, lexicographic comparison of update IDs (`update_id`) determines the winner. The higher update ID wins. This is deterministic regardless of the order nodes process updates, guaranteeing convergence
 
 **Counter fields** (`e.counter()`): Per-actor counts are summed. Concurrent increments from different actors are additive—there is no "winner" because both increments are preserved.
 

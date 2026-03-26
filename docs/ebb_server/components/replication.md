@@ -53,7 +53,7 @@ These endpoints are served by the HTTP API component but documented here for com
 
 | Dependency | What it needs | Reference |
 |------------|---------------|-----------|
-| RocksDB Store | `get/2` on `cf_action_dedup` for dedup check | [rocksdb-store.md](rocksdb-store.md#read-operations) |
+| RocksDB Store | `get/3` on `cf_action_dedup` for dedup check (uses default name) | [rocksdb-store.md](rocksdb-store.md#read-operations) |
 | Writer | `WriterRouter.route_write/1` with `trust: true` flag to skip permission checks | [writer.md](writer.md#write-api) |
 
 Note: The Writer's `write_actions/2` interface needs to support a `trust: true` option for replicated Actions. This bypasses the Permission Checker. The Writer still assigns local GSNs, encodes to ETF, and commits to RocksDB.
@@ -142,6 +142,16 @@ end
 3. Derive from `cf_action_dedup` on startup (scan for the max GSN from this peer)
 
 Option 1 is simplest. Add a `replication_cursors` table to SQLite.
+
+## HLC Trust Model
+
+Replicated Actions use `trust: true`, which **skips all validation including HLC checks**. This is by design — the originating server already validated the HLC against its own drift/staleness limits before accepting the Action. The implications:
+
+- **A compromised or misconfigured peer can inject Actions with arbitrary HLC values.** Peer authentication (shared secret or mTLS) is the trust boundary. If a peer is trusted to replicate, its HLCs are trusted.
+- **Clock skew between peer servers does not affect replication.** Each server validates HLCs against its own clock only for locally-received client Actions. Replicated Actions carry the originating client's HLC, which was validated by the originating server at write time.
+- **HLCs are never reassigned during replication.** The originating node's HLC is the canonical causal timestamp. GSNs are reassigned (each server has its own monotonic GSN sequence), but HLCs are preserved to maintain correct LWW ordering across all nodes.
+
+If peer trust becomes a concern (e.g., multi-tenant deployment with untrusted peers), consider adding optional HLC validation on the receiving side with a wider drift window (e.g., ±24 hours) to catch obviously malicious timestamps without rejecting Actions delayed by legitimate replication lag.
 
 ## Open Questions
 

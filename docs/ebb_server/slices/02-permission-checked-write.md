@@ -83,7 +83,8 @@ A client can bootstrap a Group (create Group + GroupMember + Relationship in one
 - [ ] User entity write to a Group the actor does NOT belong to is rejected with `not_authorized`
 - [ ] Intra-Action resolution works: new entity + Relationship in the same Action is authorized
 - [ ] Permission-scoped `ctx.query()` returns only entities the actor can see
-- [ ] HLC drift validation rejects Actions with HLC > now + 120s
+- [ ] HLC drift validation rejects Actions with logical time > now + 120s (future drift)
+- [ ] HLC staleness validation rejects Actions with logical time < now - 24h (broken clock)
 - [ ] Actor identity validation rejects Actions where `action.actor_id != authenticated actor`
 - [ ] Structure validation rejects Actions with missing required fields
 - [ ] Auth integration: handshake calls the configured auth URL and returns actor_id

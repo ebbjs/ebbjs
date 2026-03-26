@@ -101,7 +101,7 @@ This is a GenServer that creates ETS tables and `:atomics` in `init/1`, then pop
 
 | Dependency | What it needs | Reference |
 |------------|---------------|-----------|
-| RocksDB Store | `cf_type_entities` prefix iterator, `cf_entity_actions` iterator, `cf_updates` point lookups -- for startup population | [rocksdb-store.md](rocksdb-store.md#read-operations) |
+| RocksDB Store | `cf_type_entities` prefix iterator (`prefix_iterator/3`), `cf_entity_actions` iterator, `cf_updates` point lookups (`get/3`) -- for startup population (uses default name) | [rocksdb-store.md](rocksdb-store.md#read-operations) |
 
 Note: System Cache depends on RocksDB Store only at startup (to populate caches). At runtime, it is a pure ETS/atomics module with no external dependencies.
 

@@ -71,8 +71,8 @@ Provides the read interface for entity state with zero-staleness guarantee. When
 | Dependency | What it needs | Reference |
 |------------|---------------|-----------|
 | System Cache | `is_dirty?/1`, `clear_dirty/1`, `dirty_entity_ids_for_type/1` | [system-cache.md](system-cache.md#dirty-set) |
-| RocksDB Store | `prefix_iterator/2` on `cf_entity_actions` (to find Updates for an entity since `last_gsn`) | [rocksdb-store.md](rocksdb-store.md#read-operations) |
-| RocksDB Store | `get/2` on `cf_updates` (to fetch full Update payloads) | [rocksdb-store.md](rocksdb-store.md#read-operations) |
+| RocksDB Store | `prefix_iterator/3` on `cf_entity_actions` (to find Updates for an entity since `last_gsn`; uses default name) | [rocksdb-store.md](rocksdb-store.md#read-operations) |
+| RocksDB Store | `get/3` on `cf_updates` (to fetch full Update payloads; uses default name) | [rocksdb-store.md](rocksdb-store.md#read-operations) |
 | SQLite Store | `get_entity/1`, `get_entity_last_gsn/1`, `upsert_entity/1`, `upsert_entities/1`, `query_entities/1` | [sqlite-store.md](sqlite-store.md#entity-operations) |
 
 ## Internal Design Notes
@@ -124,18 +124,30 @@ def materialize(entity_id) do
 end
 ```
 
-**Per-field typed merge (`apply_update/2`):**
+**Per-field typed merge (`merge_field/3`):**
 
-For each field in the Update's `data.fields`:
+For each field in the Update's `data.fields`, the merge function receives the existing field value, the incoming field value, and the `update_id` of the Update that produced the incoming value. The `update_id` is stored on LWW fields as a tiebreaker for deterministic convergence when HLCs are equal.
 
 ```elixir
-def merge_field(existing, incoming) do
+def merge_field(existing, incoming, update_id) do
   case incoming["type"] do
     "lww" ->
-      if incoming["hlc"] > (existing["hlc"] || 0) do
-        incoming
-      else
-        existing
+      # Tag the incoming field with the update_id that produced it
+      incoming_tagged = Map.put(incoming, "update_id", update_id)
+      existing_hlc = existing["hlc"] || 0
+      incoming_hlc = incoming["hlc"]
+
+      cond do
+        incoming_hlc > existing_hlc ->
+          incoming_tagged
+        incoming_hlc < existing_hlc ->
+          existing
+        true ->
+          # HLC tie: lexicographic comparison of update IDs breaks the tie.
+          # This is deterministic regardless of processing order, ensuring
+          # all nodes converge to the same value.
+          existing_uid = existing["update_id"] || ""
+          if update_id > existing_uid, do: incoming_tagged, else: existing
       end
 
     "counter" ->
@@ -154,6 +166,8 @@ def merge_field(existing, incoming) do
   end
 end
 ```
+
+**Note on `update_id` storage:** LWW field values in the materialized entity include an `"update_id"` key (e.g., `%{"type" => "lww", "value" => "Buy milk", "hlc" => 1710000000000, "update_id" => "upd_abc123"}`). This is required for deterministic tiebreaking — without it, two servers processing the same updates in different order could diverge when HLCs are equal. The `update_id` is not exposed in API responses; it is an internal materialization detail stored in the entity's `data` JSON.
 
 **PUT vs. PATCH vs. DELETE handling:**
 

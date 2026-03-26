@@ -81,18 +81,21 @@ At this point the project should compile (`mix compile`) and `mix test` should p
 **`test/support/test_helpers.ex`:**
 - Module `EbbServer.TestHelpers`
 - Function `tmp_dir(test_context)` — creates a unique temporary directory under `System.tmp_dir!()` using the test module + test name. Returns the path. Registers an `on_exit` callback that recursively deletes the directory.
+- Function `generate_hlc()` — generates a 64-bit HLC from the current wall clock time with counter 0: `Bitwise.bsl(System.os_time(:millisecond), 16)`. This produces a proper HLC in the format documented in the [clock spec](/docs/clock): upper 48 bits = logical time (ms), lower 16 bits = counter.
+- Function `hlc_from(logical_time_ms, counter \\ 0)` — builds a 64-bit HLC from explicit values: `Bitwise.bsl(logical_time_ms, 16) ||| counter`. Useful for tests that need deterministic HLC values or tiebreaker testing.
 - Function `sample_action(overrides \\ %{})` — returns a valid action map with string keys:
   ```elixir
   %{
     "id" => "act_" <> Nanoid.generate(),
     "actor_id" => "a_test",
-    "hlc" => System.os_time(:millisecond),
+    "hlc" => generate_hlc(),
     "updates" => [sample_update()]
   }
   ```
   Merged with overrides.
 - Function `sample_update(overrides \\ %{})` — returns a valid update map with string keys:
   ```elixir
+  hlc = generate_hlc()
   %{
     "id" => "upd_" <> Nanoid.generate(),
     "subject_id" => "todo_" <> Nanoid.generate(),
@@ -100,8 +103,8 @@ At this point the project should compile (`mix compile`) and `mix test` should p
     "method" => "put",
     "data" => %{
       "fields" => %{
-        "title" => %{"type" => "lww", "value" => "Buy milk", "hlc" => System.os_time(:millisecond)},
-        "completed" => %{"type" => "lww", "value" => false, "hlc" => System.os_time(:millisecond)}
+        "title" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc},
+        "completed" => %{"type" => "lww", "value" => false, "hlc" => hlc}
       }
     }
   }

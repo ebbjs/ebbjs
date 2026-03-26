@@ -77,7 +77,7 @@ data: {"reconnect":true,"reason":"membership_changed"}
 |------------|---------------|-----------|
 | System Cache | `committed_watermark/0` for delivery gating | [system-cache.md](system-cache.md#committed-watermark) |
 | System Cache | `get_entity_group/1` and `get_group_entities/1` for routing Actions to Groups | [system-cache.md](system-cache.md#relationships) |
-| RocksDB Store | `range_iterator/3` on `cf_actions` to read committed Actions by GSN range | [rocksdb-store.md](rocksdb-store.md#read-operations) |
+| RocksDB Store | `range_iterator/4` on `cf_actions` to read committed Actions by GSN range (uses default name) | [rocksdb-store.md](rocksdb-store.md#read-operations) |
 
 Note: Fan-Out receives `{:batch_committed, from_gsn, to_gsn}` messages from Writer via `send/2` (not a function call). This is a message-based dependency, not a module dependency.
 

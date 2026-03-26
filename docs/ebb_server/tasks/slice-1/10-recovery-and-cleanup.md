@@ -43,7 +43,7 @@ The `Keyword.get_lazy/3` allows tests to still pass an explicit `:initial_gsn` t
 Add a function to find the highest GSN in `cf_actions`:
 
 **`get_max_gsn()`:**
-- Open iterator: `{:ok, iter} = :rocksdb.iterator(db_ref(), cf_actions(), [])`
+- Open iterator: `{:ok, iter} = :rocksdb.iterator(db_ref(name), cf_actions(name), [])` (uses default `name` in production)
 - Seek to last: `result = :rocksdb.iterator_move(iter, :last)`
 - If `{:ok, key, _value}` → `gsn = decode_gsn_key(key)`, close iterator, return `gsn`
 - If `{:error, :invalid_iterator}` → close iterator, return `0`

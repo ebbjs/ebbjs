@@ -8,7 +8,10 @@ Validates incoming Actions before they reach the Writer. Enforces structural cor
 
 - Validate Action structure (required fields, valid IDs, valid methods)
 - Validate actor identity (Action's `actor_id` matches authenticated actor)
-- Validate HLC drift (reject Actions with HLC > now + 120 seconds)
+- Validate HLC:
+  - Reject if logical time (`hlc >> 16`) > server's wall clock + 120 seconds (future drift)
+  - Reject if logical time (`hlc >> 16`) < server's wall clock - 24 hours (stale / broken client clock)
+  - Reject if HLC is not a non-negative integer
 - Authorize each Update against the actor's Group memberships and entity Relationships
 - Handle intra-Action resolution (new entity + Relationship in the same Action)
 - Handle Group bootstrap (unpermissioned: Group + GroupMember + Relationship in one Action)
@@ -32,7 +35,7 @@ This is a stateless module (no GenServer). All state comes from ETS lookups.
 |------|-----------|-------------|
 | `validate_structure/1` | `validate_structure(action :: raw_action()) :: :ok \| {:error, String.t()}` | Checks required fields, ID formats, valid methods, non-empty updates list. |
 | `validate_actor/2` | `validate_actor(action :: raw_action(), actor_id :: String.t()) :: :ok \| {:error, String.t()}` | Checks `action.actor_id == actor_id`. |
-| `validate_hlc/1` | `validate_hlc(action :: raw_action()) :: :ok \| {:error, String.t()}` | Checks HLC is not too far in the future (120s drift limit). |
+| `validate_hlc/1` | `validate_hlc(action :: raw_action()) :: :ok \| {:error, String.t()}` | Checks HLC is not too far in the future (120s drift limit) or too far in the past (24h staleness limit). Also validates the HLC is a valid 64-bit integer with a plausible logical time component. |
 | `authorize_updates/2` | `authorize_updates(action :: raw_action(), actor_id :: String.t()) :: :ok \| {:error, String.t()}` | Checks each Update against Group membership + Relationship permissions. |
 
 ### Types

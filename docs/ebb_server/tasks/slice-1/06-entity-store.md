@@ -32,7 +32,7 @@ Create `EbbServer.Storage.EntityStore` as a module (not a GenServer for Slice 1 
 
 2. Read delta from RocksDB — scan `cf_entity_actions` with prefix `entity_id`:
    ```elixir
-   entries = RocksDB.prefix_iterator(RocksDB.cf_entity_actions(), entity_id)
+    entries = RocksDB.prefix_iterator(RocksDB.cf_entity_actions(), entity_id)  # uses default name
    |> Stream.map(fn {key, action_id_binary} ->
      {_eid, gsn} = RocksDB.decode_entity_gsn_key(key)
      {gsn, action_id_binary}
@@ -47,7 +47,7 @@ Create `EbbServer.Storage.EntityStore` as a module (not a GenServer for Slice 1 
    - Return `SQLite.get_entity(entity_id)` formatted
 
 4. For each `{gsn, action_id}`, read the full Action from `cf_actions`:
-   - Read: `{:ok, action_etf} = RocksDB.get(RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn))`
+   - Read: `{:ok, action_etf} = RocksDB.get(RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn))` (uses default name)
    - Decode: `action = :erlang.binary_to_term(action_etf, [:safe])`
    - Filter updates: find updates in `action["updates"]` where `update["subject_id"] == entity_id`
 
@@ -58,9 +58,13 @@ Create `EbbServer.Storage.EntityStore` as a module (not a GenServer for Slice 1 
      - Set `created_hlc` to `action["hlc"]` (if first PUT / no existing row)
      - Set `updated_hlc` to `action["hlc"]`
    - If `method == "patch"`:
-     - For each field in `update["data"]["fields"]`:
-       - LWW merge: if incoming field's `"hlc"` > existing field's `"hlc"` (or existing doesn't exist), use incoming. Otherwise keep existing.
-     - Set `updated_hlc` to `action["hlc"]`
+      - For each field in `update["data"]["fields"]`:
+        - LWW merge with tiebreaker:
+          - If incoming `"hlc"` > existing `"hlc"` (or existing doesn't exist): use incoming, tag with `"update_id"` from the update
+          - If incoming `"hlc"` < existing `"hlc"`: keep existing
+          - If incoming `"hlc"` == existing `"hlc"`: lexicographic compare of `update["id"]` vs existing field's `"update_id"` — higher update ID wins. This ensures deterministic convergence across all nodes regardless of processing order.
+        - The winning field value is stored with an `"update_id"` key for future tiebreaking (e.g., `%{"type" => "lww", "value" => "x", "hlc" => 1000, "update_id" => "upd_abc"}`)
+      - Set `updated_hlc` to `action["hlc"]`
    - If `method == "delete"`:
      - Set `deleted_hlc` to `action["hlc"]`
      - Set `deleted_by` to `action["actor_id"]`
@@ -132,6 +136,17 @@ These tests require RocksDB, SQLite, SystemCache, and Writer to be running.
    - Verify entity has both the original fields and the new field
    - Verify `last_gsn` is 2
 
+9. **LWW tiebreaker — equal HLCs resolved by update ID:**
+   - Write a PUT action for entity "todo_abc" with field `title` at HLC 1000, update ID "upd_aaa"
+   - Write a PATCH action for same entity with field `title` at HLC 1000 (same), update ID "upd_zzz"
+   - `EntityStore.get("todo_abc", "a_test")` → title has the "upd_zzz" value (higher update ID wins)
+   - Verify the materialized field includes `"update_id" => "upd_zzz"`
+
+10. **LWW tiebreaker — lower update ID does not overwrite:**
+    - Write a PUT action for entity "todo_abc" with field `title` at HLC 1000, update ID "upd_zzz"
+    - Write a PATCH action for same entity with field `title` at HLC 1000 (same), update ID "upd_aaa"
+    - `EntityStore.get` → title still has the "upd_zzz" value (higher update ID wins)
+
 ---
 
 ## Verification
@@ -140,4 +155,4 @@ These tests require RocksDB, SQLite, SystemCache, and Writer to be running.
 cd ebb_server && mix test test/ebb_server/storage/entity_store_test.exs
 ```
 
-All 8 test cases pass. Materialization works for PUT, PATCH, and incremental reads. LWW merge is correct. Dirty bit lifecycle is correct.
+All 10 test cases pass. Materialization works for PUT, PATCH, and incremental reads. LWW merge is correct including HLC tiebreaker. Dirty bit lifecycle is correct.

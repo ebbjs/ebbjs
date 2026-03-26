@@ -71,7 +71,7 @@ Routes incoming write requests to one of the 2 Writer GenServers.
 
 | Dependency | What it needs | Reference |
 |------------|---------------|-----------|
-| RocksDB Store | `write_batch/1` for committing WriteBatches | [rocksdb-store.md](rocksdb-store.md#write-operations) |
+| RocksDB Store | `write_batch/2` for committing WriteBatches (uses default name in production) | [rocksdb-store.md](rocksdb-store.md#write-operations) |
 | RocksDB Store | Key encoding functions | [rocksdb-store.md](rocksdb-store.md#key-encoding) |
 | System Cache | `claim_gsn_range/1` for GSN assignment | [system-cache.md](system-cache.md#gsn-counter) |
 | System Cache | `mark_dirty_batch/1` for dirty set updates | [system-cache.md](system-cache.md#dirty-set) |

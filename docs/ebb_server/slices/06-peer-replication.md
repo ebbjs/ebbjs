@@ -9,7 +9,7 @@ Two ebb server instances can replicate Actions bidirectionally: each server catc
 | Component | Interface Subset Used |
 |-----------|----------------------|
 | [Replication](../components/replication.md) | `PeerManager.start_link/1`, catch-up loop, live SSE stream, dedup, trust-and-apply |
-| [RocksDB Store](../components/rocksdb-store.md) | `get/2` on `cf_action_dedup` (dedup check), `range_iterator/3` on `cf_actions` (serve replication endpoint) |
+| [RocksDB Store](../components/rocksdb-store.md) | `get/3` on `cf_action_dedup` (dedup check), `range_iterator/4` on `cf_actions` (serve replication endpoint) |
 | [Writer](../components/writer.md) | `WriterRouter.route_write/1` with `trust: true` (skip permission check for replicated Actions) |
 | [HTTP API](../components/http-api.md) | `GET /sync/replication?offset=<gsn>[&limit=<n>][&live=sse]` (inbound replication endpoint) |
 | [System Cache](../components/system-cache.md) | System entity caches updated by Writer when replicated Actions contain GroupMember/Relationship changes |
