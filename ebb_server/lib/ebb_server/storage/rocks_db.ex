@@ -100,6 +100,9 @@ defmodule EbbServer.Storage.RocksDB do
   """
   @spec encode_update_key(binary(), binary()) :: binary()
   def encode_update_key(action_id, update_id) do
+    action_id = validate_key_component(action_id, "action_id")
+    update_id = validate_key_component(update_id, "update_id")
+
     if :binary.match(action_id, <<0>>) != :nomatch do
       raise ArgumentError, "action_id must not contain null bytes (0x00)"
     end
@@ -116,11 +119,23 @@ defmodule EbbServer.Storage.RocksDB do
   """
   @spec encode_type_entity_key(binary(), binary()) :: binary()
   def encode_type_entity_key(type, entity_id) do
+    type = validate_key_component(type, "type")
+    entity_id = validate_key_component(entity_id, "entity_id")
+
     if :binary.match(type, <<0>>) != :nomatch do
       raise ArgumentError, "type must not contain null bytes (0x00)"
     end
 
     <<type::binary, 0, entity_id::binary>>
+  end
+
+  @spec validate_key_component(binary(), String.t()) :: binary()
+  def validate_key_component(value, field_name) do
+    if is_binary(value) and value != "" do
+      value
+    else
+      raise ArgumentError, "#{field_name} must be a non-empty binary"
+    end
   end
 
   # ---------------------------------------------------------------------------

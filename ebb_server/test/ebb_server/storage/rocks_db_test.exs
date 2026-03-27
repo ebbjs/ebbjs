@@ -148,4 +148,83 @@ defmodule EbbServer.Storage.RocksDBTest do
       assert {:ok, ^value} = RocksDB.get(RocksDB.cf_actions(name2), key, name: name2)
     end
   end
+
+  describe "validate_key_component" do
+    test "accepts valid non-empty binary" do
+      assert RocksDB.validate_key_component("valid", "field") == "valid"
+    end
+
+    test "rejects nil" do
+      assert_raise ArgumentError, fn ->
+        RocksDB.validate_key_component(nil, "field")
+      end
+    end
+
+    test "rejects empty string" do
+      assert_raise ArgumentError, fn ->
+        RocksDB.validate_key_component("", "field")
+      end
+    end
+
+    test "rejects non-binary" do
+      assert_raise ArgumentError, fn ->
+        RocksDB.validate_key_component(123, "field")
+      end
+    end
+  end
+
+  describe "encode_update_key" do
+    test "accepts valid action_id and update_id" do
+      assert RocksDB.encode_update_key("action123", "update456") ==
+               <<"action123", 0, "update456">>
+    end
+
+    test "rejects nil action_id" do
+      assert_raise ArgumentError, fn ->
+        RocksDB.encode_update_key(nil, "update456")
+      end
+    end
+
+    test "rejects empty action_id" do
+      assert_raise ArgumentError, fn ->
+        RocksDB.encode_update_key("", "update456")
+      end
+    end
+
+    test "rejects nil update_id" do
+      assert_raise ArgumentError, fn ->
+        RocksDB.encode_update_key("action123", nil)
+      end
+    end
+
+    test "rejects action_id with null bytes" do
+      assert_raise ArgumentError, "action_id must not contain null bytes (0x00)", fn ->
+        RocksDB.encode_update_key(<<"action", 0, "123">>, "update456")
+      end
+    end
+  end
+
+  describe "encode_type_entity_key" do
+    test "accepts valid type and entity_id" do
+      assert RocksDB.encode_type_entity_key("todo", "entity123") == <<"todo", 0, "entity123">>
+    end
+
+    test "rejects nil type" do
+      assert_raise ArgumentError, fn ->
+        RocksDB.encode_type_entity_key(nil, "entity123")
+      end
+    end
+
+    test "rejects empty entity_id" do
+      assert_raise ArgumentError, fn ->
+        RocksDB.encode_type_entity_key("todo", "")
+      end
+    end
+
+    test "rejects type with null bytes" do
+      assert_raise ArgumentError, "type must not contain null bytes (0x00)", fn ->
+        RocksDB.encode_type_entity_key(<<"tod", 0, "o">>, "entity123")
+      end
+    end
+  end
 end
