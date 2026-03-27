@@ -5,9 +5,11 @@ defmodule EbbServer.Application do
 
   @impl true
   def start(_type, _args) do
+    port = Application.get_env(:ebb_server, :port, 4000)
+
     children = [
-      # TODO: EbbServer.Storage.Supervisor
-      # TODO: Plug.Cowboy HTTP server
+      EbbServer.Storage.Supervisor,
+      {Plug.Cowboy, plug: EbbServer.Sync.Router, scheme: :http, port: port}
     ]
 
     opts = [strategy: :one_for_one, name: EbbServer.Supervisor]
