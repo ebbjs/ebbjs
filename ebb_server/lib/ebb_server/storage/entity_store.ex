@@ -184,7 +184,7 @@ defmodule EbbServer.Storage.EntityStore do
     hlc = action["hlc"]
 
     fields_with_update_id =
-      Enum.into(update["data"]["fields"], %{}, fn {field_name, field_value} ->
+      Enum.into(update["data"]["fields"] || %{}, %{}, fn {field_name, field_value} ->
         {field_name, Map.put(field_value, "update_id", update["id"])}
       end)
 
@@ -209,8 +209,8 @@ defmodule EbbServer.Storage.EntityStore do
         else: %{}
 
     merged_fields =
-      Enum.reduce(update["data"]["fields"], existing_fields, fn {field_name, new_field},
-                                                                existing_fields_map ->
+      Enum.reduce(update["data"]["fields"] || %{}, existing_fields, fn {field_name, new_field},
+                                                                       existing_fields_map ->
         existing = Map.get(existing_fields_map, field_name)
 
         winner =

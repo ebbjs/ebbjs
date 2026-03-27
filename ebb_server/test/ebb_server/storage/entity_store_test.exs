@@ -38,7 +38,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
       update = sample_update(%{"subject_id" => entity_id, "subject_type" => "todo"})
       action = sample_action(%{"updates" => [update]})
 
-      assert {:ok, {1, 1}} = Writer.write_actions([action], writer_name)
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
       assert {:ok, entity} =
                EntityStore.get(entity_id, "a_test",
@@ -421,19 +421,21 @@ defmodule EbbServer.Storage.EntityStoreTest do
     } do
       entity_id = "todo_deleted_only"
 
-      delete_update = sample_update(%{
-        "subject_id" => entity_id,
-        "subject_type" => "todo",
-        "method" => "delete"
-      })
+      delete_update =
+        sample_update(%{
+          "subject_id" => entity_id,
+          "subject_type" => "todo",
+          "method" => "delete"
+        })
 
       action = sample_action(%{"updates" => [delete_update]})
       Writer.write_actions([action], writer_name)
 
-      assert :not_found = EntityStore.get(entity_id, "a_test",
-        rocks_name: rocks_name,
-        sqlite_name: sqlite_name
-      )
+      assert :not_found =
+               EntityStore.get(entity_id, "a_test",
+                 rocks_name: rocks_name,
+                 sqlite_name: sqlite_name
+               )
     end
 
     test "PUT followed by DELETE returns :not_found", %{
@@ -443,41 +445,49 @@ defmodule EbbServer.Storage.EntityStoreTest do
     } do
       entity_id = "todo_put_then_delete"
 
-      put_action = sample_action(%{
-        "id" => "act_put",
-        "hlc" => hlc_from(1_000),
-        "updates" => [
-          sample_update(%{
-            "id" => "upd_put",
-            "subject_id" => entity_id,
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "To be deleted", "hlc" => hlc_from(1_000)}
+      put_action =
+        sample_action(%{
+          "id" => "act_put",
+          "hlc" => hlc_from(1_000),
+          "updates" => [
+            sample_update(%{
+              "id" => "upd_put",
+              "subject_id" => entity_id,
+              "data" => %{
+                "fields" => %{
+                  "title" => %{
+                    "type" => "lww",
+                    "value" => "To be deleted",
+                    "hlc" => hlc_from(1_000)
+                  }
+                }
               }
-            }
-          })
-        ]
-      })
+            })
+          ]
+        })
 
-      delete_update = sample_update(%{
-        "id" => "upd_delete",
-        "subject_id" => entity_id,
-        "method" => "delete"
-      })
+      delete_update =
+        sample_update(%{
+          "id" => "upd_delete",
+          "subject_id" => entity_id,
+          "method" => "delete"
+        })
 
-      delete_action = sample_action(%{
-        "id" => "act_delete",
-        "hlc" => hlc_from(2_000),
-        "updates" => [delete_update]
-      })
+      delete_action =
+        sample_action(%{
+          "id" => "act_delete",
+          "hlc" => hlc_from(2_000),
+          "updates" => [delete_update]
+        })
 
       Writer.write_actions([put_action], writer_name)
       Writer.write_actions([delete_action], writer_name)
 
-      assert :not_found = EntityStore.get(entity_id, "a_test",
-        rocks_name: rocks_name,
-        sqlite_name: sqlite_name
-      )
+      assert :not_found =
+               EntityStore.get(entity_id, "a_test",
+                 rocks_name: rocks_name,
+                 sqlite_name: sqlite_name
+               )
     end
 
     test "PATCH resurrects deleted entity and clears deleted_hlc", %{
@@ -487,59 +497,68 @@ defmodule EbbServer.Storage.EntityStoreTest do
     } do
       entity_id = "todo_resurrect"
 
-      put_action = sample_action(%{
-        "id" => "act_put",
-        "hlc" => hlc_from(1_000),
-        "updates" => [
-          sample_update(%{
-            "id" => "upd_put",
-            "subject_id" => entity_id,
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc_from(1_000)}
+      put_action =
+        sample_action(%{
+          "id" => "act_put",
+          "hlc" => hlc_from(1_000),
+          "updates" => [
+            sample_update(%{
+              "id" => "upd_put",
+              "subject_id" => entity_id,
+              "data" => %{
+                "fields" => %{
+                  "title" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc_from(1_000)}
+                }
               }
-            }
-          })
-        ]
-      })
+            })
+          ]
+        })
 
-      delete_update = sample_update(%{
-        "id" => "upd_delete",
-        "subject_id" => entity_id,
-        "method" => "delete"
-      })
+      delete_update =
+        sample_update(%{
+          "id" => "upd_delete",
+          "subject_id" => entity_id,
+          "method" => "delete"
+        })
 
-      delete_action = sample_action(%{
-        "id" => "act_delete",
-        "hlc" => hlc_from(2_000),
-        "updates" => [delete_update]
-      })
+      delete_action =
+        sample_action(%{
+          "id" => "act_delete",
+          "hlc" => hlc_from(2_000),
+          "updates" => [delete_update]
+        })
 
-      patch_action = sample_action(%{
-        "id" => "act_patch",
-        "hlc" => hlc_from(3_000),
-        "updates" => [
-          sample_update(%{
-            "id" => "upd_patch",
-            "subject_id" => entity_id,
-            "method" => "patch",
-            "data" => %{
-              "fields" => %{
-                "description" => %{"type" => "lww", "value" => "Updated", "hlc" => hlc_from(3_000)}
+      patch_action =
+        sample_action(%{
+          "id" => "act_patch",
+          "hlc" => hlc_from(3_000),
+          "updates" => [
+            sample_update(%{
+              "id" => "upd_patch",
+              "subject_id" => entity_id,
+              "method" => "patch",
+              "data" => %{
+                "fields" => %{
+                  "description" => %{
+                    "type" => "lww",
+                    "value" => "Updated",
+                    "hlc" => hlc_from(3_000)
+                  }
+                }
               }
-            }
-          })
-        ]
-      })
+            })
+          ]
+        })
 
       Writer.write_actions([put_action], writer_name)
       Writer.write_actions([delete_action], writer_name)
       Writer.write_actions([patch_action], writer_name)
 
-      assert {:ok, entity} = EntityStore.get(entity_id, "a_test",
-        rocks_name: rocks_name,
-        sqlite_name: sqlite_name
-      )
+      assert {:ok, entity} =
+               EntityStore.get(entity_id, "a_test",
+                 rocks_name: rocks_name,
+                 sqlite_name: sqlite_name
+               )
 
       assert entity.deleted_hlc == nil
       assert entity.deleted_by == nil

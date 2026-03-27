@@ -30,7 +30,7 @@ defmodule EbbServer.Storage.WriterTest do
     } do
       action = sample_action()
 
-      assert {:ok, {1, 1}} = Writer.write_actions([action], writer_name)
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
       gsn_key = RocksDB.encode_gsn_key(1)
 
@@ -50,9 +50,9 @@ defmodule EbbServer.Storage.WriterTest do
       action2 = sample_action()
       action3 = sample_action()
 
-      assert {:ok, {1, 1}} = Writer.write_actions([action1], writer_name)
-      assert {:ok, {2, 2}} = Writer.write_actions([action2], writer_name)
-      assert {:ok, {3, 3}} = Writer.write_actions([action3], writer_name)
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action1], writer_name)
+      assert {:ok, {2, 2}, []} = Writer.write_actions([action2], writer_name)
+      assert {:ok, {3, 3}, []} = Writer.write_actions([action3], writer_name)
     end
   end
 
@@ -64,7 +64,7 @@ defmodule EbbServer.Storage.WriterTest do
       update = sample_update(%{"subject_id" => "todo_test_123", "subject_type" => "todo"})
       action = sample_action(%{"updates" => [update]})
 
-      assert {:ok, {1, 1}} = Writer.write_actions([action], writer_name)
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
       gsn_key = RocksDB.encode_gsn_key(1)
       action_etf = :erlang.term_to_binary(Map.put(action, "gsn", 1))
@@ -183,7 +183,8 @@ defmodule EbbServer.Storage.WriterTest do
       action1 = sample_action(%{"id" => "act_valid", "updates" => [sample_update()]})
       action2 = sample_action(%{"id" => "act_empty", "updates" => []})
 
-      assert {:ok, {1, 1}} = Writer.write_actions([action1, action2], writer_name)
+      assert {:ok, {1, 1}, [%{reason: "no updates"}]} =
+               Writer.write_actions([action1, action2], writer_name)
 
       gsn_key = RocksDB.encode_gsn_key(1)
       assert {:ok, _} = RocksDB.get(RocksDB.cf_actions(rocks_name), gsn_key, name: rocks_name)
@@ -192,23 +193,23 @@ defmodule EbbServer.Storage.WriterTest do
       assert :not_found = RocksDB.get(RocksDB.cf_actions(rocks_name), gsn_key2, name: rocks_name)
     end
 
-    test "actions with invalid updates are filtered out", %{
+    test "actions with invalid updates are rejected", %{
       writer_name: writer_name
     } do
       action_with_nil_subject_id =
         sample_action(%{"id" => "act_nil_id", "updates" => [%{"subject_id" => nil}]})
 
-      assert {:error, :no_valid_actions} =
+      assert {:ok, {0, 0}, [%{reason: "update id must be a string"}]} =
                Writer.write_actions([action_with_nil_subject_id], writer_name)
     end
 
-    test "all invalid actions returns no_valid_actions error", %{
+    test "all invalid actions returns empty GSN range with rejections", %{
       writer_name: writer_name
     } do
       action_with_nil_subject_id =
         sample_action(%{"id" => "act_nil_id", "updates" => [%{"subject_id" => nil}]})
 
-      assert {:error, :no_valid_actions} =
+      assert {:ok, {0, 0}, [%{reason: "update id must be a string"}]} =
                Writer.write_actions([action_with_nil_subject_id], writer_name)
     end
 
@@ -221,7 +222,8 @@ defmodule EbbServer.Storage.WriterTest do
       invalid_action =
         sample_action(%{"id" => "act_invalid", "updates" => [%{"subject_id" => nil}]})
 
-      assert {:ok, {1, 1}} = Writer.write_actions([valid_action, invalid_action], writer_name)
+      assert {:ok, {1, 1}, [%{reason: "update id must be a string"}]} =
+               Writer.write_actions([valid_action, invalid_action], writer_name)
 
       gsn_key = RocksDB.encode_gsn_key(1)
       assert {:ok, _} = RocksDB.get(RocksDB.cf_actions(rocks_name), gsn_key, name: rocks_name)

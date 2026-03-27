@@ -14,8 +14,10 @@ defmodule EbbServer.Storage.Writer do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  @spec write_actions([map()], GenServer.name()) ::
-          {:ok, {pos_integer(), pos_integer()}} | {:error, term()}
+  @type rejected_action :: %{action: map(), reason: String.t()}
+  @type write_result :: {:ok, {pos_integer(), pos_integer()}, [rejected_action()]}
+
+  @spec write_actions([map()], GenServer.name()) :: write_result() | {:error, term()}
   def write_actions(actions, name \\ __MODULE__) do
     GenServer.call(name, {:write_actions, actions})
   end
@@ -43,13 +45,17 @@ defmodule EbbServer.Storage.Writer do
   5. Write batch synchronously to RocksDB
   6. Mark affected entities dirty in SystemCache
 
-  Returns `{:ok, {gsn_start, gsn_end}}` on success.
+  Returns `{:ok, {gsn_start, gsn_end}, rejected_actions}` on success.
   """
   @impl true
   def handle_call({:write_actions, actions}, _from, state) when is_list(actions) do
-    with {:ok, validated} <- validate_actions(actions),
-         filtered <- Enum.reject(validated, &(&1["updates"] == [])),
-         {:ok, _} <- validate_non_empty(filtered) do
+    {validated, prefiltered_rejected} = validate_and_categorize(actions)
+    filtered = Enum.reject(validated, &(&1["updates"] == []))
+    empty_update_rejected = prefiltered_rejected ++ build_empty_update_rejections(validated)
+
+    if filtered == [] do
+      {:reply, {:ok, {0, 0}, empty_update_rejected}, state}
+    else
       batch_size = length(filtered)
       {gsn_start, gsn_end} = EbbServer.Storage.SystemCache.claim_gsn_range(batch_size)
       rocks_name = state.rocks_name
@@ -95,36 +101,74 @@ defmodule EbbServer.Storage.Writer do
             |> Enum.uniq()
 
           :ok = EbbServer.Storage.SystemCache.mark_dirty_batch(entity_ids)
-          {:reply, {:ok, {gsn_start, gsn_end}}, state}
+          {:reply, {:ok, {gsn_start, gsn_end}, empty_update_rejected}, state}
 
         {:error, reason} ->
           {:reply, {:error, {:rocksdb_write_failed, reason}}, state}
       end
-    else
-      {:error, _reason} = error ->
-        {:reply, error, state}
     end
   end
 
-  defp validate_actions(actions) do
-    valid_actions = Enum.filter(actions, &valid_action?/1)
-    {:ok, valid_actions}
+  defp validate_and_categorize(actions) do
+    Enum.reduce(actions, {[], []}, fn action, {valid, rejected} ->
+      case valid_action?(action) do
+        :ok -> {[action | valid], rejected}
+        {:error, reason} -> {valid, [%{action: action, reason: reason} | rejected]}
+      end
+    end)
+    |> then(fn {valid, rejected} -> {Enum.reverse(valid), Enum.reverse(rejected)} end)
+  end
+
+  defp build_empty_update_rejections(validated) do
+    Enum.flat_map(validated, fn action ->
+      if action["updates"] == [] do
+        [%{action: action, reason: "no updates"}]
+      else
+        []
+      end
+    end)
   end
 
   defp valid_action?(%{} = action) do
-    is_binary(action["id"]) and
-      is_list(action["updates"]) and
-      Enum.all?(action["updates"], &valid_update?/1)
+    cond do
+      not is_binary(action["id"]) ->
+        {:error, "action id must be a string"}
+
+      not is_list(action["updates"]) ->
+        {:error, "action updates must be a list"}
+
+      true ->
+        Enum.reduce_while(action["updates"], :ok, fn update, _acc ->
+          case valid_update?(update) do
+            :ok -> {:cont, :ok}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+    end
   end
 
   defp valid_update?(%{} = update) do
-    is_binary(update["id"]) and
-      is_binary(update["subject_id"]) and
-      is_binary(update["subject_type"]) and
-      update["subject_id"] != "" and
-      update["subject_type"] != ""
-  end
+    cond do
+      not is_binary(update["id"]) ->
+        {:error, "update id must be a string"}
 
-  defp validate_non_empty([]), do: {:error, :no_valid_actions}
-  defp validate_non_empty(actions), do: {:ok, actions}
+      not is_binary(update["subject_id"]) or update["subject_id"] == "" ->
+        {:error, "update subject_id must be a non-empty string"}
+
+      not is_binary(update["subject_type"]) or update["subject_type"] == "" ->
+        {:error, "update subject_type must be a non-empty string"}
+
+      not is_map(update["data"]) ->
+        {:error, "update data must be a map"}
+
+      update["method"] in ["put", "patch"] and not is_map(update["data"]["fields"]) ->
+        {:error, "update data.fields must be a map for put/patch"}
+
+      update["method"] not in ["put", "patch", "delete"] ->
+        {:error, "update method must be one of: put, patch, delete"}
+
+      true ->
+        :ok
+    end
+  end
 end
