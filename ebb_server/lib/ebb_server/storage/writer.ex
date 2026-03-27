@@ -27,6 +27,24 @@ defmodule EbbServer.Storage.Writer do
     {:ok, %{rocks_name: rocks_name}}
   end
 
+  @doc """
+  Validates, assigns GSNs, and persists actions to RocksDB.
+
+  Pipeline:
+  1. Validate each action and filter out invalid ones
+  2. Reject actions with empty updates (no-op)
+  3. Claim a GSN range from SystemCache for the batch
+  4. Build a batch of puts across all 5 column families:
+     - cf_actions: GSN → full action (ETF encoded)
+     - cf_action_dedup: action_id → GSN (duplicate detection)
+     - cf_updates: (action_id, update_id) → update (ETF encoded)
+     - cf_entity_actions: (subject_id, GSN) → action_id (materialization index)
+     - cf_type_entities: (subject_type, subject_id) → <<>> (type index)
+  5. Write batch synchronously to RocksDB
+  6. Mark affected entities dirty in SystemCache
+
+  Returns `{:ok, {gsn_start, gsn_end}}` on success.
+  """
   @impl true
   def handle_call({:write_actions, actions}, _from, state) when is_list(actions) do
     with {:ok, validated} <- validate_actions(actions),

@@ -27,10 +27,8 @@ defmodule EbbServer.Storage.SystemCache do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Atomically claims a contiguous range of `count` GSNs.
-
-  Returns `{gsn_start, gsn_end}` where the range is inclusive on both ends.
-  Thread-safe — multiple concurrent callers will receive non-overlapping ranges.
+  Atomically claims a contiguous range of `count` GSNs using atomics add_get.
+  Returns `{gsn_start, gsn_end}` inclusive. Thread-safe for concurrent callers.
   """
   @spec claim_gsn_range(pos_integer()) :: {pos_integer(), pos_integer()}
   def claim_gsn_range(count) when is_integer(count) and count > 0 do
@@ -45,7 +43,9 @@ defmodule EbbServer.Storage.SystemCache do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Marks a batch of entity IDs as dirty (needing re-materialization).
+  Marks entity IDs as dirty after successful RocksDB writes.
+  Called by Writer after batch persists to ensure entities are
+  re-read from RocksDB on next access to pick up new changes.
   """
   @spec mark_dirty_batch([String.t()]) :: :ok
   def mark_dirty_batch(entity_ids) when is_list(entity_ids) do
@@ -57,7 +57,8 @@ defmodule EbbServer.Storage.SystemCache do
   end
 
   @doc """
-  Returns `true` if the given entity ID is marked dirty.
+  Checks if entity needs re-materialization from RocksDB.
+  Returns true if the entity has unflushed changes in the write log.
   """
   @spec is_dirty?(String.t()) :: boolean()
   def is_dirty?(entity_id) do

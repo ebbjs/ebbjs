@@ -43,11 +43,9 @@ So instead of hiding that gap, what if we just designed for it?
 
 ## Convergence over coordination
 
-`ebb` takes a different approach to consistency: accept that the client is a node in a distributed system, not a window into server state.
+Convergence takes a different approach to consistency: accept that the client is a node in a distributed system, not a window into server state.
 
-In `ebb`, the client isn't a cache of the server's data. It's a **replica** -- a fully valid copy. Writes apply locally, immediately.
-
-In a coordination-based system, a write is a _request_ -- the client asks the server for permission, and if the answer is no, the framework silently rolls back the user's edit. In `ebb`, a write is a _local fact_ -- applied to the user's replica immediately, because it's _their_ data. The server can still decline to propagate a write, but `ebb` surfaces the rejection explicitly rather than silently reverting state. Coordination asks for permission; convergence respects intent.
+In a coordination-based system, a write is a _request_ -- the client asks the server for permission, and if the answer is no, the framework silently rolls back the user's edit. In a convergence-based system, a write is a _local fact_ -- applied to the user's replica immediately, because it's _their_ data. The server's job is to validate and relay writes to other clients. 
 
 When clients reconnect, they exchange changes and **converge** to the same state through deterministic merge rules. There's no consensus protocol. No locks or transaction ordering. Just data flowing between replicas until they eventually agree.
 

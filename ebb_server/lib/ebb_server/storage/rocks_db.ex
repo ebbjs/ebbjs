@@ -10,6 +10,15 @@ defmodule EbbServer.Storage.RocksDB do
   All public accessor and data functions accept an optional `name`
   parameter (defaulting to `__MODULE__`) so that tests can run multiple
   isolated instances concurrently.
+
+  Column families and their key schemas:
+
+    default           - RocksDB default, unused
+    cf_actions        - GSN (64-bit big-endian) -> action (ETF binary)
+    cf_updates        - (action_id, 0x00, update_id) -> update (ETF binary)
+    cf_entity_actions - (entity_id, GSN) -> action_id binary
+    cf_type_entities  - (type, 0x00, entity_id) -> <<>> (presence index)
+    cf_action_dedup   - action_id -> GSN (duplicate detection)
   """
 
   use GenServer
@@ -73,12 +82,21 @@ defmodule EbbServer.Storage.RocksDB do
   # Public API — key encoding / decoding
   # ---------------------------------------------------------------------------
 
+  @doc """
+  Encodes GSN as 64-bit big-endian unsigned integer.
+  This ordering ensures GSN range scans return actions in sequence order.
+  """
   @spec encode_gsn_key(gsn()) :: binary()
   def encode_gsn_key(gsn), do: <<gsn::unsigned-big-integer-size(64)>>
 
   @spec decode_gsn_key(binary()) :: gsn()
   def decode_gsn_key(<<gsn::unsigned-big-integer-size(64)>>), do: gsn
 
+  @doc """
+  Composite key for entity -> actions index.
+  Entity ID is variable-length prefix, GSN is fixed 8 bytes at the end.
+  Prefix scans on entity_id return all actions for that entity in GSN order.
+  """
   @spec encode_entity_gsn_key(binary(), gsn()) :: binary()
   def encode_entity_gsn_key(entity_id, gsn) do
     <<entity_id::binary, gsn::unsigned-big-integer-size(64)>>
