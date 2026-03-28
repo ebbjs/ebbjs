@@ -12,6 +12,22 @@ defmodule EbbServer.Storage.EntityStore do
 
   All public functions accept optional `:rocks_name` and `:sqlite_name` parameters
   (defaulting to the module names) so that tests can run isolated instances.
+
+  ## Merge Semantics
+
+  When merging field values, the Last-Writer-Wins (LWW) strategy is used:
+
+  1. **HLC comparison first**: Fields with higher Hybrid Logical Clock (HLC) values win.
+  2. **Tiebreaker**: When HLCs are equal, the lexicographically higher `update_id` wins.
+     - This ensures deterministic, reproducible results across all clients.
+     - Lexicographic comparison uses standard string ordering (Unicode codepoints).
+     - Example: `"upd_zzz" > "upd_aaa"` evaluates to `true`.
+     - Note: Numeric IDs like `"id-10"` sort before `"id-9"` lexicographically
+       (`"1"` < `"9"`), which is acceptable since the comparison is purely
+       deterministic, not semantically meaningful.
+
+  This approach is replicable across any client (Elixir, JavaScript, Python, etc.)
+  since all use the same lexicographic string comparison rules.
   """
 
   alias EbbServer.Storage.{RocksDB, SQLite, SystemCache}
@@ -244,11 +260,7 @@ defmodule EbbServer.Storage.EntityStore do
               existing
 
             true ->
-              if update["id"] > existing["update_id"] do
-                Map.put(new_field, "update_id", update["id"])
-              else
-                existing
-              end
+              tiebreak_winner(new_field, existing, update["id"], existing["update_id"])
           end
 
         Map.put(existing_fields_map, field_name, winner)
@@ -276,8 +288,16 @@ defmodule EbbServer.Storage.EntityStore do
     }
   end
 
+  defp tiebreak_winner(new_field, existing, new_id, existing_id) do
+    if new_id >= existing_id do
+      Map.put(new_field, "update_id", new_id)
+    else
+      existing
+    end
+  end
+
   defp format_entity(%{data: nil} = row) do
-    raise "Unexpected nil data for entity #{inspect(row.entity_id)}"
+    raise "Unexpected nil data for entity #{inspect(row.id)}"
   end
 
   defp format_entity(row) do
