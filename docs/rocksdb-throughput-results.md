@@ -5,6 +5,7 @@
 RocksDB with ETF serialization sustains **~60k Actions/sec** with a single writer and full durability (sync writes) — **10x faster** than the SQLite baseline. With **2 concurrent writers** and RocksDB's `enable_pipelined_write` option, throughput reaches **~108k Actions/sec** (1.9x scaling) on a single RocksDB instance — exceeding the 100k architecture goal. Durability is fully preserved (`sync: true` on every batch). No Rust code or multi-instance sharding is required.
 
 The path to this result required four rounds of experiments:
+
 1. **Single-writer throughput** — established 60k baseline, identified Elixir CPU as the bottleneck
 2. **Bulk NIF (`write_multi`)** — eliminated 8,000 per-item NIF boundary crossings; no improvement, proving the bottleneck is Elixir computation not NIF overhead
 3. **Writer sharding (default config)** — 2 concurrent writers on one RocksDB; only 1.3x scaling due to WAL serialization
@@ -65,30 +66,30 @@ No bloom filters, no custom block cache, no compression tuning — all defaults.
 
 ### Throughput Comparison
 
-| Config | Actions/sec | Batch p50 | Batch p95 | Batch p99 | vs SQLite baseline |
-|--------|-------------|-----------|-----------|-----------|-------------------|
-| **ETF + sync** | **60,360** | 16.7ms | 19.1ms | 20.0ms | **10.3x** |
-| **ETF + nosync** | **72,206** | 13.9ms | 16.4ms | 17.9ms | **12.4x** |
-| MsgPack + sync | 52,246 | 19.2ms | 22.0ms | 23.5ms | 8.9x |
-| JSON + sync | 47,249 | 21.2ms | 24.1ms | 26.1ms | 8.1x |
+| Config           | Actions/sec | Batch p50 | Batch p95 | Batch p99 | vs SQLite baseline |
+| ---------------- | ----------- | --------- | --------- | --------- | ------------------ |
+| **ETF + sync**   | **60,360**  | 16.7ms    | 19.1ms    | 20.0ms    | **10.3x**          |
+| **ETF + nosync** | **72,206**  | 13.9ms    | 16.4ms    | 17.9ms    | **12.4x**          |
+| MsgPack + sync   | 52,246      | 19.2ms    | 22.0ms    | 23.5ms    | 8.9x               |
+| JSON + sync      | 47,249      | 21.2ms    | 24.1ms    | 26.1ms    | 8.1x               |
 
 ### SQLite Baselines (from `sqlite-throughput-results.md`)
 
-| Config | Actions/sec | Notes |
-|--------|-------------|-------|
-| SQLite all indexes, sync | 5,838 | Full schema with 7 B-tree indexes |
-| SQLite minimal indexes, sync | 9,466 | PK + GSN only |
-| SQLite ceiling (no durability) | 15,062 | MEMORY journal, synchronous=OFF |
+| Config                         | Actions/sec | Notes                             |
+| ------------------------------ | ----------- | --------------------------------- |
+| SQLite all indexes, sync       | 5,838       | Full schema with 7 B-tree indexes |
+| SQLite minimal indexes, sync   | 9,466       | PK + GSN only                     |
+| SQLite ceiling (no durability) | 15,062      | MEMORY journal, synchronous=OFF   |
 
 ### Serialization Cost Breakdown
 
 Isolated encode-only benchmarks (no RocksDB, no NIF — pure serialization of 1,000 Actions × 3 terms each):
 
-| Format | Batch encode (3,000 terms) | Per-term | Action size | Update size |
-|--------|---------------------------|----------|-------------|-------------|
-| **ETF** | **1.37ms** | **0.46μs** | 111 bytes | 367 bytes |
-| MessagePack | 3.58ms | 1.19μs | 91 bytes | 259 bytes |
-| JSON | 5.60ms | 1.87μs | 120 bytes | 342 bytes |
+| Format      | Batch encode (3,000 terms) | Per-term   | Action size | Update size |
+| ----------- | -------------------------- | ---------- | ----------- | ----------- |
+| **ETF**     | **1.37ms**                 | **0.46μs** | 111 bytes   | 367 bytes   |
+| MessagePack | 3.58ms                     | 1.19μs     | 91 bytes    | 259 bytes   |
+| JSON        | 5.60ms                     | 1.87μs     | 120 bytes   | 342 bytes   |
 
 ETF encode is **2.6x faster than MessagePack** and **4.1x faster than JSON**. The speed advantage comes from `:erlang.term_to_binary` being a C BIF inside the BEAM VM — no Elixir code in the encoding loop.
 
@@ -127,11 +128,11 @@ ETF is 15% faster than MessagePack and 28% faster than JSON on the full write pa
 
 The serialization breakdown confirms this:
 
-| Format | Batch encode (3,000 terms) | Full write path (sync) |
-|---|---|---|
-| ETF | 1.4ms | **58-60k/sec** |
-| MessagePack | 3.6ms | 43-52k/sec |
-| JSON | 5.6ms | 36-47k/sec |
+| Format      | Batch encode (3,000 terms) | Full write path (sync) |
+| ----------- | -------------------------- | ---------------------- |
+| ETF         | 1.4ms                      | **58-60k/sec**         |
+| MessagePack | 3.6ms                      | 43-52k/sec             |
+| JSON        | 5.6ms                      | 36-47k/sec             |
 
 ETF's advantage grows relative to MessagePack/JSON because the C BIF encoding avoids Elixir computation entirely — it's the one part of the batch pipeline that doesn't run Elixir code.
 
@@ -157,12 +158,12 @@ This is a significant finding: **the existing `batch_put` / `write_batch` API is
 
 We tested running 1, 2, 3, and 4 concurrent writer processes against a **single shared RocksDB instance** with atomic GSN assignment (`:atomics.add_get/3`). Each writer runs the full batch loop (ETF encode → WriteBatch → sync commit) in its own BEAM Task.
 
-| Writers | Aggregate | Per-Writer | Scaling | p50 batch |
-|---|---|---|---|---|
-| 1 | 57,003/sec | 57,020/sec | 1.0x | 17.5ms |
-| 2 | 78,351/sec | 39,212/sec | 1.37x | 25.8ms |
-| 3 | 57,836/sec | 19,304/sec | 1.36x | 41.3ms |
-| 4 | 77,768/sec | 19,484/sec | 1.30x | 52.3ms |
+| Writers | Aggregate  | Per-Writer | Scaling | p50 batch |
+| ------- | ---------- | ---------- | ------- | --------- |
+| 1       | 57,003/sec | 57,020/sec | 1.0x    | 17.5ms    |
+| 2       | 78,351/sec | 39,212/sec | 1.37x   | 25.8ms    |
+| 3       | 57,836/sec | 19,304/sec | 1.36x   | 41.3ms    |
+| 4       | 77,768/sec | 19,484/sec | 1.30x   | 52.3ms    |
 
 **Result: scaling wall at ~80k/sec with defaults.** RocksDB's default write path serializes both WAL and memtable writes — Writer 2 must wait for Writer 1 to finish both phases before starting its WAL write. RocksDB's group commit helps (1.37x), but cannot achieve 2x. Adding a 3rd or 4th writer provides no meaningful aggregate improvement while per-writer throughput and latency degrade significantly.
 
@@ -170,12 +171,12 @@ We tested running 1, 2, 3, and 4 concurrent writer processes against a **single 
 
 RocksDB's `enable_pipelined_write` option overlaps WAL and memtable writes across successive write groups. Once Writer 1 finishes its WAL write, Writer 2 can immediately start its WAL write while Writer 1's memtable insertion runs in the background.
 
-| Config | Aggregate | Per-Writer | Scaling | p50 | p99 |
-|---|---|---|---|---|---|
-| 1w defaults | 57,003/sec | 57,020/sec | 1.0x | 17.5ms | 21.8ms |
-| 2w defaults | 78,351/sec | 39,212/sec | 1.37x | 25.8ms | 32.0ms |
+| Config           | Aggregate       | Per-Writer     | Scaling  | p50        | p99        |
+| ---------------- | --------------- | -------------- | -------- | ---------- | ---------- |
+| 1w defaults      | 57,003/sec      | 57,020/sec     | 1.0x     | 17.5ms     | 21.8ms     |
+| 2w defaults      | 78,351/sec      | 39,212/sec     | 1.37x    | 25.8ms     | 32.0ms     |
 | **2w pipelined** | **108,068/sec** | **54,076/sec** | **1.9x** | **18.4ms** | **24.5ms** |
-| 2w unordered | 105,067/sec | 52,558/sec | 1.84x | 18.6ms | 29.9ms |
+| 2w unordered     | 105,067/sec     | 52,558/sec     | 1.84x    | 18.6ms     | 29.9ms     |
 
 **Pipelined writes are the clear winner.** Key observations:
 
@@ -192,11 +193,11 @@ RocksDB's `enable_pipelined_write` option overlaps WAL and memtable writes acros
 
 We also tested 3 concurrent writers to see whether scaling continues beyond 2:
 
-| Config | Aggregate | Per-Writer | Scaling | p50 | p99 |
-|---|---|---|---|---|---|
-| 2w pipelined | 108,429/sec | 54,252/sec | 1.83x | 18.2ms | 27.4ms |
+| Config           | Aggregate       | Per-Writer     | Scaling   | p50        | p99        |
+| ---------------- | --------------- | -------------- | --------- | ---------- | ---------- |
+| 2w pipelined     | 108,429/sec     | 54,252/sec     | 1.83x     | 18.2ms     | 27.4ms     |
 | **3w pipelined** | **139,953/sec** | **46,682/sec** | **2.37x** | **19.9ms** | **36.5ms** |
-| 3w unordered | 144,263/sec | 48,128/sec | 2.44x | 18.7ms | 54.3ms |
+| 3w unordered     | 144,263/sec     | 48,128/sec     | 2.44x     | 18.7ms     | 54.3ms     |
 
 3 writers with pipelined writes achieves ~140k/sec — a 2.37x scaling factor. However, **2 writers remains the recommended configuration** for several reasons:
 
@@ -215,15 +216,15 @@ The 108k number is from a 15-second run that includes the initial warm-up period
 
 ### Summary: Path to 100k
 
-| Optimization | Effort | Result | Notes |
-|---|---|---|---|
-| Baseline (single writer) | — | **60k/sec** | Elixir CPU is the ceiling |
-| ~~Bulk NIF (write_multi)~~ | ~~Medium~~ | ~~No improvement~~ | Tested and ruled out |
-| ~~2w sharding (defaults)~~ | ~~Low~~ | **~80k/sec wall** | Tested: WAL serialization limits scaling to 1.3x |
-| **2w sharding + pipelined** | **Low** | **~108k/sec** | **Tested: 1.9x scaling, near-linear. Recommended.** |
-| 3w sharding + pipelined | Low | ~140k/sec | Tested: 2.37x scaling, but diminishing efficiency (79% per-writer) and higher latency. Not recommended — complexity/latency cost outweighs the throughput gain over 2 writers. |
-| Multi-instance sharding | Medium | N × 60k/sec (est.) | Untested fallback if pipelined sustain is <100k |
-| Rust NIF | High | ~150-200k/sec (est.) | Nuclear option |
+| Optimization                | Effort     | Result               | Notes                                                                                                                                                                          |
+| --------------------------- | ---------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Baseline (single writer)    | —          | **60k/sec**          | Elixir CPU is the ceiling                                                                                                                                                      |
+| ~~Bulk NIF (write_multi)~~  | ~~Medium~~ | ~~No improvement~~   | Tested and ruled out                                                                                                                                                           |
+| ~~2w sharding (defaults)~~  | ~~Low~~    | **~80k/sec wall**    | Tested: WAL serialization limits scaling to 1.3x                                                                                                                               |
+| **2w sharding + pipelined** | **Low**    | **~108k/sec**        | **Tested: 1.9x scaling, near-linear. Recommended.**                                                                                                                            |
+| 3w sharding + pipelined     | Low        | ~140k/sec            | Tested: 2.37x scaling, but diminishing efficiency (79% per-writer) and higher latency. Not recommended — complexity/latency cost outweighs the throughput gain over 2 writers. |
+| Multi-instance sharding     | Medium     | N × 60k/sec (est.)   | Untested fallback if pipelined sustain is <100k                                                                                                                                |
+| Rust NIF                    | High       | ~150-200k/sec (est.) | Nuclear option                                                                                                                                                                 |
 
 **2 Writer processes + `enable_pipelined_write: true` is the recommended configuration.** It achieves 100k+ on a single RocksDB instance with no additional infrastructure, no Rust, and no semantic trade-offs. 3 writers was tested and reaches ~140k, but the per-writer efficiency drop (79%), latency tail growth (p99: 37ms vs 27ms), and additional watermark/fan-out complexity make it a poor trade-off when 2 writers already exceeds the target. Multi-instance sharding and Rust NIF remain available as fallbacks.
 
@@ -293,13 +294,13 @@ Fan-out pushes GSNs 1-2000 in order
 
 ### Summary of Implementation Work
 
-| Component | Complexity | Required for correctness? |
-|---|---|---|
-| Committed GSN watermark | Low (atomics + CAS loop) | Yes — catch-up reads depend on it |
-| Ordered fan-out gating | Medium (buffer + watermark check) | Yes — SSE ordering guarantee |
-| ETS dirty set | None (already concurrent-safe) | N/A |
-| System entity cache | None (commutative updates) | N/A |
-| `enable_pipelined_write` config | Trivial (one option) | Yes — required for 1.9x scaling |
+| Component                       | Complexity                        | Required for correctness?         |
+| ------------------------------- | --------------------------------- | --------------------------------- |
+| Committed GSN watermark         | Low (atomics + CAS loop)          | Yes — catch-up reads depend on it |
+| Ordered fan-out gating          | Medium (buffer + watermark check) | Yes — SSE ordering guarantee      |
+| ETS dirty set                   | None (already concurrent-safe)    | N/A                               |
+| System entity cache             | None (commutative updates)        | N/A                               |
+| `enable_pipelined_write` config | Trivial (one option)              | Yes — required for 1.9x scaling   |
 
 The committed GSN watermark and ordered fan-out are the only non-trivial additions. Both are well-understood patterns (Kafka, CockroachDB) with straightforward Elixir implementations.
 
@@ -307,18 +308,18 @@ The committed GSN watermark and ordered fan-out are the only non-trivial additio
 
 ## What This Validates
 
-| Assumption from `storage-architecture-v2.md` | Validated? | Evidence |
-|---|---|---|
-| RocksDB sustains >>10k Actions/sec with 5 CFs + sync | **Yes** | 60k/sec single-writer, 108k/sec 2-writer pipelined. 10-18x SQLite. |
-| ETF is significantly faster than MessagePack for encoding | **Yes** | 2.6x faster encode, 15-28% faster on full write path |
-| The architecture can reach 100k Actions/sec | **Yes** | 2 writers + `enable_pipelined_write` = 108k/sec on a single RocksDB instance. Sustained rate may be ~85-100k (needs 60s+ validation). |
-| Reducing NIF boundary crossings improves throughput | **No** | `write_multi` (single NIF call) showed no improvement over 8,000 `batch_put` calls. The bottleneck is Elixir computation, not NIF overhead. |
-| Writer sharding scales linearly (default config) | **No** | 2 writers = 1.32x, 4 writers = 1.30x with defaults. RocksDB WAL serialization limits scaling. |
-| Writer sharding scales with pipelined writes | **Yes** | 2 writers + pipelined = 1.9x scaling (108k/sec). 3 writers = 2.37x (140k/sec) but with diminishing per-writer efficiency (79% vs 92%). WAL/memtable overlap across write groups nearly eliminates contention at 2 writers; WAL fsync queueing becomes the limiting factor at 3+. |
-| `unordered_write` outperforms pipelined | **No** | `unordered_write` (105k) was slightly slower than pipelined (108k) with higher p99 latency, while sacrificing snapshot immutability. Not worth the trade-off. |
-| Serialization is the primary CPU bottleneck | **Partially** | ETF encoding is fast (1.4ms/batch), but the total Elixir computation (key construction, data structure manipulation) dominates at ~14ms/batch. |
-| Durability preserved with multi-writer | **Yes** | All configurations use `sync: true`. Pipelined writes change scheduling, not durability — each batch fsyncs the WAL before `db->Write()` returns. |
-| On-demand materialization decouples write throughput | **Assumed** | Not tested here — write path never touches SQLite, confirming the decoupling |
+| Assumption from `storage-architecture-v2.md`              | Validated?    | Evidence                                                                                                                                                                                                                                                                         |
+| --------------------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| RocksDB sustains >>10k Actions/sec with 5 CFs + sync      | **Yes**       | 60k/sec single-writer, 108k/sec 2-writer pipelined. 10-18x SQLite.                                                                                                                                                                                                               |
+| ETF is significantly faster than MessagePack for encoding | **Yes**       | 2.6x faster encode, 15-28% faster on full write path                                                                                                                                                                                                                             |
+| The architecture can reach 100k Actions/sec               | **Yes**       | 2 writers + `enable_pipelined_write` = 108k/sec on a single RocksDB instance. Sustained rate may be ~85-100k (needs 60s+ validation).                                                                                                                                            |
+| Reducing NIF boundary crossings improves throughput       | **No**        | `write_multi` (single NIF call) showed no improvement over 8,000 `batch_put` calls. The bottleneck is Elixir computation, not NIF overhead.                                                                                                                                      |
+| Writer sharding scales linearly (default config)          | **No**        | 2 writers = 1.32x, 4 writers = 1.30x with defaults. RocksDB WAL serialization limits scaling.                                                                                                                                                                                    |
+| Writer sharding scales with pipelined writes              | **Yes**       | 2 writers + pipelined = 1.9x scaling (108k/sec). 3 writers = 2.37x (140k/sec) but with diminishing per-writer efficiency (79% vs 92%). WAL/memtable overlap across write groups nearly eliminates contention at 2 writers; WAL fsync queueing becomes the limiting factor at 3+. |
+| `unordered_write` outperforms pipelined                   | **No**        | `unordered_write` (105k) was slightly slower than pipelined (108k) with higher p99 latency, while sacrificing snapshot immutability. Not worth the trade-off.                                                                                                                    |
+| Serialization is the primary CPU bottleneck               | **Partially** | ETF encoding is fast (1.4ms/batch), but the total Elixir computation (key construction, data structure manipulation) dominates at ~14ms/batch.                                                                                                                                   |
+| Durability preserved with multi-writer                    | **Yes**       | All configurations use `sync: true`. Pipelined writes change scheduling, not durability — each batch fsyncs the WAL before `db->Write()` returns.                                                                                                                                |
+| On-demand materialization decouples write throughput      | **Assumed**   | Not tested here — write path never touches SQLite, confirming the decoupling                                                                                                                                                                                                     |
 
 ---
 
@@ -349,6 +350,7 @@ experiment/rocksdb_fork/                 # Forked rocksdb hex package with write
 ```
 
 Run with:
+
 ```bash
 cd experiment/rocksdb_bench
 

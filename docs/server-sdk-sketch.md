@@ -43,7 +43,7 @@ It is **not** collocated with the database. It talks to the Ebb server over HTTP
 The server-side SDK mirrors the browser client's data API. The same method names, same signatures — different transport underneath.
 
 ```ts
-import { createServerClient } from '@ebbjs/client';
+import { createServerClient } from "@ebbjs/client";
 
 const client = createServerClient({
   url: "https://my-ebb-server.example.com",
@@ -67,6 +67,7 @@ await client.notes.delete("doc-123");
 Every server-side SDK client is initialized with credentials that resolve to an actor on the Ebb server. Data visibility and write permissions are scoped to that actor's group memberships — identical to how the browser client works.
 
 Common patterns:
+
 - **Service account** — a dedicated actor with broad permissions, used for system-level automation
 - **User-scoped** — the server acts on behalf of a specific user, passing their auth token through (e.g., in an SSR context where the user's session is available server-side)
 
@@ -122,6 +123,7 @@ export const Route = createFileRoute('/notes/$id')({
 ```
 
 **How the handoff works:**
+
 1. Server fetches entity data at a specific GSN via `createServerClient`
 2. Server passes entity data + GSN cursor to the browser as part of the render payload
 3. Browser client seeds its local replica with the entity data — no waiting for catch-up to render
@@ -138,10 +140,10 @@ The server-side SDK and browser client ship from the **same package** (`@ebbjs/c
 
 ```ts
 // Browser
-import { createClient } from '@ebbjs/client';
+import { createClient } from "@ebbjs/client";
 
 // Server
-import { createServerClient } from '@ebbjs/client';
+import { createServerClient } from "@ebbjs/client";
 ```
 
 Package `exports` in `package.json` use separate `browser` and `node` conditions to ensure the right implementation is bundled for each environment — `createServerClient` is excluded from browser bundles, `createClient`'s storage layer is excluded from Node bundles.

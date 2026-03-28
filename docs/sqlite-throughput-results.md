@@ -20,12 +20,14 @@ SQLite in WAL mode can sustain **~9.5k Actions/sec** with minimal indexes and fu
 ## Methodology
 
 All benchmarks use:
+
 - **Pre-generated data pools** stored as tuples (O(1) access) — data generation overhead (~7ms/batch, 13% of combined time) is excluded from timing
 - **Pre-built SQL strings** — SQL string construction overhead (~6ms/batch) is excluded from timing
 - **Multi-row VALUES INSERTs** — a single `INSERT INTO ... VALUES (...), (...), ...` per table per batch, reducing NIF boundary crossings from 9,000 to 4 per batch of 1,000 Actions
 - **Foreign keys OFF** — removed from the write hot path
 
 Each batch of 1,000 Actions generates:
+
 - 1,000 rows into `actions` (5 columns, PK + indexes)
 - 2,000 rows into `updates` (6 columns, PK + indexes)
 - = 3,000 total rows per batch
@@ -38,12 +40,12 @@ Throughput numbers are **cumulative** (total Actions / total elapsed), so they i
 
 The original approach used `bind/step/reset` per row — 3 NIF calls per SQL statement, 9,000 NIF crossings per batch. Switching to multi-row VALUES reduces this to 4 NIF calls per batch (BEGIN + 2 INSERTs + COMMIT).
 
-| Strategy | Throughput (in-memory) | NIF calls/batch |
-|----------|----------------------|-----------------|
-| bind/step/reset per row | 21,700/sec | 9,000 |
-| Multi-row VALUES (single INSERT) | **44,100/sec** | 4 |
-| Chunked multi-row (100 rows/INSERT) | 29,500/sec | 64 |
-| exec multi-statement string | 39,000/sec | 4 |
+| Strategy                            | Throughput (in-memory) | NIF calls/batch |
+| ----------------------------------- | ---------------------- | --------------- |
+| bind/step/reset per row             | 21,700/sec             | 9,000           |
+| Multi-row VALUES (single INSERT)    | **44,100/sec**         | 4               |
+| Chunked multi-row (100 rows/INSERT) | 29,500/sec             | 64              |
+| exec multi-statement string         | 39,000/sec             | 4               |
 
 **Implication:** Any Elixir NIF-based SQLite integration should batch SQL into as few NIF calls as possible. The bind/step/reset pattern is convenient but halves throughput. In production, the Writer GenServer should build multi-row VALUES strings from each batch before executing.
 
@@ -53,12 +55,12 @@ The original approach used `bind/step/reset` per row — 3 NIF calls per SQL sta
 
 Per batch of 1,000 Actions:
 
-| Component | Time | % of combined |
-|-----------|------|---------------|
-| Data generation (Elixir maps, JSON, nanoids) | ~7ms | 13% |
-| SQL string building (iodata → binary) | ~6ms | 11% |
-| SQLite INSERT statements | ~26ms | 46% |
-| COMMIT (WAL flush) | ~24ms | 42% |
+| Component                                    | Time  | % of combined |
+| -------------------------------------------- | ----- | ------------- |
+| Data generation (Elixir maps, JSON, nanoids) | ~7ms  | 13%           |
+| SQL string building (iodata → binary)        | ~6ms  | 11%           |
+| SQLite INSERT statements                     | ~26ms | 46%           |
+| COMMIT (WAL flush)                           | ~24ms | 42%           |
 
 Pre-generating data gives a ~15% throughput improvement (17.5k → 20k on the diagnostic, less on sustained runs). Worth doing in benchmarks for accuracy, but not the lever that changes the architecture decision.
 
@@ -68,14 +70,14 @@ Pre-generating data gives a ~15% throughput improvement (17.5k → 20k on the di
 
 Six configurations tested over 15 seconds each, all using multi-row VALUES with pre-built SQL:
 
-| Config | Sustained Actions/sec | p50 batch latency | vs Baseline |
-|--------|----------------------|-------------------|-------------|
-| 1. Baseline (all 7 indexes, auto checkpoint) | 5,838 | 186ms | — |
-| 2. Minimal indexes (PK + GSN only) | **9,466** | 114ms | **+62%** |
-| 3. ATTACH split (log.db + state.db, all indexes) | 9,460 | 114ms | +62% |
-| 4. ATTACH + minimal log indexes | 9,489 | 115ms | +63% |
-| 5. No auto checkpoint (wal_autocheckpoint=0) | 6,816 | 161ms | +17% |
-| 6. Ceiling (MEMORY journal, synchronous=OFF) | **15,062** | 75ms | +158% |
+| Config                                           | Sustained Actions/sec | p50 batch latency | vs Baseline |
+| ------------------------------------------------ | --------------------- | ----------------- | ----------- |
+| 1. Baseline (all 7 indexes, auto checkpoint)     | 5,838                 | 186ms             | —           |
+| 2. Minimal indexes (PK + GSN only)               | **9,466**             | 114ms             | **+62%**    |
+| 3. ATTACH split (log.db + state.db, all indexes) | 9,460                 | 114ms             | +62%        |
+| 4. ATTACH + minimal log indexes                  | 9,489                 | 115ms             | +63%        |
+| 5. No auto checkpoint (wal_autocheckpoint=0)     | 6,816                 | 161ms             | +17%        |
+| 6. Ceiling (MEMORY journal, synchronous=OFF)     | **15,062**            | 75ms              | +158%       |
 
 ### Analysis
 
@@ -87,6 +89,7 @@ Six configurations tested over 15 seconds each, all using multi-row VALUES with 
 Every INSERT into `updates` must update 4 separate B-trees. Dropping to PK-only reduces this to 1 B-tree per table, and the speedup is proportional.
 
 **ATTACH split provides zero benefit.** Configs 2, 3, and 4 are statistically identical (~9.5k). Splitting log and state into separate files doesn't help because:
+
 - ATTACH databases share the same connection and page cache
 - The bottleneck is B-tree maintenance CPU, not file I/O contention
 - Both databases still fsync through the same WAL mechanism
@@ -102,12 +105,12 @@ Every INSERT into `updates` must update 4 separate B-trees. Dropping to PK-only 
 All configurations show the same pattern: high throughput on the first few batches (100k+ Actions/sec when the DB is nearly empty), steadily declining as rows accumulate. This is fundamental to B-tree storage:
 
 | Rows in DB | Approximate throughput (baseline) |
-|------------|----------------------------------|
-| 0-3k | 100k+ Actions/sec |
-| 10k | 35k Actions/sec |
-| 30k | 14k Actions/sec |
-| 60k | 8k Actions/sec |
-| 90k | 6k Actions/sec |
+| ---------- | --------------------------------- |
+| 0-3k       | 100k+ Actions/sec                 |
+| 10k        | 35k Actions/sec                   |
+| 30k        | 14k Actions/sec                   |
+| 60k        | 8k Actions/sec                    |
+| 90k        | 6k Actions/sec                    |
 
 The degradation curve flattens — by 90k rows the per-batch cost stabilizes as the B-tree depth settles. The "sustained" numbers (87k rows at 15s) are representative of steady-state behavior for a DB with tens of thousands of entities.
 
@@ -115,7 +118,7 @@ The degradation curve flattens — by 90k rows the per-batch cost stabilizes as 
 
 ## Finding 5: Peak Throughput Confirms the Hypothesis (Conditionally)
 
-The experiment's core hypothesis was: *SQLite can sustain 100k+ Actions/sec with batched transactions.*
+The experiment's core hypothesis was: _SQLite can sustain 100k+ Actions/sec with batched transactions._
 
 **Confirmed for small/warm DBs.** The first batch consistently hits 100-160k Actions/sec across all configs. SQLite's raw engine is fast enough when the working set fits in the page cache.
 
@@ -129,17 +132,18 @@ The experiment's core hypothesis was: *SQLite can sustain 100k+ Actions/sec with
 
 The simplified SQLite-only architecture from the experiment proposal is **viable for the MVP**:
 
-| Metric | Target (proposal) | Measured | Status |
-|--------|-------------------|----------|--------|
-| MVP write throughput | 1-3k Actions/sec | 5.8-9.5k | Well exceeded |
-| Synchronous materialization viable? | Yes if >10k | ~3-5k (from Test 2) | Marginal — see below |
-| Multi-process reads | <1ms p99 point lookup | Not yet tested at scale | Likely passes (WAL readers are non-blocking) |
+| Metric                              | Target (proposal)     | Measured                | Status                                       |
+| ----------------------------------- | --------------------- | ----------------------- | -------------------------------------------- |
+| MVP write throughput                | 1-3k Actions/sec      | 5.8-9.5k                | Well exceeded                                |
+| Synchronous materialization viable? | Yes if >10k           | ~3-5k (from Test 2)     | Marginal — see below                         |
+| Multi-process reads                 | <1ms p99 point lookup | Not yet tested at scale | Likely passes (WAL readers are non-blocking) |
 
 The **9.5k Actions/sec** with minimal indexes is 3-10x the MVP target. Even the baseline of 5.8k with all indexes is sufficient.
 
 ### What to defer
 
 The experiment proposal listed several things that "go away" if SQLite can sustain 100k:
+
 - Custom binary Action log → **Still goes away for MVP.** SQLite at 6-10k is enough.
 - ETS indexes → **Still goes away for MVP.** SQLite indexes handle the read patterns.
 - Bun Materializer process → **Partially.** Synchronous materialization adds significant overhead (Test 2 showed ~3k with full LWW merge). For MVP volumes this is fine. At scale, async materialization may be needed.
@@ -160,6 +164,7 @@ The experiment proposal listed several things that "go away" if SQLite can susta
 ### When to revisit
 
 The SQLite-only approach should be reconsidered when:
+
 - Sustained write throughput needs to exceed **~10k Actions/sec** per group
 - Synchronous materialization latency (LWW merge inside the transaction) becomes unacceptable
 - The action log grows past the point where a single SQLite file is practical (~10-50GB)
@@ -174,11 +179,11 @@ Test 2 adds per-entity materialization inside the transaction: SELECT entity →
 
 Preliminary results (before multi-row VALUES optimization, 5s runs):
 
-| Scenario | Actions/sec |
-|----------|-------------|
-| Cold (100% creates) | ~4,000 |
-| Hot (100% patches) | ~2,800 |
-| Mixed (20/80) | ~2,900 |
+| Scenario            | Actions/sec |
+| ------------------- | ----------- |
+| Cold (100% creates) | ~4,000      |
+| Hot (100% patches)  | ~2,800      |
+| Mixed (20/80)       | ~2,900      |
 
 The hot path is slower because each entity PATCH requires a SELECT (cache miss on first access), JSON decode, field-level HLC comparison, JSON encode, and UPSERT. The cold path is faster because new entities skip the SELECT+merge and go straight to INSERT.
 
@@ -225,6 +230,7 @@ experiment/
 ```
 
 Run with:
+
 ```bash
 cd experiment/sqlite_bench
 

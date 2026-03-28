@@ -36,6 +36,7 @@ Only the inner loop of `flush_batch/1`:
 3. File append + fsync
 
 Everything else stays in Elixir:
+
 - Batch accumulation and timer management (GenServer state)
 - GSN assignment
 - ETS index updates
@@ -47,22 +48,22 @@ This minimizes the NIF surface area and avoids the coordination problems identif
 
 ## Performance Comparison
 
-| Metric | Elixir Writer | Rust NIF Writer (estimated) |
-|--------|--------------|----------------------------|
-| Serialization (1K Actions, 1KB avg) | ~10–20ms | ~1–2ms |
-| CRC32 computation | ~1ms (`:erlang.crc32`) | ~0.1ms |
-| fsync | 1–5ms (disk-bound) | 1–5ms (same disk) |
-| **Total flush latency** | **12–26ms** | **2–8ms** |
-| **Theoretical ceiling** | ~20–40k Actions/sec | ~100k+ Actions/sec |
+| Metric                              | Elixir Writer          | Rust NIF Writer (estimated) |
+| ----------------------------------- | ---------------------- | --------------------------- |
+| Serialization (1K Actions, 1KB avg) | ~10–20ms               | ~1–2ms                      |
+| CRC32 computation                   | ~1ms (`:erlang.crc32`) | ~0.1ms                      |
+| fsync                               | 1–5ms (disk-bound)     | 1–5ms (same disk)           |
+| **Total flush latency**             | **12–26ms**            | **2–8ms**                   |
+| **Theoretical ceiling**             | ~20–40k Actions/sec    | ~100k+ Actions/sec          |
 
 The gap only matters when batches are consistently large and disk is fast. Under moderate load (batches of 10–100 Actions), both implementations are fsync-bound and perform similarly.
 
 ## Alternatives Considered
 
-| Alternative | Assessment |
-|---|---|
-| **Rust NIF for full storage engine** | Too much coordination complexity across the NIF boundary. Evaluated and rejected. |
-| **Rust for everything (no Elixir)** | Strong performance but lacks Elixir's operational resilience: supervision trees, hot code reloading, per-process GC, process isolation. The sync/fan-out layer benefits enormously from OTP. |
-| **Rust sidecar process (not NIF)** | Avoids NIF scheduling issues but adds IPC overhead (~0.5ms per round-trip on localhost). Similar coordination complexity to the NIF approach, plus deployment complexity. |
-| **Zig NIF** | Smaller runtime, easier C interop, but less mature ecosystem and tooling than Rustler. Not worth the ecosystem risk for a component that may never be needed. |
-| **MessagePack instead of JSON** | ~30% size reduction and faster serialization. Should be tried before a Rust NIF — lower complexity, meaningful improvement. Documented in Phase 6 of the architecture proposal. |
+| Alternative                          | Assessment                                                                                                                                                                                   |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Rust NIF for full storage engine** | Too much coordination complexity across the NIF boundary. Evaluated and rejected.                                                                                                            |
+| **Rust for everything (no Elixir)**  | Strong performance but lacks Elixir's operational resilience: supervision trees, hot code reloading, per-process GC, process isolation. The sync/fan-out layer benefits enormously from OTP. |
+| **Rust sidecar process (not NIF)**   | Avoids NIF scheduling issues but adds IPC overhead (~0.5ms per round-trip on localhost). Similar coordination complexity to the NIF approach, plus deployment complexity.                    |
+| **Zig NIF**                          | Smaller runtime, easier C interop, but less mature ecosystem and tooling than Rustler. Not worth the ecosystem risk for a component that may never be needed.                                |
+| **MessagePack instead of JSON**      | ~30% size reduction and faster serialization. Should be tried before a Rust NIF — lower complexity, meaningful improvement. Documented in Phase 6 of the architecture proposal.              |

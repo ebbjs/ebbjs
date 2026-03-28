@@ -15,6 +15,7 @@ When the application restarts, the GSN counter in `:atomics` resets to 0. We nee
 **Approach — Option A (simplest):** Make SystemCache's `init/1` call `RocksDB.get_max_gsn()` directly. This works because RocksDB starts before SystemCache in the `rest_for_one` supervisor.
 
 **Update `SystemCache.init/1`:**
+
 ```elixir
 def init(opts) do
   # Create ETS and atomics as before...
@@ -43,12 +44,14 @@ The `Keyword.get_lazy/3` allows tests to still pass an explicit `:initial_gsn` t
 Add a function to find the highest GSN in `cf_actions`:
 
 **`get_max_gsn()`:**
+
 - Open iterator: `{:ok, iter} = :rocksdb.iterator(db_ref(name), cf_actions(name), [])` (uses default `name` in production)
 - Seek to last: `result = :rocksdb.iterator_move(iter, :last)`
 - If `{:ok, key, _value}` → `gsn = decode_gsn_key(key)`, close iterator, return `gsn`
 - If `{:error, :invalid_iterator}` → close iterator, return `0`
 
 Add a test to `rocks_db_test.exs`:
+
 - Empty database: `get_max_gsn()` → 0
 - Write 3 entries with GSNs 1, 2, 3: `get_max_gsn()` → 3
 
@@ -82,6 +85,7 @@ cd ebb_server && mix test
 ```
 
 All tests pass:
+
 - `RocksDBTest` — key encoding, write/read, prefix iterator, durability, get_max_gsn
 - `SQLiteTest` — DDL, upsert/get, generated columns
 - `SystemCacheTest` — GSN claiming, dirty set operations

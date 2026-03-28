@@ -91,9 +91,7 @@ function App() {
 
 function TodoList() {
   const client = useClient<typeof schema>();
-  const { data: todos, isLoading } = useQuery(
-    client.todo.find().eq("completed", false)
-  );
+  const { data: todos, isLoading } = useQuery(client.todo.find().eq("completed", false));
   const connection = useConnection(); // "connected" | "connecting" | "disconnected"
 
   if (isLoading) return <p>Loading...</p>;

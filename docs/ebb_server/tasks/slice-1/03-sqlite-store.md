@@ -13,6 +13,7 @@
 Create `EbbServer.Storage.SQLite` as a GenServer.
 
 **`init/1`:**
+
 - Accept `opts` keyword list with `:data_dir` key
 - Ensure directory exists: `File.mkdir_p!(data_dir)`
 - Build path: `Path.join(data_dir, "ebb.db")`
@@ -57,9 +58,11 @@ Create `EbbServer.Storage.SQLite` as a GenServer.
 - Return `{:ok, %{db: db, stmts: %{upsert: upsert_stmt, get_entity: get_entity_stmt, get_last_gsn: get_last_gsn_stmt}}}`
 
 **`terminate/2`:**
+
 - Close the database: `Exqlite.Sqlite3.close(db)`
 
 **`start_link/1`:**
+
 - `GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))`
 - Accept an optional `:name` in opts for test isolation.
 
@@ -72,6 +75,7 @@ Create `EbbServer.Storage.SQLite` as a GenServer.
 Add `handle_call` clauses and public API functions. Each public function accepts an optional `server` argument defaulting to `__MODULE__` for test isolation.
 
 **`upsert_entity(entity_row, server \\ __MODULE__)`:**
+
 - Public function: `GenServer.call(server, {:upsert_entity, entity_row})`
 - `handle_call({:upsert_entity, entity_row}, _from, state)`:
   - Bind the prepared `:upsert_stmt` with values: `[entity_row.id, entity_row.type, entity_row.data, entity_row.created_hlc, entity_row.updated_hlc, entity_row.deleted_hlc, entity_row.deleted_by, entity_row.last_gsn]`
@@ -80,6 +84,7 @@ Add `handle_call` clauses and public API functions. Each public function accepts
   - Reply `:ok`
 
 **`get_entity(id, server \\ __MODULE__)`:**
+
 - Public function: `GenServer.call(server, {:get_entity, id})`
 - `handle_call({:get_entity, id}, _from, state)`:
   - Bind `:get_entity_stmt` with `[id]`
@@ -89,6 +94,7 @@ Add `handle_call` clauses and public API functions. Each public function accepts
   - Reply `{:ok, entity_map}` or `:not_found`
 
 **`get_entity_last_gsn(id, server \\ __MODULE__)`:**
+
 - Public function: `GenServer.call(server, {:get_entity_last_gsn, id})`
 - `handle_call({:get_entity_last_gsn, id}, _from, state)`:
   - Bind `:get_last_gsn_stmt` with `[id]`

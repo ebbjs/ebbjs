@@ -20,32 +20,32 @@ Manages the SQLite database that serves as the read-optimized materialized entit
 
 #### Lifecycle
 
-| Name | Signature | Description |
-|------|-----------|-------------|
+| Name           | Signature                                  | Description                                              |
+| -------------- | ------------------------------------------ | -------------------------------------------------------- |
 | `start_link/1` | `start_link(opts) :: GenServer.on_start()` | Opens SQLite, runs DDL. `opts`: `[data_dir: String.t()]` |
 
 #### Entity Operations
 
-| Name | Signature | Description |
-|------|-----------|-------------|
-| `upsert_entity/1` | `upsert_entity(entity :: entity_row()) :: :ok \| {:error, term()}` | INSERT OR REPLACE into `entities` table. Used by Entity Store after materialization. |
-| `upsert_entities/1` | `upsert_entities(entities :: [entity_row()]) :: :ok \| {:error, term()}` | Batch UPSERT within a single transaction. Used by Entity Store for batch materialization. |
-| `get_entity/1` | `get_entity(id :: String.t()) :: {:ok, entity_row()} \| :not_found` | SELECT by primary key from `entities` table. |
-| `query_entities/1` | `query_entities(query :: entity_query()) :: {:ok, [entity_row()]}` | SELECT with type filter, `json_extract` predicates, permission JOINs, and pagination. |
-| `get_entity_last_gsn/1` | `get_entity_last_gsn(id :: String.t()) :: {:ok, non_neg_integer()} \| :not_found` | Returns the `last_gsn` for an entity (used by Entity Store to determine delta start). |
+| Name                    | Signature                                                                         | Description                                                                               |
+| ----------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `upsert_entity/1`       | `upsert_entity(entity :: entity_row()) :: :ok \| {:error, term()}`                | INSERT OR REPLACE into `entities` table. Used by Entity Store after materialization.      |
+| `upsert_entities/1`     | `upsert_entities(entities :: [entity_row()]) :: :ok \| {:error, term()}`          | Batch UPSERT within a single transaction. Used by Entity Store for batch materialization. |
+| `get_entity/1`          | `get_entity(id :: String.t()) :: {:ok, entity_row()} \| :not_found`               | SELECT by primary key from `entities` table.                                              |
+| `query_entities/1`      | `query_entities(query :: entity_query()) :: {:ok, [entity_row()]}`                | SELECT with type filter, `json_extract` predicates, permission JOINs, and pagination.     |
+| `get_entity_last_gsn/1` | `get_entity_last_gsn(id :: String.t()) :: {:ok, non_neg_integer()} \| :not_found` | Returns the `last_gsn` for an entity (used by Entity Store to determine delta start).     |
 
 #### Actor Operations
 
-| Name | Signature | Description |
-|------|-----------|-------------|
+| Name             | Signature                                     | Description                                       |
+| ---------------- | --------------------------------------------- | ------------------------------------------------- |
 | `ensure_actor/1` | `ensure_actor(actor_id :: String.t()) :: :ok` | INSERT OR IGNORE into `actors` table. Idempotent. |
 
 #### Function Version Operations
 
-| Name | Signature | Description |
-|------|-----------|-------------|
-| `get_active_function/1` | `get_active_function(name :: String.t()) :: {:ok, function_version()} \| :not_found` | Returns the active version of a named function. |
-| `upsert_function_version/1` | `upsert_function_version(fv :: function_version()) :: :ok` | INSERT OR REPLACE a function version record. |
+| Name                        | Signature                                                                            | Description                                     |
+| --------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------- |
+| `get_active_function/1`     | `get_active_function(name :: String.t()) :: {:ok, function_version()} \| :not_found` | Returns the active version of a named function. |
+| `upsert_function_version/1` | `upsert_function_version(fv :: function_version()) :: :ok`                           | INSERT OR REPLACE a function version record.    |
 
 ### Types
 
@@ -91,6 +91,7 @@ None. This is a leaf component -- it depends only on the `exqlite` hex package.
 **Connection management:** Use a single SQLite connection (not a pool). SQLite WAL mode allows concurrent readers, but ebb's write pattern is single-threaded (only Entity Store writes, and it serializes through its GenServer). A single connection avoids `SQLITE_BUSY` contention.
 
 **Prepared statements:** Prepare and cache the most frequent statements at startup:
+
 - Entity UPSERT
 - Entity SELECT by ID
 - Entity SELECT by type (base query, extended with dynamic WHERE clauses)

@@ -22,18 +22,18 @@ Handles server-to-server multi-master replication. Each peer has a dedicated Man
 
 A GenServer per configured peer. Started by the Replication Supervisor.
 
-| Name | Signature | Description |
-|------|-----------|-------------|
-| `start_link/1` | `start_link(opts) :: GenServer.on_start()` | `opts`: `[peer_url: String.t(), peer_id: String.t()]` |
-| `status/1` | `status(pid) :: peer_status()` | Returns current replication status (catching_up, live, disconnected, backoff). |
-| `lag/1` | `lag(pid) :: non_neg_integer()` | Returns the GSN lag (peer's max GSN - our last applied GSN from this peer). |
+| Name           | Signature                                  | Description                                                                    |
+| -------------- | ------------------------------------------ | ------------------------------------------------------------------------------ |
+| `start_link/1` | `start_link(opts) :: GenServer.on_start()` | `opts`: `[peer_url: String.t(), peer_id: String.t()]`                          |
+| `status/1`     | `status(pid) :: peer_status()`             | Returns current replication status (catching_up, live, disconnected, backoff). |
+| `lag/1`        | `lag(pid) :: non_neg_integer()`            | Returns the GSN lag (peer's max GSN - our last applied GSN from this peer).    |
 
 ### Inbound Endpoint (served by HTTP API)
 
-| Method | Path | Query | Response | Description |
-|--------|------|-------|----------|-------------|
-| `GET` | `/sync/replication` | `offset=<gsn>&limit=<n>` | JSON array of Actions + `Stream-Next-Offset` header | Paginated catch-up for peers |
-| `GET` | `/sync/replication` | `offset=<gsn>&live=sse` | SSE stream of Actions | Live replication stream |
+| Method | Path                | Query                    | Response                                            | Description                  |
+| ------ | ------------------- | ------------------------ | --------------------------------------------------- | ---------------------------- |
+| `GET`  | `/sync/replication` | `offset=<gsn>&limit=<n>` | JSON array of Actions + `Stream-Next-Offset` header | Paginated catch-up for peers |
+| `GET`  | `/sync/replication` | `offset=<gsn>&live=sse`  | SSE stream of Actions                               | Live replication stream      |
 
 These endpoints are served by the HTTP API component but documented here for completeness. They use peer authentication (shared secret or mTLS), not the developer's auth URL.
 
@@ -51,10 +51,10 @@ These endpoints are served by the HTTP API component but documented here for com
 
 ## Dependencies
 
-| Dependency | What it needs | Reference |
-|------------|---------------|-----------|
-| RocksDB Store | `get/3` on `cf_action_dedup` for dedup check (uses default name) | [rocksdb-store.md](rocksdb-store.md#read-operations) |
-| Writer | `WriterRouter.route_write/1` with `trust: true` flag to skip permission checks | [writer.md](writer.md#write-api) |
+| Dependency    | What it needs                                                                  | Reference                                            |
+| ------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------- |
+| RocksDB Store | `get/3` on `cf_action_dedup` for dedup check (uses default name)               | [rocksdb-store.md](rocksdb-store.md#read-operations) |
+| Writer        | `WriterRouter.route_write/1` with `trust: true` flag to skip permission checks | [writer.md](writer.md#write-api)                     |
 
 Note: The Writer's `write_actions/2` interface needs to support a `trust: true` option for replicated Actions. This bypasses the Permission Checker. The Writer still assigns local GSNs, encodes to ETF, and commits to RocksDB.
 
@@ -137,6 +137,7 @@ end
 **Exponential backoff:** Start at 1 second, double on each failure, cap at 60 seconds. Reset to 1 second on successful connection. Circuit breaker: after 10 consecutive failures, log an alert and continue retrying at the capped interval.
 
 **Cursor persistence:** The per-peer replication cursor (last applied GSN from that peer) should survive restarts. Options:
+
 1. Store in SQLite (simple, durable)
 2. Store in RocksDB (a dedicated column family or key in `cf_action_dedup`)
 3. Derive from `cf_action_dedup` on startup (scan for the max GSN from this peer)

@@ -6,15 +6,15 @@ A client can bootstrap a Group (create Group + GroupMember + Relationship in one
 
 ## Components Involved
 
-| Component | Interface Subset Used |
-|-----------|----------------------|
-| [RocksDB Store](../components/rocksdb-store.md) | All interfaces from Slice 1 |
-| [SQLite Store](../components/sqlite-store.md) | All interfaces from Slice 1 |
-| [System Cache](../components/system-cache.md) | All from Slice 1 + `put_group_member/1`, `put_relationship/1`, `get_actor_groups/1`, `get_permissions/2`, `get_entity_group/1` |
-| [Writer](../components/writer.md) | All from Slice 1 + system entity cache update logic (step 6 in flush) |
-| [Entity Store](../components/entity-store.md) | `get/2`, `query/3` |
-| [Permission Checker](../components/permission-checker.md) | `validate_and_authorize/2`, all individual checks |
-| [HTTP API](../components/http-api.md) | `POST /sync/actions` (with auth), `POST /sync/handshake`, `GET /entities/:id`, `POST /entities/query` |
+| Component                                                 | Interface Subset Used                                                                                                          |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| [RocksDB Store](../components/rocksdb-store.md)           | All interfaces from Slice 1                                                                                                    |
+| [SQLite Store](../components/sqlite-store.md)             | All interfaces from Slice 1                                                                                                    |
+| [System Cache](../components/system-cache.md)             | All from Slice 1 + `put_group_member/1`, `put_relationship/1`, `get_actor_groups/1`, `get_permissions/2`, `get_entity_group/1` |
+| [Writer](../components/writer.md)                         | All from Slice 1 + system entity cache update logic (step 6 in flush)                                                          |
+| [Entity Store](../components/entity-store.md)             | `get/2`, `query/3`                                                                                                             |
+| [Permission Checker](../components/permission-checker.md) | `validate_and_authorize/2`, all individual checks                                                                              |
+| [HTTP API](../components/http-api.md)                     | `POST /sync/actions` (with auth), `POST /sync/handshake`, `GET /entities/:id`, `POST /entities/query`                          |
 
 ## Flow
 
@@ -48,7 +48,7 @@ A client can bootstrap a Group (create Group + GroupMember + Relationship in one
    - PUT `todo_xyz` (type: `todo`, data: `{title: "Buy milk", completed: false}`)
    - PUT `rel_jkl` (type: `relationship`, data: `{source_id: "todo_xyz", target_id: "group_abc", type: "todo", field: "list"}`)
 
-7. **Permission Checker validates.** 
+7. **Permission Checker validates.**
    - Builds intra-Action context: finds Relationship `rel_jkl` linking `todo_xyz` → `group_abc`
    - Checks `todo_xyz` authorization: entity's Group is `group_abc` (from intra-Action context), actor `a_user1` has `["todo.*"]` in `group_abc` → authorized
    - Checks `rel_jkl` authorization: Relationship creation to `group_abc`, actor is a member → authorized
@@ -60,7 +60,7 @@ A client can bootstrap a Group (create Group + GroupMember + Relationship in one
 9. **Different actor sends Action.** `POST /sync/actions` (authenticated as `a_user2`) with:
    - PATCH `todo_xyz` (type: `todo`, data: `{completed: true}`)
 
-10. **Permission Checker rejects.** 
+10. **Permission Checker rejects.**
     - Looks up `todo_xyz`'s Group via `SystemCache.get_entity_group("todo_xyz")` → `group_abc`
     - Checks `SystemCache.get_permissions("a_user2", "group_abc")` → `nil` (not a member)
     - Returns rejection: `{action_id: "...", reason: "not_authorized", details: "actor not a member of entity's group"}`

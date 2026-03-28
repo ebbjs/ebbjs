@@ -2,11 +2,11 @@
   "name": "ebbjs",
   "version": "0.0.1",
   "private": true,
-  "author": "Drew Lyton (drewlyton)",
   "description": "Framework for building reactive, collaborative apps that can work offline.",
+  "author": "Drew Lyton (drewlyton)",
   "scripts": {
     "build": "pnpm --recursive build",
-    "test": "pnpm --recursive test",
+    "test": "pnpm --recursive exec vitest --run --passWithNoTests",
     "cli": "pnpm --filter @ebbjs/cli",
     "client": "pnpm --filter @ebbjs/client",
     "core": "pnpm --filter @ebbjs/core",

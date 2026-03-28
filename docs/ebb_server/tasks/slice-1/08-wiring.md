@@ -39,6 +39,7 @@ Update `EbbServer.Application.start/2` to start:
 2. `{Plug.Cowboy, plug: EbbServer.Sync.Router, scheme: :http, port: port}` where `port = Application.get_env(:ebb_server, :port, 4000)`
 
 Children list:
+
 ```elixir
 [
   EbbServer.Storage.Supervisor,

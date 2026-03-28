@@ -6,13 +6,13 @@ Two Writer GenServers process Actions concurrently against a shared RocksDB inst
 
 ## Components Involved
 
-| Component | Interface Subset Used |
-|-----------|----------------------|
-| [Writer](../components/writer.md) | 2 instances + `WriterRouter.route_write/1` + batching (10ms timer / 1000 max) |
-| [System Cache](../components/system-cache.md) | `claim_gsn_range/1` (concurrent from 2 Writers), `mark_range_committed/2`, `advance_watermark/0`, `committed_watermark/0` |
-| [RocksDB Store](../components/rocksdb-store.md) | Concurrent `write_batch/2` from 2 Writers |
-| [Fan-Out](../components/fan-out.md) | Watermark-gated delivery -- buffer out-of-order notifications, push in order |
-| [HTTP API](../components/http-api.md) | `POST /sync/actions` routed through WriterRouter |
+| Component                                       | Interface Subset Used                                                                                                     |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| [Writer](../components/writer.md)               | 2 instances + `WriterRouter.route_write/1` + batching (10ms timer / 1000 max)                                             |
+| [System Cache](../components/system-cache.md)   | `claim_gsn_range/1` (concurrent from 2 Writers), `mark_range_committed/2`, `advance_watermark/0`, `committed_watermark/0` |
+| [RocksDB Store](../components/rocksdb-store.md) | Concurrent `write_batch/2` from 2 Writers                                                                                 |
+| [Fan-Out](../components/fan-out.md)             | Watermark-gated delivery -- buffer out-of-order notifications, push in order                                              |
+| [HTTP API](../components/http-api.md)           | `POST /sync/actions` routed through WriterRouter                                                                          |
 
 ## Flow
 
@@ -36,7 +36,7 @@ Two Writer GenServers process Actions concurrently against a shared RocksDB inst
 
 5. **Fan-Out Router receives notification but buffers.** Checks `committed_watermark()` → 0. GSN 2 is not contiguous with watermark. Buffers `{2, 2}`.
 
-6. **Writer 1 commits.** 
+6. **Writer 1 commits.**
    - `RocksDB.write_batch(...)` with `sync: true` → durable
    - `SystemCache.mark_range_committed(1, 1)`
    - `SystemCache.advance_watermark()` → watermark advances to 2 (both GSNs 1 and 2 are committed)

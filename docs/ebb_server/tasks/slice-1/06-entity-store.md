@@ -23,6 +23,7 @@ Create `EbbServer.Storage.EntityStore` as a module (not a GenServer for Slice 1 
 **`materialize(entity_id)` (public for testability):**
 
 1. Get current state from SQLite:
+
    ```elixir
    {current_data, last_gsn, existing_row} = case SQLite.get_entity(entity_id) do
      {:ok, row} -> {Jason.decode!(row.data), row.last_gsn, row}
@@ -31,6 +32,7 @@ Create `EbbServer.Storage.EntityStore` as a module (not a GenServer for Slice 1 
    ```
 
 2. Read delta from RocksDB — scan `cf_entity_actions` with prefix `entity_id`:
+
    ```elixir
     entries = RocksDB.prefix_iterator(RocksDB.cf_entity_actions(), entity_id)  # uses default name
    |> Stream.map(fn {key, action_id_binary} ->
@@ -58,19 +60,20 @@ Create `EbbServer.Storage.EntityStore` as a module (not a GenServer for Slice 1 
      - Set `created_hlc` to `action["hlc"]` (if first PUT / no existing row)
      - Set `updated_hlc` to `action["hlc"]`
    - If `method == "patch"`:
-      - For each field in `update["data"]["fields"]`:
-        - LWW merge with tiebreaker:
-          - If incoming `"hlc"` > existing `"hlc"` (or existing doesn't exist): use incoming, tag with `"update_id"` from the update
-          - If incoming `"hlc"` < existing `"hlc"`: keep existing
-          - If incoming `"hlc"` == existing `"hlc"`: lexicographic compare of `update["id"]` vs existing field's `"update_id"` — higher update ID wins. This ensures deterministic convergence across all nodes regardless of processing order.
-        - The winning field value is stored with an `"update_id"` key for future tiebreaking (e.g., `%{"type" => "lww", "value" => "x", "hlc" => 1000, "update_id" => "upd_abc"}`)
-      - Set `updated_hlc` to `action["hlc"]`
+     - For each field in `update["data"]["fields"]`:
+       - LWW merge with tiebreaker:
+         - If incoming `"hlc"` > existing `"hlc"` (or existing doesn't exist): use incoming, tag with `"update_id"` from the update
+         - If incoming `"hlc"` < existing `"hlc"`: keep existing
+         - If incoming `"hlc"` == existing `"hlc"`: lexicographic compare of `update["id"]` vs existing field's `"update_id"` — higher update ID wins. This ensures deterministic convergence across all nodes regardless of processing order.
+       - The winning field value is stored with an `"update_id"` key for future tiebreaking (e.g., `%{"type" => "lww", "value" => "x", "hlc" => 1000, "update_id" => "upd_abc"}`)
+     - Set `updated_hlc` to `action["hlc"]`
    - If `method == "delete"`:
      - Set `deleted_hlc` to `action["hlc"]`
      - Set `deleted_by` to `action["actor_id"]`
      - Set `updated_hlc` to `action["hlc"]`
 
 6. Build entity row and upsert to SQLite:
+
    ```elixir
    entity_row = %{
      id: entity_id,

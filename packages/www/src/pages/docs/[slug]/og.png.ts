@@ -1,9 +1,9 @@
-import type { APIRoute, GetStaticPaths } from 'astro';
-import { getCollection } from 'astro:content';
-import { renderOgImage } from '../../../lib/og';
+import type { APIRoute, GetStaticPaths } from "astro";
+import { getCollection } from "astro:content";
+import { renderOgImage } from "../../../lib/og";
 
 export const getStaticPaths: GetStaticPaths = async () => {
-  const docs = await getCollection('docs');
+  const docs = await getCollection("docs");
   return docs.map((doc) => ({
     params: { slug: doc.id },
     props: { title: doc.data.title, description: doc.data.description },
@@ -16,6 +16,6 @@ export const GET: APIRoute = async ({ props }) => {
   return renderOgImage({
     title,
     subtitle: description,
-    badge: 'docs',
+    badge: "docs",
   });
 };

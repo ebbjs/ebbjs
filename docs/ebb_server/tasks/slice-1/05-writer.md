@@ -13,12 +13,15 @@
 Create `EbbServer.Storage.Writer` as a GenServer. For Slice 1: single instance, immediate flush (no batching timer).
 
 **`start_link/1`:**
+
 - `GenServer.start_link(__MODULE__, opts, name: __MODULE__)`
 
 **`init/1`:**
+
 - Return `{:ok, %{}}` — no state needed for Slice 1 (no batching buffer)
 
 **`write_actions(actions)` (public API):**
+
 - `GenServer.call(__MODULE__, {:write_actions, actions})`
 
 **`handle_call({:write_actions, actions}, _from, state)`:**
@@ -26,6 +29,7 @@ Create `EbbServer.Storage.Writer` as a GenServer. For Slice 1: single instance, 
 1. Count actions: `batch_size = length(actions)`
 2. Claim GSN range: `{gsn_start, gsn_end} = SystemCache.claim_gsn_range(batch_size)`
 3. Build WriteBatch operations by iterating actions with their assigned GSNs:
+
    ```elixir
    actions
    |> Enum.with_index(gsn_start)
@@ -51,6 +55,7 @@ Create `EbbServer.Storage.Writer` as a GenServer. For Slice 1: single instance, 
      end)
    end)
    ```
+
 4. Commit: `RocksDB.write_batch(ops)` (uses default name — single RocksDB instance in production)
 5. Mark dirty: collect all unique `subject_id` values from all updates, call `SystemCache.mark_dirty_batch(entity_ids)`
 6. Reply: `{:reply, {:ok, {gsn_start, gsn_end}}, state}`

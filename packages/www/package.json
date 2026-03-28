@@ -1,7 +1,7 @@
 {
   "name": "@ebbjs/www",
-  "type": "module",
   "version": "0.0.1",
+  "type": "module",
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",
@@ -16,7 +16,6 @@
     "@tailwindcss/vite": "^4.2.1",
     "astro": "^5",
     "motion": "^12.38.0",
-
     "satori": "^0.25.0",
     "tailwindcss": "^4.2.1"
   }

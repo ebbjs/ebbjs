@@ -15,27 +15,27 @@ An optional, tunable GenServer that pre-materializes dirty entities during idle 
 
 ### Module: `EbbServer.Storage.BackgroundWarmer`
 
-| Name | Signature | Description |
-|------|-----------|-------------|
-| `start_link/1` | `start_link(opts) :: GenServer.on_start()` | `opts`: `[enabled: boolean(), interval_ms: pos_integer(), batch_size: pos_integer()]` |
-| `status/0` | `status() :: %{enabled: boolean(), entities_materialized: non_neg_integer(), last_run_ms: non_neg_integer()}` | Returns warmer status and stats. |
-| `enable/0` | `enable() :: :ok` | Enables the warmer at runtime. |
-| `disable/0` | `disable() :: :ok` | Disables the warmer at runtime. |
+| Name           | Signature                                                                                                     | Description                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `start_link/1` | `start_link(opts) :: GenServer.on_start()`                                                                    | `opts`: `[enabled: boolean(), interval_ms: pos_integer(), batch_size: pos_integer()]` |
+| `status/0`     | `status() :: %{enabled: boolean(), entities_materialized: non_neg_integer(), last_run_ms: non_neg_integer()}` | Returns warmer status and stats.                                                      |
+| `enable/0`     | `enable() :: :ok`                                                                                             | Enables the warmer at runtime.                                                        |
+| `disable/0`    | `disable() :: :ok`                                                                                            | Disables the warmer at runtime.                                                       |
 
 ### Configuration
 
-| Key | Description | Default |
-|-----|-------------|---------|
-| `:warmer_enabled` | Whether the warmer runs | `false` |
-| `:warmer_interval_ms` | Milliseconds between warmer cycles | `1000` |
-| `:warmer_batch_size` | Max entities to materialize per cycle | `100` |
+| Key                   | Description                           | Default |
+| --------------------- | ------------------------------------- | ------- |
+| `:warmer_enabled`     | Whether the warmer runs               | `false` |
+| `:warmer_interval_ms` | Milliseconds between warmer cycles    | `1000`  |
+| `:warmer_batch_size`  | Max entities to materialize per cycle | `100`   |
 
 ## Dependencies
 
-| Dependency | What it needs | Reference |
-|------------|---------------|-----------|
+| Dependency   | What it needs                                       | Reference                                                                |
+| ------------ | --------------------------------------------------- | ------------------------------------------------------------------------ |
 | Entity Store | `materialize_batch/1` to materialize dirty entities | [entity-store.md](entity-store.md#materialization-internal-but-testable) |
-| System Cache | `dirty_set_size/0` to check if there's work to do | [system-cache.md](system-cache.md#dirty-set) |
+| System Cache | `dirty_set_size/0` to check if there's work to do   | [system-cache.md](system-cache.md#dirty-set)                             |
 
 ## Internal Design Notes
 
@@ -78,6 +78,7 @@ end
 **Priority:** The warmer should yield to real reads. Since Entity Store is a GenServer, warmer materializations and real reads are serialized. If the Entity Store mailbox has pending read requests, the warmer's `materialize_batch` call will queue behind them. This is the desired behavior -- real reads always take priority.
 
 **Tuning guidance:**
+
 - **Off** (default): Pure on-demand. Maximum write throughput. Read latency depends on dirty set size.
 - **Moderate** (interval: 500ms, batch: 50): Good for mixed read/write workloads. Keeps dirty set small without impacting write throughput.
 - **Aggressive** (interval: 100ms, batch: 500): Approaches eager materialization. `ctx.query()` rarely hits dirty entities. Higher CPU usage.

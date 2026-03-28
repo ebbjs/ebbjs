@@ -6,16 +6,16 @@ A client can handshake, catch up on missed Actions for its Groups via paginated 
 
 ## Components Involved
 
-| Component | Interface Subset Used |
-|-----------|----------------------|
-| [RocksDB Store](../components/rocksdb-store.md) | All from Slice 2 + `range_iterator/3` for catch-up and fan-out reads |
-| [SQLite Store](../components/sqlite-store.md) | All from Slice 2 |
-| [System Cache](../components/system-cache.md) | All from Slice 2 + `committed_watermark/0`, `get_group_entities/1`, `mark_range_committed/2`, `advance_watermark/0` |
-| [Writer](../components/writer.md) | All from Slice 2 + watermark advancement + fan-out notification |
-| [Entity Store](../components/entity-store.md) | All from Slice 2 |
-| [Permission Checker](../components/permission-checker.md) | All from Slice 2 |
-| [Fan-Out](../components/fan-out.md) | `FanOutRouter.subscribe/2`, `FanOutRouter.unsubscribe/1`, `GroupServer.push_actions/2`, `SSEConnection` |
-| [HTTP API](../components/http-api.md) | All from Slice 2 + `GET /sync/groups/:group_id?offset=:gsn`, `GET /sync/live`, `POST /sync/presence` |
+| Component                                                 | Interface Subset Used                                                                                               |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| [RocksDB Store](../components/rocksdb-store.md)           | All from Slice 2 + `range_iterator/3` for catch-up and fan-out reads                                                |
+| [SQLite Store](../components/sqlite-store.md)             | All from Slice 2                                                                                                    |
+| [System Cache](../components/system-cache.md)             | All from Slice 2 + `committed_watermark/0`, `get_group_entities/1`, `mark_range_committed/2`, `advance_watermark/0` |
+| [Writer](../components/writer.md)                         | All from Slice 2 + watermark advancement + fan-out notification                                                     |
+| [Entity Store](../components/entity-store.md)             | All from Slice 2                                                                                                    |
+| [Permission Checker](../components/permission-checker.md) | All from Slice 2                                                                                                    |
+| [Fan-Out](../components/fan-out.md)                       | `FanOutRouter.subscribe/2`, `FanOutRouter.unsubscribe/1`, `GroupServer.push_actions/2`, `SSEConnection`             |
+| [HTTP API](../components/http-api.md)                     | All from Slice 2 + `GET /sync/groups/:group_id?offset=:gsn`, `GET /sync/live`, `POST /sync/presence`                |
 
 ## Flow
 
@@ -25,9 +25,7 @@ A client can handshake, catch up on missed Actions for its Groups via paginated 
    ```json
    {
      "actor_id": "a_user1",
-     "groups": [
-       {"id": "group_abc", "cursor_valid": true}
-     ]
+     "groups": [{ "id": "group_abc", "cursor_valid": true }]
    }
    ```
 
@@ -35,7 +33,7 @@ A client can handshake, catch up on missed Actions for its Groups via paginated 
 
 2. **Client A catches up.** `GET /sync/groups/group_abc?offset=0`
 
-3. **Server reads from RocksDB.** 
+3. **Server reads from RocksDB.**
    - Authenticates, verifies Client A is a member of `group_abc`
    - Gets entity IDs for `group_abc` from `SystemCache.get_group_entities("group_abc")`
    - For each entity, iterates `cf_entity_actions` where GSN > 0
@@ -73,6 +71,7 @@ A client can handshake, catch up on missed Actions for its Groups via paginated 
 10. **GroupServer pushes to subscribers.** Sends the Action to Client A's SSE connection process.
 
 11. **SSE connection writes to stream.**
+
     ```
     event: data
     data: {"id":"act_xyz","gsn":3,"actor_id":"a_user2","hlc":...,"updates":[...]}
@@ -114,7 +113,7 @@ A client can handshake, catch up on missed Actions for its Groups via paginated 
 
 1. **Implement committed watermark in System Cache.** Add `mark_range_committed/2`, `advance_watermark/0`, `committed_watermark/0`. With a single Writer (this slice), the watermark always equals the max GSN. Write unit tests.
 
-2. **Extend Writer with watermark and fan-out notification.** After each batch commit, call `mark_range_committed` + `advance_watermark`, then `send(FanOutRouter, {:batch_committed, from, to})`. 
+2. **Extend Writer with watermark and fan-out notification.** After each batch commit, call `mark_range_committed` + `advance_watermark`, then `send(FanOutRouter, {:batch_committed, from, to})`.
 
 3. **Build Fan-Out Router.** `EbbServer.Sync.FanOutRouter` GenServer -- handle `{:batch_committed, ...}` messages, check watermark, read Actions from RocksDB, route to Group GenServers. Implement `subscribe/2` and `unsubscribe/1`.
 

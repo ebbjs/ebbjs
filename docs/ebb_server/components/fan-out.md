@@ -23,35 +23,35 @@ Delivers committed Actions to live SSE subscribers in GSN order. The Fan-Out Rou
 
 A GenServer that receives batch notifications and coordinates ordered delivery.
 
-| Name | Signature | Description |
-|------|-----------|-------------|
-| `start_link/1` | `start_link(opts) :: GenServer.on_start()` | Starts the router. |
-| `subscribe/2` | `subscribe(group_ids :: [String.t()], connection_pid :: pid()) :: :ok` | Registers an SSE connection for the given Groups. Starts Group GenServers if needed. |
-| `unsubscribe/1` | `unsubscribe(connection_pid :: pid()) :: :ok` | Removes an SSE connection from all Groups. Stops empty Group GenServers. |
-| `broadcast_presence/3` | `broadcast_presence(entity_id :: String.t(), actor_id :: String.t(), data :: map()) :: :ok` | Routes presence to the entity's Group GenServer for broadcast. |
+| Name                   | Signature                                                                                   | Description                                                                          |
+| ---------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `start_link/1`         | `start_link(opts) :: GenServer.on_start()`                                                  | Starts the router.                                                                   |
+| `subscribe/2`          | `subscribe(group_ids :: [String.t()], connection_pid :: pid()) :: :ok`                      | Registers an SSE connection for the given Groups. Starts Group GenServers if needed. |
+| `unsubscribe/1`        | `unsubscribe(connection_pid :: pid()) :: :ok`                                               | Removes an SSE connection from all Groups. Stops empty Group GenServers.             |
+| `broadcast_presence/3` | `broadcast_presence(entity_id :: String.t(), actor_id :: String.t(), data :: map()) :: :ok` | Routes presence to the entity's Group GenServer for broadcast.                       |
 
 ### Module: `EbbServer.Sync.GroupServer`
 
 A GenServer per active Group. Started dynamically when the first client subscribes, stopped when the last client leaves.
 
-| Name | Signature | Description |
-|------|-----------|-------------|
-| `start_link/1` | `start_link(group_id :: String.t()) :: GenServer.on_start()` | Starts a Group GenServer. |
-| `push_actions/2` | `push_actions(group_pid, actions :: [action()]) :: :ok` | Sends Actions to all subscribers of this Group. Cast (async). |
-| `add_subscriber/2` | `add_subscriber(group_pid, connection_pid :: pid()) :: :ok` | Adds an SSE connection to this Group's subscriber set. |
-| `remove_subscriber/2` | `remove_subscriber(group_pid, connection_pid :: pid()) :: :ok` | Removes an SSE connection. Returns `:empty` if no subscribers remain. |
-| `broadcast_presence/3` | `broadcast_presence(group_pid, actor_id :: String.t(), data :: map()) :: :ok` | Sends presence to all subscribers except the originating actor. |
+| Name                   | Signature                                                                     | Description                                                           |
+| ---------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `start_link/1`         | `start_link(group_id :: String.t()) :: GenServer.on_start()`                  | Starts a Group GenServer.                                             |
+| `push_actions/2`       | `push_actions(group_pid, actions :: [action()]) :: :ok`                       | Sends Actions to all subscribers of this Group. Cast (async).         |
+| `add_subscriber/2`     | `add_subscriber(group_pid, connection_pid :: pid()) :: :ok`                   | Adds an SSE connection to this Group's subscriber set.                |
+| `remove_subscriber/2`  | `remove_subscriber(group_pid, connection_pid :: pid()) :: :ok`                | Removes an SSE connection. Returns `:empty` if no subscribers remain. |
+| `broadcast_presence/3` | `broadcast_presence(group_pid, actor_id :: String.t(), data :: map()) :: :ok` | Sends presence to all subscribers except the originating actor.       |
 
 ### Module: `EbbServer.Sync.SSEConnection`
 
 A process per connected client. Receives messages from multiple Group GenServers and writes to the SSE stream.
 
-| Name | Signature | Description |
-|------|-----------|-------------|
-| `start_link/1` | `start_link(conn :: Plug.Conn.t()) :: GenServer.on_start()` | Starts an SSE connection process. |
-| `push_action/2` | `push_action(pid, action :: action()) :: :ok` | Sends an Action event to the client. |
-| `push_control/2` | `push_control(pid, control :: map()) :: :ok` | Sends a control event (nextOffset, reconnect). |
-| `push_presence/2` | `push_presence(pid, presence :: map()) :: :ok` | Sends a presence event. |
+| Name              | Signature                                                   | Description                                    |
+| ----------------- | ----------------------------------------------------------- | ---------------------------------------------- |
+| `start_link/1`    | `start_link(conn :: Plug.Conn.t()) :: GenServer.on_start()` | Starts an SSE connection process.              |
+| `push_action/2`   | `push_action(pid, action :: action()) :: :ok`               | Sends an Action event to the client.           |
+| `push_control/2`  | `push_control(pid, control :: map()) :: :ok`                | Sends a control event (nextOffset, reconnect). |
+| `push_presence/2` | `push_presence(pid, presence :: map()) :: :ok`              | Sends a presence event.                        |
 
 ### SSE Event Format
 
@@ -73,11 +73,11 @@ data: {"reconnect":true,"reason":"membership_changed"}
 
 ## Dependencies
 
-| Dependency | What it needs | Reference |
-|------------|---------------|-----------|
-| System Cache | `committed_watermark/0` for delivery gating | [system-cache.md](system-cache.md#committed-watermark) |
-| System Cache | `get_entity_group/1` and `get_group_entities/1` for routing Actions to Groups | [system-cache.md](system-cache.md#relationships) |
-| RocksDB Store | `range_iterator/4` on `cf_actions` to read committed Actions by GSN range (uses default name) | [rocksdb-store.md](rocksdb-store.md#read-operations) |
+| Dependency    | What it needs                                                                                 | Reference                                              |
+| ------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| System Cache  | `committed_watermark/0` for delivery gating                                                   | [system-cache.md](system-cache.md#committed-watermark) |
+| System Cache  | `get_entity_group/1` and `get_group_entities/1` for routing Actions to Groups                 | [system-cache.md](system-cache.md#relationships)       |
+| RocksDB Store | `range_iterator/4` on `cf_actions` to read committed Actions by GSN range (uses default name) | [rocksdb-store.md](rocksdb-store.md#read-operations)   |
 
 Note: Fan-Out receives `{:batch_committed, from_gsn, to_gsn}` messages from Writer via `send/2` (not a function call). This is a message-based dependency, not a module dependency.
 

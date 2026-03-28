@@ -13,6 +13,7 @@
 These tests exercise the complete end-to-end flow via HTTP. Use `Plug.Test` (not an actual HTTP client) for speed and isolation.
 
 **Test setup:**
+
 - Create a tmp_dir for this test run
 - Override application config: `Application.put_env(:ebb_server, :data_dir, tmp_dir)`
 - Start the storage supervisor manually (or use the full application)

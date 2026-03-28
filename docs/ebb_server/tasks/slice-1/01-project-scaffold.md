@@ -13,6 +13,7 @@
 Create the Mix project files manually (do not run `mix new` since `_build/` and `deps/` already exist from a previous attempt).
 
 **`mix.exs`:**
+
 - Module `EbbServer.MixProject`
 - `app: :ebb_server`, `version: "0.1.0"`, `elixir: "~> 1.17"`
 - `mod: {EbbServer.Application, []}` in `application/0`
@@ -26,9 +27,11 @@ Create the Mix project files manually (do not run `mix new` since `_build/` and 
   - `{:nanoid, "~> 2.1"}`
 
 **`.formatter.exs`:**
+
 - Standard Elixir formatter config: `[inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}"]]`
 
 **`.gitignore`:**
+
 - Standard Elixir ignores: `/_build/`, `/deps/`, `/data/`, `*.ez`, `erl_crash.dump`, `.elixir_ls/`
 
 ---
@@ -38,18 +41,21 @@ Create the Mix project files manually (do not run `mix new` since `_build/` and 
 **Files:** `ebb_server/config/config.exs` (create), `ebb_server/config/test.exs` (create), `ebb_server/config/dev.exs` (create)
 
 **`config/config.exs`:**
+
 - `import Config`
 - `config :ebb_server, port: 4000`
 - `config :ebb_server, data_dir: "./data"`
 - `import_config "#{config_env()}.exs"`
 
 **`config/test.exs`:**
+
 - `import Config`
 - `config :ebb_server, port: 4001`
 - `config :ebb_server, data_dir: "./data/test"`
 - `config :logger, level: :warning`
 
 **`config/dev.exs`:**
+
 - `import Config`
 - (empty for now, just `import Config`)
 
@@ -60,9 +66,11 @@ Create the Mix project files manually (do not run `mix new` since `_build/` and 
 **Files:** `ebb_server/lib/ebb_server.ex` (create), `ebb_server/lib/ebb_server/application.ex` (create)
 
 **`lib/ebb_server.ex`:**
+
 - Module `EbbServer` with a `@moduledoc` — just a namespace module for now.
 
 **`lib/ebb_server/application.ex`:**
+
 - Module `EbbServer.Application`, `use Application`
 - `start/2` returns `Supervisor.start_link(children, opts)` with `strategy: :one_for_one`, `name: EbbServer.Supervisor`
 - Children list initially empty — placeholder comments for `EbbServer.Storage.Supervisor` and HTTP server (Plug.Cowboy).
@@ -76,9 +84,11 @@ At this point the project should compile (`mix compile`) and `mix test` should p
 **Files:** `ebb_server/test/test_helper.exs` (create), `ebb_server/test/support/test_helpers.ex` (create)
 
 **`test/test_helper.exs`:**
+
 - `ExUnit.start()`
 
 **`test/support/test_helpers.ex`:**
+
 - Module `EbbServer.TestHelpers`
 - Function `tmp_dir(test_context)` — creates a unique temporary directory under `System.tmp_dir!()` using the test module + test name. Returns the path. Registers an `on_exit` callback that recursively deletes the directory.
 - Function `generate_hlc()` — generates a 64-bit HLC from the current wall clock time with counter 0: `Bitwise.bsl(System.os_time(:millisecond), 16)`. This produces a proper HLC in the format documented in the [clock spec](/docs/clock): upper 48 bits = logical time (ms), lower 16 bits = counter.

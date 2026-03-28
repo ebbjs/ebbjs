@@ -32,6 +32,7 @@ Ebb provides conflict management primitives similar to CouchDB's approach, using
 The server doesn't track conflicts—it simply applies all updates using per-field merge functions based on each field's [type](/docs/data-model#typed-fields). Every server applies the same deterministic algorithm:
 
 **LWW fields** (`e.string()`, `e.number()`, `e.boolean()`):
+
 1. **Higher HLC wins** - Updates with more recent causal timestamps take precedence
 2. **Tiebreaker** - If [HLC](/docs/clock) timestamps are equal, lexicographic comparison of update IDs (`update_id`) determines the winner. The higher update ID wins. This is deterministic regardless of the order nodes process updates, guaranteeing convergence
 

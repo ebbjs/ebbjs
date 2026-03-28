@@ -10,18 +10,18 @@ The server exposes an HTTP API for Action writes, entity reads, sync handshake, 
 
 ## Components
 
-| Component | Purpose |
-|-----------|---------|
-| [RocksDB Store](components/rocksdb-store.md) | Manages the RocksDB instance, column families, key encoding, and low-level read/write primitives |
-| [SQLite Store](components/sqlite-store.md) | Manages the SQLite entity cache -- schema DDL, entity UPSERT, filtered queries with permission JOINs |
-| [System Cache](components/system-cache.md) | ETS table owner for permission caches and dirty tracking; shared `:atomics` for GSN counter and watermark; startup population |
-| [Writer](components/writer.md) | 2 GenServers that serialize Action writes -- GSN assignment, ETF encoding, WriteBatch, ETS updates, watermark advancement, durability notification |
-| [Entity Store](components/entity-store.md) | On-demand materialization -- dirty check, RocksDB delta read, per-field typed merge, SQLite upsert, clear dirty |
-| [Permission Checker](components/permission-checker.md) | Validates Action structure, HLC drift, actor identity, and ETS-based Group/Relationship authorization |
-| [HTTP API](components/http-api.md) | Plug/Cowboy router -- all client-facing and internal HTTP endpoints |
-| [Fan-Out](components/fan-out.md) | Router + per-Group GenServers + SSE connection processes -- watermark-gated ordered delivery to live subscribers |
-| [Replication](components/replication.md) | Per-peer Manager processes -- catch-up + live SSE from peers, dedup, trust-and-apply writes |
-| [Background Warmer](components/background-warmer.md) | Optional GenServer that pre-materializes dirty entities during idle periods |
+| Component                                              | Purpose                                                                                                                                            |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [RocksDB Store](components/rocksdb-store.md)           | Manages the RocksDB instance, column families, key encoding, and low-level read/write primitives                                                   |
+| [SQLite Store](components/sqlite-store.md)             | Manages the SQLite entity cache -- schema DDL, entity UPSERT, filtered queries with permission JOINs                                               |
+| [System Cache](components/system-cache.md)             | ETS table owner for permission caches and dirty tracking; shared `:atomics` for GSN counter and watermark; startup population                      |
+| [Writer](components/writer.md)                         | 2 GenServers that serialize Action writes -- GSN assignment, ETF encoding, WriteBatch, ETS updates, watermark advancement, durability notification |
+| [Entity Store](components/entity-store.md)             | On-demand materialization -- dirty check, RocksDB delta read, per-field typed merge, SQLite upsert, clear dirty                                    |
+| [Permission Checker](components/permission-checker.md) | Validates Action structure, HLC drift, actor identity, and ETS-based Group/Relationship authorization                                              |
+| [HTTP API](components/http-api.md)                     | Plug/Cowboy router -- all client-facing and internal HTTP endpoints                                                                                |
+| [Fan-Out](components/fan-out.md)                       | Router + per-Group GenServers + SSE connection processes -- watermark-gated ordered delivery to live subscribers                                   |
+| [Replication](components/replication.md)               | Per-peer Manager processes -- catch-up + live SSE from peers, dedup, trust-and-apply writes                                                        |
+| [Background Warmer](components/background-warmer.md)   | Optional GenServer that pre-materializes dirty entities during idle periods                                                                        |
 
 ## Dependencies
 
@@ -74,14 +74,14 @@ The `rest_for_one` strategy on Storage Supervisor ensures that if RocksDB Store 
 
 ## Vertical Slices
 
-| # | Slice | Components Involved | Purpose |
-|---|-------|---------------------|---------|
-| 1 | [Single Action Write + Read-Back](slices/01-single-action-write-read.md) | RocksDB Store, SQLite Store, System Cache, Writer, Entity Store, HTTP API | Thinnest end-to-end: write an Action via HTTP, read the materialized entity back |
-| 2 | [Permission-Checked Write](slices/02-permission-checked-write.md) | + Permission Checker | Adds authorization -- Group bootstrap, membership check, relationship lookup |
-| 3 | [Live Sync (Catch-Up + SSE)](slices/03-live-sync.md) | + Fan-Out, HTTP API (SSE) | Client handshake, paginated catch-up from RocksDB, live SSE subscription |
-| 4 | [Multi-Writer Concurrent Writes](slices/04-multi-writer.md) | Writer (x2), System Cache (watermark), Fan-Out | Validates 2-writer pipelining, GSN watermark correctness, ordered fan-out |
-| 5 | [Server Function Invocation](slices/05-server-function-invocation.md) | HTTP API, Entity Store, Writer | Bun calls `ctx.get`/`ctx.query`/`ctx.create` via Elixir HTTP endpoints |
-| 6 | [Peer Replication](slices/06-peer-replication.md) | Replication, Writer, RocksDB Store | Server-to-server catch-up + live stream, dedup, trust-and-apply |
+| #   | Slice                                                                    | Components Involved                                                       | Purpose                                                                          |
+| --- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| 1   | [Single Action Write + Read-Back](slices/01-single-action-write-read.md) | RocksDB Store, SQLite Store, System Cache, Writer, Entity Store, HTTP API | Thinnest end-to-end: write an Action via HTTP, read the materialized entity back |
+| 2   | [Permission-Checked Write](slices/02-permission-checked-write.md)        | + Permission Checker                                                      | Adds authorization -- Group bootstrap, membership check, relationship lookup     |
+| 3   | [Live Sync (Catch-Up + SSE)](slices/03-live-sync.md)                     | + Fan-Out, HTTP API (SSE)                                                 | Client handshake, paginated catch-up from RocksDB, live SSE subscription         |
+| 4   | [Multi-Writer Concurrent Writes](slices/04-multi-writer.md)              | Writer (x2), System Cache (watermark), Fan-Out                            | Validates 2-writer pipelining, GSN watermark correctness, ordered fan-out        |
+| 5   | [Server Function Invocation](slices/05-server-function-invocation.md)    | HTTP API, Entity Store, Writer                                            | Bun calls `ctx.get`/`ctx.query`/`ctx.create` via Elixir HTTP endpoints           |
+| 6   | [Peer Replication](slices/06-peer-replication.md)                        | Replication, Writer, RocksDB Store                                        | Server-to-server catch-up + live stream, dedup, trust-and-apply                  |
 
 Slices are ordered from simplest to most complex. Build and validate them in order.
 
@@ -91,11 +91,11 @@ Slices are ordered from simplest to most complex. Build and validate them in ord
 
 Three formats at three layers, each optimized for its consumer:
 
-| Layer | Format | Library |
-|-------|--------|---------|
-| Client <-> Server (wire) | MessagePack | `Msgpax` |
-| RocksDB (storage) | ETF (Erlang Term Format) | `:erlang.term_to_binary/1` / `binary_to_term/2` |
-| SQLite (entity cache) | JSON | `Jason` |
+| Layer                    | Format                   | Library                                         |
+| ------------------------ | ------------------------ | ----------------------------------------------- |
+| Client <-> Server (wire) | MessagePack              | `Msgpax`                                        |
+| RocksDB (storage)        | ETF (Erlang Term Format) | `:erlang.term_to_binary/1` / `binary_to_term/2` |
+| SQLite (entity cache)    | JSON                     | `Jason`                                         |
 
 **Every component** that reads from RocksDB must use `binary_to_term(binary, [:safe])` to prevent atom table pollution. Map keys in stored terms should be strings, not atoms.
 
@@ -111,37 +111,37 @@ Three formats at three layers, each optimized for its consumer:
 
 All configuration flows through `Application.get_env(:ebb_server, key)`:
 
-| Key | Description | Default |
-|-----|-------------|---------|
-| `:port` | HTTP listen port | 4000 |
-| `:data_dir` | Directory for RocksDB + SQLite files | `./data` |
-| `:auth_url` | Developer's auth endpoint URL | (required) |
-| `:writer_count` | Number of Writer GenServers | 2 |
-| `:writer_batch_timeout_ms` | Batch flush timer | 10 |
-| `:writer_batch_max_size` | Max Actions per batch | 1000 |
-| `:warmer_enabled` | Enable Background Warmer | false |
-| `:warmer_interval_ms` | Warmer poll interval | 1000 |
-| `:warmer_batch_size` | Entities per warmer cycle | 100 |
-| `:replication_peers` | List of peer server URLs | [] |
+| Key                        | Description                          | Default    |
+| -------------------------- | ------------------------------------ | ---------- |
+| `:port`                    | HTTP listen port                     | 4000       |
+| `:data_dir`                | Directory for RocksDB + SQLite files | `./data`   |
+| `:auth_url`                | Developer's auth endpoint URL        | (required) |
+| `:writer_count`            | Number of Writer GenServers          | 2          |
+| `:writer_batch_timeout_ms` | Batch flush timer                    | 10         |
+| `:writer_batch_max_size`   | Max Actions per batch                | 1000       |
+| `:warmer_enabled`          | Enable Background Warmer             | false      |
+| `:warmer_interval_ms`      | Warmer poll interval                 | 1000       |
+| `:warmer_batch_size`       | Entities per warmer cycle            | 100        |
+| `:replication_peers`       | List of peer server URLs             | []         |
 
 ### Observability
 
 Every component emits `:telemetry` events. Key metrics:
 
-| Metric | Source | Type |
-|--------|--------|------|
-| `ebb.writer.batch_size` | Writer | Histogram |
-| `ebb.writer.batch_latency_ms` | Writer | Histogram |
-| `ebb.writer.actions_per_sec` | Writer | Counter |
-| `ebb.watermark.lag` | System Cache | Gauge (max_gsn - watermark) |
-| `ebb.dirty_set.size` | System Cache | Gauge |
-| `ebb.entity_store.materialize_latency_ms` | Entity Store | Histogram |
-| `ebb.entity_store.cache_hit_rate` | Entity Store | Ratio |
-| `ebb.fanout.push_latency_ms` | Fan-Out | Histogram |
-| `ebb.fanout.active_connections` | Fan-Out | Gauge |
-| `ebb.fanout.active_groups` | Fan-Out | Gauge |
-| `ebb.http.request_latency_ms` | HTTP API | Histogram (per endpoint) |
-| `ebb.replication.lag_gsn` | Replication | Gauge (per peer) |
+| Metric                                    | Source       | Type                        |
+| ----------------------------------------- | ------------ | --------------------------- |
+| `ebb.writer.batch_size`                   | Writer       | Histogram                   |
+| `ebb.writer.batch_latency_ms`             | Writer       | Histogram                   |
+| `ebb.writer.actions_per_sec`              | Writer       | Counter                     |
+| `ebb.watermark.lag`                       | System Cache | Gauge (max_gsn - watermark) |
+| `ebb.dirty_set.size`                      | System Cache | Gauge                       |
+| `ebb.entity_store.materialize_latency_ms` | Entity Store | Histogram                   |
+| `ebb.entity_store.cache_hit_rate`         | Entity Store | Ratio                       |
+| `ebb.fanout.push_latency_ms`              | Fan-Out      | Histogram                   |
+| `ebb.fanout.active_connections`           | Fan-Out      | Gauge                       |
+| `ebb.fanout.active_groups`                | Fan-Out      | Gauge                       |
+| `ebb.http.request_latency_ms`             | HTTP API     | Histogram (per endpoint)    |
+| `ebb.replication.lag_gsn`                 | Replication  | Gauge (per peer)            |
 
 ### ID Generation
 

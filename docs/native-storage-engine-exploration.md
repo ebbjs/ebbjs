@@ -11,7 +11,7 @@ This document explores an alternative to the architecture in `storage-architectu
 - Bun Materializer (async) writing to SQLite
 - SQLite for materialized entity state
 
-The core tension: **the Bun Function Server sits right next to the Action log, but sees stale data because materialization is async**. The data is *right there*, but there's lag due to the Elixir → SSE → Bun → SQLite indirection.
+The core tension: **the Bun Function Server sits right next to the Action log, but sees stale data because materialization is async**. The data is _right there_, but there's lag due to the Elixir → SSE → Bun → SQLite indirection.
 
 This exploration asks: **can we build a unified native storage engine that eliminates this lag by making materialization synchronous?**
 
@@ -158,11 +158,13 @@ Client catch-up request
 The original proposal rejected a Rust NIF for the storage engine due to "coordination complexity at the NIF boundary" — durability notifications, compaction triggers, etc.
 
 **Questions to answer:**
-- Is the coordination simpler if the NIF does *more* (materialization + indexes) rather than less?
+
+- Is the coordination simpler if the NIF does _more_ (materialization + indexes) rather than less?
 - What's the minimal interface between Elixir and the NIF?
 - Can we make the NIF "dumb" from Elixir's perspective — just "write this, read that"?
 
 **De-risk approach:**
+
 - [ ] Sketch the exact NIF API (functions, arguments, return types)
 - [ ] Identify all cross-boundary coordination points
 - [ ] Prototype the NIF boundary with a minimal implementation
@@ -174,11 +176,13 @@ The original proposal rejected a Rust NIF for the storage engine due to "coordin
 Bun needs to read (and potentially write) from the same native engine.
 
 **Questions to answer:**
+
 - N-API addon vs FFI — which is simpler for this use case?
 - How does Bun access the same data files/memory as Elixir?
 - What's the concurrency model — can Bun read while Elixir writes?
 
 **De-risk approach:**
+
 - [ ] Prototype a minimal native addon that Bun can call
 - [ ] Test concurrent access (Elixir writing via NIF, Bun reading via N-API)
 - [ ] Measure read latency from Bun
@@ -190,11 +194,13 @@ Bun needs to read (and potentially write) from the same native engine.
 The native engine must implement field-level LWW identically to how clients do it. Divergence = data inconsistency.
 
 **Questions to answer:**
+
 - Can we generate the merge logic from a single spec?
 - How do we test equivalence between native and JS implementations?
 - What about CRDT (Yjs) entities — does the native engine handle those too?
 
 **De-risk approach:**
+
 - [ ] Write a formal spec for LWW merge semantics
 - [ ] Build a test suite that runs against both native and JS implementations
 - [ ] Decide: native engine handles JSON LWW only, or also Yjs?
@@ -206,11 +212,13 @@ The native engine must implement field-level LWW identically to how clients do i
 SQLite gives you SQL. A custom engine gives you... whatever you build.
 
 **Questions to answer:**
+
 - What queries do server functions actually need?
 - Can we get away with a small, fixed set of query patterns?
 - Do we need secondary indexes on arbitrary fields, or just system entity fields?
 
 **De-risk approach:**
+
 - [ ] Enumerate all query patterns from the Ebb API (ctx.get, ctx.query, etc.)
 - [ ] Determine which require indexes
 - [ ] Prototype the query layer with the most complex query pattern
@@ -222,12 +230,14 @@ SQLite gives you SQL. A custom engine gives you... whatever you build.
 SQLite has decades of tooling. A custom engine has... what you build.
 
 **Questions to answer:**
+
 - How do you inspect the data? (debugging, support)
 - How do you back up and restore?
 - How do you monitor health and performance?
 - What happens on corruption — recovery path?
 
 **De-risk approach:**
+
 - [ ] Define the minimal operational tooling needed for launch
 - [ ] Plan the debugging story (dump to JSON? SQLite export for inspection?)
 - [ ] Document the recovery process
@@ -241,12 +251,14 @@ SQLite has decades of tooling. A custom engine has... what you build.
 **Goal:** Prove Elixir and Bun can both access the same native engine efficiently.
 
 **Build:**
+
 - Minimal Rust library with: append(data) → GSN, read(GSN) → data
 - Elixir NIF wrapper
 - Bun N-API wrapper
 - Test: Elixir writes, Bun reads concurrently
 
 **Success criteria:**
+
 - Bun sees writes within <1ms of Elixir commit
 - No corruption under concurrent access
 - NIF doesn't block BEAM scheduler
@@ -258,11 +270,13 @@ SQLite has decades of tooling. A custom engine has... what you build.
 **Goal:** Prove the native engine can maintain materialized state correctly.
 
 **Build:**
+
 - Extend engine: on append, apply LWW merge to entity state
 - Expose read_entity(id) function
 - Port the JS LWW test suite to run against native implementation
 
 **Success criteria:**
+
 - Native LWW matches JS LWW for all test cases
 - Materialized state is always consistent with Action log
 
@@ -273,11 +287,13 @@ SQLite has decades of tooling. A custom engine has... what you build.
 **Goal:** Prove queries can be efficiently filtered by actor's group membership.
 
 **Build:**
+
 - Indexes for GroupMember (actor → groups) and Relationship (entity → group)
 - Query function that takes actor_id, applies permission filter
 - Benchmark with realistic data volume (100k entities, 10k actors, 500 groups)
 
 **Success criteria:**
+
 - Query latency <5ms at target data volume
 - Index memory usage acceptable
 
@@ -288,11 +304,13 @@ SQLite has decades of tooling. A custom engine has... what you build.
 **Goal:** Prove the full write path works end-to-end.
 
 **Build:**
+
 - Replace Writer GenServer internals with NIF calls
 - Replace ETS cache reads with native engine queries
 - Remove Bun Materializer, point server functions at native engine
 
 **Success criteria:**
+
 - Sync protocol works as before
 - Server functions see zero-lag materialized state
 - Throughput meets target (10k+ writes/sec)
@@ -301,12 +319,12 @@ SQLite has decades of tooling. A custom engine has... what you build.
 
 ## Alternatives Considered
 
-| Alternative | Why not (or why maybe) |
-|-------------|------------------------|
-| **SQLite for everything** | fsync limits throughput to ~1-3k writes/sec |
-| **Current proposal (Elixir log + Bun Materializer + SQLite)** | Async materialization lag; multiple caches to coordinate |
-| **Elixir does materialization (no Bun Materializer)** | Still limited by SQLite write throughput for entity table |
-| **Keep SQLite for queries, custom log for Actions only** | Doesn't solve materialization lag |
+| Alternative                                                   | Why not (or why maybe)                                    |
+| ------------------------------------------------------------- | --------------------------------------------------------- |
+| **SQLite for everything**                                     | fsync limits throughput to ~1-3k writes/sec               |
+| **Current proposal (Elixir log + Bun Materializer + SQLite)** | Async materialization lag; multiple caches to coordinate  |
+| **Elixir does materialization (no Bun Materializer)**         | Still limited by SQLite write throughput for entity table |
+| **Keep SQLite for queries, custom log for Actions only**      | Doesn't solve materialization lag                         |
 
 ---
 
@@ -317,17 +335,19 @@ SQLite has decades of tooling. A custom engine has... what you build.
 **Decision:** Native engine handles both JSON LWW and Yjs CRDT materialization using [yrs](https://github.com/y-crdt/y-crdt) (Rust port of Yjs, maintained by the Yjs author).
 
 **How clients interact with CRDT entities:**
+
 - Client sends Yjs updates as the `data` payload in an Update
 - Client receives Yjs update blobs via sync and merges locally using yjs
 - Clients are the source of truth for their own local state
 
 **Server function reads:**
+
 ```
 Native engine (yrs)
   → merges all updates for entity
   → encodeStateAsUpdate (binary blob)
   → returns to Bun
-  
+
 Bun (yjs)
   → new Y.Doc()
   → applyUpdate(blob)
@@ -335,18 +355,21 @@ Bun (yjs)
 ```
 
 **Why this approach:**
+
 - yjs remains the interpreter on the JS side — one less divergence surface
 - Native engine only merges and serializes, doesn't convert to JSON
 - yrs and yjs are maintained by the same author (Kevin Jahns)
 - Deterministic CRDT algorithm — same inputs produce same outputs
 
 **Verification strategy:**
+
 - Property-based test suite that generates random Yjs operations
 - Applies them in random orders to both yjs and yrs
 - Asserts merged state (via `encodeStateAsUpdate`) is byte-identical
 - Run in CI on every change
 
 **Risk assessment:**
+
 - Risk is bounded: if yrs/yjs diverge, server functions see different state than clients
 - But clients don't depend on server's merged state — they merge locally
 - Bug would be observable (server function returns unexpected result) and testable
@@ -374,6 +397,7 @@ No single existing system provides the full stack. Every candidate requires cust
 ### Tier 1 — Most Promising Foundations
 
 **Option A: Fjall (Recommended Starting Point)**
+
 - Pure-Rust LSM-tree storage engine
 - Best batch write throughput of all tested (353ms for bulk operations)
 - Multiple keyspaces with cross-keyspace atomic writes
@@ -384,6 +408,7 @@ No single existing system provides the full stack. Every candidate requires cust
 - Risk: newer than RocksDB, not battle-tested at scale
 
 **Option B: RocksDB (Battle-Tested)**
+
 - Same architecture as Fjall but with C++ dependency
 - Mature Elixir NIF ecosystem (`rocksdb` hex package already exists)
 - Proven at scales far exceeding Ebb's requirements
@@ -391,6 +416,7 @@ No single existing system provides the full stack. Every candidate requires cust
 - Risk: C++ build chain, less ergonomic Rust wrapping
 
 **Option C: redb + Custom Action Log File**
+
 - Custom append-only file format for the Action log (CRC32 framing, sequential append)
 - redb (pure-Rust B-tree) for entity state and secondary indexes
 - Cleanest separation of concerns; each piece is simpler
@@ -407,16 +433,16 @@ No single existing system provides the full stack. Every candidate requires cust
 
 ### Tier 3 — Explicitly Not Recommended
 
-| Candidate | Reason |
-|-----------|--------|
-| sled | Abandoned. Last release 2021. Superseded by redb/fjall. |
-| TigerBeetle | Wrong abstraction (financial ledger, fixed schema). Inspirational for design, not adoptable. |
-| cr-sqlite | Insufficient write throughput. Maintenance concerns. |
-| EventStoreDB / MartenDB | .NET only, non-embeddable. |
-| Materialize | Non-embeddable cloud service. |
-| LMDB | Single-process constraint blocks Elixir + Bun co-access. |
-| Noria | Abandoned research prototype. |
-| Differential Dataflow | No persistence layer, async by nature, no Elixir/JS bindings. |
+| Candidate               | Reason                                                                                       |
+| ----------------------- | -------------------------------------------------------------------------------------------- |
+| sled                    | Abandoned. Last release 2021. Superseded by redb/fjall.                                      |
+| TigerBeetle             | Wrong abstraction (financial ledger, fixed schema). Inspirational for design, not adoptable. |
+| cr-sqlite               | Insufficient write throughput. Maintenance concerns.                                         |
+| EventStoreDB / MartenDB | .NET only, non-embeddable.                                                                   |
+| Materialize             | Non-embeddable cloud service.                                                                |
+| LMDB                    | Single-process constraint blocks Elixir + Bun co-access.                                     |
+| Noria                   | Abandoned research prototype.                                                                |
+| Differential Dataflow   | No persistence layer, async by nature, no Elixir/JS bindings.                                |
 
 ### Dual-Binding Architecture (Rustler + napi-rs)
 
@@ -448,4 +474,3 @@ Both bindings share the same core crate. Rustler handles Elixir resource objects
 - [ ] Choose between Fjall and RocksDB as the storage foundation
 - [ ] Prioritize risks — which is the scariest?
 - [ ] Start Phase 1 prototype
-

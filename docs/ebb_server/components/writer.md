@@ -26,14 +26,14 @@ Each Writer is a GenServer. Two instances are started by the supervision tree wi
 
 #### Lifecycle
 
-| Name | Signature | Description |
-|------|-----------|-------------|
+| Name           | Signature                                  | Description                                 |
+| -------------- | ------------------------------------------ | ------------------------------------------- |
 | `start_link/1` | `start_link(opts) :: GenServer.on_start()` | `opts`: `[name: atom(), writer_id: 1 \| 2]` |
 
 #### Write API
 
-| Name | Signature | Description |
-|------|-----------|-------------|
+| Name              | Signature                                                                                          | Description                                                                                                             |
+| ----------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `write_actions/2` | `write_actions(writer, actions :: [validated_action()]) :: {:ok, gsn_range()} \| {:error, term()}` | Synchronous call. Blocks until the batch containing these Actions is committed to disk. Returns the GSN range assigned. |
 
 The caller (HTTP handler) calls `write_actions/2` on one of the two Writers. The Writer buffers the Actions and replies only after the batch is flushed and durable.
@@ -42,8 +42,8 @@ The caller (HTTP handler) calls `write_actions/2` on one of the two Writers. The
 
 Routes incoming write requests to one of the 2 Writer GenServers.
 
-| Name | Signature | Description |
-|------|-----------|-------------|
+| Name            | Signature                                                                                | Description                                   |
+| --------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------- |
 | `route_write/1` | `route_write(actions :: [validated_action()]) :: {:ok, gsn_range()} \| {:error, term()}` | Selects a Writer (round-robin) and delegates. |
 
 ### Types
@@ -69,15 +69,15 @@ Routes incoming write requests to one of the 2 Writer GenServers.
 
 ## Dependencies
 
-| Dependency | What it needs | Reference |
-|------------|---------------|-----------|
-| RocksDB Store | `write_batch/2` for committing WriteBatches (uses default name in production) | [rocksdb-store.md](rocksdb-store.md#write-operations) |
-| RocksDB Store | Key encoding functions | [rocksdb-store.md](rocksdb-store.md#key-encoding) |
-| System Cache | `claim_gsn_range/1` for GSN assignment | [system-cache.md](system-cache.md#gsn-counter) |
-| System Cache | `mark_dirty_batch/1` for dirty set updates | [system-cache.md](system-cache.md#dirty-set) |
-| System Cache | `put_group_member/1`, `delete_group_member/1`, `put_relationship/1`, `delete_relationship/1` for system entity cache updates | [system-cache.md](system-cache.md#group-members) |
-| System Cache | `mark_range_committed/2`, `advance_watermark/0` for watermark | [system-cache.md](system-cache.md#committed-watermark) |
-| Fan-Out | `{:batch_committed, from_gsn, to_gsn}` notification (message send, not function call) | [fan-out.md](fan-out.md) |
+| Dependency    | What it needs                                                                                                                | Reference                                              |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| RocksDB Store | `write_batch/2` for committing WriteBatches (uses default name in production)                                                | [rocksdb-store.md](rocksdb-store.md#write-operations)  |
+| RocksDB Store | Key encoding functions                                                                                                       | [rocksdb-store.md](rocksdb-store.md#key-encoding)      |
+| System Cache  | `claim_gsn_range/1` for GSN assignment                                                                                       | [system-cache.md](system-cache.md#gsn-counter)         |
+| System Cache  | `mark_dirty_batch/1` for dirty set updates                                                                                   | [system-cache.md](system-cache.md#dirty-set)           |
+| System Cache  | `put_group_member/1`, `delete_group_member/1`, `put_relationship/1`, `delete_relationship/1` for system entity cache updates | [system-cache.md](system-cache.md#group-members)       |
+| System Cache  | `mark_range_committed/2`, `advance_watermark/0` for watermark                                                                | [system-cache.md](system-cache.md#committed-watermark) |
+| Fan-Out       | `{:batch_committed, from_gsn, to_gsn}` notification (message send, not function call)                                        | [fan-out.md](fan-out.md)                               |
 
 ## Internal Design Notes
 
@@ -162,12 +162,14 @@ end
 ```
 
 **System entity cache updates:** After each batch, scan the Actions for Updates where `subject_type` is `"group"`, `"groupMember"`, or `"relationship"`. For each:
+
 - `method: :put` or `method: :patch` → call `SystemCache.put_group_member/1` (or `put_relationship/1`)
 - `method: :delete` → call `SystemCache.delete_group_member/1` (or `delete_relationship/1`)
 
 This happens inline (step 6) before replying to callers, ensuring permission changes take effect immediately.
 
 **Two-writer concurrency:** Both Writers run steps 1-9 concurrently on separate BEAM schedulers. The only shared mutable state is:
+
 - `:atomics` GSN counter (lock-free)
 - `:atomics` + ETS committed watermark (lock-free + atomic single-key writes)
 - ETS `dirty_set` (atomic single-key writes)

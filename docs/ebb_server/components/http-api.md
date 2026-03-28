@@ -24,33 +24,33 @@ A `Plug.Router` that defines all HTTP endpoints.
 
 #### Sync Protocol
 
-| Method | Path | Request | Response | Description |
-|--------|------|---------|----------|-------------|
-| `POST` | `/sync/handshake` | Headers: auth token. Body: `{"cursors": {...}, "schema_version": N}` | `{"actor_id": "...", "groups": [...]}` | Authenticate, validate cursors, return Group list |
-| `POST` | `/sync/actions` | Body: MessagePack `{"actions": [...]}` | `{"rejected": [...]}` (200) or `{"error": "unauthorized"}` (401) | Write Actions. Blocks until durable. |
-| `GET` | `/sync/groups/:group_id` | Query: `offset=<gsn>` | JSON array of Actions + `Stream-Next-Offset` / `Stream-Up-To-Date` headers | Paginated catch-up (200 Actions/page, CDN-friendly) |
-| `GET` | `/sync/live` | Query: `groups=A,B,C&cursors=500,200,800` | SSE stream (`event: data`, `event: control`, `event: presence`) | Single SSE connection for live updates |
-| `POST` | `/sync/presence` | Body: `{"entity_id": "...", "data": {...}}` | 204 No Content | Ephemeral presence broadcast |
+| Method | Path                     | Request                                                              | Response                                                                   | Description                                         |
+| ------ | ------------------------ | -------------------------------------------------------------------- | -------------------------------------------------------------------------- | --------------------------------------------------- |
+| `POST` | `/sync/handshake`        | Headers: auth token. Body: `{"cursors": {...}, "schema_version": N}` | `{"actor_id": "...", "groups": [...]}`                                     | Authenticate, validate cursors, return Group list   |
+| `POST` | `/sync/actions`          | Body: MessagePack `{"actions": [...]}`                               | `{"rejected": [...]}` (200) or `{"error": "unauthorized"}` (401)           | Write Actions. Blocks until durable.                |
+| `GET`  | `/sync/groups/:group_id` | Query: `offset=<gsn>`                                                | JSON array of Actions + `Stream-Next-Offset` / `Stream-Up-To-Date` headers | Paginated catch-up (200 Actions/page, CDN-friendly) |
+| `GET`  | `/sync/live`             | Query: `groups=A,B,C&cursors=500,200,800`                            | SSE stream (`event: data`, `event: control`, `event: presence`)            | Single SSE connection for live updates              |
+| `POST` | `/sync/presence`         | Body: `{"entity_id": "...", "data": {...}}`                          | 204 No Content                                                             | Ephemeral presence broadcast                        |
 
 #### Entity Reads (for Bun Application Server)
 
-| Method | Path | Request | Response | Description |
-|--------|------|---------|----------|-------------|
-| `GET` | `/entities/:id` | Query: `actor_id=<id>` | JSON entity or 404 | Point entity read with on-demand materialization |
-| `POST` | `/entities/query` | Body: `{"type": "...", "filter": {...}, "actor_id": "..."}` | JSON array of entities | Type-scoped filtered query |
-| `POST` | `/entities/batch` | Body: `{"ids": [...], "actor_id": "..."}` | JSON array of entities | Batch point lookup |
+| Method | Path              | Request                                                     | Response               | Description                                      |
+| ------ | ----------------- | ----------------------------------------------------------- | ---------------------- | ------------------------------------------------ |
+| `GET`  | `/entities/:id`   | Query: `actor_id=<id>`                                      | JSON entity or 404     | Point entity read with on-demand materialization |
+| `POST` | `/entities/query` | Body: `{"type": "...", "filter": {...}, "actor_id": "..."}` | JSON array of entities | Type-scoped filtered query                       |
+| `POST` | `/entities/batch` | Body: `{"ids": [...], "actor_id": "..."}`                   | JSON array of entities | Batch point lookup                               |
 
 #### Server Functions
 
-| Method | Path | Request | Response | Description |
-|--------|------|---------|----------|-------------|
+| Method | Path               | Request                     | Response                        | Description              |
+| ------ | ------------------ | --------------------------- | ------------------------------- | ------------------------ |
 | `POST` | `/functions/:name` | Body: function input (JSON) | Function output (JSON) or error | Invoke a server function |
 
 #### Replication
 
-| Method | Path | Request | Response | Description |
-|--------|------|---------|----------|-------------|
-| `GET` | `/sync/replication` | Query: `offset=<gsn>&limit=<n>[&live=sse]` | JSON array of Actions or SSE stream | Unfiltered Action stream for peer replication |
+| Method | Path                | Request                                    | Response                            | Description                                   |
+| ------ | ------------------- | ------------------------------------------ | ----------------------------------- | --------------------------------------------- |
+| `GET`  | `/sync/replication` | Query: `offset=<gsn>&limit=<n>[&live=sse]` | JSON array of Actions or SSE stream | Unfiltered Action stream for peer replication |
 
 ### Response Types
 
@@ -94,15 +94,15 @@ A `Plug.Router` that defines all HTTP endpoints.
 
 ## Dependencies
 
-| Dependency | What it needs | Reference |
-|------------|---------------|-----------|
-| Permission Checker | `validate_and_authorize/2` for Action writes | [permission-checker.md](permission-checker.md#validation-api) |
-| Writer | `WriterRouter.route_write/1` for Action writes | [writer.md](writer.md#module-ebbserverstoragwriterrouter) |
-| Entity Store | `get/2`, `query/3`, `get_batch/2` for entity reads | [entity-store.md](entity-store.md#read-api) |
-| Fan-Out | SSE connection registration, presence broadcast | [fan-out.md](fan-out.md) |
-| System Cache | `get_actor_groups/1` for handshake Group list | [system-cache.md](system-cache.md#group-members) |
-| System Cache | `committed_watermark/0` for catch-up upper bound | [system-cache.md](system-cache.md#committed-watermark) |
-| RocksDB Store | Iterators for catch-up reads (GSN range scan, entity-filtered) | [rocksdb-store.md](rocksdb-store.md#read-operations) |
+| Dependency         | What it needs                                                  | Reference                                                     |
+| ------------------ | -------------------------------------------------------------- | ------------------------------------------------------------- |
+| Permission Checker | `validate_and_authorize/2` for Action writes                   | [permission-checker.md](permission-checker.md#validation-api) |
+| Writer             | `WriterRouter.route_write/1` for Action writes                 | [writer.md](writer.md#module-ebbserverstoragwriterrouter)     |
+| Entity Store       | `get/2`, `query/3`, `get_batch/2` for entity reads             | [entity-store.md](entity-store.md#read-api)                   |
+| Fan-Out            | SSE connection registration, presence broadcast                | [fan-out.md](fan-out.md)                                      |
+| System Cache       | `get_actor_groups/1` for handshake Group list                  | [system-cache.md](system-cache.md#group-members)              |
+| System Cache       | `committed_watermark/0` for catch-up upper bound               | [system-cache.md](system-cache.md#committed-watermark)        |
+| RocksDB Store      | Iterators for catch-up reads (GSN range scan, entity-filtered) | [rocksdb-store.md](rocksdb-store.md#read-operations)          |
 
 ## Internal Design Notes
 
@@ -157,6 +157,7 @@ GET /sync/groups/:group_id?offset=:gsn
 ```
 
 **SSE connection handler:** Uses Cowboy's chunked response API. The handler process:
+
 1. Authenticates and validates Group subscriptions
 2. Registers with the Fan-Out Router (which registers with Group GenServers)
 3. Enters a receive loop, forwarding messages to the SSE stream

@@ -92,10 +92,10 @@ Each field value is stored as a self-describing object with a `type` tag:
 ```json
 {
   "fields": {
-    "title":     { "type": "lww", "value": "My Post", "hlc": 1711234567890000 },
+    "title": { "type": "lww", "value": "My Post", "hlc": 1711234567890000 },
     "published": { "type": "lww", "value": true, "hlc": 1711234567890000 },
-    "likes":     { "type": "counter", "value": { "alice": 3, "bob": 1 } },
-    "body":      { "type": "crdt", "value": "<base64 yjs state>" }
+    "likes": { "type": "counter", "value": { "alice": 3, "bob": 1 } },
+    "body": { "type": "crdt", "value": "<base64 yjs state>" }
   }
 }
 ```

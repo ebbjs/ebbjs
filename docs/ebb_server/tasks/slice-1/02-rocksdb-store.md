@@ -13,6 +13,7 @@
 Create `EbbServer.Storage.RocksDB` as a GenServer.
 
 **`init/1`:**
+
 - Accept `opts` keyword list with `:data_dir` key
 - Build path: `Path.join(data_dir, "rocksdb")`
 - Ensure directory exists: `File.mkdir_p!/1`
@@ -31,14 +32,17 @@ Create `EbbServer.Storage.RocksDB` as a GenServer.
 - Return `{:ok, %{db_ref: db_ref, name: name}}`
 
 **`terminate/2`:**
+
 - Erase all `:persistent_term` tuple keys for `state.name`
 - Call `:rocksdb.close(db_ref)`
 
 **Public accessor functions (module-level, no GenServer call):**
+
 - `db_ref(name \\ __MODULE__)` → `:persistent_term.get({:ebb_rocksdb_db, name})`
 - `cf_actions(name \\ __MODULE__)`, `cf_updates/1`, `cf_entity_actions/1`, `cf_type_entities/1`, `cf_action_dedup/1` — each reads from `:persistent_term` with tuple key. All accept an optional `name` argument (default `__MODULE__`) so tests can run multiple isolated instances concurrently.
 
 **`start_link/1`:**
+
 - Extract `name` from opts (default `__MODULE__`)
 - `GenServer.start_link(__MODULE__, opts, name: name)`
 
@@ -68,6 +72,7 @@ Add pure functions to the module:
 **Files:** `ebb_server/lib/ebb_server/storage/rocks_db.ex` (modify)
 
 **`write_batch(operations, opts \\ [])`:**
+
 - `operations` is a list of `{:put, cf_ref, key, value}` tuples
 - `opts` is an optional keyword list supporting `:name` (default `__MODULE__`) for multi-instance support
 - Create batch: `{:ok, batch} = :rocksdb.batch()`
@@ -76,11 +81,13 @@ Add pure functions to the module:
 - Return `:ok` or `{:error, reason}`
 
 **`get(cf_ref, key, opts \\ [])`:**
+
 - `opts` supports `:name` (default `__MODULE__`)
 - Call `:rocksdb.get(db_ref(name), cf_ref, key, [])`
 - Return `{:ok, value}` if found, `:not_found` if not found, `{:error, reason}` on error
 
 **`prefix_iterator(cf_ref, prefix, opts \\ [])`:**
+
 - `opts` supports `:name` (default `__MODULE__`)
 - Return a `Stream.resource/3`:
   - **start_fn:** Create iterator with `:rocksdb.iterator(db_ref(name), cf_ref, [{:iterate_upper_bound, prefix_upper_bound(prefix)}])`. Seek to prefix with `:rocksdb.iterator_move(iter, {:seek, prefix})`. Return `{iter, :first_result}` where `:first_result` holds the seek result.

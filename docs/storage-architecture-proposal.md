@@ -19,6 +19,7 @@ Cursor/presence updates are ephemeral broadcasts only — not persisted to stora
 The entire server (sync protocol + storage engine) is built in Elixir.
 
 **Why Elixir:**
+
 - OTP supervision trees provide operational resilience (priority over raw performance)
 - Process-per-connection model handles 10k+ SSE connections naturally
 - Built-in fault isolation — one bad connection doesn't crash the server
@@ -91,6 +92,7 @@ The system consists of three co-located servers:
 The storage engine has two layers:
 
 **Layer 1: Append-Only Action Log** — handles high-throughput writes
+
 - Single global log file, ordered by GSN (Global Sequence Number)
 - Batched fsync for durability (10ms windows or 1000 Actions)
 - Three in-memory ETS indexes for fast concurrent reads
@@ -240,6 +242,7 @@ CREATE INDEX idx_function_active ON function_versions(name, status) WHERE status
 **System entity cache:** Elixir maintains a permanent in-memory ETS cache of all system entities (Groups, GroupMembers, Relationships). This cache is the authoritative read source for permission checks and fan-out routing — no permission check ever hits SQLite.
 
 The cache is populated from two sources:
+
 1. **On startup:** System entities are replayed from the `actions`/`updates` tables — joining Updates with their parent Action's HLC, filtering by system entity types, and replaying in HLC order. Once the Bun Materializer (C9) is running and the `entities` table is populated, startup can optionally switch to the faster path: `SELECT id, data, type, deleted_hlc FROM entities WHERE type IN ('group', 'groupMember', 'relationship')`. The server does not accept connections until startup population completes.
 2. **At runtime:** After each batch flush, the Writer extracts system entity state from Action payloads and updates the cache — including tombstones for deleted system entities. This ensures that both grants (new GroupMember) and revocations (deleted GroupMember) take effect immediately, without waiting for the Materializer.
 
@@ -250,6 +253,7 @@ The cache is bounded by the number of system entities in the application (not by
 **Consistency guarantee:** All system entity mutations flow through the Writer GenServer, which is the single point of truth for ETS writes. There is no second path that could update SQLite without also updating ETS. During multi-server replication, replicated Actions containing system entity changes also flow through the Writer (trust-and-apply), so the cache stays consistent across peers.
 
 **Bun Application Server integration:**
+
 - **Reads:** Bun reads the SQLite database directly for server functions (`ctx.get()`, `ctx.query()`). Elixir reads the system entity cache (ETS) for permission checks during the write path — permission checks never hit SQLite.
 - **Writes:** Bun server sends Actions to Elixir via `POST /sync/actions` on localhost, which routes them through the normal write path (permission checks → Writer GenServer → fsync → fan-out)
 
@@ -271,6 +275,7 @@ Each Action is stored as a fixed-format record:
 A single GenServer process serializes all writes. This is the heart of the storage engine.
 
 **Batching strategy:**
+
 - Actions arrive via message passing from HTTP handlers
 - First Action starts a 10ms timer (`Process.send_after`)
 - Subsequent Actions buffer in GenServer state (GSN assigned immediately)
@@ -278,11 +283,13 @@ A single GenServer process serializes all writes. This is the heart of the stora
 - Flush: serialize entire batch → append to file → fsync → update ETS indexes → notify callers
 
 **Why batched fsync:**
+
 - Individual fsync: ~1,000-3,000 writes/second (disk-bound)
 - Batched fsync (10ms window): 100,000+ writes/second (many Actions per fsync)
 - Latency: 0-10ms per Action (average ~5ms). Under high load, batches fill quickly so most Actions see well under 10ms.
 
 **Durability notifications (two messages after each fsync):**
+
 1. `{:durable, gsn}` → each waiting HTTP handler process (unblocks HTTP response)
 2. `{:batch_flushed, from_gsn, to_gsn}` → Fan-out Router (triggers push to SSE subscribers and notifies the Bun Materializer via the same SSE/notification channel)
 
@@ -337,13 +344,14 @@ defp flush_batch(state) ->
 
 Three ETS tables provide fast concurrent reads without blocking the Writer:
 
-| Table | Key | Value | Purpose |
-|-------|-----|-------|---------|
-| `entity_index` | `entity_id` | `[gsn1, gsn2, ...]` | Find Actions affecting an Entity |
-| `gsn_index` | `gsn` | `file_offset` | Seek directly to an Action on disk |
-| `action_id_index` | `action_id` | `gsn` | Dedup during replication + point lookup by Action ID |
+| Table             | Key         | Value               | Purpose                                              |
+| ----------------- | ----------- | ------------------- | ---------------------------------------------------- |
+| `entity_index`    | `entity_id` | `[gsn1, gsn2, ...]` | Find Actions affecting an Entity                     |
+| `gsn_index`       | `gsn`       | `file_offset`       | Seek directly to an Action on disk                   |
+| `action_id_index` | `action_id` | `gsn`               | Dedup during replication + point lookup by Action ID |
 
 **Concurrency model:**
+
 - Writer GenServer updates all three ETS tables after each batch flush
 - Any process can read ETS concurrently (no message passing to Writer needed)
 - ETS operations are atomic at the row level — no explicit locking
@@ -366,6 +374,7 @@ A separate Compactor process (not the Writer) creates synthetic Snapshots:
 8. Once durable, compact all prior Actions for that entity and remove from ETS
 
 **Why "snapshot in the past":**
+
 - Historical data is immutable — Compactor reads from disk without interacting with Writer
 - No race condition with in-flight Actions (snapshot point is frozen history)
 - Writer GenServer is never blocked during materialization
@@ -376,6 +385,7 @@ A separate Compactor process (not the Writer) creates synthetic Snapshots:
 **Hard limit (e.g., 2GB): Emergency eviction**
 
 If compaction can't keep up:
+
 1. Evict oldest index entries from ETS to cold-tier SQLite immediately
 2. No data loss — Actions still exist on disk, just require SQLite lookup + file read
 3. Degraded read performance for old data only; recent data unaffected
@@ -402,8 +412,8 @@ ActionReader.get_low_water_mark()  # minimum GSN still available (stale cursor d
 ```json
 {
   "files": [
-    {"id": 1, "path": "actions_001.log", "min_gsn": 1, "max_gsn": 5000000},
-    {"id": 2, "path": "actions_002.log", "min_gsn": 5000001, "max_gsn": null}
+    { "id": 1, "path": "actions_001.log", "min_gsn": 1, "max_gsn": 5000000 },
+    { "id": 2, "path": "actions_002.log", "min_gsn": 5000001, "max_gsn": null }
   ],
   "active_file_id": 2
 }
@@ -415,18 +425,21 @@ ActionReader.get_low_water_mark()  # minimum GSN still available (stale cursor d
 
 The Action log is append-only — individual records can't be deleted from the middle of a file. Compaction works at the segment level by rewriting old segments (similar to LSM-tree compaction in RocksDB/LevelDB and Kafka log compaction).
 
-*Segment rewriting (when a segment has significant obsolete Actions):*
+_Segment rewriting (when a segment has significant obsolete Actions):_
+
 1. Read old segment, skip Actions that have been compacted (superseded by synthetic Snapshots)
 2. Write new segment containing only live Actions
 3. Update manifest atomically to point to new segment
 4. Delete old segment
 
-*Segment deletion (when all Actions in a segment are below all client cursors):*
+_Segment deletion (when all Actions in a segment are below all client cursors):_
+
 - Track minimum cursor across all connected clients
 - Delete segments where `max_gsn < min(all_client_cursors)`
 - Populate cold-tier SQLite index before deletion
 
-*Constraints:*
+_Constraints:_
+
 - Only compact cold segments (never the active write file)
 - Temporarily uses 2x disk space for the segment being compacted
 - Manifest update must be atomic (write new manifest, then rename over old)
@@ -437,6 +450,7 @@ The Action log is append-only — individual records can't be deleted from the m
 ### Index Checkpointing
 
 To avoid slow startup from scanning large files:
+
 - Write index checkpoint file every N minutes (configurable, default 5 min)
 - Checkpoint includes all three ETS tables (`entity_index`, `gsn_index`, `action_id_index`) + last checkpointed GSN
 - On startup: load checkpoint, then replay only Actions since checkpoint GSN
@@ -453,6 +467,7 @@ To avoid slow startup from scanning large files:
 5. Rebuild in-memory indexes from valid records only
 
 **Guarantees:**
+
 - No silent data corruption (CRC validates every record)
 - At most one Action lost on crash (the in-flight write during fsync)
 - Automatic truncation of partial writes
@@ -492,6 +507,7 @@ Request body:
 **Server handshake flow:**
 
 1. **Authenticate:** Forward client's headers to the configured auth URL:
+
    ```
    POST {auth_url}
    (forwards all original client headers)
@@ -499,6 +515,7 @@ Request body:
    → 200 OK: { "actor_id": "user_123" }
    → 401: reject handshake
    ```
+
    The auth endpoint is developer-provided (Clerk, Better Auth, custom JWT validation, etc.). The Elixir sync server is auth-mechanism-agnostic — it just needs an actor ID back.
 
 2. **Load Group memberships:** Query the system entity cache (ETS) for Groups this actor belongs to
@@ -508,6 +525,7 @@ Request body:
 4. **Validate schema version:** Check client schema version meets minimum supported version
 
 5. **Respond:**
+
    ```
    200 OK
    {
@@ -519,11 +537,13 @@ Request body:
      ]
    }
    ```
+
    - `cursor_valid: true` — client can catch up from its existing cursor
    - `cursor_valid: false` — client needs full resync for this Group (start from beginning)
    - `cursor: null` — new Group (client wasn't previously subscribed), start from beginning
 
 **Auth URL configuration:**
+
 ```elixir
 config :ebb_sync,
   auth_url: "http://localhost:3001/auth"
@@ -549,6 +569,7 @@ Response body:
 ```
 
 **Pagination rules:**
+
 - Page size: 200 Actions (configurable, starting default)
 - If 200 Actions returned: more data likely available, client should request next page using `Stream-Next-Offset`
 - If fewer than 200 Actions returned: include `Stream-Up-To-Date: true` header — client is caught up
@@ -557,12 +578,14 @@ Response body:
 **CDN collapsing:** Multiple clients catching up on the same Group at the same offset make identical HTTP requests. The CDN caches the response and serves it to all of them — the server handles 1 request instead of N. This is where the Durable Streams protocol's design pays off.
 
 **Server query flow:**
+
 1. System entity cache (ETS): "Which Entities belong to Group X?" → look up Relationships where `target_id = 'X'`
 2. ETS: For each entity_id, find GSNs > cursor from `entity_index`
 3. Disk: Seek to file offsets via `gsn_index`, read Action payloads
 4. Return paginated Actions + `Stream-Next-Offset`
 
 **Per-Group catch-up with a single Action log:**
+
 - The Action log remains a single global append-only file (one GSN sequence)
 - Per-Group streams are filtered views, computed on demand via entity→GSN indexes
 - GSN is used directly as the Group stream offset (no separate offset sequence needed)
@@ -591,13 +614,14 @@ SSE events:
 
 Reconnection is event-driven, not timer-based. The server sends a control event to force the client back through the handshake when needed.
 
-| Trigger | Mechanism | Why |
-|---|---|---|
+| Trigger                 | Mechanism                                                          | Why                                                                          |
+| ----------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
 | Group membership change | Server sends `{"reconnect": true, "reason": "membership_changed"}` | Client needs updated Group list, catch up on new Groups, drop removed Groups |
-| Token expiry | Server detects expired auth token | Client must reauthenticate |
-| Safety net | Maximum session lifetime (e.g., 30 min) | Catch any missed permission changes, prevent stale sessions |
+| Token expiry            | Server detects expired auth token                                  | Client must reauthenticate                                                   |
+| Safety net              | Maximum session lifetime (e.g., 30 min)                            | Catch any missed permission changes, prevent stale sessions                  |
 
 **Client reconnection flow:**
+
 1. Receive reconnect control event (or hit safety net timeout)
 2. Close SSE connection
 3. Go back to handshake (reauthenticate, get updated Group list)
@@ -625,6 +649,7 @@ Fan-out Router
 ```
 
 **Fan-out Router:**
+
 - Receives `{:batch_flushed, from_gsn, to_gsn}` from Writer GenServer
 - Reads the flushed Actions, determines affected Groups
 - Group lookup reads from the system entity cache (ETS) — all Relationships are in memory, so no SQLite access is needed on the fan-out path
@@ -632,6 +657,7 @@ Fan-out Router
 - Single process, but its job is lightweight (routing, not delivery)
 
 **Group GenServer (one per active Group):**
+
 - Maintains `MapSet<connection_pids>` of active SSE subscribers
 - On receiving Actions: sends to each subscriber pid
 - Also handles presence broadcasting for the Group
@@ -639,12 +665,14 @@ Fan-out Router
 - Fan-out happens in parallel across Groups (BEAM schedules across cores)
 
 **SSE connection process (one per client):**
+
 - Receives Actions and presence updates from multiple Group GenServers
 - Writes to the client's SSE stream
 - Handles subscribe/unsubscribe by registering with Group GenServers
 - On client disconnect: unregisters from all Group GenServers
 
 **Why process-per-Group:**
+
 - Popular Groups (5,000 subscribers) don't block other Groups during fan-out
 - Natural fault isolation — one Group's slow subscriber doesn't affect others
 - Scales naturally with BEAM's lightweight process model (1,000+ Groups is trivial)
@@ -655,6 +683,7 @@ Fan-out Router
 Presence updates (cursors, selections, user status) are ephemeral — not persisted to storage. They flow through the existing per-Group GenServer infrastructure.
 
 **Inbound (client → server, authenticated via the same session as the SSE connection):**
+
 ```
 POST /sync/presence
 
@@ -666,18 +695,21 @@ Request body:
 ```
 
 **Server flow:**
+
 1. Identify actor from authenticated session
 2. Look up Groups for `entity_id` (system entity cache in ETS)
 3. Route to each affected Group GenServer
 4. Group GenServer broadcasts to all subscribers except the sender
 
 **Outbound (server → client, on the same SSE connection as Actions):**
+
 ```
 event: presence
 data: {"actor_id":"user_123","entity_id":"doc_1","data":{ ... }}
 ```
 
 **Design decisions:**
+
 - **Fire-and-forget:** Server does not track current presence state. New clients joining a Group wait for the next presence update from each actor.
 - **Opaque payload:** The server never parses the `data` field — it's pass-through. Developers define their own presence schema.
 - **Throttling:** Client debounces (e.g., at most every 50ms). Server also throttles per actor per entity as a safety net (drops updates that are too frequent).
@@ -689,10 +721,10 @@ Each server runs a Replication Manager process per configured peer. A peer serve
 
 **Two read paths:**
 
-| Path | Used by | Endpoint | Filtering |
-|---|---|---|---|
-| Per-Group catch-up | Clients | `GET /sync/groups/{id}?offset={gsn}` | Entity→Group filtered |
-| Unfiltered stream | Peer servers | `GET /sync/replication?offset={gsn}` | All Actions by GSN |
+| Path               | Used by      | Endpoint                             | Filtering             |
+| ------------------ | ------------ | ------------------------------------ | --------------------- |
+| Per-Group catch-up | Clients      | `GET /sync/groups/{id}?offset={gsn}` | Entity→Group filtered |
+| Unfiltered stream  | Peer servers | `GET /sync/replication?offset={gsn}` | All Actions by GSN    |
 
 **Replication Manager (per peer) flow:**
 
@@ -762,6 +794,7 @@ Each server runs a Replication Manager process per configured peer. A peer serve
 ```
 
 **Key invariants:**
+
 - HTTP response confirms durability (Action is on disk before client hears "accepted")
 - SSE subscribers only receive Actions that are on disk
 - BEAM schedulers are never blocked by fsync (HTTP handler yields while waiting)
@@ -820,27 +853,27 @@ The Writer GenServer's message-passing interface remains identical. The sync pro
 
 The system breaks down into discrete components with explicit dependencies. Components without dependency relationships between them can be built in parallel.
 
-| ID | Component | Description |
-|----|-----------|-------------|
-| C1 | Elixir Project Scaffold | Mix project, OTP application, supervision tree skeleton, dependencies |
-| C2 | SQLite Schema | All tables (WAL mode): `actions`, `updates`, `entities`, `snapshots`, `actors`, `function_versions` with generated columns and indexes |
-| C3 | Writer GenServer | Accepts Actions via message passing, inserts into SQLite, assigns GSN, fsyncs (WAL mode), notifies callers with `{:durable, gsn}` and `{:batch_flushed, from_gsn, to_gsn}` |
-| C4 | ActionReader | Query Actions from SQLite by GSN, by entity, by action ID. Implements the read-path API (`get_actions_for_entities_since`, `get_actions_since`, `get_action_at_gsn`, etc.) |
-| C5 | System Entity Cache | Permanent ETS cache of Groups, GroupMembers, Relationships (including tombstones). On startup: replay from `actions`/`updates` tables. At runtime: Writer updates after each flush |
-| C6 | Permission Checks | Structural validation of Action envelope, ETS-based permission logic, HLC drift check, intra-Action resolution for entity creation (parse Group membership from sibling Relationship Updates) |
-| C7 | Action Write Endpoint | `POST /sync/actions` — HTTP handler that validates, permission-checks, routes to Writer, waits for `{:durable, gsn}`, responds |
-| C8 | Replication SSE Endpoint | `GET /sync/replication?live=sse` — unfiltered stream of all Actions by GSN. Used by peer servers and the Bun Materializer |
-| C9 | Bun Materializer | Subscribes to replication SSE (C8), materializes entity state using JS replay logic (field-level LWW for JSON, Yjs merge for CRDT), writes to SQLite `entities` table. Tracks GSN cursor |
-| C10 | Auth Integration | HTTP callback to developer's auth URL during handshake. Actor auto-creation on first authentication (SQLite `actors` table) |
-| C11 | Handshake Endpoint | `POST /sync/handshake` — authenticate (via C10), validate cursors against low-water mark, load Group memberships from ETS (C5), return Groups with cursor validity |
-| C12 | Catch-up Endpoint | `GET /sync/groups/{id}?offset={gsn}` — per-Group paginated Actions (200 per page), CDN-friendly headers (`Cache-Control`, `ETag`), `Stream-Next-Offset` / `Stream-Up-To-Date` headers |
-| C13 | Fan-out Router + Group GenServers | Router receives `{:batch_flushed}` from Writer, reads Actions, looks up affected Groups via ETS (C5), dispatches to per-Group GenServers. Group GenServers maintain subscriber sets and push to SSE connections |
-| C14 | Live SSE Endpoint | `GET /sync/live?groups=A,B,C&cursors=500,200,800` — single SSE per client, receives Actions from Group GenServers (C13), event-driven reconnection (membership changes, token expiry, safety net timeout) |
-| C15 | Presence | `POST /sync/presence` inbound + broadcasting via Group GenServers (C13). Fire-and-forget, opaque payload, throttled. Not persisted |
-| C16 | Bun Application Server | `defineFunction` execution in vm sandbox, `ctx` object (reads from shared SQLite, writes via `POST /sync/actions`), function store, deployment CLI, version management |
-| C17 | Custom Storage Engine | Append-only binary Action log with batched fsync (10ms / 1000 Actions), ETS indexes (`entity_index`, `gsn_index`, `action_id_index`), crash recovery (CRC32). Replaces C3/C4 internals behind the same interface |
-| C18 | Operational Maturity | File rotation + manifest, segment compaction, index checkpointing, memory management (soft/hard limits, synthetic snapshots), cold-tier SQLite index, server-to-server replication (Replication Manager, dedup, trust-and-apply), replication lag monitoring |
-| C19 | Optimization | Compression, payload format migration (JSON → MessagePack), CDN tuning, performance profiling, optional schema validation in Elixir, evaluate Rust NIF (see `docs/rust-nif-optimization.md`) |
+| ID  | Component                         | Description                                                                                                                                                                                                                                                  |
+| --- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| C1  | Elixir Project Scaffold           | Mix project, OTP application, supervision tree skeleton, dependencies                                                                                                                                                                                        |
+| C2  | SQLite Schema                     | All tables (WAL mode): `actions`, `updates`, `entities`, `snapshots`, `actors`, `function_versions` with generated columns and indexes                                                                                                                       |
+| C3  | Writer GenServer                  | Accepts Actions via message passing, inserts into SQLite, assigns GSN, fsyncs (WAL mode), notifies callers with `{:durable, gsn}` and `{:batch_flushed, from_gsn, to_gsn}`                                                                                   |
+| C4  | ActionReader                      | Query Actions from SQLite by GSN, by entity, by action ID. Implements the read-path API (`get_actions_for_entities_since`, `get_actions_since`, `get_action_at_gsn`, etc.)                                                                                   |
+| C5  | System Entity Cache               | Permanent ETS cache of Groups, GroupMembers, Relationships (including tombstones). On startup: replay from `actions`/`updates` tables. At runtime: Writer updates after each flush                                                                           |
+| C6  | Permission Checks                 | Structural validation of Action envelope, ETS-based permission logic, HLC drift check, intra-Action resolution for entity creation (parse Group membership from sibling Relationship Updates)                                                                |
+| C7  | Action Write Endpoint             | `POST /sync/actions` — HTTP handler that validates, permission-checks, routes to Writer, waits for `{:durable, gsn}`, responds                                                                                                                               |
+| C8  | Replication SSE Endpoint          | `GET /sync/replication?live=sse` — unfiltered stream of all Actions by GSN. Used by peer servers and the Bun Materializer                                                                                                                                    |
+| C9  | Bun Materializer                  | Subscribes to replication SSE (C8), materializes entity state using JS replay logic (field-level LWW for JSON, Yjs merge for CRDT), writes to SQLite `entities` table. Tracks GSN cursor                                                                     |
+| C10 | Auth Integration                  | HTTP callback to developer's auth URL during handshake. Actor auto-creation on first authentication (SQLite `actors` table)                                                                                                                                  |
+| C11 | Handshake Endpoint                | `POST /sync/handshake` — authenticate (via C10), validate cursors against low-water mark, load Group memberships from ETS (C5), return Groups with cursor validity                                                                                           |
+| C12 | Catch-up Endpoint                 | `GET /sync/groups/{id}?offset={gsn}` — per-Group paginated Actions (200 per page), CDN-friendly headers (`Cache-Control`, `ETag`), `Stream-Next-Offset` / `Stream-Up-To-Date` headers                                                                        |
+| C13 | Fan-out Router + Group GenServers | Router receives `{:batch_flushed}` from Writer, reads Actions, looks up affected Groups via ETS (C5), dispatches to per-Group GenServers. Group GenServers maintain subscriber sets and push to SSE connections                                              |
+| C14 | Live SSE Endpoint                 | `GET /sync/live?groups=A,B,C&cursors=500,200,800` — single SSE per client, receives Actions from Group GenServers (C13), event-driven reconnection (membership changes, token expiry, safety net timeout)                                                    |
+| C15 | Presence                          | `POST /sync/presence` inbound + broadcasting via Group GenServers (C13). Fire-and-forget, opaque payload, throttled. Not persisted                                                                                                                           |
+| C16 | Bun Application Server            | `defineFunction` execution in vm sandbox, `ctx` object (reads from shared SQLite, writes via `POST /sync/actions`), function store, deployment CLI, version management                                                                                       |
+| C17 | Custom Storage Engine             | Append-only binary Action log with batched fsync (10ms / 1000 Actions), ETS indexes (`entity_index`, `gsn_index`, `action_id_index`), crash recovery (CRC32). Replaces C3/C4 internals behind the same interface                                             |
+| C18 | Operational Maturity              | File rotation + manifest, segment compaction, index checkpointing, memory management (soft/hard limits, synthetic snapshots), cold-tier SQLite index, server-to-server replication (Replication Manager, dedup, trust-and-apply), replication lag monitoring |
+| C19 | Optimization                      | Compression, payload format migration (JSON → MessagePack), CDN tuning, performance profiling, optional schema validation in Elixir, evaluate Rust NIF (see `docs/rust-nif-optimization.md`)                                                                 |
 
 ### Dependency Graph
 
@@ -904,13 +937,13 @@ Swap the storage engine internals, add operational tooling, then optimize.
 
 ## Alternatives Considered
 
-| Alternative | Why not |
-|---|---|
-| **RocksDB/LevelDB** | Adds operational complexity and external dependencies. Append-only file leverages Ebb's specific access patterns (append-only writes, GSN-ordered reads). |
-| **SQLite-only for Actions** | Durability requirement (fsync before ACK) limits to ~1,000-3,000 writes/second. Long sync reads could block writes. |
-| **Bun/Node.js** | Single-threaded event loop struggles with 10k concurrent SSE connections alongside file I/O. Lacks process isolation and supervision. |
-| **Rust NIF + Elixir** | See `docs/rust-nif-optimization.md` |
-| **Rust for everything** | See `docs/rust-nif-optimization.md` |
+| Alternative                 | Why not                                                                                                                                                   |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **RocksDB/LevelDB**         | Adds operational complexity and external dependencies. Append-only file leverages Ebb's specific access patterns (append-only writes, GSN-ordered reads). |
+| **SQLite-only for Actions** | Durability requirement (fsync before ACK) limits to ~1,000-3,000 writes/second. Long sync reads could block writes.                                       |
+| **Bun/Node.js**             | Single-threaded event loop struggles with 10k concurrent SSE connections alongside file I/O. Lacks process isolation and supervision.                     |
+| **Rust NIF + Elixir**       | See `docs/rust-nif-optimization.md`                                                                                                                       |
+| **Rust for everything**     | See `docs/rust-nif-optimization.md`                                                                                                                       |
 
 ## Success Metrics
 

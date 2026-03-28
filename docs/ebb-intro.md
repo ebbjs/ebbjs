@@ -1,29 +1,32 @@
-# Way Too Ambitious
+👋 Hey friends,
 
-Hey friend,
+A common trap we all fall into from time to time is working _on_ our tools rather than _with_ our tools.
 
-My favorite way to avoid writing is to dream about my perfect notes app.
+We research new gadgets, gizmos, implements and instruments – all under the assumption that, "if I just bought _this_, I'd spend more time doing _that_." And if you're cursed with the skills to _make_ your own tools, it gets worse.
 
-Not just a place to store thoughts — something that works offline, syncs across devices, lets me share a document with a collaborator and leave comments in real-time. Obsidian's file-based, offline-first experience, but with the collaboration features of a modern app.
+That seductive push to _buy_ becomes an opportunity to _build_. Suddenly, you stop writing because you're too busy working on a complicated custom notes app that will make it "so much easier" to write your 1,000 word blog posts.
 
-So I started building it. Seemed simple enough — add some sync on top of SQLite, hook up a library for collaborative text editing, call it a day. What could go wrong?
+\*_Sigh_\*
 
-Everything. Everything could go wrong.
+Obviously, I'm speaking from experience. This is exactly what happened to me over my paternity leave. I got caught in the trap.
 
-Turns out "sync" is a four-letter word. What happens when two people edit the same note offline? Who decides which change wins? How do you even agree on what "first" means when no one is talking to a server? And then there's schema evolution — what do you do when you ship a breaking change to a database that lives on thousands of devices?
+I spent months working on a document editor that syncs across devices, enables collaborative editing and commenting, _and_ works offline. And what do I have to show for all the time spent productively procrastinating?
 
-Conflict resolution, server-assigned ordering, garbage collection, permissions — each problem opened a door to three more. I kept building anyway. I hadn't shipped a single feature for the notes app. I had built a distributed systems textbook.
+Well, experience is what you get when you didn't get what you wanted. And I got a lot of experience.
 
-At some point I realized: this has to be easier.
+Turns out, there's a reason essentially every other writing app chooses between working offline and working collaboratively. Providing both is one of the most complicated problems in distributed systems design.
 
-I started researching what others had built — a dozen libraries, frameworks, databases — and kept hitting the same wall: great primitives, but still a lot of glue code. Everyone was solving one piece of the puzzle. I just wanted something that worked.
+It requires completely rethinking the traditional client-server application architecture, turning your database inside out, and dealing with concurrency and conflicts.
 
-So I started building it myself. First version taught me what *not* to do. Second taught me what could work. Third taught me what actually *did* work. **ebb** is the fourth — a complete rewrite with everything I've learned.
+After watching masters level lectures on CRDTs, Merkel trees, broadcast protocols and Lamport Clocks, and frankenstening every existing tool and library together just to _start_ working on the UI of this app, I realized there needed to be a better way for me and people like me to build apps like this.
 
-ebb is a local-first backend framework. It gives developers the primitives they actually need: offline writes, automatic sync, conflict resolution — without requiring a PhD in distributed systems to use them.
+So, instead of unintentionally falling for the trap of working on my tools, I deliberately decided to build one.
 
-I've already posted the first devlog, and there's a lot more to come. Expect deep dives on local-first architecture, the trade-offs of distributed systems, building with Elixir, and what it takes to create an open-source database framework from scratch.
+[`ebb` is a framework for building real-time, collaborative, offline-capable apps](https://ebbjs.com/)—the types of apps I want to see more of in the world.
+
+It's a complete rewrite of the architecture I was building for my notes app, but abstracted to help developers focus more on features instead of infrastructure. I'll rebuild it in public and documenting the decisions and learnings along the way in a "devlog".
+
+The first article is already up, and if you're interested in reading about database consistency models, [check it out 😆](https://ebbjs.com/devlog/consistency/).
 
 Until next time,
-
 Drew

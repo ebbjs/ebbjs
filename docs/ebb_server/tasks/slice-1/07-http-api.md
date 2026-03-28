@@ -13,6 +13,7 @@
 Create `EbbServer.Sync.Router` as a `Plug.Router`.
 
 **Module setup:**
+
 ```elixir
 use Plug.Router
 
@@ -22,6 +23,7 @@ plug :dispatch
 ```
 
 **`POST /sync/actions`:**
+
 - Read raw body: `{:ok, body, conn} = Plug.Conn.read_body(conn)`
 - Decode MessagePack: `{:ok, decoded} = Msgpax.unpack(body)`
 - Extract actions list: `actions = decoded["actions"] || []`
@@ -42,6 +44,7 @@ plug :dispatch
 Add the GET endpoint to the router:
 
 **`GET /entities/:id`:**
+
 - Extract `id` from path params
 - Call `Plug.Conn.fetch_query_params(conn)` to parse query string
 - Extract `actor_id` from `conn.query_params["actor_id"]` (required but not validated in Slice 1)

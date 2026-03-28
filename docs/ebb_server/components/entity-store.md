@@ -20,18 +20,18 @@ Provides the read interface for entity state with zero-staleness guarantee. When
 
 #### Read API
 
-| Name | Signature | Description |
-|------|-----------|-------------|
-| `get/2` | `get(entity_id :: String.t(), actor_id :: String.t()) :: {:ok, entity()} \| :not_found \| {:error, term()}` | Point lookup. Materializes if dirty. Permission check is the caller's responsibility (HTTP API layer). |
-| `query/3` | `query(type :: String.t(), filter :: map() \| nil, actor_id :: String.t()) :: {:ok, [entity()]} \| {:error, term()}` | Type-scoped query. Batch materializes dirty entities of this type first, then queries SQLite with filter + permission JOINs. |
-| `get_batch/2` | `get_batch(entity_ids :: [String.t()], actor_id :: String.t()) :: {:ok, [entity()]} \| {:error, term()}` | Batch point lookup. Materializes all dirty entities in the list, then returns all. For `ctx.getBatch()`. |
+| Name          | Signature                                                                                                            | Description                                                                                                                  |
+| ------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `get/2`       | `get(entity_id :: String.t(), actor_id :: String.t()) :: {:ok, entity()} \| :not_found \| {:error, term()}`          | Point lookup. Materializes if dirty. Permission check is the caller's responsibility (HTTP API layer).                       |
+| `query/3`     | `query(type :: String.t(), filter :: map() \| nil, actor_id :: String.t()) :: {:ok, [entity()]} \| {:error, term()}` | Type-scoped query. Batch materializes dirty entities of this type first, then queries SQLite with filter + permission JOINs. |
+| `get_batch/2` | `get_batch(entity_ids :: [String.t()], actor_id :: String.t()) :: {:ok, [entity()]} \| {:error, term()}`             | Batch point lookup. Materializes all dirty entities in the list, then returns all. For `ctx.getBatch()`.                     |
 
 #### Materialization (internal, but testable)
 
-| Name | Signature | Description |
-|------|-----------|-------------|
-| `materialize/1` | `materialize(entity_id :: String.t()) :: {:ok, entity()} \| {:error, term()}` | Reads delta from RocksDB, merges, upserts SQLite, clears dirty. Used by `get/2` and by System Cache during startup. |
-| `materialize_batch/1` | `materialize_batch(entity_ids :: [String.t()]) :: {:ok, [entity()]} \| {:error, term()}` | Batch version. Used by `query/3`. |
+| Name                  | Signature                                                                                | Description                                                                                                         |
+| --------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `materialize/1`       | `materialize(entity_id :: String.t()) :: {:ok, entity()} \| {:error, term()}`            | Reads delta from RocksDB, merges, upserts SQLite, clears dirty. Used by `get/2` and by System Cache during startup. |
+| `materialize_batch/1` | `materialize_batch(entity_ids :: [String.t()]) :: {:ok, [entity()]} \| {:error, term()}` | Batch version. Used by `query/3`.                                                                                   |
 
 ### Types
 
@@ -68,12 +68,12 @@ Provides the read interface for entity state with zero-staleness guarantee. When
 
 ## Dependencies
 
-| Dependency | What it needs | Reference |
-|------------|---------------|-----------|
-| System Cache | `is_dirty?/1`, `clear_dirty/1`, `dirty_entity_ids_for_type/1` | [system-cache.md](system-cache.md#dirty-set) |
+| Dependency    | What it needs                                                                                                  | Reference                                            |
+| ------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| System Cache  | `is_dirty?/1`, `clear_dirty/1`, `dirty_entity_ids_for_type/1`                                                  | [system-cache.md](system-cache.md#dirty-set)         |
 | RocksDB Store | `prefix_iterator/3` on `cf_entity_actions` (to find Updates for an entity since `last_gsn`; uses default name) | [rocksdb-store.md](rocksdb-store.md#read-operations) |
-| RocksDB Store | `get/3` on `cf_updates` (to fetch full Update payloads; uses default name) | [rocksdb-store.md](rocksdb-store.md#read-operations) |
-| SQLite Store | `get_entity/1`, `get_entity_last_gsn/1`, `upsert_entity/1`, `upsert_entities/1`, `query_entities/1` | [sqlite-store.md](sqlite-store.md#entity-operations) |
+| RocksDB Store | `get/3` on `cf_updates` (to fetch full Update payloads; uses default name)                                     | [rocksdb-store.md](rocksdb-store.md#read-operations) |
+| SQLite Store  | `get_entity/1`, `get_entity_last_gsn/1`, `upsert_entity/1`, `upsert_entities/1`, `query_entities/1`            | [sqlite-store.md](sqlite-store.md#entity-operations) |
 
 ## Internal Design Notes
 

@@ -7,7 +7,7 @@
 Ebb provides two distinct primitives for server-side logic:
 
 - **`defineFunction`** — Arbitrary Node.js code that runs inside the Ebb server process, with a `ctx` object for reading and writing Ebb data. Side effects (external API calls, LLM requests, etc.) are expected and allowed. Invoked over HTTP from the browser client SDK or external processes.
-- **`defineAction`** — Pure Ebb composition. Combines Ebb CRUD primitives into a single atomic Action. No side effects. *(Specified separately.)*
+- **`defineAction`** — Pure Ebb composition. Combines Ebb CRUD primitives into a single atomic Action. No side effects. _(Specified separately.)_
 
 This document covers `defineFunction`.
 
@@ -47,6 +47,7 @@ Execute handler in vm sandbox with ctx injected
 ```
 
 This makes `defineFunction` the right primitive for:
+
 - AI-assisted workflows (e.g., read a document, send to LLM, write comments back)
 - Automation and CRON-style jobs triggered by clients
 - Agent-driven mutations
@@ -86,9 +87,9 @@ Developers define functions as TypeScript files in a `functions/` directory:
 
 ```ts
 // functions/proofreadDocument.ts
-import Anthropic from '@anthropic-ai/sdk';
-import { Type } from '@sinclair/typebox';
-import { defineFunction } from '@ebbjs/server';
+import Anthropic from "@anthropic-ai/sdk";
+import { Type } from "@sinclair/typebox";
+import { defineFunction } from "@ebbjs/server";
 
 export default defineFunction({
   name: "proofreadDocument",
@@ -109,9 +110,9 @@ export default defineFunction({
     // External side effect — this is the point
     const ai = new Anthropic();
     const response = await ai.messages.create({
-      model: 'claude-opus-4-5',
+      model: "claude-opus-4-5",
       max_tokens: 1024,
-      messages: [{ role: 'user', content: `Proofread this: ${doc.data.body}` }],
+      messages: [{ role: "user", content: `Proofread this: ${doc.data.body}` }],
     });
 
     const suggestions = parseSuggestions(response.content);
@@ -252,6 +253,7 @@ If the external call fails, nothing was written. If a write fails after a succes
 ### Zero-Downtime Deployment
 
 When a new version is deployed and activated:
+
 - **In-flight requests** continue with their already-loaded handler code until completion.
 - **New requests** look up the active version at request time and immediately use the new code.
 
@@ -263,7 +265,7 @@ Functions run inside a `vm` context for one reason: **timeout enforcement**. A r
 
 Note: because server functions run in the Bun Application Server (not the Elixir server), a misbehaving function cannot affect the sync protocol, SSE connections, or the storage engine. This is a natural benefit of the two-server architecture.
 
-The sandbox is *not* a security boundary — function authors are trusted. And it is not what provides zero-downtime deploys — that comes from the version lookup at request time. The sandbox is purely about protecting the Bun host process from misbehaving function code.
+The sandbox is _not_ a security boundary — function authors are trusted. And it is not what provides zero-downtime deploys — that comes from the version lookup at request time. The sandbox is purely about protecting the Bun host process from misbehaving function code.
 
 ---
 
@@ -287,10 +289,10 @@ The sandbox is *not* a security boundary — function authors are trusted. And i
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-| State | Description |
-|---|---|
-| `pending` | Uploaded, not yet activated |
-| `active` | Receives all traffic |
+| State      | Description                   |
+| ---------- | ----------------------------- |
+| `pending`  | Uploaded, not yet activated   |
+| `active`   | Receives all traffic          |
 | `previous` | Kept for rollback, no traffic |
 
 ---
@@ -342,14 +344,14 @@ export default {
 
 ## CLI Commands
 
-| Command | Description |
-|---|---|
-| `ebb deploy` | Bundle and deploy all functions, auto-activate |
-| `ebb deploy --no-activate` | Deploy without activating |
-| `ebb functions list [name]` | List all functions or versions of a specific function |
-| `ebb functions activate <name> <version>` | Manually activate a specific version |
-| `ebb functions rollback <name>` | Rollback to previous version |
-| `ebb functions health [name]` | Show invocation counts and error rates per version |
+| Command                                   | Description                                           |
+| ----------------------------------------- | ----------------------------------------------------- |
+| `ebb deploy`                              | Bundle and deploy all functions, auto-activate        |
+| `ebb deploy --no-activate`                | Deploy without activating                             |
+| `ebb functions list [name]`               | List all functions or versions of a specific function |
+| `ebb functions activate <name> <version>` | Manually activate a specific version                  |
+| `ebb functions rollback <name>`           | Rollback to previous version                          |
+| `ebb functions health [name]`             | Show invocation counts and error rates per version    |
 
 ---
 
@@ -360,8 +362,8 @@ export default {
 ```ts
 // packages/server/src/functions/store.ts
 
-import { nanoid } from 'nanoid';
-import type { Database } from 'better-sqlite3'; // shared SQLite database (same DB as materialized entity views)
+import { nanoid } from "nanoid";
+import type { Database } from "better-sqlite3"; // shared SQLite database (same DB as materialized entity views)
 
 interface FunctionVersion {
   id: string;
@@ -370,7 +372,7 @@ interface FunctionVersion {
   code: string;
   input_schema: string | null;
   output_schema: string | null;
-  status: 'pending' | 'active' | 'previous';
+  status: "pending" | "active" | "previous";
   created_at: number;
   activated_at: number | null;
 }
@@ -388,50 +390,74 @@ export class FunctionStore {
     const id = nanoid();
     const now = Date.now();
 
-    this.db.prepare(`
+    this.db
+      .prepare(
+        `
       INSERT INTO function_versions (id, name, version, code, input_schema, output_schema, status, created_at)
       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
-    `).run(
-      id,
-      params.name,
-      params.version,
-      params.code,
-      params.inputSchema ? JSON.stringify(params.inputSchema) : null,
-      params.outputSchema ? JSON.stringify(params.outputSchema) : null,
-      now
-    );
+    `,
+      )
+      .run(
+        id,
+        params.name,
+        params.version,
+        params.code,
+        params.inputSchema ? JSON.stringify(params.inputSchema) : null,
+        params.outputSchema ? JSON.stringify(params.outputSchema) : null,
+        now,
+      );
 
     return this.getById(id)!;
   }
 
   getById(id: string): FunctionVersion | null {
-    return this.db.prepare(`
+    return this.db
+      .prepare(
+        `
       SELECT * FROM function_versions WHERE id = ?
-    `).get(id) as FunctionVersion | null;
+    `,
+      )
+      .get(id) as FunctionVersion | null;
   }
 
   getActive(name: string): FunctionVersion | null {
-    return this.db.prepare(`
+    return this.db
+      .prepare(
+        `
       SELECT * FROM function_versions WHERE name = ? AND status = 'active'
-    `).get(name) as FunctionVersion | null;
+    `,
+      )
+      .get(name) as FunctionVersion | null;
   }
 
   getPrevious(name: string): FunctionVersion | null {
-    return this.db.prepare(`
+    return this.db
+      .prepare(
+        `
       SELECT * FROM function_versions WHERE name = ? AND status = 'previous'
-    `).get(name) as FunctionVersion | null;
+    `,
+      )
+      .get(name) as FunctionVersion | null;
   }
 
   listVersions(name: string): FunctionVersion[] {
-    return this.db.prepare(`
+    return this.db
+      .prepare(
+        `
       SELECT * FROM function_versions WHERE name = ? ORDER BY created_at DESC
-    `).all(name) as FunctionVersion[];
+    `,
+      )
+      .all(name) as FunctionVersion[];
   }
 
   listFunctions(): FunctionVersion[] {
-    return this.db.prepare(`
+    return this.db
+      .prepare(
+        `
       SELECT * FROM function_versions WHERE status = 'active' ORDER BY name
-    `).all() as FunctionVersion[];
+    `,
+      )
+      .all() as FunctionVersion[];
   }
 
   activate(name: string, version: string): void {
@@ -439,14 +465,22 @@ export class FunctionStore {
       const now = Date.now();
 
       // Demote current active to previous
-      this.db.prepare(`
+      this.db
+        .prepare(
+          `
         UPDATE function_versions SET status = 'previous' WHERE name = ? AND status = 'active'
-      `).run(name);
+      `,
+        )
+        .run(name);
 
       // Promote target version to active
-      const result = this.db.prepare(`
+      const result = this.db
+        .prepare(
+          `
         UPDATE function_versions SET status = 'active', activated_at = ? WHERE name = ? AND version = ?
-      `).run(now, name, version);
+      `,
+        )
+        .run(now, name, version);
 
       if (result.changes === 0) {
         throw new Error(`Version ${version} not found for function ${name}`);
@@ -461,14 +495,22 @@ export class FunctionStore {
       const now = Date.now();
 
       // Demote current active to previous
-      this.db.prepare(`
+      this.db
+        .prepare(
+          `
         UPDATE function_versions SET status = 'previous' WHERE name = ? AND status = 'active'
-      `).run(name);
+      `,
+        )
+        .run(name);
 
       // Promote previous to active
-      const result = this.db.prepare(`
+      const result = this.db
+        .prepare(
+          `
         UPDATE function_versions SET status = 'active', activated_at = ? WHERE name = ? AND status = 'previous'
-      `).run(now, name);
+      `,
+        )
+        .run(now, name);
 
       if (result.changes === 0) {
         throw new Error(`No previous version available for function ${name}`);
@@ -496,9 +538,9 @@ export class FunctionStore {
 
 export function createFunctionContext(
   actor: Actor,
-  db: Database,            // shared SQLite database (materialized entity views)
-  elixirUrl: string,       // e.g., "http://localhost:4000"
-  authHeaders: Headers,    // forwarded from the original request for Elixir auth
+  db: Database, // shared SQLite database (materialized entity views)
+  elixirUrl: string, // e.g., "http://localhost:4000"
+  authHeaders: Headers, // forwarded from the original request for Elixir auth
 ): FunctionContext {
   // Load actor's group memberships once at invocation time (direct SQLite read)
   const groupIds = loadGroupMemberships(db, actor.id);
@@ -517,24 +559,29 @@ export function createFunctionContext(
     // Writes: HTTP POST to Elixir server on localhost
     // Elixir handles permission checks, assigns GSN, fsyncs, fans out to subscribers
     async create(type, data) {
-      return postAction(elixirUrl, authHeaders, { method: 'PUT', type, data });
+      return postAction(elixirUrl, authHeaders, { method: "PUT", type, data });
     },
     async update(entity, patch) {
-      return postAction(elixirUrl, authHeaders, { method: 'PATCH', subjectId: entity.id, data: patch });
+      return postAction(elixirUrl, authHeaders, {
+        method: "PATCH",
+        subjectId: entity.id,
+        data: patch,
+      });
     },
     async delete(entity) {
-      return postAction(elixirUrl, authHeaders, { method: 'DELETE', subjectId: entity.id });
+      return postAction(elixirUrl, authHeaders, { method: "DELETE", subjectId: entity.id });
     },
     async relate(source, name, target) {
       return postAction(elixirUrl, authHeaders, {
-        method: 'PUT', type: 'relationship',
+        method: "PUT",
+        type: "relationship",
         data: { source_id: source.id, target_id: target.id, type: source.type, field: name },
       });
     },
     async unrelate(source, name, target) {
       // Look up the Relationship entity, then DELETE it
       const rel = await findRelationship(db, source.id, target.id, name);
-      if (rel) return postAction(elixirUrl, authHeaders, { method: 'DELETE', subjectId: rel.id });
+      if (rel) return postAction(elixirUrl, authHeaders, { method: "DELETE", subjectId: rel.id });
     },
 
     generateId: () => nanoid(),
@@ -542,10 +589,14 @@ export function createFunctionContext(
 }
 
 // Helper: POST an Action to the Elixir server, wait for durability confirmation
-async function postAction(elixirUrl: string, headers: Headers, update: UpdatePayload): Promise<ActionResult> {
+async function postAction(
+  elixirUrl: string,
+  headers: Headers,
+  update: UpdatePayload,
+): Promise<ActionResult> {
   const res = await fetch(`${elixirUrl}/sync/actions`, {
-    method: 'POST',
-    headers: { ...Object.fromEntries(headers), 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { ...Object.fromEntries(headers), "Content-Type": "application/json" },
     body: JSON.stringify({ updates: [update] }),
   });
   if (!res.ok) throw new ActionError(await res.json());
@@ -558,10 +609,10 @@ async function postAction(elixirUrl: string, headers: Headers, update: UpdatePay
 ```ts
 // packages/server/src/functions/executor.ts
 
-import * as vm from 'vm';
-import { FunctionStore } from './store';
-import { ScriptCache } from './cache';
-import { createFunctionContext } from './context';
+import * as vm from "vm";
+import { FunctionStore } from "./store";
+import { ScriptCache } from "./cache";
+import { createFunctionContext } from "./context";
 
 interface ExecutorConfig {
   timeoutMs: number;
@@ -571,16 +622,16 @@ export class FunctionExecutor {
   constructor(
     private store: FunctionStore,
     private cache: ScriptCache,
-    private db: Database,            // shared SQLite database
-    private elixirUrl: string,       // e.g., "http://localhost:4000"
-    private config: ExecutorConfig = { timeoutMs: 30000 }
+    private db: Database, // shared SQLite database
+    private elixirUrl: string, // e.g., "http://localhost:4000"
+    private config: ExecutorConfig = { timeoutMs: 30000 },
   ) {}
 
   async execute(
     functionName: string,
     input: unknown,
     actor: Actor,
-    authHeaders: Headers,            // forwarded from the original request
+    authHeaders: Headers, // forwarded from the original request
   ): Promise<unknown> {
     // 1. Lookup active version (direct SQLite read)
     const version = this.store.getActive(functionName);

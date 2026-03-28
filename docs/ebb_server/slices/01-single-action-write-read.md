@@ -6,14 +6,14 @@ A client can POST an Action containing a single entity PUT to the server, receiv
 
 ## Components Involved
 
-| Component | Interface Subset Used |
-|-----------|----------------------|
-| [RocksDB Store](../components/rocksdb-store.md) | `start_link/1`, `write_batch/2`, `get/3`, `prefix_iterator/3`, key encoding functions |
-| [SQLite Store](../components/sqlite-store.md) | `start_link/1`, `upsert_entity/1`, `get_entity/1` |
-| [System Cache](../components/system-cache.md) | `start_link/1`, `claim_gsn_range/1`, `mark_dirty_batch/1`, `is_dirty?/1`, `clear_dirty/1` |
-| [Writer](../components/writer.md) | `start_link/1`, `write_actions/2` (single Writer only -- no WriterRouter yet) |
-| [Entity Store](../components/entity-store.md) | `get/2`, `materialize/1` |
-| [HTTP API](../components/http-api.md) | `POST /sync/actions`, `GET /entities/:id` (no auth -- hardcoded actor for this slice) |
+| Component                                       | Interface Subset Used                                                                     |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| [RocksDB Store](../components/rocksdb-store.md) | `start_link/1`, `write_batch/2`, `get/3`, `prefix_iterator/3`, key encoding functions     |
+| [SQLite Store](../components/sqlite-store.md)   | `start_link/1`, `upsert_entity/1`, `get_entity/1`                                         |
+| [System Cache](../components/system-cache.md)   | `start_link/1`, `claim_gsn_range/1`, `mark_dirty_batch/1`, `is_dirty?/1`, `clear_dirty/1` |
+| [Writer](../components/writer.md)               | `start_link/1`, `write_actions/2` (single Writer only -- no WriterRouter yet)             |
+| [Entity Store](../components/entity-store.md)   | `get/2`, `materialize/1`                                                                  |
+| [HTTP API](../components/http-api.md)           | `POST /sync/actions`, `GET /entities/:id` (no auth -- hardcoded actor for this slice)     |
 
 ## Flow
 
@@ -43,7 +43,7 @@ A client can POST an Action containing a single entity PUT to the server, receiv
 
 6. **HTTP handler delegates to Entity Store.** Calls `EntityStore.get("todo_abc123", "test_actor")`.
 
-7. **Entity Store materializes.** 
+7. **Entity Store materializes.**
    - Checks `SystemCache.is_dirty?("todo_abc123")` → `true`
    - Calls `SQLite.get_entity_last_gsn("todo_abc123")` → `:not_found` (first materialization)
    - Iterates `cf_entity_actions` with prefix `"todo_abc123"` → finds `{<<todo_abc123, 1::64-big>>, action_id}`

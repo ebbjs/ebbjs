@@ -6,13 +6,13 @@ A client can invoke a server function by name, the Elixir server forwards the in
 
 ## Components Involved
 
-| Component | Interface Subset Used |
-|-----------|----------------------|
-| [HTTP API](../components/http-api.md) | `POST /functions/:name` (client-facing), `GET /entities/:id`, `POST /entities/query`, `POST /entities/batch`, `POST /sync/actions` (Bun-facing) |
-| [Entity Store](../components/entity-store.md) | `get/2`, `query/3`, `get_batch/2` |
-| [Writer](../components/writer.md) | `WriterRouter.route_write/1` (for Bun's `ctx.create`/`ctx.update`/`ctx.delete`) |
-| [Permission Checker](../components/permission-checker.md) | `validate_and_authorize/2` (for Bun's write Actions) |
-| [SQLite Store](../components/sqlite-store.md) | `get_active_function/1` (function version lookup) |
+| Component                                                 | Interface Subset Used                                                                                                                           |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| [HTTP API](../components/http-api.md)                     | `POST /functions/:name` (client-facing), `GET /entities/:id`, `POST /entities/query`, `POST /entities/batch`, `POST /sync/actions` (Bun-facing) |
+| [Entity Store](../components/entity-store.md)             | `get/2`, `query/3`, `get_batch/2`                                                                                                               |
+| [Writer](../components/writer.md)                         | `WriterRouter.route_write/1` (for Bun's `ctx.create`/`ctx.update`/`ctx.delete`)                                                                 |
+| [Permission Checker](../components/permission-checker.md) | `validate_and_authorize/2` (for Bun's write Actions)                                                                                            |
+| [SQLite Store](../components/sqlite-store.md)             | `get_active_function/1` (function version lookup)                                                                                               |
 
 ## Flow
 
@@ -23,11 +23,12 @@ A client can invoke a server function by name, the Elixir server forwards the in
 3. **Elixir looks up function.** `SQLite.get_active_function("summarize_todos")` → `{:ok, %{name: "summarize_todos", version: "v3", status: "active"}}`.
 
 4. **Elixir forwards to Bun.** HTTP POST to `http://localhost:3001/invoke`:
+
    ```json
    {
      "function": "summarize_todos",
      "version": "v3",
-     "input": {"list_id": "list_abc"},
+     "input": { "list_id": "list_abc" },
      "actor_id": "a_user1",
      "server_url": "http://localhost:4000"
    }
@@ -40,14 +41,14 @@ A client can invoke a server function by name, the Elixir server forwards the in
    async function handler(ctx, input) {
      // ctx.query calls Elixir
      const todos = await ctx.query("todo", { list_id: input.list_id });
-     
+
      // ctx.create calls Elixir
      const summary = await ctx.create("summary", {
        list_id: input.list_id,
        total: todos.length,
-       completed: todos.filter(t => t.data.fields.completed.value).length
+       completed: todos.filter((t) => t.data.fields.completed.value).length,
      });
-     
+
      return { summary_id: summary.id };
    }
    ```

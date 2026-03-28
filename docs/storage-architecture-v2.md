@@ -102,12 +102,12 @@ SQLite serves as a read-optimized query layer for materialized entity state. It 
 
 Three ETS tables serve the highest-frequency code paths:
 
-| Table | Contents | Updated By | Read By |
-|-------|----------|------------|---------|
-| `dirty_set` | `{entity_id => true}` — entities with unmaterialized updates | Writer GenServers (on every write) | EntityStore (on every read) |
-| `group_members` | `{actor_id => [group_ids]}` — actor group memberships | Writer GenServers (on system entity writes) | Permission checks, fan-out |
-| `relationships` | `{source_id => group_id, target_id => [entity_ids]}` | Writer GenServers (on system entity writes) | Fan-out routing, catch-up filtering |
-| `committed_watermark` | Highest GSN where all prior GSNs are durable | Writer GenServers (after each batch commit) | Catch-up reads, fan-out gating |
+| Table                 | Contents                                                     | Updated By                                  | Read By                             |
+| --------------------- | ------------------------------------------------------------ | ------------------------------------------- | ----------------------------------- |
+| `dirty_set`           | `{entity_id => true}` — entities with unmaterialized updates | Writer GenServers (on every write)          | EntityStore (on every read)         |
+| `group_members`       | `{actor_id => [group_ids]}` — actor group memberships        | Writer GenServers (on system entity writes) | Permission checks, fan-out          |
+| `relationships`       | `{source_id => group_id, target_id => [entity_ids]}`         | Writer GenServers (on system entity writes) | Fan-out routing, catch-up filtering |
+| `committed_watermark` | Highest GSN where all prior GSNs are durable                 | Writer GenServers (after each batch commit) | Catch-up reads, fan-out gating      |
 
 **Why ETS for permissions (not RocksDB):** Permission checks and fan-out routing happen on every request and every Action push. ETS lookups are ~0.5-1us. RocksDB lookups are ~1-5us (hot block cache) to ~50-200us (cold). At 10k+ concurrent connections, the 2-5x ETS advantage compounds into meaningful latency reduction on the most critical path.
 
@@ -131,15 +131,16 @@ All five column families are written atomically via `WriteBatch` on every Action
 
 The serialization format at each layer is chosen to match the consumer and optimize for the dominant operation:
 
-| Layer | Format | Consumer | Why |
-|-------|--------|----------|-----|
-| Client ↔ Server (wire) | MessagePack | Browser SDK, server SDK, external clients | Compact (~30% smaller than JSON), cross-language, fast encode/decode in JS and Elixir |
-| RocksDB (Action log) | ETF (Erlang Term Format) | Elixir only | Fastest possible encode/decode from Elixir — `:erlang.term_to_binary` is a C BIF in the BEAM VM, ~5-10x faster than MessagePack or JSON encoding in Elixir userland |
-| SQLite (entity cache) | JSON | SQLite `json_extract()` queries | Required for generated columns, partial indexes, and `ctx.query()` filter predicates |
+| Layer                  | Format                   | Consumer                                  | Why                                                                                                                                                                 |
+| ---------------------- | ------------------------ | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Client ↔ Server (wire) | MessagePack              | Browser SDK, server SDK, external clients | Compact (~30% smaller than JSON), cross-language, fast encode/decode in JS and Elixir                                                                               |
+| RocksDB (Action log)   | ETF (Erlang Term Format) | Elixir only                               | Fastest possible encode/decode from Elixir — `:erlang.term_to_binary` is a C BIF in the BEAM VM, ~5-10x faster than MessagePack or JSON encoding in Elixir userland |
+| SQLite (entity cache)  | JSON                     | SQLite `json_extract()` queries           | Required for generated columns, partial indexes, and `ctx.query()` filter predicates                                                                                |
 
 **Why ETF for RocksDB:** In the v2 architecture, Elixir is the exclusive owner of RocksDB — no other process reads or writes it. Since serialization throughput is the primary CPU bottleneck on the write path, using the BEAM's native binary format eliminates Elixir-level encoding entirely. Each `:erlang.term_to_binary` call takes ~0.5-2μs (C implementation), compared to ~3-10μs for MessagePack encoding via `Msgpax` (pure Elixir). At 100k Actions/sec, this is the difference between ~30% of a CPU core (ETF) and >100% of a core (MessagePack) spent on serialization alone.
 
 **Trade-offs of ETF in RocksDB:**
+
 - RocksDB data is only readable by Erlang/Elixir. This is acceptable because Elixir owns RocksDB exclusively. The human-readable view of data is SQLite (the entity cache) or JSON over HTTP.
 - ETF binaries are ~20-40% larger than MessagePack. RocksDB's built-in compression (Snappy/LZ4 per SST file) mitigates this on disk. The memtable overhead is bounded by RocksDB's configured `write_buffer_size`.
 - ETF format is tied to BEAM/OTP, but is stable and backward-compatible across releases. If Elixir were ever replaced (extremely unlikely), a migration step would be needed.
@@ -263,6 +264,7 @@ Fan-out pushes GSNs 1-2000 in order to SSE subscribers
 ### Durability Notifications
 
 After each flush:
+
 1. `{:durable, gsn}` → each waiting HTTP handler process (unblocks HTTP response)
 2. `{:batch_committed, from_gsn, to_gsn}` → Fan-out Router (gated by watermark before SSE push)
 
@@ -341,10 +343,10 @@ Each entity's `data` field contains self-describing typed field values. Each fie
 ```json
 {
   "fields": {
-    "title":     { "type": "lww", "value": "My Todo", "hlc": 1711234567890000 },
+    "title": { "type": "lww", "value": "My Todo", "hlc": 1711234567890000 },
     "completed": { "type": "lww", "value": false, "hlc": 1711234567890000 },
-    "likes":     { "type": "counter", "value": { "alice": 3, "bob": 1 } },
-    "body":      { "type": "crdt", "value": "<base64 yjs state>" }
+    "likes": { "type": "counter", "value": { "alice": 3, "bob": 1 } },
+    "body": { "type": "crdt", "value": "<base64 yjs state>" }
   }
 }
 ```
@@ -542,28 +544,29 @@ All system entity mutations flow through one of the Writer GenServers, which upd
 
 ### Write Throughput
 
-| Metric | SQLite (previous) | RocksDB + ETF (this architecture) |
-|--------|-------------------|----------------------------------|
-| Bottleneck | 7 B-tree updates per INSERT | Elixir CPU (serialization + key construction) |
-| Single-writer throughput | 5.8-9.5k Actions/sec | **~60k Actions/sec** (benchmarked) |
-| 2-writer throughput (pipelined) | N/A | **~108k Actions/sec** (benchmarked) |
-| Fsync control | PRAGMA synchronous | WriteBatch sync option |
-| Index maintenance on write | Synchronous (per-write) | Asynchronous (background compaction) |
-| Serialization cost (1000-Action batch) | ~10-20ms (JSON) | **~1.4ms (ETF)** |
+| Metric                                 | SQLite (previous)           | RocksDB + ETF (this architecture)             |
+| -------------------------------------- | --------------------------- | --------------------------------------------- |
+| Bottleneck                             | 7 B-tree updates per INSERT | Elixir CPU (serialization + key construction) |
+| Single-writer throughput               | 5.8-9.5k Actions/sec        | **~60k Actions/sec** (benchmarked)            |
+| 2-writer throughput (pipelined)        | N/A                         | **~108k Actions/sec** (benchmarked)           |
+| Fsync control                          | PRAGMA synchronous          | WriteBatch sync option                        |
+| Index maintenance on write             | Synchronous (per-write)     | Asynchronous (background compaction)          |
+| Serialization cost (1000-Action batch) | ~10-20ms (JSON)             | **~1.4ms (ETF)**                              |
 
 **Benchmark results (from `rocksdb-throughput-results.md`):**
 
-| Configuration | Actions/sec | vs SQLite baseline | Notes |
-|---|---|---|---|
-| SQLite (all indexes, sync) | 5,838 | 1x | Previous architecture |
-| RocksDB + ETF (1 writer, sync) | ~60,000 | **10x** | Single-writer ceiling — Elixir CPU bound |
-| RocksDB + ETF (2 writers, pipelined, sync) | **~108,000** | **18x** | `enable_pipelined_write: true`. Near-linear 1.9x scaling. |
-| RocksDB + MessagePack (1 writer, sync) | ~52,000 | 9x | ETF is 15% faster on full write path |
-| RocksDB + JSON (1 writer, sync) | ~47,000 | 8x | ETF is 28% faster on full write path |
+| Configuration                              | Actions/sec  | vs SQLite baseline | Notes                                                     |
+| ------------------------------------------ | ------------ | ------------------ | --------------------------------------------------------- |
+| SQLite (all indexes, sync)                 | 5,838        | 1x                 | Previous architecture                                     |
+| RocksDB + ETF (1 writer, sync)             | ~60,000      | **10x**            | Single-writer ceiling — Elixir CPU bound                  |
+| RocksDB + ETF (2 writers, pipelined, sync) | **~108,000** | **18x**            | `enable_pipelined_write: true`. Near-linear 1.9x scaling. |
+| RocksDB + MessagePack (1 writer, sync)     | ~52,000      | 9x                 | ETF is 15% faster on full write path                      |
+| RocksDB + JSON (1 writer, sync)            | ~47,000      | 8x                 | ETF is 28% faster on full write path                      |
 
 **Caveat:** The 108k number is from a 15-second benchmark run that includes initial burst throughput. Sustained throughput over 60+ seconds may be ~85-100k due to memtable flush and compaction overhead. A longer validation run is recommended.
 
 **What we tested and ruled out:**
+
 - **Bulk NIF (`write_multi`):** Reduced 8,000 NIF boundary crossings to 1. No improvement — the bottleneck is Elixir computation (key construction, data structure manipulation), not NIF overhead.
 - **Writer sharding (default config):** 2 writers on single RocksDB. Only 1.3x scaling — RocksDB's WAL serialization limits default multi-writer throughput.
 - **3 writers (pipelined):** ~140k/sec (2.37x scaling), but per-writer efficiency drops to 79% (vs 92% with 2 writers), p99 latency jumps from 27ms to 37ms, and the additional watermark/fan-out complexity isn't justified when 2 writers already exceeds the 100k target. See `rocksdb-throughput-results.md` for full data.
@@ -573,12 +576,12 @@ The Rust NIF path remains available as a future optimization for >200k Actions/s
 
 ### Read Latency
 
-| Operation | Clean (cached) | Dirty (materialization needed) |
-|-----------|---------------|-------------------------------|
-| `ctx.get(id)` | ~0.3-0.5ms | ~0.5-2ms |
-| `ctx.query(type)`, 100 results | ~1.3-2.5ms | ~2-5ms (depends on dirty count) |
-| `ctx.query(type)` + permission JOINs | ~2.3-5.5ms | ~3-8ms |
-| Sync catch-up (GSN range scan) | ~1-5ms per page | N/A (reads RocksDB directly) |
+| Operation                            | Clean (cached)  | Dirty (materialization needed)  |
+| ------------------------------------ | --------------- | ------------------------------- |
+| `ctx.get(id)`                        | ~0.3-0.5ms      | ~0.5-2ms                        |
+| `ctx.query(type)`, 100 results       | ~1.3-2.5ms      | ~2-5ms (depends on dirty count) |
+| `ctx.query(type)` + permission JOINs | ~2.3-5.5ms      | ~3-8ms                          |
+| Sync catch-up (GSN range scan)       | ~1-5ms per page | N/A (reads RocksDB directly)    |
 
 The ~0.2-0.3ms per call is the localhost HTTP round-trip overhead from Bun → Elixir. Clean reads add this on top of the SQLite query time. Dirty reads add the materialization cost (RocksDB read + ETF decode + per-field typed merge + SQLite upsert), which dominates the HTTP overhead. ETF decode (`:erlang.binary_to_term`) is equally fast as encode (~0.5-2μs per term), so the read path also benefits.
 
@@ -672,25 +675,25 @@ Application Supervisor (one_for_one)
 
 ## What Was Eliminated
 
-| Original Component | Replaced By |
-|--------------------|-------------|
-| Custom binary Action log format | RocksDB column families |
-| CRC32 framing and crash recovery | RocksDB built-in WAL recovery |
-| ETS `entity_index` (entity → [GSNs]) | RocksDB `cf_entity_actions` column family |
-| ETS `gsn_index` (GSN → file offset) | RocksDB `cf_actions` (GSN key → value) |
-| ETS `action_id_index` (dedup) | RocksDB `cf_action_dedup` column family |
-| File rotation + manifest | RocksDB SST file management |
-| Segment compaction + rewriting | RocksDB built-in compaction |
-| Index checkpointing | RocksDB MANIFEST + WAL |
-| Memory management (soft/hard limits) | RocksDB block cache + OS page cache |
-| Cold-tier SQLite index | Unnecessary (RocksDB keeps all data) |
-| Bun Materializer process | EntityStore on-demand materialization in Elixir |
-| SSE stream to Materializer | Eliminated |
-| `actions` and `updates` SQLite tables | RocksDB column families |
-| `snapshots` SQLite table | `last_gsn` field on entities table |
-| Custom Rust NIF (Fjall) | `rocksdb` hex package (existing Erlang NIF) |
-| Bun direct SQLite access | Elixir HTTP endpoints |
-| Async materialization staleness window | Zero-staleness on-demand materialization |
+| Original Component                           | Replaced By                                                          |
+| -------------------------------------------- | -------------------------------------------------------------------- |
+| Custom binary Action log format              | RocksDB column families                                              |
+| CRC32 framing and crash recovery             | RocksDB built-in WAL recovery                                        |
+| ETS `entity_index` (entity → [GSNs])         | RocksDB `cf_entity_actions` column family                            |
+| ETS `gsn_index` (GSN → file offset)          | RocksDB `cf_actions` (GSN key → value)                               |
+| ETS `action_id_index` (dedup)                | RocksDB `cf_action_dedup` column family                              |
+| File rotation + manifest                     | RocksDB SST file management                                          |
+| Segment compaction + rewriting               | RocksDB built-in compaction                                          |
+| Index checkpointing                          | RocksDB MANIFEST + WAL                                               |
+| Memory management (soft/hard limits)         | RocksDB block cache + OS page cache                                  |
+| Cold-tier SQLite index                       | Unnecessary (RocksDB keeps all data)                                 |
+| Bun Materializer process                     | EntityStore on-demand materialization in Elixir                      |
+| SSE stream to Materializer                   | Eliminated                                                           |
+| `actions` and `updates` SQLite tables        | RocksDB column families                                              |
+| `snapshots` SQLite table                     | `last_gsn` field on entities table                                   |
+| Custom Rust NIF (Fjall)                      | `rocksdb` hex package (existing Erlang NIF)                          |
+| Bun direct SQLite access                     | Elixir HTTP endpoints                                                |
+| Async materialization staleness window       | Zero-staleness on-demand materialization                             |
 | Entity-level `format` column (`json`/`crdt`) | Per-field `type` tags in stored data blob (merge strategy per field) |
 
 ---
@@ -715,26 +718,26 @@ end
 
 ### Components
 
-| ID | Component | Description |
-|----|-----------|-------------|
-| C1 | Elixir Project Scaffold | Mix project, OTP application, supervision tree skeleton |
-| C2 | RocksDB Setup | Open database, create column families, configure options |
-| C3 | SQLite Schema | Entity cache tables (entities, actors, function_versions) |
-| C4 | Writer GenServers (×2) | WriteBatch across column families, shared atomic GSN assignment, ETS dirty set updates, system entity cache updates, committed GSN watermark advancement |
-| C5 | System Entity Cache + Shared Atomics | ETS tables for group_members and relationships, startup population from RocksDB, `:atomics` for GSN counter and committed watermark |
-| C6 | EntityStore | On-demand materialization: dirty check → RocksDB read → per-field typed merge → SQLite upsert → clear dirty |
-| C7 | Permission Checks | Structural validation, HLC drift, ETS-based authorization |
-| C8 | Action Write Endpoint | `POST /sync/actions` — validate, permission-check, write, confirm durability |
-| C9 | Entity Read Endpoints | `GET /entities/{id}`, `POST /entities/query` — for Bun server functions |
-| C10 | ActionReader | Query Actions from RocksDB by GSN range, by entity, for catch-up |
-| C11 | Auth Integration | HTTP callback to developer's auth URL |
-| C12 | Handshake Endpoint | `POST /sync/handshake` |
-| C13 | Catch-up Endpoint | `GET /sync/groups/{id}?offset={gsn}` |
-| C14 | Fan-out Router + Group GenServers | Per-Group fan-out, watermark-gated ordered SSE push |
-| C15 | Live SSE Endpoint | `GET /sync/live?groups=...&cursors=...` |
-| C16 | Presence | Ephemeral broadcasting |
-| C17 | Background Warmer | Optional pre-materialization GenServer |
-| C18 | Bun Application Server | Stateless function runtime, HTTP-based data access |
+| ID  | Component                            | Description                                                                                                                                              |
+| --- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1  | Elixir Project Scaffold              | Mix project, OTP application, supervision tree skeleton                                                                                                  |
+| C2  | RocksDB Setup                        | Open database, create column families, configure options                                                                                                 |
+| C3  | SQLite Schema                        | Entity cache tables (entities, actors, function_versions)                                                                                                |
+| C4  | Writer GenServers (×2)               | WriteBatch across column families, shared atomic GSN assignment, ETS dirty set updates, system entity cache updates, committed GSN watermark advancement |
+| C5  | System Entity Cache + Shared Atomics | ETS tables for group_members and relationships, startup population from RocksDB, `:atomics` for GSN counter and committed watermark                      |
+| C6  | EntityStore                          | On-demand materialization: dirty check → RocksDB read → per-field typed merge → SQLite upsert → clear dirty                                              |
+| C7  | Permission Checks                    | Structural validation, HLC drift, ETS-based authorization                                                                                                |
+| C8  | Action Write Endpoint                | `POST /sync/actions` — validate, permission-check, write, confirm durability                                                                             |
+| C9  | Entity Read Endpoints                | `GET /entities/{id}`, `POST /entities/query` — for Bun server functions                                                                                  |
+| C10 | ActionReader                         | Query Actions from RocksDB by GSN range, by entity, for catch-up                                                                                         |
+| C11 | Auth Integration                     | HTTP callback to developer's auth URL                                                                                                                    |
+| C12 | Handshake Endpoint                   | `POST /sync/handshake`                                                                                                                                   |
+| C13 | Catch-up Endpoint                    | `GET /sync/groups/{id}?offset={gsn}`                                                                                                                     |
+| C14 | Fan-out Router + Group GenServers    | Per-Group fan-out, watermark-gated ordered SSE push                                                                                                      |
+| C15 | Live SSE Endpoint                    | `GET /sync/live?groups=...&cursors=...`                                                                                                                  |
+| C16 | Presence                             | Ephemeral broadcasting                                                                                                                                   |
+| C17 | Background Warmer                    | Optional pre-materialization GenServer                                                                                                                   |
+| C18 | Bun Application Server               | Stateless function runtime, HTTP-based data access                                                                                                       |
 
 ### Suggested Build Order
 
@@ -762,19 +765,19 @@ Background warmer, if needed based on observed read patterns.
 
 ## Alternatives Considered
 
-| Alternative | Why not |
-|---|---|
-| **SQLite for everything** | Index maintenance caps write throughput at ~9.5k/sec. Async materialization introduces staleness. |
-| **Custom Elixir Action log + ETS indexes** | Significant implementation effort (CRC32 framing, file rotation, segment compaction, checkpointing). RocksDB provides all of this out of the box. |
-| **Fjall (Rust LSM-tree)** | Requires custom Rustler NIF (~4-8 weeks). Team does not know Rust. |
-| **Native Rust storage engine** | Same Rust constraint. Maximum implementation effort for marginal benefit over RocksDB. |
-| **SurrealDB** | General-purpose database that doesn't fit ebb's event-sourced + custom merge architecture. No fsync control, no embedded Elixir SDK, MVCC overhead wasted on append-only log. |
-| **Eager synchronous materialization** | Caps write throughput at ~3-4k/sec (SQLite upsert on every write). On-demand materialization decouples write throughput from read patterns. |
-| **Async Bun Materializer** | Introduces staleness window. Requires SSE subscription, separate process, cross-language coordination. On-demand materialization in Elixir is simpler and zero-staleness. |
-| **Bun direct SQLite access** | Requires shared database file between processes, WAL-mode multi-reader coordination, and doesn't solve materialization staleness. Moving all storage behind Elixir eliminates an entire class of cross-process coordination problems. |
-| **LMDB/heed for read store** | 4-7x faster reads than SQLite, but loses SQL query language. Permission-scoped JOINs would need hand-coded KV lookups. Worth revisiting if SQLite read performance becomes a bottleneck. |
-| **Pebble (CockroachDB's LSM-tree)** | Written in Go with no C API or cross-language bindings. Using it from Elixir would require embedding Go's runtime inside the BEAM VM (two GCs, two schedulers, Go panic kills BEAM). CockroachDB built Pebble specifically to escape the CGo boundary — using it from Elixir reintroduces a worse version of that problem. Also missing column families, which ebb uses for atomic cross-index writes. |
-| **MessagePack for RocksDB storage** | ~5-10x slower than ETF for encode/decode because encoding happens in Elixir userland rather than as a C BIF. Would cap practical throughput at ~30-50k Actions/sec due to serialization CPU cost. MessagePack is still used on the wire (client ↔ server) where cross-language support matters. |
+| Alternative                                | Why not                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **SQLite for everything**                  | Index maintenance caps write throughput at ~9.5k/sec. Async materialization introduces staleness.                                                                                                                                                                                                                                                                                                      |
+| **Custom Elixir Action log + ETS indexes** | Significant implementation effort (CRC32 framing, file rotation, segment compaction, checkpointing). RocksDB provides all of this out of the box.                                                                                                                                                                                                                                                      |
+| **Fjall (Rust LSM-tree)**                  | Requires custom Rustler NIF (~4-8 weeks). Team does not know Rust.                                                                                                                                                                                                                                                                                                                                     |
+| **Native Rust storage engine**             | Same Rust constraint. Maximum implementation effort for marginal benefit over RocksDB.                                                                                                                                                                                                                                                                                                                 |
+| **SurrealDB**                              | General-purpose database that doesn't fit ebb's event-sourced + custom merge architecture. No fsync control, no embedded Elixir SDK, MVCC overhead wasted on append-only log.                                                                                                                                                                                                                          |
+| **Eager synchronous materialization**      | Caps write throughput at ~3-4k/sec (SQLite upsert on every write). On-demand materialization decouples write throughput from read patterns.                                                                                                                                                                                                                                                            |
+| **Async Bun Materializer**                 | Introduces staleness window. Requires SSE subscription, separate process, cross-language coordination. On-demand materialization in Elixir is simpler and zero-staleness.                                                                                                                                                                                                                              |
+| **Bun direct SQLite access**               | Requires shared database file between processes, WAL-mode multi-reader coordination, and doesn't solve materialization staleness. Moving all storage behind Elixir eliminates an entire class of cross-process coordination problems.                                                                                                                                                                  |
+| **LMDB/heed for read store**               | 4-7x faster reads than SQLite, but loses SQL query language. Permission-scoped JOINs would need hand-coded KV lookups. Worth revisiting if SQLite read performance becomes a bottleneck.                                                                                                                                                                                                               |
+| **Pebble (CockroachDB's LSM-tree)**        | Written in Go with no C API or cross-language bindings. Using it from Elixir would require embedding Go's runtime inside the BEAM VM (two GCs, two schedulers, Go panic kills BEAM). CockroachDB built Pebble specifically to escape the CGo boundary — using it from Elixir reintroduces a worse version of that problem. Also missing column families, which ebb uses for atomic cross-index writes. |
+| **MessagePack for RocksDB storage**        | ~5-10x slower than ETF for encode/decode because encoding happens in Elixir userland rather than as a C BIF. Would cap practical throughput at ~30-50k Actions/sec due to serialization CPU cost. MessagePack is still used on the wire (client ↔ server) where cross-language support matters.                                                                                                        |
 
 ---
 

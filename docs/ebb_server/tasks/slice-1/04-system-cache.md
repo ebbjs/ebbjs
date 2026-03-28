@@ -13,6 +13,7 @@
 Create `EbbServer.Storage.SystemCache` as a GenServer.
 
 **`init/1`:**
+
 - Create ETS table: `:ets.new(:ebb_dirty_set, [:set, :public, :named_table])`
 - Create atomics: `gsn_counter = :atomics.new(1, signed: false)`
 - Store in `:persistent_term`: `:persistent_term.put(:ebb_gsn_counter, gsn_counter)`
@@ -21,6 +22,7 @@ Create `EbbServer.Storage.SystemCache` as a GenServer.
 - Return `{:ok, %{}}`
 
 **`terminate/2`:**
+
 - Delete ETS table (happens automatically when owner dies, but be explicit)
 - Erase `:persistent_term` keys
 
@@ -44,6 +46,7 @@ Create `EbbServer.Storage.SystemCache` as a GenServer.
   - Return `true`
 
 **`start_link/1`:**
+
 - `GenServer.start_link(__MODULE__, opts, name: __MODULE__)`
 
 ---
