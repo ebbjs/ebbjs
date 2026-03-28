@@ -37,7 +37,8 @@ defmodule EbbServer.Storage.SystemCache do
   end
 
   @spec mark_dirty_batch([String.t()], atom()) :: :ok
-  def mark_dirty_batch(entity_ids, dirty_set \\ @default_dirty_set_name) when is_list(entity_ids) do
+  def mark_dirty_batch(entity_ids, dirty_set \\ @default_dirty_set_name)
+      when is_list(entity_ids) do
     Enum.each(entity_ids, fn id ->
       :ets.insert(dirty_set, {id, true})
     end)
@@ -84,7 +85,11 @@ defmodule EbbServer.Storage.SystemCache do
 
   @impl true
   def init(opts) do
-    initial_gsn = Keyword.get(opts, :initial_gsn, 0)
+    initial_gsn =
+      Keyword.get_lazy(opts, :initial_gsn, fn ->
+        EbbServer.Storage.RocksDB.get_max_gsn()
+      end)
+
     dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set_name)
     gsn_counter = Keyword.get(opts, :gsn_counter, nil)
     gsn_counter_name = Keyword.get(opts, :gsn_counter_name, @default_gsn_counter_name)
@@ -103,7 +108,8 @@ defmodule EbbServer.Storage.SystemCache do
 
     :persistent_term.put(gsn_counter_name, counter)
 
-    {:ok, %__MODULE__{dirty_set: dirty_set, gsn_counter: counter, gsn_counter_name: gsn_counter_name}}
+    {:ok,
+     %__MODULE__{dirty_set: dirty_set, gsn_counter: counter, gsn_counter_name: gsn_counter_name}}
   end
 
   @impl true

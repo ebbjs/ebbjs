@@ -26,16 +26,21 @@ defmodule EbbServer.Storage.EntityStore do
   The `actor_id` parameter is accepted for future access control but is not
   used in Slice 1.
 
-  Returns `{:ok, entity}` or `:not_found`.
+  Returns `{:ok, entity}`, `:not_found`, or `{:error, :materialization_failed}`.
   """
-  @spec get(String.t(), String.t(), keyword()) :: {:ok, map()} | :not_found
+  @spec get(String.t(), String.t(), keyword()) ::
+          {:ok, map()} | :not_found | {:error, :materialization_failed}
   def get(entity_id, _actor_id, opts \\ []) do
     rocks_name = Keyword.get(opts, :rocks_name, @default_rocks_name)
     sqlite_name = Keyword.get(opts, :sqlite_name, @default_sqlite_name)
     dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
 
     if SystemCache.is_dirty?(entity_id, dirty_set) do
-      materialize(entity_id, rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set)
+      materialize(entity_id,
+        rocks_name: rocks_name,
+        sqlite_name: sqlite_name,
+        dirty_set: dirty_set
+      )
     else
       case SQLite.get_entity(entity_id, sqlite_name) do
         {:ok, row} ->
@@ -60,7 +65,7 @@ defmodule EbbServer.Storage.EntityStore do
   4. Upsert materialized entity to SQLite
   5. Clear dirty flag in SystemCache
   """
-  @spec materialize(String.t(), keyword()) :: {:ok, map()} | :not_found
+  @spec materialize(String.t(), keyword()) :: {:ok, map()} | :not_found | {:error, term()}
   def materialize(entity_id, opts \\ []) do
     rocks_name = Keyword.get(opts, :rocks_name, @default_rocks_name)
     sqlite_name = Keyword.get(opts, :sqlite_name, @default_sqlite_name)
@@ -98,37 +103,48 @@ defmodule EbbServer.Storage.EntityStore do
         :not_found
       end
     else
-      materialized = apply_actions(entity_id, current_data, entries, rocks_name)
+      materialized =
+        try do
+          {:ok, apply_actions(entity_id, current_data, entries, rocks_name)}
+        rescue
+          e ->
+            {:error, e}
+        end
 
-      %{
-        data: merged_data,
-        type: type,
-        created_hlc: created_hlc,
-        updated_hlc: updated_hlc,
-        deleted_hlc: deleted_hlc,
-        deleted_by: deleted_by,
-        max_gsn: max_gsn
-      } = materialized
+      case materialized do
+        {:ok,
+         %{
+           data: merged_data,
+           type: type,
+           created_hlc: created_hlc,
+           updated_hlc: updated_hlc,
+           deleted_hlc: deleted_hlc,
+           deleted_by: deleted_by,
+           max_gsn: max_gsn
+         }} ->
+          if deleted_hlc != nil do
+            SystemCache.clear_dirty(entity_id, dirty_set)
+            :not_found
+          else
+            entity_row = %{
+              id: entity_id,
+              type: type || "unknown",
+              data: Jason.encode!(merged_data),
+              created_hlc: created_hlc || updated_hlc,
+              updated_hlc: updated_hlc,
+              deleted_hlc: deleted_hlc,
+              deleted_by: deleted_by,
+              last_gsn: max_gsn
+            }
 
-      if deleted_hlc != nil do
-        SystemCache.clear_dirty(entity_id, dirty_set)
-        :not_found
-      else
-        entity_row = %{
-          id: entity_id,
-          type: type || "unknown",
-          data: Jason.encode!(merged_data),
-          created_hlc: created_hlc || updated_hlc,
-          updated_hlc: updated_hlc,
-          deleted_hlc: deleted_hlc,
-          deleted_by: deleted_by,
-          last_gsn: max_gsn
-        }
+            SQLite.upsert_entity(entity_row, sqlite_name)
+            SystemCache.clear_dirty(entity_id, dirty_set)
 
-        SQLite.upsert_entity(entity_row, sqlite_name)
-        SystemCache.clear_dirty(entity_id, dirty_set)
+            {:ok, format_entity(entity_row)}
+          end
 
-        {:ok, format_entity(entity_row)}
+        {:error, _reason} ->
+          {:error, :materialization_failed}
       end
     end
   end

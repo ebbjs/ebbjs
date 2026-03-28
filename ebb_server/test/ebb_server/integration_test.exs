@@ -11,7 +11,9 @@ defmodule EbbServer.IntegrationTest do
       :timer.sleep(200)
     end
 
-    tmp_dir = tmp_dir(%{module: __MODULE__, test: "integration_#{:erlang.unique_integer([:positive])}"})
+    tmp_dir =
+      tmp_dir(%{module: __MODULE__, test: "integration_#{:erlang.unique_integer([:positive])}"})
+
     Application.put_env(:ebb_server, :data_dir, tmp_dir)
 
     case EbbServer.Storage.Supervisor.start_link([]) do
@@ -27,6 +29,7 @@ defmodule EbbServer.IntegrationTest do
       catch
         _, _ -> :ok
       end
+
       Application.delete_env(:ebb_server, :data_dir)
     end)
 
@@ -308,6 +311,7 @@ defmodule EbbServer.IntegrationTest do
   describe "HLC validation" do
     test "HLC as positive integer is accepted" do
       entity_id = "todo_hlc_int"
+
       action_body = %{
         "id" => "act_hlc_int",
         "actor_id" => "a_test",
@@ -333,6 +337,7 @@ defmodule EbbServer.IntegrationTest do
 
     test "HLC as positive integer string is accepted" do
       entity_id = "todo_hlc_str"
+
       action_body = %{
         "id" => "act_hlc_str",
         "actor_id" => "a_test",

@@ -1,4 +1,16 @@
 defmodule EbbServer.Storage.Supervisor do
+  @moduledoc """
+  Supervisor for the storage layer.
+
+  Starts children in order with `rest_for_one` strategy, ensuring RocksDB
+  and SQLite are ready before SystemCache, and SystemCache is ready
+  before Writer.
+
+  The `rest_for_one` strategy means if any child crashes, those started
+  after it (higher in the list) will be restarted, but those before it
+  will not.
+  """
+
   use Supervisor
 
   def start_link(opts) do

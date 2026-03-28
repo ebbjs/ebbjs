@@ -149,6 +149,30 @@ defmodule EbbServer.Storage.RocksDBTest do
     end
   end
 
+  describe "get_max_gsn" do
+    test "returns 0 for empty database", context do
+      %{name: name} = start_rocks(context)
+      assert RocksDB.get_max_gsn(name) == 0
+    end
+
+    test "returns highest GSN when entries exist", context do
+      %{name: name} = start_rocks(context)
+      cf = RocksDB.cf_actions(name)
+
+      :ok =
+        RocksDB.write_batch(
+          [
+            {:put, cf, RocksDB.encode_gsn_key(1), :erlang.term_to_binary(%{"test" => 1})},
+            {:put, cf, RocksDB.encode_gsn_key(2), :erlang.term_to_binary(%{"test" => 2})},
+            {:put, cf, RocksDB.encode_gsn_key(3), :erlang.term_to_binary(%{"test" => 3})}
+          ],
+          name: name
+        )
+
+      assert RocksDB.get_max_gsn(name) == 3
+    end
+  end
+
   describe "validate_key_component" do
     test "accepts valid non-empty binary" do
       assert RocksDB.validate_key_component("valid", "field") == "valid"

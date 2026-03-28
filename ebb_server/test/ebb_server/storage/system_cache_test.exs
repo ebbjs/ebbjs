@@ -12,20 +12,17 @@ defmodule EbbServer.Storage.SystemCacheTest do
     counter = :atomics.new(1, signed: false)
     :persistent_term.put(gsn_counter_name, counter)
 
-    if initial_gsn > 0 do
-      :atomics.put(counter, 1, initial_gsn)
-    end
-
     {:ok, _pid} =
       SystemCache.start_link(
         name: cache_name,
         dirty_set: dirty_set_name,
         gsn_counter: counter,
-        gsn_counter_name: gsn_counter_name
+        gsn_counter_name: gsn_counter_name,
+        initial_gsn: initial_gsn
       )
 
     on_exit(fn ->
-      if pid = Process.whereis(cache_name), do: (if Process.alive?(pid), do: GenServer.stop(pid))
+      if pid = Process.whereis(cache_name), do: if(Process.alive?(pid), do: GenServer.stop(pid))
       :persistent_term.erase(gsn_counter_name)
     end)
 

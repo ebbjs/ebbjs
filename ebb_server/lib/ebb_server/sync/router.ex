@@ -1,4 +1,14 @@
 defmodule EbbServer.Sync.Router do
+  @moduledoc """
+  HTTP router for the EbbServer sync API.
+
+  Provides two endpoints:
+  - POST /sync/actions — Write actions to the system
+  - GET /entities/:id — Read an entity by ID
+
+  Returns appropriate HTTP status codes for various error conditions.
+  """
+
   use Plug.Router
 
   alias EbbServer.Storage.{EntityStore, Writer}
@@ -47,6 +57,9 @@ defmodule EbbServer.Sync.Router do
 
           :not_found ->
             send_json(conn, 404, %{"error" => "not_found"})
+
+          {:error, :materialization_failed} ->
+            send_json(conn, 503, %{"error" => "materialization_failed"})
         end
     end
   end
@@ -199,9 +212,10 @@ defmodule EbbServer.Sync.Router do
   end
 
   defp send_validation_error(conn, details) do
-    serializable_details = Enum.map(details, fn {field, msg} ->
-      %{"field" => field, "message" => msg}
-    end)
+    serializable_details =
+      Enum.map(details, fn {field, msg} ->
+        %{"field" => field, "message" => msg}
+      end)
 
     send_json(conn, 422, %{"error" => "validation_failed", "details" => serializable_details})
   end

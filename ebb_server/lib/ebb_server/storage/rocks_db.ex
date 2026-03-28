@@ -160,6 +160,29 @@ defmodule EbbServer.Storage.RocksDB do
   # Public API — data operations
   # ---------------------------------------------------------------------------
 
+  @doc """
+  Returns the highest GSN stored in the `cf_actions` column family.
+
+  Uses a RocksDB iterator to seek to the last key, then decodes it.
+  Returns 0 if the database is empty.
+  """
+  @spec get_max_gsn(name()) :: non_neg_integer()
+  def get_max_gsn(name \\ __MODULE__) do
+    {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_actions(name), [])
+
+    try do
+      case :rocksdb.iterator_move(iter, :last) do
+        {:ok, key, _value} ->
+          decode_gsn_key(key)
+
+        {:error, _reason} ->
+          0
+      end
+    after
+      :rocksdb.iterator_close(iter)
+    end
+  end
+
   @spec write_batch([{:put, cf_ref(), binary(), binary()}], keyword()) ::
           :ok | {:error, term()}
   def write_batch(operations, opts \\ []) do

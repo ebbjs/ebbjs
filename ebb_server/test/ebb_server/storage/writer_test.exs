@@ -18,7 +18,8 @@ defmodule EbbServer.Storage.WriterTest do
         name: cache_name,
         dirty_set: dirty_set_name,
         gsn_counter: counter,
-        gsn_counter_name: gsn_counter_name
+        gsn_counter_name: gsn_counter_name,
+        initial_gsn: 0
       )
 
     on_exit(fn ->
@@ -44,7 +45,14 @@ defmodule EbbServer.Storage.WriterTest do
 
   defp start_writer(opts) do
     name = :"writer_#{System.unique_integer([:positive])}"
-    {:ok, pid} = Writer.start_link(name: name, rocks_name: opts.rocks_name, dirty_set: opts.dirty_set, gsn_counter: opts.gsn_counter)
+
+    {:ok, pid} =
+      Writer.start_link(
+        name: name,
+        rocks_name: opts.rocks_name,
+        dirty_set: opts.dirty_set,
+        gsn_counter: opts.gsn_counter
+      )
 
     on_exit(fn ->
       if Process.alive?(pid), do: GenServer.stop(pid)
@@ -56,9 +64,17 @@ defmodule EbbServer.Storage.WriterTest do
   setup do
     %{dirty_set: dirty_set, gsn_counter: gsn_counter} = start_isolated_cache()
     %{name: rocks_name, dir: rocks_dir} = start_rocks()
-    %{name: writer_name} = start_writer(%{rocks_name: rocks_name, dirty_set: dirty_set, gsn_counter: gsn_counter})
 
-    %{writer_name: writer_name, rocks_name: rocks_name, rocks_dir: rocks_dir, dirty_set: dirty_set, gsn_counter: gsn_counter}
+    %{name: writer_name} =
+      start_writer(%{rocks_name: rocks_name, dirty_set: dirty_set, gsn_counter: gsn_counter})
+
+    %{
+      writer_name: writer_name,
+      rocks_name: rocks_name,
+      rocks_dir: rocks_dir,
+      dirty_set: dirty_set,
+      gsn_counter: gsn_counter
+    }
   end
 
   describe "single action write" do
@@ -188,14 +204,23 @@ defmodule EbbServer.Storage.WriterTest do
       dirty_set: dirty_set,
       gsn_counter: gsn_counter
     } do
-      dir = tmp_dir(%{module: __MODULE__, test: "durability_#{System.unique_integer([:positive])}"})
+      dir =
+        tmp_dir(%{module: __MODULE__, test: "durability_#{System.unique_integer([:positive])}"})
+
       action = sample_action()
 
       rocks_name1 = :"rocks_#{System.unique_integer([:positive])}"
       {:ok, _rocks_pid1} = RocksDB.start_link(data_dir: dir, name: rocks_name1)
 
       writer_name1 = :"writer_#{System.unique_integer([:positive])}"
-      {:ok, _writer_pid1} = Writer.start_link(name: writer_name1, rocks_name: rocks_name1, dirty_set: dirty_set, gsn_counter: gsn_counter)
+
+      {:ok, _writer_pid1} =
+        Writer.start_link(
+          name: writer_name1,
+          rocks_name: rocks_name1,
+          dirty_set: dirty_set,
+          gsn_counter: gsn_counter
+        )
 
       Writer.write_actions([action], writer_name1)
 
@@ -206,11 +231,21 @@ defmodule EbbServer.Storage.WriterTest do
       {:ok, _rocks_pid2} = RocksDB.start_link(data_dir: dir, name: rocks_name2)
 
       writer_name2 = :"writer_#{System.unique_integer([:positive])}"
-      {:ok, _writer_pid2} = Writer.start_link(name: writer_name2, rocks_name: rocks_name2, dirty_set: dirty_set, gsn_counter: gsn_counter)
+
+      {:ok, _writer_pid2} =
+        Writer.start_link(
+          name: writer_name2,
+          rocks_name: rocks_name2,
+          dirty_set: dirty_set,
+          gsn_counter: gsn_counter
+        )
 
       on_exit(fn ->
-        if pid = Process.whereis(writer_name2), do: (if Process.alive?(pid), do: GenServer.stop(pid))
-        if pid = Process.whereis(rocks_name2), do: (if Process.alive?(pid), do: GenServer.stop(pid))
+        if pid = Process.whereis(writer_name2),
+          do: if(Process.alive?(pid), do: GenServer.stop(pid))
+
+        if pid = Process.whereis(rocks_name2),
+          do: if(Process.alive?(pid), do: GenServer.stop(pid))
       end)
 
       gsn_key = RocksDB.encode_gsn_key(1)

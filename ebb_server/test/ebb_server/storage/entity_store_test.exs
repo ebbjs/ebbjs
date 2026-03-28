@@ -18,7 +18,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
         name: cache_name,
         dirty_set: dirty_set_name,
         gsn_counter: counter,
-        gsn_counter_name: gsn_counter_name
+        gsn_counter_name: gsn_counter_name,
+        initial_gsn: 0
       )
 
     on_exit(fn ->
@@ -55,7 +56,14 @@ defmodule EbbServer.Storage.EntityStoreTest do
 
   defp start_writer(opts) do
     name = :"writer_#{System.unique_integer([:positive])}"
-    {:ok, pid} = Writer.start_link(name: name, rocks_name: opts.rocks_name, dirty_set: opts.dirty_set, gsn_counter: opts.gsn_counter)
+
+    {:ok, pid} =
+      Writer.start_link(
+        name: name,
+        rocks_name: opts.rocks_name,
+        dirty_set: opts.dirty_set,
+        gsn_counter: opts.gsn_counter
+      )
 
     on_exit(fn ->
       if Process.alive?(pid), do: GenServer.stop(pid)
@@ -68,9 +76,16 @@ defmodule EbbServer.Storage.EntityStoreTest do
     %{dirty_set: dirty_set, gsn_counter: gsn_counter} = start_isolated_cache()
     %{name: rocks_name, dir: rocks_dir} = start_rocks()
     %{name: sqlite_name} = start_sqlite(rocks_dir)
-    %{name: writer_name} = start_writer(%{rocks_name: rocks_name, dirty_set: dirty_set, gsn_counter: gsn_counter})
 
-    %{rocks_name: rocks_name, sqlite_name: sqlite_name, writer_name: writer_name, dirty_set: dirty_set}
+    %{name: writer_name} =
+      start_writer(%{rocks_name: rocks_name, dirty_set: dirty_set, gsn_counter: gsn_counter})
+
+    %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    }
   end
 
   describe "get/2" do
@@ -111,7 +126,12 @@ defmodule EbbServer.Storage.EntityStoreTest do
       action = sample_action(%{"updates" => [update]})
 
       Writer.write_actions([action], writer_name)
-      EntityStore.get(entity_id, "a_test", rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set)
+
+      EntityStore.get(entity_id, "a_test",
+        rocks_name: rocks_name,
+        sqlite_name: sqlite_name,
+        dirty_set: dirty_set
+      )
 
       assert {:ok, cached} = SQLite.get_entity(entity_id, sqlite_name)
       assert cached.id == entity_id
@@ -131,7 +151,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
       Writer.write_actions([action], writer_name)
       assert SystemCache.is_dirty?(entity_id, dirty_set)
 
-      EntityStore.get(entity_id, "a_test", rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set)
+      EntityStore.get(entity_id, "a_test",
+        rocks_name: rocks_name,
+        sqlite_name: sqlite_name,
+        dirty_set: dirty_set
+      )
 
       refute SystemCache.is_dirty?(entity_id, dirty_set)
     end
