@@ -8,6 +8,13 @@ defmodule EbbServer.Storage.Writer do
 
   use GenServer
 
+  @type t :: %__MODULE__{
+          rocks_name: GenServer.name(),
+          dirty_set: atom(),
+          gsn_counter: :atomics.atomics()
+        }
+  defstruct [:rocks_name, :dirty_set, :gsn_counter]
+
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
@@ -23,10 +30,13 @@ defmodule EbbServer.Storage.Writer do
   end
 
   @impl true
-  @spec init(keyword()) :: {:ok, %{rocks_name: GenServer.name()}}
+  @spec init(keyword()) :: {:ok, t()}
   def init(opts) do
     rocks_name = Keyword.get(opts, :rocks_name, EbbServer.Storage.RocksDB)
-    {:ok, %{rocks_name: rocks_name}}
+    dirty_set = Keyword.get(opts, :dirty_set, :ebb_dirty_set)
+    gsn_counter = Keyword.get(opts, :gsn_counter, :persistent_term.get(:ebb_gsn_counter))
+
+    {:ok, %__MODULE__{rocks_name: rocks_name, dirty_set: dirty_set, gsn_counter: gsn_counter}}
   end
 
   @doc """
@@ -57,7 +67,7 @@ defmodule EbbServer.Storage.Writer do
       {:reply, {:ok, {0, 0}, empty_update_rejected}, state}
     else
       batch_size = length(filtered)
-      {gsn_start, gsn_end} = EbbServer.Storage.SystemCache.claim_gsn_range(batch_size)
+      {gsn_start, gsn_end} = EbbServer.Storage.SystemCache.claim_gsn_range(batch_size, state.gsn_counter)
       rocks_name = state.rocks_name
 
       ops =
@@ -100,7 +110,7 @@ defmodule EbbServer.Storage.Writer do
             |> Enum.map(fn update -> update["subject_id"] end)
             |> Enum.uniq()
 
-          :ok = EbbServer.Storage.SystemCache.mark_dirty_batch(entity_ids)
+          :ok = EbbServer.Storage.SystemCache.mark_dirty_batch(entity_ids, state.dirty_set)
           {:reply, {:ok, {gsn_start, gsn_end}, empty_update_rejected}, state}
 
         {:error, reason} ->

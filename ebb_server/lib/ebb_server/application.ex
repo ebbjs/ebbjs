@@ -9,7 +9,7 @@ defmodule EbbServer.Application do
 
     children = [
       EbbServer.Storage.Supervisor,
-      {Plug.Cowboy, plug: EbbServer.Sync.Router, scheme: :http, port: port}
+      {Bandit, plug: EbbServer.Sync.Router, port: port}
     ]
 
     opts = [strategy: :one_for_one, name: EbbServer.Supervisor]

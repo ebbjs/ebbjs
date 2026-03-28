@@ -4,35 +4,81 @@ defmodule EbbServer.Storage.EntityStoreTest do
   alias EbbServer.Storage.{EntityStore, RocksDB, SQLite, SystemCache, Writer}
   import EbbServer.TestHelpers
 
-  setup do
-    {:ok, _} = SystemCache.start_link()
+  defp start_isolated_cache do
+    unique_id = System.unique_integer([:positive])
+    dirty_set_name = :"ebb_dirty_#{unique_id}"
+    gsn_counter_name = :"ebb_gsn_#{unique_id}"
+    cache_name = :"ebb_cache_#{unique_id}"
 
-    dir = tmp_dir(%{module: __MODULE__, test: "setup"})
+    counter = :atomics.new(1, signed: false)
+    :persistent_term.put(gsn_counter_name, counter)
 
-    rocks_name = :"rocks_#{System.unique_integer([:positive])}"
-    {:ok, rocks_pid} = RocksDB.start_link(data_dir: dir, name: rocks_name)
-
-    sqlite_name = :"sqlite_#{System.unique_integer([:positive])}"
-    {:ok, sqlite_pid} = SQLite.start_link(data_dir: dir, name: sqlite_name)
-
-    writer_name = :"writer_#{System.unique_integer([:positive])}"
-    {:ok, writer_pid} = Writer.start_link(name: writer_name, rocks_name: rocks_name)
+    {:ok, _pid} =
+      SystemCache.start_link(
+        name: cache_name,
+        dirty_set: dirty_set_name,
+        gsn_counter: counter,
+        gsn_counter_name: gsn_counter_name
+      )
 
     on_exit(fn ->
-      if Process.alive?(writer_pid), do: GenServer.stop(writer_pid)
-      if Process.alive?(sqlite_pid), do: GenServer.stop(sqlite_pid)
-      if Process.alive?(rocks_pid), do: GenServer.stop(rocks_pid)
-      if pid = Process.whereis(SystemCache), do: GenServer.stop(pid)
+      if pid = Process.whereis(cache_name), do: GenServer.stop(pid)
+      :persistent_term.erase(gsn_counter_name)
     end)
 
-    %{dir: dir, rocks_name: rocks_name, sqlite_name: sqlite_name, writer_name: writer_name}
+    %{dirty_set: dirty_set_name, gsn_counter: counter}
+  end
+
+  defp start_rocks do
+    unique_id = System.unique_integer([:positive])
+    dir = tmp_dir(%{module: __MODULE__, test: "rocks_#{unique_id}"})
+    name = :"rocks_#{unique_id}"
+    {:ok, pid} = RocksDB.start_link(data_dir: dir, name: name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: GenServer.stop(pid)
+    end)
+
+    %{name: name, pid: pid, dir: dir}
+  end
+
+  defp start_sqlite(dir) do
+    name = :"sqlite_#{System.unique_integer([:positive])}"
+    {:ok, pid} = SQLite.start_link(data_dir: dir, name: name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: GenServer.stop(pid)
+    end)
+
+    %{name: name, pid: pid}
+  end
+
+  defp start_writer(opts) do
+    name = :"writer_#{System.unique_integer([:positive])}"
+    {:ok, pid} = Writer.start_link(name: name, rocks_name: opts.rocks_name, dirty_set: opts.dirty_set, gsn_counter: opts.gsn_counter)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: GenServer.stop(pid)
+    end)
+
+    %{name: name, pid: pid}
+  end
+
+  setup do
+    %{dirty_set: dirty_set, gsn_counter: gsn_counter} = start_isolated_cache()
+    %{name: rocks_name, dir: rocks_dir} = start_rocks()
+    %{name: sqlite_name} = start_sqlite(rocks_dir)
+    %{name: writer_name} = start_writer(%{rocks_name: rocks_name, dirty_set: dirty_set, gsn_counter: gsn_counter})
+
+    %{rocks_name: rocks_name, sqlite_name: sqlite_name, writer_name: writer_name, dirty_set: dirty_set}
   end
 
   describe "get/2" do
     test "materialize a PUT (first read)", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
-      writer_name: writer_name
+      writer_name: writer_name,
+      dirty_set: dirty_set
     } do
       entity_id = "todo_abc"
       update = sample_update(%{"subject_id" => entity_id, "subject_type" => "todo"})
@@ -43,7 +89,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert {:ok, entity} =
                EntityStore.get(entity_id, "a_test",
                  rocks_name: rocks_name,
-                 sqlite_name: sqlite_name
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
                )
 
       assert entity.id == entity_id
@@ -56,14 +103,15 @@ defmodule EbbServer.Storage.EntityStoreTest do
     test "entity is cached in SQLite after materialization", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
-      writer_name: writer_name
+      writer_name: writer_name,
+      dirty_set: dirty_set
     } do
       entity_id = "todo_abc"
       update = sample_update(%{"subject_id" => entity_id, "subject_type" => "todo"})
       action = sample_action(%{"updates" => [update]})
 
       Writer.write_actions([action], writer_name)
-      EntityStore.get(entity_id, "a_test", rocks_name: rocks_name, sqlite_name: sqlite_name)
+      EntityStore.get(entity_id, "a_test", rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set)
 
       assert {:ok, cached} = SQLite.get_entity(entity_id, sqlite_name)
       assert cached.id == entity_id
@@ -73,24 +121,26 @@ defmodule EbbServer.Storage.EntityStoreTest do
     test "dirty bit is cleared after materialization", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
-      writer_name: writer_name
+      writer_name: writer_name,
+      dirty_set: dirty_set
     } do
       entity_id = "todo_abc"
       update = sample_update(%{"subject_id" => entity_id})
       action = sample_action(%{"updates" => [update]})
 
       Writer.write_actions([action], writer_name)
-      assert SystemCache.is_dirty?(entity_id)
+      assert SystemCache.is_dirty?(entity_id, dirty_set)
 
-      EntityStore.get(entity_id, "a_test", rocks_name: rocks_name, sqlite_name: sqlite_name)
+      EntityStore.get(entity_id, "a_test", rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set)
 
-      refute SystemCache.is_dirty?(entity_id)
+      refute SystemCache.is_dirty?(entity_id, dirty_set)
     end
 
     test "second read is clean (no re-materialization)", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
-      writer_name: writer_name
+      writer_name: writer_name,
+      dirty_set: dirty_set
     } do
       entity_id = "todo_abc"
       update = sample_update(%{"subject_id" => entity_id})
@@ -101,35 +151,40 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert {:ok, entity1} =
                EntityStore.get(entity_id, "a_test",
                  rocks_name: rocks_name,
-                 sqlite_name: sqlite_name
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
                )
 
       assert {:ok, entity2} =
                EntityStore.get(entity_id, "a_test",
                  rocks_name: rocks_name,
-                 sqlite_name: sqlite_name
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
                )
 
       assert entity1.id == entity2.id
       assert entity1.last_gsn == entity2.last_gsn
-      refute SystemCache.is_dirty?(entity_id)
+      refute SystemCache.is_dirty?(entity_id, dirty_set)
     end
 
     test "entity not found", %{
       rocks_name: rocks_name,
-      sqlite_name: sqlite_name
+      sqlite_name: sqlite_name,
+      dirty_set: dirty_set
     } do
       assert :not_found =
                EntityStore.get("nonexistent", "a_test",
                  rocks_name: rocks_name,
-                 sqlite_name: sqlite_name
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
                )
     end
 
     test "LWW merge with PATCH — newer value wins", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
-      writer_name: writer_name
+      writer_name: writer_name,
+      dirty_set: dirty_set
     } do
       entity_id = "todo_abc"
 
@@ -174,7 +229,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert {:ok, entity} =
                EntityStore.get(entity_id, "a_test",
                  rocks_name: rocks_name,
-                 sqlite_name: sqlite_name
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
                )
 
       assert entity.data["fields"]["title"]["value"] == "Second"
@@ -183,7 +239,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
     test "LWW merge — older PATCH doesn't overwrite", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
-      writer_name: writer_name
+      writer_name: writer_name,
+      dirty_set: dirty_set
     } do
       entity_id = "todo_abc"
 
@@ -228,7 +285,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert {:ok, entity} =
                EntityStore.get(entity_id, "a_test",
                  rocks_name: rocks_name,
-                 sqlite_name: sqlite_name
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
                )
 
       assert entity.data["fields"]["title"]["value"] == "Newer"
@@ -237,7 +295,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
     test "incremental materialization", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
-      writer_name: writer_name
+      writer_name: writer_name,
+      dirty_set: dirty_set
     } do
       entity_id = "todo_abc"
 
@@ -285,7 +344,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert {:ok, entity1} =
                EntityStore.get(entity_id, "a_test",
                  rocks_name: rocks_name,
-                 sqlite_name: sqlite_name
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
                )
 
       assert entity1.data["fields"]["title"]["value"] == "First"
@@ -296,7 +356,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert {:ok, entity2} =
                EntityStore.get(entity_id, "a_test",
                  rocks_name: rocks_name,
-                 sqlite_name: sqlite_name
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
                )
 
       assert entity2.data["fields"]["title"]["value"] == "First"
@@ -307,7 +368,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
     test "LWW tiebreaker — equal HLCs resolved by higher update ID wins", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
-      writer_name: writer_name
+      writer_name: writer_name,
+      dirty_set: dirty_set
     } do
       entity_id = "todo_abc"
 
@@ -352,7 +414,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert {:ok, entity} =
                EntityStore.get(entity_id, "a_test",
                  rocks_name: rocks_name,
-                 sqlite_name: sqlite_name
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
                )
 
       assert entity.data["fields"]["title"]["value"] == "Higher ID"
@@ -362,7 +425,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
     test "LWW tiebreaker — lower update ID does not overwrite", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
-      writer_name: writer_name
+      writer_name: writer_name,
+      dirty_set: dirty_set
     } do
       entity_id = "todo_abc"
 
@@ -407,7 +471,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert {:ok, entity} =
                EntityStore.get(entity_id, "a_test",
                  rocks_name: rocks_name,
-                 sqlite_name: sqlite_name
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
                )
 
       assert entity.data["fields"]["title"]["value"] == "Higher ID"
@@ -417,7 +482,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
     test "delete-only entity returns :not_found", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
-      writer_name: writer_name
+      writer_name: writer_name,
+      dirty_set: dirty_set
     } do
       entity_id = "todo_deleted_only"
 
@@ -434,14 +500,16 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert :not_found =
                EntityStore.get(entity_id, "a_test",
                  rocks_name: rocks_name,
-                 sqlite_name: sqlite_name
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
                )
     end
 
     test "PUT followed by DELETE returns :not_found", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
-      writer_name: writer_name
+      writer_name: writer_name,
+      dirty_set: dirty_set
     } do
       entity_id = "todo_put_then_delete"
 
@@ -486,14 +554,16 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert :not_found =
                EntityStore.get(entity_id, "a_test",
                  rocks_name: rocks_name,
-                 sqlite_name: sqlite_name
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
                )
     end
 
     test "PATCH resurrects deleted entity and clears deleted_hlc", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
-      writer_name: writer_name
+      writer_name: writer_name,
+      dirty_set: dirty_set
     } do
       entity_id = "todo_resurrect"
 
@@ -557,7 +627,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert {:ok, entity} =
                EntityStore.get(entity_id, "a_test",
                  rocks_name: rocks_name,
-                 sqlite_name: sqlite_name
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
                )
 
       assert entity.deleted_hlc == nil

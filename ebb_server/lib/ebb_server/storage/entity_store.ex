@@ -18,6 +18,7 @@ defmodule EbbServer.Storage.EntityStore do
 
   @default_rocks_name EbbServer.Storage.RocksDB
   @default_sqlite_name EbbServer.Storage.SQLite
+  @default_dirty_set :ebb_dirty_set
 
   @doc """
   Fetches an entity by ID, reading from SQLite cache or materializing on demand.
@@ -31,9 +32,10 @@ defmodule EbbServer.Storage.EntityStore do
   def get(entity_id, _actor_id, opts \\ []) do
     rocks_name = Keyword.get(opts, :rocks_name, @default_rocks_name)
     sqlite_name = Keyword.get(opts, :sqlite_name, @default_sqlite_name)
+    dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
 
-    if SystemCache.is_dirty?(entity_id) do
-      materialize(entity_id, rocks_name: rocks_name, sqlite_name: sqlite_name)
+    if SystemCache.is_dirty?(entity_id, dirty_set) do
+      materialize(entity_id, rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set)
     else
       case SQLite.get_entity(entity_id, sqlite_name) do
         {:ok, row} ->
@@ -62,6 +64,7 @@ defmodule EbbServer.Storage.EntityStore do
   def materialize(entity_id, opts \\ []) do
     rocks_name = Keyword.get(opts, :rocks_name, @default_rocks_name)
     sqlite_name = Keyword.get(opts, :sqlite_name, @default_sqlite_name)
+    dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
 
     {current_data, last_gsn, existing_row} =
       case SQLite.get_entity(entity_id, sqlite_name) do
@@ -84,14 +87,14 @@ defmodule EbbServer.Storage.EntityStore do
 
     if entries == [] do
       if existing_row != nil do
-        SystemCache.clear_dirty(entity_id)
+        SystemCache.clear_dirty(entity_id, dirty_set)
 
         case SQLite.get_entity(entity_id, sqlite_name) do
           {:ok, row} -> {:ok, format_entity(row)}
           :not_found -> :not_found
         end
       else
-        SystemCache.clear_dirty(entity_id)
+        SystemCache.clear_dirty(entity_id, dirty_set)
         :not_found
       end
     else
@@ -108,7 +111,7 @@ defmodule EbbServer.Storage.EntityStore do
       } = materialized
 
       if deleted_hlc != nil do
-        SystemCache.clear_dirty(entity_id)
+        SystemCache.clear_dirty(entity_id, dirty_set)
         :not_found
       else
         entity_row = %{
@@ -123,7 +126,7 @@ defmodule EbbServer.Storage.EntityStore do
         }
 
         SQLite.upsert_entity(entity_row, sqlite_name)
-        SystemCache.clear_dirty(entity_id)
+        SystemCache.clear_dirty(entity_id, dirty_set)
 
         {:ok, format_entity(entity_row)}
       end

@@ -62,14 +62,18 @@ defmodule EbbServer.Sync.Router do
   defp decode_and_validate(body) do
     case Msgpax.unpack(body) do
       {:ok, decoded} ->
-        actions = Map.get(decoded, "actions", [])
+        if Map.has_key?(decoded, "actions") do
+          actions = decoded["actions"]
 
-        case validate_actions_list(actions) do
-          :ok ->
-            {:valid, actions}
+          case validate_actions_list(actions) do
+            :ok ->
+              {:valid, actions}
 
-          {:error, details} ->
-            {:invalid, details}
+            {:error, details} ->
+              {:invalid, details}
+          end
+        else
+          {:invalid, [{"root", "actions key is required"}]}
         end
 
       {:error, reason} ->
@@ -106,10 +110,16 @@ defmodule EbbServer.Sync.Router do
         do: errors,
         else: [{"#{index}.actor_id", "must be a non-empty string"} | errors]
 
+    hlc = action["hlc"]
+
+    hlc_valid =
+      (is_integer(hlc) and hlc > 0) or
+        (is_binary(hlc) and match?({int, ""} when int > 0, Integer.parse(hlc)))
+
     errors =
-      if is_binary(action["hlc"]),
+      if hlc_valid,
         do: errors,
-        else: [{"#{index}.hlc", "must be a string"} | errors]
+        else: [{"#{index}.hlc", "must be a positive integer"} | errors]
 
     errors =
       if is_list(action["updates"]),
@@ -117,11 +127,15 @@ defmodule EbbServer.Sync.Router do
         else: [{"#{index}.updates", "must be a list"} | errors]
 
     update_errors =
-      (action["updates"] || [])
-      |> Enum.with_index()
-      |> Enum.flat_map(fn {update, uidx} ->
-        update_errors("#{index}.updates[#{uidx}]", update)
-      end)
+      if is_list(action["updates"]) do
+        action["updates"]
+        |> Enum.with_index()
+        |> Enum.flat_map(fn {update, uidx} ->
+          update_errors("#{index}.updates[#{uidx}]", update)
+        end)
+      else
+        []
+      end
 
     errors ++ update_errors
   end
@@ -185,7 +199,11 @@ defmodule EbbServer.Sync.Router do
   end
 
   defp send_validation_error(conn, details) do
-    send_json(conn, 422, %{"error" => "validation_failed", "details" => details})
+    serializable_details = Enum.map(details, fn {field, msg} ->
+      %{"field" => field, "message" => msg}
+    end)
+
+    send_json(conn, 422, %{"error" => "validation_failed", "details" => serializable_details})
   end
 
   defp send_error(conn, :invalid_msgpack, _reason) do

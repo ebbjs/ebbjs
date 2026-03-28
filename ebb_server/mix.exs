@@ -14,7 +14,7 @@ defmodule EbbServer.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :runtime_tools],
+      extra_applications: [:logger, :runtime_tools, :inets],
       mod: {EbbServer.Application, []}
     ]
   end
@@ -27,9 +27,10 @@ defmodule EbbServer.MixProject do
       {:rocksdb, "~> 2.5"},
       {:exqlite, "~> 0.27"},
       {:msgpax, "~> 2.4"},
-      {:plug_cowboy, "~> 2.7"},
+      {:bandit, "~> 1.5"},
       {:jason, "~> 1.4"},
-      {:nanoid, "~> 2.1"}
+      {:nanoid, "~> 2.1"},
+      {:req, "~> 0.5", only: :test}
     ]
   end
 end
