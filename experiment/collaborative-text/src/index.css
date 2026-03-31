@@ -1,1 +1,95 @@
 @import "tailwindcss";
+
+@theme {
+  /* Fonts */
+  --font-sans: "Inter Variable", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+
+  /* Stone gray palette (matching ebb website) */
+  --color-stone-50: #fafaf9;
+  --color-stone-100: #f5f5f4;
+  --color-stone-200: #e7e5e4;
+  --color-stone-300: #d6d3d1;
+  --color-stone-400: #a8a29e;
+  --color-stone-500: #78716c;
+  --color-stone-600: #57534e;
+  --color-stone-700: #44403c;
+  --color-stone-800: #292524;
+  --color-stone-900: #1c1917;
+  --color-stone-950: #0c0a09;
+}
+
+/* ------------------------------------------------------------------ */
+/* CodeMirror dark theme overrides                                     */
+/* ------------------------------------------------------------------ */
+
+.cm-editor {
+  background-color: transparent !important;
+}
+
+.cm-editor .cm-scroller {
+  overflow: auto;
+}
+
+.cm-editor .cm-content {
+  font-family: "JetBrains Mono Variable", ui-monospace, monospace;
+  font-size: 14px;
+  color: #d6d3d1; /* stone-300 */
+  caret-color: #a8a29e; /* stone-400 */
+}
+
+.cm-editor .cm-cursor {
+  border-left-color: #a8a29e; /* stone-400 */
+}
+
+.cm-editor .cm-activeLine {
+  background-color: rgba(41, 37, 36, 0.5); /* stone-800/50 */
+}
+
+.cm-editor .cm-selectionBackground,
+.cm-editor ::selection {
+  background-color: rgba(68, 64, 60, 0.6) !important; /* stone-700/60 */
+}
+
+.cm-editor .cm-gutters {
+  background-color: transparent;
+  border-right: 1px solid #292524; /* stone-800 */
+  color: #57534e; /* stone-600 */
+}
+
+.cm-editor .cm-activeLineGutter {
+  background-color: rgba(41, 37, 36, 0.5); /* stone-800/50 */
+}
+
+.cm-editor.cm-focused {
+  outline: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* Dark mode scrollbar                                                 */
+/* ------------------------------------------------------------------ */
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #44403c #1c1917; /* stone-700 stone-900 */
+}
+
+/* Chrome, Edge, Safari */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1c1917; /* stone-900 */
+}
+
+::-webkit-scrollbar-thumb {
+  background: #44403c; /* stone-700 */
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #57534e; /* stone-600 */
+}

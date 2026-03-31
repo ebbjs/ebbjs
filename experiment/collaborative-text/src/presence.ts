@@ -98,8 +98,8 @@ export const presenceUpdateEffect = StateEffect.define<void>()
 // ---------------------------------------------------------------------------
 
 const PEER_COLORS: Record<string, string> = {
-  "peer-A": "#3b82f6", // blue-500
-  "peer-B": "#f97316", // orange-500
+  "peer-A": "#60a5fa", // blue-400 (bright enough for dark backgrounds)
+  "peer-B": "#fbbf24", // amber-400 (matching ebb site accent palette)
 }
 
 /** Fallback palette for unknown peer IDs. */

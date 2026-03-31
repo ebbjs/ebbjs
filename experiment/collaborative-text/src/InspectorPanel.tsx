@@ -1,15 +1,13 @@
 /**
- * Inspector Panel (Ebb-Native)
+ * Inspector Components (Ebb-Native)
  *
- * A tabbed "Under the Hood" panel rendered below the two editors. Three tabs:
+ * Three standalone section components, each rendering one aspect of the
+ * collaborative editing architecture. These are placed inline within the
+ * narrative page layout in App.tsx rather than combined in a tabbed panel.
  *
- * 1. Event Log — scrolling stream of ebb-native Actions, each containing
- *    one or more Updates with self-describing typed field data
- * 2. Causal Tree — indented text visualization of the tree data structure
- * 3. HLC State — live display of each peer's Hybrid Logical Clock
- *
- * Each tab includes a short explanatory blurb so the panel doubles as
- * documentation of how the system works.
+ * 1. EventLogSection — scrolling stream of ebb-native Actions
+ * 2. CausalTreeSection — visual tree data structure
+ * 3. HlcStateSection — live Hybrid Logical Clock display
  */
 
 import { useEffect, useRef, useState } from "react"
@@ -22,69 +20,17 @@ import { ROOT_ID, reconstruct, type DocState } from "./causal-tree.ts"
 import type { Hlc } from "./hlc.ts"
 
 // ---------------------------------------------------------------------------
-// Tab type
-// ---------------------------------------------------------------------------
-
-type Tab = "events" | "tree" | "hlc"
-
-// ---------------------------------------------------------------------------
-// Main component
-// ---------------------------------------------------------------------------
-
-export const InspectorPanel = () => {
-  const [activeTab, setActiveTab] = useState<Tab>("events")
-  const store = useInspectorStore()
-
-  const tabs: { id: Tab; label: string }[] = [
-    { id: "events", label: "Event Log" },
-    { id: "tree", label: "Causal Tree" },
-    { id: "hlc", label: "HLC State" },
-  ]
-
-  return (
-    <div className="w-full max-w-5xl">
-      <div className="border border-gray-300 rounded-lg overflow-hidden bg-white shadow-sm">
-        {/* Tab bar */}
-        <div className="flex border-b border-gray-200 bg-gray-50">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-4 py-2.5 text-sm font-medium transition-colors ${
-                activeTab === tab.id
-                  ? "text-gray-900 bg-white border-b-2 border-blue-500"
-                  : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Tab content */}
-        <div className="max-h-96 overflow-y-auto">
-          {activeTab === "events" && (
-            <EventLogTab events={store.events} />
-          )}
-          {activeTab === "tree" && (
-            <CausalTreeTab docStates={store.docStates} />
-          )}
-          {activeTab === "hlc" && (
-            <HlcStateTab hlcStates={store.hlcStates} />
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Event Log tab
+// Event Log Section
 // ---------------------------------------------------------------------------
 
 type PeerFilter = "all" | "peer-A" | "peer-B"
 
-const EventLogTab = ({ events }: { events: readonly InspectorEvent[] }) => {
+export const EventLogSection = () => {
+  const store = useInspectorStore()
+  return <EventLogInner events={store.events} />
+}
+
+const EventLogInner = ({ events }: { events: readonly InspectorEvent[] }) => {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [peerFilter, setPeerFilter] = useState<PeerFilter>("all")
 
@@ -93,9 +39,9 @@ const EventLogTab = ({ events }: { events: readonly InspectorEvent[] }) => {
       ? events
       : events.filter((e) => e.peerId === peerFilter)
 
-  // Auto-scroll the outer tab container to bottom when new events arrive
+  // Auto-scroll to bottom when new events arrive
   useEffect(() => {
-    const el = scrollRef.current?.closest(".overflow-y-auto") as HTMLElement | null
+    const el = scrollRef.current
     if (el) {
       el.scrollTop = el.scrollHeight
     }
@@ -108,88 +54,82 @@ const EventLogTab = ({ events }: { events: readonly InspectorEvent[] }) => {
   ]
 
   return (
-    <div className="p-4">
-      <p className="text-sm text-gray-500 mb-3 leading-relaxed">
-        Every edit produces an{" "}
-        <span className="font-semibold">Action</span> — the atomic sync unit
-        containing one or more{" "}
-        <span className="font-semibold">Updates</span>. Each Update targets a
-        single entity (RunNode) with a self-describing method and typed field
-        data. A multi-run delete produces 1 Action with N Updates, not N
-        separate messages. Actions carry a{" "}
-        <span className="font-semibold">Hybrid Logical Clock</span> for
-        causal ordering.
-      </p>
-
-      {events.length === 0 ? (
-        <div className="text-sm text-gray-400 text-center py-6">
-          No events yet. Start typing in one of the editors above.
-        </div>
-      ) : (
-        <>
-          {/* Toolbar: filter + clear */}
-          <div className="flex items-center gap-2 mb-2">
-            <div className="flex gap-1">
-              {filterButtons.map((btn) => {
-                const isActive = peerFilter === btn.id
-                const colorClass =
-                  btn.id === "peer-A"
+    <div className="border border-stone-700 rounded-lg bg-stone-950 overflow-hidden">
+      {/* Title bar */}
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-stone-700">
+        <span className="w-3 h-3 rounded-full bg-stone-700" />
+        <span className="w-3 h-3 rounded-full bg-stone-700" />
+        <span className="w-3 h-3 rounded-full bg-stone-700" />
+        <span className="font-mono text-xs text-stone-500 ml-2">event log</span>
+        <div className="ml-auto flex items-center gap-2">
+          {/* Filter pills */}
+          <div className="flex gap-1">
+            {filterButtons.map((btn) => {
+              const isActive = peerFilter === btn.id
+              const colorClass =
+                btn.id === "peer-A"
+                  ? isActive
+                    ? "bg-blue-400/20 text-blue-400 border-blue-400/40"
+                    : "text-stone-400 border-stone-700 hover:text-blue-400 hover:border-blue-400/40"
+                  : btn.id === "peer-B"
                     ? isActive
-                      ? "bg-blue-500 text-white"
-                      : "bg-gray-100 text-gray-500 hover:bg-blue-50 hover:text-blue-600"
-                    : btn.id === "peer-B"
-                      ? isActive
-                        ? "bg-orange-500 text-white"
-                        : "bg-gray-100 text-gray-500 hover:bg-orange-50 hover:text-orange-600"
-                      : isActive
-                        ? "bg-gray-700 text-white"
-                        : "bg-gray-100 text-gray-500 hover:bg-gray-200"
-                return (
-                  <button
-                    key={btn.id}
-                    onClick={() => setPeerFilter(btn.id)}
-                    className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors ${colorClass}`}
-                  >
-                    {btn.label}
-                  </button>
-                )
-              })}
-            </div>
-            <div className="flex-1" />
+                      ? "bg-amber-400/20 text-amber-400 border-amber-400/40"
+                      : "text-stone-400 border-stone-700 hover:text-amber-400 hover:border-amber-400/40"
+                    : isActive
+                      ? "bg-stone-700 text-stone-200 border-stone-600"
+                      : "text-stone-400 border-stone-700 hover:text-stone-200 hover:border-stone-600"
+              return (
+                <button
+                  key={btn.id}
+                  onClick={() => setPeerFilter(btn.id)}
+                  className={`px-2 py-0.5 text-[11px] font-mono rounded-full border transition-colors ${colorClass}`}
+                >
+                  {btn.label}
+                </button>
+              )
+            })}
+          </div>
+          {events.length > 0 && (
             <button
               onClick={clearEvents}
-              className="text-[11px] text-gray-400 hover:text-gray-600 transition-colors"
+              className="text-[11px] font-mono text-stone-600 hover:text-stone-400 transition-colors"
             >
-              Clear log
+              clear
             </button>
+          )}
+        </div>
+      </div>
+
+      {/* Event list */}
+      <div
+        ref={scrollRef}
+        className="max-h-80 overflow-y-auto p-2"
+      >
+        {events.length === 0 ? (
+          <div className="text-sm text-stone-500 text-center py-8 font-mono">
+            Start typing to see actions flow between peers.
           </div>
-          <div
-            ref={scrollRef}
-            className="font-mono text-xs space-y-1"
-          >
+        ) : (
+          <div className="font-mono text-xs space-y-0.5">
             {filteredEvents.map((event) => (
               <ActionRow key={event.id} event={event} />
             ))}
           </div>
-        </>
-      )}
+        )}
+      </div>
     </div>
   )
 }
 
 /**
  * Render an ebb-native Action as an expandable row.
- *
- * Shows the Action header (id, actor, direction, update count) with
- * expandable Update details underneath. Each Update shows its method
- * ("put" or "delete"), subject_id, and field data.
  */
 const ActionRow = ({ event }: { event: InspectorEvent }) => {
   const [expanded, setExpanded] = useState(false)
   const { action, direction, peerId } = event
   const isPeerA = peerId === "peer-A"
-  const color = isPeerA ? "text-blue-600" : "text-orange-600"
-  const bgColor = isPeerA ? "bg-blue-50" : "bg-orange-50"
+  const color = isPeerA ? "text-blue-400" : "text-amber-400"
+  const bgColor = isPeerA ? "bg-blue-400/5" : "bg-amber-400/5"
   const arrow = direction === "sent" ? "\u2192" : "\u2190"
   const dirLabel = direction === "sent" ? "sent" : "recv"
 
@@ -208,7 +148,7 @@ const ActionRow = ({ event }: { event: InspectorEvent }) => {
   const summary = [
     putCount > 0 ? `${putCount} put` : "",
     patchCount > 0 ? `${patchCount} patch` : "",
-    deleteCount > 0 ? `${deleteCount} delete` : "",
+    deleteCount > 0 ? `${deleteCount} del` : "",
   ]
     .filter(Boolean)
     .join(", ")
@@ -219,23 +159,23 @@ const ActionRow = ({ event }: { event: InspectorEvent }) => {
     <div className={`rounded ${bgColor}`}>
       {/* Action header row */}
       <div
-        className={`flex items-center gap-2 px-2 py-0.5 cursor-pointer hover:bg-opacity-80 ${color}`}
+        className={`flex items-center gap-2 px-2 py-0.5 cursor-pointer hover:bg-stone-800/50 rounded ${color}`}
         onClick={() => setExpanded(!expanded)}
       >
-        <span className="text-gray-400 w-4 shrink-0 text-center select-none">
+        <span className="text-stone-600 w-4 shrink-0 text-center select-none">
           {expanded ? "\u25BC" : "\u25B6"}
         </span>
-        <span className="text-gray-400 w-20 shrink-0">{time}</span>
+        <span className="text-stone-600 w-20 shrink-0">{time}</span>
         <span className="w-6 text-center shrink-0">{arrow}</span>
-        <span className="text-gray-400 w-8 shrink-0">{dirLabel}</span>
+        <span className="text-stone-600 w-8 shrink-0">{dirLabel}</span>
         <span className={`${color} font-semibold w-12 shrink-0`}>
           {peerId.replace("peer-", "")}
         </span>
-        <span className="px-1.5 py-0 rounded text-[11px] font-semibold shrink-0 bg-indigo-100 text-indigo-700">
+        <span className="px-1.5 py-0 rounded text-[11px] font-semibold shrink-0 bg-stone-800 text-stone-400 border border-stone-700">
           ACTION
         </span>
-        <span className="text-gray-500 shrink-0">{shortActionId}</span>
-        <span className="text-gray-400 shrink-0">
+        <span className="text-stone-500 shrink-0">{shortActionId}</span>
+        <span className="text-stone-600 shrink-0">
           ({action.updates.length} update{action.updates.length !== 1 ? "s" : ""}: {summary})
         </span>
       </div>
@@ -254,7 +194,6 @@ const ActionRow = ({ event }: { event: InspectorEvent }) => {
 
 /**
  * Render a single Update within an Action.
- * Shows method badge, subject_id, and field-specific details.
  */
 const UpdateRow = ({
   update,
@@ -265,10 +204,10 @@ const UpdateRow = ({
 }) => {
   const methodBadgeColor =
     update.method === "put"
-      ? "bg-green-100 text-green-700"
+      ? "bg-emerald-400/10 text-emerald-400 border-emerald-400/30"
       : update.method === "patch"
-        ? "bg-amber-100 text-amber-700"
-        : "bg-red-100 text-red-700"
+        ? "bg-amber-400/10 text-amber-400 border-amber-400/30"
+        : "bg-red-400/10 text-red-400 border-red-400/30"
 
   const shortSubjectId = abbreviateId(update.subject_id)
 
@@ -300,23 +239,23 @@ const UpdateRow = ({
   }
 
   return (
-    <div className="flex items-center gap-2 px-2 py-0.5 text-gray-600">
-      <span className="text-gray-300 w-4 shrink-0 text-center">{index + 1}.</span>
+    <div className="flex items-center gap-2 px-2 py-0.5 text-stone-400">
+      <span className="text-stone-700 w-4 shrink-0 text-center">{index + 1}.</span>
       <span
-        className={`px-1.5 py-0 rounded text-[11px] font-semibold shrink-0 ${methodBadgeColor}`}
+        className={`px-1.5 py-0 rounded text-[11px] font-semibold shrink-0 border ${methodBadgeColor}`}
       >
         {update.method.toUpperCase()}
       </span>
-      <span className="text-gray-500 shrink-0">
+      <span className="text-stone-500 shrink-0">
         {update.subject_type}:{shortSubjectId}
       </span>
-      <span className="text-gray-600 truncate">{detail}</span>
+      <span className="text-stone-400 truncate">{detail}</span>
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Causal Tree tab
+// Causal Tree Section
 // ---------------------------------------------------------------------------
 
 /** A chain of sequential single-child nodes, collapsed into one visual row. */
@@ -327,8 +266,7 @@ type ChainSegment = {
 
 /**
  * Walk the causal tree from a starting node and collapse sequential
- * single-child runs into ChainSegments. Branches appear when a node
- * has 2+ children (the interesting conflict points).
+ * single-child runs into ChainSegments.
  */
 const buildChains = (docState: DocState, startId: string): readonly ChainSegment[] => {
   const childIds = docState.children.get(startId) ?? []
@@ -338,7 +276,6 @@ const buildChains = (docState: DocState, startId: string): readonly ChainSegment
     const nodes: { id: string; text: string; deleted: boolean; peerId: string }[] = []
     let currentId = childId
 
-    // Walk the chain: keep going while the current node has exactly 1 child
     while (true) {
       const node = docState.nodes.get(currentId)
       if (!node) break
@@ -352,15 +289,12 @@ const buildChains = (docState: DocState, startId: string): readonly ChainSegment
 
       const nextChildren = docState.children.get(currentId) ?? []
       if (nextChildren.length === 1) {
-        // Single child — continue the chain
         currentId = nextChildren[0]!
       } else {
-        // 0 or 2+ children — end the chain, recurse for branches
         break
       }
     }
 
-    // The last node in the chain may have branches (0 or 2+ children)
     const lastNodeId = nodes[nodes.length - 1]?.id
     const branches = lastNodeId ? buildChains(docState, lastNodeId) : []
 
@@ -368,69 +302,47 @@ const buildChains = (docState: DocState, startId: string): readonly ChainSegment
   })
 }
 
-/** Extract the peer name from a node ID (format: "ts:count:peer-X"). */
-const extractPeerId = (id: string): string => {
-  // Handle split IDs like "ts:count:peer-X:s:offset"
-  const parts = id.split(":")
-  if (parts.length >= 3) {
-    // For split IDs, the peer is at index 2
-    return parts[2]!.startsWith("peer-") ? parts[2]! : parts.slice(2).join(":")
-  }
-  return "?"
-}
-
-const CausalTreeTab = ({
-  docStates,
-}: {
-  docStates: Readonly<Record<string, DocState>>
-}) => {
+export const CausalTreeSection = () => {
+  const store = useInspectorStore()
   const [selectedPeer, setSelectedPeer] = useState<string>("peer-A")
-  const peerIds = Object.keys(docStates).sort()
-  const docState = docStates[selectedPeer]
+  const peerIds = Object.keys(store.docStates).sort()
+  const docState = store.docStates[selectedPeer]
 
   return (
-    <div className="p-4">
-      <p className="text-sm text-gray-500 mb-3 leading-relaxed">
-        The document is stored as a{" "}
-        <span className="font-semibold">Causal Tree</span> — each run is
-        a node that points to its parent (the run it was typed after).
-        Sequential typing forms a chain; the tree only branches when two peers
-        type at the same position (a conflict). Reading in DFS order, skipping
-        tombstones, reconstructs the visible text.
-      </p>
-
-      {peerIds.length === 0 ? (
-        <div className="text-sm text-gray-400 text-center py-6">
-          No tree state yet. Start typing in one of the editors above.
+    <div className="border border-stone-700 rounded-lg bg-stone-950 overflow-hidden">
+      {/* Title bar */}
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-stone-700">
+        <span className="w-3 h-3 rounded-full bg-stone-700" />
+        <span className="w-3 h-3 rounded-full bg-stone-700" />
+        <span className="w-3 h-3 rounded-full bg-stone-700" />
+        <span className="font-mono text-xs text-stone-500 ml-2">causal tree</span>
+        <div className="ml-auto flex gap-1">
+          {peerIds.map((id) => (
+            <button
+              key={id}
+              onClick={() => setSelectedPeer(id)}
+              className={`px-2 py-0.5 text-[11px] font-mono rounded-full border transition-colors ${
+                selectedPeer === id
+                  ? "bg-stone-700 text-stone-200 border-stone-600"
+                  : "text-stone-400 border-stone-700 hover:text-stone-200 hover:border-stone-600"
+              }`}
+            >
+              {id}
+            </button>
+          ))}
         </div>
-      ) : (
-        <>
-          {/* Peer selector */}
-          <div className="flex gap-2 mb-3">
-            {peerIds.map((id) => (
-              <button
-                key={id}
-                onClick={() => setSelectedPeer(id)}
-                className={`px-3 py-1 text-xs rounded transition-colors ${
-                  selectedPeer === id
-                    ? "bg-gray-800 text-white"
-                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                }`}
-              >
-                {id}
-              </button>
-            ))}
-          </div>
+      </div>
 
-          {docState ? (
-            <TreeVisualization docState={docState} />
-          ) : (
-            <div className="text-sm text-gray-400 text-center py-4">
-              Select a peer to view its tree.
-            </div>
-          )}
-        </>
-      )}
+      {/* Tree content */}
+      <div className="p-4 max-h-80 overflow-y-auto">
+        {peerIds.length === 0 || !docState ? (
+          <div className="text-sm text-stone-500 text-center py-8 font-mono">
+            Start typing to see the tree grow.
+          </div>
+        ) : (
+          <TreeVisualization docState={docState} />
+        )}
+      </div>
     </div>
   )
 }
@@ -448,12 +360,12 @@ const TreeVisualization = ({ docState }: { docState: DocState }) => {
   return (
     <div>
       {/* Stats bar */}
-      <div className="flex gap-4 mb-2 text-[11px] text-gray-500">
+      <div className="flex gap-4 mb-3 text-[11px] text-stone-500 font-mono">
         <span>
-          <span className="font-semibold">{nodeCount}</span> total runs
+          <span className="font-semibold text-stone-400">{nodeCount}</span> total
         </span>
         <span>
-          <span className="font-semibold text-green-600">{visibleCount}</span>{" "}
+          <span className="font-semibold text-emerald-400">{visibleCount}</span>{" "}
           visible
         </span>
         <span>
@@ -463,21 +375,21 @@ const TreeVisualization = ({ docState }: { docState: DocState }) => {
       </div>
 
       {/* Tree */}
-      <div className="font-mono text-xs bg-gray-50 rounded p-3 max-h-56 overflow-y-auto">
+      <div className="font-mono text-xs bg-stone-900/50 rounded p-3 max-h-56 overflow-y-auto border border-stone-700">
         {/* ROOT row */}
-        <div className="text-gray-400 font-semibold mb-1">ROOT</div>
+        <div className="text-stone-500 font-semibold mb-1">ROOT</div>
 
         {chains.length === 0 ? (
-          <div className="text-gray-400 pl-4">(empty)</div>
+          <div className="text-stone-600 pl-4">(empty)</div>
         ) : (
           <ChainList chains={chains} depth={1} />
         )}
       </div>
 
       {/* Reconstructed text */}
-      <div className="mt-2 text-[11px] text-gray-500">
-        <span className="font-semibold">Reconstructed: </span>
-        <span className="font-mono text-gray-700">
+      <div className="mt-3 text-[11px] text-stone-500 font-mono">
+        <span className="font-semibold text-stone-400">Reconstructed: </span>
+        <span className="text-stone-300">
           {treeText.length > 0 ? `"${treeText}"` : "(empty)"}
         </span>
       </div>
@@ -501,7 +413,7 @@ const ChainList = ({
           {/* Branch connector for multi-child splits */}
           <div className="flex items-start gap-1.5 py-0.5">
             {isBranch && (
-              <span className="text-gray-300 shrink-0 select-none">
+              <span className="text-stone-700 shrink-0 select-none">
                 {i < chains.length - 1 ? "\u251C" : "\u2514"}
               </span>
             )}
@@ -520,9 +432,6 @@ const ChainList = ({
 
 /**
  * Render a single collapsed chain as one row.
- *
- * Groups consecutive runs by deleted status into "display runs" so that
- * deleted sections show as struck-through inline within the chain.
  */
 const ChainRow = ({ chain }: { chain: ChainSegment }) => {
   const { nodes } = chain
@@ -542,11 +451,10 @@ const ChainRow = ({ chain }: { chain: ChainSegment }) => {
     }
   }
 
-  const totalVisible = nodes.filter((n) => !n.deleted).length
   const totalDeleted = nodes.filter((n) => n.deleted).length
   const totalChars = nodes.reduce((sum, n) => sum + n.text.length, 0)
 
-  // Peer attribution — show which peer(s) authored this chain
+  // Peer attribution
   const peers = [...new Set(nodes.map((n) => n.peerId))]
   const peerLabel = peers
     .map((p) => p.replace("peer-", ""))
@@ -563,11 +471,11 @@ const ChainRow = ({ chain }: { chain: ChainSegment }) => {
         &quot;
         {runs.map((run, i) =>
           run.deleted ? (
-            <span key={i} className="text-red-400 line-through opacity-60">
+            <span key={i} className="text-red-400/60 line-through">
               {run.text}
             </span>
           ) : (
-            <span key={i} className="text-gray-800">
+            <span key={i} className="text-stone-200">
               {run.text}
             </span>
           ),
@@ -576,12 +484,12 @@ const ChainRow = ({ chain }: { chain: ChainSegment }) => {
       </span>
 
       {/* Node count badge */}
-      <span className="text-[10px] text-gray-400">
+      <span className="text-[10px] text-stone-600">
         {nodes.length === 1
-          ? `1 run (${totalChars} chars)`
-          : `${nodes.length} runs (${totalChars} chars)`}
+          ? `1 run (${totalChars} ch)`
+          : `${nodes.length} runs (${totalChars} ch)`}
         {totalDeleted > 0 && (
-          <span className="text-red-400 ml-0.5">
+          <span className="text-red-400/60 ml-0.5">
             ({totalDeleted} del)
           </span>
         )}
@@ -589,19 +497,19 @@ const ChainRow = ({ chain }: { chain: ChainSegment }) => {
 
       {/* Peer attribution */}
       <span
-        className={`text-[10px] px-1.5 py-0 rounded ${
+        className={`text-[10px] px-1.5 py-0 rounded-full border ${
           peers.length === 1 && peers[0] === "peer-A"
-            ? "bg-blue-100 text-blue-600"
+            ? "bg-blue-400/10 text-blue-400 border-blue-400/30"
             : peers.length === 1 && peers[0] === "peer-B"
-              ? "bg-orange-100 text-orange-600"
-              : "bg-gray-200 text-gray-600"
+              ? "bg-amber-400/10 text-amber-400 border-amber-400/30"
+              : "bg-stone-800 text-stone-400 border-stone-700"
         }`}
       >
         {peerLabel}
       </span>
 
       {/* ID range */}
-      <span className="text-[10px] text-gray-400">
+      <span className="text-[10px] text-stone-600">
         {firstId}
         {lastId && ` \u2192 ${lastId}`}
       </span>
@@ -610,10 +518,15 @@ const ChainRow = ({ chain }: { chain: ChainSegment }) => {
 }
 
 // ---------------------------------------------------------------------------
-// HLC State tab
+// HLC State Section
 // ---------------------------------------------------------------------------
 
-const HlcStateTab = ({
+export const HlcStateSection = () => {
+  const store = useInspectorStore()
+  return <HlcStateInner hlcStates={store.hlcStates} />
+}
+
+const HlcStateInner = ({
   hlcStates,
 }: {
   hlcStates: Readonly<Record<string, Hlc>>
@@ -621,61 +534,50 @@ const HlcStateTab = ({
   const peerIds = Object.keys(hlcStates).sort()
 
   return (
-    <div className="p-4">
-      <p className="text-sm text-gray-500 mb-3 leading-relaxed">
-        Each peer maintains a{" "}
-        <span className="font-semibold">Hybrid Logical Clock</span> (HLC) that
-        combines a wall-clock timestamp with a logical counter. Every operation
-        gets a unique, totally-ordered ID derived from the HLC — no coordination
-        needed. When a peer receives a remote operation, it merges the remote
-        clock with its own, ensuring clocks only move forward. The{" "}
-        <span className="font-semibold">tie-break rule</span> (higher HLC wins)
-        guarantees that two users typing at the exact same position converge to
-        the same result.
-      </p>
-
+    <div>
       {peerIds.length === 0 ? (
-        <div className="text-sm text-gray-400 text-center py-6">
-          No HLC state yet. Start typing in one of the editors above.
+        <div className="border border-stone-700 rounded-lg bg-stone-950 p-8">
+          <div className="text-sm text-stone-500 text-center font-mono">
+            Start typing to see the clocks advance.
+          </div>
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {peerIds.map((peerId) => {
             const hlc = hlcStates[peerId]!
             const isPeerA = peerId === "peer-A"
+            const accentColor = isPeerA ? "text-blue-400" : "text-amber-400"
             const borderColor = isPeerA
-              ? "border-blue-200"
-              : "border-orange-200"
-            const headerColor = isPeerA ? "text-blue-600" : "text-orange-600"
-            const bgColor = isPeerA ? "bg-blue-50" : "bg-orange-50"
+              ? "border-blue-400/20"
+              : "border-amber-400/20"
 
             return (
               <div
                 key={peerId}
-                className={`rounded-lg border ${borderColor} ${bgColor} p-3`}
+                className={`rounded-lg border ${borderColor} bg-stone-900/50 p-4`}
               >
                 <div
-                  className={`text-sm font-semibold ${headerColor} mb-2`}
+                  className={`text-sm font-mono font-semibold ${accentColor} mb-3`}
                 >
                   {peerId}
                 </div>
-                <div className="space-y-1.5 font-mono text-xs">
+                <div className="space-y-2 font-mono text-xs">
                   <div className="flex justify-between">
-                    <span className="text-gray-500">ts</span>
-                    <span className="text-gray-800">{hlc.ts}</span>
+                    <span className="text-stone-500">ts</span>
+                    <span className="text-stone-300">{hlc.ts}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-500">count</span>
-                    <span className="text-gray-800">{hlc.count}</span>
+                    <span className="text-stone-500">count</span>
+                    <span className="text-stone-300">{hlc.count}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-500">peerId</span>
-                    <span className="text-gray-800">{hlc.peerId}</span>
+                    <span className="text-stone-500">peerId</span>
+                    <span className="text-stone-300">{hlc.peerId}</span>
                   </div>
-                  <div className="border-t border-gray-200 pt-1.5 mt-1.5">
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">serialized</span>
-                      <span className="text-gray-600 text-[10px] break-all text-right max-w-[200px]">
+                  <div className="border-t border-stone-700 pt-2 mt-2">
+                    <div className="flex justify-between items-start gap-2">
+                      <span className="text-stone-500 shrink-0">serialized</span>
+                      <span className="text-stone-400 text-[10px] break-all text-right">
                         {formatHlcString(hlc)}
                       </span>
                     </div>
@@ -713,7 +615,6 @@ const abbreviateId = (id: string): string => {
   const ts = parts[0]!
   const count = parts[1]!
   const peer = parts[2]!
-  // Last 3 digits of ts, last 2 of count, first letter after "peer-"
   const shortTs = ts.slice(-3)
   const shortCount = count.slice(-2)
   const shortPeer = peer.replace("peer-", "")
