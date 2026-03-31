@@ -57,6 +57,12 @@ export type PositionLookup = {
 export type InsertRunAction = {
   readonly type: "INSERT_RUN"
   readonly node: RunNode
+  /**
+   * If set, the parent run was split at this offset before this insert.
+   * The reducer ignores this — it's informational metadata carried through
+   * to the wire protocol so the receiving peer can perform the same split.
+   */
+  readonly splitParentAt?: number
 }
 
 export type DeleteRangeAction = {
@@ -76,7 +82,29 @@ export type SplitAction = {
   readonly offset: number // Split point within the run's text
 }
 
-export type DocAction = InsertRunAction | DeleteRangeAction | SplitAction
+/**
+ * Extend an existing run by appending text to it.
+ *
+ * This is the run-length coalescing optimization: when a user types
+ * sequentially at the end of their own run, we grow the existing run
+ * instead of creating a new node. The run keeps its original ID.
+ *
+ * Only valid when:
+ * - The run belongs to the same peer
+ * - The insertion point is at the exact end of the run
+ * - The run hasn't been deleted
+ */
+export type ExtendRunAction = {
+  readonly type: "EXTEND_RUN"
+  readonly runId: string // Which run to extend
+  readonly appendText: string // Text to append
+}
+
+export type DocAction =
+  | InsertRunAction
+  | DeleteRangeAction
+  | SplitAction
+  | ExtendRunAction
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -114,7 +142,7 @@ export const createDocState = (): DocState => ({
 })
 
 /**
- * Pure reducer. Handles INSERT_RUN, DELETE_RANGE, and SPLIT actions.
+ * Pure reducer. Handles INSERT_RUN, DELETE_RANGE, SPLIT, and EXTEND_RUN actions.
  * Returns new state with updated index.
  */
 export const docReducer = (state: DocState, action: DocAction): DocState => {
@@ -125,6 +153,8 @@ export const docReducer = (state: DocState, action: DocAction): DocState => {
       return applySplit(state, action.runId, action.offset)
     case "DELETE_RANGE":
       return applyDeleteRange(state, action.runId, action.offset, action.count)
+    case "EXTEND_RUN":
+      return applyExtendRun(state, action.runId, action.appendText)
   }
 }
 
@@ -478,6 +508,46 @@ const tombstoneRun = (state: DocState, runId: string): DocState => {
     index: {
       spans: newSpans,
       totalLength: state.index.totalLength - node.text.length,
+    },
+  }
+}
+
+/**
+ * Extend an existing run by appending text. O(spans) to find the span.
+ *
+ * This is the run-length coalescing optimization: instead of creating a
+ * new RunNode for every keystroke, we grow the existing run's text and
+ * its span. The run keeps its original ID, parentId, and position in
+ * the tree — only the text and span length change.
+ *
+ * Safe because:
+ * - Only the authoring peer extends its own runs (same-peer check in bridge)
+ * - Extension is append-only (no reordering needed)
+ * - The run ID stays the same, so all existing parent references remain valid
+ */
+const applyExtendRun = (
+  state: DocState,
+  runId: string,
+  appendText: string,
+): DocState => {
+  const node = state.nodes.get(runId)
+  if (!node || node.deleted) return state
+
+  // Update the node's text
+  const newNodes = new Map(state.nodes)
+  newNodes.set(runId, { ...node, text: node.text + appendText })
+
+  // Grow the span in the index
+  const newSpans = state.index.spans.map((s) =>
+    s.runId === runId ? { ...s, length: s.length + appendText.length } : s,
+  )
+
+  return {
+    nodes: newNodes,
+    children: state.children,
+    index: {
+      spans: newSpans,
+      totalLength: state.index.totalLength + appendText.length,
     },
   }
 }

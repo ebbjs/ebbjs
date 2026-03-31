@@ -42,8 +42,10 @@ import {
 
 export type PresenceData = {
   readonly peerId: string
-  readonly anchorId: string // CharNode ID at the anchor of the selection
-  readonly headId: string // CharNode ID at the head (same as anchor if no selection)
+  readonly anchorId: string // Run ID at the anchor of the selection
+  readonly anchorOffset: number // Offset within the anchor run (0-based)
+  readonly headId: string // Run ID at the head (same as anchor if no selection)
+  readonly headOffset: number // Offset within the head run (0-based)
   readonly color: string // CSS color for this peer's cursor/selection
 }
 
@@ -54,6 +56,12 @@ export type PresenceConfig = {
   readonly getDocState: () => DocState
 }
 
+/** Reference to a position within a run: run ID + character offset within it. */
+export type RunRef = {
+  readonly runId: string
+  readonly offset: number
+}
+
 export type PresenceHook = {
   readonly presenceMap: ReadonlyMap<string, PresenceData>
   /** Mutable ref to the presence map — always up-to-date synchronously. */
@@ -61,11 +69,13 @@ export type PresenceHook = {
   readonly updatePresence: (
     peerId: string,
     anchorId: string,
+    anchorOffset: number,
     headId: string,
+    headOffset: number,
   ) => void
   readonly getLocalPresenceIds: (
     editorState: EditorState,
-  ) => { anchorId: string; headId: string }
+  ) => { anchor: RunRef; head: RunRef }
 }
 
 // ---------------------------------------------------------------------------
@@ -170,65 +180,72 @@ class CursorWidget extends WidgetType {
 // ---------------------------------------------------------------------------
 
 /**
- * Map a cursor position (0-based document offset) to a node ID.
- *
- * In the run-optimized model, we resolve the position to a (runId, offset)
- * pair using the span StateField, then encode it as a string for presence.
+ * Map a cursor position (0-based document offset) to a RunRef (runId + offset).
  *
  * Convention:
- * - Position 0 → ROOT_ID (cursor is before all content)
- * - Position P > 0 → the run ID containing the char at P-1
+ * - Position 0 → ROOT_ID, offset 0 (cursor is before all content)
+ * - Position P > 0 → the run containing char at P-1, with the intra-run offset
  *   (cursor is logically "after" that character)
  *
- * For simplicity in the prototype, presence IDs remain run IDs (the first
- * char's HLC-derived ID). This works because run IDs are stable.
+ * The offset is critical for correct remote cursor rendering within long runs
+ * (e.g., after EXTEND_RUN coalescing where a single run may contain many chars).
  */
-export const positionToNodeId = (
+export const positionToRunRef = (
   editorState: EditorState,
   position: number,
   idMapField: StateField<readonly RunSpan[]>,
-): string => {
+): RunRef => {
   const spans = editorState.field(idMapField)
 
-  if (spans.length === 0) return ROOT_ID
-  if (position === 0) return ROOT_ID
+  if (spans.length === 0) return { runId: ROOT_ID, offset: 0 }
+  if (position === 0) return { runId: ROOT_ID, offset: 0 }
 
   // Walk spans to find the run containing position - 1
   let cumulative = 0
   for (const span of spans) {
     if (position - 1 < cumulative + span.length) {
-      return span.runId
+      return { runId: span.runId, offset: position - 1 - cumulative }
     }
     cumulative += span.length
   }
 
-  // Past end — return last run ID
+  // Past end — return last run ID at its last offset
   const lastSpan = spans[spans.length - 1]
-  return lastSpan ? lastSpan.runId : ROOT_ID
+  return lastSpan
+    ? { runId: lastSpan.runId, offset: lastSpan.length - 1 }
+    : { runId: ROOT_ID, offset: 0 }
 }
 
 /**
- * Resolve a node ID back to a document position for rendering.
+ * Resolve a RunRef (runId + offset) back to a document position for rendering.
  *
- * Convention (inverse of positionToNodeId):
+ * Convention (inverse of positionToRunRef):
  * - ROOT_ID → position 0
- * - A valid run ID → position of that run's last char + 1
- *   (cursor is after the run)
+ * - A valid run ID + offset → cumulative position of run start + offset + 1
+ *   (cursor is "after" the character at that offset)
  * - Unknown/deleted ID → undefined (skip rendering)
+ *
+ * If the offset exceeds the current span length (e.g., the run was split
+ * after the presence message was sent), the position is clamped to the
+ * end of the span.
  */
-export const nodeIdToPosition = (
+export const runRefToPosition = (
   editorState: EditorState,
-  nodeId: string,
+  runId: string,
+  offset: number,
   idMapField: StateField<readonly RunSpan[]>,
 ): number | undefined => {
-  if (nodeId === ROOT_ID) return 0
+  if (runId === ROOT_ID) return 0
 
   const spans = editorState.field(idMapField)
   let cumulative = 0
   for (const span of spans) {
-    if (span.runId === nodeId) {
-      // Cursor is "after" this run
-      return cumulative + span.length
+    if (span.runId === runId) {
+      // Clamp offset to span length - 1 (in case the run was split
+      // after the presence message was sent)
+      const clampedOffset = Math.min(offset, span.length - 1)
+      // Cursor is "after" the character at this offset
+      return cumulative + clampedOffset + 1
     }
     cumulative += span.length
   }
@@ -265,12 +282,20 @@ export const usePresence = (
   >(() => new Map())
 
   const updatePresence = useCallback(
-    (remotePeerId: string, anchorId: string, headId: string) => {
+    (
+      remotePeerId: string,
+      anchorId: string,
+      anchorOffset: number,
+      headId: string,
+      headOffset: number,
+    ) => {
       const next = new Map(presenceMapRef.current)
       next.set(remotePeerId, {
         peerId: remotePeerId,
         anchorId,
+        anchorOffset,
         headId,
+        headOffset,
         color: colorForPeer(remotePeerId),
       })
       // Update ref synchronously — the ViewPlugin reads this immediately
@@ -284,9 +309,9 @@ export const usePresence = (
   const getLocalPresenceIds = useCallback(
     (editorState: EditorState) => {
       const sel = editorState.selection.main
-      const anchorId = positionToNodeId(editorState, sel.anchor, idMapField)
-      const headId = positionToNodeId(editorState, sel.head, idMapField)
-      return { anchorId, headId }
+      const anchor = positionToRunRef(editorState, sel.anchor, idMapField)
+      const head = positionToRunRef(editorState, sel.head, idMapField)
+      return { anchor, head }
     },
     [idMapField],
   )
@@ -349,14 +374,16 @@ const buildDecorations = (
     // Skip local peer
     if (remotePeerId === config.localPeerId) continue
 
-    const anchorPos = nodeIdToPosition(
+    const anchorPos = runRefToPosition(
       editorState,
       data.anchorId,
+      data.anchorOffset,
       config.idMapField,
     )
-    const headPos = nodeIdToPosition(
+    const headPos = runRefToPosition(
       editorState,
       data.headId,
+      data.headOffset,
       config.idMapField,
     )
 

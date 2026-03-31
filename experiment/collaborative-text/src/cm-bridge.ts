@@ -207,6 +207,45 @@ export const createBridgeExtension = (
               const currentState = config.getDocState()
               const currentIndex = currentState.index
 
+              // ----------------------------------------------------------
+              // Run extension check: can we append to an existing run?
+              //
+              // Conditions for extending instead of creating a new run:
+              // 1. Inserting after position 0 (there's a preceding character)
+              // 2. The preceding character is at the END of its run
+              // 3. That run belongs to the SAME peer
+              // 4. That run is not deleted
+              // 5. That run is a leaf (no children) — prevents inserting
+              //    between a split left-half and its right-half continuation
+              // ----------------------------------------------------------
+              if (fromA > 0) {
+                const prevLookup = lookupPosition(currentIndex, fromA - 1)
+                if (prevLookup) {
+                  const prevRun = currentState.nodes.get(prevLookup.runId)
+                  if (prevRun) {
+                    const isAtEnd = prevLookup.offset === prevRun.text.length - 1
+                    const isSamePeer = prevRun.peerId === config.peerId
+                    const isNotDeleted = !prevRun.deleted
+                    const isLeaf = (currentState.children.get(prevRun.id) ?? []).length === 0
+
+                    if (isAtEnd && isSamePeer && isNotDeleted && isLeaf) {
+                      // Extend the existing run — no new HLC, no new node
+                      config.dispatch({
+                        type: "EXTEND_RUN",
+                        runId: prevRun.id,
+                        appendText: insertedText,
+                      })
+                      // Skip the INSERT_RUN path below
+                      return
+                    }
+                  }
+                }
+              }
+
+              // ----------------------------------------------------------
+              // Standard INSERT_RUN path (new run needed)
+              // ----------------------------------------------------------
+
               // Determine the parent run for the insertion.
               // The parent is the run containing the character just before
               // the insert position (fromA) in the ORIGINAL document.
@@ -222,6 +261,7 @@ export const createBridgeExtension = (
               // The parent for the insert is whatever is at position fromA-1
               // in the state AFTER deletion.
               let parentId: string
+              let splitParentAt: number | undefined
 
               // Compute the effective position in the post-deletion state.
               // Deletions before fromA don't happen (fromA is the start of
@@ -245,11 +285,16 @@ export const createBridgeExtension = (
                     // If it's in the middle, we need to split the run first
                     if (parentLookup.offset < parentRun.text.length - 1) {
                       // Mid-run: split at offset+1 (after the parent char)
+                      const splitOffset = parentLookup.offset + 1
                       config.dispatch({
                         type: "SPLIT",
                         runId: parentLookup.runId,
-                        offset: parentLookup.offset + 1,
+                        offset: splitOffset,
                       })
+                      // Record the split offset so the relay can include it
+                      // in the broadcast — the receiving peer needs it to
+                      // perform the same split before inserting.
+                      splitParentAt = splitOffset
                     }
                     // Parent is the left half (keeps original ID)
                     parentId = parentLookup.runId
@@ -271,6 +316,7 @@ export const createBridgeExtension = (
                   peerId: config.peerId,
                   deleted: false,
                 },
+                splitParentAt,
               })
             }
           },

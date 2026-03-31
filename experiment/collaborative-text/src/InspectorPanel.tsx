@@ -1,9 +1,10 @@
 /**
- * Inspector Panel (Run-Optimized)
+ * Inspector Panel (Ebb-Native)
  *
  * A tabbed "Under the Hood" panel rendered below the two editors. Three tabs:
  *
- * 1. Event Log — scrolling stream of INSERT_RUN/DELETE_RANGE/PRESENCE messages
+ * 1. Event Log — scrolling stream of ebb-native Actions, each containing
+ *    one or more Updates with self-describing typed field data
  * 2. Causal Tree — indented text visualization of the tree data structure
  * 3. HLC State — live display of each peer's Hybrid Logical Clock
  *
@@ -109,12 +110,15 @@ const EventLogTab = ({ events }: { events: readonly InspectorEvent[] }) => {
   return (
     <div className="p-4">
       <p className="text-sm text-gray-500 mb-3 leading-relaxed">
-        Every edit generates a run-level operation (INSERT_RUN or DELETE_RANGE)
-        that's broadcast to the other peer via BroadcastChannel. Each operation
-        carries a{" "}
-        <span className="font-semibold">Hybrid Logical Clock</span> timestamp
-        that uniquely identifies the run and determines its position in the
-        document. Pasting "hello world" = 1 message, not 11.
+        Every edit produces an{" "}
+        <span className="font-semibold">Action</span> — the atomic sync unit
+        containing one or more{" "}
+        <span className="font-semibold">Updates</span>. Each Update targets a
+        single entity (RunNode) with a self-describing method and typed field
+        data. A multi-run delete produces 1 Action with N Updates, not N
+        separate messages. Actions carry a{" "}
+        <span className="font-semibold">Hybrid Logical Clock</span> for
+        causal ordering.
       </p>
 
       {events.length === 0 ? (
@@ -161,10 +165,10 @@ const EventLogTab = ({ events }: { events: readonly InspectorEvent[] }) => {
           </div>
           <div
             ref={scrollRef}
-            className="font-mono text-xs space-y-0.5"
+            className="font-mono text-xs space-y-1"
           >
             {filteredEvents.map((event) => (
-              <EventRow key={event.id} event={event} />
+              <ActionRow key={event.id} event={event} />
             ))}
           </div>
         </>
@@ -173,8 +177,16 @@ const EventLogTab = ({ events }: { events: readonly InspectorEvent[] }) => {
   )
 }
 
-const EventRow = ({ event }: { event: InspectorEvent }) => {
-  const { message, direction, peerId } = event
+/**
+ * Render an ebb-native Action as an expandable row.
+ *
+ * Shows the Action header (id, actor, direction, update count) with
+ * expandable Update details underneath. Each Update shows its method
+ * ("put" or "delete"), subject_id, and field data.
+ */
+const ActionRow = ({ event }: { event: InspectorEvent }) => {
+  const [expanded, setExpanded] = useState(false)
+  const { action, direction, peerId } = event
   const isPeerA = peerId === "peer-A"
   const color = isPeerA ? "text-blue-600" : "text-orange-600"
   const bgColor = isPeerA ? "bg-blue-50" : "bg-orange-50"
@@ -189,56 +201,114 @@ const EventRow = ({ event }: { event: InspectorEvent }) => {
     fractionalSecondDigits: 3,
   } as Intl.DateTimeFormatOptions)
 
+  // Summarize the updates: count puts, patches, and deletes
+  const putCount = action.updates.filter((u) => u.method === "put").length
+  const patchCount = action.updates.filter((u) => u.method === "patch").length
+  const deleteCount = action.updates.filter((u) => u.method === "delete").length
+  const summary = [
+    putCount > 0 ? `${putCount} put` : "",
+    patchCount > 0 ? `${patchCount} patch` : "",
+    deleteCount > 0 ? `${deleteCount} delete` : "",
+  ]
+    .filter(Boolean)
+    .join(", ")
+
+  const shortActionId = action.id.replace(/^peer-[AB]_act_/, "act:")
+
+  return (
+    <div className={`rounded ${bgColor}`}>
+      {/* Action header row */}
+      <div
+        className={`flex items-center gap-2 px-2 py-0.5 cursor-pointer hover:bg-opacity-80 ${color}`}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span className="text-gray-400 w-4 shrink-0 text-center select-none">
+          {expanded ? "\u25BC" : "\u25B6"}
+        </span>
+        <span className="text-gray-400 w-20 shrink-0">{time}</span>
+        <span className="w-6 text-center shrink-0">{arrow}</span>
+        <span className="text-gray-400 w-8 shrink-0">{dirLabel}</span>
+        <span className={`${color} font-semibold w-12 shrink-0`}>
+          {peerId.replace("peer-", "")}
+        </span>
+        <span className="px-1.5 py-0 rounded text-[11px] font-semibold shrink-0 bg-indigo-100 text-indigo-700">
+          ACTION
+        </span>
+        <span className="text-gray-500 shrink-0">{shortActionId}</span>
+        <span className="text-gray-400 shrink-0">
+          ({action.updates.length} update{action.updates.length !== 1 ? "s" : ""}: {summary})
+        </span>
+      </div>
+
+      {/* Expanded: show each Update */}
+      {expanded && (
+        <div className="pl-10 pb-1 space-y-0.5">
+          {action.updates.map((update, i) => (
+            <UpdateRow key={update.id} update={update} index={i} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Render a single Update within an Action.
+ * Shows method badge, subject_id, and field-specific details.
+ */
+const UpdateRow = ({
+  update,
+  index,
+}: {
+  update: import("./relay.ts").Update
+  index: number
+}) => {
+  const methodBadgeColor =
+    update.method === "put"
+      ? "bg-green-100 text-green-700"
+      : update.method === "patch"
+        ? "bg-amber-100 text-amber-700"
+        : "bg-red-100 text-red-700"
+
+  const shortSubjectId = abbreviateId(update.subject_id)
+
+  // Extract detail from the typed field data
   let detail = ""
-  switch (message.type) {
-    case "INSERT_RUN": {
-      const text = message.node.text.length <= 20
-        ? message.node.text.replace(/\n/g, "\\n")
-        : message.node.text.slice(0, 20).replace(/\n/g, "\\n") + "..."
-      const shortId = abbreviateId(message.node.id)
+  if (update.method === "put") {
+    const runField = update.data.fields["run"]
+    if (runField && runField.type === "causal_tree_run") {
+      const node = runField.value
+      const text =
+        node.text.length <= 20
+          ? node.text.replace(/\n/g, "\\n")
+          : node.text.slice(0, 20).replace(/\n/g, "\\n") + "..."
       const shortParent =
-        message.node.parentId === ROOT_ID
-          ? "ROOT"
-          : abbreviateId(message.node.parentId)
-      detail = `"${text}" (${message.node.text.length} chars) id=${shortId} parent=${shortParent}`
-      break
+        node.parentId === ROOT_ID ? "ROOT" : abbreviateId(node.parentId)
+      detail = `"${text}" (${node.text.length} chars) parent=${shortParent}`
     }
-    case "DELETE_RANGE": {
-      const shortId = abbreviateId(message.runId)
-      detail = `id=${shortId} offset=${message.offset} count=${message.count}`
-      break
+  } else if (update.method === "patch") {
+    const appendField = update.data.fields["append"]
+    if (appendField && appendField.type === "causal_tree_append") {
+      const text = appendField.value.text.replace(/\n/g, "\\n")
+      detail = `append "${text}"`
     }
-    case "PRESENCE": {
-      const anchor =
-        message.anchorId === ROOT_ID
-          ? "ROOT"
-          : abbreviateId(message.anchorId)
-      const head =
-        message.headId === ROOT_ID ? "ROOT" : abbreviateId(message.headId)
-      detail = `anchor=${anchor} head=${head}`
-      break
+  } else if (update.method === "delete") {
+    const rangeField = update.data.fields["range"]
+    if (rangeField && rangeField.type === "causal_tree_range") {
+      detail = `offset=${rangeField.value.offset} count=${rangeField.value.count}`
     }
   }
 
-  const typeBadgeColor =
-    message.type === "INSERT_RUN"
-      ? "bg-green-100 text-green-700"
-      : message.type === "DELETE_RANGE"
-        ? "bg-red-100 text-red-700"
-        : "bg-purple-100 text-purple-700"
-
   return (
-    <div
-      className={`flex items-center gap-2 px-2 py-0.5 rounded ${bgColor} ${color}`}
-    >
-      <span className="text-gray-400 w-20 shrink-0">{time}</span>
-      <span className="w-6 text-center shrink-0">{arrow}</span>
-      <span className="text-gray-400 w-8 shrink-0">{dirLabel}</span>
-      <span className={`${color} font-semibold w-12 shrink-0`}>{peerId.replace("peer-", "")}</span>
+    <div className="flex items-center gap-2 px-2 py-0.5 text-gray-600">
+      <span className="text-gray-300 w-4 shrink-0 text-center">{index + 1}.</span>
       <span
-        className={`px-1.5 py-0 rounded text-[11px] font-semibold shrink-0 ${typeBadgeColor}`}
+        className={`px-1.5 py-0 rounded text-[11px] font-semibold shrink-0 ${methodBadgeColor}`}
       >
-        {message.type}
+        {update.method.toUpperCase()}
+      </span>
+      <span className="text-gray-500 shrink-0">
+        {update.subject_type}:{shortSubjectId}
       </span>
       <span className="text-gray-600 truncate">{detail}</span>
     </div>

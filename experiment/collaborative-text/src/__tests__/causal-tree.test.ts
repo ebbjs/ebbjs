@@ -1103,3 +1103,174 @@ describe("span structure after mutations", () => {
     verifyPositionIndex(state)
   })
 })
+
+// ---------------------------------------------------------------------------
+// EXTEND_RUN tests (run-length coalescing)
+// ---------------------------------------------------------------------------
+
+describe("docReducer — EXTEND_RUN", () => {
+  it("appends text to an existing run", () => {
+    let state = createDocState()
+    const r = insertRun(state, 1000, 0, "peer-A", "hel", ROOT_ID)
+    state = r.state
+
+    state = docReducer(state, {
+      type: "EXTEND_RUN",
+      runId: r.id,
+      appendText: "lo",
+    })
+
+    expect(reconstruct(state)).toBe("hello")
+    expect(state.nodes.get(r.id)!.text).toBe("hello")
+  })
+
+  it("grows the span length and totalLength", () => {
+    let state = createDocState()
+    const r = insertRun(state, 1000, 0, "peer-A", "ab", ROOT_ID)
+    state = r.state
+
+    expect(state.index.totalLength).toBe(2)
+    expect(state.index.spans).toEqual([{ runId: r.id, length: 2 }])
+
+    state = docReducer(state, {
+      type: "EXTEND_RUN",
+      runId: r.id,
+      appendText: "cd",
+    })
+
+    expect(state.index.totalLength).toBe(4)
+    expect(state.index.spans).toEqual([{ runId: r.id, length: 4 }])
+    expect(reconstruct(state)).toBe("abcd")
+  })
+
+  it("does not change node count", () => {
+    let state = createDocState()
+    const r = insertRun(state, 1000, 0, "peer-A", "a", ROOT_ID)
+    state = r.state
+
+    const nodeCountBefore = state.nodes.size
+
+    state = docReducer(state, {
+      type: "EXTEND_RUN",
+      runId: r.id,
+      appendText: "bcdef",
+    })
+
+    expect(state.nodes.size).toBe(nodeCountBefore)
+    expect(reconstruct(state)).toBe("abcdef")
+  })
+
+  it("preserves children ordering after extension", () => {
+    let state = createDocState()
+    // Create "ab" as root child
+    const r1 = insertRun(state, 1000, 0, "peer-A", "ab", ROOT_ID)
+    state = r1.state
+
+    // Create "cd" as child of "ab" (typed after "ab")
+    const r2 = insertRun(state, 1001, 0, "peer-A", "cd", r1.id)
+    state = r2.state
+    expect(reconstruct(state)).toBe("abcd")
+
+    // Extend "cd" (the leaf run)
+    state = docReducer(state, {
+      type: "EXTEND_RUN",
+      runId: r2.id,
+      appendText: "ef",
+    })
+
+    expect(reconstruct(state)).toBe("abcdef")
+    expect(state.nodes.get(r2.id)!.text).toBe("cdef")
+  })
+
+  it("is a no-op for a deleted run", () => {
+    let state = createDocState()
+    const r = insertRun(state, 1000, 0, "peer-A", "abc", ROOT_ID)
+    state = r.state
+
+    // Delete the entire run
+    state = docReducer(state, {
+      type: "DELETE_RANGE",
+      runId: r.id,
+      offset: 0,
+      count: 3,
+    })
+    expect(reconstruct(state)).toBe("")
+
+    // Try to extend the deleted run — should be no-op
+    state = docReducer(state, {
+      type: "EXTEND_RUN",
+      runId: r.id,
+      appendText: "xyz",
+    })
+
+    expect(reconstruct(state)).toBe("")
+  })
+
+  it("is a no-op for a nonexistent run", () => {
+    const state = createDocState()
+
+    const newState = docReducer(state, {
+      type: "EXTEND_RUN",
+      runId: "nonexistent",
+      appendText: "xyz",
+    })
+
+    expect(newState).toBe(state)
+  })
+
+  it("multiple sequential extensions produce the correct text", () => {
+    let state = createDocState()
+    const r = insertRun(state, 1000, 0, "peer-A", "h", ROOT_ID)
+    state = r.state
+
+    // Simulate typing "hello" one character at a time
+    for (const char of "ello") {
+      state = docReducer(state, {
+        type: "EXTEND_RUN",
+        runId: r.id,
+        appendText: char,
+      })
+    }
+
+    expect(reconstruct(state)).toBe("hello")
+    expect(state.nodes.get(r.id)!.text).toBe("hello")
+    expect(state.nodes.size).toBe(2) // ROOT + 1 run (not 5)
+    expect(state.index.spans).toEqual([{ runId: r.id, length: 5 }])
+  })
+
+  it("works correctly alongside other runs", () => {
+    let state = createDocState()
+
+    // Peer-A inserts "abc"
+    const r1 = insertRun(state, 1000, 0, "peer-A", "a", ROOT_ID)
+    state = r1.state
+    state = docReducer(state, { type: "EXTEND_RUN", runId: r1.id, appendText: "bc" })
+    expect(reconstruct(state)).toBe("abc")
+
+    // Peer-B inserts "xyz" after "abc" (child of r1)
+    const r2 = insertRun(state, 1001, 0, "peer-B", "xyz", r1.id)
+    state = r2.state
+    expect(reconstruct(state)).toBe("abcxyz")
+
+    // Both runs have correct text
+    expect(state.nodes.get(r1.id)!.text).toBe("abc")
+    expect(state.nodes.get(r2.id)!.text).toBe("xyz")
+    expect(state.nodes.size).toBe(3) // ROOT + 2 runs
+  })
+
+  it("position index is consistent after extension", () => {
+    let state = createDocState()
+    const r = insertRun(state, 1000, 0, "peer-A", "h", ROOT_ID)
+    state = r.state
+
+    for (const char of "ello world") {
+      state = docReducer(state, {
+        type: "EXTEND_RUN",
+        runId: r.id,
+        appendText: char,
+      })
+    }
+
+    verifyPositionIndex(state)
+  })
+})

@@ -1,15 +1,16 @@
 /**
- * Editor App — Run-Optimized
+ * Editor App — Ebb-Native Wire Protocol
  *
  * Renders two side-by-side CodeMirror editor instances, each with its own
  * peer identity, Causal Tree, and HLC. A BroadcastChannel relay syncs
  * operations between them. Remote peer cursors and selections are rendered
  * as colored decorations via the Presence module.
  *
- * Changes from per-character version:
- * - Actions are INSERT_RUN / DELETE_RANGE / SPLIT
- * - SPLIT actions are NOT broadcast (local-only)
- * - actionToMessage handles InsertRunMessage / DeleteRangeMessage
+ * Wire protocol follows ebb's Action → Update[] model:
+ * - Each CM transaction produces a single Action containing one or more Updates
+ * - SPLIT actions are local-only (not included in Actions)
+ * - INSERT_RUN → Action with a "put" Update carrying a causal_tree_run field
+ * - DELETE_RANGE → Action with a "delete" Update carrying a causal_tree_range field
  */
 
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react"
@@ -42,9 +43,9 @@ import {
 } from "./cm-bridge.ts"
 import {
   useRelay,
-  type RelayMessage,
-  type InsertRunMessage,
-  type DeleteRangeMessage,
+  type Action,
+  type Update,
+  type SyncMessage,
 } from "./relay.ts"
 import {
   usePresence,
@@ -67,34 +68,108 @@ const CHANNEL_NAME = "collab-text"
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Counter for generating unique update IDs within this peer's session. */
+let nextUpdateId = 0
+
 /**
- * Convert a DocAction + current HLC + peerId into a RelayMessage for broadcast.
- * INSERT_RUN and DELETE_RANGE produce messages. SPLIT is local-only — not broadcast.
- * Returns undefined for actions that should not be broadcast.
+ * Convert a DocAction into an ebb-native Update.
+ *
+ * - INSERT_RUN → "put" Update with a "causal_tree_run" field value
+ * - EXTEND_RUN → "patch" Update with a "causal_tree_append" field value
+ * - DELETE_RANGE → "delete" Update with a "causal_tree_range" field value
+ * - SPLIT → returns undefined (local-only, not broadcast)
+ *
+ * Each Update targets a single entity (RunNode) with self-describing
+ * typed field data, mirroring ebb's per-field merge dispatch.
  */
-const actionToMessage = (
+const docActionToUpdate = (
   action: DocAction,
   hlc: Hlc,
   peerId: string,
-): InsertRunMessage | DeleteRangeMessage | undefined => {
+): Update | undefined => {
   switch (action.type) {
     case "INSERT_RUN":
-      return { type: "INSERT_RUN", peerId, node: action.node, hlc }
+      return {
+        id: `${peerId}_upd_${nextUpdateId++}`,
+        subject_id: action.node.id,
+        subject_type: "run",
+        method: "put",
+        data: {
+          fields: {
+            run: {
+              type: "causal_tree_run",
+              value: action.node,
+              hlc,
+              // Include the split offset so the receiving peer can split
+              // the parent run before inserting. Without this, a mid-run
+              // insert would land at the wrong position on peers that
+              // haven't split the parent yet.
+              ...(action.splitParentAt !== undefined && {
+                splitParentAt: action.splitParentAt,
+              }),
+            },
+          },
+        },
+      }
+    case "EXTEND_RUN":
+      return {
+        id: `${peerId}_upd_${nextUpdateId++}`,
+        subject_id: action.runId,
+        subject_type: "run",
+        method: "patch",
+        data: {
+          fields: {
+            append: {
+              type: "causal_tree_append",
+              value: { text: action.appendText },
+              hlc,
+            },
+          },
+        },
+      }
     case "DELETE_RANGE":
       return {
-        type: "DELETE_RANGE",
-        peerId,
-        runId: action.runId,
-        offset: action.offset,
-        count: action.count,
-        hlc,
+        id: `${peerId}_upd_${nextUpdateId++}`,
+        subject_id: action.runId,
+        subject_type: "run",
+        method: "delete",
+        data: {
+          fields: {
+            range: {
+              type: "causal_tree_range",
+              value: { offset: action.offset, count: action.count },
+              hlc,
+            },
+          },
+        },
       }
     case "SPLIT":
       // SPLIT is a local consequence — not broadcast.
-      // Each peer performs its own splits when it receives INSERT_RUN.
+      // Each peer performs its own splits when it receives a "put" Update.
       return undefined
   }
 }
+
+/** Counter for generating unique action IDs within this peer's session. */
+let nextActionId = 0
+
+/**
+ * Wrap a list of Updates into an ebb-native Action.
+ *
+ * An Action is the atomic sync unit: all Updates are applied together,
+ * and the action ID is used for dedup. This mirrors ebb's guarantee
+ * that Actions are never split across sync pages.
+ */
+const createAction = (
+  updates: readonly Update[],
+  hlc: Hlc,
+  peerId: string,
+): Action => ({
+  id: `${peerId}_act_${nextActionId++}`,
+  actor_id: peerId,
+  hlc,
+  updates,
+})
 
 // ---------------------------------------------------------------------------
 // PeerEditor component
@@ -121,9 +196,44 @@ const PeerEditor = ({ peerId }: { peerId: string }) => {
   getLocalPresenceIdsRef.current = presence.getLocalPresenceIds
 
   // Ref to hold the relay broadcast function (avoids circular dep with useRelay)
-  const broadcastRef = useRef<((message: RelayMessage) => void) | null>(null)
+  const broadcastRef = useRef<((message: SyncMessage) => void) | null>(null)
 
-  // Dispatch used by the CM Bridge (local edits): updates tree AND broadcasts.
+  // ---------------------------------------------------------------------------
+  // Update batching — collects Updates within a CM transaction, flushes as one Action
+  // ---------------------------------------------------------------------------
+
+  // Pending updates accumulator. Within a single CM transaction, the bridge
+  // may call localDispatch multiple times (e.g., delete 3 runs = 3 calls).
+  // We collect the resulting Updates here, then flush them as one Action
+  // after the transaction completes (via microtask).
+  const pendingUpdatesRef = useRef<Update[]>([])
+  const flushScheduledRef = useRef(false)
+
+  /**
+   * Flush all pending Updates into a single ebb-native Action and broadcast.
+   *
+   * This runs as a microtask after the current event-loop tick, ensuring
+   * all DocActions from a single CM transaction are batched together.
+   * A multi-run delete produces 1 Action with N "delete" Updates, not N
+   * separate messages — matching ebb's atomic Action guarantee.
+   */
+  const flushPendingUpdates = useCallback(() => {
+    flushScheduledRef.current = false
+    const updates = pendingUpdatesRef.current
+    if (updates.length === 0) return
+
+    pendingUpdatesRef.current = []
+
+    const action = createAction(updates, hlcRef.current, peerId)
+    broadcastRef.current?.({ type: "ACTION", action })
+
+    // Inspector instrumentation
+    logEvent(peerId, "sent", action)
+    updateHlc(peerId, hlcRef.current)
+    updateDocState(peerId, docStateRef.current)
+  }, [peerId])
+
+  // Dispatch used by the CM Bridge (local edits): updates tree AND collects Updates.
   // We update docStateRef synchronously so that any subsequent reads of
   // getDocState() within the same event-loop tick see the latest state
   // (React's useReducer batches updates and won't flush until the next render).
@@ -132,18 +242,20 @@ const PeerEditor = ({ peerId }: { peerId: string }) => {
       docStateRef.current = docReducer(docStateRef.current, action)
       treeDispatch(action)
 
-      const message = actionToMessage(action, hlcRef.current, peerId)
-      if (message) {
-        broadcastRef.current?.(message)
+      // Convert to an ebb-native Update and collect it for batching
+      const update = docActionToUpdate(action, hlcRef.current, peerId)
+      if (update) {
+        pendingUpdatesRef.current.push(update)
 
-        // Inspector instrumentation (only for broadcast messages)
-        logEvent(peerId, "sent", message)
+        // Schedule a flush as a microtask — this ensures all DocActions from
+        // the current CM transaction are collected before we create the Action.
+        if (!flushScheduledRef.current) {
+          flushScheduledRef.current = true
+          queueMicrotask(flushPendingUpdates)
+        }
       }
-
-      updateHlc(peerId, hlcRef.current)
-      updateDocState(peerId, docStateRef.current)
     },
-    [peerId],
+    [peerId, flushPendingUpdates],
   )
 
   // Dispatch used by the Relay (remote edits): updates tree only, no re-broadcast.
@@ -171,7 +283,9 @@ const PeerEditor = ({ peerId }: { peerId: string }) => {
     idMapField,
     updatePresence: presence.updatePresence,
     onRemoteMessage: (message) => {
-      logEvent(peerId, "received", message)
+      if (message.type === "ACTION") {
+        logEvent(peerId, "received", message.action)
+      }
       updateHlc(peerId, hlcRef.current)
     },
   })
@@ -228,12 +342,14 @@ const PeerEditor = ({ peerId }: { peerId: string }) => {
             update.selectionSet && !update.docChanged
 
           if (hasIdMapUpdate || pureSelectionChange) {
-            const ids = getLocalPresenceIdsRef.current(update.state)
+            const refs = getLocalPresenceIdsRef.current(update.state)
             broadcastRef.current?.({
               type: "PRESENCE",
               peerId,
-              anchorId: ids.anchorId,
-              headId: ids.headId,
+              anchorId: refs.anchor.runId,
+              anchorOffset: refs.anchor.offset,
+              headId: refs.head.runId,
+              headOffset: refs.head.offset,
             })
           }
         }),

@@ -1,14 +1,14 @@
 /**
- * Relay tests (Run-Optimized)
+ * Relay tests (Ebb-Native Wire Protocol)
  *
  * Tests the handleRemoteMessage function directly (pure-ish, no
  * BroadcastChannel needed). Uses a real CM EditorView in happy-dom
  * to verify that remote operations apply correctly.
  *
- * Key changes from per-character relay tests:
- * - Messages are INSERT_RUN / DELETE_RANGE (not INSERT / DELETE)
- * - RunNode.text can be multi-character
- * - Remote inserts apply the full run text in one CM transaction
+ * Messages now follow ebb's Action → Update[] model:
+ * - INSERT_RUN becomes an Action with a "put" Update carrying a causal_tree_run field
+ * - DELETE_RANGE becomes an Action with a "delete" Update carrying a causal_tree_range field
+ * - Actions are the atomic sync unit — dedup happens at the Action level
  *
  * @vitest-environment happy-dom
  */
@@ -35,8 +35,8 @@ import {
 } from "../cm-bridge.ts"
 import {
   handleRemoteMessage,
-  type InsertRunMessage,
-  type DeleteRangeMessage,
+  type Action,
+  type SyncMessage,
   type PresenceMessage,
   type RelayConfig,
 } from "../relay.ts"
@@ -44,6 +44,77 @@ import {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Counter for generating unique action/update IDs in tests. */
+let testIdCounter = 0
+
+/**
+ * Create an ebb-native Action containing a single "put" Update for inserting
+ * a RunNode. Mirrors the production code in App.tsx's docActionToUpdate.
+ */
+const makeInsertAction = (
+  peerId: string,
+  node: RunNode,
+  hlc: Hlc,
+): Action => {
+  const id = `test_act_${testIdCounter++}`
+  return {
+    id,
+    actor_id: peerId,
+    hlc,
+    updates: [
+      {
+        id: `test_upd_${testIdCounter++}`,
+        subject_id: node.id,
+        subject_type: "run",
+        method: "put",
+        data: {
+          fields: {
+            run: { type: "causal_tree_run", value: node, hlc },
+          },
+        },
+      },
+    ],
+  }
+}
+
+/**
+ * Create an ebb-native Action containing a single "delete" Update for
+ * tombstoning a range within a RunNode.
+ */
+const makeDeleteAction = (
+  peerId: string,
+  runId: string,
+  offset: number,
+  count: number,
+  hlc: Hlc,
+): Action => {
+  const id = `test_act_${testIdCounter++}`
+  return {
+    id,
+    actor_id: peerId,
+    hlc,
+    updates: [
+      {
+        id: `test_upd_${testIdCounter++}`,
+        subject_id: runId,
+        subject_type: "run",
+        method: "delete",
+        data: {
+          fields: {
+            range: { type: "causal_tree_range", value: { offset, count }, hlc },
+          },
+        },
+      },
+    ],
+  }
+}
+
+/** Wrap an Action into a SyncMessage for handleRemoteMessage. */
+const actionMsg = (action: Action): SyncMessage => ({
+  type: "ACTION",
+  action,
+})
 
 /**
  * Create a fully wired test environment: a CM EditorView + Causal Tree +
@@ -155,20 +226,14 @@ const makeRunNode = (
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("handleRemoteMessage — INSERT_RUN", () => {
+describe("handleRemoteMessage — Action with put Update (insert)", () => {
   it("applies a remote insert to an empty document", () => {
     const peer = createTestPeer("peer-B")
     const senderHlc: Hlc = { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" }
     const node = makeRunNode(senderHlc.ts, 0, "peer-A", "hello", ROOT_ID)
 
-    const message: InsertRunMessage = {
-      type: "INSERT_RUN",
-      peerId: "peer-A",
-      node,
-      hlc: senderHlc,
-    }
-
-    handleRemoteMessage(message, peer.relayConfig)
+    const action = makeInsertAction("peer-A", node, senderHlc)
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
 
     expect(reconstruct(peer.getDocState())).toBe("hello")
     expect(peer.view.state.doc.toString()).toBe("hello")
@@ -179,10 +244,8 @@ describe("handleRemoteMessage — INSERT_RUN", () => {
     const senderHlc: Hlc = { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" }
     const node = makeRunNode(senderHlc.ts, 0, "peer-A", "hello world", ROOT_ID)
 
-    handleRemoteMessage(
-      { type: "INSERT_RUN", peerId: "peer-A", node, hlc: senderHlc },
-      peer.relayConfig,
-    )
+    const action = makeInsertAction("peer-A", node, senderHlc)
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
 
     expect(reconstruct(peer.getDocState())).toBe("hello world")
     expect(peer.view.state.doc.toString()).toBe("hello world")
@@ -198,10 +261,8 @@ describe("handleRemoteMessage — INSERT_RUN", () => {
     const senderHlc: Hlc = { ts: Date.now() + 200_000, count: 0, peerId: "peer-A" }
     const bNode = makeRunNode(senderHlc.ts, 0, "peer-A", "b", aId)
 
-    handleRemoteMessage(
-      { type: "INSERT_RUN", peerId: "peer-A", node: bNode, hlc: senderHlc },
-      peer.relayConfig,
-    )
+    const action = makeInsertAction("peer-A", bNode, senderHlc)
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
 
     // "b" is child of "ac", higher HLC → comes before any lower-HLC children
     expect(reconstruct(peer.getDocState())).toBe("acb")
@@ -218,38 +279,32 @@ describe("handleRemoteMessage — INSERT_RUN", () => {
     }
     const node = makeRunNode(remoteFutureHlc.ts, 10, "peer-A", "x", ROOT_ID)
 
-    handleRemoteMessage(
-      { type: "INSERT_RUN", peerId: "peer-A", node, hlc: remoteFutureHlc },
-      peer.relayConfig,
-    )
+    const action = makeInsertAction("peer-A", node, remoteFutureHlc)
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
 
     // After merge, local HLC should be >= remote HLC
     expect(peer.hlcRef.current.ts).toBeGreaterThanOrEqual(remoteFutureHlc.ts)
   })
 
-  it("is idempotent — duplicate remote insert is a no-op for both tree and CM", () => {
+  it("is idempotent — duplicate Action is a no-op (action-level dedup)", () => {
     const peer = createTestPeer("peer-B")
     const senderHlc: Hlc = { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" }
     const node = makeRunNode(senderHlc.ts, 0, "peer-A", "hello", ROOT_ID)
-    const message: InsertRunMessage = {
-      type: "INSERT_RUN",
-      peerId: "peer-A",
-      node,
-      hlc: senderHlc,
-    }
+    const action = makeInsertAction("peer-A", node, senderHlc)
 
-    handleRemoteMessage(message, peer.relayConfig)
-    handleRemoteMessage(message, peer.relayConfig)
+    // Send the same Action twice
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
 
     // Causal Tree is correct — no duplicate
     expect(reconstruct(peer.getDocState())).toBe("hello")
-    // CM view is also correct — the relay's idempotency guard skips
-    // the second applyRemoteInsert, so no duplicate text
+    // CM view is also correct — action-level dedup skips the entire
+    // second Action, so no duplicate text
     expect(peer.view.state.doc.toString()).toBe("hello")
   })
 })
 
-describe("handleRemoteMessage — DELETE_RANGE", () => {
+describe("handleRemoteMessage — Action with delete Update", () => {
   it("applies a remote delete", () => {
     const peer = createTestPeer("peer-B")
     const { nodeId } = peer.localInsertRun("abc")
@@ -258,17 +313,8 @@ describe("handleRemoteMessage — DELETE_RANGE", () => {
     const senderHlc: Hlc = { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" }
 
     // Delete "b" from "abc" (offset 1, count 1)
-    handleRemoteMessage(
-      {
-        type: "DELETE_RANGE",
-        peerId: "peer-A",
-        runId: nodeId,
-        offset: 1,
-        count: 1,
-        hlc: senderHlc,
-      },
-      peer.relayConfig,
-    )
+    const action = makeDeleteAction("peer-A", nodeId, 1, 1, senderHlc)
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
 
     expect(reconstruct(peer.getDocState())).toBe("ac")
     expect(peer.view.state.doc.toString()).toBe("ac")
@@ -281,17 +327,8 @@ describe("handleRemoteMessage — DELETE_RANGE", () => {
 
     const senderHlc: Hlc = { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" }
 
-    handleRemoteMessage(
-      {
-        type: "DELETE_RANGE",
-        peerId: "peer-A",
-        runId: nodeId,
-        offset: 0,
-        count: 5,
-        hlc: senderHlc,
-      },
-      peer.relayConfig,
-    )
+    const action = makeDeleteAction("peer-A", nodeId, 0, 5, senderHlc)
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
 
     expect(reconstruct(peer.getDocState())).toBe("")
     expect(peer.view.state.doc.toString()).toBe("")
@@ -307,36 +344,72 @@ describe("handleRemoteMessage — DELETE_RANGE", () => {
       peerId: "peer-A",
     }
 
-    handleRemoteMessage(
-      {
-        type: "DELETE_RANGE",
-        peerId: "peer-A",
-        runId: nodeId,
-        offset: 0,
-        count: 1,
-        hlc: remoteFutureHlc,
-      },
-      peer.relayConfig,
-    )
+    const action = makeDeleteAction("peer-A", nodeId, 0, 1, remoteFutureHlc)
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
 
     expect(peer.hlcRef.current.ts).toBeGreaterThanOrEqual(remoteFutureHlc.ts)
   })
 })
 
+describe("handleRemoteMessage — Action with multiple Updates (batched)", () => {
+  it("applies multiple updates in a single Action atomically", () => {
+    const peer = createTestPeer("peer-B")
+
+    // Set up two runs: "abc" and "def"
+    const { nodeId: abcId } = peer.localInsertRun("abc")
+    const { nodeId: defId } = peer.localInsertRun("def")
+    expect(peer.view.state.doc.toString()).toBe("abcdef")
+
+    const senderHlc: Hlc = { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" }
+
+    // Create a single Action that deletes from both runs
+    // (like a "select all and delete" operation)
+    const action: Action = {
+      id: `test_batch_act_${testIdCounter++}`,
+      actor_id: "peer-A",
+      hlc: senderHlc,
+      updates: [
+        {
+          id: `test_batch_upd_${testIdCounter++}`,
+          subject_id: abcId,
+          subject_type: "run",
+          method: "delete",
+          data: {
+            fields: {
+              range: { type: "causal_tree_range", value: { offset: 0, count: 3 }, hlc: senderHlc },
+            },
+          },
+        },
+        {
+          id: `test_batch_upd_${testIdCounter++}`,
+          subject_id: defId,
+          subject_type: "run",
+          method: "delete",
+          data: {
+            fields: {
+              range: { type: "causal_tree_range", value: { offset: 0, count: 3 }, hlc: senderHlc },
+            },
+          },
+        },
+      ],
+    }
+
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
+
+    expect(reconstruct(peer.getDocState())).toBe("")
+    expect(peer.view.state.doc.toString()).toBe("")
+  })
+})
+
 describe("handleRemoteMessage — own message filtering", () => {
-  it("ignores messages from the same peerId", () => {
+  it("ignores Actions from the same actor_id", () => {
     const peer = createTestPeer("peer-A")
     const node = makeRunNode(Date.now() + 100_000, 0, "peer-A", "x", ROOT_ID)
+    const hlc: Hlc = { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" }
 
-    handleRemoteMessage(
-      {
-        type: "INSERT_RUN",
-        peerId: "peer-A", // same as local peer
-        node,
-        hlc: { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" },
-      },
-      peer.relayConfig,
-    )
+    // Action with actor_id matching the local peer
+    const action = makeInsertAction("peer-A", node, hlc)
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
 
     // Should not have been applied
     expect(reconstruct(peer.getDocState())).toBe("")
@@ -357,12 +430,14 @@ describe("handleRemoteMessage — PRESENCE", () => {
       type: "PRESENCE",
       peerId: "peer-A",
       anchorId: "some-id",
+      anchorOffset: 3,
       headId: "some-id",
+      headOffset: 3,
     }
 
     handleRemoteMessage(message, configWithPresence)
 
-    expect(updatePresence).toHaveBeenCalledWith("peer-A", "some-id", "some-id")
+    expect(updatePresence).toHaveBeenCalledWith("peer-A", "some-id", 3, "some-id", 3)
   })
 
   it("does not crash if updatePresence is not provided", () => {
@@ -372,7 +447,9 @@ describe("handleRemoteMessage — PRESENCE", () => {
       type: "PRESENCE",
       peerId: "peer-A",
       anchorId: "some-id",
+      anchorOffset: 3,
       headId: "some-id",
+      headOffset: 3,
     }
 
     // Should not throw
@@ -434,18 +511,14 @@ describe("concurrent conflict — tie-break convergence (run-level)", () => {
     })
     expect(peerB.view.state.doc.toString()).toBe("abYY")
 
-    // Now exchange messages:
+    // Now exchange messages as ebb-native Actions:
     // Peer A receives Peer B's YY
-    handleRemoteMessage(
-      { type: "INSERT_RUN", peerId: "peer-B", node: nodeY, hlc: hlcY },
-      peerA.relayConfig,
-    )
+    const actionY = makeInsertAction("peer-B", nodeY, hlcY)
+    handleRemoteMessage(actionMsg(actionY), peerA.relayConfig)
 
     // Peer B receives Peer A's XX
-    handleRemoteMessage(
-      { type: "INSERT_RUN", peerId: "peer-A", node: nodeX, hlc: hlcX },
-      peerB.relayConfig,
-    )
+    const actionX = makeInsertAction("peer-A", nodeX, hlcX)
+    handleRemoteMessage(actionMsg(actionX), peerB.relayConfig)
 
     // Both peers must converge to the same document
     const textA = reconstruct(peerA.getDocState())
@@ -460,7 +533,7 @@ describe("concurrent conflict — tie-break convergence (run-level)", () => {
     expect(peerB.view.state.doc.toString()).toBe("abYYXX")
   })
 
-  it("duplicate messages during concurrent conflict are handled correctly", () => {
+  it("duplicate Actions during concurrent conflict are handled correctly", () => {
     const peerA = createTestPeer("peer-A")
 
     // Insert base run
@@ -473,28 +546,23 @@ describe("concurrent conflict — tie-break convergence (run-level)", () => {
       annotations: isRemote.of(true),
     })
 
-    // Peer B sends "XX" after "a"
+    // Peer B sends "XX" after "a" — wrapped as an ebb-native Action
     const hlcX: Hlc = { ts: baseTs + 1, count: 0, peerId: "peer-B" }
     const nodeX = makeRunNode(baseTs + 1, 0, "peer-B", "XX", baseNode.id)
-    const msgX: InsertRunMessage = {
-      type: "INSERT_RUN",
-      peerId: "peer-B",
-      node: nodeX,
-      hlc: hlcX,
-    }
+    const actionX = makeInsertAction("peer-B", nodeX, hlcX)
 
-    // Peer A receives the message twice (simulating network replay)
-    handleRemoteMessage(msgX, peerA.relayConfig)
-    handleRemoteMessage(msgX, peerA.relayConfig)
+    // Peer A receives the same Action twice (simulating network replay)
+    handleRemoteMessage(actionMsg(actionX), peerA.relayConfig)
+    handleRemoteMessage(actionMsg(actionX), peerA.relayConfig)
 
-    // Should be "aXX" not "aXXXX"
+    // Should be "aXX" not "aXXXX" — action-level dedup prevents re-application
     expect(reconstruct(peerA.getDocState())).toBe("aXX")
     expect(peerA.view.state.doc.toString()).toBe("aXX")
   })
 })
 
 describe("two-peer simulation (run-level)", () => {
-  it("syncs a sequence of run inserts between two peers", () => {
+  it("syncs a sequence of run inserts between two peers via Actions", () => {
     const peerA = createTestPeer("peer-A")
     const peerB = createTestPeer("peer-B")
 
@@ -517,11 +585,9 @@ describe("two-peer simulation (run-level)", () => {
       annotations: isRemote.of(true),
     })
 
-    // Broadcast to B
-    handleRemoteMessage(
-      { type: "INSERT_RUN", peerId: "peer-A", node: nodeHello, hlc: aHlc1 },
-      peerB.relayConfig,
-    )
+    // Broadcast to B as an ebb-native Action
+    const actionHello = makeInsertAction("peer-A", nodeHello, aHlc1)
+    handleRemoteMessage(actionMsg(actionHello), peerB.relayConfig)
 
     // Second run: " world" parented to "hello"
     const aHlc2 = increment(peerA.hlcRef.current)
@@ -541,15 +607,295 @@ describe("two-peer simulation (run-level)", () => {
       annotations: isRemote.of(true),
     })
 
-    handleRemoteMessage(
-      { type: "INSERT_RUN", peerId: "peer-A", node: nodeWorld, hlc: aHlc2 },
-      peerB.relayConfig,
-    )
+    const actionWorld = makeInsertAction("peer-A", nodeWorld, aHlc2)
+    handleRemoteMessage(actionMsg(actionWorld), peerB.relayConfig)
 
     // Both peers should show "hello world"
     expect(reconstruct(peerA.getDocState())).toBe("hello world")
     expect(reconstruct(peerB.getDocState())).toBe("hello world")
     expect(peerA.view.state.doc.toString()).toBe("hello world")
     expect(peerB.view.state.doc.toString()).toBe("hello world")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// PATCH Update tests (run extension / append coalescing)
+// ---------------------------------------------------------------------------
+
+/**
+ * Create an ebb-native Action containing a single "patch" Update for
+ * appending text to an existing RunNode.
+ */
+const makePatchAction = (
+  peerId: string,
+  runId: string,
+  appendText: string,
+  hlc: Hlc,
+): Action => {
+  const id = `test_act_${testIdCounter++}`
+  return {
+    id,
+    actor_id: peerId,
+    hlc,
+    updates: [
+      {
+        id: `test_upd_${testIdCounter++}`,
+        subject_id: runId,
+        subject_type: "run",
+        method: "patch",
+        data: {
+          fields: {
+            append: { type: "causal_tree_append", value: { text: appendText }, hlc },
+          },
+        },
+      },
+    ],
+  }
+}
+
+describe("handleRemoteMessage — Action with patch Update (extend)", () => {
+  it("appends text to an existing run via a remote patch", () => {
+    const peer = createTestPeer("peer-B")
+
+    // Insert "hel" locally
+    const { nodeId } = peer.localInsertRun("hel")
+    expect(peer.view.state.doc.toString()).toBe("hel")
+
+    // Remote peer-A sends a patch to extend this run with "lo"
+    const senderHlc: Hlc = { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" }
+    const action = makePatchAction("peer-A", nodeId, "lo", senderHlc)
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
+
+    expect(reconstruct(peer.getDocState())).toBe("hello")
+    expect(peer.view.state.doc.toString()).toBe("hello")
+  })
+
+  it("extends a run multiple times via sequential patch Actions", () => {
+    const peer = createTestPeer("peer-B")
+
+    // Insert "h" locally
+    const { nodeId } = peer.localInsertRun("h")
+    expect(peer.view.state.doc.toString()).toBe("h")
+
+    // Remote peer-A sends sequential patches: e, l, l, o
+    const baseTs = Date.now() + 100_000
+    for (let i = 0; i < 4; i++) {
+      const char = "ello"[i]!
+      const hlc: Hlc = { ts: baseTs + i, count: 0, peerId: "peer-A" }
+      const action = makePatchAction("peer-A", nodeId, char, hlc)
+      handleRemoteMessage(actionMsg(action), peer.relayConfig)
+    }
+
+    expect(reconstruct(peer.getDocState())).toBe("hello")
+    expect(peer.view.state.doc.toString()).toBe("hello")
+    // Only 2 nodes: ROOT + 1 run (not 5)
+    expect(peer.getDocState().nodes.size).toBe(2)
+  })
+
+  it("patch on a deleted run is a no-op", () => {
+    const peer = createTestPeer("peer-B")
+
+    // Insert "abc" then delete it
+    const { nodeId } = peer.localInsertRun("abc")
+    peer.relayConfig.dispatch({
+      type: "DELETE_RANGE",
+      runId: nodeId,
+      offset: 0,
+      count: 3,
+    })
+    peer.view.dispatch({
+      changes: { from: 0, to: 3 },
+      effects: setIdMapEffect.of(peer.getDocState().index.spans),
+      annotations: isRemote.of(true),
+    })
+    expect(peer.view.state.doc.toString()).toBe("")
+
+    // Remote patch should be no-op
+    const senderHlc: Hlc = { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" }
+    const action = makePatchAction("peer-A", nodeId, "xyz", senderHlc)
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
+
+    expect(reconstruct(peer.getDocState())).toBe("")
+    expect(peer.view.state.doc.toString()).toBe("")
+  })
+
+  it("patch correctly inserts text at the end of a run followed by another run", () => {
+    const peer = createTestPeer("peer-B")
+
+    // Insert "abc" then "xyz" (two runs)
+    const { nodeId: abcId } = peer.localInsertRun("abc")
+    peer.localInsertRun("xyz")
+    expect(peer.view.state.doc.toString()).toBe("abcxyz")
+
+    // Remote patch appends "DEF" to the "abc" run
+    const senderHlc: Hlc = { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" }
+    const action = makePatchAction("peer-A", abcId, "DEF", senderHlc)
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
+
+    // "DEF" should appear between "abc" and "xyz"
+    expect(reconstruct(peer.getDocState())).toBe("abcDEFxyz")
+    expect(peer.view.state.doc.toString()).toBe("abcDEFxyz")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// splitParentAt tests (mid-run insert on unsplit peer)
+// ---------------------------------------------------------------------------
+
+/**
+ * Create an ebb-native Action containing a "put" Update with splitParentAt.
+ * This simulates what happens when a peer inserts text in the middle of
+ * another peer's run: the sender splits locally and broadcasts the insert
+ * with the split offset so the receiver can perform the same split.
+ */
+const makeInsertWithSplitAction = (
+  peerId: string,
+  node: RunNode,
+  hlc: Hlc,
+  splitParentAt: number,
+): Action => {
+  const id = `test_act_${testIdCounter++}`
+  return {
+    id,
+    actor_id: peerId,
+    hlc,
+    updates: [
+      {
+        id: `test_upd_${testIdCounter++}`,
+        subject_id: node.id,
+        subject_type: "run",
+        method: "put",
+        data: {
+          fields: {
+            run: { type: "causal_tree_run", value: node, hlc, splitParentAt },
+          },
+        },
+      },
+    ],
+  }
+}
+
+describe("handleRemoteMessage — splitParentAt (mid-run insert convergence)", () => {
+  it("reproduces the exact bug: 'This is a test' + mid-run insert 'a split'", () => {
+    // Peer-A has "This is a test" as a single unsplit run (via EXTEND_RUN coalescing)
+    const peerA = createTestPeer("peer-A")
+    const { nodeId: runId } = peerA.localInsertRun("This is a test")
+    expect(peerA.view.state.doc.toString()).toBe("This is a test")
+
+    // Peer-B would have split this run at offset 7 ("This is" | " a test")
+    // and inserted " a split" as a child of the left half (parentId = runId).
+    // The broadcast includes splitParentAt: 7.
+    const senderHlc: Hlc = { ts: Date.now() + 200_000, count: 0, peerId: "peer-B" }
+    const insertNode = makeRunNode(senderHlc.ts, 0, "peer-B", " a split", runId)
+    const action = makeInsertWithSplitAction("peer-B", insertNode, senderHlc, 7)
+
+    handleRemoteMessage(actionMsg(action), peerA.relayConfig)
+
+    // Peer-A should now show "This is a split a test" — matching Peer-B
+    expect(reconstruct(peerA.getDocState())).toBe("This is a split a test")
+    expect(peerA.view.state.doc.toString()).toBe("This is a split a test")
+  })
+
+  it("splits the parent run on the receiving peer before inserting", () => {
+    const peer = createTestPeer("peer-B")
+    const { nodeId: runId } = peer.localInsertRun("abcdef")
+    expect(peer.view.state.doc.toString()).toBe("abcdef")
+
+    // Remote peer inserts "XY" in the middle of "abcdef" at offset 3
+    // Sender split at offset 3: "abc" | "def", then inserted "XY" as child of "abc"
+    const senderHlc: Hlc = { ts: Date.now() + 200_000, count: 0, peerId: "peer-A" }
+    const insertNode = makeRunNode(senderHlc.ts, 0, "peer-A", "XY", runId)
+    const action = makeInsertWithSplitAction("peer-A", insertNode, senderHlc, 3)
+
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
+
+    // Should be "abcXYdef" — insert lands between the split halves
+    expect(reconstruct(peer.getDocState())).toBe("abcXYdef")
+    expect(peer.view.state.doc.toString()).toBe("abcXYdef")
+  })
+
+  it("split is idempotent — already-split run is not split again", () => {
+    const peer = createTestPeer("peer-B")
+    const { nodeId: runId } = peer.localInsertRun("abcdef")
+
+    // Manually split the run at offset 3 (simulating a prior local edit)
+    peer.relayConfig.dispatch({ type: "SPLIT", runId, offset: 3 })
+    peer.view.dispatch({
+      effects: setIdMapEffect.of(peer.getDocState().index.spans),
+      annotations: isRemote.of(true),
+    })
+
+    const nodeCountBefore = peer.getDocState().nodes.size
+
+    // Remote insert with splitParentAt: 3 — should not create a duplicate split
+    const senderHlc: Hlc = { ts: Date.now() + 200_000, count: 0, peerId: "peer-A" }
+    const insertNode = makeRunNode(senderHlc.ts, 0, "peer-A", "XY", runId)
+    const action = makeInsertWithSplitAction("peer-A", insertNode, senderHlc, 3)
+
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
+
+    // Only 1 new node added (the insert), not 2 (no duplicate split node)
+    expect(peer.getDocState().nodes.size).toBe(nodeCountBefore + 1)
+    expect(reconstruct(peer.getDocState())).toBe("abcXYdef")
+    expect(peer.view.state.doc.toString()).toBe("abcXYdef")
+  })
+
+  it("insert without splitParentAt works at end of run (no split needed)", () => {
+    const peer = createTestPeer("peer-B")
+    const { nodeId: runId } = peer.localInsertRun("hello")
+    expect(peer.view.state.doc.toString()).toBe("hello")
+
+    // Remote insert at end of run — no splitParentAt needed
+    const senderHlc: Hlc = { ts: Date.now() + 200_000, count: 0, peerId: "peer-A" }
+    const insertNode = makeRunNode(senderHlc.ts, 0, "peer-A", " world", runId)
+    const action = makeInsertAction("peer-A", insertNode, senderHlc)
+
+    handleRemoteMessage(actionMsg(action), peer.relayConfig)
+
+    expect(reconstruct(peer.getDocState())).toBe("hello world")
+    expect(peer.view.state.doc.toString()).toBe("hello world")
+  })
+
+  it("extended run is correctly split by remote insert with splitParentAt", () => {
+    // This tests the core EXTEND_RUN + splitParentAt interaction:
+    // Peer-A types "abcdef" character-by-character (one run via EXTEND_RUN),
+    // then Peer-B inserts mid-run and the split propagates correctly.
+    const peerA = createTestPeer("peer-A")
+    const peerB = createTestPeer("peer-B")
+
+    // Both start with "abcdef" (one run, simulating EXTEND_RUN coalescing)
+    const baseTs = Date.now() + 1_000_000
+    const baseNode = makeRunNode(baseTs, 0, "peer-A", "abcdef", ROOT_ID)
+
+    for (const peer of [peerA, peerB]) {
+      peer.relayConfig.dispatch({ type: "INSERT_RUN", node: baseNode })
+      peer.view.dispatch({
+        changes: { from: 0, insert: "abcdef" },
+        effects: setIdMapEffect.of(peer.getDocState().index.spans),
+        annotations: isRemote.of(true),
+      })
+    }
+
+    // Peer-B splits at offset 3 and inserts "XY" (like typing in the middle)
+    // Locally on Peer-B: "abc" | "def" → "abc" + "XY" + "def"
+    peerB.relayConfig.dispatch({ type: "SPLIT", runId: baseNode.id, offset: 3 })
+    const hlcX: Hlc = { ts: baseTs + 2, count: 0, peerId: "peer-B" }
+    const nodeX = makeRunNode(baseTs + 2, 0, "peer-B", "XY", baseNode.id)
+    peerB.relayConfig.dispatch({ type: "INSERT_RUN", node: nodeX })
+    peerB.view.dispatch({
+      changes: { from: 3, insert: "XY" },
+      effects: setIdMapEffect.of(peerB.getDocState().index.spans),
+      annotations: isRemote.of(true),
+    })
+    expect(peerB.view.state.doc.toString()).toBe("abcXYdef")
+
+    // Peer-A receives the insert with splitParentAt: 3
+    const actionX = makeInsertWithSplitAction("peer-B", nodeX, hlcX, 3)
+    handleRemoteMessage(actionMsg(actionX), peerA.relayConfig)
+
+    // Both peers must converge to "abcXYdef"
+    expect(reconstruct(peerA.getDocState())).toBe("abcXYdef")
+    expect(peerA.view.state.doc.toString()).toBe("abcXYdef")
+    expect(reconstruct(peerB.getDocState())).toBe("abcXYdef")
   })
 })

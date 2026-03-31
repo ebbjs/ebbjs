@@ -6,15 +6,19 @@
  * tear-free React integration.
  *
  * Three data streams:
- * - Event log: append-only list of messages sent/received between peers
+ * - Event log: append-only list of Actions sent/received between peers
  * - HLC state: latest Hybrid Logical Clock per peer
  * - Doc state: latest Causal Tree DocState per peer
+ *
+ * Events now carry ebb-native Actions (the atomic sync unit) rather than
+ * ad-hoc message types. Each Action contains one or more Updates, which
+ * the inspector can expand to show the full mutation breakdown.
  */
 
 import { useSyncExternalStore } from "react"
 import type { Hlc } from "./hlc.ts"
 import type { DocState } from "./causal-tree.ts"
-import type { RelayMessage } from "./relay.ts"
+import type { Action } from "./relay.ts"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,7 +29,7 @@ export type InspectorEvent = {
   readonly timestamp: number // Date.now() at time of logging
   readonly peerId: string // Which peer generated/received this
   readonly direction: "sent" | "received"
-  readonly message: RelayMessage
+  readonly action: Action // Ebb-native Action (the atomic sync unit)
 }
 
 type InspectorSnapshot = {
@@ -67,14 +71,14 @@ const emit = (): void => {
 export const logEvent = (
   peerId: string,
   direction: "sent" | "received",
-  message: RelayMessage,
+  action: Action,
 ): void => {
   const event: InspectorEvent = {
     id: nextEventId++,
     timestamp: Date.now(),
     peerId,
     direction,
-    message,
+    action,
   }
 
   events.push(event)
