@@ -1,103 +1,163 @@
-# Causal Tree
+# Causal Tree (Run-Length Optimized)
 
 ## Purpose
 
-Manages the core document data structure — a tree of `CharNode` objects keyed by HLC-derived IDs. Each character knows its parent (the character it was inserted after), forming a causal tree. The Causal Tree module provides a pure reducer for inserting and deleting nodes, and a pure `reconstruct` function that walks the tree to produce the current document string. This is the "model" in the system — it has no knowledge of CodeMirror, React, or the network.
+The Causal Tree is the core document model. It stores the collaborative document as a tree of `RunNode`s — contiguous sequences of characters by the same peer — ordered by Hybrid Logical Clocks. It owns all document mutation logic (insert, delete, split) and maintains an incremental `PositionIndex` that maps document positions to runs without requiring a full DFS traversal on every edit.
+
+This is the most significantly changed component in the optimization pass. The current per-character `CharNode` is replaced by `RunNode`, the reducer gains new action types, and the `PositionIndex` replaces the old `buildPositionMap` + `reconstruct` pattern.
 
 ## Responsibilities
 
-- Define the `CharNode` type and the document state shape
-- Handle `INSERT` and `DELETE` actions via a pure reducer function
-- Reconstruct the visible document string from the tree via DFS traversal
-- Determine the correct insertion index for a new node among its siblings using the HLC tie-break rule
-- Provide a mapping from tree-order position to node ID (and vice versa) so the CM Bridge can translate between positions and IDs
+- Define the `RunNode` type and `DocState` shape (tree + position index)
+- Pure reducer handling `INSERT_RUN`, `DELETE_RANGE`, and `SPLIT` actions
+- Maintain the `PositionIndex` incrementally inside the reducer (no external rebuild step)
+- Provide `reconstruct()` for debugging/consistency checks (not on the hot path)
+- Provide `lookupPosition()` and `runOffsetToPosition()` for position resolution
+- Deterministic split-ID generation so splits are commutative across peers
+- Sibling ordering by descending HLC (same tie-break rule as today)
 
 ## Public interface
+
+### Types
+
+```ts
+/** A run of consecutive characters by one peer. */
+type RunNode = {
+  readonly id: string          // HLC-derived ID (from the first character's HLC)
+  readonly text: string        // 1+ characters (the run content)
+  readonly parentId: string    // ID of the run this was inserted after
+  readonly peerId: string      // Which peer authored this run
+  readonly deleted: boolean    // Tombstone flag (applies to entire run)
+}
+
+/**
+ * A span in the position index. Each span covers a contiguous range
+ * of document positions belonging to one visible run.
+ */
+type RunSpan = {
+  readonly runId: string       // Which RunNode this span belongs to
+  readonly length: number      // Number of visible characters in this span
+}
+
+/**
+ * Incremental position index. A flat array of RunSpan entries where
+ * each entry covers a contiguous range of document positions.
+ * Maintained atomically with every tree mutation by the reducer.
+ */
+type PositionIndex = {
+  readonly spans: readonly RunSpan[]   // Ordered list of visible spans
+  readonly totalLength: number         // Sum of all span lengths (= doc length)
+}
+
+type DocState = {
+  readonly nodes: ReadonlyMap<string, RunNode>
+  readonly children: ReadonlyMap<string, readonly string[]>  // parentId → ordered child IDs
+  readonly index: PositionIndex
+}
+
+/** Result of looking up a document position in the index. */
+type PositionLookup = {
+  readonly runId: string       // Which run contains this position
+  readonly offset: number      // Offset within the run's text
+  readonly spanIndex: number   // Index into PositionIndex.spans (for efficient splicing)
+}
+
+type InsertRunAction = {
+  readonly type: "INSERT_RUN"
+  readonly node: RunNode
+}
+
+type DeleteRangeAction = {
+  readonly type: "DELETE_RANGE"
+  readonly runId: string
+  readonly offset: number      // Start offset within the run's text
+  readonly count: number       // Number of characters to delete
+}
+
+/**
+ * Split a run at a given offset. The left half keeps the original ID.
+ * The right half gets a deterministic split ID.
+ */
+type SplitAction = {
+  readonly type: "SPLIT"
+  readonly runId: string
+  readonly offset: number      // Split point within the run's text
+}
+
+type DocAction = InsertRunAction | DeleteRangeAction | SplitAction
+```
 
 ### Exported functions
 
 | Name | Signature | Description |
 |------|-----------|-------------|
-| `createDocState` | `() => DocState` | Create an empty document state with only the root sentinel node |
-| `docReducer` | `(state: DocState, action: DocAction) => DocState` | Pure reducer. Handles `INSERT` and `DELETE` actions. Returns new state. |
-| `reconstruct` | `(state: DocState) => string` | DFS traversal of the causal tree, skipping deleted nodes, producing the visible document string |
-| `buildPositionMap` | `(state: DocState) => PositionMap` | DFS traversal that returns a bidirectional mapping: position index ↔ node ID for all visible (non-deleted) characters |
-| `findInsertPosition` | `(state: DocState, parentId: string, newNodeId: string) => number` | Given a parent node and a new node's ID, determine the 0-based index in the visible document where this character should appear. Uses the HLC tie-break rule to order among siblings. |
-
-### Types
-
-```ts
-type CharNode = {
-  readonly id: string         // HLC-derived unique ID (from hlc.toString())
-  readonly value: string      // Single character
-  readonly parentId: string   // ID of the node this was inserted after
-  readonly deleted: boolean   // Tombstone flag
-}
-
-type DocState = {
-  readonly nodes: ReadonlyMap<string, CharNode>   // All nodes (including deleted)
-  readonly children: ReadonlyMap<string, readonly string[]>  // parentId → ordered child IDs
-}
-
-// Actions for the reducer
-type InsertAction = {
-  readonly type: "INSERT"
-  readonly node: CharNode
-}
-
-type DeleteAction = {
-  readonly type: "DELETE"
-  readonly nodeId: string
-}
-
-type DocAction = InsertAction | DeleteAction
-
-// Bidirectional position mapping
-type PositionMap = {
-  readonly idAtPosition: readonly string[]   // index → nodeId (only visible chars)
-  readonly positionOfId: ReadonlyMap<string, number>  // nodeId → index (only visible chars)
-}
-```
-
-**Sentinel root node:** The tree has a virtual root node with `id: "ROOT"`, `value: ""`, `parentId: ""`. All top-level characters are children of ROOT. This avoids null-checks for parentId.
+| `createDocState` | `() => DocState` | Create empty document state with ROOT sentinel and empty index |
+| `docReducer` | `(state: DocState, action: DocAction) => DocState` | Pure reducer. Handles INSERT_RUN, DELETE_RANGE, SPLIT. Returns new state with updated index. |
+| `reconstruct` | `(state: DocState) => string` | DFS traversal producing visible text. For debugging/consistency checks only — not on the hot path. |
+| `lookupPosition` | `(index: PositionIndex, position: number) => PositionLookup` | O(spans) lookup: which run contains a given document position. |
+| `runOffsetToPosition` | `(index: PositionIndex, runId: string, offset: number) => number \| undefined` | Given a run ID and offset within it, return the absolute document position. O(spans). |
+| `findInsertPosition` | `(state: DocState, parentId: string, newNodeId: string) => number` | Determine the document position where a new run should appear, based on sibling ordering. Uses the index instead of DFS + countVisibleInSubtree. |
+| `makeSplitId` | `(originalId: string, offset: number) => string` | Deterministic split-ID generation: `originalId + ":s:" + offset`. Pure function. |
+| `ROOT_ID` | `"ROOT"` | Sentinel root node ID (unchanged). |
 
 ## Dependencies
 
 | Dependency | What it needs | Reference |
 |------------|---------------|-----------|
-| HLC | `compare` function (for sibling ordering in `findInsertPosition`) | [hlc.md](hlc.md#exported-functions) |
+| HLC | `toString()` for generating run IDs, `compare()` is implicit in string comparison of serialized HLCs | [hlc.md](hlc.md) |
 
-The Causal Tree imports only the `compare` function from HLC to determine sibling order. It does not create or increment HLCs — that's the caller's job.
+No dependency on CM Bridge, Relay, Presence, or React.
 
 ## Internal design notes
 
-### Data structure
+### RunNode lifecycle
 
-`DocState` holds two maps:
-- `nodes`: the flat lookup table of all CharNodes by ID
-- `children`: an adjacency list mapping each parent ID to its ordered list of child IDs
+1. **Creation**: When a user types consecutive characters, the CM Bridge accumulates them and dispatches a single `INSERT_RUN` with the full text. The run gets one HLC ID (the HLC at the start of the typing burst).
 
-When a new node is inserted, it's added to `nodes` and spliced into the correct position in `children[parentId]` based on the HLC tie-break rule (higher HLC first among siblings).
+2. **Splitting**: When a remote insert targets a position in the middle of an existing run, the reducer first handles a `SPLIT` to break the run into two halves, then the new run is inserted between them. The left half keeps the original ID; the right half gets `makeSplitId(originalId, offset)`.
 
-### DFS traversal (reconstruct / buildPositionMap)
+3. **Appending**: When the same peer continues typing at the end of their own run, the CM Bridge can extend the existing run rather than creating a new one. This is an optimization in the bridge, not the tree — the tree sees an `INSERT_RUN` whose parent is the existing run, and the bridge knows to coalesce.
 
-Starting from ROOT, visit children in order. For each child, if not deleted, append its value (or record its position). Then recurse into that child's children. This produces a depth-first, left-to-right traversal that gives the document's character order.
+### Split-ID determinism
 
-### Sibling ordering
+The critical invariant: if Peer A and Peer B both need to split the same run at the same offset, they must produce identical split IDs. The scheme `originalId + ":s:" + offset` achieves this because:
+- `originalId` is globally unique (HLC-derived)
+- `offset` is a property of the insertion point, not the peer performing the split
+- The separator `:s:` is unambiguous (HLC IDs use `:` as a separator but never contain `:s:`)
 
-Children of the same parent are ordered by **descending HLC** (higher HLC = earlier position among siblings). This means if peer A and peer B both insert after the same character, the one with the higher HLC appears first. This is the deterministic tie-break that ensures convergence.
+If a run is split multiple times (e.g., at offset 3, then the left half at offset 1), the IDs nest: `originalId:s:3` for the first split, `originalId:s:1` for the second. Order of splits doesn't matter — the same set of splits always produces the same set of run IDs.
 
-The `children` map maintains this sorted order at insert time, so traversal doesn't need to re-sort.
+### PositionIndex maintenance
 
-### Immutability
+The index is a flat array of `RunSpan` entries. Each span says "the next N characters belong to run X." The reducer updates this array atomically with every tree mutation:
 
-The reducer returns new objects. `nodes` is a new `Map` (or a copy with the new entry). `children` is a new `Map` with the affected parent's child list replaced. This is a prototype — structural sharing (persistent data structures) is not needed. Shallow copies are fine.
+- **INSERT_RUN**: Find the span where the new run's parent ends (using sibling ordering to determine exact position among siblings). Splice a new `RunSpan { runId: node.id, length: node.text.length }` into the array at that point. Increment `totalLength`.
+- **DELETE_RANGE**: Find the span(s) covering the deleted range. Shrink or remove them. Decrement `totalLength`. For a full-run delete, mark the run as tombstoned and remove its span entirely.
+- **SPLIT**: Find the span for the split run. Replace it with two spans: `{ runId: originalId, length: offset }` and `{ runId: splitId, length: originalLength - offset }`. No change to `totalLength`.
+
+### Sibling ordering (unchanged)
+
+Children of a parent are ordered by descending HLC string comparison (higher HLC first). This is the same tie-break rule as the current per-character implementation. The only difference is that the unit is now a run, not a character.
+
+### Complexity improvements
+
+| Operation | Before (per-char) | After (runs) |
+|-----------|-------------------|--------------|
+| Insert (local) | O(n) DFS to rebuild position map | O(spans) to splice into index |
+| Insert (remote) | O(n) DFS for findInsertPosition + O(n) rebuild | O(spans) lookup + O(spans) splice |
+| Delete | O(n) DFS to find position + O(n) rebuild | O(spans) lookup + O(1) span shrink/removal |
+| Reconstruct | O(n) DFS | O(n) DFS (but only for debug, not hot path) |
+| Position lookup | O(n) linear scan of ID array | O(spans) scan of span array |
+
+Where `spans` is typically 10-100x smaller than `n` (the character count).
 
 ## Open questions
 
-- **Performance of `Map` copies:** For a prototype with small documents, copying the entire `Map` on each insert is fine. For larger documents, consider using an immutable map library or only copying the affected entries. Not a concern for this experiment.
-- **`children` as sorted array vs. insertion sort:** The current design inserts into the correct position in the children array on each INSERT action (binary search + splice on a copy). An alternative is to store children unsorted and sort during traversal. Insertion-time sorting is preferred because traversal happens more often than insertion (every keystroke triggers reconstruct).
-- **Should `reconstruct` and `buildPositionMap` be memoized?** They traverse the entire tree on every call. For the prototype, this is fine. If performance becomes an issue, memoize based on `DocState` reference identity (since the reducer returns new objects on change).
+- **Run extension vs. new run**: When a user types at the end of their own existing run, should the reducer support an `EXTEND_RUN` action that mutates the run's `text` in place (appending characters)? Or should it always create a new single-char run that the bridge coalesces? The former is more efficient but adds a mutation path. The latter is simpler but creates more runs during fast typing. **Suggested approach**: Start with always creating new runs (simpler). Add `EXTEND_RUN` as a follow-up optimization if run count becomes a problem.
+
+- **Tombstone compaction**: Deleted runs accumulate as tombstones. Should the reducer support a `COMPACT` action that merges adjacent tombstoned runs? Not needed for the POC, but worth noting as a future optimization. **Suggested approach**: Skip for now. Tombstoned runs don't appear in the `PositionIndex` spans, so they don't affect lookup performance — only memory.
+
+- **Multi-offset splits**: If two remote inserts land at different offsets within the same run in the same batch, the second split needs to account for the first. The reducer handles this naturally (each action sees the state left by the previous), but the relay must apply them sequentially, not in parallel. **Suggested approach**: Document this as a constraint on the relay — remote ops within a batch must be applied in causal order.
 
 ## File
 

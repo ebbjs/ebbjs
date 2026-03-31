@@ -1,10 +1,15 @@
 /**
- * Editor App — Slice 4
+ * Editor App — Run-Optimized
  *
  * Renders two side-by-side CodeMirror editor instances, each with its own
  * peer identity, Causal Tree, and HLC. A BroadcastChannel relay syncs
  * operations between them. Remote peer cursors and selections are rendered
  * as colored decorations via the Presence module.
+ *
+ * Changes from per-character version:
+ * - Actions are INSERT_RUN / DELETE_RANGE / SPLIT
+ * - SPLIT actions are NOT broadcast (local-only)
+ * - actionToMessage handles InsertRunMessage / DeleteRangeMessage
  */
 
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react"
@@ -38,13 +43,19 @@ import {
 import {
   useRelay,
   type RelayMessage,
-  type InsertMessage,
-  type DeleteMessage,
+  type InsertRunMessage,
+  type DeleteRangeMessage,
 } from "./relay.ts"
 import {
   usePresence,
   createPresenceExtension,
 } from "./presence.ts"
+import {
+  logEvent,
+  updateHlc,
+  updateDocState,
+} from "./inspector-store.ts"
+import { InspectorPanel } from "./InspectorPanel.tsx"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -58,18 +69,30 @@ const CHANNEL_NAME = "collab-text"
 
 /**
  * Convert a DocAction + current HLC + peerId into a RelayMessage for broadcast.
- * Only INSERT and DELETE actions produce messages.
+ * INSERT_RUN and DELETE_RANGE produce messages. SPLIT is local-only — not broadcast.
+ * Returns undefined for actions that should not be broadcast.
  */
 const actionToMessage = (
   action: DocAction,
   hlc: Hlc,
   peerId: string,
-): InsertMessage | DeleteMessage => {
+): InsertRunMessage | DeleteRangeMessage | undefined => {
   switch (action.type) {
-    case "INSERT":
-      return { type: "INSERT", peerId, node: action.node, hlc }
-    case "DELETE":
-      return { type: "DELETE", peerId, nodeId: action.nodeId, hlc }
+    case "INSERT_RUN":
+      return { type: "INSERT_RUN", peerId, node: action.node, hlc }
+    case "DELETE_RANGE":
+      return {
+        type: "DELETE_RANGE",
+        peerId,
+        runId: action.runId,
+        offset: action.offset,
+        count: action.count,
+        hlc,
+      }
+    case "SPLIT":
+      // SPLIT is a local consequence — not broadcast.
+      // Each peer performs its own splits when it receives INSERT_RUN.
+      return undefined
   }
 }
 
@@ -108,8 +131,17 @@ const PeerEditor = ({ peerId }: { peerId: string }) => {
     (action: DocAction) => {
       docStateRef.current = docReducer(docStateRef.current, action)
       treeDispatch(action)
+
       const message = actionToMessage(action, hlcRef.current, peerId)
-      broadcastRef.current?.(message)
+      if (message) {
+        broadcastRef.current?.(message)
+
+        // Inspector instrumentation (only for broadcast messages)
+        logEvent(peerId, "sent", message)
+      }
+
+      updateHlc(peerId, hlcRef.current)
+      updateDocState(peerId, docStateRef.current)
     },
     [peerId],
   )
@@ -121,8 +153,11 @@ const PeerEditor = ({ peerId }: { peerId: string }) => {
     (action: DocAction) => {
       docStateRef.current = docReducer(docStateRef.current, action)
       treeDispatch(action)
+
+      // Inspector instrumentation
+      updateDocState(peerId, docStateRef.current)
     },
-    [],
+    [peerId],
   )
 
   // Set up the relay
@@ -135,6 +170,10 @@ const PeerEditor = ({ peerId }: { peerId: string }) => {
     viewRef,
     idMapField,
     updatePresence: presence.updatePresence,
+    onRemoteMessage: (message) => {
+      logEvent(peerId, "received", message)
+      updateHlc(peerId, hlcRef.current)
+    },
   })
 
   // Wire broadcast ref once relay is available
@@ -238,13 +277,16 @@ const PeerEditor = ({ peerId }: { peerId: string }) => {
     }
   }, [docState, peerId])
 
-  // Reconstruct text from the Causal Tree for the debug panel
-  const treeText = reconstruct(docState)
-
   return (
     <div className="flex flex-col gap-2 flex-1 min-w-0">
       <div className="flex items-center gap-2">
-        <span className="text-sm font-semibold text-gray-600">{peerId}</span>
+        <span
+          className={`text-sm font-semibold ${
+            peerId === "peer-A" ? "text-blue-600" : "text-orange-600"
+          }`}
+        >
+          {peerId}
+        </span>
         <span className="text-xs text-gray-400">
           ({docState.nodes.size - 1} nodes)
         </span>
@@ -253,14 +295,6 @@ const PeerEditor = ({ peerId }: { peerId: string }) => {
         ref={editorRef}
         className="border border-gray-300 rounded-lg overflow-hidden h-64"
       />
-      <details className="text-xs">
-        <summary className="cursor-pointer text-gray-400 hover:text-gray-600">
-          Debug: Causal Tree state
-        </summary>
-        <pre className="mt-1 p-2 bg-gray-100 rounded text-gray-600 overflow-x-auto whitespace-pre-wrap break-all">
-          {treeText.length > 0 ? `"${treeText}"` : "(empty)"}
-        </pre>
-      </details>
     </div>
   )
 }
@@ -272,20 +306,23 @@ const PeerEditor = ({ peerId }: { peerId: string }) => {
 export const App = () => {
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col items-center p-8 gap-6">
-      <h1 className="text-2xl font-bold text-gray-800">
-        Collaborative Text Editor
-      </h1>
-      <p className="text-sm text-gray-500">
-        Two-peer sync via BroadcastChannel. Type in one editor, see it in the
-        other. Remote cursors and selections are shown as colored decorations.
-      </p>
+      <div className="text-center max-w-2xl">
+        <h1 className="text-2xl font-bold text-gray-800">
+          Collaborative Editing — Under the Hood
+        </h1>
+        <p className="text-sm text-gray-500 mt-2 leading-relaxed">
+          A from-scratch collaborative text editor. No CRDT library — just a{" "}
+          <span className="font-semibold">Causal Tree</span> ordered by{" "}
+          <span className="font-semibold">Hybrid Logical Clocks</span>. Two
+          peer editors sync via BroadcastChannel. Type in one, see it appear in
+          the other — with remote cursors and deterministic conflict resolution.
+        </p>
+      </div>
       <div className="flex gap-6 w-full max-w-5xl">
         <PeerEditor peerId="peer-A" />
         <PeerEditor peerId="peer-B" />
       </div>
-      <div className="text-xs text-gray-400">
-        Open the browser console to see consistency checks.
-      </div>
+      <InspectorPanel />
     </div>
   )
 }

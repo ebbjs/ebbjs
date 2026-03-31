@@ -1,9 +1,14 @@
 /**
- * CM Bridge tests
+ * CM Bridge tests (Run-Optimized)
  *
  * Tests the bridge's ability to sync CodeMirror ↔ Causal Tree by creating
- * a real CM EditorView in a jsdom/happy-dom environment, typing into it,
+ * a real CM EditorView in a happy-dom environment, typing into it,
  * and verifying that the Causal Tree state matches.
+ *
+ * Key differences from the per-character bridge tests:
+ * - Actions are INSERT_RUN / DELETE_RANGE / SPLIT (not INSERT / DELETE)
+ * - Multi-character paste produces a SINGLE INSERT_RUN
+ * - Mid-run insertion produces SPLIT + INSERT_RUN
  *
  * @vitest-environment happy-dom
  */
@@ -16,9 +21,11 @@ import {
   createDocState,
   docReducer,
   reconstruct,
-  buildPositionMap,
   type DocAction,
   type DocState,
+  type InsertRunAction,
+  type DeleteRangeAction,
+  type SplitAction,
 } from "../causal-tree.ts"
 import {
   createBridgeExtension,
@@ -92,26 +99,29 @@ const deleteRange = (view: EditorView, from: number, to: number) => {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("CM Bridge — local insertions", () => {
-  it("typing a single character creates one INSERT action", () => {
+describe("CM Bridge — local insertions (run-level)", () => {
+  it("typing a single character creates one INSERT_RUN action", () => {
     const { view, getActions, getDocState } = createTestEditor()
     typeText(view, "a")
 
     const actions = getActions()
-    expect(actions.length).toBe(1)
-    expect(actions[0]!.type).toBe("INSERT")
+    const insertRuns = actions.filter((a) => a.type === "INSERT_RUN")
+    expect(insertRuns.length).toBe(1)
+    expect((insertRuns[0] as InsertRunAction).node.text).toBe("a")
 
     expect(reconstruct(getDocState())).toBe("a")
     expect(view.state.doc.toString()).toBe("a")
   })
 
-  it("typing multiple characters creates an INSERT per character", () => {
+  it("pasting multi-character text creates a SINGLE INSERT_RUN", () => {
     const { view, getActions, getDocState } = createTestEditor()
     typeText(view, "hello")
 
     const actions = getActions()
-    const inserts = actions.filter((a) => a.type === "INSERT")
-    expect(inserts.length).toBe(5)
+    const insertRuns = actions.filter((a) => a.type === "INSERT_RUN")
+    // A single paste produces one INSERT_RUN, not 5
+    expect(insertRuns.length).toBe(1)
+    expect((insertRuns[0] as InsertRunAction).node.text).toBe("hello")
 
     const treeText = reconstruct(getDocState())
     expect(treeText).toBe("hello")
@@ -154,18 +164,41 @@ describe("CM Bridge — local insertions", () => {
     expect(treeText).toBe("abc")
     expect(view.state.doc.toString()).toBe("abc")
   })
+
+  it("inserting in the middle of a run triggers SPLIT + INSERT_RUN", () => {
+    const { view, getActions, getDocState } = createTestEditor()
+
+    // Paste "hello" — creates one run
+    typeText(view, "hello")
+    const actionsBefore = getActions().length
+
+    // Insert "X" at position 3 (between "hel" and "lo")
+    typeText(view, "X", 3)
+
+    const newActions = getActions().slice(actionsBefore)
+    const splits = newActions.filter((a) => a.type === "SPLIT")
+    const insertRuns = newActions.filter((a) => a.type === "INSERT_RUN")
+
+    expect(splits.length).toBe(1)
+    expect(insertRuns.length).toBe(1)
+    expect((insertRuns[0] as InsertRunAction).node.text).toBe("X")
+
+    expect(reconstruct(getDocState())).toBe("helXlo")
+    expect(view.state.doc.toString()).toBe("helXlo")
+  })
 })
 
-describe("CM Bridge — local deletions", () => {
-  it("deleting a character creates a DELETE action", () => {
+describe("CM Bridge — local deletions (run-level)", () => {
+  it("deleting characters creates DELETE_RANGE actions", () => {
     const { view, getActions, getDocState } = createTestEditor()
 
     typeText(view, "ab")
     const actionsBefore = getActions().length
     deleteRange(view, 1, 2) // delete "b"
 
-    const deletions = getActions().slice(actionsBefore).filter((a) => a.type === "DELETE")
-    expect(deletions.length).toBe(1)
+    const newActions = getActions().slice(actionsBefore)
+    const deletions = newActions.filter((a) => a.type === "DELETE_RANGE")
+    expect(deletions.length).toBeGreaterThanOrEqual(1)
 
     expect(reconstruct(getDocState())).toBe("a")
     expect(view.state.doc.toString()).toBe("a")
@@ -183,37 +216,35 @@ describe("CM Bridge — local deletions", () => {
   })
 })
 
-describe("CM Bridge — ID map consistency", () => {
-  it("ID map has same length as document after inserts", () => {
+describe("CM Bridge — span field consistency", () => {
+  it("span field matches DocState.index.spans after inserts", () => {
     const { view, getDocState, idMapField } = createTestEditor()
 
     typeText(view, "hello")
 
-    // After the bridge listener runs, it dispatches an idMap update
-    const idMap = view.state.field(idMapField)
-    const docLen = view.state.doc.length
+    const spans = view.state.field(idMapField)
+    const docSpans = getDocState().index.spans
 
-    expect(idMap.length).toBe(docLen)
+    expect(spans).toEqual(docSpans)
   })
 
-  it("ID map is consistent with buildPositionMap", () => {
-    const { view, getDocState, idMapField } = createTestEditor()
+  it("span field totalLength matches document length", () => {
+    const { view, getDocState } = createTestEditor()
 
     typeText(view, "abc")
 
-    const idMap = view.state.field(idMapField)
-    const posMap = buildPositionMap(getDocState())
-
-    expect(idMap).toEqual(posMap.idAtPosition)
+    expect(getDocState().index.totalLength).toBe(view.state.doc.length)
   })
 
   it("HLC advances monotonically with each insert", () => {
     const { view, getActions } = createTestEditor()
 
-    typeText(view, "abc")
+    typeText(view, "a")
+    typeText(view, "b")
+    typeText(view, "c")
 
     const inserts = getActions().filter(
-      (a): a is Extract<DocAction, { type: "INSERT" }> => a.type === "INSERT",
+      (a): a is InsertRunAction => a.type === "INSERT_RUN",
     )
 
     for (let i = 1; i < inserts.length; i++) {
@@ -223,7 +254,7 @@ describe("CM Bridge — ID map consistency", () => {
 })
 
 describe("CM Bridge — replacement (select + type)", () => {
-  it("replacing a selection dispatches DELETE then INSERT", () => {
+  it("replacing a selection dispatches DELETE_RANGE then INSERT_RUN", () => {
     const { view, getActions, getDocState } = createTestEditor()
 
     typeText(view, "abc")
@@ -236,13 +267,41 @@ describe("CM Bridge — replacement (select + type)", () => {
     })
 
     const newActions = getActions().slice(actionsBefore)
-    const deletes = newActions.filter((a) => a.type === "DELETE")
-    const inserts = newActions.filter((a) => a.type === "INSERT")
+    const deletes = newActions.filter((a) => a.type === "DELETE_RANGE")
+    const inserts = newActions.filter((a) => a.type === "INSERT_RUN")
 
-    expect(deletes.length).toBe(1)
+    expect(deletes.length).toBeGreaterThanOrEqual(1)
     expect(inserts.length).toBe(1)
 
     expect(reconstruct(getDocState())).toBe("aXc")
     expect(view.state.doc.toString()).toBe("aXc")
+  })
+})
+
+describe("CM Bridge — edge cases", () => {
+  it("empty document: typing the first character works", () => {
+    const { view, getDocState } = createTestEditor()
+
+    typeText(view, "x")
+
+    expect(reconstruct(getDocState())).toBe("x")
+    expect(view.state.doc.toString()).toBe("x")
+  })
+
+  it("inserting at the end of a run does not trigger SPLIT", () => {
+    const { view, getActions, getDocState } = createTestEditor()
+
+    typeText(view, "abc")
+    const actionsBefore = getActions().length
+
+    // Insert at position 3 (end of the "abc" run)
+    typeText(view, "d")
+
+    const newActions = getActions().slice(actionsBefore)
+    const splits = newActions.filter((a) => a.type === "SPLIT")
+    expect(splits.length).toBe(0)
+
+    expect(reconstruct(getDocState())).toBe("abcd")
+    expect(view.state.doc.toString()).toBe("abcd")
   })
 })

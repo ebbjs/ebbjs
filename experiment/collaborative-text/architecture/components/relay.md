@@ -1,132 +1,149 @@
-# Relay (Mock Network)
+# Relay (Batched Wire Protocol)
 
 ## Purpose
 
-Simulates a network layer between two editor instances using the browser's `BroadcastChannel` API. When a local editor produces an INSERT or DELETE operation, the Relay broadcasts it. When a remote operation arrives, the Relay applies it to the local Causal Tree (via the reducer), merges the remote HLC, calculates the correct document position, and dispatches a CM transaction to insert/delete the text in the local CodeMirror view.
+Simulates a network layer between editor instances using the browser's `BroadcastChannel` API. When a local editor produces an INSERT_RUN or DELETE_RANGE operation, the Relay broadcasts it. When a remote operation arrives, the Relay applies it to the local Causal Tree (via the reducer), merges the remote HLC, calculates the correct document position, and dispatches a CM transaction to insert/delete the text in the local CodeMirror view.
 
-The Relay is the integration hub — it's the only component that touches HLC, Causal Tree, and CM Bridge together.
+The key optimization: the relay now speaks in run-level messages (`INSERT_RUN`, `DELETE_RANGE`) instead of per-character messages, dramatically reducing channel traffic and remote-side processing.
 
 ## Responsibilities
 
-- Broadcast local Causal Tree operations (INSERT, DELETE) and presence updates to remote peers via `BroadcastChannel`
-- Receive remote operations and apply them to the local state:
-  1. Merge the remote HLC into the local HLC
-  2. Dispatch the operation to the local Causal Tree reducer
-  3. Calculate the resulting document position
-  4. Apply the text change to the local CodeMirror view via the CM Bridge
-- Receive remote presence updates and forward them to the Presence module
-- Provide a React hook interface for easy integration with the Editor App
+- Define the wire message types: `InsertRunMessage`, `DeleteRangeMessage`, `PresenceMessage`
+- Broadcast local operations as run-level messages
+- Receive remote messages, merge HLCs, and apply them to the local Causal Tree + CM view
+- Handle run splitting when a remote insert targets the middle of a local run
+- Maintain message ordering within a single peer's stream (BroadcastChannel guarantees this)
 
 ## Public interface
-
-### Exported functions
-
-| Name | Signature | Description |
-|------|-----------|-------------|
-| `useRelay` | `(config: RelayConfig) => RelayHandle` | React hook that sets up a `BroadcastChannel`, listens for remote messages, and provides a `broadcast` function for sending local operations |
 
 ### Types
 
 ```ts
-type RelayConfig = {
-  readonly channelName: string                          // BroadcastChannel name (same for both peers)
-  readonly peerId: string                               // This peer's ID (to ignore own messages)
-  readonly hlcRef: React.MutableRefObject<Hlc>          // Mutable ref to the local HLC
-  readonly dispatch: (action: DocAction) => void        // Dispatch to Causal Tree reducer
-  readonly getDocState: () => DocState                  // Read current Causal Tree state
-  readonly viewRef: React.MutableRefObject<EditorView | null>  // Ref to the CM EditorView
-  readonly updatePresence: (peerId: string, anchorId: string, headId: string) => void
-}
-
-type RelayHandle = {
-  readonly broadcast: (message: RelayMessage) => void   // Send a message to remote peers
-}
-
-// Messages sent over BroadcastChannel
-type InsertMessage = {
-  readonly type: "INSERT"
+type InsertRunMessage = {
+  readonly type: "INSERT_RUN"
   readonly peerId: string
-  readonly node: CharNode       // The full CharNode to insert
-  readonly hlc: Hlc             // Sender's HLC at time of send (for clock merge)
+  readonly node: RunNode       // The full run being inserted
+  readonly hlc: Hlc            // Sender's HLC at time of send
 }
 
-type DeleteMessage = {
-  readonly type: "DELETE"
+type DeleteRangeMessage = {
+  readonly type: "DELETE_RANGE"
   readonly peerId: string
-  readonly nodeId: string       // ID of the node to delete
+  readonly runId: string
+  readonly offset: number
+  readonly count: number
   readonly hlc: Hlc
 }
 
 type PresenceMessage = {
   readonly type: "PRESENCE"
   readonly peerId: string
-  readonly anchorId: string
-  readonly headId: string
+  readonly anchorRunId: string
+  readonly anchorOffset: number
+  readonly headRunId: string
+  readonly headOffset: number
 }
 
-type RelayMessage = InsertMessage | DeleteMessage | PresenceMessage
+type RelayMessage = InsertRunMessage | DeleteRangeMessage | PresenceMessage
+
+type RelayConfig = {
+  readonly channelName: string
+  readonly peerId: string
+  readonly hlcRef: React.RefObject<Hlc>
+  readonly dispatch: (action: DocAction) => void
+  readonly getDocState: () => DocState
+  readonly viewRef: React.RefObject<EditorView | null>
+  readonly idMapField: StateField<readonly RunSpan[]>
+  readonly updatePresence?: (
+    peerId: string,
+    anchorRunId: string, anchorOffset: number,
+    headRunId: string, headOffset: number,
+  ) => void
+  readonly onRemoteMessage?: (message: RelayMessage) => void
+}
+
+type RelayHandle = {
+  readonly broadcast: (message: RelayMessage) => void
+}
 ```
+
+### Exported functions
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `handleRemoteMessage` | `(message: RelayMessage, config: RelayConfig) => void` | Core message handler. Extracted from the hook for testability. Merges HLC, dispatches to tree, applies to CM view. |
+| `useRelay` | `(config: RelayConfig) => RelayHandle` | React hook that sets up BroadcastChannel, listens for remote messages, provides `broadcast`. |
 
 ## Dependencies
 
 | Dependency | What it needs | Reference |
 |------------|---------------|-----------|
-| HLC | `receive` (merge remote clock), `Hlc` type | [hlc.md](hlc.md#exported-functions) |
-| Causal Tree | `DocAction`, `DocState`, `findInsertPosition`, `CharNode` type | [causal-tree.md](causal-tree.md#exported-functions) |
-| CM Bridge | `applyRemoteInsert`, `applyRemoteDelete` | [cm-bridge.md](cm-bridge.md#exported-functions--extensions) |
-| Presence | `updatePresence` callback (passed through config) | [presence.md](presence.md#exported-functions--extensions) |
-| BroadcastChannel | Browser API | Built-in |
+| HLC | `receive()` for clock merge | [hlc.md](hlc.md) |
+| Causal Tree | `DocAction`, `DocState`, `RunNode`, `findInsertPosition`, `lookupPosition`, `runOffsetToPosition`, `makeSplitId` | [causal-tree.md](causal-tree.md) |
+| CM Bridge | `applyRemoteInsert`, `applyRemoteDelete`, `isRemote`, `setIdMapEffect` | [cm-bridge.md](cm-bridge.md) |
+| Presence | `presenceUpdateEffect` (to poke CM view on presence changes) | [presence.md](presence.md) |
 
 ## Internal design notes
 
-### Message flow: local edit → broadcast
+### Remote INSERT_RUN handling
 
-1. User types in CM → CM Bridge's updateListener fires → dispatches INSERT action to Causal Tree reducer
-2. After dispatching to the reducer, the Editor App (or Bridge callback) calls `relay.broadcast({ type: "INSERT", peerId, node, hlc })`
-3. The Relay posts the message to the `BroadcastChannel`
+```
+Pseudocode for handleRemoteMessage(INSERT_RUN):
+  1. Merge clocks: hlcRef.current = receive(hlcRef.current, message.hlc)
+  2. Idempotency guard: if node.id already exists in tree, skip
+  3. Check if the new run needs to split an existing run:
+     - The new run's parentId points to an existing run
+     - Based on sibling ordering, the new run should appear between
+       characters of an existing run (i.e., the parent run has a child
+       whose subtree occupies positions that the new run should precede)
+     - If so, dispatch SPLIT on the affected run first
+  4. Calculate visible position: findInsertPosition(state, parentId, node.id)
+  5. Dispatch INSERT_RUN to local Causal Tree
+  6. Apply to CM view: applyRemoteInsert(view, position, node.text, ...)
+```
 
-### Message flow: receive remote → apply locally
+The key difference from the current implementation: step 6 inserts the entire run's text in one CM transaction, not character by character.
 
-1. `BroadcastChannel.onmessage` fires with a remote message
-2. Relay checks `message.peerId !== config.peerId` (ignore own echoes)
-3. For INSERT:
-   a. Call `receive(localHlc, message.hlc)` to merge clocks → update `hlcRef.current`
-   b. Call `dispatch({ type: "INSERT", node: message.node })` to add to Causal Tree
-   c. Call `findInsertPosition(getDocState(), message.node.parentId, message.node.id)` to get the visible position
-   d. Call `applyRemoteInsert(viewRef.current, position, message.node.value, message.node.id)` to update CM
-4. For DELETE:
-   a. Merge clocks
-   b. Look up the node's current position via `buildPositionMap(getDocState())` **before** dispatching the delete
-   c. Call `dispatch({ type: "DELETE", nodeId: message.nodeId })`
-   d. Call `applyRemoteDelete(viewRef.current, position)` to update CM
-5. For PRESENCE:
-   a. Call `updatePresence(message.peerId, message.anchorId, message.headId)`
+### Remote DELETE_RANGE handling
 
-### Ordering concern
+```
+Pseudocode for handleRemoteMessage(DELETE_RANGE):
+  1. Merge clocks
+  2. Look up the run's current position: runOffsetToPosition(index, runId, offset)
+  3. Dispatch DELETE_RANGE to local Causal Tree
+  4. Apply to CM view: applyRemoteDelete(view, position, count, ...)
+```
 
-The Relay must update the Causal Tree **before** (for inserts) or **look up position before** (for deletes) applying to CM. The sequence matters:
-- INSERT: dispatch to tree first (so `findInsertPosition` can see the new node's siblings), then apply to CM
-- DELETE: look up position first (while the node is still visible), then dispatch to tree, then apply to CM
+### Run splitting on remote insert
 
-### Hook lifecycle
+When Peer A has a run "hello" and Peer B inserts "X" after "hel" (the new run's parent is the run containing "hello", and sibling ordering places it at offset 3), the relay on Peer A's side must:
 
-The `useRelay` hook:
-- Creates the `BroadcastChannel` in a `useEffect`
-- Attaches the `onmessage` handler
-- Returns the `broadcast` function (stable ref via `useCallback`)
-- Closes the channel on cleanup
+1. Recognize that the insert targets the middle of run "hello"
+2. Dispatch `SPLIT("hello-run-id", 3)` → produces "hel" (original ID) + "lo" (split ID `hello-run-id:s:3`)
+3. Dispatch `INSERT_RUN({ text: "X", parentId: "hello-run-id" })` — parented to the left half
+4. Apply to CM: insert "X" at the correct position
 
-### BroadcastChannel serialization
+The split detection happens in `handleRemoteMessage` by examining where the new run's insertion point falls relative to existing runs.
 
-`BroadcastChannel.postMessage` uses the structured clone algorithm, so plain objects with strings and numbers are fine. No need for JSON serialization.
+### Presence messages
+
+Presence now tracks cursor position as `(runId, offset)` pairs instead of bare node IDs. This is more stable across edits — if a run gets extended, the cursor's `(runId, offset)` still resolves correctly without needing to update the presence data.
+
+### Message size comparison
+
+| Scenario | Before (per-char) | After (runs) |
+|----------|-------------------|--------------|
+| Type "hello world" | 11 INSERT messages | 1 INSERT_RUN message |
+| Paste 1000 chars | 1000 INSERT messages | 1 INSERT_RUN message |
+| Delete a word (5 chars) | 5 DELETE messages | 1 DELETE_RANGE message |
 
 ## Open questions
 
-- **Operation ordering guarantees:** `BroadcastChannel` delivers messages in order within a single channel, but there's no guarantee about timing relative to local state. For two editors in the same tab, messages arrive synchronously (or nearly so). This is fine for the prototype. A real network would need operation buffering.
-- **Batching:** If the user pastes 100 characters, that's 100 INSERT messages. For the prototype this is fine. A real system would batch operations.
-- **Should the Relay own the HLC ref, or should the Editor App?** The architecture puts the HLC ref in the Editor App and passes it to both the Relay and the CM Bridge. This avoids the Relay needing to "own" state that the Bridge also needs. The Editor App is the single owner; Relay and Bridge both read/write through the ref.
+- **Split before or during INSERT_RUN?** Should the relay dispatch SPLIT as a separate action before INSERT_RUN, or should the Causal Tree reducer handle splitting internally when it detects an INSERT_RUN that targets the middle of a run? **Suggested approach**: The relay dispatches SPLIT explicitly. This keeps the reducer simpler (each action does one thing) and makes the split visible in the inspector/event log.
+
+- **Batching multiple remote ops**: If multiple remote messages arrive in quick succession (e.g., the remote peer pasted a large block that was split into multiple runs), should the relay batch them into a single CM transaction? **Suggested approach**: Not for the POC. Each message gets its own CM dispatch. The big win is already captured by runs being multi-character.
 
 ## File
 
 `src/relay.ts` — imports from `./hlc.ts`, `./causal-tree.ts`, `./cm-bridge.ts`.
-Test file: `src/__tests__/relay.test.ts` (test message handling logic with mock BroadcastChannel)
+Test file: `src/__tests__/relay.test.ts`

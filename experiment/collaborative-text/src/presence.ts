@@ -1,12 +1,13 @@
 /**
- * Presence
+ * Presence (Run-Optimized)
  *
  * Tracks remote peer cursors and selections, and renders them as CodeMirror 6
  * decorations (colored cursor lines and selection highlights).
  *
  * Presence data is expressed in terms of CharNode IDs (stable across edits)
  * rather than document positions (which shift). The Presence module resolves
- * IDs to current positions using the CM Bridge's ID map StateField.
+ * IDs to current positions using the Causal Tree's PositionIndex via the
+ * CM Bridge's RunSpan StateField.
  *
  * Two exports:
  * - `usePresence` — React hook managing the presence map
@@ -28,7 +29,12 @@ import {
   type Extension,
   type StateField,
 } from "@codemirror/state"
-import { ROOT_ID, buildPositionMap, type DocState } from "./causal-tree.ts"
+import {
+  ROOT_ID,
+  runOffsetToPosition,
+  type DocState,
+  type RunSpan,
+} from "./causal-tree.ts"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,7 +50,7 @@ export type PresenceData = {
 export type PresenceConfig = {
   readonly localPeerId: string
   readonly getPresenceMap: () => ReadonlyMap<string, PresenceData>
-  readonly idMapField: StateField<readonly string[]>
+  readonly idMapField: StateField<readonly RunSpan[]>
   readonly getDocState: () => DocState
 }
 
@@ -164,50 +170,69 @@ class CursorWidget extends WidgetType {
 // ---------------------------------------------------------------------------
 
 /**
- * Map a cursor position (0-based document offset) to a CharNode ID.
+ * Map a cursor position (0-based document offset) to a node ID.
+ *
+ * In the run-optimized model, we resolve the position to a (runId, offset)
+ * pair using the span StateField, then encode it as a string for presence.
  *
  * Convention:
- * - Position 0 in an empty doc → ROOT_ID
- * - Position 0 in a non-empty doc → "before" first char, use ROOT_ID
- *   (the cursor is logically after ROOT)
- * - Position N (end of doc) → ID of the last character
- * - Position P (mid-doc) → ID of the character at P - 1
- *   (the cursor is logically "after" that character)
+ * - Position 0 → ROOT_ID (cursor is before all content)
+ * - Position P > 0 → the run ID containing the char at P-1
+ *   (cursor is logically "after" that character)
+ *
+ * For simplicity in the prototype, presence IDs remain run IDs (the first
+ * char's HLC-derived ID). This works because run IDs are stable.
  */
 export const positionToNodeId = (
   editorState: EditorState,
   position: number,
-  idMapField: StateField<readonly string[]>,
+  idMapField: StateField<readonly RunSpan[]>,
 ): string => {
-  const idMap = editorState.field(idMapField)
+  const spans = editorState.field(idMapField)
 
-  if (idMap.length === 0) return ROOT_ID
+  if (spans.length === 0) return ROOT_ID
   if (position === 0) return ROOT_ID
-  if (position >= idMap.length) return idMap[idMap.length - 1]!
-  return idMap[position - 1]!
+
+  // Walk spans to find the run containing position - 1
+  let cumulative = 0
+  for (const span of spans) {
+    if (position - 1 < cumulative + span.length) {
+      return span.runId
+    }
+    cumulative += span.length
+  }
+
+  // Past end — return last run ID
+  const lastSpan = spans[spans.length - 1]
+  return lastSpan ? lastSpan.runId : ROOT_ID
 }
 
 /**
- * Resolve a CharNode ID back to a document position for rendering.
+ * Resolve a node ID back to a document position for rendering.
  *
  * Convention (inverse of positionToNodeId):
  * - ROOT_ID → position 0
- * - A valid node ID → position of that node + 1 (cursor is after the char)
- *   Exception: if the node is the last character, position = doc.length
+ * - A valid run ID → position of that run's last char + 1
+ *   (cursor is after the run)
  * - Unknown/deleted ID → undefined (skip rendering)
  */
 export const nodeIdToPosition = (
   editorState: EditorState,
   nodeId: string,
-  idMapField: StateField<readonly string[]>,
+  idMapField: StateField<readonly RunSpan[]>,
 ): number | undefined => {
   if (nodeId === ROOT_ID) return 0
 
-  const idMap = editorState.field(idMapField)
-  const idx = idMap.indexOf(nodeId)
-  if (idx === -1) return undefined
-  // Cursor is "after" this character, so position = idx + 1
-  return idx + 1
+  const spans = editorState.field(idMapField)
+  let cumulative = 0
+  for (const span of spans) {
+    if (span.runId === nodeId) {
+      // Cursor is "after" this run
+      return cumulative + span.length
+    }
+    cumulative += span.length
+  }
+  return undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +253,7 @@ export const nodeIdToPosition = (
  */
 export const usePresence = (
   peerId: string,
-  idMapField: StateField<readonly string[]>,
+  idMapField: StateField<readonly RunSpan[]>,
 ): PresenceHook => {
   // Mutable ref — updated synchronously in updatePresence so the CM
   // ViewPlugin always reads the latest data.
@@ -283,8 +308,8 @@ export const usePresence = (
  * and selections as decorations.
  *
  * Rebuilds decorations on every update by resolving node IDs to current
- * positions. This is O(peers * doc.length) per update but fine for a
- * prototype with 2 peers.
+ * positions. This is O(peers * spans) per update but fine for a prototype
+ * with 2 peers.
  */
 export const createPresenceExtension = (
   config: PresenceConfig,

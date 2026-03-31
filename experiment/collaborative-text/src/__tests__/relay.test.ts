@@ -1,9 +1,14 @@
 /**
- * Relay tests
+ * Relay tests (Run-Optimized)
  *
  * Tests the handleRemoteMessage function directly (pure-ish, no
  * BroadcastChannel needed). Uses a real CM EditorView in happy-dom
  * to verify that remote operations apply correctly.
+ *
+ * Key changes from per-character relay tests:
+ * - Messages are INSERT_RUN / DELETE_RANGE (not INSERT / DELETE)
+ * - RunNode.text can be multi-character
+ * - Remote inserts apply the full run text in one CM transaction
  *
  * @vitest-environment happy-dom
  */
@@ -13,25 +18,25 @@ import { EditorState } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 import { createHlc, increment, toString, type Hlc } from "../hlc.ts"
 import {
-  buildPositionMap,
   createDocState,
   docReducer,
   reconstruct,
   ROOT_ID,
-  type CharNode,
   type DocAction,
   type DocState,
+  type RunNode,
 } from "../causal-tree.ts"
 import {
   createBridgeExtension,
   createIdMapField,
   isRemote,
+  setIdMapEffect,
   type BridgeConfig,
 } from "../cm-bridge.ts"
 import {
   handleRemoteMessage,
-  type InsertMessage,
-  type DeleteMessage,
+  type InsertRunMessage,
+  type DeleteRangeMessage,
   type PresenceMessage,
   type RelayConfig,
 } from "../relay.ts"
@@ -56,7 +61,8 @@ const createTestPeer = (peerId: string) => {
     dispatched.push(action)
   }
 
-  // Bridge config (for local edits — not used in relay tests, but needed for CM setup)
+  // Bridge config (for local edits — not used directly in relay tests,
+  // but needed for CM setup)
   const bridgeConfig: BridgeConfig = {
     peerId,
     getHlc: () => hlcRef.current,
@@ -92,47 +98,56 @@ const createTestPeer = (peerId: string) => {
     getDocState: () => docState,
     getDispatched: () => dispatched,
     idMapField,
-    /** Helper: locally insert text by directly manipulating the tree + CM */
-    localInsert: (text: string) => {
-      for (let i = 0; i < text.length; i++) {
-        hlcRef.current = increment(hlcRef.current)
-        const nodeId = toString(hlcRef.current)
-        const posMap = buildPositionMap(docState)
-        const parentId =
-          posMap.idAtPosition.length > 0
-            ? posMap.idAtPosition[posMap.idAtPosition.length - 1]!
-            : ROOT_ID
+    /**
+     * Helper: locally insert a run by directly manipulating the tree + CM.
+     * Simulates what the bridge does for local edits.
+     */
+    localInsertRun: (text: string, parentId?: string) => {
+      hlcRef.current = increment(hlcRef.current)
+      const nodeId = toString(hlcRef.current)
 
-        const node: CharNode = {
-          id: nodeId,
-          value: text[i]!,
-          parentId,
-          deleted: false,
-        }
-        docState = docReducer(docState, { type: "INSERT", node })
+      // Determine parent: the last visible run, or ROOT
+      const resolvedParentId = parentId ?? (() => {
+        const { spans } = docState.index
+        if (spans.length === 0) return ROOT_ID
+        return spans[spans.length - 1]!.runId
+      })()
 
-        // Apply to CM — the ID map StateField auto-rebuilds on docChanged
-        const pos = view.state.doc.length
-        view.dispatch({
-          changes: { from: pos, insert: text[i]! },
-          annotations: isRemote.of(true),
-        })
+      const node: RunNode = {
+        id: nodeId,
+        text,
+        parentId: resolvedParentId,
+        peerId,
+        deleted: false,
       }
+
+      docState = docReducer(docState, { type: "INSERT_RUN", node })
+
+      // Apply to CM view — insert the text and update the span field
+      const pos = view.state.doc.length
+      view.dispatch({
+        changes: { from: pos, insert: text },
+        effects: setIdMapEffect.of(docState.index.spans),
+        annotations: isRemote.of(true),
+      })
+
+      return { nodeId, node }
     },
   }
 }
 
-/** Create a CharNode with a specific HLC. */
-const makeNode = (
+/** Create a RunNode with a specific HLC. */
+const makeRunNode = (
   ts: number,
   count: number,
   peerId: string,
-  value: string,
+  text: string,
   parentId: string,
-): CharNode => ({
+): RunNode => ({
   id: toString({ ts, count, peerId }),
-  value,
+  text,
   parentId,
+  peerId,
   deleted: false,
 })
 
@@ -140,14 +155,14 @@ const makeNode = (
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("handleRemoteMessage — INSERT", () => {
+describe("handleRemoteMessage — INSERT_RUN", () => {
   it("applies a remote insert to an empty document", () => {
     const peer = createTestPeer("peer-B")
     const senderHlc: Hlc = { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" }
-    const node = makeNode(senderHlc.ts, 0, "peer-A", "a", ROOT_ID)
+    const node = makeRunNode(senderHlc.ts, 0, "peer-A", "hello", ROOT_ID)
 
-    const message: InsertMessage = {
-      type: "INSERT",
+    const message: InsertRunMessage = {
+      type: "INSERT_RUN",
       peerId: "peer-A",
       node,
       hlc: senderHlc,
@@ -155,48 +170,56 @@ describe("handleRemoteMessage — INSERT", () => {
 
     handleRemoteMessage(message, peer.relayConfig)
 
-    expect(reconstruct(peer.getDocState())).toBe("a")
-    expect(peer.view.state.doc.toString()).toBe("a")
+    expect(reconstruct(peer.getDocState())).toBe("hello")
+    expect(peer.view.state.doc.toString()).toBe("hello")
+  })
+
+  it("applies a multi-character remote insert in one CM transaction", () => {
+    const peer = createTestPeer("peer-B")
+    const senderHlc: Hlc = { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" }
+    const node = makeRunNode(senderHlc.ts, 0, "peer-A", "hello world", ROOT_ID)
+
+    handleRemoteMessage(
+      { type: "INSERT_RUN", peerId: "peer-A", node, hlc: senderHlc },
+      peer.relayConfig,
+    )
+
+    expect(reconstruct(peer.getDocState())).toBe("hello world")
+    expect(peer.view.state.doc.toString()).toBe("hello world")
   })
 
   it("applies a remote insert at the correct position in an existing document", () => {
     const peer = createTestPeer("peer-B")
     // Locally insert "ac"
-    peer.localInsert("ac")
+    const { nodeId: aId } = peer.localInsertRun("ac")
     expect(peer.view.state.doc.toString()).toBe("ac")
 
-    // Get the ID of "a" so we can parent the remote insert to it
-    const posMap = buildPositionMap(peer.getDocState())
-    const aId = posMap.idAtPosition[0]!
-
-    // Remote peer-A inserts "b" after "a"
+    // Remote peer-A inserts "b" after "ac" (child of "ac" run)
     const senderHlc: Hlc = { ts: Date.now() + 200_000, count: 0, peerId: "peer-A" }
-    const bNode = makeNode(senderHlc.ts, 0, "peer-A", "b", aId)
+    const bNode = makeRunNode(senderHlc.ts, 0, "peer-A", "b", aId)
 
     handleRemoteMessage(
-      { type: "INSERT", peerId: "peer-A", node: bNode, hlc: senderHlc },
+      { type: "INSERT_RUN", peerId: "peer-A", node: bNode, hlc: senderHlc },
       peer.relayConfig,
     )
 
-    // "b" is child of "a", with higher HLC than "c" (which is also child of "a")
-    // Higher HLC first among siblings → b comes before c
-    expect(reconstruct(peer.getDocState())).toBe("abc")
-    expect(peer.view.state.doc.toString()).toBe("abc")
+    // "b" is child of "ac", higher HLC → comes before any lower-HLC children
+    expect(reconstruct(peer.getDocState())).toBe("acb")
+    expect(peer.view.state.doc.toString()).toBe("acb")
   })
 
   it("merges the remote HLC into the local HLC", () => {
     const peer = createTestPeer("peer-B")
-    const localHlcBefore = { ...peer.hlcRef.current }
 
     const remoteFutureHlc: Hlc = {
       ts: Date.now() + 500_000,
       count: 10,
       peerId: "peer-A",
     }
-    const node = makeNode(remoteFutureHlc.ts, 10, "peer-A", "x", ROOT_ID)
+    const node = makeRunNode(remoteFutureHlc.ts, 10, "peer-A", "x", ROOT_ID)
 
     handleRemoteMessage(
-      { type: "INSERT", peerId: "peer-A", node, hlc: remoteFutureHlc },
+      { type: "INSERT_RUN", peerId: "peer-A", node, hlc: remoteFutureHlc },
       peer.relayConfig,
     )
 
@@ -207,9 +230,9 @@ describe("handleRemoteMessage — INSERT", () => {
   it("is idempotent — duplicate remote insert is a no-op for both tree and CM", () => {
     const peer = createTestPeer("peer-B")
     const senderHlc: Hlc = { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" }
-    const node = makeNode(senderHlc.ts, 0, "peer-A", "a", ROOT_ID)
-    const message: InsertMessage = {
-      type: "INSERT",
+    const node = makeRunNode(senderHlc.ts, 0, "peer-A", "hello", ROOT_ID)
+    const message: InsertRunMessage = {
+      type: "INSERT_RUN",
       peerId: "peer-A",
       node,
       hlc: senderHlc,
@@ -219,27 +242,31 @@ describe("handleRemoteMessage — INSERT", () => {
     handleRemoteMessage(message, peer.relayConfig)
 
     // Causal Tree is correct — no duplicate
-    expect(reconstruct(peer.getDocState())).toBe("a")
+    expect(reconstruct(peer.getDocState())).toBe("hello")
     // CM view is also correct — the relay's idempotency guard skips
-    // the second applyRemoteInsert, so no duplicate character
-    expect(peer.view.state.doc.toString()).toBe("a")
+    // the second applyRemoteInsert, so no duplicate text
+    expect(peer.view.state.doc.toString()).toBe("hello")
   })
 })
 
-describe("handleRemoteMessage — DELETE", () => {
+describe("handleRemoteMessage — DELETE_RANGE", () => {
   it("applies a remote delete", () => {
     const peer = createTestPeer("peer-B")
-    peer.localInsert("abc")
+    const { nodeId } = peer.localInsertRun("abc")
     expect(peer.view.state.doc.toString()).toBe("abc")
-
-    // Get the ID of "b"
-    const posMap = buildPositionMap(peer.getDocState())
-    const bId = posMap.idAtPosition[1]!
 
     const senderHlc: Hlc = { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" }
 
+    // Delete "b" from "abc" (offset 1, count 1)
     handleRemoteMessage(
-      { type: "DELETE", peerId: "peer-A", nodeId: bId, hlc: senderHlc },
+      {
+        type: "DELETE_RANGE",
+        peerId: "peer-A",
+        runId: nodeId,
+        offset: 1,
+        count: 1,
+        hlc: senderHlc,
+      },
       peer.relayConfig,
     )
 
@@ -247,36 +274,32 @@ describe("handleRemoteMessage — DELETE", () => {
     expect(peer.view.state.doc.toString()).toBe("ac")
   })
 
-  it("handles delete of already-deleted node gracefully", () => {
+  it("applies a remote full-run delete", () => {
     const peer = createTestPeer("peer-B")
-    peer.localInsert("a")
-
-    const posMap = buildPositionMap(peer.getDocState())
-    const aId = posMap.idAtPosition[0]!
+    const { nodeId } = peer.localInsertRun("hello")
+    expect(peer.view.state.doc.toString()).toBe("hello")
 
     const senderHlc: Hlc = { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" }
-    const msg: DeleteMessage = {
-      type: "DELETE",
-      peerId: "peer-A",
-      nodeId: aId,
-      hlc: senderHlc,
-    }
 
-    // Delete once
-    handleRemoteMessage(msg, peer.relayConfig)
-    expect(reconstruct(peer.getDocState())).toBe("")
+    handleRemoteMessage(
+      {
+        type: "DELETE_RANGE",
+        peerId: "peer-A",
+        runId: nodeId,
+        offset: 0,
+        count: 5,
+        hlc: senderHlc,
+      },
+      peer.relayConfig,
+    )
 
-    // Delete again — should not crash or change anything
-    handleRemoteMessage(msg, peer.relayConfig)
     expect(reconstruct(peer.getDocState())).toBe("")
+    expect(peer.view.state.doc.toString()).toBe("")
   })
 
   it("merges the remote HLC on delete", () => {
     const peer = createTestPeer("peer-B")
-    peer.localInsert("a")
-
-    const posMap = buildPositionMap(peer.getDocState())
-    const aId = posMap.idAtPosition[0]!
+    const { nodeId } = peer.localInsertRun("a")
 
     const remoteFutureHlc: Hlc = {
       ts: Date.now() + 500_000,
@@ -285,7 +308,14 @@ describe("handleRemoteMessage — DELETE", () => {
     }
 
     handleRemoteMessage(
-      { type: "DELETE", peerId: "peer-A", nodeId: aId, hlc: remoteFutureHlc },
+      {
+        type: "DELETE_RANGE",
+        peerId: "peer-A",
+        runId: nodeId,
+        offset: 0,
+        count: 1,
+        hlc: remoteFutureHlc,
+      },
       peer.relayConfig,
     )
 
@@ -296,11 +326,11 @@ describe("handleRemoteMessage — DELETE", () => {
 describe("handleRemoteMessage — own message filtering", () => {
   it("ignores messages from the same peerId", () => {
     const peer = createTestPeer("peer-A")
-    const node = makeNode(Date.now() + 100_000, 0, "peer-A", "x", ROOT_ID)
+    const node = makeRunNode(Date.now() + 100_000, 0, "peer-A", "x", ROOT_ID)
 
     handleRemoteMessage(
       {
-        type: "INSERT",
+        type: "INSERT_RUN",
         peerId: "peer-A", // same as local peer
         node,
         hlc: { ts: Date.now() + 100_000, count: 0, peerId: "peer-A" },
@@ -353,28 +383,24 @@ describe("handleRemoteMessage — PRESENCE", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Slice 3: Concurrent Conflict (Tie-Break)
+// Concurrent Conflict (Tie-Break) — Run-Level
 // ---------------------------------------------------------------------------
 
-describe("concurrent conflict — tie-break convergence", () => {
+describe("concurrent conflict — tie-break convergence (run-level)", () => {
   it("two peers inserting at the same position converge to the same document", () => {
     const peerA = createTestPeer("peer-A")
     const peerB = createTestPeer("peer-B")
 
-    // Both peers start with "ab" (a→ROOT, b→a)
-    // Use a shared base timestamp far in the future so HLC comparisons are stable
+    // Both peers start with "ab" (one run "ab" → ROOT)
     const baseTs = Date.now() + 1_000_000
-
-    const nodeA = makeNode(baseTs, 0, "peer-A", "a", ROOT_ID)
-    const nodeB = makeNode(baseTs + 1, 0, "peer-A", "b", nodeA.id)
+    const baseNode = makeRunNode(baseTs, 0, "peer-A", "ab", ROOT_ID)
 
     // Apply base state to both peers
     for (const peer of [peerA, peerB]) {
-      peer.relayConfig.dispatch({ type: "INSERT", node: nodeA })
-      peer.relayConfig.dispatch({ type: "INSERT", node: nodeB })
-      // ID map auto-rebuilds on docChanged
+      peer.relayConfig.dispatch({ type: "INSERT_RUN", node: baseNode })
       peer.view.dispatch({
         changes: { from: 0, insert: "ab" },
+        effects: setIdMapEffect.of(peer.getDocState().index.spans),
         annotations: isRemote.of(true),
       })
     }
@@ -383,41 +409,41 @@ describe("concurrent conflict — tie-break convergence", () => {
     expect(peerA.view.state.doc.toString()).toBe("ab")
     expect(peerB.view.state.doc.toString()).toBe("ab")
 
-    // Peer A inserts "X" after "a" (parent = nodeA.id)
+    // Peer A inserts "XX" after "ab" (parent = baseNode.id)
     const hlcX: Hlc = { ts: baseTs + 2, count: 0, peerId: "peer-A" }
-    const nodeX = makeNode(baseTs + 2, 0, "peer-A", "X", nodeA.id)
+    const nodeX = makeRunNode(baseTs + 2, 0, "peer-A", "XX", baseNode.id)
 
-    // Apply X locally on Peer A
-    peerA.relayConfig.dispatch({ type: "INSERT", node: nodeX })
-    // ID map auto-rebuilds on docChanged
+    // Apply XX locally on Peer A
+    peerA.relayConfig.dispatch({ type: "INSERT_RUN", node: nodeX })
     peerA.view.dispatch({
-      changes: { from: 1, insert: "X" },
+      changes: { from: 2, insert: "XX" },
+      effects: setIdMapEffect.of(peerA.getDocState().index.spans),
       annotations: isRemote.of(true),
     })
-    expect(peerA.view.state.doc.toString()).toBe("aXb")
+    expect(peerA.view.state.doc.toString()).toBe("abXX")
 
-    // Peer B inserts "Y" after "a" (parent = nodeA.id) — BEFORE receiving X
+    // Peer B inserts "YY" after "ab" (parent = baseNode.id) — BEFORE receiving XX
     const hlcY: Hlc = { ts: baseTs + 2, count: 0, peerId: "peer-B" }
-    const nodeY = makeNode(baseTs + 2, 0, "peer-B", "Y", nodeA.id)
+    const nodeY = makeRunNode(baseTs + 2, 0, "peer-B", "YY", baseNode.id)
 
-    // Apply Y locally on Peer B
-    peerB.relayConfig.dispatch({ type: "INSERT", node: nodeY })
+    peerB.relayConfig.dispatch({ type: "INSERT_RUN", node: nodeY })
     peerB.view.dispatch({
-      changes: { from: 1, insert: "Y" },
+      changes: { from: 2, insert: "YY" },
+      effects: setIdMapEffect.of(peerB.getDocState().index.spans),
       annotations: isRemote.of(true),
     })
-    expect(peerB.view.state.doc.toString()).toBe("aYb")
+    expect(peerB.view.state.doc.toString()).toBe("abYY")
 
     // Now exchange messages:
-    // Peer A receives Peer B's Y
+    // Peer A receives Peer B's YY
     handleRemoteMessage(
-      { type: "INSERT", peerId: "peer-B", node: nodeY, hlc: hlcY },
+      { type: "INSERT_RUN", peerId: "peer-B", node: nodeY, hlc: hlcY },
       peerA.relayConfig,
     )
 
-    // Peer B receives Peer A's X
+    // Peer B receives Peer A's XX
     handleRemoteMessage(
-      { type: "INSERT", peerId: "peer-A", node: nodeX, hlc: hlcX },
+      { type: "INSERT_RUN", peerId: "peer-A", node: nodeX, hlc: hlcX },
       peerB.relayConfig,
     )
 
@@ -426,37 +452,32 @@ describe("concurrent conflict — tie-break convergence", () => {
     const textB = reconstruct(peerB.getDocState())
     expect(textA).toBe(textB)
 
-    // Y has higher HLC (peer-B > peer-A at same ts:count) → Y comes first
-    // b (ts=baseTs+1) has lower HLC than both X and Y (ts=baseTs+2) → b is last among a's children
-    expect(textA).toBe("aYXb")
+    // YY has higher HLC (peer-B > peer-A at same ts:count) → YY comes first
+    expect(textA).toBe("abYYXX")
 
     // CM views must also match
-    expect(peerA.view.state.doc.toString()).toBe("aYXb")
-    expect(peerB.view.state.doc.toString()).toBe("aYXb")
+    expect(peerA.view.state.doc.toString()).toBe("abYYXX")
+    expect(peerB.view.state.doc.toString()).toBe("abYYXX")
   })
 
   it("duplicate messages during concurrent conflict are handled correctly", () => {
     const peerA = createTestPeer("peer-A")
-    const peerB = createTestPeer("peer-B")
 
-    // Insert base character "a"
+    // Insert base run
     const baseTs = Date.now() + 1_000_000
-    const nodeA = makeNode(baseTs, 0, "peer-A", "a", ROOT_ID)
+    const baseNode = makeRunNode(baseTs, 0, "peer-A", "a", ROOT_ID)
+    peerA.relayConfig.dispatch({ type: "INSERT_RUN", node: baseNode })
+    peerA.view.dispatch({
+      changes: { from: 0, insert: "a" },
+      effects: setIdMapEffect.of(peerA.getDocState().index.spans),
+      annotations: isRemote.of(true),
+    })
 
-    for (const peer of [peerA, peerB]) {
-      peer.relayConfig.dispatch({ type: "INSERT", node: nodeA })
-      // ID map auto-rebuilds on docChanged
-      peer.view.dispatch({
-        changes: { from: 0, insert: "a" },
-        annotations: isRemote.of(true),
-      })
-    }
-
-    // Peer B sends "X" after "a"
+    // Peer B sends "XX" after "a"
     const hlcX: Hlc = { ts: baseTs + 1, count: 0, peerId: "peer-B" }
-    const nodeX = makeNode(baseTs + 1, 0, "peer-B", "X", nodeA.id)
-    const msgX: InsertMessage = {
-      type: "INSERT",
+    const nodeX = makeRunNode(baseTs + 1, 0, "peer-B", "XX", baseNode.id)
+    const msgX: InsertRunMessage = {
+      type: "INSERT_RUN",
       peerId: "peer-B",
       node: nodeX,
       hlc: hlcX,
@@ -466,66 +487,69 @@ describe("concurrent conflict — tie-break convergence", () => {
     handleRemoteMessage(msgX, peerA.relayConfig)
     handleRemoteMessage(msgX, peerA.relayConfig)
 
-    // Should be "aX" not "aXX"
-    expect(reconstruct(peerA.getDocState())).toBe("aX")
-    expect(peerA.view.state.doc.toString()).toBe("aX")
+    // Should be "aXX" not "aXXXX"
+    expect(reconstruct(peerA.getDocState())).toBe("aXX")
+    expect(peerA.view.state.doc.toString()).toBe("aXX")
   })
 })
 
-describe("two-peer simulation", () => {
-  it("syncs a sequence of inserts between two peers", () => {
+describe("two-peer simulation (run-level)", () => {
+  it("syncs a sequence of run inserts between two peers", () => {
     const peerA = createTestPeer("peer-A")
     const peerB = createTestPeer("peer-B")
 
-    // Peer A types "hi"
-    // Simulate: A inserts locally, then broadcasts to B
+    // Peer A types "hello" (one run)
     const aHlc1 = increment(peerA.hlcRef.current)
     peerA.hlcRef.current = aHlc1
-    const nodeH: CharNode = {
+    const nodeHello: RunNode = {
       id: toString(aHlc1),
-      value: "h",
+      text: "hello",
       parentId: ROOT_ID,
+      peerId: "peer-A",
       deleted: false,
     }
 
-    // Apply locally on A — ID map auto-rebuilds on docChanged
-    peerA.relayConfig.dispatch({ type: "INSERT", node: nodeH })
+    // Apply locally on A
+    peerA.relayConfig.dispatch({ type: "INSERT_RUN", node: nodeHello })
     peerA.view.dispatch({
-      changes: { from: 0, insert: "h" },
+      changes: { from: 0, insert: "hello" },
+      effects: setIdMapEffect.of(peerA.getDocState().index.spans),
       annotations: isRemote.of(true),
     })
 
     // Broadcast to B
     handleRemoteMessage(
-      { type: "INSERT", peerId: "peer-A", node: nodeH, hlc: aHlc1 },
+      { type: "INSERT_RUN", peerId: "peer-A", node: nodeHello, hlc: aHlc1 },
       peerB.relayConfig,
     )
 
-    // Second char: "i" parented to "h"
+    // Second run: " world" parented to "hello"
     const aHlc2 = increment(peerA.hlcRef.current)
     peerA.hlcRef.current = aHlc2
-    const nodeI: CharNode = {
+    const nodeWorld: RunNode = {
       id: toString(aHlc2),
-      value: "i",
-      parentId: nodeH.id,
+      text: " world",
+      parentId: nodeHello.id,
+      peerId: "peer-A",
       deleted: false,
     }
 
-    peerA.relayConfig.dispatch({ type: "INSERT", node: nodeI })
+    peerA.relayConfig.dispatch({ type: "INSERT_RUN", node: nodeWorld })
     peerA.view.dispatch({
-      changes: { from: 1, insert: "i" },
+      changes: { from: 5, insert: " world" },
+      effects: setIdMapEffect.of(peerA.getDocState().index.spans),
       annotations: isRemote.of(true),
     })
 
     handleRemoteMessage(
-      { type: "INSERT", peerId: "peer-A", node: nodeI, hlc: aHlc2 },
+      { type: "INSERT_RUN", peerId: "peer-A", node: nodeWorld, hlc: aHlc2 },
       peerB.relayConfig,
     )
 
-    // Both peers should show "hi"
-    expect(reconstruct(peerA.getDocState())).toBe("hi")
-    expect(reconstruct(peerB.getDocState())).toBe("hi")
-    expect(peerA.view.state.doc.toString()).toBe("hi")
-    expect(peerB.view.state.doc.toString()).toBe("hi")
+    // Both peers should show "hello world"
+    expect(reconstruct(peerA.getDocState())).toBe("hello world")
+    expect(reconstruct(peerB.getDocState())).toBe("hello world")
+    expect(peerA.view.state.doc.toString()).toBe("hello world")
+    expect(peerB.view.state.doc.toString()).toBe("hello world")
   })
 })

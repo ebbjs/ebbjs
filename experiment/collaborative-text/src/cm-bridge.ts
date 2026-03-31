@@ -1,30 +1,35 @@
 /**
- * CodeMirror Bridge
+ * CodeMirror Bridge (Run-Optimized)
  *
  * Bidirectional translation layer between CodeMirror 6's text document model
- * and the Causal Tree. Maintains a StateField that maps every character
- * position to its CharNode.id, and provides an updateListener that intercepts
- * local edits and translates them into Causal Tree actions.
+ * and the run-length Causal Tree. Maintains a StateField that mirrors the
+ * PositionIndex spans, intercepts local edits and translates them into
+ * run-level actions (INSERT_RUN, DELETE_RANGE, SPLIT).
  *
- * Strategy: Option B — rebuild the ID map from the Causal Tree on every
- * transaction. Simpler than incremental updates, O(n) per keystroke but fine
- * for a prototype.
+ * Key changes from the per-character bridge:
+ * - StateField holds RunSpan[] (not string[])
+ * - Multi-character inserts produce a SINGLE INSERT_RUN
+ * - Mid-run insertions dispatch SPLIT before INSERT_RUN
+ * - Deletions dispatch DELETE_RANGE (with splits if needed)
+ * - Remote inserts/deletes apply full run text in one CM transaction
  */
 
 import {
   Annotation,
+  StateEffect,
   StateField,
   type Extension,
-  type Transaction,
 } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 import { increment, toString, type Hlc } from "./hlc.ts"
 import {
-  buildPositionMap,
-  findInsertPosition,
+  lookupPosition,
+  runOffsetToPosition,
   ROOT_ID,
   type DocAction,
   type DocState,
+  type RunSpan,
+  type PositionLookup,
 } from "./causal-tree.ts"
 
 // ---------------------------------------------------------------------------
@@ -50,20 +55,18 @@ export type BridgeConfig = {
 export const isRemote = Annotation.define<boolean>()
 
 // ---------------------------------------------------------------------------
-// StateField: ID map
+// StateField: span array (mirrors PositionIndex)
 // ---------------------------------------------------------------------------
 
+/** Effect to replace the entire span array in the StateField. */
+export const setIdMapEffect = StateEffect.define<readonly RunSpan[]>()
+
 /**
- * Creates the CM6 StateField that holds an array of node IDs parallel to the
- * document text. Index i in the array = node ID of the character at document
- * position i.
- *
- * Updated via the `setIdMapEffect`. The bridge's updateListener dispatches
- * this effect after processing each local or remote edit, ensuring the ID
- * map is rebuilt from the Causal Tree.
+ * Creates the CM6 StateField that holds the current span array, mirroring
+ * DocState.index.spans. Updated via setIdMapEffect after every tree mutation.
  */
-export const createIdMapField = (): StateField<readonly string[]> =>
-  StateField.define<readonly string[]>({
+export const createIdMapField = (): StateField<readonly RunSpan[]> =>
+  StateField.define<readonly RunSpan[]>({
     create: () => [],
     update: (value, tr) => {
       for (const effect of tr.effects) {
@@ -75,22 +78,66 @@ export const createIdMapField = (): StateField<readonly string[]> =>
     },
   })
 
-import { StateEffect } from "@codemirror/state"
+// ---------------------------------------------------------------------------
+// Position ↔ Run helpers (for Presence and external consumers)
+// ---------------------------------------------------------------------------
 
-/** Effect to replace the entire ID map in the StateField. */
-export const setIdMapEffect = StateEffect.define<readonly string[]>()
+/**
+ * Look up which run contains a given document position, using the StateField.
+ * Returns { runId, offset, spanIndex } or undefined if out of bounds.
+ */
+export const getRunAtPosition = (
+  state: { field: <T>(f: StateField<T>) => T },
+  position: number,
+  idMapField: StateField<readonly RunSpan[]>,
+): PositionLookup | undefined => {
+  const spans = state.field(idMapField)
+  // Walk the spans to find the one containing the position
+  let cumulative = 0
+  for (let i = 0; i < spans.length; i++) {
+    const span = spans[i]!
+    if (position < cumulative + span.length) {
+      return { runId: span.runId, offset: position - cumulative, spanIndex: i }
+    }
+    cumulative += span.length
+  }
+  return undefined
+}
+
+/**
+ * Find the document position of a given run ID + offset within it,
+ * using the StateField.
+ */
+export const getPositionOfRun = (
+  state: { field: <T>(f: StateField<T>) => T },
+  runId: string,
+  offset: number,
+  idMapField: StateField<readonly RunSpan[]>,
+): number | undefined => {
+  const spans = state.field(idMapField)
+  let cumulative = 0
+  for (const span of spans) {
+    if (span.runId === runId) {
+      if (offset >= span.length) return undefined
+      return cumulative + offset
+    }
+    cumulative += span.length
+  }
+  return undefined
+}
 
 // ---------------------------------------------------------------------------
 // Bridge Extension
 // ---------------------------------------------------------------------------
 
 /**
- * Returns a CM6 Extension that bundles the ID map StateField + an updateListener
- * that intercepts local edits and translates them into Causal Tree actions.
+ * Returns a CM6 Extension that bundles the span StateField + an updateListener
+ * that intercepts local edits and translates them into run-level Causal Tree
+ * actions.
  */
 export const createBridgeExtension = (
   config: BridgeConfig,
-  idMapField: StateField<readonly string[]>,
+  idMapField: StateField<readonly RunSpan[]>,
 ): Extension => {
   return [
     idMapField,
@@ -105,66 +152,137 @@ export const createBridgeExtension = (
       // Process local changes
       const view = update.view
 
-      // Collect the current ID map before changes
-      // We need to iterate through changes and process them
       for (const tr of update.transactions) {
         if (!tr.docChanged || tr.annotation(isRemote)) continue
 
         tr.changes.iterChanges(
           (fromA, toA, _fromB, _toB, inserted) => {
-            const currentIdMap = [...tr.startState.field(idMapField)]
+            const docState = config.getDocState()
+            const { index } = docState
 
+            // ----------------------------------------------------------
             // Handle deletions first (fromA to toA in the old doc)
-            for (let pos = toA - 1; pos >= fromA; pos--) {
-              const nodeId = currentIdMap[pos]
-              if (nodeId) {
-                config.dispatch({ type: "DELETE", nodeId })
+            // ----------------------------------------------------------
+            if (toA > fromA) {
+              // Find which runs are affected by the deletion range.
+              // We need to delete characters at positions [fromA, toA) in the
+              // old document. Walk from toA-1 back to fromA, grouping
+              // consecutive chars that belong to the same run.
+              //
+              // Strategy: iterate through the deletion range, identify
+              // contiguous segments within the same run, and dispatch one
+              // DELETE_RANGE per segment.
+              let pos = fromA
+              while (pos < toA) {
+                const lookup = lookupPosition(index, pos)
+                if (!lookup) {
+                  pos++
+                  continue
+                }
+
+                // How many chars from this run are in the deletion range?
+                const span = index.spans[lookup.spanIndex]!
+                const charsRemainingInSpan = span.length - lookup.offset
+                const charsRemainingInDeletion = toA - pos
+                const count = Math.min(charsRemainingInSpan, charsRemainingInDeletion)
+
+                config.dispatch({
+                  type: "DELETE_RANGE",
+                  runId: lookup.runId,
+                  offset: lookup.offset,
+                  count,
+                })
+
+                pos += count
               }
             }
 
-            // Handle insertions (inserted text)
+            // ----------------------------------------------------------
+            // Handle insertions
+            // ----------------------------------------------------------
             const insertedText = inserted.toString()
             if (insertedText.length > 0) {
-              // Parent is the character just before the insert position,
-              // or ROOT if inserting at position 0.
-              // In the old doc positions, fromA is where the insertion goes.
-              // After deletions, the parent is the char at fromA - 1 in the old doc.
+              // After deletions, the doc state may have changed.
+              // Re-read it for correct position resolution.
+              const currentState = config.getDocState()
+              const currentIndex = currentState.index
+
+              // Determine the parent run for the insertion.
+              // The parent is the run containing the character just before
+              // the insert position (fromA) in the ORIGINAL document.
+              // After deletions, we need to work with the current state.
+              //
+              // If fromA === 0 → parent is ROOT
+              // If fromA > 0 → find the char at position fromA - 1
+              //   (but we need to account for any chars that were deleted
+              //    before fromA in this same change)
+              //
+              // In a replacement (delete then insert at same from), after
+              // the delete the chars before fromA are still there.
+              // The parent for the insert is whatever is at position fromA-1
+              // in the state AFTER deletion.
               let parentId: string
+
+              // Compute the effective position in the post-deletion state.
+              // Deletions before fromA don't happen (fromA is the start of
+              // the deleted range). So position fromA-1 in the original doc
+              // is still at position fromA-1 in the post-deletion doc
+              // (characters before fromA are unchanged).
               if (fromA === 0) {
                 parentId = ROOT_ID
               } else {
-                parentId = currentIdMap[fromA - 1] ?? ROOT_ID
+                // Find the run at position fromA-1 in the current (post-deletion) state
+                const parentPos = fromA - 1
+                const parentLookup = lookupPosition(currentIndex, parentPos)
+                if (!parentLookup) {
+                  parentId = ROOT_ID
+                } else {
+                  const parentRun = currentState.nodes.get(parentLookup.runId)
+                  if (!parentRun) {
+                    parentId = ROOT_ID
+                  } else {
+                    // If the parent char is at the END of its run, no split needed
+                    // If it's in the middle, we need to split the run first
+                    if (parentLookup.offset < parentRun.text.length - 1) {
+                      // Mid-run: split at offset+1 (after the parent char)
+                      config.dispatch({
+                        type: "SPLIT",
+                        runId: parentLookup.runId,
+                        offset: parentLookup.offset + 1,
+                      })
+                    }
+                    // Parent is the left half (keeps original ID)
+                    parentId = parentLookup.runId
+                  }
+                }
               }
 
-              // Insert each character sequentially, each parented to the previous
-              for (let i = 0; i < insertedText.length; i++) {
-                const newHlc = increment(config.getHlc())
-                config.setHlc(newHlc)
-                const nodeId = toString(newHlc)
+              // Create a single RunNode for the entire inserted text
+              const newHlc = increment(config.getHlc())
+              config.setHlc(newHlc)
+              const nodeId = toString(newHlc)
 
-                config.dispatch({
-                  type: "INSERT",
-                  node: {
-                    id: nodeId,
-                    value: insertedText[i]!,
-                    parentId,
-                    deleted: false,
-                  },
-                })
-
-                parentId = nodeId // next char is parented to this one
-              }
+              config.dispatch({
+                type: "INSERT_RUN",
+                node: {
+                  id: nodeId,
+                  text: insertedText,
+                  parentId,
+                  peerId: config.peerId,
+                  deleted: false,
+                },
+              })
             }
           },
         )
       }
 
-      // Rebuild the ID map from the Causal Tree and dispatch it as a
-      // follow-up transaction. The presence listener watches for this
-      // effect to know the ID map is fresh before broadcasting.
-      const posMap = buildPositionMap(config.getDocState())
+      // Rebuild the span field from the Causal Tree's index and dispatch
+      // it as a follow-up transaction. Marked as remote so the listener
+      // skips it.
+      const spans = config.getDocState().index.spans
       view.dispatch({
-        effects: setIdMapEffect.of(posMap.idAtPosition),
+        effects: setIdMapEffect.of(spans),
         annotations: isRemote.of(true),
       })
     }),
@@ -172,74 +290,49 @@ export const createBridgeExtension = (
 }
 
 // ---------------------------------------------------------------------------
-// Remote operation helpers (for Slice 2, stubbed here for completeness)
+// Remote operation helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Dispatch a CM transaction that inserts a character at the given position.
+ * Dispatch a CM transaction that inserts a run's full text at the given position.
  * Marks the transaction as remote so the updateListener ignores it.
  *
- * Combines the text change and the ID map rebuild into a single dispatch
- * so the ID map is always consistent with the document in the same
- * transaction — no transient inconsistency window.
+ * Combines the text change and the span field rebuild into a single dispatch
+ * so the spans are always consistent with the document.
  */
 export const applyRemoteInsert = (
   view: EditorView,
   position: number,
-  char: string,
-  _nodeId: string,
-  idMapField: StateField<readonly string[]>,
+  text: string,
+  _runId: string,
+  _idMapField: StateField<readonly RunSpan[]>,
   getDocState: () => DocState,
 ): void => {
-  const posMap = buildPositionMap(getDocState())
+  const spans = getDocState().index.spans
   view.dispatch({
-    changes: { from: position, insert: char },
-    effects: setIdMapEffect.of(posMap.idAtPosition),
+    changes: { from: position, insert: text },
+    effects: setIdMapEffect.of(spans),
     annotations: isRemote.of(true),
   })
 }
 
 /**
- * Dispatch a CM transaction that deletes the character at the given position.
+ * Dispatch a CM transaction that deletes `count` characters starting at `from`.
  * Marks as remote via annotation.
  *
- * Same as applyRemoteInsert — combines text change and ID map in one dispatch.
+ * Combines text change and span field in one dispatch.
  */
 export const applyRemoteDelete = (
   view: EditorView,
-  position: number,
-  idMapField: StateField<readonly string[]>,
+  from: number,
+  count: number,
+  _idMapField: StateField<readonly RunSpan[]>,
   getDocState: () => DocState,
 ): void => {
-  const posMap = buildPositionMap(getDocState())
+  const spans = getDocState().index.spans
   view.dispatch({
-    changes: { from: position, to: position + 1 },
-    effects: setIdMapEffect.of(posMap.idAtPosition),
+    changes: { from, to: from + count },
+    effects: setIdMapEffect.of(spans),
     annotations: isRemote.of(true),
   })
-}
-
-// ---------------------------------------------------------------------------
-// Position ↔ ID helpers
-// ---------------------------------------------------------------------------
-
-/** Read the node ID at a given document position from the StateField. */
-export const getIdAtPosition = (
-  state: { field: <T>(f: StateField<T>) => T },
-  position: number,
-  idMapField: StateField<readonly string[]>,
-): string | undefined => {
-  const idMap = state.field(idMapField)
-  return idMap[position]
-}
-
-/** Find the document position of a given node ID. Linear scan. */
-export const getPositionOfId = (
-  state: { field: <T>(f: StateField<T>) => T },
-  nodeId: string,
-  idMapField: StateField<readonly string[]>,
-): number | undefined => {
-  const idMap = state.field(idMapField)
-  const idx = idMap.indexOf(nodeId)
-  return idx === -1 ? undefined : idx
 }

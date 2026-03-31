@@ -2,94 +2,98 @@
 
 ## Purpose
 
-Tracks where remote peers' cursors and selections are in the document and renders them as visual decorations in CodeMirror. Presence data is expressed in terms of `CharNode` IDs (stable across edits) rather than positions (which shift). The Presence module resolves IDs to current positions using the CM Bridge's StateField, and renders cursor lines and selection highlights as CM6 decorations.
+Tracks where remote peers' cursors and selections are in the document and renders them as visual decorations in CodeMirror. Presence data is now expressed in terms of `(runId, offset)` pairs (stable across edits) rather than bare character-position node IDs. The Presence module resolves these to current document positions using the Causal Tree's `PositionIndex` and renders cursor lines and selection highlights as CM6 decorations.
 
 ## Responsibilities
 
-- Maintain a map of remote peer presence data (`peerId → { anchorId, headId }`)
+- Maintain a map of remote peer presence data (`peerId → { anchorRunId, anchorOffset, headRunId, headOffset }`)
 - Update presence data when remote presence messages arrive
-- Resolve node IDs to current document positions via the CM Bridge
+- Resolve `(runId, offset)` pairs to current document positions via the `PositionIndex`
 - Render remote cursors as `WidgetDecoration` (colored cursor line) and selections as `Decoration.mark` (colored highlight)
 - Assign distinct colors to each remote peer
 
 ## Public interface
-
-### Exported functions / extensions
-
-| Name | Signature | Description |
-|------|-----------|-------------|
-| `createPresenceExtension` | `(config: PresenceConfig) => Extension` | Returns a CM6 Extension (ViewPlugin) that renders remote cursors and selections as decorations |
-| `usePresence` | `(peerId: string) => PresenceHook` | React hook that manages the presence state map and provides functions to update it |
 
 ### Types
 
 ```ts
 type PresenceData = {
   readonly peerId: string
-  readonly anchorId: string   // CharNode ID at the anchor of the selection
-  readonly headId: string     // CharNode ID at the head of the selection (same as anchor if no selection)
-  readonly color: string      // CSS color for this peer's cursor/selection
+  readonly anchorRunId: string    // RunNode ID at the anchor of the selection
+  readonly anchorOffset: number   // Offset within the anchor run
+  readonly headRunId: string      // RunNode ID at the head of the selection
+  readonly headOffset: number     // Offset within the head run
+  readonly color: string          // CSS color for this peer's cursor/selection
 }
 
 type PresenceConfig = {
   readonly localPeerId: string
   readonly getPresenceMap: () => ReadonlyMap<string, PresenceData>
-  readonly getPositionOfId: (nodeId: string) => number | undefined
+  readonly idMapField: StateField<readonly RunSpan[]>
+  readonly getDocState: () => DocState
 }
 
 type PresenceHook = {
   readonly presenceMap: ReadonlyMap<string, PresenceData>
-  readonly updatePresence: (peerId: string, anchorId: string, headId: string) => void
-  readonly getLocalPresence: (editorState: EditorState) => { anchorId: string; headId: string }
+  readonly presenceMapRef: MutableRefObject<ReadonlyMap<string, PresenceData>>
+  readonly updatePresence: (
+    peerId: string,
+    anchorRunId: string, anchorOffset: number,
+    headRunId: string, headOffset: number,
+  ) => void
+  readonly getLocalPresenceIds: (editorState: EditorState) => {
+    anchorRunId: string; anchorOffset: number;
+    headRunId: string; headOffset: number;
+  }
 }
 ```
+
+### Exported functions / values
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `usePresence` | `(peerId: string, idMapField: StateField<...>) => PresenceHook` | React hook managing the presence state map. Provides `updatePresence` and `getLocalPresenceIds`. |
+| `createPresenceExtension` | `(config: PresenceConfig) => Extension` | CM6 ViewPlugin that renders remote cursors and selections as decorations. |
+| `presenceUpdateEffect` | `StateEffect<void>` | No-op effect dispatched to poke CM into rebuilding presence decorations when remote presence data changes. |
+| `positionToRunOffset` | `(editorState, position, idMapField) => { runId, offset }` | Map a cursor position to a `(runId, offset)` pair for presence broadcasting. |
+| `runOffsetToDocPosition` | `(editorState, runId, offset, idMapField) => number \| undefined` | Resolve a `(runId, offset)` pair back to a document position for rendering. |
 
 ## Dependencies
 
 | Dependency | What it needs | Reference |
 |------------|---------------|-----------|
-| CM Bridge | `getPositionOfId` function to resolve node IDs to positions | [cm-bridge.md](cm-bridge.md#exported-functions--extensions) |
-| CodeMirror 6 | `ViewPlugin`, `Decoration`, `WidgetType`, `EditorView`, `DecorationSet` | External dependency (`@codemirror/view`) |
+| Causal Tree | `DocState`, `PositionIndex`, `RunSpan`, `runOffsetToPosition`, `lookupPosition`, `ROOT_ID` | [causal-tree.md](causal-tree.md) |
+| CM Bridge | `idMapField` StateField (reads spans for position resolution) | [cm-bridge.md](cm-bridge.md) |
+| `@codemirror/view` | `ViewPlugin`, `Decoration`, `WidgetType`, `EditorView`, `DecorationSet` | External |
+| `@codemirror/state` | `StateEffect`, `EditorState`, `Extension`, `StateField` | External |
 
 ## Internal design notes
 
-### Cursor rendering
+### Change from node IDs to (runId, offset) pairs
 
-The ViewPlugin rebuilds its `DecorationSet` on every document update. For each entry in the presence map (excluding the local peer):
-1. Look up `anchorId` and `headId` positions via `getPositionOfId`
-2. If both resolve to valid positions:
-   - If anchor === head: render a `WidgetDecoration` at that position (a thin colored line)
-   - If anchor !== head: render a `Decoration.mark` over the range with a colored background
+The current implementation tracks cursor position as a single `CharNode.id`. With runs, a cursor position within a run needs both the run ID and the character offset within that run. For example, if the cursor is after the 3rd character of run "hello", the presence data is `{ runId: "hello-run-id", offset: 3 }`.
 
-If an ID doesn't resolve (the character was deleted), skip that peer's cursor. This is acceptable for a prototype — in production you'd fall back to the nearest visible character.
+This is more stable than bare positions because:
+- If text is inserted *before* the run, the `(runId, offset)` still resolves correctly
+- If the run itself is extended (more chars appended), the offset still points to the same character
+- Only if the run is *split* at or before the offset does the resolution need to account for the split — and `runOffsetToPosition` handles this by checking if the run still exists and has enough characters
 
-### Color assignment
+### Cursor rendering (unchanged approach)
 
-Use a fixed palette of 4-5 distinct colors. Assign based on peer ID hash or simple index. Since this prototype only has 2 peers, even a hardcoded mapping (`peer-A → blue`, `peer-B → orange`) is fine.
+The ViewPlugin rebuilds its `DecorationSet` on every update. For each entry in the presence map (excluding the local peer):
+1. Resolve `(anchorRunId, anchorOffset)` and `(headRunId, headOffset)` to document positions
+2. If both resolve: render cursor widget (if same position) or selection mark (if range)
+3. If either fails to resolve (run deleted): skip that peer's cursor
 
-### Local presence tracking
+### Color assignment (unchanged)
 
-`getLocalPresence` reads the CM editor's current selection (`state.selection.main`) and maps the anchor/head positions back to node IDs using the CM Bridge's ID map. This is broadcast to remote peers via the Relay.
-
-### Presence message format
-
-Presence updates are sent as separate messages through the Relay (not bundled with edit operations). The message shape:
-
-```ts
-type PresenceMessage = {
-  readonly type: "PRESENCE"
-  readonly peerId: string
-  readonly anchorId: string
-  readonly headId: string
-}
-```
+Hardcoded: `peer-A → blue (#3b82f6)`, `peer-B → orange (#f97316)`. Fallback palette for unknown peers.
 
 ## Open questions
 
-- **Throttling presence updates:** Every cursor movement triggers a presence broadcast. For two local editors this is fine. If this were a real network, you'd throttle to ~50ms. Not needed for the prototype but worth noting.
-- **Cursor widget styling:** The cursor widget needs to be a DOM element (a `<span>` with absolute positioning and a colored border). CM6's `WidgetType` requires a `toDOM` method. This is one place where a class is technically required by CM6's API — `WidgetType` is a class you extend. This is an exception to the "no classes" rule since it's dictated by the CM6 API. Alternatively, use `Decoration.widget` with an inline `toDOM` function if CM6 supports it.
+- **Cursor on split boundary**: If a run is split at exactly the cursor's offset, should the cursor resolve to the end of the left half or the beginning of the right half? **Suggested approach**: End of the left half (the cursor was "after" that character, and the left half retains the original ID). The right half is a new run from the cursor's perspective.
 
 ## File
 
-`src/presence.ts` — imports from `./cm-bridge.ts` and `@codemirror/*`.
-No dedicated test file — tested through Slice 4 acceptance criteria.
+`src/presence.ts` — imports from `./causal-tree.ts`, `./cm-bridge.ts`, and `@codemirror/*`.
+No dedicated test file — tested through slice acceptance criteria.

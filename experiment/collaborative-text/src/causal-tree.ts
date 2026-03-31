@@ -1,60 +1,95 @@
 /**
- * Causal Tree
+ * Causal Tree (Run-Length Optimized)
  *
- * Reducer-based document state: a Map<string, CharNode> with pure insert,
- * delete, and reconstruct operations. Each character knows its parent
- * (the character it was inserted after), forming a causal tree.
+ * Reducer-based document state using RunNodes — contiguous sequences of
+ * characters by the same peer — ordered by Hybrid Logical Clocks. Maintains
+ * an incremental PositionIndex that maps document positions to runs without
+ * requiring a full DFS traversal on every edit.
  *
  * This is the "model" — no knowledge of CodeMirror, React, or the network.
  */
-
-import { compare } from "./hlc.ts"
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type CharNode = {
-  readonly id: string // HLC-derived unique ID (from hlc.toString())
-  readonly value: string // Single character
-  readonly parentId: string // ID of the node this was inserted after
-  readonly deleted: boolean // Tombstone flag
+/** A run of consecutive characters by one peer. */
+export type RunNode = {
+  readonly id: string // HLC-derived ID (from the first character's HLC)
+  readonly text: string // 1+ characters (the run content)
+  readonly parentId: string // ID of the run this was inserted after
+  readonly peerId: string // Which peer authored this run
+  readonly deleted: boolean // Tombstone flag (applies to entire run)
+}
+
+/**
+ * A span in the position index. Each span covers a contiguous range
+ * of document positions belonging to one visible run.
+ */
+export type RunSpan = {
+  readonly runId: string // Which RunNode this span belongs to
+  readonly length: number // Number of visible characters in this span
+}
+
+/**
+ * Incremental position index. A flat array of RunSpan entries where
+ * each entry covers a contiguous range of document positions.
+ * Maintained atomically with every tree mutation by the reducer.
+ */
+export type PositionIndex = {
+  readonly spans: readonly RunSpan[] // Ordered list of visible spans
+  readonly totalLength: number // Sum of all span lengths (= doc length)
 }
 
 export type DocState = {
-  readonly nodes: ReadonlyMap<string, CharNode> // All nodes (including deleted)
+  readonly nodes: ReadonlyMap<string, RunNode>
   readonly children: ReadonlyMap<string, readonly string[]> // parentId → ordered child IDs
+  readonly index: PositionIndex
 }
 
-export type InsertAction = {
-  readonly type: "INSERT"
-  readonly node: CharNode
+/** Result of looking up a document position in the index. */
+export type PositionLookup = {
+  readonly runId: string // Which run contains this position
+  readonly offset: number // Offset within the run's text
+  readonly spanIndex: number // Index into PositionIndex.spans
 }
 
-export type DeleteAction = {
-  readonly type: "DELETE"
-  readonly nodeId: string
+export type InsertRunAction = {
+  readonly type: "INSERT_RUN"
+  readonly node: RunNode
 }
 
-export type DocAction = InsertAction | DeleteAction
-
-/** Bidirectional position mapping: visible-doc index ↔ node ID. */
-export type PositionMap = {
-  readonly idAtPosition: readonly string[] // index → nodeId (only visible chars)
-  readonly positionOfId: ReadonlyMap<string, number> // nodeId → index (only visible chars)
+export type DeleteRangeAction = {
+  readonly type: "DELETE_RANGE"
+  readonly runId: string
+  readonly offset: number // Start offset within the run's text
+  readonly count: number // Number of characters to delete
 }
+
+/**
+ * Split a run at a given offset. The left half keeps the original ID.
+ * The right half gets a deterministic split ID.
+ */
+export type SplitAction = {
+  readonly type: "SPLIT"
+  readonly runId: string
+  readonly offset: number // Split point within the run's text
+}
+
+export type DocAction = InsertRunAction | DeleteRangeAction | SplitAction
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Sentinel root node. All top-level characters are children of ROOT. */
+/** Sentinel root node. All top-level runs are children of ROOT. */
 export const ROOT_ID = "ROOT"
 
-const ROOT_NODE: CharNode = {
+const ROOT_NODE: RunNode = {
   id: ROOT_ID,
-  value: "",
+  text: "",
   parentId: "",
+  peerId: "",
   deleted: false,
 }
 
@@ -62,114 +97,141 @@ const ROOT_NODE: CharNode = {
 // Public functions
 // ---------------------------------------------------------------------------
 
+/**
+ * Deterministic split-ID generation.
+ * Same inputs always produce the same output, regardless of which peer
+ * performs the split. The separator ":s:" is unambiguous — HLC IDs use ":"
+ * as a separator but never contain ":s:".
+ */
+export const makeSplitId = (originalId: string, offset: number): string =>
+  `${originalId}:s:${offset}`
+
 /** Create an empty document state with only the root sentinel node. */
 export const createDocState = (): DocState => ({
   nodes: new Map([[ROOT_ID, ROOT_NODE]]),
   children: new Map([[ROOT_ID, []]]),
+  index: { spans: [], totalLength: 0 },
 })
 
 /**
- * Pure reducer. Handles INSERT and DELETE actions. Returns new state.
- *
- * INSERT: adds the node to `nodes` and splices it into the correct position
- * in `children[parentId]` based on the HLC tie-break rule (higher HLC first).
- *
- * DELETE: sets the `deleted` flag on the node. Does NOT remove from `children`
- * (tombstone approach — the node stays in the tree for ordering purposes).
+ * Pure reducer. Handles INSERT_RUN, DELETE_RANGE, and SPLIT actions.
+ * Returns new state with updated index.
  */
 export const docReducer = (state: DocState, action: DocAction): DocState => {
   switch (action.type) {
-    case "INSERT":
-      return applyInsert(state, action.node)
-    case "DELETE":
-      return applyDelete(state, action.nodeId)
+    case "INSERT_RUN":
+      return applyInsertRun(state, action.node)
+    case "SPLIT":
+      return applySplit(state, action.runId, action.offset)
+    case "DELETE_RANGE":
+      return applyDeleteRange(state, action.runId, action.offset, action.count)
   }
 }
 
 /**
  * DFS traversal of the causal tree, skipping deleted nodes, producing the
- * visible document string.
+ * visible document string. For debugging/consistency checks only — not on
+ * the hot path.
  */
 export const reconstruct = (state: DocState): string => {
   const result: string[] = []
   dfs(state, ROOT_ID, (node) => {
     if (!node.deleted && node.id !== ROOT_ID) {
-      result.push(node.value)
+      result.push(node.text)
     }
   })
   return result.join("")
 }
 
 /**
- * DFS traversal that returns a bidirectional mapping:
- * position index ↔ node ID for all visible (non-deleted) characters.
+ * O(spans) lookup: which run contains a given document position.
+ * Returns undefined if position is out of bounds.
  */
-export const buildPositionMap = (state: DocState): PositionMap => {
-  const idAtPosition: string[] = []
-  const positionOfId = new Map<string, number>()
+export const lookupPosition = (
+  index: PositionIndex,
+  position: number,
+): PositionLookup | undefined => {
+  if (position < 0 || position >= index.totalLength) return undefined
 
-  dfs(state, ROOT_ID, (node) => {
-    if (!node.deleted && node.id !== ROOT_ID) {
-      const pos = idAtPosition.length
-      idAtPosition.push(node.id)
-      positionOfId.set(node.id, pos)
+  let cumulative = 0
+  for (let i = 0; i < index.spans.length; i++) {
+    const span = index.spans[i]!
+    if (position < cumulative + span.length) {
+      return {
+        runId: span.runId,
+        offset: position - cumulative,
+        spanIndex: i,
+      }
     }
-  })
+    cumulative += span.length
+  }
 
-  return { idAtPosition, positionOfId }
+  return undefined
 }
 
 /**
- * Given a parent node and a new node's ID, determine the 0-based index in
- * the visible document where this character should appear.
+ * Given a run ID and offset within it, return the absolute document position.
+ * O(spans). Returns undefined if the run is not in the index.
+ */
+export const runOffsetToPosition = (
+  index: PositionIndex,
+  runId: string,
+  offset: number,
+): number | undefined => {
+  let cumulative = 0
+  for (const span of index.spans) {
+    if (span.runId === runId) {
+      if (offset >= span.length) return undefined
+      return cumulative + offset
+    }
+    cumulative += span.length
+  }
+  return undefined
+}
+
+/**
+ * Determine the document position where a new run should appear, based on
+ * sibling ordering. Uses the span index — no DFS traversal.
  *
- * Walks the tree to find where the new node would be placed among its
- * siblings, then counts visible characters up to that point.
+ * Approach: find the parent's position in the span array, advance past the
+ * parent's own span, then for each preceding sibling (higher HLC) sum the
+ * span lengths of its entire subtree.
  */
 export const findInsertPosition = (
   state: DocState,
   parentId: string,
   newNodeId: string,
 ): number => {
-  // First, determine where among the parent's children the new node would go.
-  // Children are ordered by descending HLC (higher first).
   const siblings = state.children.get(parentId) ?? []
-  let insertIdx = siblings.length // default: after all siblings
 
+  // Find where among siblings the new node would go (descending HLC order)
+  let insertIdx = siblings.length
   for (let i = 0; i < siblings.length; i++) {
-    const siblingId = siblings[i]!
-    // Compare: we want descending order, so higher HLC first.
-    // If newNodeId > siblingId (by HLC string comparison, which matches compare()),
-    // the new node goes before this sibling.
-    if (newNodeId > siblingId) {
+    if (newNodeId > siblings[i]!) {
       insertIdx = i
       break
     }
   }
 
-  // Now count visible characters up to that insertion point.
-  // The position is: (visible chars before parent) + 1 (for parent, if visible)
-  //                  + (visible chars in subtrees of siblings before insertIdx)
-  const posMap = buildPositionMap(state)
-  const parentPos = posMap.positionOfId.get(parentId)
-
-  // Start right after the parent's position
+  // Compute base position: right after the parent (or 0 for ROOT)
   let basePos: number
   if (parentId === ROOT_ID) {
     basePos = 0
-  } else if (parentPos !== undefined) {
-    basePos = parentPos + 1
   } else {
-    // Parent is deleted — insert at position 0 as fallback
-    // This shouldn't happen in normal operation
-    return 0
+    const parentPos = runOffsetToPosition(state.index, parentId, 0)
+    if (parentPos === undefined) {
+      // Parent is deleted or not in index — fallback
+      return 0
+    }
+    const parentSpan = state.index.spans.find((s) => s.runId === parentId)
+    basePos = parentPos + (parentSpan?.length ?? 0)
   }
 
-  // Add the count of visible characters in the subtrees of siblings that come
-  // before the insertion index (i.e., siblings with higher HLCs)
+  // Add visible characters in subtrees of siblings that precede insertIdx.
+  // Uses the span index: collect all node IDs in each sibling's subtree,
+  // then sum the lengths of matching spans.
   for (let i = 0; i < insertIdx; i++) {
-    const sibId = siblings[i]!
-    basePos += countVisibleInSubtree(state, sibId)
+    basePos += subtreeVisibleLength(state, siblings[i]!)
   }
 
   return basePos
@@ -179,8 +241,8 @@ export const findInsertPosition = (
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/** Apply an INSERT action. */
-const applyInsert = (state: DocState, node: CharNode): DocState => {
+/** Apply an INSERT_RUN action. */
+const applyInsertRun = (state: DocState, node: RunNode): DocState => {
   // Idempotency: if node already exists, skip
   if (state.nodes.has(node.id)) {
     return state
@@ -190,11 +252,10 @@ const applyInsert = (state: DocState, node: CharNode): DocState => {
   const newNodes = new Map(state.nodes)
   newNodes.set(node.id, node)
 
-  // Insert into children list at the correct sorted position
+  // Insert into children list at the correct sorted position (descending HLC)
   const newChildren = new Map(state.children)
   const siblings = [...(newChildren.get(node.parentId) ?? [])]
 
-  // Find insertion point: descending HLC order (higher ID string first)
   let insertIdx = siblings.length
   for (let i = 0; i < siblings.length; i++) {
     if (node.id > siblings[i]!) {
@@ -211,25 +272,221 @@ const applyInsert = (state: DocState, node: CharNode): DocState => {
     newChildren.set(node.id, [])
   }
 
-  return { nodes: newNodes, children: newChildren }
+  // Update the position index: find where in the flat span array this run goes.
+  // We need the state with updated children for findSpanInsertIndex to work,
+  // but we'll compute the span position based on the tree structure.
+  const stateWithTree: DocState = {
+    nodes: newNodes,
+    children: newChildren,
+    index: state.index,
+  }
+
+  const spanIndex = findSpanInsertIndex(stateWithTree, node)
+  const newSpans = [...state.index.spans]
+
+  if (!node.deleted) {
+    newSpans.splice(spanIndex, 0, { runId: node.id, length: node.text.length })
+  }
+
+  return {
+    nodes: newNodes,
+    children: newChildren,
+    index: {
+      spans: newSpans,
+      totalLength: node.deleted
+        ? state.index.totalLength
+        : state.index.totalLength + node.text.length,
+    },
+  }
 }
 
-/** Apply a DELETE action (tombstone). */
-const applyDelete = (state: DocState, nodeId: string): DocState => {
-  const node = state.nodes.get(nodeId)
+/** Apply a SPLIT action. */
+const applySplit = (
+  state: DocState,
+  runId: string,
+  offset: number,
+): DocState => {
+  const node = state.nodes.get(runId)
+  if (!node) {
+    console.error(`SPLIT: node ${runId} not found`)
+    return state
+  }
+
+  if (offset <= 0 || offset >= node.text.length) {
+    console.error(
+      `SPLIT: invalid offset ${offset} for node with text length ${node.text.length}`,
+    )
+    return state
+  }
+
+  const splitId = makeSplitId(runId, offset)
+
+  // If the split has already been performed (idempotency), skip
+  if (state.nodes.has(splitId)) {
+    return state
+  }
+
+  // Left half: keeps original ID, truncated text
+  const leftNode: RunNode = {
+    ...node,
+    text: node.text.slice(0, offset),
+  }
+
+  // Right half: new split ID, remainder text, parented to left half
+  const rightNode: RunNode = {
+    id: splitId,
+    text: node.text.slice(offset),
+    parentId: runId, // child of left half
+    peerId: node.peerId,
+    deleted: node.deleted,
+  }
+
+  // Update nodes
+  const newNodes = new Map(state.nodes)
+  newNodes.set(runId, leftNode)
+  newNodes.set(splitId, rightNode)
+
+  // Update children:
+  // - Right half inherits original's children
+  // - Left half's children = [rightId, ...] (right is the first/highest-priority child
+  //   because it's the continuation of the original text)
+  const newChildren = new Map(state.children)
+  const originalChildren = newChildren.get(runId) ?? []
+
+  // Right half gets the original's children
+  newChildren.set(splitId, [...originalChildren])
+
+  // Left half's first child is the right half, placed before any existing children.
+  // The right half must come first among left's children because it's the
+  // continuation of the run — it should appear immediately after the left half
+  // in document order. We place it at position 0 so it sorts before any
+  // other children that might be inserted later (those would have their own
+  // HLC ordering). Actually, we need to insert it at the correct sorted position
+  // among siblings. But since rightNode is the continuation of the original,
+  // and any existing children were children of the original node (now re-parented
+  // to right), left's children list should just be [splitId].
+  newChildren.set(runId, [splitId])
+
+  // Re-parent the original's children to point to the right half.
+  // The children entries in the children map are keyed by parent, so we
+  // already moved them above. But the child nodes' parentId fields point
+  // to the original — we need to update those to point to the right half.
+  for (const childId of originalChildren) {
+    const childNode = newNodes.get(childId)
+    if (childNode) {
+      newNodes.set(childId, { ...childNode, parentId: splitId })
+    }
+  }
+
+  // Update the position index:
+  // Find the span for the original run, replace with two spans
+  if (node.deleted) {
+    // Deleted nodes have no spans — just update the tree structure
+    return { nodes: newNodes, children: newChildren, index: state.index }
+  }
+
+  const newSpans = [...state.index.spans]
+  const spanIdx = newSpans.findIndex((s) => s.runId === runId)
+
+  if (spanIdx === -1) {
+    console.error(`SPLIT: span for ${runId} not found in index`)
+    return { nodes: newNodes, children: newChildren, index: state.index }
+  }
+
+  // Replace one span with two
+  newSpans.splice(spanIdx, 1, {
+    runId: runId,
+    length: offset,
+  }, {
+    runId: splitId,
+    length: node.text.length - offset,
+  })
+
+  return {
+    nodes: newNodes,
+    children: newChildren,
+    index: { spans: newSpans, totalLength: state.index.totalLength },
+  }
+}
+
+/** Apply a DELETE_RANGE action. */
+const applyDeleteRange = (
+  state: DocState,
+  runId: string,
+  offset: number,
+  count: number,
+): DocState => {
+  const node = state.nodes.get(runId)
+  if (!node || node.deleted) return state
+
+  const textLen = node.text.length
+
+  // Validate range
+  if (offset < 0 || count <= 0 || offset + count > textLen) {
+    console.error(
+      `DELETE_RANGE: invalid range [${offset}, ${offset + count}) for text length ${textLen}`,
+    )
+    return state
+  }
+
+  // Case 1: Full delete — tombstone the entire run
+  if (offset === 0 && count === textLen) {
+    return tombstoneRun(state, runId)
+  }
+
+  // Case 2: Delete from the beginning of the run
+  if (offset === 0) {
+    // Split at `count`, then tombstone the left half
+    const split = applySplit(state, runId, count)
+    return tombstoneRun(split, runId)
+  }
+
+  // Case 3: Delete from the end of the run
+  if (offset + count === textLen) {
+    // Split at `offset`, then tombstone the right half
+    const split = applySplit(state, runId, offset)
+    const rightId = makeSplitId(runId, offset)
+    return tombstoneRun(split, rightId)
+  }
+
+  // Case 4: Delete from the middle of the run
+  // First split at `offset` to isolate the tail
+  const split1 = applySplit(state, runId, offset)
+  const rightId = makeSplitId(runId, offset)
+
+  // Then split the right half at `count` to isolate the portion to delete
+  const split2 = applySplit(split1, rightId, count)
+
+  // Tombstone the right half (which now contains only the deleted characters)
+  return tombstoneRun(split2, rightId)
+}
+
+/** Tombstone a single run and remove its span from the index. */
+const tombstoneRun = (state: DocState, runId: string): DocState => {
+  const node = state.nodes.get(runId)
   if (!node || node.deleted) return state
 
   const newNodes = new Map(state.nodes)
-  newNodes.set(nodeId, { ...node, deleted: true })
+  newNodes.set(runId, { ...node, deleted: true })
 
-  return { nodes: newNodes, children: state.children }
+  // Remove the span from the index
+  const newSpans = state.index.spans.filter((s) => s.runId !== runId)
+
+  return {
+    nodes: newNodes,
+    children: state.children,
+    index: {
+      spans: newSpans,
+      totalLength: state.index.totalLength - node.text.length,
+    },
+  }
 }
 
 /** DFS traversal from a given root, calling visitor for each node. */
 const dfs = (
   state: DocState,
   nodeId: string,
-  visitor: (node: CharNode) => void,
+  visitor: (node: RunNode) => void,
 ): void => {
   const node = state.nodes.get(nodeId)
   if (!node) return
@@ -242,13 +499,105 @@ const dfs = (
   }
 }
 
-/** Count visible (non-deleted) characters in a node's subtree (including itself). */
-const countVisibleInSubtree = (state: DocState, nodeId: string): number => {
-  let count = 0
-  dfs(state, nodeId, (node) => {
-    if (!node.deleted && node.id !== ROOT_ID) {
-      count++
+/**
+ * Collect all node IDs in a subtree rooted at `rootId` (inclusive).
+ * Walks the children map only — no DFS over node values.
+ * O(subtree-size).
+ */
+const collectSubtreeIds = (
+  state: DocState,
+  rootId: string,
+): Set<string> => {
+  const result = new Set<string>()
+  const stack = [rootId]
+  while (stack.length > 0) {
+    const id = stack.pop()!
+    result.add(id)
+    const childIds = state.children.get(id) ?? []
+    for (let i = childIds.length - 1; i >= 0; i--) {
+      stack.push(childIds[i]!)
     }
-  })
-  return count
+  }
+  return result
+}
+
+/**
+ * Sum the visible character count (span lengths) for all nodes in a subtree.
+ * Uses the span index — no DFS over node text.
+ *
+ * Collects subtree IDs via the children map, then sums matching span lengths.
+ * O(subtree-size + spans).
+ */
+const subtreeVisibleLength = (
+  state: DocState,
+  rootId: string,
+): number => {
+  const ids = collectSubtreeIds(state, rootId)
+  let total = 0
+  for (const span of state.index.spans) {
+    if (ids.has(span.runId)) {
+      total += span.length
+    }
+  }
+  return total
+}
+
+/**
+ * Find the index in the flat span array where a newly inserted run's span
+ * should be spliced. Uses the span index — no full-document DFS.
+ *
+ * Approach:
+ * 1. Find the parent's span in the array (or start at 0 for ROOT).
+ * 2. Advance past the parent's span.
+ * 3. For each sibling with a higher HLC (comes before the new node in the
+ *    children list), skip past all spans belonging to that sibling's subtree.
+ * 4. The resulting position is the insertion index.
+ *
+ * This works because the span array is in document order, and subtrees
+ * occupy contiguous ranges in the span array.
+ */
+const findSpanInsertIndex = (state: DocState, newNode: RunNode): number => {
+  const { spans } = state.index
+  const siblings = state.children.get(newNode.parentId) ?? []
+
+  // Find where the new node sits among its siblings (descending HLC)
+  let siblingInsertIdx = siblings.length
+  for (let i = 0; i < siblings.length; i++) {
+    if (siblings[i] === newNode.id) {
+      siblingInsertIdx = i
+      break
+    }
+  }
+
+  // Find the starting span index: right after the parent's span
+  let spanIdx: number
+  if (newNode.parentId === ROOT_ID) {
+    spanIdx = 0
+  } else {
+    // Find the parent's span index
+    const parentSpanIdx = spans.findIndex(
+      (s) => s.runId === newNode.parentId,
+    )
+    if (parentSpanIdx === -1) {
+      // Parent is deleted (no span) — find where its subtree would be
+      // by scanning for any span belonging to its subtree. If none, append.
+      // For a deleted parent with no visible descendants before us, we need
+      // to find the right position by walking up to the grandparent.
+      // Simplification: count visible chars before us and locate the span index.
+      // This path is rare (inserting as child of a deleted node).
+      return spans.length
+    }
+    spanIdx = parentSpanIdx + 1
+  }
+
+  // Skip past spans belonging to subtrees of preceding siblings
+  for (let i = 0; i < siblingInsertIdx; i++) {
+    const sibId = siblings[i]!
+    const sibIds = collectSubtreeIds(state, sibId)
+    while (spanIdx < spans.length && sibIds.has(spans[spanIdx]!.runId)) {
+      spanIdx++
+    }
+  }
+
+  return spanIdx
 }
