@@ -1,0 +1,161 @@
+---
+title: "CRDTs Aren't Conflict Free"
+description: "The problem isn't CRDTs — it's conflict-avoidant software. Here's how we're building collaborative editing that embraces conflicts as a human problem."
+date: 2026-04-01
+---
+
+import {
+  DualEditors,
+  EventLogSection,
+  CausalTreeSection,
+  HlcStateSection,
+} from "../../components/collaborative-text";
+import "../../components/collaborative-text/styles.css";
+
+CRDT stands for Conflict-Free Replicated Data Type. The name suggests a kind of mathematical magic: data structures that can be edited concurrently by multiple users and always converge to the same state, with no conflicts to resolve. This promise has made CRDTs the default answer for collaborative editing, offline-first architectures, and local-first software.
+
+The problem isn't CRDTs themselves — they're genuinely useful data structures. The problem is treating "conflict-free" as a feature rather than a limitation. When we build software that avoids surfacing conflicts to users, we're not eliminating conflicts. We're hiding them. And hidden conflicts don't disappear — they manifest as results that users interpret as corruption, bugs, or "the computer doing something weird."
+
+Conflicts are a social problem. Software that pretends otherwise is lying to its users.
+
+## The problem with conflict-avoidant software
+
+The Moment team [illustrated this perfectly](https://www.moment.dev/blog/lies-i-was-told-pt-1) with a deceptively simple test. Alice and Bob are both editing a document offline. The document contains the text:
+
+> The Color of Pomegranates
+
+Bob, being British, changes "Color" to "Colour". Alice, reorganizing the document, deletes the entire heading.
+
+Later, both come online. The CRDT merges their changes. What should the result be?
+
+If you guessed "nothing" (Alice's delete wins) or "The Colour of Pomegranates" (Bob's edit wins), you'd be wrong. The mathematically correct CRDT result is:
+
+> u
+
+Just the letter "u" — the one character Bob added that wasn't part of what Alice deleted. This is *technically* correct according to the CRDT's merge semantics. It's also something no human would ever write.
+
+When Moment tested scenarios like this systematically, they found that roughly 20-30% of direct editing conflicts produced results they considered unacceptable:
+
+> The two most popular families of collab editing algorithms (CRDTs and OT) resolve direct editing conflicts unintuitively enough that **users generally interpreted their results as data corruption.**
+
+The important thing to understand is that this isn't a bug in the algorithm. The CRDT did exactly what it was designed to do: converge deterministically without coordination. The problem is that we asked an algorithm to solve a human problem.
+
+When Alice deleted the heading and Bob fixed a typo, they made decisions based on context no algorithm can see. Alice might not have deleted the heading if she knew Bob was fixing it. Bob might not have bothered with the typo if he knew Alice was removing the whole thing. These are *social* decisions that require *social* resolution.
+
+As Clemmer puts it:
+
+> Offline editing is a UI/UX problem, not an algorithms problem.
+
+The issue isn't that CRDTs produce bad merges. It's that conflict-avoidant software treats the merge result as the final answer, when it should be the starting point for a conversation.
+
+## Two paths forward
+
+Given the limitations of conflict-avoidant software, there are two reasonable responses.
+
+**Path 1: Use a server as the authority.** Moment's [second post](https://www.moment.dev/blog/lies-i-was-told-pt-2) advocates for this approach, demonstrating that a ~40 line implementation using `prosemirror-collab` achieves the same user experience as a CRDT for most use cases:
+
+> I have heard the argument more times than I can count: CRDTs are operationally complex, but you need them (*need* them!) for optimistic updates, edits during network blips, fine-grained provenance of edits, peer-to-peer reconciliation, and so on. I want to convince you that *all* of these things (except true masterless p2p architecture) are easily doable without CRDTs.
+
+In this model, the server is the single source of truth. Clients send operations, the server rebases them against concurrent edits, and clients accept whatever the server says. It's simple, debuggable, and avoids the weird merge semantics entirely — conflicts are resolved by operation ordering, not by algorithmic merge.
+
+The tradeoff is that you need a server, and the server must be available for edits to be accepted. True offline editing becomes "optimistic local edits that might be rejected when you reconnect."
+
+**Path 2: Keep the CRDT properties, but surface conflicts.** This is closer to what we're building with ebb.
+
+Matthew Weidner, who spent years researching text-editing CRDTs, [recently argued](https://mattweidner.com/2025/05/21/text-without-crdts.html) that you don't need a complex CRDT library to get CRDT-like properties:
+
+> The main issue with both CRDTs and OT is their *conceptual complexity*. Text-editing CRDTs' total orders are subtle algorithms defined in academic papers, often challenging to read. [...] Complicated algorithms lead to even more complicated implementations, and CRDT/OT implementations are notoriously difficult.
+
+His alternative? Label each character with a unique ID, send "insert after" operations that reference those IDs, and use a deterministic ordering rule. The same convergence guarantees, achieved with straightforward code you can actually understand and modify.
+
+This is essentially what we've built. And to be completely honest: **our causal tree would produce the same "u" result in the Colour scenario**. The merge semantics are identical to a traditional CRDT — we're not claiming to have solved that problem algorithmically.
+
+What we *are* claiming is that the merge result shouldn't be the end of the story.
+
+## Conflicts as a feature, not a bug
+
+CouchDB figured this out years ago. When concurrent edits create a conflict, CouchDB doesn't pick a winner and discard the loser. It picks a *deterministic* winner (so all replicas converge), but it *stores both versions* and exposes them through an API. Applications can then surface those conflicts to users, merge them intelligently, or handle them however makes sense for their domain.
+
+This is the right mental model: **deterministic convergence for the machines, conflict surfacing for the humans**.
+
+A collaborative editing system should have:
+
+**Convergence.** All replicas must eventually reach the same state. This is what CRDTs provide, and it's genuinely valuable. We're not throwing this out.
+
+**Transparency.** When concurrent edits produce an unexpected result, you should be able to inspect exactly what happened and why. The merge logic shouldn't be buried in a library you can't read.
+
+**Conflict detection.** The system should know when a merge happened that might have produced surprising results. Not every concurrent edit is a conflict — two users typing in different paragraphs is fine. But when Alice deletes text that Bob was editing, that's worth flagging.
+
+**Conflict surfacing.** Rather than pretending conflicts don't exist, surface them to users when they occur. A human seeing "Alice deleted this heading while you were fixing a typo — what do you want to do?" is infinitely better than silently producing a document containing just "u".
+
+**Ergonomic levers.** Developers need tools to decide *how* conflicts are handled for their specific use case. Some conflicts should be auto-resolved. Some should be surfaced to users. Some should block until resolved. The framework shouldn't dictate a one-size-fits-all policy.
+
+## How ebb approaches this
+
+Ebb doesn't use a CRDT library, but we *do* use CRDT-like data structures. The demo below builds a collaborative text editor from scratch using a **Causal Tree** ordered by **Hybrid Logical Clocks**. This is functionally equivalent to the RGA CRDT — we get the same convergence guarantees, including the same "u" result in pathological cases.
+
+The difference is what happens next.
+
+When ebb detects that concurrent edits touched the same data, it doesn't just merge and move on. It snapshots the pre-merge state and surfaces the conflict through an API — similar to CouchDB's approach. Developers can then decide whether to show the user a diff, auto-resolve based on business rules, or let the merge stand silently.
+
+The following demo shows the data structure itself. Every operation is inspectable. Every merge is traceable. This isn't a black box — it's the actual causal tree, running in your browser.
+
+## See it in action
+
+Two independent editors, each with their own copy of the document. A ghost is typing in peer-B — watch the operations propagate to peer-A in real time. Type in peer-A yourself and see both editors converge to the same result, every time.
+
+<div className="not-prose my-8">
+  <DualEditors client:only="react" />
+</div>
+
+## Identity over indices
+
+The core problem with collaborative text editing is deceptively simple: when two users type concurrently, array indices become meaningless. Alice inserts at position 3, shifting everything after it — but Bob's concurrent insert at position 17 doesn't know that yet.
+
+The fix: stop thinking in indices. Give each run of characters a stable ID and reference neighbors instead. `insert after node X` works no matter what else has changed. These parent references form a **Causal Tree** — sequential typing creates chains, concurrent edits at the same position create branches. Reading in depth-first order reconstructs the document deterministically.
+
+Run-length optimization means sequential characters by the same peer are stored as a single node, keeping the tree compact even for long documents.
+
+<div className="not-prose my-8">
+  <CausalTreeSection client:only="react" />
+</div>
+
+## Order without authority
+
+A tree of character runs solves the identity problem, but you still need a rule for ordering siblings — when two users type at the exact same position, who goes first?
+
+CRDTs typically solve this with complex, algorithm-specific total orders. We use a **Hybrid Logical Clock**: a wall-clock timestamp combined with a monotonic counter that guarantees every operation gets a unique, totally-ordered ID. The ordering rule is deterministic — peers converge to the same result regardless of whether a server relays the operations or they arrive peer-to-peer.
+
+When a remote operation arrives, the peer merges the remote clock with its own, ensuring time only moves forward. The tie-break rule — higher HLC wins — is what makes convergence deterministic without any central coordination.
+
+<div className="not-prose my-8">
+  <HlcStateSection client:only="react" />
+</div>
+
+## Sync you can inspect
+
+One of the strongest critiques of CRDT libraries is that they're opaque — operations go in, state comes out, and when something goes wrong, you can't see why. Our wire protocol is fully transparent: every edit produces an **Action** containing self-describing **Updates**, each targeting a specific run node with a named method and typed field data.
+
+- **PUT** inserts a new run into the tree
+- **PATCH** appends characters to an existing run
+- **DELETE** tombstones a character range within a run
+
+A multi-character delete produces one Action with multiple DELETE Updates — not separate messages. You can read every operation, trace every mutation, and understand exactly why the document looks the way it does.
+
+<div className="not-prose my-8">
+  <EventLogSection client:only="react" />
+</div>
+
+## What's next
+
+This demo is a proof of concept, but it demonstrates the core philosophy behind ebb's approach: **we're not trying to eliminate conflicts — we're trying to make them manageable**.
+
+The same causal tree structure shown here will power real-time collaboration in ebb. In production, the relay won't be a `BroadcastChannel` between two browser tabs — it'll be ebb's sync engine: Actions flowing through a durable log, fanned out to subscribers over SSE, with the same HLC-based ordering ensuring every client converges to the same state.
+
+But convergence is just the foundation. When concurrent edits produce results that might surprise users — like the "Colour" scenario — ebb [detects and surfaces those conflicts](/docs/conflicts) rather than silently merging them. Developers get ergonomic levers to decide how conflicts are handled: surface them to users, auto-resolve based on rules, or let the merge stand.
+
+The CRDT community got the hard part right: stable identities, causal ordering, deterministic merge rules. What the *ecosystem* got wrong was treating "conflict-free" as a feature instead of a tradeoff. Humans don't work in a conflict-free way. We disagree, we make concurrent decisions, we change our minds. Software that hides this reality isn't helping — it's lying.
+
+The answer isn't to abandon CRDTs for simpler server-authoritative models (though that's a valid choice for many applications). The answer is to stop building conflict-avoidant software and start building conflict-embracing software. Let the machines converge deterministically. Let the humans decide what that convergence should mean.
+
+If you want to follow along as we build this, [join the waitlist](/).

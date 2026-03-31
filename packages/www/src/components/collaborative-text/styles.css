@@ -1,0 +1,51 @@
+/**
+ * CodeMirror dark theme overrides for the collaborative text demo.
+ * Import this in your Astro page or MDX file.
+ */
+
+/* ------------------------------------------------------------------ */
+/* CodeMirror dark theme overrides                                     */
+/* ------------------------------------------------------------------ */
+
+.cm-editor {
+  background-color: transparent !important;
+}
+
+.cm-editor .cm-scroller {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.cm-editor .cm-content {
+  font-family: "JetBrains Mono Variable", ui-monospace, monospace;
+  font-size: 14px;
+  color: #d6d3d1; /* stone-300 */
+  caret-color: #a8a29e; /* stone-400 */
+}
+
+.cm-editor .cm-cursor {
+  border-left-color: #a8a29e; /* stone-400 */
+}
+
+.cm-editor .cm-activeLine {
+  background-color: rgba(41, 37, 36, 0.5); /* stone-800/50 */
+}
+
+.cm-editor .cm-selectionBackground,
+.cm-editor ::selection {
+  background-color: rgba(68, 64, 60, 0.6) !important; /* stone-700/60 */
+}
+
+.cm-editor .cm-gutters {
+  background-color: transparent;
+  border-right: 1px solid #292524; /* stone-800 */
+  color: #57534e; /* stone-600 */
+}
+
+.cm-editor .cm-activeLineGutter {
+  background-color: rgba(41, 37, 36, 0.5); /* stone-800/50 */
+}
+
+.cm-editor.cm-focused {
+  outline: none;
+}
