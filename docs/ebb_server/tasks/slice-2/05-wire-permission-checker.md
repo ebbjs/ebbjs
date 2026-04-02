@@ -1,7 +1,7 @@
 # Phase 5: Wire Permission Checker into HTTP API
 
 > **Slice:** [02 — Permission-Checked Write](../../slices/02-permission-checked-write.md)
-> **Depends on:** [Phase 1 — Permission Checker](01-permission-checker.md), [Phase 4 — Auth Integration](04-auth-integration.md)
+> **Depends on:** [Phase 2 — Permission Checker](02-permission-checker.md), [Phase 4 — Auth Integration](04-auth-integration.md)
 > **Produces:** Updated `EbbServer.Sync.Router` with AuthPlug and Permission Checker integration in `POST /sync/actions`
 
 ---

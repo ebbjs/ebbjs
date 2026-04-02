@@ -1,7 +1,7 @@
 # Phase 7: Entity Store Query
 
 > **Slice:** [02 — Permission-Checked Write](../../slices/02-permission-checked-write.md)
-> **Depends on:** [Phase 2 — System Cache Permission APIs](02-system-cache-permissions.md) (for `dirty_entity_ids_for_type/1`)
+> **Depends on:** [Phase 1 — System Cache Permission APIs](01-system-cache-permissions.md) (for `dirty_entity_ids_for_type/1`)
 > **Produces:** Fixed SQLite generated columns for nested field paths, `EntityStore.query/3` function and `SQLite.query_entities/1` with permission JOINs, plus unit tests
 
 ---

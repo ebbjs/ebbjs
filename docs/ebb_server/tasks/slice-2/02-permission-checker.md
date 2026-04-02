@@ -1,7 +1,7 @@
-# Phase 1: Permission Checker
+# Phase 2: Permission Checker
 
 > **Slice:** [02 — Permission-Checked Write](../../slices/02-permission-checked-write.md)
-> **Depends on:** Slice 1 complete
+> **Depends on:** [Phase 1 — System Cache Permission APIs](01-system-cache-permissions.md)
 > **Produces:** `EbbServer.Storage.PermissionChecker` stateless module with all validation and authorization checks, plus unit tests
 
 ---
@@ -10,7 +10,7 @@
 
 **Files:** `ebb_server/lib/ebb_server/storage/permission_checker.ex` (create)
 
-Create `EbbServer.Storage.PermissionChecker` as a stateless module (no GenServer). All state comes from ETS lookups via SystemCache.
+Create `EbbServer.Storage.PermissionChecker` as a stateless module (no GenServer). All state comes from ETS lookups via SystemCache functions defined in Phase 1 (`get_permissions/2`, `get_entity_group/1`).
 
 **Types (module attributes or `@type` specs):**
 

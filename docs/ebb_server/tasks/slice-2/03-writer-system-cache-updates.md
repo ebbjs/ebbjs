@@ -1,7 +1,7 @@
 # Phase 3: Writer System Cache Updates
 
 > **Slice:** [02 — Permission-Checked Write](../../slices/02-permission-checked-write.md)
-> **Depends on:** [Phase 2 — System Cache Permission APIs](02-system-cache-permissions.md)
+> **Depends on:** [Phase 1 — System Cache Permission APIs](01-system-cache-permissions.md)
 > **Produces:** Extended `EbbServer.Storage.Writer` that updates system entity caches after each batch commit, plus unit tests
 
 ---

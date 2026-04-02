@@ -1,14 +1,19 @@
-# Phase 2: System Cache Permission APIs
+# Phase 1: System Cache Permission APIs
 
 > **Slice:** [02 — Permission-Checked Write](../../slices/02-permission-checked-write.md)
-> **Depends on:** [Phase 1 — Permission Checker](01-permission-checker.md) (for understanding the API contract)
-> **Produces:** Extended `EbbServer.Storage.SystemCache` with 3 new ETS tables and permission-related APIs, plus unit tests
+> **Depends on:** Slice 1 complete
+> **Produces:** Extended `EbbServer.Storage.SystemCache` with 3 new ETS tables and permission-related APIs (`get_permissions/2`, `get_entity_group/1`, etc.), plus unit tests. These APIs are consumed by the Permission Checker.
 
 ---
 
 ## Task 3. Add new ETS tables to SystemCache init
 
 **Files:** `ebb_server/lib/ebb_server/storage/system_cache.ex` (modify)
+
+**API contract for PermissionChecker:** The Permission Checker (Phase 2) will call these functions:
+- `get_permissions(actor_id, group_id, opts)` — returns permissions list or `nil`
+- `get_entity_group(entity_id, opts)` — returns group_id or `nil`
+- `get_actor_groups(actor_id, opts)` — returns `[%{group_id, permissions}]`
 
 Add 3 new ETS tables created in `init/1`, alongside the existing `dirty_set`:
 

@@ -1,7 +1,7 @@
 # Phase 6: Handshake Endpoint
 
 > **Slice:** [02 — Permission-Checked Write](../../slices/02-permission-checked-write.md)
-> **Depends on:** [Phase 4 — Auth Integration](04-auth-integration.md), [Phase 2 — System Cache Permission APIs](02-system-cache-permissions.md)
+> **Depends on:** [Phase 4 — Auth Integration](04-auth-integration.md), [Phase 1 — System Cache Permission APIs](01-system-cache-permissions.md)
 > **Produces:** `POST /sync/handshake` endpoint in the Router, plus unit tests
 
 ---
