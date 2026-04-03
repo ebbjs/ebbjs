@@ -277,6 +277,7 @@ cd ebb_server && mix test
 ```
 
 All tests pass across all test files:
+
 - `system_cache_test.exs` — existing + new permission API tests
 - `writer_test.exs` — existing + new system cache update tests
 - `permission_checker_test.exs` — all validation and authorization tests
@@ -289,16 +290,16 @@ All tests pass across all test files:
 
 ### Acceptance Criteria Verification
 
-| Criterion | Test(s) |
-|---|---|
-| Group bootstrap accepted without prior permissions | Test 1 |
-| ETS caches contain GroupMember and Relationship after bootstrap | Test 1 |
-| User entity write to actor's Group accepted | Test 3 |
-| User entity write to non-member Group rejected | Test 5 |
-| Intra-Action resolution works | Test 4 |
-| Permission-scoped query returns only visible entities | Test 7 |
-| HLC future drift rejected (>120s) | Test 8 |
-| HLC staleness rejected (>24h) | Test 9 |
-| Actor identity mismatch rejected | Test 6 |
-| Structure validation rejects missing fields | Tests 10, 11 |
-| Auth integration: handshake returns actor_id | Test 2 |
+| Criterion                                                       | Test(s)      |
+| --------------------------------------------------------------- | ------------ |
+| Group bootstrap accepted without prior permissions              | Test 1       |
+| ETS caches contain GroupMember and Relationship after bootstrap | Test 1       |
+| User entity write to actor's Group accepted                     | Test 3       |
+| User entity write to non-member Group rejected                  | Test 5       |
+| Intra-Action resolution works                                   | Test 4       |
+| Permission-scoped query returns only visible entities           | Test 7       |
+| HLC future drift rejected (>120s)                               | Test 8       |
+| HLC staleness rejected (>24h)                                   | Test 9       |
+| Actor identity mismatch rejected                                | Test 6       |
+| Structure validation rejects missing fields                     | Tests 10, 11 |
+| Auth integration: handshake returns actor_id                    | Test 2       |

@@ -14,7 +14,7 @@
  * - `createPresenceExtension` — CM6 ViewPlugin for rendering decorations
  */
 
-import { useCallback, useRef, useState, type MutableRefObject } from "react"
+import { useCallback, useRef, useState, type MutableRefObject } from "react";
 import {
   type DecorationSet,
   Decoration,
@@ -22,60 +22,49 @@ import {
   ViewPlugin,
   type ViewUpdate,
   WidgetType,
-} from "@codemirror/view"
-import {
-  StateEffect,
-  type EditorState,
-  type Extension,
-  type StateField,
-} from "@codemirror/state"
-import {
-  ROOT_ID,
-  type DocState,
-  type RunSpan,
-} from "./causal-tree.ts"
+} from "@codemirror/view";
+import { StateEffect, type EditorState, type Extension, type StateField } from "@codemirror/state";
+import { ROOT_ID, type DocState, type RunSpan } from "./causal-tree.ts";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export type PresenceData = {
-  readonly peerId: string
-  readonly anchorId: string // Run ID at the anchor of the selection
-  readonly anchorOffset: number // Offset within the anchor run (0-based)
-  readonly headId: string // Run ID at the head (same as anchor if no selection)
-  readonly headOffset: number // Offset within the head run (0-based)
-  readonly color: string // CSS color for this peer's cursor/selection
-}
+  readonly peerId: string;
+  readonly anchorId: string; // Run ID at the anchor of the selection
+  readonly anchorOffset: number; // Offset within the anchor run (0-based)
+  readonly headId: string; // Run ID at the head (same as anchor if no selection)
+  readonly headOffset: number; // Offset within the head run (0-based)
+  readonly color: string; // CSS color for this peer's cursor/selection
+};
 
 export type PresenceConfig = {
-  readonly localPeerId: string
-  readonly getPresenceMap: () => ReadonlyMap<string, PresenceData>
-  readonly idMapField: StateField<readonly RunSpan[]>
-  readonly getDocState: () => DocState
-}
+  readonly localPeerId: string;
+  readonly getPresenceMap: () => ReadonlyMap<string, PresenceData>;
+  readonly idMapField: StateField<readonly RunSpan[]>;
+  readonly getDocState: () => DocState;
+};
 
 /** Reference to a position within a run: run ID + character offset within it. */
 export type RunRef = {
-  readonly runId: string
-  readonly offset: number
-}
+  readonly runId: string;
+  readonly offset: number;
+};
 
 export type PresenceHook = {
-  readonly presenceMap: ReadonlyMap<string, PresenceData>
+  readonly presenceMap: ReadonlyMap<string, PresenceData>;
   /** Mutable ref to the presence map — always up-to-date synchronously. */
-  readonly presenceMapRef: MutableRefObject<ReadonlyMap<string, PresenceData>>
+  readonly presenceMapRef: MutableRefObject<ReadonlyMap<string, PresenceData>>;
   readonly updatePresence: (
     peerId: string,
     anchorId: string,
     anchorOffset: number,
     headId: string,
     headOffset: number,
-  ) => void
-  readonly getLocalPresenceIds: (
-    editorState: EditorState,
-  ) => { anchor: RunRef; head: RunRef }
-}
+  ) => void;
+  readonly getLocalPresenceIds: (editorState: EditorState) => { anchor: RunRef; head: RunRef };
+};
 
 // ---------------------------------------------------------------------------
 // Effects
@@ -90,7 +79,7 @@ export type PresenceHook = {
  * cause the ViewPlugin to re-render — CM6 only calls `update()` on
  * actual CM transactions.
  */
-export const presenceUpdateEffect = StateEffect.define<void>()
+export const presenceUpdateEffect = StateEffect.define<void>();
 
 // ---------------------------------------------------------------------------
 // Color assignment
@@ -99,7 +88,7 @@ export const presenceUpdateEffect = StateEffect.define<void>()
 const PEER_COLORS: Record<string, string> = {
   "peer-A": "#60a5fa", // blue-400 (bright enough for dark backgrounds)
   "peer-B": "#fbbf24", // amber-400 (matching ebb site accent palette)
-}
+};
 
 /** Fallback palette for unknown peer IDs. */
 const FALLBACK_PALETTE = [
@@ -108,17 +97,17 @@ const FALLBACK_PALETTE = [
   "#8b5cf6", // violet-500
   "#ec4899", // pink-500
   "#14b8a6", // teal-500
-]
+];
 
 const colorForPeer = (peerId: string): string => {
-  if (peerId in PEER_COLORS) return PEER_COLORS[peerId]!
+  if (peerId in PEER_COLORS) return PEER_COLORS[peerId]!;
   // Simple hash-based fallback
-  let hash = 0
+  let hash = 0;
   for (let i = 0; i < peerId.length; i++) {
-    hash = (hash * 31 + peerId.charCodeAt(i)) | 0
+    hash = (hash * 31 + peerId.charCodeAt(i)) | 0;
   }
-  return FALLBACK_PALETTE[Math.abs(hash) % FALLBACK_PALETTE.length]!
-}
+  return FALLBACK_PALETTE[Math.abs(hash) % FALLBACK_PALETTE.length]!;
+};
 
 // ---------------------------------------------------------------------------
 // Cursor widget
@@ -133,44 +122,44 @@ class CursorWidget extends WidgetType {
     readonly color: string,
     readonly label: string,
   ) {
-    super()
+    super();
   }
 
   toDOM(): HTMLElement {
-    const span = document.createElement("span")
-    span.className = "cm-remote-cursor"
-    span.style.borderLeft = `2px solid ${this.color}`
-    span.style.height = "1.2em"
-    span.style.display = "inline-block"
-    span.style.width = "0"
-    span.style.verticalAlign = "text-bottom"
-    span.style.position = "relative"
-    span.style.marginLeft = "-1px"
-    span.style.marginRight = "-1px"
-    span.setAttribute("aria-label", `${this.label}'s cursor`)
+    const span = document.createElement("span");
+    span.className = "cm-remote-cursor";
+    span.style.borderLeft = `2px solid ${this.color}`;
+    span.style.height = "1.2em";
+    span.style.display = "inline-block";
+    span.style.width = "0";
+    span.style.verticalAlign = "text-bottom";
+    span.style.position = "relative";
+    span.style.marginLeft = "-1px";
+    span.style.marginRight = "-1px";
+    span.setAttribute("aria-label", `${this.label}'s cursor`);
 
     // Peer label tooltip above the cursor
-    const label = document.createElement("span")
-    label.className = "cm-remote-cursor-label"
-    label.textContent = this.label
-    label.style.position = "absolute"
-    label.style.bottom = "100%"
-    label.style.left = "-1px"
-    label.style.padding = "1px 4px"
-    label.style.fontSize = "10px"
-    label.style.lineHeight = "1.2"
-    label.style.backgroundColor = this.color
-    label.style.color = "white"
-    label.style.borderRadius = "2px"
-    label.style.whiteSpace = "nowrap"
-    label.style.pointerEvents = "none"
-    span.appendChild(label)
+    const label = document.createElement("span");
+    label.className = "cm-remote-cursor-label";
+    label.textContent = this.label;
+    label.style.position = "absolute";
+    label.style.bottom = "100%";
+    label.style.left = "-1px";
+    label.style.padding = "1px 4px";
+    label.style.fontSize = "10px";
+    label.style.lineHeight = "1.2";
+    label.style.backgroundColor = this.color;
+    label.style.color = "white";
+    label.style.borderRadius = "2px";
+    label.style.whiteSpace = "nowrap";
+    label.style.pointerEvents = "none";
+    span.appendChild(label);
 
-    return span
+    return span;
   }
 
   eq(other: CursorWidget): boolean {
-    return this.color === other.color && this.label === other.label
+    return this.color === other.color && this.label === other.label;
   }
 }
 
@@ -194,26 +183,26 @@ export const positionToRunRef = (
   position: number,
   idMapField: StateField<readonly RunSpan[]>,
 ): RunRef => {
-  const spans = editorState.field(idMapField)
+  const spans = editorState.field(idMapField);
 
-  if (spans.length === 0) return { runId: ROOT_ID, offset: 0 }
-  if (position === 0) return { runId: ROOT_ID, offset: 0 }
+  if (spans.length === 0) return { runId: ROOT_ID, offset: 0 };
+  if (position === 0) return { runId: ROOT_ID, offset: 0 };
 
   // Walk spans to find the run containing position - 1
-  let cumulative = 0
+  let cumulative = 0;
   for (const span of spans) {
     if (position - 1 < cumulative + span.length) {
-      return { runId: span.runId, offset: position - 1 - cumulative }
+      return { runId: span.runId, offset: position - 1 - cumulative };
     }
-    cumulative += span.length
+    cumulative += span.length;
   }
 
   // Past end — return last run ID at its last offset
-  const lastSpan = spans[spans.length - 1]
+  const lastSpan = spans[spans.length - 1];
   return lastSpan
     ? { runId: lastSpan.runId, offset: lastSpan.length - 1 }
-    : { runId: ROOT_ID, offset: 0 }
-}
+    : { runId: ROOT_ID, offset: 0 };
+};
 
 /**
  * Resolve a RunRef (runId + offset) back to a document position for rendering.
@@ -234,22 +223,22 @@ export const runRefToPosition = (
   offset: number,
   idMapField: StateField<readonly RunSpan[]>,
 ): number | undefined => {
-  if (runId === ROOT_ID) return 0
+  if (runId === ROOT_ID) return 0;
 
-  const spans = editorState.field(idMapField)
-  let cumulative = 0
+  const spans = editorState.field(idMapField);
+  let cumulative = 0;
   for (const span of spans) {
     if (span.runId === runId) {
       // Clamp offset to span length - 1 (in case the run was split
       // after the presence message was sent)
-      const clampedOffset = Math.min(offset, span.length - 1)
+      const clampedOffset = Math.min(offset, span.length - 1);
       // Cursor is "after" the character at this offset
-      return cumulative + clampedOffset + 1
+      return cumulative + clampedOffset + 1;
     }
-    cumulative += span.length
+    cumulative += span.length;
   }
-  return undefined
-}
+  return undefined;
+};
 
 // ---------------------------------------------------------------------------
 // usePresence hook
@@ -273,12 +262,12 @@ export const usePresence = (
 ): PresenceHook => {
   // Mutable ref — updated synchronously in updatePresence so the CM
   // ViewPlugin always reads the latest data.
-  const presenceMapRef = useRef<ReadonlyMap<string, PresenceData>>(new Map())
+  const presenceMapRef = useRef<ReadonlyMap<string, PresenceData>>(new Map());
 
   // React state copy — triggers re-renders for any React consumers.
-  const [presenceMap, setPresenceMap] = useState<
-    ReadonlyMap<string, PresenceData>
-  >(() => new Map())
+  const [presenceMap, setPresenceMap] = useState<ReadonlyMap<string, PresenceData>>(
+    () => new Map(),
+  );
 
   const updatePresence = useCallback(
     (
@@ -288,7 +277,7 @@ export const usePresence = (
       headId: string,
       headOffset: number,
     ) => {
-      const next = new Map(presenceMapRef.current)
+      const next = new Map(presenceMapRef.current);
       next.set(remotePeerId, {
         peerId: remotePeerId,
         anchorId,
@@ -296,32 +285,32 @@ export const usePresence = (
         headId,
         headOffset,
         color: colorForPeer(remotePeerId),
-      })
+      });
       // Update ref synchronously — the ViewPlugin reads this immediately
-      presenceMapRef.current = next
+      presenceMapRef.current = next;
       // Also update React state for re-renders
-      setPresenceMap(next)
+      setPresenceMap(next);
     },
     [],
-  )
+  );
 
   const getLocalPresenceIds = useCallback(
     (editorState: EditorState) => {
-      const sel = editorState.selection.main
-      const anchor = positionToRunRef(editorState, sel.anchor, idMapField)
-      const head = positionToRunRef(editorState, sel.head, idMapField)
-      return { anchor, head }
+      const sel = editorState.selection.main;
+      const anchor = positionToRunRef(editorState, sel.anchor, idMapField);
+      const head = positionToRunRef(editorState, sel.head, idMapField);
+      return { anchor, head };
     },
     [idMapField],
-  )
+  );
 
   return {
     presenceMap,
     presenceMapRef,
     updatePresence,
     getLocalPresenceIds,
-  }
-}
+  };
+};
 
 // ---------------------------------------------------------------------------
 // CM6 Presence Extension (ViewPlugin)
@@ -335,64 +324,54 @@ export const usePresence = (
  * positions. This is O(peers * spans) per update but fine for a prototype
  * with 2 peers.
  */
-export const createPresenceExtension = (
-  config: PresenceConfig,
-): Extension => {
+export const createPresenceExtension = (config: PresenceConfig): Extension => {
   return ViewPlugin.fromClass(
     class {
-      decorations: DecorationSet
+      decorations: DecorationSet;
 
       constructor(view: EditorView) {
-        this.decorations = buildDecorations(view.state, config)
+        this.decorations = buildDecorations(view.state, config);
       }
 
       update(update: ViewUpdate) {
         // Rebuild on every update — doc changes, selection changes,
         // or presence map changes (triggered by React re-render)
-        this.decorations = buildDecorations(update.state, config)
+        this.decorations = buildDecorations(update.state, config);
       }
     },
     {
       decorations: (v) => v.decorations,
     },
-  )
-}
+  );
+};
 
 /**
  * Build a DecorationSet with remote cursor widgets and selection marks
  * for all peers in the presence map.
  */
-const buildDecorations = (
-  editorState: EditorState,
-  config: PresenceConfig,
-): DecorationSet => {
-  const presenceMap = config.getPresenceMap()
-  const decorations: { from: number; to: number; decoration: Decoration }[] = []
+const buildDecorations = (editorState: EditorState, config: PresenceConfig): DecorationSet => {
+  const presenceMap = config.getPresenceMap();
+  const decorations: { from: number; to: number; decoration: Decoration }[] = [];
 
   for (const [remotePeerId, data] of presenceMap) {
     // Skip local peer
-    if (remotePeerId === config.localPeerId) continue
+    if (remotePeerId === config.localPeerId) continue;
 
     const anchorPos = runRefToPosition(
       editorState,
       data.anchorId,
       data.anchorOffset,
       config.idMapField,
-    )
-    const headPos = runRefToPosition(
-      editorState,
-      data.headId,
-      data.headOffset,
-      config.idMapField,
-    )
+    );
+    const headPos = runRefToPosition(editorState, data.headId, data.headOffset, config.idMapField);
 
     // If either position can't be resolved (deleted char), skip
-    if (anchorPos === undefined || headPos === undefined) continue
+    if (anchorPos === undefined || headPos === undefined) continue;
 
     // Clamp positions to document bounds
-    const docLen = editorState.doc.length
-    const clampedAnchor = Math.min(anchorPos, docLen)
-    const clampedHead = Math.min(headPos, docLen)
+    const docLen = editorState.doc.length;
+    const clampedAnchor = Math.min(anchorPos, docLen);
+    const clampedHead = Math.min(headPos, docLen);
 
     if (clampedAnchor === clampedHead) {
       // Cursor (no selection): render a widget
@@ -403,11 +382,11 @@ const buildDecorations = (
           widget: new CursorWidget(data.color, data.peerId),
           side: 1, // render after the character at this position
         }),
-      })
+      });
     } else {
       // Selection range: render a mark
-      const from = Math.min(clampedAnchor, clampedHead)
-      const to = Math.max(clampedAnchor, clampedHead)
+      const from = Math.min(clampedAnchor, clampedHead);
+      const to = Math.max(clampedAnchor, clampedHead);
       decorations.push({
         from,
         to,
@@ -417,7 +396,7 @@ const buildDecorations = (
             style: `background-color: ${data.color}33`, // 20% opacity
           },
         }),
-      })
+      });
       // Also render a cursor widget at the head position
       decorations.push({
         from: clampedHead,
@@ -426,17 +405,15 @@ const buildDecorations = (
           widget: new CursorWidget(data.color, data.peerId),
           side: 1,
         }),
-      })
+      });
     }
   }
 
   // Sort by from position — required by CM6's Decoration.set
-  decorations.sort((a, b) => a.from - b.from || a.to - b.to)
+  decorations.sort((a, b) => a.from - b.from || a.to - b.to);
   return Decoration.set(
     decorations.map((d) =>
-      d.from === d.to
-        ? d.decoration.range(d.from)
-        : d.decoration.range(d.from, d.to),
+      d.from === d.to ? d.decoration.range(d.from) : d.decoration.range(d.from, d.to),
     ),
-  )
-}
+  );
+};

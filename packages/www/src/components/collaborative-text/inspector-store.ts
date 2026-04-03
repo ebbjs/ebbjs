@@ -15,41 +15,41 @@
  * the inspector can expand to show the full mutation breakdown.
  */
 
-import { useSyncExternalStore } from "react"
-import type { Hlc } from "./hlc.ts"
-import type { DocState } from "./causal-tree.ts"
-import type { Action } from "./relay.ts"
+import { useSyncExternalStore } from "react";
+import type { Hlc } from "./hlc.ts";
+import type { DocState } from "./causal-tree.ts";
+import type { Action } from "./relay.ts";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export type InspectorEvent = {
-  readonly id: number
-  readonly timestamp: number // Date.now() at time of logging
-  readonly peerId: string // Which peer generated/received this
-  readonly direction: "sent" | "received"
-  readonly action: Action // Ebb-native Action (the atomic sync unit)
-}
+  readonly id: number;
+  readonly timestamp: number; // Date.now() at time of logging
+  readonly peerId: string; // Which peer generated/received this
+  readonly direction: "sent" | "received";
+  readonly action: Action; // Ebb-native Action (the atomic sync unit)
+};
 
 type InspectorSnapshot = {
-  readonly events: readonly InspectorEvent[]
-  readonly hlcStates: Readonly<Record<string, Hlc>>
-  readonly docStates: Readonly<Record<string, DocState>>
-}
+  readonly events: readonly InspectorEvent[];
+  readonly hlcStates: Readonly<Record<string, Hlc>>;
+  readonly docStates: Readonly<Record<string, DocState>>;
+};
 
 // ---------------------------------------------------------------------------
 // Store state (module-level singleton)
 // ---------------------------------------------------------------------------
 
-const MAX_EVENTS = 200
+const MAX_EVENTS = 200;
 
-let nextEventId = 0
-let events: InspectorEvent[] = []
-let hlcStates: Record<string, Hlc> = {}
-let docStates: Record<string, DocState> = {}
-let snapshot: InspectorSnapshot = { events: [], hlcStates: {}, docStates: {} }
-let listeners: Set<() => void> = new Set()
+let nextEventId = 0;
+let events: InspectorEvent[] = [];
+let hlcStates: Record<string, Hlc> = {};
+let docStates: Record<string, DocState> = {};
+let snapshot: InspectorSnapshot = { events: [], hlcStates: {}, docStates: {} };
+let listeners: Set<() => void> = new Set();
 
 /** Notify all subscribers that the snapshot changed. */
 const emit = (): void => {
@@ -57,71 +57,67 @@ const emit = (): void => {
     events: [...events],
     hlcStates: { ...hlcStates },
     docStates: { ...docStates },
-  }
+  };
   for (const listener of listeners) {
-    listener()
+    listener();
   }
-}
+};
 
 // ---------------------------------------------------------------------------
 // Public mutation functions (called by PeerEditor / Relay)
 // ---------------------------------------------------------------------------
 
 /** Append an event to the log and notify subscribers. */
-export const logEvent = (
-  peerId: string,
-  direction: "sent" | "received",
-  action: Action,
-): void => {
+export const logEvent = (peerId: string, direction: "sent" | "received", action: Action): void => {
   const event: InspectorEvent = {
     id: nextEventId++,
     timestamp: Date.now(),
     peerId,
     direction,
     action,
-  }
+  };
 
-  events.push(event)
+  events.push(event);
 
   // Cap at MAX_EVENTS to prevent unbounded memory growth
   if (events.length > MAX_EVENTS) {
-    events = events.slice(-MAX_EVENTS)
+    events = events.slice(-MAX_EVENTS);
   }
 
-  emit()
-}
+  emit();
+};
 
 /** Update a peer's latest HLC and notify subscribers. */
 export const updateHlc = (peerId: string, hlc: Hlc): void => {
-  hlcStates = { ...hlcStates, [peerId]: hlc }
-  emit()
-}
+  hlcStates = { ...hlcStates, [peerId]: hlc };
+  emit();
+};
 
 /** Update a peer's latest DocState and notify subscribers. */
 export const updateDocState = (peerId: string, state: DocState): void => {
-  docStates = { ...docStates, [peerId]: state }
-  emit()
-}
+  docStates = { ...docStates, [peerId]: state };
+  emit();
+};
 
 /** Clear all events (useful for a "clear log" button). */
 export const clearEvents = (): void => {
-  events = []
-  emit()
-}
+  events = [];
+  emit();
+};
 
 // ---------------------------------------------------------------------------
 // React integration via useSyncExternalStore
 // ---------------------------------------------------------------------------
 
 const subscribe = (listener: () => void): (() => void) => {
-  listeners.add(listener)
+  listeners.add(listener);
   return () => {
-    listeners.delete(listener)
-  }
-}
+    listeners.delete(listener);
+  };
+};
 
-const getSnapshot = (): InspectorSnapshot => snapshot
+const getSnapshot = (): InspectorSnapshot => snapshot;
 
 /** React hook to read the full inspector snapshot. */
 export const useInspectorStore = (): InspectorSnapshot =>
-  useSyncExternalStore(subscribe, getSnapshot)
+  useSyncExternalStore(subscribe, getSnapshot);

@@ -145,6 +145,7 @@ Extract logical time via bitwise right shift: `logical_time_ms = action["hlc"] >
 The HLC may arrive as an integer or as a string (MessagePack can encode large integers as strings depending on the client). Normalize to integer first, matching the existing router's behavior of accepting string HLCs via `Integer.parse/1`.
 
 Compare to `System.os_time(:millisecond)`:
+
 - If `logical_time_ms > now + 120_000` → reject with `"hlc_future_drift"`
 - If `logical_time_ms < now - 86_400_000` → reject with `"hlc_stale"`
 
@@ -253,6 +254,7 @@ end
 **`check_all_updates/4`:**
 
 For each update, dispatch based on `subject_type`:
+
 - `"group"`, `"groupMember"`, `"relationship"` → system entity authorization
 - Any other type → user entity authorization
 

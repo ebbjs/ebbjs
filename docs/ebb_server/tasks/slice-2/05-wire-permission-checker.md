@@ -47,11 +47,13 @@ end
 Replace the current validation + write flow in `POST /sync/actions` with the Permission Checker pipeline.
 
 **Current flow:**
+
 1. Decode MessagePack → `decode_and_validate/1`
 2. Router-level validation (structure checks)
 3. `Writer.write_actions(actions)`
 
 **New flow:**
+
 1. Decode MessagePack body (keep the `Msgpax.unpack` step)
 2. Extract actions list (keep the `decoded["actions"]` check)
 3. Call `PermissionChecker.validate_and_authorize(actions, conn.assigns.actor_id)`
@@ -97,6 +99,7 @@ end
 **Modify Writer to accept validated actions:**
 
 In `handle_call`, the actions now have atom keys. Update field access:
+
 - `action["id"]` → `action.id` or `action[:id]`
 - `action["updates"]` → `action.updates`
 - `update["subject_id"]` → `update.subject_id`
@@ -192,6 +195,7 @@ end
 Simplify the router's decode function to just handle MessagePack decoding and actions list extraction, without the deep validation.
 
 **⚠️ Behavior change:** The router previously returned 422 with structured `{field, message}` errors for individual action validation failures. With the Permission Checker handling validation, the API now returns:
+
 - **422** only for request-level errors (invalid MessagePack encoding, missing `actions` key, `actions` not a list)
 - **200 with `rejected` array** for action-level errors (bad structure, bad HLC, actor mismatch, unauthorized)
 
@@ -284,6 +288,7 @@ end
 ```
 
 **Update all test cases** to use `validated_action()` and `validated_update()` instead of `sample_action()` and `sample_update()`. Key changes:
+
 - All field access in assertions changes from `action["id"]` to `action.id`
 - Method values change from `"put"` to `:put`
 - The ETF round-trip test must account for `to_storage_format` converting back to string keys
@@ -306,6 +311,7 @@ end
 **Update validation tests:**
 
 The Writer no longer does its own validation (Permission Checker handles it). Remove or simplify the validation test cases:
+
 - Remove "actions with invalid updates are rejected" test (Permission Checker handles this)
 - Keep "actions with empty updates are filtered out" test as a safety check
 - Update the empty-updates test to use atom-keyed maps
@@ -367,6 +373,7 @@ assert length(response["rejected"]) > 0
 ```
 
 **Important behavior change:** With the Permission Checker handling validation, the router no longer returns 422 for individual action validation errors. Instead:
+
 - **422** is only returned for request-level errors (invalid MessagePack, missing `actions` key)
 - **200 with rejections** is returned for action-level validation errors (bad HLC, missing fields, unauthorized)
 
@@ -375,12 +382,14 @@ This is a deliberate design change: the API now always processes what it can and
 **Update the "validation error format" test:**
 
 The existing test checks for 422 with structured `{field, message}` details. This test needs to be reworked:
+
 - If the action has structural issues that the Permission Checker catches, it will be in the `rejected` array with a reason string, not the `{field, message}` format
 - Remove or replace this test with one that checks the new rejection format
 
 **Ensure actor_id consistency:** All existing test actions use `"actor_id" => "a_test"`. The `x-ebb-actor-id` header must also be `"a_test"` to avoid actor mismatch rejections.
 
 **Ensure actions have proper authorization:** The existing tests write "todo" entities without group bootstrap. After this phase, these writes will be rejected by the Permission Checker as unauthorized (no group membership). Options:
+
 1. **Recommended:** Add a `bootstrap_group` helper to the integration tests and call it before writing entities
 2. Alternative: Add a test-only bypass in the Permission Checker (not recommended — tests should exercise real behavior)
 

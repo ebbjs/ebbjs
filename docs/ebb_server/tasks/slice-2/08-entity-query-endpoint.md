@@ -17,7 +17,7 @@ Add `POST /entities/query` endpoint. This endpoint accepts a JSON body with `typ
 ```json
 {
   "type": "todo",
-  "filter": {"completed": true},
+  "filter": { "completed": true },
   "limit": 50,
   "offset": 0
 }
@@ -30,7 +30,7 @@ Add `POST /entities/query` endpoint. This endpoint accepts a JSON body with `typ
   {
     "id": "todo_abc",
     "type": "todo",
-    "data": {"fields": {"title": {"type": "lww", "value": "Buy milk", "hlc": 123}}},
+    "data": { "fields": { "title": { "type": "lww", "value": "Buy milk", "hlc": 123 } } },
     "created_hlc": 123,
     "updated_hlc": 456,
     "deleted_hlc": null,

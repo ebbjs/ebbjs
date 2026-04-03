@@ -16,7 +16,7 @@ Add `POST /sync/handshake` endpoint. This endpoint authenticates the client (via
 
 ```json
 {
-  "cursors": {"group_1": 500, "group_2": 200},
+  "cursors": { "group_1": 500, "group_2": 200 },
   "schema_version": 1
 }
 ```
@@ -27,8 +27,8 @@ Add `POST /sync/handshake` endpoint. This endpoint authenticates the client (via
 {
   "actor_id": "actor_123",
   "groups": [
-    {"id": "group_1", "permissions": ["todo.create", "todo.update"]},
-    {"id": "group_2", "permissions": ["post.*"]}
+    { "id": "group_1", "permissions": ["todo.create", "todo.update"] },
+    { "id": "group_2", "permissions": ["post.*"] }
   ]
 }
 ```

@@ -10,48 +10,42 @@
  * 3. HlcStateSection — live Hybrid Logical Clock display
  */
 
-import { useEffect, useRef, useState } from "react"
-import {
-  useInspectorStore,
-  clearEvents,
-  type InspectorEvent,
-} from "./inspector-store.ts"
-import { ROOT_ID, reconstruct, type DocState } from "./causal-tree.ts"
-import type { Hlc } from "./hlc.ts"
+import { useEffect, useRef, useState } from "react";
+import { useInspectorStore, clearEvents, type InspectorEvent } from "./inspector-store.ts";
+import { ROOT_ID, reconstruct, type DocState } from "./causal-tree.ts";
+import type { Hlc } from "./hlc.ts";
 
 // ---------------------------------------------------------------------------
 // Event Log Section
 // ---------------------------------------------------------------------------
 
-type PeerFilter = "all" | "peer-A" | "peer-B"
+type PeerFilter = "all" | "peer-A" | "peer-B";
 
 export const EventLogSection = () => {
-  const store = useInspectorStore()
-  return <EventLogInner events={store.events} />
-}
+  const store = useInspectorStore();
+  return <EventLogInner events={store.events} />;
+};
 
 const EventLogInner = ({ events }: { events: readonly InspectorEvent[] }) => {
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const [peerFilter, setPeerFilter] = useState<PeerFilter>("all")
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [peerFilter, setPeerFilter] = useState<PeerFilter>("all");
 
   const filteredEvents =
-    peerFilter === "all"
-      ? events
-      : events.filter((e) => e.peerId === peerFilter)
+    peerFilter === "all" ? events : events.filter((e) => e.peerId === peerFilter);
 
   // Auto-scroll to bottom when new events arrive
   useEffect(() => {
-    const el = scrollRef.current
+    const el = scrollRef.current;
     if (el) {
-      el.scrollTop = el.scrollHeight
+      el.scrollTop = el.scrollHeight;
     }
-  }, [filteredEvents.length])
+  }, [filteredEvents.length]);
 
   const filterButtons: { id: PeerFilter; label: string }[] = [
     { id: "all", label: "All" },
     { id: "peer-A", label: "peer-A" },
     { id: "peer-B", label: "peer-B" },
-  ]
+  ];
 
   return (
     <div className="border border-stone-700 rounded-lg bg-stone-950 overflow-hidden">
@@ -65,7 +59,7 @@ const EventLogInner = ({ events }: { events: readonly InspectorEvent[] }) => {
           {/* Filter pills */}
           <div className="flex gap-1">
             {filterButtons.map((btn) => {
-              const isActive = peerFilter === btn.id
+              const isActive = peerFilter === btn.id;
               const colorClass =
                 btn.id === "peer-A"
                   ? isActive
@@ -77,7 +71,7 @@ const EventLogInner = ({ events }: { events: readonly InspectorEvent[] }) => {
                       : "text-stone-400 border-stone-700 hover:text-amber-400 hover:border-amber-400/40"
                     : isActive
                       ? "bg-stone-700 text-stone-200 border-stone-600"
-                      : "text-stone-400 border-stone-700 hover:text-stone-200 hover:border-stone-600"
+                      : "text-stone-400 border-stone-700 hover:text-stone-200 hover:border-stone-600";
               return (
                 <button
                   key={btn.id}
@@ -86,7 +80,7 @@ const EventLogInner = ({ events }: { events: readonly InspectorEvent[] }) => {
                 >
                   {btn.label}
                 </button>
-              )
+              );
             })}
           </div>
           {events.length > 0 && (
@@ -101,10 +95,7 @@ const EventLogInner = ({ events }: { events: readonly InspectorEvent[] }) => {
       </div>
 
       {/* Event list */}
-      <div
-        ref={scrollRef}
-        className="max-h-80 overflow-y-auto p-2"
-      >
+      <div ref={scrollRef} className="max-h-80 overflow-y-auto p-2">
         {events.length === 0 ? (
           <div className="text-sm text-stone-500 text-center py-8 font-mono">
             Start typing to see actions flow between peers.
@@ -118,20 +109,20 @@ const EventLogInner = ({ events }: { events: readonly InspectorEvent[] }) => {
         )}
       </div>
     </div>
-  )
-}
+  );
+};
 
 /**
  * Render an ebb-native Action as an expandable row.
  */
 const ActionRow = ({ event }: { event: InspectorEvent }) => {
-  const [expanded, setExpanded] = useState(false)
-  const { action, direction, peerId } = event
-  const isPeerA = peerId === "peer-A"
-  const color = isPeerA ? "text-blue-400" : "text-amber-400"
-  const bgColor = isPeerA ? "bg-blue-400/5" : "bg-amber-400/5"
-  const arrow = direction === "sent" ? "\u2192" : "\u2190"
-  const dirLabel = direction === "sent" ? "sent" : "recv"
+  const [expanded, setExpanded] = useState(false);
+  const { action, direction, peerId } = event;
+  const isPeerA = peerId === "peer-A";
+  const color = isPeerA ? "text-blue-400" : "text-amber-400";
+  const bgColor = isPeerA ? "bg-blue-400/5" : "bg-amber-400/5";
+  const arrow = direction === "sent" ? "\u2192" : "\u2190";
+  const dirLabel = direction === "sent" ? "sent" : "recv";
 
   const time = new Date(event.timestamp).toLocaleTimeString("en-US", {
     hour12: false,
@@ -139,21 +130,21 @@ const ActionRow = ({ event }: { event: InspectorEvent }) => {
     minute: "2-digit",
     second: "2-digit",
     fractionalSecondDigits: 3,
-  } as Intl.DateTimeFormatOptions)
+  } as Intl.DateTimeFormatOptions);
 
   // Summarize the updates: count puts, patches, and deletes
-  const putCount = action.updates.filter((u) => u.method === "put").length
-  const patchCount = action.updates.filter((u) => u.method === "patch").length
-  const deleteCount = action.updates.filter((u) => u.method === "delete").length
+  const putCount = action.updates.filter((u) => u.method === "put").length;
+  const patchCount = action.updates.filter((u) => u.method === "patch").length;
+  const deleteCount = action.updates.filter((u) => u.method === "delete").length;
   const summary = [
     putCount > 0 ? `${putCount} put` : "",
     patchCount > 0 ? `${patchCount} patch` : "",
     deleteCount > 0 ? `${deleteCount} del` : "",
   ]
     .filter(Boolean)
-    .join(", ")
+    .join(", ");
 
-  const shortActionId = action.id.replace(/^peer-[AB]_act_/, "act:")
+  const shortActionId = action.id.replace(/^peer-[AB]_act_/, "act:");
 
   return (
     <div className={`rounded ${bgColor}`}>
@@ -189,52 +180,45 @@ const ActionRow = ({ event }: { event: InspectorEvent }) => {
         </div>
       )}
     </div>
-  )
-}
+  );
+};
 
 /**
  * Render a single Update within an Action.
  */
-const UpdateRow = ({
-  update,
-  index,
-}: {
-  update: import("./relay.ts").Update
-  index: number
-}) => {
+const UpdateRow = ({ update, index }: { update: import("./relay.ts").Update; index: number }) => {
   const methodBadgeColor =
     update.method === "put"
       ? "bg-emerald-400/10 text-emerald-400 border-emerald-400/30"
       : update.method === "patch"
         ? "bg-amber-400/10 text-amber-400 border-amber-400/30"
-        : "bg-red-400/10 text-red-400 border-red-400/30"
+        : "bg-red-400/10 text-red-400 border-red-400/30";
 
-  const shortSubjectId = abbreviateId(update.subject_id)
+  const shortSubjectId = abbreviateId(update.subject_id);
 
   // Extract detail from the typed field data
-  let detail = ""
+  let detail = "";
   if (update.method === "put") {
-    const runField = update.data.fields["run"]
+    const runField = update.data.fields["run"];
     if (runField && runField.type === "causal_tree_run") {
-      const node = runField.value
+      const node = runField.value;
       const text =
         node.text.length <= 20
           ? node.text.replace(/\n/g, "\\n")
-          : node.text.slice(0, 20).replace(/\n/g, "\\n") + "..."
-      const shortParent =
-        node.parentId === ROOT_ID ? "ROOT" : abbreviateId(node.parentId)
-      detail = `"${text}" (${node.text.length} chars) parent=${shortParent}`
+          : node.text.slice(0, 20).replace(/\n/g, "\\n") + "...";
+      const shortParent = node.parentId === ROOT_ID ? "ROOT" : abbreviateId(node.parentId);
+      detail = `"${text}" (${node.text.length} chars) parent=${shortParent}`;
     }
   } else if (update.method === "patch") {
-    const appendField = update.data.fields["append"]
+    const appendField = update.data.fields["append"];
     if (appendField && appendField.type === "causal_tree_append") {
-      const text = appendField.value.text.replace(/\n/g, "\\n")
-      detail = `append "${text}"`
+      const text = appendField.value.text.replace(/\n/g, "\\n");
+      detail = `append "${text}"`;
     }
   } else if (update.method === "delete") {
-    const rangeField = update.data.fields["range"]
+    const rangeField = update.data.fields["range"];
     if (rangeField && rangeField.type === "causal_tree_range") {
-      detail = `offset=${rangeField.value.offset} count=${rangeField.value.count}`
+      detail = `offset=${rangeField.value.offset} count=${rangeField.value.count}`;
     }
   }
 
@@ -251,8 +235,8 @@ const UpdateRow = ({
       </span>
       <span className="text-stone-400 truncate">{detail}</span>
     </div>
-  )
-}
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Causal Tree Section
@@ -260,53 +244,53 @@ const UpdateRow = ({
 
 /** A chain of sequential single-child nodes, collapsed into one visual row. */
 type ChainSegment = {
-  readonly nodes: readonly { id: string; text: string; deleted: boolean; peerId: string }[]
-  readonly branches: readonly ChainSegment[] // Children at the end of the chain (or branch point)
-}
+  readonly nodes: readonly { id: string; text: string; deleted: boolean; peerId: string }[];
+  readonly branches: readonly ChainSegment[]; // Children at the end of the chain (or branch point)
+};
 
 /**
  * Walk the causal tree from a starting node and collapse sequential
  * single-child runs into ChainSegments.
  */
 const buildChains = (docState: DocState, startId: string): readonly ChainSegment[] => {
-  const childIds = docState.children.get(startId) ?? []
-  if (childIds.length === 0) return []
+  const childIds = docState.children.get(startId) ?? [];
+  if (childIds.length === 0) return [];
 
   return childIds.map((childId) => {
-    const nodes: { id: string; text: string; deleted: boolean; peerId: string }[] = []
-    let currentId = childId
+    const nodes: { id: string; text: string; deleted: boolean; peerId: string }[] = [];
+    let currentId = childId;
 
     while (true) {
-      const node = docState.nodes.get(currentId)
-      if (!node) break
+      const node = docState.nodes.get(currentId);
+      if (!node) break;
 
       nodes.push({
         id: node.id,
         text: node.text,
         deleted: node.deleted,
         peerId: node.peerId,
-      })
+      });
 
-      const nextChildren = docState.children.get(currentId) ?? []
+      const nextChildren = docState.children.get(currentId) ?? [];
       if (nextChildren.length === 1) {
-        currentId = nextChildren[0]!
+        currentId = nextChildren[0]!;
       } else {
-        break
+        break;
       }
     }
 
-    const lastNodeId = nodes[nodes.length - 1]?.id
-    const branches = lastNodeId ? buildChains(docState, lastNodeId) : []
+    const lastNodeId = nodes[nodes.length - 1]?.id;
+    const branches = lastNodeId ? buildChains(docState, lastNodeId) : [];
 
-    return { nodes, branches }
-  })
-}
+    return { nodes, branches };
+  });
+};
 
 export const CausalTreeSection = () => {
-  const store = useInspectorStore()
-  const [selectedPeer, setSelectedPeer] = useState<string>("peer-A")
-  const peerIds = Object.keys(store.docStates).sort()
-  const docState = store.docStates[selectedPeer]
+  const store = useInspectorStore();
+  const [selectedPeer, setSelectedPeer] = useState<string>("peer-A");
+  const peerIds = Object.keys(store.docStates).sort();
+  const docState = store.docStates[selectedPeer];
 
   return (
     <div className="border border-stone-700 rounded-lg bg-stone-950 overflow-hidden">
@@ -344,18 +328,18 @@ export const CausalTreeSection = () => {
         )}
       </div>
     </div>
-  )
-}
+  );
+};
 
 const TreeVisualization = ({ docState }: { docState: DocState }) => {
-  const treeText = reconstruct(docState)
-  const nodeCount = docState.nodes.size - 1 // Exclude ROOT
+  const treeText = reconstruct(docState);
+  const nodeCount = docState.nodes.size - 1; // Exclude ROOT
   const deletedCount = Array.from(docState.nodes.values()).filter(
     (n) => n.deleted && n.id !== ROOT_ID,
-  ).length
-  const visibleCount = nodeCount - deletedCount
+  ).length;
+  const visibleCount = nodeCount - deletedCount;
 
-  const chains = buildChains(docState, ROOT_ID)
+  const chains = buildChains(docState, ROOT_ID);
 
   return (
     <div>
@@ -365,12 +349,10 @@ const TreeVisualization = ({ docState }: { docState: DocState }) => {
           <span className="font-semibold text-stone-400">{nodeCount}</span> total
         </span>
         <span>
-          <span className="font-semibold text-emerald-400">{visibleCount}</span>{" "}
-          visible
+          <span className="font-semibold text-emerald-400">{visibleCount}</span> visible
         </span>
         <span>
-          <span className="font-semibold text-red-400">{deletedCount}</span>{" "}
-          tombstoned
+          <span className="font-semibold text-red-400">{deletedCount}</span> tombstoned
         </span>
       </div>
 
@@ -389,22 +371,14 @@ const TreeVisualization = ({ docState }: { docState: DocState }) => {
       {/* Reconstructed text */}
       <div className="mt-3 text-[11px] text-stone-500 font-mono">
         <span className="font-semibold text-stone-400">Reconstructed: </span>
-        <span className="text-stone-300">
-          {treeText.length > 0 ? `"${treeText}"` : "(empty)"}
-        </span>
+        <span className="text-stone-300">{treeText.length > 0 ? `"${treeText}"` : "(empty)"}</span>
       </div>
     </div>
-  )
-}
+  );
+};
 
-const ChainList = ({
-  chains,
-  depth,
-}: {
-  chains: readonly ChainSegment[]
-  depth: number
-}) => {
-  const isBranch = chains.length > 1
+const ChainList = ({ chains, depth }: { chains: readonly ChainSegment[]; depth: number }) => {
+  const isBranch = chains.length > 1;
 
   return (
     <div style={{ paddingLeft: `${depth * 14}px` }}>
@@ -421,48 +395,44 @@ const ChainList = ({
           </div>
 
           {/* Recurse into branches at the end of this chain */}
-          {chain.branches.length > 0 && (
-            <ChainList chains={chain.branches} depth={depth + 1} />
-          )}
+          {chain.branches.length > 0 && <ChainList chains={chain.branches} depth={depth + 1} />}
         </div>
       ))}
     </div>
-  )
-}
+  );
+};
 
 /**
  * Render a single collapsed chain as one row.
  */
 const ChainRow = ({ chain }: { chain: ChainSegment }) => {
-  const { nodes } = chain
-  if (nodes.length === 0) return null
+  const { nodes } = chain;
+  if (nodes.length === 0) return null;
 
   // Group consecutive nodes by deleted status for inline rendering
-  type DisplayRun = { deleted: boolean; text: string; count: number }
-  const runs: DisplayRun[] = []
+  type DisplayRun = { deleted: boolean; text: string; count: number };
+  const runs: DisplayRun[] = [];
   for (const node of nodes) {
-    const charDisplay = node.text.replace(/\n/g, "\u23CE").replace(/ /g, "\u2423")
-    const last = runs[runs.length - 1]
+    const charDisplay = node.text.replace(/\n/g, "\u23CE").replace(/ /g, "\u2423");
+    const last = runs[runs.length - 1];
     if (last && last.deleted === node.deleted) {
-      last.text += charDisplay
-      last.count++
+      last.text += charDisplay;
+      last.count++;
     } else {
-      runs.push({ deleted: node.deleted, text: charDisplay, count: 1 })
+      runs.push({ deleted: node.deleted, text: charDisplay, count: 1 });
     }
   }
 
-  const totalDeleted = nodes.filter((n) => n.deleted).length
-  const totalChars = nodes.reduce((sum, n) => sum + n.text.length, 0)
+  const totalDeleted = nodes.filter((n) => n.deleted).length;
+  const totalChars = nodes.reduce((sum, n) => sum + n.text.length, 0);
 
   // Peer attribution
-  const peers = [...new Set(nodes.map((n) => n.peerId))]
-  const peerLabel = peers
-    .map((p) => p.replace("peer-", ""))
-    .join(", ")
+  const peers = [...new Set(nodes.map((n) => n.peerId))];
+  const peerLabel = peers.map((p) => p.replace("peer-", "")).join(", ");
 
   // Abbreviated IDs for the first and last node
-  const firstId = abbreviateId(nodes[0]!.id)
-  const lastId = nodes.length > 1 ? abbreviateId(nodes[nodes.length - 1]!.id) : null
+  const firstId = abbreviateId(nodes[0]!.id);
+  const lastId = nodes.length > 1 ? abbreviateId(nodes[nodes.length - 1]!.id) : null;
 
   return (
     <div className="flex items-center gap-1.5 flex-wrap">
@@ -488,11 +458,7 @@ const ChainRow = ({ chain }: { chain: ChainSegment }) => {
         {nodes.length === 1
           ? `1 run (${totalChars} ch)`
           : `${nodes.length} runs (${totalChars} ch)`}
-        {totalDeleted > 0 && (
-          <span className="text-red-400/60 ml-0.5">
-            ({totalDeleted} del)
-          </span>
-        )}
+        {totalDeleted > 0 && <span className="text-red-400/60 ml-0.5">({totalDeleted} del)</span>}
       </span>
 
       {/* Peer attribution */}
@@ -514,24 +480,20 @@ const ChainRow = ({ chain }: { chain: ChainSegment }) => {
         {lastId && ` \u2192 ${lastId}`}
       </span>
     </div>
-  )
-}
+  );
+};
 
 // ---------------------------------------------------------------------------
 // HLC State Section
 // ---------------------------------------------------------------------------
 
 export const HlcStateSection = () => {
-  const store = useInspectorStore()
-  return <HlcStateInner hlcStates={store.hlcStates} />
-}
+  const store = useInspectorStore();
+  return <HlcStateInner hlcStates={store.hlcStates} />;
+};
 
-const HlcStateInner = ({
-  hlcStates,
-}: {
-  hlcStates: Readonly<Record<string, Hlc>>
-}) => {
-  const peerIds = Object.keys(hlcStates).sort()
+const HlcStateInner = ({ hlcStates }: { hlcStates: Readonly<Record<string, Hlc>> }) => {
+  const peerIds = Object.keys(hlcStates).sort();
 
   return (
     <div>
@@ -544,21 +506,14 @@ const HlcStateInner = ({
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {peerIds.map((peerId) => {
-            const hlc = hlcStates[peerId]!
-            const isPeerA = peerId === "peer-A"
-            const accentColor = isPeerA ? "text-blue-400" : "text-amber-400"
-            const borderColor = isPeerA
-              ? "border-blue-400/20"
-              : "border-amber-400/20"
+            const hlc = hlcStates[peerId]!;
+            const isPeerA = peerId === "peer-A";
+            const accentColor = isPeerA ? "text-blue-400" : "text-amber-400";
+            const borderColor = isPeerA ? "border-blue-400/20" : "border-amber-400/20";
 
             return (
-              <div
-                key={peerId}
-                className={`rounded-lg border ${borderColor} bg-stone-900/50 p-4`}
-              >
-                <div
-                  className={`text-sm font-mono font-semibold ${accentColor} mb-3`}
-                >
+              <div key={peerId} className={`rounded-lg border ${borderColor} bg-stone-900/50 p-4`}>
+                <div className={`text-sm font-mono font-semibold ${accentColor} mb-3`}>
                   {peerId}
                 </div>
                 <div className="space-y-2 font-mono text-xs">
@@ -584,13 +539,13 @@ const HlcStateInner = ({
                   </div>
                 </div>
               </div>
-            )
+            );
           })}
         </div>
       )}
     </div>
-  )
-}
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -603,27 +558,27 @@ const HlcStateInner = ({
  */
 const abbreviateId = (id: string): string => {
   // Handle split IDs: "ts:count:peer-X:s:offset"
-  const splitMarker = id.indexOf(":s:")
+  const splitMarker = id.indexOf(":s:");
   if (splitMarker !== -1) {
-    const baseId = id.slice(0, splitMarker)
-    const offset = id.slice(splitMarker + 3)
-    return abbreviateId(baseId) + `:s:${offset}`
+    const baseId = id.slice(0, splitMarker);
+    const offset = id.slice(splitMarker + 3);
+    return abbreviateId(baseId) + `:s:${offset}`;
   }
 
-  const parts = id.split(":")
-  if (parts.length !== 3) return id
-  const ts = parts[0]!
-  const count = parts[1]!
-  const peer = parts[2]!
-  const shortTs = ts.slice(-3)
-  const shortCount = count.slice(-2)
-  const shortPeer = peer.replace("peer-", "")
-  return `${shortTs}:${shortCount}:${shortPeer}`
-}
+  const parts = id.split(":");
+  if (parts.length !== 3) return id;
+  const ts = parts[0]!;
+  const count = parts[1]!;
+  const peer = parts[2]!;
+  const shortTs = ts.slice(-3);
+  const shortCount = count.slice(-2);
+  const shortPeer = peer.replace("peer-", "");
+  return `${shortTs}:${shortCount}:${shortPeer}`;
+};
 
 /** Format an HLC object as its serialized string. */
 const formatHlcString = (hlc: Hlc): string => {
-  const ts = String(hlc.ts).padStart(15, "0")
-  const count = String(hlc.count).padStart(5, "0")
-  return `${ts}:${count}:${hlc.peerId}`
-}
+  const ts = String(hlc.ts).padStart(15, "0");
+  const count = String(hlc.count).padStart(5, "0");
+  return `${ts}:${count}:${hlc.peerId}`;
+};

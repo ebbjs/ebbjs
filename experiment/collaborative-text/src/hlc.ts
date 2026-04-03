@@ -15,17 +15,17 @@
 // ---------------------------------------------------------------------------
 
 export type Hlc = {
-  readonly ts: number // Wall-clock timestamp (ms since epoch)
-  readonly count: number // Logical counter for same-ts disambiguation
-  readonly peerId: string // Unique identifier for the peer
-}
+  readonly ts: number; // Wall-clock timestamp (ms since epoch)
+  readonly count: number; // Logical counter for same-ts disambiguation
+  readonly peerId: string; // Unique identifier for the peer
+};
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const TS_PAD = 15 // Covers timestamps through year 2286
-const COUNT_PAD = 5 // Allows 99,999 events per millisecond
+const TS_PAD = 15; // Covers timestamps through year 2286
+const COUNT_PAD = 5; // Allows 99,999 events per millisecond
 
 // ---------------------------------------------------------------------------
 // Public functions
@@ -36,7 +36,7 @@ export const createHlc = (peerId: string): Hlc => ({
   ts: Date.now(),
   count: 0,
   peerId,
-})
+});
 
 /**
  * Advance the local HLC on a local event.
@@ -45,12 +45,12 @@ export const createHlc = (peerId: string): Hlc => ({
  * otherwise resets count to 0. Returns a new HLC.
  */
 export const increment = (local: Hlc): Hlc => {
-  const now = Date.now()
+  const now = Date.now();
   if (now > local.ts) {
-    return { ts: now, count: 0, peerId: local.peerId }
+    return { ts: now, count: 0, peerId: local.peerId };
   }
-  return { ts: local.ts, count: local.count + 1, peerId: local.peerId }
-}
+  return { ts: local.ts, count: local.count + 1, peerId: local.peerId };
+};
 
 /**
  * Merge a local HLC with a received remote HLC.
@@ -64,26 +64,26 @@ export const increment = (local: Hlc): Hlc => {
  * Always keeps the local peer ID.
  */
 export const receive = (local: Hlc, remote: Hlc): Hlc => {
-  const now = Date.now()
-  const maxTs = Math.max(now, local.ts, remote.ts)
+  const now = Date.now();
+  const maxTs = Math.max(now, local.ts, remote.ts);
 
-  let count: number
+  let count: number;
   if (maxTs === local.ts && maxTs === remote.ts) {
     // Both local and remote share the max ts
-    count = Math.max(local.count, remote.count) + 1
+    count = Math.max(local.count, remote.count) + 1;
   } else if (maxTs === local.ts) {
     // Local ts is the highest
-    count = local.count + 1
+    count = local.count + 1;
   } else if (maxTs === remote.ts) {
     // Remote ts is the highest
-    count = remote.count + 1
+    count = remote.count + 1;
   } else {
     // Wall clock advanced past both — reset
-    count = 0
+    count = 0;
   }
 
-  return { ts: maxTs, count, peerId: local.peerId }
-}
+  return { ts: maxTs, count, peerId: local.peerId };
+};
 
 /**
  * Total order comparison of two HLCs.
@@ -92,12 +92,12 @@ export const receive = (local: Hlc, remote: Hlc): Hlc => {
  * Returns negative if a < b, positive if a > b, 0 if equal.
  */
 export const compare = (a: Hlc, b: Hlc): number => {
-  if (a.ts !== b.ts) return a.ts - b.ts
-  if (a.count !== b.count) return a.count - b.count
-  if (a.peerId < b.peerId) return -1
-  if (a.peerId > b.peerId) return 1
-  return 0
-}
+  if (a.ts !== b.ts) return a.ts - b.ts;
+  if (a.count !== b.count) return a.count - b.count;
+  if (a.peerId < b.peerId) return -1;
+  if (a.peerId > b.peerId) return 1;
+  return 0;
+};
 
 /**
  * Serialize an HLC to a deterministic, lexicographically-sortable string.
@@ -107,7 +107,7 @@ export const compare = (a: Hlc, b: Hlc): number => {
  * String comparison of two serialized HLCs gives the same result as compare().
  */
 export const toString = (hlc: Hlc): string => {
-  const ts = String(hlc.ts).padStart(TS_PAD, "0")
-  const count = String(hlc.count).padStart(COUNT_PAD, "0")
-  return `${ts}:${count}:${hlc.peerId}`
-}
+  const ts = String(hlc.ts).padStart(TS_PAD, "0");
+  const count = String(hlc.count).padStart(COUNT_PAD, "0");
+  return `${ts}:${count}:${hlc.peerId}`;
+};

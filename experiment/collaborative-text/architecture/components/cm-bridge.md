@@ -21,35 +21,35 @@ The key change from the current implementation: instead of rebuilding the entire
 
 ```ts
 type BridgeConfig = {
-  readonly peerId: string
-  readonly getHlc: () => Hlc
-  readonly setHlc: (hlc: Hlc) => void
-  readonly dispatch: (action: DocAction) => void
-  readonly getDocState: () => DocState
-}
+  readonly peerId: string;
+  readonly getHlc: () => Hlc;
+  readonly setHlc: (hlc: Hlc) => void;
+  readonly dispatch: (action: DocAction) => void;
+  readonly getDocState: () => DocState;
+};
 ```
 
 ### Exported functions / values
 
-| Name | Signature | Description |
-|------|-----------|-------------|
-| `createIdMapField` | `() => StateField<readonly RunSpan[]>` | Creates the CM6 StateField holding the current span array (mirrors `PositionIndex.spans`). |
-| `setIdMapEffect` | `StateEffect<readonly RunSpan[]>` | Effect to replace the span array in the StateField. |
-| `isRemote` | `Annotation<boolean>` | Annotation marking a transaction as remote (unchanged). |
-| `createBridgeExtension` | `(config: BridgeConfig, idMapField: StateField<...>) => Extension` | Returns the CM6 Extension bundle: StateField + updateListener. |
-| `applyRemoteInsert` | `(view, position, text, runId, idMapField, getDocState) => void` | Dispatch a CM transaction inserting a run's full text at a position. Marks as remote. Updates span field. |
-| `applyRemoteDelete` | `(view, from, count, idMapField, getDocState) => void` | Dispatch a CM transaction deleting `count` chars starting at `from`. Marks as remote. Updates span field. |
-| `getRunAtPosition` | `(state, position, idMapField) => PositionLookup \| undefined` | Read the run ID + offset at a given document position from the StateField. |
-| `getPositionOfRun` | `(state, runId, offset, idMapField) => number \| undefined` | Find the document position of a given run ID + offset. |
+| Name                    | Signature                                                          | Description                                                                                               |
+| ----------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| `createIdMapField`      | `() => StateField<readonly RunSpan[]>`                             | Creates the CM6 StateField holding the current span array (mirrors `PositionIndex.spans`).                |
+| `setIdMapEffect`        | `StateEffect<readonly RunSpan[]>`                                  | Effect to replace the span array in the StateField.                                                       |
+| `isRemote`              | `Annotation<boolean>`                                              | Annotation marking a transaction as remote (unchanged).                                                   |
+| `createBridgeExtension` | `(config: BridgeConfig, idMapField: StateField<...>) => Extension` | Returns the CM6 Extension bundle: StateField + updateListener.                                            |
+| `applyRemoteInsert`     | `(view, position, text, runId, idMapField, getDocState) => void`   | Dispatch a CM transaction inserting a run's full text at a position. Marks as remote. Updates span field. |
+| `applyRemoteDelete`     | `(view, from, count, idMapField, getDocState) => void`             | Dispatch a CM transaction deleting `count` chars starting at `from`. Marks as remote. Updates span field. |
+| `getRunAtPosition`      | `(state, position, idMapField) => PositionLookup \| undefined`     | Read the run ID + offset at a given document position from the StateField.                                |
+| `getPositionOfRun`      | `(state, runId, offset, idMapField) => number \| undefined`        | Find the document position of a given run ID + offset.                                                    |
 
 ## Dependencies
 
-| Dependency | What it needs | Reference |
-|------------|---------------|-----------|
-| Causal Tree | `RunNode`, `DocState`, `PositionIndex`, `RunSpan`, `lookupPosition`, `runOffsetToPosition`, `findInsertPosition`, `makeSplitId`, `ROOT_ID`, `DocAction` | [causal-tree.md](causal-tree.md) |
-| HLC | `increment`, `toString` (for generating IDs on local inserts) | [hlc.md](hlc.md) |
-| `@codemirror/state` | `StateField`, `StateEffect`, `Annotation`, `Extension`, `Transaction` | External |
-| `@codemirror/view` | `EditorView` | External |
+| Dependency          | What it needs                                                                                                                                           | Reference                        |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| Causal Tree         | `RunNode`, `DocState`, `PositionIndex`, `RunSpan`, `lookupPosition`, `runOffsetToPosition`, `findInsertPosition`, `makeSplitId`, `ROOT_ID`, `DocAction` | [causal-tree.md](causal-tree.md) |
+| HLC                 | `increment`, `toString` (for generating IDs on local inserts)                                                                                           | [hlc.md](hlc.md)                 |
+| `@codemirror/state` | `StateField`, `StateEffect`, `Annotation`, `Extension`, `Transaction`                                                                                   | External                         |
+| `@codemirror/view`  | `EditorView`                                                                                                                                            | External                         |
 
 ## Internal design notes
 

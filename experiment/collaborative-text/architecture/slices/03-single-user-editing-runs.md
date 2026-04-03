@@ -6,12 +6,12 @@ A single CodeMirror editor instance where the user can type, paste, and delete t
 
 ## Components involved
 
-| Component | Interface subset used |
-|-----------|---------------------|
-| [HLC](../components/hlc.md) | `createHlc`, `increment`, `toString` |
+| Component                                   | Interface subset used                                                                                             |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| [HLC](../components/hlc.md)                 | `createHlc`, `increment`, `toString`                                                                              |
 | [Causal Tree](../components/causal-tree.md) | `createDocState`, `docReducer`, `reconstruct`, `lookupPosition`, `RunNode`, `RunSpan`, `PositionIndex`, `ROOT_ID` |
-| [CM Bridge](../components/cm-bridge.md) | `createBridgeExtension`, `createIdMapField`, `setIdMapEffect`, `BridgeConfig` |
-| [Editor App](../components/editor-app.md) | Single `PeerEditor` component (one instance, no relay yet) |
+| [CM Bridge](../components/cm-bridge.md)     | `createBridgeExtension`, `createIdMapField`, `setIdMapEffect`, `BridgeConfig`                                     |
+| [Editor App](../components/editor-app.md)   | Single `PeerEditor` component (one instance, no relay yet)                                                        |
 
 ## Flow
 
@@ -67,6 +67,7 @@ A single CodeMirror editor instance where the user can type, paste, and delete t
 ### StateField update
 
 After every local edit:
+
 1. The reducer updates `DocState.index`
 2. The bridge dispatches a follow-up CM transaction with `setIdMapEffect.of(getDocState().index.spans)`
 3. The StateField now holds the current `RunSpan[]`

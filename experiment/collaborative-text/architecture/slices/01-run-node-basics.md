@@ -6,9 +6,9 @@ A `RunNode`-based causal tree where inserting runs, splitting runs, deleting ran
 
 ## Components involved
 
-| Component | Interface subset used |
-|-----------|---------------------|
-| [HLC](../components/hlc.md) | `toString` (for generating run IDs in test helpers) |
+| Component                                   | Interface subset used                                                                                                                                 |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [HLC](../components/hlc.md)                 | `toString` (for generating run IDs in test helpers)                                                                                                   |
 | [Causal Tree](../components/causal-tree.md) | `RunNode`, `DocState`, `createDocState`, `docReducer`, `reconstruct`, `makeSplitId`, `ROOT_ID`, `InsertRunAction`, `DeleteRangeAction`, `SplitAction` |
 
 ## Flow
