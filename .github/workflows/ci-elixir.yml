@@ -15,43 +15,83 @@ jobs:
   format:
     name: Format Check
     runs-on: ubuntu-latest
+    container: ghcr.io/${{ github.repository }}/elixir:latest
     steps:
       - uses: actions/checkout@v4
-      - uses: erlef/setup-beam@v1
+      - name: Configure git safe directory
+        run: git config --global --add safe.directory /__w/ebbjs/ebbjs
+      - name: Cache deps and build
+        uses: actions/cache@v4
         with:
-          elixir-version: "1.17"
-          otp-version: "27"
-      - run: mix format --check-formatted
+          path: |
+            ebb_server/deps
+            ebb_server/_build
+            ~/.mix
+          key: mix-${{ runner.os }}-${{ hashFiles('ebb_server/mix.lock') }}
+          restore-keys: |
+            mix-${{ runner.os }}-
+      - name: Install Hex and Rebar
+        run: mix local.hex --force && mix local.rebar --force
+        working-directory: ebb_server
+      - name: Install dependencies
+        run: mix deps.get
+        working-directory: ebb_server
+      - name: Check formatting
+        run: mix format --check-formatted
         working-directory: ebb_server
 
   lint:
     name: Lint (Credo)
     runs-on: ubuntu-latest
+    container: ghcr.io/${{ github.repository }}/elixir:latest
     steps:
       - uses: actions/checkout@v4
-      - uses: erlef/setup-beam@v1
+      - name: Configure git safe directory
+        run: git config --global --add safe.directory /__w/ebbjs/ebbjs
+      - name: Cache deps and build
+        uses: actions/cache@v4
         with:
-          elixir-version: "1.17"
-          otp-version: "27"
-      - name: Install native dependencies for rocksdb
-        run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
-      - run: mix deps.get
+          path: |
+            ebb_server/deps
+            ebb_server/_build
+            ~/.mix
+          key: mix-${{ runner.os }}-${{ hashFiles('ebb_server/mix.lock') }}
+          restore-keys: |
+            mix-${{ runner.os }}-
+      - name: Install Hex and Rebar
+        run: mix local.hex --force && mix local.rebar --force
         working-directory: ebb_server
-      - run: mix credo --strict
+      - name: Install dependencies
+        run: mix deps.get
+        working-directory: ebb_server
+      - name: Run Credo
+        run: mix credo --strict
         working-directory: ebb_server
 
   test:
     name: Test
     runs-on: ubuntu-latest
+    container: ghcr.io/${{ github.repository }}/elixir:latest
     steps:
       - uses: actions/checkout@v4
-      - uses: erlef/setup-beam@v1
+      - name: Configure git safe directory
+        run: git config --global --add safe.directory /__w/ebbjs/ebbjs
+      - name: Cache deps and build
+        uses: actions/cache@v4
         with:
-          elixir-version: "1.17"
-          otp-version: "27"
-      - name: Install native dependencies for rocksdb and exqlite
-        run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
-      - run: mix deps.get
+          path: |
+            ebb_server/deps
+            ebb_server/_build
+            ~/.mix
+          key: mix-${{ runner.os }}-${{ hashFiles('ebb_server/mix.lock') }}
+          restore-keys: |
+            mix-${{ runner.os }}-
+      - name: Install Hex and Rebar
+        run: mix local.hex --force && mix local.rebar --force
         working-directory: ebb_server
-      - run: mix test
+      - name: Install dependencies
+        run: mix deps.get
+        working-directory: ebb_server
+      - name: Run tests
+        run: mix test
         working-directory: ebb_server
