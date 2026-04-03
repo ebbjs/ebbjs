@@ -33,6 +33,8 @@ jobs:
         with:
           elixir-version: "1.17"
           otp-version: "27"
+      - name: Install native dependencies for rocksdb
+        run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
       - run: mix deps.get
         working-directory: ebb_server
       - run: mix credo --strict
