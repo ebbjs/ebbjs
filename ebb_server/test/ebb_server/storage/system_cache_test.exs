@@ -34,14 +34,24 @@ defmodule EbbServer.Storage.SystemCacheTest do
     on_exit(fn ->
       if pid = Process.whereis(cache_name), do: if(Process.alive?(pid), do: GenServer.stop(pid))
       :persistent_term.erase(gsn_counter_name)
+
       for t <- [group_members_name, relationships_name, relationships_by_group_name] do
-        try do :ets.delete(t) rescue _ -> :ok end
+        try do
+          :ets.delete(t)
+        rescue
+          _ -> :ok
+        end
       end
     end)
 
-    %{dirty_set: dirty_set_name, gsn_counter: counter, cache_name: cache_name,
-      group_members: group_members_name, relationships: relationships_name,
-      relationships_by_group: relationships_by_group_name}
+    %{
+      dirty_set: dirty_set_name,
+      gsn_counter: counter,
+      cache_name: cache_name,
+      group_members: group_members_name,
+      relationships: relationships_name,
+      relationships_by_group: relationships_by_group_name
+    }
   end
 
   describe "GSN claiming" do
@@ -150,27 +160,31 @@ defmodule EbbServer.Storage.SystemCacheTest do
     test "put_group_member and get_actor_groups" do
       %{group_members: gm} = start_isolated_cache()
 
-      :ok = SystemCache.put_group_member(
-        %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
-        gm
-      )
+      :ok =
+        SystemCache.put_group_member(
+          %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
+          gm
+        )
 
       assert SystemCache.get_actor_groups("a_1", gm) == [
-        %{group_id: "g_1", permissions: ["todo.create"]}
-      ]
+               %{group_id: "g_1", permissions: ["todo.create"]}
+             ]
     end
 
     test "get_actor_groups with multiple groups" do
       %{group_members: gm} = start_isolated_cache()
 
-      :ok = SystemCache.put_group_member(
-        %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
-        gm
-      )
-      :ok = SystemCache.put_group_member(
-        %{id: "gm_2", actor_id: "a_1", group_id: "g_2", permissions: ["post.create"]},
-        gm
-      )
+      :ok =
+        SystemCache.put_group_member(
+          %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
+          gm
+        )
+
+      :ok =
+        SystemCache.put_group_member(
+          %{id: "gm_2", actor_id: "a_1", group_id: "g_2", permissions: ["post.create"]},
+          gm
+        )
 
       groups = SystemCache.get_actor_groups("a_1", gm)
       assert length(groups) == 2
@@ -179,10 +193,16 @@ defmodule EbbServer.Storage.SystemCacheTest do
     test "get_permissions returns permissions for matching group" do
       %{group_members: gm} = start_isolated_cache()
 
-      :ok = SystemCache.put_group_member(
-        %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create", "todo.update"]},
-        gm
-      )
+      :ok =
+        SystemCache.put_group_member(
+          %{
+            id: "gm_1",
+            actor_id: "a_1",
+            group_id: "g_1",
+            permissions: ["todo.create", "todo.update"]
+          },
+          gm
+        )
 
       assert SystemCache.get_permissions("a_1", "g_1", gm) == ["todo.create", "todo.update"]
     end
@@ -196,10 +216,11 @@ defmodule EbbServer.Storage.SystemCacheTest do
     test "delete_group_member removes entry" do
       %{group_members: gm} = start_isolated_cache()
 
-      :ok = SystemCache.put_group_member(
-        %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
-        gm
-      )
+      :ok =
+        SystemCache.put_group_member(
+          %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
+          gm
+        )
 
       :ok = SystemCache.delete_group_member("gm_1", gm)
 
@@ -211,10 +232,12 @@ defmodule EbbServer.Storage.SystemCacheTest do
     test "put_relationship and get_entity_group" do
       %{relationships: rel, relationships_by_group: rbg} = start_isolated_cache()
 
-      :ok = SystemCache.put_relationship(
-        %{id: "rel_1", source_id: "todo_1", target_id: "g_1", type: "todo", field: "group"},
-        relationships: rel, relationships_by_group: rbg
-      )
+      :ok =
+        SystemCache.put_relationship(
+          %{id: "rel_1", source_id: "todo_1", target_id: "g_1", type: "todo", field: "group"},
+          relationships: rel,
+          relationships_by_group: rbg
+        )
 
       assert SystemCache.get_entity_group("todo_1", rel) == "g_1"
     end
@@ -228,14 +251,19 @@ defmodule EbbServer.Storage.SystemCacheTest do
     test "get_group_entities" do
       %{relationships: rel, relationships_by_group: rbg} = start_isolated_cache()
 
-      :ok = SystemCache.put_relationship(
-        %{id: "rel_1", source_id: "todo_1", target_id: "g_1", type: "todo", field: "group"},
-        relationships: rel, relationships_by_group: rbg
-      )
-      :ok = SystemCache.put_relationship(
-        %{id: "rel_2", source_id: "todo_2", target_id: "g_1", type: "todo", field: "group"},
-        relationships: rel, relationships_by_group: rbg
-      )
+      :ok =
+        SystemCache.put_relationship(
+          %{id: "rel_1", source_id: "todo_1", target_id: "g_1", type: "todo", field: "group"},
+          relationships: rel,
+          relationships_by_group: rbg
+        )
+
+      :ok =
+        SystemCache.put_relationship(
+          %{id: "rel_2", source_id: "todo_2", target_id: "g_1", type: "todo", field: "group"},
+          relationships: rel,
+          relationships_by_group: rbg
+        )
 
       entities = SystemCache.get_group_entities("g_1", rbg)
       assert length(entities) == 2
@@ -246,12 +274,15 @@ defmodule EbbServer.Storage.SystemCacheTest do
     test "delete_relationship removes from both tables" do
       %{relationships: rel, relationships_by_group: rbg} = start_isolated_cache()
 
-      :ok = SystemCache.put_relationship(
-        %{id: "rel_1", source_id: "todo_1", target_id: "g_1", type: "todo", field: "group"},
-        relationships: rel, relationships_by_group: rbg
-      )
+      :ok =
+        SystemCache.put_relationship(
+          %{id: "rel_1", source_id: "todo_1", target_id: "g_1", type: "todo", field: "group"},
+          relationships: rel,
+          relationships_by_group: rbg
+        )
 
-      :ok = SystemCache.delete_relationship("rel_1", relationships: rel, relationships_by_group: rbg)
+      :ok =
+        SystemCache.delete_relationship("rel_1", relationships: rel, relationships_by_group: rbg)
 
       assert SystemCache.get_entity_group("todo_1", rel) == nil
       assert SystemCache.get_group_entities("g_1", rbg) == []
