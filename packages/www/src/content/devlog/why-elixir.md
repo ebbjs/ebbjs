@@ -1,22 +1,55 @@
 ---
-title: "Why Elixir"
+title: "Picking the best tool for the job"
 description: "I don't know Elixir. But I'm writing my sync engine in it anyway. Here's why."
 date: 2026-03-21
 ---
 
 I don't know [Elixir](https://elixir-lang.org/). I've never written a [GenServer](https://hexdocs.pm/elixir/GenServer.html) in my life. I barely know what the [BEAM](https://www.erlang.org/blog/a-brief-beam-primer/) is.
 
-So why am I rewriting my entire sync engine in it anyway?
+But I'm rewriting ebb's entire sync server in it anyway.
 
-## Find the best tool for the job
+And in this article, I want to run you through my reasoning for choosing Elixir, show you how translating your stack can help you learn a new language, and explain why I think AI has made it easier than ever to pick the right tool for the job.
 
-My first rule of side projects: prototype in whatever gets you to a working thing fastest.
+Let's start by discussing why the first version of ebb _wasn't_ written in Elixir.
 
-For me, that's TypeScript. So the first proof of concept for Ebb's sync — the handshake, the catch-up reads, the live SSE subscriptions — was all Node. And it worked. I could open two browser tabs, make edits in one, and watch them appear in the other. Magic.
+## "Is this anything?"
+
+Whenever I get obsessed with a new idea, this is the question I'm trying to answer as fast as possible.
+
+For me, that usually starts by putting the idea down on paper and doing research on prior art, community need, competitive landscape, and technical feasibility. And usually, after I've made this "paper prototype", the idea dies.
+
+This is actually my favorite outcome for an idea. Because it means I got the initial rush of being consumed by something new, but I don't have to actually do the hard work and drudgery of bringing it into reality.
+
+Unfortunately, that didn't happen with ebb.
+
+Instead, the more I read and wrote, the more the answer to "Is this anything?" was just "Maybe?"
+
+excited I was to bring the pages to life. Not because I felt there was a huge opportunity here or because I felt I had stumbled upon something completely novel.
+
+That means I need to get to a working prototype
+
+As a product engineer, I think about building in two phases:
+
+1. Building the right thing
+2. Building the thing right
+
+At the beginning of a new project, there are so many unknowns about _what_ the thing actually needs to do that belaboring _how_ it should do that is really just a distraction.
+
+So, I always default to using the tools I'm most comfortable with for MVPs and prototypes. I can find errors in my thinking, architecture, or design much faster when I'm not also worried about every implementation detail.
+
+For ebb, that meant building the entire proof of concept in Typescript. The data model, replication protocol, client-store, query builder, and sync server were all in a unified language.
+
+And it worked! I could open two browser tabs, make edits in one, and watch them appear in the other. Magic.
+
+But it was slow, brittle and overly complicated.
 
 But a proof of concept only proves the concept. And once I had confidence in the _design_, I needed to pick the right tool for the _implementation_.
 
-Ebb's sync server has a specific job: accept thousands of concurrent connections, write Actions to a durable log at high throughput, and fan out changes to subscribers in real time. That's fundamentally a concurrency and I/O problem, and the right runtime matters.
+After prototyping and interating, I had a clear idea of what ebb's sync server job / the "right thing" was: accept thousands of concurrent connections, write Actions to a durable log at high throughput, and fan out changes to subscribers in real time.
+
+That's fundamentally a concurrency and I/O problem, and the right runtime matters. And Node.js was not that runtime.
+
+So I began looking for other options.
 
 ## The CouchDB breadcrumb trail
 
