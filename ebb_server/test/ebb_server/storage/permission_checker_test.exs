@@ -16,7 +16,11 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
 
     on_exit(fn ->
       for t <- [gm, rel, rbg] do
-        try do :ets.delete(t) rescue _ -> :ok end
+        try do
+          :ets.delete(t)
+        rescue
+          _ -> :ok
+        end
       end
     end)
 
@@ -24,7 +28,11 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
   end
 
   defp auth_opts(tables) do
-    [group_members: tables.group_members, relationships: tables.relationships, relationships_by_group: tables.relationships_by_group]
+    [
+      group_members: tables.group_members,
+      relationships: tables.relationships,
+      relationships_by_group: tables.relationships_by_group
+    ]
   end
 
   describe "validate_structure/1" do
@@ -64,37 +72,41 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
     end
 
     test "system entity without data.fields passes" do
-      action = sample_action(%{
-        "updates" => [
-          %{
-            "id" => "rel_1",
-            "subject_id" => "rel_1",
-            "subject_type" => "relationship",
-            "method" => "put",
-            "data" => %{
-              "source_id" => "todo_1",
-              "target_id" => "g_1",
-              "type" => "todo",
-              "field" => "group"
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "rel_1",
+              "subject_id" => "rel_1",
+              "subject_type" => "relationship",
+              "method" => "put",
+              "data" => %{
+                "source_id" => "todo_1",
+                "target_id" => "g_1",
+                "type" => "todo",
+                "field" => "group"
+              }
             }
-          }
-        ]
-      })
+          ]
+        })
+
       assert PermissionChecker.validate_structure(action) == :ok
     end
 
     test "user entity without data.fields rejected" do
-      action = sample_action(%{
-        "updates" => [
-          %{
-            "id" => "upd_1",
-            "subject_id" => "todo_1",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{}
-          }
-        ]
-      })
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "todo_1",
+              "subject_type" => "todo",
+              "method" => "put",
+              "data" => %{}
+            }
+          ]
+        })
+
       assert {:error, "invalid_structure", _} = PermissionChecker.validate_structure(action)
     end
 
@@ -110,7 +122,8 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
     end
 
     test "mismatched actor rejected" do
-      assert {:error, "actor_mismatch", _} = PermissionChecker.validate_actor(%{"actor_id" => "a_1"}, "a_2")
+      assert {:error, "actor_mismatch", _} =
+               PermissionChecker.validate_actor(%{"actor_id" => "a_1"}, "a_2")
     end
   end
 
@@ -155,11 +168,35 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
         "updates" => [
-          %{"id" => "g_1", "subject_id" => "g_1", "subject_type" => "group", "method" => "put", "data" => %{"fields" => %{"name" => %{"value" => "Test Group"}}}},
-          %{"id" => "gm_1", "subject_id" => "gm_1", "subject_type" => "groupMember", "method" => "put", "data" => %{"actor_id" => "a_1", "group_id" => "g_1", "permissions" => ["group.read"]}},
-          %{"id" => "rel_1", "subject_id" => "rel_1", "subject_type" => "relationship", "method" => "put", "data" => %{"source_id" => "todo_1", "target_id" => "g_1", "type" => "todo", "field" => "group"}}
+          %{
+            "id" => "g_1",
+            "subject_id" => "g_1",
+            "subject_type" => "group",
+            "method" => "put",
+            "data" => %{"fields" => %{"name" => %{"value" => "Test Group"}}}
+          },
+          %{
+            "id" => "gm_1",
+            "subject_id" => "gm_1",
+            "subject_type" => "groupMember",
+            "method" => "put",
+            "data" => %{"actor_id" => "a_1", "group_id" => "g_1", "permissions" => ["group.read"]}
+          },
+          %{
+            "id" => "rel_1",
+            "subject_id" => "rel_1",
+            "subject_type" => "relationship",
+            "method" => "put",
+            "data" => %{
+              "source_id" => "todo_1",
+              "target_id" => "g_1",
+              "type" => "todo",
+              "field" => "group"
+            }
+          }
         ]
       }
+
       opts = auth_opts(create_isolated_tables())
       assert PermissionChecker.authorize_updates(action, "a_1", opts) == :ok
     end
@@ -168,14 +205,28 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
 
-      :ets.insert(tables.group_members, {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.create", "todo.update"]}})
-      :ets.insert(tables.relationships, {"todo_1", %{id: "rel_1", target_id: "g_1", type: "todo", field: "group"}})
+      :ets.insert(
+        tables.group_members,
+        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.create", "todo.update"]}}
+      )
 
-      action = sample_action(%{
-        "updates" => [
-          %{"id" => "upd_1", "subject_id" => "todo_1", "subject_type" => "todo", "method" => "put", "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}}
-        ]
-      })
+      :ets.insert(
+        tables.relationships,
+        {"todo_1", %{id: "rel_1", target_id: "g_1", type: "todo", field: "group"}}
+      )
+
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "todo_1",
+              "subject_type" => "todo",
+              "method" => "put",
+              "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
+            }
+          ]
+        })
 
       assert PermissionChecker.authorize_updates(action, "a_1", opts) == :ok
     end
@@ -184,45 +235,85 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
 
-      :ets.insert(tables.relationships, {"todo_1", %{id: "rel_1", target_id: "g_1", type: "todo", field: "group"}})
+      :ets.insert(
+        tables.relationships,
+        {"todo_1", %{id: "rel_1", target_id: "g_1", type: "todo", field: "group"}}
+      )
 
-      action = sample_action(%{
-        "updates" => [
-          %{"id" => "upd_1", "subject_id" => "todo_1", "subject_type" => "todo", "method" => "put", "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}}
-        ]
-      })
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "todo_1",
+              "subject_type" => "todo",
+              "method" => "put",
+              "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
+            }
+          ]
+        })
 
-      assert {:error, "not_authorized", _} = PermissionChecker.authorize_updates(action, "a_1", opts)
+      assert {:error, "not_authorized", _} =
+               PermissionChecker.authorize_updates(action, "a_1", opts)
     end
 
     test "unauthorized write (wrong permissions)" do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
 
-      :ets.insert(tables.group_members, {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["post.create"]}})
-      :ets.insert(tables.relationships, {"todo_1", %{id: "rel_1", target_id: "g_1", type: "todo", field: "group"}})
+      :ets.insert(
+        tables.group_members,
+        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["post.create"]}}
+      )
 
-      action = sample_action(%{
-        "updates" => [
-          %{"id" => "upd_1", "subject_id" => "todo_1", "subject_type" => "todo", "method" => "put", "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}}
-        ]
-      })
+      :ets.insert(
+        tables.relationships,
+        {"todo_1", %{id: "rel_1", target_id: "g_1", type: "todo", field: "group"}}
+      )
 
-      assert {:error, "not_authorized", _} = PermissionChecker.authorize_updates(action, "a_1", opts)
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "todo_1",
+              "subject_type" => "todo",
+              "method" => "put",
+              "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
+            }
+          ]
+        })
+
+      assert {:error, "not_authorized", _} =
+               PermissionChecker.authorize_updates(action, "a_1", opts)
     end
 
     test "wildcard permission matches" do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
 
-      :ets.insert(tables.group_members, {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.*"]}})
-      :ets.insert(tables.relationships, {"todo_1", %{id: "rel_1", target_id: "g_1", type: "todo", field: "group"}})
+      :ets.insert(
+        tables.group_members,
+        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.*"]}}
+      )
 
-      action = sample_action(%{
-        "updates" => [
-          %{"id" => "upd_1", "subject_id" => "todo_1", "subject_type" => "todo", "method" => "patch", "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}}
-        ]
-      })
+      :ets.insert(
+        tables.relationships,
+        {"todo_1", %{id: "rel_1", target_id: "g_1", type: "todo", field: "group"}}
+      )
+
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "todo_1",
+              "subject_type" => "todo",
+              "method" => "patch",
+              "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
+            }
+          ]
+        })
 
       assert PermissionChecker.authorize_updates(action, "a_1", opts) == :ok
     end
@@ -231,15 +322,35 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
 
-      :ets.insert(tables.group_members, {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.create"]}})
+      :ets.insert(
+        tables.group_members,
+        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.create"]}}
+      )
 
       action = %{
         "id" => "act_1",
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
         "updates" => [
-          %{"id" => "upd_1", "subject_id" => "todo_new", "subject_type" => "todo", "method" => "put", "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}},
-          %{"id" => "rel_1", "subject_id" => "rel_new", "subject_type" => "relationship", "method" => "put", "data" => %{"source_id" => "todo_new", "target_id" => "g_1", "type" => "todo", "field" => "group"}}
+          %{
+            "id" => "upd_1",
+            "subject_id" => "todo_new",
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
+          },
+          %{
+            "id" => "rel_1",
+            "subject_id" => "rel_new",
+            "subject_type" => "relationship",
+            "method" => "put",
+            "data" => %{
+              "source_id" => "todo_new",
+              "target_id" => "g_1",
+              "type" => "todo",
+              "field" => "group"
+            }
+          }
         ]
       }
 
@@ -250,14 +361,29 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
 
-      :ets.insert(tables.group_members, {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["group.read"]}})
+      :ets.insert(
+        tables.group_members,
+        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["group.read"]}}
+      )
 
       action = %{
         "id" => "act_1",
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
         "updates" => [
-          %{"id" => "gm_2", "subject_id" => "gm_2", "subject_type" => "groupMember", "method" => "patch", "data" => %{"fields" => %{"group_id" => %{"value" => "g_1"}, "actor_id" => %{"value" => "a_2"}, "permissions" => %{"value" => ["group.read"]}}}}
+          %{
+            "id" => "gm_2",
+            "subject_id" => "gm_2",
+            "subject_type" => "groupMember",
+            "method" => "patch",
+            "data" => %{
+              "fields" => %{
+                "group_id" => %{"value" => "g_1"},
+                "actor_id" => %{"value" => "a_2"},
+                "permissions" => %{"value" => ["group.read"]}
+              }
+            }
+          }
         ]
       }
 
@@ -273,11 +399,24 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
         "updates" => [
-          %{"id" => "gm_1", "subject_id" => "gm_1", "subject_type" => "groupMember", "method" => "patch", "data" => %{"fields" => %{"group_id" => %{"value" => "g_1"}, "actor_id" => %{"value" => "a_2"}, "permissions" => %{"value" => ["group.read"]}}}}
+          %{
+            "id" => "gm_1",
+            "subject_id" => "gm_1",
+            "subject_type" => "groupMember",
+            "method" => "patch",
+            "data" => %{
+              "fields" => %{
+                "group_id" => %{"value" => "g_1"},
+                "actor_id" => %{"value" => "a_2"},
+                "permissions" => %{"value" => ["group.read"]}
+              }
+            }
+          }
         ]
       }
 
-      assert {:error, "not_authorized", _} = PermissionChecker.authorize_updates(action, "a_1", opts)
+      assert {:error, "not_authorized", _} =
+               PermissionChecker.authorize_updates(action, "a_1", opts)
     end
   end
 
@@ -286,15 +425,28 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
 
-      :ets.insert(tables.group_members, {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.create"]}})
-      :ets.insert(tables.relationships, {"todo_1", %{id: "rel_1", target_id: "g_1", type: "todo", field: "group"}})
+      :ets.insert(
+        tables.group_members,
+        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.create"]}}
+      )
+
+      :ets.insert(
+        tables.relationships,
+        {"todo_1", %{id: "rel_1", target_id: "g_1", type: "todo", field: "group"}}
+      )
 
       valid_action = %{
         "id" => "act_1",
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
         "updates" => [
-          %{"id" => "upd_1", "subject_id" => "todo_1", "subject_type" => "todo", "method" => "put", "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}}
+          %{
+            "id" => "upd_1",
+            "subject_id" => "todo_1",
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
+          }
         ]
       }
 
@@ -303,19 +455,26 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
         "actor_id" => "a_2",
         "hlc" => generate_hlc(),
         "updates" => [
-          %{"id" => "upd_2", "subject_id" => "todo_1", "subject_type" => "todo", "method" => "put", "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}}
+          %{
+            "id" => "upd_2",
+            "subject_id" => "todo_1",
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
+          }
         ]
       }
 
-      {accepted, rejected} = PermissionChecker.validate_and_authorize([valid_action, invalid_action], "a_1", opts)
+      {accepted, rejected} =
+        PermissionChecker.validate_and_authorize([valid_action, invalid_action], "a_1", opts)
 
       assert length(accepted) == 1
       assert length(rejected) == 1
 
       validated = hd(accepted)
-      assert is_atom(validated.method)
       assert is_integer(validated.hlc)
       assert validated.actor_id == "a_1"
+      assert is_atom(hd(validated.updates).method)
 
       rejection = hd(rejected)
       assert rejection.reason == "actor_mismatch"

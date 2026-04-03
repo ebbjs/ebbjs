@@ -28,8 +28,14 @@ defmodule EbbServer.Storage.SystemCache do
           relationships: atom(),
           relationships_by_group: atom()
         }
-  defstruct [:dirty_set, :gsn_counter, :gsn_counter_name,
-             :group_members, :relationships, :relationships_by_group]
+  defstruct [
+    :dirty_set,
+    :gsn_counter,
+    :gsn_counter_name,
+    :group_members,
+    :relationships,
+    :relationships_by_group
+  ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -93,15 +99,22 @@ defmodule EbbServer.Storage.SystemCache do
 
   def put_group_member(member, table \\ @default_group_members) do
     actor_id = member[:actor_id] || member["actor_id"]
-    entry = %{
-      id: member[:id] || member["id"],
-      group_id: member[:group_id] || member["group_id"],
-      permissions: member[:permissions] || member["permissions"]
-    }
+    group_id = member[:group_id] || member["group_id"]
+    entry_id = member[:id] || member["id"]
 
-    delete_group_member_by_id(entry.id, actor_id, table)
-    :ets.insert(table, {actor_id, entry})
-    :ok
+    if is_nil(actor_id) or is_nil(group_id) or is_nil(entry_id) do
+      {:error, :nil_values_not_allowed}
+    else
+      entry = %{
+        id: entry_id,
+        group_id: group_id,
+        permissions: member[:permissions] || member["permissions"]
+      }
+
+      delete_group_member_by_id(entry.id, actor_id, table)
+      :ets.insert(table, {actor_id, entry})
+      :ok
+    end
   end
 
   def delete_group_member(member_id, table \\ @default_group_members) do
@@ -127,17 +140,35 @@ defmodule EbbServer.Storage.SystemCache do
   end
 
   def get_actor_groups(actor_id, table \\ @default_group_members) do
-    :ets.lookup(table, actor_id)
+    actual_table = resolve_table(table, :group_members)
+
+    :ets.lookup(actual_table, actor_id)
     |> Enum.map(fn {_actor_id, entry} ->
       %{group_id: entry.group_id, permissions: entry.permissions}
     end)
   end
 
+  defp resolve_table(table, _key) when is_atom(table), do: table
+  defp resolve_table(opts, key) when is_list(opts), do: Keyword.get(opts, key)
+
+  defp ensure_table(name, opts) do
+    case :ets.info(name, :name) do
+      :undefined -> :ets.new(name, opts)
+      _ -> name
+    end
+  end
+
   def get_permissions(actor_id, group_id, table \\ @default_group_members) do
-    :ets.lookup(table, actor_id)
-    |> Enum.find_value(fn {_actor_id, entry} ->
-      if entry.group_id == group_id, do: entry.permissions
+    actual_table = resolve_table(table, :group_members)
+
+    :ets.lookup(actual_table, actor_id)
+    |> Enum.flat_map(fn {_actor_id, entry} ->
+      if entry.group_id == group_id, do: entry.permissions, else: []
     end)
+    |> case do
+      [] -> nil
+      perms -> Enum.uniq(List.flatten(perms))
+    end
   end
 
   def put_relationship(rel, opts \\ []) do
@@ -146,16 +177,22 @@ defmodule EbbServer.Storage.SystemCache do
 
     source_id = rel[:source_id] || rel["source_id"]
     target_id = rel[:target_id] || rel["target_id"]
-    entry = %{
-      id: rel[:id] || rel["id"],
-      target_id: target_id,
-      type: rel[:type] || rel["type"],
-      field: rel[:field] || rel["field"]
-    }
+    entry_id = rel[:id] || rel["id"]
 
-    :ets.insert(rel_table, {source_id, entry})
-    :ets.insert(rbg_table, {target_id, source_id})
-    :ok
+    if is_nil(source_id) or is_nil(target_id) or is_nil(entry_id) do
+      {:error, :nil_values_not_allowed}
+    else
+      entry = %{
+        id: entry_id,
+        target_id: target_id,
+        type: rel[:type] || rel["type"],
+        field: rel[:field] || rel["field"]
+      }
+
+      :ets.insert(rel_table, {source_id, entry})
+      :ets.insert(rbg_table, {target_id, source_id})
+      :ok
+    end
   end
 
   def delete_relationship(rel_id, opts \\ []) do
@@ -175,7 +212,9 @@ defmodule EbbServer.Storage.SystemCache do
   end
 
   def get_entity_group(entity_id, table \\ @default_relationships) do
-    case :ets.lookup(table, entity_id) do
+    actual_table = resolve_table(table, :relationships)
+
+    case :ets.lookup(actual_table, entity_id) do
       [{_source_id, %{target_id: group_id}}] -> group_id
       [] -> nil
     end
@@ -241,7 +280,7 @@ defmodule EbbServer.Storage.SystemCache do
 
       case EbbServer.Storage.EntityStore.materialize(entity_id, rocks_name: rocks_name) do
         {:ok, entity} -> insert_fn.(entity)
-        _ -> :ok
+        error -> Logger.warning("Failed to materialize entity #{entity_id}: #{inspect(error)}")
       end
     end)
     |> Stream.run()
@@ -259,12 +298,14 @@ defmodule EbbServer.Storage.SystemCache do
     gsn_counter_name = Keyword.get(opts, :gsn_counter_name, @default_gsn_counter_name)
     group_members = Keyword.get(opts, :group_members, @default_group_members)
     relationships = Keyword.get(opts, :relationships, @default_relationships)
-    relationships_by_group = Keyword.get(opts, :relationships_by_group, @default_relationships_by_group)
+
+    relationships_by_group =
+      Keyword.get(opts, :relationships_by_group, @default_relationships_by_group)
 
     :ets.new(dirty_set, [:set, :public, :named_table])
-    :ets.new(group_members, [:bag, :public, :named_table])
-    :ets.new(relationships, [:set, :public, :named_table])
-    :ets.new(relationships_by_group, [:bag, :public, :named_table])
+    ensure_table(group_members, [:bag, :public, :named_table])
+    ensure_table(relationships, [:set, :public, :named_table])
+    ensure_table(relationships_by_group, [:bag, :public, :named_table])
 
     counter =
       case gsn_counter do
