@@ -33,8 +33,13 @@ defmodule EbbServer.Storage.WriterTest do
       :persistent_term.erase(gsn_counter_name)
     end)
 
-    %{dirty_set: dirty_set_name, gsn_counter: counter,
-      group_members: gm_table, relationships: rel_table, relationships_by_group: rbg_table}
+    %{
+      dirty_set: dirty_set_name,
+      gsn_counter: counter,
+      group_members: gm_table,
+      relationships: rel_table,
+      relationships_by_group: rbg_table
+    }
   end
 
   defp start_rocks do
@@ -342,11 +347,11 @@ defmodule EbbServer.Storage.WriterTest do
 
   describe "system cache updates" do
     test "groupMember PUT updates ETS",
-      %{
-        writer_name: writer_name,
-        group_members: gm_table,
-        relationships: rel_table
-      } do
+         %{
+           writer_name: writer_name,
+           group_members: gm_table,
+           relationships: rel_table
+         } do
       hlc = generate_hlc()
       gm_id = "gm_" <> Nanoid.generate()
 
@@ -380,11 +385,11 @@ defmodule EbbServer.Storage.WriterTest do
     end
 
     test "relationship PUT updates ETS",
-      %{
-        writer_name: writer_name,
-        relationships: rel_table,
-        relationships_by_group: rbg_table
-      } do
+         %{
+           writer_name: writer_name,
+           relationships: rel_table,
+           relationships_by_group: rbg_table
+         } do
       hlc = generate_hlc()
       rel_id = "rel_" <> Nanoid.generate()
 
@@ -415,10 +420,10 @@ defmodule EbbServer.Storage.WriterTest do
     end
 
     test "groupMember DELETE removes from ETS",
-      %{
-        writer_name: writer_name,
-        group_members: gm_table
-      } do
+         %{
+           writer_name: writer_name,
+           group_members: gm_table
+         } do
       hlc = generate_hlc()
       gm_id = "gm_" <> Nanoid.generate()
 
@@ -466,11 +471,11 @@ defmodule EbbServer.Storage.WriterTest do
     end
 
     test "relationship DELETE removes from ETS",
-      %{
-        writer_name: writer_name,
-        relationships: rel_table,
-        relationships_by_group: rbg_table
-      } do
+         %{
+           writer_name: writer_name,
+           relationships: rel_table,
+           relationships_by_group: rbg_table
+         } do
       hlc = generate_hlc()
       rel_id = "rel_" <> Nanoid.generate()
 
@@ -517,11 +522,11 @@ defmodule EbbServer.Storage.WriterTest do
     end
 
     test "non-system entity updates do not affect ETS",
-      %{
-        writer_name: writer_name,
-        group_members: gm_table,
-        relationships: rel_table
-      } do
+         %{
+           writer_name: writer_name,
+           group_members: gm_table,
+           relationships: rel_table
+         } do
       action = sample_action()
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
@@ -531,10 +536,10 @@ defmodule EbbServer.Storage.WriterTest do
     end
 
     test "relationship PUT with empty data is rejected",
-      %{
-        writer_name: writer_name,
-        relationships: rel_table
-      } do
+         %{
+           writer_name: writer_name,
+           relationships: rel_table
+         } do
       action = %{
         "id" => "act_" <> Nanoid.generate(),
         "actor_id" => "actor_1",
@@ -550,16 +555,18 @@ defmodule EbbServer.Storage.WriterTest do
         ]
       }
 
-      assert {:ok, {_gsn_start, _gsn_end}, [%{reason: reason}]} = Writer.write_actions([action], writer_name)
+      assert {:ok, {_gsn_start, _gsn_end}, [%{reason: reason}]} =
+               Writer.write_actions([action], writer_name)
+
       assert reason =~ "relationship"
     end
 
     test "mixed batch - system and user entities",
-      %{
-        writer_name: writer_name,
-        group_members: gm_table,
-        relationships: rel_table
-      } do
+         %{
+           writer_name: writer_name,
+           group_members: gm_table,
+           relationships: rel_table
+         } do
       hlc = generate_hlc()
       gm_id = "gm_" <> Nanoid.generate()
 

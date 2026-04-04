@@ -18,7 +18,14 @@ defmodule EbbServer.Storage.Writer do
           relationships: atom(),
           relationships_by_group: atom()
         }
-  defstruct [:rocks_name, :dirty_set, :gsn_counter, :group_members, :relationships, :relationships_by_group]
+  defstruct [
+    :rocks_name,
+    :dirty_set,
+    :gsn_counter,
+    :group_members,
+    :relationships,
+    :relationships_by_group
+  ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -42,7 +49,9 @@ defmodule EbbServer.Storage.Writer do
     gsn_counter = Keyword.get(opts, :gsn_counter, :persistent_term.get(:ebb_gsn_counter))
     group_members = Keyword.get(opts, :group_members, :ebb_group_members)
     relationships = Keyword.get(opts, :relationships, :ebb_relationships)
-    relationships_by_group = Keyword.get(opts, :relationships_by_group, :ebb_relationships_by_group)
+
+    relationships_by_group =
+      Keyword.get(opts, :relationships_by_group, :ebb_relationships_by_group)
 
     {:ok,
      %__MODULE__{
@@ -107,14 +116,14 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp write_and_respond(
-          ops,
-          filtered,
-          gsn_start,
-          gsn_end,
-          empty_update_rejected,
-          state,
-          rocks_name
-        ) do
+         ops,
+         filtered,
+         gsn_start,
+         gsn_end,
+         empty_update_rejected,
+         state,
+         rocks_name
+       ) do
     case RocksDB.write_batch(ops, name: rocks_name) do
       :ok ->
         entity_ids =
@@ -154,12 +163,15 @@ defmodule EbbServer.Storage.Writer do
         data = update["data"]
         fields = data["fields"] || %{}
 
-        SystemCache.put_group_member(%{
-          id: update["subject_id"],
-          actor_id: get_field_value(fields, "actor_id"),
-          group_id: get_field_value(fields, "group_id"),
-          permissions: get_field_value(fields, "permissions")
-        }, state.group_members)
+        SystemCache.put_group_member(
+          %{
+            id: update["subject_id"],
+            actor_id: get_field_value(fields, "actor_id"),
+            group_id: get_field_value(fields, "group_id"),
+            permissions: get_field_value(fields, "permissions")
+          },
+          state.group_members
+        )
 
       "delete" ->
         SystemCache.delete_group_member(update["subject_id"], state.group_members)
@@ -193,6 +205,7 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp get_field_value(nil, _field), do: nil
+
   defp get_field_value(fields, field) do
     case fields[field] do
       %{"value" => value} -> value
@@ -317,6 +330,7 @@ defmodule EbbServer.Storage.Writer do
   defp validate_group_member_data(data) do
     if is_map(data) do
       fields = data["fields"] || %{}
+
       if is_map(fields) and fields["actor_id"] != nil and fields["group_id"] != nil do
         :ok
       else
@@ -336,7 +350,8 @@ defmodule EbbServer.Storage.Writer do
       if has_top_level or has_nested do
         :ok
       else
-        {:error, "update data must contain source_id and target_id (top-level or in fields) for relationship"}
+        {:error,
+         "update data must contain source_id and target_id (top-level or in fields) for relationship"}
       end
     else
       {:error, "update data must be a map"}
