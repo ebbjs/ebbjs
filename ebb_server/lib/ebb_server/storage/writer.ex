@@ -13,9 +13,12 @@ defmodule EbbServer.Storage.Writer do
   @type t :: %__MODULE__{
           rocks_name: GenServer.name(),
           dirty_set: atom(),
-          gsn_counter: :atomics.atomics()
+          gsn_counter: :atomics.atomics(),
+          group_members: atom(),
+          relationships: atom(),
+          relationships_by_group: atom()
         }
-  defstruct [:rocks_name, :dirty_set, :gsn_counter]
+  defstruct [:rocks_name, :dirty_set, :gsn_counter, :group_members, :relationships, :relationships_by_group]
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -37,8 +40,19 @@ defmodule EbbServer.Storage.Writer do
     rocks_name = Keyword.get(opts, :rocks_name, EbbServer.Storage.RocksDB)
     dirty_set = Keyword.get(opts, :dirty_set, :ebb_dirty_set)
     gsn_counter = Keyword.get(opts, :gsn_counter, :persistent_term.get(:ebb_gsn_counter))
+    group_members = Keyword.get(opts, :group_members, :ebb_group_members)
+    relationships = Keyword.get(opts, :relationships, :ebb_relationships)
+    relationships_by_group = Keyword.get(opts, :relationships_by_group, :ebb_relationships_by_group)
 
-    {:ok, %__MODULE__{rocks_name: rocks_name, dirty_set: dirty_set, gsn_counter: gsn_counter}}
+    {:ok,
+     %__MODULE__{
+       rocks_name: rocks_name,
+       dirty_set: dirty_set,
+       gsn_counter: gsn_counter,
+       group_members: group_members,
+       relationships: relationships,
+       relationships_by_group: relationships_by_group
+     }}
   end
 
   @doc """
@@ -93,14 +107,14 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp write_and_respond(
-         ops,
-         filtered,
-         gsn_start,
-         gsn_end,
-         empty_update_rejected,
-         state,
-         rocks_name
-       ) do
+          ops,
+          filtered,
+          gsn_start,
+          gsn_end,
+          empty_update_rejected,
+          state,
+          rocks_name
+        ) do
     case RocksDB.write_batch(ops, name: rocks_name) do
       :ok ->
         entity_ids =
@@ -110,10 +124,80 @@ defmodule EbbServer.Storage.Writer do
           |> Enum.uniq()
 
         :ok = SystemCache.mark_dirty_batch(entity_ids, state.dirty_set)
+        update_system_caches(filtered, state)
         {:reply, {:ok, {gsn_start, gsn_end}, empty_update_rejected}, state}
 
       {:error, reason} ->
         {:reply, {:error, {:rocksdb_write_failed, reason}}, state}
+    end
+  end
+
+  defp update_system_caches(actions, state) do
+    Enum.each(actions, &process_action_updates(&1, state))
+  end
+
+  defp process_action_updates(action, state) do
+    Enum.each(action["updates"], &process_single_update(&1, state))
+  end
+
+  defp process_single_update(update, state) do
+    case update["subject_type"] do
+      "groupMember" -> handle_group_member_update(update, state)
+      "relationship" -> handle_relationship_update(update, state)
+      _ -> :ok
+    end
+  end
+
+  defp handle_group_member_update(update, state) do
+    case update["method"] do
+      method when method in ["put", "patch"] ->
+        data = update["data"]
+        fields = data["fields"] || %{}
+
+        SystemCache.put_group_member(%{
+          id: update["subject_id"],
+          actor_id: get_field_value(fields, "actor_id"),
+          group_id: get_field_value(fields, "group_id"),
+          permissions: get_field_value(fields, "permissions")
+        }, state.group_members)
+
+      "delete" ->
+        SystemCache.delete_group_member(update["subject_id"], state.group_members)
+    end
+  end
+
+  defp handle_relationship_update(update, state) do
+    case update["method"] do
+      method when method in ["put", "patch"] ->
+        data = update["data"]
+
+        SystemCache.put_relationship(
+          %{
+            id: update["subject_id"],
+            source_id: data["source_id"] || get_field_value(data["fields"], "source_id"),
+            target_id: data["target_id"] || get_field_value(data["fields"], "target_id"),
+            type: data["type"] || get_field_value(data["fields"], "type"),
+            field: data["field"] || get_field_value(data["fields"], "field")
+          },
+          relationships: state.relationships,
+          relationships_by_group: state.relationships_by_group
+        )
+
+      "delete" ->
+        SystemCache.delete_relationship(
+          update["subject_id"],
+          relationships: state.relationships,
+          relationships_by_group: state.relationships_by_group
+        )
+    end
+  end
+
+  defp get_field_value(nil, _field), do: nil
+  defp get_field_value(fields, field) do
+    case fields[field] do
+      %{"value" => value} -> value
+      value when is_binary(value) -> value
+      _ -> nil
     end
   end
 
@@ -194,7 +278,7 @@ defmodule EbbServer.Storage.Writer do
     with :ok <- validate_update_id(update["id"]),
          :ok <- validate_subject_id(update["subject_id"]),
          :ok <- validate_subject_type(update["subject_type"]),
-         :ok <- validate_data(update["data"], update["method"]) do
+         :ok <- validate_data(update["data"], update["method"], update["subject_type"]) do
       validate_method(update["method"])
     end
   end
@@ -215,17 +299,21 @@ defmodule EbbServer.Storage.Writer do
       else: {:error, "update subject_type must be a non-empty string"}
   end
 
-  defp validate_data(data, method) when method in ["put", "patch"] do
-    if is_map(data) and is_map(data["fields"]),
-      do: :ok,
-      else: {:error, "update data.fields must be a map for put/patch"}
+  defp validate_data(data, method, subject_type) when method in ["put", "patch"] do
+    if subject_type in ["group", "groupMember", "relationship"] do
+      if is_map(data), do: :ok, else: {:error, "update data must be a map"}
+    else
+      if is_map(data) and is_map(data["fields"]),
+        do: :ok,
+        else: {:error, "update data.fields must be a map for put/patch"}
+    end
   end
 
-  defp validate_data(data, "delete") do
+  defp validate_data(data, "delete", _subject_type) do
     if is_map(data), do: :ok, else: {:error, "update data must be a map"}
   end
 
-  defp validate_data(_data, _method), do: {:error, "update data must be a map"}
+  defp validate_data(_data, _method, _subject_type), do: {:error, "update data must be a map"}
 
   defp validate_method(method) do
     if method in ["put", "patch", "delete"],
