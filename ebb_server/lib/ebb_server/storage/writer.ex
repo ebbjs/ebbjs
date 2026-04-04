@@ -300,18 +300,19 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp validate_data(data, method, subject_type) when method in ["put", "patch"] do
-    if subject_type == "groupMember" do
-      validate_group_member_data(data)
-    else
-      if subject_type == "relationship" do
-        validate_relationship_data(data)
-      else
-        if is_map(data) and is_map(data["fields"]),
-          do: :ok,
-          else: {:error, "update data.fields must be a map for put/patch"}
-      end
+    cond do
+      subject_type == "groupMember" -> validate_group_member_data(data)
+      subject_type == "relationship" -> validate_relationship_data(data)
+      is_map(data) and is_map(data["fields"]) -> :ok
+      true -> {:error, "update data.fields must be a map for put/patch"}
     end
   end
+
+  defp validate_data(data, "delete", _subject_type) do
+    if is_map(data), do: :ok, else: {:error, "update data must be a map"}
+  end
+
+  defp validate_data(_data, _method, _subject_type), do: {:error, "update data must be a map"}
 
   defp validate_group_member_data(data) do
     if is_map(data) do
@@ -341,12 +342,6 @@ defmodule EbbServer.Storage.Writer do
       {:error, "update data must be a map"}
     end
   end
-
-  defp validate_data(data, "delete", _subject_type) do
-    if is_map(data), do: :ok, else: {:error, "update data must be a map"}
-  end
-
-  defp validate_data(_data, _method, _subject_type), do: {:error, "update data must be a map"}
 
   defp validate_method(method) do
     if method in ["put", "patch", "delete"],
