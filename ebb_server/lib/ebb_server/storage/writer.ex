@@ -300,12 +300,45 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp validate_data(data, method, subject_type) when method in ["put", "patch"] do
-    if subject_type in ["group", "groupMember", "relationship"] do
-      if is_map(data), do: :ok, else: {:error, "update data must be a map"}
+    if subject_type == "groupMember" do
+      validate_group_member_data(data)
     else
-      if is_map(data) and is_map(data["fields"]),
-        do: :ok,
-        else: {:error, "update data.fields must be a map for put/patch"}
+      if subject_type == "relationship" do
+        validate_relationship_data(data)
+      else
+        if is_map(data) and is_map(data["fields"]),
+          do: :ok,
+          else: {:error, "update data.fields must be a map for put/patch"}
+      end
+    end
+  end
+
+  defp validate_group_member_data(data) do
+    if is_map(data) do
+      fields = data["fields"] || %{}
+      if is_map(fields) and fields["actor_id"] != nil and fields["group_id"] != nil do
+        :ok
+      else
+        {:error, "update data.fields must contain actor_id and group_id for groupMember"}
+      end
+    else
+      {:error, "update data must be a map"}
+    end
+  end
+
+  defp validate_relationship_data(data) do
+    if is_map(data) do
+      has_top_level = data["source_id"] != nil and data["target_id"] != nil
+      fields = data["fields"] || %{}
+      has_nested = is_map(fields) and fields["source_id"] != nil and fields["target_id"] != nil
+
+      if has_top_level or has_nested do
+        :ok
+      else
+        {:error, "update data must contain source_id and target_id (top-level or in fields) for relationship"}
+      end
+    else
+      {:error, "update data must be a map"}
     end
   end
 

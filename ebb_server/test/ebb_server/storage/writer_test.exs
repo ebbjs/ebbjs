@@ -530,6 +530,30 @@ defmodule EbbServer.Storage.WriterTest do
       assert nil == SystemCache.get_entity_group("todo_test", rel_table)
     end
 
+    test "relationship PUT with empty data is rejected",
+      %{
+        writer_name: writer_name,
+        relationships: rel_table
+      } do
+      action = %{
+        "id" => "act_" <> Nanoid.generate(),
+        "actor_id" => "actor_1",
+        "hlc" => generate_hlc(),
+        "updates" => [
+          %{
+            "id" => "upd_" <> Nanoid.generate(),
+            "subject_id" => "rel_test",
+            "subject_type" => "relationship",
+            "method" => "put",
+            "data" => %{}
+          }
+        ]
+      }
+
+      assert {:ok, {_gsn_start, _gsn_end}, [%{reason: reason}]} = Writer.write_actions([action], writer_name)
+      assert reason =~ "relationship"
+    end
+
     test "mixed batch - system and user entities",
       %{
         writer_name: writer_name,
