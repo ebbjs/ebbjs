@@ -6,8 +6,8 @@ Position lookups (`lookupPosition`, `runOffsetToPosition`) return correct result
 
 ## Components involved
 
-| Component | Interface subset used |
-|-----------|---------------------|
+| Component                                   | Interface subset used                                                                                                                                                             |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [Causal Tree](../components/causal-tree.md) | `DocState`, `PositionIndex`, `RunSpan`, `lookupPosition`, `runOffsetToPosition`, `findInsertPosition`, `docReducer`, `createDocState`, `reconstruct` (as oracle for verification) |
 
 ## Flow

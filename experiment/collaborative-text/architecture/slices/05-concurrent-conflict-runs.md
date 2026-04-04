@@ -6,13 +6,13 @@ Two users type at the exact same position simultaneously, causing run splits and
 
 ## Components involved
 
-| Component | Interface subset used |
-|-----------|---------------------|
-| [HLC](../components/hlc.md) | `compare` (tie-break), `receive` (clock merge) |
+| Component                                   | Interface subset used                                                                                      |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| [HLC](../components/hlc.md)                 | `compare` (tie-break), `receive` (clock merge)                                                             |
 | [Causal Tree](../components/causal-tree.md) | `docReducer` (INSERT_RUN with sibling ordering, SPLIT), `findInsertPosition`, `reconstruct`, `makeSplitId` |
-| [CM Bridge](../components/cm-bridge.md) | `applyRemoteInsert` (inserting at tie-break-determined position) |
-| [Relay](../components/relay.md) | Full message handling with split detection |
-| [Editor App](../components/editor-app.md) | Full two-peer setup |
+| [CM Bridge](../components/cm-bridge.md)     | `applyRemoteInsert` (inserting at tie-break-determined position)                                           |
+| [Relay](../components/relay.md)             | Full message handling with split detection                                                                 |
+| [Editor App](../components/editor-app.md)   | Full two-peer setup                                                                                        |
 
 ## Flow
 
@@ -26,12 +26,14 @@ Two users type at the exact same position simultaneously, causing run splits and
 6. Both peers converge to `"worldhello"`
 
 **Peer A's perspective:**
+
 - Has "hello" locally
 - Receives INSERT_RUN for "world" (parent = ROOT)
 - `findInsertPosition` sees ROOT has two children: "world" (higher HLC) and "hello" (lower). "world" goes first → position 0
 - `applyRemoteInsert(view, 0, "world")` → "worldhello" ✓
 
 **Peer B's perspective:**
+
 - Has "world" locally
 - Receives INSERT_RUN for "hello" (parent = ROOT)
 - `findInsertPosition` sees ROOT has two children: "world" (higher) and "hello" (lower). "hello" goes second → position 5
@@ -45,6 +47,7 @@ Two users type at the exact same position simultaneously, causing run splits and
 4. Now both peers need to apply the other's insert
 
 **Peer A receives Peer B's INSERT_RUN for "Y":**
+
 - Peer A's tree already has: "hel" (helloId) → "X" (xId) + "lo" (helloId:s:3)
 - "Y" has parent = helloId (which is "hel" after Peer A's split)
 - "Y" is a new sibling of "X" and "lo" under parent "hel"
@@ -52,6 +55,7 @@ Two users type at the exact same position simultaneously, causing run splits and
 - No additional split needed — "hel" is already split, and "Y" is inserted as a sibling
 
 **Peer B receives Peer A's INSERT_RUN for "X":**
+
 - Peer B's tree already has: "hel" (helloId) → "Y" (yId) + "lo" (helloId:s:3)
 - Same logic — "X" is a sibling of "Y" and "lo"
 - Same ordering by HLC → same result

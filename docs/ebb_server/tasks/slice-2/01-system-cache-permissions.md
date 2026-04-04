@@ -11,6 +11,7 @@
 **Files:** `ebb_server/lib/ebb_server/storage/system_cache.ex` (modify)
 
 **API contract for PermissionChecker:** The Permission Checker (Phase 2) will call these functions:
+
 - `get_permissions(actor_id, group_id, opts)` — returns permissions list or `nil`
 - `get_entity_group(entity_id, opts)` — returns group_id or `nil`
 - `get_actor_groups(actor_id, opts)` — returns `[%{group_id, permissions}]`

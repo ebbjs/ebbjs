@@ -8,6 +8,8 @@ defmodule EbbServer.Storage.Writer do
 
   use GenServer
 
+  alias EbbServer.Storage.{RocksDB, SystemCache}
+
   @type t :: %__MODULE__{
           rocks_name: GenServer.name(),
           dirty_set: atom(),
@@ -69,57 +71,79 @@ defmodule EbbServer.Storage.Writer do
       batch_size = length(filtered)
 
       {gsn_start, gsn_end} =
-        EbbServer.Storage.SystemCache.claim_gsn_range(batch_size, state.gsn_counter)
+        SystemCache.claim_gsn_range(batch_size, state.gsn_counter)
 
       rocks_name = state.rocks_name
 
       ops =
         filtered
         |> Enum.with_index(gsn_start)
-        |> Enum.flat_map(fn {action, gsn} ->
-          action_with_gsn = Map.put(action, "gsn", gsn)
-          action_etf = :erlang.term_to_binary(action_with_gsn)
+        |> Enum.flat_map(fn {action, gsn} -> build_action_ops(action, gsn, rocks_name) end)
 
-          [
-            {:put, EbbServer.Storage.RocksDB.cf_actions(rocks_name),
-             EbbServer.Storage.RocksDB.encode_gsn_key(gsn), action_etf},
-            {:put, EbbServer.Storage.RocksDB.cf_action_dedup(rocks_name), action["id"],
-             EbbServer.Storage.RocksDB.encode_gsn_key(gsn)}
-          ] ++
-            Enum.flat_map(action["updates"], fn update ->
-              update_etf = :erlang.term_to_binary(update)
-
-              [
-                {:put, EbbServer.Storage.RocksDB.cf_updates(rocks_name),
-                 EbbServer.Storage.RocksDB.encode_update_key(action["id"], update["id"]),
-                 update_etf},
-                {:put, EbbServer.Storage.RocksDB.cf_entity_actions(rocks_name),
-                 EbbServer.Storage.RocksDB.encode_entity_gsn_key(update["subject_id"], gsn),
-                 action["id"]},
-                {:put, EbbServer.Storage.RocksDB.cf_type_entities(rocks_name),
-                 EbbServer.Storage.RocksDB.encode_type_entity_key(
-                   update["subject_type"],
-                   update["subject_id"]
-                 ), <<>>}
-              ]
-            end)
-        end)
-
-      case EbbServer.Storage.RocksDB.write_batch(ops, name: rocks_name) do
-        :ok ->
-          entity_ids =
-            filtered
-            |> Enum.flat_map(fn action -> action["updates"] end)
-            |> Enum.map(fn update -> update["subject_id"] end)
-            |> Enum.uniq()
-
-          :ok = EbbServer.Storage.SystemCache.mark_dirty_batch(entity_ids, state.dirty_set)
-          {:reply, {:ok, {gsn_start, gsn_end}, empty_update_rejected}, state}
-
-        {:error, reason} ->
-          {:reply, {:error, {:rocksdb_write_failed, reason}}, state}
-      end
+      write_and_respond(
+        ops,
+        filtered,
+        gsn_start,
+        gsn_end,
+        empty_update_rejected,
+        state,
+        rocks_name
+      )
     end
+  end
+
+  defp write_and_respond(
+         ops,
+         filtered,
+         gsn_start,
+         gsn_end,
+         empty_update_rejected,
+         state,
+         rocks_name
+       ) do
+    case RocksDB.write_batch(ops, name: rocks_name) do
+      :ok ->
+        entity_ids =
+          filtered
+          |> Enum.flat_map(fn action -> action["updates"] end)
+          |> Enum.map(fn update -> update["subject_id"] end)
+          |> Enum.uniq()
+
+        :ok = SystemCache.mark_dirty_batch(entity_ids, state.dirty_set)
+        {:reply, {:ok, {gsn_start, gsn_end}, empty_update_rejected}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, {:rocksdb_write_failed, reason}}, state}
+    end
+  end
+
+  defp build_action_ops(action, gsn, rocks_name) do
+    action_with_gsn = Map.put(action, "gsn", gsn)
+    action_etf = :erlang.term_to_binary(action_with_gsn)
+
+    [
+      {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), action_etf},
+      {:put, RocksDB.cf_action_dedup(rocks_name), action["id"], RocksDB.encode_gsn_key(gsn)}
+    ] ++
+      Enum.flat_map(action["updates"], fn update ->
+        build_update_ops(action["id"], update, gsn, rocks_name)
+      end)
+  end
+
+  defp build_update_ops(action_id, update, gsn, rocks_name) do
+    update_etf = :erlang.term_to_binary(update)
+
+    [
+      {:put, RocksDB.cf_updates(rocks_name), RocksDB.encode_update_key(action_id, update["id"]),
+       update_etf},
+      {:put, RocksDB.cf_entity_actions(rocks_name),
+       RocksDB.encode_entity_gsn_key(update["subject_id"], gsn), action_id},
+      {:put, RocksDB.cf_type_entities(rocks_name),
+       RocksDB.encode_type_entity_key(
+         update["subject_type"],
+         update["subject_id"]
+       ), <<>>}
+    ]
   end
 
   defp validate_and_categorize(actions) do
@@ -143,45 +167,69 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp valid_action?(%{} = action) do
-    cond do
-      not is_binary(action["id"]) ->
-        {:error, "action id must be a string"}
+    with {:ok, _} <- validate_action_id(action["id"]),
+         {:ok, _} <- validate_action_updates(action["updates"]) do
+      validate_updates_list(action["updates"])
+    end
+  end
 
-      not is_list(action["updates"]) ->
-        {:error, "action updates must be a list"}
+  defp validate_action_id(id) do
+    if is_binary(id), do: {:ok, id}, else: {:error, "action id must be a string"}
+  end
 
-      true ->
-        Enum.reduce_while(action["updates"], :ok, fn update, _acc ->
-          case valid_update?(update) do
-            :ok -> {:cont, :ok}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-        end)
+  defp validate_action_updates(updates) do
+    if is_list(updates), do: {:ok, updates}, else: {:error, "action updates must be a list"}
+  end
+
+  defp validate_updates_list([]), do: :ok
+
+  defp validate_updates_list([update | rest]) do
+    case valid_update?(update) do
+      :ok -> validate_updates_list(rest)
+      error -> error
     end
   end
 
   defp valid_update?(%{} = update) do
-    cond do
-      not is_binary(update["id"]) ->
-        {:error, "update id must be a string"}
-
-      not is_binary(update["subject_id"]) or update["subject_id"] == "" ->
-        {:error, "update subject_id must be a non-empty string"}
-
-      not is_binary(update["subject_type"]) or update["subject_type"] == "" ->
-        {:error, "update subject_type must be a non-empty string"}
-
-      not is_map(update["data"]) ->
-        {:error, "update data must be a map"}
-
-      update["method"] in ["put", "patch"] and not is_map(update["data"]["fields"]) ->
-        {:error, "update data.fields must be a map for put/patch"}
-
-      update["method"] not in ["put", "patch", "delete"] ->
-        {:error, "update method must be one of: put, patch, delete"}
-
-      true ->
-        :ok
+    with :ok <- validate_update_id(update["id"]),
+         :ok <- validate_subject_id(update["subject_id"]),
+         :ok <- validate_subject_type(update["subject_type"]),
+         :ok <- validate_data(update["data"], update["method"]) do
+      validate_method(update["method"])
     end
+  end
+
+  defp validate_update_id(id) do
+    if is_binary(id), do: :ok, else: {:error, "update id must be a string"}
+  end
+
+  defp validate_subject_id(subject_id) do
+    if is_binary(subject_id) and subject_id != "",
+      do: :ok,
+      else: {:error, "update subject_id must be a non-empty string"}
+  end
+
+  defp validate_subject_type(subject_type) do
+    if is_binary(subject_type) and subject_type != "",
+      do: :ok,
+      else: {:error, "update subject_type must be a non-empty string"}
+  end
+
+  defp validate_data(data, method) when method in ["put", "patch"] do
+    if is_map(data) and is_map(data["fields"]),
+      do: :ok,
+      else: {:error, "update data.fields must be a map for put/patch"}
+  end
+
+  defp validate_data(data, "delete") do
+    if is_map(data), do: :ok, else: {:error, "update data must be a map"}
+  end
+
+  defp validate_data(_data, _method), do: {:error, "update data must be a map"}
+
+  defp validate_method(method) do
+    if method in ["put", "patch", "delete"],
+      do: :ok,
+      else: {:error, "update method must be one of: put, patch, delete"}
   end
 end

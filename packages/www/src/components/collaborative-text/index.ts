@@ -6,14 +6,10 @@
  */
 
 // Main interactive components
-export { DualEditors } from "./DualEditors.tsx"
-export {
-  EventLogSection,
-  CausalTreeSection,
-  HlcStateSection,
-} from "./InspectorPanel.tsx"
+export { DualEditors } from "./DualEditors.tsx";
+export { EventLogSection, CausalTreeSection, HlcStateSection } from "./InspectorPanel.tsx";
 
 // Re-export types that might be useful
-export type { Hlc } from "./hlc.ts"
-export type { DocState, RunNode } from "./causal-tree.ts"
-export type { Action, Update, SyncMessage } from "./relay.ts"
+export type { Hlc } from "./hlc.ts";
+export type { DocState, RunNode } from "./causal-tree.ts";
+export type { Action, Update, SyncMessage } from "./relay.ts";

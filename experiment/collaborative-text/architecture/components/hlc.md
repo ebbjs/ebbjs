@@ -20,21 +20,21 @@ This component is **unchanged** in the optimization pass. Runs use HLC IDs the s
 
 ```ts
 type Hlc = {
-  readonly ts: number       // Wall-clock timestamp (ms since epoch)
-  readonly count: number    // Logical counter for same-ts disambiguation
-  readonly peerId: string   // Unique identifier for the peer that created this HLC
-}
+  readonly ts: number; // Wall-clock timestamp (ms since epoch)
+  readonly count: number; // Logical counter for same-ts disambiguation
+  readonly peerId: string; // Unique identifier for the peer that created this HLC
+};
 ```
 
 ### Exported functions
 
-| Name | Signature | Description |
-|------|-----------|-------------|
-| `createHlc` | `(peerId: string) => Hlc` | Create a fresh HLC initialized to the current wall-clock time with count 0 |
-| `increment` | `(local: Hlc) => Hlc` | Advance the local HLC: take `max(Date.now(), local.ts)`, bump count if ts unchanged, return new HLC |
-| `receive` | `(local: Hlc, remote: Hlc) => Hlc` | Merge local and remote: `ts = max(now, local.ts, remote.ts)`, count follows HLC merge rules, keep local peer ID |
-| `compare` | `(a: Hlc, b: Hlc) => number` | Total order comparison: first by `ts`, then by `count`, then by `peerId` lexicographically. Returns negative if a < b, positive if a > b, 0 if equal. |
-| `toString` | `(hlc: Hlc) => string` | Serialize to `{ts padded to 15}:{count padded to 5}:{peerId}`. Lexicographic order matches `compare()`. |
+| Name        | Signature                          | Description                                                                                                                                           |
+| ----------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createHlc` | `(peerId: string) => Hlc`          | Create a fresh HLC initialized to the current wall-clock time with count 0                                                                            |
+| `increment` | `(local: Hlc) => Hlc`              | Advance the local HLC: take `max(Date.now(), local.ts)`, bump count if ts unchanged, return new HLC                                                   |
+| `receive`   | `(local: Hlc, remote: Hlc) => Hlc` | Merge local and remote: `ts = max(now, local.ts, remote.ts)`, count follows HLC merge rules, keep local peer ID                                       |
+| `compare`   | `(a: Hlc, b: Hlc) => number`       | Total order comparison: first by `ts`, then by `count`, then by `peerId` lexicographically. Returns negative if a < b, positive if a > b, 0 if equal. |
+| `toString`  | `(hlc: Hlc) => string`             | Serialize to `{ts padded to 15}:{count padded to 5}:{peerId}`. Lexicographic order matches `compare()`.                                               |
 
 ## Dependencies
 
@@ -42,7 +42,7 @@ None. This is a leaf module with zero imports from other project modules.
 
 ## Internal design notes
 
-No changes from the current implementation in `src/hlc.ts`. The optimization pass changes the *granularity* of what gets an HLC ID (runs instead of characters) but not the HLC logic itself.
+No changes from the current implementation in `src/hlc.ts`. The optimization pass changes the _granularity_ of what gets an HLC ID (runs instead of characters) but not the HLC logic itself.
 
 One run = one `increment()` call = one HLC ID. Previously, typing "hello" required 5 `increment()` calls; now it requires 1. This means the HLC counter advances more slowly, which is fine — the counter exists for disambiguation, not for counting characters.
 

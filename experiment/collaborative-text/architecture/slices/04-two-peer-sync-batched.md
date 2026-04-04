@@ -6,13 +6,13 @@ Two side-by-side CodeMirror editors where typing in one causes the text to appea
 
 ## Components involved
 
-| Component | Interface subset used |
-|-----------|---------------------|
-| [HLC](../components/hlc.md) | `createHlc`, `increment`, `receive`, `toString` |
+| Component                                   | Interface subset used                                                                                        |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| [HLC](../components/hlc.md)                 | `createHlc`, `increment`, `receive`, `toString`                                                              |
 | [Causal Tree](../components/causal-tree.md) | `createDocState`, `docReducer`, `findInsertPosition`, `runOffsetToPosition`, `lookupPosition`, `reconstruct` |
-| [CM Bridge](../components/cm-bridge.md) | `createBridgeExtension`, `applyRemoteInsert`, `applyRemoteDelete`, `createIdMapField`, `setIdMapEffect` |
-| [Relay](../components/relay.md) | `useRelay`, `handleRemoteMessage`, `InsertRunMessage`, `DeleteRangeMessage` |
-| [Editor App](../components/editor-app.md) | Full `App` with two `PeerEditor` instances |
+| [CM Bridge](../components/cm-bridge.md)     | `createBridgeExtension`, `applyRemoteInsert`, `applyRemoteDelete`, `createIdMapField`, `setIdMapEffect`      |
+| [Relay](../components/relay.md)             | `useRelay`, `handleRemoteMessage`, `InsertRunMessage`, `DeleteRangeMessage`                                  |
+| [Editor App](../components/editor-app.md)   | Full `App` with two `PeerEditor` instances                                                                   |
 
 ## Flow
 

@@ -23,21 +23,21 @@ This is the most significantly changed component in the optimization pass. The c
 ```ts
 /** A run of consecutive characters by one peer. */
 type RunNode = {
-  readonly id: string          // HLC-derived ID (from the first character's HLC)
-  readonly text: string        // 1+ characters (the run content)
-  readonly parentId: string    // ID of the run this was inserted after
-  readonly peerId: string      // Which peer authored this run
-  readonly deleted: boolean    // Tombstone flag (applies to entire run)
-}
+  readonly id: string; // HLC-derived ID (from the first character's HLC)
+  readonly text: string; // 1+ characters (the run content)
+  readonly parentId: string; // ID of the run this was inserted after
+  readonly peerId: string; // Which peer authored this run
+  readonly deleted: boolean; // Tombstone flag (applies to entire run)
+};
 
 /**
  * A span in the position index. Each span covers a contiguous range
  * of document positions belonging to one visible run.
  */
 type RunSpan = {
-  readonly runId: string       // Which RunNode this span belongs to
-  readonly length: number      // Number of visible characters in this span
-}
+  readonly runId: string; // Which RunNode this span belongs to
+  readonly length: number; // Number of visible characters in this span
+};
 
 /**
  * Incremental position index. A flat array of RunSpan entries where
@@ -45,66 +45,66 @@ type RunSpan = {
  * Maintained atomically with every tree mutation by the reducer.
  */
 type PositionIndex = {
-  readonly spans: readonly RunSpan[]   // Ordered list of visible spans
-  readonly totalLength: number         // Sum of all span lengths (= doc length)
-}
+  readonly spans: readonly RunSpan[]; // Ordered list of visible spans
+  readonly totalLength: number; // Sum of all span lengths (= doc length)
+};
 
 type DocState = {
-  readonly nodes: ReadonlyMap<string, RunNode>
-  readonly children: ReadonlyMap<string, readonly string[]>  // parentId → ordered child IDs
-  readonly index: PositionIndex
-}
+  readonly nodes: ReadonlyMap<string, RunNode>;
+  readonly children: ReadonlyMap<string, readonly string[]>; // parentId → ordered child IDs
+  readonly index: PositionIndex;
+};
 
 /** Result of looking up a document position in the index. */
 type PositionLookup = {
-  readonly runId: string       // Which run contains this position
-  readonly offset: number      // Offset within the run's text
-  readonly spanIndex: number   // Index into PositionIndex.spans (for efficient splicing)
-}
+  readonly runId: string; // Which run contains this position
+  readonly offset: number; // Offset within the run's text
+  readonly spanIndex: number; // Index into PositionIndex.spans (for efficient splicing)
+};
 
 type InsertRunAction = {
-  readonly type: "INSERT_RUN"
-  readonly node: RunNode
-}
+  readonly type: "INSERT_RUN";
+  readonly node: RunNode;
+};
 
 type DeleteRangeAction = {
-  readonly type: "DELETE_RANGE"
-  readonly runId: string
-  readonly offset: number      // Start offset within the run's text
-  readonly count: number       // Number of characters to delete
-}
+  readonly type: "DELETE_RANGE";
+  readonly runId: string;
+  readonly offset: number; // Start offset within the run's text
+  readonly count: number; // Number of characters to delete
+};
 
 /**
  * Split a run at a given offset. The left half keeps the original ID.
  * The right half gets a deterministic split ID.
  */
 type SplitAction = {
-  readonly type: "SPLIT"
-  readonly runId: string
-  readonly offset: number      // Split point within the run's text
-}
+  readonly type: "SPLIT";
+  readonly runId: string;
+  readonly offset: number; // Split point within the run's text
+};
 
-type DocAction = InsertRunAction | DeleteRangeAction | SplitAction
+type DocAction = InsertRunAction | DeleteRangeAction | SplitAction;
 ```
 
 ### Exported functions
 
-| Name | Signature | Description |
-|------|-----------|-------------|
-| `createDocState` | `() => DocState` | Create empty document state with ROOT sentinel and empty index |
-| `docReducer` | `(state: DocState, action: DocAction) => DocState` | Pure reducer. Handles INSERT_RUN, DELETE_RANGE, SPLIT. Returns new state with updated index. |
-| `reconstruct` | `(state: DocState) => string` | DFS traversal producing visible text. For debugging/consistency checks only — not on the hot path. |
-| `lookupPosition` | `(index: PositionIndex, position: number) => PositionLookup` | O(spans) lookup: which run contains a given document position. |
-| `runOffsetToPosition` | `(index: PositionIndex, runId: string, offset: number) => number \| undefined` | Given a run ID and offset within it, return the absolute document position. O(spans). |
-| `findInsertPosition` | `(state: DocState, parentId: string, newNodeId: string) => number` | Determine the document position where a new run should appear, based on sibling ordering. Uses the index instead of DFS + countVisibleInSubtree. |
-| `makeSplitId` | `(originalId: string, offset: number) => string` | Deterministic split-ID generation: `originalId + ":s:" + offset`. Pure function. |
-| `ROOT_ID` | `"ROOT"` | Sentinel root node ID (unchanged). |
+| Name                  | Signature                                                                      | Description                                                                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `createDocState`      | `() => DocState`                                                               | Create empty document state with ROOT sentinel and empty index                                                                                   |
+| `docReducer`          | `(state: DocState, action: DocAction) => DocState`                             | Pure reducer. Handles INSERT_RUN, DELETE_RANGE, SPLIT. Returns new state with updated index.                                                     |
+| `reconstruct`         | `(state: DocState) => string`                                                  | DFS traversal producing visible text. For debugging/consistency checks only — not on the hot path.                                               |
+| `lookupPosition`      | `(index: PositionIndex, position: number) => PositionLookup`                   | O(spans) lookup: which run contains a given document position.                                                                                   |
+| `runOffsetToPosition` | `(index: PositionIndex, runId: string, offset: number) => number \| undefined` | Given a run ID and offset within it, return the absolute document position. O(spans).                                                            |
+| `findInsertPosition`  | `(state: DocState, parentId: string, newNodeId: string) => number`             | Determine the document position where a new run should appear, based on sibling ordering. Uses the index instead of DFS + countVisibleInSubtree. |
+| `makeSplitId`         | `(originalId: string, offset: number) => string`                               | Deterministic split-ID generation: `originalId + ":s:" + offset`. Pure function.                                                                 |
+| `ROOT_ID`             | `"ROOT"`                                                                       | Sentinel root node ID (unchanged).                                                                                                               |
 
 ## Dependencies
 
-| Dependency | What it needs | Reference |
-|------------|---------------|-----------|
-| HLC | `toString()` for generating run IDs, `compare()` is implicit in string comparison of serialized HLCs | [hlc.md](hlc.md) |
+| Dependency | What it needs                                                                                        | Reference        |
+| ---------- | ---------------------------------------------------------------------------------------------------- | ---------------- |
+| HLC        | `toString()` for generating run IDs, `compare()` is implicit in string comparison of serialized HLCs | [hlc.md](hlc.md) |
 
 No dependency on CM Bridge, Relay, Presence, or React.
 
@@ -121,6 +121,7 @@ No dependency on CM Bridge, Relay, Presence, or React.
 ### Split-ID determinism
 
 The critical invariant: if Peer A and Peer B both need to split the same run at the same offset, they must produce identical split IDs. The scheme `originalId + ":s:" + offset` achieves this because:
+
 - `originalId` is globally unique (HLC-derived)
 - `offset` is a property of the insertion point, not the peer performing the split
 - The separator `:s:` is unambiguous (HLC IDs use `:` as a separator but never contain `:s:`)
@@ -141,13 +142,13 @@ Children of a parent are ordered by descending HLC string comparison (higher HLC
 
 ### Complexity improvements
 
-| Operation | Before (per-char) | After (runs) |
-|-----------|-------------------|--------------|
-| Insert (local) | O(n) DFS to rebuild position map | O(spans) to splice into index |
-| Insert (remote) | O(n) DFS for findInsertPosition + O(n) rebuild | O(spans) lookup + O(spans) splice |
-| Delete | O(n) DFS to find position + O(n) rebuild | O(spans) lookup + O(1) span shrink/removal |
-| Reconstruct | O(n) DFS | O(n) DFS (but only for debug, not hot path) |
-| Position lookup | O(n) linear scan of ID array | O(spans) scan of span array |
+| Operation       | Before (per-char)                              | After (runs)                                |
+| --------------- | ---------------------------------------------- | ------------------------------------------- |
+| Insert (local)  | O(n) DFS to rebuild position map               | O(spans) to splice into index               |
+| Insert (remote) | O(n) DFS for findInsertPosition + O(n) rebuild | O(spans) lookup + O(spans) splice           |
+| Delete          | O(n) DFS to find position + O(n) rebuild       | O(spans) lookup + O(1) span shrink/removal  |
+| Reconstruct     | O(n) DFS                                       | O(n) DFS (but only for debug, not hot path) |
+| Position lookup | O(n) linear scan of ID array                   | O(spans) scan of span array                 |
 
 Where `spans` is typically 10-100x smaller than `n` (the character count).
 

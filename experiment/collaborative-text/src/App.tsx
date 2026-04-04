@@ -17,27 +17,11 @@
  * - DELETE_RANGE -> Action with a "delete" Update carrying a causal_tree_range field
  */
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useReducer,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { EditorState } from "@codemirror/state";
-import {
-  EditorView,
-  keymap,
-  drawSelection,
-  highlightActiveLine,
-} from "@codemirror/view";
+import { EditorView, keymap, drawSelection, highlightActiveLine } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
-import {
-  syntaxHighlighting,
-  defaultHighlightStyle,
-  bracketMatching,
-} from "@codemirror/language";
+import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from "@codemirror/language";
 import { createHlc, type Hlc } from "./hlc.ts";
 import {
   createDocState,
@@ -52,19 +36,10 @@ import {
   setIdMapEffect,
   type BridgeConfig,
 } from "./cm-bridge.ts";
-import {
-  useRelay,
-  type Action,
-  type Update,
-  type SyncMessage,
-} from "./relay.ts";
+import { useRelay, type Action, type Update, type SyncMessage } from "./relay.ts";
 import { usePresence, createPresenceExtension } from "./presence.ts";
 import { logEvent, updateHlc, updateDocState } from "./inspector-store.ts";
-import {
-  EventLogSection,
-  CausalTreeSection,
-  HlcStateSection,
-} from "./InspectorPanel.tsx";
+import { EventLogSection, CausalTreeSection, HlcStateSection } from "./InspectorPanel.tsx";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -90,11 +65,7 @@ let nextUpdateId = 0;
  * Each Update targets a single entity (RunNode) with self-describing
  * typed field data, mirroring ebb's per-field merge dispatch.
  */
-const docActionToUpdate = (
-  action: DocAction,
-  hlc: Hlc,
-  peerId: string,
-): Update | undefined => {
+const docActionToUpdate = (action: DocAction, hlc: Hlc, peerId: string): Update | undefined => {
   switch (action.type) {
     case "INSERT_RUN":
       return {
@@ -168,11 +139,7 @@ let nextActionId = 0;
  * and the action ID is used for dedup. This mirrors ebb's guarantee
  * that Actions are never split across sync pages.
  */
-const createAction = (
-  updates: readonly Update[],
-  hlc: Hlc,
-  peerId: string,
-): Action => ({
+const createAction = (updates: readonly Update[], hlc: Hlc, peerId: string): Action => ({
   id: `${peerId}_act_${nextActionId++}`,
   actor_id: peerId,
   hlc,
@@ -183,13 +150,7 @@ const createAction = (
 // Section wrapper
 // ---------------------------------------------------------------------------
 
-const Section = ({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) => (
+const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
   <section className="w-full py-8 sm:py-10">
     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
       <h2 className="text-2xl sm:text-3xl font-bold text-stone-100 tracking-tight text-balance mb-6">
@@ -211,22 +172,13 @@ type PeerEditorProps = {
   ghostActive?: boolean;
 };
 
-const PeerEditor = ({
-  peerId,
-  onViewReady,
-  onFocus,
-  ghostActive,
-}: PeerEditorProps) => {
+const PeerEditor = ({ peerId, onViewReady, onFocus, ghostActive }: PeerEditorProps) => {
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const hlcRef = useRef<Hlc>(createHlc(peerId));
 
   // Causal Tree state via useReducer
-  const [docState, treeDispatch] = useReducer(
-    docReducer,
-    undefined,
-    createDocState,
-  );
+  const [docState, treeDispatch] = useReducer(docReducer, undefined, createDocState);
 
   // Stable ref to latest docState (so callbacks can read it without stale closures)
   const docStateRef = useRef<DocState>(docState);
@@ -442,14 +394,8 @@ const PeerEditor = ({
           <span className="w-3 h-3 rounded-full bg-stone-700" />
           <span className="w-3 h-3 rounded-full bg-stone-700" />
           <span className="w-3 h-3 rounded-full bg-stone-700" />
-          <span className={`font-mono text-xs ml-2 ${peerColor}`}>
-            {peerLabel}
-          </span>
-          {ghostActive && (
-            <span className="font-mono text-xs text-stone-500 ml-1">
-              (ghost)
-            </span>
-          )}
+          <span className={`font-mono text-xs ml-2 ${peerColor}`}>{peerLabel}</span>
+          {ghostActive && <span className="font-mono text-xs text-stone-500 ml-1">(ghost)</span>}
           <span className="font-mono text-xs text-stone-500 ml-auto">
             {docState.nodes.size - 1} runs
           </span>
@@ -496,12 +442,8 @@ export const App = () => {
 
       // Schedule next character with random delay
       const delay =
-        GHOST_CHAR_MIN_DELAY +
-        Math.random() * (GHOST_CHAR_MAX_DELAY - GHOST_CHAR_MIN_DELAY);
-      ghostTimeoutRef.current = setTimeout(
-        () => typeNextChar(index + 1),
-        delay,
-      );
+        GHOST_CHAR_MIN_DELAY + Math.random() * (GHOST_CHAR_MAX_DELAY - GHOST_CHAR_MIN_DELAY);
+      ghostTimeoutRef.current = setTimeout(() => typeNextChar(index + 1), delay);
     };
 
     // Start typing after initial delay
@@ -536,9 +478,9 @@ export const App = () => {
             Collaborative Editing, From the Inside Out
           </h1>
           <p className="text-base text-stone-200 mt-6 sm:mt-8 leading-relaxed max-w-3xl">
-            Collaborative text editing is one of the hardest problems in
-            distributed systems. The standard approach — use a CRDT library —
-            works, but at a cost: the ordering algorithm is a{" "}
+            Collaborative text editing is one of the hardest problems in distributed systems. The
+            standard approach — use a CRDT library — works, but at a cost: the ordering algorithm is
+            a{" "}
             <strong className="text-white font-semibold">
               black box you can't inspect or adapt
             </strong>
@@ -547,24 +489,15 @@ export const App = () => {
               results users interpret as corruption
             </strong>
             , and integration with real editor frameworks creates layers of{" "}
-            <strong className="text-white font-semibold">
-              impedance mismatch
-            </strong>
-            .
+            <strong className="text-white font-semibold">impedance mismatch</strong>.
           </p>
           <p className="text-base text-stone-200 mt-4 leading-relaxed max-w-3xl">
-            A growing body of work argues there's a simpler path. Label each
-            character with a unique ID, reference neighbors instead of indices,
-            and let a deterministic ordering rule handle the rest. The conflict
-            resolution lives in the data structure itself — not in a server, not
-            in a library you can't inspect. This demo builds that data structure
-            from scratch: a{" "}
-            <strong className="text-white font-semibold">Causal Tree</strong>{" "}
-            ordered by{" "}
-            <strong className="text-white font-semibold">
-              Hybrid Logical Clocks
-            </strong>
-            .
+            A growing body of work argues there's a simpler path. Label each character with a unique
+            ID, reference neighbors instead of indices, and let a deterministic ordering rule handle
+            the rest. The conflict resolution lives in the data structure itself — not in a server,
+            not in a library you can't inspect. This demo builds that data structure from scratch: a{" "}
+            <strong className="text-white font-semibold">Causal Tree</strong> ordered by{" "}
+            <strong className="text-white font-semibold">Hybrid Logical Clocks</strong>.
           </p>
         </div>
       </section>
@@ -572,10 +505,9 @@ export const App = () => {
       {/* Step 1: Live Editors */}
       <Section title="Hello from the other side">
         <p className="text-base text-stone-200 leading-relaxed mb-8 max-w-3xl">
-          Two independent editors, each with their own copy of the document. A
-          ghost is typing in peer-B — watch the operations propagate to peer-A
-          in real time. Type in peer-A yourself and see both editors converge to
-          the same result, every time.
+          Two independent editors, each with their own copy of the document. A ghost is typing in
+          peer-B — watch the operations propagate to peer-A in real time. Type in peer-A yourself
+          and see both editors converge to the same result, every time.
         </p>
         <div className="flex flex-col sm:flex-row gap-4 sm:gap-6">
           <PeerEditor peerId="peer-A" />
@@ -593,29 +525,25 @@ export const App = () => {
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.5fr] gap-8 lg:gap-12 items-start">
           <div>
             <p className="text-base text-stone-200 leading-relaxed mb-4">
-              The core problem with collaborative text editing is deceptively
-              simple: when two users type concurrently, array indices become
-              meaningless. Alice inserts at position 3, shifting everything
-              after it — but Bob's concurrent insert at position 17 doesn't know
+              The core problem with collaborative text editing is deceptively simple: when two users
+              type concurrently, array indices become meaningless. Alice inserts at position 3,
+              shifting everything after it — but Bob's concurrent insert at position 17 doesn't know
               that yet.
             </p>
             <p className="text-base text-stone-200 leading-relaxed mb-4">
-              The fix: stop thinking in indices. Give each run of characters a
-              stable ID and reference neighbors instead.{" "}
+              The fix: stop thinking in indices. Give each run of characters a stable ID and
+              reference neighbors instead.{" "}
               <code className="text-white font-mono bg-stone-800 px-1.5 py-0.5 rounded">
                 insert after node X
               </code>{" "}
-              works no matter what else has changed. These parent references
-              form a{" "}
-              <strong className="text-white font-semibold">Causal Tree</strong>{" "}
-              — sequential typing creates chains, concurrent edits at the same
-              position create branches. Reading in depth-first order
-              reconstructs the document deterministically.
+              works no matter what else has changed. These parent references form a{" "}
+              <strong className="text-white font-semibold">Causal Tree</strong> — sequential typing
+              creates chains, concurrent edits at the same position create branches. Reading in
+              depth-first order reconstructs the document deterministically.
             </p>
             <p className="text-base text-stone-200 leading-relaxed">
-              Run-length optimization means sequential characters by the same
-              peer are stored as a single node, keeping the tree compact even
-              for long documents.
+              Run-length optimization means sequential characters by the same peer are stored as a
+              single node, keeping the tree compact even for long documents.
             </p>
           </div>
           <CausalTreeSection />
@@ -627,27 +555,21 @@ export const App = () => {
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr] gap-8 lg:gap-12 items-start">
           <div>
             <p className="text-base text-stone-200 leading-relaxed mb-4">
-              A tree of character runs solves the identity problem, but you
-              still need a rule for ordering siblings — when two users type at
-              the exact same position, who goes first?
+              A tree of character runs solves the identity problem, but you still need a rule for
+              ordering siblings — when two users type at the exact same position, who goes first?
             </p>
             <p className="text-base text-stone-200 leading-relaxed mb-4">
-              CRDTs typically solve this with complex, algorithm-specific total
-              orders. We use a{" "}
-              <strong className="text-white font-semibold">
-                Hybrid Logical Clock
-              </strong>
-              : a wall-clock timestamp combined with a monotonic counter that
-              guarantees every operation gets a unique, totally-ordered ID. The
-              ordering rule is deterministic — peers converge to the same result
-              regardless of whether a server relays the operations or they
-              arrive peer-to-peer.
+              CRDTs typically solve this with complex, algorithm-specific total orders. We use a{" "}
+              <strong className="text-white font-semibold">Hybrid Logical Clock</strong>: a
+              wall-clock timestamp combined with a monotonic counter that guarantees every operation
+              gets a unique, totally-ordered ID. The ordering rule is deterministic — peers converge
+              to the same result regardless of whether a server relays the operations or they arrive
+              peer-to-peer.
             </p>
             <p className="text-base text-stone-200 leading-relaxed">
-              When a remote operation arrives, the peer merges the remote clock
-              with its own, ensuring time only moves forward. The tie-break rule
-              — higher HLC wins — is what makes convergence deterministic
-              without any central coordination.
+              When a remote operation arrives, the peer merges the remote clock with its own,
+              ensuring time only moves forward. The tie-break rule — higher HLC wins — is what makes
+              convergence deterministic without any central coordination.
             </p>
           </div>
           <HlcStateSection />
@@ -659,50 +581,40 @@ export const App = () => {
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.5fr] gap-8 lg:gap-12 items-start">
           <div>
             <p className="text-base text-stone-200 leading-relaxed mb-4">
-              One of the strongest critiques of CRDT libraries is that they're
-              opaque — operations go in, state comes out, and when something
-              goes wrong, you can't see why. Our wire protocol is fully
-              transparent: every edit produces an{" "}
-              <strong className="text-white font-semibold">Action</strong>{" "}
-              containing self-describing{" "}
-              <strong className="text-white font-semibold">Updates</strong>,
-              each targeting a specific run node with a named method and typed
-              field data.
+              One of the strongest critiques of CRDT libraries is that they're opaque — operations
+              go in, state comes out, and when something goes wrong, you can't see why. Our wire
+              protocol is fully transparent: every edit produces an{" "}
+              <strong className="text-white font-semibold">Action</strong> containing
+              self-describing <strong className="text-white font-semibold">Updates</strong>, each
+              targeting a specific run node with a named method and typed field data.
             </p>
             <ul className="space-y-2 text-stone-200 text-base">
               <li className="flex gap-2">
                 <span className="font-mono text-stone-500 shrink-0">--</span>
                 <span>
-                  <strong className="text-emerald-400 font-mono font-semibold">
-                    PUT
-                  </strong>{" "}
-                  inserts a new run into the tree
+                  <strong className="text-emerald-400 font-mono font-semibold">PUT</strong> inserts
+                  a new run into the tree
                 </span>
               </li>
               <li className="flex gap-2">
                 <span className="font-mono text-stone-500 shrink-0">--</span>
                 <span>
-                  <strong className="text-amber-400 font-mono font-semibold">
-                    PATCH
-                  </strong>{" "}
-                  appends characters to an existing run
+                  <strong className="text-amber-400 font-mono font-semibold">PATCH</strong> appends
+                  characters to an existing run
                 </span>
               </li>
               <li className="flex gap-2">
                 <span className="font-mono text-stone-500 shrink-0">--</span>
                 <span>
-                  <strong className="text-red-400 font-mono font-semibold">
-                    DELETE
-                  </strong>{" "}
+                  <strong className="text-red-400 font-mono font-semibold">DELETE</strong>{" "}
                   tombstones a character range within a run
                 </span>
               </li>
             </ul>
             <p className="text-base text-stone-200 mt-4 leading-relaxed">
-              A multi-character delete produces one Action with multiple DELETE
-              Updates — not separate messages. You can read every operation,
-              trace every mutation, and understand exactly why the document
-              looks the way it does.
+              A multi-character delete produces one Action with multiple DELETE Updates — not
+              separate messages. You can read every operation, trace every mutation, and understand
+              exactly why the document looks the way it does.
             </p>
           </div>
           <EventLogSection />

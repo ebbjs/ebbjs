@@ -20,68 +20,70 @@ The key optimization: the relay now speaks in run-level messages (`INSERT_RUN`, 
 
 ```ts
 type InsertRunMessage = {
-  readonly type: "INSERT_RUN"
-  readonly peerId: string
-  readonly node: RunNode       // The full run being inserted
-  readonly hlc: Hlc            // Sender's HLC at time of send
-}
+  readonly type: "INSERT_RUN";
+  readonly peerId: string;
+  readonly node: RunNode; // The full run being inserted
+  readonly hlc: Hlc; // Sender's HLC at time of send
+};
 
 type DeleteRangeMessage = {
-  readonly type: "DELETE_RANGE"
-  readonly peerId: string
-  readonly runId: string
-  readonly offset: number
-  readonly count: number
-  readonly hlc: Hlc
-}
+  readonly type: "DELETE_RANGE";
+  readonly peerId: string;
+  readonly runId: string;
+  readonly offset: number;
+  readonly count: number;
+  readonly hlc: Hlc;
+};
 
 type PresenceMessage = {
-  readonly type: "PRESENCE"
-  readonly peerId: string
-  readonly anchorRunId: string
-  readonly anchorOffset: number
-  readonly headRunId: string
-  readonly headOffset: number
-}
+  readonly type: "PRESENCE";
+  readonly peerId: string;
+  readonly anchorRunId: string;
+  readonly anchorOffset: number;
+  readonly headRunId: string;
+  readonly headOffset: number;
+};
 
-type RelayMessage = InsertRunMessage | DeleteRangeMessage | PresenceMessage
+type RelayMessage = InsertRunMessage | DeleteRangeMessage | PresenceMessage;
 
 type RelayConfig = {
-  readonly channelName: string
-  readonly peerId: string
-  readonly hlcRef: React.RefObject<Hlc>
-  readonly dispatch: (action: DocAction) => void
-  readonly getDocState: () => DocState
-  readonly viewRef: React.RefObject<EditorView | null>
-  readonly idMapField: StateField<readonly RunSpan[]>
+  readonly channelName: string;
+  readonly peerId: string;
+  readonly hlcRef: React.RefObject<Hlc>;
+  readonly dispatch: (action: DocAction) => void;
+  readonly getDocState: () => DocState;
+  readonly viewRef: React.RefObject<EditorView | null>;
+  readonly idMapField: StateField<readonly RunSpan[]>;
   readonly updatePresence?: (
     peerId: string,
-    anchorRunId: string, anchorOffset: number,
-    headRunId: string, headOffset: number,
-  ) => void
-  readonly onRemoteMessage?: (message: RelayMessage) => void
-}
+    anchorRunId: string,
+    anchorOffset: number,
+    headRunId: string,
+    headOffset: number,
+  ) => void;
+  readonly onRemoteMessage?: (message: RelayMessage) => void;
+};
 
 type RelayHandle = {
-  readonly broadcast: (message: RelayMessage) => void
-}
+  readonly broadcast: (message: RelayMessage) => void;
+};
 ```
 
 ### Exported functions
 
-| Name | Signature | Description |
-|------|-----------|-------------|
+| Name                  | Signature                                              | Description                                                                                                        |
+| --------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
 | `handleRemoteMessage` | `(message: RelayMessage, config: RelayConfig) => void` | Core message handler. Extracted from the hook for testability. Merges HLC, dispatches to tree, applies to CM view. |
-| `useRelay` | `(config: RelayConfig) => RelayHandle` | React hook that sets up BroadcastChannel, listens for remote messages, provides `broadcast`. |
+| `useRelay`            | `(config: RelayConfig) => RelayHandle`                 | React hook that sets up BroadcastChannel, listens for remote messages, provides `broadcast`.                       |
 
 ## Dependencies
 
-| Dependency | What it needs | Reference |
-|------------|---------------|-----------|
-| HLC | `receive()` for clock merge | [hlc.md](hlc.md) |
+| Dependency  | What it needs                                                                                                    | Reference                        |
+| ----------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| HLC         | `receive()` for clock merge                                                                                      | [hlc.md](hlc.md)                 |
 | Causal Tree | `DocAction`, `DocState`, `RunNode`, `findInsertPosition`, `lookupPosition`, `runOffsetToPosition`, `makeSplitId` | [causal-tree.md](causal-tree.md) |
-| CM Bridge | `applyRemoteInsert`, `applyRemoteDelete`, `isRemote`, `setIdMapEffect` | [cm-bridge.md](cm-bridge.md) |
-| Presence | `presenceUpdateEffect` (to poke CM view on presence changes) | [presence.md](presence.md) |
+| CM Bridge   | `applyRemoteInsert`, `applyRemoteDelete`, `isRemote`, `setIdMapEffect`                                           | [cm-bridge.md](cm-bridge.md)     |
+| Presence    | `presenceUpdateEffect` (to poke CM view on presence changes)                                                     | [presence.md](presence.md)       |
 
 ## Internal design notes
 
@@ -131,11 +133,11 @@ Presence now tracks cursor position as `(runId, offset)` pairs instead of bare n
 
 ### Message size comparison
 
-| Scenario | Before (per-char) | After (runs) |
-|----------|-------------------|--------------|
-| Type "hello world" | 11 INSERT messages | 1 INSERT_RUN message |
-| Paste 1000 chars | 1000 INSERT messages | 1 INSERT_RUN message |
-| Delete a word (5 chars) | 5 DELETE messages | 1 DELETE_RANGE message |
+| Scenario                | Before (per-char)    | After (runs)           |
+| ----------------------- | -------------------- | ---------------------- |
+| Type "hello world"      | 11 INSERT messages   | 1 INSERT_RUN message   |
+| Paste 1000 chars        | 1000 INSERT messages | 1 INSERT_RUN message   |
+| Delete a word (5 chars) | 5 DELETE messages    | 1 DELETE_RANGE message |
 
 ## Open questions
 

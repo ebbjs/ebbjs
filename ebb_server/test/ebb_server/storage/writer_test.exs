@@ -162,7 +162,7 @@ defmodule EbbServer.Storage.WriterTest do
         sample_update(%{
           "subject_id" => "todo_roundtrip",
           "data" => %{
-            "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => 12345}}
+            "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => 12_345}}
           }
         })
 
@@ -195,7 +195,7 @@ defmodule EbbServer.Storage.WriterTest do
 
       Writer.write_actions([action], writer_name)
 
-      assert SystemCache.is_dirty?("todo_abc", dirty_set)
+      assert SystemCache.dirty?("todo_abc", dirty_set)
     end
   end
 

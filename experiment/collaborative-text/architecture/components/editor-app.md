@@ -27,16 +27,16 @@ None. Peer IDs and channel name are hardcoded constants (`"peer-A"`, `"peer-B"`,
 
 ## Dependencies
 
-| Dependency | What it needs | Reference |
-|------------|---------------|-----------|
-| HLC | `createHlc`, `Hlc` type | [hlc.md](hlc.md) |
-| Causal Tree | `createDocState`, `docReducer`, `DocState`, `DocAction`, `reconstruct` (for debug consistency check) | [causal-tree.md](causal-tree.md) |
-| CM Bridge | `createBridgeExtension`, `createIdMapField`, `setIdMapEffect`, `BridgeConfig` | [cm-bridge.md](cm-bridge.md) |
-| Presence | `createPresenceExtension`, `usePresence` | [presence.md](presence.md) |
-| Relay | `useRelay`, `RelayMessage`, `InsertRunMessage`, `DeleteRangeMessage` | [relay.md](relay.md) |
-| Inspector Store | `logEvent`, `updateHlc`, `updateDocState` | (internal module, not a separate component doc) |
-| React | `useReducer`, `useRef`, `useEffect`, `useCallback`, `useMemo` | External |
-| CodeMirror 6 | `EditorView`, `EditorState`, keymap, extensions | External |
+| Dependency      | What it needs                                                                                        | Reference                                       |
+| --------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| HLC             | `createHlc`, `Hlc` type                                                                              | [hlc.md](hlc.md)                                |
+| Causal Tree     | `createDocState`, `docReducer`, `DocState`, `DocAction`, `reconstruct` (for debug consistency check) | [causal-tree.md](causal-tree.md)                |
+| CM Bridge       | `createBridgeExtension`, `createIdMapField`, `setIdMapEffect`, `BridgeConfig`                        | [cm-bridge.md](cm-bridge.md)                    |
+| Presence        | `createPresenceExtension`, `usePresence`                                                             | [presence.md](presence.md)                      |
+| Relay           | `useRelay`, `RelayMessage`, `InsertRunMessage`, `DeleteRangeMessage`                                 | [relay.md](relay.md)                            |
+| Inspector Store | `logEvent`, `updateHlc`, `updateDocState`                                                            | (internal module, not a separate component doc) |
+| React           | `useReducer`, `useRef`, `useEffect`, `useCallback`, `useMemo`                                        | External                                        |
+| CodeMirror 6    | `EditorView`, `EditorState`, keymap, extensions                                                      | External                                        |
 
 ## Internal design notes
 
@@ -88,6 +88,7 @@ This remains a debug-only check. `reconstruct()` is O(n) but only runs on state 
 ### Inspector changes
 
 The inspector store and panel need minor updates to display run-level info:
+
 - Event log: show `INSERT_RUN "hello" (5 chars)` instead of 5 separate `INSERT "h"`, `INSERT "e"`, etc.
 - Causal tree visualization: show runs as collapsed chains (already partially implemented in the current `InspectorPanel.tsx`)
 - HLC state: unchanged

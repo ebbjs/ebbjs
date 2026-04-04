@@ -43,14 +43,14 @@ experiment/collaborative-text/
 
 ## Components
 
-| Component | Purpose | Change scope |
-|-----------|---------|-------------|
-| [HLC](components/hlc.md) | Pure HLC functions — create, increment, receive, compare, serialize | Unchanged |
-| [Causal Tree](components/causal-tree.md) | Run-length document state: `RunNode` with split/merge, incremental `PositionIndex`, pure reducer | Major rework |
-| [CodeMirror Bridge](components/cm-bridge.md) | Batches local edits into run-level actions, consumes incremental position index | Moderate changes |
-| [Relay](components/relay.md) | `INSERT_RUN` / `DELETE_RANGE` message types, batch broadcast | Moderate changes |
-| [Presence](components/presence.md) | Position resolution via new `PositionIndex` API | Minor changes |
-| [Editor App](components/editor-app.md) | Wire new types through, same overall structure | Minor changes |
+| Component                                    | Purpose                                                                                          | Change scope     |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------ | ---------------- |
+| [HLC](components/hlc.md)                     | Pure HLC functions — create, increment, receive, compare, serialize                              | Unchanged        |
+| [Causal Tree](components/causal-tree.md)     | Run-length document state: `RunNode` with split/merge, incremental `PositionIndex`, pure reducer | Major rework     |
+| [CodeMirror Bridge](components/cm-bridge.md) | Batches local edits into run-level actions, consumes incremental position index                  | Moderate changes |
+| [Relay](components/relay.md)                 | `INSERT_RUN` / `DELETE_RANGE` message types, batch broadcast                                     | Moderate changes |
+| [Presence](components/presence.md)           | Position resolution via new `PositionIndex` API                                                  | Minor changes    |
+| [Editor App](components/editor-app.md)       | Wire new types through, same overall structure                                                   | Minor changes    |
 
 ## Dependencies
 
@@ -70,37 +70,44 @@ Editor App
 
 ## Vertical slices
 
-| # | Slice | Components involved | Purpose |
-|---|-------|---------------------|---------|
-| 1 | [RunNode basics](slices/01-run-node-basics.md) | Causal Tree, HLC | Thinnest path: RunNode insert, split, delete, reconstruct. Pure unit tests. |
-| 2 | [Incremental position index](slices/02-incremental-position-index.md) | Causal Tree | Position lookups correct after insert/split/delete without full DFS. |
-| 3 | [Single-user editing with runs](slices/03-single-user-editing-runs.md) | CM Bridge, Causal Tree, HLC, Editor App | CM Bridge batches keystrokes into runs, dispatches to tree, ID map stays consistent. |
-| 4 | [Two-peer sync with batched protocol](slices/04-two-peer-sync-batched.md) | + Relay | Relay sends/receives `INSERT_RUN` messages. Remote peer applies correctly. |
-| 5 | [Concurrent conflict with runs](slices/05-concurrent-conflict-runs.md) | All | Two peers type at same position. Run splitting + HLC tie-break → deterministic convergence. |
+| #   | Slice                                                                     | Components involved                     | Purpose                                                                                     |
+| --- | ------------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 1   | [RunNode basics](slices/01-run-node-basics.md)                            | Causal Tree, HLC                        | Thinnest path: RunNode insert, split, delete, reconstruct. Pure unit tests.                 |
+| 2   | [Incremental position index](slices/02-incremental-position-index.md)     | Causal Tree                             | Position lookups correct after insert/split/delete without full DFS.                        |
+| 3   | [Single-user editing with runs](slices/03-single-user-editing-runs.md)    | CM Bridge, Causal Tree, HLC, Editor App | CM Bridge batches keystrokes into runs, dispatches to tree, ID map stays consistent.        |
+| 4   | [Two-peer sync with batched protocol](slices/04-two-peer-sync-batched.md) | + Relay                                 | Relay sends/receives `INSERT_RUN` messages. Remote peer applies correctly.                  |
+| 5   | [Concurrent conflict with runs](slices/05-concurrent-conflict-runs.md)    | All                                     | Two peers type at same position. Run splitting + HLC tie-break → deterministic convergence. |
 
 Slices are ordered from simplest to most complex. Build and validate them in order. Each slice builds on the previous — don't skip ahead.
 
 ## Cross-cutting concerns
 
 ### Functional programming style
+
 Unchanged. All state logic uses pure functions. No classes (except CM6's required `WidgetType` subclass for cursor rendering). Document state lives in a `useReducer`. HLC is a plain object manipulated by pure functions.
 
 ### Run identity and splitting
+
 A `RunNode` gets a single HLC-derived ID (the HLC at the time the run started). When a run must be split (e.g., a remote insert lands in the middle), the left half keeps the original ID and the right half gets a new deterministic ID derived from the original (e.g., `originalId + ":split:" + offset`). This preserves the causal tree's commutativity — the same split applied in any order produces the same result. See the [Causal Tree component doc](components/causal-tree.md) for details.
 
 ### Position index consistency
+
 The `PositionIndex` is always updated atomically with the tree mutation inside the reducer. There is no window where the tree and the index are out of sync. This replaces the current pattern of "mutate tree, then rebuild position map as a separate step."
 
 ### Peer identity
+
 Unchanged. Each editor instance has a unique peer ID embedded in every HLC.
 
 ### Error handling
+
 Unchanged. Fail loud. Console errors for invariant violations.
 
 ### Testing strategy
+
 Same approach: test behavior, not implementation. The Causal Tree is pure functions — test with vitest. The new `PositionIndex` is also pure and testable in isolation. CM Bridge integration is tested through slice acceptance criteria.
 
 ### Persistence (future concern)
+
 Run-length nodes are significantly more serialization-friendly than per-character nodes. A 10K-char document might have ~100-500 runs instead of 10K nodes. This makes JSON serialization, IndexedDB storage, or wire snapshots practical. Not in scope for this pass, but the architecture doesn't preclude it.
 
 ## Constraints and assumptions
