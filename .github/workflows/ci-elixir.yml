@@ -12,10 +12,19 @@ on:
       - ebb_server/**
 
 jobs:
-  format:
-    name: Format Check
+  ci:
+    name: ${{ matrix.job }}
     runs-on: ubuntu-latest
     container: ghcr.io/${{ github.repository }}/elixir:latest
+    strategy:
+      matrix:
+        include:
+          - job: Format Check
+            command: mix format --check-formatted
+          - job: Lint (Credo)
+            command: mix credo --strict
+          - job: Test
+            command: mix test
     steps:
       - uses: actions/checkout@v4
       - name: Configure git safe directory
@@ -27,6 +36,7 @@ jobs:
             ebb_server/deps
             ebb_server/_build
             ~/.mix
+            ~/.hex
           key: mix-${{ runner.os }}-${{ hashFiles('ebb_server/mix.lock') }}
           restore-keys: |
             mix-${{ runner.os }}-
@@ -36,62 +46,6 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
         working-directory: ebb_server
-      - name: Check formatting
-        run: mix format --check-formatted
-        working-directory: ebb_server
-
-  lint:
-    name: Lint (Credo)
-    runs-on: ubuntu-latest
-    container: ghcr.io/${{ github.repository }}/elixir:latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure git safe directory
-        run: git config --global --add safe.directory /__w/ebbjs/ebbjs
-      - name: Cache deps and build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ebb_server/deps
-            ebb_server/_build
-            ~/.mix
-          key: mix-${{ runner.os }}-${{ hashFiles('ebb_server/mix.lock') }}
-          restore-keys: |
-            mix-${{ runner.os }}-
-      - name: Install Hex and Rebar
-        run: mix local.hex --force && mix local.rebar --force
-        working-directory: ebb_server
-      - name: Install dependencies
-        run: mix deps.get
-        working-directory: ebb_server
-      - name: Run Credo
-        run: mix credo --strict
-        working-directory: ebb_server
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    container: ghcr.io/${{ github.repository }}/elixir:latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure git safe directory
-        run: git config --global --add safe.directory /__w/ebbjs/ebbjs
-      - name: Cache deps and build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ebb_server/deps
-            ebb_server/_build
-            ~/.mix
-          key: mix-${{ runner.os }}-${{ hashFiles('ebb_server/mix.lock') }}
-          restore-keys: |
-            mix-${{ runner.os }}-
-      - name: Install Hex and Rebar
-        run: mix local.hex --force && mix local.rebar --force
-        working-directory: ebb_server
-      - name: Install dependencies
-        run: mix deps.get
-        working-directory: ebb_server
-      - name: Run tests
-        run: mix test
+      - name: ${{ matrix.job }}
+        run: ${{ matrix.command }}
         working-directory: ebb_server

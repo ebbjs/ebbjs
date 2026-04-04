@@ -10,6 +10,8 @@ defmodule EbbServer.Storage.PermissionChecker do
 
   import Bitwise
 
+  alias EbbServer.Storage.SystemCache
+
   @type raw_action :: %{String.t() => term()}
   @type raw_update :: %{String.t() => term()}
 
@@ -92,33 +94,59 @@ defmodule EbbServer.Storage.PermissionChecker do
   end
 
   defp validate_update_structure(update) do
-    cond do
-      not is_binary(update["id"]) or update["id"] == "" ->
-        {:error, "invalid_structure", "update id must be a non-empty string"}
+    with :ok <- validate_update_id(update["id"]),
+         :ok <- validate_update_subject_id(update["subject_id"]),
+         :ok <- validate_update_subject_type(update["subject_type"]),
+         :ok <- validate_update_method(update["method"]) do
+      validate_update_data(update)
+    end
+  end
 
-      not is_binary(update["subject_id"]) or update["subject_id"] == "" ->
-        {:error, "invalid_structure", "update subject_id must be a non-empty string"}
+  defp validate_update_id(id) do
+    if is_binary(id) and id != "",
+      do: :ok,
+      else: {:error, "invalid_structure", "update id must be a non-empty string"}
+  end
 
-      not is_binary(update["subject_type"]) or update["subject_type"] == "" ->
-        {:error, "invalid_structure", "update subject_type must be a non-empty string"}
+  defp validate_update_subject_id(subject_id) do
+    if is_binary(subject_id) and subject_id != "",
+      do: :ok,
+      else: {:error, "invalid_structure", "update subject_id must be a non-empty string"}
+  end
 
-      update["method"] not in ["put", "patch", "delete"] ->
-        {:error, "invalid_structure", "update method must be one of: put, patch, delete"}
+  defp validate_update_subject_type(subject_type) do
+    if is_binary(subject_type) and subject_type != "",
+      do: :ok,
+      else: {:error, "invalid_structure", "update subject_type must be a non-empty string"}
+  end
 
-      not is_map(update["data"]) ->
-        {:error, "invalid_structure", "update data must be a map"}
+  defp validate_update_method(method) do
+    if method in ["put", "patch", "delete"],
+      do: :ok,
+      else: {:error, "invalid_structure", "update method must be one of: put, patch, delete"}
+  end
 
-      (update["method"] in ["put", "patch"] and
-         update["subject_type"] not in @system_entity_types and
-         not is_map(update["data"]["fields"])) or
-          (update["method"] == "delete" and
-             update["subject_type"] not in @system_entity_types and
-             not is_map(update["data"])) ->
+  defp validate_update_data(update) do
+    if is_map(update["data"]) and well_formed_data?(update),
+      do: :ok,
+      else:
         {:error, "invalid_structure",
          "update data must be a well-formed map for put/patch/delete on user entities"}
+  end
 
-      true ->
-        :ok
+  defp well_formed_data?(update) do
+    subject_type = update["subject_type"]
+    method = update["method"]
+    data = update["data"]
+
+    if subject_type in @system_entity_types do
+      true
+    else
+      case method do
+        m when m in ["put", "patch"] -> is_map(data["fields"])
+        "delete" -> true
+        _ -> false
+      end
     end
   end
 
@@ -176,7 +204,7 @@ defmodule EbbServer.Storage.PermissionChecker do
     updates = action["updates"]
     intra_ctx = build_intra_action_context(updates)
 
-    if is_group_bootstrap?(updates, actor_id) do
+    if group_bootstrap?(updates, actor_id) do
       :ok
     else
       check_all_updates(updates, actor_id, intra_ctx, opts)
@@ -193,7 +221,7 @@ defmodule EbbServer.Storage.PermissionChecker do
     end)
   end
 
-  defp is_group_bootstrap?(updates, actor_id) do
+  defp group_bootstrap?(updates, actor_id) do
     group_ids =
       updates
       |> Enum.filter(fn u -> u["subject_type"] == "group" and u["method"] == "put" end)
@@ -237,32 +265,30 @@ defmodule EbbServer.Storage.PermissionChecker do
   end
 
   defp authorize_system_entity_update(update, actor_id, _intra_ctx, opts) do
-    case update["subject_type"] do
-      "group" ->
-        group_id = update["subject_id"]
+    group_id = get_group_id_for_update(update)
+    check_group_membership(actor_id, group_id, opts)
+  end
 
-        case EbbServer.Storage.SystemCache.get_permissions(actor_id, group_id, opts) do
-          nil -> {:error, "not_authorized", "actor is not a member of the group"}
-          _perms -> :ok
-        end
+  defp get_group_id_for_update(%{"subject_type" => "group", "subject_id" => group_id}) do
+    group_id
+  end
 
-      "groupMember" ->
-        group_id =
-          get_in(update, ["data", "fields", "group_id", "value"]) ||
-            get_in(update, ["data", "group_id"])
+  defp get_group_id_for_update(%{"subject_type" => "groupMember", "data" => data}) do
+    get_in(data, ["fields", "group_id", "value"]) || get_in(data, ["group_id"])
+  end
 
-        case EbbServer.Storage.SystemCache.get_permissions(actor_id, group_id, opts) do
-          nil -> {:error, "not_authorized", "actor is not a member of the target group"}
-          _perms -> :ok
-        end
+  defp get_group_id_for_update(%{"subject_type" => "relationship", "data" => data}) do
+    get_in(data, ["target_id"])
+  end
 
-      "relationship" ->
-        target_id = get_in(update, ["data", "target_id"])
+  defp check_group_membership(_actor_id, nil, _opts) do
+    {:error, "not_authorized", "actor is not a member of the group"}
+  end
 
-        case EbbServer.Storage.SystemCache.get_permissions(actor_id, target_id, opts) do
-          nil -> {:error, "not_authorized", "actor is not a member of the target group"}
-          _perms -> :ok
-        end
+  defp check_group_membership(actor_id, group_id, opts) do
+    case SystemCache.get_permissions(actor_id, group_id, opts) do
+      nil -> {:error, "not_authorized", "actor is not a member of the group"}
+      _perms -> :ok
     end
   end
 
@@ -271,25 +297,37 @@ defmodule EbbServer.Storage.PermissionChecker do
     subject_type = update["subject_type"]
 
     group_id =
-      EbbServer.Storage.SystemCache.get_entity_group(subject_id, opts) ||
+      SystemCache.get_entity_group(subject_id, opts) ||
         Map.get(intra_ctx, subject_id)
 
-    if group_id == nil do
-      {:error, "not_authorized", "entity has no group"}
+    with {:ok, _} <- ensure_group(group_id),
+         {:ok, permissions} <- fetch_permissions(actor_id, group_id, opts),
+         :ok <-
+           ensure_has_permission(
+             permissions,
+             subject_type,
+             method_to_permission(update["method"])
+           ) do
+      :ok
     else
-      case EbbServer.Storage.SystemCache.get_permissions(actor_id, group_id, opts) do
-        nil ->
-          {:error, "not_authorized", "actor is not a member of the group"}
-
-        permissions ->
-          required_permission = method_to_permission(update["method"])
-          has_permission = check_permission(permissions, subject_type, required_permission)
-
-          if has_permission,
-            do: :ok,
-            else: {:error, "not_authorized", "missing required permission"}
-      end
+      {:error, reason, details} -> {:error, reason, details}
     end
+  end
+
+  defp ensure_group(nil), do: {:error, "not_authorized", "entity has no group"}
+  defp ensure_group(_), do: {:ok, :group_found}
+
+  defp fetch_permissions(actor_id, group_id, opts) do
+    case SystemCache.get_permissions(actor_id, group_id, opts) do
+      nil -> {:error, "not_authorized", "actor is not a member of the group"}
+      permissions -> {:ok, permissions}
+    end
+  end
+
+  defp ensure_has_permission(permissions, subject_type, required_permission) do
+    if check_permission(permissions, subject_type, required_permission),
+      do: :ok,
+      else: {:error, "not_authorized", "missing required permission"}
   end
 
   defp method_to_permission("put"), do: "create"

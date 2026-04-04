@@ -32,7 +32,11 @@ defmodule EbbServer.Storage.SystemCacheTest do
       )
 
     on_exit(fn ->
-      if pid = Process.whereis(cache_name), do: if(Process.alive?(pid), do: GenServer.stop(pid))
+      with pid when is_pid(pid) <- Process.whereis(cache_name),
+           true <- Process.alive?(pid) do
+        GenServer.stop(pid)
+      end
+
       :persistent_term.erase(gsn_counter_name)
 
       for t <- [group_members_name, relationships_name, relationships_by_group_name] do
@@ -76,18 +80,18 @@ defmodule EbbServer.Storage.SystemCacheTest do
     test "mark, check, and clear lifecycle" do
       %{dirty_set: dirty_set, gsn_counter: _counter} = start_isolated_cache()
 
-      refute SystemCache.is_dirty?("todo_abc", dirty_set)
-      refute SystemCache.is_dirty?("todo_xyz", dirty_set)
+      refute SystemCache.dirty?("todo_abc", dirty_set)
+      refute SystemCache.dirty?("todo_xyz", dirty_set)
 
       :ok = SystemCache.mark_dirty_batch(["todo_abc", "todo_xyz"], dirty_set)
 
-      assert SystemCache.is_dirty?("todo_abc", dirty_set)
-      assert SystemCache.is_dirty?("todo_xyz", dirty_set)
+      assert SystemCache.dirty?("todo_abc", dirty_set)
+      assert SystemCache.dirty?("todo_xyz", dirty_set)
 
       SystemCache.clear_dirty("todo_abc", dirty_set)
 
-      refute SystemCache.is_dirty?("todo_abc", dirty_set)
-      assert SystemCache.is_dirty?("todo_xyz", dirty_set)
+      refute SystemCache.dirty?("todo_abc", dirty_set)
+      assert SystemCache.dirty?("todo_xyz", dirty_set)
     end
   end
 
@@ -113,15 +117,15 @@ defmodule EbbServer.Storage.SystemCacheTest do
       %{dirty_set: dirty_set} = start_isolated_cache()
 
       :ok = SystemCache.mark_dirty_batch(["todo_1", "todo_2", "todo_3"], dirty_set)
-      assert SystemCache.is_dirty?("todo_1", dirty_set)
-      assert SystemCache.is_dirty?("todo_2", dirty_set)
-      assert SystemCache.is_dirty?("todo_3", dirty_set)
+      assert SystemCache.dirty?("todo_1", dirty_set)
+      assert SystemCache.dirty?("todo_2", dirty_set)
+      assert SystemCache.dirty?("todo_3", dirty_set)
 
       :ok = SystemCache.reset(dirty_set)
 
-      refute SystemCache.is_dirty?("todo_1", dirty_set)
-      refute SystemCache.is_dirty?("todo_2", dirty_set)
-      refute SystemCache.is_dirty?("todo_3", dirty_set)
+      refute SystemCache.dirty?("todo_1", dirty_set)
+      refute SystemCache.dirty?("todo_2", dirty_set)
+      refute SystemCache.dirty?("todo_3", dirty_set)
     end
 
     test "resets GSN counter to 0" do
@@ -140,9 +144,9 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
       :ok = SystemCache.reset(unique_name)
 
-      refute SystemCache.is_dirty?("todo_x", unique_name)
+      refute SystemCache.dirty?("todo_x", unique_name)
       :ok = SystemCache.mark_dirty_batch(["todo_x"], unique_name)
-      assert SystemCache.is_dirty?("todo_x", unique_name)
+      assert SystemCache.dirty?("todo_x", unique_name)
     end
   end
 

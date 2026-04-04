@@ -14,6 +14,8 @@ defmodule EbbServer.Storage.SystemCache do
   use GenServer
   require Logger
 
+  alias EbbServer.Storage.{EntityStore, RocksDB}
+
   @default_dirty_set_name :ebb_dirty_set
   @default_gsn_counter_name :ebb_gsn_counter
   @default_group_members :ebb_group_members
@@ -60,8 +62,8 @@ defmodule EbbServer.Storage.SystemCache do
     :ok
   end
 
-  @spec is_dirty?(String.t(), atom()) :: boolean()
-  def is_dirty?(entity_id, dirty_set \\ @default_dirty_set_name) do
+  @spec dirty?(String.t(), atom()) :: boolean()
+  def dirty?(entity_id, dirty_set \\ @default_dirty_set_name) do
     :ets.lookup(dirty_set, entity_id) != []
   end
 
@@ -240,7 +242,7 @@ defmodule EbbServer.Storage.SystemCache do
   end
 
   defp populate_system_caches(state) do
-    rocks_name = EbbServer.Storage.RocksDB
+    rocks_name = RocksDB
 
     populate_type("groupMember", rocks_name, fn entity_data ->
       put_group_member(
@@ -271,14 +273,14 @@ defmodule EbbServer.Storage.SystemCache do
 
   defp populate_type(type, rocks_name, insert_fn) do
     prefix = type <> <<0>>
-    cf = EbbServer.Storage.RocksDB.cf_type_entities(rocks_name)
+    cf = RocksDB.cf_type_entities(rocks_name)
 
     rocks_name
-    |> EbbServer.Storage.RocksDB.prefix_iterator(cf, prefix)
+    |> RocksDB.prefix_iterator(cf, prefix)
     |> Stream.each(fn {key, _value} ->
       <<_type_bytes::binary-size(byte_size(type)), 0, entity_id::binary>> = key
 
-      case EbbServer.Storage.EntityStore.materialize(entity_id, rocks_name: rocks_name) do
+      case EntityStore.materialize(entity_id, rocks_name: rocks_name) do
         {:ok, entity} -> insert_fn.(entity)
         error -> Logger.warning("Failed to materialize entity #{entity_id}: #{inspect(error)}")
       end
@@ -290,7 +292,7 @@ defmodule EbbServer.Storage.SystemCache do
   def init(opts) do
     initial_gsn =
       Keyword.get_lazy(opts, :initial_gsn, fn ->
-        EbbServer.Storage.RocksDB.get_max_gsn()
+        RocksDB.get_max_gsn()
       end)
 
     dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set_name)

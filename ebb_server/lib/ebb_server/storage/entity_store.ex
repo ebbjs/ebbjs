@@ -51,7 +51,7 @@ defmodule EbbServer.Storage.EntityStore do
     sqlite_name = Keyword.get(opts, :sqlite_name, @default_sqlite_name)
     dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
 
-    if SystemCache.is_dirty?(entity_id, dirty_set) do
+    if SystemCache.dirty?(entity_id, dirty_set) do
       materialize(entity_id,
         rocks_name: rocks_name,
         sqlite_name: sqlite_name,
@@ -87,81 +87,112 @@ defmodule EbbServer.Storage.EntityStore do
     sqlite_name = Keyword.get(opts, :sqlite_name, @default_sqlite_name)
     dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
 
-    {current_data, last_gsn, existing_row} =
-      case SQLite.get_entity(entity_id, sqlite_name) do
-        {:ok, row} ->
-          {Jason.decode!(row.data), row.last_gsn, row}
-
-        :not_found ->
-          {%{"fields" => %{}}, 0, nil}
-      end
-
-    entries =
-      RocksDB.prefix_iterator(RocksDB.cf_entity_actions(rocks_name), entity_id, name: rocks_name)
-      |> Stream.map(fn {key, action_id_binary} ->
-        {_eid, gsn} = RocksDB.decode_entity_gsn_key(key)
-        {gsn, action_id_binary}
-      end)
-      |> Stream.filter(fn {gsn, _} -> gsn > last_gsn end)
-      |> Enum.to_list()
-      |> Enum.sort_by(fn {gsn, _} -> gsn end)
+    {current_data, last_gsn, existing_row} = fetch_current_state(entity_id, sqlite_name)
+    entries = fetch_relevant_entries(entity_id, rocks_name, last_gsn)
 
     if entries == [] do
-      if existing_row != nil do
-        SystemCache.clear_dirty(entity_id, dirty_set)
-
-        case SQLite.get_entity(entity_id, sqlite_name) do
-          {:ok, row} -> {:ok, format_entity(row)}
-          :not_found -> :not_found
-        end
-      else
-        SystemCache.clear_dirty(entity_id, dirty_set)
-        :not_found
-      end
+      handle_empty_entries(entity_id, existing_row, dirty_set, sqlite_name)
     else
-      materialized =
-        try do
-          {:ok, apply_actions(entity_id, current_data, entries, rocks_name)}
-        rescue
-          e ->
-            {:error, e}
-        end
+      apply_entries_and_persist(
+        entity_id,
+        current_data,
+        entries,
+        rocks_name,
+        dirty_set,
+        sqlite_name
+      )
+    end
+  end
 
-      case materialized do
-        {:ok,
-         %{
-           data: merged_data,
-           type: type,
-           created_hlc: created_hlc,
-           updated_hlc: updated_hlc,
-           deleted_hlc: deleted_hlc,
-           deleted_by: deleted_by,
-           max_gsn: max_gsn
-         }} ->
-          if deleted_hlc != nil do
-            SystemCache.clear_dirty(entity_id, dirty_set)
-            :not_found
-          else
-            entity_row = %{
-              id: entity_id,
-              type: type || "unknown",
-              data: Jason.encode!(merged_data),
-              created_hlc: created_hlc || updated_hlc,
-              updated_hlc: updated_hlc,
-              deleted_hlc: deleted_hlc,
-              deleted_by: deleted_by,
-              last_gsn: max_gsn
-            }
+  defp fetch_current_state(entity_id, sqlite_name) do
+    case SQLite.get_entity(entity_id, sqlite_name) do
+      {:ok, row} ->
+        {Jason.decode!(row.data), row.last_gsn, row}
 
-            SQLite.upsert_entity(entity_row, sqlite_name)
-            SystemCache.clear_dirty(entity_id, dirty_set)
+      :not_found ->
+        {%{"fields" => %{}}, 0, nil}
+    end
+  end
 
-            {:ok, format_entity(entity_row)}
-          end
+  defp fetch_relevant_entries(entity_id, rocks_name, last_gsn) do
+    RocksDB.prefix_iterator(RocksDB.cf_entity_actions(rocks_name), entity_id, name: rocks_name)
+    |> Stream.map(fn {key, action_id_binary} ->
+      {_eid, gsn} = RocksDB.decode_entity_gsn_key(key)
+      {gsn, action_id_binary}
+    end)
+    |> Stream.filter(fn {gsn, _} -> gsn > last_gsn end)
+    |> Enum.to_list()
+    |> Enum.sort_by(fn {gsn, _} -> gsn end)
+  end
 
-        {:error, _reason} ->
-          {:error, :materialization_failed}
+  defp handle_empty_entries(entity_id, nil, dirty_set, _sqlite_name) do
+    SystemCache.clear_dirty(entity_id, dirty_set)
+    :not_found
+  end
+
+  defp handle_empty_entries(entity_id, _existing_row, dirty_set, sqlite_name) do
+    SystemCache.clear_dirty(entity_id, dirty_set)
+
+    case SQLite.get_entity(entity_id, sqlite_name) do
+      {:ok, row} -> {:ok, format_entity(row)}
+      :not_found -> :not_found
+    end
+  end
+
+  defp apply_entries_and_persist(
+         entity_id,
+         current_data,
+         entries,
+         rocks_name,
+         dirty_set,
+         sqlite_name
+       ) do
+    materialized =
+      try do
+        {:ok, apply_actions(entity_id, current_data, entries, rocks_name)}
+      rescue
+        e ->
+          {:error, e}
       end
+
+    case materialized do
+      {:ok, result} ->
+        handle_materialized_result(entity_id, result, dirty_set, sqlite_name)
+
+      {:error, _reason} ->
+        {:error, :materialization_failed}
+    end
+  end
+
+  defp handle_materialized_result(entity_id, result, dirty_set, sqlite_name) do
+    %{
+      data: merged_data,
+      type: type,
+      created_hlc: created_hlc,
+      updated_hlc: updated_hlc,
+      deleted_hlc: deleted_hlc,
+      deleted_by: deleted_by,
+      max_gsn: max_gsn
+    } = result
+
+    if deleted_hlc != nil do
+      SystemCache.clear_dirty(entity_id, dirty_set)
+      :not_found
+    else
+      entity_row = %{
+        id: entity_id,
+        type: type || "unknown",
+        data: Jason.encode!(merged_data),
+        created_hlc: created_hlc || updated_hlc,
+        updated_hlc: updated_hlc,
+        deleted_hlc: deleted_hlc,
+        deleted_by: deleted_by,
+        last_gsn: max_gsn
+      }
+
+      SQLite.upsert_entity(entity_row, sqlite_name)
+      SystemCache.clear_dirty(entity_id, dirty_set)
+      {:ok, format_entity(entity_row)}
     end
   end
 

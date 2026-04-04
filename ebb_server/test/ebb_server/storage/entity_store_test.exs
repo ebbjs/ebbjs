@@ -149,7 +149,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
       action = sample_action(%{"updates" => [update]})
 
       Writer.write_actions([action], writer_name)
-      assert SystemCache.is_dirty?(entity_id, dirty_set)
+      assert SystemCache.dirty?(entity_id, dirty_set)
 
       EntityStore.get(entity_id, "a_test",
         rocks_name: rocks_name,
@@ -157,7 +157,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
         dirty_set: dirty_set
       )
 
-      refute SystemCache.is_dirty?(entity_id, dirty_set)
+      refute SystemCache.dirty?(entity_id, dirty_set)
     end
 
     test "second read is clean (no re-materialization)", %{
@@ -188,7 +188,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
 
       assert entity1.id == entity2.id
       assert entity1.last_gsn == entity2.last_gsn
-      refute SystemCache.is_dirty?(entity_id, dirty_set)
+      refute SystemCache.dirty?(entity_id, dirty_set)
     end
 
     test "entity not found", %{

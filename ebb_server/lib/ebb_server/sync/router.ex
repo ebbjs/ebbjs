@@ -75,22 +75,23 @@ defmodule EbbServer.Sync.Router do
   defp decode_and_validate(body) do
     case Msgpax.unpack(body) do
       {:ok, decoded} ->
-        if Map.has_key?(decoded, "actions") do
-          actions = decoded["actions"]
-
-          case validate_actions_list(actions) do
-            :ok ->
-              {:valid, actions}
-
-            {:error, details} ->
-              {:invalid, details}
-          end
-        else
-          {:invalid, [{"root", "actions key is required"}]}
-        end
+        extract_and_validate_actions(decoded)
 
       {:error, reason} ->
         {:error, :invalid_msgpack, reason}
+    end
+  end
+
+  defp extract_and_validate_actions(decoded) do
+    case Map.fetch(decoded, "actions") do
+      {:ok, actions} ->
+        case validate_actions_list(actions) do
+          :ok -> {:valid, actions}
+          {:error, details} -> {:invalid, details}
+        end
+
+      :error ->
+        {:invalid, [{"root", "actions key is required"}]}
     end
   end
 
@@ -111,90 +112,104 @@ defmodule EbbServer.Sync.Router do
     do: {:error, [{"root", "actions must be a list"}]}
 
   defp action_errors(index, action) when is_map(action) do
-    errors = []
+    [
+      validate_action_id(action, index),
+      validate_action_actor_id(action, index),
+      validate_action_hlc(action, index),
+      validate_action_updates(action, index)
+    ]
+    |> Enum.concat()
+  end
 
-    errors =
-      if is_binary(action["id"]) && action["id"] != "",
-        do: errors,
-        else: [{"#{index}.id", "must be a non-empty string"} | errors]
+  defp action_errors(index, _action),
+    do: [{"#{index}", "must be a map"}]
 
-    errors =
-      if is_binary(action["actor_id"]) && action["actor_id"] != "",
-        do: errors,
-        else: [{"#{index}.actor_id", "must be a non-empty string"} | errors]
+  defp validate_action_id(action, index) do
+    if is_binary(action["id"]) && action["id"] != "",
+      do: [],
+      else: [{"#{index}.id", "must be a non-empty string"}]
+  end
 
+  defp validate_action_actor_id(action, index) do
+    if is_binary(action["actor_id"]) && action["actor_id"] != "",
+      do: [],
+      else: [{"#{index}.actor_id", "must be a non-empty string"}]
+  end
+
+  defp validate_action_hlc(action, index) do
     hlc = action["hlc"]
 
     hlc_valid =
       (is_integer(hlc) and hlc > 0) or
         (is_binary(hlc) and match?({int, ""} when int > 0, Integer.parse(hlc)))
 
-    errors =
-      if hlc_valid,
-        do: errors,
-        else: [{"#{index}.hlc", "must be a positive integer"} | errors]
-
-    errors =
-      if is_list(action["updates"]),
-        do: errors,
-        else: [{"#{index}.updates", "must be a list"} | errors]
-
-    update_errors =
-      if is_list(action["updates"]) do
-        action["updates"]
-        |> Enum.with_index()
-        |> Enum.flat_map(fn {update, uidx} ->
-          update_errors("#{index}.updates[#{uidx}]", update)
-        end)
-      else
-        []
-      end
-
-    errors ++ update_errors
+    if hlc_valid,
+      do: [],
+      else: [{"#{index}.hlc", "must be a positive integer"}]
   end
 
-  defp action_errors(index, _action),
-    do: [{"#{index}", "must be a map"}]
+  defp validate_action_updates(action, index) do
+    if is_list(action["updates"]) do
+      action["updates"]
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {update, uidx} ->
+        update_errors("#{index}.updates[#{uidx}]", update)
+      end)
+    else
+      [{"#{index}.updates", "must be a list"}]
+    end
+  end
 
   defp update_errors(path, update) when is_map(update) do
-    errors = []
-
-    errors =
-      if is_binary(update["id"]) && update["id"] != "",
-        do: errors,
-        else: [{"#{path}.id", "must be a non-empty string"} | errors]
-
-    errors =
-      if is_binary(update["subject_id"]) && update["subject_id"] != "",
-        do: errors,
-        else: [{"#{path}.subject_id", "must be a non-empty string"} | errors]
-
-    errors =
-      if is_binary(update["subject_type"]) && update["subject_type"] != "",
-        do: errors,
-        else: [{"#{path}.subject_type", "must be a non-empty string"} | errors]
-
-    errors =
-      if update["method"] in ["put", "patch", "delete"],
-        do: errors,
-        else: [{"#{path}.method", "must be one of: put, patch, delete"} | errors]
-
-    errors =
-      if is_map(update["data"]) do
-        if update["method"] in ["put", "patch"] && !is_map(update["data"]["fields"]) do
-          [{"#{path}.data.fields", "must be a map for put/patch"} | errors]
-        else
-          errors
-        end
-      else
-        [{"#{path}.data", "must be a map"} | errors]
-      end
-
-    errors
+    [
+      validate_update_id(update, path),
+      validate_update_subject_id(update, path),
+      validate_update_subject_type(update, path),
+      validate_update_method(update, path),
+      validate_update_data(update, path)
+    ]
+    |> Enum.concat()
   end
 
   defp update_errors(path, _update),
     do: [{"#{path}", "must be a map"}]
+
+  defp validate_update_id(update, path) do
+    if is_binary(update["id"]) && update["id"] != "",
+      do: [],
+      else: [{"#{path}.id", "must be a non-empty string"}]
+  end
+
+  defp validate_update_subject_id(update, path) do
+    if is_binary(update["subject_id"]) && update["subject_id"] != "",
+      do: [],
+      else: [{"#{path}.subject_id", "must be a non-empty string"}]
+  end
+
+  defp validate_update_subject_type(update, path) do
+    if is_binary(update["subject_type"]) && update["subject_type"] != "",
+      do: [],
+      else: [{"#{path}.subject_type", "must be a non-empty string"}]
+  end
+
+  defp validate_update_method(update, path) do
+    if update["method"] in ["put", "patch", "delete"],
+      do: [],
+      else: [{"#{path}.method", "must be one of: put, patch, delete"}]
+  end
+
+  defp validate_update_data(update, path) do
+    cond do
+      not is_map(update["data"]) ->
+        [{"#{path}.data", "must be a map"}]
+
+      update["method"] in ["put", "patch"] and not is_map(update["data"]["fields"]) ->
+        [{"#{path}.data.fields", "must be a map for put/patch"}]
+
+      true ->
+        []
+    end
+  end
 
   defp write_and_respond(conn, actions) do
     case Writer.write_actions(actions) do
