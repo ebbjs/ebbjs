@@ -30,7 +30,7 @@ defmodule EbbServer.MixProject do
       {:bandit, "~> 1.5"},
       {:jason, "~> 1.4"},
       {:nanoid, "~> 2.1"},
-      {:req, "~> 0.5", only: :test},
+      {:req, "~> 0.5"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end
