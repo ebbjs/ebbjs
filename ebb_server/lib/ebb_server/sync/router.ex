@@ -11,7 +11,7 @@ defmodule EbbServer.Sync.Router do
 
   use Plug.Router
 
-  alias EbbServer.Storage.{EntityStore, PermissionChecker, Writer}
+  alias EbbServer.Storage.{EntityStore, PermissionChecker, Writer, SystemCache}
 
   plug(Plug.Logger)
   plug(EbbServer.Sync.AuthPlug)
@@ -76,6 +76,32 @@ defmodule EbbServer.Sync.Router do
           {:error, :materialization_failed} ->
             send_json(conn, 503, %{"error" => "materialization_failed"})
         end
+    end
+  end
+
+  post "/sync/handshake" do
+    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    actor_id = conn.assigns.actor_id
+
+    case Jason.decode(body) do
+      {:ok, payload} ->
+        _cursors = payload["cursors"] || %{}
+        _schema_version = payload["schema_version"]
+
+        groups = SystemCache.get_actor_groups(actor_id)
+
+        response = %{
+          "actor_id" => actor_id,
+          "groups" =>
+            Enum.map(groups, fn %{group_id: gid, permissions: perms} ->
+              %{"id" => gid, "permissions" => perms}
+            end)
+        }
+
+        send_json(conn, 200, response)
+
+      {:error, _} ->
+        send_json(conn, 422, %{"error" => "invalid_json"})
     end
   end
 
