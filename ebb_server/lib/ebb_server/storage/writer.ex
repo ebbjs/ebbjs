@@ -128,15 +128,14 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp update_system_caches(actions, state) do
-    Enum.each(actions, fn action ->
-      Enum.each(action.updates, fn update ->
-        case update.subject_type do
-          "groupMember" -> handle_group_member_update(update, state)
-          "relationship" -> handle_relationship_update(update, state)
-          _ -> :ok
-        end
-      end)
-    end)
+    for action <- actions,
+        update <- action.updates,
+        update.subject_type in ["groupMember", "relationship"] do
+      case update.subject_type do
+        "groupMember" -> handle_group_member_update(update, state)
+        "relationship" -> handle_relationship_update(update, state)
+      end
+    end
   end
 
   defp handle_group_member_update(update, state) do

@@ -447,7 +447,7 @@ defmodule EbbServer.IntegrationTest do
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
       assert conn.status == 200
       {:ok, response} = Jason.decode(conn.resp_body)
-      assert length(response["rejected"]) > 0
+      assert response["rejected"] != []
     end
 
     test "HLC as negative integer is rejected" do
@@ -471,7 +471,7 @@ defmodule EbbServer.IntegrationTest do
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
       assert conn.status == 200
       {:ok, response} = Jason.decode(conn.resp_body)
-      assert length(response["rejected"]) > 0
+      assert response["rejected"] != []
     end
 
     test "HLC as non-numeric string is rejected" do
@@ -495,7 +495,7 @@ defmodule EbbServer.IntegrationTest do
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
       assert conn.status == 200
       {:ok, response} = Jason.decode(conn.resp_body)
-      assert length(response["rejected"]) > 0
+      assert response["rejected"] != []
     end
 
     test "HLC as float is rejected" do
@@ -519,7 +519,7 @@ defmodule EbbServer.IntegrationTest do
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
       assert conn.status == 200
       {:ok, response} = Jason.decode(conn.resp_body)
-      assert length(response["rejected"]) > 0
+      assert response["rejected"] != []
     end
 
     test "HLC as nil is rejected" do
@@ -543,7 +543,7 @@ defmodule EbbServer.IntegrationTest do
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
       assert conn.status == 200
       {:ok, response} = Jason.decode(conn.resp_body)
-      assert length(response["rejected"]) > 0
+      assert response["rejected"] != []
     end
 
     test "HLC as empty string is rejected" do
@@ -567,7 +567,7 @@ defmodule EbbServer.IntegrationTest do
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
       assert conn.status == 200
       {:ok, response} = Jason.decode(conn.resp_body)
-      assert length(response["rejected"]) > 0
+      assert response["rejected"] != []
     end
   end
 
@@ -600,7 +600,7 @@ defmodule EbbServer.IntegrationTest do
 
       {:ok, response} = Jason.decode(conn.resp_body)
       assert is_list(response["rejected"])
-      assert length(response["rejected"]) > 0
+      assert response["rejected"] != []
 
       rejection = hd(response["rejected"])
       assert %{"id" => "act_rej", "reason" => _} = rejection
