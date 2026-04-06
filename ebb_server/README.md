@@ -15,6 +15,22 @@ mix test
 mix dev
 ```
 
+## Code Quality
+
+```bash
+# Format code
+mix format
+
+# Check formatting
+mix format --check-formatted
+
+# Run credo linter
+mix credo --strict
+
+# Run tests
+mix test
+```
+
 ## Docker
 
 ```bash
