@@ -8,8 +8,8 @@ defmodule EbbServer.Storage.Writer do
 
   use GenServer
 
-  alias EbbServer.Storage.{RocksDB, SystemCache}
   alias EbbServer.Storage.PermissionChecker
+  alias EbbServer.Storage.{RocksDB, SystemCache}
 
   @type validated_action :: PermissionChecker.validated_action()
   @type validated_update :: PermissionChecker.validated_update()

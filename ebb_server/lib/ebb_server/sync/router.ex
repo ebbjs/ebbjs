@@ -11,7 +11,7 @@ defmodule EbbServer.Sync.Router do
 
   use Plug.Router
 
-  alias EbbServer.Storage.{EntityStore, Writer, PermissionChecker}
+  alias EbbServer.Storage.{EntityStore, PermissionChecker, Writer}
 
   plug(Plug.Logger)
   plug(EbbServer.Sync.AuthPlug)
