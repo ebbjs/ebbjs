@@ -1,6 +1,0 @@
-#!/usr/bin/env sh
-. "$(dirname "$0")/h"
-
-pnpm lint-staged
-
-cd ebb_server && mix format --check-formatted && mix credo --strict && mix test
