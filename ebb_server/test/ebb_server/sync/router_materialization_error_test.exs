@@ -23,7 +23,7 @@ defmodule EbbServer.Sync.Router.MaterializationErrorTest do
       )
 
     on_exit(fn ->
-      if pid = Process.whereis(cache_name), do: GenServer.stop(pid)
+      if pid = Process.whereis(cache_name), do: safe_stop(pid)
       :persistent_term.erase(gsn_counter_name)
     end)
 
@@ -37,7 +37,7 @@ defmodule EbbServer.Sync.Router.MaterializationErrorTest do
     {:ok, pid} = RocksDB.start_link(data_dir: dir, name: name)
 
     on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
+      safe_stop(pid)
     end)
 
     %{name: name, pid: pid, dir: dir}
@@ -48,7 +48,7 @@ defmodule EbbServer.Sync.Router.MaterializationErrorTest do
     {:ok, pid} = SQLite.start_link(data_dir: dir, name: name)
 
     on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
+      safe_stop(pid)
     end)
 
     %{name: name, pid: pid}

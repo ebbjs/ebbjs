@@ -11,21 +11,35 @@ defmodule EbbServer.Sync.Router do
 
   use Plug.Router
 
-  alias EbbServer.Storage.{EntityStore, Writer}
+  alias EbbServer.Storage.{EntityStore, PermissionChecker, Writer}
 
   plug(Plug.Logger)
+  plug(EbbServer.Sync.AuthPlug)
   plug(:match)
   plug(:dispatch)
 
   post "/sync/actions" do
     {:ok, body, conn} = Plug.Conn.read_body(conn)
+    actor_id = conn.assigns.actor_id
 
-    case decode_and_validate(body) do
-      {:valid, actions} ->
-        write_and_respond(conn, actions)
+    case decode_msgpack(body) do
+      {:ok, actions} ->
+        {accepted, pc_rejected} = PermissionChecker.validate_and_authorize(actions, actor_id)
 
-      {:invalid, details} ->
-        send_validation_error(conn, details)
+        if accepted == [] do
+          send_json(conn, 200, %{"rejected" => format_rejections(pc_rejected)})
+        else
+          case Writer.write_actions(accepted) do
+            {:ok, _gsn_range, writer_rejected} ->
+              all_rejected =
+                format_rejections(pc_rejected) ++ format_writer_rejections(writer_rejected)
+
+              send_json(conn, 200, %{"rejected" => all_rejected})
+
+            {:error, _reason} ->
+              send_json(conn, 503, %{"error" => "write_failed"})
+          end
+        end
 
       {:error, error_type, reason} ->
         send_error(conn, error_type, reason)
@@ -35,10 +49,11 @@ defmodule EbbServer.Sync.Router do
   get "/entities/:id" do
     conn = Plug.Conn.fetch_query_params(conn)
     entity_id = conn.path_params["id"]
+    actor_id = conn.assigns[:actor_id] || conn.query_params["actor_id"]
 
-    case conn.query_params["actor_id"] do
+    case actor_id do
       nil ->
-        send_json(conn, 400, %{"error" => "actor_id query parameter required"})
+        send_json(conn, 400, %{"error" => "actor_id required"})
 
       actor_id ->
         case EntityStore.get(entity_id, actor_id) do
@@ -68,171 +83,34 @@ defmodule EbbServer.Sync.Router do
     send_resp(conn, 404, "")
   end
 
-  defp decode_and_validate(<<>>) do
+  defp decode_msgpack(<<>>) do
     {:error, :invalid_msgpack, "empty body"}
   end
 
-  defp decode_and_validate(body) do
+  defp decode_msgpack(body) do
     case Msgpax.unpack(body) do
-      {:ok, decoded} ->
-        extract_and_validate_actions(decoded)
+      {:ok, %{"actions" => actions}} when is_list(actions) ->
+        {:ok, actions}
+
+      {:ok, _} ->
+        {:error, :invalid_msgpack, "actions key is required and must be a list"}
 
       {:error, reason} ->
         {:error, :invalid_msgpack, reason}
     end
   end
 
-  defp extract_and_validate_actions(decoded) do
-    case Map.fetch(decoded, "actions") do
-      {:ok, actions} ->
-        case validate_actions_list(actions) do
-          :ok -> {:valid, actions}
-          {:error, details} -> {:invalid, details}
-        end
-
-      :error ->
-        {:invalid, [{"root", "actions key is required"}]}
-    end
+  defp format_rejections(rejections) do
+    Enum.map(rejections, fn %{action_id: id, reason: reason, details: details} ->
+      rejection = %{"id" => id, "reason" => reason}
+      if details, do: Map.put(rejection, "details", details), else: rejection
+    end)
   end
 
-  defp validate_actions_list(actions) when is_list(actions) do
-    errors =
-      actions
-      |> Enum.with_index()
-      |> Enum.flat_map(fn {action, index} ->
-        action_errors(index, action)
-      end)
-
-    if errors == [],
-      do: :ok,
-      else: {:error, errors}
-  end
-
-  defp validate_actions_list(_),
-    do: {:error, [{"root", "actions must be a list"}]}
-
-  defp action_errors(index, action) when is_map(action) do
-    [
-      validate_action_id(action, index),
-      validate_action_actor_id(action, index),
-      validate_action_hlc(action, index),
-      validate_action_updates(action, index)
-    ]
-    |> Enum.concat()
-  end
-
-  defp action_errors(index, _action),
-    do: [{"#{index}", "must be a map"}]
-
-  defp validate_action_id(action, index) do
-    if is_binary(action["id"]) && action["id"] != "",
-      do: [],
-      else: [{"#{index}.id", "must be a non-empty string"}]
-  end
-
-  defp validate_action_actor_id(action, index) do
-    if is_binary(action["actor_id"]) && action["actor_id"] != "",
-      do: [],
-      else: [{"#{index}.actor_id", "must be a non-empty string"}]
-  end
-
-  defp validate_action_hlc(action, index) do
-    hlc = action["hlc"]
-
-    hlc_valid =
-      (is_integer(hlc) and hlc > 0) or
-        (is_binary(hlc) and match?({int, ""} when int > 0, Integer.parse(hlc)))
-
-    if hlc_valid,
-      do: [],
-      else: [{"#{index}.hlc", "must be a positive integer"}]
-  end
-
-  defp validate_action_updates(action, index) do
-    if is_list(action["updates"]) do
-      action["updates"]
-      |> Enum.with_index()
-      |> Enum.flat_map(fn {update, uidx} ->
-        update_errors("#{index}.updates[#{uidx}]", update)
-      end)
-    else
-      [{"#{index}.updates", "must be a list"}]
-    end
-  end
-
-  defp update_errors(path, update) when is_map(update) do
-    [
-      validate_update_id(update, path),
-      validate_update_subject_id(update, path),
-      validate_update_subject_type(update, path),
-      validate_update_method(update, path),
-      validate_update_data(update, path)
-    ]
-    |> Enum.concat()
-  end
-
-  defp update_errors(path, _update),
-    do: [{"#{path}", "must be a map"}]
-
-  defp validate_update_id(update, path) do
-    if is_binary(update["id"]) && update["id"] != "",
-      do: [],
-      else: [{"#{path}.id", "must be a non-empty string"}]
-  end
-
-  defp validate_update_subject_id(update, path) do
-    if is_binary(update["subject_id"]) && update["subject_id"] != "",
-      do: [],
-      else: [{"#{path}.subject_id", "must be a non-empty string"}]
-  end
-
-  defp validate_update_subject_type(update, path) do
-    if is_binary(update["subject_type"]) && update["subject_type"] != "",
-      do: [],
-      else: [{"#{path}.subject_type", "must be a non-empty string"}]
-  end
-
-  defp validate_update_method(update, path) do
-    if update["method"] in ["put", "patch", "delete"],
-      do: [],
-      else: [{"#{path}.method", "must be one of: put, patch, delete"}]
-  end
-
-  defp validate_update_data(update, path) do
-    cond do
-      not is_map(update["data"]) ->
-        [{"#{path}.data", "must be a map"}]
-
-      update["method"] in ["put", "patch"] and not is_map(update["data"]["fields"]) ->
-        [{"#{path}.data.fields", "must be a map for put/patch"}]
-
-      true ->
-        []
-    end
-  end
-
-  defp write_and_respond(conn, actions) do
-    case Writer.write_actions(actions) do
-      {:ok, _gsn_range, rejected} ->
-        rejected_json =
-          Enum.map(rejected, fn %{action: action, reason: reason} ->
-            %{"id" => action["id"], "reason" => reason}
-          end)
-
-        send_json(conn, 200, %{"rejected" => rejected_json})
-
-      {:error, _reason} ->
-        send_json(conn, 503, %{"error" => "write_failed"})
-    end
-  end
-
-  defp send_validation_error(conn, details) do
-    serializable_details =
-      Enum.map(details, fn {field, msg} ->
-        %{"field" => field, "message" => msg}
-      end)
-
-    send_json(conn, 422, %{"error" => "validation_failed", "details" => serializable_details})
+  defp format_writer_rejections(rejections) do
+    Enum.map(rejections, fn %{action: action, reason: reason} ->
+      %{"id" => action.id, "reason" => reason}
+    end)
   end
 
   defp send_error(conn, :invalid_msgpack, _reason) do

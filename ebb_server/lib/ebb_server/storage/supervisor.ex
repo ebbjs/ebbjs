@@ -17,8 +17,8 @@ defmodule EbbServer.Storage.Supervisor do
     Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  def init(_opts) do
-    data_dir = Application.get_env(:ebb_server, :data_dir, "./data")
+  def init(opts) do
+    data_dir = Keyword.get(opts, :data_dir, Application.get_env(:ebb_server, :data_dir, "./data"))
 
     children = [
       {EbbServer.Storage.RocksDB, data_dir: data_dir},

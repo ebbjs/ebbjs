@@ -10,7 +10,7 @@ defmodule EbbServer.Storage.RocksDBTest do
     {:ok, pid} = RocksDB.start_link(data_dir: dir, name: name)
 
     on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
+      safe_stop(pid)
     end)
 
     %{name: name, dir: dir, pid: pid}

@@ -32,9 +32,12 @@ defmodule EbbServer.Storage.SystemCacheTest do
       )
 
     on_exit(fn ->
-      with pid when is_pid(pid) <- Process.whereis(cache_name),
-           true <- Process.alive?(pid) do
-        GenServer.stop(pid)
+      if pid = Process.whereis(cache_name) do
+        try do
+          Process.exit(pid, :normal)
+        rescue
+          _ -> :ok
+        end
       end
 
       :persistent_term.erase(gsn_counter_name)
