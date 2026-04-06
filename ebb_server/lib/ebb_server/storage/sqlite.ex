@@ -282,33 +282,36 @@ defmodule EbbServer.Storage.SQLite do
            "SELECT sql FROM sqlite_master WHERE type='table' AND name='entities'"
          ) do
       {:ok, stmt} ->
-        result =
-          case Sqlite3.step(db, stmt) do
-            {:row, [create_sql]} ->
-              if is_binary(create_sql) and
-                   String.contains?(create_sql, "json_extract(data, '$.actor_id')") and
-                   not String.contains?(create_sql, "$.fields.actor_id.value") do
-                :needs_migration
-              else
-                :ok
-              end
-
-            :done ->
-              :ok
-          end
-
+        result = check_schema_migration_needed(db, stmt)
         Sqlite3.release(db, stmt)
-
-        if result == :needs_migration do
-          :ok = Sqlite3.execute(db, "DROP TABLE entities")
-        end
-
+        if result == :needs_migration, do: Sqlite3.execute(db, "DROP TABLE entities")
         result
 
       _ ->
         :ok
     end
   end
+
+  defp check_schema_migration_needed(db, stmt) do
+    case Sqlite3.step(db, stmt) do
+      {:row, [create_sql]} ->
+        needs_migration?(create_sql)
+
+      :done ->
+        :ok
+    end
+  end
+
+  defp needs_migration?(create_sql) when is_binary(create_sql) do
+    if String.contains?(create_sql, "json_extract(data, '$.actor_id')") &&
+         not String.contains?(create_sql, "$.fields.actor_id.value") do
+      :needs_migration
+    else
+      :ok
+    end
+  end
+
+  defp needs_migration?(_), do: :ok
 
   # ---------------------------------------------------------------------------
   # Query helpers
@@ -318,26 +321,20 @@ defmodule EbbServer.Storage.SQLite do
   defp build_filter_clauses(filter) when filter == %{}, do: {"", []}
 
   defp build_filter_clauses(filter) do
-    {clauses, params} =
-      Enum.reduce(filter, {[], []}, fn {field, value}, {clauses, params} ->
-        if safe_field_name?(field) do
-          clause = " AND json_extract(e.data, '$.fields.#{field}.value') = ?"
-
-          converted_value =
-            case value do
-              true -> 1
-              false -> 0
-              _ -> value
-            end
-
-          {[clause | clauses], [converted_value | params]}
-        else
-          raise "Unsafe field name: #{inspect(field)}"
-        end
-      end)
-
-    {Enum.join(Enum.reverse(clauses)), Enum.reverse(params)}
+    Enum.reduce(filter, {[], []}, fn {field, value}, {clauses, params} ->
+      if safe_field_name?(field) do
+        clause = " AND json_extract(e.data, '$.fields.#{field}.value') = ?"
+        {[clause | clauses], [convert_filter_value(value) | params]}
+      else
+        raise "Unsafe field name: #{inspect(field)}"
+      end
+    end)
+    |> then(fn {clauses, params} -> {Enum.join(Enum.reverse(clauses)), Enum.reverse(params)} end)
   end
+
+  defp convert_filter_value(true), do: 1
+  defp convert_filter_value(false), do: 0
+  defp convert_filter_value(value), do: value
 
   defp safe_field_name?(name) when is_binary(name) do
     Regex.match?(~r/^[a-zA-Z_][a-zA-Z0-9_]*$/, name)

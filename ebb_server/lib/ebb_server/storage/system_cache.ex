@@ -136,13 +136,10 @@ defmodule EbbServer.Storage.SystemCache do
     |> :ets.tab2list()
     |> Enum.each(fn entry ->
       [stored_actor_id, stored_entry] = Tuple.to_list(entry)
+      entry_id = stored_entry[:id] || stored_entry["id"]
 
-      if stored_actor_id == actor_id do
-        entry_id = stored_entry[:id] || stored_entry["id"]
-
-        if entry_id == member_id do
-          :ets.delete_object(table, entry)
-        end
+      if stored_actor_id == actor_id && entry_id == member_id do
+        :ets.delete_object(table, entry)
       end
     end)
   end
