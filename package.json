@@ -22,7 +22,7 @@
     "lint:fix": "oxlint --fix",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
-    "prepare": "husky install",
+    "prepare": "lefthook install",
     "lint-staged": "lint-staged"
   },
   "dependencies": {
@@ -36,7 +36,7 @@
     "@types/node": "^25.2.3",
     "better-sqlite3": "^12.6.2",
     "concurrently": "^9.2.0",
-    "husky": "^9.1.7",
+    "lefthook": "^2.1.5",
     "lint-staged": "^15.5.2",
     "oxfmt": "^0.32.0",
     "oxlint": "^1.47.0",
@@ -69,7 +69,8 @@
     },
     "onlyBuiltDependencies": [
       "better-sqlite3",
-      "esbuild"
+      "esbuild",
+      "lefthook"
     ]
   }
 }

@@ -1,0 +1,7 @@
+pre-commit:
+  jobs:
+    - name: typescript
+      run: pnpm lint-staged
+    - name: elixir
+      root: ebb_server
+      run: mix format --check-formatted && mix credo --strict && mix test
