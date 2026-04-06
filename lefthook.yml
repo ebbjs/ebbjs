@@ -3,7 +3,7 @@ pre-commit:
     - name: typescript
       env:
         PATH: /home/drew/.nvm/versions/node/v22.22.2/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      run: pnpm lint-staged
+      run: corepack enable --install-directory node_modules/.bin && pnpm lint-staged
     - name: elixir
       root: ebb_server
       run: mix format --check-formatted && mix credo --strict && mix test
