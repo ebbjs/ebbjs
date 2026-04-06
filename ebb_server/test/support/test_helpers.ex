@@ -11,6 +11,16 @@ defmodule EbbServer.TestHelpers do
 
   Returns the path to the created directory.
   """
+  def safe_stop(pid) when is_pid(pid) do
+    try do
+      Process.exit(pid, :normal)
+    rescue
+      _ -> :ok
+    end
+
+    :ok
+  end
+
   def tmp_dir(%{module: module, test: test}) do
     dir =
       Path.join([
