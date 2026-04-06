@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+pnpm lint-staged
+cd ebb_server && mix format --check-formatted && mix credo --strict && mix test

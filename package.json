@@ -22,7 +22,7 @@
     "lint:fix": "oxlint --fix",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
-    "prepare": "husky",
+    "prepare": "husky install",
     "lint-staged": "lint-staged"
   },
   "dependencies": {
