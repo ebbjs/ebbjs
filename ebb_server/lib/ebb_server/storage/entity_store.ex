@@ -248,18 +248,24 @@ defmodule EbbServer.Storage.EntityStore do
 
   defp apply_put(action, update, gsn, acc) do
     hlc = action["hlc"]
+    subject_type = update["subject_type"]
 
-    fields_with_update_id =
-      Enum.into(update["data"]["fields"] || %{}, %{}, fn {field_name, field_value} ->
-        {field_name, Map.put(field_value, "update_id", update["id"])}
-      end)
+    new_data =
+      if subject_type in ["groupMember", "relationship"] do
+        update["data"]
+      else
+        fields_with_update_id =
+          Enum.into(update["data"]["fields"] || %{}, %{}, fn {field_name, field_value} ->
+            {field_name, Map.put(field_value, "update_id", update["id"])}
+          end)
 
-    new_data = %{"fields" => fields_with_update_id}
+        %{"fields" => fields_with_update_id}
+      end
 
     %{
       acc
       | data: new_data,
-        type: update["subject_type"],
+        type: subject_type,
         created_hlc: if(acc.created_hlc == nil, do: hlc, else: acc.created_hlc),
         updated_hlc: hlc,
         max_gsn: max(acc.max_gsn, gsn)
@@ -333,5 +339,66 @@ defmodule EbbServer.Storage.EntityStore do
 
   defp format_entity(row) do
     %{row | data: Jason.decode!(row.data)}
+  end
+
+  @doc """
+  Queries entities of a given type with permission filtering and optional field filters.
+
+  First materializes any dirty entities of the requested type, then delegates to
+  SQLite for the permission-checked query.
+
+  ## Options
+  - `:rocks_name` - RocksDB server name (default: `EbbServer.Storage.RocksDB`)
+  - `:sqlite_name` - SQLite server name (default: `EbbServer.Storage.SQLite`)
+  - `:dirty_set` - ETS table name for dirty tracking (default: `:ebb_dirty_set`)
+  - `:limit` - Maximum results to return
+  - `:offset` - Number of results to skip
+
+  Returns `{:ok, [entity_maps]}` or `{:error, term()}`.
+  """
+  @spec query(String.t(), map() | nil, String.t(), keyword()) ::
+          {:ok, [map()]} | {:error, term()}
+  def query(type, filter, actor_id, opts \\ []) do
+    rocks_name = Keyword.get(opts, :rocks_name, @default_rocks_name)
+    sqlite_name = Keyword.get(opts, :sqlite_name, @default_sqlite_name)
+    dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
+    limit = Keyword.get(opts, :limit)
+    offset = Keyword.get(opts, :offset)
+
+    dirty_ids = SystemCache.dirty_entity_ids_for_type(type, dirty_set)
+
+    if dirty_ids != [] do
+      Enum.each(dirty_ids, fn id ->
+        materialize(id, rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set)
+      end)
+    end
+
+    materialize_system_entities(rocks_name, sqlite_name, dirty_set)
+
+    query_params = %{type: type, filter: filter, actor_id: actor_id}
+    query_params = if limit, do: Map.put(query_params, :limit, limit), else: query_params
+    query_params = if offset, do: Map.put(query_params, :offset, offset), else: query_params
+
+    case SQLite.query_entities(query_params, sqlite_name) do
+      {:ok, rows} ->
+        {:ok, Enum.map(rows, &format_entity/1)}
+
+      error ->
+        error
+    end
+  end
+
+  defp materialize_system_entities(rocks_name, sqlite_name, dirty_set) do
+    system_prefixes = ["gm_", "rel_"]
+
+    dirty_set
+    |> :ets.tab2list()
+    |> Enum.map(fn {id, _} -> id end)
+    |> Enum.filter(fn id ->
+      Enum.any?(system_prefixes, &String.starts_with?(id, &1))
+    end)
+    |> Enum.each(fn id ->
+      materialize(id, rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set)
+    end)
   end
 end

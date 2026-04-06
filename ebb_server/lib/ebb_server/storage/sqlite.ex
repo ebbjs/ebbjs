@@ -40,15 +40,17 @@ defmodule EbbServer.Storage.SQLite do
     target_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.target_id')) STORED,
     rel_type TEXT GENERATED ALWAYS AS (json_extract(data, '$.type')) STORED,
     rel_field TEXT GENERATED ALWAYS AS (json_extract(data, '$.field')) STORED,
-    actor_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.actor_id')) STORED,
-    group_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.group_id')) STORED,
-    permissions TEXT GENERATED ALWAYS AS (json_extract(data, '$.permissions')) STORED
+    actor_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.actor_id.value')) STORED,
+    group_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.group_id.value')) STORED,
+    permissions TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.permissions.value')) STORED
   );
   """
 
   @create_indexes """
   CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type) WHERE deleted_hlc IS NULL;
   CREATE INDEX IF NOT EXISTS idx_entities_type_gsn ON entities(type, last_gsn);
+  CREATE INDEX IF NOT EXISTS idx_entities_source_id ON entities(source_id) WHERE type = 'relationship' AND deleted_hlc IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_entities_group_member ON entities(group_id, actor_id) WHERE type = 'groupMember' AND deleted_hlc IS NULL;
   """
 
   @upsert_sql """
@@ -130,6 +132,9 @@ defmodule EbbServer.Storage.SQLite do
     # PRAGMAs
     :ok = Sqlite3.execute(db, @pragmas)
 
+    # Schema migration check
+    migrate_schema(db)
+
     # DDL
     :ok = Sqlite3.execute(db, @create_entities_table)
     :ok = Sqlite3.execute(db, @create_indexes)
@@ -207,6 +212,56 @@ defmodule EbbServer.Storage.SQLite do
     {:reply, result, state}
   end
 
+  @doc """
+  Queries entities of a given type with permission JOINs and optional filters.
+
+  Returns `{:ok, [entity_maps]}`.
+  """
+  @spec query_entities(map(), GenServer.server()) :: {:ok, [map()]}
+  def query_entities(query, server \\ __MODULE__) do
+    GenServer.call(server, {:query_entities, query})
+  end
+
+  @impl true
+  def handle_call({:query_entities, query}, _from, state) do
+    %{db: db} = state
+
+    {filter_sql, filter_params} = build_filter_clauses(query[:filter])
+
+    base_sql = """
+    SELECT e.id, e.type, e.data, e.created_hlc, e.updated_hlc, e.deleted_hlc, e.deleted_by, e.last_gsn
+    FROM entities e
+    INNER JOIN entities r ON r.type = 'relationship'
+      AND r.source_id = e.id
+      AND r.deleted_hlc IS NULL
+    INNER JOIN entities gm ON gm.type = 'groupMember'
+      AND gm.group_id = r.target_id
+      AND gm.actor_id = ?
+      AND gm.deleted_hlc IS NULL
+    WHERE e.type = ?
+      AND e.deleted_hlc IS NULL
+    """
+
+    sql = base_sql <> filter_sql
+
+    {sql, pagination_params} =
+      case {query[:limit], query[:offset]} do
+        {nil, _} -> {sql, []}
+        {limit, nil} -> {sql <> " LIMIT ?", [limit]}
+        {limit, offset} -> {sql <> " LIMIT ? OFFSET ?", [limit, offset]}
+      end
+
+    params = [query.actor_id, query.type] ++ filter_params ++ pagination_params
+
+    {:ok, stmt} = Sqlite3.prepare(db, sql)
+    :ok = Sqlite3.bind(stmt, params)
+
+    rows = collect_rows(db, stmt, [])
+    Sqlite3.release(db, stmt)
+
+    {:reply, {:ok, rows}, state}
+  end
+
   @impl true
   def terminate(_reason, %{db: db, stmts: stmts}) do
     # Release all prepared statements before closing
@@ -215,6 +270,84 @@ defmodule EbbServer.Storage.SQLite do
     end)
 
     Sqlite3.close(db)
+  end
+
+  # ---------------------------------------------------------------------------
+  # Schema migration
+  # ---------------------------------------------------------------------------
+
+  defp migrate_schema(db) do
+    case Sqlite3.prepare(
+           db,
+           "SELECT sql FROM sqlite_master WHERE type='table' AND name='entities'"
+         ) do
+      {:ok, stmt} ->
+        result =
+          case Sqlite3.step(db, stmt) do
+            {:row, [create_sql]} ->
+              if is_binary(create_sql) and
+                   String.contains?(create_sql, "json_extract(data, '$.actor_id')") and
+                   not String.contains?(create_sql, "$.fields.actor_id.value") do
+                :needs_migration
+              else
+                :ok
+              end
+
+            :done ->
+              :ok
+          end
+
+        Sqlite3.release(db, stmt)
+
+        if result == :needs_migration do
+          :ok = Sqlite3.execute(db, "DROP TABLE entities")
+        end
+
+        result
+
+      _ ->
+        :ok
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Query helpers
+  # ---------------------------------------------------------------------------
+
+  defp build_filter_clauses(nil), do: {"", []}
+  defp build_filter_clauses(filter) when filter == %{}, do: {"", []}
+
+  defp build_filter_clauses(filter) do
+    {clauses, params} =
+      Enum.reduce(filter, {[], []}, fn {field, value}, {clauses, params} ->
+        if safe_field_name?(field) do
+          clause = " AND json_extract(e.data, '$.fields.#{field}.value') = ?"
+
+          converted_value =
+            case value do
+              true -> 1
+              false -> 0
+              _ -> value
+            end
+
+          {[clause | clauses], [converted_value | params]}
+        else
+          raise "Unsafe field name: #{inspect(field)}"
+        end
+      end)
+
+    {Enum.join(Enum.reverse(clauses)), Enum.reverse(params)}
+  end
+
+  defp safe_field_name?(name) when is_binary(name) do
+    Regex.match?(~r/^[a-zA-Z_][a-zA-Z0-9_]*$/, name)
+  end
+
+  defp collect_rows(db, stmt, acc) do
+    case Sqlite3.step(db, stmt) do
+      {:row, row} -> collect_rows(db, stmt, [row_to_entity(row) | acc])
+      :done -> Enum.reverse(acc)
+    end
   end
 
   # ---------------------------------------------------------------------------
