@@ -35,7 +35,7 @@ defmodule EbbServer.TestHelpers do
   For test helpers the counter is always 0 since we don't need to
   distinguish sub-millisecond events in most tests.
 
-  To generate HLCs with specific values, use `hlc_from/2`.
+  To generate HLC values with specific values, use `hlc_from/2`.
   """
   def generate_hlc do
     Bitwise.bsl(System.os_time(:millisecond), 16)
@@ -96,5 +96,94 @@ defmodule EbbServer.TestHelpers do
       },
       overrides
     )
+  end
+
+  @doc """
+  Returns a valid action map with atom keys (validated_action format).
+  Used for testing the Writer after PermissionChecker validation.
+
+  Handles both atom and string keys in overrides for convenience.
+
+  ## Examples
+
+      validated_action()  # basic action with random IDs
+      validated_action(%{id: "act_123", updates: [update]})  # with atom key overrides
+      validated_action(%{"id" => "act_123", "hlc" => 123})  # with string key overrides
+  """
+  def validated_action(overrides \\ %{}) do
+    hlc = generate_hlc()
+    update = validated_update()
+
+    base = %{
+      id: "act_" <> Nanoid.generate(),
+      actor_id: "a_test",
+      hlc: hlc,
+      updates: [update]
+    }
+
+    # Handle both atom and string keys
+    result =
+      Enum.reduce(overrides, base, fn
+        {:id, v}, acc -> Map.put(acc, :id, v)
+        {:actor_id, v}, acc -> Map.put(acc, :actor_id, v)
+        {:hlc, v}, acc -> Map.put(acc, :hlc, v)
+        {:updates, v}, acc -> Map.put(acc, :updates, v)
+        {"id", v}, acc -> Map.put(acc, :id, v)
+        {"actor_id", v}, acc -> Map.put(acc, :actor_id, v)
+        {"hlc", v}, acc -> Map.put(acc, :hlc, v)
+        {"updates", v}, acc -> Map.put(acc, :updates, v)
+        # Skip other keys
+        {_, _}, acc -> acc
+      end)
+
+    result
+  end
+
+  @doc """
+  Returns a valid update map with atom keys (validated_update format).
+  Used for testing the Writer after PermissionChecker validation.
+
+  Handles both atom and string keys in overrides for convenience.
+
+  ## Examples
+
+      validated_update()  # basic update with random IDs
+      validated_update(%{subject_id: "todo_123", method: :patch})  # with atom key overrides
+      validated_update(%{"id" => "upd_123", "subject_id" => "todo_123"})  # with string key overrides
+  """
+  def validated_update(overrides \\ %{}) do
+    hlc = generate_hlc()
+
+    base = %{
+      id: "upd_" <> Nanoid.generate(),
+      subject_id: "todo_" <> Nanoid.generate(),
+      subject_type: "todo",
+      method: :put,
+      data: %{
+        "fields" => %{
+          "title" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc},
+          "completed" => %{"type" => "lww", "value" => false, "hlc" => hlc}
+        }
+      }
+    }
+
+    # Handle both atom and string keys for structural fields
+    result =
+      Enum.reduce(overrides, base, fn
+        {:id, v}, acc -> Map.put(acc, :id, v)
+        {:subject_id, v}, acc -> Map.put(acc, :subject_id, v)
+        {:subject_type, v}, acc -> Map.put(acc, :subject_type, v)
+        {:method, v}, acc -> Map.put(acc, :method, v)
+        {:data, v}, acc -> Map.put(acc, :data, v)
+        {"id", v}, acc -> Map.put(acc, :id, v)
+        {"subject_id", v}, acc -> Map.put(acc, :subject_id, v)
+        {"subject_type", v}, acc -> Map.put(acc, :subject_type, v)
+        {"method", v}, acc -> Map.put(acc, :method, v)
+        {"data", v}, acc -> Map.put(acc, :data, v)
+        # Skip other keys
+        {_, _}, acc -> acc
+      end)
+
+    result
   end
 end

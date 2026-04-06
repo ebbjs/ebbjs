@@ -300,17 +300,48 @@ defmodule EbbServer.Storage.PermissionChecker do
       SystemCache.get_entity_group(subject_id, opts) ||
         Map.get(intra_ctx, subject_id)
 
+    if group_id do
+      check_group_permissions(group_id, actor_id, subject_type, update["method"], opts)
+    else
+      check_actor_can_create_entity(actor_id, subject_type, update["method"], opts)
+    end
+  end
+
+  defp check_group_permissions(group_id, actor_id, subject_type, method, opts) do
     with {:ok, _} <- ensure_group(group_id),
          {:ok, permissions} <- fetch_permissions(actor_id, group_id, opts),
          :ok <-
            ensure_has_permission(
              permissions,
              subject_type,
-             method_to_permission(update["method"])
+             method_to_permission(method)
            ) do
       :ok
     else
       {:error, reason, details} -> {:error, reason, details}
+    end
+  end
+
+  defp check_actor_can_create_entity(actor_id, subject_type, method, opts) do
+    required_permission = method_to_permission(method)
+
+    # Get actor's groups - use default table if not specified in opts
+    table =
+      Keyword.get(opts, :group_members) || Application.get_env(:ebb_server, :group_members) ||
+        :ebb_group_members
+
+    actor_groups = SystemCache.get_actor_groups(actor_id, table)
+
+    has_permission =
+      Enum.any?(actor_groups, fn group_entry ->
+        %{group_id: group_id, permissions: permissions} = group_entry
+        group_id != nil and check_permission(permissions, subject_type, required_permission)
+      end)
+
+    if has_permission do
+      :ok
+    else
+      {:error, "not_authorized", "actor has no group with required permission"}
     end
   end
 

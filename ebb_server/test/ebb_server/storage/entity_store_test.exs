@@ -96,8 +96,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
       dirty_set: dirty_set
     } do
       entity_id = "todo_abc"
-      update = sample_update(%{"subject_id" => entity_id, "subject_type" => "todo"})
-      action = sample_action(%{"updates" => [update]})
+      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
+      action = validated_action(%{updates: [update]})
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
@@ -122,8 +122,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
       dirty_set: dirty_set
     } do
       entity_id = "todo_abc"
-      update = sample_update(%{"subject_id" => entity_id, "subject_type" => "todo"})
-      action = sample_action(%{"updates" => [update]})
+      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
+      action = validated_action(%{updates: [update]})
 
       Writer.write_actions([action], writer_name)
 
@@ -145,8 +145,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
       dirty_set: dirty_set
     } do
       entity_id = "todo_abc"
-      update = sample_update(%{"subject_id" => entity_id})
-      action = sample_action(%{"updates" => [update]})
+      update = validated_update(%{"subject_id" => entity_id})
+      action = validated_action(%{updates: [update]})
 
       Writer.write_actions([action], writer_name)
       assert SystemCache.dirty?(entity_id, dirty_set)
@@ -167,8 +167,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
       dirty_set: dirty_set
     } do
       entity_id = "todo_abc"
-      update = sample_update(%{"subject_id" => entity_id})
-      action = sample_action(%{"updates" => [update]})
+      update = validated_update(%{"subject_id" => entity_id})
+      action = validated_action(%{updates: [update]})
 
       Writer.write_actions([action], writer_name)
 
@@ -213,11 +213,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
       entity_id = "todo_abc"
 
       put_action =
-        sample_action(%{
+        validated_action(%{
           "id" => "act_put",
           "hlc" => hlc_from(1_000),
           "updates" => [
-            sample_update(%{
+            validated_update(%{
               "id" => "upd_put",
               "subject_id" => entity_id,
               "data" => %{
@@ -230,11 +230,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
         })
 
       patch_action =
-        sample_action(%{
+        validated_action(%{
           "id" => "act_patch",
           "hlc" => hlc_from(2_000),
           "updates" => [
-            sample_update(%{
+            validated_update(%{
               "id" => "upd_patch",
               "subject_id" => entity_id,
               "method" => "patch",
@@ -269,11 +269,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
       entity_id = "todo_abc"
 
       put_action =
-        sample_action(%{
+        validated_action(%{
           "id" => "act_put",
           "hlc" => hlc_from(2_000),
           "updates" => [
-            sample_update(%{
+            validated_update(%{
               "id" => "upd_put",
               "subject_id" => entity_id,
               "data" => %{
@@ -286,11 +286,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
         })
 
       patch_action =
-        sample_action(%{
+        validated_action(%{
           "id" => "act_patch",
           "hlc" => hlc_from(1_000),
           "updates" => [
-            sample_update(%{
+            validated_update(%{
               "id" => "upd_patch",
               "subject_id" => entity_id,
               "method" => "patch",
@@ -325,11 +325,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
       entity_id = "todo_abc"
 
       put_action =
-        sample_action(%{
+        validated_action(%{
           "id" => "act_put",
           "hlc" => hlc_from(1_000),
           "updates" => [
-            sample_update(%{
+            validated_update(%{
               "id" => "upd_put",
               "subject_id" => entity_id,
               "data" => %{
@@ -342,11 +342,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
         })
 
       patch_action =
-        sample_action(%{
+        validated_action(%{
           "id" => "act_patch",
           "hlc" => hlc_from(2_000),
           "updates" => [
-            sample_update(%{
+            validated_update(%{
               "id" => "upd_patch",
               "subject_id" => entity_id,
               "method" => "patch",
@@ -398,11 +398,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
       entity_id = "todo_abc"
 
       action1 =
-        sample_action(%{
+        validated_action(%{
           "id" => "act_aaa",
           "hlc" => hlc_from(1_000),
           "updates" => [
-            sample_update(%{
+            validated_update(%{
               "id" => "upd_aaa",
               "subject_id" => entity_id,
               "data" => %{
@@ -415,11 +415,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
         })
 
       action2 =
-        sample_action(%{
+        validated_action(%{
           "id" => "act_zzz",
           "hlc" => hlc_from(1_000),
           "updates" => [
-            sample_update(%{
+            validated_update(%{
               "id" => "upd_zzz",
               "subject_id" => entity_id,
               "method" => "patch",
@@ -455,11 +455,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
       entity_id = "todo_abc"
 
       action1 =
-        sample_action(%{
+        validated_action(%{
           "id" => "act_zzz",
           "hlc" => hlc_from(1_000),
           "updates" => [
-            sample_update(%{
+            validated_update(%{
               "id" => "upd_zzz",
               "subject_id" => entity_id,
               "data" => %{
@@ -472,11 +472,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
         })
 
       action2 =
-        sample_action(%{
+        validated_action(%{
           "id" => "act_aaa",
           "hlc" => hlc_from(1_000),
           "updates" => [
-            sample_update(%{
+            validated_update(%{
               "id" => "upd_aaa",
               "subject_id" => entity_id,
               "method" => "patch",
@@ -512,13 +512,13 @@ defmodule EbbServer.Storage.EntityStoreTest do
       entity_id = "todo_deleted_only"
 
       delete_update =
-        sample_update(%{
+        validated_update(%{
           "subject_id" => entity_id,
           "subject_type" => "todo",
           "method" => "delete"
         })
 
-      action = sample_action(%{"updates" => [delete_update]})
+      action = validated_action(%{updates: [delete_update]})
       Writer.write_actions([action], writer_name)
 
       assert :not_found =
@@ -538,11 +538,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
       entity_id = "todo_put_then_delete"
 
       put_action =
-        sample_action(%{
+        validated_action(%{
           "id" => "act_put",
           "hlc" => hlc_from(1_000),
           "updates" => [
-            sample_update(%{
+            validated_update(%{
               "id" => "upd_put",
               "subject_id" => entity_id,
               "data" => %{
@@ -559,14 +559,14 @@ defmodule EbbServer.Storage.EntityStoreTest do
         })
 
       delete_update =
-        sample_update(%{
+        validated_update(%{
           "id" => "upd_delete",
           "subject_id" => entity_id,
           "method" => "delete"
         })
 
       delete_action =
-        sample_action(%{
+        validated_action(%{
           "id" => "act_delete",
           "hlc" => hlc_from(2_000),
           "updates" => [delete_update]
@@ -592,11 +592,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
       entity_id = "todo_resurrect"
 
       put_action =
-        sample_action(%{
+        validated_action(%{
           "id" => "act_put",
           "hlc" => hlc_from(1_000),
           "updates" => [
-            sample_update(%{
+            validated_update(%{
               "id" => "upd_put",
               "subject_id" => entity_id,
               "data" => %{
@@ -609,25 +609,25 @@ defmodule EbbServer.Storage.EntityStoreTest do
         })
 
       delete_update =
-        sample_update(%{
+        validated_update(%{
           "id" => "upd_delete",
           "subject_id" => entity_id,
           "method" => "delete"
         })
 
       delete_action =
-        sample_action(%{
+        validated_action(%{
           "id" => "act_delete",
           "hlc" => hlc_from(2_000),
           "updates" => [delete_update]
         })
 
       patch_action =
-        sample_action(%{
+        validated_action(%{
           "id" => "act_patch",
           "hlc" => hlc_from(3_000),
           "updates" => [
-            sample_update(%{
+            validated_update(%{
               "id" => "upd_patch",
               "subject_id" => entity_id,
               "method" => "patch",

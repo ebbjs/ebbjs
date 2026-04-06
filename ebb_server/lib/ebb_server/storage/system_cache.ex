@@ -150,6 +150,7 @@ defmodule EbbServer.Storage.SystemCache do
     end)
   end
 
+  defp resolve_table(nil, _key), do: nil
   defp resolve_table(table, _key) when is_atom(table), do: table
   defp resolve_table(opts, key) when is_list(opts), do: Keyword.get(opts, key)
 
@@ -216,9 +217,13 @@ defmodule EbbServer.Storage.SystemCache do
   def get_entity_group(entity_id, table \\ @default_relationships) do
     actual_table = resolve_table(table, :relationships)
 
-    case :ets.lookup(actual_table, entity_id) do
-      [{_source_id, %{target_id: group_id}}] -> group_id
-      [] -> nil
+    if is_nil(actual_table) do
+      nil
+    else
+      case :ets.lookup(actual_table, entity_id) do
+        [{_source_id, %{target_id: group_id}}] -> group_id
+        [] -> nil
+      end
     end
   end
 

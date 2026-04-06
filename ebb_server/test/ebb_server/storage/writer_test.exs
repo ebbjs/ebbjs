@@ -114,7 +114,7 @@ defmodule EbbServer.Storage.WriterTest do
       writer_name: writer_name,
       rocks_name: rocks_name
     } do
-      action = sample_action()
+      action = validated_action()
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
@@ -132,9 +132,9 @@ defmodule EbbServer.Storage.WriterTest do
     test "assigns consecutive GSNs across multiple writes", %{
       writer_name: writer_name
     } do
-      action1 = sample_action()
-      action2 = sample_action()
-      action3 = sample_action()
+      action1 = validated_action()
+      action2 = validated_action()
+      action3 = validated_action()
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action1], writer_name)
       assert {:ok, {2, 2}, []} = Writer.write_actions([action2], writer_name)
@@ -147,18 +147,19 @@ defmodule EbbServer.Storage.WriterTest do
       writer_name: writer_name,
       rocks_name: rocks_name
     } do
-      update = sample_update(%{"subject_id" => "todo_test_123", "subject_type" => "todo"})
-      action = sample_action(%{"updates" => [update]})
+      update = validated_update(%{subject_id: "todo_test_123", subject_type: "todo"})
+      action = validated_action(%{updates: [update]})
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
       gsn_key = RocksDB.encode_gsn_key(1)
-      action_etf = :erlang.term_to_binary(Map.put(action, "gsn", 1))
+      stored_action = to_storage_format(action, 1)
+      action_etf = :erlang.term_to_binary(stored_action)
 
       assert {:ok, ^action_etf} =
                RocksDB.get(RocksDB.cf_actions(rocks_name), gsn_key, name: rocks_name)
 
-      update_key = RocksDB.encode_update_key(action["id"], update["id"])
+      update_key = RocksDB.encode_update_key(action.id, hd(action.updates).id)
       update_etf = :erlang.term_to_binary(update)
 
       assert {:ok, ^update_etf} =
@@ -171,7 +172,7 @@ defmodule EbbServer.Storage.WriterTest do
                  name: rocks_name
                )
 
-      assert action_id == action["id"]
+      assert action_id == action.id
 
       type_entity_key = RocksDB.encode_type_entity_key("todo", "todo_test_123")
 
@@ -181,7 +182,7 @@ defmodule EbbServer.Storage.WriterTest do
                )
 
       assert {:ok, ^gsn_key} =
-               RocksDB.get(RocksDB.cf_action_dedup(rocks_name), action["id"], name: rocks_name)
+               RocksDB.get(RocksDB.cf_action_dedup(rocks_name), action.id, name: rocks_name)
     end
   end
 
@@ -191,17 +192,17 @@ defmodule EbbServer.Storage.WriterTest do
       rocks_name: rocks_name
     } do
       update =
-        sample_update(%{
-          "subject_id" => "todo_roundtrip",
-          "data" => %{
+        validated_update(%{
+          subject_id: "todo_roundtrip",
+          data: %{
             "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => 12_345}}
           }
         })
 
       action =
-        sample_action(%{
-          "id" => "act_roundtrip",
-          "updates" => [update]
+        validated_action(%{
+          id: "act_roundtrip",
+          updates: [update]
         })
 
       Writer.write_actions([action], writer_name)
@@ -210,8 +211,8 @@ defmodule EbbServer.Storage.WriterTest do
       {:ok, binary} = RocksDB.get(RocksDB.cf_actions(rocks_name), gsn_key, name: rocks_name)
       decoded = :erlang.binary_to_term(binary, [:safe])
 
-      assert decoded["id"] == action["id"]
-      assert decoded["actor_id"] == action["actor_id"]
+      assert decoded["id"] == action.id
+      assert decoded["actor_id"] == action.actor_id
       assert decoded["gsn"] == 1
       assert length(decoded["updates"]) == 1
       assert hd(decoded["updates"])["subject_id"] == "todo_roundtrip"
@@ -223,7 +224,7 @@ defmodule EbbServer.Storage.WriterTest do
       writer_name: writer_name,
       dirty_set: dirty_set
     } do
-      action = sample_action(%{"updates" => [sample_update(%{"subject_id" => "todo_abc"})]})
+      action = validated_action(%{updates: [validated_update(%{subject_id: "todo_abc"})]})
 
       Writer.write_actions([action], writer_name)
 
@@ -239,7 +240,7 @@ defmodule EbbServer.Storage.WriterTest do
       dir =
         tmp_dir(%{module: __MODULE__, test: "durability_#{System.unique_integer([:positive])}"})
 
-      action = sample_action()
+      action = validated_action()
 
       rocks_name1 = :"rocks_#{System.unique_integer([:positive])}"
       {:ok, _rocks_pid1} = RocksDB.start_link(data_dir: dir, name: rocks_name1)
@@ -287,55 +288,16 @@ defmodule EbbServer.Storage.WriterTest do
     end
   end
 
-  describe "validation" do
+  describe "empty updates filtering" do
     test "actions with empty updates are filtered out", %{
       writer_name: writer_name,
       rocks_name: rocks_name
     } do
-      action1 = sample_action(%{"id" => "act_valid", "updates" => [sample_update()]})
-      action2 = sample_action(%{"id" => "act_empty", "updates" => []})
+      action1 = validated_action(%{id: "act_valid", updates: [validated_update()]})
+      action2 = validated_action(%{id: "act_empty", updates: []})
 
-      assert {:ok, {1, 1}, [%{reason: "no updates"}]} =
+      assert {:ok, {1, 1}, []} =
                Writer.write_actions([action1, action2], writer_name)
-
-      gsn_key = RocksDB.encode_gsn_key(1)
-      assert {:ok, _} = RocksDB.get(RocksDB.cf_actions(rocks_name), gsn_key, name: rocks_name)
-
-      gsn_key2 = RocksDB.encode_gsn_key(2)
-      assert :not_found = RocksDB.get(RocksDB.cf_actions(rocks_name), gsn_key2, name: rocks_name)
-    end
-
-    test "actions with invalid updates are rejected", %{
-      writer_name: writer_name
-    } do
-      action_with_nil_subject_id =
-        sample_action(%{"id" => "act_nil_id", "updates" => [%{"subject_id" => nil}]})
-
-      assert {:ok, {0, 0}, [%{reason: "update id must be a string"}]} =
-               Writer.write_actions([action_with_nil_subject_id], writer_name)
-    end
-
-    test "all invalid actions returns empty GSN range with rejections", %{
-      writer_name: writer_name
-    } do
-      action_with_nil_subject_id =
-        sample_action(%{"id" => "act_nil_id", "updates" => [%{"subject_id" => nil}]})
-
-      assert {:ok, {0, 0}, [%{reason: "update id must be a string"}]} =
-               Writer.write_actions([action_with_nil_subject_id], writer_name)
-    end
-
-    test "only valid actions are written when mixed with invalid", %{
-      writer_name: writer_name,
-      rocks_name: rocks_name
-    } do
-      valid_action = sample_action(%{"id" => "act_valid", "updates" => [sample_update()]})
-
-      invalid_action =
-        sample_action(%{"id" => "act_invalid", "updates" => [%{"subject_id" => nil}]})
-
-      assert {:ok, {1, 1}, [%{reason: "update id must be a string"}]} =
-               Writer.write_actions([valid_action, invalid_action], writer_name)
 
       gsn_key = RocksDB.encode_gsn_key(1)
       assert {:ok, _} = RocksDB.get(RocksDB.cf_actions(rocks_name), gsn_key, name: rocks_name)
@@ -356,16 +318,16 @@ defmodule EbbServer.Storage.WriterTest do
       gm_id = "gm_" <> Nanoid.generate()
 
       action = %{
-        "id" => "act_" <> Nanoid.generate(),
-        "actor_id" => "actor_1",
-        "hlc" => hlc,
-        "updates" => [
+        id: "act_" <> Nanoid.generate(),
+        actor_id: "actor_1",
+        hlc: hlc,
+        updates: [
           %{
-            "id" => "upd_" <> Nanoid.generate(),
-            "subject_id" => gm_id,
-            "subject_type" => "groupMember",
-            "method" => "put",
-            "data" => %{
+            id: "upd_" <> Nanoid.generate(),
+            subject_id: gm_id,
+            subject_type: "groupMember",
+            method: :put,
+            data: %{
               "fields" => %{
                 "actor_id" => %{"type" => "lww", "value" => "actor_1", "hlc" => hlc},
                 "group_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc},
@@ -394,16 +356,16 @@ defmodule EbbServer.Storage.WriterTest do
       rel_id = "rel_" <> Nanoid.generate()
 
       action = %{
-        "id" => "act_" <> Nanoid.generate(),
-        "actor_id" => "actor_1",
-        "hlc" => hlc,
-        "updates" => [
+        id: "act_" <> Nanoid.generate(),
+        actor_id: "actor_1",
+        hlc: hlc,
+        updates: [
           %{
-            "id" => "upd_" <> Nanoid.generate(),
-            "subject_id" => rel_id,
-            "subject_type" => "relationship",
-            "method" => "put",
-            "data" => %{
+            id: "upd_" <> Nanoid.generate(),
+            subject_id: rel_id,
+            subject_type: "relationship",
+            method: :put,
+            data: %{
               "source_id" => "todo_1",
               "target_id" => "group_1",
               "type" => "todo",
@@ -428,16 +390,16 @@ defmodule EbbServer.Storage.WriterTest do
       gm_id = "gm_" <> Nanoid.generate()
 
       put_action = %{
-        "id" => "act_" <> Nanoid.generate(),
-        "actor_id" => "actor_1",
-        "hlc" => hlc,
-        "updates" => [
+        id: "act_" <> Nanoid.generate(),
+        actor_id: "actor_1",
+        hlc: hlc,
+        updates: [
           %{
-            "id" => "upd_" <> Nanoid.generate(),
-            "subject_id" => gm_id,
-            "subject_type" => "groupMember",
-            "method" => "put",
-            "data" => %{
+            id: "upd_" <> Nanoid.generate(),
+            subject_id: gm_id,
+            subject_type: "groupMember",
+            method: :put,
+            data: %{
               "fields" => %{
                 "actor_id" => %{"type" => "lww", "value" => "actor_1", "hlc" => hlc},
                 "group_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc},
@@ -452,16 +414,16 @@ defmodule EbbServer.Storage.WriterTest do
       assert [_] = SystemCache.get_actor_groups("actor_1", gm_table)
 
       delete_action = %{
-        "id" => "act_" <> Nanoid.generate(),
-        "actor_id" => "actor_1",
-        "hlc" => generate_hlc(),
-        "updates" => [
+        id: "act_" <> Nanoid.generate(),
+        actor_id: "actor_1",
+        hlc: generate_hlc(),
+        updates: [
           %{
-            "id" => "upd_" <> Nanoid.generate(),
-            "subject_id" => gm_id,
-            "subject_type" => "groupMember",
-            "method" => "delete",
-            "data" => %{}
+            id: "upd_" <> Nanoid.generate(),
+            subject_id: gm_id,
+            subject_type: "groupMember",
+            method: :delete,
+            data: %{}
           }
         ]
       }
@@ -480,16 +442,16 @@ defmodule EbbServer.Storage.WriterTest do
       rel_id = "rel_" <> Nanoid.generate()
 
       put_action = %{
-        "id" => "act_" <> Nanoid.generate(),
-        "actor_id" => "actor_1",
-        "hlc" => hlc,
-        "updates" => [
+        id: "act_" <> Nanoid.generate(),
+        actor_id: "actor_1",
+        hlc: hlc,
+        updates: [
           %{
-            "id" => "upd_" <> Nanoid.generate(),
-            "subject_id" => rel_id,
-            "subject_type" => "relationship",
-            "method" => "put",
-            "data" => %{
+            id: "upd_" <> Nanoid.generate(),
+            subject_id: rel_id,
+            subject_type: "relationship",
+            method: :put,
+            data: %{
               "source_id" => "todo_1",
               "target_id" => "group_1",
               "type" => "todo",
@@ -503,16 +465,16 @@ defmodule EbbServer.Storage.WriterTest do
       assert "group_1" = SystemCache.get_entity_group("todo_1", rel_table)
 
       delete_action = %{
-        "id" => "act_" <> Nanoid.generate(),
-        "actor_id" => "actor_1",
-        "hlc" => generate_hlc(),
-        "updates" => [
+        id: "act_" <> Nanoid.generate(),
+        actor_id: "actor_1",
+        hlc: generate_hlc(),
+        updates: [
           %{
-            "id" => "upd_" <> Nanoid.generate(),
-            "subject_id" => rel_id,
-            "subject_type" => "relationship",
-            "method" => "delete",
-            "data" => %{}
+            id: "upd_" <> Nanoid.generate(),
+            subject_id: rel_id,
+            subject_type: "relationship",
+            method: :delete,
+            data: %{}
           }
         ]
       }
@@ -527,38 +489,12 @@ defmodule EbbServer.Storage.WriterTest do
            group_members: gm_table,
            relationships: rel_table
          } do
-      action = sample_action()
+      action = validated_action()
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
       assert [] = SystemCache.get_actor_groups("a_test", gm_table)
       assert nil == SystemCache.get_entity_group("todo_test", rel_table)
-    end
-
-    test "relationship PUT with empty data is rejected",
-         %{
-           writer_name: writer_name,
-           relationships: rel_table
-         } do
-      action = %{
-        "id" => "act_" <> Nanoid.generate(),
-        "actor_id" => "actor_1",
-        "hlc" => generate_hlc(),
-        "updates" => [
-          %{
-            "id" => "upd_" <> Nanoid.generate(),
-            "subject_id" => "rel_test",
-            "subject_type" => "relationship",
-            "method" => "put",
-            "data" => %{}
-          }
-        ]
-      }
-
-      assert {:ok, {_gsn_start, _gsn_end}, [%{reason: reason}]} =
-               Writer.write_actions([action], writer_name)
-
-      assert reason =~ "relationship"
     end
 
     test "mixed batch - system and user entities",
@@ -571,27 +507,27 @@ defmodule EbbServer.Storage.WriterTest do
       gm_id = "gm_" <> Nanoid.generate()
 
       action = %{
-        "id" => "act_" <> Nanoid.generate(),
-        "actor_id" => "actor_1",
-        "hlc" => hlc,
-        "updates" => [
+        id: "act_" <> Nanoid.generate(),
+        actor_id: "actor_1",
+        hlc: hlc,
+        updates: [
           %{
-            "id" => "upd_" <> Nanoid.generate(),
-            "subject_id" => "todo_1",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
+            id: "upd_" <> Nanoid.generate(),
+            subject_id: "todo_1",
+            subject_type: "todo",
+            method: :put,
+            data: %{
               "fields" => %{
                 "title" => %{"type" => "lww", "value" => "Test", "hlc" => hlc}
               }
             }
           },
           %{
-            "id" => "upd_gm_" <> Nanoid.generate(),
-            "subject_id" => gm_id,
-            "subject_type" => "groupMember",
-            "method" => "put",
-            "data" => %{
+            id: "upd_gm_" <> Nanoid.generate(),
+            subject_id: gm_id,
+            subject_type: "groupMember",
+            method: :put,
+            data: %{
               "fields" => %{
                 "actor_id" => %{"type" => "lww", "value" => "actor_1", "hlc" => hlc},
                 "group_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc},
@@ -607,5 +543,24 @@ defmodule EbbServer.Storage.WriterTest do
       assert [%{group_id: "group_1"}] = SystemCache.get_actor_groups("actor_1", gm_table)
       assert nil == SystemCache.get_entity_group("todo_1", rel_table)
     end
+  end
+
+  defp to_storage_format(action, gsn) do
+    %{
+      "id" => action.id,
+      "actor_id" => action.actor_id,
+      "hlc" => action.hlc,
+      "gsn" => gsn,
+      "updates" =>
+        Enum.map(action.updates, fn update ->
+          %{
+            "id" => update.id,
+            "subject_id" => update.subject_id,
+            "subject_type" => update.subject_type,
+            "method" => Atom.to_string(update.method),
+            "data" => update.data
+          }
+        end)
+    }
   end
 end

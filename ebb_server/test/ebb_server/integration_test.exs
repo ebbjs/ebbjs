@@ -2,6 +2,7 @@ defmodule EbbServer.IntegrationTest do
   use ExUnit.Case, async: false
 
   import Plug.Test
+  import Plug.Conn
   import EbbServer.TestHelpers
   alias EbbServer.Storage.SystemCache
   alias EbbServer.Sync.Router
@@ -17,7 +18,7 @@ defmodule EbbServer.IntegrationTest do
 
     Application.put_env(:ebb_server, :data_dir, tmp_dir)
 
-    case EbbServer.Storage.Supervisor.start_link([]) do
+    case EbbServer.Storage.Supervisor.start_link(data_dir: tmp_dir) do
       {:ok, _pid} -> :ok
       {:error, {:already_started, _pid}} -> :ok
     end
@@ -37,7 +38,7 @@ defmodule EbbServer.IntegrationTest do
     %{tmp_dir: tmp_dir}
   end
 
-  defp post_actions(body) do
+  defp post_actions(body, actor_id \\ "a_test") do
     owner = self()
     ref = make_ref()
 
@@ -63,7 +64,10 @@ defmodule EbbServer.IntegrationTest do
       |> Map.put(:query_params, %Plug.Conn.Unfetched{aspect: :query_params})
       |> Map.put(:body_params, %Plug.Conn.Unfetched{aspect: :body_params})
       |> Map.put(:params, %Plug.Conn.Unfetched{aspect: :params})
-      |> Map.put(:req_headers, [{"content-type", "application/msgpack"}])
+      |> Map.put(:req_headers, [
+        {"content-type", "application/msgpack"},
+        {"x-ebb-actor-id", actor_id}
+      ])
       |> Map.put(:host, "www.example.com")
       |> Map.put(:port, 80)
       |> Map.put(:remote_ip, {127, 0, 0, 1})
@@ -74,7 +78,8 @@ defmodule EbbServer.IntegrationTest do
   end
 
   defp get_entity(id, actor_id \\ "a_test") do
-    conn(:get, "/entities/#{id}?actor_id=#{actor_id}")
+    conn(:get, "/entities/#{id}")
+    |> put_req_header("x-ebb-actor-id", actor_id)
     |> Router.call([])
   end
 
@@ -82,10 +87,64 @@ defmodule EbbServer.IntegrationTest do
     data |> Msgpax.pack!() |> IO.iodata_to_binary()
   end
 
+  defp bootstrap_group(actor_id, group_id, permissions) do
+    hlc = generate_hlc()
+    gm_id = "gm_" <> Nanoid.generate()
+    rel_id = "rel_" <> Nanoid.generate()
+
+    action = %{
+      "id" => "act_bootstrap_" <> Nanoid.generate(),
+      "actor_id" => actor_id,
+      "hlc" => hlc,
+      "updates" => [
+        %{
+          "id" => "upd_group_" <> Nanoid.generate(),
+          "subject_id" => group_id,
+          "subject_type" => "group",
+          "method" => "put",
+          "data" => %{
+            "fields" => %{"name" => %{"type" => "lww", "value" => "Test Group", "hlc" => hlc}}
+          }
+        },
+        %{
+          "id" => gm_id,
+          "subject_id" => gm_id,
+          "subject_type" => "groupMember",
+          "method" => "put",
+          "data" => %{
+            "actor_id" => actor_id,
+            "group_id" => group_id,
+            "permissions" => permissions
+          }
+        },
+        %{
+          "id" => rel_id,
+          "subject_id" => rel_id,
+          "subject_type" => "relationship",
+          "method" => "put",
+          "data" => %{
+            "source_id" => "todo_bootstrap",
+            "target_id" => group_id,
+            "type" => "todo",
+            "field" => "group"
+          }
+        }
+      ]
+    }
+
+    post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
+    :ok
+  end
+
   describe "POST /sync/actions then GET /entities/:id" do
+    setup do
+      bootstrap_group("a_test", "g_test", ["todo.create", "todo.update", "todo.read"])
+      :ok
+    end
+
     test "POST action, GET entity back" do
       entity_id = "todo_xyz789"
-      hlc = hlc_from(1_000)
+      hlc = generate_hlc()
 
       action_body = %{
         "id" => "act_test1",
@@ -125,7 +184,7 @@ defmodule EbbServer.IntegrationTest do
 
     test "second GET returns same data (cache hit)" do
       entity_id = "todo_cache_test"
-      hlc = hlc_from(2_000)
+      hlc = generate_hlc()
 
       action_body = %{
         "id" => "act_cache",
@@ -168,7 +227,7 @@ defmodule EbbServer.IntegrationTest do
 
     test "GSN is assigned as 1" do
       entity_id = "todo_gsn_test"
-      hlc = hlc_from(3_000)
+      hlc = generate_hlc()
 
       action_body = %{
         "id" => "act_gsn",
@@ -194,7 +253,7 @@ defmodule EbbServer.IntegrationTest do
       conn = get_entity(entity_id)
       {:ok, entity} = Jason.decode(conn.resp_body)
 
-      assert entity["last_gsn"] == 1
+      assert entity["last_gsn"] == 2
     end
 
     @tag :restart
@@ -204,7 +263,7 @@ defmodule EbbServer.IntegrationTest do
 
     test "dirty bit lifecycle" do
       entity_id = "todo_dirty_test"
-      hlc = hlc_from(5_000)
+      hlc = generate_hlc()
 
       action_body = %{
         "id" => "act_dirty",
@@ -241,8 +300,8 @@ defmodule EbbServer.IntegrationTest do
     test "multiple actions, sequential GSNs" do
       entity1 = "todo_seq1"
       entity2 = "todo_seq2"
-      hlc1 = hlc_from(6_000)
-      hlc2 = hlc_from(6_001)
+      hlc1 = generate_hlc()
+      hlc2 = generate_hlc()
 
       action1 = %{
         "id" => "act_seq1",
@@ -291,8 +350,8 @@ defmodule EbbServer.IntegrationTest do
       conn2 = get_entity(entity2)
       {:ok, entity2_resp} = Jason.decode(conn2.resp_body)
 
-      assert entity1_resp["last_gsn"] == 1
-      assert entity2_resp["last_gsn"] == 2
+      assert entity1_resp["last_gsn"] == 2
+      assert entity2_resp["last_gsn"] == 3
       assert entity1_resp["data"]["fields"]["title"]["value"] == "First entity"
       assert entity2_resp["data"]["fields"]["title"]["value"] == "Second entity"
     end
@@ -310,13 +369,18 @@ defmodule EbbServer.IntegrationTest do
   end
 
   describe "HLC validation" do
+    setup do
+      bootstrap_group("a_test", "g_test", ["todo.create", "todo.update"])
+      :ok
+    end
+
     test "HLC as positive integer is accepted" do
       entity_id = "todo_hlc_int"
 
       action_body = %{
         "id" => "act_hlc_int",
         "actor_id" => "a_test",
-        "hlc" => 123,
+        "hlc" => generate_hlc(),
         "updates" => [
           %{
             "id" => "upd_hlc_int",
@@ -325,7 +389,7 @@ defmodule EbbServer.IntegrationTest do
             "method" => "put",
             "data" => %{
               "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Integer HLC", "hlc" => 123}
+                "title" => %{"type" => "lww", "value" => "Integer HLC", "hlc" => generate_hlc()}
               }
             }
           }
@@ -342,7 +406,7 @@ defmodule EbbServer.IntegrationTest do
       action_body = %{
         "id" => "act_hlc_str",
         "actor_id" => "a_test",
-        "hlc" => "123",
+        "hlc" => "#{generate_hlc()}",
         "updates" => [
           %{
             "id" => "upd_hlc_str",
@@ -351,7 +415,7 @@ defmodule EbbServer.IntegrationTest do
             "method" => "put",
             "data" => %{
               "fields" => %{
-                "title" => %{"type" => "lww", "value" => "String HLC", "hlc" => "123"}
+                "title" => %{"type" => "lww", "value" => "String HLC", "hlc" => generate_hlc()}
               }
             }
           }
@@ -367,11 +431,23 @@ defmodule EbbServer.IntegrationTest do
         "id" => "act_hlc_zero",
         "actor_id" => "a_test",
         "hlc" => 0,
-        "updates" => []
+        "updates" => [
+          %{
+            "id" => "upd_hlc_zero",
+            "subject_id" => "todo_zero",
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => 0}}
+            }
+          }
+        ]
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
-      assert conn.status == 422
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert length(response["rejected"]) > 0
     end
 
     test "HLC as negative integer is rejected" do
@@ -379,11 +455,23 @@ defmodule EbbServer.IntegrationTest do
         "id" => "act_hlc_neg",
         "actor_id" => "a_test",
         "hlc" => -1,
-        "updates" => []
+        "updates" => [
+          %{
+            "id" => "upd_hlc_neg",
+            "subject_id" => "todo_neg",
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => -1}}
+            }
+          }
+        ]
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
-      assert conn.status == 422
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert length(response["rejected"]) > 0
     end
 
     test "HLC as non-numeric string is rejected" do
@@ -391,11 +479,23 @@ defmodule EbbServer.IntegrationTest do
         "id" => "act_hlc_nan",
         "actor_id" => "a_test",
         "hlc" => "abc",
-        "updates" => []
+        "updates" => [
+          %{
+            "id" => "upd_hlc_nan",
+            "subject_id" => "todo_nan",
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => "abc"}}
+            }
+          }
+        ]
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
-      assert conn.status == 422
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert length(response["rejected"]) > 0
     end
 
     test "HLC as float is rejected" do
@@ -403,11 +503,23 @@ defmodule EbbServer.IntegrationTest do
         "id" => "act_hlc_float",
         "actor_id" => "a_test",
         "hlc" => 1.5,
-        "updates" => []
+        "updates" => [
+          %{
+            "id" => "upd_hlc_float",
+            "subject_id" => "todo_float",
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => 1.5}}
+            }
+          }
+        ]
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
-      assert conn.status == 422
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert length(response["rejected"]) > 0
     end
 
     test "HLC as nil is rejected" do
@@ -415,11 +527,23 @@ defmodule EbbServer.IntegrationTest do
         "id" => "act_hlc_nil",
         "actor_id" => "a_test",
         "hlc" => nil,
-        "updates" => []
+        "updates" => [
+          %{
+            "id" => "upd_hlc_nil",
+            "subject_id" => "todo_nil",
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => nil}}
+            }
+          }
+        ]
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
-      assert conn.status == 422
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert length(response["rejected"]) > 0
     end
 
     test "HLC as empty string is rejected" do
@@ -427,39 +551,59 @@ defmodule EbbServer.IntegrationTest do
         "id" => "act_hlc_empty",
         "actor_id" => "a_test",
         "hlc" => "",
-        "updates" => []
+        "updates" => [
+          %{
+            "id" => "upd_hlc_empty",
+            "subject_id" => "todo_empty",
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => ""}}
+            }
+          }
+        ]
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
-      assert conn.status == 422
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert length(response["rejected"]) > 0
     end
   end
 
-  describe "validation error format" do
-    test "returns structured error with field and message" do
+  describe "rejection format" do
+    setup do
+      bootstrap_group("a_test", "g_test", ["todo.create"])
+      :ok
+    end
+
+    test "returns rejection with id and reason" do
       action_body = %{
-        "id" => "",
+        "id" => "act_rej",
         "actor_id" => "a_test",
         "hlc" => 0,
-        "updates" => "not_a_list"
+        "updates" => [
+          %{
+            "id" => "upd_rej",
+            "subject_id" => "todo_rej",
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => 0}}
+            }
+          }
+        ]
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
-      assert conn.status == 422
+      assert conn.status == 200
 
       {:ok, response} = Jason.decode(conn.resp_body)
-      assert response["error"] == "validation_failed"
-      assert is_list(response["details"])
+      assert is_list(response["rejected"])
+      assert length(response["rejected"]) > 0
 
-      fields = Enum.map(response["details"], & &1["field"])
-      messages = Enum.map(response["details"], & &1["message"])
-
-      assert "0.id" in fields
-      assert "must be a non-empty string" in messages
-      assert "0.hlc" in fields
-      assert "must be a positive integer" in messages
-      assert "0.updates" in fields
-      assert "must be a list" in messages
+      rejection = hd(response["rejected"])
+      assert %{"id" => "act_rej", "reason" => _} = rejection
     end
   end
 end
