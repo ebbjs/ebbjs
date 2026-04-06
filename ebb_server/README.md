@@ -46,9 +46,9 @@ docker run -e EBB_PORT=5000 -e EBB_DATA_DIR=/data -v /path/to/data:/data ebb_ser
 
 ## Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EBB_PORT` | `4000` | HTTP listen port |
+| Variable       | Default     | Description                     |
+| -------------- | ----------- | ------------------------------- |
+| `EBB_PORT`     | `4000`      | HTTP listen port                |
 | `EBB_DATA_DIR` | `/app/data` | RocksDB + SQLite data directory |
 
 For full architecture documentation, see [docs/ebb_server/README.md](../docs/ebb_server/README.md).

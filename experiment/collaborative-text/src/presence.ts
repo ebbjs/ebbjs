@@ -24,7 +24,7 @@ import {
   WidgetType,
 } from "@codemirror/view";
 import { StateEffect, type EditorState, type Extension, type StateField } from "@codemirror/state";
-import { ROOT_ID, runOffsetToPosition, type DocState, type RunSpan } from "./causal-tree.ts";
+import { ROOT_ID, type DocState, type RunSpan } from "./causal-tree.ts";
 
 // ---------------------------------------------------------------------------
 // Types

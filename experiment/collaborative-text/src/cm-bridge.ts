@@ -19,7 +19,6 @@ import { EditorView } from "@codemirror/view";
 import { increment, toString, type Hlc } from "./hlc.ts";
 import {
   lookupPosition,
-  runOffsetToPosition,
   ROOT_ID,
   type DocAction,
   type DocState,

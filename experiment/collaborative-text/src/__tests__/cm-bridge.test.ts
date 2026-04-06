@@ -24,16 +24,8 @@ import {
   type DocAction,
   type DocState,
   type InsertRunAction,
-  type DeleteRangeAction,
-  type SplitAction,
 } from "../causal-tree.ts";
-import {
-  createBridgeExtension,
-  createIdMapField,
-  isRemote,
-  setIdMapEffect,
-  type BridgeConfig,
-} from "../cm-bridge.ts";
+import { createBridgeExtension, createIdMapField, type BridgeConfig } from "../cm-bridge.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
