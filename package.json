@@ -22,8 +22,7 @@
     "lint:fix": "oxlint --fix",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
-    "prepare": "lefthook install",
-    "lint-staged": "lint-staged"
+    "prepare": "lefthook install"
   },
   "dependencies": {
     "nanoid": "^5.1.6",
@@ -37,7 +36,6 @@
     "better-sqlite3": "^12.6.2",
     "concurrently": "^9.2.0",
     "lefthook": "^2.1.5",
-    "lint-staged": "^15.5.2",
     "oxfmt": "^0.32.0",
     "oxlint": "^1.47.0",
     "tsx": "^4.21.0",
@@ -48,12 +46,6 @@
     "vite-tsconfig-paths": "^6.1.1",
     "vitest": "^4.0.18",
     "yjs": "^13.6.0"
-  },
-  "lint-staged": {
-    "*.{js,jsx,ts,tsx}": [
-      "oxlint --fix",
-      "oxfmt --write"
-    ]
   },
   "engines": {
     "node": ">=22.8.0"

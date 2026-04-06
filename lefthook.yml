@@ -1,5 +1,13 @@
 pre-commit:
   jobs:
+    - name: typescript-lint
+      glob: "*.{ts,tsx}"
+      run: oxlint --fix {staged_files}
+      stage_fixed: true
+    - name: typescript-fmt
+      glob: "*.{ts,tsx}"
+      run: oxfmt --write {staged_files}
+      stage_fixed: true
     - name: elixir
       root: ebb_server
       run: mix format --check-formatted && mix credo --strict && mix test
