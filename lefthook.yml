@@ -1,6 +1,8 @@
 pre-commit:
   jobs:
     - name: typescript
+      env:
+        PATH: /home/drew/.nvm/versions/node/v22.22.2/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       run: pnpm lint-staged
     - name: elixir
       root: ebb_server
