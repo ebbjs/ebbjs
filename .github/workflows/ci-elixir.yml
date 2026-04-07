@@ -15,7 +15,6 @@ jobs:
   ci:
     name: ${{ matrix.job }}
     runs-on: ubuntu-latest
-    container: ghcr.io/${{ github.repository }}/elixir:latest
     strategy:
       matrix:
         include:
@@ -27,8 +26,12 @@ jobs:
             command: mix test
     steps:
       - uses: actions/checkout@v4
-      - name: Configure git safe directory
-        run: git config --global --add safe.directory /__w/ebbjs/ebbjs
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.17"
+          otp-version: "27"
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
       - name: Cache deps and build
         uses: actions/cache@v4
         with:

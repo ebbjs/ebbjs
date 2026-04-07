@@ -134,9 +134,12 @@ defmodule EbbServer.Storage.SystemCache do
   defp delete_group_member_by_id(member_id, actor_id, table) do
     table
     |> :ets.tab2list()
-    |> Enum.each(fn {^actor_id, %{id: id} = entry} ->
-      if id == member_id do
-        :ets.delete_object(table, {actor_id, entry})
+    |> Enum.each(fn entry ->
+      [stored_actor_id, stored_entry] = Tuple.to_list(entry)
+      entry_id = stored_entry[:id] || stored_entry["id"]
+
+      if stored_actor_id == actor_id && entry_id == member_id do
+        :ets.delete_object(table, entry)
       end
     end)
   end
@@ -233,12 +236,17 @@ defmodule EbbServer.Storage.SystemCache do
   end
 
   def dirty_entity_ids_for_type(type, dirty_set \\ @default_dirty_set_name) do
-    prefix = type <> "_"
+    type_prefixes =
+      case type do
+        "groupMember" -> ["gm_", "groupMember_"]
+        "relationship" -> ["rel_", "relationship_"]
+        _ -> [type <> "_"]
+      end
 
     dirty_set
     |> :ets.tab2list()
     |> Enum.reduce([], fn {entity_id, _}, acc ->
-      if String.starts_with?(entity_id, prefix) do
+      if Enum.any?(type_prefixes, &String.starts_with?(entity_id, &1)) do
         [entity_id | acc]
       else
         acc
