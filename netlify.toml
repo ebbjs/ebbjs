@@ -1,0 +1,3 @@
+[build]
+  command = "git config --unset-all --local core.hooksPath && pnpm install --ignore-scripts"
+  publish = "packages/www/dist"
