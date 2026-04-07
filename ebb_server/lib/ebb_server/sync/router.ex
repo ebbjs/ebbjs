@@ -79,6 +79,49 @@ defmodule EbbServer.Sync.Router do
     end
   end
 
+  post "/entities/query" do
+    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    actor_id = conn.assigns.actor_id
+
+    case Jason.decode(body) do
+      {:ok, %{"type" => type} = payload} when is_binary(type) and type != "" ->
+        filter = payload["filter"]
+        opts = []
+        opts = if payload["limit"], do: [{:limit, payload["limit"]} | opts], else: opts
+        opts = if payload["offset"], do: [{:offset, payload["offset"]} | opts], else: opts
+
+        case EntityStore.query(type, filter, actor_id, opts) do
+          {:ok, entities} ->
+            response =
+              Enum.map(entities, fn entity ->
+                %{
+                  "id" => entity.id,
+                  "type" => entity.type,
+                  "data" => entity.data,
+                  "created_hlc" => entity.created_hlc,
+                  "updated_hlc" => entity.updated_hlc,
+                  "deleted_hlc" => entity.deleted_hlc,
+                  "last_gsn" => entity.last_gsn
+                }
+              end)
+
+            send_json(conn, 200, response)
+
+          {:error, reason} ->
+            send_json(conn, 503, %{"error" => "query_failed", "details" => inspect(reason)})
+        end
+
+      {:ok, _} ->
+        send_json(conn, 422, %{
+          "error" => "validation_failed",
+          "details" => "type is required and must be a non-empty string"
+        })
+
+      {:error, _} ->
+        send_json(conn, 422, %{"error" => "invalid_json"})
+    end
+  end
+
   post "/sync/handshake" do
     {:ok, body, conn} = Plug.Conn.read_body(conn)
     actor_id = conn.assigns.actor_id
