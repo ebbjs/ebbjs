@@ -145,9 +145,10 @@ defmodule EbbServer.Storage.SystemCache do
   end
 
   def get_actor_groups(actor_id, table \\ @default_group_members) do
-    actual_table = resolve_table(table, :group_members)
-
-    :ets.lookup(actual_table, actor_id)
+    case resolve_table(table, :group_members) do
+      nil -> []
+      actual_table -> :ets.lookup(actual_table, actor_id)
+    end
     |> Enum.map(fn {_actor_id, entry} ->
       %{group_id: entry.group_id, permissions: entry.permissions}
     end)
@@ -165,16 +166,24 @@ defmodule EbbServer.Storage.SystemCache do
   end
 
   def get_permissions(actor_id, group_id, table \\ @default_group_members) do
-    actual_table = resolve_table(table, :group_members)
+    case resolve_table(table, :group_members) do
+      nil ->
+        nil
 
-    :ets.lookup(actual_table, actor_id)
-    |> Enum.flat_map(fn {_actor_id, entry} ->
+      actual_table ->
+        :ets.lookup(actual_table, actor_id)
+        |> flat_map_permissions(group_id)
+        |> case do
+          [] -> nil
+          perms -> Enum.uniq(List.flatten(perms))
+        end
+    end
+  end
+
+  defp flat_map_permissions(entries, group_id) do
+    Enum.flat_map(entries, fn {_actor_id, entry} ->
       if entry.group_id == group_id, do: entry.permissions, else: []
     end)
-    |> case do
-      [] -> nil
-      perms -> Enum.uniq(List.flatten(perms))
-    end
   end
 
   def put_relationship(rel, opts \\ []) do

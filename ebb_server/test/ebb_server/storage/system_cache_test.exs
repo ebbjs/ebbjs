@@ -233,6 +233,18 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
       assert SystemCache.get_actor_groups("a_1", gm) == []
     end
+
+    test "get_permissions returns nil gracefully when table not found" do
+      start_isolated_cache()
+
+      assert SystemCache.get_permissions("a_1", "g_1", []) == nil
+    end
+
+    test "get_actor_groups returns empty list when table not found" do
+      start_isolated_cache()
+
+      assert SystemCache.get_actor_groups("a_1", []) == []
+    end
   end
 
   describe "permission APIs - relationships" do
