@@ -286,7 +286,11 @@ defmodule EbbServer.Storage.PermissionChecker do
   end
 
   defp check_group_membership(actor_id, group_id, opts) do
-    case SystemCache.get_permissions(actor_id, group_id, opts) do
+    table =
+      Keyword.get(opts, :group_members) || Application.get_env(:ebb_server, :group_members) ||
+        :ebb_group_members
+
+    case SystemCache.get_permissions(actor_id, group_id, table) do
       nil -> {:error, "not_authorized", "actor is not a member of the group"}
       _perms -> :ok
     end
@@ -296,8 +300,12 @@ defmodule EbbServer.Storage.PermissionChecker do
     subject_id = update["subject_id"]
     subject_type = update["subject_type"]
 
+    rel_table =
+      Keyword.get(opts, :relationships) || Application.get_env(:ebb_server, :relationships) ||
+        :ebb_relationships
+
     group_id =
-      SystemCache.get_entity_group(subject_id, opts) ||
+      SystemCache.get_entity_group(subject_id, rel_table) ||
         Map.get(intra_ctx, subject_id)
 
     if group_id do
@@ -349,7 +357,11 @@ defmodule EbbServer.Storage.PermissionChecker do
   defp ensure_group(_), do: {:ok, :group_found}
 
   defp fetch_permissions(actor_id, group_id, opts) do
-    case SystemCache.get_permissions(actor_id, group_id, opts) do
+    table =
+      Keyword.get(opts, :group_members) || Application.get_env(:ebb_server, :group_members) ||
+        :ebb_group_members
+
+    case SystemCache.get_permissions(actor_id, group_id, table) do
       nil -> {:error, "not_authorized", "actor is not a member of the group"}
       permissions -> {:ok, permissions}
     end
