@@ -251,15 +251,25 @@ defmodule EbbServer.Storage.EntityStore do
     subject_type = update["subject_type"]
 
     new_data =
-      if subject_type in ["groupMember", "relationship"] do
-        update["data"]
-      else
-        fields_with_update_id =
-          Enum.into(update["data"]["fields"] || %{}, %{}, fn {field_name, field_value} ->
-            {field_name, Map.put(field_value, "update_id", update["id"])}
-          end)
+      cond do
+        subject_type == "groupMember" ->
+          fields_with_update_id =
+            Enum.into(update["data"]["fields"] || %{}, %{}, fn {field_name, field_value} ->
+              {field_name, Map.put(field_value, "update_id", update["id"])}
+            end)
 
-        %{"fields" => fields_with_update_id}
+          %{update["data"] | "fields" => fields_with_update_id}
+
+        subject_type == "relationship" ->
+          update["data"]
+
+        true ->
+          fields_with_update_id =
+            Enum.into(update["data"]["fields"] || %{}, %{}, fn {field_name, field_value} ->
+              {field_name, Map.put(field_value, "update_id", update["id"])}
+            end)
+
+          %{"fields" => fields_with_update_id}
       end
 
     %{
