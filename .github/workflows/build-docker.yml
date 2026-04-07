@@ -45,6 +45,9 @@ jobs:
             type=sha,prefix=,suffix=,format=short
             type=raw,value=latest
 
+      - name: Copy git dir for rocksdb compile hooks
+        run: cp -r .git ebb_server/.git
+
       - name: Build and Push
         uses: docker/build-push-action@v6
         with:
