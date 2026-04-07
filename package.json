@@ -22,7 +22,7 @@
     "lint:fix": "oxlint --fix",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
-    "prepare": "lefthook install"
+    "prepare": "lefthook install --skip-ci"
   },
   "dependencies": {
     "nanoid": "^5.1.6",
