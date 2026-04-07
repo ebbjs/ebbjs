@@ -1,3 +1,3 @@
 [build]
-  command = "pnpm install"
+  command = "rm -rf .husky/_ && pnpm install"
   publish = "packages/www/dist"
