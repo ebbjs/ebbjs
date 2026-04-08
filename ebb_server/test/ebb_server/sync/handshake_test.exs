@@ -4,7 +4,6 @@ defmodule EbbServer.Sync.HandshakeTest do
   import Plug.Test
   import Plug.Conn
   import EbbServer.TestHelpers
-  alias EbbServer.Storage.SystemCache
   alias EbbServer.Sync.Router
 
   setup do

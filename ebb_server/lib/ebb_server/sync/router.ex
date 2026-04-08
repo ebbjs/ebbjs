@@ -11,7 +11,7 @@ defmodule EbbServer.Sync.Router do
 
   use Plug.Router
 
-  alias EbbServer.Storage.{EntityStore, PermissionChecker, SystemCache, Writer}
+  alias EbbServer.Storage.{EntityStore, GroupCache, PermissionChecker, Writer}
 
   plug(Plug.Logger)
   plug(EbbServer.Sync.AuthPlug)
@@ -131,7 +131,7 @@ defmodule EbbServer.Sync.Router do
         _cursors = payload["cursors"] || %{}
         _schema_version = payload["schema_version"]
 
-        groups = SystemCache.get_actor_groups(actor_id)
+        groups = GroupCache.get_actor_groups(actor_id)
 
         response = %{
           "actor_id" => actor_id,
