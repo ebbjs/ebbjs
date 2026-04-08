@@ -1,29 +1,52 @@
 defmodule EbbServer.Storage.EntityStoreTest do
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{EntityStore, RocksDB, SQLite, SystemCache, Writer}
+  alias EbbServer.Storage.{
+    DirtyTracker,
+    EntityStore,
+    GroupCache,
+    GsnCounter,
+    RelationshipCache,
+    RocksDB,
+    SQLite,
+    Writer
+  }
+
   import EbbServer.TestHelpers
 
   defp start_isolated_cache do
     unique_id = System.unique_integer([:positive])
     dirty_set_name = :"ebb_dirty_#{unique_id}"
     gsn_counter_name = :"ebb_gsn_#{unique_id}"
-    cache_name = :"ebb_cache_#{unique_id}"
+    gm_table = :"ebb_gm_#{unique_id}"
+    rel_table = :"ebb_rel_#{unique_id}"
+    rbg_table = :"ebb_rbg_#{unique_id}"
+    dt_name = :"dt_#{unique_id}"
+    gc_name = :"gc_#{unique_id}"
+    rc_name = :"rc_#{unique_id}"
 
     counter = :atomics.new(1, signed: false)
     :persistent_term.put(gsn_counter_name, counter)
+    :persistent_term.put({DirtyTracker, :dirty_set}, dirty_set_name)
+    :persistent_term.put({GroupCache, :group_members}, gm_table)
+    :persistent_term.put({RelationshipCache, :relationships}, rel_table)
+    :persistent_term.put({RelationshipCache, :relationships_by_group}, rbg_table)
 
-    {:ok, _pid} =
-      SystemCache.start_link(
-        name: cache_name,
-        dirty_set: dirty_set_name,
-        gsn_counter: counter,
-        gsn_counter_name: gsn_counter_name,
-        initial_gsn: 0
+    {:ok, _pid_dt} = DirtyTracker.start_link(name: dt_name, dirty_set: dirty_set_name)
+    {:ok, _pid_gc} = GroupCache.start_link(name: gc_name, table: gm_table)
+
+    {:ok, _pid_rc} =
+      RelationshipCache.start_link(
+        name: rc_name,
+        relationships: rel_table,
+        relationships_by_group: rbg_table
       )
 
     on_exit(fn ->
-      if pid = Process.whereis(cache_name), do: safe_stop(pid)
+      for name <- [dt_name, gc_name, rc_name],
+          pid = Process.whereis(name),
+          do: safe_stop(pid)
+
       :persistent_term.erase(gsn_counter_name)
     end)
 
@@ -149,7 +172,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
       action = validated_action(%{updates: [update]})
 
       Writer.write_actions([action], writer_name)
-      assert SystemCache.dirty?(entity_id, dirty_set)
+      assert DirtyTracker.dirty?(entity_id, dirty_set)
 
       EntityStore.get(entity_id, "a_test",
         rocks_name: rocks_name,
@@ -157,7 +180,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
         dirty_set: dirty_set
       )
 
-      refute SystemCache.dirty?(entity_id, dirty_set)
+      refute DirtyTracker.dirty?(entity_id, dirty_set)
     end
 
     test "second read is clean (no re-materialization)", %{
@@ -188,7 +211,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
 
       assert entity1.id == entity2.id
       assert entity1.last_gsn == entity2.last_gsn
-      refute SystemCache.dirty?(entity_id, dirty_set)
+      refute DirtyTracker.dirty?(entity_id, dirty_set)
     end
 
     test "entity not found", %{

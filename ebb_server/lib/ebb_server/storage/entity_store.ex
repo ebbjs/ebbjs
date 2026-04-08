@@ -6,7 +6,7 @@ defmodule EbbServer.Storage.EntityStore do
   (for cached reads) and the RocksDB GenServer (for materialization).
 
   The `get/2,3` function is the main entry point:
-  - First checks if the entity is dirty in SystemCache
+  - First checks if the entity is dirty in DirtyTracker
   - If clean: reads directly from SQLite
   - If dirty: materializes by replaying actions from RocksDB
 
@@ -30,7 +30,7 @@ defmodule EbbServer.Storage.EntityStore do
   since all use the same lexicographic string comparison rules.
   """
 
-  alias EbbServer.Storage.{Fields, RocksDB, SQLite, SystemCache}
+  alias EbbServer.Storage.{DirtyTracker, Fields, RocksDB, SQLite}
 
   @default_rocks_name EbbServer.Storage.RocksDB
   @default_sqlite_name EbbServer.Storage.SQLite
@@ -51,7 +51,7 @@ defmodule EbbServer.Storage.EntityStore do
     sqlite_name = Keyword.get(opts, :sqlite_name, @default_sqlite_name)
     dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
 
-    if SystemCache.dirty?(entity_id, dirty_set) do
+    if DirtyTracker.dirty?(entity_id, dirty_set) do
       materialize(entity_id,
         rocks_name: rocks_name,
         sqlite_name: sqlite_name,
@@ -79,7 +79,7 @@ defmodule EbbServer.Storage.EntityStore do
   2. Scan RocksDB cf_entity_actions for actions after last_gsn
   3. Replay each action's updates in GSN order
   4. Upsert materialized entity to SQLite
-  5. Clear dirty flag in SystemCache
+  5. Clear dirty flag in DirtyTracker
   """
   @spec materialize(String.t(), keyword()) :: {:ok, map()} | :not_found | {:error, term()}
   def materialize(entity_id, opts \\ []) do
@@ -126,12 +126,12 @@ defmodule EbbServer.Storage.EntityStore do
   end
 
   defp handle_empty_entries(entity_id, nil, dirty_set, _sqlite_name) do
-    SystemCache.clear_dirty(entity_id, dirty_set)
+    DirtyTracker.clear_dirty(entity_id, dirty_set)
     :not_found
   end
 
   defp handle_empty_entries(entity_id, _existing_row, dirty_set, sqlite_name) do
-    SystemCache.clear_dirty(entity_id, dirty_set)
+    DirtyTracker.clear_dirty(entity_id, dirty_set)
 
     case SQLite.get_entity(entity_id, sqlite_name) do
       {:ok, row} -> {:ok, format_entity(row)}
@@ -176,7 +176,7 @@ defmodule EbbServer.Storage.EntityStore do
     } = result
 
     if deleted_hlc != nil do
-      SystemCache.clear_dirty(entity_id, dirty_set)
+      DirtyTracker.clear_dirty(entity_id, dirty_set)
       :not_found
     else
       entity_row = %{
@@ -191,7 +191,7 @@ defmodule EbbServer.Storage.EntityStore do
       }
 
       SQLite.upsert_entity(entity_row, sqlite_name)
-      SystemCache.clear_dirty(entity_id, dirty_set)
+      DirtyTracker.clear_dirty(entity_id, dirty_set)
       {:ok, format_entity(entity_row)}
     end
   end
@@ -382,7 +382,7 @@ defmodule EbbServer.Storage.EntityStore do
     limit = Keyword.get(opts, :limit)
     offset = Keyword.get(opts, :offset)
 
-    dirty_ids = SystemCache.dirty_entity_ids_for_type(type, dirty_set)
+    dirty_ids = DirtyTracker.dirty_entity_ids_for_type(type, dirty_set)
 
     if dirty_ids != [] do
       Enum.each(dirty_ids, fn id ->

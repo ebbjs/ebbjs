@@ -4,7 +4,7 @@ defmodule EbbServer.IntegrationTest do
   import Plug.Test
   import Plug.Conn
   import EbbServer.TestHelpers
-  alias EbbServer.Storage.SystemCache
+  alias EbbServer.Storage.DirtyTracker
   alias EbbServer.Sync.Router
 
   setup do
@@ -286,12 +286,12 @@ defmodule EbbServer.IntegrationTest do
 
       post_actions(msgpack_encode!(%{"actions" => [action_body]}))
 
-      assert SystemCache.dirty?(entity_id)
+      assert DirtyTracker.dirty?(entity_id)
 
       conn = get_entity(entity_id)
       assert conn.status == 200
 
-      refute SystemCache.dirty?(entity_id)
+      refute DirtyTracker.dirty?(entity_id)
 
       conn = get_entity(entity_id)
       assert conn.status == 200

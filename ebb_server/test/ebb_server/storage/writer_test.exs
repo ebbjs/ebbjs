@@ -1,35 +1,50 @@
 defmodule EbbServer.Storage.WriterTest do
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{RocksDB, SystemCache, Writer}
+  alias EbbServer.Storage.{
+    DirtyTracker,
+    GroupCache,
+    GsnCounter,
+    RelationshipCache,
+    RocksDB,
+    Writer
+  }
+
   import EbbServer.TestHelpers
 
   defp start_isolated_cache do
     unique_id = System.unique_integer([:positive])
     dirty_set_name = :"ebb_dirty_#{unique_id}"
     gsn_counter_name = :"ebb_gsn_#{unique_id}"
-    cache_name = :"ebb_cache_#{unique_id}"
     gm_table = :"ebb_gm_#{unique_id}"
     rel_table = :"ebb_rel_#{unique_id}"
     rbg_table = :"ebb_rbg_#{unique_id}"
+    dt_name = :"dt_#{unique_id}"
+    gc_name = :"gc_#{unique_id}"
+    rc_name = :"rc_#{unique_id}"
 
     counter = :atomics.new(1, signed: false)
     :persistent_term.put(gsn_counter_name, counter)
+    :persistent_term.put({DirtyTracker, :dirty_set}, dirty_set_name)
+    :persistent_term.put({GroupCache, :group_members}, gm_table)
+    :persistent_term.put({RelationshipCache, :relationships}, rel_table)
+    :persistent_term.put({RelationshipCache, :relationships_by_group}, rbg_table)
 
-    {:ok, _pid} =
-      SystemCache.start_link(
-        name: cache_name,
-        dirty_set: dirty_set_name,
-        gsn_counter: counter,
-        gsn_counter_name: gsn_counter_name,
-        initial_gsn: 0,
-        group_members: gm_table,
+    {:ok, _pid_dt} = DirtyTracker.start_link(name: dt_name, dirty_set: dirty_set_name)
+    {:ok, _pid_gc} = GroupCache.start_link(name: gc_name, table: gm_table)
+
+    {:ok, _pid_rc} =
+      RelationshipCache.start_link(
+        name: rc_name,
         relationships: rel_table,
         relationships_by_group: rbg_table
       )
 
     on_exit(fn ->
-      if pid = Process.whereis(cache_name), do: safe_stop(pid)
+      for name <- [dt_name, gc_name, rc_name],
+          pid = Process.whereis(name),
+          do: safe_stop(pid)
+
       :persistent_term.erase(gsn_counter_name)
     end)
 
@@ -228,7 +243,7 @@ defmodule EbbServer.Storage.WriterTest do
 
       Writer.write_actions([action], writer_name)
 
-      assert SystemCache.dirty?("todo_abc", dirty_set)
+      assert DirtyTracker.dirty?("todo_abc", dirty_set)
     end
   end
 
@@ -341,9 +356,9 @@ defmodule EbbServer.Storage.WriterTest do
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
       assert [%{group_id: "group_1", permissions: ["todo.create"]}] =
-               SystemCache.get_actor_groups("actor_1", gm_table)
+               GroupCache.get_actor_groups("actor_1", gm_table)
 
-      assert ["todo.create"] = SystemCache.get_permissions("actor_1", "group_1", gm_table)
+      assert ["todo.create"] = GroupCache.get_permissions("actor_1", "group_1", gm_table)
     end
 
     test "relationship PUT updates ETS",
@@ -377,8 +392,8 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
-      assert "group_1" = SystemCache.get_entity_group("todo_1", rel_table)
-      assert ["todo_1"] = SystemCache.get_group_entities("group_1", rbg_table)
+      assert "group_1" = RelationshipCache.get_entity_group("todo_1", rel_table)
+      assert ["todo_1"] = RelationshipCache.get_group_entities("group_1", rbg_table)
     end
 
     test "groupMember DELETE removes from ETS",
@@ -411,7 +426,7 @@ defmodule EbbServer.Storage.WriterTest do
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([put_action], writer_name)
-      assert [_] = SystemCache.get_actor_groups("actor_1", gm_table)
+      assert [_] = GroupCache.get_actor_groups("actor_1", gm_table)
 
       delete_action = %{
         id: "act_" <> Nanoid.generate(),
@@ -429,7 +444,7 @@ defmodule EbbServer.Storage.WriterTest do
       }
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([delete_action], writer_name)
-      assert [] = SystemCache.get_actor_groups("actor_1", gm_table)
+      assert [] = GroupCache.get_actor_groups("actor_1", gm_table)
     end
 
     test "relationship DELETE removes from ETS",
@@ -462,7 +477,7 @@ defmodule EbbServer.Storage.WriterTest do
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([put_action], writer_name)
-      assert "group_1" = SystemCache.get_entity_group("todo_1", rel_table)
+      assert "group_1" = RelationshipCache.get_entity_group("todo_1", rel_table)
 
       delete_action = %{
         id: "act_" <> Nanoid.generate(),
@@ -480,7 +495,7 @@ defmodule EbbServer.Storage.WriterTest do
       }
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([delete_action], writer_name)
-      assert nil == SystemCache.get_entity_group("todo_1", rel_table)
+      assert nil == RelationshipCache.get_entity_group("todo_1", rel_table)
     end
 
     test "non-system entity updates do not affect ETS",
@@ -493,8 +508,8 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
-      assert [] = SystemCache.get_actor_groups("a_test", gm_table)
-      assert nil == SystemCache.get_entity_group("todo_test", rel_table)
+      assert [] = GroupCache.get_actor_groups("a_test", gm_table)
+      assert nil == RelationshipCache.get_entity_group("todo_test", rel_table)
     end
 
     test "mixed batch - system and user entities",
@@ -540,8 +555,8 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
-      assert [%{group_id: "group_1"}] = SystemCache.get_actor_groups("actor_1", gm_table)
-      assert nil == SystemCache.get_entity_group("todo_1", rel_table)
+      assert [%{group_id: "group_1"}] = GroupCache.get_actor_groups("actor_1", gm_table)
+      assert nil == RelationshipCache.get_entity_group("todo_1", rel_table)
     end
   end
 

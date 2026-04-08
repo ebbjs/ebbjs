@@ -4,7 +4,7 @@ defmodule EbbServer.PermissionIntegrationTest do
   import Plug.Test
   import Plug.Conn
   import EbbServer.TestHelpers
-  alias EbbServer.Storage.SystemCache
+  alias EbbServer.Storage.{GroupCache, RelationshipCache}
   alias EbbServer.Sync.Router
 
   setup do
@@ -186,10 +186,10 @@ defmodule EbbServer.PermissionIntegrationTest do
       {:ok, response} = Jason.decode(conn.resp_body)
       assert response == %{"rejected" => []}
 
-      assert SystemCache.get_actor_groups("actor_1")
+      assert GroupCache.get_actor_groups("actor_1")
              |> Enum.any?(fn gm -> gm.group_id == "group_1" end)
 
-      assert SystemCache.get_entity_group("group_1") == "group_1"
+      assert RelationshipCache.get_entity_group("group_1") == "group_1"
     end
   end
 
