@@ -2,15 +2,15 @@ defmodule EbbServer.Storage.PermissionChecker do
   @moduledoc """
   Stateless module for validating and authorizing actions.
 
-  All state comes from ETS lookups via SystemCache functions:
-  - get_permissions/2
-  - get_entity_group/1
-  - get_actor_groups/1
+  All state comes from ETS lookups via cache modules:
+  - GroupCache.get_permissions/3
+  - RelationshipCache.get_entity_group/2
+  - GroupCache.get_actor_groups/2
   """
 
   import Bitwise
 
-  alias EbbServer.Storage.SystemCache
+  alias EbbServer.Storage.{GroupCache, RelationshipCache}
 
   @type raw_action :: %{String.t() => term()}
   @type raw_update :: %{String.t() => term()}
@@ -290,7 +290,7 @@ defmodule EbbServer.Storage.PermissionChecker do
       Keyword.get(opts, :group_members) || Application.get_env(:ebb_server, :group_members) ||
         :ebb_group_members
 
-    case SystemCache.get_permissions(actor_id, group_id, table) do
+    case GroupCache.get_permissions(actor_id, group_id, table) do
       nil -> {:error, "not_authorized", "actor is not a member of the group"}
       _perms -> :ok
     end
@@ -305,7 +305,7 @@ defmodule EbbServer.Storage.PermissionChecker do
         :ebb_relationships
 
     group_id =
-      SystemCache.get_entity_group(subject_id, rel_table) ||
+      RelationshipCache.get_entity_group(subject_id, rel_table) ||
         Map.get(intra_ctx, subject_id)
 
     if group_id do
@@ -338,7 +338,7 @@ defmodule EbbServer.Storage.PermissionChecker do
       Keyword.get(opts, :group_members) || Application.get_env(:ebb_server, :group_members) ||
         :ebb_group_members
 
-    actor_groups = SystemCache.get_actor_groups(actor_id, table)
+    actor_groups = GroupCache.get_actor_groups(actor_id, table)
 
     has_permission =
       Enum.any?(actor_groups, fn group_entry ->
@@ -361,7 +361,7 @@ defmodule EbbServer.Storage.PermissionChecker do
       Keyword.get(opts, :group_members) || Application.get_env(:ebb_server, :group_members) ||
         :ebb_group_members
 
-    case SystemCache.get_permissions(actor_id, group_id, table) do
+    case GroupCache.get_permissions(actor_id, group_id, table) do
       nil -> {:error, "not_authorized", "actor is not a member of the group"}
       permissions -> {:ok, permissions}
     end

@@ -3,14 +3,21 @@ defmodule EbbServer.Storage.Writer do
   GenServer that writes actions to RocksDB.
 
   For Slice 1: single instance, immediate flush (no batching timer).
-  Claims GSN ranges from SystemCache and writes to all 5 column families.
+  Claims GSN ranges from GsnCounter and writes to all 5 column families.
   """
 
   use GenServer
 
-  alias EbbServer.Storage.Fields
   alias EbbServer.Storage.PermissionChecker
-  alias EbbServer.Storage.{RocksDB, SystemCache}
+
+  alias EbbServer.Storage.{
+    DirtyTracker,
+    Fields,
+    GroupCache,
+    GsnCounter,
+    RelationshipCache,
+    RocksDB
+  }
 
   @type validated_action :: PermissionChecker.validated_action()
   @type validated_update :: PermissionChecker.validated_update()
@@ -50,13 +57,39 @@ defmodule EbbServer.Storage.Writer do
   @spec init(keyword()) :: {:ok, t()}
   def init(opts) do
     rocks_name = Keyword.get(opts, :rocks_name, EbbServer.Storage.RocksDB)
-    dirty_set = Keyword.get(opts, :dirty_set, :ebb_dirty_set)
-    gsn_counter = Keyword.get(opts, :gsn_counter, :persistent_term.get(:ebb_gsn_counter))
-    group_members = Keyword.get(opts, :group_members, :ebb_group_members)
-    relationships = Keyword.get(opts, :relationships, :ebb_relationships)
+
+    dirty_set =
+      Keyword.get(
+        opts,
+        :dirty_set,
+        :persistent_term.get({DirtyTracker, :dirty_set}, :ebb_dirty_set)
+      )
+
+    gsn_counter = Keyword.get(opts, :gsn_counter, GsnCounter.get_resources().gsn_counter)
+
+    group_members =
+      Keyword.get(
+        opts,
+        :group_members,
+        :persistent_term.get({GroupCache, :group_members}, :ebb_group_members)
+      )
+
+    relationships =
+      Keyword.get(
+        opts,
+        :relationships,
+        :persistent_term.get({RelationshipCache, :relationships}, :ebb_relationships)
+      )
 
     relationships_by_group =
-      Keyword.get(opts, :relationships_by_group, :ebb_relationships_by_group)
+      Keyword.get(
+        opts,
+        :relationships_by_group,
+        :persistent_term.get(
+          {RelationshipCache, :relationships_by_group},
+          :ebb_relationships_by_group
+        )
+      )
 
     {:ok,
      %__MODULE__{
@@ -75,7 +108,7 @@ defmodule EbbServer.Storage.Writer do
   Actions are already validated by PermissionChecker before reaching the Writer.
   Pipeline:
   1. Filter out actions with empty updates (safety check)
-  2. Claim a GSN range from SystemCache for the batch
+  2. Claim a GSN range from GsnCounter for the batch
   3. Build a batch of puts across all 5 column families:
      - cf_actions: GSN → full action (ETF encoded)
      - cf_action_dedup: action_id → GSN (duplicate detection)
@@ -83,7 +116,7 @@ defmodule EbbServer.Storage.Writer do
      - cf_entity_actions: (subject_id, GSN) → action_id (materialization index)
      - cf_type_entities: (subject_type, subject_id) → <<>> (type index)
   4. Write batch synchronously to RocksDB
-  5. Mark affected entities dirty in SystemCache
+  5. Mark affected entities dirty in DirtyTracker
 
   Returns `{:ok, {gsn_start, gsn_end}, rejected_actions}` on success.
   """
@@ -97,7 +130,7 @@ defmodule EbbServer.Storage.Writer do
       batch_size = length(filtered)
 
       {gsn_start, gsn_end} =
-        SystemCache.claim_gsn_range(batch_size, state.gsn_counter)
+        GsnCounter.claim_gsn_range(batch_size, state.gsn_counter)
 
       rocks_name = state.rocks_name
 
@@ -119,7 +152,7 @@ defmodule EbbServer.Storage.Writer do
           |> Enum.map(fn update -> update.subject_id end)
           |> Enum.uniq()
 
-        :ok = SystemCache.mark_dirty_batch(entity_ids, state.dirty_set)
+        :ok = DirtyTracker.mark_dirty_batch(entity_ids, state.dirty_set)
         update_system_caches(filtered, state)
         {:reply, {:ok, {gsn_start, gsn_end}, []}, state}
 
@@ -149,7 +182,7 @@ defmodule EbbServer.Storage.Writer do
         group_id = Fields.get(data, "group_id")
         permissions = Fields.get(data, "permissions")
 
-        SystemCache.put_group_member(
+        GroupCache.put_group_member(
           %{
             id: update.subject_id,
             actor_id: actor_id,
@@ -160,7 +193,7 @@ defmodule EbbServer.Storage.Writer do
         )
 
       :delete ->
-        SystemCache.delete_group_member(update.subject_id, state.group_members)
+        GroupCache.delete_group_member(update.subject_id, state.group_members)
     end
   end
 
@@ -175,7 +208,7 @@ defmodule EbbServer.Storage.Writer do
         type = Fields.get(data, "type")
         field = Fields.get(data, "field")
 
-        SystemCache.put_relationship(
+        RelationshipCache.put_relationship(
           %{
             id: update.subject_id,
             source_id: source_id,
@@ -188,7 +221,7 @@ defmodule EbbServer.Storage.Writer do
         )
 
       :delete ->
-        SystemCache.delete_relationship(
+        RelationshipCache.delete_relationship(
           update.subject_id,
           relationships: state.relationships,
           relationships_by_group: state.relationships_by_group
