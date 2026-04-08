@@ -149,15 +149,9 @@ defmodule EbbServer.Storage.SystemCache do
       nil when table == [] ->
         []
 
-      nil ->
-        actual_table = @default_group_members
+      resolved_table ->
+        actual_table = resolved_table || @default_group_members
 
-        :ets.lookup(actual_table, actor_id)
-        |> Enum.map(fn {_actor_id, entry} ->
-          %{group_id: entry.group_id, permissions: entry.permissions}
-        end)
-
-      actual_table ->
         :ets.lookup(actual_table, actor_id)
         |> Enum.map(fn {_actor_id, entry} ->
           %{group_id: entry.group_id, permissions: entry.permissions}
@@ -181,17 +175,9 @@ defmodule EbbServer.Storage.SystemCache do
       nil when table == [] ->
         nil
 
-      nil ->
-        actual_table = @default_group_members
+      resolved_table ->
+        actual_table = resolved_table || @default_group_members
 
-        :ets.lookup(actual_table, actor_id)
-        |> flat_map_permissions(group_id)
-        |> case do
-          [] -> nil
-          perms -> Enum.uniq(List.flatten(perms))
-        end
-
-      actual_table ->
         :ets.lookup(actual_table, actor_id)
         |> flat_map_permissions(group_id)
         |> case do
@@ -252,15 +238,9 @@ defmodule EbbServer.Storage.SystemCache do
       nil when table == [] ->
         nil
 
-      nil ->
-        actual_table = @default_relationships
+      resolved_table ->
+        actual_table = resolved_table || @default_relationships
 
-        case :ets.lookup(actual_table, entity_id) do
-          [{_source_id, %{target_id: group_id}}] -> group_id
-          [] -> nil
-        end
-
-      actual_table ->
         case :ets.lookup(actual_table, entity_id) do
           [{_source_id, %{target_id: group_id}}] -> group_id
           [] -> nil

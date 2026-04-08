@@ -254,7 +254,6 @@ defmodule EbbServer.Storage.EntityStore do
       cond do
         subject_type == "groupMember" ->
           data = update["data"]
-          fields = data["fields"] || %{}
 
           actor_id = get_field_value(data, "actor_id")
           group_id = get_field_value(data, "group_id")
