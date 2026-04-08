@@ -1,4 +1,4 @@
-defmodule EbbServer.Slice2IntegrationTest do
+defmodule EbbServer.PermissionIntegrationTest do
   use ExUnit.Case, async: false
 
   import Plug.Test
@@ -14,7 +14,7 @@ defmodule EbbServer.Slice2IntegrationTest do
     end
 
     tmp_dir =
-      tmp_dir(%{module: __MODULE__, test: "slice2_#{:erlang.unique_integer([:positive])}"})
+      tmp_dir(%{module: __MODULE__, test: "permission_#{:erlang.unique_integer([:positive])}"})
 
     Application.put_env(:ebb_server, :data_dir, tmp_dir)
 
@@ -85,13 +85,6 @@ defmodule EbbServer.Slice2IntegrationTest do
 
   defp post_query(body, actor_id \\ "a_test") do
     conn(:post, "/entities/query", Jason.encode!(body))
-    |> put_req_header("content-type", "application/json")
-    |> put_req_header("x-ebb-actor-id", actor_id)
-    |> Router.call([])
-  end
-
-  defp post_handshake(body, actor_id \\ "a_test") do
-    conn(:post, "/sync/handshake", Jason.encode!(body))
     |> put_req_header("content-type", "application/json")
     |> put_req_header("x-ebb-actor-id", actor_id)
     |> Router.call([])
@@ -185,7 +178,7 @@ defmodule EbbServer.Slice2IntegrationTest do
     post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
   end
 
-  describe "Flow A: Group Bootstrap" do
+  describe "Group Bootstrap" do
     test "group bootstrap accepted without prior permissions" do
       conn = bootstrap_group("actor_1", "group_1", ["todo.*", "post.*"])
       assert conn.status == 200
@@ -198,19 +191,9 @@ defmodule EbbServer.Slice2IntegrationTest do
 
       assert SystemCache.get_entity_group("group_1") == "group_1"
     end
-
-    test "handshake returns bootstrapped group" do
-      bootstrap_group("actor_1", "group_1", ["todo.*", "post.*"])
-
-      conn = post_handshake(%{"cursors" => %{}, "schema_version" => 1}, "actor_1")
-      assert conn.status == 200
-
-      {:ok, response} = Jason.decode(conn.resp_body)
-      assert response["groups"] |> hd() |> Map.get("id") == "group_1"
-    end
   end
 
-  describe "Flow B: Authorized Write" do
+  describe "Authorized Write" do
     test "authorized write to actor's group accepted" do
       bootstrap_group("actor_1", "group_1", ["todo.create", "todo.read"])
 
@@ -301,7 +284,7 @@ defmodule EbbServer.Slice2IntegrationTest do
     end
   end
 
-  describe "Flow C: Unauthorized Write Rejected" do
+  describe "Unauthorized Write Rejection" do
     test "write to group actor does NOT belong to is rejected" do
       bootstrap_group("actor_1", "group_1", ["todo.*", "post.*"])
 
@@ -358,7 +341,7 @@ defmodule EbbServer.Slice2IntegrationTest do
     end
   end
 
-  describe "Flow D: Permission-Scoped Query" do
+  describe "Permission-Scoped Query" do
     test "permission-scoped query returns only visible entities" do
       bootstrap_group("actor_1", "group_1", ["todo.create", "todo.read"])
       bootstrap_group("actor_2", "group_2", ["todo.create", "todo.read"])
@@ -449,7 +432,7 @@ defmodule EbbServer.Slice2IntegrationTest do
     end
   end
 
-  describe "Validation Checks" do
+  describe "HLC Validation" do
     test "HLC future drift rejected (>120s)" do
       hlc_future = hlc_from(System.os_time(:millisecond) + 200_000)
 
@@ -513,7 +496,9 @@ defmodule EbbServer.Slice2IntegrationTest do
       rejection = hd(response["rejected"])
       assert rejection["reason"] == "hlc_stale"
     end
+  end
 
+  describe "Structure Validation" do
     test "structure validation rejects missing action id" do
       action = %{
         "actor_id" => "a_test",
@@ -575,61 +560,6 @@ defmodule EbbServer.Slice2IntegrationTest do
 
       rejection = hd(response["rejected"])
       assert rejection["reason"] == "invalid_structure"
-    end
-  end
-
-  describe "Auth Integration" do
-    test "handshake without auth header returns 401" do
-      conn =
-        conn(:post, "/sync/handshake", Jason.encode!(%{"cursors" => %{}, "schema_version" => 1}))
-        |> put_req_header("content-type", "application/json")
-        |> Router.call([])
-
-      assert conn.status == 401
-    end
-
-    test "actions without auth header returns 401" do
-      action = %{
-        "id" => "act_no_auth_" <> Nanoid.generate(),
-        "actor_id" => "a_test",
-        "hlc" => generate_hlc(),
-        "updates" => []
-      }
-
-      owner = self()
-      ref = make_ref()
-
-      state = %{
-        method: "POST",
-        params: %{},
-        req_body: msgpack_encode!(%{"actions" => [action]}),
-        chunks: nil,
-        ref: ref,
-        owner: owner,
-        http_protocol: :"HTTP/1.1",
-        peer_data: %{address: {127, 0, 0, 1}, port: 111_317, ssl_cert: nil},
-        sock_data: %{address: {127, 0, 0, 1}, port: 111_318},
-        ssl_data: nil
-      }
-
-      conn =
-        %Plug.Conn{}
-        |> Map.put(:method, "POST")
-        |> Map.put(:path_info, ["sync", "actions"])
-        |> Map.put(:request_path, "/sync/actions")
-        |> Map.put(:query_string, "")
-        |> Map.put(:query_params, %Plug.Conn.Unfetched{aspect: :query_params})
-        |> Map.put(:body_params, %Plug.Conn.Unfetched{aspect: :body_params})
-        |> Map.put(:params, %Plug.Conn.Unfetched{aspect: :params})
-        |> Map.put(:req_headers, [{"content-type", "application/msgpack"}])
-        |> Map.put(:host, "www.example.com")
-        |> Map.put(:port, 80)
-        |> Map.put(:remote_ip, {127, 0, 0, 1})
-        |> Map.put(:scheme, :http)
-        |> Map.put(:adapter, {Plug.Adapters.Test.Conn, state})
-
-      conn = Router.call(conn, [])
-      assert conn.status == 401
     end
   end
 
