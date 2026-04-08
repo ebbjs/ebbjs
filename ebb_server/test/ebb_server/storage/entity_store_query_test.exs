@@ -1,107 +1,41 @@
 defmodule EbbServer.Storage.EntityStoreQueryTest do
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{
-    DirtyTracker,
-    EntityStore,
-    GroupCache,
-    RelationshipCache,
-    RocksDB,
-    SQLite,
-    Writer
-  }
+  alias EbbServer.Storage.{DirtyTracker, EntityStore, Writer}
 
   import EbbServer.TestHelpers
 
-  defp start_isolated_cache do
-    unique_id = System.unique_integer([:positive])
-    dirty_set_name = :"ebb_dirty_#{unique_id}"
-    gsn_counter_name = :"ebb_gsn_#{unique_id}"
-    gm_table = :"ebb_gm_#{unique_id}"
-    rel_table = :"ebb_rel_#{unique_id}"
-    rbg_table = :"ebb_rbg_#{unique_id}"
-    dt_name = :"dt_#{unique_id}"
-    gc_name = :"gc_#{unique_id}"
-    rc_name = :"rc_#{unique_id}"
+  setup do
+    %{
+      dirty_set: dirty_set,
+      gsn_counter: gsn_counter,
+      group_members: group_members,
+      relationships: relationships,
+      relationships_by_group: relationships_by_group
+    } = start_isolated_cache()
 
-    counter = :atomics.new(1, signed: false)
-    :persistent_term.put(gsn_counter_name, counter)
-    :persistent_term.put(gsn_counter_name, counter)
-    :persistent_term.put({DirtyTracker, :dirty_set}, dirty_set_name)
-    :persistent_term.put({GroupCache, :group_members}, gm_table)
-    :persistent_term.put({RelationshipCache, :relationships}, rel_table)
-    :persistent_term.put({RelationshipCache, :relationships_by_group}, rbg_table)
+    %{name: rocks_name, dir: rocks_dir} = start_rocks()
+    %{name: sqlite_name} = start_sqlite(rocks_dir)
 
-    {:ok, _pid_dt} = DirtyTracker.start_link(name: dt_name, dirty_set: dirty_set_name)
-    {:ok, _pid_gc} = GroupCache.start_link(name: gc_name, table: gm_table)
-
-    {:ok, _pid_rc} =
-      RelationshipCache.start_link(
-        name: rc_name,
-        relationships: rel_table,
-        relationships_by_group: rbg_table
-      )
-
-    on_exit(fn ->
-      for name <- [dt_name, gc_name, rc_name],
-          pid = Process.whereis(name),
-          do: safe_stop(pid)
-
-      :persistent_term.erase(gsn_counter_name)
-    end)
+    %{name: writer_name} =
+      start_writer(%{
+        rocks_name: rocks_name,
+        dirty_set: dirty_set,
+        gsn_counter: gsn_counter,
+        group_members: group_members,
+        relationships: relationships,
+        relationships_by_group: relationships_by_group
+      })
 
     %{
-      dirty_set: dirty_set_name,
-      gsn_counter: counter,
-      group_members: gm_table,
-      relationships: rel_table,
-      relationships_by_group: rbg_table
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set,
+      group_members: group_members,
+      relationships: relationships,
+      relationships_by_group: relationships_by_group
     }
-  end
-
-  defp start_rocks do
-    unique_id = System.unique_integer([:positive])
-    dir = tmp_dir(%{module: __MODULE__, test: "rocks_#{unique_id}"})
-    name = :"rocks_#{unique_id}"
-    {:ok, pid} = RocksDB.start_link(data_dir: dir, name: name)
-
-    on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
-    end)
-
-    %{name: name, pid: pid, dir: dir}
-  end
-
-  defp start_sqlite(dir) do
-    name = :"sqlite_#{System.unique_integer([:positive])}"
-    {:ok, pid} = SQLite.start_link(data_dir: dir, name: name)
-
-    on_exit(fn ->
-      safe_stop(pid)
-    end)
-
-    %{name: name, pid: pid}
-  end
-
-  defp start_writer(opts) do
-    name = :"writer_#{System.unique_integer([:positive])}"
-
-    {:ok, pid} =
-      Writer.start_link(
-        name: name,
-        rocks_name: opts.rocks_name,
-        dirty_set: opts.dirty_set,
-        gsn_counter: opts.gsn_counter,
-        group_members: opts.group_members,
-        relationships: opts.relationships,
-        relationships_by_group: opts.relationships_by_group
-      )
-
-    on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
-    end)
-
-    %{name: name, pid: pid}
   end
 
   defp bootstrap_group(group_id, actor_id, writer_name) do
