@@ -146,12 +146,17 @@ defmodule EbbServer.Storage.SystemCache do
 
   def get_actor_groups(actor_id, table \\ @default_group_members) do
     case resolve_table(table, :group_members) do
-      nil -> []
-      actual_table -> :ets.lookup(actual_table, actor_id)
+      nil when table == [] ->
+        []
+
+      resolved_table ->
+        actual_table = resolved_table || @default_group_members
+
+        :ets.lookup(actual_table, actor_id)
+        |> Enum.map(fn {_actor_id, entry} ->
+          %{group_id: entry.group_id, permissions: entry.permissions}
+        end)
     end
-    |> Enum.map(fn {_actor_id, entry} ->
-      %{group_id: entry.group_id, permissions: entry.permissions}
-    end)
   end
 
   defp resolve_table(nil, _key), do: nil
@@ -167,10 +172,12 @@ defmodule EbbServer.Storage.SystemCache do
 
   def get_permissions(actor_id, group_id, table \\ @default_group_members) do
     case resolve_table(table, :group_members) do
-      nil ->
+      nil when table == [] ->
         nil
 
-      actual_table ->
+      resolved_table ->
+        actual_table = resolved_table || @default_group_members
+
         :ets.lookup(actual_table, actor_id)
         |> flat_map_permissions(group_id)
         |> case do
@@ -227,15 +234,17 @@ defmodule EbbServer.Storage.SystemCache do
   end
 
   def get_entity_group(entity_id, table \\ @default_relationships) do
-    actual_table = resolve_table(table, :relationships)
+    case resolve_table(table, :relationships) do
+      nil when table == [] ->
+        nil
 
-    if is_nil(actual_table) do
-      nil
-    else
-      case :ets.lookup(actual_table, entity_id) do
-        [{_source_id, %{target_id: group_id}}] -> group_id
-        [] -> nil
-      end
+      resolved_table ->
+        actual_table = resolved_table || @default_relationships
+
+        case :ets.lookup(actual_table, entity_id) do
+          [{_source_id, %{target_id: group_id}}] -> group_id
+          [] -> nil
+        end
     end
   end
 
@@ -264,15 +273,18 @@ defmodule EbbServer.Storage.SystemCache do
   end
 
   defp populate_system_caches(state) do
-    rocks_name = RocksDB
+    rocks_name = EbbServer.Storage.RocksDB
 
     populate_type("groupMember", rocks_name, fn entity_data ->
+      data = entity_data["data"] || %{}
+      fields = data["fields"] || %{}
+
       put_group_member(
         %{
           id: entity_data["id"],
-          actor_id: get_in(entity_data, ["data", "fields", "actor_id", "value"]),
-          group_id: get_in(entity_data, ["data", "fields", "group_id", "value"]),
-          permissions: get_in(entity_data, ["data", "fields", "permissions", "value"])
+          actor_id: get_in(data, ["actor_id"]) || get_in(fields, ["actor_id", "value"]),
+          group_id: get_in(data, ["group_id"]) || get_in(fields, ["group_id", "value"]),
+          permissions: get_in(data, ["permissions"]) || get_in(fields, ["permissions", "value"])
         },
         state.group_members
       )
@@ -297,8 +309,7 @@ defmodule EbbServer.Storage.SystemCache do
     prefix = type <> <<0>>
     cf = RocksDB.cf_type_entities(rocks_name)
 
-    rocks_name
-    |> RocksDB.prefix_iterator(cf, prefix)
+    RocksDB.prefix_iterator(cf, prefix, name: rocks_name)
     |> Stream.each(fn {key, _value} ->
       <<_type_bytes::binary-size(byte_size(type)), 0, entity_id::binary>> = key
 

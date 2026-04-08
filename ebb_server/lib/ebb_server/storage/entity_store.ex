@@ -253,12 +253,19 @@ defmodule EbbServer.Storage.EntityStore do
     new_data =
       cond do
         subject_type == "groupMember" ->
-          fields_with_update_id =
-            Enum.into(update["data"]["fields"] || %{}, %{}, fn {field_name, field_value} ->
-              {field_name, Map.put(field_value, "update_id", update["id"])}
-            end)
+          data = update["data"]
 
-          %{update["data"] | "fields" => fields_with_update_id}
+          actor_id = get_field_value(data, "actor_id")
+          group_id = get_field_value(data, "group_id")
+          permissions = get_field_value(data, "permissions")
+
+          %{
+            "fields" => %{
+              "actor_id" => %{"value" => actor_id, "update_id" => update["id"]},
+              "group_id" => %{"value" => group_id, "update_id" => update["id"]},
+              "permissions" => %{"value" => permissions, "update_id" => update["id"]}
+            }
+          }
 
         subject_type == "relationship" ->
           update["data"]
@@ -281,6 +288,25 @@ defmodule EbbServer.Storage.EntityStore do
         max_gsn: max(acc.max_gsn, gsn)
     }
   end
+
+  defp get_field_value(data, field) when is_map(data) do
+    cond do
+      Map.has_key?(data, field) ->
+        case data[field] do
+          %{"value" => value} -> value
+          value when is_binary(value) -> value
+          _ -> nil
+        end
+
+      Map.has_key?(data, "fields") and is_map(data["fields"]) ->
+        get_field_value(data["fields"], field)
+
+      true ->
+        nil
+    end
+  end
+
+  defp get_field_value(_, _), do: nil
 
   defp apply_patch(action, update, gsn, acc) do
     hlc = action["hlc"]
