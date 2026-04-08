@@ -141,10 +141,12 @@ defmodule EbbServer.Storage.GroupCache do
         :ets.new(table, [:bag, :public, :named_table])
 
       _ ->
-        :ets.delete_all_objects(table)
+        try do
+          :ets.delete_all_objects(table)
+        rescue
+          ArgumentError -> :ets.new(table, [:bag, :public, :named_table])
+        end
     end
-
-    :ok
   end
 
   defp resolve_table(nil), do: nil

@@ -144,7 +144,11 @@ defmodule EbbServer.Storage.RelationshipCache do
         :ets.new(rel_table, [:set, :public, :named_table])
 
       _ ->
-        :ets.delete_all_objects(rel_table)
+        try do
+          :ets.delete_all_objects(rel_table)
+        rescue
+          ArgumentError -> :ets.new(rel_table, [:set, :public, :named_table])
+        end
     end
 
     case :ets.info(rbg_table, :name) do
@@ -152,7 +156,11 @@ defmodule EbbServer.Storage.RelationshipCache do
         :ets.new(rbg_table, [:bag, :public, :named_table])
 
       _ ->
-        :ets.delete_all_objects(rbg_table)
+        try do
+          :ets.delete_all_objects(rbg_table)
+        rescue
+          ArgumentError -> :ets.new(rbg_table, [:bag, :public, :named_table])
+        end
     end
 
     :ok

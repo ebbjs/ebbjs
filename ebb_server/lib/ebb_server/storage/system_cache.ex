@@ -54,7 +54,6 @@ defmodule EbbServer.Storage.SystemCache do
         gsn_counter = setup_gsn_counter(opts, gsn_counter_name)
 
         try do
-          :timer.sleep(50)
           populate_system_caches()
         rescue
           e ->

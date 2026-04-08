@@ -78,11 +78,15 @@ defmodule EbbServer.Storage.DirtyTracker do
   @spec reset(atom()) :: :ok
   def reset(dirty_set \\ @default_dirty_set_name) do
     case :ets.info(dirty_set, :name) do
-      ^dirty_set ->
-        :ets.delete_all_objects(dirty_set)
+      :undefined ->
+        :ets.new(dirty_set, [:set, :public, :named_table])
 
       _ ->
-        :ets.new(dirty_set, [:set, :public, :named_table])
+        try do
+          :ets.delete_all_objects(dirty_set)
+        rescue
+          ArgumentError -> :ets.new(dirty_set, [:set, :public, :named_table])
+        end
     end
 
     :ok
