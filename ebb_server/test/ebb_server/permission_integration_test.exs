@@ -83,7 +83,7 @@ defmodule EbbServer.PermissionIntegrationTest do
     |> Router.call([])
   end
 
-  defp post_query(body, actor_id \\ "a_test") do
+  defp post_query(body, actor_id) do
     conn(:post, "/entities/query", Jason.encode!(body))
     |> put_req_header("content-type", "application/json")
     |> put_req_header("x-ebb-actor-id", actor_id)
