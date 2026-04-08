@@ -8,6 +8,7 @@ defmodule EbbServer.Storage.Writer do
 
   use GenServer
 
+  alias EbbServer.Storage.Fields
   alias EbbServer.Storage.PermissionChecker
   alias EbbServer.Storage.{RocksDB, SystemCache}
 
@@ -143,11 +144,10 @@ defmodule EbbServer.Storage.Writer do
       method when method in [:put, :patch] ->
         data = update.data
 
-        # groupMember data is stored flat, not nested in "fields"
-        # Data format: %{"actor_id" => "...", "group_id" => "...", "permissions" => [...]}
-        actor_id = data["actor_id"] || get_field_value(data["fields"], "actor_id")
-        group_id = data["group_id"] || get_field_value(data["fields"], "group_id")
-        permissions = data["permissions"] || get_field_value(data["fields"], "permissions")
+        # groupMember data may be nested: %{"actor_id" => "..."} or %{"fields" => %{"actor_id" => "..."}}
+        actor_id = Fields.get(data, "actor_id")
+        group_id = Fields.get(data, "group_id")
+        permissions = Fields.get(data, "permissions")
 
         SystemCache.put_group_member(
           %{
@@ -169,12 +169,11 @@ defmodule EbbServer.Storage.Writer do
       method when method in [:put, :patch] ->
         data = update.data
 
-        # relationship data is stored flat
-        # Data format: %{"source_id" => "...", "target_id" => "...", "type" => "...", "field" => "..."}
-        source_id = data["source_id"] || get_field_value(data["fields"], "source_id")
-        target_id = data["target_id"] || get_field_value(data["fields"], "target_id")
-        type = data["type"] || get_field_value(data["fields"], "type")
-        field = data["field"] || get_field_value(data["fields"], "field")
+        # relationship data may be nested
+        source_id = Fields.get(data, "source_id")
+        target_id = Fields.get(data, "target_id")
+        type = Fields.get(data, "type")
+        field = Fields.get(data, "field")
 
         SystemCache.put_relationship(
           %{
@@ -194,16 +193,6 @@ defmodule EbbServer.Storage.Writer do
           relationships: state.relationships,
           relationships_by_group: state.relationships_by_group
         )
-    end
-  end
-
-  defp get_field_value(nil, _field), do: nil
-
-  defp get_field_value(fields, field) do
-    case fields[field] do
-      %{"value" => value} -> value
-      value when is_binary(value) -> value
-      _ -> nil
     end
   end
 

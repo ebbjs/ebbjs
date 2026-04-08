@@ -30,7 +30,7 @@ defmodule EbbServer.Storage.EntityStore do
   since all use the same lexicographic string comparison rules.
   """
 
-  alias EbbServer.Storage.{RocksDB, SQLite, SystemCache}
+  alias EbbServer.Storage.{Fields, RocksDB, SQLite, SystemCache}
 
   @default_rocks_name EbbServer.Storage.RocksDB
   @default_sqlite_name EbbServer.Storage.SQLite
@@ -255,9 +255,9 @@ defmodule EbbServer.Storage.EntityStore do
         subject_type == "groupMember" ->
           data = update["data"]
 
-          actor_id = get_field_value(data, "actor_id")
-          group_id = get_field_value(data, "group_id")
-          permissions = get_field_value(data, "permissions")
+          actor_id = Fields.get(data, "actor_id")
+          group_id = Fields.get(data, "group_id")
+          permissions = Fields.get(data, "permissions")
 
           %{
             "fields" => %{
@@ -288,25 +288,6 @@ defmodule EbbServer.Storage.EntityStore do
         max_gsn: max(acc.max_gsn, gsn)
     }
   end
-
-  defp get_field_value(data, field) when is_map(data) do
-    cond do
-      Map.has_key?(data, field) ->
-        case data[field] do
-          %{"value" => value} -> value
-          value when is_binary(value) -> value
-          _ -> nil
-        end
-
-      Map.has_key?(data, "fields") and is_map(data["fields"]) ->
-        get_field_value(data["fields"], field)
-
-      true ->
-        nil
-    end
-  end
-
-  defp get_field_value(_, _), do: nil
 
   defp apply_patch(action, update, gsn, acc) do
     hlc = action["hlc"]
