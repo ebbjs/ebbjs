@@ -5,18 +5,6 @@ defmodule EbbServer.Storage.SQLiteTest do
   alias Exqlite.Sqlite3
   import EbbServer.TestHelpers
 
-  defp start_sqlite(context) do
-    dir = tmp_dir(context)
-    name = :"sqlite_#{System.unique_integer([:positive])}"
-    {:ok, pid} = SQLite.start_link(data_dir: dir, name: name)
-
-    on_exit(fn ->
-      safe_stop(pid)
-    end)
-
-    %{name: name, dir: dir, pid: pid}
-  end
-
   defp open_readonly(dir) do
     path = Path.join(dir, "ebb.db")
     {:ok, db} = Sqlite3.open(path, mode: :readonly)
@@ -30,7 +18,8 @@ defmodule EbbServer.Storage.SQLiteTest do
 
   describe "DDL" do
     test "runs without error and creates the entities table", context do
-      %{dir: dir} = start_sqlite(context)
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
 
       db = open_readonly(dir)
 
@@ -47,7 +36,8 @@ defmodule EbbServer.Storage.SQLiteTest do
 
   describe "upsert and get round-trip" do
     test "upserts an entity and reads it back", context do
-      %{name: name} = start_sqlite(context)
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
 
       entity = %{
         id: "todo_abc",
@@ -74,7 +64,8 @@ defmodule EbbServer.Storage.SQLiteTest do
     end
 
     test "returns :not_found for nonexistent entity", context do
-      %{name: name} = start_sqlite(context)
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
 
       assert :not_found = SQLite.get_entity("nonexistent", name)
     end
@@ -82,7 +73,8 @@ defmodule EbbServer.Storage.SQLiteTest do
 
   describe "get_entity_last_gsn" do
     test "returns the last_gsn for an existing entity", context do
-      %{name: name} = start_sqlite(context)
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
 
       entity = %{
         id: "todo_abc",
@@ -101,7 +93,8 @@ defmodule EbbServer.Storage.SQLiteTest do
     end
 
     test "returns :not_found for nonexistent entity", context do
-      %{name: name} = start_sqlite(context)
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
 
       assert :not_found = SQLite.get_entity_last_gsn("nonexistent", name)
     end
@@ -109,7 +102,8 @@ defmodule EbbServer.Storage.SQLiteTest do
 
   describe "upsert replaces existing" do
     test "second upsert with same ID overwrites the first", context do
-      %{name: name} = start_sqlite(context)
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
 
       entity_v1 = %{
         id: "todo_abc",
@@ -135,7 +129,8 @@ defmodule EbbServer.Storage.SQLiteTest do
 
   describe "generated columns" do
     test "source_id and target_id are populated from JSON data", context do
-      %{name: name, dir: dir} = start_sqlite(context)
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
 
       entity = %{
         id: "rel_abc",
@@ -150,7 +145,6 @@ defmodule EbbServer.Storage.SQLiteTest do
 
       :ok = SQLite.upsert_entity(entity, name)
 
-      # Open a separate read-only connection to query generated columns
       db = open_readonly(dir)
       {:ok, stmt} = Sqlite3.prepare(db, "SELECT source_id, target_id FROM entities WHERE id = ?")
       :ok = Sqlite3.bind(stmt, ["rel_abc"])

@@ -1,4 +1,24 @@
 defmodule EbbServer.Storage.GsnCounterTest do
+  @moduledoc """
+  Behavioral tests for GsnCounter - atomic GSN generation.
+
+  GsnCounter provides monotonically increasing, gap-free sequence numbers
+  using Erlang's :atomics module for lock-free atomic operations.
+
+  ## Key Behaviors Tested
+
+  - Sequential GSNs: claim_gsn_range returns consecutive integers
+  - Range claiming: can claim multiple GSNs at once
+  - Monotonicity: GSNs never decrease across claims
+  - Concurrency: multiple processes can claim safely
+  - Reset: counter can be reset to 0
+
+  ## Architecture Context
+
+  GsnCounter uses :atomics for lock-free atomic increments.
+  It is NOT a GenServer - all operations are direct function calls.
+  """
+
   use ExUnit.Case, async: false
 
   alias EbbServer.Storage.GsnCounter
