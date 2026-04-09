@@ -2,30 +2,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
   use ExUnit.Case, async: false
 
   import EbbServer.TestHelpers
-  alias EbbServer.Storage.{ActionValidator, AuthorizationContext, Authorizer}
-
-  defp create_isolated_tables do
-    uid = System.unique_integer([:positive])
-    gm = :"test_gm_#{uid}"
-    rel = :"test_rel_#{uid}"
-    rbg = :"test_rbg_#{uid}"
-
-    :ets.new(gm, [:bag, :public, :named_table])
-    :ets.new(rel, [:set, :public, :named_table])
-    :ets.new(rbg, [:bag, :public, :named_table])
-
-    on_exit(fn ->
-      for t <- [gm, rel, rbg] do
-        try do
-          :ets.delete(t)
-        rescue
-          _ -> :ok
-        end
-      end
-    end)
-
-    %{group_members: gm, relationships: rel, relationships_by_group: rbg}
-  end
+  alias EbbServer.Storage.{AuthorizationContext, Authorizer}
 
   defp auth_context(tables) do
     AuthorizationContext.build(
