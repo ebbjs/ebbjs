@@ -9,8 +9,8 @@ defmodule EbbServer.PermissionIntegrationTest do
 
   setup do
     if pid = Process.whereis(EbbServer.Storage.Supervisor) do
-      GenServer.stop(pid)
-      :timer.sleep(200)
+      GenServer.stop(pid, :normal, 5000)
+      :timer.sleep(50)
     end
 
     tmp_dir =

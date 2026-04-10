@@ -1,4 +1,26 @@
 defmodule EbbServer.Storage.EntityStoreTest do
+  @moduledoc """
+  Behavioral tests for EntityStore - the entity read layer.
+
+  EntityStore provides read access to entities by combining:
+  - SQLite: Cached/materialized entity state
+  - RocksDB: Source-of-truth action log
+
+  ## Key Behaviors Tested
+
+  - On-demand materialization: dirty entities are reconstructed from RocksDB
+  - LWW (Last-Writer-Wins) merge semantics using HLC timestamps
+  - HLC tiebreaker: equal timestamps resolved by lexicographic update_id
+  - Dirty tracking: entities marked dirty after write, clean after read
+  - Incremental materialization: only replays actions after last known GSN
+  - Delete handling: soft deletes, resurrects, not_found cases
+
+  ## Architecture Context
+
+  EntityStore is NOT a GenServer - it composes SQLite and RocksDB reads.
+  It delegates writes to Writer, which updates both stores.
+  """
+
   use ExUnit.Case, async: false
 
   alias EbbServer.Storage.{

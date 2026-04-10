@@ -1,6 +1,34 @@
 defmodule EbbServer.TestHelpers do
   @moduledoc """
   Shared test helper functions and fixtures for EbbServer tests.
+
+  ## Organization
+
+  Helper functions are grouped by purpose:
+
+  **Process Management**
+  - `safe_stop/1` - Safely stop a GenServer
+  - `tmp_dir/1` - Create isolated temporary directory with cleanup
+
+  **Storage Setup** (for unit tests)
+  - `start_isolated_cache/0` - Create isolated ETS caches (DirtyTracker, GroupCache, RelationshipCache)
+  - `start_rocks/1` - Start isolated RocksDB instance
+  - `start_sqlite/1` - Start isolated SQLite instance
+  - `start_writer/1` - Start isolated Writer instance
+  - `create_isolated_tables/0` - Create isolated ETS tables for auth testing
+  - `auth_opts/1` - Build auth context options from isolated tables
+
+  **Data Fixtures**
+  - `generate_hlc/0` - Generate current HLC timestamp
+  - `hlc_from/2` - Build HLC from explicit time and counter
+  - `sample_action/1` - Create sample action with string keys
+  - `sample_update/1` - Create sample update with string keys
+  - `validated_action/1` - Create sample action with atom keys (post-validation format)
+  - `validated_update/1` - Create sample update with atom keys (post-validation format)
+
+  ## HLC Encoding
+
+  HLC timestamps are 64-bit integers encoded as: `(logical_time_ms << 16) | counter`
   """
 
   import Bitwise
@@ -22,10 +50,14 @@ defmodule EbbServer.TestHelpers do
   Returns the path to the created directory.
   """
   def safe_stop(pid) when is_pid(pid) do
-    try do
-      Process.exit(pid, :normal)
-    rescue
-      _ -> :ok
+    if Process.alive?(pid) do
+      try do
+        GenServer.stop(pid, :normal, 5000)
+      rescue
+        _ -> :ok
+      catch
+        :exit, _ -> :ok
+      end
     end
 
     :ok
@@ -42,7 +74,9 @@ defmodule EbbServer.TestHelpers do
     File.mkdir_p!(dir)
 
     ExUnit.Callbacks.on_exit(fn ->
-      File.rm_rf!(dir)
+      :timer.sleep(50)
+      File.rm_rf(dir)
+      :ok
     end)
 
     dir
@@ -95,6 +129,10 @@ defmodule EbbServer.TestHelpers do
           do: safe_stop(pid)
 
       :persistent_term.erase(gsn_counter_name)
+      :persistent_term.erase({DirtyTracker, :dirty_set})
+      :persistent_term.erase({GroupCache, :group_members})
+      :persistent_term.erase({RelationshipCache, :relationships})
+      :persistent_term.erase({RelationshipCache, :relationships_by_group})
     end)
 
     %{
@@ -124,6 +162,12 @@ defmodule EbbServer.TestHelpers do
 
     on_exit(fn ->
       safe_stop(pid)
+      :persistent_term.erase({:ebb_rocksdb_db, name})
+      :persistent_term.erase({:ebb_cf_actions, name})
+      :persistent_term.erase({:ebb_cf_updates, name})
+      :persistent_term.erase({:ebb_cf_entity_actions, name})
+      :persistent_term.erase({:ebb_cf_type_entities, name})
+      :persistent_term.erase({:ebb_cf_action_dedup, name})
     end)
 
     %{name: name, pid: pid, dir: dir}

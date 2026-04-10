@@ -1,4 +1,21 @@
 defmodule EbbServer.Sync.AuthPlugTest do
+  @moduledoc """
+  Behavioral tests for AuthPlug - HTTP authentication middleware.
+
+  AuthPlug extracts or validates actor identity from incoming requests.
+  It operates in two modes:
+
+  - `:bypass` - reads actor_id directly from x-ebb-actor-id header
+  - `:external` - forwards auth to a configured external auth URL
+
+  ## Key Behaviors Tested
+
+  - Bypass mode: accepts/rejects based on header presence
+  - External mode: delegates to auth server, handles success/failure
+  - Missing headers: returns 401 appropriately
+  - Proper assigns: actor_id is set in conn.assigns
+  """
+
   use ExUnit.Case, async: false
 
   import Plug.Test

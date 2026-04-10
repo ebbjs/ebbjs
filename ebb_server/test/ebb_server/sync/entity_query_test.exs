@@ -1,4 +1,24 @@
 defmodule EbbServer.Sync.EntityQueryTest do
+  @moduledoc """
+  Behavioral tests for entity query endpoint (POST /entities/query).
+
+  Queries return entities of a given type that the actor has permission
+  to read, filtered and sorted by various criteria.
+
+  ## Key Behaviors Tested
+
+  - Query validation: requires type parameter
+  - Permission scoping: only returns entities in readable groups
+  - Filter support: supports filtering by field values
+  - Auth requirements: requires valid actor_id
+  - Empty results: returns empty array when no matches
+
+  ## Architecture Context
+
+  Query first materializes dirty entities, then delegates to SQLite
+  with permission-filtered JOINs.
+  """
+
   use ExUnit.Case, async: false
 
   import Plug.Test
@@ -9,8 +29,8 @@ defmodule EbbServer.Sync.EntityQueryTest do
 
   setup do
     if pid = Process.whereis(EbbServer.Storage.Supervisor) do
-      GenServer.stop(pid)
-      :timer.sleep(200)
+      GenServer.stop(pid, :normal, 5000)
+      :timer.sleep(50)
     end
 
     tmp_dir =

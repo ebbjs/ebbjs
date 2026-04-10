@@ -1,4 +1,27 @@
 defmodule EbbServer.Storage.WriterTest do
+  @moduledoc """
+  Behavioral tests for Writer - the action persistence layer.
+
+  Writer receives validated actions and persists them to RocksDB,
+  assigning GSNs (Global Sequence Numbers) for ordering.
+
+  ## Key Behaviors Tested
+
+  - GSN assignment: monotonic, gap-free sequence numbers
+  - Column family population: all 5 RocksDB CFs written correctly
+  - Dirty tracking: marks entities dirty for later materialization
+  - System cache updates: GroupCache and RelationshipCache kept in sync
+  - ETF serialization: actions encoded/decoded correctly
+  - Durability: data survives restarts
+  - Empty update filtering: actions with no updates are skipped
+
+  ## Architecture Context
+
+  Writer is a GenServer that receives pre-validated actions.
+  It claims a GSN range from GsnCounter, writes to RocksDB,
+  then updates DirtyTracker and system caches.
+  """
+
   use ExUnit.Case, async: false
 
   alias EbbServer.Storage.{
