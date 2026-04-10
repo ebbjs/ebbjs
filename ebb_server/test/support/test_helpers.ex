@@ -55,6 +55,8 @@ defmodule EbbServer.TestHelpers do
         GenServer.stop(pid, :normal, 5000)
       rescue
         _ -> :ok
+      catch
+        :exit, _ -> :ok
       end
     end
 
