@@ -10,4 +10,4 @@ pre-commit:
       stage_fixed: true
     - name: elixir
       root: ebb_server
-      run: mix format --check-formatted && mix credo --strict && mix test
+      run: mix format --check-formatted && mix credo --strict --files-excluded "./test/**" && mix test

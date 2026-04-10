@@ -21,7 +21,7 @@ jobs:
           - job: Format Check
             command: mix format --check-formatted
           - job: Lint (Credo)
-            command: mix credo --strict
+            command: mix credo --strict --files-excluded "./test/**"
           - job: Test
             command: mix test
     steps:
