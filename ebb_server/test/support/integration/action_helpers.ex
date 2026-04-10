@@ -99,10 +99,10 @@ defmodule EbbServer.Integration.ActionHelpers do
           "subject_type" => "relationship",
           "method" => "put",
           "data" => %{
-            "source_id" => group_id,
+            "source_id" => "todo_bootstrap",
             "target_id" => group_id,
-            "type" => "group",
-            "field" => "self"
+            "type" => "todo",
+            "field" => "group"
           }
         }
       ]
