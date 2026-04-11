@@ -76,8 +76,8 @@ None -- this is a pure extension to the existing RocksDB module.
 
 ## Testing
 
-- [ ] Iterator returns correct key-value pairs within range
-- [ ] Iterator returns nothing when `from_key >= to_key`
-- [ ] Iterator returns nothing when no keys exist in range
-- [ ] Iterator closes cleanly even if stream is partially consumed
-- [ ] Works with GSN-encoded keys (8-byte big-endian)
+- [x] Iterator returns correct key-value pairs within range
+- [x] Iterator returns nothing when `from_key >= to_key`
+- [x] Iterator returns nothing when no keys exist in range
+- [x] Iterator closes cleanly even if stream is partially consumed
+- [x] Works with GSN-encoded keys (8-byte big-endian)
