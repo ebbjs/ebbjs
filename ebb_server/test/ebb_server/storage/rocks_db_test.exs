@@ -84,6 +84,120 @@ defmodule EbbServer.Storage.RocksDBTest do
     end
   end
 
+  describe "range iterator" do
+    test "returns correct key-value pairs within range", context do
+      %{name: name} = start_rocks(context)
+      cf = RocksDB.cf_actions(name)
+
+      for gsn <- 10..15 do
+        key = RocksDB.encode_gsn_key(gsn)
+        value = :erlang.term_to_binary(%{"gsn" => gsn})
+        :ok = RocksDB.write_batch([{:put, cf, key, value}], name: name)
+      end
+
+      from_key = RocksDB.encode_gsn_key(12)
+      to_key = RocksDB.encode_gsn_key(16)
+
+      results =
+        RocksDB.range_iterator(cf, from_key, to_key, name: name)
+        |> Enum.to_list()
+
+      assert length(results) == 4
+
+      gsns =
+        for {key, _value} <- results do
+          RocksDB.decode_gsn_key(key)
+        end
+
+      assert gsns == [12, 13, 14, 15]
+    end
+
+    test "returns empty when from_key >= to_key", context do
+      %{name: name} = start_rocks(context)
+      cf = RocksDB.cf_actions(name)
+
+      key = RocksDB.encode_gsn_key(5)
+      :ok = RocksDB.write_batch([{:put, cf, key, "value"}], name: name)
+
+      from_key = RocksDB.encode_gsn_key(10)
+      to_key = RocksDB.encode_gsn_key(5)
+
+      results = RocksDB.range_iterator(cf, from_key, to_key, name: name) |> Enum.to_list()
+      assert results == []
+    end
+
+    test "returns nothing when no keys exist in range", context do
+      %{name: name} = start_rocks(context)
+      cf = RocksDB.cf_actions(name)
+
+      key = RocksDB.encode_gsn_key(50)
+      :ok = RocksDB.write_batch([{:put, cf, key, "value"}], name: name)
+
+      from_key = RocksDB.encode_gsn_key(10)
+      to_key = RocksDB.encode_gsn_key(20)
+
+      results = RocksDB.range_iterator(cf, from_key, to_key, name: name) |> Enum.to_list()
+      assert results == []
+    end
+
+    test "returns nothing when keys exist but outside range", context do
+      %{name: name} = start_rocks(context)
+      cf = RocksDB.cf_actions(name)
+
+      for gsn <- [5, 10, 15, 20, 25] do
+        key = RocksDB.encode_gsn_key(gsn)
+        :ok = RocksDB.write_batch([{:put, cf, key, "v#{gsn}"}], name: name)
+      end
+
+      from_key = RocksDB.encode_gsn_key(12)
+      to_key = RocksDB.encode_gsn_key(18)
+
+      results = RocksDB.range_iterator(cf, from_key, to_key, name: name) |> Enum.to_list()
+      assert length(results) == 1
+
+      [{key, value}] = results
+      assert RocksDB.decode_gsn_key(key) == 15
+      assert value == "v15"
+    end
+
+    test "closes cleanly when partially consumed", context do
+      %{name: name} = start_rocks(context)
+      cf = RocksDB.cf_actions(name)
+
+      for gsn <- 1..10 do
+        key = RocksDB.encode_gsn_key(gsn)
+        :ok = RocksDB.write_batch([{:put, cf, key, "value#{gsn}"}], name: name)
+      end
+
+      from_key = RocksDB.encode_gsn_key(1)
+      to_key = RocksDB.encode_gsn_key(11)
+
+      stream = RocksDB.range_iterator(cf, from_key, to_key, name: name)
+      results = stream |> Stream.take(3) |> Enum.to_list()
+
+      assert length(results) == 3
+    end
+
+    test "works with GSN-encoded keys (8-byte big-endian)", context do
+      %{name: name} = start_rocks(context)
+      cf = RocksDB.cf_actions(name)
+
+      high_gsn = 1_000_000_000
+      key = RocksDB.encode_gsn_key(high_gsn)
+      value = :erlang.term_to_binary(%{"high" => high_gsn})
+      :ok = RocksDB.write_batch([{:put, cf, key, value}], name: name)
+
+      from_key = RocksDB.encode_gsn_key(high_gsn)
+      to_key = RocksDB.encode_gsn_key(high_gsn + 1)
+
+      [{ret_key, ret_value}] =
+        RocksDB.range_iterator(cf, from_key, to_key, name: name) |> Enum.to_list()
+
+      assert ret_key == key
+      assert ret_value == value
+    end
+  end
+
   describe "durability across restarts" do
     test "data survives process restart with same data_dir", context do
       dir = tmp_dir(context)
