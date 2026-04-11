@@ -258,11 +258,9 @@ defmodule EbbServer.Storage.RocksDB do
   Returns a lazy stream of `{key, value}` pairs whose keys fall in the
   half-open range `[from_key, to_key)`.
 
-  Unlike `prefix_iterator/3`, this function cannot use RocksDB's
-  `iterate_upper_bound` option because the bound is caller-specified rather
-  than derived from the prefix. The bound check is performed in Elixir after
-  each `iterator_move`, making it slightly less efficient for large ranges
-  but flexible for arbitrary key ranges.
+  Uses RocksDB's `iterate_upper_bound` option for efficient bounded scanning.
+  The bound check happens in RocksDB itself, not in Elixir, so this is as
+  efficient as `prefix_iterator` for large ranges.
   """
   @spec range_iterator(cf_ref(), binary(), binary(), keyword()) :: Enumerable.t()
   def range_iterator(cf_ref, from_key, to_key, opts \\ []) do
@@ -270,14 +268,11 @@ defmodule EbbServer.Storage.RocksDB do
 
     Stream.resource(
       fn ->
-        {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, [])
+        {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, [{:iterate_upper_bound, to_key}])
         seek_result = :rocksdb.iterator_move(iter, {:seek, from_key})
         {iter, seek_result}
       end,
       fn
-        {iter, {:ok, key, _value}} when key >= to_key ->
-          {:halt, iter}
-
         {iter, {:ok, key, value}} ->
           {[{key, value}], {iter, :rocksdb.iterator_move(iter, :next)}}
 
