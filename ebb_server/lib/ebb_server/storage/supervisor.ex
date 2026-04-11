@@ -3,7 +3,7 @@ defmodule EbbServer.Storage.Supervisor do
   Supervisor for the storage layer.
 
   Starts children in order with `rest_for_one` strategy, ensuring RocksDB
-  and SQLite are ready before SystemCache, and SystemCache is ready
+  and SQLite are ready before SystemCache, WatermarkTracker is ready
   before Writer.
 
   The `rest_for_one` strategy means if any child crashes, those started
@@ -24,6 +24,7 @@ defmodule EbbServer.Storage.Supervisor do
       {EbbServer.Storage.RocksDB, data_dir: data_dir},
       {EbbServer.Storage.SQLite, data_dir: data_dir},
       {EbbServer.Storage.SystemCache, []},
+      {EbbServer.Storage.WatermarkTracker, []},
       {EbbServer.Storage.Writer, []}
     ]
 

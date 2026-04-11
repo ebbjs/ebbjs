@@ -35,7 +35,7 @@ A client can handshake, catch up on missed Actions for its Groups via paginated 
 
 3. **Server reads from RocksDB.**
    - Authenticates, verifies Client A is a member of `group_abc`
-   - Gets entity IDs for `group_abc` from `SystemCache.get_group_entities("group_abc")`
+   - Gets entity IDs for `group_abc` from `RelationshipCache.get_group_entities("group_abc")`
    - For each entity, iterates `cf_entity_actions` where GSN > 0
    - Collects unique Action IDs, fetches full Actions from `cf_actions`
    - Sorts by GSN, takes up to 200
