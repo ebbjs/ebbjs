@@ -13,7 +13,7 @@
 
 ## Background
 
-Live sync requires knowing which GSNs have been fully committed and flushed to storage. The current `ebb_server` has GSN tracking via `SystemCache` (`:atomics` for the counter, `:persistent_term` for fast reads) but lacks the watermark APIs needed to track committed *ranges*.
+Live sync requires knowing which GSNs have been fully committed and flushed to storage. The current `ebb_server` has GSN tracking via `SystemCache` (`:atomics` for the counter, `:persistent_term` for fast reads) but lacks the watermark APIs needed to track committed _ranges_.
 
 ---
 
@@ -22,6 +22,7 @@ Live sync requires knowing which GSNs have been fully committed and flushed to s
 **Decision:** Watermark APIs belong in a new `WatermarkTracker` module, not in `SystemCache`.
 
 **Rationale:**
+
 - `WatermarkTracker` follows the established pattern: `DirtyTracker`, `GroupCache`, `RelationshipCache` are all separate modules with single responsibilities
 - Testing watermark in isolation requires no startup of RocksDB, SQLite, or other storage children
 - Watermark logic (CAS loops, ETS scanning) is complex — keeping it separate preserves clarity of `SystemCache`'s role as a supervisor/aggregator
@@ -29,6 +30,7 @@ Live sync requires knowing which GSNs have been fully committed and flushed to s
 - TDD workflow is cleaner — tests run fast without infrastructure dependencies
 
 **Updated structure:**
+
 ```
 Storage.Supervisor
 ├── RocksDB
@@ -46,16 +48,19 @@ Storage.Supervisor
 ## Data Structures
 
 ### `:persistent_term {name, :gsn_ref}`
+
 - An `:atomics` reference storing the current committed watermark (the highest GSN known to be fully committed)
 - O(1) reads via `persistent_term`
 - Key is `{instance_name, :gsn_ref}` where `instance_name` is the registered name (defaults to `EbbServer.Storage.WatermarkTracker`)
 - Updated atomically via CAS loop in `advance_watermark/0`
 
 ### `:persistent_term {name, :committed_ranges}`
+
 - Stores the ETS table name for the committed ranges table
 - Key is `{instance_name, :committed_ranges}`
 
 ### `:ets {table_name}`
+
 - Table type: `:ordered_set`
 - Key: `{gsn, pid}` tuple (GSN is the ordering key, pid disambiguates same GSN from concurrent writers)
 - Value: `true`
@@ -110,6 +115,7 @@ The function performs a CAS loop:
 7. Return the new watermark
 
 Key invariants:
+
 - The watermark only ever moves forward
 - Gaps in the GSN sequence stop advancement (other ranges may still be in-flight)
 
@@ -131,6 +137,7 @@ This uses the same startup pattern as GSN counter seeding. No separate initializ
 ## Existing Code — No Changes Needed
 
 `EbbServer.Storage.RelationshipCache` already implements:
+
 - `get_entity_group(entity_id)`
 - `get_group_entities(group_id)`
 
@@ -143,15 +150,18 @@ The live sync docs previously referenced `SystemCache` for these functions. Thos
 ### Unit tests — `WatermarkTracker`
 
 **`committed_watermark/0`**
+
 - Returns `0` when never advanced
 - Returns N after `mark_range_committed/2` + `advance_watermark/0`
 
 **`mark_range_committed/2`**
+
 - Inserts single GSN into ETS
 - Inserts multiple GSNs (verifies ETS contents)
 - Idempotent: inserting same GSN twice does not corrupt
 
 **`advance_watermark/0`**
+
 - Returns current watermark when ETS is empty
 - Advances past contiguous range `[1, 2, 3]` → returns `3`
 - Stops at gap: given `[1, 2, 4]`, returns `2`
@@ -161,6 +171,7 @@ The live sync docs previously referenced `SystemCache` for these functions. Thos
 ### Integration tests — after Writer extension
 
 Once `EbbServer.Storage.Writer` is extended to notify the watermark after a successful commit:
+
 - Verify watermark advances after a write completes
 - Verify watermark reflects max GSN in RocksDB after restart
 
