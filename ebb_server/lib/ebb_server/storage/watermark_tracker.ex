@@ -52,9 +52,8 @@ defmodule EbbServer.Storage.WatermarkTracker do
     table_name = :persistent_term.get({name, :committed_ranges})
     pid = self()
 
-    for gsn <- first..last do
-      :ets.insert(table_name, {{gsn, pid}, true})
-    end
+    entries = for gsn <- first..last, do: {{gsn, pid}, true}
+    :ets.insert(table_name, entries)
 
     :ok
   end
