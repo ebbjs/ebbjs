@@ -166,8 +166,8 @@ end
 2. **Relationship PUT updates ETS:**
    - Build an action with a PUT update for `subject_type: "relationship"`, `subject_id: "rel_1"`, with data containing `source_id`, `target_id`, `type`, `field`
    - Write via Writer
-   - Verify `SystemCache.get_entity_group("todo_1", rel_table)` returns the group_id
-   - Verify `SystemCache.get_group_entities("group_1", rbg_table)` includes `"todo_1"`
+   - Verify `RelationshipCache.get_entity_group("todo_1", rel_table)` returns the group_id
+   - Verify `RelationshipCache.get_group_entities("group_1", rbg_table)` includes `"todo_1"`
 
 3. **GroupMember DELETE removes from ETS:**
    - Write a PUT for groupMember, verify it's in ETS

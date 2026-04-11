@@ -144,7 +144,7 @@ POST /sync/actions
 GET /sync/groups/:group_id?offset=:gsn
   1. AuthPlug: authenticate → actor_id
   2. Verify actor is a member of group_id (SystemCache.is_member?)
-  3. Read entity IDs for this Group (SystemCache.get_group_entities)
+   3. Read entity IDs for this Group (RelationshipCache.get_group_entities)
   4. For each entity, iterate cf_entity_actions where GSN > offset
   5. Collect unique Action IDs, fetch from cf_actions
   6. Sort by GSN, take up to 200

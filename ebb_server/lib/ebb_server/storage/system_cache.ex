@@ -26,7 +26,13 @@ defmodule EbbServer.Storage.SystemCache do
 
   require Logger
 
-  alias EbbServer.Storage.{DirtyTracker, EntityStore, GroupCache, RelationshipCache, RocksDB}
+  alias EbbServer.Storage.{
+    DirtyTracker,
+    EntityStore,
+    GroupCache,
+    RelationshipCache,
+    RocksDB
+  }
 
   @default_gsn_counter_name :ebb_gsn_counter
 
