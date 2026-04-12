@@ -7,3 +7,4 @@ tsconfig.tsbuildinfo
 .netlify/
 
 .husky/
+erl_crash.dump

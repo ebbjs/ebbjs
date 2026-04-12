@@ -11,6 +11,7 @@ defmodule EbbServer.Application do
       EbbServer.Storage.Supervisor,
       {Registry, keys: :unique, name: EbbServer.Sync.GroupRegistry},
       EbbServer.Sync.Supervisor,
+      {EbbServer.Storage.Writer, []},
       {Bandit, plug: EbbServer.Sync.Router, port: port}
     ]
 

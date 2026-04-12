@@ -24,8 +24,7 @@ defmodule EbbServer.Storage.Supervisor do
       {EbbServer.Storage.RocksDB, data_dir: data_dir},
       {EbbServer.Storage.SQLite, data_dir: data_dir},
       {EbbServer.Storage.SystemCache, []},
-      {EbbServer.Storage.WatermarkTracker, []},
-      {EbbServer.Storage.Writer, []}
+      {EbbServer.Storage.WatermarkTracker, []}
     ]
 
     Supervisor.init(children, strategy: :rest_for_one)

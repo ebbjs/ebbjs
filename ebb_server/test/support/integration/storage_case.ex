@@ -53,7 +53,33 @@ defmodule EbbServer.Integration.StorageCase do
             {:error, {:already_started, _pid}} -> :ok
           end
 
+          case EbbServer.Sync.Supervisor.start_link([]) do
+            {:ok, _pid} -> :ok
+            {:error, {:already_started, _pid}} -> :ok
+          end
+
+          case EbbServer.Storage.Writer.start_link(name: EbbServer.Storage.Writer) do
+            {:ok, _pid} -> :ok
+            {:error, {:already_started, _pid}} -> :ok
+          end
+
           on_exit(fn ->
+            try do
+              if pid = Process.whereis(EbbServer.Storage.Writer) do
+                GenServer.stop(pid, :normal, 5000)
+              end
+            catch
+              _, _ -> :ok
+            end
+
+            try do
+              if pid = Process.whereis(EbbServer.Sync.Supervisor) do
+                GenServer.stop(pid, :normal, 5000)
+              end
+            catch
+              _, _ -> :ok
+            end
+
             try do
               if pid = Process.whereis(EbbServer.Storage.Supervisor) do
                 :ok = GenServer.stop(pid, :normal, 5000)
@@ -91,7 +117,33 @@ defmodule EbbServer.Integration.StorageCase do
             {:error, {:already_started, _pid}} -> :ok
           end
 
+          case EbbServer.Sync.Supervisor.start_link([]) do
+            {:ok, _pid} -> :ok
+            {:error, {:already_started, _pid}} -> :ok
+          end
+
+          case EbbServer.Storage.Writer.start_link(name: EbbServer.Storage.Writer) do
+            {:ok, _pid} -> :ok
+            {:error, {:already_started, _pid}} -> :ok
+          end
+
           on_exit(fn ->
+            try do
+              if pid = Process.whereis(EbbServer.Storage.Writer) do
+                GenServer.stop(pid, :normal, 5000)
+              end
+            catch
+              _, _ -> :ok
+            end
+
+            try do
+              if pid = Process.whereis(EbbServer.Sync.Supervisor) do
+                GenServer.stop(pid, :normal, 5000)
+              end
+            catch
+              _, _ -> :ok
+            end
+
             try do
               if pid = Process.whereis(EbbServer.Storage.Supervisor) do
                 :ok = GenServer.stop(pid, :normal, 5000)
