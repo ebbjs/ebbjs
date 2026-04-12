@@ -1,5 +1,9 @@
 # SSEConnection
 
+## Build Order Position
+
+**Step 1 of 4** -- Build this first. No dependencies on sync infrastructure. Can be unit tested standalone with a mock `Plug.Conn`.
+
 ## Purpose
 
 A process per connected client that receives Actions, control events, and presence messages from GroupServers and writes them to the client in Server-Sent Events (SSE) format over a Cowboy chunked HTTP response.

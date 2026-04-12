@@ -1,5 +1,9 @@
 # GroupServer
 
+## Build Order Position
+
+**Step 2 of 4** -- Depends on SSEConnection. GroupServer wraps SSEConnection for a specific Group, adding subscriber management.
+
 ## Purpose
 
 A per-Group GenServer that maintains the set of SSE connection subscribers for a Group, receives Action batches from the FanOutRouter, and pushes those Actions to all subscribers. It self-stops when the last subscriber leaves.
@@ -138,7 +142,7 @@ Registry.register(GroupRegistry, group_id, :group_server)
 
 | Dependency    | What it needs                      | Reference                                 |
 | ------------- | ---------------------------------- | ----------------------------------------- |
-| SSEConnection | `push_action/2`, `push_presence/2` | [sse-connection.md](04-sse-connection.md) |
+| SSEConnection | `push_action/2`, `push_presence/2` | [sse-connection.md](01-sse-connection.md) |
 | Registry      | `register/3` for group_id lookup   | OTP built-in                              |
 
 ## Supervision

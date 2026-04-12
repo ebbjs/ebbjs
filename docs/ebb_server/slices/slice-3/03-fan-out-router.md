@@ -1,5 +1,9 @@
 # FanOutRouter
 
+## Build Order Position
+
+**Step 3 of 4** -- Depends on GroupServer being registered in Registry. Watermark gating is the core logic.
+
 ## Purpose
 
 A GenServer that receives `{:batch_committed, from_gsn, to_gsn}` notifications from Writers, gates delivery on the committed watermark to ensure ordering despite concurrent writers, reads committed Actions from RocksDB, resolves affected Groups, and dispatches to per-Group GenServers.
@@ -135,7 +139,7 @@ Use `Registry` with `keys: :unique` for looking up Group GenServers by `group_id
 | WatermarkTracker  | `committed_watermark/0`                                | [watermark_tracker.ex](../../components/watermark-design.md)    |
 | RelationshipCache | `get_entity_group/1`                                   | [relationship_cache.ex](../../components/relationship-cache.md) |
 | RocksDB           | `range_iterator/3`, `cf_actions/1`, `encode_gsn_key/1` | [rocksdb-store.md](../../components/rocksdb-store.md)           |
-| GroupServer       | `start_link/1`, `add_subscriber/2`, `push_actions/2`   | [group-server.md](03-group-server.md)                           |
+| GroupServer       | `start_link/1`, `add_subscriber/2`, `push_actions/2`   | [group-server.md](02-group-server.md)                           |
 | DynamicSupervisor | Start/stop GroupServer children                        | OTP built-in                                                    |
 
 ## Supervision
