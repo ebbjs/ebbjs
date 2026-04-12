@@ -1,5 +1,9 @@
 # Writer → FanOut Integration
 
+## Build Order Position
+
+**Step 4 of 4** -- Final step. Depends on FanOutRouter being started and registered.
+
 ## Purpose
 
 After the Writer successfully commits a batch to RocksDB, it must update the watermark tracking system and notify the FanOutRouter so that live SSE subscribers receive the new Actions. This integration point is the bridge between the write path and the fan-out path.
@@ -93,7 +97,7 @@ No new types are introduced. `{:batch_committed, from_gsn :: non_neg_integer(), 
 | Dependency       | What it needs                                   | Reference                                        |
 | ---------------- | ----------------------------------------------- | ------------------------------------------------ |
 | WatermarkTracker | `mark_range_committed/2`, `advance_watermark/0` | [watermark-design.md](../../watermark-design.md) |
-| FanOutRouter     | Process pid (via `send/2`)                      | [fan-out-router.md](02-fan-out-router.md)        |
+| FanOutRouter     | Process pid (via `send/2`)                      | [fan-out-router.md](03-fan-out-router.md)        |
 
 ## Supervision
 

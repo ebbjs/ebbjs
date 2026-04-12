@@ -283,7 +283,7 @@ defmodule EbbServer.Storage.RocksDB do
           {:halt, iter}
       end,
       fn
-        {iter, _seek_result} -> :rocksdb.iterator_close(iter)
+        {iter, _} -> :rocksdb.iterator_close(iter)
         iter -> :rocksdb.iterator_close(iter)
       end
     )
