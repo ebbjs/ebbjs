@@ -12,6 +12,7 @@ defmodule EbbServer.Sync.Router do
   use Plug.Router
 
   alias EbbServer.Storage.{EntityStore, GroupCache, PermissionChecker, Writer}
+  alias EbbServer.Sync.CatchUp
 
   plug(Plug.Logger)
   plug(EbbServer.Sync.AuthPlug)
@@ -148,6 +149,29 @@ defmodule EbbServer.Sync.Router do
     end
   end
 
+  get "/sync/groups/:group_id" do
+    conn = Plug.Conn.fetch_query_params(conn)
+    actor_id = conn.assigns.actor_id
+    offset_str = conn.query_params["offset"] || "0"
+
+    case Integer.parse(offset_str) do
+      {offset, ""} when offset >= 0 ->
+        case CatchUp.catch_up_group(group_id, actor_id, offset) do
+          {:ok, actions, meta} ->
+            conn
+            |> maybe_put_resp_header("stream-next-offset", meta.next_offset)
+            |> maybe_put_resp_header("stream-up-to-date", meta.up_to_date && "true")
+            |> send_json_actions(200, actions)
+
+          {:error, :not_member} ->
+            send_json(conn, 403, %{"error" => "not_member"})
+        end
+
+      _ ->
+        send_json(conn, 400, %{"error" => "invalid_offset"})
+    end
+  end
+
   match _ do
     send_resp(conn, 404, "")
   end
@@ -187,6 +211,40 @@ defmodule EbbServer.Sync.Router do
   end
 
   defp send_json(conn, status, body) do
+    case Jason.encode(body) do
+      {:ok, json} ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(status, json)
+        |> halt()
+
+      {:error, _} ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(500, ~s({"error": "encoding_failed"}))
+        |> halt()
+    end
+  end
+
+  defp maybe_put_resp_header(conn, _header, false), do: conn
+  defp maybe_put_resp_header(conn, _header, nil), do: conn
+
+  defp maybe_put_resp_header(conn, header, value) do
+    Plug.Conn.put_resp_header(conn, header, to_string(value))
+  end
+
+  defp send_json_actions(conn, status, actions) do
+    body =
+      Enum.map(actions, fn action ->
+        %{
+          "id" => action["id"],
+          "actor_id" => action["actor_id"],
+          "hlc" => action["hlc"],
+          "gsn" => action["gsn"],
+          "updates" => action["updates"]
+        }
+      end)
+
     case Jason.encode(body) do
       {:ok, json} ->
         conn

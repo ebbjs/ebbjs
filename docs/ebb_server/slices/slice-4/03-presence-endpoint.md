@@ -41,7 +41,7 @@ The route reads the JSON body, extracts `entity_id` and `data`, verifies the act
 
 ### presence_broadcast/3
 
-Resolve the entity to its Group via `RelationshipCache.get_entity_group/1`. Verify the actor is a member of that Group via `GroupCache.get_permissions/2`. If both pass, call `FanOutRouter.broadcast_presence/3`.
+Resolve the entity to its Group via `RelationshipCache.get_entity_group/2` (using the default relationships table). Verify the actor is a member of that Group via `GroupCache.get_permissions/2`. If both pass, call `FanOutRouter.broadcast_presence/3`.
 
 The routing path through FanOutRouter → GroupServer → SSEConnection already exists and filters out the originating actor automatically.
 
@@ -74,7 +74,7 @@ Stateless. No process state.
 
 | Dependency          | What it needs                          | Reference                                                    |
 | ------------------- | -------------------------------------- | ------------------------------------------------------------ |
-| `RelationshipCache` | get_entity_group/1                     | [relationship-cache.md](../components/relationship-cache.md) |
+| `RelationshipCache` | get_entity_group/2                     | [relationship-cache.md](../components/relationship-cache.md) |
 | `GroupCache`        | get_permissions/2 for membership check | [group-cache.md](../components/group-cache.md)               |
 | `FanOutRouter`      | broadcast_presence/3                   | [fan-out-router.md](../slice-3/03-fan-out-router.md)         |
 
