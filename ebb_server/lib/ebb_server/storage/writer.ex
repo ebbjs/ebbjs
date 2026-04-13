@@ -3,7 +3,7 @@ defmodule EbbServer.Storage.Writer do
   GenServer that writes actions to RocksDB.
 
   For Slice 1: single instance, immediate flush (no batching timer).
-  Claims GSN ranges from GsnCounter and writes to all 5 column families.
+  Claims GSN ranges from GsnCounter and writes to all 6 column families.
   """
 
   use GenServer
@@ -120,12 +120,13 @@ defmodule EbbServer.Storage.Writer do
   Pipeline:
   1. Filter out actions with empty updates (safety check)
   2. Claim a GSN range from GsnCounter for the batch
-  3. Build a batch of puts across all 5 column families:
+  3. Build a batch of puts across all 6 column families:
      - cf_actions: GSN → full action (ETF encoded)
      - cf_action_dedup: action_id → GSN (duplicate detection)
      - cf_updates: (action_id, update_id) → update (ETF encoded)
      - cf_entity_actions: (subject_id, GSN) → action_id (materialization index)
      - cf_type_entities: (subject_type, subject_id) → <<>> (type index)
+     - cf_group_actions: (group_id, GSN) → action_id (group catch-up index)
   4. Write batch synchronously to RocksDB
   5. Mark affected entities dirty in DirtyTracker
 
@@ -148,7 +149,9 @@ defmodule EbbServer.Storage.Writer do
       ops =
         filtered
         |> Enum.with_index(gsn_start)
-        |> Enum.flat_map(fn {action, gsn} -> build_action_ops(action, gsn, rocks_name) end)
+        |> Enum.flat_map(fn {action, gsn} ->
+          build_action_ops(action, gsn, rocks_name, state.relationships)
+        end)
 
       write_and_respond(ops, filtered, gsn_start, gsn_end, state, rocks_name)
     end
@@ -250,7 +253,7 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
-  defp build_action_ops(action, gsn, rocks_name) do
+  defp build_action_ops(action, gsn, rocks_name, relationships) do
     action_with_gsn = to_storage_format(action, gsn)
     action_etf = :erlang.term_to_binary(action_with_gsn)
 
@@ -259,7 +262,7 @@ defmodule EbbServer.Storage.Writer do
       {:put, RocksDB.cf_action_dedup(rocks_name), action.id, RocksDB.encode_gsn_key(gsn)}
     ] ++
       Enum.flat_map(action.updates, fn update ->
-        build_update_ops(action.id, update, gsn, rocks_name)
+        build_update_ops(action.id, update, gsn, rocks_name, relationships)
       end)
   end
 
@@ -294,7 +297,7 @@ defmodule EbbServer.Storage.Writer do
     }
   end
 
-  defp build_update_ops(action_id, update, gsn, rocks_name) do
+  defp build_update_ops(action_id, update, gsn, rocks_name, relationships) do
     update_etf = :erlang.term_to_binary(update)
 
     [
@@ -307,6 +310,19 @@ defmodule EbbServer.Storage.Writer do
          update.subject_type,
          update.subject_id
        ), <<>>}
-    ]
+    ] ++ build_group_action_index(action_id, gsn, update, rocks_name, relationships)
+  end
+
+  defp build_group_action_index(_action_id, _gsn, _update, _rocks_name, nil), do: []
+
+  defp build_group_action_index(action_id, gsn, update, rocks_name, relationships) do
+    group_id = RelationshipCache.get_entity_group(update.subject_id, relationships)
+
+    if group_id do
+      key = <<group_id::binary, gsn::unsigned-big-integer-size(64)>>
+      [{:put, RocksDB.cf_group_actions(rocks_name), key, action_id}]
+    else
+      []
+    end
   end
 end

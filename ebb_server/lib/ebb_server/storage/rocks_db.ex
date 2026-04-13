@@ -19,6 +19,7 @@ defmodule EbbServer.Storage.RocksDB do
     cf_entity_actions - (entity_id, GSN) -> action_id binary
     cf_type_entities  - (type, 0x00, entity_id) -> <<>> (presence index)
     cf_action_dedup   - action_id -> GSN (duplicate detection)
+    cf_group_actions  - (group_id, GSN) -> action_id binary
   """
 
   use GenServer
@@ -41,7 +42,8 @@ defmodule EbbServer.Storage.RocksDB do
     {~c"cf_updates", []},
     {~c"cf_entity_actions", []},
     {~c"cf_type_entities", []},
-    {~c"cf_action_dedup", []}
+    {~c"cf_action_dedup", []},
+    {~c"cf_group_actions", []}
   ]
 
   # ---------------------------------------------------------------------------
@@ -77,6 +79,10 @@ defmodule EbbServer.Storage.RocksDB do
 
   @spec cf_action_dedup(name()) :: cf_ref()
   def cf_action_dedup(name \\ __MODULE__), do: :persistent_term.get({:ebb_cf_action_dedup, name})
+
+  @spec cf_group_actions(name()) :: cf_ref()
+  def cf_group_actions(name \\ __MODULE__),
+    do: :persistent_term.get({:ebb_cf_group_actions, name})
 
   # ---------------------------------------------------------------------------
   # Public API — key encoding / decoding
@@ -309,13 +315,22 @@ defmodule EbbServer.Storage.RocksDB do
 
     case :rocksdb.open(String.to_charlist(path), db_opts, @cf_descriptors) do
       {:ok, db_ref,
-       [_default_cf, cf_actions, cf_updates, cf_entity_actions, cf_type_entities, cf_action_dedup]} ->
+       [
+         _default_cf,
+         cf_actions,
+         cf_updates,
+         cf_entity_actions,
+         cf_type_entities,
+         cf_action_dedup,
+         cf_group_actions
+       ]} ->
         :persistent_term.put({:ebb_rocksdb_db, name}, db_ref)
         :persistent_term.put({:ebb_cf_actions, name}, cf_actions)
         :persistent_term.put({:ebb_cf_updates, name}, cf_updates)
         :persistent_term.put({:ebb_cf_entity_actions, name}, cf_entity_actions)
         :persistent_term.put({:ebb_cf_type_entities, name}, cf_type_entities)
         :persistent_term.put({:ebb_cf_action_dedup, name}, cf_action_dedup)
+        :persistent_term.put({:ebb_cf_group_actions, name}, cf_group_actions)
 
         {:ok, %{db_ref: db_ref, name: name}}
 
@@ -332,6 +347,7 @@ defmodule EbbServer.Storage.RocksDB do
     :persistent_term.erase({:ebb_cf_entity_actions, name})
     :persistent_term.erase({:ebb_cf_type_entities, name})
     :persistent_term.erase({:ebb_cf_action_dedup, name})
+    :persistent_term.erase({:ebb_cf_group_actions, name})
 
     :rocksdb.close(db_ref)
   end
