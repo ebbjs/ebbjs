@@ -225,5 +225,84 @@ defmodule EbbServer.Sync.HandshakeTest do
 
       assert conn.status == 200
     end
+
+    test "valid cursor at or below watermark returns cursor_valid true" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      bootstrap_group("a_cursor_test", "g_valid", ["read"])
+
+      conn =
+        post_handshake(%{"cursors" => %{"g_valid" => 0}, "schema_version" => 1}, "a_cursor_test")
+
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert length(response["groups"]) == 1
+
+      group = hd(response["groups"])
+      assert group["id"] == "g_valid"
+      assert group["cursor_valid"] == true
+      assert group["reason"] == nil
+      assert group["cursor"] == 0
+    end
+
+    test "stale cursor above watermark returns cursor_valid false" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      bootstrap_group("a_stale_test", "g_stale", ["read"])
+
+      conn =
+        post_handshake(
+          %{"cursors" => %{"g_stale" => 999_999}, "schema_version" => 1},
+          "a_stale_test"
+        )
+
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+
+      group = hd(response["groups"])
+      assert group["cursor_valid"] == false
+      assert group["reason"] == "behind_watermark"
+      assert is_integer(group["cursor"])
+    end
+
+    test "multiple groups with mixed cursor validity" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      bootstrap_group("a_multi_test", "g_1", ["read"])
+      bootstrap_group("a_multi_test", "g_2", ["read"])
+
+      conn =
+        post_handshake(
+          %{"cursors" => %{"g_1" => 0, "g_2" => 999_999}, "schema_version" => 1},
+          "a_multi_test"
+        )
+
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert length(response["groups"]) == 2
+
+      groups = Enum.into(response["groups"], %{}, fn g -> {g["id"], g} end)
+
+      assert groups["g_1"]["cursor_valid"] == true
+      assert groups["g_1"]["reason"] == nil
+
+      assert groups["g_2"]["cursor_valid"] == false
+      assert groups["g_2"]["reason"] == "behind_watermark"
+    end
+
+    test "missing cursors defaults to 0 for all groups" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      bootstrap_group("a_no_cursors", "g_default", ["read"])
+
+      conn = post_handshake(%{}, "a_no_cursors")
+
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+
+      group = hd(response["groups"])
+      assert group["cursor_valid"] == true
+      assert group["cursor"] == 0
+    end
   end
 end

@@ -142,16 +142,35 @@ defmodule EbbServer.Sync.Router do
 
     case Jason.decode(body) do
       {:ok, payload} ->
-        _cursors = payload["cursors"] || %{}
+        cursors = if is_map(payload["cursors"]), do: payload["cursors"], else: %{}
         _schema_version = payload["schema_version"]
 
         groups = GroupCache.get_actor_groups(actor_id)
+        watermark = WatermarkTracker.committed_watermark()
 
         response = %{
           "actor_id" => actor_id,
           "groups" =>
             Enum.map(groups, fn %{group_id: gid, permissions: perms} ->
-              %{"id" => gid, "permissions" => perms}
+              client_cursor = Map.get(cursors, gid, 0)
+
+              if client_cursor <= watermark do
+                %{
+                  "id" => gid,
+                  "permissions" => perms,
+                  "cursor_valid" => true,
+                  "reason" => nil,
+                  "cursor" => client_cursor
+                }
+              else
+                %{
+                  "id" => gid,
+                  "permissions" => perms,
+                  "cursor_valid" => false,
+                  "reason" => "behind_watermark",
+                  "cursor" => watermark
+                }
+              end
             end)
         }
 
