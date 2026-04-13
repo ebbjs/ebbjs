@@ -2,17 +2,30 @@ defmodule EbbServer.Sync.Router do
   @moduledoc """
   HTTP router for the EbbServer sync API.
 
-  Provides two endpoints:
+  Provides endpoints:
   - POST /sync/actions — Write actions to the system
   - GET /entities/:id — Read an entity by ID
+  - POST /entities/query — Query entities by type
+  - POST /sync/handshake — Initialize connection and get group membership
+  - GET /sync/live — SSE stream for live updates
+  - GET /sync/groups/:group_id — Catch-up for a group
+  - POST /sync/presence — Broadcast ephemeral presence data
 
   Returns appropriate HTTP status codes for various error conditions.
   """
 
   use Plug.Router
 
-  alias EbbServer.Storage.{EntityStore, GroupCache, PermissionChecker, WatermarkTracker, Writer}
-  alias EbbServer.Sync.{CatchUp, SSEHandler}
+  alias EbbServer.Storage.{
+    EntityStore,
+    GroupCache,
+    PermissionChecker,
+    RelationshipCache,
+    WatermarkTracker,
+    Writer
+  }
+
+  alias EbbServer.Sync.{CatchUp, FanOutRouter, SSEHandler}
 
   plug(Plug.Logger)
   plug(EbbServer.Sync.AuthPlug)
@@ -203,6 +216,37 @@ defmodule EbbServer.Sync.Router do
 
       _ ->
         send_json(conn, 400, %{"error" => "invalid_offset"})
+    end
+  end
+
+  post "/sync/presence" do
+    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    actor_id = conn.assigns.actor_id
+
+    case Jason.decode(body) do
+      {:ok, %{"entity_id" => entity_id, "data" => data}}
+      when is_binary(entity_id) and entity_id != "" ->
+        case RelationshipCache.get_entity_group(entity_id) do
+          nil ->
+            send_json(conn, 404, %{"error" => "entity_not_found"})
+
+          group_id ->
+            if GroupCache.get_permissions(actor_id, group_id) do
+              FanOutRouter.broadcast_presence(entity_id, actor_id, data)
+              send_resp(conn, 204, "")
+            else
+              send_json(conn, 403, %{"error" => "not_member"})
+            end
+        end
+
+      {:ok, _} ->
+        send_json(conn, 422, %{
+          "error" => "validation_failed",
+          "details" => "entity_id is required and must be a non-empty string"
+        })
+
+      {:error, _} ->
+        send_json(conn, 422, %{"error" => "invalid_json"})
     end
   end
 
