@@ -206,13 +206,10 @@ defmodule EbbServer.Sync.FanOutRouter do
     from_key = RocksDB.encode_gsn_key(from_gsn)
     to_key = RocksDB.encode_gsn_key(to_gsn + 1)
 
-    actions =
-      RocksDB.range_iterator(cf, from_key, to_key)
-      |> Enum.map(fn {_key, value} -> :erlang.binary_to_term(value, [:safe]) end)
-
-    for action <- actions do
-      dispatch_to_groups(action)
-    end
+    RocksDB.range_iterator(cf, from_key, to_key)
+    |> Stream.map(fn {_key, value} -> :erlang.binary_to_term(value, [:safe]) end)
+    |> Stream.each(&dispatch_to_groups/1)
+    |> Stream.run()
   end
 
   defp dispatch_to_groups(action) do

@@ -30,7 +30,7 @@ defmodule EbbServer.Sync.FanOutRouterTest do
       assert FanOutRouter.split_pushable(pending, 0, 10) == {[], [{1, 15}]}
     end
 
-    test "only first range is pushable - second fails from check" do
+    test "contiguous ranges both pushable when within watermark" do
       pending = [{1, 3}, {4, 6}]
       assert FanOutRouter.split_pushable(pending, 0, 10) == {[{1, 3}, {4, 6}], []}
     end
