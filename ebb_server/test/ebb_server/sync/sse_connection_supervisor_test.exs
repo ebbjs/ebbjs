@@ -8,7 +8,6 @@ defmodule EbbServer.Sync.SSEConnectionSupervisorTest do
   alias EbbServer.Sync.SSEConnectionSupervisor
 
   describe "child spec" do
-    @tag :bug1
     test "child spec uses unique id per child (not hardcoded atom)" do
       code =
         File.read!(

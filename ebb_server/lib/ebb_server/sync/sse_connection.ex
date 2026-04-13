@@ -31,7 +31,7 @@ defmodule EbbServer.Sync.SSEConnection do
   Events are separated by `\\n\\n`. Each field line ends with `\\n`.
   """
 
-  use GenServer
+  use GenServer, restart: :temporary
 
   @type t :: %__MODULE__{
           conn: Plug.Conn.t(),

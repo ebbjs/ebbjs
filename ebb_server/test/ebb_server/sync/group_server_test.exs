@@ -14,7 +14,6 @@ defmodule EbbServer.Sync.GroupServerTest do
   end
 
   describe "add_subscriber/3" do
-    @tag :bug2
     test "GenServer.call includes timeout argument" do
       code = File.read!(Path.expand("../../../lib/ebb_server/sync/group_server.ex", __DIR__))
 
@@ -65,7 +64,6 @@ defmodule EbbServer.Sync.GroupServerTest do
   end
 
   describe "broadcast_presence/3" do
-    @tag :bug3
     test "no crash when sending to dead connection", %{group_server: gs} do
       dead_conn =
         spawn(fn ->
@@ -79,13 +77,7 @@ defmodule EbbServer.Sync.GroupServerTest do
       :ok = GroupServer.add_subscriber(gs, dead_conn, "actor_dead")
       Process.exit(dead_conn, :kill)
 
-      receive do
-        {:DOWN, _, :process, ^dead_conn, _} -> :ok
-      after
-        100 -> :ok
-      end
-
-      GroupServer.broadcast_presence(gs, "actor_other", %{"data" => "test"})
+      :ok = GroupServer.broadcast_presence(gs, "actor_other", %{"data" => "test"})
     end
   end
 
