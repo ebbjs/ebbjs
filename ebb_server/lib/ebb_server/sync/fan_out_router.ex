@@ -73,11 +73,20 @@ defmodule EbbServer.Sync.FanOutRouter do
   @impl true
   def handle_call({:subscribe, group_ids, connection_pid}, _from, state) do
     for group_id <- group_ids do
-      {:ok, group_pid} =
-        DynamicSupervisor.start_child(
-          GroupDynamicSupervisor,
-          {GroupServer, group_id}
-        )
+      group_pid =
+        case DynamicSupervisor.start_child(
+               GroupDynamicSupervisor,
+               {GroupServer, group_id}
+             ) do
+          {:ok, pid} ->
+            pid
+
+          {:error, {:already_started, pid}} ->
+            pid
+
+          {:error, reason} ->
+            raise "Failed to start GroupServer for #{group_id}: #{inspect(reason)}"
+        end
 
       GroupServer.add_subscriber(group_pid, connection_pid, group_id)
     end
@@ -138,9 +147,22 @@ defmodule EbbServer.Sync.FanOutRouter do
           {to_push :: [{non_neg_integer(), non_neg_integer()}],
            remaining :: [{non_neg_integer(), non_neg_integer()}]}
   def split_pushable(pending, last_pushed, watermark) do
-    Enum.split_while(pending, fn {from, to} ->
-      from <= last_pushed + 1 and to <= watermark
-    end)
+    {pushable, remaining} =
+      do_split_pushable(pending, last_pushed, watermark, [])
+
+    {Enum.reverse(pushable), remaining}
+  end
+
+  defp do_split_pushable([], _running_last, _watermark, acc) do
+    {acc, []}
+  end
+
+  defp do_split_pushable([{from, to} | rest], running_last, watermark, acc) do
+    if from <= running_last + 1 and to <= watermark do
+      do_split_pushable(rest, to, watermark, [{from, to} | acc])
+    else
+      {Enum.reverse(acc), [{from, to} | rest]}
+    end
   end
 
   @doc """
@@ -195,7 +217,7 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   defp dispatch_to_groups(action) do
     group_ids =
-      action.updates
+      action["updates"]
       |> Enum.map(& &1["subject_id"])
       |> Enum.map(&RelationshipCache.get_entity_group/1)
       |> Enum.reject(&is_nil/1)

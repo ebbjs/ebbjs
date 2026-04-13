@@ -32,12 +32,12 @@ defmodule EbbServer.Sync.FanOutRouterTest do
 
     test "only first range is pushable - second fails from check" do
       pending = [{1, 3}, {4, 6}]
-      assert FanOutRouter.split_pushable(pending, 0, 10) == {[{1, 3}], [{4, 6}]}
+      assert FanOutRouter.split_pushable(pending, 0, 10) == {[{1, 3}, {4, 6}], []}
     end
 
     test "third range also fails from check" do
       pending = [{1, 3}, {4, 6}, {7, 9}]
-      assert FanOutRouter.split_pushable(pending, 0, 10) == {[{1, 3}], [{4, 6}, {7, 9}]}
+      assert FanOutRouter.split_pushable(pending, 0, 10) == {[{1, 3}, {4, 6}, {7, 9}], []}
     end
 
     test "from equal to last_pushed + 1 is pushable" do
@@ -68,6 +68,54 @@ defmodule EbbServer.Sync.FanOutRouterTest do
     test "to exactly at watermark boundary" do
       pending = [{1, 10}]
       assert FanOutRouter.split_pushable(pending, 0, 10) == {[{1, 10}], []}
+    end
+  end
+
+  describe "split_pushable/3 — contiguous range tracking" do
+    test "all contiguous ranges are pushable even when beyond original last_pushed" do
+      pending = [{1, 3}, {4, 6}, {7, 9}]
+      assert FanOutRouter.split_pushable(pending, 0, 10) == {[{1, 3}, {4, 6}, {7, 9}], []}
+    end
+
+    test "after first range is pushed, second becomes pushable with updated boundary" do
+      pending = [{1, 3}, {4, 6}]
+      assert FanOutRouter.split_pushable(pending, 3, 10) == {[{1, 3}, {4, 6}], []}
+    end
+
+    test "two-writer scenario: both batches pushed when watermark covers both" do
+      pending = [{1001, 2000}, {1, 1000}]
+      sorted_pending = Enum.sort_by(pending, &elem(&1, 0))
+
+      assert FanOutRouter.split_pushable(sorted_pending, 0, 2000) ==
+               {[{1, 1000}, {1001, 2000}], []}
+    end
+
+    test "three+ contiguous ranges all within watermark are all pushed" do
+      pending = [{1, 2}, {3, 4}, {5, 6}]
+      assert FanOutRouter.split_pushable(pending, 0, 6) == {[{1, 2}, {3, 4}, {5, 6}], []}
+    end
+
+    test "gap detected after first pushes — subsequent non-contiguous stays" do
+      pending = [{1, 3}, {7, 9}]
+      assert FanOutRouter.split_pushable(pending, 3, 10) == {[{1, 3}], [{7, 9}]}
+    end
+  end
+
+  describe "process_batch/4 — watermark-gated delivery" do
+    test "first batch arrives out of order, waits for watermark" do
+      state = new_state(pending_notifications: [], last_pushed_gsn: 0)
+      {to_push, remaining, new_last} = FanOutRouter.process_batch(state, 1001, 2000, 0)
+      assert to_push == []
+      assert remaining == [{1001, 2000}]
+      assert new_last == 0
+    end
+
+    test "second batch arrives and watermark advances — both ranges push in order" do
+      state = new_state(pending_notifications: [{1001, 2000}], last_pushed_gsn: 0)
+      {to_push, remaining, new_last} = FanOutRouter.process_batch(state, 1, 1000, 2000)
+      assert to_push == [{1, 1000}, {1001, 2000}]
+      assert remaining == []
+      assert new_last == 2000
     end
   end
 

@@ -68,6 +68,11 @@ defmodule EbbServer.Integration.StorageCase do
             {:error, {:already_started, _pid}} -> :ok
           end
 
+          case EbbServer.Sync.GroupDynamicSupervisor.start_link([]) do
+            {:ok, _pid} -> :ok
+            {:error, {:already_started, _pid}} -> :ok
+          end
+
           case EbbServer.Storage.Writer.start_link(name: EbbServer.Storage.Writer) do
             {:ok, _pid} -> :ok
             {:error, {:already_started, _pid}} -> :ok
@@ -146,6 +151,11 @@ defmodule EbbServer.Integration.StorageCase do
           end
 
           case EbbServer.Sync.Supervisor.start_link([]) do
+            {:ok, _pid} -> :ok
+            {:error, {:already_started, _pid}} -> :ok
+          end
+
+          case EbbServer.Sync.GroupDynamicSupervisor.start_link([]) do
             {:ok, _pid} -> :ok
             {:error, {:already_started, _pid}} -> :ok
           end
