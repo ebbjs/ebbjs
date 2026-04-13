@@ -10,7 +10,7 @@ defmodule EbbServer.Sync.GroupDynamicSupervisor do
   use DynamicSupervisor
 
   def start_link(_opts) do
-    DynamicSupervisor.start_link(__MODULE__, strategy: :one_for_one, name: __MODULE__)
+    DynamicSupervisor.start_link(__MODULE__, [], name: __MODULE__)
   end
 
   @impl true

@@ -20,69 +20,14 @@ defmodule EbbServer.Sync.EntityQueryTest do
   """
 
   use ExUnit.Case, async: false
+  use EbbServer.Integration.StorageCase
 
   import Plug.Test
   import Plug.Conn
   import EbbServer.TestHelpers
+
   alias EbbServer.Storage.Writer
   alias EbbServer.Sync.Router
-
-  setup do
-    if pid = Process.whereis(EbbServer.Storage.Supervisor) do
-      GenServer.stop(pid, :normal, 5000)
-      :timer.sleep(50)
-    end
-
-    tmp_dir =
-      tmp_dir(%{module: __MODULE__, test: "entity_query_#{:erlang.unique_integer([:positive])}"})
-
-    Application.put_env(:ebb_server, :data_dir, tmp_dir)
-
-    case EbbServer.Storage.Supervisor.start_link(data_dir: tmp_dir) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
-    case EbbServer.Sync.Supervisor.start_link([]) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
-    case EbbServer.Storage.Writer.start_link(name: EbbServer.Storage.Writer) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
-    on_exit(fn ->
-      try do
-        if pid = Process.whereis(EbbServer.Storage.Writer) do
-          GenServer.stop(pid, :normal, 5000)
-        end
-      catch
-        _, _ -> :ok
-      end
-
-      try do
-        if pid = Process.whereis(EbbServer.Sync.Supervisor) do
-          GenServer.stop(pid, :normal, 5000)
-        end
-      catch
-        _, _ -> :ok
-      end
-
-      try do
-        if pid = Process.whereis(EbbServer.Storage.Supervisor) do
-          :ok = GenServer.stop(pid, :normal, 5000)
-        end
-      catch
-        _, _ -> :ok
-      end
-
-      Application.delete_env(:ebb_server, :data_dir)
-    end)
-
-    :ok
-  end
 
   defp post_query(body, actor_id \\ "a_test") do
     conn(:post, "/entities/query", Jason.encode!(body))
