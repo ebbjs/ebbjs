@@ -36,7 +36,7 @@ defmodule EbbServer.Sync.GroupServer do
 
   @spec add_subscriber(pid(), pid(), String.t()) :: :ok
   def add_subscriber(pid, connection_pid, actor_id) do
-    GenServer.call(pid, {:add_subscriber, connection_pid, actor_id})
+    GenServer.call(pid, {:add_subscriber, connection_pid, actor_id}, 5_000)
   end
 
   @spec remove_subscriber(pid(), pid()) :: :ok
