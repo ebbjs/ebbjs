@@ -4,6 +4,29 @@ defmodule EbbServer.Storage.Writer do
 
   For Slice 1: single instance, immediate flush (no batching timer).
   Claims GSN ranges from GsnCounter and writes to all 6 column families.
+
+  ## cf_group_actions Index and Intra-Action Context
+
+  When building the `cf_group_actions` index entry for a relationship update, the
+  Writer must resolve which group the relationship belongs to. This is straightforward
+  when the relationship's `source_id` already exists — it can be looked up in
+  `RelationshipCache`. However, when the `source_id` entity is being created in the
+  same action (e.g., a "create todo" update paired with a "todo.owns" relationship
+  update), the cache has no entry yet.
+
+  To handle this, the Writer builds an **intra-action context** before processing
+  updates. This context maps each `source_id` to its corresponding `target_id` for
+  all relationship updates in the action. When a relationship's `source_id` appears
+  in this context, the Writer uses the `target_id` to look up the group instead.
+
+  Example: an action with two updates:
+  1. Create entity `todo_123` (targeting group `g_1`)
+  2. Add relationship `rel_456` with `source_id: "todo_123", target_id: "col_1"`
+
+  The intra-action context becomes `%{"todo_123" => "col_1"}`. When building the
+  `cf_group_actions` index for `rel_456`, the Writer sees that `source_id` is in
+  the context and uses `col_1` to find the group, rather than failing to look up
+  `todo_123` in the cache.
   """
 
   use GenServer
