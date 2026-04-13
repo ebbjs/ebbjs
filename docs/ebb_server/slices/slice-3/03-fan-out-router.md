@@ -136,7 +136,7 @@ Use `Registry` with `keys: :unique` for looking up Group GenServers by `group_id
 
 | Dependency        | What it needs                                          | Reference                                                       |
 | ----------------- | ------------------------------------------------------ | --------------------------------------------------------------- |
-| WatermarkTracker  | `committed_watermark/0`                                | [watermark_tracker.ex](../../components/watermark-design.md)    |
+| WatermarkTracker  | `committed_watermark/0`                                | [watermark-design.md](../../watermark-design.md)                |
 | RelationshipCache | `get_entity_group/1`                                   | [relationship_cache.ex](../../components/relationship-cache.md) |
 | RocksDB           | `range_iterator/3`, `cf_actions/1`, `encode_gsn_key/1` | [rocksdb-store.md](../../components/rocksdb-store.md)           |
 | GroupServer       | `start_link/1`, `add_subscriber/2`, `push_actions/2`   | [group-server.md](02-group-server.md)                           |

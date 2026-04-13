@@ -17,6 +17,7 @@ Opens a long-lived SSE connection subscribed to one or more Groups. The client p
 Takes a Plug.Conn, a list of group IDs, a cursor GSN, and an actor ID. Starts an SSEConnection process, subscribes it to FanOutRouter for all groups, and takes ownership of the chunked connection. Returns `:ok`.
 
 **Return shape:**
+
 - `:ok` on success — SSEConnection owns the connection from here
 - `{:error, :not_member}` if the actor is not a member of any requested group
 
@@ -74,12 +75,12 @@ Stateless handler module. No persistent state. The SSEConnection process owns th
 
 ## Dependencies
 
-| Dependency | What it needs | Reference |
-|------------|---------------|-----------|
-| `SSEConnection` | start_link/4, push_control/2 | [sse-connection.md](../slice-3/01-sse-connection.md) |
-| `FanOutRouter` | subscribe/2 | [fan-out-router.md](../slice-3/03-fan-out-router.md) |
-| `WatermarkTracker` | committed_watermark/0 | [watermark-design.md](../../../watermark-design.md) |
-| `GroupCache` | get_permissions/2 for membership check | [group-cache.md](../components/group-cache.md) |
+| Dependency         | What it needs                          | Reference                                            |
+| ------------------ | -------------------------------------- | ---------------------------------------------------- |
+| `SSEConnection`    | start_link/4, push_control/2           | [sse-connection.md](../slice-3/01-sse-connection.md) |
+| `FanOutRouter`     | subscribe/2                            | [fan-out-router.md](../slice-3/03-fan-out-router.md) |
+| `WatermarkTracker` | committed_watermark/0                  | [watermark-design.md](../../../watermark-design.md)  |
+| `GroupCache`       | get_permissions/2 for membership check | [group-cache.md](../components/group-cache.md)       |
 
 ## Test Plan
 

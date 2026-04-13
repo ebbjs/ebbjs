@@ -26,13 +26,14 @@ Extends the existing handshake to include `cursor_valid` per Group, telling the 
 
 Each group entry in the response gains three new fields:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `cursor_valid` | boolean | Whether the client's cursor for this group is usable |
-| `reason` | String \| null | Reason if `cursor_valid` is false. `"behind_watermark"` for now. `null` if valid. |
-| `cursor` | non_neg_integer \| null | If invalid, the current watermark (catch up from here). If valid, the cursor the client sent. |
+| Field          | Type                    | Description                                                                                   |
+| -------------- | ----------------------- | --------------------------------------------------------------------------------------------- |
+| `cursor_valid` | boolean                 | Whether the client's cursor for this group is usable                                          |
+| `reason`       | String \| null          | Reason if `cursor_valid` is false. `"behind_watermark"` for now. `null` if valid.             |
+| `cursor`       | non_neg_integer \| null | If invalid, the current watermark (catch up from here). If valid, the cursor the client sent. |
 
 Example response:
+
 ```json
 {
   "actor_id": "a_user1",
@@ -79,9 +80,9 @@ There is no compaction implementation yet. The watermark is always the ceiling o
 
 ## Dependencies
 
-| Dependency | What it needs | Reference |
-|------------|---------------|-----------|
-| `GroupCache` | get_actor_groups/1 | [group-cache.md](../components/group-cache.md) |
+| Dependency         | What it needs         | Reference                                           |
+| ------------------ | --------------------- | --------------------------------------------------- |
+| `GroupCache`       | get_actor_groups/1    | [group-cache.md](../components/group-cache.md)      |
 | `WatermarkTracker` | committed_watermark/0 | [watermark-design.md](../../../watermark-design.md) |
 
 ## State

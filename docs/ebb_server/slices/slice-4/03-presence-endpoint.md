@@ -30,12 +30,12 @@ The route reads the JSON body, extracts `entity_id` and `data`, verifies the act
 
 ### Response
 
-| Status | Description |
-|--------|-------------|
-| 204 No Content | Presence broadcast succeeded |
-| 403 Forbidden | Actor is not a member of the entity's Group |
-| 404 Not Found | Entity does not belong to any Group |
-| 422 Unprocessable Entity | Missing entity_id or invalid JSON |
+| Status                   | Description                                 |
+| ------------------------ | ------------------------------------------- |
+| 204 No Content           | Presence broadcast succeeded                |
+| 403 Forbidden            | Actor is not a member of the entity's Group |
+| 404 Not Found            | Entity does not belong to any Group         |
+| 422 Unprocessable Entity | Missing entity_id or invalid JSON           |
 
 ## Algorithm
 
@@ -72,11 +72,11 @@ Stateless. No process state.
 
 ## Dependencies
 
-| Dependency | What it needs | Reference |
-|------------|---------------|-----------|
-| `RelationshipCache` | get_entity_group/1 | [relationship-cache.md](../components/relationship-cache.md) |
-| `GroupCache` | get_permissions/2 for membership check | [group-cache.md](../components/group-cache.md) |
-| `FanOutRouter` | broadcast_presence/3 | [fan-out-router.md](../slice-3/03-fan-out-router.md) |
+| Dependency          | What it needs                          | Reference                                                    |
+| ------------------- | -------------------------------------- | ------------------------------------------------------------ |
+| `RelationshipCache` | get_entity_group/1                     | [relationship-cache.md](../components/relationship-cache.md) |
+| `GroupCache`        | get_permissions/2 for membership check | [group-cache.md](../components/group-cache.md)               |
+| `FanOutRouter`      | broadcast_presence/3                   | [fan-out-router.md](../slice-3/03-fan-out-router.md)         |
 
 ## Test Plan
 

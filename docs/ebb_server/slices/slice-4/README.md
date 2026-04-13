@@ -16,13 +16,13 @@ These endpoints are built on top of the existing sync infrastructure and reuse i
 
 ## Components
 
-| # | Component | File | Purpose |
-|---|-----------|------|---------|
-| 0 | [Group Actions Index](../prereq-group-actions-index.md) | `RocksDB` + `Writer` | Pre-indexed `(group_id, gsn) → action_id` for efficient group-scoped catch-up reads |
-| 1 | [Catch-Up Endpoint](01-catch-up-endpoint.md) | `router.ex` + `lib/ebb_server/sync/catch_up.ex` | Paginated group-scoped Action reads |
-| 2 | [Live SSE Endpoint](02-live-sse-endpoint.md) | `router.ex` + `lib/ebb_server/sync/sse_handler.ex` | Long-lived SSE subscription |
-| 3 | [Presence Endpoint](03-presence-endpoint.md) | `router.ex` | Ephemeral cursor broadcast |
-| 4 | [Handshake Update](04-handshake-update.md) | `router.ex` | `cursor_valid` per group |
+| #   | Component                                               | File                                               | Purpose                                                                             |
+| --- | ------------------------------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| 0   | [Group Actions Index](../prereq-group-actions-index.md) | `RocksDB` + `Writer`                               | Pre-indexed `(group_id, gsn) → action_id` for efficient group-scoped catch-up reads |
+| 1   | [Catch-Up Endpoint](01-catch-up-endpoint.md)            | `router.ex` + `lib/ebb_server/sync/catch_up.ex`    | Paginated group-scoped Action reads                                                 |
+| 2   | [Live SSE Endpoint](02-live-sse-endpoint.md)            | `router.ex` + `lib/ebb_server/sync/sse_handler.ex` | Long-lived SSE subscription                                                         |
+| 3   | [Presence Endpoint](03-presence-endpoint.md)            | `router.ex`                                        | Ephemeral cursor broadcast                                                          |
+| 4   | [Handshake Update](04-handshake-update.md)              | `router.ex`                                        | `cursor_valid` per group                                                            |
 
 ## Build Order
 

@@ -17,6 +17,7 @@ Serves paginated Action reads scoped to a single Group, starting from a client-p
 Takes a group ID, a GSN offset, and a page limit. Returns a tuple of `{actions, meta}` where meta contains pagination state.
 
 **Return shape:**
+
 - `{:ok, [action], %{next_offset: integer | nil, up_to_date: boolean}}` on success
 - `{:error, :not_member}` when the actor is not a member of the group
 
@@ -26,10 +27,10 @@ The `GET /sync/groups/:group_id` route parses the `offset` query parameter, dele
 
 ### Response Headers
 
-| Header | Value | Description |
-|--------|-------|-------------|
+| Header               | Value                 | Description                                                     |
+| -------------------- | --------------------- | --------------------------------------------------------------- |
 | `Stream-Next-Offset` | GSN integer as string | Present when more pages exist — the offset for the next request |
-| `Stream-Up-To-Date` | `"true"` | Present when the client is caught up (fewer results than limit) |
+| `Stream-Up-To-Date`  | `"true"`              | Present when the client is caught up (fewer results than limit) |
 
 ### Response Body
 
@@ -98,12 +99,12 @@ Test the wired endpoint by calling `Router.call/2` with a test conn:
 
 ## Dependencies
 
-| Dependency | What it needs | Reference |
-|------------|---------------|-----------|
-| `GroupCache` | `get_permissions/2` for membership check | [group-cache.md](../components/group-cache.md) |
-| `RocksDB` | `range_iterator/3`, `cf_group_actions/1`, `cf_actions/1`, `multi_get/3` | [rocksdb-store.md](../components/rocksdb-store.md) |
-| `RelationshipCache` | `get_entity_group/1` at write time only | [relationship-cache.md](../components/relationship-cache.md) |
-| `WatermarkTracker` | `committed_watermark/0` for the to_key bound | [watermark-design.md](../../../watermark-design.md) |
+| Dependency          | What it needs                                                           | Reference                                                    |
+| ------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `GroupCache`        | `get_permissions/2` for membership check                                | [group-cache.md](../components/group-cache.md)               |
+| `RocksDB`           | `range_iterator/3`, `cf_group_actions/1`, `cf_actions/1`, `multi_get/3` | [rocksdb-store.md](../components/rocksdb-store.md)           |
+| `RelationshipCache` | `get_entity_group/1` at write time only                                 | [relationship-cache.md](../components/relationship-cache.md) |
+| `WatermarkTracker`  | `committed_watermark/0` for the to_key bound                            | [watermark-design.md](../../../watermark-design.md)          |
 
 ## Open Questions
 
