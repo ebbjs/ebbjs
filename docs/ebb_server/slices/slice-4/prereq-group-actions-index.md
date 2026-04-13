@@ -1,5 +1,7 @@
 # Prerequisite: Group Actions Index
 
+**Status: Implemented** ✓
+
 ## Purpose
 
 Adds a new RocksDB column family `cf_group_actions` that indexes `(group_id, gsn) → action_id` at write time. This pre-index enables O(1) group-scoped catch-up reads regardless of how many entities a group contains. It is a prerequisite for the Catch-Up endpoint and is built before it.

@@ -28,7 +28,7 @@ The server exposes an HTTP API for Action writes, entity reads, sync handshake, 
 ```
 HTTP API ──────→ Permission Checker ──→ System Cache (group_members, relationships)
            │
-           ├──→ Writer ──→ RocksDB Store (WriteBatch across 5 CFs)
+           ├──→ Writer ──→ RocksDB Store (WriteBatch across 6 CFs)
            │            ──→ System Cache  (dirty_set, group_members, relationships, watermark)
            │            ──→ Fan-Out       ({:batch_committed, from_gsn, to_gsn} notification)
            │
