@@ -11,8 +11,8 @@ defmodule EbbServer.Sync.Router do
 
   use Plug.Router
 
-  alias EbbServer.Storage.{EntityStore, GroupCache, PermissionChecker, Writer}
-  alias EbbServer.Sync.CatchUp
+  alias EbbServer.Storage.{EntityStore, GroupCache, PermissionChecker, WatermarkTracker, Writer}
+  alias EbbServer.Sync.{CatchUp, SSEHandler}
 
   plug(Plug.Logger)
   plug(EbbServer.Sync.AuthPlug)
@@ -149,6 +149,40 @@ defmodule EbbServer.Sync.Router do
     end
   end
 
+  get "/sync/live" do
+    conn = Plug.Conn.fetch_query_params(conn)
+    actor_id = conn.assigns.actor_id
+
+    groups_param = conn.query_params["groups"] || ""
+    cursor_param = conn.query_params["cursor"] || "0"
+
+    group_ids = String.split(groups_param, ",", trim: true)
+
+    case Integer.parse(cursor_param) do
+      {cursor, ""} when cursor >= 0 and group_ids != [] ->
+        case verify_all_group_membership(group_ids, actor_id) do
+          :ok ->
+            watermark = WatermarkTracker.committed_watermark()
+
+            if cursor > watermark do
+              SSEHandler.write_stale_cursor_response(conn, watermark + 1)
+              {:stop, :normal}
+            else
+              case SSEHandler.open_sse(conn, group_ids, cursor, actor_id) do
+                :ok -> {:stop, :normal}
+                {:error, :not_member} -> send_json(conn, 403, %{"error" => "not_member"})
+              end
+            end
+
+          {:error, :not_member} ->
+            send_json(conn, 403, %{"error" => "not_member"})
+        end
+
+      _ ->
+        send_json(conn, 400, %{"error" => "invalid_params"})
+    end
+  end
+
   get "/sync/groups/:group_id" do
     conn = Plug.Conn.fetch_query_params(conn)
     actor_id = conn.assigns.actor_id
@@ -257,6 +291,19 @@ defmodule EbbServer.Sync.Router do
         |> Plug.Conn.put_resp_content_type("application/json")
         |> Plug.Conn.send_resp(500, ~s({"error": "encoding_failed"}))
         |> halt()
+    end
+  end
+
+  defp verify_all_group_membership(group_ids, actor_id) do
+    non_member_groups =
+      Enum.reject(group_ids, fn group_id ->
+        GroupCache.get_permissions(actor_id, group_id) != nil
+      end)
+
+    if non_member_groups == [] do
+      :ok
+    else
+      {:error, :not_member}
     end
   end
 end
