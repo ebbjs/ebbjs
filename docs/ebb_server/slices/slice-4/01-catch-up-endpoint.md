@@ -52,9 +52,9 @@ Construct a composite key range `[<<group_id, offset+1>>, <<group_id, watermark+
 
 The composite key sorts lexicographically by group_id first, then by GSN within each group, so a single seek lands at the first action for that group at or after the offset.
 
-### Phase 3: Batch-fetch full action bodies
+### Phase 3: Fetch full action bodies from cf_actions
 
-Extract the GSN from each index entry (it was encoded in the key) and batch-fetch the full action binaries from `cf_actions` using a single `multi_get` call. The GSN is re-attached to each deserialized action since `cf_actions` stores the action body without it — the GSN is only the key.
+Use the GSN range from Phase 2 to iterate `cf_actions` directly — the first and last GSN from the collected pairs define a half-open range `[first_gsn, last_gsn + 1)`. Stream over that range, filter to only the action_ids collected in Phase 2, and deserialize. The GSN is re-attached to each action from the iterator key.
 
 ### Phase 4: Pagination metadata
 
@@ -99,12 +99,12 @@ Test the wired endpoint by calling `Router.call/2` with a test conn:
 
 ## Dependencies
 
-| Dependency          | What it needs                                                           | Reference                                                    |
-| ------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `GroupCache`        | `get_permissions/2` for membership check                                | [group-cache.md](../components/group-cache.md)               |
-| `RocksDB`           | `range_iterator/3`, `cf_group_actions/1`, `cf_actions/1`, `multi_get/3` | [rocksdb-store.md](../components/rocksdb-store.md)           |
-| `RelationshipCache` | `get_entity_group/1` at write time only                                 | [relationship-cache.md](../components/relationship-cache.md) |
-| `WatermarkTracker`  | `committed_watermark/0` for the to_key bound                            | [watermark-design.md](../../../watermark-design.md)          |
+| Dependency          | What it needs                                            | Reference                                                    |
+| ------------------- | -------------------------------------------------------- | ------------------------------------------------------------ |
+| `GroupCache`        | `get_permissions/2` for membership check                 | [group-cache.md](../components/group-cache.md)               |
+| `RocksDB`           | `range_iterator/3`, `cf_group_actions/1`, `cf_actions/1` | [rocksdb-store.md](../components/rocksdb-store.md)           |
+| `RelationshipCache` | `get_entity_group/2` at write time only                  | [relationship-cache.md](../components/relationship-cache.md) |
+| `WatermarkTracker`  | `committed_watermark/0` for the to_key bound             | [watermark-design.md](../../../watermark-design.md)          |
 
 ## Open Questions
 

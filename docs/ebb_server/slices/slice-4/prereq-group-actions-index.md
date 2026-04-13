@@ -33,11 +33,11 @@ The column family is opened alongside all others during `RocksDB.init/1`. A new 
 
 ## Changes to Writer
 
-During `Writer.build_action_ops`, for each update in an action, resolve the entity's group via `RelationshipCache.get_entity_group/1` and write an extra index entry to `cf_group_actions`:
+During `Writer.build_action_ops`, for each update in an action, resolve the entity's group via `RelationshipCache.get_entity_group/2` and write an extra index entry to `cf_group_actions`:
 
 ```elixir
-defp build_group_action_index(action_id, gsn, update, rocks_name) do
-  group_id = RelationshipCache.get_entity_group(update.subject_id)
+defp build_group_action_index(action_id, gsn, update, rocks_name, relationships) do
+  group_id = RelationshipCache.get_entity_group(update.subject_id, relationships)
   if group_id do
     key = <<group_id::binary, gsn::unsigned-big-integer-size(64)>>
     [{:put, RocksDB.cf_group_actions(rocks_name), key, action_id}]

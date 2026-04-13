@@ -11,7 +11,7 @@ These endpoints are built on top of the existing sync infrastructure and reuse i
 - All components from [Slice 3 README](../slice-3/README.md) — FanOutRouter, GroupServer, SSEConnection, WatermarkTracker, Writer integration
 - `GroupCache.get_permissions/2` and `get_actor_groups/1`
 - `WatermarkTracker.committed_watermark/0`
-- `RocksDB.range_iterator/3`, `cf_group_actions/1`, `multi_get/3` (new)
+- `RocksDB.range_iterator/3`, `cf_group_actions/1` (new)
 - `cf_group_actions` column family added to RocksDB and populated at write time
 
 ## Components
@@ -39,7 +39,7 @@ HTTP API (router.ex)
 ├── AuthPlug (already exists)
 ├── SSEHandler ──→ SSEConnection (already exists, via start_link)
 │              ──→ FanOutRouter.subscribe/2 (already exists)
-├── CatchUp ──→ RocksDB (range_iterator, cf_group_actions, multi_get)
+├── CatchUp ──→ RocksDB (range_iterator, cf_group_actions, cf_actions)
 │           ──→ WatermarkTracker (committed_watermark)
 ├── FanOutRouter.broadcast_presence/3 (already exists)
 └── GroupCache (get_permissions, get_actor_groups)
