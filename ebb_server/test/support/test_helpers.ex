@@ -40,6 +40,7 @@ defmodule EbbServer.TestHelpers do
     RelationshipCache,
     RocksDB,
     SQLite,
+    WatermarkTracker,
     Writer
   }
 
@@ -105,6 +106,8 @@ defmodule EbbServer.TestHelpers do
     dt_name = :"dt_#{unique_id}"
     gc_name = :"gc_#{unique_id}"
     rc_name = :"rc_#{unique_id}"
+    wt_name = :"wt_#{unique_id}"
+    wt_table = :"wt_ranges_#{unique_id}"
 
     counter = :atomics.new(1, signed: false)
     :persistent_term.put(gsn_counter_name, counter)
@@ -123,8 +126,10 @@ defmodule EbbServer.TestHelpers do
         relationships_by_group: rbg_table
       )
 
+    {:ok, _pid_wt} = WatermarkTracker.start_link(name: wt_name, table: wt_table, initial_gsn: 0)
+
     on_exit(fn ->
-      for name <- [dt_name, gc_name, rc_name],
+      for name <- [dt_name, gc_name, rc_name, wt_name],
           pid = Process.whereis(name),
           do: safe_stop(pid)
 
@@ -140,7 +145,8 @@ defmodule EbbServer.TestHelpers do
       gsn_counter: counter,
       group_members: gm_table,
       relationships: rel_table,
-      relationships_by_group: rbg_table
+      relationships_by_group: rbg_table,
+      watermark_tracker: wt_name
     }
   end
 
@@ -213,7 +219,9 @@ defmodule EbbServer.TestHelpers do
         gsn_counter: opts.gsn_counter,
         group_members: opts[:group_members],
         relationships: opts[:relationships],
-        relationships_by_group: opts[:relationships_by_group]
+        relationships_by_group: opts[:relationships_by_group],
+        watermark_tracker: opts[:watermark_tracker],
+        fan_out_router: opts[:fan_out_router]
       )
 
     on_exit(fn ->

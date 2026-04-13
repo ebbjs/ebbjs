@@ -9,6 +9,8 @@ defmodule EbbServer.Storage.Writer do
   use GenServer
 
   alias EbbServer.Storage.PermissionChecker
+  alias EbbServer.Storage.WatermarkTracker
+  alias EbbServer.Sync.FanOutRouter
 
   alias EbbServer.Storage.{
     DirtyTracker,
@@ -28,7 +30,9 @@ defmodule EbbServer.Storage.Writer do
           gsn_counter: :atomics.atomics(),
           group_members: atom(),
           relationships: atom(),
-          relationships_by_group: atom()
+          relationships_by_group: atom(),
+          fan_out_router: GenServer.name(),
+          watermark_tracker: GenServer.name()
         }
   defstruct [
     :rocks_name,
@@ -36,7 +40,9 @@ defmodule EbbServer.Storage.Writer do
     :gsn_counter,
     :group_members,
     :relationships,
-    :relationships_by_group
+    :relationships_by_group,
+    :fan_out_router,
+    :watermark_tracker
   ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -91,6 +97,9 @@ defmodule EbbServer.Storage.Writer do
         )
       )
 
+    fan_out_router = Keyword.get(opts, :fan_out_router, nil)
+    watermark_tracker = Keyword.get(opts, :watermark_tracker, nil)
+
     {:ok,
      %__MODULE__{
        rocks_name: rocks_name,
@@ -98,7 +107,9 @@ defmodule EbbServer.Storage.Writer do
        gsn_counter: gsn_counter,
        group_members: group_members,
        relationships: relationships,
-       relationships_by_group: relationships_by_group
+       relationships_by_group: relationships_by_group,
+       fan_out_router: fan_out_router,
+       watermark_tracker: watermark_tracker
      }}
   end
 
@@ -154,6 +165,16 @@ defmodule EbbServer.Storage.Writer do
 
         :ok = DirtyTracker.mark_dirty_batch(entity_ids, state.dirty_set)
         update_system_caches(filtered, state)
+
+        if state.watermark_tracker do
+          :ok = WatermarkTracker.mark_range_committed(gsn_start, gsn_end, state.watermark_tracker)
+          WatermarkTracker.advance_watermark(state.watermark_tracker)
+        end
+
+        if state.fan_out_router && Process.whereis(state.fan_out_router) do
+          send(state.fan_out_router, {:batch_committed, gsn_start, gsn_end})
+        end
+
         {:reply, {:ok, {gsn_start, gsn_end}, []}, state}
 
       {:error, reason} ->
