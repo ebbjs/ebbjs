@@ -4,6 +4,29 @@ defmodule EbbServer.Storage.Writer do
 
   For Slice 1: single instance, immediate flush (no batching timer).
   Claims GSN ranges from GsnCounter and writes to all 6 column families.
+
+  ## cf_group_actions Index and Intra-Action Context
+
+  When building the `cf_group_actions` index entry for a relationship update, the
+  Writer must resolve which group the relationship belongs to. This is straightforward
+  when the relationship's `source_id` already exists — it can be looked up in
+  `RelationshipCache`. However, when the `source_id` entity is being created in the
+  same action (e.g., a "create todo" update paired with a "todo.owns" relationship
+  update), the cache has no entry yet.
+
+  To handle this, the Writer builds an **intra-action context** before processing
+  updates. This context maps each `source_id` to its corresponding `target_id` for
+  all relationship updates in the action. When a relationship's `source_id` appears
+  in this context, the Writer uses the `target_id` to look up the group instead.
+
+  Example: an action with two updates:
+  1. Create entity `todo_123` (targeting group `g_1`)
+  2. Add relationship `rel_456` with `source_id: "todo_123", target_id: "col_1"`
+
+  The intra-action context becomes `%{"todo_123" => "col_1"}`. When building the
+  `cf_group_actions` index for `rel_456`, the Writer sees that `source_id` is in
+  the context and uses `col_1` to find the group, rather than failing to look up
+  `todo_123` in the cache.
   """
 
   use GenServer
@@ -257,13 +280,26 @@ defmodule EbbServer.Storage.Writer do
     action_with_gsn = to_storage_format(action, gsn)
     action_etf = :erlang.term_to_binary(action_with_gsn)
 
+    intra_ctx = build_intra_action_context(action.updates)
+
     [
       {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), action_etf},
       {:put, RocksDB.cf_action_dedup(rocks_name), action.id, RocksDB.encode_gsn_key(gsn)}
     ] ++
       Enum.flat_map(action.updates, fn update ->
-        build_update_ops(action.id, update, gsn, rocks_name, relationships)
+        build_update_ops(action.id, update, gsn, rocks_name, relationships, intra_ctx)
       end)
+  end
+
+  defp build_intra_action_context(updates) do
+    updates
+    |> Enum.filter(fn u -> u.subject_type == "relationship" end)
+    |> Enum.reduce(%{}, fn u, acc ->
+      data = u.data || %{}
+      source_id = data["source_id"]
+      target_id = data["target_id"]
+      if source_id && target_id, do: Map.put(acc, source_id, target_id), else: acc
+    end)
   end
 
   defp to_storage_format(action, gsn) do
@@ -297,7 +333,7 @@ defmodule EbbServer.Storage.Writer do
     }
   end
 
-  defp build_update_ops(action_id, update, gsn, rocks_name, relationships) do
+  defp build_update_ops(action_id, update, gsn, rocks_name, relationships, intra_ctx) do
     update_etf = :erlang.term_to_binary(update)
 
     [
@@ -310,19 +346,37 @@ defmodule EbbServer.Storage.Writer do
          update.subject_type,
          update.subject_id
        ), <<>>}
-    ] ++ build_group_action_index(action_id, gsn, update, rocks_name, relationships)
+    ] ++ build_group_action_index(action_id, gsn, update, rocks_name, relationships, intra_ctx)
   end
 
-  defp build_group_action_index(_action_id, _gsn, _update, _rocks_name, nil), do: []
+  defp build_group_action_index(_action_id, _gsn, _update, _rocks_name, nil, _intra_ctx), do: []
 
-  defp build_group_action_index(action_id, gsn, update, rocks_name, relationships) do
-    group_id = RelationshipCache.get_entity_group(update.subject_id, relationships)
+  defp build_group_action_index(action_id, gsn, update, rocks_name, relationships, intra_ctx) do
+    group_id = get_group_id_for_group_action_index(update, relationships, intra_ctx)
 
     if group_id do
       key = <<group_id::binary, gsn::unsigned-big-integer-size(64)>>
       [{:put, RocksDB.cf_group_actions(rocks_name), key, action_id}]
     else
       []
+    end
+  end
+
+  defp get_group_id_for_group_action_index(update, relationships, intra_ctx) do
+    case update.subject_type do
+      "relationship" ->
+        data = update.data || %{}
+        source_id = data["source_id"]
+
+        if source_id do
+          Map.get(intra_ctx, source_id) ||
+            RelationshipCache.get_entity_group(source_id, relationships)
+        else
+          nil
+        end
+
+      _ ->
+        RelationshipCache.get_entity_group(update.subject_id, relationships)
     end
   end
 end

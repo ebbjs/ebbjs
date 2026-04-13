@@ -214,6 +214,22 @@ defmodule EbbServer.Storage.RocksDB do
   end
 
   @doc """
+  Retrieves multiple values from a single column family in a single RocksDB call.
+
+  Returns a list of values in the same order as the input keys.
+  Returns `:not_found` for keys that don't exist.
+  """
+  @spec multi_get(cf_ref(), [binary()], keyword()) :: [{:ok, binary()} | :not_found]
+  def multi_get(cf_ref, keys, opts \\ []) do
+    name = Keyword.get(opts, :name, __MODULE__)
+    results = :rocksdb.multi_get(db_ref(name), keys, cf_ref, [])
+    Enum.map(results, &format_multi_get_result/1)
+  end
+
+  defp format_multi_get_result({:ok, value}), do: {:ok, value}
+  defp format_multi_get_result(:not_found), do: :not_found
+
+  @doc """
   Returns a lazy stream of `{key, value}` pairs whose keys fall in the
   half-open range `[prefix, prefix_upper_bound(prefix))`.
 
