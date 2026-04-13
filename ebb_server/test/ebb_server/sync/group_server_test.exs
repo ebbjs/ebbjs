@@ -4,13 +4,26 @@ defmodule EbbServer.Sync.GroupServerTest do
   """
 
   use ExUnit.Case, async: false
+  use EbbServer.Integration.StorageCase
 
   alias EbbServer.Sync.GroupServer
 
   setup do
-    Registry.start_link(keys: :unique, name: EbbServer.Sync.GroupRegistry)
-    {:ok, group_server} = GenServer.start_link(GroupServer, "test_group")
-    %{group_server: group_server}
+    group_id = "test_group_#{:erlang.unique_integer([:positive])}"
+    {:ok, gs} = GroupServer.start_link(group_id)
+
+    on_exit(fn ->
+      try do
+        case Process.whereis(GroupServer) do
+          nil -> :ok
+          pid when is_pid(pid) -> GenServer.stop(pid, :normal, 5000)
+        end
+      catch
+        _, _ -> :ok
+      end
+    end)
+
+    %{group_server: gs, group_id: group_id}
   end
 
   describe "add_subscriber/3" do

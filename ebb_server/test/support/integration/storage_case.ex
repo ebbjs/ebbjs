@@ -40,6 +40,11 @@ defmodule EbbServer.Integration.StorageCase do
             :timer.sleep(50)
           end
 
+          if pid = Process.whereis(EbbServer.Sync.GroupRegistry) do
+            GenServer.stop(pid, :normal, 5000)
+            :timer.sleep(100)
+          end
+
           tmp_dir =
             TestHelpers.tmp_dir(%{
               module: __MODULE__,
@@ -48,12 +53,22 @@ defmodule EbbServer.Integration.StorageCase do
 
           Application.put_env(:ebb_server, :data_dir, tmp_dir)
 
+          case Registry.start_link(keys: :unique, name: EbbServer.Sync.GroupRegistry) do
+            {:ok, _pid} -> :ok
+            {:error, {:already_started, _pid}} -> :ok
+          end
+
           case EbbServer.Storage.Supervisor.start_link(data_dir: tmp_dir) do
             {:ok, _pid} -> :ok
             {:error, {:already_started, _pid}} -> :ok
           end
 
           case EbbServer.Sync.Supervisor.start_link([]) do
+            {:ok, _pid} -> :ok
+            {:error, {:already_started, _pid}} -> :ok
+          end
+
+          case EbbServer.Sync.GroupDynamicSupervisor.start_link([]) do
             {:ok, _pid} -> :ok
             {:error, {:already_started, _pid}} -> :ok
           end
@@ -74,6 +89,14 @@ defmodule EbbServer.Integration.StorageCase do
 
             try do
               if pid = Process.whereis(EbbServer.Sync.Supervisor) do
+                GenServer.stop(pid, :normal, 5000)
+              end
+            catch
+              _, _ -> :ok
+            end
+
+            try do
+              if pid = Process.whereis(EbbServer.Sync.GroupRegistry) do
                 GenServer.stop(pid, :normal, 5000)
               end
             catch
@@ -104,6 +127,11 @@ defmodule EbbServer.Integration.StorageCase do
             :timer.sleep(50)
           end
 
+          if pid = Process.whereis(EbbServer.Sync.GroupRegistry) do
+            GenServer.stop(pid, :normal, 5000)
+            :timer.sleep(100)
+          end
+
           tmp_dir =
             TestHelpers.tmp_dir(%{
               module: __MODULE__,
@@ -112,12 +140,22 @@ defmodule EbbServer.Integration.StorageCase do
 
           Application.put_env(:ebb_server, :data_dir, tmp_dir)
 
+          case Registry.start_link(keys: :unique, name: EbbServer.Sync.GroupRegistry) do
+            {:ok, _pid} -> :ok
+            {:error, {:already_started, _pid}} -> :ok
+          end
+
           case EbbServer.Storage.Supervisor.start_link(data_dir: tmp_dir) do
             {:ok, _pid} -> :ok
             {:error, {:already_started, _pid}} -> :ok
           end
 
           case EbbServer.Sync.Supervisor.start_link([]) do
+            {:ok, _pid} -> :ok
+            {:error, {:already_started, _pid}} -> :ok
+          end
+
+          case EbbServer.Sync.GroupDynamicSupervisor.start_link([]) do
             {:ok, _pid} -> :ok
             {:error, {:already_started, _pid}} -> :ok
           end
@@ -138,6 +176,14 @@ defmodule EbbServer.Integration.StorageCase do
 
             try do
               if pid = Process.whereis(EbbServer.Sync.Supervisor) do
+                GenServer.stop(pid, :normal, 5000)
+              end
+            catch
+              _, _ -> :ok
+            end
+
+            try do
+              if pid = Process.whereis(EbbServer.Sync.GroupRegistry) do
                 GenServer.stop(pid, :normal, 5000)
               end
             catch

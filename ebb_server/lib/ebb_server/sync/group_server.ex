@@ -96,12 +96,16 @@ defmodule EbbServer.Sync.GroupServer do
   @impl true
   def handle_cast({:broadcast_presence, actor_id, data}, state) do
     for {subscriber_pid, subscriber_actor} <- state.actors do
-      if subscriber_actor != actor_id and Process.alive?(subscriber_pid) do
-        SSEConnection.push_presence(subscriber_pid, %{
-          "actor_id" => actor_id,
-          "entity_id" => state.group_id,
-          "data" => data
-        })
+      if subscriber_actor != actor_id do
+        try do
+          SSEConnection.push_presence(subscriber_pid, %{
+            "actor_id" => actor_id,
+            "entity_id" => state.group_id,
+            "data" => data
+          })
+        catch
+          _, _ -> :ok
+        end
       end
     end
 
