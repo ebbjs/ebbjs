@@ -1,16 +1,19 @@
+import { Value } from "@sinclair/typebox/value";
 import { ActionSchema, UpdateSchema, EntitySchema, HLCTimestampSchema } from "./types/index";
 import { Action, Update, Entity } from "./types/index";
 
+export { ActionSchema, UpdateSchema, EntitySchema, HLCTimestampSchema };
+
 export function validateAction(action: unknown): action is Action {
-  return ActionSchema.Check(action);
+  return Value.Check(ActionSchema, action);
 }
 
 export function validateUpdate(update: unknown): update is Update {
-  return UpdateSchema.Check(update);
+  return Value.Check(UpdateSchema, update);
 }
 
 export function validateEntity(entity: unknown): entity is Entity {
-  return EntitySchema.Check(entity);
+  return Value.Check(EntitySchema, entity);
 }
 
 export function validateActions(actions: unknown[]): actions is Action[] {
@@ -22,5 +25,5 @@ export function validateCursor(cursor: unknown): cursor is number {
 }
 
 export function validateHLCTimestamp(ts: unknown): ts is string {
-  return HLCTimestampSchema.Check(ts);
+  return Value.Check(HLCTimestampSchema, ts);
 }
