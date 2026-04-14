@@ -96,7 +96,7 @@ interface PatchData {
 
 #### Entity
 
-Materialized view of a subject. Built client-side by replaying Updates from storage, or returned from server during initial sync.
+Materialized view of a subject. Built client-side by replaying Updates from storage. The server never returns Entity objects during sync — clients receive Actions/Updates and materialize locally.
 
 ```typescript
 interface Entity {
