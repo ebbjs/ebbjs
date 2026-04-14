@@ -1,8 +1,8 @@
-import { Action, Update, UpdateInput } from "../types/action.js";
-import { HLCTimestamp } from "../types/hlc.js";
-import { HLCState } from "../hlc/index.js";
-import { localEvent } from "../hlc/clock.js";
-import { generateId, ID_PREFIX_ACTION, ID_PREFIX_UPDATE } from "../id/index.js";
+import { Action, Update, UpdateInput } from "../types/action";
+import { HLCTimestamp } from "../types/hlc";
+import { HLCState } from "../hlc/index";
+import { localEvent } from "../hlc/clock";
+import { generateId, ID_PREFIX_ACTION, ID_PREFIX_UPDATE } from "../id/index";
 
 export interface CreateActionOptions {
   actorId: string;

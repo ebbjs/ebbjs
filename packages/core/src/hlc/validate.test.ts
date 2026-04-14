@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isValidHLC } from "./validate.js";
+import { isValidHLC } from "./validate";
 
 describe("isValidHLC", () => {
   it("returns true for valid positive decimal string", () => {

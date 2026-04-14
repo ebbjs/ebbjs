@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { compare, isBefore, isAfter } from "./compare.js";
-import { format, pack } from "./pack.js";
+import { compare, isBefore, isAfter } from "./compare";
+import { format, pack } from "./pack";
 
 describe("compare", () => {
   it("returns -1 when a < b", () => {

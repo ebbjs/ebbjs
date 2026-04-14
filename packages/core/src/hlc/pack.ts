@@ -1,4 +1,4 @@
-import { HLCComponents } from "./types.js";
+import { HLCComponents } from "./types";
 
 export const COUNTER_BITS = 16n;
 export const COUNTER_MASK = 0xffffn;

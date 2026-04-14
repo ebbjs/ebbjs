@@ -1,6 +1,6 @@
-import { HLCState } from "./types.js";
-import { COUNTER_MASK, MAX_FUTURE_DRIFT_MS, MAX_PAST_DRIFT_MS } from "./constants.js";
-import { pack, unpack, parse, format } from "./pack.js";
+import { HLCState } from "./types";
+import { COUNTER_MASK, MAX_FUTURE_DRIFT_MS, MAX_PAST_DRIFT_MS } from "./constants";
+import { pack, unpack, parse, format } from "./pack";
 
 export function createClock(): HLCState {
   return {
