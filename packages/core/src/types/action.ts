@@ -31,13 +31,29 @@ export type PutData = Static<typeof PutDataSchema>;
 export const PatchDataSchema = Type.Record(Type.String(), FieldValueSchema);
 export type PatchData = Static<typeof PatchDataSchema>;
 
-export const UpdateSchema = Type.Object({
-  id: NanoIdSchema,
+const BaseUpdateFields = Type.Object({
   subject_id: NanoIdSchema,
-  subject_type: SubjectTypeSchema,
+  subject_type: Type.String({ minLength: 1 }),
   method: UpdateMethodSchema,
-  data: Type.Union([PutDataSchema, PatchDataSchema, Type.Null()]),
 });
+
+export const UpdateInputSchema = Type.Intersect([
+  BaseUpdateFields,
+  Type.Object({
+    id: Type.Optional(NanoIdSchema),
+    data: Type.Union([Type.Null(), Type.Record(Type.String(), Type.Unknown())]),
+  }),
+]);
+export type UpdateInput = Static<typeof UpdateInputSchema>;
+
+export const UpdateSchema = Type.Intersect([
+  BaseUpdateFields,
+  Type.Object({
+    id: NanoIdSchema,
+    subject_type: SubjectTypeSchema,
+    data: Type.Union([PutDataSchema, PatchDataSchema, Type.Null()]),
+  }),
+]);
 export type Update = Static<typeof UpdateSchema>;
 
 export const ActionSchema = Type.Object({
