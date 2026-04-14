@@ -31,17 +31,13 @@ mix credo --strict
 mix test
 ```
 
-## Docker
+## OpenAPI Spec
+
+The HTTP API is documented with an OpenAPI 3.1 spec.
 
 ```bash
-# Build
-docker build -t ebb_server .
-
-# Run
-docker run -p 4000:4000 ebb_server
-
-# Override environment
-docker run -e EBB_PORT=5000 -e EBB_DATA_DIR=/data -v /path/to/data:/data ebb_server
+# Generate openapi.yaml from router annotations
+mix openapi.gen.spec
 ```
 
 ## Configuration
