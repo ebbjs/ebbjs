@@ -1,12 +1,6 @@
 export type { HLCState, HLCComponents } from "./types.js";
 
-export {
-  COUNTER_BITS,
-  COUNTER_MASK,
-  MAX_FUTURE_DRIFT_MS,
-  MAX_PAST_DRIFT_MS,
-  DEFAULT_MAX_DRIFT_MS,
-} from "./constants.js";
+export { COUNTER_BITS, COUNTER_MASK, MAX_FUTURE_DRIFT_MS, MAX_PAST_DRIFT_MS } from "./constants.js";
 
 export { createClock, localEvent, receiveRemoteHLC } from "./clock.js";
 

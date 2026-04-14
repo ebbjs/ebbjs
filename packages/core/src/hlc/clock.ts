@@ -1,17 +1,11 @@
 import { HLCState } from "./types.js";
-import {
-  COUNTER_MASK,
-  DEFAULT_MAX_DRIFT_MS,
-  MAX_FUTURE_DRIFT_MS,
-  MAX_PAST_DRIFT_MS,
-} from "./constants.js";
+import { COUNTER_MASK, MAX_FUTURE_DRIFT_MS, MAX_PAST_DRIFT_MS } from "./constants.js";
 import { pack, unpack, parse, format } from "./pack.js";
 
-export function createClock(maxDrift?: bigint): HLCState {
+export function createClock(): HLCState {
   return {
     l: 0n,
     c: 0n,
-    maxDrift: maxDrift ?? DEFAULT_MAX_DRIFT_MS,
   };
 }
 

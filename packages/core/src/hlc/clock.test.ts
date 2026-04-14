@@ -9,16 +9,6 @@ describe("createClock", () => {
     expect(clock.l).toBe(0n);
     expect(clock.c).toBe(0n);
   });
-
-  it("uses default maxDrift", () => {
-    const clock = createClock();
-    expect(clock.maxDrift).toBe(60_000n);
-  });
-
-  it("accepts custom maxDrift", () => {
-    const clock = createClock(30_000n);
-    expect(clock.maxDrift).toBe(30_000n);
-  });
 });
 
 describe("localEvent", () => {
