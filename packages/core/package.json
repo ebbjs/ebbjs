@@ -23,6 +23,11 @@
     "fmt": "pnpm --root ../../ fmt",
     "fmt:check": "pnpm --root ../../ fmt:check"
   },
+  "dependencies": {
+    "@msgpack/msgpack": "latest",
+    "@sinclair/typebox": "latest",
+    "nanoid": "latest"
+  },
   "devDependencies": {
     "tsx": "^4.20.4",
     "vitest": "^3.2.4"
