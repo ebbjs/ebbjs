@@ -14,7 +14,6 @@
     "sync": "pnpm --filter @zuko/sync",
     "log": "pnpm --filter @zuko/log",
     "server": "pnpm --filter @ebbjs/server",
-    "react": "pnpm --filter @ebbjs/react",
     "www": "pnpm --filter @ebbjs/www",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
