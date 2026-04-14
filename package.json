@@ -52,13 +52,6 @@
   },
   "packageManager": "pnpm@10.30.1",
   "pnpm": {
-    "overrides": {
-      "better-auth": "^1.4.17",
-      "better-sqlite3": "^12.6.2",
-      "drizzle-orm": "^0.45.1",
-      "drizzle-zod": "^0.8.3",
-      "yjs": "^13.6.0"
-    },
     "onlyBuiltDependencies": [
       "better-sqlite3",
       "esbuild",
