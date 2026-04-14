@@ -99,4 +99,11 @@ Maps to Elixir `EbbServer.Relationship` struct.
 - [ ] Group, GroupMember, Relationship use flat data (no fields wrapper)
 - [ ] All types re-exported from `types/index.ts`
 - [ ] TypeScript types derived via `Static<>` from Typebox schemas
-- [ ] Each type maps to corresponding Elixir struct in ebb_server
+- [ ] Each type maps to corresponding Elixir struct in ebb_server:
+  - Action → `ebb_server/lib/ebb_server/storage/action_validator.ex` (`validated_action` type)
+  - Update → `ebb_server/lib/ebb_server/storage/action_validator.ex` (`validated_update` type)
+  - Entity → `ebb_server/lib/ebb_server/storage/sqlite.ex` (entity schema)
+  - Group → `ebb_server/lib/ebb_server/storage/permission_helper.ex` (system entity types)
+  - GroupMember → `ebb_server/lib/ebb_server/storage/group_cache.ex`
+  - Relationship → `ebb_server/lib/ebb_server/storage/relationship_cache.ex`
+  - HLC → `ebb_server/lib/ebb_server/storage/action_validator.ex` (`validate_hlc/2`)
