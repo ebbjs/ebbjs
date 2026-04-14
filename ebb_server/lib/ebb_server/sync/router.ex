@@ -26,6 +26,7 @@ defmodule EbbServer.Sync.Router do
   }
 
   alias EbbServer.Sync.{CatchUp, FanOutRouter, SSEHandler}
+  alias EbbServer.Sync.Router.OperationSchema
 
   plug(Plug.Logger)
   plug(EbbServer.Sync.AuthPlug)
@@ -273,6 +274,254 @@ defmodule EbbServer.Sync.Router do
     send_resp(conn, 404, "")
   end
 
+  def openapi_operation(:write_actions) do
+    %{
+      operationId: "writeActions",
+      summary: "Write actions to the system",
+      description:
+        "Accepts a batch of actions for validation, authorization, and persistence. Actions are processed atomically.",
+      tags: ["Sync"],
+      requestBody: %{
+        required: true,
+        content: %{
+          "application/msgpack" => %{
+            schema: %OpenApiSpex.Schema{
+              type: :object,
+              required: ["actions"],
+              properties: %{
+                actions: %OpenApiSpex.Schema{
+                  type: :array,
+                  items: OperationSchema.action()
+                }
+              }
+            }
+          }
+        }
+      },
+      responses: %{
+        "200" => OperationSchema.actions_response(),
+        "422" =>
+          OperationSchema.error_response("Invalid MessagePack or missing/invalid structure"),
+        "503" => OperationSchema.error_response("Write operation failed")
+      }
+    }
+  end
+
+  def openapi_operation(:get_entity) do
+    %{
+      operationId: "getEntity",
+      summary: "Read an entity by ID",
+      description: "Retrieves a single entity by its ID, materialized from the action log.",
+      tags: ["Entities"],
+      parameters: [
+        OperationSchema.path_param("id", "string", "The entity ID"),
+        OperationSchema.query_actor_id_param()
+      ],
+      responses: %{
+        "200" => OperationSchema.entity_response(),
+        "400" => OperationSchema.error_response("Missing actor_id"),
+        "404" => OperationSchema.error_response("Entity not found"),
+        "503" => OperationSchema.error_response("Materialization failed")
+      }
+    }
+  end
+
+  def openapi_operation(:query_entities) do
+    %{
+      operationId: "queryEntities",
+      summary: "Query entities by type",
+      description:
+        "Returns a list of entities matching the given type, with optional field filtering and pagination.",
+      tags: ["Entities"],
+      requestBody: %{
+        required: true,
+        content: %{
+          "application/json" => %{
+            schema: %OpenApiSpex.Schema{
+              type: :object,
+              required: ["type"],
+              properties: %{
+                type: %OpenApiSpex.Schema{type: :string, description: "Entity type to query"},
+                filter: %OpenApiSpex.Schema{
+                  type: :object,
+                  nullable: true,
+                  description: "Field-value filter"
+                },
+                limit: %OpenApiSpex.Schema{
+                  type: :integer,
+                  nullable: true,
+                  description: "Max results to return"
+                },
+                offset: %OpenApiSpex.Schema{
+                  type: :integer,
+                  nullable: true,
+                  description: "Number of results to skip"
+                }
+              }
+            }
+          }
+        }
+      },
+      responses: %{
+        "200" => OperationSchema.entities_array_response(),
+        "422" => OperationSchema.error_response("Missing or invalid type, or invalid JSON"),
+        "503" => OperationSchema.error_response("Query failed")
+      }
+    }
+  end
+
+  def openapi_operation(:handshake) do
+    %{
+      operationId: "handshake",
+      summary: "Initialize connection and get group membership",
+      description:
+        "Called by clients on connection to obtain their actor ID and group membership information.",
+      tags: ["Sync"],
+      requestBody: %{
+        required: true,
+        content: %{
+          "application/json" => %{
+            schema: %OpenApiSpex.Schema{
+              type: :object,
+              properties: %{
+                cursors: %OpenApiSpex.Schema{
+                  type: :object,
+                  nullable: true,
+                  description: "Map of group_id to cursor GSN",
+                  additionalProperties: %OpenApiSpex.Schema{type: :integer, format: :int64}
+                },
+                schema_version: %OpenApiSpex.Schema{
+                  type: :integer,
+                  nullable: true,
+                  description: "Client schema version"
+                }
+              }
+            }
+          }
+        }
+      },
+      responses: %{
+        "200" => OperationSchema.handshake_response(),
+        "401" => OperationSchema.error_response("Missing actor_id"),
+        "422" => OperationSchema.error_response("Invalid JSON body")
+      }
+    }
+  end
+
+  def openapi_operation(:live_updates) do
+    %{
+      operationId: "liveUpdates",
+      summary: "SSE stream for live updates",
+      description:
+        "Opens a Server-Sent Events stream delivering action events, control events, and presence updates.",
+      tags: ["Sync"],
+      parameters: [
+        OperationSchema.query_param(
+          "groups",
+          "string",
+          "Comma-separated group IDs to subscribe to",
+          required: true
+        ),
+        OperationSchema.query_param("cursor", "string", "GSN cursor to resume from",
+          required: false,
+          default: "0"
+        )
+      ],
+      responses: %{
+        "200" => %{
+          description: "SSE stream established",
+          content: %{
+            "text/event-stream" => %{
+              schema: %OpenApiSpex.Schema{type: :string, description: "Raw SSE data payload"}
+            }
+          }
+        },
+        "400" => OperationSchema.error_response("Invalid query parameters"),
+        "403" => OperationSchema.error_response("Not a member of one or more requested groups")
+      }
+    }
+  end
+
+  def openapi_operation(:catch_up_group) do
+    %{
+      operationId: "catchUpGroup",
+      summary: "Catch-up for a group",
+      description: "Returns a paginated list of actions for a group since a given GSN offset.",
+      tags: ["Sync"],
+      parameters: [
+        OperationSchema.path_param("group_id", "string", "The group ID to catch up"),
+        OperationSchema.query_param("offset", "string", "GSN offset to start from",
+          required: false,
+          default: "0"
+        )
+      ],
+      responses: %{
+        "200" => %{
+          description: "Action list (may be empty)",
+          headers: %{
+            "stream-next-offset" => %{
+              description: "Next GSN offset for pagination. Omitted if no more results.",
+              schema: %OpenApiSpex.Schema{type: :string}
+            },
+            "stream-up-to-date" => %{
+              description: "\"true\" if client has caught up to watermark",
+              schema: %OpenApiSpex.Schema{type: :string}
+            }
+          },
+          content: %{
+            "application/json" => %{
+              schema: %OpenApiSpex.Schema{
+                type: :array,
+                items: OperationSchema.action()
+              }
+            }
+          }
+        },
+        "400" => OperationSchema.error_response("Invalid offset"),
+        "403" => OperationSchema.error_response("Not a member of the group")
+      }
+    }
+  end
+
+  def openapi_operation(:broadcast_presence) do
+    %{
+      operationId: "broadcastPresence",
+      summary: "Broadcast ephemeral presence data",
+      description:
+        "Broadcasts ephemeral presence data for the authenticated actor on a specific entity.",
+      tags: ["Presence"],
+      requestBody: %{
+        required: true,
+        content: %{
+          "application/json" => %{
+            schema: %OpenApiSpex.Schema{
+              type: :object,
+              required: ["entity_id", "data"],
+              properties: %{
+                entity_id: %OpenApiSpex.Schema{
+                  type: :string,
+                  description: "ID of the entity to broadcast presence for"
+                },
+                data: %OpenApiSpex.Schema{
+                  type: :object,
+                  description: "Ephemeral presence data payload"
+                }
+              }
+            }
+          }
+        }
+      },
+      responses: %{
+        "204" => %OpenApiSpex.Response{
+          description: "Presence broadcasted successfully"
+        },
+        "403" => OperationSchema.error_response("Not a member of the entity's group"),
+        "404" => OperationSchema.error_response("Entity not found"),
+        "422" => OperationSchema.error_response("Validation failed (missing/invalid entity_id)")
+      }
+    }
+  end
+
   defp decode_msgpack(<<>>) do
     {:error, :invalid_msgpack, "empty body"}
   end
@@ -368,5 +617,221 @@ defmodule EbbServer.Sync.Router do
     else
       {:error, :not_member}
     end
+  end
+end
+
+defmodule EbbServer.Sync.Router.OperationSchema do
+  @moduledoc "Shared schema definitions for OpenAPI operations"
+
+  def action do
+    %OpenApiSpex.Schema{
+      type: :object,
+      required: ["id", "actor_id", "hlc", "updates"],
+      properties: %{
+        id: %OpenApiSpex.Schema{type: :string, description: "Unique action ID"},
+        actor_id: %OpenApiSpex.Schema{type: :string, description: "Actor who created the action"},
+        hlc: %OpenApiSpex.Schema{
+          type: :integer,
+          format: :int64,
+          description: "Hybrid Logical Clock timestamp"
+        },
+        updates: %OpenApiSpex.Schema{
+          type: :array,
+          items: update()
+        }
+      }
+    }
+  end
+
+  def update do
+    %OpenApiSpex.Schema{
+      type: :object,
+      required: ["id", "subject_id", "subject_type", "method"],
+      properties: %{
+        id: %OpenApiSpex.Schema{type: :string, description: "Unique update ID within the action"},
+        subject_id: %OpenApiSpex.Schema{
+          type: :string,
+          description: "ID of the entity being updated"
+        },
+        subject_type: %OpenApiSpex.Schema{type: :string, description: "Type of the entity"},
+        method: %OpenApiSpex.Schema{
+          type: :string,
+          enum: ["put", "patch", "delete"],
+          description: "Update method"
+        },
+        data: %OpenApiSpex.Schema{type: :object, nullable: true, description: "Update payload"}
+      }
+    }
+  end
+
+  def entity do
+    %OpenApiSpex.Schema{
+      type: :object,
+      required: ["id", "type", "data", "created_hlc", "updated_hlc", "last_gsn"],
+      properties: %{
+        id: %OpenApiSpex.Schema{type: :string},
+        type: %OpenApiSpex.Schema{type: :string},
+        data: %OpenApiSpex.Schema{
+          type: :object,
+          description: "Contains `fields` map of FieldValue entries"
+        },
+        created_hlc: %OpenApiSpex.Schema{type: :integer, format: :int64},
+        updated_hlc: %OpenApiSpex.Schema{type: :integer, format: :int64},
+        deleted_hlc: %OpenApiSpex.Schema{type: :integer, format: :int64, nullable: true},
+        last_gsn: %OpenApiSpex.Schema{type: :integer, format: :int64}
+      }
+    }
+  end
+
+  def error do
+    %OpenApiSpex.Schema{
+      type: :object,
+      required: ["error"],
+      properties: %{
+        error: %OpenApiSpex.Schema{type: :string, description: "Error code string"},
+        details: %OpenApiSpex.Schema{
+          type: :string,
+          nullable: true,
+          description: "Human-readable error details"
+        }
+      }
+    }
+  end
+
+  def actions_response do
+    %OpenApiSpex.Response{
+      description: "Actions processed (some may be rejected)",
+      content: %{
+        "application/json" => %{
+          schema: %OpenApiSpex.Schema{
+            type: :object,
+            properties: %{
+              rejected: %OpenApiSpex.Schema{
+                type: :array,
+                items: rejection()
+              }
+            }
+          }
+        }
+      }
+    }
+  end
+
+  def entity_response do
+    %OpenApiSpex.Response{
+      description: "Entity found",
+      content: %{
+        "application/json" => %{
+          schema: entity()
+        }
+      }
+    }
+  end
+
+  def entities_array_response do
+    %OpenApiSpex.Response{
+      description: "Matching entities",
+      content: %{
+        "application/json" => %{
+          schema: %OpenApiSpex.Schema{
+            type: :array,
+            items: entity()
+          }
+        }
+      }
+    }
+  end
+
+  def handshake_response do
+    %OpenApiSpex.Response{
+      description: "Handshake successful",
+      content: %{
+        "application/json" => %{
+          schema: %OpenApiSpex.Schema{
+            type: :object,
+            required: ["actor_id", "groups"],
+            properties: %{
+              actor_id: %OpenApiSpex.Schema{type: :string},
+              groups: %OpenApiSpex.Schema{
+                type: :array,
+                items: group_info()
+              }
+            }
+          }
+        }
+      }
+    }
+  end
+
+  def group_info do
+    %OpenApiSpex.Schema{
+      type: :object,
+      required: ["id", "permissions", "cursor_valid", "cursor"],
+      properties: %{
+        id: %OpenApiSpex.Schema{type: :string, description: "Group ID"},
+        permissions: %OpenApiSpex.Schema{type: :array, items: %OpenApiSpex.Schema{type: :string}},
+        cursor_valid: %OpenApiSpex.Schema{type: :boolean},
+        reason: %OpenApiSpex.Schema{type: :string, nullable: true},
+        cursor: %OpenApiSpex.Schema{type: :integer, format: :int64}
+      }
+    }
+  end
+
+  def rejection do
+    %OpenApiSpex.Schema{
+      type: :object,
+      required: ["id", "reason"],
+      properties: %{
+        id: %OpenApiSpex.Schema{type: :string, description: "ID of the rejected action"},
+        reason: %OpenApiSpex.Schema{type: :string, description: "Rejection reason code"},
+        details: %OpenApiSpex.Schema{type: :string, nullable: true}
+      }
+    }
+  end
+
+  def error_response(description) do
+    %OpenApiSpex.Response{
+      description: description,
+      content: %{
+        "application/json" => %{
+          schema: error()
+        }
+      }
+    }
+  end
+
+  def path_param(name, type, description) do
+    %OpenApiSpex.Parameter{
+      name: name,
+      in: :path,
+      required: true,
+      description: description,
+      schema: %OpenApiSpex.Schema{type: type}
+    }
+  end
+
+  def query_param(name, type, description, opts) do
+    required = Keyword.get(opts, :required, false)
+    default = Keyword.get(opts, :default)
+    schema = %OpenApiSpex.Schema{type: type}
+    schema = if default, do: Map.put(schema, :default, default), else: schema
+
+    %OpenApiSpex.Parameter{
+      name: name,
+      in: :query,
+      required: required,
+      description: description,
+      schema: schema
+    }
+  end
+
+  def query_actor_id_param do
+    %OpenApiSpex.Parameter{
+      name: :actor_id,
+      in: :query,
+      required: false,
+      description: "Actor ID override. Usually provided via x-ebb-actor-id header.",
+      schema: %OpenApiSpex.Schema{type: :string}
+    }
   end
 end

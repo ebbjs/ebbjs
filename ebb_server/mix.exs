@@ -31,7 +31,8 @@ defmodule EbbServer.MixProject do
       {:jason, "~> 1.4"},
       {:nanoid, "~> 2.1"},
       {:req, "~> 0.5"},
-      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:open_api_spex, "~> 3.22"}
     ]
   end
 end
