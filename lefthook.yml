@@ -3,11 +3,11 @@ pre-commit:
   commands:
     typescript-lint:
       glob: "**/*.{ts,tsx}"
-      run: export PATH="$PWD/node_modules/.bin:$PATH" && oxlint --fix {staged_files}
+      run: pnpm exec oxlint --fix {staged_files}
       stage_fixed: true
     typescript-fmt:
       glob: "**/*.{ts,tsx}"
-      run: export PATH="$PWD/node_modules/.bin:$PATH" && oxfmt --write {staged_files}
+      run: pnpm exec oxfmt --write {staged_files}
       stage_fixed: true
     elixir-format:
       root: ebb_server
