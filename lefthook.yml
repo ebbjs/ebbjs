@@ -1,22 +1,23 @@
 pre-commit:
-  jobs:
-    - name: typescript-lint
+  runner: bash
+  commands:
+    typescript-lint:
       glob: "**/*.{ts,tsx}"
-      run: oxlint --fix {staged_files}
+      run: export PATH="$PWD/node_modules/.bin:$PATH" && oxlint --fix {staged_files}
       stage_fixed: true
-    - name: typescript-fmt
+    typescript-fmt:
       glob: "**/*.{ts,tsx}"
-      run: oxfmt --write {staged_files}
+      run: export PATH="$PWD/node_modules/.bin:$PATH" && oxfmt --write {staged_files}
       stage_fixed: true
-    - name: elixir-format
+    elixir-format:
       root: ebb_server
       glob: "lib/** test/** *.exs .formatter.exs config/*.exs"
       run: mix format --check-formatted
-    - name: elixir-credo
+    elixir-credo:
       root: ebb_server
       glob: "lib/** test/**"
       run: mix credo --strict
-    - name: elixir-test
+    elixir-test:
       root: ebb_server
       glob: "lib/** test/**"
       run: mix test
