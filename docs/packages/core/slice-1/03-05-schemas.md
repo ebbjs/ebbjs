@@ -1,206 +1,102 @@
-# Slice 1: Typebox Schemas
+# Typebox Types
 
-## Tasks 3–5: Domain Type Schemas
+Define TypeScript types with Typebox schemas for runtime validation. Types map to Elixir structs in `ebb_server`.
 
-### Task 3: Implement NanoId and HLC Typebox schemas
+## Tasks 3–5
 
-**Files:** `packages/core/src/schemas/nanoid.ts` (create), `packages/core/src/schemas/hlc.ts` (create)
+### Task 3: NanoId and HLCTimestamp types
+
+**Files:** `packages/core/src/types/nanoid.ts`, `packages/core/src/types/hlc.ts`
 
 **Depends on:** Tasks 1, 2
 
-**`src/schemas/nanoid.ts`:**
+**NanoId** — string identifier with type prefix and unique suffix. Pattern: `^[a-z]+_[a-zA-Z0-9]+$`. Examples: `"act_abc123"`, `"todo_xyz"`, `"upd_001"`.
 
-```typescript
-import { Type } from "@sinclair/typebox";
-
-// NanoId pattern: lowercase prefix + underscore + alphanumeric suffix
-// Examples: "act_abc123", "todo_xyz", "upd_001"
-export const NanoIdSchema = Type.String({
-  pattern: "^[a-z]+_[a-zA-Z0-9]+$"
-});
-
-export type NanoId = string;
-```
-
-**`src/schemas/hlc.ts`:**
-
-```typescript
-import { Type } from "@sinclair/typebox";
-
-// HLCTimestamp is a decimal string representation of a packed 64-bit bigint
-// Server sends/receives as integer, client uses string internally
-export const HLCTimestampSchema = Type.String();
-
-export type HLCTimestamp = string;
-```
+**HLCTimestamp** — decimal string representation of a packed 64-bit HLC bigint. Server sends/receives as integer; client uses string internally.
 
 ---
 
-### Task 4: Implement Action and Update Typebox schemas
+### Task 4: Action and Update types
 
-**Files:** `packages/core/src/schemas/action.ts` (create)
+**Files:** `packages/core/src/types/action.ts`
 
 **Depends on:** Task 3
 
-Create schemas for all action-related types:
+**SubjectType** — union of entity types that can be updated: `"todo" | "doc" | "group" | "groupMember" | "relationship"`.
 
-```typescript
-import { Type, Static } from "@sinclair/typebox";
-import { NanoIdSchema } from "./nanoid.js";
-import { HLCTimestampSchema } from "./hlc.js";
+**UpdateMethod** — operations supported on entities: `"put" | "patch" | "delete"`.
 
-// SubjectType: entity types that can be updated
-export type SubjectType = "todo" | "doc" | "group" | "groupMember" | "relationship";
-export const SubjectTypeSchema = Type.Union([
-  Type.Literal("todo"),
-  Type.Literal("doc"),
-  Type.Literal("group"),
-  Type.Literal("groupMember"),
-  Type.Literal("relationship")
-]);
-
-// UpdateMethod: operations supported on entities
-export type UpdateMethod = "put" | "patch" | "delete";
-export const UpdateMethodSchema = Type.Union([
-  Type.Literal("put"),
-  Type.Literal("patch"),
-  Type.Literal("delete")
-]);
-
-// FieldValue: a single field's value with its source update ID
-export const FieldValueSchema = Type.Object({
-  value: Type.Unknown(),
-  update_id: NanoIdSchema,
-  hlc: Type.Optional(HLCTimestampSchema)  // Optional, for tiebreaking
-});
-export type FieldValue = Static<typeof FieldValueSchema>;
-
-// UpdateData: payload for put/patch operations
-export const PutDataSchema = Type.Object({
-  fields: Type.Record(Type.String(), FieldValueSchema)
-});
-
-export const PatchDataSchema = Type.Object({
-  fields: Type.Record(Type.String(), Type.Partial(FieldValueSchema))
-});
-
-// Update: a single modification within an Action
-export const UpdateSchema = Type.Object({
-  id: NanoIdSchema,
-  subject_id: NanoIdSchema,
-  subject_type: SubjectTypeSchema,
-  method: UpdateMethodSchema,
-  data: Type.Union([PutDataSchema, PatchDataSchema, Type.Null()])
-});
-export type Update = Static<typeof UpdateSchema>;
-
-// Action: primary write unit sent to /sync/actions
-export const ActionSchema = Type.Object({
-  id: NanoIdSchema,
-  actor_id: NanoIdSchema,
-  hlc: HLCTimestampSchema,
-  gsn: Type.Number(),
-  updates: Type.Array(UpdateSchema)
-});
-export type Action = Static<typeof ActionSchema>;
+**FieldValue** — a single field's value with its source update ID and optional HLC for tiebreaking.
 ```
+{ value: unknown, update_id: NanoId, hlc?: HLCTimestamp }
+```
+
+**PutData** — payload for create/replace operations. Fields map field names to FieldValue.
+
+**PatchData** — payload for merge operations. Only changed fields are included.
+
+**Update** — a single modification within an Action.
+```
+{ id: NanoId, subject_id: NanoId, subject_type: SubjectType, method: UpdateMethod, data: PutData | PatchData | null }
+```
+
+**Action** — primary write unit sent to `/sync/actions`. Contains an HLC timestamp and a non-empty array of Updates.
+```
+{ id: NanoId, actor_id: NanoId, hlc: HLCTimestamp, gsn: number, updates: Update[] }
+```
+
+Maps to Elixir `EbbServerWeb.Action` struct.
 
 ---
 
-### Task 5: Implement Entity and System Entity Typebox schemas
+### Task 5: Entity and System Entity types
 
-**Files:** `packages/core/src/schemas/entity.ts` (create), `packages/core/src/schemas/system.ts` (create), `packages/core/src/schemas/index.ts` (create)
+**Files:** `packages/core/src/types/entity.ts`, `packages/core/src/types/group.ts`, `packages/core/src/types/group-member.ts`, `packages/core/src/types/relationship.ts`, `packages/core/src/types/index.ts`
 
 **Depends on:** Task 4
 
-**`src/schemas/entity.ts`:**
+**EntityData** — container for regular entity fields: `{ fields: Record<string, FieldValue> }`.
 
-```typescript
-import { Type, Static } from "@sinclair/typebox";
-import { NanoIdSchema } from "./nanoid.js";
-import { HLCTimestampSchema } from "./hlc.js";
-import { FieldValueSchema } from "./action.js";
-
-// EntityData: container for regular entity fields
-export const EntityDataSchema = Type.Object({
-  fields: Type.Record(Type.String(), FieldValueSchema)
-});
-
-// Entity: materialized view of a subject
-export const EntitySchema = Type.Object({
-  id: NanoIdSchema,
-  type: Type.String(),
-  data: EntityDataSchema,
-  created_hlc: HLCTimestampSchema,
-  updated_hlc: HLCTimestampSchema,
-  deleted_hlc: Type.Union([HLCTimestampSchema, Type.Null()]),
-  last_gsn: Type.Number()
-});
-export type Entity = Static<typeof EntitySchema>;
+**Entity** — materialized view of a subject, built client-side by replaying Updates from storage.
+```
+{ id: NanoId, type: string, data: EntityData, created_hlc: HLCTimestamp, updated_hlc: HLCTimestamp, deleted_hlc: HLCTimestamp | null, last_gsn: number }
 ```
 
-**`src/schemas/system.ts`:**
+Maps to Elixir `EbbServer.Storage.Entity` struct.
 
-```typescript
-import { Type, Static } from "@sinclair/typebox";
-import { NanoIdSchema } from "./nanoid.js";
-import { HLCTimestampSchema } from "./hlc.js";
-
-// Group: system entity with flat data (no fields wrapper)
-export const GroupSchema = Type.Object({
-  id: NanoIdSchema,
-  type: Type.Literal("group"),
-  data: Type.Object({
-    name: Type.String()
-  })
-});
-export type Group = Static<typeof GroupSchema>;
-
-// GroupMember: flat data structure
-export const GroupMemberSchema = Type.Object({
-  id: NanoIdSchema,
-  type: Type.Literal("groupMember"),
-  data: Type.Object({
-    group_id: NanoIdSchema,
-    actor_id: NanoIdSchema,
-    permissions: Type.Array(Type.String())
-  })
-});
-export type GroupMember = Static<typeof GroupMemberSchema>;
-
-// Relationship: flat data structure
-export const RelationshipSchema = Type.Object({
-  id: NanoIdSchema,
-  type: Type.Literal("relationship"),
-  data: Type.Object({
-    source_id: NanoIdSchema,
-    target_id: NanoIdSchema,
-    relationship_type: Type.String()
-  })
-});
-export type Relationship = Static<typeof RelationshipSchema>;
+**Group** — system entity with flat data (no fields wrapper).
+```
+{ id: NanoId, type: "group", data: { name: string } }
 ```
 
-**`src/schemas/index.ts`:**
+Maps to Elixir `EbbServer.Group` struct.
 
-```typescript
-// Re-export all schemas and derived types
-export * from "./nanoid.js";
-export * from "./hlc.js";
-export * from "./action.js";
-export * from "./entity.js";
-export * from "./system.js";
+**GroupMember** — system entity linking a group to an actor with permissions.
 ```
+{ id: NanoId, type: "groupMember", data: { group_id: NanoId, actor_id: NanoId, permissions: string[] } }
+```
+
+Maps to Elixir `EbbServer.GroupMember` struct.
+
+**Relationship** — system entity linking two subjects.
+```
+{ id: NanoId, type: "relationship", data: { source_id: NanoId, target_id: NanoId, relationship_type: string } }
+```
+
+Maps to Elixir `EbbServer.Relationship` struct.
+
+**Re-exports** — `types/index.ts` re-exports all types for single-entry access.
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] `NanoIdSchema` validates pattern `^[a-z]+_[a-zA-Z0-9]+$`
-- [ ] `HLCTimestampSchema` exists for string-based HLC values
-- [ ] `ActionSchema` validates the full Action structure
-- [ ] `UpdateSchema` validates Update with put/patch/delete methods
-- [ ] `EntitySchema` validates Entity with fields wrapper
-- [ ] `GroupSchema`, `GroupMemberSchema`, `RelationshipSchema` use flat data (no fields wrapper)
-- [ ] All schemas are re-exported from `schemas/index.ts`
-- [ ] TypeScript types are derived via `Static<>` from each schema
+- [ ] NanoId validates pattern `^[a-z]+_[a-zA-Z0-9]+$`
+- [ ] HLCTimestamp is a string type for HLC values
+- [ ] Action type has id, actor_id, hlc, gsn, updates fields
+- [ ] Update type supports put/patch/delete methods with appropriate data shapes
+- [ ] Entity type has fields wrapper for regular entities
+- [ ] Group, GroupMember, Relationship use flat data (no fields wrapper)
+- [ ] All types re-exported from `types/index.ts`
+- [ ] TypeScript types derived via `Static<>` from Typebox schemas
+- [ ] Each type maps to corresponding Elixir struct in ebb_server
