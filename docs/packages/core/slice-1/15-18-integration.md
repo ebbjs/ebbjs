@@ -18,13 +18,13 @@ export * from "./action";
 
 Each submodule handles its own exports:
 
-| Module | What it exports |
-|--------|----------------|
-| `./types` | NanoIdSchema, ActionSchema, EntitySchema, GroupSchema, etc. + all types |
-| `./hlc` | createClock, localEvent, receiveRemoteHLC, pack/unpack, compare, isValidHLC, constants |
-| `./msgpack` | encode, decode, encodeSync, decodeSync + default export |
-| `./id` | generateId |
-| `./action` | createAction, CreateActionOptions |
+| Module      | What it exports                                                                        |
+| ----------- | -------------------------------------------------------------------------------------- |
+| `./types`   | NanoIdSchema, ActionSchema, EntitySchema, GroupSchema, etc. + all types                |
+| `./hlc`     | createClock, localEvent, receiveRemoteHLC, pack/unpack, compare, isValidHLC, constants |
+| `./msgpack` | encode, decode, encodeSync, decodeSync + default export                                |
+| `./id`      | generateId                                                                             |
+| `./action`  | createAction, CreateActionOptions                                                      |
 
 **Note:** `validate.ts` at package root exports validation helpers (validateAction, validateUpdate, validateEntity, etc.) but is **not** auto-exported from index — must be imported directly.
 
@@ -44,17 +44,17 @@ The `nanoid` package is used directly via `customAlphabet` from the installed pa
 
 All 9 test files are written and passing (97 tests total):
 
-| Test file | Coverage |
-|-----------|----------|
-| `src/hlc/clock.test.ts` | createClock, localEvent, receiveRemoteHLC |
-| `src/hlc/compare.test.ts` | compare, isBefore, isAfter |
-| `src/hlc/pack.test.ts` | pack, unpack, parse, format |
-| `src/hlc/validate.test.ts` | isValidHLC |
-| `src/types/action.test.ts` | NanoId, HLCTimestamp, Action/Update schema validation |
-| `src/msgpack/convert.test.ts` | HLC↔integer conversion |
-| `src/msgpack/index.test.ts` | encode/decode roundtrip (async + sync) |
-| `src/id/index.test.ts` | generateId format/uniqueness |
-| `src/action/index.test.ts` | createAction produces valid Action |
+| Test file                     | Coverage                                              |
+| ----------------------------- | ----------------------------------------------------- |
+| `src/hlc/clock.test.ts`       | createClock, localEvent, receiveRemoteHLC             |
+| `src/hlc/compare.test.ts`     | compare, isBefore, isAfter                            |
+| `src/hlc/pack.test.ts`        | pack, unpack, parse, format                           |
+| `src/hlc/validate.test.ts`    | isValidHLC                                            |
+| `src/types/action.test.ts`    | NanoId, HLCTimestamp, Action/Update schema validation |
+| `src/msgpack/convert.test.ts` | HLC↔integer conversion                                |
+| `src/msgpack/index.test.ts`   | encode/decode roundtrip (async + sync)                |
+| `src/id/index.test.ts`        | generateId format/uniqueness                          |
+| `src/action/index.test.ts`    | createAction produces valid Action                    |
 
 **Note on Typebox validation:** This codebase uses `Value.Check()` from `@sinclair/typebox/value` for runtime schema validation (not the non-existent `.Check()` instance method). `validate.ts` uses this approach and exports schemas for reuse.
 
@@ -87,7 +87,7 @@ Scripts: `build`, `dev`, `test`, `test:watch`, `typecheck`, `lint`, `lint:fix`, 
 
 ```typescript
 // Types (from ./types)
-import type { NanoId, HLCTimestamp, Action, Update, SubjectType, 
+import type { NanoId, HLCTimestamp, Action, Update, SubjectType,
                 UpdateMethod, FieldValue, Entity, EntityData,
                 Group, GroupMember, Relationship, HLCState, HLCComponents } from "@ebbjs/core";
 
