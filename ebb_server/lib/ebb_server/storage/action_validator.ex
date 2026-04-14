@@ -215,12 +215,10 @@ defmodule EbbServer.Storage.ActionValidator do
       true ->
         logical_time_ms = hlc >>> 16
 
-        cond do
-          logical_time_ms > now_ms + @future_drift_limit_ms ->
-            {:error, "hlc_future_drift", "logical time is more than 120s in the future"}
-
-          true ->
-            :ok
+        if logical_time_ms > now_ms + @future_drift_limit_ms do
+          {:error, "hlc_future_drift", "logical time is more than 120s in the future"}
+        else
+          :ok
         end
     end
   end
