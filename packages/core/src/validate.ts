@@ -1,5 +1,5 @@
-import { ActionSchema, UpdateSchema, EntitySchema, HLCTimestampSchema } from "./types/index.js";
-import { Action, Update, Entity } from "./types/index.js";
+import { ActionSchema, UpdateSchema, EntitySchema, HLCTimestampSchema } from "./types/index";
+import { Action, Update, Entity } from "./types/index";
 
 export function validateAction(action: unknown): action is Action {
   return ActionSchema.Check(action);

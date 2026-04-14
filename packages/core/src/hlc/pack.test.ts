@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pack, unpack, parse, format, COUNTER_BITS, COUNTER_MASK } from "./pack.js";
+import { pack, unpack, parse, format, COUNTER_BITS, COUNTER_MASK } from "./pack";
 
 describe("pack", () => {
   it("packs logical time and counter into 64-bit integer", () => {

@@ -1,4 +1,4 @@
-import { parse } from "./pack.js";
+import { parse } from "./pack";
 
 export function compare(a: string, b: string): -1 | 0 | 1 {
   const aBig = parse(a);

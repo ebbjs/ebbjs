@@ -1,4 +1,4 @@
-import { parse, format } from "../hlc/pack.js";
+import { parse, format } from "../hlc/pack";
 
 export function hlcToInteger(hlc: string): number {
   return Number(parse(hlc));

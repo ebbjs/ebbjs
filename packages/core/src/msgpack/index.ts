@@ -1,5 +1,5 @@
 import { encode as msgpackEncode, decode as msgpackDecode } from "@msgpack/msgpack";
-import { convertHlcToInteger, convertIntegerToHlc } from "./convert.js";
+import { convertHlcToInteger, convertIntegerToHlc } from "./convert";
 
 export async function encode<T>(value: T): Promise<Uint8Array> {
   const converted = convertHlcToInteger(value);

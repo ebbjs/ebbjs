@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { createClock, localEvent, receiveRemoteHLC } from "./clock.js";
-import { unpack, pack, parse, format } from "./pack.js";
-import { COUNTER_MASK } from "./constants.js";
+import { createClock, localEvent, receiveRemoteHLC } from "./clock";
+import { unpack, pack, parse, format } from "./pack";
+import { COUNTER_MASK } from "./constants";
 
 describe("createClock", () => {
   it("returns correct initial state", () => {
