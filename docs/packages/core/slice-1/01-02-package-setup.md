@@ -15,18 +15,6 @@ cd packages/core
 pnpm add @sinclair/typebox @msgpack/msgpack nanoid
 ```
 
-Update `package.json` to ensure dependencies are present:
-
-```json
-{
-  "dependencies": {
-    "@sinclair/typebox": "latest",
-    "@msgpack/msgpack": "latest",
-    "nanoid": "latest"
-  }
-}
-```
-
 Update `tsconfig.json` to extend the base config:
 
 ```json
@@ -74,18 +62,3 @@ src/
 └── action/
     └── index.ts         # createAction helper
 ```
-
-**Notes:**
-- `types/` directory (not `schemas/`) to avoid confusion with future schema definition code
-- System entity types are single files: `group.ts`, `group-member.ts`, `relationship.ts`
-- Validation functions live alongside their Typebox schemas in `types/`
-- HLC string↔integer conversion is part of `msgpack/index.ts` (not a separate file)
-
----
-
-## Acceptance Criteria
-
-- [ ] `pnpm add` installs latest versions of typebox, msgpack, nanoid
-- [ ] `package.json` has the three dependencies
-- [ ] `tsconfig.json` extends base config with correct outDir/rootDir
-- [ ] Directory structure matches the specified layout
