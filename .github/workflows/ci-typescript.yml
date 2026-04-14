@@ -4,8 +4,26 @@ name: CI (TypeScript)
 on:
   push:
     branches: [main]
+    paths:
+      - 'packages/**'
+      - '*.json'
+      - 'tsconfig*.json'
+      - 'vite.config.*'
+      - 'vitest.config.*'
+      - '.eslintrc*'
+      - '.prettierrc*'
+      - 'pnpm-lock.yaml'
   pull_request:
     branches: [main]
+    paths:
+      - 'packages/**'
+      - '*.json'
+      - 'tsconfig*.json'
+      - 'vite.config.*'
+      - 'vitest.config.*'
+      - '.eslintrc*'
+      - '.prettierrc*'
+      - 'pnpm-lock.yaml'
 
 jobs:
   typecheck:
