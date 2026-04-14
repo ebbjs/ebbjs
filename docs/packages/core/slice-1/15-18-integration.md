@@ -17,37 +17,37 @@ export type { Group, GroupMember, Relationship } from "./schemas/system.js";
 export type { HLCState, HLCComponents } from "./hlc/types.js";
 
 // Schemas
-export { 
-  NanoIdSchema, 
-  HLCTimestampSchema, 
-  ActionSchema, 
-  UpdateSchema, 
+export {
+  NanoIdSchema,
+  HLCTimestampSchema,
+  ActionSchema,
+  UpdateSchema,
   EntitySchema,
   FieldValueSchema,
   PutDataSchema,
   PatchDataSchema,
   GroupSchema,
   GroupMemberSchema,
-  RelationshipSchema
+  RelationshipSchema,
 } from "./schemas/index.js";
 
 // HLC functions
-export { 
-  createClock, 
-  localEvent, 
+export {
+  createClock,
+  localEvent,
   receiveRemoteHLC,
-  pack, 
-  unpack, 
-  parse, 
-  format, 
-  compare, 
-  isBefore, 
+  pack,
+  unpack,
+  parse,
+  format,
+  compare,
+  isBefore,
   isAfter,
   isValidHLC,
   COUNTER_BITS,
   COUNTER_MASK,
   MAX_FUTURE_DRIFT_MS,
-  MAX_PAST_DRIFT_MS
+  MAX_PAST_DRIFT_MS,
 } from "./hlc/index.js";
 
 // MessagePack
@@ -61,7 +61,14 @@ export { generateId } from "./id/index.js";
 export { createAction, type CreateActionOptions, type UpdateData } from "./action/index.js";
 
 // Validation
-export { validateAction, validateUpdate, validateEntity, validateActions, validateCursor, validateHLCTimestamp } from "./validate.js";
+export {
+  validateAction,
+  validateUpdate,
+  validateEntity,
+  validateActions,
+  validateCursor,
+  validateHLCTimestamp,
+} from "./validate.js";
 ```
 
 ---
@@ -91,12 +98,14 @@ declare module "nanoid" {
 Create tests for each major module:
 
 **`src/schemas/action.test.ts`:**
+
 - Test NanoId validation (valid patterns, invalid patterns)
 - Test HLCTimestamp schema validation
 - Test Action schema validation with valid/invalid data
 - Test Update schema with put/patch/delete variants
 
 **`src/hlc/clock.test.ts`:**
+
 - Test `createClock` returns correct initial state
 - Test `localEvent` advances logical time
 - Test `localEvent` increments counter when same ms
@@ -107,31 +116,37 @@ Create tests for each major module:
 - Test drift validation throws on excessive drift
 
 **`src/hlc/compare.test.ts`:**
+
 - Test `compare` returns correct ordering
 - Test `isBefore` / `isAfter` predicates
 - Test equal HLCs
 
 **`src/hlc/pack.test.ts`:**
+
 - Test `pack` / `unpack` roundtrip
 - Test `parse` / `format` roundtrip
 - Test bit manipulation correctness
 
 **`src/msgpack/convert.test.ts`:**
+
 - Test HLC string to integer conversion
 - Test integer to HLC string conversion
 - Test nested object conversion
 - Test array conversion
 
 **`src/msgpack/index.test.ts`:**
+
 - Test encode/decode roundtrip
 - Test HLC conversion in encode/decode cycle
 - Test sync variants
 
 **`src/id/index.test.ts`:**
+
 - Test `generateId` produces correct format
 - Test uniqueness of generated IDs
 
 **`src/action/index.test.ts`:**
+
 - Test `createAction` produces valid Action
 - Test HLC is generated and assigned
 - Test updates have generated IDs

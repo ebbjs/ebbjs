@@ -27,6 +27,7 @@ Define TypeScript types with Typebox schemas for runtime validation. Types map t
 **UpdateMethod** — operations supported on entities: `"put" | "patch" | "delete"`.
 
 **FieldValue** — a single field's value with its source update ID and optional HLC for tiebreaking.
+
 ```
 { value: unknown, update_id: NanoId, hlc?: HLCTimestamp }
 ```
@@ -36,11 +37,13 @@ Define TypeScript types with Typebox schemas for runtime validation. Types map t
 **PatchData** — payload for merge operations. Only changed fields are included.
 
 **Update** — a single modification within an Action.
+
 ```
 { id: NanoId, subject_id: NanoId, subject_type: SubjectType, method: UpdateMethod, data: PutData | PatchData | null }
 ```
 
 **Action** — primary write unit sent to `/sync/actions`. Contains an HLC timestamp and a non-empty array of Updates.
+
 ```
 { id: NanoId, actor_id: NanoId, hlc: HLCTimestamp, gsn: number, updates: Update[] }
 ```
@@ -58,6 +61,7 @@ Maps to Elixir `EbbServerWeb.Action` struct.
 **EntityData** — container for regular entity fields: `{ fields: Record<string, FieldValue> }`.
 
 **Entity** — materialized view of a subject, built client-side by replaying Updates from storage.
+
 ```
 { id: NanoId, type: string, data: EntityData, created_hlc: HLCTimestamp, updated_hlc: HLCTimestamp, deleted_hlc: HLCTimestamp | null, last_gsn: number }
 ```
@@ -65,6 +69,7 @@ Maps to Elixir `EbbServerWeb.Action` struct.
 Maps to Elixir `EbbServer.Storage.Entity` struct.
 
 **Group** — system entity with flat data (no fields wrapper).
+
 ```
 { id: NanoId, type: "group", data: { name: string } }
 ```
@@ -72,6 +77,7 @@ Maps to Elixir `EbbServer.Storage.Entity` struct.
 Maps to Elixir `EbbServer.Group` struct.
 
 **GroupMember** — system entity linking a group to an actor with permissions.
+
 ```
 { id: NanoId, type: "groupMember", data: { group_id: NanoId, actor_id: NanoId, permissions: string[] } }
 ```
@@ -79,6 +85,7 @@ Maps to Elixir `EbbServer.Group` struct.
 Maps to Elixir `EbbServer.GroupMember` struct.
 
 **Relationship** — system entity linking two subjects.
+
 ```
 { id: NanoId, type: "relationship", data: { source_id: NanoId, target_id: NanoId, relationship_type: string } }
 ```

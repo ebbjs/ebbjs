@@ -4,13 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  better-auth: ^1.4.17
-  better-sqlite3: ^12.6.2
-  drizzle-orm: ^0.45.1
-  drizzle-zod: ^0.8.3
-  yjs: ^13.6.0
-
 importers:
 
   .:
@@ -18,15 +11,9 @@ importers:
       nanoid:
         specifier: ^5.1.6
         version: 5.1.7
-      postgres:
-        specifier: ^3.4.8
-        version: 3.4.8
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
-      zod:
-        specifier: ^4.3.6
-        version: 4.3.6
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.13
@@ -92,43 +79,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2)
 
-  packages/db:
-    devDependencies:
-      tsx:
-        specifier: ^4.20.4
-        version: 4.21.0
-      vitest:
-        specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2)
-
-  packages/log:
-    devDependencies:
-      tsx:
-        specifier: ^4.20.4
-        version: 4.21.0
-      vitest:
-        specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2)
-
-  packages/react:
-    devDependencies:
-      tsx:
-        specifier: ^4.20.4
-        version: 4.21.0
-      vitest:
-        specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2)
-
   packages/server:
-    devDependencies:
-      tsx:
-        specifier: ^4.20.4
-        version: 4.21.0
-      vitest:
-        specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2)
-
-  packages/sync:
     devDependencies:
       tsx:
         specifier: ^4.20.4
@@ -203,15 +154,6 @@ importers:
       '@types/react-dom':
         specifier: ^19.1.2
         version: 19.2.3(@types/react@19.2.14)
-
-  packages/yjs:
-    devDependencies:
-      tsx:
-        specifier: ^4.20.4
-        version: 4.21.0
-      vitest:
-        specifier: ^3.2.4
-        version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2)
 
 packages:
 
@@ -4617,10 +4559,6 @@ packages:
   postcss@8.5.8:
     resolution: {integrity: sha512-OW/rX8O/jXnm82Ey1k44pObPtdblfiuWnrd8X7GJ7emImCOstunGbXUpp7HdBrFQX6rJzn3sPT397Wp5aCwCHg==}
     engines: {node: ^10 || ^12 || >=14}
-
-  postgres@3.4.8:
-    resolution: {integrity: sha512-d+JFcLM17njZaOLkv6SCev7uoLaBtfK86vMUXhW1Z4glPWh4jozno9APvW/XKFJ3CCxVoC7OL38BqRydtu5nGg==}
-    engines: {node: '>=12'}
 
   prebuild-install@7.1.3:
     resolution: {integrity: sha512-8Mf2cbV7x1cXPUILADGI3wuhfqWvtiLA1iclTDbFRZkgRQS0NqsPZphna9V+HyTEadheuPmjaJMsbzKQFOzLug==}
@@ -10737,8 +10675,6 @@ snapshots:
       nanoid: 3.3.11
       picocolors: 1.1.1
       source-map-js: 1.2.1
-
-  postgres@3.4.8: {}
 
   prebuild-install@7.1.3:
     dependencies:

@@ -41,11 +41,11 @@ The primary write unit. Sent to `/sync/actions` as MessagePack.
 
 ```typescript
 interface Action {
-  id: NanoId;           // Unique action ID (nanoid)
-  actor_id: ActorId;    // Actor who created the action
-  hlc: HLCTimestamp;    // HLC timestamp (client generates)
-  gsn: number;         // Assigned by server on commit (0 until acknowledged)
-  updates: Update[];   // Non-empty array of updates
+  id: NanoId; // Unique action ID (nanoid)
+  actor_id: ActorId; // Actor who created the action
+  hlc: HLCTimestamp; // HLC timestamp (client generates)
+  gsn: number; // Assigned by server on commit (0 until acknowledged)
+  updates: Update[]; // Non-empty array of updates
 }
 ```
 
@@ -55,14 +55,14 @@ A single modification within an Action.
 
 ```typescript
 interface Update {
-  id: NanoId;                    // Unique update ID within action
-  subject_id: NanoId;            // ID of entity being updated
-  subject_type: SubjectType;    // Entity type (e.g., "todo", "doc", "group")
-  method: UpdateMethod;          // "put" | "patch" | "delete"
-  data: UpdateData | null;      // Payload (null for delete)
+  id: NanoId; // Unique update ID within action
+  subject_id: NanoId; // ID of entity being updated
+  subject_type: SubjectType; // Entity type (e.g., "todo", "doc", "group")
+  method: UpdateMethod; // "put" | "patch" | "delete"
+  data: UpdateData | null; // Payload (null for delete)
 }
 
-type SubjectType = string;  // "todo" | "doc" | "group" | "groupMember" | "relationship"
+type SubjectType = string; // "todo" | "doc" | "group" | "groupMember" | "relationship"
 
 type UpdateMethod = "put" | "patch" | "delete";
 ```
@@ -70,6 +70,7 @@ type UpdateMethod = "put" | "patch" | "delete";
 #### UpdateData Format
 
 **For `put`** (create or replace):
+
 ```typescript
 interface PutData {
   fields: {
@@ -78,16 +79,17 @@ interface PutData {
 }
 
 interface FieldValue {
-  value: unknown;      // The field's value
-  update_id: NanoId;   // ID of the update that set this value
+  value: unknown; // The field's value
+  update_id: NanoId; // ID of the update that set this value
 }
 ```
 
 **For `patch`** (merge with existing):
+
 ```typescript
 interface PatchData {
   fields: {
-    [fieldName: string]: Partial<FieldValue>;  // Only include changed fields
+    [fieldName: string]: Partial<FieldValue>; // Only include changed fields
   };
 }
 ```
@@ -189,7 +191,7 @@ type Entity = Static<typeof EntitySchema>;
 // Validate an Action against its schema
 function validateAction(action: unknown): action is Action;
 
-// Validate an Update against its schema  
+// Validate an Update against its schema
 function validateUpdate(update: unknown): update is Update;
 
 // Validate an Entity against its schema
@@ -209,9 +211,9 @@ function validateCursor(cursor: unknown): cursor is number;
 #### Constants
 
 ```typescript
-const COUNTER_BITS = 16n;           // Bits for counter component
-const COUNTER_MASK = 0xFFFFn;       // Mask for counter extraction
-const MAX_FUTURE_DRIFT_MS = 120_000n;  // Max 120 seconds ahead (server validation)
+const COUNTER_BITS = 16n; // Bits for counter component
+const COUNTER_MASK = 0xffffn; // Mask for counter extraction
+const MAX_FUTURE_DRIFT_MS = 120_000n; // Max 120 seconds ahead (server validation)
 const MAX_PAST_DRIFT_MS = 86_400_000n; // Max 24 hours behind (server validation)
 // Note: Server uses different bounds than client default (60s)
 // Client default: 60_000n for local generation safety
@@ -223,15 +225,15 @@ const MAX_PAST_DRIFT_MS = 86_400_000n; // Max 24 hours behind (server validation
 ```typescript
 // Internal clock state
 interface HLCState {
-  l: bigint;       // Logical time (milliseconds since Unix epoch)
-  c: bigint;       // Counter component (0-65535)
+  l: bigint; // Logical time (milliseconds since Unix epoch)
+  c: bigint; // Counter component (0-65535)
   maxDrift: bigint;
 }
 
 // Parsed HLC components
 interface HLCComponents {
-  logicalTime: bigint;  // Upper 48 bits (physical time in ms)
-  counter: bigint;     // Lower 16 bits
+  logicalTime: bigint; // Upper 48 bits (physical time in ms)
+  counter: bigint; // Lower 16 bits
 }
 ```
 
@@ -283,12 +285,12 @@ Server uses 64-bit integer: `(logical_time << 16) | counter`
 
 ```typescript
 // localEvent:
-const now = Date.now();  // Unix ms
+const now = Date.now(); // Unix ms
 if (now > state.l) {
   state.l = now;
   state.c = 0n;
 } else {
-  state.c = (state.c + 1n) & COUNTER_MASK;  // Wrap at 65535
+  state.c = (state.c + 1n) & COUNTER_MASK; // Wrap at 65535
 }
 return format(pack(state.l, state.c));
 
@@ -310,11 +312,11 @@ return format(pack(state.l, state.c));
 
 Server validates incoming HLCs:
 
-| Check | Bound | Server Rejection |
-|-------|-------|------------------|
-| Future drift | > 120 seconds ahead | `hlc_future_drift` |
-| Past drift | > 24 hours behind | `hlc_stale` |
-| Invalid format | Not a positive integer | `invalid_hlc` |
+| Check          | Bound                  | Server Rejection   |
+| -------------- | ---------------------- | ------------------ |
+| Future drift   | > 120 seconds ahead    | `hlc_future_drift` |
+| Past drift     | > 24 hours behind      | `hlc_stale`        |
+| Invalid format | Not a positive integer | `invalid_hlc`      |
 
 ---
 
@@ -407,8 +409,8 @@ function createAction(options: CreateActionOptions): {
 function generateId(prefix: string): NanoId;
 
 // Examples:
-const actionId = generateId("act");  // "act_abc123"
-const updateId = generateId("upd");  // "upd_xyz789"
+const actionId = generateId("act"); // "act_abc123"
+const updateId = generateId("upd"); // "upd_xyz789"
 ```
 
 Uses `nanoid` library with custom prefix for domain-specific IDs.

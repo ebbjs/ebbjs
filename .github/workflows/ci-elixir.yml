@@ -5,11 +5,11 @@ on:
   push:
     branches: [main]
     paths:
-      - 'ebb_server/**'
+      - "ebb_server/**"
   pull_request:
     branches: [main]
     paths:
-      - 'ebb_server/**'
+      - "ebb_server/**"
 
 jobs:
   ci:

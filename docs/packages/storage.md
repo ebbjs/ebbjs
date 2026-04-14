@@ -15,11 +15,11 @@ Provides a storage adapter interface for @ebbjs/client. The adapter pattern allo
 
 The server uses **GSN (Global Sequence Number)** as the cursor for catch-up and SSE:
 
-| Server Concept | Client Storage |
-|---------------|----------------|
-| GSN | Integer (server assigns on commit) |
-| `stream-next-offset` header | Stored as `nextOffset` |
-| `/sync/live?cursor={gsn}` | Client passes cursor to SSE |
+| Server Concept                        | Client Storage                      |
+| ------------------------------------- | ----------------------------------- |
+| GSN                                   | Integer (server assigns on commit)  |
+| `stream-next-offset` header           | Stored as `nextOffset`              |
+| `/sync/live?cursor={gsn}`             | Client passes cursor to SSE         |
 | `/sync/groups/:group_id?offset={gsn}` | Client passes offset for pagination |
 
 **Important**: Server returns HLC as integer in responses, but cursors are GSN integers. Client stores cursors as numbers for direct server API usage.
@@ -75,8 +75,8 @@ interface StorageAdapter {
 
 // Outbox entry
 interface OutboxEntry {
-  id: string;            // Action ID
-  action: Action;       // The action to sync
+  id: string; // Action ID
+  action: Action; // The action to sync
   status: OutboxStatus;
   retryCount: number;
   error?: string;
@@ -117,6 +117,7 @@ import type { Action, Entity, Update, GroupId, HLCTimestamp } from "@ebbjs/core"
 - **HLCTimestamps** are HLC strings — used for ordering within storage and comparing update precedence
 
 The storage adapter translates between them:
+
 ```typescript
 // When server returns action with gsn: 501
 storage.cursors.set("group_abc", 501);
@@ -124,8 +125,8 @@ storage.cursors.set("group_abc", 501);
 // When querying updates
 const updates = storage.updates.findForSync({
   groupId: "group_abc",
-  afterHlc: "1711036800001",  // HLC string for ordering
-  limit: 100
+  afterHlc: "1711036800001", // HLC string for ordering
+  limit: 100,
 });
 ```
 

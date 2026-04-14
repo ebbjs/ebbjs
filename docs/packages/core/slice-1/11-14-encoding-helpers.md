@@ -33,11 +33,11 @@ export function convertHlcToInteger<T>(value: T): T {
     }
     return value;
   }
-  
+
   if (Array.isArray(value)) {
-    return value.map(v => convertHlcToInteger(v)) as T;
+    return value.map((v) => convertHlcToInteger(v)) as T;
   }
-  
+
   if (value !== null && typeof value === "object") {
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
@@ -45,7 +45,7 @@ export function convertHlcToInteger<T>(value: T): T {
     }
     return result as T;
   }
-  
+
   return value;
 }
 
@@ -55,20 +55,21 @@ export function convertIntegerToHlc<T>(value: T): T {
   if (typeof value === "number" && Number.isInteger(value) && value > 0) {
     // Check if this could be an HLC (large number with timestamp-like magnitude)
     // If it's a reasonable HLC value, convert it
-    if (value > 1_000_000_000_000) {  // ~2001 AD in ms
+    if (value > 1_000_000_000_000) {
+      // ~2001 AD in ms
       return format(BigInt(value)) as T;
     }
     return value;
   }
-  
+
   if (typeof value === "string") {
     return value;
   }
-  
+
   if (Array.isArray(value)) {
-    return value.map(v => convertIntegerToHlc(v)) as T;
+    return value.map((v) => convertIntegerToHlc(v)) as T;
   }
-  
+
   if (value !== null && typeof value === "object") {
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
@@ -76,7 +77,7 @@ export function convertIntegerToHlc<T>(value: T): T {
     }
     return result as T;
   }
-  
+
   return value;
 }
 ```
@@ -96,7 +97,7 @@ export async function encode<T>(value: T): Promise<Uint8Array> {
 
 // Decode MessagePack binary to JavaScript object
 export async function decode<T>(data: Uint8Array): Promise<T> {
-  const decoded = await msgpackDecode(data) as T;
+  const decoded = (await msgpackDecode(data)) as T;
   // Convert integers back to HLC strings
   return convertIntegerToHlc(decoded);
 }
@@ -151,7 +152,7 @@ import { HLCState } from "../hlc/index.js";
 import { generateId } from "../id/index.js";
 
 export interface UpdateData {
-  id?: string;           // Auto-generated if not provided
+  id?: string; // Auto-generated if not provided
   subject_id: string;
   subject_type: string;
   method: "put" | "patch" | "delete";
@@ -169,27 +170,27 @@ export function createAction(options: CreateActionOptions): {
   hlc: HLCTimestamp;
 } {
   const { actorId, updates, clock } = options;
-  
+
   // Generate HLC for this action
   const hlc = localEvent(clock);
-  
+
   // Build updates with generated IDs
-  const builtUpdates: Update[] = updates.map(u => ({
+  const builtUpdates: Update[] = updates.map((u) => ({
     id: u.id ?? generateId("upd"),
     subject_id: u.subject_id,
     subject_type: u.subject_type as any,
     method: u.method,
-    data: u.data as any
+    data: u.data as any,
   }));
-  
+
   const action: Action = {
     id: generateId("act"),
     actor_id: actorId,
     hlc,
-    gsn: 0,  // Server assigns on commit
-    updates: builtUpdates
+    gsn: 0, // Server assigns on commit
+    updates: builtUpdates,
   };
-  
+
   return { action, hlc };
 }
 ```
@@ -223,7 +224,7 @@ export function validateEntity(entity: unknown): entity is Entity {
 
 // Validate a batch of Actions
 export function validateActions(actions: unknown[]): actions is Action[] {
-  return Array.isArray(actions) && actions.every(a => validateAction(a));
+  return Array.isArray(actions) && actions.every((a) => validateAction(a));
 }
 
 // Validate cursor format (GSN is just a number)
