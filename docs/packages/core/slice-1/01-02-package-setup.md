@@ -1,6 +1,4 @@
-# Slice 1: Package Setup
-
-## Tasks 1–2
+# Package Setup
 
 ### Task 1: Set up package dependencies and tsconfig
 
