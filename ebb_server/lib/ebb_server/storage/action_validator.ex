@@ -37,7 +37,6 @@ defmodule EbbServer.Storage.ActionValidator do
   @method_atoms PermissionHelper.method_atoms()
 
   @future_drift_limit_ms 120_000
-  @stale_limit_ms 86_400_000
 
   @doc """
   Validates a list of raw actions, returning validated actions and rejections.
@@ -45,7 +44,12 @@ defmodule EbbServer.Storage.ActionValidator do
   Each action is validated for:
   - Structure (valid fields, non-empty values)
   - Actor (actor_id matches the authenticated actor)
-  - HLC (valid timestamp within bounds)
+  - HLC (valid timestamp within future drift bounds)
+
+  Note: HLC stale validation was removed because GSN provides total ordering
+  and HLC is only used for conflict resolution during replica sync. The stale
+  limit will be re-added when compaction watermark is implemented, since
+  compaction overwrites entire entities and stale HLC updates would be lost.
   """
   @spec validate([raw_action()], String.t(), keyword()) ::
           {accepted :: [validated_action()], rejected :: [rejection()]}
@@ -211,15 +215,10 @@ defmodule EbbServer.Storage.ActionValidator do
       true ->
         logical_time_ms = hlc >>> 16
 
-        cond do
-          logical_time_ms > now_ms + @future_drift_limit_ms ->
-            {:error, "hlc_future_drift", "logical time is more than 120s in the future"}
-
-          logical_time_ms < now_ms - @stale_limit_ms ->
-            {:error, "hlc_stale", "logical time is more than 24h in the past"}
-
-          true ->
-            :ok
+        if logical_time_ms > now_ms + @future_drift_limit_ms do
+          {:error, "hlc_future_drift", "logical time is more than 120s in the future"}
+        else
+          :ok
         end
     end
   end

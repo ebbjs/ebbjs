@@ -166,12 +166,6 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       assert {:error, "hlc_future_drift", _} = ActionValidator.validate_hlc(action)
     end
 
-    test "stale HLC rejected" do
-      stale_hlc = hlc_from(System.os_time(:millisecond) - 100_000_000, 0)
-      action = %{"hlc" => stale_hlc}
-      assert {:error, "hlc_stale", _} = ActionValidator.validate_hlc(action)
-    end
-
     test "negative HLC rejected" do
       action = %{"hlc" => -1}
       assert {:error, "invalid_hlc", _} = ActionValidator.validate_hlc(action)
