@@ -60,7 +60,7 @@ export const ActionSchema = Type.Object({
   id: NanoIdSchema,
   actor_id: NanoIdSchema,
   hlc: HLCTimestampSchema,
-  gsn: Type.Number(),
+  gsn: Type.Number({ minimum: 0 }),
   updates: Type.Array(UpdateSchema),
 });
 export type Action = Static<typeof ActionSchema>;
