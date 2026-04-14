@@ -1,13 +1,22 @@
 pre-commit:
   jobs:
     - name: typescript-lint
-      glob: "*.{ts,tsx}"
+      glob: "**/*.{ts,tsx}"
       run: oxlint --fix {staged_files}
       stage_fixed: true
     - name: typescript-fmt
-      glob: "*.{ts,tsx}"
+      glob: "**/*.{ts,tsx}"
       run: oxfmt --write {staged_files}
       stage_fixed: true
-    - name: elixir
+    - name: elixir-format
       root: ebb_server
-      run: mix format --check-formatted && mix credo --strict --files-excluded "./test/**" && mix test
+      glob: "lib/** test/** *.exs .formatter.exs config/*.exs"
+      run: mix format --check-formatted
+    - name: elixir-credo
+      root: ebb_server
+      glob: "lib/** test/**"
+      run: mix credo --strict
+    - name: elixir-test
+      root: ebb_server
+      glob: "lib/** test/**"
+      run: mix test
