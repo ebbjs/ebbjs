@@ -55,10 +55,3 @@ export const createMemoryActionLog = (): ActionLog => {
     },
   };
 };
-
-export const getEntityIdsForType = (state: ActionLogState, type: string): readonly string[] => {
-  const entry = state.typeIndex.find(([t]) => t === type);
-  return entry ? entry[1] : [];
-};
-
-export type { ActionLogState };

@@ -5,6 +5,7 @@
 On the server, relationships (`subject_type: "relationship"`) and group memberships (`subject_type: "groupMember"`) are first-class entities stored in RocksDB/SQLite. The server maintains separate caches (RelationshipCache, GroupCache) for efficient lookups.
 
 On the client, we need similar query capabilities:
+
 - "All todos in group X"
 - "All entities related to entity Y"
 - "All groups I'm a member of"
@@ -18,9 +19,9 @@ When `subject_type` is `"groupMember"`, the entity represents actor-to-group mem
 
 ```typescript
 interface GroupMemberData {
-  actor_id: string;       // The member (actor)
-  group_id: string;       // The group
-  permissions: string[];    // Permissions in this group
+  actor_id: string; // The member (actor)
+  group_id: string; // The group
+  permissions: string[]; // Permissions in this group
 }
 ```
 
@@ -30,10 +31,10 @@ When `subject_type` is `"relationship"`, the entity represents entity-to-entity 
 
 ```typescript
 interface RelationshipData {
-  source_id: string;   // The entity that "owns" the relationship
-  target_id: string;   // The target (could be another entity or a group)
-  type: string;        // Entity type of source (e.g., "todo", "document")
-  field: string;       // Relationship field name (e.g., "group", "collaborators", "parent")
+  source_id: string; // The entity that "owns" the relationship
+  target_id: string; // The target (could be another entity or a group)
+  type: string; // Entity type of source (e.g., "todo", "document")
+  field: string; // Relationship field name (e.g., "group", "collaborators", "parent")
 }
 ```
 
@@ -71,19 +72,19 @@ import type { GroupMember } from "./group-member";
 export interface GroupStore {
   // Get all group IDs an actor is a member of
   getMyGroups(actorId: string): Promise<readonly string[]>;
-  
+
   // Get all members of a group
   getGroupMembers(groupId: string): Promise<readonly GroupMember[]>;
-  
+
   // Get my permissions in a group
   getMyPermissions(actorId: string, groupId: string): Promise<readonly string[]>;
-  
+
   // Idempotent upsert - removes old first if exists
   upsert(member: GroupMember): Promise<void>;
-  
+
   // Remove membership
   remove(memberId: string): Promise<void>;
-  
+
   clear(): Promise<void>;
 }
 ```
@@ -96,10 +97,10 @@ export interface GroupStore {
 interface GroupStoreState {
   // actorId -> Set<groupId>
   actorToGroups: Map<string, Set<string>>;
-  
+
   // groupId -> Set<memberId>
   groupToMembers: Map<string, Set<string>>;
-  
+
   // memberId -> GroupMember (full entity)
   members: Map<string, GroupMember>;
 }
@@ -108,29 +109,29 @@ export const createMemoryGroupStore = (): GroupStore => {
   let state: GroupStoreState = {
     actorToGroups: new Map(),
     groupToMembers: new Map(),
-    members: new Map(),  // memberId -> GroupMember (full entity)
+    members: new Map(), // memberId -> GroupMember (full entity)
   };
 
   return {
     async getMyGroups(actorId: string): Promise<readonly string[]> {
-      return state.actorToGroups.get(actorId)?.size 
-        ? Array.from(state.actorToGroups.get(actorId)!) 
+      return state.actorToGroups.get(actorId)?.size
+        ? Array.from(state.actorToGroups.get(actorId)!)
         : [];
     },
 
     async getGroupMembers(groupId: string): Promise<readonly GroupMember[]> {
       const memberIds = state.groupToMembers.get(groupId);
       if (!memberIds) return [];
-      
+
       return Array.from(memberIds)
-        .map(id => state.members.get(id))
+        .map((id) => state.members.get(id))
         .filter((m): m is GroupMember => m !== undefined);
     },
 
     async getMyPermissions(actorId: string, groupId: string): Promise<readonly string[]> {
       const memberIds = state.groupToMembers.get(groupId);
       if (!memberIds) return [];
-      
+
       for (const memberId of memberIds) {
         const member = state.members.get(memberId);
         if (member?.data.fields.actor_id.value === actorId) {
@@ -201,22 +202,22 @@ import type { Relationship } from "./relationship";
 export interface RelationshipStore {
   // Get all relationships where entity is the source (what entity references)
   getReferences(sourceId: string): Promise<readonly Relationship[]>;
-  
+
   // Get all relationships where entity is the target (what references entity)
   getReferencedBy(targetId: string): Promise<readonly Relationship[]>;
-  
+
   // Get relationships from entity for a specific field
   getReferencesByField(sourceId: string, field: string): Promise<readonly Relationship[]>;
-  
+
   // Get entity IDs of type that reference target (e.g., all todos in group X)
   getEntityIdsByTarget(targetId: string, type?: string): Promise<readonly string[]>;
-  
+
   // Idempotent upsert - removes old first if exists
   upsert(relationship: Relationship): Promise<void>;
-  
+
   // Remove relationship
   remove(relationshipId: string): Promise<void>;
-  
+
   clear(): Promise<void>;
 }
 ```
@@ -229,10 +230,10 @@ export interface RelationshipStore {
 interface RelationshipStoreState {
   // sourceId -> Relationship[]
   references: Map<string, Relationship[]>;
-  
+
   // targetId -> Relationship[]
   referencedBy: Map<string, Relationship[]>;
-  
+
   // relationshipId -> Relationship (for lookup on upsert)
   byId: Map<string, Relationship>;
 }
@@ -250,11 +251,17 @@ export const createMemoryRelationshipStore = (): RelationshipStore => {
 
     // Remove from source refs
     const sourceRefs = state.references.get(sourceId) ?? [];
-    state.references.set(sourceId, sourceRefs.filter(r => r.id !== rel.id));
+    state.references.set(
+      sourceId,
+      sourceRefs.filter((r) => r.id !== rel.id),
+    );
 
     // Remove from target refs
     const targetRefs = state.referencedBy.get(targetId) ?? [];
-    state.referencedBy.set(targetId, targetRefs.filter(r => r.id !== rel.id));
+    state.referencedBy.set(
+      targetId,
+      targetRefs.filter((r) => r.id !== rel.id),
+    );
   };
 
   return {
@@ -268,13 +275,13 @@ export const createMemoryRelationshipStore = (): RelationshipStore => {
 
     async getReferencesByField(sourceId: string, field: string): Promise<readonly Relationship[]> {
       const refs = state.references.get(sourceId) ?? [];
-      return refs.filter(r => r.data.fields.field.value === field);
+      return refs.filter((r) => r.data.fields.field.value === field);
     },
 
     async getEntityIdsByTarget(targetId: string, type?: string): Promise<readonly string[]> {
       const refs = state.referencedBy.get(targetId) ?? [];
-      const filtered = type ? refs.filter(r => r.data.fields.type.value === type) : refs;
-      return [...new Set(filtered.map(r => r.data.fields.source_id.value))];
+      const filtered = type ? refs.filter((r) => r.data.fields.type.value === type) : refs;
+      return [...new Set(filtered.map((r) => r.data.fields.source_id.value))];
     },
 
     async upsert(relationship: Relationship): Promise<void> {
@@ -285,7 +292,7 @@ export const createMemoryRelationshipStore = (): RelationshipStore => {
       }
 
       const old = state.byId.get(relationship.id);
-      
+
       // If updating existing, remove old indexes first
       if (old) {
         removeFromIndexes(old);
@@ -369,7 +376,7 @@ When actions are received and processed, relationship and membership tracking is
 async function processAction(action: Action): Promise<void> {
   // Store action
   await storage.actions.append(action);
-  
+
   // Update relationship/membership indexes based on this action
   for (const update of action.updates) {
     if (update.subject_type === "relationship") {
@@ -381,7 +388,7 @@ async function processAction(action: Action): Promise<void> {
         if (rel) storage.relationshipStore.upsert(rel);
       }
     }
-    
+
     if (update.subject_type === "groupMember") {
       if (update.method === "delete") {
         storage.groupStore.remove(update.subject_id);
@@ -453,7 +460,12 @@ import { describe, it, expect } from "vitest";
 import { createMemoryGroupStore } from "./group-store.memory";
 
 describe("MemoryGroupStore", () => {
-  const makeMember = (id: string, actorId: string, groupId: string, permissions: string[] = []): GroupMember => ({
+  const makeMember = (
+    id: string,
+    actorId: string,
+    groupId: string,
+    permissions: string[] = [],
+  ): GroupMember => ({
     id,
     type: "groupMember",
     data: {
@@ -473,17 +485,17 @@ describe("MemoryGroupStore", () => {
     it("tracks membership", async () => {
       const store = createMemoryGroupStore();
       await store.upsert(makeMember("gm_1", "actor_1", "group_1", ["read"]));
-      
+
       expect(await store.getMyGroups("actor_1")).toEqual(["group_1"]);
       expect(await store.getGroupMembers("group_1")).toHaveLength(1);
     });
 
     it("is idempotent - updating replaces old", async () => {
       const store = createMemoryGroupStore();
-      
+
       await store.upsert(makeMember("gm_1", "actor_1", "group_1", ["read"]));
       await store.upsert(makeMember("gm_1", "actor_1", "group_2", ["write"]));
-      
+
       expect(await store.getMyGroups("actor_1")).toEqual(["group_2"]);
       expect(await store.getGroupMembers("group_1")).toHaveLength(0);
       expect(await store.getGroupMembers("group_2")).toHaveLength(1);
@@ -492,10 +504,13 @@ describe("MemoryGroupStore", () => {
     it("removes on soft-delete", async () => {
       const store = createMemoryGroupStore();
       await store.upsert(makeMember("gm_1", "actor_1", "group_1", ["read"]));
-      
-      const deleted: GroupMember = { ...makeMember("gm_1", "actor_1", "group_1"), deleted_hlc: "123" };
+
+      const deleted: GroupMember = {
+        ...makeMember("gm_1", "actor_1", "group_1"),
+        deleted_hlc: "123",
+      };
       await store.upsert(deleted);
-      
+
       expect(await store.getMyGroups("actor_1")).toEqual([]);
       expect(await store.getGroupMembers("group_1")).toHaveLength(0);
     });
@@ -506,7 +521,7 @@ describe("MemoryGroupStore", () => {
       const store = createMemoryGroupStore();
       await store.upsert(makeMember("gm_1", "actor_1", "group_1"));
       await store.remove("gm_1");
-      
+
       expect(await store.getMyGroups("actor_1")).toEqual([]);
     });
   });
@@ -515,7 +530,7 @@ describe("MemoryGroupStore", () => {
     it("returns permissions for actor in group", async () => {
       const store = createMemoryGroupStore();
       await store.upsert(makeMember("gm_1", "actor_1", "group_1", ["read", "write"]));
-      
+
       expect(await store.getMyPermissions("actor_1", "group_1")).toEqual(["read", "write"]);
     });
 
@@ -534,7 +549,13 @@ import { describe, it, expect } from "vitest";
 import { createMemoryRelationshipStore } from "./relationship-store.memory";
 
 describe("MemoryRelationshipStore", () => {
-  const makeRel = (id: string, sourceId: string, targetId: string, type: string, field: string): Relationship => ({
+  const makeRel = (
+    id: string,
+    sourceId: string,
+    targetId: string,
+    type: string,
+    field: string,
+  ): Relationship => ({
     id,
     type: "relationship",
     data: {
@@ -555,17 +576,17 @@ describe("MemoryRelationshipStore", () => {
     it("tracks relationship", async () => {
       const store = createMemoryRelationshipStore();
       await store.upsert(makeRel("rel_1", "todo_1", "group_1", "todo", "group"));
-      
+
       expect(await store.getReferences("todo_1")).toHaveLength(1);
       expect(await store.getReferencedBy("group_1")).toHaveLength(1);
     });
 
     it("is idempotent - updating changes target", async () => {
       const store = createMemoryRelationshipStore();
-      
+
       await store.upsert(makeRel("rel_1", "todo_1", "group_1", "todo", "group"));
       await store.upsert(makeRel("rel_1", "todo_1", "group_2", "todo", "group"));
-      
+
       expect(await store.getReferencedBy("group_1")).toHaveLength(0);
       expect(await store.getReferencedBy("group_2")).toHaveLength(1);
     });
@@ -573,10 +594,13 @@ describe("MemoryRelationshipStore", () => {
     it("removes on soft-delete", async () => {
       const store = createMemoryRelationshipStore();
       await store.upsert(makeRel("rel_1", "todo_1", "group_1", "todo", "group"));
-      
-      const deleted: Relationship = { ...makeRel("rel_1", "todo_1", "group_1", "todo", "group"), deleted_hlc: "123" };
+
+      const deleted: Relationship = {
+        ...makeRel("rel_1", "todo_1", "group_1", "todo", "group"),
+        deleted_hlc: "123",
+      };
       await store.upsert(deleted);
-      
+
       expect(await store.getReferences("todo_1")).toHaveLength(0);
     });
   });
@@ -586,7 +610,7 @@ describe("MemoryRelationshipStore", () => {
       const store = createMemoryRelationshipStore();
       await store.upsert(makeRel("rel_1", "todo_1", "group_1", "todo", "group"));
       await store.upsert(makeRel("rel_2", "todo_2", "group_1", "todo", "group"));
-      
+
       const ids = await store.getEntityIdsByTarget("group_1");
       expect(ids).toContain("todo_1");
       expect(ids).toContain("todo_2");
@@ -596,7 +620,7 @@ describe("MemoryRelationshipStore", () => {
       const store = createMemoryRelationshipStore();
       await store.upsert(makeRel("rel_1", "todo_1", "group_1", "todo", "group"));
       await store.upsert(makeRel("rel_2", "doc_1", "group_1", "document", "group"));
-      
+
       const ids = await store.getEntityIdsByTarget("group_1", "todo");
       expect(ids).toEqual(["todo_1"]);
     });
@@ -607,7 +631,7 @@ describe("MemoryRelationshipStore", () => {
       const store = createMemoryRelationshipStore();
       await store.upsert(makeRel("rel_1", "todo_1", "group_1", "todo", "group"));
       await store.remove("rel_1");
-      
+
       expect(await store.getReferences("todo_1")).toHaveLength(0);
     });
   });

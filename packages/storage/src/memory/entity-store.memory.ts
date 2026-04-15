@@ -61,7 +61,7 @@ const mergeFields = (existing: Entity["data"], patch: PatchData): Entity["data"]
       if (hlcCmp < 0) {
         merged[field] = patchValue;
       } else if (hlcCmp === 0) {
-        if (patchValue.update_id > existingValue.update_id) {
+        if (patchValue.update_id >= existingValue.update_id) {
           merged[field] = patchValue;
         }
       }
@@ -72,7 +72,7 @@ const mergeFields = (existing: Entity["data"], patch: PatchData): Entity["data"]
 };
 
 const laterHlc = (a: HLCTimestamp, b: HLCTimestamp): boolean => {
-  return compare(a, b) < 0;
+  return compare(a, b) > 0;
 };
 
 export const createMemoryEntityStore = (
