@@ -5,10 +5,32 @@ import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
 
 interface EntityStoreState {
-  entities: readonly (readonly [entityId: string, entity: Entity])[];
+  entities: Record<string, Entity>;
+  typeIndex: Record<string, Set<string>>;
 }
 
 const copyEntity = (entity: Entity): Entity => JSON.parse(JSON.stringify(entity));
+
+const updateTypeIndexOnSet = (
+  typeIndex: Record<string, Set<string>>,
+  entity: Entity,
+  oldType?: string,
+): Record<string, Set<string>> => {
+  const newTypeIndex = { ...typeIndex };
+
+  if (oldType && oldType !== entity.type) {
+    const oldSet = new Set(newTypeIndex[oldType] ?? []);
+    oldSet.delete(entity.id);
+    newTypeIndex[oldType] = oldSet;
+  }
+
+  if (!newTypeIndex[entity.type]) {
+    newTypeIndex[entity.type] = new Set();
+  }
+  newTypeIndex[entity.type] = new Set(newTypeIndex[entity.type]).add(entity.id);
+
+  return newTypeIndex;
+};
 
 const applyUpdate = (
   entity: Entity | null,
@@ -79,7 +101,7 @@ export const createMemoryEntityStore = (
   actionLog: ActionLog,
   dirtyTracker: DirtyTracker,
 ): EntityStore => {
-  let state: EntityStoreState = { entities: [] };
+  let state: EntityStoreState = { entities: {}, typeIndex: {} };
 
   const materialize = async (entityId: string): Promise<void> => {
     const isEntityDirty = await dirtyTracker.isDirty(entityId);
@@ -99,18 +121,11 @@ export const createMemoryEntityStore = (
 
     if (entity === null) return;
 
-    const exists = state.entities.some(([eId]) => eId === entityId);
-    if (exists) {
-      state = {
-        entities: state.entities.map(([eId, e]) =>
-          eId === entityId ? [entityId, copyEntity(entity!)] : [eId, e],
-        ),
-      };
-    } else {
-      state = {
-        entities: [...state.entities, [entityId, copyEntity(entity)]],
-      };
-    }
+    const oldEntity = state.entities[entityId];
+    state = {
+      entities: { ...state.entities, [entityId]: copyEntity(entity) },
+      typeIndex: updateTypeIndexOnSet(state.typeIndex, entity, oldEntity?.type),
+    };
 
     await dirtyTracker.clear(entityId);
   };
@@ -118,23 +133,16 @@ export const createMemoryEntityStore = (
   return {
     async get(id: string): Promise<Entity | null> {
       await materialize(id);
-      const found = state.entities.find(([eId]) => eId === id);
-      return found ? copyEntity(found[1]) : null;
+      const entity = state.entities[id];
+      return entity ? copyEntity(entity) : null;
     },
 
     async set(entity: Entity): Promise<void> {
-      const exists = state.entities.some(([eId]) => eId === entity.id);
-      if (exists) {
-        state = {
-          entities: state.entities.map(([eId, e]) =>
-            eId === entity.id ? [eId, copyEntity(entity)] : [eId, e],
-          ),
-        };
-      } else {
-        state = {
-          entities: [...state.entities, [entity.id, copyEntity(entity)]],
-        };
-      }
+      const oldEntity = state.entities[entity.id];
+      state = {
+        entities: { ...state.entities, [entity.id]: copyEntity(entity) },
+        typeIndex: updateTypeIndexOnSet(state.typeIndex, entity, oldEntity?.type),
+      };
     },
 
     async query(type: string): Promise<readonly Entity[]> {
@@ -144,11 +152,12 @@ export const createMemoryEntityStore = (
         await materialize(id);
       }
 
-      return state.entities.filter(([, e]) => e.type === type).map(([, e]) => copyEntity(e));
+      const entityIds = state.typeIndex[type] ?? new Set();
+      return [...entityIds].map((id) => copyEntity(state.entities[id])).filter(Boolean);
     },
 
     async reset(): Promise<void> {
-      state = { entities: [] };
+      state = { entities: {}, typeIndex: {} };
     },
   };
 };
