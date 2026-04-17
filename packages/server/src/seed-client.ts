@@ -4,7 +4,7 @@ import { createAction } from "@ebbjs/core";
 import { createClock, localEvent } from "@ebbjs/core";
 import { GroupSeed, GroupMemberSeed, EntitySeed, SeedData } from "./types";
 
-export { GroupSeed, GroupMemberSeed, EntitySeed, SeedData };
+export type { GroupSeed, GroupMemberSeed, EntitySeed, SeedData, Action };
 
 export function buildSeedAction(actorId: string, data: SeedData): Action {
   const clock = createClock();
@@ -18,7 +18,7 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
     updates.push({
       subject_id: group.id,
       subject_type: "group",
-      method: "put",
+      method: "put" as const,
       data: {
         name: { value: group.name, update_id: "seed_update", hlc: localEvent(clock) },
       },
@@ -29,7 +29,7 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
     updates.push({
       subject_id: member.id,
       subject_type: "groupMember",
-      method: "put",
+      method: "put" as const,
       data: {
         actorId: { value: member.actorId, update_id: "seed_update", hlc: localEvent(clock) },
         groupId: { value: member.groupId, update_id: "seed_update", hlc: localEvent(clock) },
@@ -53,7 +53,7 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
     updates.push({
       subject_id: entity.id,
       subject_type: entity.type,
-      method: "put",
+      method: "put" as const,
       data: fields,
     });
   }
@@ -72,7 +72,7 @@ export async function seed(baseUrl: string, actorId: string, data: SeedData): Pr
       "Content-Type": "application/msgpack",
       "x-ebb-actor-id": actorId,
     },
-    body,
+    body: body as BodyInit,
   });
 
   if (!res.ok) {

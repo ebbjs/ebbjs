@@ -8,7 +8,7 @@ const DEFAULT_PORT = 4000;
 const READY_TIMEOUT_MS = 30_000;
 const SHUTDOWN_GRACE_MS = 5_000;
 
-export { ServerOptions, RunningServer };
+export type { ServerOptions, RunningServer };
 
 export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const { dataDir, port = DEFAULT_PORT, env = {} } = opts;
