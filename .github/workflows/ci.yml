@@ -182,7 +182,7 @@ jobs:
         run: mix deps.get
         working-directory: ebb_server
       - name: Build release
-        run: MIX_ENV=prod mix release
+        run: MIX_ENV=prod mix release --overwrite
         working-directory: ebb_server
       - name: Cache release artifact
         uses: actions/cache@v4
