@@ -66,7 +66,7 @@ jobs:
   create-release:
     name: Create Release
     needs: ci
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
