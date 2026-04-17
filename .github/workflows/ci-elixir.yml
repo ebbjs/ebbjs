@@ -10,6 +10,7 @@ on:
     branches: [main]
     paths:
       - "ebb_server/**"
+  workflow_dispatch:
 
 jobs:
   ci:
