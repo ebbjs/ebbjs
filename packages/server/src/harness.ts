@@ -3,7 +3,7 @@ import { mkdirSync, existsSync } from "fs";
 import { join } from "path";
 import { ServerOptions, RunningServer } from "./types";
 
-const RELEASE_BIN = join(__dirname, "../../dist/ebb_server/bin/ebb_server");
+const RELEASE_BIN = join(__dirname, "../dist/ebb_server/bin/ebb_server");
 const DEFAULT_PORT = 4000;
 const READY_TIMEOUT_MS = 30_000;
 const SHUTDOWN_GRACE_MS = 5_000;
