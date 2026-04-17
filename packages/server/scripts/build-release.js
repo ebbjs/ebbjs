@@ -74,6 +74,12 @@ const needsBuild = () => {
     if (!sourceFilesChanged() && !configFilesChanged()) {
       return false;
     }
+  } else if (existsSync(releaseSrc)) {
+    console.log("Copying existing release...");
+    cpSync(releaseSrc, releaseDest, { recursive: true });
+    return false;
+  } else {
+    return true;
   }
   return true;
 };
@@ -81,14 +87,9 @@ const needsBuild = () => {
 // Ensure dist directory exists
 ensureDir(join(rootDir, "dist"));
 
-// Copy existing release if no rebuild needed
+// Use cached release if available
 if (!needsBuild()) {
-  if (existsSync(releaseSrc) && !existsSync(releaseDest)) {
-    console.log("Copying existing release (no source changes)...");
-    cpSync(releaseSrc, releaseDest, { recursive: true });
-  } else if (existsSync(releaseDest)) {
-    console.log("Release up-to-date, using cached bundle.");
-  }
+  console.log("Release up-to-date, using cached bundle.");
   process.exit(0);
 }
 
