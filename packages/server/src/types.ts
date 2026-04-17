@@ -34,10 +34,19 @@ export interface EntitySeed {
   }>;
 }
 
+export interface RelationshipSeed {
+  id: string;
+  sourceId: string;
+  targetId: string;
+  type: string;
+  field: string;
+}
+
 export interface SeedData {
   groups: GroupSeed[];
   groupMembers: GroupMemberSeed[];
   entities: EntitySeed[];
+  relationships?: RelationshipSeed[];
   baseHlc?: number;
 }
 

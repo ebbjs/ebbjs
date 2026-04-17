@@ -11,31 +11,13 @@ export function buildSingleEntitySeed(): SeedData {
         permissions: ["read", "write"],
       },
     ],
-    entities: [
+    relationships: [
       {
-        id: "ent_001",
+        id: "rel_001",
+        sourceId: "ent_001",
+        targetId: "grp_001",
         type: "todo",
-        patches: [
-          {
-            fields: {
-              title: { value: "Test Todo", hlc: "1700000000000001", updateId: "upd_ent_001_1" },
-            },
-          },
-          {
-            fields: {
-              description: {
-                value: "A description",
-                hlc: "1700000000000002",
-                updateId: "upd_ent_001_2",
-              },
-            },
-          },
-          {
-            fields: {
-              status: { value: "open", hlc: "1700000000000003", updateId: "upd_ent_001_3" },
-            },
-          },
-        ],
+        field: "ownedBy",
       },
     ],
   };
