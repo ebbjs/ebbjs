@@ -103,7 +103,7 @@ jobs:
         working-directory: ebb_server
       - name: Get version
         id: version
-        run: echo "VERSION=$(cd ebb_server && mix run -e 'IO.puts(Mix.Project.config()[:version])')" >> $GITHUB_OUTPUT
+        run: echo "VERSION=$(cd ebb_server && mix run -e 'IO.puts(Mix.Project.config()[:version])' 2>/dev/null)" >> $GITHUB_OUTPUT
       - name: Build release
         run: MIX_ENV=prod mix release
         working-directory: ebb_server
