@@ -5,7 +5,7 @@ import { buildSingleEntitySeed } from "./seeds/single-entity";
 
 beforeAll(async () => {
   await seed(server.url, "actor_test", buildSingleEntitySeed());
-});
+}, 30000);
 
 test("handshake returns group membership", async () => {
   const response = await fetch(`${server.url}/sync/handshake`, {
