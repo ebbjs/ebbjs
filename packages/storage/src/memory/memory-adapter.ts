@@ -6,6 +6,37 @@ import { createMemoryDirtyTracker } from "./dirty-tracker.memory";
 import { createMemoryEntityStore } from "./entity-store.memory";
 import { createMemoryCursorStore } from "./cursor-store.memory";
 
+/**
+ * MemoryAdapter — in-memory implementation of StorageAdapter for v1.
+ *
+ * ## Composition
+ * - ActionLog — stores actions, provides entity-level queries
+ * - DirtyTracker — tracks dirty entities, queryable by type
+ * - EntityStore — materialized entity cache
+ * - CursorStore — per-group GSN cursors
+ *
+ * ## Usage
+ * ```typescript
+ * const storage = createMemoryAdapter();
+ *
+ * // On action receipt:
+ * await storage.actions.append(action);
+ * for (const update of action.updates) {
+ *   await storage.dirtyTracker.mark(update.subject_id, update.subject_type);
+ * }
+ *
+ * // On entity read:
+ * const entity = await storage.entities.get(entityId);
+ *
+ * // On query:
+ * const entities = await storage.entities.query("todo");
+ * ```
+ *
+ * ## Sync with Server
+ * The adapter maintains local state only. Sync with the server requires:
+ * 1. Receiving actions from server (append to ActionLog, mark dirty)
+ * 2. Sending local changes to server (future: outbox/writes)
+ */
 export const createMemoryAdapter = (): StorageAdapter => {
   const actionLog = createMemoryActionLog();
   const dirtyTracker = createMemoryDirtyTracker();

@@ -1,5 +1,19 @@
 import type { DirtyTracker } from "../types/dirty-tracker";
 
+/**
+ * MemoryDirtyTracker — in-memory implementation of DirtyTracker.
+ *
+ * ## State
+ * - `entities` — Record<entityId, entityType> — O(1) existence check
+ * - `typeIndex` — Record<type, Set<entityId>> — O(1) lookup by type
+ *
+ * ## Operations (all O(1))
+ * - `mark()` — idempotent, skips if already marked
+ * - `isDirty()` — O(1) property lookup
+ * - `getDirtyForType()` — O(1) Set lookup + spread
+ * - `clear()` — O(1) destructure + Set delete
+ * - `clearAll()` — O(1) reassign
+ */
 interface DirtyTrackerState {
   entities: Record<string, string>;
   typeIndex: Record<string, Set<string>>;

@@ -1,6 +1,21 @@
 import type { Action } from "@ebbjs/core";
 import type { ActionLog } from "../types/action-log";
 
+/**
+ * MemoryActionLog — in-memory implementation of ActionLog.
+ *
+ * ## State
+ * - `actions` — ordered list of all received actions
+ * - `typeIndex` — maps entity type to set of entity IDs affected (for query optimization)
+ *
+ * ## Materialization Flow
+ * 1. Action received via `append()`
+ * 2. Entities mentioned in action are marked dirty by caller (DirtyTracker)
+ * 3. EntityStore.materialize() replays actions for dirty entities
+ *
+ * ## Internal Helpers
+ * - `updateTypeIndex()` — merges action's entity IDs into the type index, deduplicating
+ */
 interface ActionLogState {
   actions: readonly Action[];
   typeIndex: readonly (readonly [type: string, entityIds: readonly string[]])[];

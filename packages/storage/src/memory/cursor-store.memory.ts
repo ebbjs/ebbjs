@@ -1,5 +1,15 @@
 import type { CursorStore } from "../types/cursor-store";
 
+/**
+ * MemoryCursorStore — in-memory implementation of CursorStore.
+ *
+ * ## State
+ * - `cursors` — Record<groupId, cursor> — O(1) get/set
+ *
+ * ## Notes
+ * Simple object-based storage. Cursor represents the highest observed GSN
+ * for a group, used for sync resumption.
+ */
 interface CursorStoreState {
   cursors: Record<string, number>;
 }
