@@ -23,11 +23,11 @@
     "fmt": "pnpm --root ../../ fmt",
     "fmt:check": "pnpm --root ../../ fmt:check"
   },
+  "dependencies": {
+    "@ebbjs/core": "workspace:*"
+  },
   "devDependencies": {
     "tsx": "^4.20.4",
     "vitest": "^3.2.4"
-  },
-  "dependencies": {
-    "@ebbjs/core": "workspace:*"
   }
 }

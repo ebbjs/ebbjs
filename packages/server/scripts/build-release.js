@@ -18,8 +18,7 @@ const releaseSrc = join(ebbServerDir, "_build/prod/rel/ebb_server");
 const releaseDest = join(rootDir, "dist/ebb_server");
 const bundledBinary = join(releaseDest, "bin/ebb_server");
 
-const exec = (cmd, opts = {}) =>
-  execSync(cmd, { encoding: "utf8", stdio: "inherit", ...opts });
+const exec = (cmd, opts = {}) => execSync(cmd, { encoding: "utf8", stdio: "inherit", ...opts });
 
 const ensureDir = (dir) => {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -35,7 +34,7 @@ const sourceFilesChanged = () => {
   try {
     const result = exec(
       `find "${join(ebbServerDir, "lib")}" -name "*.ex" -newer "${bundledBinary}" -print -quit`,
-      { stdio: ["pipe", "pipe", "ignore"] }
+      { stdio: ["pipe", "pipe", "ignore"] },
     );
     return result.trim().length > 0;
   } catch {
@@ -47,18 +46,14 @@ const sourceFilesChanged = () => {
  * Returns true if mix.exs or mix.lock changed since last build.
  */
 const configFilesChanged = () => {
-  const files = [
-    join(ebbServerDir, "mix.exs"),
-    join(ebbServerDir, "mix.lock"),
-  ];
+  const files = [join(ebbServerDir, "mix.exs"), join(ebbServerDir, "mix.lock")];
 
   for (const file of files) {
     if (existsSync(file)) {
       try {
-        const result = exec(
-          `find "${file}" -newer "${bundledBinary}" -print -quit`,
-          { stdio: ["pipe", "pipe", "ignore"] }
-        );
+        const result = exec(`find "${file}" -newer "${bundledBinary}" -print -quit`, {
+          stdio: ["pipe", "pipe", "ignore"],
+        });
         if (result.trim().length > 0) return true;
       } catch {
         return true;
