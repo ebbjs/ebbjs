@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
-SCRIPT_DIR="$(dirname "$0")"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.."
+REPO_ROOT="$(pwd)"
 cd "$REPO_ROOT/ebb_server"
 MIX_ENV=prod mix release --overwrite
 mkdir -p "$REPO_ROOT/packages/server/dist"
