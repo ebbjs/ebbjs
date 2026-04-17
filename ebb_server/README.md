@@ -49,5 +49,4 @@ mix openapi.gen.spec
 
 For full architecture documentation, see [docs/ebb_server/README.md](../docs/ebb_server/README.md).
 
-
 test
