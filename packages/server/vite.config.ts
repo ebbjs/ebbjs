@@ -20,7 +20,6 @@ export default defineConfig({
         "src/integration.test.ts",
         "src/example-usage.ts",
         "src/testing/**",
-        "src/test/**",
       ],
       outDir: "dist",
       rollupTypes: false,
@@ -40,5 +39,4 @@ export default defineConfig({
       },
     },
   },
-  external: ["fs", "path", "child_process"],
 });

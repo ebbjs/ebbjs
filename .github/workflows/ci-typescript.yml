@@ -76,16 +76,5 @@ jobs:
           node-version: "22"
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Download ebb_server release
-        run: |
-          mkdir -p packages/server/dist
-          if ! gh release download ${{ vars.ELIXIR_VERSION || '0.1.0' }} -R ebbjs/ebbjs -p ebb_server.tar.gz 2>/dev/null; then
-            echo "Error: ebb-server-${{ vars.ELIXIR_VERSION || '0.1.0' }} release not found. Run Elixir CI first to build the release."
-            exit 1
-          fi
-          tar -xzf ebb_server.tar.gz -C packages/server/dist
-          rm ebb_server.tar.gz
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: pnpm build
       - run: pnpm --recursive exec vitest --run --passWithNoTests

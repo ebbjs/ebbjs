@@ -2,7 +2,7 @@
   "name": "@ebbjs/server",
   "version": "0.0.1",
   "private": true,
-  "description": "Server runtime tooling — spawns ebb_server, seeds data, provides test harness",
+  "description": "",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,7 +13,7 @@
     }
   },
   "scripts": {
-    "build": "vite build && node scripts/build-release.js",
+    "build": "vite build",
     "dev": "vite build --watch",
     "test": "vitest --run",
     "test:watch": "vitest",
@@ -22,9 +22,6 @@
     "lint:fix": "pnpm --root ../../ lint:fix",
     "fmt": "pnpm --root ../../ fmt",
     "fmt:check": "pnpm --root ../../ fmt:check"
-  },
-  "dependencies": {
-    "@ebbjs/core": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.20.4",
