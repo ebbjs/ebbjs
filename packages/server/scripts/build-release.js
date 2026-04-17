@@ -63,7 +63,20 @@ const configFilesChanged = () => {
   return false;
 };
 
-const needsBuild = () => sourceFilesChanged() || configFilesChanged();
+const needsBuild = () => {
+  if (existsSync(releaseDest)) {
+    try {
+      exec("which mix", { stdio: ["pipe", "pipe", "ignore"] });
+    } catch {
+      console.log("Elixir not available, using cached release artifact.");
+      return false;
+    }
+    if (!sourceFilesChanged() && !configFilesChanged()) {
+      return false;
+    }
+  }
+  return true;
+};
 
 // Ensure dist directory exists
 ensureDir(join(rootDir, "dist"));
