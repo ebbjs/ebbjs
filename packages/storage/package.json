@@ -1,0 +1,33 @@
+{
+  "name": "@ebbjs/storage",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Storage components for ebbjs",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch",
+    "test": "vitest --run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "pnpm --root ../../ lint",
+    "lint:fix": "pnpm --root ../../ lint:fix",
+    "fmt": "pnpm --root ../../ fmt",
+    "fmt:check": "pnpm --root ../../ fmt:check"
+  },
+  "dependencies": {
+    "@ebbjs/core": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.4",
+    "vitest": "^3.2.4"
+  }
+}
