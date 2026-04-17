@@ -13,7 +13,8 @@
     }
   },
   "scripts": {
-    "build": "vite build && node scripts/build-release.js",
+    "build": "node scripts/ensure-server-binary.js && vite build",
+    "build:local": "bash scripts/build-release.sh",
     "dev": "vite build --watch",
     "test": "vitest --run",
     "test:watch": "vitest",
