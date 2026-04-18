@@ -5,7 +5,7 @@ import { ServerOptions, RunningServer } from "./types";
 
 const RELEASE_BIN = join(__dirname, "../dist/ebb_server/bin/ebb_server");
 const DEFAULT_PORT = 4000;
-const READY_TIMEOUT_MS = 30_000;
+const READY_TIMEOUT_MS = 120_000;
 const SHUTDOWN_GRACE_MS = 5_000;
 
 export type { ServerOptions, RunningServer };
@@ -19,10 +19,12 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
 
   const url = `http://localhost:${port}`;
 
+  console.error("[harness] spawning server:", RELEASE_BIN);
   const child = spawn(RELEASE_BIN, ["start"], {
     env: { ...process.env, ...env, EBB_DATA_DIR: dataDir, EBB_PORT: String(port) },
     stdio: "pipe",
   });
+  console.error("[harness] spawned process with pid:", child.pid);
 
   let killed = false;
 
@@ -65,6 +67,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
 
     waitForReady(url, READY_TIMEOUT_MS)
       .then(() => {
+        console.error("[harness] server ready!");
         resolve({
           pid: child.pid!,
           port,
@@ -73,23 +76,31 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           kill,
         });
       })
-      .catch(rejectOnce);
+      .catch((err) => {
+        console.error("[harness] waitForReady failed:", err.message);
+        rejectOnce(err);
+      });
   });
 }
 
 export async function waitForReady(url: string, timeoutMs = 30_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+  console.error("[harness] waitForReady starting, URL:", url, "timeout:", timeoutMs);
 
   while (Date.now() < deadline) {
     try {
       const res = await fetch(`${url}/entities/non-existent-readiness-check`, {
         headers: { "x-ebb-actor-id": "readiness-check" },
       });
+      console.error("[harness] got response status:", res.status);
       if (res.status === 404) {
         return;
       }
-    } catch {
+    } catch (e) {
       // connection refused, server not up yet
+      if (Date.now() % 5000 < 200) {
+        console.error("[harness] connection attempt failed:", (e as Error).message);
+      }
     }
 
     await new Promise((r) => setTimeout(r, 100));
