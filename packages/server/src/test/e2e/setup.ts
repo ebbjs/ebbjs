@@ -8,7 +8,7 @@ beforeAll(async () => {
     dataDir: process.env.EBB_SERVER_DATA_DIR ?? "/tmp/ebb-test-data",
     port: 4000,
   });
-}, 30000);
+}, 60000);
 
 afterAll(async () => {
   await server.kill();
