@@ -82,7 +82,7 @@ export async function waitForReady(url: string, timeoutMs = 30_000): Promise<voi
 
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${url}/entities/non-existent- readiness-check`, {
+      const res = await fetch(`${url}/entities/non-existent-readiness-check`, {
         headers: { "x-ebb-actor-id": "readiness-check" },
       });
       if (res.status === 404) {
