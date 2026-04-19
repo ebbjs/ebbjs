@@ -20,12 +20,14 @@ export default defineConfig({
         "src/integration.test.ts",
         "src/example-usage.ts",
         "src/testing/**",
+        "src/test/**",
       ],
       outDir: "dist",
       rollupTypes: false,
     }),
   ],
   build: {
+    emptyOutDir: false,
     lib: {
       entry: {
         index: "./src/index.ts",
@@ -39,4 +41,5 @@ export default defineConfig({
       },
     },
   },
+  external: ["fs", "path", "child_process"],
 });

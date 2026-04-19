@@ -86,11 +86,13 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   defp get_group_id_for_update(%{subject_type: "groupMember", data: data}) do
-    get_in(data, ["fields", "group_id", "value"]) || get_in(data, ["group_id"])
+    raw_value = get_in(data, ["fields", "group_id", "value"]) || get_in(data, ["group_id"])
+    unwrap_value(raw_value)
   end
 
   defp get_group_id_for_update(%{subject_type: "relationship", data: data}) do
-    get_in(data, ["target_id"])
+    raw_value = get_in(data, ["target_id"])
+    unwrap_value(raw_value)
   end
 
   defp check_group_membership(_actor_id, nil, _ctx) do
@@ -169,4 +171,8 @@ defmodule EbbServer.Storage.Authorizer do
       do: :ok,
       else: {:error, "not_authorized", "missing required permission"}
   end
+
+  defp unwrap_value(%{"value" => value}), do: value
+  defp unwrap_value(nil), do: nil
+  defp unwrap_value(value), do: value
 end
