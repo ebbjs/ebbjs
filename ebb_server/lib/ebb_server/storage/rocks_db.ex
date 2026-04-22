@@ -23,6 +23,7 @@ defmodule EbbServer.Storage.RocksDB do
   """
 
   use GenServer
+  require Logger
 
   # ---------------------------------------------------------------------------
   # Types
@@ -320,8 +321,17 @@ defmodule EbbServer.Storage.RocksDB do
     data_dir = Keyword.fetch!(opts, :data_dir)
     name = Keyword.get(opts, :name, __MODULE__)
     path = Path.join(data_dir, "rocksdb")
-    File.mkdir_p!(path)
 
+    case safe_mkdir_p(path) do
+      :ok ->
+        open_database(path, name, opts)
+
+      {:error, reason} ->
+        {:stop, {:data_dirCreation_failed, reason}}
+    end
+  end
+
+  defp open_database(path, name, opts) do
     db_opts = [
       create_if_missing: true,
       create_missing_column_families: true,
@@ -340,23 +350,87 @@ defmodule EbbServer.Storage.RocksDB do
          cf_action_dedup,
          cf_group_actions
        ]} ->
-        :persistent_term.put({:ebb_rocksdb_db, name}, db_ref)
-        :persistent_term.put({:ebb_cf_actions, name}, cf_actions)
-        :persistent_term.put({:ebb_cf_updates, name}, cf_updates)
-        :persistent_term.put({:ebb_cf_entity_actions, name}, cf_entity_actions)
-        :persistent_term.put({:ebb_cf_type_entities, name}, cf_type_entities)
-        :persistent_term.put({:ebb_cf_action_dedup, name}, cf_action_dedup)
-        :persistent_term.put({:ebb_cf_group_actions, name}, cf_group_actions)
+        store_persistent_terms(
+          db_ref,
+          cf_actions,
+          cf_updates,
+          cf_entity_actions,
+          cf_type_entities,
+          cf_action_dedup,
+          cf_group_actions,
+          name
+        )
 
         {:ok, %{db_ref: db_ref, name: name}}
 
       {:error, reason} ->
-        {:stop, reason}
+        log_rocksdb_error(reason, path)
+        {:stop, {:rocksdb_open_failed, reason}}
     end
+  end
+
+  defp safe_mkdir_p(path) do
+    case File.mkdir_p(path) do
+      :ok ->
+        :ok
+
+      {:error, reason} when reason in [:eexist, :eperm] ->
+        if File.dir?(path), do: :ok, else: {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp store_persistent_terms(
+         db_ref,
+         cf_actions,
+         cf_updates,
+         cf_entity_actions,
+         cf_type_entities,
+         cf_action_dedup,
+         cf_group_actions,
+         name
+       ) do
+    :persistent_term.put({:ebb_rocksdb_db, name}, db_ref)
+    :persistent_term.put({:ebb_cf_actions, name}, cf_actions)
+    :persistent_term.put({:ebb_cf_updates, name}, cf_updates)
+    :persistent_term.put({:ebb_cf_entity_actions, name}, cf_entity_actions)
+    :persistent_term.put({:ebb_cf_type_entities, name}, cf_type_entities)
+    :persistent_term.put({:ebb_cf_action_dedup, name}, cf_action_dedup)
+    :persistent_term.put({:ebb_cf_group_actions, name}, cf_group_actions)
+  end
+
+  defp log_rocksdb_error(reason, path) do
+    safe_reason = safe_stringify(reason)
+    Logger.error(fn -> "RocksDB failed to open at #{path}: #{safe_reason}" end)
+  rescue
+    _ -> :logger.error("RocksDB open failed at #{path}: #{inspect(reason, printable_limit: 100)}")
+  end
+
+  defp safe_stringify(term) do
+    term
+    |> inspect(limit: 1000, printable_limit: 1000)
+    |> String.replace(~c"\t", "~t")
+    |> String.replace(~c"\n", "~n")
+    |> String.replace(~c"\r", "~r")
   end
 
   @impl true
   def terminate(_reason, %{db_ref: db_ref, name: name}) do
+    erase_persistent_terms(name)
+    safe_close(db_ref)
+  end
+
+  def terminate(_reason, %{name: name}) do
+    erase_persistent_terms(name)
+  end
+
+  def terminate(_reason, _state) do
+    :ok
+  end
+
+  defp erase_persistent_terms(name) do
     :persistent_term.erase({:ebb_rocksdb_db, name})
     :persistent_term.erase({:ebb_cf_actions, name})
     :persistent_term.erase({:ebb_cf_updates, name})
@@ -364,8 +438,14 @@ defmodule EbbServer.Storage.RocksDB do
     :persistent_term.erase({:ebb_cf_type_entities, name})
     :persistent_term.erase({:ebb_cf_action_dedup, name})
     :persistent_term.erase({:ebb_cf_group_actions, name})
+  end
 
+  defp safe_close(nil), do: :ok
+
+  defp safe_close(db_ref) do
     :rocksdb.close(db_ref)
+  rescue
+    _ -> :ok
   end
 
   # ---------------------------------------------------------------------------

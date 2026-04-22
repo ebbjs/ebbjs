@@ -97,9 +97,14 @@ defmodule EbbServer.Storage.PermissionHelper do
 
     if is_map(data) do
       atom_key = String.to_existing_atom(key)
-      Map.get(data, key) || Map.get(data, atom_key)
+      raw_value = Map.get(data, key) || Map.get(data, atom_key)
+      unwrap_value(raw_value)
     end
   end
+
+  defp unwrap_value(%{"value" => value}), do: value
+  defp unwrap_value(nil), do: nil
+  defp unwrap_value(value), do: value
 
   @doc """
   Builds an intra-action context map for relationship resolution.
@@ -118,12 +123,12 @@ defmodule EbbServer.Storage.PermissionHelper do
 
       source_id =
         if is_map(data) do
-          Map.get(data, "source_id") || Map.get(data, :source_id)
+          unwrap_value(Map.get(data, "source_id") || Map.get(data, :source_id))
         end
 
       target_id =
         if is_map(data) do
-          Map.get(data, "target_id") || Map.get(data, :target_id)
+          unwrap_value(Map.get(data, "target_id") || Map.get(data, :target_id))
         end
 
       if source_id && target_id, do: Map.put(acc, source_id, target_id), else: acc
