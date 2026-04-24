@@ -7,6 +7,7 @@ defmodule EbbServer.Storage.Authorizer do
   """
 
   alias EbbServer.Storage.AuthorizationContext
+  alias EbbServer.Storage.Fields
   alias EbbServer.Storage.GroupCache
   alias EbbServer.Storage.PermissionHelper
   alias EbbServer.Storage.RelationshipCache
@@ -86,11 +87,11 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   defp get_group_id_for_update(%{subject_type: "groupMember", data: data}) do
-    get_in(data, ["fields", "group_id", "value"]) || get_in(data, ["group_id"])
+    Fields.get(data, "group_id")
   end
 
   defp get_group_id_for_update(%{subject_type: "relationship", data: data}) do
-    get_in(data, ["target_id"])
+    Fields.get(data, "target_id")
   end
 
   defp check_group_membership(_actor_id, nil, _ctx) do

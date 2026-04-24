@@ -296,8 +296,8 @@ defmodule EbbServer.Storage.Writer do
     |> Enum.filter(fn u -> u.subject_type == "relationship" end)
     |> Enum.reduce(%{}, fn u, acc ->
       data = u.data || %{}
-      source_id = data["source_id"]
-      target_id = data["target_id"]
+      source_id = Fields.get(data, "source_id")
+      target_id = Fields.get(data, "target_id")
       if source_id && target_id, do: Map.put(acc, source_id, target_id), else: acc
     end)
   end
