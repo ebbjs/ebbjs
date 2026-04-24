@@ -3,6 +3,8 @@ defmodule EbbServer.Storage.PermissionHelper do
   Utility functions for permission checking and method-to-permission mapping.
   """
 
+  alias EbbServer.Storage.Fields
+
   @system_entity_types ["group", "groupMember", "relationship"]
   @method_atoms %{"put" => :put, "patch" => :patch, "delete" => :delete}
 
@@ -96,15 +98,9 @@ defmodule EbbServer.Storage.PermissionHelper do
     data = Map.get(map, "data") || Map.get(map, :data)
 
     if is_map(data) do
-      atom_key = String.to_existing_atom(key)
-      raw_value = Map.get(data, key) || Map.get(data, atom_key)
-      unwrap_value(raw_value)
+      Fields.get(data, key)
     end
   end
-
-  defp unwrap_value(%{"value" => value}), do: value
-  defp unwrap_value(nil), do: nil
-  defp unwrap_value(value), do: value
 
   @doc """
   Builds an intra-action context map for relationship resolution.
@@ -121,15 +117,9 @@ defmodule EbbServer.Storage.PermissionHelper do
     |> Enum.reduce(%{}, fn u, acc ->
       data = Map.get(u, "data") || Map.get(u, :data)
 
-      source_id =
-        if is_map(data) do
-          unwrap_value(Map.get(data, "source_id") || Map.get(data, :source_id))
-        end
+      source_id = if is_map(data), do: Fields.get(data, "source_id")
 
-      target_id =
-        if is_map(data) do
-          unwrap_value(Map.get(data, "target_id") || Map.get(data, :target_id))
-        end
+      target_id = if is_map(data), do: Fields.get(data, "target_id")
 
       if source_id && target_id, do: Map.put(acc, source_id, target_id), else: acc
     end)

@@ -48,5 +48,3 @@ mix openapi.gen.spec
 | `EBB_DATA_DIR` | `/app/data` | RocksDB + SQLite data directory |
 
 For full architecture documentation, see [docs/ebb_server/README.md](../docs/ebb_server/README.md).
-
-test
