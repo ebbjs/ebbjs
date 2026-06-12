@@ -1,3 +1,4 @@
+# Elixir project configuration
 defmodule EbbServer.MixProject do
   use Mix.Project
 

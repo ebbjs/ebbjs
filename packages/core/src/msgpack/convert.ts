@@ -1,7 +1,13 @@
 import { parse, format } from "../hlc/pack";
 
-export function hlcToInteger(hlc: string): number {
-  return Number(parse(hlc));
+const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
+
+export function hlcToInteger(hlc: string): number | string {
+  const bigintVal = parse(hlc);
+  if (bigintVal > MAX_SAFE_INTEGER) {
+    return hlc;
+  }
+  return Number(bigintVal);
 }
 
 export function integerToHLC(n: number): string {

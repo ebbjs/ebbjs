@@ -1,0 +1,257 @@
+---
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ─────────────────────────────────────────────────────────
+  # Elixir jobs
+  # ─────────────────────────────────────────────────────────
+
+  elixir-format:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.17"
+          otp-version: "27"
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ebb_server/deps
+            ebb_server/_build
+            ~/.mix
+            ~/.hex
+          key: mix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}
+          restore-keys: |
+            mix-${{ runner.os }}-${{ runner.arch }}-
+      - name: Cache rocksdb build
+        uses: actions/cache@v4
+        with:
+          path: ebb_server/deps/rocksdb/_build
+          key: rocksdb-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}-${{ hashFiles('ebb_server/deps/rocksdb/rebar.config') }}
+          restore-keys: |
+            rocksdb-${{ runner.os }}-${{ runner.arch }}-
+      - name: Fix CMake cache for architecture
+        run: rm -f ebb_server/deps/rocksdb/_build/cmake/CMakeCache.txt
+        working-directory: ebb_server
+      - name: Install Hex and Rebar
+        run: mix local.hex --force && mix local.rebar --force
+        working-directory: ebb_server
+      - name: Install dependencies
+        run: mix deps.get
+        working-directory: ebb_server
+      - name: Format Check
+        run: mix format --check-formatted
+        working-directory: ebb_server
+
+  elixir-credo:
+    name: Lint (Credo)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.17"
+          otp-version: "27"
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ebb_server/deps
+            ebb_server/_build
+            ~/.mix
+            ~/.hex
+          key: mix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}
+          restore-keys: |
+            mix-${{ runner.os }}-${{ runner.arch }}-
+      - name: Cache rocksdb build
+        uses: actions/cache@v4
+        with:
+          path: ebb_server/deps/rocksdb/_build
+          key: rocksdb-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}-${{ hashFiles('ebb_server/deps/rocksdb/rebar.config') }}
+          restore-keys: |
+            rocksdb-${{ runner.os }}-${{ runner.arch }}-
+      - name: Fix CMake cache for architecture
+        run: rm -f ebb_server/deps/rocksdb/_build/cmake/CMakeCache.txt
+        working-directory: ebb_server
+      - name: Install Hex and Rebar
+        run: mix local.hex --force && mix local.rebar --force
+        working-directory: ebb_server
+      - name: Install dependencies
+        run: mix deps.get
+        working-directory: ebb_server
+      - name: Lint (Credo)
+        run: mix credo --strict --files-excluded "test/**"
+        working-directory: ebb_server
+
+  elixir-test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.17"
+          otp-version: "27"
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ebb_server/deps
+            ebb_server/_build
+            ~/.mix
+            ~/.hex
+          key: mix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}
+          restore-keys: |
+            mix-${{ runner.os }}-${{ runner.arch }}-
+      - name: Cache rocksdb build
+        uses: actions/cache@v4
+        with:
+          path: ebb_server/deps/rocksdb/_build
+          key: rocksdb-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}-${{ hashFiles('ebb_server/deps/rocksdb/rebar.config') }}
+          restore-keys: |
+            rocksdb-${{ runner.os }}-${{ runner.arch }}-
+      - name: Fix CMake cache for architecture
+        run: rm -f ebb_server/deps/rocksdb/_build/cmake/CMakeCache.txt
+        working-directory: ebb_server
+      - name: Install Hex and Rebar
+        run: mix local.hex --force && mix local.rebar --force
+        working-directory: ebb_server
+      - name: Install dependencies
+        run: mix deps.get
+        working-directory: ebb_server
+      - name: Test
+        run: mix test
+        working-directory: ebb_server
+
+  # ─────────────────────────────────────────────────────────
+  # Release builder — runs on every push/PR so typescript-test
+  # always has a release available
+  # ─────────────────────────────────────────────────────────
+
+  elixir-release:
+    name: Build Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.17"
+          otp-version: "27"
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ebb_server/deps
+            ebb_server/_build
+            ~/.mix
+            ~/.hex
+          key: mix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}
+          restore-keys: |
+            mix-${{ runner.os }}-${{ runner.arch }}-
+      - name: Cache rocksdb build
+        uses: actions/cache@v4
+        with:
+          path: ebb_server/deps/rocksdb/_build
+          key: rocksdb-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}-${{ hashFiles('ebb_server/deps/rocksdb/rebar.config') }}
+          restore-keys: |
+            rocksdb-${{ runner.os }}-${{ runner.arch }}-
+      - name: Fix CMake cache for architecture
+        run: rm -f ebb_server/deps/rocksdb/_build/cmake/CMakeCache.txt
+        working-directory: ebb_server
+      - name: Install Hex and Rebar
+        run: mix local.hex --force && mix local.rebar --force
+        working-directory: ebb_server
+      - name: Install dependencies
+        run: mix deps.get
+        working-directory: ebb_server
+      - name: Build and copy release
+        run: bash packages/server/scripts/build-release.sh
+      - name: Cache release artifact
+        uses: actions/cache@v4
+        with:
+          path: packages/server/dist/ebb_server
+          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}
+          restore-keys: |
+            release-${{ runner.os }}-${{ runner.arch }}-
+
+  # ─────────────────────────────────────────────────────────
+  # TypeScript jobs
+  # ─────────────────────────────────────────────────────────
+
+  typescript-typecheck:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm tsc --noEmit
+
+  typescript-lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+
+  typescript-format:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm fmt:check
+
+  typescript-test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: elixir-release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - name: Restore release artifact
+        uses: actions/cache@v4
+        with:
+          path: packages/server/dist/ebb_server
+          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}
+          restore-keys: |
+            release-${{ runner.os }}-${{ runner.arch }}-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm --recursive exec vitest --run --passWithNoTests
