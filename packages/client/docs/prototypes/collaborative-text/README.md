@@ -28,18 +28,19 @@ Five questions were raised in the initial work plan. They've been resolved as fo
 
 Two things to keep separate:
 
-| Thing | What it is | Lives in |
-|---|---|---|
-| **Type marker** (`e.collaborativeText()`) | A data-shape tag (`{ value, update_id, hlc }` where `value` is an opaque encoded tree blob) | `@ebbjs/core/src/fields/collaborative-text.ts` — ~10 lines |
-| **Algorithm** (the run-length causal tree, ported from `experiment/collaborative-text/src/causal-tree.ts`) | Pure data structure: takes Updates, produces a document | `@ebbjs/client/src/fields/collaborative-text/` |
+| Thing                                                                                                      | What it is                                                                                  | Lives in                                                   |
+| ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| **Type marker** (`e.collaborativeText()`)                                                                  | A data-shape tag (`{ value, update_id, hlc }` where `value` is an opaque encoded tree blob) | `@ebbjs/core/src/fields/collaborative-text.ts` — ~10 lines |
+| **Algorithm** (the run-length causal tree, ported from `experiment/collaborative-text/src/causal-tree.ts`) | Pure data structure: takes Updates, produces a document                                     | `@ebbjs/client/src/fields/collaborative-text/`             |
 
 **Rationale:**
+
 - The type marker in `@ebbjs/core` matches the v1 docs API (`import { e } from "@ebbjs/core"`).
 - The algorithm in `@ebbjs/client` because it's tied to the Action/Update shape and needs to subscribe to incoming actions via the storage adapter — both client concerns.
 - Single import surface for users.
 - Storage stays dumb — `@ebbjs/storage` continues to do HLC + tiebreak on the field's `value` blob; the client maintains the actual tree in its own per-entity state.
 
-**Storage doesn't know about field types.** When a `causal-tree` field is updated, the storage adapter sees `{ value: <opaque blob>, update_id, hlc }` and materializes it the same way as any LWW field — last action wins for the blob. The client *also* subscribes to the Action stream and replays all Updates on its in-memory causal tree, so the client keeps the live, evolving tree regardless of what storage materializes.
+**Storage doesn't know about field types.** When a `causal-tree` field is updated, the storage adapter sees `{ value: <opaque blob>, update_id, hlc }` and materializes it the same way as any LWW field — last action wins for the blob. The client _also_ subscribes to the Action stream and replays all Updates on its in-memory causal tree, so the client keeps the live, evolving tree regardless of what storage materializes.
 
 ### Decision 2 — `defineModel` is deferred
 
@@ -48,7 +49,9 @@ For the prototype, the demo has exactly one model (a text document). The client 
 ```ts
 const tree = await client.textDocument.open(docId);
 tree.localInsert("hello", { afterRunId: "ROOT", hlc: localHlc(clock) });
-tree.onUpdate(action => { /* CodeMirror integration */ });
+tree.onUpdate((action) => {
+  /* CodeMirror integration */
+});
 ```
 
 `defineModel` adds value when we have multiple entity types or want type-safe CRUD. That's slice 5+ (a second example app). The prototype hardcodes "one document = one entity with one causal-tree field."
@@ -96,11 +99,12 @@ tree.conflicts.since(timestamp: number);
 tree.conflicts.clear();
 ```
 
-Conflicts live **in-memory on the tree**, not in the storage adapter. Rationale: the action log is the source of truth for *what happened*; conflicts are derived metadata. The server doesn't need to know about them. Re-deriving on reload is cheap (walk the action log, apply the detection rule). If we want conflicts to survive a reload later, we can persist them in `localStorage`.
+Conflicts live **in-memory on the tree**, not in the storage adapter. Rationale: the action log is the source of truth for _what happened_; conflicts are derived metadata. The server doesn't need to know about them. Re-deriving on reload is cheap (walk the action log, apply the detection rule). If we want conflicts to survive a reload later, we can persist them in `localStorage`.
 
 #### UI behavior
 
 For each conflict, show:
+
 - The pre-merge text and the post-merge text (small diff)
 - Who contributed which edits (actor IDs + HLCs)
 - Buttons: "Dismiss" / "Revert to pre-merge"
@@ -113,11 +117,11 @@ For the prototype: in-memory storage is fine. Refresh = empty doc, reconnect, se
 
 Post-prototype (slice 6+):
 
-| Adapter | Use case | Library |
-|---|---|---|
-| SQLite | Node-side, SSR, tests, server-side state | `better-sqlite3` (already in `devDependencies`) |
-| IndexedDB | Browser persistence | Custom (no extra deps) |
-| sql.js (WASM) | Browser persistence without IndexedDB | Larger bundle, last resort |
+| Adapter       | Use case                                 | Library                                         |
+| ------------- | ---------------------------------------- | ----------------------------------------------- |
+| SQLite        | Node-side, SSR, tests, server-side state | `better-sqlite3` (already in `devDependencies`) |
+| IndexedDB     | Browser persistence                      | Custom (no extra deps)                          |
+| sql.js (WASM) | Browser persistence without IndexedDB    | Larger bundle, last resort                      |
 
 Both adapters share the existing `StorageAdapter` interface. Adding SQLite is ~150 lines + tests — the `ActionLog`/`DirtyTracker`/`EntityStore`/`CursorStore` shape fits a SQL backend well (each is essentially a table).
 
@@ -137,7 +141,10 @@ interface SyncClient {
   handshake(): Promise<{ actorId: string; groups: Group[]; cursors: Record<GroupId, number> }>;
 
   /** GET /sync/groups/:group_id?offset=N. Returns actions ordered by GSN. */
-  catchUp(groupId: GroupId, fromGsn: number): Promise<{ actions: Action[]; nextOffset: number | null; upToDate: boolean }>;
+  catchUp(
+    groupId: GroupId,
+    fromGsn: number,
+  ): Promise<{ actions: Action[]; nextOffset: number | null; upToDate: boolean }>;
 
   /** GET /sync/live?groups=...&cursor=N. SSE stream; returns unsubscribe fn. */
   subscribe(groupIds: GroupId[], fromGsn: number, onEvent: (event: SSEEvent) => void): () => void;
@@ -159,7 +166,7 @@ interface SyncClient {
 ```ts
 // Inside subscribe():
 onEvent((event) => {
-  if (event.type === 'data') {
+  if (event.type === "data") {
     for (const action of event.actions) {
       storage.actions.append(action);
       // storage internally marks affected entities dirty;
@@ -179,27 +186,29 @@ Ports `experiment/collaborative-text/src/causal-tree.ts` (652 lines) and adapts 
 
 ```ts
 type RunNode = {
-  id: string;           // HLC-derived; sort key for siblings
+  id: string; // HLC-derived; sort key for siblings
   text: string;
-  parentId: string;     // insertion anchor
+  parentId: string; // insertion anchor
   peerId: string;
   deleted: boolean;
 };
 
 type DocAction =
-  | { type: 'INSERT_RUN'; node: RunNode; splitParentAt?: number }
-  | { type: 'DELETE_RANGE'; runId: string; offset: number; count: number }
-  | { type: 'SPLIT'; runId: string; offset: number }
-  | { type: 'EXTEND_RUN'; runId: string; appendText: string };
+  | { type: "INSERT_RUN"; node: RunNode; splitParentAt?: number }
+  | { type: "DELETE_RANGE"; runId: string; offset: number; count: number }
+  | { type: "SPLIT"; runId: string; offset: number }
+  | { type: "EXTEND_RUN"; runId: string; appendText: string };
 ```
 
 **Wire format.** The experiment's `relay.ts` already produces messages that look like ebb Actions:
+
 - `INSERT_RUN` → `method: 'put'` Update targeting a RunNode entity
 - `DELETE_RANGE` → `method: 'delete'` Update with `{ runId, offset, count }`
 - `SPLIT` → local-only (split is a local consequence of receiving a remote INSERT_RUN; receivers perform their own splits)
 - `EXTEND_RUN` → `method: 'patch'` Update appending to an existing run
 
 The experiment's relay wraps these in `{ type: 'INSERT_RUN', node: ... }` messages. For production, we re-shape to:
+
 ```ts
 { id, actor_id, hlc, gsn: 0, updates: [{ id, subject_id: <runId>, subject_type: 'run', method: 'put' | 'patch' | 'delete', data: ... }] }
 ```
@@ -210,10 +219,10 @@ The experiment's relay wraps these in `{ type: 'INSERT_RUN', node: ... }` messag
 
 ```ts
 // POC (experiment/causal-tree.ts)
-id: `${ts}:${count}:${peerId}`  // string format
+id: `${ts}:${count}:${peerId}`; // string format
 
 // Production (after port)
-id: `${formatHlc(hlc)}:${actor_id}`  // formatHlc returns the bigint as a string
+id: `${formatHlc(hlc)}:${actor_id}`; // formatHlc returns the bigint as a string
 ```
 
 Where `formatHlc(hlc)` is `@ebbjs/core`'s `HLCTimestamp`-string formatter. The `actor_id` is taken from the originating Action, not baked into the HLC.
@@ -221,6 +230,7 @@ Where `formatHlc(hlc)` is `@ebbjs/core`'s `HLCTimestamp`-string formatter. The `
 After this change, a run's `parentId` references another run's `<packed-hlc-bignum>:<actor_id>` ID. The deterministic-split ID generator in `experiment/causal-tree.ts:342` (`makeSplitId`) needs the same format.
 
 **Conflict surfacing in the merge path.** When the reducer applies an incoming action to the tree:
+
 1. Check if the action targets a RunNode that another in-flight or recently-merged action also touched
 2. If yes, snapshot the pre-merge tree state
 3. Apply the merge
@@ -266,16 +276,16 @@ client.onPresence((presence: PresenceEvent) => {
 });
 
 // Per-actor map is shared with the CM6 extension
-const presenceMap = client.presence.forEntity(entityId);  // Map<actor_id, PresenceData>
+const presenceMap = client.presence.forEntity(entityId); // Map<actor_id, PresenceData>
 ```
 
 **POC components to port:**
 
-| POC file | What | Port to |
-|---|---|---|
-| `presence.ts` (run-optimized types + helpers + hook) | 419 lines | `@ebbjs/client/src/presence/presence.ts` (mostly verbatim) |
-| `cm-bridge.ts` cursor widget | already in cm-bridge | `@ebbjs/client/src/presence/cursor-widget.ts` |
-| `App.tsx` peer color palette + `usePresence` integration | small slice | `examples/collaborative-text-demo/src/presence.tsx` |
+| POC file                                                 | What                 | Port to                                                    |
+| -------------------------------------------------------- | -------------------- | ---------------------------------------------------------- |
+| `presence.ts` (run-optimized types + helpers + hook)     | 419 lines            | `@ebbjs/client/src/presence/presence.ts` (mostly verbatim) |
+| `cm-bridge.ts` cursor widget                             | already in cm-bridge | `@ebbjs/client/src/presence/cursor-widget.ts`              |
+| `App.tsx` peer color palette + `usePresence` integration | small slice          | `examples/collaborative-text-demo/src/presence.tsx`        |
 
 **Sync vs async.** The POC uses a mutable `useRef` for the presence map (sync reads from the CM6 ViewPlugin) plus a `useState` copy (for React re-renders). Both are needed; the docstring at `presence.ts:268-281` explains why. Keep this dual-store pattern in the port.
 
@@ -290,11 +300,11 @@ const presenceMap = client.presence.forEntity(entityId);  // Map<actor_id, Prese
 ```ts
 // Adds to @ebbjs/core exports
 export const e = {
-  string: () => ({ type: 'lww' }),
-  number: () => ({ type: 'lww' }),
-  boolean: () => ({ type: 'lww' }),
-  counter: () => ({ type: 'counter' }),
-  collaborativeText: () => ({ type: 'causal-tree' }),
+  string: () => ({ type: "lww" }),
+  number: () => ({ type: "lww" }),
+  boolean: () => ({ type: "lww" }),
+  counter: () => ({ type: "counter" }),
+  collaborativeText: () => ({ type: "causal-tree" }),
 };
 ```
 
@@ -304,16 +314,16 @@ For the prototype, only `collaborativeText()` matters. The others are stubs that
 
 ```ts
 // Sync client factory
-import { createClient } from '@ebbjs/client';
+import { createClient } from "@ebbjs/client";
 
 const client = createClient({
-  serverUrl: 'http://localhost:4000',
-  actorId: 'drew',  // bypass mode uses this as the actor_id
-  storage: createMemoryAdapter(),  // from @ebbjs/storage
+  serverUrl: "http://localhost:4000",
+  actorId: "drew", // bypass mode uses this as the actor_id
+  storage: createMemoryAdapter(), // from @ebbjs/storage
 });
 
 // Open a text document
-const doc = await client.textDocument.open('doc_demo');
+const doc = await client.textDocument.open("doc_demo");
 
 // Subscribe to incoming updates (from other clients via SSE)
 const unsubscribe = doc.onUpdate((update) => {
@@ -328,8 +338,8 @@ doc.onConflict((conflict) => {
 });
 
 // Local edit (optimistic)
-doc.localInsert('hello world', {
-  afterRun: doc.rootRunId,  // 'ROOT' for now
+doc.localInsert("hello world", {
+  afterRun: doc.rootRunId, // 'ROOT' for now
 });
 
 // Local delete (optimistic)
@@ -340,9 +350,9 @@ const { rejected } = await client.write(doc.pendingActions());
 
 // Presence (optional in slice 3, recommended)
 client.presence.setLocalCursor({
-  anchorId: 'a_<...>',       // RunNode ID at the anchor
-  anchorOffset: 3,           // offset within that run
-  headId: 'a_<...>',
+  anchorId: "a_<...>", // RunNode ID at the anchor
+  anchorOffset: 3, // offset within that run
+  headId: "a_<...>",
   headOffset: 7,
 });
 ```
@@ -500,13 +510,13 @@ These came up during design but don't block the prototype. Resolve during or aft
    - Bundle the seed call into the demo's startup (synchronous on page load)
    - Have the demo auto-create on first load via bootstrap Actions
    - Pre-seed via a server-side script
-   The simplest is option 1 (call `@ebbjs/server`'s `seed()`). The demo is single-user on initial visit, multi-user on subsequent visits. **Resolve during slice 1** — confirm `seed()` works end-to-end from a browser. If it does, document the pattern. If it doesn't (e.g., CORS), pivot to option 3 (a one-time server-side seed script).
+     The simplest is option 1 (call `@ebbjs/server`'s `seed()`). The demo is single-user on initial visit, multi-user on subsequent visits. **Resolve during slice 1** — confirm `seed()` works end-to-end from a browser. If it does, document the pattern. If it doesn't (e.g., CORS), pivot to option 3 (a one-time server-side seed script).
 
 4. ~~Presence~~ **RESOLVED by POC.** `experiment/collaborative-text/src/presence.ts` is a complete, working presence implementation (419 lines). Port it to `@ebbjs/client/src/presence/` during slice 3. Only change: BroadcastChannel → `POST /sync/presence`. See the Presence section above.
 
-5. ~~HLC for the run ID~~ **PARTIALLY RESOLVED.** Run IDs derived from HLC is correct (the POC does this). The mismatch is the *format*: POC uses string `{15-digit-ts}:{5-digit-count}:{peerId}`, production uses packed bigint `(logical_time << 16) | counter` plus a separate `actor_id`. Resolution is in slice 2 task 2 (see CausalTree component design): change run ID to `${formatHlc(hlc)}:${actor_id}` using production's HLC string formatter. Merge logic is unchanged.
+5. ~~HLC for the run ID~~ **PARTIALLY RESOLVED.** Run IDs derived from HLC is correct (the POC does this). The mismatch is the _format_: POC uses string `{15-digit-ts}:{5-digit-count}:{peerId}`, production uses packed bigint `(logical_time << 16) | counter` plus a separate `actor_id`. Resolution is in slice 2 task 2 (see CausalTree component design): change run ID to `${formatHlc(hlc)}:${actor_id}` using production's HLC string formatter. Merge logic is unchanged.
 
-6. **Per-action conflict detection vs batch.** The detection rule fires on each incoming Action. But sometimes a single Action with multiple Updates is internally consistent (one Update's HLC dominates another's by construction). The detection should only fire when *concurrent* Actions both touch the same run. Implementation: track a small "recently applied per-run" map with the HLC of the last update; an incoming Action with concurrent HLC to that triggers detection.
+6. **Per-action conflict detection vs batch.** The detection rule fires on each incoming Action. But sometimes a single Action with multiple Updates is internally consistent (one Update's HLC dominates another's by construction). The detection should only fire when _concurrent_ Actions both touch the same run. Implementation: track a small "recently applied per-run" map with the HLC of the last update; an incoming Action with concurrent HLC to that triggers detection.
 
 ---
 
