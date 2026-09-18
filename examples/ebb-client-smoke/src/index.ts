@@ -137,12 +137,14 @@ async function main(): Promise<void> {
     });
     log("subscription is live");
 
-    // 9. Send a new Action from a separate client (simulating another actor).
-    log("writing a follow-up action from another actor...");
-    const otherActor = "actor_smoke_other";
+    // 9. Send a new Action from the same client (separate clock).
+    // Note: in a multi-user scenario this would be a different client
+    // authenticated as a different actor; here we use the same actor but
+    // a fresh clock so the HLC advances and produces a unique action.
+    log("writing a follow-up action...");
     const clock = createClock();
     const { action } = createAction({
-      actorId: otherActor,
+      actorId: SMOKE_ACTOR_ID,
       clock,
       updates: [
         {
@@ -150,11 +152,15 @@ async function main(): Promise<void> {
           subject_id: SMOKE_ENTITY_ID,
           subject_type: "todo",
           method: "patch",
+          // User-entity updates must nest their fields under `fields` —
+          // see ActionValidator.well_formed_data?/1 in ebb_server.
           data: {
-            title: {
-              value: "Updated via SSE",
-              update_id: "upd_followup",
-              hlc: clock.l ? `${clock.l.toString()}:0` : "0",
+            fields: {
+              title: {
+                value: "Updated via SSE",
+                update_id: "upd_followup",
+                hlc: clock.l ? `${clock.l.toString()}:0` : "0",
+              },
             },
           },
         },
