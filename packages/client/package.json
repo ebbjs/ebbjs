@@ -23,6 +23,11 @@
     "fmt": "pnpm --root ../../ fmt",
     "fmt:check": "pnpm --root ../../ fmt:check"
   },
+  "dependencies": {
+    "@ebbjs/core": "workspace:*",
+    "@ebbjs/storage": "workspace:*",
+    "@sinclair/typebox": "latest"
+  },
   "devDependencies": {
     "tsx": "^4.20.4",
     "vitest": "^3.2.4"
