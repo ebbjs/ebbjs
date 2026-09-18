@@ -85,6 +85,22 @@ export interface LocalDeleteOptions {
   readonly hlc?: HLCTimestamp;
 }
 
+/**
+ * Local extend options. Extends an existing run by appending text to it
+ * (no new run, no new HLC for the run itself — the existing run's text
+ * is replaced atomically). The Action's HLC advances so peers can
+ * order the extend relative to other operations, but the run's
+ * identity is preserved.
+ *
+ * Run extension is what lets the cm-bridge avoid creating a new run on
+ * every keystroke when typing at the end of your own last run.
+ */
+export interface LocalExtendOptions {
+  readonly runId: string;
+  readonly appendText: string;
+  readonly hlc?: HLCTimestamp;
+}
+
 /** Update listener. */
 export type UpdateListener = (update: AppliedUpdate) => void;
 
@@ -396,6 +412,80 @@ export class TextDocument {
       action,
       runId: opts.runId,
       kind: "tombstone",
+    };
+    for (const cb of this.updateListeners) {
+      try {
+        cb(evt);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[TextDocument] onUpdate handler threw:", err);
+      }
+    }
+
+    return action.id;
+  }
+
+  /**
+   * Extend an existing run by appending text.
+   *
+   * Returns the resulting action id, or null if the local edit was
+   * invalid (run not found, run is tombstoned, or appendText is empty).
+   *
+   * Local-only — applies optimistically to the tree immediately, then
+   * queues the resulting Action for `client.write()`. The wire payload
+   * carries a single field update for the run with the replaced text;
+   * the receiver's wire adapter treats it as an EXTEND_RUN.
+   */
+  localExtend(opts: LocalExtendOptions): string | null {
+    if (opts.appendText.length === 0) return null;
+
+    const node = this.state.nodes.get(opts.runId);
+    if (!node || node.deleted) return null;
+
+    const { hlc, state: newHlcState } = advanceLocalHlc(this.localHlcState);
+    this.localHlcState.l = newHlcState.l;
+    this.localHlcState.c = newHlcState.c;
+    const finalHlc = opts.hlc ?? hlc;
+
+    const pre = this.state;
+    const post = docReducer(pre, {
+      type: "EXTEND_RUN",
+      runId: opts.runId,
+      appendText: opts.appendText,
+    });
+    this.state = post;
+
+    // diffRunFields emits a field update when the run's text changes.
+    // For an extend, only the extended run's field appears in the diff.
+    const fields = diffRunFields(pre, post, {
+      updateId: `u_ext_${this.updateCounter++}`,
+      hlc: finalHlc,
+    });
+    if (Object.keys(fields).length === 0) return null;
+    const update = docActionToUpdate(
+      { type: "EXTEND_RUN", runId: opts.runId, appendText: opts.appendText },
+      fields,
+      {
+        docId: this.docId,
+        updateId: fields[Object.keys(fields)[0]!]!.update_id,
+        docSubjectType: this.docType,
+      },
+    );
+    if (!update) return null;
+
+    const action: Action = {
+      id: `a_ext_${this.updateCounter++}`,
+      actor_id: this.actorId,
+      hlc: finalHlc,
+      gsn: 0,
+      updates: [update],
+    };
+    this.pending.push(action);
+
+    const evt: AppliedUpdate = {
+      action,
+      runId: opts.runId,
+      kind: "extend",
     };
     for (const cb of this.updateListeners) {
       try {

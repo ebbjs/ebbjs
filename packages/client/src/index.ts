@@ -36,6 +36,7 @@ export {
   type AppliedUpdate,
   type LocalInsertOptions,
   type LocalDeleteOptions,
+  type LocalExtendOptions,
   type UpdateListener,
   type ConflictListener,
 } from "./fields/collaborative-text/text-document";

@@ -436,20 +436,22 @@ Five vertical slices, ordered by what unblocks what. Each slice ends with a runn
 
 ### Slice 3 — Demo app
 
+> **Status: shipped.** See [`examples/collaborative-text-demo/`](../../../../examples/collaborative-text-demo/) and [`packages/collaborative-text-editor/`](../../../collaborative-text-editor/).
+
 **Goal:** A Vite + React 19 app with CodeMirror 6 that uses the real client, opens two tabs against `mix dev`, and shows live collaborative editing.
 
 **Tasks:**
 
-1. New package `examples/collaborative-text-demo/` (Vite + React 19 + CodeMirror 6 + Tailwind)
-2. Wire `experiment/collaborative-text/src/cm-bridge.ts` to the new client (replace the BroadcastChannel relay with sync client subscriptions)
-3. URL param `?actor=drew` → hardcoded actor ID → bypass auth
-4. Hardcoded group ID `grp_demo`; seed via `@ebbjs/server`'s `seed()` on first load (POST bootstrap group + member + document if they don't exist)
-5. Connection state indicator (connecting / live / offline badge)
-6. Conflict panel (collapsible right sidebar showing last N conflicts)
-7. **Optional but recommended:** port `experiment/collaborative-text/src/presence.ts` to `@ebbjs/client/src/presence/`. Replace BroadcastChannel presence messages with `POST /sync/presence`. Render remote cursors via CM6 decorations. This makes the demo feel real and validates the sync client's presence path. (If presence slips slice 3, it becomes a slice 5 polish item.)
-8. Test: manual two-tab test against `mix dev`
+1. ✅ New package `examples/collaborative-text-demo/` (Vite + React 19 + CodeMirror 6 + Tailwind)
+2. ✅ Wire CodeMirror to the new client. The bridge lives in a separate package, [`@ebbjs/collaborative-text-editor`](../../../collaborative-text-editor/) (peer dep on `@ebbjs/client` + CodeMirror), not inlined in the demo. The bridge translates CM transactions to `doc.localInsert` / `localExtend` / `localDelete` and applies remote updates from `doc.onUpdate` back to CM. A `StateField` mirrors `doc.docState.index.spans` for position ↔ run mapping.
+3. ✅ URL param `?actor=drew` → hardcoded actor ID → bypass auth
+4. ✅ Hardcoded group ID `grp_demo`; seed via `@ebbjs/server`'s `seed()` on first load (POST bootstrap group + member + document if they don't exist). Seed is inlined in the demo (`src/seed.ts`) because the `@ebbjs/server` package pulls in Node-only deps that can't ship to the browser.
+5. ✅ Connection state indicator (connecting / live / offline badge) — `ConnectionBadge.tsx`
+6. ✅ Conflict panel (collapsible right sidebar showing last N conflicts) — `ConflictPanel.tsx`
+7. ⏭️ Presence — deferred to slice 5 polish.
+8. ✅ Test: manual two-tab test against `mix dev`. The bridge has 14 unit tests covering insert / extend / delete / tombstone round-trips.
 
-**Acceptance:** `pnpm --filter collaborative-text-demo dev` + `cd ebb_server && mix dev` → open two tabs with different actor IDs → typing in one appears in the other in <100ms over the Action/SSE stack. If presence is included: remote cursors are visible and update as the other tab types.
+**Acceptance:** `pnpm --filter collaborative-text-demo dev` + `cd ebb_server && mix dev` → open two tabs with different actor IDs → typing in one appears in the other in <100ms over the Action/SSE stack. Concurrent edits at the same position surface in the conflict panel on both tabs.
 
 ### Slice 4 — End-to-end Playwright test
 
