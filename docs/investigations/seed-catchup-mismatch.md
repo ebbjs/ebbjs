@@ -25,7 +25,7 @@ Each bug is documented below with the chain of evidence that surfaced it.
 
 ## Bug 1 — `cf_group_actions` index empty (the original "seed → catchUp" report)
 
-`Writer.get_group_id_for_group_action_index/3` reads `data["source_id"]` and `data["target_id"]` *without* unwrapping the `FieldValue` shape (`{value, update_id, hlc}`). Meanwhile the sibling helper `build_intra_action_context/1` correctly uses `Fields.get/3` to unwrap. So when the seed action wraps relationship fields in FieldValue:
+`Writer.get_group_id_for_group_action_index/3` reads `data["source_id"]` and `data["target_id"]` _without_ unwrapping the `FieldValue` shape (`{value, update_id, hlc}`). Meanwhile the sibling helper `build_intra_action_context/1` correctly uses `Fields.get/3` to unwrap. So when the seed action wraps relationship fields in FieldValue:
 
 ```elixir
 data = %{"source_id" => %{"value" => "ent_w", "update_id" => "...", "hlc" => "..."}, ...}
@@ -33,7 +33,7 @@ data = %{"source_id" => %{"value" => "ent_w", "update_id" => "...", "hlc" => "..
 
 the intra_ctx is built correctly (`%{"ent_w" => "grp_w"}`), but the index-lookup function sees `source_id = %{"value" => "ent_w", ...}` — a map — and tries to look that up in the cache and intra_ctx. Both miss. `build_group_action_index` returns `[]`. No cf_group_actions entry gets written.
 
-The integration test in `catch_up_integration_test.exs` doesn't hit this bug because its helpers (`test/support/integration/action_helpers.ex`) send relationship fields as *plain strings* (`"source_id" => "todo_bootstrap"`) — not wrapped in FieldValue. The two paths were never exercised against the same writer code with the same data shape.
+The integration test in `catch_up_integration_test.exs` doesn't hit this bug because its helpers (`test/support/integration/action_helpers.ex`) send relationship fields as _plain strings_ (`"source_id" => "todo_bootstrap"`) — not wrapped in FieldValue. The two paths were never exercised against the same writer code with the same data shape.
 
 **Fix** — `ebb_server/lib/ebb_server/storage/writer.ex`: use `Fields.get/3` in `get_group_id_for_group_action_index/3`, matching the convention already used by `build_intra_action_context/1`.
 
@@ -101,7 +101,7 @@ This in turn meant the SSE handshake saw `cursor=0 > watermark=0` is false (it s
 
 ## Bug 6 — `WatermarkTracker.advance_watermark/1` never advances past 1
 
-Once the watermark-tracker name was wired in, advancing started working — but only the *first* write advanced the watermark (from 0 to 1). Subsequent writes stayed at 1. The next bug.
+Once the watermark-tracker name was wired in, advancing started working — but only the _first_ write advanced the watermark (from 0 to 1). Subsequent writes stayed at 1. The next bug.
 
 The previous implementation called `:ets.next(table, current_watermark)` where the keys are `{gsn, pid}` tuples. In Erlang term ordering, `{1, smallest_pid} > 1` (tuple > integer). So `:ets.next(table, 1)` returned `{1, smallest_pid}` (gsn = 1, not 2), the guard `gsn == current_watermark + 1` failed, and the watermark never advanced.
 
@@ -147,7 +147,7 @@ Tests in `memory-adapter.test.ts`, `client.test.ts`, `client-sse.test.ts`, and `
 
 ## Bug 9 — Seed used `updateId` (camelCase) instead of `update_id`
 
-After bug 8 was fixed, the merge now ran with `hlcCmp = 0` and compared `patchValue.update_id` vs `existingValue.update_id`. The existing value was the *seeded* entity, whose `FieldValue` had `updateId: "seed_title"` (camelCase from `examples/ebb-client-smoke/src/seed.ts` and `packages/server/src/seed-client.ts`). The patch used `update_id` (the correct snake_case per `@ebbjs/core`'s `FieldValueSchema`). So `existingValue.update_id` was `undefined`, `"upd_followup" >= undefined` is `false`, and the patch was rejected.
+After bug 8 was fixed, the merge now ran with `hlcCmp = 0` and compared `patchValue.update_id` vs `existingValue.update_id`. The existing value was the _seeded_ entity, whose `FieldValue` had `updateId: "seed_title"` (camelCase from `examples/ebb-client-smoke/src/seed.ts` and `packages/server/src/seed-client.ts`). The patch used `update_id` (the correct snake_case per `@ebbjs/core`'s `FieldValueSchema`). So `existingValue.update_id` was `undefined`, `"upd_followup" >= undefined` is `false`, and the patch was rejected.
 
 **Fix** — `examples/ebb-client-smoke/src/seed.ts`, `packages/server/src/seed-client.ts`, `packages/server/src/types.ts`: rename `updateId` → `update_id` to match the `FieldValue` schema.
 
