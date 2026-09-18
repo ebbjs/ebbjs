@@ -124,11 +124,17 @@ maybeDescribe("ebb client smoke (against running server)", () => {
           subject_id: SMOKE_ENTITY_ID,
           subject_type: "todo",
           method: "patch",
+          // User-entity updates must nest fields under `data.fields`
+          // (mirrors ActionValidator.well_formed_data?/1 in ebb_server and
+          // extractPatchFields in @ebbjs/storage). Without the wrapper, the
+          // patch silently no-ops in the client materializer.
           data: {
-            title: {
-              value: "Updated via SSE",
-              update_id: "upd_followup",
-              hlc: clock.l ? `${clock.l.toString()}:0` : "0",
+            fields: {
+              title: {
+                value: "Updated via SSE",
+                update_id: "upd_followup",
+                hlc: clock.l ? `${clock.l.toString()}:0` : "0",
+              },
             },
           },
         },

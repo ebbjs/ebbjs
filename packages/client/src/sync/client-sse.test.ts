@@ -158,6 +158,112 @@ describe("SyncClient.subscribe (SSE)", () => {
     unsubscribe();
   });
 
+  it("materializes a user-entity patch when fields are wrapped under data.fields", async () => {
+    // Regression guard: a patch update for a user entity must wrap the
+    // field map under `data.fields` to mirror
+    // `EbbServer.Storage.ActionValidator.well_formed_data?/1`. With the
+    // correct wrapping, the materializer should merge the patched field
+    // into the existing entity.
+    const storage = createMemoryAdapter();
+    const putAction: Action = {
+      id: "act_put",
+      actor_id: "a_alice",
+      hlc: "1711036800000000",
+      gsn: 1,
+      updates: [
+        {
+          id: "u_put",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "put",
+          data: {
+            fields: { title: { value: "Hello", update_id: "u_put", hlc: "1711036800000000" } },
+          } as never,
+        },
+      ],
+    };
+    const patchAction: Action = {
+      id: "act_patch",
+      actor_id: "a_alice",
+      hlc: "1711036800000001",
+      gsn: 2,
+      updates: [
+        {
+          id: "u_patch",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "patch",
+          data: {
+            fields: {
+              title: { value: "Updated", update_id: "u_patch", hlc: "1711036800000001" },
+            },
+          } as never,
+        },
+      ],
+    };
+    // Seed via the same wire path subscribe() uses.
+    const { applyAction } = await import("./storage");
+    await applyAction(storage, putAction, "grp_1");
+    await applyAction(storage, patchAction, "grp_1");
+    const e = await storage.entities.get("todo_1");
+    expect(e).not.toBeNull();
+    expect((e!.data.fields.title as { value?: unknown }).value).toBe("Updated");
+  });
+
+  it("does not materialize a user-entity patch with unwrapped (flat) data", async () => {
+    // Documents the failure mode that the smoke test in
+    // examples/ebb-client-smoke used to hit: a patch update whose `data`
+    // shape doesn't wrap fields is silently dropped by the client
+    // materializer (extractPatchFields returns {}), and the entity never
+    // updates. This pins the failure mode so a future "fix" that loosens
+    // the unwrap won't silently regress.
+    const storage = createMemoryAdapter();
+    const putAction: Action = {
+      id: "act_put",
+      actor_id: "a_alice",
+      hlc: "1711036800000000",
+      gsn: 1,
+      updates: [
+        {
+          id: "u_put",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "put",
+          data: {
+            fields: { title: { value: "Hello", update_id: "u_put", hlc: "1711036800000000" } },
+          } as never,
+        },
+      ],
+    };
+    const flatPatch: Action = {
+      id: "act_flat_patch",
+      actor_id: "a_alice",
+      hlc: "1711036800000001",
+      gsn: 2,
+      updates: [
+        {
+          id: "u_flat",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "patch",
+          // NO `fields` wrapper — this is the bug shape.
+          data: {
+            title: { value: "Should not stick", update_id: "u_flat", hlc: "1711036800000001" },
+          } as never,
+        },
+      ],
+    };
+    const { applyAction } = await import("./storage");
+    await applyAction(storage, putAction, "grp_1");
+    await applyAction(storage, flatPatch, "grp_1");
+    const e = await storage.entities.get("todo_1");
+    expect(e).not.toBeNull();
+    // The flat patch must NOT have overwritten the put's title.
+    expect((e!.data.fields.title as { value?: unknown }).value).toBe("Hello");
+    // And the patch must not have produced a stray `fields` key under data.fields.
+    expect(e!.data.fields).not.toHaveProperty("fields");
+  });
+
   it("fires onEvent for control events", async () => {
     const encoder = new TextEncoder();
     const sseBody = new ReadableStream<Uint8Array>({
