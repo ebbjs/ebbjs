@@ -114,6 +114,29 @@ describe("TextDocument.localInsert", () => {
     expect(parent.text).toBe("abc");
   });
 
+  it("rejects invalid splitParentAt (0 or negative)", () => {
+    const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
+    doc.localInsert("abcdef");
+    const parentId = doc.docState.children.get("ROOT")![0]!;
+
+    // splitParentAt must be in [1, text.length). 0 and -1 are invalid.
+    expect(doc.localInsert("X", { afterRun: parentId, splitParentAt: 0 })).toBeNull();
+    expect(doc.localInsert("X", { afterRun: parentId, splitParentAt: -1 })).toBeNull();
+    // Doc state should be unchanged
+    expect(doc.text).toBe("abcdef");
+    expect(doc.pendingActions()).toHaveLength(1);
+  });
+
+  it("rejects splitParentAt >= parent text length", () => {
+    const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
+    doc.localInsert("abcdef");
+    const parentId = doc.docState.children.get("ROOT")![0]!;
+
+    expect(doc.localInsert("X", { afterRun: parentId, splitParentAt: 6 })).toBeNull();
+    expect(doc.localInsert("X", { afterRun: parentId, splitParentAt: 100 })).toBeNull();
+    expect(doc.text).toBe("abcdef");
+  });
+
   it("fires onUpdate listeners for local edits", () => {
     const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
     const events: AppliedUpdate[] = [];

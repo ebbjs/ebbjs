@@ -304,14 +304,18 @@ export class TextDocument {
     const pre = this.state;
     let next = pre;
     if (opts.splitParentAt !== undefined) {
+      // Validate up front so the caller sees a rejection (null) instead of an
+      // applySplit console.error followed by a mis-positioned insert.
+      // applySplit requires offset in [1, text.length).
       const parentNode = next.nodes.get(parentId);
-      if (parentNode && parentNode.text.length > opts.splitParentAt) {
-        next = docReducer(next, {
-          type: "SPLIT",
-          runId: parentId,
-          offset: opts.splitParentAt,
-        });
-      }
+      const validOffset =
+        !!parentNode && opts.splitParentAt >= 1 && opts.splitParentAt < parentNode.text.length;
+      if (!validOffset) return null;
+      next = docReducer(next, {
+        type: "SPLIT",
+        runId: parentId,
+        offset: opts.splitParentAt,
+      });
     }
     next = docReducer(next, { type: "INSERT_RUN", node });
     this.state = next;
