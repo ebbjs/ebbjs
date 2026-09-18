@@ -30,7 +30,7 @@ export interface EntitySeed {
   id: string;
   type: string;
   patches: Array<{
-    fields: Record<string, { value: unknown; hlc: string; updateId: string }>;
+    fields: Record<string, { value: unknown; hlc: string; update_id: string }>;
   }>;
 }
 

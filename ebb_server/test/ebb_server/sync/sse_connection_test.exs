@@ -179,15 +179,15 @@ defmodule EbbServer.Sync.SSEConnectionTest do
   describe "state structure" do
     test "SSEConnection state has correct fields" do
       state = %SSEConnection{
-        conn: nil,
+        parent_pid: self(),
         group_ids: ["g1", "g2"],
         cursors: %{"g1" => 100, "g2" => 200},
-        keepalive_ref: make_ref()
+        parent_monitor: make_ref()
       }
 
       assert state.group_ids == ["g1", "g2"]
       assert state.cursors == %{"g1" => 100, "g2" => 200}
-      assert %SSEConnection{keepalive_ref: ref} = state
+      assert %SSEConnection{parent_monitor: ref} = state
       assert is_reference(ref)
     end
 

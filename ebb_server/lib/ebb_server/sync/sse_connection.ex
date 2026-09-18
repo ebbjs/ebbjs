@@ -1,92 +1,82 @@
 defmodule EbbServer.Sync.SSEConnection do
   @moduledoc """
-  GenServer per connected client that streams Actions, control events, and
-  presence messages as Server-Sent Events (SSE) over a Cowboy/Bandit chunked
-  HTTP response.
+  GenServer per connected client that forwards server-emitted events to the
+  Bandit request process that owns the chunked HTTP connection.
 
-  ## Responsibilities
+  ## Why a separate GenServer?
 
-  - Own the chunked response connection for one client
-  - Receive `push_action`, `push_control`, and `push_presence` messages
-  - Write SSE-formatted events to the stream
-  - Send SSE keepalive comments (`: keepalive\\n\\n`) every 15 seconds
-  - Detect client disconnect and clean up
+  Bandit only allows the request process (the one currently executing the
+  plug handler) to call `Plug.Conn.chunk/2` on a chunked response. As soon as
+  the plug handler returns, Bandit commits the response (sends an empty
+  chunk terminator) and the connection closes.
 
-  ## SSE Event Format
+  We solve this by:
 
-      event: data
-      data: {"id":"act_abc","gsn":501,"actor_id":"a_user1","hlc":1711036800000,"updates":[...]}
+  1. `SSEHandler.open_sse/4` runs in the request process. It calls
+     `send_chunked/2` and then blocks in a receive loop, keeping Bandit's
+     pipeline blocked.
+  2. This module is a separate GenServer (started under
+     `SSEConnectionSupervisor`). It receives `push_action` /
+     `push_control` / `push_presence` messages from the `FanOutRouter`,
+     formats them as SSE, and forwards each chunk to the request process
+     via a plain `send/2`.
+  3. The request process writes the chunks (it's the conn owner).
+  4. When the request process exits (e.g., on client disconnect), this
+     GenServer monitors it and shuts down too, triggering FanOutRouter
+     unsubscribe and DynamicSupervisor cleanup.
 
-      event: control
-      data: {"group":"group_a","nextOffset":"502"}
+  ## Restart strategy
 
-      event: presence
-      data: {"actor_id":"a_user1","entity_id":"doc_1","data":{"cursor":{"line":5,"col":12}}}
-
-      event: control
-      data: {"reconnect":true,"reason":"membership_changed"}
-
-      : keepalive
-
-  Events are separated by `\\n\\n`. Each field line ends with `\\n`.
+  `restart: :temporary` so the DynamicSupervisor never auto-restarts a
+  connection that died — the HTTP request is already gone.
   """
 
   use GenServer, restart: :temporary
 
   @type t :: %__MODULE__{
-          conn: Plug.Conn.t(),
+          parent_pid: pid(),
           group_ids: [String.t()],
           cursors: %{String.t() => non_neg_integer()},
-          keepalive_ref: reference() | nil
+          parent_monitor: reference() | nil
         }
 
-  defstruct [:conn, :group_ids, :cursors, :keepalive_ref]
+  defstruct [:parent_pid, :group_ids, :cursors, :parent_monitor]
 
-  @spec start_link(Plug.Conn.t(), [String.t()], %{String.t() => non_neg_integer()}, keyword()) ::
+  @spec start_link(pid(), [String.t()], %{String.t() => non_neg_integer()}, keyword()) ::
           {:ok, pid()} | {:error, term()}
-  def start_link(conn, group_ids, cursors, opts \\ []) do
+  def start_link(parent_pid, group_ids, cursors, opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, {conn, group_ids, cursors}, name: name)
+    GenServer.start_link(__MODULE__, {parent_pid, group_ids, cursors}, name: name)
   end
 
   @spec push_action(pid(), map()) :: :ok
-  def push_action(pid, action) do
-    GenServer.cast(pid, {:push_action, action})
-  end
+  def push_action(pid, action), do: GenServer.cast(pid, {:push_action, action})
 
   @spec push_control(pid(), map()) :: :ok
-  def push_control(pid, control) do
-    GenServer.cast(pid, {:push_control, control})
-  end
+  def push_control(pid, control), do: GenServer.cast(pid, {:push_control, control})
 
   @spec push_presence(pid(), map()) :: :ok
-  def push_presence(pid, presence) do
-    GenServer.cast(pid, {:push_presence, presence})
-  end
+  def push_presence(pid, presence), do: GenServer.cast(pid, {:push_presence, presence})
 
   @impl true
-  def init({conn, group_ids, cursors}) do
-    conn =
-      conn
-      |> Plug.Conn.put_resp_header("content-type", "text/event-stream")
-      |> Plug.Conn.put_resp_header("cache-control", "no-cache")
-      |> Plug.Conn.put_resp_header("connection", "keep-alive")
-      |> Plug.Conn.send_chunked(200)
-
-    keepalive_ref = Process.send_after(self(), :keepalive, 15_000)
+  def init({parent_pid, group_ids, cursors}) do
+    # Monitor the request process so we exit when the HTTP connection is
+    # gone. This is how the FanOutRouter / GroupServers learn the
+    # subscription ended: they see our DOWN message.
+    ref = Process.monitor(parent_pid)
 
     {:ok,
      %__MODULE__{
-       conn: conn,
+       parent_pid: parent_pid,
        group_ids: group_ids,
        cursors: cursors,
-       keepalive_ref: keepalive_ref
+       parent_monitor: ref
      }}
   end
 
   @impl true
   def handle_cast({:push_action, action}, state) do
-    event =
+    payload =
       Jason.encode!(%{
         "id" => action["id"],
         "gsn" => action["gsn"],
@@ -95,33 +85,32 @@ defmodule EbbServer.Sync.SSEConnection do
         "updates" => action["updates"]
       })
 
-    chunk_and_stop(state.conn, "data", event, state)
+    send(state.parent_pid, {:sse_chunk, "data", payload})
+    {:noreply, state}
   end
 
-  @impl true
   def handle_cast({:push_control, control}, state) do
-    event = Jason.encode!(control)
-    chunk_and_stop(state.conn, "control", event, state)
+    payload = Jason.encode!(control)
+    send(state.parent_pid, {:sse_chunk, "control", payload})
+    {:noreply, state}
   end
 
-  @impl true
   def handle_cast({:push_presence, presence}, state) do
-    event = Jason.encode!(presence)
-    chunk_and_stop(state.conn, "presence", event, state)
+    payload = Jason.encode!(presence)
+    send(state.parent_pid, {:sse_chunk, "presence", payload})
+    {:noreply, state}
   end
 
   @impl true
-  def handle_info(:keepalive, state) do
-    case Plug.Conn.chunk(state.conn, ": keepalive\n\n") do
-      {:ok, _conn} ->
-        ref = Process.send_after(self(), :keepalive, 15_000)
-        {:noreply, %{state | keepalive_ref: ref}}
-
-      {:error, :closed} ->
-        {:stop, :normal, state}
-    end
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) when pid == state.parent_pid do
+    # Request process died → chunked conn is gone. Exit so the supervisor
+    # removes us and the GroupServer's monitor fires unsubscribe.
+    {:stop, :normal, state}
   end
 
+  @doc """
+  Formats a single SSE event block as a binary: `event: <type>\ndata: <payload>\n\n`.
+  """
   @spec format_sse_event(String.t(), String.t()) :: String.t()
   def format_sse_event(event_type, data) do
     IO.iodata_to_binary([
@@ -132,14 +121,5 @@ defmodule EbbServer.Sync.SSEConnection do
       data,
       "\n\n"
     ])
-  end
-
-  defp chunk_and_stop(conn, event_type, data, state) do
-    chunk = format_sse_event(event_type, data)
-
-    case Plug.Conn.chunk(conn, chunk) do
-      {:ok, _} -> {:noreply, state}
-      {:error, :closed} -> {:stop, :normal, state}
-    end
   end
 end

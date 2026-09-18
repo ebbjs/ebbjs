@@ -140,5 +140,24 @@ defmodule EbbServer.Storage.WatermarkTrackerTest do
       assert Enum.all?(results, &(&1 >= 1 and &1 <= 100)),
              "All results should be between 1 and 100"
     end
+
+    test "advances when previous watermark > 0 and next gsn is committed (regression for FanOutRouter slice-1 bug)" do
+      # The previous implementation used `:ets.next(table, current_watermark)`
+      # where the table keys are `{gsn, pid}` tuples. After advancing to 1,
+      # the next call returned `{1, smallest_pid}` (gsn=1, not 2) because
+      # tuple keys sort after integers in Erlang term ordering. The guard
+      # `gsn == current_watermark + 1` (2) then failed and the watermark
+      # never advanced past 1, blocking all subsequent SSE broadcasts.
+      %{name: name} = with_isolated_tracker()
+
+      WatermarkTracker.mark_range_committed(1, 1, name)
+      assert WatermarkTracker.advance_watermark(name) == 1
+
+      WatermarkTracker.mark_range_committed(2, 2, name)
+      assert WatermarkTracker.advance_watermark(name) == 2
+
+      WatermarkTracker.mark_range_committed(3, 5, name)
+      assert WatermarkTracker.advance_watermark(name) == 5
+    end
   end
 end

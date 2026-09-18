@@ -61,7 +61,54 @@ importers:
         specifier: ^13.6.0
         version: 13.6.30
 
+  examples/ebb-client-smoke:
+    dependencies:
+      '@ebbjs/client':
+        specifier: workspace:*
+        version: link:../../packages/client
+      '@ebbjs/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@ebbjs/server':
+        specifier: workspace:*
+        version: link:../../packages/server
+      '@ebbjs/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
+    devDependencies:
+      '@types/node':
+        specifier: ^25.2.3
+        version: 25.5.0
+      tsx:
+        specifier: ^4.20.4
+        version: 4.21.0
+      vite:
+        specifier: ^7.1.2
+        version: 7.3.1(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2)
+      vite-plugin-dts:
+        specifier: ^4.5.4
+        version: 4.5.4(@types/node@25.5.0)(rollup@4.59.0)(typescript@5.9.3)(vite@7.3.1(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2))
+      vite-plugin-externalize-deps:
+        specifier: ^0.10.0
+        version: 0.10.0(vite@7.3.1(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2))
+      vite-tsconfig-paths:
+        specifier: ^6.1.1
+        version: 6.1.1(typescript@5.9.3)(vite@7.3.1(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2))
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2)
+
   packages/client:
+    dependencies:
+      '@ebbjs/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ebbjs/storage':
+        specifier: workspace:*
+        version: link:../storage
+      '@sinclair/typebox':
+        specifier: latest
+        version: 0.34.52
     devDependencies:
       tsx:
         specifier: ^4.20.4
@@ -1880,6 +1927,9 @@ packages:
 
   '@sinclair/typebox@0.34.49':
     resolution: {integrity: sha512-brySQQs7Jtn0joV8Xh9ZV/hZb9Ozb0pmazDIASBkYKCjXrXU3mpcFahmK/z4YDhGkQvP9mWJbVyahdtU5wQA+A==}
+
+  '@sinclair/typebox@0.34.52':
+    resolution: {integrity: sha512-XiMQh7qqVlxZzcVD+kkGMNGMzcTrDMLWI7S4x7z1MkCkbDPrekpZXEUK0eZqZFMuHQg2a2DZOcDIh9o5v3Gonw==}
 
   '@so-ric/colorspace@1.1.6':
     resolution: {integrity: sha512-/KiKkpHNOBgkFJwu9sh48LkHSMYGyuTcSFK/qMBdnOAlrRJzRSXAOFB5qwzaVQuDl8wAvHVMkaASQDReTahxuw==}
@@ -7414,6 +7464,8 @@ snapshots:
       string.prototype.codepointat: 0.2.1
 
   '@sinclair/typebox@0.34.49': {}
+
+  '@sinclair/typebox@0.34.52': {}
 
   '@so-ric/colorspace@1.1.6':
     dependencies:

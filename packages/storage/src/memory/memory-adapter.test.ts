@@ -3,6 +3,10 @@ import { createMemoryAdapter } from "./memory-adapter";
 import type { Action } from "@ebbjs/core";
 
 describe("MemoryAdapter", () => {
+  // User entities (todo) nest their fields under `data.fields` to mirror
+  // `EbbServer.Storage.ActionValidator.well_formed_data?/1`. The static
+  // `Update.data` type is `PutData | PatchData | null`, neither of which
+  // models that wrapping, so we cast through `unknown` at the call site.
   const action: Action = {
     id: "a_1",
     actor_id: "a_user1",
@@ -14,7 +18,9 @@ describe("MemoryAdapter", () => {
         subject_id: "todo_1",
         subject_type: "todo",
         method: "put",
-        data: { title: { value: "Hello", update_id: "u_1", hlc: "1711036800000" } },
+        data: {
+          fields: { title: { value: "Hello", update_id: "u_1", hlc: "1711036800000" } },
+        } as never,
       },
     ],
   };
@@ -30,7 +36,9 @@ describe("MemoryAdapter", () => {
         subject_id: "todo_1",
         subject_type: "todo",
         method: "patch",
-        data: { title: { value: "Updated", update_id: "u_2", hlc: "1711036800001" } },
+        data: {
+          fields: { title: { value: "Updated", update_id: "u_2", hlc: "1711036800001" } },
+        } as never,
       },
     ],
   };
@@ -86,8 +94,10 @@ describe("MemoryAdapter", () => {
       const entity1 = await adapter.entities.get("todo_1");
       const entity2 = await adapter.entities.get("todo_1");
 
-      (entity1 as { data: { fields: Record<string, unknown> } }).data.fields.title = "Modified";
-      expect(entity2!.data.fields.title).not.toBe("Modified");
+      (entity1 as { data: { fields: Record<string, unknown> } }).data.fields.title = {
+        value: "Modified",
+      };
+      expect((entity2!.data.fields.title as { value: unknown }).value).not.toBe("Modified");
     });
 
     it("clears dirty flag after get", async () => {
@@ -97,6 +107,27 @@ describe("MemoryAdapter", () => {
 
       await adapter.entities.get("todo_1");
       expect(await adapter.isDirty("todo_1")).toBe(false);
+    });
+
+    it("applies a patch update to an existing entity (regression: was wrapping fields under data.fields)", async () => {
+      // Before the fix, mergeFields iterated the patch's top-level keys
+      // (`{ fields: {...} }`) and stored them under `data.fields`, producing
+      // `{ fields: { fields: {...}, title: {...} } }`. The client materializer
+      // now unwraps `data.fields` first (mirroring the server's
+      // ActionValidator.well_formed_data?/1), so the patch lands at
+      // `data.fields.title` as expected.
+      const adapter = createMemoryAdapter();
+      await adapter.actions.append(action);
+      const before = await adapter.entities.get("todo_1");
+      expect((before!.data.fields.title as { value: unknown }).value).toBe("Hello");
+
+      await adapter.actions.append(action2);
+      const after = await adapter.entities.get("todo_1");
+
+      expect(after).not.toBe(null);
+      expect(after!.data.fields).toHaveProperty("title");
+      expect((after!.data.fields.title as { value: unknown }).value).toBe("Updated");
+      expect(after!.data.fields).not.toHaveProperty("fields");
     });
   });
 
