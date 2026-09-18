@@ -223,7 +223,6 @@ export class TextDocument {
     this.state = post;
 
     // Fire update listeners for each applied Update
-    let actionIdx = 0;
     let updateCounter = 0;
     for (const action of actions) {
       for (const update of action.updates) {
@@ -253,8 +252,6 @@ export class TextDocument {
           }
         }
       }
-      void actionIdx++;
-      actionIdx++;
     }
 
     // Detect conflicts (only over the just-applied actions)
