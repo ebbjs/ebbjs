@@ -25,7 +25,11 @@ describe("SyncClient.subscribe (SSE)", () => {
           subject_id: "todo_1",
           subject_type: "todo",
           method: "put",
-          data: { title: { value: "Live", update_id: "u_1", hlc: "1711036800000:0" } },
+          // User entities nest their fields under `data.fields` (mirrors
+          // `EbbServer.Storage.ActionValidator.well_formed_data?/1`).
+          data: {
+            fields: { title: { value: "Live", update_id: "u_1", hlc: "1711036800000:0" } },
+          } as never,
         },
       ],
     };
@@ -105,7 +109,11 @@ describe("SyncClient.subscribe (SSE)", () => {
           subject_id: "doc_1",
           subject_type: "doc",
           method: "put",
-          data: { x: { value: 1, update_id: "u_sse", hlc: "1711036800000:0" } },
+          // User entities nest their fields under `data.fields` (mirrors
+          // `EbbServer.Storage.ActionValidator.well_formed_data?/1`).
+          data: {
+            fields: { x: { value: 1, update_id: "u_sse", hlc: "1711036800000:0" } },
+          } as never,
         },
       ],
     };

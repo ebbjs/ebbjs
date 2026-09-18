@@ -22,7 +22,14 @@ export function buildSmokeSeed(): SeedData {
         id: SMOKE_MEMBER_ID,
         actorId: SMOKE_ACTOR_ID,
         groupId: SMOKE_GROUP_ID,
-        permissions: ["read", "write"],
+        // Permission strings must be `<entity_type>.<verb>` or `<entity_type>.*`
+        // to satisfy `EbbServer.Storage.PermissionHelper.check_permission/3`,
+        // which the writer uses to authorize updates on user entities
+        // (e.g., `todo.create` / `todo.update`). Plain `["read", "write"]`
+        // entries don't match any required permission and are rejected with
+        // `not_authorized: missing required permission`. Use the wildcard so
+        // the smoke test can exercise every verb on a `todo`.
+        permissions: ["todo.*"],
       },
     ],
     relationships: [
@@ -43,7 +50,7 @@ export function buildSmokeSeed(): SeedData {
             fields: {
               title: {
                 value: "Hello, ebb",
-                updateId: "seed_title",
+                update_id: "seed_title",
                 hlc: "0",
               },
             },

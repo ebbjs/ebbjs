@@ -40,7 +40,7 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
   }
 
   for (const entity of data.entities ?? []) {
-    const fields: Record<string, { value: unknown; hlc: string; updateId: string }> = {};
+    const fields: Record<string, { value: unknown; hlc: string; update_id: string }> = {};
     for (const patch of entity.patches) {
       for (const [key, val] of Object.entries(patch.fields)) {
         fields[key] = val;

@@ -365,8 +365,13 @@ defmodule EbbServer.Storage.Writer do
   defp get_group_id_for_group_action_index(update, relationships, intra_ctx) do
     case update.subject_type do
       "relationship" ->
-        data = update.data || %{}
-        source_id = data["source_id"]
+        # NOTE: must use Fields.get so FieldValue-wrapped values
+        # ({value, update_id, hlc}) unwrap to the inner string. The
+        # sibling helper build_intra_action_context/1 already does this;
+        # without it, the lookup below misses intra_ctx and the cache
+        # because we're searching for a map where the keys are strings.
+        # See docs/investigations/seed-catchup-mismatch.md.
+        source_id = Fields.get(update.data || %{}, "source_id")
 
         if source_id do
           Map.get(intra_ctx, source_id) ||

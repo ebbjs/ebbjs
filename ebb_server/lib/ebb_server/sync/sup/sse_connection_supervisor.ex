@@ -9,6 +9,8 @@ defmodule EbbServer.Sync.SSEConnectionSupervisor do
 
   use DynamicSupervisor
 
+  alias EbbServer.Sync.SSEConnection
+
   def start_link(opts) do
     DynamicSupervisor.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -18,12 +20,12 @@ defmodule EbbServer.Sync.SSEConnectionSupervisor do
     DynamicSupervisor.init(strategy: :one_for_one, max_restarts: 100, max_seconds: 1)
   end
 
-  @spec start_child(Plug.Conn.t(), [String.t()], %{String.t() => non_neg_integer()}) ::
+  @spec start_child(pid(), [String.t()], %{String.t() => non_neg_integer()}) ::
           {:ok, pid()} | {:error, term()}
-  def start_child(conn, group_ids, cursors) do
+  def start_child(parent_pid, group_ids, cursors) do
     spec = %{
       id: make_ref(),
-      start: {SSEConnection, :start_link, [conn, group_ids, cursors, []]},
+      start: {SSEConnection, :start_link, [parent_pid, group_ids, cursors, []]},
       restart: :temporary
     }
 

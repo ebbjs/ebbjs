@@ -126,7 +126,11 @@ describe("SyncClient.catchUp", () => {
             subject_id: "todo_1",
             subject_type: "todo",
             method: "put",
-            data: { title: { value: "Hello", update_id: "u_1", hlc: 1711036800000000 } },
+            // User entities nest their fields under `data.fields` to mirror
+            // `EbbServer.Storage.ActionValidator.well_formed_data?/1`.
+            data: {
+              fields: { title: { value: "Hello", update_id: "u_1", hlc: 1711036800000000 } },
+            } as never,
           },
         ],
       },
@@ -141,7 +145,9 @@ describe("SyncClient.catchUp", () => {
             subject_id: "todo_1",
             subject_type: "todo",
             method: "patch",
-            data: { title: { value: "Updated", update_id: "u_2", hlc: 1711036800000001 } },
+            data: {
+              fields: { title: { value: "Updated", update_id: "u_2", hlc: 1711036800000001 } },
+            } as never,
           },
         ],
       },

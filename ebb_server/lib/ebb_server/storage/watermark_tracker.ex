@@ -73,53 +73,35 @@ defmodule EbbServer.Storage.WatermarkTracker do
 
   defp do_advance_loop(gsn_ref, table_name) do
     current_watermark = :atomics.get(gsn_ref, 1)
-    scan_key = :ets.next(table_name, current_watermark)
+    next_gsn = current_watermark + 1
 
     cond do
-      scan_key == :"$end_of_table" ->
+      not has_committed?(table_name, next_gsn) ->
         current_watermark
-
-      match?({gsn, _pid} when gsn == current_watermark + 1, scan_key) ->
-        attempt_advance(gsn_ref, table_name, current_watermark, scan_key)
 
       true ->
-        current_watermark
+        attempt_advance_from(gsn_ref, table_name, current_watermark, next_gsn)
     end
   end
 
-  defp attempt_advance(gsn_ref, table_name, current_watermark, {gsn, _pid} = scan_key) do
-    case :atomics.compare_exchange(gsn_ref, 1, current_watermark, gsn) do
+  # Has any tuple {gsn, _pid} with this gsn been committed?
+  defp has_committed?(table_name, gsn) do
+    :ets.match_object(table_name, {{gsn, :_}, true}) != []
+  end
+
+  # We've confirmed `gsn` is committed. Try to CAS the watermark from
+  # `prev` to `gsn`; on contention, retry the whole loop (the other writer
+  # may have advanced past us, in which case we'll try to advance further
+  # from the new value). On success, recurse to see if `gsn + 1` is also
+  # committed and continue advancing.
+  defp attempt_advance_from(gsn_ref, table_name, prev, gsn) do
+    case :atomics.compare_exchange(gsn_ref, 1, prev, gsn) do
       :ok ->
-        continue_or_return(gsn_ref, table_name, gsn, scan_key)
-
-      _ ->
-        do_advance_loop(gsn_ref, table_name)
-    end
-  end
-
-  defp continue_or_return(gsn_ref, table_name, gsn, key) do
-    next_key = :ets.next(table_name, key)
-
-    if next_key == :"$end_of_table" do
-      gsn
-    else
-      {next_gsn, _} = next_key
-      check_and_advance(gsn_ref, table_name, gsn, next_key, next_gsn)
-    end
-  end
-
-  defp check_and_advance(gsn_ref, table_name, gsn, next_key, next_gsn) do
-    if next_gsn == gsn + 1 do
-      attempt_advance_contiguous(gsn_ref, table_name, gsn, next_key, next_gsn)
-    else
-      gsn
-    end
-  end
-
-  defp attempt_advance_contiguous(gsn_ref, table_name, gsn, next_key, next_gsn) do
-    case :atomics.compare_exchange(gsn_ref, 1, gsn, next_gsn) do
-      :ok ->
-        continue_or_return(gsn_ref, table_name, next_gsn, next_key)
+        if has_committed?(table_name, gsn + 1) do
+          attempt_advance_from(gsn_ref, table_name, gsn, gsn + 1)
+        else
+          gsn
+        end
 
       _ ->
         do_advance_loop(gsn_ref, table_name)
