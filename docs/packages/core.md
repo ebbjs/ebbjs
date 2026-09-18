@@ -1,5 +1,7 @@
 # @ebbjs/core
 
+> **Status: Implemented — accurate.** This document describes the shipped `@ebbjs/core` package. The TypeBox schemas, HLC implementation, MessagePack codec, `createAction` helper, and ID generation are all in `packages/core/src/` and tested (97 tests pass). The `defineModel` / `defineSchema` schema-builder section near the end describes **planned** additions, not implemented ones.
+
 ## Purpose
 
 Provides TypeScript types, runtime validation, HLC implementation, and MessagePack encoding for the ebb domain model. Single source of truth for client-side domain logic, aligned with ebb_server expectations.

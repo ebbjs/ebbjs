@@ -1,5 +1,7 @@
 # EntityCache
 
+> **Status: Forward-looking — design only.** `@ebbjs/client` is a stub. The `EntityCache` is not implemented.
+
 ## Purpose
 
 Provides a synchronous, fast-path read layer above the StorageAdapter. React components read entities without async cross-thread communication on cache hits. On cache miss, falls through to the StorageAdapter and populates the cache.

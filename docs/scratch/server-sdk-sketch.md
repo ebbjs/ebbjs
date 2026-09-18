@@ -1,5 +1,7 @@
 # Server-Side SDK (Sketch)
 
+> **Status: Forward-looking — design sketch.** This is an early outline for an HTTP/RPC SDK that SSR frameworks and external processes would use to read and write Ebb data. **Not implemented.** The closest existing surface is the `@ebbjs/server` test harness (TS) which only spawns the Elixir server — it does not provide a read/write client API.
+
 ## What It Is
 
 The server-side SDK is an HTTP/RPC client for the Ebb server. It gives application servers, SSR frameworks, and external processes the same data access API as the browser client — but over the network instead of against a local replica.

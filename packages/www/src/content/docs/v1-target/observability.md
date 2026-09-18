@@ -3,7 +3,9 @@ title: "Observability & Analytics"
 description: "Metrics, the onAction handler, and application analytics."
 ---
 
-Ebb's [Action](/docs/data-model)-based architecture means every write is already a structured event. Every Action carries who (`actor_id`), what (`subject_type`, method, `data`), when ([HLC](/docs/clock), GSN), and where ([Group](/docs/groups) context, derivable from the Entity's Relationships). This gives you operational observability and application analytics essentially for free—no separate event tracking layer required.
+> **Note — Partially accurate.** The **server telemetry is implemented** (`:telemetry` events for writer batches, watermark lag, fan-out push latency, etc. — see `docs/ebb_server/README.md#observability`). The developer-facing **`onAction` hook** and the **client-side observable values** (Outbox depth, flush latency, conflict count, sync state) are **planned** — they depend on `@ebbjs/client` and a server-side hook into the Writer.
+
+Ebb's [Action](/docs/v1-target/data-model)-based architecture means every write is already a structured event. Every Action carries who (`actor_id`), what (`subject_type`, method, `data`), when ([HLC](/docs/v1-target/clock), GSN), and where ([Group](/docs/v1-target/groups) context, derivable from the Entity's Relationships). This gives you operational observability and application analytics essentially for free—no separate event tracking layer required.
 
 ## The `onAction` handler
 
@@ -18,7 +20,7 @@ Common use cases:
 
 The handler is async and non-blocking. It does not affect Action acceptance or sync. If the handler throws or fails, the Action is still persisted and replicated normally—analytics should never block writes.
 
-For Actions received via [server-to-server replication](/docs/sync#server-server), the handler fires on the receiving server too. This means each server can independently feed its own analytics pipeline. Developers should design their downstream systems to handle deduplication—Action IDs are globally unique, making this straightforward.
+For Actions received via [server-to-server replication](/docs/v1-target/sync#server-server), the handler fires on the receiving server too. This means each server can independently feed its own analytics pipeline. Developers should design their downstream systems to handle deduplication—Action IDs are globally unique, making this straightforward.
 
 ## Server-side operational metrics
 
@@ -27,18 +29,18 @@ Ebb exposes built-in metrics for monitoring the health of the system:
 - **Replication lag** — Per-peer cursor delta. How far behind is this server relative to each of its sync peers? Sustained lag indicates network issues or a slow peer.
 - **Action throughput** — Actions accepted per second, broken down by source (client vs. peer). Useful for capacity planning and detecting traffic spikes.
 - **Sync connection count** — Active client and peer connections. Helps with load balancing and detecting connection leaks.
-- **Catch-up / resync frequency** — How often clients are performing full resyncs vs. incremental catch-up. A spike in full resyncs may indicate aggressive [GC](/docs/garbage-collection) settings or frequent client failovers.
+- **Catch-up / resync frequency** — How often clients are performing full resyncs vs. incremental catch-up. A spike in full resyncs may indicate aggressive [GC](/docs/v1-target/garbage-collection) settings or frequent client failovers.
 - **Storage health** — Circuit breaker state per peer, GC progress (last compaction, tombstone count, low-water mark), and database size.
 
 These metrics are designed to be compatible with standard observability tooling. The long-term goal is OpenTelemetry-compatible export, but for now Ebb exposes them as an observable API that operators can plug into whatever monitoring stack they use.
 
 ## Client-side operational metrics
 
-The [client](/docs/client) exposes first-class observable values that framework bindings (like `@ebbjs/react`) can use to build sync indicators, error surfaces, and debugging tools:
+The [client](/docs/v1-target/client) exposes first-class observable values that framework bindings (like `@ebbjs/react`) can use to build sync indicators, error surfaces, and debugging tools:
 
 - **Outbox depth** — Count of pending, acknowledged, and errored Actions. A growing pending count means the client can't reach the server; errored Actions need application attention.
 - **Flush latency** — Time between writing to the Outbox and receiving acknowledgment from the server. A useful signal for perceived responsiveness.
-- **Conflict count** — Number of Actions in the [Conflicts](/docs/conflicts) table awaiting resolution. Lets apps prompt users to review conflicts.
+- **Conflict count** — Number of Actions in the [Conflicts](/docs/v1-target/conflicts) table awaiting resolution. Lets apps prompt users to review conflicts.
 - **Sync state** — Current phase: handshake, catch-up, subscribed, or disconnected. The building block for "syncing..." and "offline" UI states.
 - **Last synced timestamp** — When the client last received an Action from the server. Useful for "last updated X seconds ago" displays.
 

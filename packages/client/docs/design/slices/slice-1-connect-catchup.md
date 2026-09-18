@@ -1,5 +1,7 @@
 # Slice: Establish Connection + Catchup
 
+> **Status: Forward-looking — design slice.** `@ebbjs/client` is a stub. Not implemented.
+
 ## Goal
 
 The client connects to a running ebb_server (bypass auth), performs catch-up on a single seeded group, and verifies the entity in its local entity store has the correct materialized state after all actions are applied.

@@ -1,5 +1,7 @@
 # StorageAdapter
 
+> **Status: Forward-looking — design only.** `@ebbjs/client` is a stub. The `createMemoryAdapter()` from `@ebbjs/storage` is shipped; this `StorageAdapter` wrapper layer that the v1 client would expose is not.
+
 ## Purpose
 
 Wraps `@ebbjs/storage`'s `createMemoryAdapter()` and exposes it to the rest of the client. The client does not implement any storage itself — it delegates entirely to this adapter.

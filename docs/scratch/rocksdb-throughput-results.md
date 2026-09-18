@@ -1,5 +1,7 @@
 # RocksDB Write Throughput Experiment: Results
 
+> **Status: Working draft — exploratory benchmark notes.** Retained for historical context. The active architecture is in `docs/ebb_server/README.md` and `docs/scratch/storage-architecture-v2.md`. These results informed the dual-store design.
+
 ## Executive Summary
 
 RocksDB with ETF serialization sustains **~60k Actions/sec** with a single writer and full durability (sync writes) — **10x faster** than the SQLite baseline. With **2 concurrent writers** and RocksDB's `enable_pipelined_write` option, throughput reaches **~108k Actions/sec** (1.9x scaling) on a single RocksDB instance — exceeding the 100k architecture goal. Durability is fully preserved (`sync: true` on every batch). No Rust code or multi-instance sharding is required.

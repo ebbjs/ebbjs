@@ -1,5 +1,7 @@
 # Devlog Post Outline: How We Designed Ebb's Storage Architecture
 
+> **Status: Unpublished draft — superseded.** This outline was never published and is **out of date** in one important way: it lists "Yjs CRDT for collaborative text fields" as a planned merge strategy. The current plan (per the [April 2026 devlog post](https://github.com/ebbjs/ebbjs/blob/main/packages/www/src/content/devlog/how-collaborative-editing-works.mdx)) is a causal tree over existing Action/Update primitives, **not** Yjs. The high-level dual-store argument (RocksDB + SQLite + on-demand materialization) is still correct and is documented in `docs/scratch/storage-architecture-v2.md`.
+
 ## Working Title
 
 "Why Our Sync Engine Uses Two Databases (and Zero at Write Time)"

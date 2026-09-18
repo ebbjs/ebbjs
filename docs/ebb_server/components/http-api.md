@@ -1,5 +1,7 @@
 # HTTP API
 
+> **Status: Implemented (client-facing endpoints only).** `POST /sync/actions`, `POST /sync/handshake`, `GET /sync/groups/:group_id`, `GET /sync/live`, `POST /sync/presence`, `GET /entities/:id`, `POST /entities/query` are shipped. **Not implemented:** `POST /functions/:name` (slice 5 — server functions) and `GET /sync/replication` (slice 6 — peer replication).
+
 ## Purpose
 
 The Plug/Cowboy HTTP router that exposes all client-facing and internal endpoints. This is the entry point for every external interaction with the server: Action writes, entity reads (for Bun server functions), sync handshake, paginated catch-up, live SSE subscriptions, presence broadcasting, server function invocation, and peer replication.

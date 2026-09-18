@@ -1,5 +1,7 @@
 # ebb-client v1 — Read-Only Sync Client
 
+> **Status: Forward-looking — design spec for v1.** The `@ebbjs/client` package is currently a stub (`export {};`). The components described here (`SyncConnection`, `SyncWorker`, etc.) are **planned, not implemented**. This is a reasonable starting point: a read-only sync client (handshake + catch-up + materialize) using the in-memory `@ebbjs/storage` adapter, with no writes, outbox, or reactive queries. Writes and outbox would come in a later iteration.
+
 ## Summary
 
 The v1 client is a read-only sync client that connects to a running `ebb_server`, performs catch-up on a single group, and maintains correct materialized entity state in its local entity store. It bypasses authentication via the `x-ebb-actor-id` header and uses the in-memory `@ebbjs/storage` adapter for local state.

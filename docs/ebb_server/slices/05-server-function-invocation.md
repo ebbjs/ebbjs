@@ -1,5 +1,7 @@
 # Slice 5: Server Function Invocation
 
+> **Status: Not started — design only.** This document is an architectural outline for `defineFunction` and the Bun Application Server. The Elixir server has no `/functions/:name` endpoint, no function version lookup, no `WriterRouter`, and no Bun runtime is in the repo. **Yjs collaborative-text merge (referenced in this slice and the EntityStore spec) is not part of the plan** — see [the devlog](https://github.com/ebbjs/ebbjs/blob/main/packages/www/src/content/devlog/how-collaborative-editing-works.mdx) for the actual intended approach (causal tree over existing Action/Update primitives).
+
 ## Goal
 
 A client can invoke a server function by name, the Elixir server forwards the invocation to the Bun Application Server, and the Bun function can read entities (via `ctx.get`/`ctx.query`) and write Actions (via `ctx.create`/`ctx.update`/`ctx.delete`) through the Elixir HTTP API, with all reads returning zero-staleness materialized state.

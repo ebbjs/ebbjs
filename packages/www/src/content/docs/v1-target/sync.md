@@ -3,9 +3,11 @@ title: "Sync Protocol"
 description: "Replication, catch-up, subscription, and the Outbox."
 ---
 
-In Ebb, [Groups](/docs/groups) are our sync boundary. Each node can be seen as containing a partial replica of all the data in the our application based on a set of `Groups` that node is subscribed to.
+> **Note — Forward-looking API outline.** This document describes the planned v1 client-side sync behavior. The **server-side protocol is implemented** in `ebb_server/` — see the [server HTTP API spec](https://github.com/ebbjs/ebbjs/blob/main/ebb_server/openapi.yaml) for the exact endpoints (`POST /sync/handshake`, `GET /sync/groups/:group_id?offset=N`, `GET /sync/live?groups=...&cursor=N`, `POST /sync/actions`, `POST /sync/presence`). The client-side outbox / catch-up / subscription code described here is **not yet built**.
 
-We can think of our goal of our sync engine in Ebb as: "How do I ensure two nodes have the same [Actions](/docs/data-model) for a given `Group`".
+In Ebb, [Groups](/docs/v1-target/groups) are our sync boundary. Each node can be seen as containing a partial replica of all the data in the our application based on a set of `Groups` that node is subscribed to.
+
+We can think of our goal of our sync engine in Ebb as: "How do I ensure two nodes have the same [Actions](/docs/v1-target/data-model) for a given `Group`".
 
 This leaves us with a well-defined, but not trivial problem to solve. To solve it, we'll need three main pieces that any replication system needs to have:
 
@@ -29,7 +31,7 @@ You can think about replication/sync happening in three phases:
 
 1. **Handshake** — The client authenticates and receives metadata about the sync session. This includes which Groups the client can subscribe to (based on its Actor's GroupMember records), whether the client's cursor is stale and requires a full resync, and whether the client's version is too old to proceed (triggering an "update required" message).
 
-2. **Catch-up** — The client requests all Actions it missed since its last sync, paginated by [GSN](/docs/clock#dual-timestamp-system).
+2. **Catch-up** — The client requests all Actions it missed since its last sync, paginated by [GSN](/docs/v1-target/clock#dual-timestamp-system).
 
 3. **Subscription** — Once caught up, the client subscribes to a continuous push of new Actions.
 
@@ -41,23 +43,27 @@ You can think about replication/sync happening in three phases:
 │     Client                                      Server                      │
 │        │                                           │                        │
 │        │  ──────── 1. HANDSHAKE ─────────────────► │                        │
-│        │     authenticate(actor_id)                │                        │
+│        │     POST /sync/handshake                  │
+│     Headers: x-ebb-actor-id               │                        │
 │        │  ◄─────────────────────────────────────── │                        │
-│        │     { groups: [...], cursor_valid: true } │                        │
+│        │     { actor_id, groups: [...], cursors }  │                        │
 │        │                                           │                        │
 │        │  ──────── 2. CATCH-UP ──────────────────► │                        │
-│        │     GET /sync?group=X&cursor=150          │                        │
+│        │     GET /sync/groups/group_abc?offset=150 │                        │
 │        │  ◄─────────────────────────────────────── │                        │
-│        │     [actions 151-200] + control:continue  │                        │
+│        │     [actions 151-200]                     │
+│     stream-next-offset: 201               │
+│     stream-up-to-date: false              │                        │
 │        │  ────────────────────────────────────────►│                        │
-│        │     GET /sync?group=X&cursor=200          │                        │
+│        │     GET /sync/groups/group_abc?offset=201 │                        │
 │        │  ◄─────────────────────────────────────── │                        │
-│        │     [actions 201-210] + control:caught_up │                        │
+│        │     [actions 201-210]                     │
+│     stream-up-to-date: true               │                        │
 │        │                                           │                        │
 │        │  ════════ 3. SUBSCRIPTION ══════════════► │                        │
-│        │     subscribe(groups: [X, Y, Z])          │                        │
+│        │     GET /sync/live?groups=...&cursor=N    │                        │
 │        │  ◄══════════════════════════════════════  │                        │
-│        │     (continuous push of new actions)      │                        │
+│        │     (SSE stream: action events)           │                        │
 │        ▼                                           ▼                        │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -71,9 +77,9 @@ After coming online, the client requests the server for all of the `Groups` it i
 
 For each `Group`, the client requests a paginated list of `Actions` starting from a `cursor` that equals the last GSN it saw from that server.
 
-`GET /sync?groupId=<group_id>&cursor=<gsn>`
+`GET /sync/groups/<group_id>?offset=<gsn>`
 
-This endpoint returns Actions ordered by GSN (ensuring no gaps in the client's view), where each Action contains its full set of Updates and its original [HLC](/docs/clock) timestamp for proper state materialization. The response includes a `control` message at the end telling the client to request again or that they are up to date. Pagination always splits between Actions, never within—an Action is never split across pages.
+This endpoint returns Actions ordered by GSN (ensuring no gaps in the client's view), where each Action contains its full set of Updates and its original [HLC](/docs/v1-target/clock) timestamp for proper state materialization. The response sets a `stream-next-offset` header for the next request, and `stream-up-to-date: true` when the client has caught up. Pagination always splits between Actions, never within—an Action is never split across pages.
 
 The client continues to request and digest these messages, increasing the `cursor` based on the last GSN received until they get a `control` message notifying them they are up to date.
 
@@ -81,7 +87,7 @@ The client continues to request and digest these messages, increasing the `curso
 
 1. Actions are stored with both their original HLC (for causal ordering) and a server-assigned GSN (for reliable sync)
 2. Clients can safely request "all Actions with GSN > X" knowing they won't miss any due to network timing
-3. The server streams Actions in GSN order for client sync, but applies their Updates in HLC order for state materialization (using each field's [type](/docs/data-model#typed-fields) to dispatch the appropriate merge function)
+3. The server streams Actions in GSN order for client sync, but applies their Updates in HLC order for state materialization (using each field's [type](/docs/v1-target/data-model#typed-fields) to dispatch the appropriate merge function)
 4. Client failover requires connecting to a new server and performing a full resync, since GSNs are server-specific (see below)
 
 ## Client failover
@@ -163,7 +169,7 @@ When a client writes data, the Action doesn't go directly to the server. Instead
 
 **The write flow:**
 
-1. **Local validation** — The client checks [permissions](/docs/permissions) and schema locally before accepting the write. This fails fast for obvious violations (e.g., user doesn't have `post.create` permission).
+1. **Local validation** — The client checks [permissions](/docs/v1-target/permissions) and schema locally before accepting the write. This fails fast for obvious violations (e.g., user doesn't have `post.create` permission).
 
 2. **Optimistic apply** — The Action is written to the Outbox as **pending** and all of its Updates are immediately applied to the local materialized state. The user sees their changes right away.
 

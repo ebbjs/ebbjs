@@ -1,5 +1,7 @@
 # System Cache
 
+> **Status: Implemented.** The shared ETS tables (`dirty_set`, `group_members`, `relationships`) and the `:atomics` references for GSN and watermark are shipped. Populated from RocksDB on startup; the `DirtyTracker`, `GroupCache`, `RelationshipCache`, and `WatermarkTracker` modules that own this state are all shipped as separate GenServers under the Storage Supervisor.
+
 ## Purpose
 
 Owns the ETS tables and `:atomics` references that serve the hottest code paths in the system: permission checks, dirty entity tracking, fan-out routing, and GSN/watermark coordination. Populates the permission caches from RocksDB on startup and provides the shared state that Writers, Entity Store, Permission Checker, and Fan-Out all depend on.

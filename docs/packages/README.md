@@ -1,5 +1,7 @@
 # ebb JS Foundation Packages
 
+> **Status:** Describes the **planned** foundation for the TypeScript packages. Today, `@ebbjs/core` and `@ebbjs/storage` are **shipped and tested**; `@ebbjs/client` (the sync client SDK they back) is a **stub** (`export {};`). The two foundation packages are ready to support the client SDK; the client SDK itself is the next major piece of work.
+
 ## Summary
 
 Two packages that provide building blocks for `@ebbjs/client`:

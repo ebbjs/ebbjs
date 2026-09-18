@@ -1,5 +1,7 @@
 # Slice 2: Permission-Checked Write
 
+> **Status: Implemented.** Groups, GroupMembers, Relationships, and the `PermissionChecker` are shipped in `ebb_server/lib/ebb_server/storage/`. `AuthPlug` (bypass + external modes) is shipped. The `POST /sync/handshake` and `POST /entities/query` endpoints use these checks.
+
 ## Goal
 
 A client can bootstrap a Group (create Group + GroupMember + Relationship in one Action), then write a user entity into that Group, and have the server enforce that only Group members with the correct permissions can write to entities in that Group.

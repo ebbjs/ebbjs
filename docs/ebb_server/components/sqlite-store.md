@@ -1,5 +1,7 @@
 # SQLite Store
 
+> **Status: Implemented.** `EbbServer.Storage.SQLite` is shipped and is the only module that talks to `exqlite`. Schema DDL, entity UPSERT, and filtered queries with permission JOINs are all in place.
+
 ## Purpose
 
 Manages the SQLite database that serves as the read-optimized materialized entity cache. Handles schema DDL, entity UPSERT (during materialization), and filtered queries with permission JOINs for `ctx.query()`. This is the only module that interacts with `exqlite` directly.
