@@ -29,11 +29,11 @@ Ebb packages them so you can write application logic instead of infrastructure.
 
 Ebb gives you a complete stack for building local-first applications:
 
-- **`@ebbjs/core`** — TypeBox schemas, Hybrid Logical Clock implementation, MessagePack codec, action-creation helpers, and shared domain types. *(Shipped)*
-- **`@ebbjs/storage`** — `StorageAdapter` interface and an in-memory implementation (ActionLog, DirtyTracker, EntityStore, CursorStore). *(Shipped, in-memory only)*
-- **`@ebbjs/client`** — Sync client (handshake, catch-up, SSE subscription, outbox, optimistic writes, query API). *(Planned — the package is currently a stub; the storage adapter is ready to back it.)*
-- **`@ebbjs/react`** — React bindings: `EbbProvider`, `useQuery`, `useClient`, `useConnection`. *(Planned)*
-- **`ebb_server/`** — Elixir/OTP sync server: RocksDB action log, SQLite materialization, HTTP API, SSE fan-out, permissions, presence. *(Shipped)*
+- **`@ebbjs/core`** — TypeBox schemas, Hybrid Logical Clock implementation, MessagePack codec, action-creation helpers, and shared domain types. _(Shipped)_
+- **`@ebbjs/storage`** — `StorageAdapter` interface and an in-memory implementation (ActionLog, DirtyTracker, EntityStore, CursorStore). _(Shipped, in-memory only)_
+- **`@ebbjs/client`** — Sync client (handshake, catch-up, SSE subscription, outbox, optimistic writes, query API). _(Planned — the package is currently a stub; the storage adapter is ready to back it.)_
+- **`@ebbjs/react`** — React bindings: `EbbProvider`, `useQuery`, `useClient`, `useConnection`. _(Planned)_
+- **`ebb_server/`** — Elixir/OTP sync server: RocksDB action log, SQLite materialization, HTTP API, SSE fan-out, permissions, presence. _(Shipped)_
 
 Define your models once. Ebb handles syncing them across every node in your system, enforcing permissions, detecting and surfacing conflicts, evolving your schema, and cleaning up after itself.
 

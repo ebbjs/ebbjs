@@ -11,7 +11,7 @@ Provides a storage adapter interface for @ebbjs/client. The adapter pattern allo
 - Define the `StorageAdapter` interface
 - Provide an in-memory implementation for v1
 - Track per-group cursors (GSN)
-- Maintain action outbox with status tracking *(planned)*
+- Maintain action outbox with status tracking _(planned)_
 
 ## Alignment with Server
 
