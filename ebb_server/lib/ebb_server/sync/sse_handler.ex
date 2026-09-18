@@ -116,13 +116,13 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
   defp do_sse_loop(conn, sse_pid, monitor_ref) do
     receive do
       {:sse_chunk, kind, payload} ->
-        case chunk_event(conn, kind, payload) do
+        case chunk(conn, SSEConnection.format_sse_event(kind, payload)) do
           :ok -> do_sse_loop(conn, sse_pid, monitor_ref)
           :closed -> :ok
         end
 
       :keepalive ->
-        case chunk_keepalive(conn) do
+        case chunk(conn, ": keepalive\n\n") do
           :ok ->
             Process.send_after(self(), :keepalive, @keepalive_interval_ms)
             do_sse_loop(conn, sse_pid, monitor_ref)
@@ -136,18 +136,9 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
     end
   end
 
-  defp chunk_event(conn, kind, payload) do
-    case Plug.Conn.chunk(conn, SSEConnection.format_sse_event(kind, payload)) do
+  defp chunk(conn, payload) do
+    case Plug.Conn.chunk(conn, payload) do
       {:ok, _conn} -> :ok
-      {:error, :closed} -> :closed
-      {:error, _reason} -> :closed
-    end
-  end
-
-  defp chunk_keepalive(conn) do
-    case Plug.Conn.chunk(conn, ": keepalive\n\n") do
-      {:ok, _conn} -> :ok
-      {:error, :closed} -> :closed
       {:error, _reason} -> :closed
     end
   end
