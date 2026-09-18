@@ -164,8 +164,7 @@ defmodule EbbServer.Storage.Writer do
     else
       batch_size = length(filtered)
 
-      {gsn_start, gsn_end} =
-        GsnCounter.claim_gsn_range(batch_size, state.gsn_counter)
+      {gsn_start, gsn_end} = GsnCounter.claim_gsn_range(batch_size, state.gsn_counter)
 
       rocks_name = state.rocks_name
 

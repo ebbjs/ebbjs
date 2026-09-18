@@ -110,8 +110,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
         ]
       }
 
-      assert {:error, "not_authorized", _} =
-               Authorizer.authorize([action], "a_1", ctx)
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
     end
 
     test "unauthorized write (wrong permissions)" do
@@ -143,8 +142,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
         ]
       }
 
-      assert {:error, "not_authorized", _} =
-               Authorizer.authorize([action], "a_1", ctx)
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
     end
 
     test "wildcard permission matches" do
@@ -276,8 +274,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
         ]
       }
 
-      assert {:error, "not_authorized", _} =
-               Authorizer.authorize([action], "a_1", ctx)
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
     end
 
     test "empty action list returns ok" do
