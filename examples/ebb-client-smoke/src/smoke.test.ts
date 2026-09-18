@@ -45,7 +45,9 @@ async function loadServerModule(): Promise<ServerRuntime> {
 }
 
 const DATA_DIR = process.env.EBB_CLIENT_SMOKE_DATA_DIR ?? `/tmp/ebb-smoke-data-${process.pid}`;
-const PORT = Number(process.env.EBB_CLIENT_SMOKE_PORT ?? 4101);
+// The ebb_server release ignores EBB_PORT (config-driven) and always binds
+// 4000 in prod. See ebb_server/lib/ebb_server/application.ex.
+const PORT = Number(process.env.EBB_CLIENT_SMOKE_PORT ?? 4000);
 const SERVER_BIN = join(
   dirname(fileURLToPath(import.meta.url)),
   "../../../../packages/server/dist/ebb_server/bin/ebb_server",
