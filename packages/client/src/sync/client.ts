@@ -98,6 +98,20 @@ export class SyncClient {
   }
 
   /**
+   * Close the active SSE stream and clear the field. Swallows errors
+   * because a half-closed stream is fine when we're tearing down.
+   */
+  private closeStream(sub: ActiveSubscription): void {
+    if (!sub.stream) return;
+    try {
+      sub.stream.close();
+    } catch {
+      // ignore
+    }
+    sub.stream = null;
+  }
+
+  /**
    * Open the SSE live stream for the given groups.
    *
    * Returns an `unsubscribe` function that closes the stream. Internally
@@ -353,14 +367,7 @@ export class SyncClient {
         if (sub.cancelled) return;
         this.scheduleReconnect(sub, errorMessage(err));
       } finally {
-        if (sub.stream) {
-          try {
-            sub.stream.close();
-          } catch {
-            // ignore
-          }
-          sub.stream = null;
-        }
+        this.closeStream(sub);
       }
     }
   }
@@ -406,13 +413,7 @@ export class SyncClient {
       }
       // Force a stream restart by closing the current one; the loop will
       // pick the new cursor up on the next iteration.
-      if (sub.stream) {
-        try {
-          sub.stream.close();
-        } catch {
-          // ignore
-        }
-      }
+      this.closeStream(sub);
     }
   }
 
@@ -449,13 +450,7 @@ export class SyncClient {
     );
     // Close the current stream so the for-await loop exits and the outer
     // `while (!sub.cancelled)` re-enters to open a fresh stream.
-    if (sub.stream) {
-      try {
-        sub.stream.close();
-      } catch {
-        // ignore
-      }
-    }
+    this.closeStream(sub);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (sub.cancelled) return;
@@ -465,14 +460,7 @@ export class SyncClient {
 
   private cancelSubscription(sub: ActiveSubscription): void {
     sub.cancelled = true;
-    if (sub.stream) {
-      try {
-        sub.stream.close();
-      } catch {
-        // ignore
-      }
-      sub.stream = null;
-    }
+    this.closeStream(sub);
     if (sub === this.activeSub) {
       this.activeSub = null;
     }
