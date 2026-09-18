@@ -144,6 +144,82 @@ function buildSeedAction(actorId: string, data: SeedData) {
 }
 
 /**
+ * Build an action that adds `actorId` as a member of `groupId`. Run
+ * idempotently on every demo load so any actor can join the demo group
+ * without a separate signup flow.
+ *
+ * The action's actor_id is the demo-seeder (who already has
+ * `groupMember.*` permission) — only the seeder can authorize the
+ * `groupMember.put` verb. The new member's actor_id is in the payload.
+ */
+export function buildAddMemberAction(
+  actorId: string,
+  groupId: string = DEMO_GROUP_ID,
+): ReturnType<typeof createAction>["action"] {
+  const clock = createClock();
+  const memberId = `gm_${actorId}`;
+  const update = {
+    subject_id: memberId,
+    subject_type: "groupMember",
+    method: "put" as const,
+    data: {
+      actor_id: { value: actorId, update_id: "add_member", hlc: localEvent(clock) },
+      group_id: { value: groupId, update_id: "add_member", hlc: localEvent(clock) },
+      permissions: {
+        value: ["text_document.*", "group.read", "groupMember.*", "relationship.*"],
+        update_id: "add_member",
+        hlc: localEvent(clock),
+      },
+    },
+  };
+  // Action is attributed to the seeder (the actor making the request),
+  // not the actor being added — otherwise the server rejects the put.
+  const { action } = createAction({ actorId: "demo-seeder", updates: [update], clock });
+  return action;
+}
+
+/**
+ * POST an "add member" action. Idempotent — re-running for an
+ * already-member actor is fine (the server will accept the redundant
+ * put for the same groupMember entity). Sent on behalf of
+ * `demo-seeder`, who already has `groupMember.*` permission.
+ */
+export async function addMember(baseUrl: string, actorId: string, groupId?: string): Promise<void> {
+  const action = buildAddMemberAction(actorId, groupId);
+  const body = encodeSync({ actions: [action] });
+
+  const res = await fetch(`${baseUrl}/sync/actions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/msgpack",
+      "x-ebb-actor-id": "demo-seeder",
+    },
+    body: body as BodyInit,
+  });
+
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`addMember failed: ${res.status} ${text}`);
+  }
+  // Tolerate already-existing member rejections.
+  try {
+    const json = JSON.parse(text);
+    if (json.rejected && json.rejected.length > 0) {
+      const onlyConflicts = json.rejected.every(
+        (r: { reason?: string }) =>
+          r.reason === "already_exists" || r.reason === "duplicate_action",
+      );
+      if (!onlyConflicts) {
+        // eslint-disable-next-line no-console
+        console.warn("[addMember] rejected:", json.rejected);
+      }
+    }
+  } catch {
+    // ignore non-JSON
+  }
+}
+
+/**
  * POST the seed Action to the server. Idempotent — re-running on an
  * already-seeded group is safe; the server will dedup by action id (the
  * HLC differs but the action body is the same... actually no, the HLC

@@ -1,10 +1,11 @@
 /**
- * Bootstrap: connect to the server, handshake, optionally seed the demo
- * data, then return a configured `SyncClient` ready for use.
+ * Bootstrap: connect to the server, handshake, ensure the demo data
+ * exists, add the connecting actor as a member, then return a
+ * configured `SyncClient` ready for use.
  */
 
 import { createClient, type SyncClient } from "@ebbjs/client";
-import { buildDemoSeed, seed } from "./seed";
+import { addMember, buildDemoSeed, seed } from "./seed";
 
 export interface BootstrapResult {
   client: SyncClient;
@@ -46,7 +47,17 @@ export async function bootstrap(opts: {
     }
   }
 
-  // 2. Handshake.
+  // 2. Add this actor as a member of the demo group (idempotent).
+  // Without this the handshake would return zero groups and the demo
+  // would have nothing to subscribe to.
+  try {
+    await addMember(serverUrl, actorId);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn("[bootstrap] addMember warning:", err);
+  }
+
+  // 3. Handshake.
   const { groups } = await client.handshake();
   const groupIds = groups.map((g) => g.id);
 

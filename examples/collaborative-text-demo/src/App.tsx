@@ -16,7 +16,7 @@ import { ConflictPanel } from "./ConflictPanel";
 import { bootstrap, type BootstrapResult } from "./bootstrap";
 import { DEMO_DOC_ID, DEMO_GROUP_ID } from "./seed";
 
-const SERVER_URL = "http://localhost:4000";
+const SERVER_URL = ""; // Empty = same origin (vite dev proxies to localhost:4000)
 
 type AppState =
   | { status: "loading"; message: string }
