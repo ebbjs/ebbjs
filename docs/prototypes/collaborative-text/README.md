@@ -204,7 +204,21 @@ The experiment's relay wraps these in `{ type: 'INSERT_RUN', node: ... }` messag
 { id, actor_id, hlc, gsn: 0, updates: [{ id, subject_id: <runId>, subject_type: 'run', method: 'put' | 'patch' | 'delete', data: ... }] }
 ```
 
-**Run ID format.** From `experiment/collaborative-text/src/causal-tree.ts`: `id: HLC-derived ID (from the first character's HLC)`. The run's ID is a stringification of its HLC. This makes runs orderable by HLC and gives deterministic merge order.
+**Run ID format.** Runs get IDs derived from the originating Action's HLC plus the actor ID. The POC formats this as a string `{15-digit-ts}:{5-digit-count}:{peerId}` (`experiment/causal-tree.ts:11`, `hlc.ts:109-113`); production's HLC is a packed bigint `(logical_time << 16) | counter` with `actor_id` on the Action. The merge order is the same — compare HLCs first, fall back to actor ID lexicographically — but the wire format differs.
+
+**Reconciliation (slice 2 task):** change the run ID format to use the production HLC representation, e.g. `<packed-hlc-bignum>:<actor_id>`. The merge logic in `causal-tree.ts` stays unchanged because it sorts by `compare(hlc1, hlc2)` which reduces to `(ts, count)` order with `actor_id` as the final tiebreak. Concretely:
+
+```ts
+// POC (experiment/causal-tree.ts)
+id: `${ts}:${count}:${peerId}`  // string format
+
+// Production (after port)
+id: `${formatHlc(hlc)}:${actor_id}`  // formatHlc returns the bigint as a string
+```
+
+Where `formatHlc(hlc)` is `@ebbjs/core`'s `HLCTimestamp`-string formatter. The `actor_id` is taken from the originating Action, not baked into the HLC.
+
+After this change, a run's `parentId` references another run's `<packed-hlc-bignum>:<actor_id>` ID. The deterministic-split ID generator in `experiment/causal-tree.ts:342` (`makeSplitId`) needs the same format.
 
 **Conflict surfacing in the merge path.** When the reducer applies an incoming action to the tree:
 1. Check if the action targets a RunNode that another in-flight or recently-merged action also touched
@@ -232,6 +246,40 @@ New package. Vite + React 19 + CodeMirror 6 + Tailwind, matching the POC stack. 
 **Conflict panel** (collapsible right sidebar): shows the last N conflicts with pre/post text and a dismiss button.
 
 **Why this stack.** React 19 + Vite matches what the POC uses. CodeMirror 6 is the right editor for showing the actual document state (the POC already proved it works). Tailwind is a one-line config add.
+
+### Presence (`@ebbjs/client/src/presence/`)
+
+The POC has a **complete presence implementation** in [`experiment/collaborative-text/src/presence.ts`](../../../experiment/collaborative-text/src/presence.ts) — port it directly. The only change: replace the BroadcastChannel presence messages with `POST /sync/presence` (the server endpoint already exists).
+
+**Why cursors are expressed as RunNode IDs, not positions.** When two users are typing concurrently, document positions shift. RunNode IDs are stable across edits (a run's ID comes from its HLC, which doesn't change). So a remote cursor's `anchorId` and `headId` stay meaningful even as the document rearranges around them. The `positionToRunRef` / `runRefToPosition` helpers (`presence.ts:198-251`) resolve IDs to current positions for rendering.
+
+**API shape:**
+
+```ts
+// Local side: report cursor/selection on every CodeMirror selection change
+client.presence.setLocalCursor({ anchorId, anchorOffset, headId, headOffset });
+
+// Server broadcasts presence; the client dispatches incoming events
+client.onPresence((presence: PresenceEvent) => {
+  // presence: { actor_id, entity_id, data: { anchorId, anchorOffset, headId, headOffset, color } }
+  // Store in a per-actor map; the CM6 ViewPlugin reads it to render decorations
+});
+
+// Per-actor map is shared with the CM6 extension
+const presenceMap = client.presence.forEntity(entityId);  // Map<actor_id, PresenceData>
+```
+
+**POC components to port:**
+
+| POC file | What | Port to |
+|---|---|---|
+| `presence.ts` (run-optimized types + helpers + hook) | 419 lines | `@ebbjs/client/src/presence/presence.ts` (mostly verbatim) |
+| `cm-bridge.ts` cursor widget | already in cm-bridge | `@ebbjs/client/src/presence/cursor-widget.ts` |
+| `App.tsx` peer color palette + `usePresence` integration | small slice | `examples/collaborative-text-demo/src/presence.tsx` |
+
+**Sync vs async.** The POC uses a mutable `useRef` for the presence map (sync reads from the CM6 ViewPlugin) plus a `useState` copy (for React re-renders). Both are needed; the docstring at `presence.ts:268-281` explains why. Keep this dual-store pattern in the port.
+
+**Clamping on stale IDs.** If a run is split or deleted after a presence message was sent, the position resolution in `runRefToPosition` clamps to the end of the span (`presence.ts:227-228`) rather than failing. This means a cursor briefly snaps to the end of a run after a split — acceptable for the prototype.
 
 ---
 
@@ -289,6 +337,14 @@ doc.localDelete({ runId, offset: 0, count: 5 });
 
 // Send pending actions to the server
 const { rejected } = await client.write(doc.pendingActions());
+
+// Presence (optional in slice 3, recommended)
+client.presence.setLocalCursor({
+  anchorId: 'a_<...>',       // RunNode ID at the anchor
+  anchorOffset: 3,           // offset within that run
+  headId: 'a_<...>',
+  headOffset: 7,
+});
 ```
 
 ### Demo
@@ -331,16 +387,17 @@ Five vertical slices, ordered by what unblocks what. Each slice ends with a runn
 
 **Tasks:**
 
-1. Move `causal-tree.ts` and `hlc.ts` (HLC is already in `@ebbjs/core`, so use that)
+1. Move `causal-tree.ts` into `@ebbjs/client/src/fields/collaborative-text/`. Use `@ebbjs/core`'s HLC instead of the experiment's `hlc.ts`.
+2. **Reconcile run ID format** (see "Run ID format" in CausalTree component design above). Change from `{ts}:{count}:{peerId}` string to `${formatHlc(hlc)}:${actor_id}` using production HLC representation. Update `makeSplitId` accordingly. Update `parentId` references throughout the reducer.
 3. Adapt the wire format: experiment's `DocAction`s → ebb Action/Update shape (`subject_type: 'run'`, `subject_id: <runId>`)
 4. `client.textDocument.open(docId)` → returns the `CausalTree` instance, subscribed to incoming Updates for that entity
 5. `doc.localInsert()` / `doc.localDelete()` → create an Action with the right Update, apply locally, mark pending for `client.write()`
 6. `doc.onUpdate()` event for incoming Updates (after local materialization)
 7. Conflict detection in the merge path (Decision 4)
 8. `doc.onConflict()` event + `doc.conflicts.all()` query
-9. Tests: port `experiment/collaborative-text/src/__tests__/` to `packages/client/src/fields/collaborative-text/__tests__/`, add network-driven tests using a mock SSE source
+9. Tests: port `experiment/collaborative-text/src/__tests__/` to `packages/client/src/fields/collaborative-text/__tests__/`, add network-driven tests using a mock SSE source. **Verify the run-ID-format change preserves test expectations.**
 
-**Acceptance:** `client.applyActions([...])` on a text entity produces the same document as the BroadcastChannel POC for the same edit sequence.
+**Acceptance:** `client.applyActions([...])` on a text entity produces the same document as the BroadcastChannel POC for the same edit sequence. All POC tests pass with the new run ID format.
 
 ### Slice 3 — Demo app
 
@@ -354,9 +411,10 @@ Five vertical slices, ordered by what unblocks what. Each slice ends with a runn
 4. Hardcoded group ID `grp_demo`; seed via `@ebbjs/server`'s `seed()` on first load (POST bootstrap group + member + document if they don't exist)
 5. Connection state indicator (connecting / live / offline badge)
 6. Conflict panel (collapsible right sidebar showing last N conflicts)
-7. Test: manual two-tab test against `mix dev`
+7. **Optional but recommended:** port `experiment/collaborative-text/src/presence.ts` to `@ebbjs/client/src/presence/`. Replace BroadcastChannel presence messages with `POST /sync/presence`. Render remote cursors via CM6 decorations. This makes the demo feel real and validates the sync client's presence path. (If presence slips slice 3, it becomes a slice 5 polish item.)
+8. Test: manual two-tab test against `mix dev`
 
-**Acceptance:** `pnpm --filter collaborative-text-demo dev` + `cd ebb_server && mix dev` → open two tabs with different actor IDs → typing in one appears in the other in <100ms over the Action/SSE stack.
+**Acceptance:** `pnpm --filter collaborative-text-demo dev` + `cd ebb_server && mix dev` → open two tabs with different actor IDs → typing in one appears in the other in <100ms over the Action/SSE stack. If presence is included: remote cursors are visible and update as the other tab types.
 
 ### Slice 4 — End-to-end Playwright test
 
@@ -402,6 +460,9 @@ packages/client/src/fields/collaborative-text/tree.ts  # port of experiment/caus
 packages/client/src/fields/collaborative-text/types.ts # RunNode, Conflict, etc.
 packages/client/src/fields/collaborative-text/conflict.ts  # conflict detection
 packages/client/src/text-document.ts                   # new — client.textDocument.open(docId) API
+packages/client/src/presence/                          # new — port of experiment/presence.ts (slice 3 optional)
+packages/client/src/presence/presence.ts               # PresenceData, positionToRunRef, runRefToPosition, usePresence
+packages/client/src/presence/cursor-widget.ts          # CM6 CursorWidget
 
 packages/storage/src/memory/                            # modify — add subscribe hook for live updates
 packages/storage/src/types/storage-adapter.ts           # modify — add subscribe(callback) for live updates
@@ -415,6 +476,7 @@ examples/ebb-client-smoke/                              # new — slice 1 accept
 
 experiment/collaborative-text/                          # stays as a test harness
 experiment/collaborative-text/src/causal-tree.ts        # moved OUT — now in packages/client
+experiment/collaborative-text/src/presence.ts           # moved OUT — now in packages/client (slice 3)
 experiment/collaborative-text/src/relay.ts              # stays — used by experiment for testing the algorithm
 experiment/collaborative-text/src/__tests__/            # tests migrate to packages/client
 experiment/collaborative-text/PLAN.md                  # update or delete (this doc supersedes it)
@@ -432,17 +494,17 @@ These came up during design but don't block the prototype. Resolve during or aft
 
 1. **HLC skew handling.** Server validates client HLCs against 120s future / 24h past drift. If a client's clock is wrong, their actions get rejected. For the prototype, the demo runs locally so no clock drift. If shared across machines: document the requirement ("use NTP") or add a "discovery" endpoint that lets clients sync HLC state.
 
-2. **Optimistic vs pessimistic local apply.** The design assumes optimistic (apply locally, reconcile if server rejects). If a reject is common (e.g., permission denial), the UI flashes confusingly. Mitigation: do permission checks client-side (the storage has synced GroupMember records) before applying locally. Server-side rejection is then a rare event that should be a UI error, not a "revert the edit" event.
+2. ~~Optimistic vs pessimistic local apply~~ **RESOLVED by POC.** The POC's `cm-bridge.ts` dispatches every local CM transaction to the `docReducer` synchronously (`cm-bridge.ts:182-303`). Optimistic apply is the POC's default — the design is correct. No further work needed.
 
 3. **Bootstrap mechanics.** The demo needs to create the group + member + document on first load. Options:
    - Bundle the seed call into the demo's startup (synchronous on page load)
    - Have the demo auto-create on first load via bootstrap Actions
    - Pre-seed via a server-side script
-   The simplest is option 1 (call `@ebbjs/server`'s `seed()`). The demo is single-user on initial visit, multi-user on subsequent visits.
+   The simplest is option 1 (call `@ebbjs/server`'s `seed()`). The demo is single-user on initial visit, multi-user on subsequent visits. **Resolve during slice 1** — confirm `seed()` works end-to-end from a browser. If it does, document the pattern. If it doesn't (e.g., CORS), pivot to option 3 (a one-time server-side seed script).
 
-4. **Presence.** The April 2026 devlog mentions "presence as the bridge from collaborative text" but the prototype doesn't include cursor presence. The server has `POST /sync/presence` ready. Slice 5+ can add it; it's a small lift once the sync client exists.
+4. ~~Presence~~ **RESOLVED by POC.** `experiment/collaborative-text/src/presence.ts` is a complete, working presence implementation (419 lines). Port it to `@ebbjs/client/src/presence/` during slice 3. Only change: BroadcastChannel → `POST /sync/presence`. See the Presence section above.
 
-5. **HLC for the run ID.** The experiment's `causal-tree.ts` derives run IDs from HLC. This means the HLC is the identity, and ordering is HLC order. Need to verify this matches our HLC packing format (`(logical_time << 16) | counter`) — the experiment uses a string representation that may need adapting.
+5. ~~HLC for the run ID~~ **PARTIALLY RESOLVED.** Run IDs derived from HLC is correct (the POC does this). The mismatch is the *format*: POC uses string `{15-digit-ts}:{5-digit-count}:{peerId}`, production uses packed bigint `(logical_time << 16) | counter` plus a separate `actor_id`. Resolution is in slice 2 task 2 (see CausalTree component design): change run ID to `${formatHlc(hlc)}:${actor_id}` using production's HLC string formatter. Merge logic is unchanged.
 
 6. **Per-action conflict detection vs batch.** The detection rule fires on each incoming Action. But sometimes a single Action with multiple Updates is internally consistent (one Update's HLC dominates another's by construction). The detection should only fire when *concurrent* Actions both touch the same run. Implementation: track a small "recently applied per-run" map with the HLC of the last update; an incoming Action with concurrent HLC to that triggers detection.
 
