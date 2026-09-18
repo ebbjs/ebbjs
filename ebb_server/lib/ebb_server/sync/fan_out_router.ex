@@ -60,8 +60,7 @@ defmodule EbbServer.Sync.FanOutRouter do
   def handle_info({:batch_committed, from_gsn, to_gsn}, state) do
     watermark = WatermarkTracker.committed_watermark()
 
-    {to_push, remaining, new_last} =
-      process_batch(state, from_gsn, to_gsn, watermark)
+    {to_push, remaining, new_last} = process_batch(state, from_gsn, to_gsn, watermark)
 
     for {from, to} <- to_push do
       push_gsn_range(from, to)
@@ -147,8 +146,7 @@ defmodule EbbServer.Sync.FanOutRouter do
           {to_push :: [{non_neg_integer(), non_neg_integer()}],
            remaining :: [{non_neg_integer(), non_neg_integer()}]}
   def split_pushable(pending, last_pushed, watermark) do
-    {pushable, remaining} =
-      do_split_pushable(pending, last_pushed, watermark, [])
+    {pushable, remaining} = do_split_pushable(pending, last_pushed, watermark, [])
 
     {Enum.reverse(pushable), remaining}
   end

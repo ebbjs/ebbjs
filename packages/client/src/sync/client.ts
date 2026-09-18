@@ -30,6 +30,7 @@ import type { StorageAdapter } from "@ebbjs/storage";
 import { ConnectionStateMachine, type ConnectionState } from "./connection-state";
 import { applyAction } from "./storage";
 import { openSSEStream, type SSESubscription } from "./sse";
+import { TextDocument, TextDocumentRegistry } from "../fields/collaborative-text/text-document";
 import type {
   CatchUpResponse,
   ControlEvent,
@@ -64,6 +65,8 @@ export class SyncClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** Latest per-group cursors, refreshed by `catchUp` and SSE receipt. */
   private groupCursors: Map<string, number> = new Map();
+  /** TextDocument registry (one document per docId, per actor). */
+  private readonly textDocumentRegistry = new TextDocumentRegistry();
 
   constructor(opts: SyncClientOptions) {
     this.serverUrl = opts.serverUrl.replace(/\/$/, "");
@@ -331,6 +334,32 @@ export class SyncClient {
       this.cancelSubscription(this.activeSub);
     }
     this.stateMachine.transition("offline");
+  }
+
+  // -------------------------------------------------------------------------
+  // TextDocument (causal-tree field type)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Open (or get) the TextDocument for a given entity id.
+   *
+   * The TextDocument is a per-(docId, actor) singleton. Calling `open`
+   * twice with the same args returns the same instance; the document's
+   * DocState, pendingActions queue, and event listeners all persist.
+   *
+   * The returned TextDocument is NOT auto-wired to the SSE stream. To
+   * pipe incoming Actions into the document, call `doc.applyActions()`
+   * from your own SSE/catchUp handler:
+   *
+   * ```ts
+   * const doc = client.textDocument('doc_demo');
+   * client.subscribe(groupIds, cursor, (ev) => {
+   *   if (ev.type === 'data') doc.applyActions([ev.action]);
+   * });
+   * ```
+   */
+  textDocument(docId: string): TextDocument {
+    return this.textDocumentRegistry.open({ docId, actorId: this.actorId });
   }
 
   // -------------------------------------------------------------------------

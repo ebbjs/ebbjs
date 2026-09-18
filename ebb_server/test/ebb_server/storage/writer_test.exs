@@ -254,8 +254,7 @@ defmodule EbbServer.Storage.WriterTest do
       action1 = validated_action(%{id: "act_valid", updates: [validated_update()]})
       action2 = validated_action(%{id: "act_empty", updates: []})
 
-      assert {:ok, {1, 1}, []} =
-               Writer.write_actions([action1, action2], writer_name)
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action1, action2], writer_name)
 
       gsn_key = RocksDB.encode_gsn_key(1)
       assert {:ok, _} = RocksDB.get(RocksDB.cf_actions(rocks_name), gsn_key, name: rocks_name)
