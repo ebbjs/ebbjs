@@ -1,0 +1,5 @@
+# Netlify redirects file
+# Created to satisfy Netlify's "Redirect rules" site check.
+# The Astro site has no application-level redirects; this is an empty
+# file with just the comment above.
+
