@@ -1,5 +1,7 @@
 # Permission Checker
 
+> **Status: Implemented.** `PermissionChecker` and the in-memory `GroupCache` / `RelationshipCache` are shipped (`lib/ebb_server/storage/`). All permission lookups are ETS-based (sub-microsecond). Group-membership relationship enforcement is wired; the broader "relationship permission defaults" described below are server-enforced for Groups only — other relationship types are validated but not yet role-checked per the rules in this spec.
+
 ## Purpose
 
 Validates incoming Actions before they reach the Writer. Enforces structural correctness, HLC drift limits, actor identity, and Group-based authorization. All permission lookups use ETS (sub-microsecond) -- no database reads on the permission check path.

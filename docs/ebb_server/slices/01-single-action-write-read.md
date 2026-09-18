@@ -1,5 +1,7 @@
 # Slice 1: Single Action Write + Read-Back
 
+> **Status: Implemented.** Single Action write + read-back, with on-demand materialization via RocksDB + SQLite, is shipped in `ebb_server/`. See `lib/ebb_server/storage/rocks_db.ex`, `entity_store.ex`, `writer.ex`, and the `POST /sync/actions` / `GET /entities/:id` endpoints.
+
 ## Goal
 
 A client can POST an Action containing a single entity PUT to the server, receive a durable acknowledgment, and then GET the materialized entity back with the correct field values.

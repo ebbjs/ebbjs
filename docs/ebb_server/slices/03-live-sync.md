@@ -1,5 +1,7 @@
 # Slice 3: Live Sync (Catch-Up + SSE)
 
+> **Status: Implemented.** Catch-up, SSE live stream, presence broadcast, watermark-gated fan-out, and the corresponding HTTP endpoints (`GET /sync/groups/:group_id?offset=N`, `GET /sync/live?groups=...&cursor=N`, `POST /sync/presence`) are shipped.
+
 ## Goal
 
 A client can handshake, catch up on missed Actions for its Groups via paginated HTTP, then open a single SSE connection and receive new Actions in real-time as other clients write them.

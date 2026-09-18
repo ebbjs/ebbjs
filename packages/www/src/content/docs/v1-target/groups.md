@@ -3,15 +3,17 @@ title: "Groups, Membership & Actors"
 description: "Permission boundaries, identity, and access control primitives."
 ---
 
+> **Note — Forward-looking API outline.** The server-side implementation of Groups, GroupMembers, Relationships, and the `PermissionChecker` is **shipped** in `ebb_server/` (`lib/ebb_server/storage/`). The high-level mental model described here — service accounts, two ways to relate to a Group, online-only mutations, etc. — matches what the server enforces. The client-side surface that operates on these entities is **planned** (depends on `@ebbjs/client`).
+
 ## Groups and membership
 
-To manage permissions and sync boundaries, Ebb provides built-in Entity types: `Group`, `GroupMember`, and a special interpretation of [Relationships](/docs/relationships).
+To manage permissions and sync boundaries, Ebb provides built-in Entity types: `Group`, `GroupMember`, and a special interpretation of [Relationships](/docs/v1-target/relationships).
 
-These aren't special primitives — they're just Entities with a predefined schema that Ebb understands. They flow through the same sync mechanism, materialize the same way, and follow the same conflict resolution rules as your application Entities. The only difference is that Ebb uses them internally to enforce [permissions](/docs/permissions) and determine sync boundaries.
+These aren't special primitives — they're just Entities with a predefined schema that Ebb understands. They flow through the same sync mechanism, materialize the same way, and follow the same conflict resolution rules as your application Entities. The only difference is that Ebb uses them internally to enforce [permissions](/docs/v1-target/permissions) and determine sync boundaries.
 
 **Two ways to relate to a Group:** Actors _join_ Groups (via `GroupMember` Entities), and Entities _belong to_ Groups (via Relationships). These are different mechanisms with different rules—don't confuse them. Actor membership controls _who_ can access data; Entity membership controls _what data_ lives in a Group.
 
-**Entity membership** is modeled as a Relationship where the target is a Group. Every Entity must belong to at least one Group—this is enforced at both creation and deletion time. When you create an Entity, you must also create its Group membership Relationship in the same [Action](/docs/data-model). And you cannot remove an Entity's last Group membership—if you want the Entity gone, delete the Entity itself.
+**Entity membership** is modeled as a Relationship where the target is a Group. Every Entity must belong to at least one Group—this is enforced at both creation and deletion time. When you create an Entity, you must also create its Group membership Relationship in the same [Action](/docs/v1-target/data-model). And you cannot remove an Entity's last Group membership—if you want the Entity gone, delete the Entity itself.
 
 When Ebb sees a Relationship pointing to a Group, it interprets that as "this Entity is a member of this Group" — which has implications for sync boundaries and permissions.
 
@@ -41,7 +43,7 @@ Mutations to Groups and GroupMembers require connectivity—they cannot be perfo
 
 This constraint exists because these entities are structural—they define who can sync what. Allowing these changes offline could create inconsistent states that are difficult to resolve—for example, a user removed from a Group continuing to sync until the change propagates, or a Group deleted on one node while others are still writing to it.
 
-Changing which Groups an _Entity_ belongs to (adding or removing Group membership Relationships) works offline like any other Entity operation. These changes affect what data syncs to whom, but they flow through the normal [sync](/docs/sync) mechanism and converge like any other update.
+Changing which Groups an _Entity_ belongs to (adding or removing Group membership Relationships) works offline like any other Entity operation. These changes affect what data syncs to whom, but they flow through the normal [sync](/docs/v1-target/sync) mechanism and converge like any other update.
 
 In practice, the online-only constraint is rarely limiting. Group and GroupMember changes are infrequent compared to regular Entity operations.
 

@@ -1,5 +1,7 @@
 # RocksDB Store
 
+> **Status: Implemented.** `EbbServer.Storage.RocksDB` is shipped and is the only module that talks to the `rocksdb` hex package. The DB is opened with `enable_pipelined_write: true`. A 2-writer pipelined benchmark hit ~108k Actions/sec with full durability (see [devlog](https://github.com/ebbjs/ebbjs/blob/main/packages/www/src/content/devlog/a-rocksdb-solid-start.md)); production currently runs a single Writer.
+
 ## Purpose
 
 Manages the RocksDB embedded database instance -- opening the database, creating and referencing column families, encoding/decoding keys, and providing low-level read/write primitives that other components build on. This is the only module that interacts with the `rocksdb` hex package directly.

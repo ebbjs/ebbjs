@@ -1,5 +1,7 @@
 # Writer
 
+> **Status: Implemented (single Writer in production).** `EbbServer.Storage.Writer` is shipped and is the write hot path. **Production starts one Writer GenServer** (see `EbbServer.Application`). The RocksDB instance is opened with `enable_pipelined_write: true` so that a second Writer, if started, would benefit from pipelined commits. The 2-writer setup was benchmarked at ~108k Actions/sec with full durability — see the [devlog](https://github.com/ebbjs/ebbjs/blob/main/packages/www/src/content/devlog/a-rocksdb-solid-start.md) — but is not deployed by default.
+
 ## Purpose
 
 Serializes Action writes to RocksDB. Two Writer GenServer instances run concurrently, each independently batching incoming Actions, claiming GSN ranges atomically, encoding terms to ETF, building WriteBatches across all 5 column families, committing with `sync: true`, updating ETS caches, advancing the committed watermark, and notifying fan-out. This is the write hot path -- the component most critical to throughput.

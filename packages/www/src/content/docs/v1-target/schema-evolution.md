@@ -3,7 +3,9 @@ title: "Schema Evolution"
 description: "Versioning, migrations, and breaking changes."
 ---
 
-In a distributed system with offline clients, schema changes are tricky. A client might be offline when you deploy a new schema, then come back online with pending [Actions](/docs/data-model) written against the old structure.
+> **Note — Forward-looking API outline.** The server is **schema-agnostic** today — it reads per-field `type` tags from stored data and merges accordingly, which is the basis of the "primitives, not rigid migrations" approach described below. Per-model schema versioning, `defineModel`-level migration functions, and the "minimum supported version" handshake extension are **planned** (they will live in `@ebbjs/core` / `@ebbjs/client`).
+
+In a distributed system with offline clients, schema changes are tricky. A client might be offline when you deploy a new schema, then come back online with pending [Actions](/docs/v1-target/data-model) written against the old structure.
 
 Ebb takes a primitives-based approach: it provides the tools to handle schema evolution, but doesn't enforce a rigid migration system.
 
@@ -27,7 +29,7 @@ This is a discipline choice, not something Ebb enforces. If you don't need backw
 
 ## Breaking changes
 
-Sometimes backward compatibility isn't worth the effort. For breaking changes, you can configure a minimum supported schema version. Clients below this version receive an "update required" message during [sync](/docs/sync) and cannot proceed until they upgrade.
+Sometimes backward compatibility isn't worth the effort. For breaking changes, you can configure a minimum supported schema version. Clients below this version receive an "update required" message during [sync](/docs/v1-target/sync) and cannot proceed until they upgrade.
 
 ## What Ebb provides
 

@@ -1,36 +1,42 @@
 ---
 const sections = [
   {
-    label: 'Overview',
+    label: 'Current state',
     links: [
-      { label: 'Ebb Overview', href: '/docs/overview' },
-      { label: 'Getting Started', href: '/docs/getting-started' },
+      { label: 'What is shipped', href: '/docs/' },
     ],
   },
   {
-    label: 'Core Concepts',
+    label: 'v1 target API (planned)',
     links: [
-      { label: 'The Data Model', href: '/docs/data-model' },
-      { label: 'Relationships', href: '/docs/relationships' },
-      { label: 'Groups, Membership & Actors', href: '/docs/groups' },
+      { label: 'Overview', href: '/docs/v1-target/overview' },
+      { label: 'Getting started', href: '/docs/v1-target/getting-started' },
     ],
   },
   {
-    label: 'Architecture',
+    label: 'v1 target — Core concepts',
     links: [
-      { label: 'Hybrid Logical Clocks', href: '/docs/clock' },
-      { label: 'Sync Protocol', href: '/docs/sync' },
-      { label: 'Permission Enforcement', href: '/docs/permissions' },
-      { label: 'Conflict Resolution', href: '/docs/conflicts' },
+      { label: 'The data model', href: '/docs/v1-target/data-model' },
+      { label: 'Relationships', href: '/docs/v1-target/relationships' },
+      { label: 'Groups, membership & actors', href: '/docs/v1-target/groups' },
     ],
   },
   {
-    label: 'Guides',
+    label: 'v1 target — Architecture',
     links: [
-      { label: 'The Client', href: '/docs/client' },
-      { label: 'Garbage Collection', href: '/docs/garbage-collection' },
-      { label: 'Schema Evolution', href: '/docs/schema-evolution' },
-      { label: 'Observability & Analytics', href: '/docs/observability' },
+      { label: 'Hybrid logical clocks', href: '/docs/v1-target/clock' },
+      { label: 'Sync protocol', href: '/docs/v1-target/sync' },
+      { label: 'Permission enforcement', href: '/docs/v1-target/permissions' },
+      { label: 'Conflict resolution', href: '/docs/v1-target/conflicts' },
+    ],
+  },
+  {
+    label: 'v1 target — Guides',
+    links: [
+      { label: 'The client', href: '/docs/v1-target/client' },
+      { label: 'Garbage collection', href: '/docs/v1-target/garbage-collection' },
+      { label: 'Schema evolution', href: '/docs/v1-target/schema-evolution' },
+      { label: 'Observability & analytics', href: '/docs/v1-target/observability' },
     ],
   },
 ];
@@ -50,8 +56,8 @@ const currentPath = Astro.url.pathname;
               href={link.href}
               class:list={[
                 'block py-1.5 text-sm transition-colors border-b-2',
-                isActive 
-                  ? 'text-stone-100 font-semibold border-stone-100' 
+                isActive
+                  ? 'text-stone-100 font-semibold border-stone-100'
                   : 'text-stone-400 hover:text-stone-200 border-transparent hover:border-stone-700'
               ]}
             >

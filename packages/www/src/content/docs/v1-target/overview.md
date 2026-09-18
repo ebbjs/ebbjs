@@ -3,6 +3,8 @@ title: "Ebb Overview"
 description: "Why ebb exists and what it gives you."
 ---
 
+> **Note — Forward-looking API outline.** This document describes the planned v1 of Ebb. **None of the API surface described here is implemented yet** — Ebb is pre-alpha. What is currently in the repo: `@ebbjs/core` (types, HLC, msgpack), `@ebbjs/storage` (in-memory storage adapter), the Elixir `ebb_server` (sync server: handshake, catch-up, SSE, presence, permissions), and `@ebbjs/server` (E2E test harness). The `@ebbjs/client` sync SDK, `@ebbjs/react` bindings, server functions, and CLI are not yet built.
+
 ## Why?
 
 Ebb was born because building a collaborative, offline-capable app was way too hard.
@@ -27,10 +29,11 @@ Ebb packages them so you can write application logic instead of infrastructure.
 
 Ebb gives you a complete stack for building local-first applications:
 
-- **`@ebbjs/db`** — A relational data model built on SQLite (server) and pluggable storage (client) that handles offline writes, partial replication, and eventual consistency out of the box.
-- **`@ebbjs/client`** — An ORM and sync client that manages your local data, optimistically applies writes, and keeps everything in sync — online or off.
-- **`@ebbjs/server`** — The server runtime that handles sync connections, permission enforcement, Action validation, and server-to-server replication.
-- **`@ebbjs/react`** — React bindings that make your UI reactive to data changes with zero boilerplate.
+- **`@ebbjs/core`** — TypeBox schemas, Hybrid Logical Clock implementation, MessagePack codec, action-creation helpers, and shared domain types. _(Shipped)_
+- **`@ebbjs/storage`** — `StorageAdapter` interface and an in-memory implementation (ActionLog, DirtyTracker, EntityStore, CursorStore). _(Shipped, in-memory only)_
+- **`@ebbjs/client`** — Sync client (handshake, catch-up, SSE subscription, outbox, optimistic writes, query API). _(Planned — the package is currently a stub; the storage adapter is ready to back it.)_
+- **`@ebbjs/react`** — React bindings: `EbbProvider`, `useQuery`, `useClient`, `useConnection`. _(Planned)_
+- **`ebb_server/`** — Elixir/OTP sync server: RocksDB action log, SQLite materialization, HTTP API, SSE fan-out, permissions, presence. _(Shipped)_
 
 Define your models once. Ebb handles syncing them across every node in your system, enforcing permissions, detecting and surfacing conflicts, evolving your schema, and cleaning up after itself.
 
@@ -38,14 +41,14 @@ Define your models once. Ebb handles syncing them across every node in your syst
 
 The rest of these docs explain how Ebb works — the data model, sync protocol, permission system, and everything else that makes the above possible.
 
-- [The Data Model](/docs/data-model) — Entities, Actions, Updates, Snapshots, entity formats, and materialization.
-- [Relationships](/docs/relationships) — How Entities relate to each other.
-- [Groups, Membership & Actors](/docs/groups) — Permission boundaries, identity, and access control primitives.
-- [Hybrid Logical Clocks](/docs/clock) — How Ebb orders events across distributed nodes.
-- [Sync Protocol](/docs/sync) — Replication, catch-up, subscription, and the Outbox.
-- [Permission Enforcement](/docs/permissions) — How permissions are checked on client and server.
-- [The Client](/docs/client) — The ORM, materialized cache, querying, and reactivity.
-- [Conflict Resolution](/docs/conflicts) — Why CRDTs aren't enough and how Ebb handles conflicts.
-- [Garbage Collection](/docs/garbage-collection) — Tombstones, compaction, and retention.
-- [Schema Evolution](/docs/schema-evolution) — Versioning, migrations, and breaking changes.
-- [Observability & Analytics](/docs/observability) — Metrics, the onAction handler, and application analytics.
+- [The Data Model](/docs/v1-target/data-model) — Entities, Actions, Updates, Snapshots, entity formats, and materialization.
+- [Relationships](/docs/v1-target/relationships) — How Entities relate to each other.
+- [Groups, Membership & Actors](/docs/v1-target/groups) — Permission boundaries, identity, and access control primitives.
+- [Hybrid Logical Clocks](/docs/v1-target/clock) — How Ebb orders events across distributed nodes.
+- [Sync Protocol](/docs/v1-target/sync) — Replication, catch-up, subscription, and the Outbox.
+- [Permission Enforcement](/docs/v1-target/permissions) — How permissions are checked on client and server.
+- [The Client](/docs/v1-target/client) — The ORM, materialized cache, querying, and reactivity.
+- [Conflict Resolution](/docs/v1-target/conflicts) — Why CRDTs aren't enough and how Ebb handles conflicts.
+- [Garbage Collection](/docs/v1-target/garbage-collection) — Tombstones, compaction, and retention.
+- [Schema Evolution](/docs/v1-target/schema-evolution) — Versioning, migrations, and breaking changes.
+- [Observability & Analytics](/docs/v1-target/observability) — Metrics, the onAction handler, and application analytics.

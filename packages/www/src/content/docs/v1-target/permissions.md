@@ -3,7 +3,9 @@ title: "Permission Enforcement"
 description: "How permissions are checked on client and server."
 ---
 
-Permissions are checked in two places: on the client (before writing to the Outbox) and on the server (before accepting [Actions](/docs/data-model)). Both run the same logic against the same data model, so they should agree — unless the client's view is stale.
+> **Note — Forward-looking API outline.** The **server-side permission checks are implemented** (`PermissionChecker` and the in-memory `GroupCache` / `RelationshipCache` in `ebb_server/`). The **client-side validation** described here is **planned** — it depends on the Outbox and on a sync'd view of GroupMember / Relationship records in `@ebbjs/client`.
+
+Permissions are checked in two places: on the client (before writing to the Outbox) and on the server (before accepting [Actions](/docs/v1-target/data-model)). Both run the same logic against the same data model, so they should agree — unless the client's view is stale.
 
 ## How permission checks work
 
@@ -11,7 +13,7 @@ When an Actor submits an Action, Ebb checks each Update within it: "Does this Ac
 
 The check follows this logic:
 
-1. **Find the Entity's Groups** — Look up all [Relationships](/docs/relationships) where the Entity is the source and the target is a [Group](/docs/groups).
+1. **Find the Entity's Groups** — Look up all [Relationships](/docs/v1-target/relationships) where the Entity is the source and the target is a [Group](/docs/v1-target/groups).
 
 2. **Find the Actor's memberships** — Look up all GroupMember Entities for this Actor that reference any of those Groups.
 
@@ -76,7 +78,7 @@ The client checks permissions before writing to the Outbox. Since the client has
 
 This provides immediate feedback — the user knows right away if an Action isn't allowed, without a round-trip to the server.
 
-If the client's permission data is stale (e.g., permissions were revoked while offline), the client may optimistically allow an Action that the server will reject. This is handled through the normal [Outbox error flow](/docs/sync#client-to-server-writes) — the Action is marked with an error, and the application decides how to surface it.
+If the client's permission data is stale (e.g., permissions were revoked while offline), the client may optimistically allow an Action that the server will reject. This is handled through the normal [Outbox error flow](/docs/v1-target/sync#client-to-server-writes) — the Action is marked with an error, and the application decides how to surface it.
 
 ## Server-side validation
 

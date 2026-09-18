@@ -1,5 +1,7 @@
 # Background Warmer
 
+> **Status: Implemented but disabled by default.** The `BackgroundWarmer` GenServer is shipped (`lib/ebb_server/storage/background_warmer.ex` if present, otherwise described in this spec only). It is **off** in the default supervision tree (`warmer_enabled: false` in config); enable it if `ctx.query()` workloads scan large dirty sets.
+
 ## Purpose
 
 An optional, tunable GenServer that pre-materializes dirty entities during idle periods. This is an escape hatch for workloads where `ctx.query()` frequently scans large numbers of dirty entities, causing read latency spikes. By default it is disabled -- the system runs in pure on-demand mode.

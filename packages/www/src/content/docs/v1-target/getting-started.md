@@ -3,6 +3,8 @@ title: "Getting Started"
 description: "Set up ebb in your project in under five minutes."
 ---
 
+> **Note — Forward-looking API outline.** This document describes the **planned** v1 public API. **None of the code shown on this page runs today** — Ebb is pre-alpha. See the [GitHub README](https://github.com/ebbjs/ebbjs) for the current state of the repo. The API surface below (`@ebbjs/core` schema builders, `@ebbjs/client`, `@ebbjs/react`, `@ebbjs/server`) is the target design, not a tutorial.
+
 Ebb is a sync engine that makes the network optional. This guide will get you up and running quickly.
 
 ## Installation
@@ -24,7 +26,7 @@ const todo = defineModel("todo", {
 });
 ```
 
-Each field declares its type and merge strategy. `e.string()` and `e.boolean()` are [LWW fields](/docs/data-model#typed-fields)—concurrent updates to the same field resolve via last-write-wins. Other field types like `e.counter()` and `e.collaborativeText()` use CRDT merge strategies. See the [data model](/docs/data-model#typed-fields) for the full list of field types.
+Each field declares its type and merge strategy. `e.string()` and `e.boolean()` are [LWW fields](/docs/v1-target/data-model#typed-fields)—concurrent updates to the same field resolve via last-write-wins. Other field types like `e.counter()` and `e.collaborativeText()` use CRDT merge strategies. See the [data model](/docs/v1-target/data-model#typed-fields) for the full list of field types.
 
 Then wrap your models in a schema with `defineSchema`:
 
@@ -126,5 +128,5 @@ const server = createServer({
 
 ## Next Steps
 
-- Read the [Ebb Overview](/docs/overview) to understand ebb's design philosophy
-- Explore the [data model](/docs/data-model) and [sync protocol](/docs/sync) in depth
+- Read the [Ebb Overview](/docs/v1-target/overview) to understand ebb's design philosophy
+- Explore the [data model](/docs/v1-target/data-model) and [sync protocol](/docs/v1-target/sync) in depth

@@ -1,5 +1,7 @@
 # Slice 4: Multi-Writer Concurrent Writes
 
+> **Status: Partially implemented.** The multi-writer path was **designed, benchmarked, and validated** against a shared RocksDB instance with `enable_pipelined_write: true` (achieving ~108k Actions/sec with full durability, see the [devlog benchmark](https://github.com/ebbjs/ebbjs/blob/main/packages/www/src/content/devlog/a-rocksdb-solid-start.md)). **Production, however, currently starts a single Writer GenServer** (see `EbbServer.Application`). The infrastructure to start N writers exists; flipping `writer_count` to 2 is a config change but has not been deployed or stress-tested in production.
+
 ## Goal
 
 Two Writer GenServers process Actions concurrently against a shared RocksDB instance with pipelined writes, and the committed GSN watermark ensures Actions are delivered to SSE subscribers in correct GSN order despite out-of-order commits.
@@ -95,7 +97,7 @@ Two Writer GenServers process Actions concurrently against a shared RocksDB inst
    - SSE delivery is in GSN order
    - No data corruption
 
-8. **Throughput benchmark.** Measure Actions/sec with 1 Writer vs. 2 Writers. Verify near-linear scaling (expect ~1.8-1.9x). Compare against the 108k benchmark from `docs/rocksdb-throughput-results.md`.
+8. **Throughput benchmark.** Measure Actions/sec with 1 Writer vs. 2 Writers. Verify near-linear scaling (expect ~1.8-1.9x). Compare against the 108k benchmark from `docs/scratch/rocksdb-throughput-results.md`. _(Note: the production default is 1. Validating the 2-writer path was done in benchmark only; the deployment decision to ship 1 writer is documented in the [devlog](https://github.com/ebbjs/ebbjs/blob/main/packages/www/src/content/devlog/a-rocksdb-solid-start.md).)_
 
 9. **Crash recovery test.** Kill a Writer mid-batch. Verify:
    - Supervisor restarts the Writer

@@ -1,5 +1,7 @@
 # @ebbjs/storage
 
+> **Status: Mostly implemented — outbox/subscribe/retry are planned, not built.** This document describes the **target** `StorageAdapter` shape. What is **implemented today** in `packages/storage/src/`: an `ActionLog` (in-memory append + entity-scoped queries), a `DirtyTracker` (entity-type-indexed dirty set), an `EntityStore` (lazy materialization on `get`/`query`, HLC + lexicographic `update_id` tiebreak, matching server semantics), and a `CursorStore` (per-group GSN cursors). The `updates.findForSync` / `outbox` / `subscribe` / `OutboxEntry` / `OutboxStatus` shapes described below are **planned** — they will live in `@ebbjs/client` when the sync SDK is built, not in `@ebbjs/storage`.
+
 ## Purpose
 
 Provides a storage adapter interface for @ebbjs/client. The adapter pattern allows different storage backends (memory, IndexedDB, etc.) to be swapped without changing client code. v1 includes only an in-memory adapter.
@@ -9,7 +11,7 @@ Provides a storage adapter interface for @ebbjs/client. The adapter pattern allo
 - Define the `StorageAdapter` interface
 - Provide an in-memory implementation for v1
 - Track per-group cursors (GSN)
-- Maintain action outbox with status tracking
+- Maintain action outbox with status tracking _(planned)_
 
 ## Alignment with Server
 

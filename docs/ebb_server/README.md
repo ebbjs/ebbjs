@@ -1,10 +1,15 @@
 # Ebb Server Architecture
 
+> **Status:** This is the **canonical architecture document** for the Elixir sync server. The components and slices below describe both what is implemented and what is planned. See the [Root README](../../README.md#current-state) for the high-level shipped / in-progress / planned breakdown.
+>
+> - **Implemented (Slices 1–4):** RocksDB + SQLite storage, permission-checked writes, single-action write/read, multi-writer pipelining, live sync (catch-up + SSE + watermark-gated fan-out), and presence.
+> - **Not started (Slices 5–6):** Server functions (Bun runtime), peer-to-peer replication.
+
 ## Summary
 
 Ebb Server is the Elixir/OTP core of the ebb local-first collaborative backend. It owns all persistent storage, the sync protocol, real-time fan-out, permission enforcement, and the HTTP interface that both browser clients and the Bun Application Server use to read and write data.
 
-The architecture follows a dual-store CQRS pattern: RocksDB (LSM-tree) handles the write-heavy Action log as the source of truth, while SQLite (B-tree) serves as a read-optimized materialized entity cache populated lazily on demand. Two Writer GenServers write concurrently to a shared RocksDB instance with pipelined writes, achieving ~108k Actions/sec. Entity state is materialized only when read, decoupling write throughput from materialization cost. ETS tables serve the hottest code paths -- permission checks, dirty tracking, and fan-out routing -- at sub-microsecond latency.
+The architecture follows a dual-store CQRS pattern: RocksDB (LSM-tree) handles the write-heavy Action log as the source of truth, while SQLite (B-tree) serves as a read-optimized materialized entity cache populated lazily on demand. **Production runs a single Writer GenServer** with `enable_pipelined_write: true` enabled on the RocksDB instance; the multi-writer path was benchmarked at ~108k Actions/sec with full durability ([devlog](https://github.com/ebbjs/ebbjs/blob/main/packages/www/src/content/devlog/a-rocksdb-solid-start.md)) but is not deployed by default. Entity state is materialized only when read, decoupling write throughput from materialization cost. ETS tables serve the hottest code paths -- permission checks, dirty tracking, and fan-out routing -- at sub-microsecond latency.
 
 The server exposes an HTTP API for Action writes, entity reads, sync handshake, paginated catch-up, live SSE subscriptions, presence broadcasting, server function invocation, and peer-to-peer replication. Bun is a stateless function runtime that accesses all data through these HTTP endpoints. The canonical specification is `docs/storage-architecture-v2.md`; the sync protocol, fan-out, presence, and replication details in `docs/storage-architecture-proposal.md` remain valid.
 
@@ -149,7 +154,7 @@ All IDs use `Nanoid` with type prefixes: `act_` (Action), `upd_` (Update), `a_` 
 
 ### HLC (Hybrid Logical Clock)
 
-HLCs are 64-bit integers (upper 48 bits = logical time in ms, lower 16 bits = counter) assigned by the originating node and preserved across replication. The server validates incoming client HLCs: reject if logical time > now + 120s (future drift) or < now - 24h (stale clock). The server does not generate or assign HLCs. HLCs are used for LWW conflict resolution during materialization, with lexicographic update ID comparison as a tiebreaker when HLCs are equal. Replicated Actions skip HLC validation (trust-and-apply). See the [clock spec](../../packages/www/src/content/docs/clock.md) for the full generation algorithm.
+HLCs are 64-bit integers (upper 48 bits = logical time in ms, lower 16 bits = counter) assigned by the originating node and preserved across replication. The server validates incoming client HLCs: reject if logical time > now + 120s (future drift) or < now - 24h (stale clock). The server does not generate or assign HLCs. HLCs are used for LWW conflict resolution during materialization, with lexicographic update ID comparison as a tiebreaker when HLCs are equal. Replicated Actions skip HLC validation (trust-and-apply). See the [clock spec](../../packages/www/src/content/docs/v1-target/clock.md) for the full generation algorithm.
 
 ## Constraints and Assumptions
 

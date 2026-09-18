@@ -1,5 +1,7 @@
 # SyncConnection
 
+> **Status: Forward-looking — design only.** `@ebbjs/client` is a stub. Not implemented.
+
 ## Purpose
 
 Manages the HTTP connection to the ebb_server, providing typed request methods that automatically include the `x-ebb-actor-id` header. This is the only component that knows about the server's HTTP API.

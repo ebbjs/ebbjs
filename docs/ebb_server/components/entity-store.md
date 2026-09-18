@@ -1,5 +1,7 @@
 # Entity Store
 
+> **Status: Partially implemented — design doc.** The on-demand materialization engine, per-field HLC + lexicographic `update_id` tiebreak merge, and the dirty-set pipeline are **shipped** in `ebb_server/lib/ebb_server/storage/entity_store.ex`. The **typed-field dispatch table** described below (LWW / G-Counter / CRDT cases) is **not implemented** — the server materializes every field with the same HLC + tiebreak rule. The CRDT case is dropped from the plan: collaborative text will use a causal-tree over the existing Action/Update primitives, not Yjs.
+
 ## Purpose
 
 Provides the read interface for entity state with zero-staleness guarantee. When an entity is requested, the Entity Store checks if it has unmaterialized updates (dirty), and if so, reads the delta from RocksDB, applies per-field typed merges, upserts the result into SQLite, and clears the dirty bit -- all before returning the entity. Callers never see stale data.
@@ -62,7 +64,7 @@ Provides the read interface for entity state with zero-staleness guarantee. When
 
 @type crdt_field :: %{
   "type" => "crdt",
-  "value" => binary()   # base64-encoded Yjs state
+  "value" => binary()   # encoded causal-tree state (planned)
 }
 ```
 
@@ -160,8 +162,8 @@ def merge_field(existing, incoming, update_id) do
       %{existing | "value" => merged_counts}
 
     "crdt" ->
-      # Yjs merge via y_ex NIF
-      merged_state = YEx.merge(existing["value"], incoming["value"])
+      # (planned) causal-tree merge — not implemented
+      merged_state = CausalTree.merge(existing["value"], incoming["value"])
       %{existing | "value" => merged_state}
   end
 end
@@ -199,5 +201,5 @@ end
 ## Open Questions
 
 - **GenServer vs. module:** Should Entity Store be a GenServer (serializing all materializations) or a stateless module (callers materialize in their own process)? GenServer simplifies SQLite write serialization. Module approach allows parallel materialization but needs SQLite write coordination. Start with GenServer; consider a pool or module approach if materialization latency under concurrent reads becomes a bottleneck.
-- **Yjs merge dependency:** The spec mentions `y_ex` (Elixir Yjs NIF) for CRDT field merges. This dependency is not in the current `mix.exs` deps list. It needs to be added, or CRDT field support can be deferred to a later slice.
+- **CRDT field merge (planned):** The current EntityStore does LWW per field. CRDT-style fields (e.g. collaborative text) are **not implemented**. The intended approach is a causal-tree over the existing Action/Update primitives (see [the devlog](https://github.com/ebbjs/ebbjs/blob/main/packages/www/src/content/devlog/how-collaborative-editing-works.mdx)) — no `y_ex` NIF, no Yjs dependency.
 - **Materialization under concurrent writes:** If a Writer marks entity X dirty while Entity Store is materializing entity X, the Entity Store may miss the latest Updates. The dirty bit should NOT be cleared if new writes arrived during materialization. One approach: compare the `last_gsn` of the materialized result against the current max GSN for that entity in RocksDB. If they differ, leave the dirty bit set.

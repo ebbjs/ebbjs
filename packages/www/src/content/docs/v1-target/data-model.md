@@ -3,7 +3,9 @@ title: "The Data Model"
 description: "Entities, Actions, Updates, Snapshots, typed fields, and materialization."
 ---
 
-`@ebbjs/db` contains the complete set of interfaces and adapters that allow Ebb apps to work offline and still stay in sync. On the server, Ebb uses SQLite. On the client, storage is pluggable—IndexedDB, SQLite, or in-memory, depending on your platform and needs.
+> **Note — Forward-looking API outline.** This document describes the planned v1 data model. The **server-side storage is implemented** (RocksDB action log + on-demand SQLite materialization; see `ebb_server/`), and **`@ebbjs/core` defines the schemas for Actions, Updates, Entities, and the typed-field envelope**. The high-level model described here — typed fields, typed-field merge dispatch, snapshot pointers, etc. — is the **target design** for the client SDK and the docs may diverge from what the current in-memory `@ebbjs/storage` adapter actually implements (which uses HLC + lexicographic `update_id` tiebreak for all fields rather than a per-type dispatch table).
+
+`@ebbjs/db` is the planned name for the storage layer that will back `@ebbjs/client` and `ebb_server`. Today, those layers ship separately: server storage lives in `ebb_server/` (RocksDB + SQLite), and client storage lives in `@ebbjs/storage` (currently in-memory only). On the server, Ebb uses SQLite. On the client, storage is pluggable—IndexedDB, SQLite, or in-memory, depending on your platform and needs.
 
 Ebb represents your application data as a series of `Entities`, `Actions`, and `Updates`.
 
@@ -64,11 +66,11 @@ Each field on an Entity declares a **type** that determines how its values are s
 
 Ebb supports the following field types:
 
-**LWW fields** (`e.string()`, `e.number()`, `e.boolean()`) — The field's value is a plain JSON value. Concurrent updates to the same field are resolved using last-write-wins (LWW) based on [HLC](/docs/clock) timestamps. This is appropriate for most application data.
+**LWW fields** (`e.string()`, `e.number()`, `e.boolean()`) — The field's value is a plain JSON value. Concurrent updates to the same field are resolved using last-write-wins (LWW) based on [HLC](/docs/v1-target/clock) timestamps. This is appropriate for most application data.
 
 **Counter fields** (`e.counter()`) — The field's value is a G-Counter CRDT—a map of actor IDs to per-actor counts. The total value is the sum of all actors' counts. Concurrent increments from different actors never conflict; they are additive by definition. This is appropriate for like counts, view counts, or any value where concurrent increments must all be preserved.
 
-**Collaborative text fields** (`e.collaborativeText()`) — The field's value is a Yjs document. `PUT` writes the full document state (`Y.encodeStateAsUpdate`); `PATCH` writes an incremental Yjs update. Merging uses Yjs's built-in CRDT merge algorithm. This is appropriate for collaborative text editing where character-level concurrent edits are expected.
+**Collaborative text fields** (`e.collaborativeText()`) — **Planned, not yet implemented.** The intended approach is a causal-tree of character runs (each node carries a parent reference) ordered by [HLC](/docs/v1-target/clock), using the same Action/Update primitives as every other field type. This is the approach described in the [April 2026 devlog post](/devlog/how-collaborative-editing-works) and prototyped in `experiment/collaborative-text/`. **Yjs is not used.**
 
 Types are declared in your model definition and travel with the data at the field level:
 
@@ -95,7 +97,7 @@ Each field value is stored as a self-describing object with a `type` tag:
     "title": { "type": "lww", "value": "My Post", "hlc": 1711234567890000 },
     "published": { "type": "lww", "value": true, "hlc": 1711234567890000 },
     "likes": { "type": "counter", "value": { "alice": 3, "bob": 1 } },
-    "body": { "type": "crdt", "value": "<base64 yjs state>" }
+    "body": { "type": "causal-tree", "value": "<encoded run-node tree>" }
   }
 }
 ```
@@ -117,10 +119,11 @@ await client.post.increment(post.id, "likes");
 await client.post.decrement(post.id, "likes");
 ```
 
-Collaborative text fields provide access to the underlying Yjs document:
+Collaborative text fields will provide access to the underlying causal-tree document (target API — not implemented yet):
 
 ```ts
-const ydoc = client.post.getText(post.id, "body");
+// Planned API — not implemented
+const tree = client.post.getText(post.id, "body");
 ```
 
 ### Extensibility
@@ -135,9 +138,9 @@ For **LWW fields**, concurrent `PATCH`es to _different_ fields both apply—they
 
 For **counter fields**, concurrent increments from different actors are additive. Each actor's count is tracked independently, and the total is the sum. No HLC comparison is needed—the merge is commutative and conflict-free.
 
-For **collaborative text fields**, Yjs's built-in CRDT merge algorithm handles concurrent edits at the character level. The merged state is stored as a binary blob.
+For **collaborative text fields** (planned), the causal tree handles concurrent edits at the character level. Merging follows the same HLC + lexicographic tiebreak as LWW fields — conflict surfacing is handled at the Action/Update layer rather than buried inside the data structure (see [devlog on CRDTs](/devlog/how-collaborative-editing-works)).
 
-To materialize an `Entity`, we start at the last `PUT` update for that entity and play forward all subsequent `PATCH` (or `DELETE`) updates in [HLC](/docs/clock) order. For each field in each update, we read the field's `type` tag and dispatch to the corresponding merge function. Materialization operates at the Update level—Action boundaries don't matter here. Updates from different Actions are interleaved by HLC order during replay.
+To materialize an `Entity`, we start at the last `PUT` update for that entity and play forward all subsequent `PATCH` (or `DELETE`) updates in [HLC](/docs/v1-target/clock) order. For each field in each update, we read the field's `type` tag and dispatch to the corresponding merge function. Materialization operates at the Update level—Action boundaries don't matter here. Updates from different Actions are interleaved by HLC order during replay.
 
 `Snapshots` are a convenience pointer to the last `PUT` update for a given `Entity`—simply an `(entity_id, update_id)` pair. They serve two purposes:
 
@@ -150,6 +153,6 @@ To materialize an `Entity`, we start at the last `PUT` update for that entity an
 
 **Conflicts for counter fields:** Counter fields are conflict-free by definition—concurrent increments from different actors are additive, not competing. No conflict detection is needed.
 
-**Conflicts for collaborative text fields:** When a collaborative text field changes while the client is offline, Yjs merges the updates automatically. Ebb still detects this scenario and snapshots the pre-merge state to the Conflicts table. This allows developers to surface "here's what the document looked like before the merge" if needed—even though the merge has already happened.
+**Conflicts for collaborative text fields** (planned): When a collaborative text field changes while the client is offline, Ebb detects the concurrent edits via HLC comparison. The pre-merge state is snapshotted to the Conflicts table — the same approach used for LWW fields, applied at the character-run level. The framework surfaces the conflict rather than silently merging; resolution is a human decision (see [devlog on conflict-surfacing](/devlog/how-collaborative-editing-works)).
 
-**Compaction for collaborative text fields:** Collaborative text fields rely on Yjs's internal compaction via `encodeStateAsUpdate`. The full document history is embedded in the Yjs state rather than managed through Ebb's Snapshot mechanism.
+**Compaction for collaborative text fields** (planned): Run nodes carry their own history (the `parentId` chain and the HLC of each insertion); no separate snapshot mechanism is needed for the field itself.

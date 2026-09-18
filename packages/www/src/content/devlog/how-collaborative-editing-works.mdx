@@ -189,7 +189,7 @@ This demo is a proof of concept, but it demonstrates the core philosophy behind 
 
 The same causal tree structure shown here will power real-time collaboration in ebb. In production, the relay won't be a `BroadcastChannel` between two browser tabs — it'll be ebb's sync engine: Actions flowing through a durable log, fanned out to subscribers over SSE, with the same HLC-based ordering ensuring every client converges to the same state.
 
-But convergence is just the foundation. When concurrent edits produce results that might surprise users — like the "Colour" scenario — ebb [detects and surfaces those conflicts](/docs/conflicts) rather than silently merging them. Developers get ergonomic levers to decide how conflicts are handled: surface them to users, auto-resolve based on rules, or let the merge stand.
+But convergence is just the foundation. When concurrent edits produce results that might surprise users — like the "Colour" scenario — ebb [detects and surfaces those conflicts](/docs/v1-target/conflicts) rather than silently merging them. Developers get ergonomic levers to decide how conflicts are handled: surface them to users, auto-resolve based on rules, or let the merge stand.
 
 The CRDT community got the hard part right: stable identities, causal ordering, deterministic merge rules. What the _ecosystem_ got wrong was treating "conflict-free" as a feature instead of a tradeoff. Humans don't work in a conflict-free way. We disagree, we make concurrent decisions, we change our minds. Software that hides this reality isn't helping — it's lying.
 

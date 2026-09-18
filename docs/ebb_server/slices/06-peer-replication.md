@@ -1,5 +1,7 @@
 # Slice 6: Peer Replication
 
+> **Status: Not started — design only.** No `PeerManager` exists; no `/sync/replication` endpoint; no `cf_action_dedup` writes. **Yjs references in this document are about a hypothetical CRDT field type — Yjs is not part of the plan.**
+
 ## Goal
 
 Two ebb server instances can replicate Actions bidirectionally: each server catches up on the other's Actions via paginated HTTP, switches to a live SSE stream, deduplicates already-seen Actions, and applies new Actions locally -- resulting in both servers converging to the same entity state.
@@ -68,7 +70,7 @@ Two servers: **Server A** (localhost:4000) and **Server B** (localhost:4001). Ea
 14. **Both servers have all Actions.** Entity materialization on both servers produces identical state because:
     - LWW fields: same HLCs → same winner
     - Counter fields: same per-actor counts → same totals
-    - CRDT fields: Yjs merge is commutative → same state regardless of merge order
+    - CRDT fields: (planned) causal-tree merge is commutative → same state regardless of merge order
 
 ## Acceptance Criteria
 

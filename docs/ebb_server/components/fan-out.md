@@ -1,5 +1,7 @@
 # Fan-Out
 
+> **Status: Implemented.** `FanOutRouter`, `GroupServer`, and `SSEConnection` are shipped (`lib/ebb_server/sync/`). The watermark-gated fan-out, presence broadcast, SSE keepalive, and dynamic supervisor lifecycle are all wired and tested (slice 3 + slice 4).
+
 ## Purpose
 
 Delivers committed Actions to live SSE subscribers in GSN order. The Fan-Out Router receives batch-committed notifications from Writers, gates delivery on the committed GSN watermark to ensure ordering despite concurrent writers, resolves which Groups are affected, and dispatches to per-Group GenServers that maintain subscriber lists and push to SSE connections.

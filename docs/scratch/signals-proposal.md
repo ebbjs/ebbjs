@@ -1,3 +1,7 @@
+# Signals Proposal (Sketch)
+
+> **Status: Working scratch notes — very early idea.** Not authoritative. The current server uses **SSE** (unidirectional, server→client) for live Actions and a separate `POST /sync/presence` endpoint for ephemeral broadcasts. WebSocket and "rooms" are not planned for v1.
+
 Actions - durable
 Signals - ephemeral
 

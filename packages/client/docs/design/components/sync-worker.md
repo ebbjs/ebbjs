@@ -1,5 +1,7 @@
 # SyncWorker
 
+> **Status: Forward-looking — design only.** `@ebbjs/client` is a stub. Not implemented.
+
 ## Purpose
 
 Orchestrates the full sync lifecycle: handshake to discover group membership, then catch-up on each group by paginating through all actions and appending them to local storage.
