@@ -200,18 +200,44 @@ type DocAction =
   | { type: "EXTEND_RUN"; runId: string; appendText: string };
 ```
 
-**Wire format.** The experiment's `relay.ts` already produces messages that look like ebb Actions:
+**Wire format — runs as fields of the document.** Each Update targets the document entity (subject_id = docId, subject_type = docType, method = "patch"). Runs are encoded as `data.fields["run:<runId>"]` — a flat per-field patch that the server's per-field LWW merge handles without any custom code. Tombstones are `value: null`.
 
-- `INSERT_RUN` → `method: 'put'` Update targeting a RunNode entity
-- `DELETE_RANGE` → `method: 'delete'` Update with `{ runId, offset, count }`
-- `SPLIT` → local-only (split is a local consequence of receiving a remote INSERT_RUN; receivers perform their own splits)
-- `EXTEND_RUN` → `method: 'patch'` Update appending to an existing run
-
-The experiment's relay wraps these in `{ type: 'INSERT_RUN', node: ... }` messages. For production, we re-shape to:
-
-```ts
-{ id, actor_id, hlc, gsn: 0, updates: [{ id, subject_id: <runId>, subject_type: 'run', method: 'put' | 'patch' | 'delete', data: ... }] }
+```json
+{
+  "id": "u_xxx",
+  "subject_id": "<docId>",
+  "subject_type": "text_document",
+  "method": "patch",
+  "data": {
+    "fields": {
+      "run:131072000:alice": {
+        "value": {
+          "id": "...",
+          "hlc": "...",
+          "actorId": "alice",
+          "text": "hello",
+          "parentId": "ROOT",
+          "deleted": false
+        },
+        "update_id": "u_xxx",
+        "hlc": "131072000"
+      }
+    }
+  }
+}
 ```
+
+Three run operations map to one shape:
+
+- **Insert** — new field `run:<runId>` with a `RunNode` value
+- **Extend** — same field name with an updated `RunNode` value (text replacement is atomic; the receiver just sets the text outright)
+- **Tombstone** — same field name with `value: null`
+
+**Why runs as fields, not separate entities?** With runs as separate entities (`subject_type: "run"`), the server's `<type>.<verb>` permission model grants `run.update` to anyone in the group — so Bob could rewrite Alice's run by reusing her run id with a higher HLC, since storage's HLC tiebreak would accept his update. With runs as fields of the doc, the doc is the only entity the server ever sees, and `text_document.update` (or `text_document.*`) cleanly gates all run operations. No server-side changes required.
+
+**SPLITs are encoded in the field updates.** When a sender does a partial DELETE_RANGE, the local tree splits into N runs and tombstones some of them. The sender's wire payload lists each affected run as its own field update: left-half with replaced text, tombstoned middle (`value: null`), and right-half as a new field. The receiver's tree reducer handles missing parents by materializing tombstoned placeholders so the structure remains valid.
+
+**Wire vs DocAction.** Internally the tree reducer speaks `DocAction`s (`INSERT_RUN`, `EXTEND_RUN`, `DELETE_RANGE`, `SPLIT`). The wire adapter (`wire.ts`) translates field updates into DocActions for the reducer and back. Callers normally don't see DocActions — the public surface is field updates and `TextDocument.applyActions(actions)`.
 
 **Run ID format.** Runs get IDs derived from the originating Action's HLC plus the actor ID. The POC formats this as a string `{15-digit-ts}:{5-digit-count}:{peerId}` (`experiment/causal-tree.ts:11`, `hlc.ts:109-113`); production's HLC is a packed bigint `(logical_time << 16) | counter` with `actor_id` on the Action. The merge order is the same — compare HLCs first, fall back to actor ID lexicographically — but the wire format differs.
 
