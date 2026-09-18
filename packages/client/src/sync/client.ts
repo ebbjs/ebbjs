@@ -89,6 +89,15 @@ export class SyncClient {
   }
 
   /**
+   * Build an outbound HTTP header bag carrying the actor identity.
+   * All request paths funnel through this so the `x-ebb-actor-id`
+   * header (and any future shared headers) live in one place.
+   */
+  private authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+    return { "x-ebb-actor-id": this.actorId, ...extra };
+  }
+
+  /**
    * Open the SSE live stream for the given groups.
    *
    * Returns an `unsubscribe` function that closes the stream. Internally
@@ -138,12 +147,7 @@ export class SyncClient {
    * subsequent `catchUp` / `subscribe` calls can pick up where we left off.
    */
   async handshake(opts: HandshakeRequest = {}): Promise<HandshakeResult> {
-    const path = "/sync/handshake";
-    const url = `${this.serverUrl}${path}`;
-    const headers = {
-      "Content-Type": "application/json",
-      "x-ebb-actor-id": this.actorId,
-    };
+    const url = `${this.serverUrl}/sync/handshake`;
     const body = JSON.stringify({
       cursors: opts.cursors ?? {},
       schema_version: opts.schema_version,
@@ -151,7 +155,7 @@ export class SyncClient {
 
     const response = await this.fetchImpl(url, {
       method: "POST",
-      headers,
+      headers: this.authHeaders({ "Content-Type": "application/json" }),
       body,
     });
 
@@ -185,9 +189,7 @@ export class SyncClient {
     const url = `${this.serverUrl}/sync/groups/${encodeURIComponent(groupId)}?offset=${offset}`;
     const response = await this.fetchImpl(url, {
       method: "GET",
-      headers: {
-        "x-ebb-actor-id": this.actorId,
-      },
+      headers: this.authHeaders(),
     });
 
     if (!response.ok) {
@@ -235,10 +237,7 @@ export class SyncClient {
     const body = encodeSync({ actions });
     const response = await this.fetchImpl(`${this.serverUrl}/sync/actions`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/msgpack",
-        "x-ebb-actor-id": this.actorId,
-      },
+      headers: this.authHeaders({ "Content-Type": "application/msgpack" }),
       body: body as BodyInit,
     });
 
@@ -263,9 +262,7 @@ export class SyncClient {
     const url = `${this.serverUrl}/entities/${encodeURIComponent(id)}?actor_id=${encodeURIComponent(this.actorId)}`;
     const response = await this.fetchImpl(url, {
       method: "GET",
-      headers: {
-        "x-ebb-actor-id": this.actorId,
-      },
+      headers: this.authHeaders(),
     });
 
     if (response.status === 404) return null;
@@ -280,10 +277,7 @@ export class SyncClient {
   async queryEntities(type: string, opts: QueryOptions = {}): Promise<EntityQueryResponse> {
     const response = await this.fetchImpl(`${this.serverUrl}/entities/query`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-ebb-actor-id": this.actorId,
-      },
+      headers: this.authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         type,
         filter: opts.filter,
