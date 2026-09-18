@@ -319,3 +319,31 @@ describe("Conflict shape", () => {
     expect(c.detectedAt).toBeGreaterThanOrEqual(before);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Self-replay (redelivered SSE action) must not fire a conflict against itself
+// ---------------------------------------------------------------------------
+
+describe("ConflictDetector — self-replay", () => {
+  it("does not fire when the same Action is observed twice", () => {
+    const detector = new ConflictDetector();
+    const run = makeRun(1000, "peer-A", "hello", "ROOT");
+    const action = makeFieldAction(run, run.hlc);
+
+    const pre = createDocState();
+    const r1 = applyActions(pre, [action]);
+    const post = r1.state;
+
+    // First receipt — no conflict.
+    const first = detector.observe(pre, post, [action], "peer-A");
+    expect(first).toHaveLength(0);
+
+    // SSE can redeliver an action across reconnect / replay boundaries.
+    // The lastAppliedByRun map remembers the HLC; happensBefore returns
+    // 0 for equal HLCs, which without an action.id check would fire a
+    // spurious "conflict against itself".
+    const replayed = detector.observe(pre, post, [action], "peer-A");
+    expect(replayed).toHaveLength(0);
+    expect(detector.all()).toHaveLength(0);
+  });
+});

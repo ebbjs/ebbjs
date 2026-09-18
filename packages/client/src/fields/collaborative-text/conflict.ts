@@ -113,6 +113,7 @@ export type Conflict = {
 
 /** Per-run "last applied non-trivial Update" record. */
 type LastApplied = {
+  readonly actionId: string;
   readonly action: Action;
   readonly hlc: HLCTimestamp;
   readonly actorId: string;
@@ -203,8 +204,11 @@ export class ConflictDetector {
           if (kind === null) continue;
 
           const previous = this.lastAppliedByRun.get(runId);
-          if (previous) {
+          if (previous && previous.actionId !== action.id) {
             // Concurrent check: if neither happens-before holds, it's a conflict.
+            // happensBefore returns 0 for both "equal" and "concurrent"; we
+            // already filtered out the equal case via the action.id check above
+            // (same action redelivered via SSE / replay).
             const rel = happensBefore(previous.hlc, action.hlc);
             if (rel === 0) {
               const conflict: Conflict = {
@@ -223,6 +227,7 @@ export class ConflictDetector {
 
           // Record this Update as the new "last applied" for this run.
           this.lastAppliedByRun.set(runId, {
+            actionId: action.id,
             action,
             hlc: action.hlc,
             actorId,
