@@ -75,7 +75,7 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
         GroupCache.get_permissions(actor_id, group_id) != nil
       end)
 
-    if non_member_groups == [] or Enum.empty?(group_ids) do
+    if non_member_groups == [] do
       :ok
     else
       {:error, :not_member}
