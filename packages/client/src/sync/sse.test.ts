@@ -75,6 +75,10 @@ describe("parseSSEBlock", () => {
 });
 
 describe("applyAction", () => {
+  // User entities (todo) nest their fields under `data.fields` to mirror
+  // `EbbServer.Storage.ActionValidator.well_formed_data?/1`. The static
+  // `Update.data` type is `PutData | PatchData | null`, so we cast through
+  // `never` at the call sites below.
   it("appends action and marks entities dirty", async () => {
     const storage = createMemoryAdapter();
     const action: Action = {
@@ -88,7 +92,9 @@ describe("applyAction", () => {
           subject_id: "todo_1",
           subject_type: "todo",
           method: "put",
-          data: { title: { value: "Hello", update_id: "u_1", hlc: "1711036800000:0" } },
+          data: {
+            fields: { title: { value: "Hello", update_id: "u_1", hlc: "1711036800000:0" } },
+          } as never,
         },
       ],
     };
@@ -112,7 +118,9 @@ describe("applyAction", () => {
           subject_id: "todo_1",
           subject_type: "todo",
           method: "put",
-          data: { title: { value: "Hello", update_id: "u_1", hlc: "1711036800000:0" } },
+          data: {
+            fields: { title: { value: "Hello", update_id: "u_1", hlc: "1711036800000:0" } },
+          } as never,
         },
       ],
     };
@@ -146,14 +154,18 @@ describe("applyAction", () => {
           subject_id: "todo_1",
           subject_type: "todo",
           method: "put",
-          data: { title: { value: "Hello", update_id: "u_1", hlc: "1711036800000:0" } },
+          data: {
+            fields: { title: { value: "Hello", update_id: "u_1", hlc: "1711036800000:0" } },
+          } as never,
         },
         {
           id: "u_2",
           subject_id: "todo_2",
           subject_type: "todo",
           method: "put",
-          data: { title: { value: "World", update_id: "u_2", hlc: "1711036800000:1" } },
+          data: {
+            fields: { title: { value: "World", update_id: "u_2", hlc: "1711036800000:1" } },
+          } as never,
         },
       ],
     };
