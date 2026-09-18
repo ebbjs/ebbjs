@@ -459,7 +459,6 @@ function openBrowserSSE(opts: SSEOpenOptions): SSESubscription {
 
 function buildSSEUrl(serverUrl: string, groupIds: readonly string[], cursor: number): string {
   const base = serverUrl.replace(/\/$/, "");
-  const groups = groupIds.join(",");
-  const params = new URLSearchParams({ groups, cursor: String(cursor) });
+  const params = new URLSearchParams({ groups: groupIds.join(","), cursor: String(cursor) });
   return `${base}/sync/live?${params.toString()}`;
 }
