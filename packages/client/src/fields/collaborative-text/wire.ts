@@ -53,7 +53,6 @@
 import type { Action, HLCTimestamp, Update } from "@ebbjs/core";
 import {
   applyRunFieldUpdates,
-  docReducer,
   type DocAction,
   type DocState,
   type RunFieldValue,
@@ -76,9 +75,6 @@ export const DEFAULT_DOC_SUBJECT_TYPE = "text_document";
  * for split halves).
  */
 export const RUN_FIELD_PREFIX = "run:";
-// Re-export the prefix under the legacy alias so tests that import FIELD_RUN
-// can still find it. (Removed when the test suite is updated.)
-export const FIELD_RUN = RUN_FIELD_PREFIX;
 
 // ---------------------------------------------------------------------------
 // Field value shapes (wire / client view)
@@ -239,74 +235,8 @@ export const applyUpdate = (
 };
 
 // ---------------------------------------------------------------------------
-// Write side: convert DocActions into field-update wire Updates
+// Write side: build Update payload from a field-update map
 // ---------------------------------------------------------------------------
-
-/**
- * Convert a single DocAction into the field-update payload(s) that
- * represent it on the wire.
- *
- * Returns a `Record<fieldName, RunFieldValue>` (one entry per affected
- * run) — for SPLIT, two entries; for INSERT_RUN, one; for DELETE_RANGE,
- * the tombstoned run plus any split-half updates (caller computes the
- * pre/post state diff); for EXTEND_RUN, one entry.
- *
- * Caller is responsible for:
- * - Providing `actorId` / `hlc` / `updateId` for the originating Action
- * - Computing the `preState` so DELETE_RANGE can derive the diff
- */
-export const docActionToFieldUpdates = (
-  action: DocAction,
-  opts: {
-    readonly actorId: string;
-    readonly hlc: HLCTimestamp;
-    readonly updateId: string;
-    /**
-     * Pre-application state. Needed for DELETE_RANGE to compute which
-     * runs were tombstoned vs split into survivors.
-     */
-    readonly preState?: DocState;
-  },
-): Record<string, RunFieldValue> => {
-  switch (action.type) {
-    case "INSERT_RUN": {
-      return {
-        [formatRunFieldName(action.node.id)]: {
-          value: action.node,
-          update_id: opts.updateId,
-          hlc: opts.hlc,
-        },
-      };
-    }
-    case "EXTEND_RUN": {
-      // The caller already applied EXTEND_RUN locally and has the post
-      // state in hand. We don't have it in opts (only pre), so we emit
-      // the run id as a placeholder and let the caller fix up the
-      // final value via the dedicated extendFieldUpdate helper.
-      // For the prototype, callers use that helper directly — see
-      // text-document.ts.
-      return {
-        [formatRunFieldName(action.runId)]: {
-          value: null, // placeholder; replaced by caller
-          update_id: opts.updateId,
-          hlc: opts.hlc,
-        },
-      };
-    }
-    case "DELETE_RANGE": {
-      if (opts.preState === undefined) {
-        // Without pre-state we can't compute the diff. Caller must use
-        // the diffRunFields helper below with both pre/post state.
-        return {};
-      }
-      return diffRunFieldsForDelete(action, { ...opts, preState: opts.preState });
-    }
-    case "SPLIT":
-      // Local-only — splits are inferred from sibling field updates in
-      // the same Action. No wire payload.
-      return {};
-  }
-};
 
 /**
  * Helper: build a full Update from a DocAction and field-update payload.
@@ -328,65 +258,8 @@ export const docActionToUpdate = (
 };
 
 // ---------------------------------------------------------------------------
-// Pre/post diff helpers (for DELETE_RANGE → wire payload)
+// Pre/post diff helpers (for local edits → wire payload)
 // ---------------------------------------------------------------------------
-
-/**
- * Compute the field updates that capture a DELETE_RANGE between pre and
- * post state. Tombstones (`value: null`) the deleted runs, replaces any
- * split-half survivors with their final state.
- */
-const diffRunFieldsForDelete = (
-  action: DocAction & { type: "DELETE_RANGE" },
-  opts: {
-    readonly actorId: string;
-    readonly hlc: HLCTimestamp;
-    readonly updateId: string;
-    readonly preState: DocState;
-  },
-): Record<string, RunFieldValue> => {
-  // Apply the DELETE_RANGE locally to get the post-state, then diff.
-  const postState = docReducer(opts.preState, action);
-  const fields: Record<string, RunFieldValue> = {};
-
-  // Iterate every run that exists in EITHER pre or post. Anything that
-  // changed needs a field update.
-  const seen = new Set<string>();
-  for (const [id, pre] of opts.preState.nodes) {
-    if (id === "ROOT") continue;
-    seen.add(id);
-    const post = postState.nodes.get(id);
-    if (post && !post.deleted) {
-      // Still visible — possibly updated (split left/right half).
-      if (post.text !== pre.text || post.hlc !== pre.hlc) {
-        fields[formatRunFieldName(id)] = {
-          value: post,
-          update_id: opts.updateId,
-          hlc: opts.hlc,
-        };
-      }
-    } else {
-      // Tombstoned or removed — emit null.
-      fields[formatRunFieldName(id)] = {
-        value: null,
-        update_id: opts.updateId,
-        hlc: opts.hlc,
-      };
-    }
-  }
-  for (const [id, post] of postState.nodes) {
-    if (seen.has(id) || id === "ROOT") continue;
-    // New run created by the SPLITs in DELETE_RANGE.
-    if (!post.deleted) {
-      fields[formatRunFieldName(id)] = {
-        value: post,
-        update_id: opts.updateId,
-        hlc: opts.hlc,
-      };
-    }
-  }
-  return fields;
-};
 
 /**
  * Public helper for callers that want the diff directly (e.g., the

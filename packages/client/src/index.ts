@@ -55,7 +55,6 @@ export {
   isDocSubjectUpdate,
   DEFAULT_DOC_SUBJECT_TYPE,
   RUN_FIELD_PREFIX,
-  FIELD_RUN,
   formatRunFieldName,
   parseRunFieldName,
 } from "./fields/collaborative-text/wire";

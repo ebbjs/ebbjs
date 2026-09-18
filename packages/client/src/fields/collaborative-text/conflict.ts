@@ -35,7 +35,7 @@
 import type { Action, HLCTimestamp } from "@ebbjs/core";
 import { parse } from "@ebbjs/core";
 import { applyActions, isDocSubjectUpdate, DEFAULT_DOC_SUBJECT_TYPE } from "./wire";
-import { reconstruct, type DocState, type RunNode } from "./tree";
+import { reconstruct, type DocState } from "./tree";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -81,8 +81,6 @@ export const happensBefore = (a: HLCTimestamp, b: HLCTimestamp): -1 | 0 | 1 => {
  * non-null RunNode value are non-trivial (insert / extend); field
  * updates with `value: null` (tombstones) are not.
  */
-const _isNonTrivialUpdateKind = (kind: "insert" | "extend" | "tombstone"): boolean =>
-  kind !== "tombstone";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -256,7 +254,3 @@ const snapshotOf = (state: DocState): RunSnapshot => {
 // Re-export apply-related items so callers don't need a second import.
 export { applyActions, isDocSubjectUpdate, DEFAULT_DOC_SUBJECT_TYPE } from "./wire";
 export { RUN_FIELD_PREFIX, formatRunFieldName, parseRunFieldName } from "./wire";
-// Reference unused symbols to keep tsc quiet about re-exports that may not
-// always be used.
-const _unused: RunNode | undefined = undefined;
-void _unused;

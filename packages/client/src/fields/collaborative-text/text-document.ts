@@ -47,8 +47,6 @@ import {
   diffRunFieldsForDeleteRange,
   docActionToUpdate,
   DEFAULT_DOC_SUBJECT_TYPE,
-  formatRunFieldName,
-  parseRunFieldName,
   RUN_FIELD_PREFIX,
 } from "./wire";
 import { ConflictDetector, type Conflict } from "./conflict";
@@ -76,8 +74,6 @@ export interface LocalInsertOptions {
   readonly splitParentAt?: number;
   /** HLC for the new run. Defaults to Date.now()-derived packed bigint. */
   readonly hlc?: HLCTimestamp;
-  /** Local HLC state for advancing on local edits. */
-  readonly localHlc?: { l: bigint; c: bigint };
 }
 
 /** Local delete options. */
@@ -284,7 +280,7 @@ export class TextDocument {
     const parentId = opts.afterRun ?? this.findLastVisibleRunId() ?? "ROOT";
 
     // Advance local HLC
-    const { hlc, state: newHlcState } = advanceLocalHlc(opts.localHlc ?? this.localHlcState);
+    const { hlc, state: newHlcState } = advanceLocalHlc(this.localHlcState);
     this.localHlcState.l = newHlcState.l;
     this.localHlcState.c = newHlcState.c;
     const finalHlc = opts.hlc ?? hlc;
@@ -577,14 +573,7 @@ export {
   diffRunFields,
   DEFAULT_DOC_SUBJECT_TYPE,
   RUN_FIELD_PREFIX,
-  formatRunFieldName,
-  parseRunFieldName,
 };
+export { formatRunFieldName, parseRunFieldName } from "./wire";
 export type { DocState, RunNode, RunFieldValue } from "./tree";
 export type { Conflict } from "./conflict";
-
-// Use the parsed-field helper to keep imports referenced for tree-shakers.
-const _keepRefsAlive = parseRunFieldName;
-const _keepRefsAlive2 = formatRunFieldName;
-void _keepRefsAlive;
-void _keepRefsAlive2;

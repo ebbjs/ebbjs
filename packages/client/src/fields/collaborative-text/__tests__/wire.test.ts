@@ -21,7 +21,6 @@ import {
   formatRunFieldName,
   isDocSubjectUpdate,
   parseRunFieldName,
-  RUN_FIELD_PREFIX,
 } from "../wire";
 import {
   createDocState,
@@ -508,10 +507,3 @@ describe("acceptance — same edits produce the same document via field-update w
     expect(reconstruct(docA.state)).toBe("hello world");
   });
 });
-
-// ---------------------------------------------------------------------------
-// Reference unused exports to keep tree-shakers happy
-// ---------------------------------------------------------------------------
-
-const _keepRefs = [RUN_FIELD_PREFIX];
-void _keepRefs;

@@ -13,8 +13,7 @@
 import { describe, expect, it } from "vitest";
 import { pack, format, type Action, type HLCTimestamp } from "@ebbjs/core";
 import { TextDocument, type AppliedUpdate } from "../text-document";
-import { FIELD_RUN as _FIELD_RUN, DEFAULT_DOC_SUBJECT_TYPE, formatRunFieldName } from "../wire";
-void _FIELD_RUN;
+import { DEFAULT_DOC_SUBJECT_TYPE, formatRunFieldName } from "../wire";
 import type { RunNode } from "../tree";
 
 // ---------------------------------------------------------------------------
