@@ -75,12 +75,10 @@ defmodule EbbServer.Storage.WatermarkTracker do
     current_watermark = :atomics.get(gsn_ref, 1)
     next_gsn = current_watermark + 1
 
-    cond do
-      not has_committed?(table_name, next_gsn) ->
-        current_watermark
-
-      true ->
-        attempt_advance_from(gsn_ref, table_name, current_watermark, next_gsn)
+    if has_committed?(table_name, next_gsn) do
+      attempt_advance_from(gsn_ref, table_name, current_watermark, next_gsn)
+    else
+      current_watermark
     end
   end
 
