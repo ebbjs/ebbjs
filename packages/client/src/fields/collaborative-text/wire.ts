@@ -179,7 +179,8 @@ const readRunFields = (update: Update): ParsedField[] => {
 /**
  * Apply a list of wire-format Actions targeting the given document subject
  * type to a DocState. Returns the new state plus the flat list of DocActions
- * applied (one per run field update).
+ * applied (one per run field update) and a parallel `sourceActions` array
+ * identifying which input Action each applied DocAction came from.
  *
  * Skips:
  * - Actions whose Updates target a different subject type
@@ -190,9 +191,10 @@ export const applyActions = (
   state: DocState,
   actions: readonly Action[],
   docSubjectType: string = DEFAULT_DOC_SUBJECT_TYPE,
-): { state: DocState; applied: DocAction[] } => {
+): { state: DocState; applied: DocAction[]; sourceActions: Action[] } => {
   let current = state;
   const applied: DocAction[] = [];
+  const sourceActions: Action[] = [];
 
   for (const action of actions) {
     for (const update of action.updates) {
@@ -208,11 +210,17 @@ export const applyActions = (
 
       const result = applyRunFieldUpdates(current, updates);
       current = result.state;
-      applied.push(...result.applied);
+      // Each applied DocAction came from this Action. We pair them up so
+      // listeners can attribute events to the source action without having
+      // to scan the input batch.
+      for (const docAction of result.applied) {
+        applied.push(docAction);
+        sourceActions.push(action);
+      }
     }
   }
 
-  return { state: current, applied };
+  return { state: current, applied, sourceActions };
 };
 
 /**
@@ -223,7 +231,7 @@ export const applyUpdate = (
   state: DocState,
   update: Update,
   docSubjectType: string = DEFAULT_DOC_SUBJECT_TYPE,
-): { state: DocState; applied: DocAction[] } => {
+): { state: DocState; applied: DocAction[]; sourceActions: Action[] } => {
   const action: Action = {
     id: update.id,
     actor_id: "",

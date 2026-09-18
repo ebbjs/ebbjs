@@ -235,6 +235,29 @@ describe("TextDocument.applyActions", () => {
     expect(events[0]!.kind).toBe("insert");
   });
 
+  it("attributes each applied update to its source action, not the first one in the batch", () => {
+    // Regression: appliedToEvent used to scan the actions array for the
+    // first one carrying a run:* field and attribute every event to it.
+    // With two actions in a batch, the second action's events would all
+    // be mis-attributed to the first.
+    const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
+    const events: AppliedUpdate[] = [];
+    doc.onUpdate((evt) => events.push(evt));
+
+    const run1 = makeRun(1000, "peer-B", "first", "ROOT");
+    const run2 = makeRun(1001, "peer-C", "second", "ROOT");
+    const action1 = makeInsertAction(run1);
+    const action2 = makeInsertAction(run2);
+
+    doc.applyActions([action1, action2]);
+
+    expect(events).toHaveLength(2);
+    expect(events[0]!.action.id).toBe(action1.id);
+    expect(events[0]!.runId).toBe(run1.id);
+    expect(events[1]!.action.id).toBe(action2.id);
+    expect(events[1]!.runId).toBe(run2.id);
+  });
+
   it("ignores actions for other document/entity scopes (no filter at this level)", () => {
     // TextDocument itself doesn't filter by docId — that's the SyncClient's job.
     // Verify it still applies all run updates correctly.

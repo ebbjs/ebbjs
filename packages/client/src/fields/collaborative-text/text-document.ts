@@ -210,13 +210,16 @@ export class TextDocument {
   applyActions(actions: readonly Action[]): void {
     if (actions.length === 0) return;
     const pre = this.state;
-    const { state: post, applied } = applyActions(pre, actions, this.docType);
+    const { state: post, applied, sourceActions } = applyActions(pre, actions, this.docType);
     this.state = post;
 
-    // Fire update listeners — one per applied DocAction.
+    // Fire update listeners — one per applied DocAction. Each event is
+    // paired with the source Action that produced it (threaded through
+    // from applyActions; no scanning of the input batch required).
     for (let i = 0; i < applied.length; i++) {
       const docAction = applied[i]!;
-      const evt = appliedToEvent(docAction, actions);
+      const sourceAction = sourceActions[i]!;
+      const evt = appliedToEvent(docAction, sourceAction);
       if (!evt) continue;
       for (const cb of this.updateListeners) {
         try {
@@ -490,6 +493,9 @@ export class TextDocument {
 
 /**
  * Convert an applied DocAction into the public AppliedUpdate event shape.
+ * The source Action is passed in directly (paired by `applyActions`) so
+ * we don't have to scan the input batch to find it.
+ *
  * Returns null for SPLITs (internal, never exposed).
  *
  * For DELETE_RANGE, the event's `kind` is "tombstone" (the wire value is
@@ -497,18 +503,8 @@ export class TextDocument {
  */
 const appliedToEvent = (
   docAction: import("./tree").DocAction,
-  actions: readonly Action[],
+  action: Action,
 ): AppliedUpdate | null => {
-  const action = actions.find((a) =>
-    a.updates.some(
-      (u) =>
-        (u.subject_type === DEFAULT_DOC_SUBJECT_TYPE || u.subject_type === "text_document") &&
-        u.data &&
-        typeof u.data === "object" &&
-        Object.keys(u.data as Record<string, unknown>).some((k) => k.startsWith("run:")),
-    ),
-  );
-  if (!action) return null;
   switch (docAction.type) {
     case "INSERT_RUN":
       return { action, runId: docAction.node.id, kind: "insert" };
