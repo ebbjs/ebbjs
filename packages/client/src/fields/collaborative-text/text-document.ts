@@ -37,6 +37,7 @@ import type { Action, HLCTimestamp, Update } from "@ebbjs/core";
 import {
   createDocState,
   docReducer,
+  reconstruct,
   type DocState,
   type RunFieldValue,
   type RunNode,
@@ -155,26 +156,9 @@ export class TextDocument {
     return this.state;
   }
 
-  /** Current document text (reconstructed via DFS). */
+  /** Current document text. */
   get text(): string {
-    let result = "";
-    const { nodes, children } = this.state;
-    const stack: string[] = ["ROOT"];
-    const output: string[] = [];
-    while (stack.length > 0) {
-      const id = stack.pop()!;
-      const node = nodes.get(id);
-      if (!node) continue;
-      if (!node.deleted && node.id !== "ROOT") {
-        output.push(node.text);
-      }
-      const childIds = children.get(id) ?? [];
-      for (let i = childIds.length - 1; i >= 0; i--) {
-        stack.push(childIds[i]!);
-      }
-    }
-    result = output.join("");
-    return result;
+    return reconstruct(this.state);
   }
 
   /** All recorded conflicts. */
