@@ -47,10 +47,10 @@ Two things to keep separate:
 For the prototype, the demo has exactly one model (a text document). The client exposes a direct API:
 
 ```ts
-const tree = await client.textDocument.open(docId);
-tree.localInsert("hello", { afterRunId: "ROOT", hlc: localHlc(clock) });
-tree.onUpdate((action) => {
-  /* CodeMirror integration */
+const doc = client.textDocument(docId);
+doc.localInsert("hello", { afterRun: doc.rootRunId }); // 'ROOT' to insert among root children
+doc.onUpdate((update) => {
+  /* update is an AppliedUpdate; CodeMirror re-render */
 });
 ```
 
@@ -90,13 +90,12 @@ type Conflict = {
 };
 
 // Event-based — for UI:
-tree.onConflict((conflict: Conflict) => { ... });
+doc.onConflict((conflict: Conflict) => { ... });
 
 // Query-based — for tests and debugging:
-tree.conflicts.all();
-tree.conflicts.forRun(runId: string);
-tree.conflicts.since(timestamp: number);
-tree.conflicts.clear();
+// doc.conflicts() returns all recorded conflicts (read-only snapshot).
+// doc.reset() clears conflicts AND the tree state — used in tests.
+doc.conflicts();
 ```
 
 Conflicts live **in-memory on the tree**, not in the storage adapter. Rationale: the action log is the source of truth for _what happened_; conflicts are derived metadata. The server doesn't need to know about them. Re-deriving on reload is cheap (walk the action log, apply the detection rule). If we want conflicts to survive a reload later, we can persist them in `localStorage`.
@@ -261,7 +260,7 @@ After this change, a run's `parentId` references another run's `<packed-hlc-bign
 2. If yes, snapshot the pre-merge tree state
 3. Apply the merge
 4. Record a `Conflict` record with pre/post snapshots and the contributing actions
-5. Fire `tree.onConflict(conflict)` if subscribed
+5. Fire `doc.onConflict(conflict)` if subscribed
 
 The detection uses the rule from Decision 4. Implementation: in the reducer, before applying a non-trivial Update to a RunNode, check if the RunNode was modified by another action whose HLC is concurrent with this one. If yes, flag.
 
@@ -274,7 +273,7 @@ New package. Vite + React 19 + CodeMirror 6 + Tailwind, matching the POC stack. 
 1. URL param `?actor=drew` (or `?actor=alice`) → actor ID
 2. Hardcoded `grp_demo` and `doc_demo` IDs
 3. If the group doesn't exist (first run), the demo calls `seed()` from `@ebbjs/server` to bootstrap it via HTTP `POST /sync/actions` with a PUT for the group, a PUT for the group member, and a PUT for the document
-4. Open the document: `client.textDocument.open('doc_demo')`
+4. Open the document: `client.textDocument('doc_demo')`
 5. Wire CodeMirror to the causal tree
 
 **Connection state indicator** (small badge in the corner): connecting → live → reconnecting → offline.
@@ -349,12 +348,12 @@ const client = createClient({
 });
 
 // Open a text document
-const doc = await client.textDocument.open("doc_demo");
+const doc = client.textDocument("doc_demo");
 
 // Subscribe to incoming updates (from other clients via SSE)
 const unsubscribe = doc.onUpdate((update) => {
-  // update: Action that modified this document's tree
-  // already applied to the tree; this is for UI re-render
+  // update: AppliedUpdate event — the Action that modified this document's
+  // tree has already been applied; this is for UI re-render.
 });
 
 // Listen for conflicts (event-based)
@@ -426,7 +425,7 @@ Five vertical slices, ordered by what unblocks what. Each slice ends with a runn
 1. Move `causal-tree.ts` into `@ebbjs/client/src/fields/collaborative-text/`. Use `@ebbjs/core`'s HLC instead of the experiment's `hlc.ts`.
 2. **Reconcile run ID format** (see "Run ID format" in CausalTree component design above). Change from `{ts}:{count}:{peerId}` string to `${formatHlc(hlc)}:${actor_id}` using production HLC representation. Update `makeSplitId` accordingly. Update `parentId` references throughout the reducer.
 3. Adapt the wire format: experiment's `DocAction`s → ebb Action/Update shape (`subject_type: 'run'`, `subject_id: <runId>`)
-4. `client.textDocument.open(docId)` → returns the `CausalTree` instance, subscribed to incoming Updates for that entity
+4. `client.textDocument(docId)` → returns the `TextDocument` instance (the TextDocument is NOT auto-wired to the SSE stream — callers pipe incoming Actions into `doc.applyActions()` themselves; see `SyncClient.subscribe` docs)
 5. `doc.localInsert()` / `doc.localDelete()` → create an Action with the right Update, apply locally, mark pending for `client.write()`
 6. `doc.onUpdate()` event for incoming Updates (after local materialization)
 7. Conflict detection in the merge path (Decision 4)
@@ -495,7 +494,7 @@ packages/client/src/fields/collaborative-text/         # new — port causal-tre
 packages/client/src/fields/collaborative-text/tree.ts  # port of experiment/causal-tree.ts
 packages/client/src/fields/collaborative-text/types.ts # RunNode, Conflict, etc.
 packages/client/src/fields/collaborative-text/conflict.ts  # conflict detection
-packages/client/src/text-document.ts                   # new — client.textDocument.open(docId) API
+packages/client/src/fields/collaborative-text/text-document.ts  # new — client.textDocument(docId) API + Registry
 packages/client/src/presence/                          # new — port of experiment/presence.ts (slice 3 optional)
 packages/client/src/presence/presence.ts               # PresenceData, positionToRunRef, runRefToPosition, usePresence
 packages/client/src/presence/cursor-widget.ts          # CM6 CursorWidget
