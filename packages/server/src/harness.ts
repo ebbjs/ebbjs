@@ -1,7 +1,11 @@
 import { spawn } from "child_process";
 import { mkdirSync, existsSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 import { ServerOptions, RunningServer } from "./types";
+
+// ESM-safe equivalent of `__dirname` for the source file.
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const RELEASE_BIN = join(__dirname, "../dist/ebb_server/bin/ebb_server");
 const DEFAULT_PORT = 4000;

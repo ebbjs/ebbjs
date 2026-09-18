@@ -36,10 +36,13 @@ import { fileURLToPath } from "url";
 import { buildSmokeSeed, SMOKE_ACTOR_ID, SMOKE_GROUP_ID, SMOKE_ENTITY_ID } from "./seed";
 
 const DATA_DIR = process.env.EBB_CLIENT_SMOKE_DATA_DIR ?? "/tmp/ebb-smoke-data";
-const PORT = Number(process.env.EBB_CLIENT_SMOKE_PORT ?? 4100);
+// The ebb_server release ignores EBB_PORT (config-driven) and always binds
+// 4000 in prod. The harness accepts a port parameter but it's a no-op.
+// See ebb_server/lib/ebb_server/application.ex.
+const PORT = Number(process.env.EBB_CLIENT_SMOKE_PORT ?? 4000);
 const SERVER_BIN = join(
   dirname(fileURLToPath(import.meta.url)),
-  "../../packages/server/dist/ebb_server/bin/ebb_server",
+  "../../../packages/server/dist/ebb_server/bin/ebb_server",
 );
 
 const log = (...args: unknown[]): void => {
