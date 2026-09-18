@@ -50,13 +50,14 @@ export {
 export {
   applyActions,
   docActionToUpdate,
-  updateToDocAction,
-  isRunUpdate,
-  isWellFormedRunUpdate,
-  RUN_SUBJECT_TYPE,
+  diffRunFields,
+  diffRunFieldsForDeleteRange,
+  isDocSubjectUpdate,
+  DEFAULT_DOC_SUBJECT_TYPE,
+  RUN_FIELD_PREFIX,
   FIELD_RUN,
-  FIELD_APPEND,
-  FIELD_RANGE,
+  formatRunFieldName,
+  parseRunFieldName,
 } from "./fields/collaborative-text/wire";
 
 export {

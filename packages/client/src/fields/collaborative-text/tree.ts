@@ -32,6 +32,22 @@
 import { compare as compareHlc, type HLCTimestamp } from "@ebbjs/core";
 
 // ---------------------------------------------------------------------------
+// Field-update wire shape
+// ---------------------------------------------------------------------------
+
+/**
+ * The value shape of a `run:<runId>` field on a text document. This is the
+ * wire-level representation of a run update — storage sees only this
+ * opaque blob; the client interprets it to drive the tree reducer.
+ *
+ * `value: null` is the canonical tombstone encoding — storage keeps the
+ * field with a null value (cheap), the client knows to drop the run.
+ */
+export type RunFieldValue =
+  | { readonly value: RunNode; readonly update_id: string; readonly hlc: HLCTimestamp }
+  | { readonly value: null; readonly update_id: string; readonly hlc: HLCTimestamp };
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -617,6 +633,41 @@ const applyExtendRun = (state: DocState, runId: string, appendText: string): Doc
   };
 };
 
+/**
+ * Replace a run's text outright (used by the wire adapter when it
+ * receives a field update with a new RunNode value for an existing run).
+ *
+ * The run keeps its ID, parentId, and position in the tree — only the
+ * text and span length change. The text delta is applied to the
+ * position index so totalLength stays in sync.
+ */
+const applySetRun = (state: DocState, runId: string, newNode: RunNode): DocState => {
+  const existing = state.nodes.get(runId);
+  if (!existing || existing.deleted) {
+    // Caller should have routed to applyInsertRun.
+    return state;
+  }
+  const textDelta = newNode.text.length - existing.text.length;
+  const newNodes = new Map(state.nodes);
+  newNodes.set(runId, {
+    ...newNode,
+    id: runId,
+    parentId: existing.parentId,
+    deleted: false,
+  });
+  const newSpans = state.index.spans.map((s) =>
+    s.runId === runId ? { ...s, length: newNode.text.length } : s,
+  );
+  return {
+    nodes: newNodes,
+    children: state.children,
+    index: {
+      spans: newSpans,
+      totalLength: state.index.totalLength + textDelta,
+    },
+  };
+};
+
 /** DFS traversal from a given root, calling visitor for each node. */
 const dfs = (state: DocState, nodeId: string, visitor: (node: RunNode) => void): void => {
   const node = state.nodes.get(nodeId);
@@ -723,4 +774,133 @@ const findSpanInsertIndex = (state: DocState, newNode: RunNode): number => {
   }
 
   return spanIdx;
+};
+
+// ---------------------------------------------------------------------------
+// Field-update reducer (wire path)
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply a single `run:<runId>` field value to the tree state.
+ *
+ * This is the wire-level entry point. It collapses the three local
+ * operations (INSERT_RUN / EXTEND_RUN / DELETE_RANGE) plus the implicit
+ * SPLIT into one atomic reducer that handles the three shapes a run
+ * field can carry:
+ *
+ * - `{ value: <RunNode> }` for a new run — `applyInsertRun`
+ * - `{ value: <RunNode> }` for an existing run — replace text + span
+ *   length (covers both extend and partial-delete + split atomicly)
+ * - `{ value: null }` for a tombstone — `tombstoneRun`
+ *
+ * Returns the new state plus a list of the equivalent `DocAction`s the
+ * receiver conceptually applied. This lets the wire adapter and conflict
+ * detector reason in DocAction terms even though the wire carries fields.
+ */
+export const applyRunFieldUpdate = (
+  state: DocState,
+  runId: string,
+  field: RunFieldValue,
+): { state: DocState; applied: DocAction[] } => {
+  if (field.value === null) {
+    const node = state.nodes.get(runId);
+    if (!node || node.deleted) {
+      return { state, applied: [] };
+    }
+    // Tombstone the whole run. The wire carries the FINAL state, so
+    // partial deletes are encoded by the sender as a set of field updates
+    // (split halves + tombstoned middle). The receiver just patches.
+    const fullTombstone: DocAction = {
+      type: "DELETE_RANGE",
+      runId,
+      offset: 0,
+      count: node.text.length,
+    };
+    return {
+      state: docReducer(state, fullTombstone),
+      applied: [fullTombstone],
+    };
+  }
+
+  const newNode = field.value;
+  if (state.nodes.has(runId)) {
+    // Existing run — the wire payload is the final state. Replace text
+    // and span length in one step. This single DocAction (`EXTEND_RUN`
+    // with the new full text) handles all of: extend, shrink, partial
+    // delete-after-split, and re-attribution. The receiver does NOT
+    // need to perform the sender's splits because they're encoded in
+    // the sibling field updates that follow in the same Action.
+    const existing = state.nodes.get(runId)!;
+    if (existing.deleted) {
+      // Re-creating a tombstoned run: treat as insert.
+      return {
+        state: docReducer(state, { type: "INSERT_RUN", node: newNode }),
+        applied: [{ type: "INSERT_RUN", node: newNode }],
+      };
+    }
+    if (
+      newNode.text === existing.text &&
+      newNode.hlc === existing.hlc &&
+      newNode.actorId === existing.actorId
+    ) {
+      // No-op: same final state.
+      return { state, applied: [] };
+    }
+    // Replace the run's text and span length atomically. The wire
+    // carries the FINAL state, so we set the text outright (no delta
+    // computation needed). We model this as a new reducer operation
+    // `setRun` that replaces text + span length in one step.
+    const setRun = applySetRun(state, runId, newNode);
+    return {
+      state: setRun,
+      applied: [{ type: "EXTEND_RUN", runId, appendText: newNode.text }],
+    };
+  }
+
+  // New run — insert. If the run's parent doesn't exist in the tree
+  // (typical when receiving split-half survivors from a partial
+  // DELETE_RANGE on a peer), materialize a tombstoned placeholder for
+  // the missing parent so the new run has a valid parent reference.
+  let working = state;
+  if (newNode.parentId !== ROOT_ID && !working.nodes.has(newNode.parentId)) {
+    const placeholder: RunNode = {
+      id: newNode.parentId,
+      hlc: newNode.hlc,
+      actorId: newNode.actorId,
+      text: "",
+      parentId: ROOT_ID,
+      deleted: true,
+    };
+    working = applyInsertRun(working, placeholder);
+    if (working === state) {
+      // Insert failed (shouldn't happen with our inputs); skip.
+      return { state, applied: [] };
+    }
+  }
+  return {
+    state: docReducer(working, { type: "INSERT_RUN", node: newNode }),
+    applied: [{ type: "INSERT_RUN", node: newNode }],
+  };
+};
+
+/**
+ * Apply a list of `run:<runId>` field updates to the tree. Returns the new
+ * state plus the flat list of DocActions applied (in document order).
+ *
+ * Field names are expected to have the `run:` prefix stripped already
+ * (this function deals in run IDs, not field names). Callers parse the
+ * prefix off first.
+ */
+export const applyRunFieldUpdates = (
+  state: DocState,
+  updates: ReadonlyMap<string, RunFieldValue>,
+): { state: DocState; applied: DocAction[] } => {
+  let current = state;
+  const applied: DocAction[] = [];
+  for (const [runId, field] of updates) {
+    const result = applyRunFieldUpdate(current, runId, field);
+    current = result.state;
+    applied.push(...result.applied);
+  }
+  return { state: current, applied };
 };

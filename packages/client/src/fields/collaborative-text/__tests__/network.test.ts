@@ -13,7 +13,8 @@
 import { describe, expect, it } from "vitest";
 import { pack, format, type Action, type HLCTimestamp } from "@ebbjs/core";
 import { TextDocument, type AppliedUpdate } from "../text-document";
-import { FIELD_RUN } from "../wire";
+import { FIELD_RUN as _FIELD_RUN, DEFAULT_DOC_SUBJECT_TYPE, formatRunFieldName } from "../wire";
+void _FIELD_RUN;
 import type { RunNode } from "../tree";
 
 // ---------------------------------------------------------------------------
@@ -35,10 +36,16 @@ const makeInsertAction = (run: RunNode): Action => ({
   updates: [
     {
       id: `upd_${run.id}`,
-      subject_id: run.id,
-      subject_type: "run",
-      method: "put",
-      data: { [FIELD_RUN]: { value: run, update_id: `upd_${run.id}`, hlc: run.hlc } },
+      subject_id: "doc_xxx",
+      subject_type: DEFAULT_DOC_SUBJECT_TYPE,
+      method: "patch",
+      data: {
+        [formatRunFieldName(run.id)]: {
+          value: run,
+          update_id: `upd_${run.id}`,
+          hlc: run.hlc,
+        },
+      },
     } as never,
   ],
 });
@@ -181,10 +188,23 @@ describe("TextDocument — conflict surfacing via mock SSE", () => {
     expect(docB.text).toBe("hello");
     const runId = docB.docState.children.get("ROOT")![0]!;
 
-    // Concurrent EXTENDs to the same run with same HLC
-    // Both apply locally first (optimistic), then broadcast.
-    // To simulate concurrency without the same HLC conflict in the local
-    // append, we use a custom Action sequence.
+    // Concurrent field updates to the same run with same HLC
+    const extARun: RunNode = {
+      id: runId,
+      hlc: makeHlc(5000),
+      actorId: "peer-A",
+      text: "helloA",
+      parentId: "ROOT",
+      deleted: false,
+    };
+    const extBRun: RunNode = {
+      id: runId,
+      hlc: makeHlc(5000),
+      actorId: "peer-B",
+      text: "helloB",
+      parentId: "ROOT",
+      deleted: false,
+    };
     const extA: Action = {
       id: "act_extA",
       actor_id: "peer-A",
@@ -193,11 +213,15 @@ describe("TextDocument — conflict surfacing via mock SSE", () => {
       updates: [
         {
           id: "upd_extA",
-          subject_id: runId,
-          subject_type: "run",
+          subject_id: "doc_1",
+          subject_type: DEFAULT_DOC_SUBJECT_TYPE,
           method: "patch",
           data: {
-            append: { value: { text: "A" }, update_id: "upd_extA", hlc: makeHlc(5000) },
+            [formatRunFieldName(runId)]: {
+              value: extARun,
+              update_id: "upd_extA",
+              hlc: makeHlc(5000),
+            },
           },
         } as never,
       ],
@@ -210,11 +234,15 @@ describe("TextDocument — conflict surfacing via mock SSE", () => {
       updates: [
         {
           id: "upd_extB",
-          subject_id: runId,
-          subject_type: "run",
+          subject_id: "doc_1",
+          subject_type: DEFAULT_DOC_SUBJECT_TYPE,
           method: "patch",
           data: {
-            append: { value: { text: "B" }, update_id: "upd_extB", hlc: makeHlc(5000) },
+            [formatRunFieldName(runId)]: {
+              value: extBRun,
+              update_id: "upd_extB",
+              hlc: makeHlc(5000),
+            },
           },
         } as never,
       ],
@@ -252,6 +280,22 @@ describe("TextDocument — conflict surfacing via mock SSE", () => {
     const events: number[] = [];
     docB.onConflict(() => events.push(events.length));
 
+    const extARun2: RunNode = {
+      id: runId,
+      hlc: makeHlc(5000),
+      actorId: "peer-A",
+      text: "hi!",
+      parentId: "ROOT",
+      deleted: false,
+    };
+    const extBRun2: RunNode = {
+      id: runId,
+      hlc: makeHlc(5000),
+      actorId: "peer-B",
+      text: "hi?",
+      parentId: "ROOT",
+      deleted: false,
+    };
     const extA: Action = {
       id: "act_eA",
       actor_id: "peer-A",
@@ -260,11 +304,15 @@ describe("TextDocument — conflict surfacing via mock SSE", () => {
       updates: [
         {
           id: "upd_eA",
-          subject_id: runId,
-          subject_type: "run",
+          subject_id: "doc_1",
+          subject_type: DEFAULT_DOC_SUBJECT_TYPE,
           method: "patch",
           data: {
-            append: { value: { text: "!" }, update_id: "upd_eA", hlc: makeHlc(5000) },
+            [formatRunFieldName(runId)]: {
+              value: extARun2,
+              update_id: "upd_eA",
+              hlc: makeHlc(5000),
+            },
           },
         } as never,
       ],
@@ -277,11 +325,15 @@ describe("TextDocument — conflict surfacing via mock SSE", () => {
       updates: [
         {
           id: "upd_eB",
-          subject_id: runId,
-          subject_type: "run",
+          subject_id: "doc_1",
+          subject_type: DEFAULT_DOC_SUBJECT_TYPE,
           method: "patch",
           data: {
-            append: { value: { text: "?" }, update_id: "upd_eB", hlc: makeHlc(5000) },
+            [formatRunFieldName(runId)]: {
+              value: extBRun2,
+              update_id: "upd_eB",
+              hlc: makeHlc(5000),
+            },
           },
         } as never,
       ],
@@ -312,7 +364,7 @@ describe("TextDocument — update event flow", () => {
 
     expect(events).toHaveLength(2);
     expect(events[0]!.runId).toBe(run1.id);
-    expect(events[0]!.method).toBe("put");
+    expect(events[0]!.kind).toBe("insert");
     expect(events[1]!.runId).toBe(run2.id);
   });
 

@@ -12,7 +12,8 @@
 import { describe, expect, it } from "vitest";
 import { pack, format, type Action, type HLCTimestamp } from "@ebbjs/core";
 import { TextDocument, TextDocumentRegistry, type AppliedUpdate } from "../text-document";
-import { FIELD_RUN } from "../wire";
+import { FIELD_RUN as _FIELD_RUN, DEFAULT_DOC_SUBJECT_TYPE, formatRunFieldName } from "../wire";
+void _FIELD_RUN;
 import type { RunNode } from "../tree";
 
 // ---------------------------------------------------------------------------
@@ -34,10 +35,16 @@ const makeInsertAction = (run: RunNode): Action => ({
   updates: [
     {
       id: `upd_${run.id}`,
-      subject_id: run.id,
-      subject_type: "run",
-      method: "put",
-      data: { [FIELD_RUN]: { value: run, update_id: `upd_${run.id}`, hlc: run.hlc } },
+      subject_id: "doc_1",
+      subject_type: DEFAULT_DOC_SUBJECT_TYPE,
+      method: "patch",
+      data: {
+        [formatRunFieldName(run.id)]: {
+          value: run,
+          update_id: `upd_${run.id}`,
+          hlc: run.hlc,
+        },
+      },
     } as never,
   ],
 });
@@ -73,8 +80,9 @@ describe("TextDocument.localInsert", () => {
     const action = doc.pendingActions()[0]!;
     expect(action.actor_id).toBe("peer-A");
     expect(action.updates).toHaveLength(1);
-    expect(action.updates[0]!.subject_id).toBe(id);
-    expect(action.updates[0]!.method).toBe("put");
+    expect(action.updates[0]!.subject_id).toBe("doc_1");
+    expect(action.updates[0]!.subject_type).toBe("text_document");
+    expect(action.updates[0]!.method).toBe("patch");
   });
 
   it("inserts as child of ROOT by default", () => {
@@ -115,7 +123,7 @@ describe("TextDocument.localInsert", () => {
 
     expect(events).toHaveLength(1);
     expect(events[0]!.runId).toBe(id);
-    expect(events[0]!.method).toBe("put");
+    expect(events[0]!.kind).toBe("insert");
   });
 
   it("multiple sequential inserts produce ordered runs", () => {
@@ -173,7 +181,7 @@ describe("TextDocument.localDelete", () => {
 
     expect(events).toHaveLength(1);
     expect(events[0]!.runId).toBe(runId);
-    expect(events[0]!.method).toBe("delete");
+    expect(events[0]!.kind).toBe("tombstone");
   });
 });
 
@@ -202,7 +210,7 @@ describe("TextDocument.applyActions", () => {
 
     expect(events).toHaveLength(1);
     expect(events[0]!.runId).toBe(remoteRun.id);
-    expect(events[0]!.method).toBe("put");
+    expect(events[0]!.kind).toBe("insert");
   });
 
   it("ignores actions for other document/entity scopes (no filter at this level)", () => {
@@ -251,8 +259,11 @@ describe("TextDocument.onConflict", () => {
     doc.localInsert("hello");
     expect(doc.text).toBe("hello");
 
-    // Apply two concurrent EXTEND_RUNs targeting the same run from peer-B
+    // Apply two concurrent field updates targeting the same run from peer-B
     const runId = doc.docState.children.get("ROOT")![0]!;
+    const baseRun = doc.docState.nodes.get(runId)!;
+    const runA: RunNode = { ...baseRun, text: "helloA", hlc: makeHlc(5000), actorId: "peer-B" };
+    const runB: RunNode = { ...baseRun, text: "helloB", hlc: makeHlc(5000), actorId: "peer-C" };
     const extA: Action = {
       id: "act_extA",
       actor_id: "peer-B",
@@ -261,11 +272,15 @@ describe("TextDocument.onConflict", () => {
       updates: [
         {
           id: "upd_extA",
-          subject_id: runId,
-          subject_type: "run",
+          subject_id: "doc_1",
+          subject_type: "text_document",
           method: "patch",
           data: {
-            append: { value: { text: "A" }, update_id: "upd_extA", hlc: makeHlc(5000) },
+            [formatRunFieldName(runId)]: {
+              value: runA,
+              update_id: "upd_extA",
+              hlc: makeHlc(5000),
+            },
           },
         } as never,
       ],
@@ -278,11 +293,15 @@ describe("TextDocument.onConflict", () => {
       updates: [
         {
           id: "upd_extB",
-          subject_id: runId,
-          subject_type: "run",
+          subject_id: "doc_1",
+          subject_type: "text_document",
           method: "patch",
           data: {
-            append: { value: { text: "B" }, update_id: "upd_extB", hlc: makeHlc(5000) },
+            [formatRunFieldName(runId)]: {
+              value: runB,
+              update_id: "upd_extB",
+              hlc: makeHlc(5000),
+            },
           },
         } as never,
       ],

@@ -1,263 +1,218 @@
 /**
  * Wire format adapter — convert between ebb Actions and tree DocActions.
  *
- * Ebb's wire protocol sees a run as just another entity: an Update with
- * `subject_type: "run"`, `subject_id: <runId>`, and
- * `method: put | patch | delete`. The field data carries the payload:
+ * ## Design: runs are fields of the document
  *
- * - `put`   → `data.fields.run = { value: <RunNode>, update_id, hlc, splitParentAt? }`
- * - `patch` → `data.fields.append = { value: { text }, update_id, hlc }`
- * - `delete`→ `data.fields.range = { value: { offset, count }, update_id, hlc }`
+ * A collaborative-text document is an ebb entity of type `text_document`
+ * (configurable). Each run is a field on that entity, named `run:<runId>`.
+ * This keeps the doc as the only entity the server ever sees — runs never
+ * appear as separate entities, so the server's permission model
+ * (`<type>.<verb>` scoped per group) gates the whole document with a
+ * single grant: `text_document.update` (or `text_document.*`) covers all
+ * run operations.
  *
- * `splitParentAt` is informational metadata: when the sender's local edit
- * was mid-run, the receiver must perform the same split before applying
- * the INSERT_RUN. SPLIT itself is never broadcast — it's a local-only
- * consequence of receiving a remote insert (each peer does its own splits
- * as needed).
+ * Wire-format shape for a run update:
  *
- * ## Why `type` and `splitParentAt` aren't in core's FieldValue schema
+ * ```json
+ * {
+ *   "subject_id": "<docId>",
+ *   "subject_type": "text_document",
+ *   "method": "patch",
+ *   "data": {
+ *     "fields": {
+ *       "run:<runId>": {
+ *         "value": <RunNode | null>,
+ *         "update_id": "<update-id>",
+ *         "hlc": "<hlc>"
+ *       }
+ *     }
+ *   }
+ * }
+ * ```
  *
- * The core `FieldValueSchema` is `{ value, update_id, hlc }` — extra fields
- * are silently dropped by storage (its extractFields cast ignores anything
- * else). Storage stays dumb on purpose (per Decision 1 in the design doc).
- * We rely on the field name (`run` / `append` / `range`) as the type
- * discriminator instead of an inner `type` tag.
+ * - `method: "patch"` always — storage's per-field LWW merge handles
+ *   insert/update of any run field, including new ones.
+ * - `value: null` is the tombstone encoding. The receiver drops the run
+ *   from its tree.
+ * - SPLITs are local-only consequences — the wire carries the resulting
+ *   field updates (split halves + any tombstones) as a flat list. The
+ *   receiver doesn't re-derive the splits.
  *
- * ## Subject type
+ * ## Why this is the right model
  *
- * All updates targeting a run carry `subject_type: "run"`. The receiving
- * peer filters by this marker; entities of other subject types are passed
- * through unchanged.
+ * The alternative — runs as separate entities with `subject_type: "run"`
+ * — grants `run.update` permission too broadly: any actor with that
+ * permission in a group can rewrite any run, including runs authored by
+ * others. Doc-as-entity fixes this: the doc's `text_document.update`
+ * permission gates all runs, and authorship is preserved by the run's
+ * `actorId` field which the receiver keeps intact.
  *
- * ## Action-level dedup
- *
- * The storage adapter's ActionLog already enforces idempotency
- * (`storage.actions.append` is a no-op for repeated IDs). So `applyActions`
- * here does not track seen IDs separately — it relies on the caller having
- * routed actions through the storage layer first.
+ * @see packages/client/docs/prototypes/collaborative-text/README.md (Decision 1 + wire format)
  */
 
 import type { Action, HLCTimestamp, Update } from "@ebbjs/core";
-import { docReducer, type DocAction, type DocState, type RunNode } from "./tree";
+import {
+  applyRunFieldUpdates,
+  docReducer,
+  type DocAction,
+  type DocState,
+  type RunFieldValue,
+  type RunNode,
+} from "./tree";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-export const RUN_SUBJECT_TYPE = "run";
+/** Default document subject type for collaborative-text documents. */
+export const DEFAULT_DOC_SUBJECT_TYPE = "text_document";
 
-/** Well-known field names in the wire format. */
-export const FIELD_RUN = "run";
-export const FIELD_APPEND = "append";
-export const FIELD_RANGE = "range";
+/**
+ * Field-name prefix for run fields on the document. The receiver parses
+ * the run id from the suffix.
+ *
+ * Field names take the shape `run:<runId>` where `<runId>` is the full
+ * run ID (`${formatHlc(hlc)}:${actorId}`, possibly followed by `:s:<offset>`
+ * for split halves).
+ */
+export const RUN_FIELD_PREFIX = "run:";
+// Re-export the prefix under the legacy alias so tests that import FIELD_RUN
+// can still find it. (Removed when the test suite is updated.)
+export const FIELD_RUN = RUN_FIELD_PREFIX;
 
 // ---------------------------------------------------------------------------
-// Field value shapes
-//
-// These mirror the core FieldValue shape ({ value, update_id, hlc }) plus
-// optional metadata. Storage reads only { value, update_id, hlc } so the
-// extras are ignored there.
+// Field value shapes (wire / client view)
 // ---------------------------------------------------------------------------
 
-/** `put` Update payload for a run. */
+/** Live run field on the document. */
 export type CausalTreeRunFieldValue = {
   readonly value: RunNode;
   readonly update_id: string;
   readonly hlc: HLCTimestamp;
-  /**
-   * If set, the parent run was split at this offset on the sender before
-   * this insert. The receiver must perform the same split before applying
-   * the INSERT_RUN. The split is idempotent — repeated splits at the same
-   * offset are no-ops.
-   */
-  readonly splitParentAt?: number;
 };
 
-/** `patch` Update payload: append text to an existing run. */
-export type CausalTreeAppendFieldValue = {
-  readonly value: { readonly text: string };
-  readonly update_id: string;
-  readonly hlc: HLCTimestamp;
-};
-
-/** `delete` Update payload: tombstone a range of a run. */
-export type CausalTreeRangeFieldValue = {
-  readonly value: { readonly offset: number; readonly count: number };
+/** Tombstoned run field on the document (kept for audit / late-apply). */
+export type CausalTreeTombstoneFieldValue = {
+  readonly value: null;
   readonly update_id: string;
   readonly hlc: HLCTimestamp;
 };
 
 // ---------------------------------------------------------------------------
-// Update ↔ DocAction conversion
+// Filter helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Decide whether an Update targets a run. Use this to filter updates when
- * applying an Action to a document — non-run updates are ignored.
+ * Check whether an Update targets the given document subject type. Use
+ * this to filter updates from an Action before applying them to a
+ * TextDocument (so non-doc updates pass through unchanged).
  */
-export const isRunUpdate = (update: Update): boolean => update.subject_type === RUN_SUBJECT_TYPE;
+export const isDocSubjectUpdate = (update: Update, docSubjectType: string): boolean =>
+  update.subject_type === docSubjectType;
 
-/** Read a field value from `update.data`, ignoring TypeBox's strict schema. */
-const readField = (update: Update, fieldName: string): Record<string, unknown> | null => {
-  if (!update.data || typeof update.data !== "object") return null;
+/**
+ * Parse a `run:<runId>` field name into the run id. Returns null if the
+ * field name doesn't have the run prefix.
+ */
+export const parseRunFieldName = (fieldName: string): string | null => {
+  if (!fieldName.startsWith(RUN_FIELD_PREFIX)) return null;
+  return fieldName.slice(RUN_FIELD_PREFIX.length);
+};
+
+/**
+ * Build a `run:<runId>` field name from a run id.
+ */
+export const formatRunFieldName = (runId: string): string => `${RUN_FIELD_PREFIX}${runId}`;
+
+// ---------------------------------------------------------------------------
+// Read side: parse incoming wire updates into field-update operations
+// ---------------------------------------------------------------------------
+
+/** A single run field read out of an Update's data. */
+type ParsedField = {
+  readonly fieldName: string;
+  readonly runId: string;
+  readonly field: RunFieldValue;
+  readonly updateId: string;
+  readonly updateHlc: HLCTimestamp;
+};
+
+/**
+ * Read the fields out of an Update that target runs. Silently ignores
+ * fields with names that don't start with the run prefix (so non-run
+ * fields on the doc — e.g., a `title` field — pass through untouched).
+ */
+const readRunFields = (update: Update): ParsedField[] => {
+  if (!update.data || typeof update.data !== "object") return [];
   const fields = update.data as Record<string, Record<string, unknown>>;
-  const field = fields[fieldName];
-  if (!field || typeof field !== "object") return null;
-  return field;
-};
-
-/**
- * Convert a wire-format Update into a DocAction. Returns null if the Update
- * doesn't carry run data (e.g., it's targeting a different subject type, or
- * it's a malformed run Update).
- *
- * Note: SPLIT is NOT represented in wire format — splits are local-only.
- * The split hint lives inside the `put` payload's `splitParentAt` field.
- */
-export const updateToDocAction = (update: Update): DocAction | null => {
-  if (!isRunUpdate(update)) return null;
-
-  if (update.method === "put") {
-    const f = readField(update, FIELD_RUN) as CausalTreeRunFieldValue | null;
-    if (!f || !f.value || !f.value.id) return null;
-    return { type: "INSERT_RUN", node: f.value, splitParentAt: f.splitParentAt };
-  }
-
-  if (update.method === "patch") {
-    const f = readField(update, FIELD_APPEND) as CausalTreeAppendFieldValue | null;
-    if (!f || typeof f.value?.text !== "string") return null;
-    return { type: "EXTEND_RUN", runId: update.subject_id, appendText: f.value.text };
-  }
-
-  if (update.method === "delete") {
-    const f = readField(update, FIELD_RANGE) as CausalTreeRangeFieldValue | null;
-    if (!f || typeof f.value?.offset !== "number" || typeof f.value?.count !== "number")
-      return null;
-    return {
-      type: "DELETE_RANGE",
-      runId: update.subject_id,
-      offset: f.value.offset,
-      count: f.value.count,
-    };
-  }
-
-  return null;
-};
-
-/**
- * Convert a DocAction into a wire-format Update. Returns null for SPLIT
- * (local-only — never broadcast).
- *
- * The actor and HLC come from the originating Action, not from the node
- * itself. Pass them via `opts`.
- */
-export const docActionToUpdate = (
-  action: DocAction,
-  opts: { actorId: string; hlc: HLCTimestamp; updateId: string },
-): Update | null => {
-  switch (action.type) {
-    case "INSERT_RUN": {
-      const field: CausalTreeRunFieldValue = {
-        value: action.node,
-        update_id: opts.updateId,
-        hlc: opts.hlc,
-        ...(action.splitParentAt !== undefined && { splitParentAt: action.splitParentAt }),
-      };
-      return {
-        id: opts.updateId,
-        subject_id: action.node.id,
-        subject_type: RUN_SUBJECT_TYPE,
-        method: "put",
-        data: { [FIELD_RUN]: field as unknown as never },
-      };
+  const out: ParsedField[] = [];
+  for (const [fieldName, field] of Object.entries(fields)) {
+    const parsed = parseRunFieldName(fieldName);
+    if (!parsed) continue;
+    if (!field || typeof field !== "object") continue;
+    const value = field["value"];
+    const update_id =
+      typeof field["update_id"] === "string" ? (field["update_id"] as string) : update.id;
+    const hlc =
+      typeof field["hlc"] === "string" ? (field["hlc"] as HLCTimestamp) : ("0" as HLCTimestamp);
+    if (value === null) {
+      out.push({
+        fieldName,
+        runId: parsed,
+        field: { value: null, update_id, hlc },
+        updateId: update.id,
+        updateHlc: hlc,
+      });
+    } else if (value && typeof value === "object" && "id" in value) {
+      out.push({
+        fieldName,
+        runId: parsed,
+        field: { value: value as RunNode, update_id, hlc },
+        updateId: update.id,
+        updateHlc: hlc,
+      });
     }
-    case "EXTEND_RUN": {
-      const field: CausalTreeAppendFieldValue = {
-        value: { text: action.appendText },
-        update_id: opts.updateId,
-        hlc: opts.hlc,
-      };
-      return {
-        id: opts.updateId,
-        subject_id: action.runId,
-        subject_type: RUN_SUBJECT_TYPE,
-        method: "patch",
-        data: { [FIELD_APPEND]: field as unknown as never },
-      };
-    }
-    case "DELETE_RANGE": {
-      const field: CausalTreeRangeFieldValue = {
-        value: { offset: action.offset, count: action.count },
-        update_id: opts.updateId,
-        hlc: opts.hlc,
-      };
-      return {
-        id: opts.updateId,
-        subject_id: action.runId,
-        subject_type: RUN_SUBJECT_TYPE,
-        method: "delete",
-        data: { [FIELD_RANGE]: field as unknown as never },
-      };
-    }
-    case "SPLIT":
-      // Local-only — splits are inferred from splitParentAt on a put.
-      return null;
   }
+  return out;
 };
 
 // ---------------------------------------------------------------------------
-// Apply wire Actions to a DocState
+// Apply wire Actions to a DocState (read path)
 // ---------------------------------------------------------------------------
 
 /**
- * Apply a list of wire-format Actions to a DocState, producing the new
- * state plus a list of the resulting DocActions that were applied.
+ * Apply a list of wire-format Actions targeting the given document subject
+ * type to a DocState. Returns the new state plus the flat list of DocActions
+ * applied (one per run field update).
  *
- * The caller is responsible for:
- * - Routing Actions through the storage adapter first (so dedup happens)
- * - Filtering Actions by group/entity scope before calling
- *
- * Side effects of a single run Update:
- * - A `put` with `splitParentAt` triggers a SPLIT before the INSERT_RUN.
- * - All other Updates translate 1:1 to a DocAction.
+ * Skips:
+ * - Actions whose Updates target a different subject type
+ * - Updates whose data doesn't carry `run:*` fields
+ * - Updates with malformed data shapes
  */
 export const applyActions = (
   state: DocState,
   actions: readonly Action[],
+  docSubjectType: string = DEFAULT_DOC_SUBJECT_TYPE,
 ): { state: DocState; applied: DocAction[] } => {
   let current = state;
   const applied: DocAction[] = [];
 
   for (const action of actions) {
     for (const update of action.updates) {
-      if (!isRunUpdate(update)) continue;
+      if (!isDocSubjectUpdate(update, docSubjectType)) continue;
 
-      const docAction = updateToDocAction(update);
-      if (!docAction) continue;
+      const parsed = readRunFields(update);
+      if (parsed.length === 0) continue;
 
-      if (docAction.type === "INSERT_RUN" && docAction.splitParentAt !== undefined) {
-        const parentNode = current.nodes.get(docAction.node.parentId);
-        if (parentNode && parentNode.text.length > docAction.splitParentAt) {
-          const splitAction: DocAction = {
-            type: "SPLIT",
-            runId: docAction.node.parentId,
-            offset: docAction.splitParentAt,
-          };
-          current = docReducer(current, splitAction);
-          applied.push(splitAction);
-        }
+      const updates = new Map<string, RunFieldValue>();
+      for (const p of parsed) {
+        updates.set(p.runId, p.field);
       }
 
-      current = docReducer(current, docAction);
-      // Strip wire-format metadata (splitParentAt) before recording — the
-      // applied list is consumed for tree mutations only, and splitParentAt
-      // is wire-format metadata that the tree doesn't track.
-      if (docAction.type === "INSERT_RUN") {
-        const { splitParentAt: _split, ...actionWithoutSplit } = docAction;
-        applied.push(actionWithoutSplit);
-      } else {
-        applied.push(docAction);
-      }
+      const result = applyRunFieldUpdates(current, updates);
+      current = result.state;
+      applied.push(...result.applied);
     }
   }
 
@@ -265,14 +220,261 @@ export const applyActions = (
 };
 
 /**
- * Validate that an Update's data shape matches what the tree expects for
- * its method. Used by callers to detect malformed updates before applying.
+ * Apply a single Update to a DocState. Convenience wrapper around
+ * applyActions for SSE handlers that work per-event.
  */
-export const isWellFormedRunUpdate = (update: Update): boolean => {
-  if (!isRunUpdate(update)) return false;
-  if (!update.data || typeof update.data !== "object") return false;
-  if (update.method === "put") return readField(update, FIELD_RUN) !== null;
-  if (update.method === "patch") return readField(update, FIELD_APPEND) !== null;
-  if (update.method === "delete") return readField(update, FIELD_RANGE) !== null;
-  return false;
+export const applyUpdate = (
+  state: DocState,
+  update: Update,
+  docSubjectType: string = DEFAULT_DOC_SUBJECT_TYPE,
+): { state: DocState; applied: DocAction[] } => {
+  const action: Action = {
+    id: update.id,
+    actor_id: "",
+    hlc: "0",
+    gsn: 0,
+    updates: [update],
+  };
+  return applyActions(state, [action], docSubjectType);
+};
+
+// ---------------------------------------------------------------------------
+// Write side: convert DocActions into field-update wire Updates
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a single DocAction into the field-update payload(s) that
+ * represent it on the wire.
+ *
+ * Returns a `Record<fieldName, RunFieldValue>` (one entry per affected
+ * run) — for SPLIT, two entries; for INSERT_RUN, one; for DELETE_RANGE,
+ * the tombstoned run plus any split-half updates (caller computes the
+ * pre/post state diff); for EXTEND_RUN, one entry.
+ *
+ * Caller is responsible for:
+ * - Providing `actorId` / `hlc` / `updateId` for the originating Action
+ * - Computing the `preState` so DELETE_RANGE can derive the diff
+ */
+export const docActionToFieldUpdates = (
+  action: DocAction,
+  opts: {
+    readonly actorId: string;
+    readonly hlc: HLCTimestamp;
+    readonly updateId: string;
+    /**
+     * Pre-application state. Needed for DELETE_RANGE to compute which
+     * runs were tombstoned vs split into survivors.
+     */
+    readonly preState?: DocState;
+  },
+): Record<string, RunFieldValue> => {
+  switch (action.type) {
+    case "INSERT_RUN": {
+      return {
+        [formatRunFieldName(action.node.id)]: {
+          value: action.node,
+          update_id: opts.updateId,
+          hlc: opts.hlc,
+        },
+      };
+    }
+    case "EXTEND_RUN": {
+      // The caller already applied EXTEND_RUN locally and has the post
+      // state in hand. We don't have it in opts (only pre), so we emit
+      // the run id as a placeholder and let the caller fix up the
+      // final value via the dedicated extendFieldUpdate helper.
+      // For the prototype, callers use that helper directly — see
+      // text-document.ts.
+      return {
+        [formatRunFieldName(action.runId)]: {
+          value: null, // placeholder; replaced by caller
+          update_id: opts.updateId,
+          hlc: opts.hlc,
+        },
+      };
+    }
+    case "DELETE_RANGE": {
+      if (opts.preState === undefined) {
+        // Without pre-state we can't compute the diff. Caller must use
+        // the diffRunFields helper below with both pre/post state.
+        return {};
+      }
+      return diffRunFieldsForDelete(action, { ...opts, preState: opts.preState });
+    }
+    case "SPLIT":
+      // Local-only — splits are inferred from sibling field updates in
+      // the same Action. No wire payload.
+      return {};
+  }
+};
+
+/**
+ * Helper: build a full Update from a DocAction and field-update payload.
+ */
+export const docActionToUpdate = (
+  action: DocAction,
+  fieldUpdates: Record<string, RunFieldValue>,
+  opts: { readonly docId: string; readonly updateId: string; readonly docSubjectType?: string },
+): Update | null => {
+  if (Object.keys(fieldUpdates).length === 0) return null;
+  const subjectType = opts.docSubjectType ?? DEFAULT_DOC_SUBJECT_TYPE;
+  return {
+    id: opts.updateId,
+    subject_id: opts.docId,
+    subject_type: subjectType,
+    method: "patch",
+    data: fieldUpdates as unknown as never,
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Pre/post diff helpers (for DELETE_RANGE → wire payload)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the field updates that capture a DELETE_RANGE between pre and
+ * post state. Tombstones (`value: null`) the deleted runs, replaces any
+ * split-half survivors with their final state.
+ */
+const diffRunFieldsForDelete = (
+  action: DocAction & { type: "DELETE_RANGE" },
+  opts: {
+    readonly actorId: string;
+    readonly hlc: HLCTimestamp;
+    readonly updateId: string;
+    readonly preState: DocState;
+  },
+): Record<string, RunFieldValue> => {
+  // Apply the DELETE_RANGE locally to get the post-state, then diff.
+  const postState = docReducer(opts.preState, action);
+  const fields: Record<string, RunFieldValue> = {};
+
+  // Iterate every run that exists in EITHER pre or post. Anything that
+  // changed needs a field update.
+  const seen = new Set<string>();
+  for (const [id, pre] of opts.preState.nodes) {
+    if (id === "ROOT") continue;
+    seen.add(id);
+    const post = postState.nodes.get(id);
+    if (post && !post.deleted) {
+      // Still visible — possibly updated (split left/right half).
+      if (post.text !== pre.text || post.hlc !== pre.hlc) {
+        fields[formatRunFieldName(id)] = {
+          value: post,
+          update_id: opts.updateId,
+          hlc: opts.hlc,
+        };
+      }
+    } else {
+      // Tombstoned or removed — emit null.
+      fields[formatRunFieldName(id)] = {
+        value: null,
+        update_id: opts.updateId,
+        hlc: opts.hlc,
+      };
+    }
+  }
+  for (const [id, post] of postState.nodes) {
+    if (seen.has(id) || id === "ROOT") continue;
+    // New run created by the SPLITs in DELETE_RANGE.
+    if (!post.deleted) {
+      fields[formatRunFieldName(id)] = {
+        value: post,
+        update_id: opts.updateId,
+        hlc: opts.hlc,
+      };
+    }
+  }
+  return fields;
+};
+
+/**
+ * Public helper for callers that want the diff directly (e.g., the
+ * TextDocument's localDelete implementation).
+ */
+export const diffRunFieldsForDeleteRange = (
+  preState: DocState,
+  postState: DocState,
+  opts: { readonly updateId: string; readonly hlc: HLCTimestamp },
+): Record<string, RunFieldValue> => {
+  const fields: Record<string, RunFieldValue> = {};
+  const seen = new Set<string>();
+  for (const [id, pre] of preState.nodes) {
+    if (id === "ROOT") continue;
+    seen.add(id);
+    const post = postState.nodes.get(id);
+    if (post && !post.deleted) {
+      if (post.text !== pre.text || post.hlc !== pre.hlc) {
+        fields[formatRunFieldName(id)] = {
+          value: post,
+          update_id: opts.updateId,
+          hlc: opts.hlc,
+        };
+      }
+    } else {
+      fields[formatRunFieldName(id)] = {
+        value: null,
+        update_id: opts.updateId,
+        hlc: opts.hlc,
+      };
+    }
+  }
+  for (const [id, post] of postState.nodes) {
+    if (seen.has(id) || id === "ROOT") continue;
+    if (!post.deleted) {
+      fields[formatRunFieldName(id)] = {
+        value: post,
+        update_id: opts.updateId,
+        hlc: opts.hlc,
+      };
+    }
+  }
+  return fields;
+};
+
+/**
+ * Helper for callers that have applied a local edit (localInsert or
+ * localDelete) and want the resulting field-update wire payload.
+ *
+ * The caller passes the pre-state and post-state of the tree; this
+ * function emits one entry per run that changed between them.
+ */
+export const diffRunFields = (
+  preState: DocState,
+  postState: DocState,
+  opts: { readonly updateId: string; readonly hlc: HLCTimestamp },
+): Record<string, RunFieldValue> => {
+  const fields: Record<string, RunFieldValue> = {};
+  const seen = new Set<string>();
+  for (const [id, pre] of preState.nodes) {
+    if (id === "ROOT") continue;
+    seen.add(id);
+    const post = postState.nodes.get(id);
+    if (post && !post.deleted) {
+      if (post.text !== pre.text || post.hlc !== pre.hlc || post.actorId !== pre.actorId) {
+        fields[formatRunFieldName(id)] = {
+          value: post,
+          update_id: opts.updateId,
+          hlc: opts.hlc,
+        };
+      }
+    } else {
+      fields[formatRunFieldName(id)] = {
+        value: null,
+        update_id: opts.updateId,
+        hlc: opts.hlc,
+      };
+    }
+  }
+  for (const [id, post] of postState.nodes) {
+    if (seen.has(id) || id === "ROOT") continue;
+    if (!post.deleted) {
+      fields[formatRunFieldName(id)] = {
+        value: post,
+        update_id: opts.updateId,
+        hlc: opts.hlc,
+      };
+    }
+  }
+  return fields;
 };

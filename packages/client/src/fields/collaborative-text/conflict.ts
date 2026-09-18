@@ -33,8 +33,8 @@
  */
 
 import type { Action, HLCTimestamp } from "@ebbjs/core";
-import { parse, compare } from "@ebbjs/core";
-import { applyActions, isRunUpdate, updateToDocAction, type FIELD_RUN } from "./wire";
+import { parse } from "@ebbjs/core";
+import { applyActions, isDocSubjectUpdate, DEFAULT_DOC_SUBJECT_TYPE } from "./wire";
 import { reconstruct, type DocState, type RunNode } from "./tree";
 
 // ---------------------------------------------------------------------------
@@ -77,29 +77,12 @@ export const happensBefore = (a: HLCTimestamp, b: HLCTimestamp): -1 | 0 | 1 => {
 
 /**
  * Determine whether an Update is non-trivial (modifies content).
- * - INSERT_RUN: creates new content → non-trivial
- * - EXTEND_RUN: appends to existing content → non-trivial
- * - DELETE_RANGE: tombstone → NOT non-trivial
- * - SPLIT: split is local-only → not present on the wire
+ * Kept for the conflict detector's logical model: field updates with a
+ * non-null RunNode value are non-trivial (insert / extend); field
+ * updates with `value: null` (tombstones) are not.
  */
-const isNonTrivialUpdate = (action: import("./tree").DocAction | null): boolean => {
-  if (!action) return false;
-  return action.type === "INSERT_RUN" || action.type === "EXTEND_RUN";
-};
-
-/** Find which RunNode an Update "targets":
- *  - INSERT_RUN: the new run's id (the new node, not the parent)
- *  - EXTEND_RUN: the runId being extended
- *  - DELETE_RANGE: not non-trivial, never queried here
- */
-const updateTargetRunId = (
-  action: import("./tree").DocAction,
-  updateSubjectId: string,
-): string | null => {
-  if (action.type === "INSERT_RUN") return action.node.id;
-  if (action.type === "EXTEND_RUN") return updateSubjectId;
-  return null;
-};
+const _isNonTrivialUpdateKind = (kind: "insert" | "extend" | "tombstone"): boolean =>
+  kind !== "tombstone";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -203,43 +186,50 @@ export class ConflictDetector {
 
     for (const action of actions) {
       for (const update of action.updates) {
-        if (!isRunUpdate(update)) continue;
+        if (!isDocSubjectUpdate(update, DEFAULT_DOC_SUBJECT_TYPE)) continue;
+        if (!update.data || typeof update.data !== "object") continue;
+        const fields = update.data as Record<string, Record<string, unknown>>;
+        for (const [fieldName, field] of Object.entries(fields)) {
+          if (!fieldName.startsWith("run:")) continue;
+          if (!field || typeof field !== "object") continue;
+          const value = field["value"];
+          // Tombstones are not non-trivial.
+          if (value === null) continue;
+          const runId = fieldName.slice("run:".length);
+          const kind =
+            value && typeof value === "object" && "id" in value
+              ? preState.nodes.has(runId)
+                ? "extend"
+                : "insert"
+              : null;
+          if (kind === null) continue;
 
-        const docAction = updateToDocAction(update);
-        if (!isNonTrivialUpdate(docAction)) continue;
-
-        const runId = updateTargetRunId(docAction!, update.subject_id);
-        if (!runId) continue;
-
-        const previous = this.lastAppliedByRun.get(runId);
-        if (previous) {
-          // Concurrent check: if neither happens-before holds, it's a conflict.
-          // Note: `previous` and `action` may be from the same actor (sequential
-          // edits) — happens-before returns 0 (equal HLCs) OR a non-zero
-          // directional value. We only fire if happens-before returns 0
-          // (concurrent or equal — both warrant a conflict record).
-          const rel = happensBefore(previous.hlc, action.hlc);
-          if (rel === 0) {
-            const conflict: Conflict = {
-              id: `conflict_${this.conflictCounter++}`,
-              runId,
-              preMerge: snapshotOf(preState),
-              postMerge: snapshotOf(postState),
-              contributingActions: [previous.action, action],
-              contributingHlcs: [previous.hlc, action.hlc],
-              detectedAt: Date.now(),
-            };
-            this.conflicts.push(conflict);
-            newConflicts.push(conflict);
+          const previous = this.lastAppliedByRun.get(runId);
+          if (previous) {
+            // Concurrent check: if neither happens-before holds, it's a conflict.
+            const rel = happensBefore(previous.hlc, action.hlc);
+            if (rel === 0) {
+              const conflict: Conflict = {
+                id: `conflict_${this.conflictCounter++}`,
+                runId,
+                preMerge: snapshotOf(preState),
+                postMerge: snapshotOf(postState),
+                contributingActions: [previous.action, action],
+                contributingHlcs: [previous.hlc, action.hlc],
+                detectedAt: Date.now(),
+              };
+              this.conflicts.push(conflict);
+              newConflicts.push(conflict);
+            }
           }
-        }
 
-        // Record this Update as the new "last applied" for this run.
-        this.lastAppliedByRun.set(runId, {
-          action,
-          hlc: action.hlc,
-          actorId,
-        });
+          // Record this Update as the new "last applied" for this run.
+          this.lastAppliedByRun.set(runId, {
+            action,
+            hlc: action.hlc,
+            actorId,
+          });
+        }
       }
     }
 
@@ -264,13 +254,9 @@ const snapshotOf = (state: DocState): RunSnapshot => {
 // ---------------------------------------------------------------------------
 
 // Re-export apply-related items so callers don't need a second import.
-export { applyActions, isRunUpdate, updateToDocAction };
-// Re-export field names for convenience.
-export { FIELD_RUN };
+export { applyActions, isDocSubjectUpdate, DEFAULT_DOC_SUBJECT_TYPE } from "./wire";
+export { RUN_FIELD_PREFIX, formatRunFieldName, parseRunFieldName } from "./wire";
 // Reference unused symbols to keep tsc quiet about re-exports that may not
 // always be used.
 const _unused: RunNode | undefined = undefined;
 void _unused;
-// Make sure the `compare` import is referenced for tree-shake friendliness
-// if we ever swap to a compare-based detector.
-void compare;
