@@ -300,7 +300,6 @@ describe("TextDocument — conflict surfacing via mock SSE", () => {
 
 describe("TextDocument — update event flow", () => {
   it("fires onUpdate for each applied Update", () => {
-    const source = new MockSSESource();
     const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
 
     const events: AppliedUpdate[] = [];
