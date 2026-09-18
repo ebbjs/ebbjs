@@ -62,8 +62,6 @@ export class SyncClient {
   /** Reconnect bookkeeping. */
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Latest handshake result, used by reconnect to re-establish subscriptions. */
-  private lastHandshake: HandshakeResult | null = null;
   /** Latest per-group cursors, refreshed by `catchUp` and SSE receipt. */
   private groupCursors: Map<string, number> = new Map();
 
@@ -113,26 +111,23 @@ export class SyncClient {
       );
     }
 
-    const groups = [...groupIds];
-    const initialCursor = fromGsn;
     const sub: ActiveSubscription = {
-      groupIds: groups,
+      groupIds: [...groupIds],
       onEvent,
       cancelled: false,
       stream: null,
-      loopPromise: null,
-      fromGsn: initialCursor,
+      fromGsn,
     };
     this.activeSub = sub;
 
-    // Transition to `connecting` if this is the first attempt.
-    if (this.stateMachine.state === "live") {
-      // Already live — leave it (e.g., re-subscribe during an existing live state).
-    } else if (this.stateMachine.state !== "connecting") {
+    // Transition to `connecting` unless we're already there or live
+    // (e.g., a second subscribe call while one is already streaming).
+    const s = this.stateMachine.state;
+    if (s !== "live" && s !== "connecting") {
       this.stateMachine.transition("connecting");
     }
 
-    sub.loopPromise = this.runSubscriptionLoop(sub);
+    this.runSubscriptionLoop(sub);
     return () => this.cancelSubscription(sub);
   }
 
@@ -176,7 +171,6 @@ export class SyncClient {
     for (const g of result.groups) {
       this.groupCursors.set(g.id, g.cursor);
     }
-    this.lastHandshake = result;
     return result;
   }
 
@@ -505,7 +499,6 @@ interface ActiveSubscription {
   onEvent: (event: SSEEvent) => void;
   cancelled: boolean;
   stream: SSESubscription | null;
-  loopPromise: Promise<void> | null;
   fromGsn: number;
 }
 
