@@ -4,7 +4,7 @@
  * configured `SyncClient` ready for use.
  */
 
-import { createClient, type SyncClient } from "@ebbjs/client";
+import { createClient, type Action, type SyncClient } from "@ebbjs/client";
 import { addMember, buildDemoSeed, seed } from "./seed";
 
 export interface BootstrapResult {
@@ -67,9 +67,28 @@ export async function bootstrap(opts: {
     );
   }
 
+  // 4. Catch up — replay every committed action since GSN 0 so the
+  // demo doc starts with the current state. Without this, a fresh
+  // tab (even for an actor that was already connected in another
+  // tab) would start empty and only catch up on the next SSE event.
+  const caughtUpActions: Action[] = [];
+  for (const gid of groupIds) {
+    let cursor = 0;
+    // catchUp is paginated but the demo has at most a handful of
+    // historical actions — loop until the server says we're caught up.
+    // Hard cap as a safety net.
+    for (let i = 0; i < 1000; i++) {
+      const result = await client.catchUp(gid, cursor);
+      if (result.actions.length === 0) break;
+      caughtUpActions.push(...result.actions);
+      cursor += result.actions.length;
+      if (result.upToDate) break;
+    }
+  }
+
   // The SSE subscription opened by Editor.tsx will move the state
   // machine to "live" once the stream connects — no need to set it
   // manually here.
 
-  return { client, groupIds, didSeed };
+  return { client, groupIds, didSeed, caughtUpActions };
 }

@@ -16,7 +16,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from "@codemirror/view";
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from "@codemirror/language";
-import { createClient } from "@ebbjs/client";
+import { createClient, type Action } from "@ebbjs/client";
 import { createBridgeExtension, createIdMapField, mountEditorBridge } from "@ebbjs/codemirror";
 
 interface Props {
@@ -24,11 +24,17 @@ interface Props {
   docId: string;
   actorId: string;
   groupIds: readonly string[];
+  /**
+   * Actions to replay into the doc on open. From `bootstrap.ts`'s
+   * catchUp — without this, a new tab starts with an empty document
+   * even if other tabs (or earlier sessions) have written to it.
+   */
+  caughtUpActions: readonly Action[];
 }
 
 const FLUSH_INTERVAL_MS = 250;
 
-export function Editor({ client, docId, actorId, groupIds }: Props) {
+export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const bridgeRef = useRef<{ detach: () => void } | null>(null);
@@ -38,6 +44,14 @@ export function Editor({ client, docId, actorId, groupIds }: Props) {
 
     const doc = client.textDocument(docId);
     const idMapField = createIdMapField();
+
+    // Seed the doc with caught-up actions so it opens with the
+    // current document state. SSE only delivers future actions, so
+    // without this a fresh tab would start empty even if other tabs
+    // have already typed text.
+    for (const action of caughtUpActions) {
+      doc.applyActions([action]);
+    }
 
     // Stash a ref so the bridge extension can read the view at runtime
     // (the listener fires synchronously inside CM dispatch). The
