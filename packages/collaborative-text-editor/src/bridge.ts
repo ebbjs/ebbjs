@@ -132,6 +132,20 @@ export const getPositionOfRun = (
 // Bridge extension — local CM edits → doc
 // ---------------------------------------------------------------------------
 
+/**
+ * Shared mutable state between the bridge extension (which sets the
+ * flag during a local edit) and `mountEditorBridge` (which reads it
+ * to skip applying cmChanges for events raised during a local edit).
+ *
+ * Lives in a plain object so the reference is stable across the
+ * two closures — both `createBridgeExtension` and `mountEditorBridge`
+ * receive the same object.
+ */
+export interface LocalEditTracker {
+  /** Set to true while inside a local-CM→doc transaction. */
+  active: boolean;
+}
+
 /** Options for {@link createBridgeExtension}. */
 export interface BridgeExtensionConfig {
   readonly doc: TextDocument;
@@ -142,6 +156,13 @@ export interface BridgeExtensionConfig {
    * the EditorState.
    */
   readonly getView: () => EditorView | null;
+  /**
+   * Shared tracker that the bridge flips on/off around local-CM→doc
+   * dispatches. `mountEditorBridge` reads it to skip applying
+   * cmChanges for events raised during a local edit. Optional — if
+   * omitted, the bridge assumes all doc updates are remote.
+   */
+  readonly localEdit?: LocalEditTracker;
 }
 
 /**
@@ -163,90 +184,95 @@ export const createBridgeExtension = (config: BridgeExtensionConfig): Extension 
       const localTr = update.transactions.find((tr) => tr.docChanged && !tr.annotation(isRemote));
       if (!localTr) return;
 
-      const { idMapField, doc } = config;
+      const { idMapField, doc, localEdit } = config;
       const spans = view.state.field(idMapField);
 
-      localTr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
-        // ----- Deletions first ----------------------------------------
-        if (toA > fromA) {
-          let pos = fromA;
-          while (pos < toA) {
-            const lookup = lookupPositionFromSpans(spans, pos);
-            if (!lookup) {
-              // Position falls in a gap (shouldn't happen if spans
-              // mirror doc.text); advance by one to avoid an infinite
-              // loop.
-              pos += 1;
-              continue;
+      if (localEdit) localEdit.active = true;
+      try {
+        localTr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+          // ----- Deletions first ----------------------------------------
+          if (toA > fromA) {
+            let pos = fromA;
+            while (pos < toA) {
+              const lookup = lookupPositionFromSpans(spans, pos);
+              if (!lookup) {
+                // Position falls in a gap (shouldn't happen if spans
+                // mirror doc.text); advance by one to avoid an infinite
+                // loop.
+                pos += 1;
+                continue;
+              }
+              const remainingInRun = lookup.spanLength - lookup.runOffset;
+              const remainingInDel = toA - pos;
+              const count = Math.min(remainingInRun, remainingInDel);
+
+              doc.localDelete({
+                runId: lookup.runId,
+                offset: lookup.runOffset,
+                count,
+              });
+
+              pos += count;
             }
-            const remainingInRun = lookup.spanLength - lookup.runOffset;
-            const remainingInDel = toA - pos;
-            const count = Math.min(remainingInRun, remainingInDel);
-
-            doc.localDelete({
-              runId: lookup.runId,
-              offset: lookup.runOffset,
-              count,
-            });
-
-            pos += count;
           }
-        }
 
-        // ----- Insertions ---------------------------------------------
-        const insertedText = inserted.toString();
-        if (insertedText.length === 0) return;
+          // ----- Insertions ---------------------------------------------
+          const insertedText = inserted.toString();
+          if (insertedText.length === 0) return;
 
-        if (fromA === 0) {
-          // Inserting at position 0 — parent is ROOT. Never an
-          // extension (there's no preceding character owned by us).
-          doc.localInsert(insertedText, { afterRun: "ROOT" });
-          return;
-        }
+          if (fromA === 0) {
+            // Inserting at position 0 — parent is ROOT. Never an
+            // extension (there's no preceding character owned by us).
+            doc.localInsert(insertedText, { afterRun: "ROOT" });
+            return;
+          }
 
-        // Look up the run containing the character just before `fromA`.
-        const parentLookup = lookupPositionFromSpans(spans, fromA - 1);
-        if (!parentLookup) {
-          // Shouldn't happen, but fall back to inserting at ROOT.
-          doc.localInsert(insertedText, { afterRun: "ROOT" });
-          return;
-        }
+          // Look up the run containing the character just before `fromA`.
+          const parentLookup = lookupPositionFromSpans(spans, fromA - 1);
+          if (!parentLookup) {
+            // Shouldn't happen, but fall back to inserting at ROOT.
+            doc.localInsert(insertedText, { afterRun: "ROOT" });
+            return;
+          }
 
-        const parentRun = doc.docState.nodes.get(parentLookup.runId);
-        if (!parentRun || parentRun.deleted) {
-          // Parent missing or tombstoned — insert at ROOT.
-          doc.localInsert(insertedText, { afterRun: "ROOT" });
-          return;
-        }
+          const parentRun = doc.docState.nodes.get(parentLookup.runId);
+          if (!parentRun || parentRun.deleted) {
+            // Parent missing or tombstoned — insert at ROOT.
+            doc.localInsert(insertedText, { afterRun: "ROOT" });
+            return;
+          }
 
-        const isAtEndOfRun = parentLookup.runOffset === parentRun.text.length - 1;
-        const isSamePeer = parentRun.actorId === doc.actorId;
-        const isNotDeleted = !parentRun.deleted;
-        const childrenOfParent = doc.docState.children.get(parentRun.id) ?? [];
-        const isLeaf = childrenOfParent.length === 0;
+          const isAtEndOfRun = parentLookup.runOffset === parentRun.text.length - 1;
+          const isSamePeer = parentRun.actorId === doc.actorId;
+          const isNotDeleted = !parentRun.deleted;
+          const childrenOfParent = doc.docState.children.get(parentRun.id) ?? [];
+          const isLeaf = childrenOfParent.length === 0;
 
-        // Extension optimization: typing right after the end of our
-        // own leaf run. Avoids creating a new run per keystroke.
-        if (isAtEndOfRun && isSamePeer && isNotDeleted && isLeaf) {
-          doc.localExtend({
-            runId: parentRun.id,
-            appendText: insertedText,
+          // Extension optimization: typing right after the end of our
+          // own leaf run. Avoids creating a new run per keystroke.
+          if (isAtEndOfRun && isSamePeer && isNotDeleted && isLeaf) {
+            doc.localExtend({
+              runId: parentRun.id,
+              appendText: insertedText,
+            });
+            return;
+          }
+
+          // New run path. Compute split offset if mid-run.
+          let splitParentAt: number | undefined;
+          if (!isAtEndOfRun) {
+            // Mid-run: split at runOffset + 1 (after the parent char).
+            splitParentAt = parentLookup.runOffset + 1;
+          }
+
+          doc.localInsert(insertedText, {
+            afterRun: parentRun.id,
+            ...(splitParentAt !== undefined && { splitParentAt }),
           });
-          return;
-        }
-
-        // New run path. Compute split offset if mid-run.
-        let splitParentAt: number | undefined;
-        if (!isAtEndOfRun) {
-          // Mid-run: split at runOffset + 1 (after the parent char).
-          splitParentAt = parentLookup.runOffset + 1;
-        }
-
-        doc.localInsert(insertedText, {
-          afterRun: parentRun.id,
-          ...(splitParentAt !== undefined && { splitParentAt }),
         });
-      });
+      } finally {
+        if (localEdit) localEdit.active = false;
+      }
     }),
   ];
 };
@@ -277,6 +303,7 @@ export function mountEditorBridge(
   view: EditorView,
   doc: TextDocument,
   idMapField: StateField<readonly RunSpan[]>,
+  localEdit?: LocalEditTracker,
 ): EditorBridge {
   // Initial sync: replace CM's doc text with the document's current
   // text (if they differ) and seed the spans StateField.
@@ -294,10 +321,16 @@ export function mountEditorBridge(
     });
   }
 
-  // Wire doc updates to CM.
+  // Wire doc updates to CM. The localEdit tracker is set by the
+  // bridge extension during a local-CM→doc dispatch; reading it
+  // here lets us skip applying cmChanges for events raised during
+  // a local edit (CM already has the new text in that case, and
+  // re-applying would double the characters and push mid-run
+  // inserts to the wrong side of the parent because the spans
+  // StateField hasn't caught up yet).
   const unsubscribeDoc = doc.onUpdate((evt) => {
     if (!evt) return; // type guard
-    applyDocUpdateToCM(view, doc, idMapField, evt);
+    applyDocUpdateToCM(view, doc, idMapField, evt, localEdit);
   });
 
   return {
@@ -331,30 +364,39 @@ function applyDocUpdateToCM(
   doc: TextDocument,
   idMapField: StateField<readonly RunSpan[]>,
   evt: AppliedUpdate,
+  localEdit: LocalEditTracker | undefined,
 ): void {
   const oldSpans = view.state.field(idMapField);
   const node = doc.docState.nodes.get(evt.runId);
+
+  // During a local CM edit, CM already has the new text from the
+  // user's input. Re-applying the change here would double the
+  // characters and push mid-run inserts to the wrong side of the
+  // parent (the spans StateField hasn't caught up to the local edit
+  // yet). Skip the cmChanges — but still push the new spans so the
+  // field stays in sync.
+  const isLocal = !!localEdit?.active;
 
   let cmChanges: { from: number; to?: number; insert?: string }[] = [];
 
   if (evt.kind === "tombstone") {
     // Tombstone: find the run in oldSpans and delete its range.
     const range = findRunRange(oldSpans, evt.runId);
-    if (range) {
+    if (range && !isLocal) {
       cmChanges = [{ from: range.start, to: range.end }];
     }
   } else if (evt.kind === "extend") {
     // Extend: find the run in oldSpans, replace its text with the
     // current full text.
     const range = findRunRange(oldSpans, evt.runId);
-    if (range && node && !node.deleted) {
+    if (range && node && !node.deleted && !isLocal) {
       cmChanges = [{ from: range.start, to: range.end, insert: node.text }];
     }
   } else if (evt.kind === "insert") {
     // Insert: the run is new in oldSpans. Insert its text after the
     // parent's end position. Skip tombstoned placeholders (they have
     // no visible text in CM).
-    if (node && !node.deleted) {
+    if (node && !node.deleted && !isLocal) {
       const parentRange = findRunRange(oldSpans, node.parentId);
       const insertAt = parentRange ? parentRange.end : 0;
       cmChanges = [{ from: insertAt, insert: node.text }];
