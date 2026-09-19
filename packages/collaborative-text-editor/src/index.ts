@@ -31,5 +31,6 @@ export {
   getPositionOfRun,
   type EditorBridge,
   type BridgeExtensionConfig,
+  type LocalEditTracker,
   type RunSpan,
 } from "./bridge";

@@ -59,10 +59,12 @@ function setup(initialDocText = ""): {
   const idMapField = createIdMapField();
 
   const ref = { current: null as EditorView | null };
+  const localEdit = { active: false };
   const extension = createBridgeExtension({
     doc: d,
     idMapField,
     getView: () => ref.current,
+    localEdit,
   });
 
   const v = new EditorView({
@@ -74,7 +76,7 @@ function setup(initialDocText = ""): {
   });
   ref.current = v;
 
-  const bridgeObj = mountEditorBridge(v, d, idMapField);
+  const bridgeObj = mountEditorBridge(v, d, idMapField, localEdit);
   view = v;
   _doc = d;
   bridge = bridgeObj;
@@ -283,6 +285,63 @@ describe("local CM edit → doc", () => {
     expect(doc.text).toBe("helloX");
     // A new run for "X" was created.
     expect(doc.docState.nodes.size).toBe(runsBefore + 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: local CM edits must not double-apply to CM
+// ---------------------------------------------------------------------------
+//
+// For local edits, CM already has the new text from the user input.
+// The bridge's doc.onUpdate listener used to dispatch cmChanges
+// anyway, which inserted the same characters a second time on top of
+// what CM already had (and pushed mid-run inserts to the wrong side
+// of the parent because the spans StateField hadn't caught up yet).
+//
+// These tests would have caught the bug originally reported via the
+// demo: typing 'h' repeatedly produced 'hhhh...' and mid-run
+// inserts appeared backwards.
+
+describe("regression: local CM edits do not double-apply", () => {
+  it("typing each letter produces the right text (not doubled)", () => {
+    const { view, doc } = setup();
+    const letters = ["h", "e", "l", "l", "o"];
+    for (let i = 0; i < letters.length; i++) {
+      localInsert(view, i, letters[i]!);
+    }
+    expect(doc.text).toBe("hello");
+    // And CM's view matches.
+    expect(view.state.doc.toString()).toBe("hello");
+  });
+
+  it("extending a run repeatedly does not double characters", () => {
+    const { view, doc } = setup();
+    localInsert(view, 0, "h");
+    for (let i = 0; i < 4; i++) {
+      localInsert(view, i + 1, "h");
+    }
+    expect(doc.text).toBe("hhhhh");
+    expect(view.state.doc.toString()).toBe("hhhhh");
+  });
+
+  it("mid-run insert lands between the two halves, not after them", () => {
+    const { view, doc } = setup();
+    localInsert(view, 0, "abcdef");
+    // Insert "X" between c and d.
+    localInsert(view, 3, "X");
+
+    // The bug would produce "abcdefX" (X inserted after the parent)
+    // or "abcdefXdef" (the duplicate-apply doubled with split).
+    expect(doc.text).toBe("abcXdef");
+    expect(view.state.doc.toString()).toBe("abcXdef");
+  });
+
+  it("typing at start then middle preserves order", () => {
+    const { view, doc } = setup();
+    localInsert(view, 0, "ab");
+    localInsert(view, 1, "X");
+    expect(doc.text).toBe("aXb");
+    expect(view.state.doc.toString()).toBe("aXb");
   });
 });
 

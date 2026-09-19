@@ -45,12 +45,21 @@ export function Editor({ client, docId, actorId, groupIds }: Props) {
     const idMapField = createIdMapField();
 
     // Stash a ref so the bridge extension can read the view at runtime
-    // (the listener fires synchronously inside CM dispatch).
+    // (the listener fires synchronously inside CM dispatch). The
+    // localEdit tracker is flipped on/off by the extension during a
+    // local-CM→doc dispatch; mountEditorBridge reads it to skip
+    // applying cmChanges for events raised during a local edit (CM
+    // already has the new text from the user input — re-applying
+    // would double characters and push mid-run inserts to the wrong
+    // side of the parent because the spans StateField hasn't caught
+    // up yet).
     const viewRefLocal = { current: null as EditorView | null };
+    const localEdit = { active: false };
     const extension = createBridgeExtension({
       doc,
       idMapField,
       getView: () => viewRefLocal.current,
+      localEdit,
     });
 
     const state = EditorState.create({
@@ -77,7 +86,7 @@ export function Editor({ client, docId, actorId, groupIds }: Props) {
     viewRefLocal.current = view;
     viewRef.current = view;
 
-    const bridge = mountEditorBridge(view, doc, idMapField);
+    const bridge = mountEditorBridge(view, doc, idMapField, localEdit);
     bridgeRef.current = bridge;
 
     // We poll catchUp() instead of using SSE for live updates. Vite's
