@@ -1211,6 +1211,7 @@ describe("docReducer — EXTEND_RUN", () => {
       type: "EXTEND_RUN",
       runId: r.id,
       appendText: "lo",
+      hlc: "1",
     });
 
     expect(reconstruct(state)).toBe("hello");
@@ -1229,6 +1230,7 @@ describe("docReducer — EXTEND_RUN", () => {
       type: "EXTEND_RUN",
       runId: r.id,
       appendText: "cd",
+      hlc: "2",
     });
 
     expect(state.index.totalLength).toBe(4);
@@ -1247,6 +1249,7 @@ describe("docReducer — EXTEND_RUN", () => {
       type: "EXTEND_RUN",
       runId: r.id,
       appendText: "bcdef",
+      hlc: "3",
     });
 
     expect(state.nodes.size).toBe(nodeCountBefore);
@@ -1269,6 +1272,7 @@ describe("docReducer — EXTEND_RUN", () => {
       type: "EXTEND_RUN",
       runId: r2.id,
       appendText: "ef",
+      hlc: "4",
     });
 
     expect(reconstruct(state)).toBe("abcdef");
@@ -1294,6 +1298,7 @@ describe("docReducer — EXTEND_RUN", () => {
       type: "EXTEND_RUN",
       runId: r.id,
       appendText: "xyz",
+      hlc: "5",
     });
 
     expect(reconstruct(state)).toBe("");
@@ -1306,6 +1311,7 @@ describe("docReducer — EXTEND_RUN", () => {
       type: "EXTEND_RUN",
       runId: "nonexistent",
       appendText: "xyz",
+      hlc: "6",
     });
 
     expect(newState).toBe(state);
@@ -1317,11 +1323,13 @@ describe("docReducer — EXTEND_RUN", () => {
     state = r.state;
 
     // Simulate typing "hello" one character at a time
+    let hlc = 1;
     for (const char of "ello") {
       state = docReducer(state, {
         type: "EXTEND_RUN",
         runId: r.id,
         appendText: char,
+        hlc: String(hlc++),
       });
     }
 
@@ -1337,7 +1345,7 @@ describe("docReducer — EXTEND_RUN", () => {
     // Peer-A inserts "abc"
     const r1 = insertRun(state, 1000, 0, "peer-A", "a", ROOT_ID);
     state = r1.state;
-    state = docReducer(state, { type: "EXTEND_RUN", runId: r1.id, appendText: "bc" });
+    state = docReducer(state, { type: "EXTEND_RUN", runId: r1.id, appendText: "bc", hlc: "7" });
     expect(reconstruct(state)).toBe("abc");
 
     // Peer-B inserts "xyz" after "abc" (child of r1)
@@ -1356,11 +1364,13 @@ describe("docReducer — EXTEND_RUN", () => {
     const r = insertRun(state, 1000, 0, "peer-A", "h", ROOT_ID);
     state = r.state;
 
+    let hlc = 1;
     for (const char of "ello world") {
       state = docReducer(state, {
         type: "EXTEND_RUN",
         runId: r.id,
         appendText: char,
+        hlc: String(hlc++),
       });
     }
 

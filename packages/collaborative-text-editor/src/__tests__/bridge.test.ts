@@ -430,13 +430,16 @@ describe("doc.onUpdate → CM", () => {
     expect(view.state.doc.toString()).toBe("hello");
     const runId = doc.docState.children.get("ROOT")![0]!;
     const original = doc.docState.nodes.get(runId)!;
+    // Use an HLC strictly greater than the local insert's HLC so the
+    // wire adapter's "existing newer than received" skip doesn't fire.
+    const newerHlc = (BigInt(original.hlc) + 1n).toString();
 
     // Receive an extend via wire format — the run's text becomes "hello world".
     doc.applyActions([
       {
         id: "act_ext",
         actor_id: "peer-A",
-        hlc: "3000",
+        hlc: newerHlc,
         gsn: 0,
         updates: [
           {
@@ -449,10 +452,10 @@ describe("doc.onUpdate → CM", () => {
                 value: {
                   ...original,
                   text: "hello world",
-                  hlc: "3000",
+                  hlc: newerHlc,
                 },
                 update_id: "upd_ext",
-                hlc: "3000",
+                hlc: newerHlc,
               },
             } as never,
           },
