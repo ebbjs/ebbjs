@@ -26,11 +26,6 @@
   "dependencies": {
     "@ebbjs/client": "workspace:*"
   },
-  "peerDependencies": {
-    "@codemirror/state": "^6.5.0",
-    "@codemirror/view": "^6.30.0",
-    "codemirror": "^6.0.0"
-  },
   "devDependencies": {
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.8",
@@ -39,5 +34,10 @@
     "happy-dom": "^17.4.4",
     "tsx": "^4.20.4",
     "vitest": "^3.2.4"
+  },
+  "peerDependencies": {
+    "@codemirror/state": "^6.5.0",
+    "@codemirror/view": "^6.30.0",
+    "codemirror": "^6.0.0"
   }
 }
