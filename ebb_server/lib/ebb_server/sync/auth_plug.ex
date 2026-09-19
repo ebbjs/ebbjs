@@ -30,9 +30,13 @@ defmodule EbbServer.Sync.AuthPlug do
   end
 
   defp bypass_auth(conn) do
-    case get_req_header(conn, "x-ebb-actor-id") do
-      [actor_id] when actor_id != "" ->
-        assign(conn, :actor_id, actor_id)
+    conn = Plug.Conn.fetch_query_params(conn)
+    actor_id = bypass_actor_id(conn)
+    actor_id = bypass_actor_id(conn)
+
+    case actor_id do
+      id when is_binary(id) and id != "" ->
+        assign(conn, :actor_id, id)
 
       _ ->
         conn
@@ -41,10 +45,28 @@ defmodule EbbServer.Sync.AuthPlug do
           401,
           Jason.encode!(%{
             "error" => "unauthorized",
-            "details" => "missing x-ebb-actor-id header"
+            "details" => "missing x-ebb-actor-id header (or ?actor_id= query param)"
           })
         )
         |> halt()
+    end
+  end
+
+  # In bypass mode, accept the actor id from either the header OR a query
+  # parameter. The query parameter is needed by browser SSE
+  # (`EventSource`) since native EventSource can't set custom request
+  # headers. Bypass mode is explicitly insecure — using `?actor_id=` in
+  # production is never the right answer.
+  defp bypass_actor_id(conn) do
+    case get_req_header(conn, "x-ebb-actor-id") do
+      [actor_id] when actor_id != "" ->
+        actor_id
+
+      _ ->
+        case conn.query_params do
+          %{"actor_id" => actor_id} when actor_id != "" -> actor_id
+          _ -> nil
+        end
     end
   end
 
