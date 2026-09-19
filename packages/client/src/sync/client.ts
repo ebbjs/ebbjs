@@ -92,6 +92,17 @@ export class SyncClient {
   }
 
   /**
+   * Force a connection-state transition. Useful for non-SSE consumers
+   * (e.g., a polling-only client that wants the state machine to
+   * reflect "we're connected" without opening an SSE stream). The
+   * state machine otherwise only advances when `subscribe()` opens
+   * or fails.
+   */
+  setState(state: ConnectionState): void {
+    this.stateMachine.transition(state);
+  }
+
+  /**
    * Build an outbound HTTP header bag carrying the actor identity.
    * All request paths funnel through this so the `x-ebb-actor-id`
    * header (and any future shared headers) live in one place.
