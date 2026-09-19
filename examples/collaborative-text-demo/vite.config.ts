@@ -17,6 +17,16 @@ export default defineConfig({
     // relative URLs (`/sync/...`, `/entities/...`) so it works the
     // same when accessed locally (http://localhost:5173) and when
     // proxied through tailscale serve (https://vps.tail9b3b6.ts.net).
+    //
+    // SSE note: vite's built-in proxy passes chunked text/event-stream
+    // responses through fine (verified by hand). The earlier "SSE
+    // hangs" symptom was a server-side bug — `SSEConnection` was
+    // registering itself with the global name `__MODULE__` so every
+    // subsequent SSE attempt failed with `:already_started`. The
+    // first connection's HTTP 200 + headers went out but no chunks
+    // ever followed (because the SSEConnection GenServer never
+    // started). Removed the global-name registration in
+    // `sse_connection.ex` and SSE flows through vite just fine.
     proxy: {
       "/sync": {
         target: "http://localhost:4000",
