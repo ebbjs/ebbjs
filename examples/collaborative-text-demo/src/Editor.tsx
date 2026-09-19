@@ -31,7 +31,6 @@ interface Props {
 }
 
 const FLUSH_INTERVAL_MS = 250;
-const POLL_INTERVAL_MS = 250;
 
 export function Editor({ client, docId, actorId, groupIds }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -89,31 +88,19 @@ export function Editor({ client, docId, actorId, groupIds }: Props) {
     const bridge = mountEditorBridge(view, doc, idMapField, localEdit);
     bridgeRef.current = bridge;
 
-    // We poll catchUp() instead of using SSE for live updates. Vite's
-    // dev proxy buffers SSE streams (a long-standing issue with
-    // http-proxy + text/event-stream in dev mode), so subscribe()
-    // hangs without ever delivering events. catchUp is plain chunked
-    // JSON and flows through the proxy fine. For production deploys
-    // behind nginx/Caddy, switch back to client.subscribe().
-    let cancelled = false;
-    let cursor = 0;
-    const poll = async (): Promise<void> => {
-      if (cancelled) return;
-      try {
-        for (const gid of groupIds) {
-          const result = await client.catchUp(gid, cursor);
-          for (const action of result.actions) {
-            doc.applyActions([action]);
-            if (action.gsn > cursor) cursor = action.gsn;
-          }
-        }
-      } catch (err) {
+    // Subscribe to SSE for live updates. The browser's EventSource
+    // can't set custom request headers, so the @ebbjs/client SSE
+    // client passes the actor id via the ?actor_id= query param.
+    const unsubscribe = client.subscribe(groupIds, 0, (event) => {
+      if (event.type === "data") {
+        doc.applyActions([event.action]);
+      } else if (event.type === "control" && (event.control as { reconnect?: boolean }).reconnect) {
+        // Server told us our cursor is stale — let subscribe's
+        // own retry logic handle the reconnect; just log.
         // eslint-disable-next-line no-console
-        console.warn("[editor] catchUp error:", err);
+        console.warn("[editor] server requested reconnect:", event.control);
       }
-      if (!cancelled) setTimeout(poll, POLL_INTERVAL_MS);
-    };
-    void poll();
+    });
 
     // Periodic flush of pending actions to the server.
     const flushTimer = window.setInterval(() => {
@@ -135,8 +122,8 @@ export function Editor({ client, docId, actorId, groupIds }: Props) {
     }, FLUSH_INTERVAL_MS);
 
     return () => {
-      cancelled = true;
       window.clearInterval(flushTimer);
+      unsubscribe();
       bridge.detach();
       view.destroy();
       viewRef.current = null;
