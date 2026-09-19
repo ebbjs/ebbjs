@@ -232,7 +232,12 @@ describe("TextDocument.localExtend", () => {
 
     const extendAction = doc.pendingActions()[1]!;
     expect(extendAction.updates).toHaveLength(1);
-    const fields = extendAction.updates[0]!.data as Record<string, { value: RunNode }>;
+    // Wire format wraps user-entity fields under `data.fields` so the
+    // server's per-field LWW merge handles each run independently.
+    const data = extendAction.updates[0]!.data as unknown as {
+      fields: Record<string, { value: RunNode }>;
+    };
+    const fields = data.fields;
     // Only the extended run's field appears in the diff.
     const fieldNames = Object.keys(fields);
     expect(fieldNames).toHaveLength(1);

@@ -67,5 +67,10 @@ export async function bootstrap(opts: {
     );
   }
 
+  // We're polling instead of subscribing via SSE (see Editor.tsx for
+  // why), so the state machine wouldn't move past 'connecting' on its
+  // own. Mark the client as 'live' now that handshake succeeded.
+  client.setState("live");
+
   return { client, groupIds, didSeed };
 }
