@@ -120,7 +120,13 @@ function Ready({
       {/* Main split: editor | (optional) conflict panel */}
       <div className="flex flex-1 min-h-0">
         <div className="flex-1 min-w-0">
-          <Editor client={client} docId={DEMO_DOC_ID} actorId={actorId} groupIds={groupIds} />
+          <Editor
+            client={client}
+            docId={DEMO_DOC_ID}
+            actorId={actorId}
+            groupIds={groupIds}
+            caughtUpActions={boot.caughtUpActions}
+          />
         </div>
         {conflictsOpen && (
           <aside className="w-80 shrink-0 border-l border-stone-800 overflow-y-auto">
