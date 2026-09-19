@@ -12,6 +12,7 @@
 
 import { describe, expect, it } from "vitest";
 import { pack, format, type Action, type HLCTimestamp } from "@ebbjs/core";
+import { TextDocument } from "../text-document";
 import {
   applyActions,
   diffRunFields,
@@ -201,7 +202,12 @@ describe("applyActions", () => {
     expect(s2.nodes.get(node.id)?.text).toBe("hello world");
     expect(s2.index.totalLength).toBe(11);
     expect(applied).toHaveLength(1);
-    expect(applied[0]).toEqual({ type: "EXTEND_RUN", runId: node.id, appendText: "hello world" });
+    expect(applied[0]).toEqual({
+      type: "EXTEND_RUN",
+      runId: node.id,
+      appendText: "hello world",
+      hlc: expect.anything(),
+    });
   });
 
   it("is a no-op for a field update with the same final state", () => {
@@ -505,5 +511,122 @@ describe("acceptance — same edits produce the same document via field-update w
     };
 
     expect(reconstruct(docA.state)).toBe("hello world");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: receiving old extend actions over already-extended state
+// ---------------------------------------------------------------------------
+//
+// Originally reported via the demo: typing fast (e.g., "abcdef" in a
+// single keystroke burst) caused characters to flicker in and out as
+// the poll caught up with our own previously-written actions.
+//
+// Root cause: applyExtendRun didn't advance the run's HLC, so the
+// wire adapter couldn't distinguish "we're catching up to state we
+// already passed" from "we should rewind to this older state". With
+// the HLC advance + the receiver's "existing is newer" skip, each
+// catchUp is idempotent regardless of how fast the user types.
+
+describe("regression: out-of-order extend catchUp does not rewind", () => {
+  // Self-contained test setup — the existing `stateA` / `stateB` are
+  // mutable module-level objects used by other suites; reusing them
+  // would couple these tests to the broader state.
+  const docA = new TextDocument({ docId: "doc_regression_a", actorId: "peer-A" });
+  const docB = new TextDocument({ docId: "doc_regression_b", actorId: "peer-B" });
+
+  // Helper: build a wire-format extend Action (single Update, one run field).
+  const buildExtendAction = (runId: string, appendText: string, hlc: string): Action => ({
+    id: `act_${hlc}_${runId}`,
+    actor_id: "peer-A",
+    hlc,
+    gsn: 0,
+    updates: [
+      {
+        id: `u_${hlc}_${runId}`,
+        subject_id: "doc_regression",
+        subject_type: "text_document",
+        method: "patch",
+        data: {
+          fields: {
+            [formatRunFieldName(runId)]: {
+              value: {
+                id: runId,
+                hlc,
+                actorId: "peer-A",
+                text: appendText, // wire format carries the full text after extend
+                parentId: "ROOT",
+                deleted: false,
+              },
+              update_id: `u_${hlc}_${runId}`,
+              hlc,
+            },
+          },
+        } as never,
+      },
+    ],
+  });
+
+  it("skipping a caught-up older extend when our state is already ahead", () => {
+    // peer-A inserts run X with text "a", then locally extends to
+    // "abc" by calling localExtend twice (with strictly-increasing
+    // HLCs so each extend advances the run's HLC).
+    const runId = docA.localInsert("a", { hlc: "100" })!;
+    docA.localExtend({ runId, appendText: "b", hlc: "200" });
+    docA.localExtend({ runId, appendText: "c", hlc: "300" });
+    expect(docA.text).toBe("abc");
+
+    // Build a wire action representing an OLDER extend (hlc=150,
+    // text="ab") — peer-A wrote this *between* the insert (100) and
+    // the first extend (200), and we're now seeing it via catchUp.
+    const olderExtend = buildExtendAction(runId, "ab", "150");
+
+    // peer-B receives peer-A's actions in any order. With the fix,
+    // older actions are skipped (existing.hlc > newNode.hlc); newer
+    // actions advance the state. Apply them all in random order and
+    // assert peer-B converges to "abc" without ever rewinding.
+    docB.applyActions([olderExtend]);
+    // Apply the two newer ones on top.
+    docB.applyActions([
+      buildExtendAction(runId, "ab", "200"),
+      buildExtendAction(runId, "abc", "300"),
+    ]);
+    expect(docB.text).toBe("abc");
+  });
+
+  it("applyExtendRun advances the run's HLC", () => {
+    const doc = new TextDocument({ docId: "doc_hlc_adv", actorId: "peer-A" });
+    const runId = doc.localInsert("a", { hlc: "100" })!;
+    expect(doc.docState.nodes.get(runId)!.hlc).toBe("100");
+    doc.localExtend({ runId, appendText: "b", hlc: "200" });
+    expect(doc.docState.nodes.get(runId)!.hlc).toBe("200");
+    doc.localExtend({ runId, appendText: "c", hlc: "300" });
+    expect(doc.docState.nodes.get(runId)!.hlc).toBe("300");
+  });
+
+  it("fast typing + catchUp: receiver stays consistent with sender", () => {
+    // Sender types 5 characters fast. Each localExtend produces an
+    // action carrying the CUMULATIVE run text + the latest HLC.
+    const sender = new TextDocument({ docId: "doc_fast", actorId: "peer-A" });
+    const receiver = new TextDocument({ docId: "doc_fast", actorId: "peer-B" });
+    const runId = sender.localInsert("", { hlc: "100" })!;
+    let hlcCounter = 200n;
+    for (const ch of "hello") {
+      sender.localExtend({ runId, appendText: ch, hlc: String(hlcCounter) });
+      hlcCounter += 1n;
+    }
+    expect(sender.text).toBe("hello");
+
+    // Capture the actual pending actions the sender would write —
+    // these carry the cumulative text at each step.
+    const senderActions = sender.pendingActions();
+
+    // Receiver processes them in REVERSE order (worst case). It must
+    // converge to "hello" without flickering through intermediate
+    // values like "" or "h" or "he".
+    for (let i = senderActions.length - 1; i >= 0; i--) {
+      receiver.applyActions([senderActions[i]!]);
+    }
+    expect(receiver.text).toBe("hello");
   });
 });

@@ -367,7 +367,12 @@ interface BrowserEventSourceInstance {
 
 function openBrowserSSE(opts: SSEOpenOptions): SSESubscription {
   const ES = (globalThis as { EventSource: BrowserEventSourceConstructor }).EventSource;
-  const url = buildSSEUrl(opts.serverUrl, opts.groupIds, opts.cursor);
+  // Browser EventSource cannot set custom request headers. We pass the
+  // actor id via a query parameter; the server's bypass-auth plug
+  // accepts it as a fallback to the header.
+  const url = buildSSEUrl(opts.serverUrl, opts.groupIds, opts.cursor, {
+    actorId: opts.headers.actorId,
+  });
 
   const state: NodeStreamState = {
     queue: [],
@@ -417,17 +422,9 @@ function openBrowserSSE(opts: SSEOpenOptions): SSESubscription {
     return makeSubscription(state, () => finish(), closed);
   }
 
-  // Browser EventSource cannot set custom request headers, so bypass auth
-  // has to be passed via a query parameter. The server doesn't honor that
-  // today (it reads `x-ebb-actor-id` from headers), so browser usage of
-  // bypass mode will be a slice-2 issue. We log a warning and still try.
-  if (opts.headers.actorId) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      "[sse] browser EventSource cannot set x-ebb-actor-id header; " +
-        "use external auth or proxy through a server that injects the header",
-    );
-  }
+  // Browser EventSource cannot set custom request headers. We pass the
+  // actor id via a query parameter above; the server's bypass-auth plug
+  // accepts it as a fallback to the header.
 
   for (const eventType of DEFAULT_BROWSER_EVENT_TYPES) {
     source.addEventListener(eventType, (ev) => {
@@ -457,8 +454,17 @@ function openBrowserSSE(opts: SSEOpenOptions): SSESubscription {
 // Shared URL builder.
 // ---------------------------------------------------------------------------
 
-function buildSSEUrl(serverUrl: string, groupIds: readonly string[], cursor: number): string {
+function buildSSEUrl(
+  serverUrl: string,
+  groupIds: readonly string[],
+  cursor: number,
+  opts?: { actorId?: string },
+): string {
   const base = serverUrl.replace(/\/$/, "");
   const params = new URLSearchParams({ groups: groupIds.join(","), cursor: String(cursor) });
+  // Browser EventSource can't set custom headers; pass the actor id via
+  // query parameter as a fallback. The server's bypass-auth plug accepts
+  // either source.
+  if (opts?.actorId) params.set("actor_id", opts.actorId);
   return `${base}/sync/live?${params.toString()}`;
 }

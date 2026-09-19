@@ -198,11 +198,23 @@ defmodule EbbServer.Sync.Router do
             watermark = WatermarkTracker.committed_watermark()
 
             if cursor > watermark do
-              SSEHandler.write_stale_cursor_response(conn, watermark + 1)
-              {:stop, :normal}
+              # Cursor is ahead of the watermark. Send a single SSE
+              # control event with reconnect instructions, then halt
+              # the plug pipeline. The plug pipeline expects every
+              # match clause to return a `%Plug.Conn{}`; `{:stop,
+              # :normal}` triggers a RuntimeError that drops the
+              # connection before the response is flushed.
+              conn
+              |> SSEHandler.write_stale_cursor_response(watermark + 1)
+              |> Plug.Conn.halt()
             else
               case SSEHandler.open_sse(conn, group_ids, cursor, actor_id) do
-                :ok -> {:stop, :normal}
+                # `open_sse` blocks the request process in a receive
+                # loop; this branch is only taken if it returns early
+                # (today: never). Halt the pipeline rather than
+                # returning `{:stop, :normal}` which Plug.Builder
+                # rejects.
+                :ok -> Plug.Conn.halt(conn)
                 {:error, :not_member} -> send_json(conn, 403, %{"error" => "not_member"})
               end
             end

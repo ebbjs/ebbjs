@@ -208,6 +208,101 @@ describe("TextDocument.localDelete", () => {
 });
 
 // ---------------------------------------------------------------------------
+// localExtend
+// ---------------------------------------------------------------------------
+
+describe("TextDocument.localExtend", () => {
+  it("appends text to an existing run and queues an action", () => {
+    const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
+    const runId = doc.localInsert("hello")!;
+
+    const actionId = doc.localExtend({ runId, appendText: " world" });
+
+    expect(actionId).not.toBeNull();
+    expect(doc.text).toBe("hello world");
+    expect(doc.docState.nodes.size).toBe(2); // ROOT + 1 run (extended in place)
+    expect(doc.pendingActions()).toHaveLength(2);
+  });
+
+  it("emits a single field update for the extended run", () => {
+    const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
+    const runId = doc.localInsert("hello")!;
+
+    doc.localExtend({ runId, appendText: " world" });
+
+    const extendAction = doc.pendingActions()[1]!;
+    expect(extendAction.updates).toHaveLength(1);
+    // Wire format wraps user-entity fields under `data.fields` so the
+    // server's per-field LWW merge handles each run independently.
+    const data = extendAction.updates[0]!.data as unknown as {
+      fields: Record<string, { value: RunNode }>;
+    };
+    const fields = data.fields;
+    // Only the extended run's field appears in the diff.
+    const fieldNames = Object.keys(fields);
+    expect(fieldNames).toHaveLength(1);
+    expect(fieldNames[0]).toBe(formatRunFieldName(runId));
+    expect(fields[fieldNames[0]!]!.value.text).toBe("hello world");
+  });
+
+  it("fires onUpdate with kind 'extend'", () => {
+    const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
+    const runId = doc.localInsert("hello")!;
+    const events: AppliedUpdate[] = [];
+    doc.onUpdate((evt) => events.push(evt));
+    events.length = 0; // clear the insert event
+
+    doc.localExtend({ runId, appendText: " world" });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.runId).toBe(runId);
+    expect(events[0]!.kind).toBe("extend");
+  });
+
+  it("returns null for an empty appendText", () => {
+    const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
+    const runId = doc.localInsert("hello")!;
+
+    expect(doc.localExtend({ runId, appendText: "" })).toBeNull();
+    expect(doc.text).toBe("hello");
+    expect(doc.pendingActions()).toHaveLength(1);
+  });
+
+  it("returns null for a nonexistent run", () => {
+    const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
+    doc.localInsert("hello");
+
+    expect(doc.localExtend({ runId: "nonexistent", appendText: "x" })).toBeNull();
+    expect(doc.text).toBe("hello");
+    expect(doc.pendingActions()).toHaveLength(1);
+  });
+
+  it("returns null for a tombstoned run", () => {
+    const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
+    const runId = doc.localInsert("hello")!;
+    doc.localDelete({ runId, offset: 0, count: 5 });
+    expect(doc.docState.nodes.get(runId)?.deleted).toBe(true);
+
+    expect(doc.localExtend({ runId, appendText: "x" })).toBeNull();
+    expect(doc.text).toBe("");
+  });
+
+  it("extend survives a roundtrip through applyActions (wire compatibility)", () => {
+    const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
+    const runId = doc.localInsert("hello")!;
+    doc.localExtend({ runId, appendText: " world" });
+
+    const extendAction = doc.pendingActions()[1]!;
+
+    // A fresh doc receives the extend action — should see "hello world".
+    const peer = new TextDocument({ docId: "doc_1", actorId: "peer-B" });
+    peer.applyActions([extendAction]);
+
+    expect(peer.text).toBe("hello world");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // applyActions
 // ---------------------------------------------------------------------------
 
