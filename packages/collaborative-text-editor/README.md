@@ -49,16 +49,16 @@ const bridge = mountEditorBridge(view, doc, idMapField);
 
 ## API
 
-| Export | What |
-| --- | --- |
-| `createBridgeExtension({ doc, idMapField, getView })` | CM6 Extension that listens for local edits and dispatches `doc.local*` calls. |
-| `mountEditorBridge(view, doc, idMapField)` | Subscribes to `doc.onUpdate` and applies remote updates to the view. Returns `{ detach }`. |
-| `createIdMapField()` | The `StateField` mirroring `doc.docState.index.spans`. |
-| `setIdMapEffect` | The `StateEffect` that replaces the field's value (re-exported for advanced use). |
-| `isRemote` | The `Annotation` marking a CM transaction as originating from the bridge. |
-| `getRunAtPosition(state, position, idMapField)` | Lookup helper: which run contains a document position? |
-| `getPositionOfRun(state, runId, offset, idMapField)` | Inverse: what absolute position does a (runId, offset) pair map to? |
-| `RunSpan` | The `{ runId, length }` shape exposed via the StateField. |
+| Export                                                | What                                                                                       |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `createBridgeExtension({ doc, idMapField, getView })` | CM6 Extension that listens for local edits and dispatches `doc.local*` calls.              |
+| `mountEditorBridge(view, doc, idMapField)`            | Subscribes to `doc.onUpdate` and applies remote updates to the view. Returns `{ detach }`. |
+| `createIdMapField()`                                  | The `StateField` mirroring `doc.docState.index.spans`.                                     |
+| `setIdMapEffect`                                      | The `StateEffect` that replaces the field's value (re-exported for advanced use).          |
+| `isRemote`                                            | The `Annotation` marking a CM transaction as originating from the bridge.                  |
+| `getRunAtPosition(state, position, idMapField)`       | Lookup helper: which run contains a document position?                                     |
+| `getPositionOfRun(state, runId, offset, idMapField)`  | Inverse: what absolute position does a (runId, offset) pair map to?                        |
+| `RunSpan`                                             | The `{ runId, length }` shape exposed via the StateField.                                  |
 
 ## Peer dependencies
 
