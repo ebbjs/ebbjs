@@ -436,14 +436,14 @@ Five vertical slices, ordered by what unblocks what. Each slice ends with a runn
 
 ### Slice 3 — Demo app
 
-> **Status: shipped.** See [`examples/collaborative-text-demo/`](../../../../examples/collaborative-text-demo/) and [`packages/collaborative-text-editor/`](../../../collaborative-text-editor/).
+> **Status: shipped.** See [`examples/collaborative-text-demo/`](../../../../examples/collaborative-text-demo/) and [`packages/codemirror/`](../../../codemirror/).
 
 **Goal:** A Vite + React 19 app with CodeMirror 6 that uses the real client, opens two tabs against `mix dev`, and shows live collaborative editing.
 
 **Tasks:**
 
 1. ✅ New package `examples/collaborative-text-demo/` (Vite + React 19 + CodeMirror 6 + Tailwind)
-2. ✅ Wire CodeMirror to the new client. The bridge lives in a separate package, [`@ebbjs/collaborative-text-editor`](../../../collaborative-text-editor/) (peer dep on `@ebbjs/client` + CodeMirror), not inlined in the demo. The bridge translates CM transactions to `doc.localInsert` / `localExtend` / `localDelete` and applies remote updates from `doc.onUpdate` back to CM. A `StateField` mirrors `doc.docState.index.spans` for position ↔ run mapping.
+2. ✅ Wire CodeMirror to the new client. The bridge lives in a separate package, [`@ebbjs/codemirror`](../../../codemirror/) (peer dep on `@ebbjs/client` + CodeMirror), not inlined in the demo. The bridge translates CM transactions to `doc.localInsert` / `localExtend` / `localDelete` and applies remote updates from `doc.onUpdate` back to CM. A `StateField` mirrors `doc.docState.index.spans` for position ↔ run mapping.
 3. ✅ URL param `?actor=drew` → hardcoded actor ID → bypass auth
 4. ✅ Hardcoded group ID `grp_demo`; seed via `@ebbjs/server`'s `seed()` on first load (POST bootstrap group + member + document if they don't exist). Seed is inlined in the demo (`src/seed.ts`) because the `@ebbjs/server` package pulls in Node-only deps that can't ship to the browser.
 5. ✅ Connection state indicator (connecting / live / offline badge) — `ConnectionBadge.tsx`

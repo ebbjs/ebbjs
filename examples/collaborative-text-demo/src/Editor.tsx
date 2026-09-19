@@ -1,6 +1,6 @@
 /**
  * Editor component — CodeMirror 6 wired to a TextDocument via
- * @ebbjs/collaborative-text-editor.
+ * @ebbjs/codemirror.
  *
  * Responsibilities:
  * - Construct the EditorView with the bridge extension.
@@ -17,11 +17,7 @@ import { EditorView, keymap, lineNumbers, highlightActiveLine } from "@codemirro
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from "@codemirror/language";
 import { createClient } from "@ebbjs/client";
-import {
-  createBridgeExtension,
-  createIdMapField,
-  mountEditorBridge,
-} from "@ebbjs/collaborative-text-editor";
+import { createBridgeExtension, createIdMapField, mountEditorBridge } from "@ebbjs/codemirror";
 
 interface Props {
   client: ReturnType<typeof createClient>;

@@ -1,5 +1,5 @@
 /**
- * @ebbjs/collaborative-text-editor — CodeMirror 6 bridge for TextDocument.
+ * @ebbjs/codemirror — CodeMirror 6 bridge for TextDocument.
  *
  * Wires a CodeMirror 6 editor view to a `@ebbjs/client` TextDocument so
  * that:

@@ -78,9 +78,9 @@ importers:
       '@ebbjs/client':
         specifier: workspace:*
         version: link:../../packages/client
-      '@ebbjs/collaborative-text-editor':
+      '@ebbjs/codemirror':
         specifier: workspace:*
-        version: link:../../packages/collaborative-text-editor
+        version: link:../../packages/codemirror
       '@ebbjs/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -175,7 +175,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2)
 
-  packages/collaborative-text-editor:
+  packages/codemirror:
     dependencies:
       '@ebbjs/client':
         specifier: workspace:*
