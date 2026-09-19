@@ -31,6 +31,7 @@ interface Props {
 }
 
 const FLUSH_INTERVAL_MS = 250;
+const POLL_INTERVAL_MS = 250;
 
 export function Editor({ client, docId, actorId, groupIds }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -79,14 +80,31 @@ export function Editor({ client, docId, actorId, groupIds }: Props) {
     const bridge = mountEditorBridge(view, doc, idMapField);
     bridgeRef.current = bridge;
 
-    // Open SSE for the subscribed groups. Data events get applied to
-    // storage (handled by SyncClient.subscribe) AND piped into the
-    // TextDocument via our onEvent handler.
-    const unsubscribe = client.subscribe(groupIds, 0, (event) => {
-      if (event.type === "data") {
-        doc.applyActions([event.action]);
+    // We poll catchUp() instead of using SSE for live updates. Vite's
+    // dev proxy buffers SSE streams (a long-standing issue with
+    // http-proxy + text/event-stream in dev mode), so subscribe()
+    // hangs without ever delivering events. catchUp is plain chunked
+    // JSON and flows through the proxy fine. For production deploys
+    // behind nginx/Caddy, switch back to client.subscribe().
+    let cancelled = false;
+    let cursor = 0;
+    const poll = async (): Promise<void> => {
+      if (cancelled) return;
+      try {
+        for (const gid of groupIds) {
+          const result = await client.catchUp(gid, cursor);
+          for (const action of result.actions) {
+            doc.applyActions([action]);
+            if (action.gsn > cursor) cursor = action.gsn;
+          }
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("[editor] catchUp error:", err);
       }
-    });
+      if (!cancelled) setTimeout(poll, POLL_INTERVAL_MS);
+    };
+    void poll();
 
     // Periodic flush of pending actions to the server.
     const flushTimer = window.setInterval(() => {
@@ -108,8 +126,8 @@ export function Editor({ client, docId, actorId, groupIds }: Props) {
     }, FLUSH_INTERVAL_MS);
 
     return () => {
+      cancelled = true;
       window.clearInterval(flushTimer);
-      unsubscribe();
       bridge.detach();
       view.destroy();
       viewRef.current = null;

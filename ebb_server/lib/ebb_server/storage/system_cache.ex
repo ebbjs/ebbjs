@@ -29,6 +29,7 @@ defmodule EbbServer.Storage.SystemCache do
   alias EbbServer.Storage.{
     DirtyTracker,
     EntityStore,
+    Fields,
     GroupCache,
     RelationshipCache,
     RocksDB
@@ -108,33 +109,35 @@ defmodule EbbServer.Storage.SystemCache do
     rocks_name = EbbServer.Storage.RocksDB
 
     populate_type("groupMember", rocks_name, fn entity_data ->
-      data = entity_data["data"] || %{}
-      fields = data["fields"] || %{}
+      data = entity_data.data || %{}
 
       group_members = :persistent_term.get({GroupCache, :group_members})
 
-      GroupCache.put_group_member(
-        %{
-          id: entity_data["id"],
-          actor_id: get_in(data, ["actor_id"]) || get_in(fields, ["actor_id", "value"]),
-          group_id: get_in(data, ["group_id"]) || get_in(fields, ["group_id", "value"]),
-          permissions: get_in(data, ["permissions"]) || get_in(fields, ["permissions", "value"])
-        },
-        group_members
-      )
+      member = %{
+        id: entity_data.id,
+        # Use Fields.get/2 to handle both shapes: `{"actor_id" => "x"}`
+        # and `{"fields" => {"actor_id" => {"value" => "x"}}}`.
+        actor_id: Fields.get(data, "actor_id"),
+        group_id: Fields.get(data, "group_id"),
+        permissions: Fields.get(data, "permissions")
+      }
+
+      GroupCache.put_group_member(member, group_members)
     end)
 
     populate_type("relationship", rocks_name, fn entity_data ->
+      data = entity_data.data || %{}
+
       relationships = :persistent_term.get({RelationshipCache, :relationships})
       relationships_by_group = :persistent_term.get({RelationshipCache, :relationships_by_group})
 
       RelationshipCache.put_relationship(
         %{
-          id: entity_data["id"],
-          source_id: get_in(entity_data, ["data", "source_id"]),
-          target_id: get_in(entity_data, ["data", "target_id"]),
-          type: get_in(entity_data, ["data", "type"]),
-          field: get_in(entity_data, ["data", "field"])
+          id: entity_data.id,
+          source_id: Fields.get(data, "source_id"),
+          target_id: Fields.get(data, "target_id"),
+          type: Fields.get(data, "type"),
+          field: Fields.get(data, "field")
         },
         relationships: relationships,
         relationships_by_group: relationships_by_group
