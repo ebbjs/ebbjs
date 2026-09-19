@@ -22,7 +22,7 @@
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.8",
     "@ebbjs/client": "workspace:*",
-    "@ebbjs/collaborative-text-editor": "workspace:*",
+    "@ebbjs/codemirror": "workspace:*",
     "@ebbjs/core": "workspace:*",
     "codemirror": "^6.0.1",
     "react": "^19.1.0",

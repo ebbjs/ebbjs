@@ -1,4 +1,4 @@
-# `@ebbjs/collaborative-text-editor`
+# `@ebbjs/codemirror`
 
 CodeMirror 6 bridge for [`@ebbjs/client`](https://github.com/ebbjs/ebbjs/tree/main/packages/client)'s `TextDocument`. Wires a CM6 editor view to a causal-tree document so that:
 
@@ -14,11 +14,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import { createClient } from "@ebbjs/client";
-import {
-  createBridgeExtension,
-  createIdMapField,
-  mountEditorBridge,
-} from "@ebbjs/collaborative-text-editor";
+import { createBridgeExtension, createIdMapField, mountEditorBridge } from "@ebbjs/codemirror";
 
 const client = createClient({ serverUrl: "http://localhost:4000", actorId: "alice" });
 const doc = client.textDocument("doc_demo");

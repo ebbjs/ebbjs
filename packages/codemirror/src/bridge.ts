@@ -40,7 +40,7 @@ import type { AppliedUpdate, RunSpan, TextDocument } from "@ebbjs/client";
 // Public types
 // ---------------------------------------------------------------------------
 
-// Re-export RunSpan so consumers of @ebbjs/collaborative-text-editor
+// Re-export RunSpan so consumers of @ebbjs/codemirror
 // don't need to import it separately from @ebbjs/client.
 export type { RunSpan };
 

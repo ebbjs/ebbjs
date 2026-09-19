@@ -26,7 +26,7 @@ Type in one tab — the text appears in the other within ~100ms. Concurrent edit
 1. The `?actor=` URL param sets the actor id (bypass auth mode).
 2. On first load the demo calls `seed()` to bootstrap a `grp_demo` group + `doc_demo` document via `POST /sync/actions`.
 3. A `SyncClient` opens an SSE subscription for the demo's groups.
-4. A CodeMirror 6 view is wired to a `TextDocument` via [`@ebbjs/collaborative-text-editor`](../../packages/collaborative-text-editor/).
+4. A CodeMirror 6 view is wired to a `TextDocument` via [`@ebbjs/codemirror`](../../packages/codemirror/).
 5. Edits are flushed to the server every 250ms via `client.write(doc.pendingActions())`.
 6. Incoming SSE data events are piped into `doc.applyActions()`, which fires `onUpdate` — the bridge reflects the change in CM.
 7. Concurrent edits at the same run are recorded by the conflict detector and surfaced via `doc.onConflict()`.
@@ -48,7 +48,7 @@ src/
 ## What this slice delivers (slice 3 of the [prototype plan](../../packages/client/docs/prototypes/collaborative-text/README.md))
 
 - ✅ New `examples/collaborative-text-demo/` package
-- ✅ Bridge from CM6 to `TextDocument` (in `@ebbjs/collaborative-text-editor`)
+- ✅ Bridge from CM6 to `TextDocument` (in `@ebbjs/codemirror`)
 - ✅ `?actor=drew|alice` URL param → bypass auth
 - ✅ Hardcoded `grp_demo` / `doc_demo`; seeded on first load
 - ✅ Connection-state indicator
