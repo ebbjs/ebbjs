@@ -19,8 +19,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.17"
+          # Pinned to match ebb_server/.tool-versions — see issue #62.
+          elixir-version: "1.17.3"
           otp-version: "27"
+      - name: Verify Elixir version matches .tool-versions
+        run: |
+          pinned=$(grep -E '^elixir ' ebb_server/.tool-versions | awk '{print $2}')
+          installed=$(elixir --version | awk '/^Elixir /{print $2}')
+          if [ "$pinned" != "$installed" ]; then
+            echo "::error::Elixir version mismatch: pinned $pinned in ebb_server/.tool-versions, installed $installed."
+            exit 1
+          fi
+          echo "Elixir $installed matches ebb_server/.tool-versions"
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
       - name: Cache deps and build
@@ -61,8 +71,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.17"
+          # Pinned to match ebb_server/.tool-versions — see issue #62.
+          elixir-version: "1.17.3"
           otp-version: "27"
+      - name: Verify Elixir version matches .tool-versions
+        run: |
+          pinned=$(grep -E '^elixir ' ebb_server/.tool-versions | awk '{print $2}')
+          installed=$(elixir --version | awk '/^Elixir /{print $2}')
+          if [ "$pinned" != "$installed" ]; then
+            echo "::error::Elixir version mismatch: pinned $pinned in ebb_server/.tool-versions, installed $installed."
+            exit 1
+          fi
+          echo "Elixir $installed matches ebb_server/.tool-versions"
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
       - name: Cache deps and build
@@ -103,8 +123,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.17"
+          # Pinned to match ebb_server/.tool-versions — see issue #62.
+          elixir-version: "1.17.3"
           otp-version: "27"
+      - name: Verify Elixir version matches .tool-versions
+        run: |
+          pinned=$(grep -E '^elixir ' ebb_server/.tool-versions | awk '{print $2}')
+          installed=$(elixir --version | awk '/^Elixir /{print $2}')
+          if [ "$pinned" != "$installed" ]; then
+            echo "::error::Elixir version mismatch: pinned $pinned in ebb_server/.tool-versions, installed $installed."
+            exit 1
+          fi
+          echo "Elixir $installed matches ebb_server/.tool-versions"
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
       - name: Cache deps and build
@@ -150,8 +180,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.17"
+          # Pinned to match ebb_server/.tool-versions — see issue #62.
+          elixir-version: "1.17.3"
           otp-version: "27"
+      - name: Verify Elixir version matches .tool-versions
+        run: |
+          pinned=$(grep -E '^elixir ' ebb_server/.tool-versions | awk '{print $2}')
+          installed=$(elixir --version | awk '/^Elixir /{print $2}')
+          if [ "$pinned" != "$installed" ]; then
+            echo "::error::Elixir version mismatch: pinned $pinned in ebb_server/.tool-versions, installed $installed."
+            exit 1
+          fi
+          echo "Elixir $installed matches ebb_server/.tool-versions"
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
       - name: Cache deps and build
