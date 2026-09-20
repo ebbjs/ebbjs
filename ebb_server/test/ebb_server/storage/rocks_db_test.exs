@@ -27,6 +27,33 @@ defmodule EbbServer.Storage.RocksDBTest do
       assert_raise ArgumentError, fn -> RocksDB.cf_entity_actions(name) end
       assert_raise ArgumentError, fn -> RocksDB.cf_type_entities(name) end
       assert_raise ArgumentError, fn -> RocksDB.cf_action_dedup(name) end
+      assert_raise ArgumentError, fn -> RocksDB.cf_group_actions(name) end
+    end
+
+    test "start_rocks + safe_stop releases the lock and the rocksdb directory can be removed",
+         context do
+      %{pid: pid, dir: dir} = start_rocks(context)
+
+      rocks_dir = Path.join(dir, "rocksdb")
+      assert File.dir?(rocks_dir), "expected RocksDB to create #{inspect(rocks_dir)}"
+
+      # Stop the GenServer the same way `start_rocks/1`'s on_exit does. If
+      # `safe_stop/1` releases the RocksDB lock, the next `File.rm_rf/1`
+      # will succeed. Otherwise, we would observe a leftover `LOCK` file
+      # — the symptom called out in issue #56.
+      :ok = safe_stop(pid)
+
+      # `:rocksdb.close/1` runs synchronously inside `terminate/2`, but
+      # RocksDB may briefly keep the lock file descriptor open in the
+      # kernel. Give the BEAM a moment to fully tear down.
+      Process.sleep(50)
+
+      assert {:ok, _removed} = File.rm_rf(rocks_dir),
+             "could not remove #{inspect(rocks_dir)} after stop — the RocksDB " <>
+               "lock was probably not released. See issue #56."
+
+      refute File.exists?(rocks_dir)
+      refute File.exists?(Path.join(rocks_dir, "LOCK"))
     end
   end
 

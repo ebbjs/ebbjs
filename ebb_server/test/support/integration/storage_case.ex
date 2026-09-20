@@ -64,9 +64,22 @@ defmodule EbbServer.Integration.StorageCase do
   end
 
   def setup_storage do
-    if pid = Process.whereis(EbbServer.Storage.Supervisor) do
-      GenServer.stop(pid, :normal, 5000)
-      :timer.sleep(50)
+    # Detach the application-managed Storage.Supervisor so we can replace
+    # it with a per-test instance pointed at an isolated `tmp_dir`. We
+    # `terminate_child/2` first (not `GenServer.stop/3`) so the parent
+    # `EbbServer.Supervisor` does not immediately restart the child
+    # against the same RocksDB directory — the restart would race with
+    # the in-flight `close/1` and surface "lock hold by current process"
+    # errors (see ebbjs/ebbjs#56).
+    parent = Process.whereis(EbbServer.Supervisor)
+    child_id = EbbServer.Storage.Supervisor
+
+    if parent do
+      case Supervisor.terminate_child(parent, child_id) do
+        :ok -> :ok
+        # Already gone (e.g. previous test ran cleanup first).
+        {:error, :not_found} -> :ok
+      end
     end
 
     if pid = Process.whereis(EbbServer.Sync.GroupRegistry) do
@@ -83,7 +96,15 @@ defmodule EbbServer.Integration.StorageCase do
     Application.put_env(:ebb_server, :data_dir, tmp_dir)
 
     ensure_started(Registry, keys: :unique, name: EbbServer.Sync.GroupRegistry)
-    ensure_started(EbbServer.Storage.Supervisor, data_dir: tmp_dir)
+
+    # `EbbServer.Storage.Supervisor` is registered under `__MODULE__` so
+    # only one instance can run per BEAM. Since we've terminated the
+    # application-managed one above, we start a *new* supervisor *outside*
+    # the application tree — the parent `EbbServer.Supervisor` no longer
+    # holds a child spec for it. This per-test supervisor will be torn
+    # down by `cleanup_storage/0`.
+    {:ok, _pid} = EbbServer.Storage.Supervisor.start_link(data_dir: tmp_dir)
+
     ensure_started(EbbServer.Sync.Supervisor, [])
     ensure_started(EbbServer.Sync.GroupDynamicSupervisor, [])
     ensure_started(EbbServer.Storage.Writer, name: EbbServer.Storage.Writer)
