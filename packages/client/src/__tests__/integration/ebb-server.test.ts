@@ -4,6 +4,9 @@
  * `__tests__/wire.test.ts` and friends; this file exercises the full
  * client → HTTP → server → storage → catchUp → client round-trip.
  *
+ * See `packages/client/README.md` for how to run this file (requires
+ * a live server on `EBB_TEST_URL` or the default `localhost:4000`).
+ *
  * ## What gets covered
  *
  * - Bootstrap: handshake returns groups; client.setState drives the
@@ -20,27 +23,22 @@
  * - Conflict surfacing: conflict.test.ts + collaborative-text-editor
  *   integration tests.
  *
- * ## Prerequisites
+ * ## Skip semantics
  *
- * Tests need a running ebb_server with bypass auth on the default
- * port (4000). The CI pipeline runs `mix run --no-halt` against this
- * port. Locally you can run `cd ebb_server && MIX_ENV=dev mix run
- * --no-halt` in another shell. Override with `EBB_TEST_URL=http://...
- * ` if the server is on a different host or port.
+ * Every `it` block calls `shouldRun()` and short-circuits when the
+ * server isn't reachable — the test counts as passing in that case,
+ * matching the convention that integration tests must never make a
+ * plain `pnpm test` run fail because of a missing server.
  *
  * Each test run creates its own isolated group + actor (named with a
  * per-run random suffix), so the test is reentrant against the same
  * server — running it twice in a row does not collide.
- *
- * Set `EBB_SKIP_INTEGRATION=1` to skip the whole file (useful for
- * fast iteration when the server isn't running).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createAction, createClock, encodeSync, localEvent, type Action } from "@ebbjs/core";
 import { createClient, type SyncClient } from "../..";
 
-const SKIP = process.env.EBB_SKIP_INTEGRATION === "1";
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
 
 const TEST_SEEDER = "test_seeder";
@@ -78,10 +76,6 @@ async function ensureServerReachable(): Promise<boolean> {
 }
 
 beforeAll(async () => {
-  if (SKIP) {
-    console.warn("[skip] integration tests (EBB_SKIP_INTEGRATION=1)");
-    return;
-  }
   if (!(await ensureServerReachable())) {
     console.warn(`[skip] ebb server not reachable at ${SERVER_URL}`);
     return;
@@ -271,7 +265,7 @@ async function createTestDoc(docId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Test runner: skip if the server isn't reachable (or SKIP is set)
+// Test runner: skip if the server isn't reachable
 // ---------------------------------------------------------------------------
 
 /**
@@ -279,7 +273,6 @@ async function createTestDoc(docId: string): Promise<void> {
  * `it` so the suite is skipped as a whole when the server isn't up.
  */
 async function shouldRun(): Promise<boolean> {
-  if (SKIP) return false;
   return await ensureServerReachable();
 }
 

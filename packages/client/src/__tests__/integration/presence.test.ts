@@ -1,14 +1,16 @@
 /**
- * Presence round-trip integration test against the running ebb_server.
+ * Presence round-trip integration test against a running ebb_server.
  *
  * Two clients (drew and alice) both connect to grp_demo. Drew calls
  * `setLocalCursor`; alice should see drew's cursor in
  * `client.presence.forEntity` within a couple of seconds (the
  * 100ms debounce + SSE delivery).
  *
- * Skipped automatically if no server is reachable. Set
- * `EBB_SKIP_INTEGRATION=1` to skip unconditionally, or override the
- * server URL with `EBB_TEST_URL`.
+ * Requires a pre-seeded `grp_demo` group with a `demo-seeder` member
+ * that the standard integration CI job does not bootstrap. The test
+ * probes for that fixture at load time and skips cleanly with a
+ * warning when it's missing. See `packages/client/README.md` for how
+ * to seed the demo fixtures locally.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -16,7 +18,6 @@ import { createClient } from "@ebbjs/client";
 import type { SyncClient } from "@ebbjs/client";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
-const SKIP = process.env.EBB_SKIP_INTEGRATION === "1";
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const GROUP_ID = "grp_demo";
 
@@ -38,15 +39,40 @@ async function ping(url: string): Promise<boolean> {
   }
 }
 
-const serverReachable = await ping(SERVER_URL);
-
-if (SKIP) {
-  console.warn("[skip] presence integration tests (EBB_SKIP_INTEGRATION=1)");
-} else if (!serverReachable) {
-  console.warn(`[skip] presence integration tests — ebb server not reachable at ${SERVER_URL}`);
+/**
+ * Probe the demo fixture: this test requires a pre-seeded `grp_demo`
+ * group with a `demo-seeder` member. The standard integration CI job
+ * does not bootstrap those fixtures, so the test should skip cleanly
+ * when they're absent. Probe by handshaking as `demo-seeder`; if the
+ * group isn't returned, the fixture is missing.
+ */
+async function demoFixtureSeeded(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${url}/sync/handshake`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-ebb-actor-id": "demo-seeder" },
+      body: "{}",
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { groups?: Array<{ id: string }> };
+    return (body.groups ?? []).some((g) => g.id === GROUP_ID);
+  } catch {
+    return false;
+  }
 }
 
-const itIfServerUp = serverReachable && !SKIP ? it : it.skip;
+const serverReachable = await ping(SERVER_URL);
+const fixtureSeeded = serverReachable && (await demoFixtureSeeded(SERVER_URL));
+
+if (!serverReachable) {
+  console.warn(`[skip] presence integration tests — ebb server not reachable at ${SERVER_URL}`);
+} else if (!fixtureSeeded) {
+  console.warn(
+    `[skip] presence integration tests — grp_demo with demo-seeder not seeded on ${SERVER_URL}`,
+  );
+}
+
+const itIfReady = serverReachable && fixtureSeeded ? it : it.skip;
 
 /**
  * Add an actor as a member of grp_demo (sent as demo-seeder, who has
@@ -111,7 +137,7 @@ describe("integration: presence", () => {
   let alice: ClientHandle | null = null;
 
   beforeAll(async () => {
-    if (SKIP || !serverReachable) return;
+    if (!serverReachable || !fixtureSeeded) return;
     drew = await setupActor(`drew_presence_${RUN_ID}`);
     alice = await setupActor(`alice_presence_${RUN_ID}`);
   });
@@ -121,7 +147,7 @@ describe("integration: presence", () => {
     alice?.close();
   });
 
-  itIfServerUp("alice sees drew's cursor via the SSE presence stream", async () => {
+  itIfReady("alice sees drew's cursor via the SSE presence stream", async () => {
     if (!drew || !alice) throw new Error("test setup failed");
 
     drew.client.presence.start();

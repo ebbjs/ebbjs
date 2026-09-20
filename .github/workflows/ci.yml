@@ -255,3 +255,72 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm --recursive exec vitest --run --passWithNoTests
+
+  elixir-integration-tests:
+    name: Integration Tests (client ↔ ebb_server)
+    runs-on: ubuntu-latest
+    needs: elixir-release
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
+      - name: Restore release artifact
+        uses: actions/cache@v4
+        with:
+          path: packages/server/dist/ebb_server
+          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}
+          restore-keys: |
+            release-${{ runner.os }}-${{ runner.arch }}-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Start ebb_server
+        env:
+          EBB_DATA_DIR: /tmp/ebb-integration-data
+        run: |
+          mkdir -p "$EBB_DATA_DIR"
+          rm -rf "$EBB_DATA_DIR"/*
+          nohup ./packages/server/dist/ebb_server/bin/ebb_server start >/tmp/ebb_server.log 2>&1 &
+          echo $! > /tmp/ebb_server.pid
+          # Wait up to 60s for /sync/handshake to respond 2xx.
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              -X POST http://localhost:4000/sync/handshake \
+              -H 'Content-Type: application/json' \
+              -H 'x-ebb-actor-id: ci_healthcheck' \
+              -d '{}' || true)
+            if [ "$code" != "000" ] && [ "$code" -lt 500 ] 2>/dev/null; then
+              echo "ebb_server ready (HTTP $code) after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "ebb_server did not become ready within 60s"
+          echo '--- last 100 lines of ebb_server.log ---'
+          tail -n 100 /tmp/ebb_server.log
+          exit 1
+      - name: Run client integration tests
+        # Runs every *.test.ts under src/__tests__/integration/.
+        # presence.test.ts no-ops via itIfServerUp because it requires
+        # a pre-seeded grp_demo group that this job does not bootstrap;
+        # future self-seeding tests added to that directory will run
+        # automatically.
+        run: pnpm --filter @ebbjs/client test:integration
+      - name: Stop ebb_server
+        if: always()
+        run: |
+          if [ -f /tmp/ebb_server.pid ]; then
+            pid=$(cat /tmp/ebb_server.pid)
+            # Kill the BEAM process and any children.
+            pkill -P "$pid" 2>/dev/null || true
+            kill "$pid" 2>/dev/null || true
+            # Give it a moment, then force-kill anything still bound to :4000.
+            sleep 2
+            pkill -f 'packages/server/dist/ebb_server/bin/ebb_server' 2>/dev/null || true
+            rm -f /tmp/ebb_server.pid
+          fi

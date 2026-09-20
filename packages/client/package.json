@@ -15,8 +15,9 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite build --watch",
-    "test": "vitest --run",
-    "test:watch": "vitest",
+    "test": "vitest --run --exclude '**/__tests__/integration/**'",
+    "test:watch": "vitest --exclude '**/__tests__/integration/**'",
+    "test:integration": "vitest --run src/__tests__/integration",
     "typecheck": "tsc --noEmit",
     "lint": "pnpm --root ../../ lint",
     "lint:fix": "pnpm --root ../../ lint:fix",
