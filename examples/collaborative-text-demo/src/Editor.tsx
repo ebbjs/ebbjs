@@ -155,9 +155,9 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
     view.dispatch({ effects: [] }); // ensure initial send runs after mount
     sendLocalCursor();
 
-    // Subscribe to SSE for live updates. The browser's EventSource
-    // can't set custom request headers, so the @ebbjs/client SSE
-    // client passes the actor id via the ?actor_id= query param.
+    // Subscribe to SSE for live updates. The @ebbjs/client SSE
+    // implementation sends the actor id via the x-ebb-actor-id
+    // header (fetch-based, works the same in browser and Node).
     const unsubscribe = client.subscribe(groupIds, 0, (event) => {
       if (event.type === "data") {
         doc.applyActions([event.action]);
