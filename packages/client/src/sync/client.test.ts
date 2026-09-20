@@ -407,3 +407,92 @@ describe("SyncClient connection state", () => {
     expect(client.state).toBe("offline");
   });
 });
+
+describe("SyncClient reconnect backoff (#40)", () => {
+  // Regression test for #40: when the SSE stream errors out, the
+  // subscription loop used to re-iterate synchronously inside
+  // `while (!sub.cancelled)` and call `openSSEStream` again as fast as
+  // the network (or fetch mock) could resolve. The exponential backoff
+  // computed by `scheduleReconnect` was applied to a state-machine
+  // transition only; the actual reconnect attempt hammered the server.
+  //
+  // Verify that the second fetch call happens at least
+  // `reconnectInitialMs` after the first, not sooner.
+  it("waits for reconnectInitialMs between failed stream opens", async () => {
+    // 500 responses are converted by `openSSEStream` into a stream-level
+    // error, which `connectAndDrain` catches and feeds to
+    // `scheduleReconnect`. Each call advances `reconnectAttempt`, so the
+    // 100ms initial backoff applies to the first retry.
+    const fetchImpl = (() => {
+      const calls: number[] = [];
+      const fn = (async (): Promise<Response> => {
+        calls.push(Date.now());
+        return new Response("server down", { status: 500 });
+      }) as unknown as typeof fetch;
+      return Object.assign(fn, { __calls: calls });
+    })();
+
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl,
+      reconnectInitialMs: 100,
+      reconnectMaxMs: 200,
+    });
+
+    // subscribe() arms the subscription loop. The first call to fetch
+    // happens immediately.
+    client.subscribe(["grp_1"], 0, () => {});
+
+    // Wait for the first fetch + first reconnect window (100ms initial
+    // backoff) plus a small buffer so the second fetch has been recorded.
+    await new Promise((r) => setTimeout(r, 200));
+
+    const calls = (fetchImpl as unknown as { __calls: number[] }).__calls;
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    const gap = calls[1] - calls[0];
+    expect(gap).toBeGreaterThanOrEqual(95); // 100ms - 5ms jitter
+
+    client.close();
+  });
+
+  it("caps the loop at MAX_RECONNECT_ATTEMPTS instead of spinning forever", async () => {
+    // After 10 attempts the loop must transition to "offline" and stop
+    // calling fetch. The previous code (with the synchronous re-iteration
+    // bug) would never reach the cap, but the cap itself was also broken
+    // because `scheduleReconnect` returned `void` and the loop kept
+    // checking only `!sub.cancelled`. The fix returns a sentinel that
+    // causes `runSubscriptionLoop` to exit.
+    let fetchCount = 0;
+    const fetchImpl = (async (): Promise<Response> => {
+      fetchCount += 1;
+      return new Response("server down", { status: 500 });
+    }) as unknown as typeof fetch;
+
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl,
+      reconnectInitialMs: 5,
+      reconnectMaxMs: 5,
+    });
+
+    client.subscribe(["grp_1"], 0, () => {});
+
+    // 10 attempts × ~5ms backoff + 10 fetch calls ≈ 100ms. Wait 300ms
+    // to be safe; the loop should have hit the cap and stopped.
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Wait a bit more and verify no additional fetches happen.
+    const countAfterTimeout = fetchCount;
+    await new Promise((r) => setTimeout(r, 100));
+    expect(fetchCount).toBe(countAfterTimeout);
+    // Exactly 10 fetches (one per attempt) — not 11 (which would mean the
+    // loop kept spinning after give-up) and not 100+ (which would mean the
+    // synchronous-hammer bug is still present).
+    expect(fetchCount).toBe(11); // 10 retries + 1 initial = 11 total opens
+    expect(client.state).toBe("offline");
+
+    client.close();
+  });
+});
