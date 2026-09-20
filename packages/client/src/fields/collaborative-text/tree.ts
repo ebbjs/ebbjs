@@ -137,6 +137,13 @@ export type ExtendRunAction = {
   readonly type: "EXTEND_RUN";
   readonly runId: string; // Which run to extend
   readonly appendText: string; // Text to append
+  /**
+   * HLC of the extend action. The reducer advances the run's HLC to
+   * this value so downstream consumers (the wire adapter's "is the
+   * received state newer than ours" check) can distinguish sequential
+   * extends.
+   */
+  readonly hlc: HLCTimestamp;
 };
 
 export type DocAction = InsertRunAction | DeleteRangeAction | SplitAction | ExtendRunAction;
@@ -238,7 +245,7 @@ export const docReducer = (state: DocState, action: DocAction): DocState => {
     case "DELETE_RANGE":
       return applyDeleteRange(state, action.runId, action.offset, action.count);
     case "EXTEND_RUN":
-      return applyExtendRun(state, action.runId, action.appendText);
+      return applyExtendRun(state, action.runId, action.appendText, action.hlc);
   }
 };
 
@@ -610,13 +617,21 @@ const tombstoneRun = (state: DocState, runId: string): DocState => {
  * - Extension is append-only (no reordering needed)
  * - The run ID stays the same, so all existing parent references remain valid
  */
-const applyExtendRun = (state: DocState, runId: string, appendText: string): DocState => {
+const applyExtendRun = (
+  state: DocState,
+  runId: string,
+  appendText: string,
+  hlc: HLCTimestamp,
+): DocState => {
   const node = state.nodes.get(runId);
   if (!node || node.deleted) return state;
 
-  // Update the node's text
+  // Update the node's text AND advance its HLC. The HLC advance is
+  // what lets the wire adapter distinguish sequential extends — if
+  // we receive an EXTEND with an older HLC, we know our local state
+  // is newer (the run was extended further locally) and can skip.
   const newNodes = new Map(state.nodes);
-  newNodes.set(runId, { ...node, text: node.text + appendText });
+  newNodes.set(runId, { ...node, text: node.text + appendText, hlc });
 
   // Grow the span in the index
   const newSpans = state.index.spans.map((s) =>
@@ -846,6 +861,14 @@ export const applyRunFieldUpdate = (
       // No-op: same final state.
       return { state, applied: [] };
     }
+    // Skip when our local state is already newer than the received
+    // state. This happens when we receive our own previously-written
+    // actions back via catchUp after we've moved on to newer ones
+    // locally — without this check, every older action would rewind
+    // the run text back to its intermediate value.
+    if (compareHlc(existing.hlc, newNode.hlc) > 0) {
+      return { state, applied: [] };
+    }
     // Replace the run's text and span length atomically. The wire
     // carries the FINAL state, so we set the text outright (no delta
     // computation needed). We model this as a new reducer operation
@@ -853,7 +876,7 @@ export const applyRunFieldUpdate = (
     const setRun = applySetRun(state, runId, newNode);
     return {
       state: setRun,
-      applied: [{ type: "EXTEND_RUN", runId, appendText: newNode.text }],
+      applied: [{ type: "EXTEND_RUN", runId, appendText: newNode.text, hlc: newNode.hlc }],
     };
   }
 

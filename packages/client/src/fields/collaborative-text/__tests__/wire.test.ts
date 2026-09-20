@@ -201,7 +201,12 @@ describe("applyActions", () => {
     expect(s2.nodes.get(node.id)?.text).toBe("hello world");
     expect(s2.index.totalLength).toBe(11);
     expect(applied).toHaveLength(1);
-    expect(applied[0]).toEqual({ type: "EXTEND_RUN", runId: node.id, appendText: "hello world" });
+    expect(applied[0]).toEqual({
+      type: "EXTEND_RUN",
+      runId: node.id,
+      appendText: "hello world",
+      hlc: expect.anything(),
+    });
   });
 
   it("is a no-op for a field update with the same final state", () => {
