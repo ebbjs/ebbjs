@@ -6,7 +6,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Resolves to <repo>/packages/server/dist/ebb_server/bin/ebb_server,
 // independent of where Playwright invokes the webServer command from
 // (which is this config file's directory, i.e. the demo package).
-const ebbServerBin = resolve(__dirname, "../../../packages/server/dist/ebb_server/bin/ebb_server");
+// `<demo>/../../packages/...` lands at `<repo>/packages/...`.
+const ebbServerBin = resolve(__dirname, "../../packages/server/dist/ebb_server/bin/ebb_server");
 
 /**
  * Playwright config for the collaborative-text demo's e2e suite.
@@ -54,11 +55,11 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: `echo "BEFORE WEBSERVER CMD: cwd=$(pwd)"; echo "BEFORE: dist contents:"; ls -la packages/server/dist/ 2>&1 || true; ls -la packages/server/dist/ebb_server/ 2>&1 || true; ls -la packages/server/dist/ebb_server/bin/ 2>&1 || true; echo "Parent of expected bin:"; ls -la "$(dirname ${ebbServerBin})" 2>&1 || true; ls -la "$(dirname ${ebbServerBin})/.." 2>&1 || true; rm -rf /tmp/ebb-playwright-data && mkdir -p /tmp/ebb-playwright-data && (test -x ${ebbServerBin} || { echo "ebb_server binary missing or not executable: ${ebbServerBin}"; ls -la ${ebbServerBin} 2>&1 || true; ls -la "$(dirname ${ebbServerBin})" 2>&1 || true; exit 127; }) && EBB_DATA_DIR=/tmp/ebb-playwright-data ${ebbServerBin} start`,
+      command: `rm -rf /tmp/ebb-playwright-data && mkdir -p /tmp/ebb-playwright-data && EBB_DATA_DIR=/tmp/ebb-playwright-data ${ebbServerBin} start`,
       url: "http://localhost:4000/sync/handshake",
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
-      stdout: "pipe",
+      stdout: "ignore",
       stderr: "pipe",
     },
     {
