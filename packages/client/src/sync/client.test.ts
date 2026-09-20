@@ -1,35 +1,7 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { createClient } from "./client";
 import { decodeSync } from "@ebbjs/core";
-
-/**
- * Tiny helper: a `fetch` mock that records calls and returns canned responses
- * from a FIFO queue. The last entry in the queue is returned for all
- * subsequent calls (so you can stash a "default" response and override).
- */
-function makeFetchMock(
-  responses: Array<{
-    status?: number;
-    headers?: Record<string, string>;
-    body?: string | Uint8Array;
-  }>,
-) {
-  const calls: Array<{ url: string; init: RequestInit }> = [];
-  const queue = [...responses];
-  const fn = vi.fn(async (url: string, init: RequestInit = {}) => {
-    calls.push({ url, init });
-    const next = queue.shift() ?? queue[queue.length - 1];
-    if (!next) {
-      throw new Error("fetchMock: no more responses queued");
-    }
-    const headers = new Headers(next.headers ?? {});
-    return new Response((next.body ?? "") as BodyInit, {
-      status: next.status ?? 200,
-      headers,
-    });
-  }) as unknown as typeof fetch;
-  return { fn, calls };
-}
+import { makeFetchMock } from "./test-utils";
 
 describe("SyncClient.handshake", () => {
   it("returns group membership and caches cursors", async () => {
@@ -77,7 +49,7 @@ describe("SyncClient.handshake", () => {
     expect(result.groups[1].reason).toBe("behind_watermark");
 
     // Handshake should send POST to /sync/handshake with JSON body.
-    const call = (fn as unknown as { mock: { calls: unknown[][] } }).mock.calls[0];
+    const call = fn.mock.calls[0];
     expect(call[0]).toBe("http://localhost:4000/sync/handshake");
     expect((call[1] as RequestInit).method).toBe("POST");
     expect(JSON.parse((call[1] as RequestInit).body as string)).toEqual({
@@ -281,7 +253,7 @@ describe("SyncClient.write", () => {
 
     expect(result.rejected).toEqual([{ id: "act_bad", reason: "permission_denied" }]);
 
-    const call = (fn as unknown as { mock: { calls: unknown[][] } }).mock.calls[0];
+    const call = fn.mock.calls[0];
     const init = call[1] as RequestInit;
     expect(init.method).toBe("POST");
     expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/msgpack");
@@ -307,7 +279,7 @@ describe("SyncClient.write", () => {
     const result = await client.write([]);
     expect(result.rejected).toEqual([]);
     // No fetch call should have been made.
-    expect((fn as unknown as { mock: { calls: unknown[] } }).mock.calls).toHaveLength(0);
+    expect(fn.mock.calls).toHaveLength(0);
   });
 
   it("throws on non-2xx response", async () => {

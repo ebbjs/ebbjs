@@ -1,36 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { openSSEStream } from "./sse";
 import type { SSEEvent } from "./types";
-
-/**
- * Build a `fetch` mock that returns a streaming Response built from a list
- * of pre-encoded SSE bytes. Models what the ebb server sends.
- */
-function makeStreamingFetch(
-  chunks: string[],
-  options: { status?: number; headers?: Record<string, string> } = {},
-) {
-  const encoder = new TextEncoder();
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const chunk of chunks) {
-        controller.enqueue(encoder.encode(chunk));
-      }
-      controller.close();
-    },
-  });
-
-  const calls: Array<{ url: string; init: RequestInit }> = [];
-  const fn = vi.fn(async (url: string, init: RequestInit = {}) => {
-    calls.push({ url, init });
-    return new Response(body, {
-      status: options.status ?? 200,
-      headers: new Headers(options.headers ?? { "content-type": "text/event-stream" }),
-    });
-  }) as unknown as typeof fetch;
-
-  return { fn, calls };
-}
+import { makeStreamingFetch } from "./test-utils";
 
 describe("openSSEStream", () => {
   it("opens a stream and parses data events", async () => {
