@@ -43,7 +43,9 @@ defmodule EbbServer.Sync.SSEHandler do
   ### write_stale_cursor_response/2
 
   Switches the conn to chunked mode, writes a single `control` event
-  with `reconnect: true` and `catchUpFrom`, and returns `:closed`. Used
+  with `reconnect: true` and `catchUpFrom`, and returns the conn. The
+  caller is responsible for halting the plug pipeline (`Plug.Conn.halt/1`)
+  before returning from the match clause. Used
   by the router when the client's cursor is ahead of the watermark.
 
   ## Return shape
@@ -148,7 +150,7 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
 
   Called by the router when the client's cursor exceeds the committed watermark.
   """
-  @spec write_stale_cursor_response(Plug.Conn.t(), non_neg_integer()) :: :closed
+  @spec write_stale_cursor_response(Plug.Conn.t(), non_neg_integer()) :: Plug.Conn.t()
   def write_stale_cursor_response(conn, catch_up_from) do
     event = @stale_cursor_event <> to_string(catch_up_from) <> @stale_cursor_suffix
 
@@ -163,8 +165,8 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
       |> Plug.Conn.send_chunked(200)
 
     case Plug.Conn.chunk(conn, event) do
-      {:ok, _conn} -> :closed
-      {:error, _reason} -> :closed
+      {:ok, conn} -> conn
+      {:error, _reason} -> conn
     end
   end
 end

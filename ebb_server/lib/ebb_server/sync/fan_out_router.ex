@@ -145,19 +145,27 @@ defmodule EbbServer.Sync.FanOutRouter do
         ) ::
           {to_push :: [{non_neg_integer(), non_neg_integer()}],
            remaining :: [{non_neg_integer(), non_neg_integer()}]}
-  def split_pushable(pending, last_pushed, watermark) do
-    {pushable, remaining} = do_split_pushable(pending, last_pushed, watermark, [])
+  def split_pushable(pending, _last_pushed, watermark) do
+    # Only the watermark check matters: an action is pushable when
+    # its GSN has been committed. The contiguity check against
+    # `last_pushed_gsn` is removed — it blocked the very first action
+    # committed after a fresh start (last_pushed_gsn=0 but actions
+    # have GSN > 1) and also blocked actions when an SSE subscribed
+    # with cursor=0 but other writes had already advanced
+    # last_pushed_gsn. SSE connections tolerate out-of-order events;
+    # the client uses `catchUp` for ordered backfill of past actions.
+    {pushable, remaining} = do_split_pushable(pending, watermark, [])
 
     {Enum.reverse(pushable), remaining}
   end
 
-  defp do_split_pushable([], _running_last, _watermark, acc) do
+  defp do_split_pushable([], _watermark, acc) do
     {acc, []}
   end
 
-  defp do_split_pushable([{from, to} | rest], running_last, watermark, acc) do
-    if from <= running_last + 1 and to <= watermark do
-      do_split_pushable(rest, to, watermark, [{from, to} | acc])
+  defp do_split_pushable([{from, to} | rest], watermark, acc) do
+    if to <= watermark do
+      do_split_pushable(rest, watermark, [{from, to} | acc])
     else
       {Enum.reverse(acc), [{from, to} | rest]}
     end
@@ -197,6 +205,20 @@ defmodule EbbServer.Sync.FanOutRouter do
       end
 
     {to_push, remaining, new_last}
+  end
+
+  @doc """
+  Pushes a single range to subscribers regardless of contiguity.
+
+  Used when a new SSE subscriber joins: backfill them with everything
+  in [from, watermark] so they're caught up. Avoids the contiguity
+  check that would otherwise reject actions whose GSN exceeds the
+  global `last_pushed_gsn` (e.g., the very first action committed
+  after the system starts).
+  """
+  @spec backfill_range(non_neg_integer(), non_neg_integer()) :: :ok
+  def backfill_range(from_gsn, to_gsn) when from_gsn <= to_gsn do
+    push_gsn_range(from_gsn, to_gsn)
   end
 
   defp push_gsn_range(from_gsn, to_gsn) do

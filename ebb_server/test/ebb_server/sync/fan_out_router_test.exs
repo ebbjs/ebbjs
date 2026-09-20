@@ -15,14 +15,22 @@ defmodule EbbServer.Sync.FanOutRouterTest do
       assert FanOutRouter.split_pushable([], 0, 10) == {[], []}
     end
 
-    test "single range pushable when from <= last_pushed + 1 and to <= watermark" do
+    test "single range pushable when to <= watermark" do
       pending = [{1, 5}]
       assert FanOutRouter.split_pushable(pending, 0, 10) == {[{1, 5}], []}
     end
 
-    test "single range not pushable when from > last_pushed + 1" do
+    # `last_pushed_gsn` no longer affects pushability (only the watermark
+    # does). A range whose end is committed is pushable regardless of
+    # whether its start is contiguous with the last pushed GSN — SSE
+    # tolerates out-of-order events and clients use catchUp for ordered
+    # backfill of past actions. The contiguity check was removed because
+    # it blocked the very first action after a fresh start (last_pushed=0
+    # but actions have GSN > 1) and actions arriving after an SSE
+    # subscribe with cursor=0.
+    test "single range with from > last_pushed + 1 is pushable when watermark covers" do
       pending = [{5, 10}]
-      assert FanOutRouter.split_pushable(pending, 0, 20) == {[], [{5, 10}]}
+      assert FanOutRouter.split_pushable(pending, 0, 20) == {[{5, 10}], []}
     end
 
     test "single range not pushable when to > watermark" do
@@ -35,14 +43,9 @@ defmodule EbbServer.Sync.FanOutRouterTest do
       assert FanOutRouter.split_pushable(pending, 0, 10) == {[{1, 3}, {4, 6}], []}
     end
 
-    test "third range also fails from check" do
+    test "three contiguous ranges all pushable when within watermark" do
       pending = [{1, 3}, {4, 6}, {7, 9}]
       assert FanOutRouter.split_pushable(pending, 0, 10) == {[{1, 3}, {4, 6}, {7, 9}], []}
-    end
-
-    test "from equal to last_pushed + 1 is pushable" do
-      pending = [{4, 6}]
-      assert FanOutRouter.split_pushable(pending, 3, 20) == {[{4, 6}], []}
     end
 
     test "watermark boundary - to equal to watermark is pushable" do
@@ -55,12 +58,20 @@ defmodule EbbServer.Sync.FanOutRouterTest do
       assert FanOutRouter.split_pushable(pending, 0, 10) == {[], [{1, 11}]}
     end
 
-    test "multiple ranges where first is pushable but second is not" do
+    # Old behavior: only the first range was pushed because the contiguity
+    # check (from > last_pushed + 1) blocked the second. New behavior: both
+    # are pushable because both fit in the watermark.
+    test "multiple ranges are all pushable when both fit in watermark" do
       pending = [{1, 5}, {10, 15}]
-      assert FanOutRouter.split_pushable(pending, 0, 20) == {[{1, 5}], [{10, 15}]}
+      assert FanOutRouter.split_pushable(pending, 0, 20) == {[{1, 5}, {10, 15}], []}
     end
 
-    test "from exactly at last_pushed boundary" do
+    test "second range stays in remaining when only first fits in watermark" do
+      pending = [{1, 5}, {10, 50}]
+      assert FanOutRouter.split_pushable(pending, 0, 20) == {[{1, 5}], [{10, 50}]}
+    end
+
+    test "from exactly at last_pushed boundary is still pushable when watermark covers" do
       pending = [{2, 4}]
       assert FanOutRouter.split_pushable(pending, 1, 10) == {[{2, 4}], []}
     end
@@ -71,15 +82,12 @@ defmodule EbbServer.Sync.FanOutRouterTest do
     end
   end
 
-  describe "split_pushable/3 — contiguous range tracking" do
-    test "all contiguous ranges are pushable even when beyond original last_pushed" do
+  describe "split_pushable/3 — out-of-order batches" do
+    # All contiguous ranges are pushable when the watermark covers them,
+    # regardless of their relationship to last_pushed_gsn.
+    test "all contiguous ranges are pushable when watermark covers all" do
       pending = [{1, 3}, {4, 6}, {7, 9}]
       assert FanOutRouter.split_pushable(pending, 0, 10) == {[{1, 3}, {4, 6}, {7, 9}], []}
-    end
-
-    test "after first range is pushed, second becomes pushable with updated boundary" do
-      pending = [{1, 3}, {4, 6}]
-      assert FanOutRouter.split_pushable(pending, 3, 10) == {[{1, 3}, {4, 6}], []}
     end
 
     test "two-writer scenario: both batches pushed when watermark covers both" do
@@ -95,9 +103,17 @@ defmodule EbbServer.Sync.FanOutRouterTest do
       assert FanOutRouter.split_pushable(pending, 0, 6) == {[{1, 2}, {3, 4}, {5, 6}], []}
     end
 
-    test "gap detected after first pushes — subsequent non-contiguous stays" do
+    # Old behavior: gap detection kept the second range in remaining even
+    # though it was within the watermark. New behavior: only the watermark
+    # matters, so the second range is pushable regardless of contiguity.
+    test "non-contiguous ranges are both pushable when both fit in watermark" do
       pending = [{1, 3}, {7, 9}]
-      assert FanOutRouter.split_pushable(pending, 3, 10) == {[{1, 3}], [{7, 9}]}
+      assert FanOutRouter.split_pushable(pending, 3, 10) == {[{1, 3}, {7, 9}], []}
+    end
+
+    test "non-contiguous range stays in remaining when watermark blocks it" do
+      pending = [{1, 3}, {7, 20}]
+      assert FanOutRouter.split_pushable(pending, 3, 10) == {[{1, 3}], [{7, 20}]}
     end
   end
 
@@ -120,7 +136,7 @@ defmodule EbbServer.Sync.FanOutRouterTest do
   end
 
   describe "process_batch/4" do
-    test "adds notification to pending when not pushable" do
+    test "adds notification to pending when not pushable (to > watermark)" do
       state = new_state(pending_notifications: [], last_pushed_gsn: 0)
 
       {to_push, remaining, new_last} = FanOutRouter.process_batch(state, 10, 20, 5)
@@ -130,7 +146,7 @@ defmodule EbbServer.Sync.FanOutRouterTest do
       assert new_last == 0
     end
 
-    test "pushes single range when contiguous and within watermark" do
+    test "pushes single range when within watermark" do
       state = new_state(pending_notifications: [], last_pushed_gsn: 0)
 
       {to_push, remaining, new_last} = FanOutRouter.process_batch(state, 1, 5, 10)
@@ -140,14 +156,16 @@ defmodule EbbServer.Sync.FanOutRouterTest do
       assert new_last == 5
     end
 
-    test "second range not pushable due to gap in from sequence" do
+    # Old behavior: gap from last_pushed kept the second range pending.
+    # New behavior: both ranges are within the watermark, so both push.
+    test "non-contiguous second range is pushable when within watermark" do
       state = new_state(pending_notifications: [{1, 3}], last_pushed_gsn: 0)
 
       {to_push, remaining, new_last} = FanOutRouter.process_batch(state, 5, 10, 10)
 
-      assert to_push == [{1, 3}]
-      assert remaining == [{5, 10}]
-      assert new_last == 3
+      assert to_push == [{1, 3}, {5, 10}]
+      assert remaining == []
+      assert new_last == 10
     end
 
     test "range blocked by watermark not pushable" do
@@ -160,15 +178,20 @@ defmodule EbbServer.Sync.FanOutRouterTest do
       assert new_last == 0
     end
 
-    test "new notification added to sorted pending" do
+    # Old behavior: the new range was added to pending because it wasn't
+    # contiguous with last_pushed=0. New behavior: it pushes because the
+    # watermark covers it.
+    test "new notification within watermark is pushed, not added to pending" do
       state = new_state(pending_notifications: [], last_pushed_gsn: 0)
 
-      {_to_push, remaining, _} = FanOutRouter.process_batch(state, 5, 10, 20)
+      {to_push, remaining, new_last} = FanOutRouter.process_batch(state, 5, 10, 20)
 
-      assert remaining == [{5, 10}]
+      assert to_push == [{5, 10}]
+      assert remaining == []
+      assert new_last == 10
     end
 
-    test "continuation from previous last_pushed_gsn - second range becomes pushable" do
+    test "continuation from previous last_pushed_gsn - both ranges push" do
       state = new_state(pending_notifications: [{1, 3}], last_pushed_gsn: 3)
 
       {to_push, remaining, new_last} = FanOutRouter.process_batch(state, 4, 5, 10)
@@ -178,32 +201,40 @@ defmodule EbbServer.Sync.FanOutRouterTest do
       assert new_last == 5
     end
 
-    test "gap in sequence stops at first non-contiguous" do
+    # Old behavior: the second range stayed pending because of the gap.
+    # New behavior: it pushes because the watermark covers it.
+    test "non-contiguous second range is pushable when watermark covers it" do
       state = new_state(pending_notifications: [{1, 3}], last_pushed_gsn: 0)
 
       {to_push, remaining, new_last} = FanOutRouter.process_batch(state, 6, 10, 10)
 
-      assert to_push == [{1, 3}]
-      assert remaining == [{6, 10}]
-      assert new_last == 3
+      assert to_push == [{1, 3}, {6, 10}]
+      assert remaining == []
+      assert new_last == 10
     end
 
-    test "last_pushed_gsn unchanged when nothing pushed" do
+    # Old behavior: nothing was pushed because of the contiguity gap.
+    # New behavior: both ranges push because the watermark covers them,
+    # and last_pushed_gsn advances to the to of the highest pushed range.
+    test "all in-watermark ranges push regardless of contiguity" do
       state = new_state(pending_notifications: [{10, 15}], last_pushed_gsn: 5)
 
       {to_push, remaining, new_last} = FanOutRouter.process_batch(state, 20, 25, 30)
 
-      assert to_push == []
-      assert remaining == [{10, 15}, {20, 25}]
-      assert new_last == 5
+      assert to_push == [{10, 15}, {20, 25}]
+      assert remaining == []
+      assert new_last == 25
     end
 
-    test "existing pending plus new notification sorted" do
+    # Same idea: existing pending + new in-watermark notification both push.
+    test "existing pending plus new notification both push when watermark covers" do
       state = new_state(pending_notifications: [{1, 3}], last_pushed_gsn: 5)
 
-      {_to_push, remaining, _} = FanOutRouter.process_batch(state, 7, 10, 20)
+      {to_push, remaining, new_last} = FanOutRouter.process_batch(state, 7, 10, 20)
 
-      assert remaining == [{7, 10}]
+      assert to_push == [{1, 3}, {7, 10}]
+      assert remaining == []
+      assert new_last == 10
     end
 
     test "new last_pushed_gsn is last item in to_push" do
@@ -214,14 +245,17 @@ defmodule EbbServer.Sync.FanOutRouterTest do
       assert new_last == 8
     end
 
-    test "pending range with gap from last_pushed stays in pending" do
-      state = new_state(pending_notifications: [{10, 15}], last_pushed_gsn: 5)
+    # If only some pending ranges fit in the watermark, the unwatermarked
+    # ones stay pending. last_pushed_gsn advances to the to of the last
+    # PUSHED range, not the last attempted.
+    test "pending range above watermark stays in remaining" do
+      state = new_state(pending_notifications: [{10, 50}], last_pushed_gsn: 5)
 
-      {to_push, remaining, new_last} = FanOutRouter.process_batch(state, 20, 25, 30)
+      {to_push, remaining, new_last} = FanOutRouter.process_batch(state, 1, 8, 20)
 
-      assert to_push == []
-      assert remaining == [{10, 15}, {20, 25}]
-      assert new_last == 5
+      assert to_push == [{1, 8}]
+      assert remaining == [{10, 50}]
+      assert new_last == 8
     end
   end
 
