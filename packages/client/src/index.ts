@@ -29,7 +29,6 @@ export {
   parseSSEBlock,
   type SSESubscription,
   type SSEOpenOptions,
-  type SSEHeaders,
 } from "./sync/sse";
 
 export { applyAction } from "./sync/storage";
