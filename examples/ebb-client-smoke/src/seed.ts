@@ -51,6 +51,9 @@ export function buildSmokeSeed(): SeedData {
               title: {
                 value: "Hello, ebb",
                 update_id: "seed_title",
+                // The seeder ignores this value and substitutes a
+                // server-valid HLC generated from its own clock; the
+                // literal "0" satisfies the type but is otherwise unused.
                 hlc: "0",
               },
             },

@@ -43,7 +43,16 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
     const fields: Record<string, { value: unknown; hlc: string; update_id: string }> = {};
     for (const patch of entity.patches) {
       for (const [key, val] of Object.entries(patch.fields)) {
-        fields[key] = val;
+        // Override `hlc` with a server-valid packed HLC generated from the
+        // seeder's clock; the user-supplied `hlc` in seed data is
+        // irrelevant because seed actions establish initial state, not
+        // causality. `update_id` is preserved as the caller supplied it
+        // (it identifies the field, not the wire-protocol HLC).
+        fields[key] = {
+          value: val.value,
+          update_id: val.update_id,
+          hlc: localEvent(clock),
+        };
       }
     }
 
