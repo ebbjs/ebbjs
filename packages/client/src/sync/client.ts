@@ -245,15 +245,16 @@ export class SyncClient {
 
     // Apply every action to local storage. We do this inline (rather than
     // waiting for `subscribe`) because catch-up happens before subscribing.
-    let highestGsn = 0;
+    // `applyAction` already advances `storage.cursors[groupId]` to the max
+    // GSN it sees, so we read it back once instead of re-aggregating here.
     for (const action of actions) {
       await applyAction(this.storage, action, groupId);
-      if (action.gsn > highestGsn) highestGsn = action.gsn;
     }
-    if (highestGsn > 0) {
+    const stored = await this.storage.cursors.get(groupId);
+    if (stored !== null) {
       const prev = this.groupCursors.get(groupId) ?? 0;
-      if (highestGsn > prev) {
-        this.groupCursors.set(groupId, highestGsn);
+      if (stored > prev) {
+        this.groupCursors.set(groupId, stored);
       }
     }
 
