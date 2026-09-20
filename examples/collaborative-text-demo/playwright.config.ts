@@ -1,4 +1,12 @@
 import { defineConfig, devices } from "@playwright/test";
+import { fileURLToPath } from "url";
+import { dirname, resolve } from "path";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+// Resolves to <repo>/packages/server/dist/ebb_server/bin/ebb_server,
+// independent of where Playwright invokes the webServer command from
+// (which is this config file's directory, i.e. the demo package).
+const ebbServerBin = resolve(__dirname, "../../../packages/server/dist/ebb_server/bin/ebb_server");
 
 /**
  * Playwright config for the collaborative-text demo's e2e suite.
@@ -46,7 +54,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: `rm -rf /tmp/ebb-playwright-data && mkdir -p /tmp/ebb-playwright-data && EBB_DATA_DIR=/tmp/ebb-playwright-data ./packages/server/dist/ebb_server/bin/ebb_server start`,
+      command: `rm -rf /tmp/ebb-playwright-data && mkdir -p /tmp/ebb-playwright-data && EBB_DATA_DIR=/tmp/ebb-playwright-data ${ebbServerBin} start`,
       url: "http://localhost:4000/sync/handshake",
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
