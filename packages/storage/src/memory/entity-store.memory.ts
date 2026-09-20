@@ -1,4 +1,4 @@
-import type { Entity, Update, PutData, PatchData, HLCTimestamp } from "@ebbjs/core";
+import type { Entity, Update, FieldValue, HLCTimestamp } from "@ebbjs/core";
 import { compare } from "@ebbjs/core";
 import type { EntityStore } from "../types/entity-store";
 import type { ActionLog } from "../types/action-log";
@@ -74,7 +74,7 @@ const applyUpdate = (
       return {
         id: update.subject_id,
         type: update.subject_type,
-        data: { fields: extractFields(update) },
+        data: { fields: unwrapFields(update) },
         created_hlc: hlc,
         updated_hlc: hlc,
         deleted_hlc: null,
@@ -103,45 +103,35 @@ const applyUpdate = (
 };
 
 /**
- * Extracts the field map from an update's `data` payload.
- *
- * Mirrors `EbbServer.Storage.EntityStore.apply_put/4`:
- * - User entities (e.g. "todo") ship their fields nested under a "fields" key
- *   in `data`, e.g. `data = { fields: { title: FieldValue } }`. Use directly.
- * - System entities ("groupMember", "relationship") ship flat top-level keys,
- *   e.g. `data = { actor_id, group_id, permissions }`. Wrap into `fields` so
- *   the materialized shape matches what the server returns from
- *   `GET /entities/:id`.
- *
- * Without this branching, user-entity updates double-wrap into
- * `{ fields: { fields: {...} } }` because `update.data` is already nested.
+ * Subject types whose updates ship flat top-level keys in `data` instead of
+ * nesting fields under `data.fields`. For these, the update's `data` *is*
+ * the field map.
  */
-const extractFields = (update: Update): PutData => {
-  if (update.subject_type === "groupMember" || update.subject_type === "relationship") {
-    return (update.data ?? {}) as PutData;
-  }
-  // User-entity updates are wrapped in `{ fields: {...} }` by the client
-  // (mirrors `ActionValidator.well_formed_data?/1`). The static type
-  // `Update.data` is `PutData | PatchData | null`, neither of which models
-  // the wrapping, so we cast through `unknown` at runtime.
-  const data = update.data as unknown as { fields?: PutData } | null;
-  return data?.fields ?? {};
-};
+const SYSTEM_SUBJECT_TYPES: ReadonlySet<string> = new Set<string>(["groupMember", "relationship"]);
 
 /**
- * Extracts the field map from an update's `data` payload for a patch.
+ * Unwrap an Update's `data` into the field map the entity store consumes.
  *
- * For user entities the server nests the patch under `data.fields`, e.g.
- * `data = { fields: { title: FieldValue } }`. System entities patch flat
- * top-level keys. Without unwrapping the user-entity case, mergeFields would
- * write a `fields` key under `data.fields` (i.e. `{ fields: { fields: ... } }`).
+ * Mirrors `EbbServer.Storage.EntityStore.apply_put/4`:
+ * - User entities (e.g. "todo") ship their fields nested under a "fields"
+ *   key in `data`, e.g. `data = { fields: { title: FieldValue } }`. Use
+ *   `data.fields` directly.
+ * - System entities ("groupMember", "relationship") ship flat top-level
+ *   keys, e.g. `data = { actor_id, group_id, permissions }`. Use `data`
+ *   itself as the field map so the materialized shape matches what the
+ *   server returns from `GET /entities/:id`.
+ *
+ * Without this branching, user-entity updates would double-wrap into
+ * `{ fields: { fields: {...} } }` because `update.data` is already nested.
  */
-const extractPatchFields = (update: Update): PatchData => {
-  if (update.subject_type === "groupMember" || update.subject_type === "relationship") {
-    return (update.data ?? {}) as PatchData;
+const unwrapFields = (update: Update): Record<string, FieldValue> => {
+  if (SYSTEM_SUBJECT_TYPES.has(update.subject_type)) {
+    return (update.data ?? {}) as Record<string, FieldValue>;
   }
-  // See extractFields/1 above for the runtime cast rationale.
-  const data = update.data as unknown as { fields?: PatchData } | null;
+  // Static `Update.data` is `PutData | PatchData | null`, neither of which
+  // models the `{ fields: {...} }` wrapping the wire carries, so cast
+  // through `unknown` at runtime.
+  const data = update.data as unknown as { fields?: Record<string, FieldValue> } | null;
   return data?.fields ?? {};
 };
 
@@ -150,7 +140,7 @@ const extractPatchFields = (update: Update): PatchData => {
  * Higher HLC wins; equal HLC uses lexicographic update_id (newer >= older).
  */
 const mergeFields = (existing: Entity["data"], update: Update): Entity["data"] => {
-  const patch = extractPatchFields(update);
+  const patch = unwrapFields(update);
   const merged = { ...existing.fields };
 
   for (const [field, patchValue] of Object.entries(patch)) {
