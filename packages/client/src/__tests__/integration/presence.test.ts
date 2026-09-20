@@ -6,7 +6,9 @@
  * `client.presence.forEntity` within a couple of seconds (the
  * 100ms debounce + SSE delivery).
  *
- * Skipped automatically if no server is reachable.
+ * Skipped automatically if no server is reachable. Set
+ * `EBB_SKIP_INTEGRATION=1` to skip unconditionally, or override the
+ * server URL with `EBB_TEST_URL`.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -14,6 +16,7 @@ import { createClient } from "@ebbjs/client";
 import type { SyncClient } from "@ebbjs/client";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
+const SKIP = process.env.EBB_SKIP_INTEGRATION === "1";
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const GROUP_ID = "grp_demo";
 
@@ -21,6 +24,29 @@ interface ClientHandle {
   client: SyncClient;
   close: () => void;
 }
+
+async function ping(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${url}/sync/handshake`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-ebb-actor-id": "presence-test-ping" },
+      body: "{}",
+    });
+    return res.status < 500;
+  } catch {
+    return false;
+  }
+}
+
+const serverReachable = await ping(SERVER_URL);
+
+if (SKIP) {
+  console.warn("[skip] presence integration tests (EBB_SKIP_INTEGRATION=1)");
+} else if (!serverReachable) {
+  console.warn(`[skip] presence integration tests — ebb server not reachable at ${SERVER_URL}`);
+}
+
+const itIfServerUp = serverReachable && !SKIP ? it : it.skip;
 
 /**
  * Add an actor as a member of grp_demo (sent as demo-seeder, who has
@@ -85,6 +111,7 @@ describe("integration: presence", () => {
   let alice: ClientHandle | null = null;
 
   beforeAll(async () => {
+    if (SKIP || !serverReachable) return;
     drew = await setupActor(`drew_presence_${RUN_ID}`);
     alice = await setupActor(`alice_presence_${RUN_ID}`);
   });
@@ -94,7 +121,7 @@ describe("integration: presence", () => {
     alice?.close();
   });
 
-  it("alice sees drew's cursor via the SSE presence stream", async () => {
+  itIfServerUp("alice sees drew's cursor via the SSE presence stream", async () => {
     if (!drew || !alice) throw new Error("test setup failed");
 
     drew.client.presence.start();
