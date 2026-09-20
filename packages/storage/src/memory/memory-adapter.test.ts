@@ -129,6 +129,41 @@ describe("MemoryAdapter", () => {
       expect((after!.data.fields.title as { value: unknown }).value).toBe("Updated");
       expect(after!.data.fields).not.toHaveProperty("fields");
     });
+
+    it("materializes a system entity (groupMember) with flat top-level data fields", async () => {
+      // System entities ship flat keys in `data` (no `{ fields: ... }`
+      // wrapping). Issue #43 collapsed `extractFields` and
+      // `extractPatchFields` into a single `unwrapFields` helper that
+      // branches on subject type — this pins the system-entity branch.
+      const groupMemberAction: Action = {
+        id: "a_gm",
+        actor_id: "a_user1",
+        hlc: "1711036800000",
+        gsn: 1,
+        updates: [
+          {
+            id: "u_gm",
+            subject_id: "gm_1",
+            subject_type: "groupMember",
+            method: "put",
+            data: {
+              actor_id: { value: "a_user1", update_id: "u_gm", hlc: "1711036800000" },
+              group_id: { value: "grp_1", update_id: "u_gm", hlc: "1711036800000" },
+            } as never,
+          },
+        ],
+      };
+
+      const adapter = createMemoryAdapter();
+      await adapter.actions.append(groupMemberAction);
+
+      const entity = await adapter.entities.get("gm_1");
+      expect(entity).not.toBe(null);
+      // Flat keys land at `data.fields` (no extra `fields` wrapper).
+      expect(entity!.data.fields).toHaveProperty("actor_id");
+      expect(entity!.data.fields).toHaveProperty("group_id");
+      expect(entity!.data.fields).not.toHaveProperty("fields");
+    });
   });
 
   describe("entities.query", () => {
