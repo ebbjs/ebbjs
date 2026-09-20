@@ -432,11 +432,17 @@ describe("doc.onUpdate → CM", () => {
     const original = doc.docState.nodes.get(runId)!;
 
     // Receive an extend via wire format — the run's text becomes "hello world".
+    // Use an HLC strictly greater than the local run's, otherwise the
+    // "skip older catchUp" check in applyRunFieldUpdate rejects the
+    // update (local text came from a Date.now()-sourced bigint, so any
+    // literal number smaller than ~10^18 loses to it).
+    const wireHlc = String(BigInt(original.hlc) + 1n);
+
     doc.applyActions([
       {
         id: "act_ext",
         actor_id: "peer-A",
-        hlc: "3000",
+        hlc: wireHlc,
         gsn: 0,
         updates: [
           {
@@ -449,10 +455,10 @@ describe("doc.onUpdate → CM", () => {
                 value: {
                   ...original,
                   text: "hello world",
-                  hlc: "3000",
+                  hlc: wireHlc,
                 },
                 update_id: "upd_ext",
-                hlc: "3000",
+                hlc: wireHlc,
               },
             } as never,
           },

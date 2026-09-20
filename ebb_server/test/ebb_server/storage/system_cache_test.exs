@@ -29,8 +29,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       relationships_by_group: rbg_table
     } = TestHelpers.start_isolated_cache()
 
-    %{name: rocks_name, dir: rocks_dir} =
-      TestHelpers.start_rocks(%{test: "sys_cache_#{unique}"})
+    %{name: rocks_name, dir: rocks_dir} = TestHelpers.start_rocks(%{test: "sys_cache_#{unique}"})
 
     %{name: sqlite_name} = TestHelpers.start_sqlite(rocks_dir)
 
