@@ -452,6 +452,7 @@ export class TextDocument {
       type: "EXTEND_RUN",
       runId: opts.runId,
       appendText: opts.appendText,
+      hlc: finalHlc,
     });
     this.state = post;
 
@@ -463,7 +464,7 @@ export class TextDocument {
     });
     if (Object.keys(fields).length === 0) return null;
     const update = docActionToUpdate(
-      { type: "EXTEND_RUN", runId: opts.runId, appendText: opts.appendText },
+      { type: "EXTEND_RUN", runId: opts.runId, appendText: opts.appendText, hlc: finalHlc },
       fields,
       {
         docId: this.docId,
