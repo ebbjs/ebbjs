@@ -41,8 +41,4 @@ defmodule EbbServer.Application do
   defp runtime_data_dir do
     Application.get_env(:ebb_server, :data_dir) || System.get_env("EBB_DATA_DIR") || "./data"
   end
-
-  defp release? do
-    Application.get_env(:elixir, :language) == :elixir
-  end
 end

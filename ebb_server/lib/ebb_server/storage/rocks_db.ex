@@ -387,7 +387,7 @@ defmodule EbbServer.Storage.RocksDB do
     end
   end
 
-  defp open_database(path, name, opts) do
+  defp open_database(path, name, _opts) do
     db_opts = [
       create_if_missing: true,
       create_missing_column_families: true,
