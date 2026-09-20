@@ -62,13 +62,11 @@ defmodule EbbServer.Sync.Router do
   end
 
   get "/entities/:id" do
-    conn = Plug.Conn.fetch_query_params(conn)
     entity_id = conn.path_params["id"]
-    actor_id = conn.assigns[:actor_id] || conn.query_params["actor_id"]
 
-    case actor_id do
+    case conn.assigns[:actor_id] do
       nil ->
-        send_json(conn, 400, %{"error" => "actor_id required"})
+        send_json(conn, 401, %{"error" => "unauthorized"})
 
       actor_id ->
         case EntityStore.get(entity_id, actor_id) do
@@ -326,12 +324,11 @@ defmodule EbbServer.Sync.Router do
       description: "Retrieves a single entity by its ID, materialized from the action log.",
       tags: ["Entities"],
       parameters: [
-        OperationSchema.path_param("id", "string", "The entity ID"),
-        OperationSchema.query_actor_id_param()
+        OperationSchema.path_param("id", "string", "The entity ID")
       ],
       responses: %{
         "200" => OperationSchema.entity_response(),
-        "400" => OperationSchema.error_response("Missing actor_id"),
+        "401" => OperationSchema.error_response("Missing or invalid x-ebb-actor-id header"),
         "404" => OperationSchema.error_response("Entity not found"),
         "503" => OperationSchema.error_response("Materialization failed")
       }
@@ -834,16 +831,6 @@ defmodule EbbServer.Sync.Router.OperationSchema do
       required: required,
       description: description,
       schema: schema
-    }
-  end
-
-  def query_actor_id_param do
-    %OpenApiSpex.Parameter{
-      name: :actor_id,
-      in: :query,
-      required: false,
-      description: "Actor ID override. Usually provided via x-ebb-actor-id header.",
-      schema: %OpenApiSpex.Schema{type: :string}
     }
   end
 end
