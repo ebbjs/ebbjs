@@ -11,13 +11,26 @@ pre-commit:
       stage_fixed: true
     elixir-format:
       root: ebb_server
-      glob: "lib/** test/** *.exs .formatter.exs config/*.exs"
+      glob:
+        - "ebb_server/lib/**"
+        - "ebb_server/test/**"
+        - "ebb_server/*.exs"
+        - "ebb_server/.formatter.exs"
+        - "ebb_server/config/*.exs"
       run: mix format --check-formatted
     elixir-credo:
       root: ebb_server
-      glob: "lib/** test/**"
+      glob:
+        - "ebb_server/lib/**"
+        - "ebb_server/test/**"
       run: mix credo --strict
+
+pre-push:
+  runner: bash
+  commands:
     elixir-test:
       root: ebb_server
-      glob: "lib/** test/**"
+      glob:
+        - "ebb_server/lib/**"
+        - "ebb_server/test/**"
       run: mix test

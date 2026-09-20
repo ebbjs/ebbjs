@@ -44,7 +44,11 @@ Elixir: `format → credo → test`
 
 ## Pre-commit Hooks
 
-lefthook runs on staged `.ts/.tsx` files: `oxlint --fix` then `oxfmt --write`. For Elixir: `mix format --check-formatted`, `mix credo --strict`, `mix test`.
+lefthook runs on staged `.ts/.tsx` files: `oxlint --fix` then `oxfmt --write`. For Elixir, on staged `ebb_server/**`: `mix format --check-formatted` then `mix credo --strict`.
+
+`mix test` runs as a `pre-push` hook against Elixir files changed since the upstream (`main`) — kept off commit because the Elixir test suite is slow.
+
+Hooks are installed automatically on `pnpm install` via the root `prepare` script (`lefthook install --reset-hooks-path`).
 
 ## Key Config Files
 
