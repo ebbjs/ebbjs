@@ -30,8 +30,16 @@ defmodule EbbServer.Application do
     Supervisor.start_link(children, opts)
   end
 
+  # Resolution order for the storage data directory:
+  #   1. `Application.get_env(:ebb_server, :data_dir)` (set by `config/*.exs`)
+  #   2. `EBB_DATA_DIR` environment variable (set by containerized deployments)
+  #   3. `./data` (the historical default for `mix run`)
+  #
+  # The application env is checked first so that `MIX_ENV=test mix test`
+  # honors the path declared in `config/test.exs` instead of leaking test
+  # state into `./data` at the project root.
   defp runtime_data_dir do
-    System.get_env("EBB_DATA_DIR") || "./data"
+    Application.get_env(:ebb_server, :data_dir) || System.get_env("EBB_DATA_DIR") || "./data"
   end
 
   defp release? do

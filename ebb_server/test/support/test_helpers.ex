@@ -174,6 +174,7 @@ defmodule EbbServer.TestHelpers do
       :persistent_term.erase({:ebb_cf_entity_actions, name})
       :persistent_term.erase({:ebb_cf_type_entities, name})
       :persistent_term.erase({:ebb_cf_action_dedup, name})
+      :persistent_term.erase({:ebb_cf_group_actions, name})
     end)
 
     %{name: name, pid: pid, dir: dir}

@@ -7,9 +7,15 @@ defmodule EbbServer.Sync.HandshakeTest do
   alias EbbServer.Sync.Router
 
   setup do
-    if pid = Process.whereis(EbbServer.Storage.Supervisor) do
-      GenServer.stop(pid, :normal, 5000)
-      :timer.sleep(50)
+    # Detach the application-managed Storage.Supervisor so it doesn't
+    # reopen the RocksDB directory mid-test (see ebbjs/ebbjs#56).
+    parent = Process.whereis(EbbServer.Supervisor)
+
+    if parent do
+      case Supervisor.terminate_child(parent, EbbServer.Storage.Supervisor) do
+        :ok -> :ok
+        {:error, :not_found} -> :ok
+      end
     end
 
     tmp_dir =
