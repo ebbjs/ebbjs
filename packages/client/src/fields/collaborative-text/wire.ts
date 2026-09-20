@@ -140,7 +140,11 @@ type ParsedField = {
  */
 const readRunFields = (update: Update): ParsedField[] => {
   if (!update.data || typeof update.data !== "object") return [];
-  const fields = update.data as Record<string, Record<string, unknown>>;
+  // Wire format: user-entity fields are nested under `data.fields`.
+  // Tolerate the unwrapped shape too (older peers / older tests).
+  const dataObj = update.data as Record<string, Record<string, unknown>>;
+  const fields =
+    (dataObj["fields"] as Record<string, Record<string, unknown>> | undefined) ?? dataObj;
   const out: ParsedField[] = [];
   for (const [fieldName, field] of Object.entries(fields)) {
     const parsed = parseRunFieldName(fieldName);
@@ -261,7 +265,9 @@ export const docActionToUpdate = (
     subject_id: opts.docId,
     subject_type: subjectType,
     method: "patch",
-    data: fieldUpdates as unknown as never,
+    // Wire format: user-entity fields are nested under `data.fields`
+    // so the server's per-field LWW merge handles each run independently.
+    data: { fields: fieldUpdates } as unknown as never,
   };
 };
 

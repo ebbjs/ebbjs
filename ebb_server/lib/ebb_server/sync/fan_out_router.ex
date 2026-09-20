@@ -13,6 +13,16 @@ defmodule EbbServer.Sync.FanOutRouter do
   FanOutRouter buffers notifications and only pushes contiguous GSN ranges
   up to the committed watermark from WatermarkTracker.
 
+  ## SSE out-of-order dispatch is safe
+
+  Even when `process_batch/4` returns multiple disjoint ranges in `to_push`
+  (possible when the watermark advances past buffered notifications in
+  arbitrary order), `dispatch_to_groups/1` writes each Action independently
+  to its group's pid. SSE tolerates out-of-order events, and clients
+  reconstruct ordered state via `catchUp` (the dedicated ordered backfill
+  endpoint) before consuming the SSE stream. So the FanOutRouter is free
+  to push in arrival order; clients converge.
+
   ## Supervision
 
   Started under `EbbServer.Sync.Supervisor`.
@@ -36,9 +46,9 @@ defmodule EbbServer.Sync.FanOutRouter do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @spec subscribe([String.t()], pid()) :: :ok
-  def subscribe(group_ids, connection_pid) do
-    GenServer.call(__MODULE__, {:subscribe, group_ids, connection_pid}, 30_000)
+  @spec subscribe([String.t()], pid(), String.t()) :: :ok
+  def subscribe(group_ids, connection_pid, actor_id) do
+    GenServer.call(__MODULE__, {:subscribe, group_ids, connection_pid, actor_id}, 30_000)
   end
 
   @spec unsubscribe(pid()) :: :ok
@@ -70,7 +80,7 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   @impl true
-  def handle_call({:subscribe, group_ids, connection_pid}, _from, state) do
+  def handle_call({:subscribe, group_ids, connection_pid, actor_id}, _from, state) do
     for group_id <- group_ids do
       group_pid =
         case DynamicSupervisor.start_child(
@@ -87,7 +97,10 @@ defmodule EbbServer.Sync.FanOutRouter do
             raise "Failed to start GroupServer for #{group_id}: #{inspect(reason)}"
         end
 
-      GroupServer.add_subscriber(group_pid, connection_pid, group_id)
+      # Forward the authenticated actor_id so GroupServer's broadcast_presence
+      # guard can filter out self-echoes. (Previously this passed group_id,
+      # which made every subscriber look like the group itself.)
+      GroupServer.add_subscriber(group_pid, connection_pid, actor_id)
     end
 
     new_subscriptions =
@@ -121,7 +134,7 @@ defmodule EbbServer.Sync.FanOutRouter do
 
       group_id ->
         case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do
-          [{pid, _}] -> GroupServer.broadcast_presence(pid, actor_id, data)
+          [{pid, _}] -> GroupServer.broadcast_presence(pid, entity_id, actor_id, data)
           [] -> :ok
         end
     end

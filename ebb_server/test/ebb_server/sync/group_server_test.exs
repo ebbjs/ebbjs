@@ -76,7 +76,7 @@ defmodule EbbServer.Sync.GroupServerTest do
     end
   end
 
-  describe "broadcast_presence/3" do
+  describe "broadcast_presence/4" do
     test "no crash when sending to dead connection", %{group_server: gs} do
       dead_conn =
         spawn(fn ->
@@ -90,7 +90,7 @@ defmodule EbbServer.Sync.GroupServerTest do
       :ok = GroupServer.add_subscriber(gs, dead_conn, "actor_dead")
       Process.exit(dead_conn, :kill)
 
-      :ok = GroupServer.broadcast_presence(gs, "actor_other", %{"data" => "test"})
+      :ok = GroupServer.broadcast_presence(gs, "doc_demo", "actor_other", %{"data" => "test"})
     end
   end
 

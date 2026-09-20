@@ -88,7 +88,7 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
   # forwarding GenServer, then blocks in a receive loop. The loop keeps
   # Bandit's pipeline blocked until the client disconnects (chunk returns
   # :closed) or the SSEConnection dies.
-  defp open_sse_connection(conn, group_ids, cursor, _actor_id) do
+  defp open_sse_connection(conn, group_ids, cursor, actor_id) do
     cursors = Map.new(group_ids, fn group_id -> {group_id, cursor} end)
 
     conn =
@@ -99,7 +99,11 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
       |> Plug.Conn.send_chunked(200)
 
     {:ok, sse_pid} = SSEConnectionSupervisor.start_child(self(), group_ids, cursors)
-    FanOutRouter.subscribe(group_ids, sse_pid)
+    # Forward the authenticated actor_id so the GroupServer can tag this
+    # subscriber correctly. Without this, every subscriber ends up
+    # associated with the group_id and presence broadcasts can't tell
+    # "self" from "peer".
+    FanOutRouter.subscribe(group_ids, sse_pid, actor_id)
 
     run_sse_loop(conn, sse_pid)
     :ok

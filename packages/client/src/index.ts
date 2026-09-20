@@ -10,9 +10,13 @@
  * - `client.textDocument(docId)` opens a TextDocument (causal-tree field)
  *   with local edit API, onUpdate/onConflict events, and pendingActions
  *   queue for `client.write()`.
+ *
+ * Slice 3 adds the bridge package `@ebbjs/codemirror` (peer dep) plus
+ * presence (ephemeral cursors/selections).
  */
 
 export { SyncClient, createClient, type HandshakeResult, type QueryOptions } from "./sync/client";
+export { PresenceManager, type PresenceEntry, type CursorPresence } from "./presence/presence";
 
 export {
   ConnectionStateMachine,
@@ -36,6 +40,7 @@ export {
   type AppliedUpdate,
   type LocalInsertOptions,
   type LocalDeleteOptions,
+  type LocalExtendOptions,
   type UpdateListener,
   type ConflictListener,
 } from "./fields/collaborative-text/text-document";
@@ -84,6 +89,7 @@ export {
 } from "./fields/collaborative-text/tree";
 
 export type {
+  Action,
   GroupInfo,
   HandshakeResponse,
   HandshakeRequest,

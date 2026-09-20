@@ -3,11 +3,19 @@ defmodule EbbServer.Sync.AuthPlug do
   Plug-based authentication for EbbServer.
 
   Supports two modes:
-  - `:bypass` - reads actor_id from `x-ebb-actor-id` header
+  - `:bypass` - reads actor_id from `x-ebb-actor-id` request header
   - `:external` - forwards auth headers to a configured auth URL
 
   Configure via `Application.get_env(:ebb_server, :auth_mode)` and
   `Application.get_env(:ebb_server, :auth_url)`.
+
+  ## Security warning
+
+  `:bypass` mode is intended for local dev and the demo only. Any actor
+  can claim any identity by sending `x-ebb-actor-id: <anything>` — there
+  is no signature, no session, no verification. Production deployments
+  MUST run in `:external` mode and point `:auth_url` at a real identity
+  service.
   """
 
   @behaviour Plug
@@ -30,9 +38,15 @@ defmodule EbbServer.Sync.AuthPlug do
   end
 
   defp bypass_auth(conn) do
-    case get_req_header(conn, "x-ebb-actor-id") do
-      [actor_id] when actor_id != "" ->
-        assign(conn, :actor_id, actor_id)
+    actor_id =
+      case get_req_header(conn, "x-ebb-actor-id") do
+        [actor_id] when actor_id != "" -> actor_id
+        _ -> nil
+      end
+
+    case actor_id do
+      id when is_binary(id) and id != "" ->
+        assign(conn, :actor_id, id)
 
       _ ->
         conn

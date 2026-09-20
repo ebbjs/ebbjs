@@ -1,8 +1,8 @@
 {
-  "name": "@ebbjs/client",
+  "name": "@ebbjs/codemirror",
   "version": "0.0.1",
   "private": true,
-  "description": "",
+  "description": "CodeMirror 6 bridge for @ebbjs/client's TextDocument — bidirectional sync between the causal-tree field and a CM6 editor view.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,13 +24,20 @@
     "fmt:check": "pnpm --root ../../ fmt:check"
   },
   "dependencies": {
-    "@ebbjs/core": "workspace:*",
-    "@ebbjs/storage": "workspace:*",
-    "@sinclair/typebox": "latest",
-    "eventsource-client": "^1.2.0"
+    "@ebbjs/client": "workspace:*"
   },
   "devDependencies": {
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.36.8",
+    "@ebbjs/core": "workspace:*",
+    "codemirror": "^6.0.1",
+    "happy-dom": "^17.4.4",
     "tsx": "^4.20.4",
     "vitest": "^3.2.4"
+  },
+  "peerDependencies": {
+    "@codemirror/state": "^6.5.0",
+    "@codemirror/view": "^6.30.0",
+    "codemirror": "^6.0.0"
   }
 }

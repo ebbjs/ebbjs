@@ -44,9 +44,9 @@ defmodule EbbServer.Sync.GroupServer do
     GenServer.cast(pid, {:remove_subscriber, connection_pid})
   end
 
-  @spec broadcast_presence(pid(), String.t(), map()) :: :ok
-  def broadcast_presence(pid, actor_id, data) do
-    GenServer.cast(pid, {:broadcast_presence, actor_id, data})
+  @spec broadcast_presence(pid(), String.t(), String.t(), map()) :: :ok
+  def broadcast_presence(pid, entity_id, actor_id, data) do
+    GenServer.cast(pid, {:broadcast_presence, entity_id, actor_id, data})
   end
 
   @impl true
@@ -94,13 +94,17 @@ defmodule EbbServer.Sync.GroupServer do
   end
 
   @impl true
-  def handle_cast({:broadcast_presence, actor_id, data}, state) do
+  def handle_cast({:broadcast_presence, entity_id, actor_id, data}, state) do
+    # `entity_id` is the original entity_id from POST /sync/presence
+    # (e.g., "doc_demo"). We forward it on the wire event so subscribers
+    # can filter by document — not just by group ("grp_demo").
+
     for {subscriber_pid, subscriber_actor} <- state.actors do
       if subscriber_actor != actor_id do
         try do
           SSEConnection.push_presence(subscriber_pid, %{
             "actor_id" => actor_id,
-            "entity_id" => state.group_id,
+            "entity_id" => entity_id,
             "data" => data
           })
         catch

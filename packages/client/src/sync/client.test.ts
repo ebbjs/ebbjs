@@ -355,7 +355,8 @@ describe("SyncClient.getEntity and queryEntities", () => {
     const entity = await client.getEntity("todo_1");
     expect(entity?.id).toBe("todo_1");
     expect(entity?.type).toBe("todo");
-    expect(calls[0].url).toContain("/entities/todo_1?actor_id=a_test");
+    expect(calls[0].url).toContain("/entities/todo_1");
+    expect(calls[0].url).not.toContain("actor_id=");
   });
 
   it("returns null on 404", async () => {

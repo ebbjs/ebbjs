@@ -284,37 +284,37 @@ New package. Vite + React 19 + CodeMirror 6 + Tailwind, matching the POC stack. 
 
 ### Presence (`@ebbjs/client/src/presence/`)
 
-The POC has a **complete presence implementation** in [`experiment/collaborative-text/src/presence.ts`](../../../experiment/collaborative-text/src/presence.ts) — port it directly. The only change: replace the BroadcastChannel presence messages with `POST /sync/presence` (the server endpoint already exists).
+> **Status: shipped (slice 3, not deferred).** See `packages/client/src/presence/presence.ts` and `packages/codemirror/src/presence/cursor-decoration.ts`. Wired in `examples/collaborative-text-demo/src/Editor.tsx`.
 
-**Why cursors are expressed as RunNode IDs, not positions.** When two users are typing concurrently, document positions shift. RunNode IDs are stable across edits (a run's ID comes from its HLC, which doesn't change). So a remote cursor's `anchorId` and `headId` stay meaningful even as the document rearranges around them. The `positionToRunRef` / `runRefToPosition` helpers (`presence.ts:198-251`) resolve IDs to current positions for rendering.
+The POC had a complete presence implementation in `experiment/collaborative-text/src/presence.ts`. The port replaces BroadcastChannel with `POST /sync/presence` (the server endpoint already exists) and adds a dedicated SSE stream filtered to `presence` events. The CM6 rendering is a `ViewPlugin` in `@ebbjs/codemirror` rather than a React component, so it can read the map synchronously during transaction dispatch.
 
-**API shape:**
+**Why cursors are expressed as RunNode IDs, not positions.** When two users are typing concurrently, document positions shift. RunNode IDs are stable across edits (a run's ID comes from its HLC, which doesn't change). So a remote cursor's `anchorId` and `headId` stay meaningful even as the document rearranges around them. The `getRunAtPosition` / `getPositionOfRun` helpers in `@ebbjs/codemirror/src/bridge.ts` resolve IDs to current positions for rendering.
+
+**API shape (shipped):**
 
 ```ts
 // Local side: report cursor/selection on every CodeMirror selection change
-client.presence.setLocalCursor({ anchorId, anchorOffset, headId, headOffset });
-
-// Server broadcasts presence; the client dispatches incoming events
-client.onPresence((presence: PresenceEvent) => {
-  // presence: { actor_id, entity_id, data: { anchorId, anchorOffset, headId, headOffset, color } }
-  // Store in a per-actor map; the CM6 ViewPlugin reads it to render decorations
+client.presence.setLocalCursor(entityId, {
+  anchorId,
+  anchorOffset,
+  headId,
+  headOffset,
 });
 
-// Per-actor map is shared with the CM6 extension
-const presenceMap = client.presence.forEntity(entityId); // Map<actor_id, PresenceData>
+// Per-entity map of remote actors' cursors (excludes self)
+const presenceMap = client.presence.forEntity(entityId); // Map<actor_id, PresenceEntry>
+
+// React to map changes (local send or remote event)
+const unsub = client.presence.onUpdate(() => {
+  /* refresh CM decorations */
+});
 ```
 
-**POC components to port:**
+**CM6 rendering.** `createPresenceExtension({ getPresence, getPositionOfRun, getRunAtPosition })` produces a `ViewPlugin` that reads `getPresence()` and decorates remote cursors as `Decoration.widget` (colored bar + actor label) and selections as `Decoration.mark`. The demo's `Editor.tsx` mounts the extension and uses the bridge's `idMapField` to translate run-id coordinates to CM positions.
 
-| POC file                                                 | What                 | Port to                                                    |
-| -------------------------------------------------------- | -------------------- | ---------------------------------------------------------- |
-| `presence.ts` (run-optimized types + helpers + hook)     | 419 lines            | `@ebbjs/client/src/presence/presence.ts` (mostly verbatim) |
-| `cm-bridge.ts` cursor widget                             | already in cm-bridge | `@ebbjs/client/src/presence/cursor-widget.ts`              |
-| `App.tsx` peer color palette + `usePresence` integration | small slice          | `examples/collaborative-text-demo/src/presence.tsx`        |
+**Color palette.** A small `KNOWN_ACTOR_COLORS` map (drew → green, alice → red, etc.) for known test actors, with a hash-based fallback for unknown actors so two random users never get the same color.
 
-**Sync vs async.** The POC uses a mutable `useRef` for the presence map (sync reads from the CM6 ViewPlugin) plus a `useState` copy (for React re-renders). Both are needed; the docstring at `presence.ts:268-281` explains why. Keep this dual-store pattern in the port.
-
-**Clamping on stale IDs.** If a run is split or deleted after a presence message was sent, the position resolution in `runRefToPosition` clamps to the end of the span (`presence.ts:227-228`) rather than failing. This means a cursor briefly snaps to the end of a run after a split — acceptable for the prototype.
+**Server-side wiring.** `POST /sync/presence` resolves the entity → group via `RelationshipCache.get_entity_group/1`, then dispatches to `FanOutRouter.broadcast_presence/3`, which forwards to `GroupServer.broadcast_presence/4`. The GroupServer's `actors` map (keyed by subscriber pid) is used to filter self-presence echoes. **Note:** the `actor_id` threaded into the GroupServer's `actors` map is the authenticated actor from the SSE handshake, NOT the group_id — a bug where `group_id` was passed instead caused every subscriber to look like the group itself and presence broadcasts to fall on a non-matching cast handler, silently dropping every event.
 
 ---
 
@@ -436,20 +436,22 @@ Five vertical slices, ordered by what unblocks what. Each slice ends with a runn
 
 ### Slice 3 — Demo app
 
+> **Status: shipped.** See [`examples/collaborative-text-demo/`](../../../../examples/collaborative-text-demo/) and [`packages/codemirror/`](../../../codemirror/).
+
 **Goal:** A Vite + React 19 app with CodeMirror 6 that uses the real client, opens two tabs against `mix dev`, and shows live collaborative editing.
 
 **Tasks:**
 
-1. New package `examples/collaborative-text-demo/` (Vite + React 19 + CodeMirror 6 + Tailwind)
-2. Wire `experiment/collaborative-text/src/cm-bridge.ts` to the new client (replace the BroadcastChannel relay with sync client subscriptions)
-3. URL param `?actor=drew` → hardcoded actor ID → bypass auth
-4. Hardcoded group ID `grp_demo`; seed via `@ebbjs/server`'s `seed()` on first load (POST bootstrap group + member + document if they don't exist)
-5. Connection state indicator (connecting / live / offline badge)
-6. Conflict panel (collapsible right sidebar showing last N conflicts)
-7. **Optional but recommended:** port `experiment/collaborative-text/src/presence.ts` to `@ebbjs/client/src/presence/`. Replace BroadcastChannel presence messages with `POST /sync/presence`. Render remote cursors via CM6 decorations. This makes the demo feel real and validates the sync client's presence path. (If presence slips slice 3, it becomes a slice 5 polish item.)
-8. Test: manual two-tab test against `mix dev`
+1. ✅ New package `examples/collaborative-text-demo/` (Vite + React 19 + CodeMirror 6 + Tailwind)
+2. ✅ Wire CodeMirror to the new client. The bridge lives in a separate package, [`@ebbjs/codemirror`](../../../codemirror/) (peer dep on `@ebbjs/client` + CodeMirror), not inlined in the demo. The bridge translates CM transactions to `doc.localInsert` / `localExtend` / `localDelete` and applies remote updates from `doc.onUpdate` back to CM. A `StateField` mirrors `doc.docState.index.spans` for position ↔ run mapping.
+3. ✅ URL param `?actor=drew` → hardcoded actor ID → bypass auth
+4. ✅ Hardcoded group ID `grp_demo`; seed via `@ebbjs/server`'s `seed()` on first load (POST bootstrap group + member + document if they don't exist). Seed is inlined in the demo (`src/seed.ts`) because the `@ebbjs/server` package pulls in Node-only deps that can't ship to the browser.
+5. ✅ Connection state indicator (connecting / live / offline badge) — `ConnectionBadge.tsx`
+6. ✅ Conflict panel (collapsible right sidebar showing last N conflicts) — `ConflictPanel.tsx`
+7. ✅ Presence (ephemeral cursors/selections) — `client.presence` + `createPresenceExtension`. Remote cursors render as colored bars with actor labels; selections as highlight marks. Round-trip is unit-tested (`packages/client/src/presence/presence.test.ts`) and integration-tested (`packages/client/src/__tests__/integration/presence.test.ts`).
+8. ✅ Test: manual two-tab test against `mix dev`. The bridge has 14 unit tests covering insert / extend / delete / tombstone round-trips.
 
-**Acceptance:** `pnpm --filter collaborative-text-demo dev` + `cd ebb_server && mix dev` → open two tabs with different actor IDs → typing in one appears in the other in <100ms over the Action/SSE stack. If presence is included: remote cursors are visible and update as the other tab types.
+**Acceptance:** `pnpm --filter collaborative-text-demo dev` + `cd ebb_server && mix dev` → open two tabs with different actor IDs → typing in one appears in the other in <100ms over the Action/SSE stack. Concurrent edits at the same position surface in the conflict panel on both tabs.
 
 ### Slice 4 — End-to-end Playwright test
 
@@ -473,6 +475,8 @@ Things we'd want for a public-facing demo, but defer until slices 1–4 ship:
 - Docker compose (server on :4000, demo on :5173)
 - One-deploy-target config (Render/Fly) using the existing `Dockerfile`
 - A second example app (e.g., shared todo list) to prove the framework generalizes beyond text
+
+**Note: presence was originally planned for slice 5 but shipped during slice 3** so the demo could show remote cursors during the initial two-tab walkthrough. See the Presence section above for the shipped design.
 
 ---
 

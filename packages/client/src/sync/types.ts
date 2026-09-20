@@ -1,5 +1,7 @@
-import type { Action } from "@ebbjs/core";
 import { Type, Static } from "@sinclair/typebox";
+export type { Action } from "@ebbjs/core";
+// Bring `Action` into local scope so the interfaces below can use it.
+type Action = import("@ebbjs/core").Action;
 
 /**
  * Wire-level types for the ebb sync protocol.
@@ -84,7 +86,7 @@ export interface WriteResponse {
   rejected: readonly Rejection[];
 }
 
-/** Response shape for `GET /entities/:id?actor_id=...`. */
+/** Response shape for `GET /entities/:id`. */
 export const EntityResponseSchema = Type.Object({
   id: Type.String(),
   type: Type.String(),

@@ -28,6 +28,7 @@ import { createMemoryAdapter } from "@ebbjs/storage";
 import type { StorageAdapter } from "@ebbjs/storage";
 
 import { ConnectionStateMachine, type ConnectionState } from "./connection-state";
+import { PresenceManager } from "../presence/presence";
 import { applyAction } from "./storage";
 import { openSSEStream, type SSESubscription } from "./sse";
 import { TextDocument, TextDocumentRegistry } from "../fields/collaborative-text/text-document";
@@ -53,6 +54,7 @@ export class SyncClient {
   readonly serverUrl: string;
   readonly actorId: string;
   readonly storage: StorageAdapter;
+  readonly presence: PresenceManager;
   private readonly fetchImpl: typeof fetch;
   private readonly reconnectInitialMs: number;
   private readonly reconnectMaxMs: number;
@@ -75,6 +77,13 @@ export class SyncClient {
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
+    // PresenceManager wires itself to the SSE stream; the `presence`
+    // field on the client is the public API for sending local
+    // cursors and reading the map of remote ones. The manager lives
+    // for the lifetime of the client; consumers should call
+    // `client.close()` (already wired in the existing close path)
+    // when tearing down.
+    this.presence = new PresenceManager(this);
   }
 
   // -------------------------------------------------------------------------
@@ -89,6 +98,17 @@ export class SyncClient {
   /** Subscribe to connection state transitions. Returns an unsubscribe fn. */
   onStateChange(cb: (state: ConnectionState, prev: ConnectionState) => void): () => void {
     return this.stateMachine.onChange(cb);
+  }
+
+  /**
+   * Force a connection-state transition. Useful for non-SSE consumers
+   * (e.g., a polling-only client that wants the state machine to
+   * reflect "we're connected" without opening an SSE stream). The
+   * state machine otherwise only advances when `subscribe()` opens
+   * or fails.
+   */
+  setState(state: ConnectionState): void {
+    this.stateMachine.transition(state);
   }
 
   /**
@@ -274,9 +294,9 @@ export class SyncClient {
     return { rejected };
   }
 
-  /** `GET /entities/:id?actor_id=...` — read a materialized entity. */
+  /** `GET /entities/:id` — read a materialized entity. */
   async getEntity(id: string): Promise<EntityResponse | null> {
-    const url = `${this.serverUrl}/entities/${encodeURIComponent(id)}?actor_id=${encodeURIComponent(this.actorId)}`;
+    const url = `${this.serverUrl}/entities/${encodeURIComponent(id)}`;
     const response = await this.fetchImpl(url, {
       method: "GET",
       headers: this.authHeaders(),
@@ -334,6 +354,7 @@ export class SyncClient {
       this.cancelSubscription(this.activeSub);
     }
     this.stateMachine.transition("offline");
+    this.presence.dispose();
   }
 
   // -------------------------------------------------------------------------

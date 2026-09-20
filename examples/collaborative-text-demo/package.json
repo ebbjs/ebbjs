@@ -1,0 +1,41 @@
+{
+  "name": "collaborative-text-demo",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Browser-based collaborative text demo — two tabs editing the same document against mix dev.",
+  "type": "module",
+  "main": "src/main.tsx",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest --run --passWithNoTests",
+    "typecheck": "tsc --noEmit",
+    "lint": "pnpm --root ../../ lint",
+    "lint:fix": "pnpm --root ../../ lint:fix",
+    "fmt": "pnpm --root ../../ fmt",
+    "fmt:check": "pnpm --root ../../ fmt:check"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.10.3",
+    "@codemirror/language": "^6.11.0",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.36.8",
+    "@ebbjs/client": "workspace:*",
+    "@ebbjs/codemirror": "workspace:*",
+    "@ebbjs/core": "workspace:*",
+    "codemirror": "^6.0.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.4",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-react": "^4.4.1",
+    "tailwindcss": "^4.1.4",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.2",
+    "vitest": "^3.2.4"
+  }
+}
