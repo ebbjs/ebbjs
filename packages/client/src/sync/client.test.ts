@@ -182,6 +182,13 @@ describe("SyncClient.catchUp", () => {
     // Cursor should be advanced.
     expect(await client.storage.cursors.get("grp_1")).toBe(2);
 
+    // The `groupCursors` cache (which feeds `computeResumeCursor`) must be
+    // in sync with `storage.cursors` so SSE reconnects resume from the right
+    // GSN. Issue #46: catchUp used to track the max GSN in two places; this
+    // guards against drift between them.
+    const groupCursors = (client as unknown as { groupCursors: Map<string, number> }).groupCursors;
+    expect(groupCursors.get("grp_1")).toBe(2);
+
     // URL should have the offset query string.
     expect(calls[0].url).toBe("http://localhost:4000/sync/groups/grp_1?offset=0");
   });
