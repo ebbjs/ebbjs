@@ -294,9 +294,9 @@ export class SyncClient {
     return { rejected };
   }
 
-  /** `GET /entities/:id?actor_id=...` — read a materialized entity. */
+  /** `GET /entities/:id` — read a materialized entity. */
   async getEntity(id: string): Promise<EntityResponse | null> {
-    const url = `${this.serverUrl}/entities/${encodeURIComponent(id)}?actor_id=${encodeURIComponent(this.actorId)}`;
+    const url = `${this.serverUrl}/entities/${encodeURIComponent(id)}`;
     const response = await this.fetchImpl(url, {
       method: "GET",
       headers: this.authHeaders(),

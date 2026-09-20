@@ -86,7 +86,7 @@ export interface WriteResponse {
   rejected: readonly Rejection[];
 }
 
-/** Response shape for `GET /entities/:id?actor_id=...`. */
+/** Response shape for `GET /entities/:id`. */
 export const EntityResponseSchema = Type.Object({
   id: Type.String(),
   type: Type.String(),

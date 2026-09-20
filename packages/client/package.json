@@ -26,7 +26,8 @@
   "dependencies": {
     "@ebbjs/core": "workspace:*",
     "@ebbjs/storage": "workspace:*",
-    "@sinclair/typebox": "latest"
+    "@sinclair/typebox": "latest",
+    "eventsource-client": "^1.2.0"
   },
   "devDependencies": {
     "tsx": "^4.20.4",

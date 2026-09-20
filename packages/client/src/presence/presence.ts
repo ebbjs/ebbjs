@@ -217,7 +217,6 @@ export class PresenceManager {
         groupIds: groups,
         cursor: 0,
         headers: { actorId: this.localActorId },
-        opts: { actorId: this.localActorId },
       });
 
       (async () => {

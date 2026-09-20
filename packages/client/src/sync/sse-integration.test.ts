@@ -32,7 +32,7 @@ function makeStreamingFetch(
   return { fn, calls };
 }
 
-describe("openSSEStream (Node implementation)", () => {
+describe("openSSEStream", () => {
   it("opens a stream and parses data events", async () => {
     const sse = [
       'event: data\ndata: {"id":"act_1","gsn":1,"actor_id":"a_1","hlc":1,"updates":[]}\n\n',
@@ -154,6 +154,27 @@ describe("openSSEStream (Node implementation)", () => {
     expect(calls[0].url).toBe("http://localhost:4000/sync/live?groups=grp_a%2Cgrp_b&cursor=7");
   });
 
+  it("does NOT append actor_id= query param (auth is via header only)", async () => {
+    const { fn, calls } = makeStreamingFetch(['event: control\ndata: {"reason":"x"}\n\n']);
+    const sub = openSSEStream({
+      serverUrl: "http://localhost:4000",
+      groupIds: ["grp_1"],
+      cursor: 0,
+      headers: { actorId: "a_1" },
+      fetchImpl: fn,
+    });
+    (async () => {
+      for await (const _ev of sub.events()) {
+        sub.close();
+      }
+    })();
+    await sub.closed;
+    expect(calls[0].url).toBe("http://localhost:4000/sync/live?groups=grp_1&cursor=0");
+    expect(calls[0].url).not.toMatch(/[?&]actor_id=/);
+    const headers = (calls[0].init.headers ?? {}) as Record<string, string>;
+    expect(headers["x-ebb-actor-id"]).toBe("a_1");
+  });
+
   it("fails the stream on a non-2xx response", async () => {
     const { fn } = makeStreamingFetch([], { status: 403 });
     const sub = openSSEStream({
@@ -182,16 +203,21 @@ describe("openSSEStream (Node implementation)", () => {
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(encoder.encode('event: data\ndata: {"id":"a"}\n\n'));
-        // Then block forever — the client should close us.
+        // Then block — consumer should signal us via abort.
       },
       cancel() {
         aborted = true;
       },
     });
-    const fn = vi.fn(
-      async () =>
-        new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
-    ) as unknown as typeof fetch;
+    const fn = vi.fn(async (_url: string, init: RequestInit = {}) => {
+      init.signal?.addEventListener("abort", () => {
+        aborted = true;
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as unknown as typeof fetch;
 
     const sub = openSSEStream({
       serverUrl: "http://localhost:4000",
@@ -201,13 +227,13 @@ describe("openSSEStream (Node implementation)", () => {
       fetchImpl: fn,
     });
 
-    const it = (async () => {
+    const iter = (async () => {
       for await (const _ev of sub.events()) {
         sub.close();
       }
     })();
-    await it;
-    // Give the cancel handler a tick to run.
+    await iter;
+    // Give the abort handler a tick to run.
     await new Promise((r) => setTimeout(r, 10));
     expect(aborted).toBe(true);
   });
