@@ -16,9 +16,9 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       conn1 = spawn(fn -> receive do: (_ -> :ok) end)
       conn2 = spawn(fn -> receive do: (_ -> :ok) end)
 
-      :ok = FanOutRouter.subscribe(["shared_group"], conn1)
+      :ok = FanOutRouter.subscribe(["shared_group"], conn1, "actor_1")
 
-      second_result = FanOutRouter.subscribe(["shared_group"], conn2)
+      second_result = FanOutRouter.subscribe(["shared_group"], conn2, "actor_2")
 
       assert second_result == :ok
 
@@ -41,8 +41,8 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
           end
         end)
 
-      :ok = FanOutRouter.subscribe(["push_test_group"], conn1)
-      :ok = FanOutRouter.subscribe(["push_test_group"], conn2)
+      :ok = FanOutRouter.subscribe(["push_test_group"], conn1, "actor_1")
+      :ok = FanOutRouter.subscribe(["push_test_group"], conn2, "actor_2")
 
       :ok = FanOutRouter.unsubscribe(conn1)
       :ok = FanOutRouter.unsubscribe(conn2)

@@ -48,6 +48,12 @@ export interface SSEOpenOptions {
   cursor: number;
   /** Headers to include (e.g., bypass auth). */
   headers: SSEHeaders;
+  /**
+   * Extra URL options. `actorId` adds `?actor_id=<id>` to the URL — needed
+   * because browsers can't set custom headers on EventSource (and the
+   * bypass-auth plug accepts the actor from either source).
+   */
+  opts?: { actorId?: string };
   /** Fetch implementation (Node only; defaults to global `fetch`). */
   fetchImpl?: typeof fetch;
 }

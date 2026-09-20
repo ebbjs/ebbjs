@@ -36,9 +36,9 @@ defmodule EbbServer.Sync.FanOutRouter do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @spec subscribe([String.t()], pid()) :: :ok
-  def subscribe(group_ids, connection_pid) do
-    GenServer.call(__MODULE__, {:subscribe, group_ids, connection_pid}, 30_000)
+  @spec subscribe([String.t()], pid(), String.t()) :: :ok
+  def subscribe(group_ids, connection_pid, actor_id) do
+    GenServer.call(__MODULE__, {:subscribe, group_ids, connection_pid, actor_id}, 30_000)
   end
 
   @spec unsubscribe(pid()) :: :ok
@@ -70,7 +70,7 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   @impl true
-  def handle_call({:subscribe, group_ids, connection_pid}, _from, state) do
+  def handle_call({:subscribe, group_ids, connection_pid, actor_id}, _from, state) do
     for group_id <- group_ids do
       group_pid =
         case DynamicSupervisor.start_child(
@@ -87,7 +87,13 @@ defmodule EbbServer.Sync.FanOutRouter do
             raise "Failed to start GroupServer for #{group_id}: #{inspect(reason)}"
         end
 
-      GroupServer.add_subscriber(group_pid, connection_pid, group_id)
+      # Forward the authenticated actor_id so GroupServer can use it to
+      # filter self-presence events. Passing `group_id` here (the previous
+      # behavior) caused every subscriber to look like the group itself,
+      # which (a) silently broke the `subscriber_actor != actor_id` guard
+      # in `broadcast_presence` and (b) meant a subscriber never
+      # recognized its own outbound presence echoes.
+      GroupServer.add_subscriber(group_pid, connection_pid, actor_id)
     end
 
     new_subscriptions =
@@ -121,7 +127,7 @@ defmodule EbbServer.Sync.FanOutRouter do
 
       group_id ->
         case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do
-          [{pid, _}] -> GroupServer.broadcast_presence(pid, actor_id, data)
+          [{pid, _}] -> GroupServer.broadcast_presence(pid, entity_id, actor_id, data)
           [] -> :ok
         end
     end

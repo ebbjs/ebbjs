@@ -34,3 +34,10 @@ export {
   type LocalEditTracker,
   type RunSpan,
 } from "./bridge";
+
+export {
+  createPresenceExtension,
+  type PresenceDecorationConfig,
+} from "./presence/cursor-decoration";
+
+export type { PresenceEntry, CursorPresence } from "@ebbjs/client";

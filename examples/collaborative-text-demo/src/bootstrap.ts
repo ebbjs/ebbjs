@@ -12,6 +12,14 @@ export interface BootstrapResult {
   groupIds: readonly string[];
   /** True if we ran the seed call (group may or may not be new). */
   didSeed: boolean;
+  /**
+   * Actions replayed from `catchUp` for every group the actor is in.
+   * The Editor applies these to the freshly-created TextDocument
+   * BEFORE opening its SSE subscription, so a new tab (even with
+   * the same `?actor=` as an existing one) starts with the current
+   * document state instead of an empty doc.
+   */
+  caughtUpActions: readonly Action[];
 }
 
 /**

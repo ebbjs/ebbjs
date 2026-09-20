@@ -17,7 +17,14 @@ import { EditorView, keymap, lineNumbers, highlightActiveLine } from "@codemirro
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from "@codemirror/language";
 import { createClient, type Action } from "@ebbjs/client";
-import { createBridgeExtension, createIdMapField, mountEditorBridge } from "@ebbjs/codemirror";
+import {
+  createBridgeExtension,
+  createIdMapField,
+  createPresenceExtension,
+  getPositionOfRun,
+  getRunAtPosition,
+  mountEditorBridge,
+} from "@ebbjs/codemirror";
 
 interface Props {
   client: ReturnType<typeof createClient>;
@@ -71,6 +78,24 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
       localEdit,
     });
 
+    // Forward local selection / doc changes to the presence stream.
+    // Reads `view` lazily through `viewRefLocal` so the listener can
+    // be registered before the view is constructed.
+    const sendLocalCursor = (): void => {
+      const v = viewRefLocal.current;
+      if (!v) return;
+      const sel = v.state.selection.main;
+      const anchor = getRunAtPosition(v.state, sel.anchor, idMapField);
+      const head = getRunAtPosition(v.state, sel.head, idMapField);
+      if (!anchor || !head) return;
+      client.presence.setLocalCursor(docId, {
+        anchorId: anchor.runId,
+        anchorOffset: anchor.offset,
+        headId: head.runId,
+        headOffset: head.offset,
+      });
+    };
+
     const state = EditorState.create({
       doc: "",
       extensions: [
@@ -84,6 +109,25 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
         syntaxHighlighting(defaultHighlightStyle),
         bracketMatching(),
         extension,
+        // Render remote peers' cursors/selections. Reads from
+        // client.presence and the bridge's idMapField to translate
+        // run-id coordinates to CM positions.
+        createPresenceExtension({
+          getPresence: () => client.presence.forEntity(docId),
+          getPositionOfRun: (runId, offset) => {
+            const v = viewRefLocal.current;
+            if (!v) return 0;
+            return getPositionOfRun(v.state, runId, offset, idMapField);
+          },
+          getRunAtPosition: (position) => {
+            const v = viewRefLocal.current;
+            const r = getRunAtPosition(v?.state ?? state, position, idMapField);
+            return r ? { runId: r.runId, offset: r.offset } : undefined;
+          },
+        }),
+        EditorView.updateListener.of((u) => {
+          if (u.selectionSet || u.docChanged) sendLocalCursor();
+        }),
         EditorView.theme({
           "&": { height: "100%" },
           ".cm-scroller": { overflow: "auto" },
@@ -97,6 +141,19 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
 
     const bridge = mountEditorBridge(view, doc, idMapField, localEdit);
     bridgeRef.current = bridge;
+
+    // Open the local cursor/selection stream. The SSE stream the
+    // client opens carries presence events back from other actors;
+    // `client.presence` maintains the per-entity map.
+    client.presence.start();
+    client.presence.onUpdate(() => {
+      // Force the ViewPlugin to rebuild decorations by dispatching
+      // a no-op transaction. CM6 only re-runs ViewPlugin.update() on
+      // actual transactions, so we need to nudge it.
+      view.dispatch({});
+    });
+    view.dispatch({ effects: [] }); // ensure initial send runs after mount
+    sendLocalCursor();
 
     // Subscribe to SSE for live updates. The browser's EventSource
     // can't set custom request headers, so the @ebbjs/client SSE

@@ -32,7 +32,6 @@ defmodule EbbServer.Sync.AuthPlug do
   defp bypass_auth(conn) do
     conn = Plug.Conn.fetch_query_params(conn)
     actor_id = bypass_actor_id(conn)
-    actor_id = bypass_actor_id(conn)
 
     case actor_id do
       id when is_binary(id) and id != "" ->
