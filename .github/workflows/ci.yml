@@ -227,7 +227,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: packages/server/dist/ebb_server
-          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}
+          # Cache key includes lib/config sources so any code change
+          # invalidates the cache. Previously keyed only on mix.lock,
+          # which silently served stale releases when only .ex source
+          # files changed (see issue #86).
+          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
           restore-keys: |
             release-${{ runner.os }}-${{ runner.arch }}-
 
@@ -289,7 +293,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: packages/server/dist/ebb_server
-          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}
+          # Must match the key in `elixir-release` (incl. lib/config
+          # sources) so the TS-test job picks up the same fresh
+          # release as the build job. See #86.
+          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
           restore-keys: |
             release-${{ runner.os }}-${{ runner.arch }}-
       - run: pnpm install --frozen-lockfile
@@ -314,7 +321,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: packages/server/dist/ebb_server
-          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}
+          # Must match the key in `elixir-release` (incl. lib/config
+          # sources) so the integration job picks up the same fresh
+          # release as the build job. See #86.
+          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
           restore-keys: |
             release-${{ runner.os }}-${{ runner.arch }}-
       - run: pnpm install --frozen-lockfile
@@ -381,7 +391,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: packages/server/dist/ebb_server
-          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}
+          # Must match the key in `elixir-release` (incl. lib/config
+          # sources) so the Playwright job picks up the same fresh
+          # release as the build job. See #86.
+          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
           restore-keys: |
             release-${{ runner.os }}-${{ runner.arch }}-
       - name: Install OS deps for Chromium
