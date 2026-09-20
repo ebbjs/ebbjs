@@ -10,6 +10,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest --run --passWithNoTests",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install --with-deps chromium",
     "typecheck": "tsc --noEmit",
     "lint": "pnpm --root ../../ lint",
     "lint:fix": "pnpm --root ../../ lint:fix",
@@ -29,6 +31,7 @@
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.1.4",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
