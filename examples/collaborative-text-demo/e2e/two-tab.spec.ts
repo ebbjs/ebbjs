@@ -33,11 +33,14 @@ test.describe("two-tab collaborative editing", () => {
     // Wait for both tabs to finish bootstrapping. The bootstrap status
     // is reflected in the URL hash or the header; the safest signal
     // here is the connection badge, which transitions to "live" once
-    // SSE opens. Fall back to a fixed timeout if the badge is missing.
-    await expect(drewPage.getByText(/live|connecting|reconnecting/i).first()).toBeVisible({
+    // SSE opens. We wait specifically for "live" rather than the
+    // broader /live|connecting|reconnecting/ regex to avoid racing the
+    // bootstrap (where the badge briefly reads "connecting" before
+    // SSE actually connects).
+    await expect(drewPage.getByText("live").first()).toBeVisible({
       timeout: 30_000,
     });
-    await expect(alicePage.getByText(/live|connecting|reconnecting/i).first()).toBeVisible({
+    await expect(alicePage.getByText("live").first()).toBeVisible({
       timeout: 30_000,
     });
 
@@ -49,10 +52,11 @@ test.describe("two-tab collaborative editing", () => {
     await drewEditor.pressSequentially(sentinel);
 
     // The text should propagate to alice's tab via SSE within a few
-    // seconds. The 10s expect timeout is generous to absorb cold-start
-    // jitter on CI runners.
+    // seconds. The 30s expect timeout is generous to absorb cold-start
+    // jitter on CI runners (full bootstrap + SSE round-trip + CM6
+    // bridge + DOM render can easily take 10-15s on first run).
     await expect(alicePage.locator(".cm-content").first()).toContainText(sentinel, {
-      timeout: 10_000,
+      timeout: 30_000,
     });
 
     await drew.close();
