@@ -31,7 +31,7 @@
  * multi-line `data:` fields with `\n`, matching the SSE spec.
  */
 
-import { createEventSource } from "eventsource-client";
+import { createEventSource, type EventSourceOptions } from "eventsource-client";
 import type { SSEEvent } from "./types";
 
 const KNOWN_EVENT_TYPES = ["data", "control", "presence"] as const;
@@ -93,13 +93,15 @@ export function openSSEStream(opts: SSEOpenOptions): SSESubscription {
 
   const source = createEventSource({
     url,
-    fetch: fetchImpl as unknown as Parameters<typeof createEventSource>[0]["fetch"],
+    // The library's `FetchLike` type is a strict subset of DOM `fetch`
+    // — cast through unknown because TS can't bridge the variance.
+    fetch: fetchImpl as unknown as EventSourceOptions["fetch"],
     headers: {
       Accept: "text/event-stream",
       "x-ebb-actor-id": opts.headers.actorId,
       "Cache-Control": "no-cache",
     },
-  });
+  } as never);
 
   const queue: SSEEvent[] = [];
   const waiters: Array<{
