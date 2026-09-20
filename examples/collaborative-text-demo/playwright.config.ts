@@ -54,7 +54,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: `echo "BEFORE WEBSERVER CMD: cwd=$(pwd)"; echo "BEFORE: dist contents:"; ls -la packages/server/dist/ 2>&1 || true; ls -la packages/server/dist/ebb_server/ 2>&1 || true; ls -la packages/server/dist/ebb_server/bin/ 2>&1 || true; rm -rf /tmp/ebb-playwright-data && mkdir -p /tmp/ebb-playwright-data && (test -x ${ebbServerBin} || { echo "ebb_server binary missing or not executable: ${ebbServerBin}"; ls -la ${ebbServerBin} 2>&1 || true; ls -la "$(dirname ${ebbServerBin})" 2>&1 || true; exit 127; }) && EBB_DATA_DIR=/tmp/ebb-playwright-data ${ebbServerBin} start`,
+      command: `echo "BEFORE WEBSERVER CMD: cwd=$(pwd)"; echo "BEFORE: dist contents:"; ls -la packages/server/dist/ 2>&1 || true; ls -la packages/server/dist/ebb_server/ 2>&1 || true; ls -la packages/server/dist/ebb_server/bin/ 2>&1 || true; echo "Parent of expected bin:"; ls -la "$(dirname ${ebbServerBin})" 2>&1 || true; ls -la "$(dirname ${ebbServerBin})/.." 2>&1 || true; rm -rf /tmp/ebb-playwright-data && mkdir -p /tmp/ebb-playwright-data && (test -x ${ebbServerBin} || { echo "ebb_server binary missing or not executable: ${ebbServerBin}"; ls -la ${ebbServerBin} 2>&1 || true; ls -la "$(dirname ${ebbServerBin})" 2>&1 || true; exit 127; }) && EBB_DATA_DIR=/tmp/ebb-playwright-data ${ebbServerBin} start`,
       url: "http://localhost:4000/sync/handshake",
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
