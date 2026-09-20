@@ -50,7 +50,7 @@ const DATA_DIR = process.env.EBB_CLIENT_SMOKE_DATA_DIR ?? `/tmp/ebb-smoke-data-$
 const PORT = Number(process.env.EBB_CLIENT_SMOKE_PORT ?? 4000);
 const SERVER_BIN = join(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../../packages/server/dist/ebb_server/bin/ebb_server",
+  "../../../packages/server/dist/ebb_server/bin/ebb_server",
 );
 
 const skip = process.env.EBB_SKIP_SMOKE === "1" || !existsSync(SERVER_BIN);
@@ -94,6 +94,15 @@ maybeDescribe("ebb client smoke (against running server)", () => {
 
   it("subscribe delivers an incoming action via SSE", async () => {
     const client = createClient({ serverUrl: server.url, actorId: SMOKE_ACTOR_ID });
+
+    // Mirror the `index.ts` script: handshake → catchUp → subscribe.
+    // Without the explicit catchUp the client's local storage has no
+    // materialization of the seeded entity, so a subsequent patch
+    // would fail with "Cannot patch non-existent entity" inside the
+    // SSE-driven materializer.
+    await client.handshake();
+    await client.catchUp(SMOKE_GROUP_ID, 0);
+
     let resolve!: () => void;
     const received = new Promise<void>((r) => {
       resolve = r;
@@ -113,10 +122,17 @@ maybeDescribe("ebb client smoke (against running server)", () => {
       tick();
     });
 
-    const otherActor = "actor_smoke_other";
+    // Write under the same actor as the SSE subscription. In
+    // bypass-mode auth the server checks `action.actor_id ==
+    // x-ebb-actor-id`, so a write under a different actor would be
+    // rejected with `actor_mismatch`. The test still demonstrates
+    // SSE-driven delivery: the server broadcasts the action to all
+    // subscribers (including the writer's own subscription), so the
+    // `resolve()` above fires when the action comes back through the
+    // stream.
     const clock = createClock();
     const { action } = createAction({
-      actorId: otherActor,
+      actorId: SMOKE_ACTOR_ID,
       clock,
       updates: [
         {
