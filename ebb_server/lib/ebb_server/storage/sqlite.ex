@@ -351,7 +351,7 @@ defmodule EbbServer.Storage.SQLite do
       # in a COALESCE fallback — the new schema does, the old one
       # doesn't.
       String.contains?(create_sql, "json_extract(data, '$.source_id')") and
-        not String.contains?(create_sql, "COALESCE") ->
+          not String.contains?(create_sql, "COALESCE") ->
         :needs_migration
 
       true ->

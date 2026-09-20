@@ -58,7 +58,11 @@ defmodule EbbServer.Storage.SystemCache do
   def populate_system_caches(opts \\ []) do
     rocks_name = Keyword.get(opts, :rocks_name, EbbServer.Storage.RocksDB)
     gm_table = Keyword.get(opts, :table) || :persistent_term.get({GroupCache, :group_members})
-    rel_table = Keyword.get(opts, :relationships) || :persistent_term.get({RelationshipCache, :relationships})
+
+    rel_table =
+      Keyword.get(opts, :relationships) ||
+        :persistent_term.get({RelationshipCache, :relationships})
+
     rbg_table =
       Keyword.get(opts, :relationships_by_group) ||
         :persistent_term.get({RelationshipCache, :relationships_by_group})
@@ -86,7 +90,9 @@ defmodule EbbServer.Storage.SystemCache do
         gsn_counter = setup_gsn_counter(opts, gsn_counter_name)
 
         try do
-          populate_system_caches(Keyword.take(opts, [:rocks_name, :table, :relationships, :relationships_by_group]))
+          populate_system_caches(
+            Keyword.take(opts, [:rocks_name, :table, :relationships, :relationships_by_group])
+          )
         rescue
           e ->
             Logger.warning("Failed to populate system caches: #{inspect(e)}")
@@ -133,36 +139,46 @@ defmodule EbbServer.Storage.SystemCache do
   defp populate_caches_from_indexes(rocks_name, gm_table, rel_table, rbg_table, opts \\ []) do
     sqlite_opts = Keyword.take(opts, [:sqlite_name])
 
-    populate_type("groupMember", rocks_name, fn entity_data ->
-      data = entity_data.data || %{}
+    populate_type(
+      "groupMember",
+      rocks_name,
+      fn entity_data ->
+        data = entity_data.data || %{}
 
-      member = %{
-        id: entity_data.id,
-        # Use Fields.get/2 to handle both shapes: `{"actor_id" => "x"}`
-        # and `{"fields" => {"actor_id" => {"value" => "x"}}}`.
-        actor_id: Fields.get(data, "actor_id"),
-        group_id: Fields.get(data, "group_id"),
-        permissions: Fields.get(data, "permissions")
-      }
-
-      GroupCache.put_group_member(member, gm_table)
-    end, sqlite_opts)
-
-    populate_type("relationship", rocks_name, fn entity_data ->
-      data = entity_data.data || %{}
-
-      RelationshipCache.put_relationship(
-        %{
+        member = %{
           id: entity_data.id,
-          source_id: Fields.get(data, "source_id"),
-          target_id: Fields.get(data, "target_id"),
-          type: Fields.get(data, "type"),
-          field: Fields.get(data, "field")
-        },
-        relationships: rel_table,
-        relationships_by_group: rbg_table
-      )
-    end, sqlite_opts)
+          # Use Fields.get/2 to handle both shapes: `{"actor_id" => "x"}`
+          # and `{"fields" => {"actor_id" => {"value" => "x"}}}`.
+          actor_id: Fields.get(data, "actor_id"),
+          group_id: Fields.get(data, "group_id"),
+          permissions: Fields.get(data, "permissions")
+        }
+
+        GroupCache.put_group_member(member, gm_table)
+      end,
+      sqlite_opts
+    )
+
+    populate_type(
+      "relationship",
+      rocks_name,
+      fn entity_data ->
+        data = entity_data.data || %{}
+
+        RelationshipCache.put_relationship(
+          %{
+            id: entity_data.id,
+            source_id: Fields.get(data, "source_id"),
+            target_id: Fields.get(data, "target_id"),
+            type: Fields.get(data, "type"),
+            field: Fields.get(data, "field")
+          },
+          relationships: rel_table,
+          relationships_by_group: rbg_table
+        )
+      end,
+      sqlite_opts
+    )
   end
 
   defp populate_type(type, rocks_name, insert_fn, opts \\ []) do
@@ -233,8 +249,11 @@ defmodule EbbServer.Storage.SystemCache do
       Logger.info("Backfilling #{length(ops_list)} missing cf_type_entities entries")
 
       case RocksDB.write_batch(ops_list, name: rocks_name) do
-        :ok -> :ok
-        {:error, reason} -> Logger.warning("cf_type_entities backfill write failed: #{inspect(reason)}")
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("cf_type_entities backfill write failed: #{inspect(reason)}")
       end
     end
 
