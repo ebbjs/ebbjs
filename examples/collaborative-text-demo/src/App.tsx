@@ -122,7 +122,7 @@ function Ready({
             docId={DEMO_DOC_ID}
             actorId={actorId}
             groupIds={groupIds}
-            caughtUpActions={boot.caughtUpActions}
+            caughtUpActions={bootstrap.caughtUpActions}
           />
         </div>
         {conflictsOpen && (
