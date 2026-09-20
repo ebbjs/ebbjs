@@ -50,7 +50,7 @@ const DATA_DIR = process.env.EBB_CLIENT_SMOKE_DATA_DIR ?? `/tmp/ebb-smoke-data-$
 const PORT = Number(process.env.EBB_CLIENT_SMOKE_PORT ?? 4000);
 const SERVER_BIN = join(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../../packages/server/dist/ebb_server/bin/ebb_server",
+  "../../../packages/server/dist/ebb_server/bin/ebb_server",
 );
 
 const skip = process.env.EBB_SKIP_SMOKE === "1" || !existsSync(SERVER_BIN);
