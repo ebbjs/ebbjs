@@ -45,13 +45,10 @@ defmodule EbbServer.Sync.SSEConnection do
   @spec start_link(pid(), [String.t()], %{String.t() => non_neg_integer()}, keyword()) ::
           {:ok, pid()} | {:error, term()}
   def start_link(parent_pid, group_ids, cursors, opts \\ []) do
-    # No global name registration: each connection is referenced only
-    # by its pid (the supervisor hands it back from start_child, and the
-    # FanOutRouter keeps a subscription by pid). Registering the
-    # module name here caused every subsequent SSE connection to fail
-    # with `:already_started` since there's already one process with
-    # that name — which silently turned the stream into a no-op
-    # (HTTP 200 + headers went out, but no chunks ever followed).
+    # No global name registration: connections are referenced only by pid.
+    # Registering the module name caused every SSE attempt after the first
+    # to fail with :already_started, which silently turned the stream into
+    # a no-op (HTTP 200 + headers went out, then no chunks ever followed).
     _ = opts
     GenServer.start_link(__MODULE__, {parent_pid, group_ids, cursors})
   end

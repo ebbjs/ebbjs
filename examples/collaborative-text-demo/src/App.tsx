@@ -16,8 +16,7 @@ import { ConflictPanel } from "./ConflictPanel";
 import { bootstrap, type BootstrapResult } from "./bootstrap";
 import { DEMO_DOC_ID, DEMO_GROUP_ID } from "./seed";
 
-const SERVER_URL = ""; // Empty = same origin (vite dev proxies to localhost:4000)
-
+const SERVER_URL = "";
 type AppState =
   | { status: "loading"; message: string }
   | { status: "error"; error: string }
@@ -84,7 +83,7 @@ export function App() {
 }
 
 function Ready({
-  bootstrap: boot,
+  bootstrap,
   actorId,
   serverUrl,
 }: {
@@ -92,13 +91,12 @@ function Ready({
   actorId: string;
   serverUrl: string;
 }) {
-  const { client, groupIds } = boot;
+  const { client, groupIds } = bootstrap;
   const [conflictsOpen, setConflictsOpen] = useState(false);
   const conflictsButtonRef = useRef<HTMLButtonElement>(null);
 
   return (
     <div className="flex h-screen flex-col">
-      {/* Header */}
       <header className="flex items-center gap-4 border-b border-stone-800 px-4 py-2">
         <div className="font-mono text-xs text-stone-500">ebb collaborative text demo</div>
         <div className="font-mono text-xs text-stone-300">
@@ -117,7 +115,6 @@ function Ready({
         <ConnectionBadge client={client} />
       </header>
 
-      {/* Main split: editor | (optional) conflict panel */}
       <div className="flex flex-1 min-h-0">
         <div className="flex-1 min-w-0">
           <Editor
@@ -135,7 +132,6 @@ function Ready({
         )}
       </div>
 
-      {/* Footer hint */}
       <footer className="border-t border-stone-800 px-4 py-2 font-mono text-xs text-stone-500">
         Open this URL in another tab with{" "}
         <code className="bg-stone-800 px-1 rounded">?actor=alice</code> to see live editing.

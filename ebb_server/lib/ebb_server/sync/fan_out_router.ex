@@ -87,12 +87,9 @@ defmodule EbbServer.Sync.FanOutRouter do
             raise "Failed to start GroupServer for #{group_id}: #{inspect(reason)}"
         end
 
-      # Forward the authenticated actor_id so GroupServer can use it to
-      # filter self-presence events. Passing `group_id` here (the previous
-      # behavior) caused every subscriber to look like the group itself,
-      # which (a) silently broke the `subscriber_actor != actor_id` guard
-      # in `broadcast_presence` and (b) meant a subscriber never
-      # recognized its own outbound presence echoes.
+      # Forward the authenticated actor_id so GroupServer's broadcast_presence
+      # guard can filter out self-echoes. (Previously this passed group_id,
+      # which made every subscriber look like the group itself.)
       GroupServer.add_subscriber(group_pid, connection_pid, actor_id)
     end
 
