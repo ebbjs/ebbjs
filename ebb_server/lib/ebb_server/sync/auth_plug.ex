@@ -3,11 +3,21 @@ defmodule EbbServer.Sync.AuthPlug do
   Plug-based authentication for EbbServer.
 
   Supports two modes:
-  - `:bypass` - reads actor_id from `x-ebb-actor-id` header
+  - `:bypass` - reads actor_id from `x-ebb-actor-id` header (or `?actor_id=`
+    query parameter, needed by browser `EventSource` since native SSE can't
+    set custom headers)
   - `:external` - forwards auth headers to a configured auth URL
 
   Configure via `Application.get_env(:ebb_server, :auth_mode)` and
   `Application.get_env(:ebb_server, :auth_url)`.
+
+  ## Security warning
+
+  `:bypass` mode is intended for local dev and the demo only. Any actor
+  can claim any identity by sending `x-ebb-actor-id: <anything>` or
+  `?actor_id=<anything>` — there is no signature, no session, no
+  verification. Production deployments MUST run in `:external` mode and
+  point `:auth_url` at a real identity service.
   """
 
   @behaviour Plug

@@ -13,6 +13,16 @@ defmodule EbbServer.Sync.FanOutRouter do
   FanOutRouter buffers notifications and only pushes contiguous GSN ranges
   up to the committed watermark from WatermarkTracker.
 
+  ## SSE out-of-order dispatch is safe
+
+  Even when `process_batch/4` returns multiple disjoint ranges in `to_push`
+  (possible when the watermark advances past buffered notifications in
+  arbitrary order), `dispatch_to_groups/1` writes each Action independently
+  to its group's pid. SSE tolerates out-of-order events, and clients
+  reconstruct ordered state via `catchUp` (the dedicated ordered backfill
+  endpoint) before consuming the SSE stream. So the FanOutRouter is free
+  to push in arrival order; clients converge.
+
   ## Supervision
 
   Started under `EbbServer.Sync.Supervisor`.
