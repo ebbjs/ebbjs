@@ -9,10 +9,8 @@ defmodule EbbServer.Storage.SystemCacheTest do
   use ExUnit.Case, async: false
 
   alias EbbServer.Storage.{
-    GroupCache,
     RelationshipCache,
     RocksDB,
-    SQLite,
     SystemCache,
     Writer
   }
@@ -44,6 +42,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       })
 
     %{
+      dirty_set: dirty_set,
       writer_name: writer_name,
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
@@ -61,6 +60,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
     # subsequent writes to that entity index into the right group's
     # action stream.
     test "re-populates RelationshipCache after cf_type_entities is wiped", %{
+      dirty_set: dirty_set,
       writer_name: writer_name,
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
@@ -137,6 +137,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
         SystemCache.populate_system_caches(
           rocks_name: rocks_name,
           sqlite_name: sqlite_name,
+          dirty_set: dirty_set,
           table: gm_table,
           relationships: rel_table,
           relationships_by_group: rbg_table
@@ -180,6 +181,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
     end
 
     test "rebuilds RelationshipCache from cf_actions + cf_type_entities", %{
+      dirty_set: dirty_set,
       writer_name: writer_name,
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
@@ -223,6 +225,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
         SystemCache.populate_system_caches(
           rocks_name: rocks_name,
           sqlite_name: sqlite_name,
+          dirty_set: dirty_set,
           table: gm_table,
           relationships: rel_table,
           relationships_by_group: rbg_table

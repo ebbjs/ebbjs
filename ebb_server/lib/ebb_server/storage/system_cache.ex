@@ -54,6 +54,8 @@ defmodule EbbServer.Storage.SystemCache do
   `:sqlite_name`) so callers can drive the rebuild against isolated
   stores without relying on global `:persistent_term` state.
   """
+  @default_dirty_set_name :ebb_dirty_set
+
   @spec populate_system_caches(keyword()) :: :ok
   def populate_system_caches(opts \\ []) do
     rocks_name = Keyword.get(opts, :rocks_name, EbbServer.Storage.RocksDB)
@@ -67,8 +69,20 @@ defmodule EbbServer.Storage.SystemCache do
       Keyword.get(opts, :relationships_by_group) ||
         :persistent_term.get({RelationshipCache, :relationships_by_group})
 
+    dirty_set =
+      Keyword.get(opts, :dirty_set) ||
+        :persistent_term.get({DirtyTracker, :dirty_set}, @default_dirty_set_name)
+
     backfill_type_entities(rocks_name)
-    populate_caches_from_indexes(rocks_name, gm_table, rel_table, rbg_table, opts)
+
+    populate_caches_from_indexes(
+      rocks_name,
+      gm_table,
+      rel_table,
+      rbg_table,
+      dirty_set,
+      opts
+    )
   end
 
   @impl true
@@ -136,12 +150,20 @@ defmodule EbbServer.Storage.SystemCache do
     counter
   end
 
-  defp populate_caches_from_indexes(rocks_name, gm_table, rel_table, rbg_table, opts \\ []) do
+  defp populate_caches_from_indexes(
+         rocks_name,
+         gm_table,
+         rel_table,
+         rbg_table,
+         dirty_set,
+         opts \\ []
+       ) do
     sqlite_opts = Keyword.take(opts, [:sqlite_name])
 
     populate_type(
       "groupMember",
       rocks_name,
+      dirty_set,
       fn entity_data ->
         data = entity_data.data || %{}
 
@@ -162,6 +184,7 @@ defmodule EbbServer.Storage.SystemCache do
     populate_type(
       "relationship",
       rocks_name,
+      dirty_set,
       fn entity_data ->
         data = entity_data.data || %{}
 
@@ -181,7 +204,7 @@ defmodule EbbServer.Storage.SystemCache do
     )
   end
 
-  defp populate_type(type, rocks_name, insert_fn, opts \\ []) do
+  defp populate_type(type, rocks_name, dirty_set, insert_fn, opts) do
     prefix = type <> <<0>>
     cf = RocksDB.cf_type_entities(rocks_name)
     sqlite_name = Keyword.get(opts, :sqlite_name, EbbServer.Storage.SQLite)
@@ -191,7 +214,12 @@ defmodule EbbServer.Storage.SystemCache do
     |> Stream.each(fn {key, _value} ->
       <<_type_bytes::binary-size(byte_size(type)), 0, entity_id::binary>> = key
 
-      case EntityStore.materialize(entity_id, rocks_name: rocks_name, sqlite_name: sqlite_name) do
+      case EntityStore.materialize(
+             entity_id,
+             rocks_name: rocks_name,
+             sqlite_name: sqlite_name,
+             dirty_set: dirty_set
+           ) do
         {:ok, entity} -> insert_fn.(entity)
         error -> Logger.warning("Failed to materialize entity #{entity_id}: #{inspect(error)}")
       end
