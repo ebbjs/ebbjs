@@ -396,7 +396,7 @@ export class SyncClient {
           serverUrl: this.serverUrl,
           groupIds: sub.groupIds,
           cursor,
-          headers: { actorId: this.actorId },
+          actorId: this.actorId,
           fetchImpl: this.fetchImpl,
         });
         sub.stream = stream;

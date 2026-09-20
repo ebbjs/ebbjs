@@ -36,12 +36,6 @@ import type { SSEEvent } from "./types";
 
 const KNOWN_EVENT_TYPES = ["data", "control", "presence"] as const;
 
-/** HTTP headers that must be sent to open an SSE connection. */
-export interface SSEHeaders {
-  /** Actor ID for bypass auth (sent as `x-ebb-actor-id`). */
-  actorId: string;
-}
-
 /** URL/options for opening an SSE stream. */
 export interface SSEOpenOptions {
   /** Server base URL (e.g., "http://localhost:4000"). */
@@ -50,8 +44,13 @@ export interface SSEOpenOptions {
   groupIds: readonly string[];
   /** Cursor (GSN) to resume from. */
   cursor: number;
-  /** Headers to include (e.g., bypass auth). */
-  headers: SSEHeaders;
+  /**
+   * Actor ID for bypass auth (sent as the `x-ebb-actor-id` header).
+   *
+   * Required for now; if cookie-based auth lands, this can become optional
+   * without a breaking change.
+   */
+  actorId: string;
   /**
    * Fetch implementation. Defaults to `globalThis.fetch`. Must support
    * streaming response bodies (WHATWG `ReadableStream`). Both the browser
@@ -98,7 +97,7 @@ export function openSSEStream(opts: SSEOpenOptions): SSESubscription {
     fetch: fetchImpl as unknown as EventSourceOptions["fetch"],
     headers: {
       Accept: "text/event-stream",
-      "x-ebb-actor-id": opts.headers.actorId,
+      "x-ebb-actor-id": opts.actorId,
       "Cache-Control": "no-cache",
     },
   } as never);

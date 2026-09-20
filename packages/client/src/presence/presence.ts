@@ -216,7 +216,7 @@ export class PresenceManager {
         serverUrl: this.client.serverUrl,
         groupIds: groups,
         cursor: 0,
-        headers: { actorId: this.localActorId },
+        actorId: this.localActorId,
       });
 
       (async () => {

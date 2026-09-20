@@ -44,7 +44,7 @@ describe("openSSEStream", () => {
       serverUrl: "http://localhost:4000",
       groupIds: ["grp_1"],
       cursor: 0,
-      headers: { actorId: "a_1" },
+      actorId: "a_1",
       fetchImpl: fn,
     });
 
@@ -85,7 +85,7 @@ describe("openSSEStream", () => {
       serverUrl: "http://localhost:4000",
       groupIds: ["grp_1"],
       cursor: 0,
-      headers: { actorId: "a_1" },
+      actorId: "a_1",
       fetchImpl: fn,
     });
 
@@ -120,7 +120,7 @@ describe("openSSEStream", () => {
       serverUrl: "http://localhost:4000",
       groupIds: ["grp_1"],
       cursor: 0,
-      headers: { actorId: "a_1" },
+      actorId: "a_1",
       fetchImpl: fn,
     });
 
@@ -142,7 +142,7 @@ describe("openSSEStream", () => {
       serverUrl: "http://localhost:4000",
       groupIds: ["grp_a", "grp_b"],
       cursor: 7,
-      headers: { actorId: "a_1" },
+      actorId: "a_1",
       fetchImpl: fn,
     });
     (async () => {
@@ -160,7 +160,7 @@ describe("openSSEStream", () => {
       serverUrl: "http://localhost:4000",
       groupIds: ["grp_1"],
       cursor: 0,
-      headers: { actorId: "a_1" },
+      actorId: "a_1",
       fetchImpl: fn,
     });
     (async () => {
@@ -181,7 +181,7 @@ describe("openSSEStream", () => {
       serverUrl: "http://localhost:4000",
       groupIds: ["grp_x"],
       cursor: 0,
-      headers: { actorId: "a_1" },
+      actorId: "a_1",
       fetchImpl: fn,
     });
 
@@ -223,7 +223,7 @@ describe("openSSEStream", () => {
       serverUrl: "http://localhost:4000",
       groupIds: ["grp_1"],
       cursor: 0,
-      headers: { actorId: "a_1" },
+      actorId: "a_1",
       fetchImpl: fn,
     });
 
