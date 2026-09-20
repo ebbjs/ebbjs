@@ -11,14 +11,15 @@ defmodule EbbServer.Sync.SSEHandlerTest do
   import Plug.Test
   import Plug.Conn
 
-  alias EbbServer.Sync.Router
+  alias EbbServer.Storage.GroupCache
+  alias EbbServer.Sync.{Router, SSEHandler}
 
   describe "open_sse/4" do
     test "returns {:error, :not_member} when actor is not a member of the group" do
       cursor = 0
 
       result =
-        EbbServer.Sync.SSEHandler.open_sse(self(), ["nonexistent_group"], cursor, "stranger")
+        SSEHandler.open_sse(self(), ["nonexistent_group"], cursor, "stranger")
 
       assert result == {:error, :not_member}
     end
@@ -40,7 +41,7 @@ defmodule EbbServer.Sync.SSEHandlerTest do
       actor_id = "a_test_#{:erlang.unique_integer([:positive])}"
       group_id = "g_test_#{:erlang.unique_integer([:positive])}"
 
-      EbbServer.Storage.GroupCache.put_group_member(%{
+      GroupCache.put_group_member(%{
         id: "gm_test",
         actor_id: actor_id,
         group_id: group_id,

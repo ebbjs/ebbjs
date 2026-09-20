@@ -2,8 +2,8 @@ defmodule EbbServer.Sync.CatchUpTest do
   use ExUnit.Case, async: false
   use EbbServer.Integration.StorageCase
 
-  alias EbbServer.Sync.CatchUp
   alias EbbServer.Integration.ActionHelpers
+  alias EbbServer.Sync.CatchUp
 
   describe "catch_up_group/3" do
     test "happy path: returns actions sorted by GSN with up_to_date: true" do

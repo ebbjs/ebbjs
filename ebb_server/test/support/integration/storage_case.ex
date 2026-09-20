@@ -32,9 +32,9 @@ defmodule EbbServer.Integration.StorageCase do
     quote do
       setup do
         if unquote(with_auth_mode) do
-          EbbServer.Integration.StorageCase.setup_with_auth()
+          unquote(__MODULE__).setup_with_auth()
         else
-          EbbServer.Integration.StorageCase.setup_without_auth()
+          unquote(__MODULE__).setup_without_auth()
         end
       end
     end
@@ -127,7 +127,9 @@ defmodule EbbServer.Integration.StorageCase do
     Application.delete_env(:ebb_server, :data_dir)
   end
 
+  # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
   def stop_if_running(name) do
+    # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
     try do
       if pid = Process.whereis(name) do
         GenServer.stop(pid, :normal, 5000)

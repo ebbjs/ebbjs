@@ -242,16 +242,6 @@ defmodule EbbServer.Storage.SQLite do
     {:reply, result, state}
   end
 
-  @doc """
-  Queries entities of a given type with permission JOINs and optional filters.
-
-  Returns `{:ok, [entity_maps]}`.
-  """
-  @spec query_entities(map(), GenServer.server()) :: {:ok, [map()]}
-  def query_entities(query, server \\ __MODULE__) do
-    GenServer.call(server, {:query_entities, query})
-  end
-
   @impl true
   def handle_call({:query_entities, query}, _from, state) do
     %{db: db} = state
@@ -290,6 +280,16 @@ defmodule EbbServer.Storage.SQLite do
     Sqlite3.release(db, stmt)
 
     {:reply, {:ok, rows}, state}
+  end
+
+  @doc """
+  Queries entities of a given type with permission JOINs and optional filters.
+
+  Returns `{:ok, [entity_maps]}`.
+  """
+  @spec query_entities(map(), GenServer.server()) :: {:ok, [map()]}
+  def query_entities(query, server \\ __MODULE__) do
+    GenServer.call(server, {:query_entities, query})
   end
 
   @impl true

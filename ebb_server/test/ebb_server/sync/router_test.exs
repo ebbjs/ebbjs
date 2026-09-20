@@ -4,8 +4,8 @@ defmodule EbbServer.Sync.RouterTest do
 
   import Plug.Test
   import Plug.Conn
-  alias EbbServer.Sync.Router
   alias EbbServer.Storage.{GroupCache, RelationshipCache}
+  alias EbbServer.Sync.Router
 
   defp post_presence(body, actor_id \\ "a_member") do
     conn(:post, "/sync/presence", Jason.encode!(body))

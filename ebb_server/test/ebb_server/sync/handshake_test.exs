@@ -4,6 +4,7 @@ defmodule EbbServer.Sync.HandshakeTest do
   import Plug.Test
   import Plug.Conn
   import EbbServer.TestHelpers
+  alias EbbServer.Storage.Writer
   alias EbbServer.Sync.Router
 
   setup do
@@ -33,14 +34,14 @@ defmodule EbbServer.Sync.HandshakeTest do
       {:error, {:already_started, _pid}} -> :ok
     end
 
-    case EbbServer.Storage.Writer.start_link(name: EbbServer.Storage.Writer) do
+    case Writer.start_link(name: Writer) do
       {:ok, _pid} -> :ok
       {:error, {:already_started, _pid}} -> :ok
     end
 
     on_exit(fn ->
       try do
-        if pid = Process.whereis(EbbServer.Storage.Writer) do
+        if pid = Process.whereis(Writer) do
           GenServer.stop(pid, :normal, 5000)
         end
       catch

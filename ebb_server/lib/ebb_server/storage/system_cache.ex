@@ -156,7 +156,7 @@ defmodule EbbServer.Storage.SystemCache do
          rel_table,
          rbg_table,
          dirty_set,
-         opts \\ []
+         opts
        ) do
     sqlite_opts = Keyword.take(opts, [:sqlite_name])
 

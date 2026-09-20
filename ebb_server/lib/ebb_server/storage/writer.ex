@@ -33,7 +33,6 @@ defmodule EbbServer.Storage.Writer do
 
   alias EbbServer.Storage.PermissionChecker
   alias EbbServer.Storage.WatermarkTracker
-  alias EbbServer.Sync.FanOutRouter
 
   alias EbbServer.Storage.{
     DirtyTracker,
