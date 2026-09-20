@@ -136,6 +136,39 @@ defmodule EbbServer.Storage.RocksDB do
   end
 
   @doc """
+  Iterator over an entire column family. Yields `{key, value}` tuples
+  in key-sorted order. Convenience wrapper around `:rocksdb.iterator/3`.
+  """
+  @spec full_iterator(cf_ref(), keyword()) :: Enumerable.t()
+  def full_iterator(cf_ref, opts \\ []) do
+    name = Keyword.get(opts, :name, __MODULE__)
+
+    Stream.resource(
+      fn ->
+        {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, [])
+        {iter, :rocksdb.iterator_move(iter, :first)}
+      end,
+      fn
+        {iter, {:ok, key, value}} ->
+          {[{key, value}], {iter, :rocksdb.iterator_move(iter, :next)}}
+
+        {iter, {:error, :invalid_iterator}} ->
+          {:halt, iter}
+
+        {iter, {:error, _reason}} ->
+          {:halt, iter}
+      end,
+      fn iter ->
+        try do
+          :rocksdb.iterator_close(iter)
+        catch
+          :error, {:invalid_iterator, _} -> :ok
+        end
+      end
+    )
+  end
+
+  @doc """
   Encodes a composite key for the type-entities column family.
 
   Uses a `0x00` null byte as the separator between `type` and `entity_id`.
@@ -272,7 +305,19 @@ defmodule EbbServer.Storage.RocksDB do
           {:halt, iter}
       end,
       fn iter ->
-        :rocksdb.iterator_close(iter)
+        # The iterator may already be invalidated if the DB was closed
+        # mid-stream (e.g., between tests). The BEAM surfaces that as
+        # either an `ArgumentError` (when the NIF returns :badarg) or
+        # a tagged `{:error, :invalid_iterator}` tuple — both of which
+        # Stream.resource turns into exceptions. Swallow them silently:
+        # we got the data we cared about, and the caller is already
+        # cleaning up the DB anyway.
+        try do
+          :rocksdb.iterator_close(iter)
+        catch
+          :error, _ -> :ok
+          {:error, _} -> :ok
+        end
       end
     )
   end
@@ -306,8 +351,19 @@ defmodule EbbServer.Storage.RocksDB do
           {:halt, iter}
       end,
       fn
-        {iter, _} -> :rocksdb.iterator_close(iter)
-        iter -> :rocksdb.iterator_close(iter)
+        {iter, _} ->
+          try do
+            :rocksdb.iterator_close(iter)
+          catch
+            :error, {:invalid_iterator, _} -> :ok
+          end
+
+        iter ->
+          try do
+            :rocksdb.iterator_close(iter)
+          catch
+            :error, {:invalid_iterator, _} -> :ok
+          end
       end
     )
   end
