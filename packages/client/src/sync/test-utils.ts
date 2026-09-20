@@ -39,7 +39,8 @@ export interface FetchCall {
  * of the array).
  */
 export function makeFetchMock(responses: FetchMockResponse[]): {
-  fn: MockInstance<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>;
+  fn: MockInstance<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>> &
+    typeof fetch;
   calls: FetchCall[];
 } {
   const calls: FetchCall[] = [];
@@ -56,7 +57,10 @@ export function makeFetchMock(responses: FetchMockResponse[]): {
       status: next.status ?? 200,
       headers,
     });
-  });
+  }) as unknown as MockInstance<
+    (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+  > &
+    typeof fetch;
   return { fn, calls };
 }
 
@@ -72,7 +76,8 @@ export function makeStreamingFetch(
   chunks: string[],
   options: { status?: number; headers?: Record<string, string> } = {},
 ): {
-  fn: MockInstance<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>;
+  fn: MockInstance<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>> &
+    typeof fetch;
   calls: FetchCall[];
 } {
   const encoder = new TextEncoder();
@@ -93,6 +98,9 @@ export function makeStreamingFetch(
       status: options.status ?? 200,
       headers: new Headers(options.headers ?? { "content-type": "text/event-stream" }),
     });
-  });
+  }) as unknown as MockInstance<
+    (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+  > &
+    typeof fetch;
   return { fn, calls };
 }
