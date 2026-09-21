@@ -29,6 +29,10 @@ pre-commit:
 pre-push:
   runner: bash
   commands:
+    branch-name:
+      # Soft warning when current branch doesn't match CONTRIBUTING.md.
+      # Always exits 0; see scripts/check-branch-name.sh.
+      run: bash scripts/check-branch-name.sh
     elixir-test:
       # Run on push (not commit) because the Elixir suite is slow.
       root: ebb_server

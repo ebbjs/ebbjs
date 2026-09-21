@@ -28,7 +28,7 @@
     "storage:test": "pnpm --filter @ebbjs/storage test",
     "codemirror:test": "pnpm --filter @ebbjs/codemirror test",
     "setup:ebb-server": "bash scripts/setup-ebb-server.sh",
-    "prepare": "lefthook install --reset-hooks-path"
+    "prepare": "bash scripts/install-dev-tools.sh"
   },
   "dependencies": {
     "nanoid": "^5.1.6",
