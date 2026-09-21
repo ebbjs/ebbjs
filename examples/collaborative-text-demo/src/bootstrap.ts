@@ -7,6 +7,59 @@
 import { createClient, type Action, type SyncClient } from "@ebbjs/client";
 import { addMember, buildDemoSeed, seed } from "./seed";
 
+/**
+ * Shape of `window.__EBB_DEMO_TEST_CONFIG__` — opt-in test seams read
+ * by `bootstrap()` (and the Editor) when present. Set by Playwright via
+ * `page.addInitScript()` to influence the demo's runtime behavior
+ * without baking test-only branches into production code paths.
+ *
+ * Currently:
+ * - `reconnectInitialMs` / `reconnectMaxMs` shorten the SyncClient's
+ *   backoff so the connection-state-transitions e2e can reach
+ *   "reconnecting" and "offline" in seconds rather than minutes.
+ * - `exposeState` makes the Editor publish a minimal handle on
+ *   `window.__EBB_DEMO_TEST_STATE__` so the conflict-surfacing e2e
+ *   can read run ids and dispatch a pinned-HLC `localExtend` without
+ *   poking through React internals.
+ *
+ * Adding new test seams: prefer reading from this object so the
+ * surface stays auditable in one place.
+ */
+export interface DemoTestConfig {
+  reconnectInitialMs?: number;
+  reconnectMaxMs?: number;
+  /**
+   * If true, the Editor exposes the underlying TextDocument on
+   * `window.__EBB_DEMO_TEST_STATE__` once mounted. Lets the conflict
+   * e2e read run ids and call `localExtend` directly without poking
+   * through React internals.
+   */
+  exposeState?: boolean;
+}
+
+declare global {
+  interface Window {
+    __EBB_DEMO_TEST_CONFIG__?: DemoTestConfig;
+    __EBB_DEMO_TEST_STATE__?: {
+      docId: string;
+      actorId: string;
+      getRunIds: () => readonly string[];
+      /** Force a localExtend on a run with a pinned HLC. */
+      forceExtend: (runId: string, appendText: string, hlc: string) => string | null;
+      /** Flush any locally-queued actions to the server. */
+      flushPending: () => Promise<{
+        rejected: readonly { id: string; reason: string; details?: string | null }[];
+      }>;
+      /** Snapshot the presence map for the doc (for diagnostics). */
+      getPresenceEntries: () => readonly {
+        actorId: string;
+        anchorId: string;
+        anchorOffset: number;
+      }[];
+    };
+  }
+}
+
 export interface BootstrapResult {
   client: SyncClient;
   groupIds: readonly string[];
@@ -38,7 +91,22 @@ export async function bootstrap(opts: {
   const { serverUrl, actorId } = opts;
   const ensureSeeded = opts.ensureSeeded ?? true;
 
-  const client = createClient({ serverUrl, actorId });
+  const client = createClient({
+    serverUrl,
+    actorId,
+    // Test seams: a Playwright spec can shorten reconnect backoff via
+    // `window.__EBB_DEMO_TEST_CONFIG__` to make the connection-state
+    // transitions testable in seconds rather than minutes. No effect
+    // when the config object isn't set.
+    ...(typeof window !== "undefined" &&
+      window.__EBB_DEMO_TEST_CONFIG__?.reconnectInitialMs !== undefined && {
+        reconnectInitialMs: window.__EBB_DEMO_TEST_CONFIG__.reconnectInitialMs,
+      }),
+    ...(typeof window !== "undefined" &&
+      window.__EBB_DEMO_TEST_CONFIG__?.reconnectMaxMs !== undefined && {
+        reconnectMaxMs: window.__EBB_DEMO_TEST_CONFIG__.reconnectMaxMs,
+      }),
+  });
 
   // 1. Seed (best-effort).
   let didSeed = false;

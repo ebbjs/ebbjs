@@ -163,6 +163,58 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
     // client opens carries presence events back from other actors;
     // `client.presence` maintains the per-entity map.
     client.presence.start();
+
+    // Test seam: when the Playwright spec opts in via
+    // `window.__EBB_DEMO_TEST_CONFIG__.exposeState`, expose a
+    // minimal test handle on `window.__EBB_DEMO_TEST_STATE__`.
+    // The conflict e2e reads `getRunIds()` to discover existing runs
+    // and `forceExtend(runId, text, hlc)` to dispatch a localExtend
+    // with a forced HLC — bypassing the auto-advance so two tabs can
+    // produce concurrent field updates without racing the clock.
+    // The handle is opt-in (only set when the test config requests
+    // it) and only exposes what the conflict scenario needs, so the
+    // audit surface stays small.
+    const exposeState = window.__EBB_DEMO_TEST_CONFIG__?.exposeState;
+    if (exposeState) {
+      const getRunIds = (): readonly string[] => {
+        const ids: string[] = [];
+        for (const [id, node] of doc.docState.nodes) {
+          if (id !== "ROOT" && !node.deleted) ids.push(id);
+        }
+        return ids;
+      };
+      window.__EBB_DEMO_TEST_STATE__ = {
+        docId,
+        actorId,
+        getRunIds,
+        forceExtend: (runId: string, appendText: string, hlc: string) => {
+          // localExtend accepts an `hlc` override; we use it to pin
+          // the HLC to a value the test controls so two tabs can
+          // produce concurrent updates without HLC drift.
+          return doc.localExtend({ runId, appendText, hlc: hlc as never });
+        },
+        flushPending: async () => {
+          const pending = doc.pendingActions();
+          if (pending.length === 0) return { rejected: [] };
+          return client.write(pending);
+        },
+        // Read-only snapshot of the presence map for the document.
+        // Useful for debugging tests that exercise the cursor/selection
+        // surfacing path.
+        getPresenceEntries: (): readonly {
+          actorId: string;
+          anchorId: string;
+          anchorOffset: number;
+        }[] => {
+          const entries = client.presence.forEntity(docId);
+          return Array.from(entries.values()).map((e) => ({
+            actorId: e.actorId,
+            anchorId: e.cursor.anchorId,
+            anchorOffset: e.cursor.anchorOffset,
+          }));
+        },
+      };
+    }
     client.presence.onUpdate(() => {
       // Force the ViewPlugin to rebuild decorations by dispatching
       // a no-op transaction. CM6 only re-runs ViewPlugin.update() on
