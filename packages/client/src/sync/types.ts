@@ -116,18 +116,8 @@ export type SSEEvent =
 /**
  * Control event payload. Today the server only emits one control event:
  * `{ reconnect: true, reason: "behind_watermark", catchUpFrom: <gsn> }`.
- * Future events may carry `group` / `nextOffset`.
- *
- * Previously typed as `{ reconnect?: boolean; ...; [key: string]: unknown }`.
- * The index signature widened every well-known key to `unknown`, forcing
- * downstream consumers (e.g. `SyncClient.handleControlEvent`) to narrow
- * values at runtime with `typeof x === "number"` checks before use. A
- * TypeBox schema gives the well-known keys their precise types while
- * letting the JSON parser reject malformed payloads.
- *
- * Unknown keys are silently dropped at parse time (rather than preserved
- * via an index signature); this matches how the rest of the wire schemas
- * in this file treat incoming JSON.
+ * Future events may carry `group` / `nextOffset`. Unknown keys are
+ * dropped at parse time.
  */
 export const ControlEventSchema = Type.Object({
   reconnect: Type.Optional(Type.Boolean()),
