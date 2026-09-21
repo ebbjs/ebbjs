@@ -9,6 +9,17 @@ pre-commit:
       glob: "**/*.{ts,tsx}"
       run: pnpm exec oxfmt --write {staged_files}
       stage_fixed: true
+    markdown-fmt:
+      # List form to work around a lefthook v2.1.5 bug where
+      # `**/*.{md,mdx}` (brace expansion) silently fails to match
+      # staged files. List form fires correctly with {staged_files}.
+      glob:
+        - "*.md"
+        - "**/*.md"
+        - "*.mdx"
+        - "**/*.mdx"
+      run: pnpm exec oxfmt --write {staged_files}
+      stage_fixed: true
     elixir-format:
       root: ebb_server
       glob:
@@ -23,12 +34,18 @@ pre-commit:
       glob:
         - "ebb_server/lib/**"
         - "ebb_server/test/**"
-      run: mix credo --strict
+      # `--files-excluded "test/**"` matches CI; see .github/workflows/ci.yml.
+      run: mix credo --strict --files-excluded "test/**"
 
 pre-push:
   runner: bash
   commands:
+    branch-name:
+      # Soft warning when current branch doesn't match CONTRIBUTING.md.
+      # Always exits 0; see scripts/check-branch-name.sh.
+      run: bash scripts/check-branch-name.sh
     elixir-test:
+      # Run on push (not commit) because the Elixir suite is slow.
       root: ebb_server
       glob:
         - "ebb_server/lib/**"

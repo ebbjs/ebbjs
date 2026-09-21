@@ -1,0 +1,9 @@
+# <type>(<scope>): <subject>          ← ≤72 chars, lowercase, imperative
+#
+# <body — explain why, not what>       ← wrap at 72 chars
+#
+# <footer>                             ← e.g. (#123) or BREAKING CHANGE: ...
+#
+# types: feat fix chore docs refactor test perf ci build style
+# --- COMMIT END ---
+# (delete everything above this line before committing)

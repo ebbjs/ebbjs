@@ -1,9 +1,10 @@
 FROM elixir:1.17-otp-27
 
-RUN apt-get update && apt-get install -y \
-    cmake libsnappy-dev libsqlite3-dev libz-dev \
-    libbz2-dev liblz4-dev libzstd-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Install system deps via the shared setup script (canonical source of truth).
+# Build from the repo root so `scripts/` resolves — e.g.:
+#   docker build -f ebb_server/Dockerfile .
+COPY scripts/setup-ebb-server.sh /tmp/setup-ebb-server.sh
+RUN bash /tmp/setup-ebb-server.sh && rm /tmp/setup-ebb-server.sh
 
 RUN useradd --create-home --shell /bin/bash app
 
