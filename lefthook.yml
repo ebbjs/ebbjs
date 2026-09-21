@@ -9,6 +9,17 @@ pre-commit:
       glob: "**/*.{ts,tsx}"
       run: pnpm exec oxfmt --write {staged_files}
       stage_fixed: true
+    markdown-fmt:
+      # List form to work around a lefthook v2.1.5 bug where
+      # `**/*.{md,mdx}` (brace expansion) silently fails to match
+      # staged files. List form fires correctly with {staged_files}.
+      glob:
+        - "*.md"
+        - "**/*.md"
+        - "*.mdx"
+        - "**/*.mdx"
+      run: pnpm exec oxfmt --write {staged_files}
+      stage_fixed: true
     elixir-format:
       root: ebb_server
       glob:
