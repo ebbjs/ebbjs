@@ -236,7 +236,12 @@ jobs:
           # stale release built from a different source snapshot under
           # an older key. We want a full rebuild whenever the key
           # changes.
-          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
+          #
+          # The `v2-` prefix invalidates the pre-fix cache (where the
+          # OLD release was saved under the source-hashed key by a
+          # previous run's restore-keys fallback). Bump on any future
+          # cache-breaking change.
+          key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
 
   # ─────────────────────────────────────────────────────────
   # TypeScript jobs
@@ -299,7 +304,7 @@ jobs:
           # Must match the key in `elixir-release` (incl. lib/config
           # sources). No `restore-keys` — see elixir-release step for
           # the rationale. See #86.
-          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
+          key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm --recursive exec vitest --run --passWithNoTests
@@ -325,7 +330,7 @@ jobs:
           # Must match the key in `elixir-release` (incl. lib/config
           # sources). No `restore-keys` — see elixir-release step for
           # the rationale. See #86.
-          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
+          key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Start ebb_server
