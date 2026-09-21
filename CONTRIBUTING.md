@@ -15,7 +15,7 @@
 - **types:** `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `perf`, `ci`, `build`, `style`
 - **scope** (in parens): the affected package or area, e.g. `(client)`, `(ebb_server)`, `(hooks)`
 - **subject:** lowercase, imperative mood, no trailing period, ≤72 chars
-- **body:** explain *why*, not *what*; wrap at 72 chars
+- **body:** explain _why_, not _what_; wrap at 72 chars
 - **footer:** `(#NN)` for issue references, `BREAKING CHANGE:` notes for breaking changes
 
 The template at `.gitmessage` is wired into `prepare` and applied automatically on `pnpm install`.
@@ -34,7 +34,7 @@ Examples:
 - `feat/issue-61-slice4-playwright-scenarios`
 - `chore/devex-cleanup`
 
-GitHub disallows `#` in branch names, so the issue number goes *after* the dash, not as `#40`.
+GitHub disallows `#` in branch names, so the issue number goes _after_ the dash, not as `#40`.
 
 The `pre-push` hook in `lefthook.yml` emits a soft warning for non-conforming names. The push is not blocked.
 
