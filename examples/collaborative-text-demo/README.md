@@ -6,8 +6,16 @@ Two tabs editing the same document see each other's keystrokes in real time, wit
 
 ## Run it
 
+From the repo root, one command starts both processes in the same pane:
+
 ```bash
-# Terminal 1: server
+pnpm dev
+```
+
+Or run them separately if you want isolated logs:
+
+```bash
+# Terminal 1: server (auto-reload on lib/ save)
 cd ebb_server && mix dev
 
 # Terminal 2: demo
