@@ -32,8 +32,7 @@ jobs:
           fi
           echo "Elixir $installed matches ebb_server/.tool-versions"
       - name: Install system dependencies
-        # Canonical list lives in scripts/setup-ebb-server.sh — keep in sync.
-        run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
+        run: sudo bash scripts/setup-ebb-server.sh
       - name: Cache deps and build
         uses: actions/cache@v4
         with:
@@ -85,8 +84,7 @@ jobs:
           fi
           echo "Elixir $installed matches ebb_server/.tool-versions"
       - name: Install system dependencies
-        # Canonical list lives in scripts/setup-ebb-server.sh — keep in sync.
-        run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
+        run: sudo bash scripts/setup-ebb-server.sh
       - name: Cache deps and build
         uses: actions/cache@v4
         with:
@@ -138,8 +136,7 @@ jobs:
           fi
           echo "Elixir $installed matches ebb_server/.tool-versions"
       - name: Install system dependencies
-        # Canonical list lives in scripts/setup-ebb-server.sh — keep in sync.
-        run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
+        run: sudo bash scripts/setup-ebb-server.sh
       - name: Cache deps and build
         uses: actions/cache@v4
         with:
@@ -196,8 +193,7 @@ jobs:
           fi
           echo "Elixir $installed matches ebb_server/.tool-versions"
       - name: Install system dependencies
-        # Canonical list lives in scripts/setup-ebb-server.sh — keep in sync.
-        run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
+        run: sudo bash scripts/setup-ebb-server.sh
       - name: Cache deps and build
         uses: actions/cache@v4
         with:
@@ -313,8 +309,7 @@ jobs:
           node-version: "22"
           cache: pnpm
       - name: Install system dependencies
-        # Canonical list lives in scripts/setup-ebb-server.sh — keep in sync.
-        run: sudo apt-get update && sudo apt-get install -y cmake libsnappy-dev libsqlite3-dev libz-dev libbz2-dev liblz4-dev libzstd-dev
+        run: sudo bash scripts/setup-ebb-server.sh
       - name: Restore release artifact
         uses: actions/cache@v4
         with:

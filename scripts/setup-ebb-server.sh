@@ -1,9 +1,13 @@
 #!/bin/bash
 #
 # Install system dependencies required to build ebb_server.
-# Canonical source of truth for the Elixir build environment;
-# the Dockerfile and .github/workflows/ci.yml keep their own
-# inline apt-get invocations but defer to this list.
+# Single source of truth for the Elixir build environment.
+# Called by:
+#   - `pnpm setup:ebb-server` for local dev (interactive)
+#   - `ebb_server/Dockerfile` for image builds (root, non-interactive)
+#   - `.github/workflows/ci.yml` Elixir jobs (root, non-interactive)
+#
+# The macOS branch is for local dev only; CI and Docker are Linux.
 #
 set -e
 
