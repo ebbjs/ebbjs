@@ -1,5 +1,6 @@
 FROM elixir:1.17-otp-27
 
+# Canonical list lives in scripts/setup-ebb-server.sh — keep in sync.
 RUN apt-get update && apt-get install -y \
     cmake libsnappy-dev libsqlite3-dev libz-dev \
     libbz2-dev liblz4-dev libzstd-dev \

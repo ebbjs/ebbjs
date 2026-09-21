@@ -23,12 +23,14 @@ pre-commit:
       glob:
         - "ebb_server/lib/**"
         - "ebb_server/test/**"
-      run: mix credo --strict
+      # `--files-excluded "test/**"` matches CI; see .github/workflows/ci.yml.
+      run: mix credo --strict --files-excluded "test/**"
 
 pre-push:
   runner: bash
   commands:
     elixir-test:
+      # Run on push (not commit) because the Elixir suite is slow.
       root: ebb_server
       glob:
         - "ebb_server/lib/**"
