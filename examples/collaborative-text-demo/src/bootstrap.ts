@@ -75,9 +75,6 @@ export async function bootstrap(opts: {
     );
   }
 
-  // eslint-disable-next-line no-console
-  console.log("[bootstrap] actor=", actorId, "handshake groups=", JSON.stringify(groupIds));
-
   // 4. Catch up — replay every committed action since GSN 0 so the
   // demo doc starts with the current state. Without this, a fresh
   // tab (even for an actor that was already connected in another
@@ -90,29 +87,12 @@ export async function bootstrap(opts: {
     // Hard cap as a safety net.
     for (let i = 0; i < 1000; i++) {
       const result = await client.catchUp(gid, cursor);
-      // eslint-disable-next-line no-console
-      console.log(
-        "[bootstrap] actor=",
-        actorId,
-        "gid=",
-        gid,
-        "catchUp iter=",
-        i,
-        "actions=",
-        result.actions.length,
-        "upToDate=",
-        result.upToDate,
-        "cursor=",
-        cursor,
-      );
       if (result.actions.length === 0) break;
       caughtUpActions.push(...result.actions);
       cursor += result.actions.length;
       if (result.upToDate) break;
     }
   }
-  // eslint-disable-next-line no-console
-  console.log("[bootstrap] actor=", actorId, "total caughtUp=", caughtUpActions.length);
 
   // The SSE subscription opened by Editor.tsx will move the state
   // machine to "live" once the stream connects — no need to set it

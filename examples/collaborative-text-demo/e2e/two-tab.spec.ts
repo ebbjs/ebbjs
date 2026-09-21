@@ -25,12 +25,6 @@ test.describe("two-tab collaborative editing", () => {
     const alicePage = await alice.newPage();
 
     // Surface browser console to test logs (CI only) so we can see
-    // what bootstrap / SSE / editor are doing when the test fails.
-    if (process.env.CI) {
-      drewPage.on("console", (msg) => console.log(`[drew console:${msg.type()}] ${msg.text()}`));
-      alicePage.on("console", (msg) => console.log(`[alice console:${msg.type()}] ${msg.text()}`));
-    }
-
     // Load the demo under two distinct actor identities via the
     // `?actor=` deep-link seed (the ActorPicker PR keeps the URL
     // parameter as a fallback).
