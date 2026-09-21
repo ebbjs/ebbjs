@@ -4,25 +4,6 @@ import { test, expect, openTwoActorTabs } from "./helpers";
  * Remote cursor presence — moving the cursor in tab 1 should show a
  * colored cursor caret + actor label in tab 2.
  *
- * ## Status — both tests currently skipped
- *
- * Both assertions are gated on a server-side presence broadcast bug
- * tracked in #98. With the editor listener fix from #97 landed,
- * drew's `POST /sync/presence` carries a valid run id after a
- * keystroke, but alice's `PresenceManager.forEntity(docId)` stays
- * empty — the broadcast path / SSE delivery is broken upstream of
- * any client-side listener.
- *
- * Both tests are therefore wrapped in `test.skip(...)` so CI goes
- * green while the spec stays in tree as the acceptance target for
- * #98. Whoever fixes #98 should:
- *
- *   1. Verify the bisect plan from #98 lands on a root cause.
- *   2. Remove the `test.skip` wrapper on each test.
- *   3. Run `pnpm test:e2e` and confirm both assertions pass.
- *
- * The test bodies themselves are unchanged — they are the spec.
- *
  * ## Background
  *
  * The presence implementation lives in two places:
@@ -43,8 +24,8 @@ import { test, expect, openTwoActorTabs } from "./helpers";
  * ## What this test does
  *
  * 1. Open the demo under `?actor=drew` and `?actor=alice`.
- * 2. Click into drew's editor (this dispatches a CM selection change
- *    → `sendLocalCursor` → `client.presence.setLocalCursor`).
+ * 2. Click into drew's editor and type a sentinel to materialize a
+ *    run before asserting on the cursor widget.
  * 3. Wait for drew's `POST /sync/presence` to round-trip through the
  *    server and arrive in alice's presence map.
  * 4. Wait for alice's CM6 ViewPlugin to re-render the cursor widget
@@ -54,31 +35,22 @@ import { test, expect, openTwoActorTabs } from "./helpers";
  *
  * - `setLocalCursor` is debounced 100ms. We wait the debounce window
  *   plus server round-trip plus SSE delivery plus CM render.
- * - The first click on an empty editor doesn't produce a "selection
- *   change" event in the conventional sense — the cursor lands at
- *   position 0/0, but CodeMirror does dispatch a transaction with
- *   `selectionSet: true`. Verified locally; the presence POST fires.
  * - The remote cursor renders as an inline-block widget of width 0
  *   (just the left border + label tag). The label has class
  *   `cm-remote-cursor-label`; we assert the actor id text inside it.
  */
 test.describe("remote cursor presence", () => {
-  // TODO(#98): remove the `.skip` once the server-side presence
-  // broadcast / SSE delivery bug is fixed. See the file header for
-  // un-skip instructions.
-  test.skip("drew's cursor appears as a colored caret + label in alice's tab", async ({
-    browser,
-  }) => {
+  test("drew's cursor appears as a colored caret + label in alice's tab", async ({ browser }) => {
     const { firstPage: drewPage, secondPage: alicePage } = await openTwoActorTabs(browser, {
       first: "drew",
       second: "alice",
     });
 
-    // Click into drew's editor. This dispatches a CM selection
-    // transaction; the bridge's updateListener calls sendLocalCursor,
-    // which feeds the debounced POST /sync/presence.
+    // Click into drew's editor and type a sentinel to materialize
+    // a run before asserting on the cursor widget.
     const drewEditor = drewPage.locator(".cm-content").first();
     await drewEditor.click();
+    await drewEditor.pressSequentially("a");
 
     // Wait for the remote cursor widget to render in alice's editor.
     // The widget is a span with class `cm-remote-cursor` (the cursor
@@ -102,9 +74,7 @@ test.describe("remote cursor presence", () => {
     ).toBeVisible();
   });
 
-  // TODO(#98): remove the `.skip` once the server-side presence
-  // broadcast / SSE delivery bug is fixed.
-  test.skip("cursor label updates when drew moves the cursor", async ({ browser }) => {
+  test("cursor label updates when drew moves the cursor", async ({ browser }) => {
     // Open two tabs and let them settle.
     const { firstPage: drewPage, secondPage: alicePage } = await openTwoActorTabs(browser, {
       first: "drew",

@@ -84,21 +84,44 @@ export class PresenceManager {
 
   /**
    * Open the SSE stream and start receiving remote presence events.
-   * Idempotent — safe to call multiple times. Typically called from
-   * the editor once bootstrap is done.
+   * Idempotent — safe to call multiple times. Reversible: a call
+   * after `dispose()` re-opens the stream (this is the StrictMode
+   * mount/unmount/remount cycle path; see `dispose()` for why).
+   *
+   * Typically called from the editor once bootstrap is done.
    */
   start(): void {
-    if (this.unsubscribed) return;
     if (this.streamUnsub) return;
+    // A prior `dispose()` left `unsubscribed === true`. Reset it so
+    // the iterator loop in `openStream()` doesn't bail out before
+    // delivering any events.
+    this.unsubscribed = false;
     void this.openStream();
   }
 
   /**
    * Detach the SSE listener and flush any pending send. Call from
    * `SyncClient.close()` paths.
+   *
+   * `dispose()` is reversible: subsequent `start()` calls re-open
+   * the SSE stream and resume receiving remote presence events.
+   * This matters under React 19 StrictMode, which intentionally
+   * mount-unmount-remounts every component to surface lifecycle
+   * bugs — the editor's first effect run calls `presence.start()`,
+   * the immediate-unmount cleanup calls `presence.dispose()`, then
+   * the re-mount calls `start()` again. Without reversibility, the
+   * second mount silently no-ops.
+   *
+   * Listeners are preserved across dispose/start so callbacks added
+   * by the Editor effect continue to fire after the restart.
    */
   dispose(): void {
-    if (this.unsubscribed) return;
+    if (this.unsubscribed) {
+      // Already torn down — nothing to do. Re-calling `dispose()`
+      // is idempotent so the StrictMode unmount-then-remount cycle
+      // doesn't accumulate state.
+      return;
+    }
     this.unsubscribed = true;
     if (this.pending !== null) {
       clearTimeout(this.pending);
@@ -106,7 +129,10 @@ export class PresenceManager {
     }
     this.streamUnsub?.();
     this.streamUnsub = null;
-    this.listeners.clear();
+    // Note: we deliberately do NOT clear `this.listeners` here.
+    // Editor's `client.presence.onUpdate(cb)` registers a callback
+    // that survives across the dispose/start cycle so the re-mount
+    // sees the same notification flow as the first mount.
   }
 
   /**

@@ -88,6 +88,10 @@ export const createIdMapField = (): StateField<readonly RunSpan[]> =>
 /**
  * Find the run that contains a given document position, using the
  * StateField. Returns `{ runId, offset, spanIndex }` or undefined.
+ *
+ * CodeMirror positions are in `[0, doc.length]` inclusive, so a
+ * position equal to the sum of all spans' lengths is still inside
+ * the last run.
  */
 export const getRunAtPosition = (
   state: { field: <T>(f: StateField<T>) => T },
@@ -98,7 +102,7 @@ export const getRunAtPosition = (
   let cumulative = 0;
   for (let i = 0; i < spans.length; i++) {
     const span = spans[i]!;
-    if (position < cumulative + span.length) {
+    if (position <= cumulative + span.length) {
       return { runId: span.runId, offset: position - cumulative, spanIndex: i };
     }
     cumulative += span.length;
@@ -109,6 +113,9 @@ export const getRunAtPosition = (
 /**
  * Compute the document position of a given (runId, offsetWithinRun).
  * Returns undefined if the run is not visible in the current spans.
+ *
+ * `offset` may equal `span.length` — that's the position immediately
+ * past the last character of the run, a legitimate cursor position.
  */
 export const getPositionOfRun = (
   state: { field: <T>(f: StateField<T>) => T },
@@ -120,7 +127,7 @@ export const getPositionOfRun = (
   let cumulative = 0;
   for (const span of spans) {
     if (span.runId === runId) {
-      if (offset >= span.length) return undefined;
+      if (offset > span.length) return undefined;
       return cumulative + offset;
     }
     cumulative += span.length;

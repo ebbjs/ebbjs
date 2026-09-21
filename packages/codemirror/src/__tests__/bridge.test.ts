@@ -162,7 +162,11 @@ describe("bridge helpers", () => {
       offset: 2,
       spanIndex: 1,
     });
-    expect(getRunAtPosition(seeded, 8, idMapField)).toBeUndefined();
+    expect(getRunAtPosition(seeded, 8, idMapField)).toEqual({
+      runId: "b",
+      offset: 3,
+      spanIndex: 1,
+    });
   });
 
   it("getPositionOfRun via StateField", () => {
@@ -184,6 +188,17 @@ describe("bridge helpers", () => {
     expect(getPositionOfRun(seeded, "missing", 0, idMapField)).toBeUndefined();
     // Offset beyond run length is rejected.
     expect(getPositionOfRun(seeded, "a", 100, idMapField)).toBeUndefined();
+  });
+
+  it("getPositionOfRun accepts offset === span.length (end-of-run cursor)", () => {
+    const idMapField = createIdMapField();
+    const seeded = EditorState.create({
+      doc: "",
+      extensions: [idMapField],
+    }).update({
+      effects: setIdMapEffect.of([{ runId: "a", length: 5 }]),
+    }).state;
+    expect(getPositionOfRun(seeded, "a", 5, idMapField)).toBe(5);
   });
 });
 
@@ -517,5 +532,55 @@ describe("isRemote annotation", () => {
     // shape we rely on.
     expect(isRemote).toBeDefined();
     expect(typeof (isRemote as unknown as { of: (v: boolean) => unknown }).of).toBe("function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getRunAtPosition end-of-doc positions
+// ---------------------------------------------------------------------------
+
+describe("getRunAtPosition at end of doc", () => {
+  it("returns the last run when position equals the total span length", () => {
+    const idMapField = createIdMapField();
+    const seeded = EditorState.create({
+      doc: "",
+      extensions: [idMapField],
+    }).update({
+      effects: setIdMapEffect.of([
+        { runId: "a", length: 5 },
+        { runId: "b", length: 3 },
+      ]),
+    }).state;
+    expect(getRunAtPosition(seeded, 8, idMapField)).toEqual({
+      runId: "b",
+      offset: 3,
+      spanIndex: 1,
+    });
+  });
+
+  it("returns the only run when position equals its length (single-run doc)", () => {
+    const idMapField = createIdMapField();
+    const seeded = EditorState.create({
+      doc: "",
+      extensions: [idMapField],
+    }).update({
+      effects: setIdMapEffect.of([{ runId: "solo", length: 5 }]),
+    }).state;
+    expect(getRunAtPosition(seeded, 5, idMapField)).toEqual({
+      runId: "solo",
+      offset: 5,
+      spanIndex: 0,
+    });
+  });
+
+  it("still returns undefined for positions past the total span length", () => {
+    const idMapField = createIdMapField();
+    const seeded = EditorState.create({
+      doc: "",
+      extensions: [idMapField],
+    }).update({
+      effects: setIdMapEffect.of([{ runId: "a", length: 5 }]),
+    }).state;
+    expect(getRunAtPosition(seeded, 6, idMapField)).toBeUndefined();
   });
 });
