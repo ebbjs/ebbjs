@@ -116,16 +116,17 @@ export type SSEEvent =
 /**
  * Control event payload. Today the server only emits one control event:
  * `{ reconnect: true, reason: "behind_watermark", catchUpFrom: <gsn> }`.
- * Future events may carry `group` / `nextOffset`.
+ * Future events may carry `group` / `nextOffset`. Unknown keys are
+ * dropped at parse time.
  */
-export type ControlEvent = {
-  reconnect?: boolean;
-  reason?: string;
-  catchUpFrom?: number;
-  group?: string;
-  nextOffset?: number;
-  [key: string]: unknown;
-};
+export const ControlEventSchema = Type.Object({
+  reconnect: Type.Optional(Type.Boolean()),
+  reason: Type.Optional(Type.String()),
+  catchUpFrom: Type.Optional(Type.Number()),
+  group: Type.Optional(Type.String()),
+  nextOffset: Type.Optional(Type.Number()),
+});
+export type ControlEvent = Static<typeof ControlEventSchema>;
 
 /** Presence event payload as forwarded by the server. */
 export interface PresenceEvent {
