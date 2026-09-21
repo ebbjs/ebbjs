@@ -227,9 +227,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: packages/server/dist/ebb_server
-          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}
-          restore-keys: |
-            release-${{ runner.os }}-${{ runner.arch }}-
+          # Key on sources (not just mix.lock) so .ex changes
+          # invalidate; no restore-keys so a stale release can't
+          # sneak in via prefix match. v2- busts the pre-fix cache.
+          key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
 
   # ─────────────────────────────────────────────────────────
   # TypeScript jobs
@@ -289,9 +290,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: packages/server/dist/ebb_server
-          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}
-          restore-keys: |
-            release-${{ runner.os }}-${{ runner.arch }}-
+          # Key must match elixir-release. v2- busts pre-fix cache.
+          key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm --recursive exec vitest --run --passWithNoTests
@@ -314,9 +314,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: packages/server/dist/ebb_server
-          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}
-          restore-keys: |
-            release-${{ runner.os }}-${{ runner.arch }}-
+          # Key must match elixir-release. v2- busts pre-fix cache.
+          key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Start ebb_server
