@@ -51,6 +51,13 @@ PR body uses [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.
 - **Bug reports:** [`.github/ISSUE_TEMPLATE/bug.md`](.github/ISSUE_TEMPLATE/bug.md)
 - **Feature requests:** [`.github/ISSUE_TEMPLATE/feature.md`](.github/ISSUE_TEMPLATE/feature.md)
 
+## Code Style
+
+- Prefer functional style over OO: pure functions, immutable data,
+  avoid class hierarchies and inheritance.
+- Comments document intent for future maintainers. Don't narrate
+  what the code does or explain choices visible in the code.
+
 ## Local setup
 
 ```bash
