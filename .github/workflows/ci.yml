@@ -363,3 +363,41 @@ jobs:
             pkill -f 'packages/server/dist/ebb_server/bin/ebb_server' 2>/dev/null || true
             rm -f /tmp/ebb_server.pid
           fi
+
+  playwright-e2e:
+    name: Playwright e2e (collaborative-text-demo)
+    runs-on: ubuntu-latest
+    needs: elixir-release
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - name: Restore release artifact
+        uses: actions/cache@v4
+        with:
+          path: packages/server/dist/ebb_server
+          # Key must match elixir-release. v2- busts pre-fix cache.
+          key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
+      - name: Install OS deps for Chromium
+        run: sudo apt-get update && sudo apt-get install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2t64
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Install Playwright browsers
+        run: pnpm --filter collaborative-text-demo exec playwright install chromium
+      - name: Run Playwright tests
+        # The webServer entries in playwright.config.ts manage their
+        # own lifecycle (start `ebb_server` + `pnpm dev`, wait for
+        # readiness, stop on exit). One worker to avoid port-4000
+        # collisions between parallel test files.
+        run: pnpm --filter collaborative-text-demo test:e2e
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: examples/collaborative-text-demo/playwright-report
+          retention-days: 7
