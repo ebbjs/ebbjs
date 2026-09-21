@@ -5,6 +5,7 @@ export { COUNTER_BITS, COUNTER_MASK, MAX_FUTURE_DRIFT_MS, MAX_PAST_DRIFT_MS } fr
 export { createClock, localEvent, receiveRemoteHLC } from "./clock";
 
 export { pack, unpack, parse, format } from "./pack";
+export { makeHlc } from "./make";
 
 export { compare, isBefore, isAfter } from "./compare";
 

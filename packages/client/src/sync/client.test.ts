@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createClient } from "./client";
-import { decodeSync } from "@ebbjs/core";
+import { decodeSync, makeHlc } from "@ebbjs/core";
 import { makeFetchMock } from "./test-utils";
 
 describe("SyncClient.handshake", () => {
@@ -90,7 +90,7 @@ describe("SyncClient.catchUp", () => {
       {
         id: "act_1",
         actor_id: "a_test",
-        hlc: 1711036800000000,
+        hlc: makeHlc(1711036800000),
         gsn: 1,
         updates: [
           {
@@ -101,7 +101,7 @@ describe("SyncClient.catchUp", () => {
             // User entities nest their fields under `data.fields` to mirror
             // `EbbServer.Storage.ActionValidator.well_formed_data?/1`.
             data: {
-              fields: { title: { value: "Hello", update_id: "u_1", hlc: 1711036800000000 } },
+              fields: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
             } as never,
           },
         ],
@@ -109,7 +109,7 @@ describe("SyncClient.catchUp", () => {
       {
         id: "act_2",
         actor_id: "a_test",
-        hlc: 1711036800000001,
+        hlc: makeHlc(1711036800000, 1),
         gsn: 2,
         updates: [
           {
@@ -118,7 +118,9 @@ describe("SyncClient.catchUp", () => {
             subject_type: "todo",
             method: "patch",
             data: {
-              fields: { title: { value: "Updated", update_id: "u_2", hlc: 1711036800000001 } },
+              fields: {
+                title: { value: "Updated", update_id: "u_2", hlc: makeHlc(1711036800000, 1) },
+              },
             } as never,
           },
         ],
@@ -222,7 +224,7 @@ describe("SyncClient.write", () => {
       {
         id: "act_ok",
         actor_id: "a_test",
-        hlc: "1711036800000000",
+        hlc: makeHlc(1711036800000),
         gsn: 0,
         updates: [
           {
@@ -230,14 +232,14 @@ describe("SyncClient.write", () => {
             subject_id: "todo_1",
             subject_type: "todo",
             method: "put",
-            data: { title: { value: "Hello", update_id: "u_1", hlc: "1711036800000000" } },
+            data: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
           },
         ],
       },
       {
         id: "act_bad",
         actor_id: "a_test",
-        hlc: "1711036800000001",
+        hlc: makeHlc(1711036800000, 1),
         gsn: 0,
         updates: [
           {
