@@ -1,18 +1,9 @@
 /**
- * In-app actor identity selector.
- *
- * Replaces the previous `?actor=` URL-parameter mechanism as the
- * primary way to pick which identity the demo connects under. The URL
- * parameter is still honored as an initial deep-link seed (see
- * `App.readInitialActor`), but the picker overrides it at runtime
- * without modifying the URL — so two-tab demos can keep using
- * `?actor=drew` / `?actor=alice` deep links without each tab having to
- * be reloaded.
- *
- * UI: a dropdown of known actors (drew, alice, bob) plus an
- * inline free-text input for custom identities. Selecting from the
- * dropdown or pressing Enter in the custom field commits the choice
- * and triggers an `onChange`, which `App` translates into a full
+ * In-app actor identity selector. Replaces the previous `?actor=`
+ * URL-parameter mechanism; the URL param is still honored as an
+ * initial deep-link seed in `App.readInitialActor`. UI: a dropdown
+ * of known actors + an inline free-text input for custom strings;
+ * both trigger `onChange`, which `App` translates into a full
  * re-bootstrap.
  */
 
@@ -20,11 +11,6 @@ import { useState, useEffect, useRef } from "react";
 
 export const KNOWN_ACTORS = ["drew", "alice", "bob"] as const;
 export type KnownActor = (typeof KNOWN_ACTORS)[number];
-/**
- * Actor identity — any non-empty string. Known actors are
- * {@link KnownActor}s; custom actors are arbitrary user-supplied
- * strings (free-text input).
- */
 export type ActorId = KnownActor | (string & {});
 
 export function ActorPicker({
