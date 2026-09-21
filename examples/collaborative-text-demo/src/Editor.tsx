@@ -59,6 +59,15 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
     for (const action of caughtUpActions) {
       doc.applyActions([action]);
     }
+    // eslint-disable-next-line no-console
+    console.log(
+      "[editor] actor=",
+      actorId,
+      "after-bootstrap: doc.text=",
+      JSON.stringify(doc.text),
+      "caughtUpActions=",
+      caughtUpActions.length,
+    );
 
     // Stash a ref so the bridge extension can read the view at runtime
     // (the listener fires synchronously inside CM dispatch). The
@@ -160,7 +169,23 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
     // header (fetch-based, works the same in browser and Node).
     const unsubscribe = client.subscribe(groupIds, 0, (event) => {
       if (event.type === "data") {
+        const before = doc.text;
+        // eslint-disable-next-line no-console
+        console.log(
+          "[editor] SSE data: gsn=",
+          event.action.gsn,
+          "doc.text-before=",
+          JSON.stringify(before),
+        );
         doc.applyActions([event.action]);
+        const after = doc.text;
+        // eslint-disable-next-line no-console
+        console.log(
+          "[editor] after applyActions: doc.text=",
+          JSON.stringify(after),
+          "cm-text=",
+          JSON.stringify(view.state.doc.toString()),
+        );
       } else if (event.type === "control" && (event.control as { reconnect?: boolean }).reconnect) {
         // Server told us our cursor is stale — let subscribe's
         // own retry logic handle the reconnect; just log.
