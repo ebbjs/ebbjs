@@ -11,10 +11,39 @@ import { test, expect } from "@playwright/test";
  * connection-state, bootstrap-catchUp, actor-picker) build on the same
  * scaffolding and will be added in follow-up PRs.
  *
- * Why a fresh `data dir` per run: the demo's bootstrap seeds a default
- * group + member + doc on first request. Reusing a previous run's
- * state would mask actor-isolation regressions (e.g., a leaked group
- * membership from a prior run masking a missing addMember call).
+ * ## Regression coverage (#86)
+ *
+ * This test is the canary for a server-side SSE bug that previously
+ * hung the second of two simultaneous subscribers. The `SSEConnection`
+ * GenServer used to register itself with the global name `__MODULE__`,
+ * so the first `/sync/live` succeeded but every subsequent one
+ * crashed with `:already_started` before it ever wrote a chunk. The
+ * client saw HTTP 200 + headers, then no events — drew's typed text
+ * never reached alice. PR #50 removed the global-name registration;
+ * PR #87 fixed the CI release cache so the fix actually shipped.
+ *
+ * The two assertions that catch this exact failure mode:
+ *
+ * 1. `await expect(alicePage.getByText("live")).toBeVisible()` —
+ *    alice's "live" badge requires her SSE to actually connect.
+ *    A `:already_started` crash leaves the state machine in
+ *    `reconnecting`, not `live`, so this assertion times out.
+ * 2. The final `toContainText(sentinel)` — even if the badge
+ *    somehow reaches "live" through a stale state, the SSE-delivered
+ *    action is what populates alice's editor.
+ *
+ * If a future change re-introduces the global-name registration (or
+ * any other regression that prevents a second subscriber from
+ * receiving events), this test fails fast.
+ *
+ * ## Fresh data dir per run
+ *
+ * The demo's bootstrap seeds a default group + member + doc on first
+ * request. The `webServer` entry in `playwright.config.ts` does
+ * `rm -rf` on the data dir before starting, so each CI run starts
+ * from a known state. Reusing a previous run's state would mask
+ * actor-isolation regressions (e.g., a leaked group membership from
+ * a prior run masking a missing addMember call).
  */
 test.describe("two-tab collaborative editing", () => {
   test("text typed in tab 1 appears in tab 2 within a few seconds", async ({ browser }) => {
