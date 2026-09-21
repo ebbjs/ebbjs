@@ -65,6 +65,8 @@ export class SyncClient {
   /** Reconnect bookkeeping. */
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Resolver invoked when the reconnect timer fires or is cleared. */
+  private reconnectTimerResolve: (() => void) | null = null;
   /** Latest per-group cursors, refreshed by `catchUp` and SSE receipt. */
   private groupCursors: Map<string, number> = new Map();
   /** TextDocument registry (one document per docId, per actor). */
@@ -350,6 +352,9 @@ export class SyncClient {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+      const resolve = this.reconnectTimerResolve;
+      this.reconnectTimerResolve = null;
+      if (resolve) resolve();
     }
     if (this.activeSub) {
       this.cancelSubscription(this.activeSub);
@@ -390,37 +395,74 @@ export class SyncClient {
 
   private async runSubscriptionLoop(sub: ActiveSubscription): Promise<void> {
     while (!sub.cancelled) {
-      const cursor = await this.computeResumeCursor(sub);
-      try {
-        const stream = openSSEStream({
-          serverUrl: this.serverUrl,
-          groupIds: sub.groupIds,
-          cursor,
-          actorId: this.actorId,
-          fetchImpl: this.fetchImpl,
-        });
-        sub.stream = stream;
-
-        // Reset backoff on successful open.
-        this.reconnectAttempt = 0;
-        this.stateMachine.transition("live");
-
-        for await (const event of stream.events()) {
-          if (sub.cancelled) break;
-          await this.handleSSEEvent(event, sub);
-        }
-
-        // Stream ended without being cancelled → treat as a transient drop.
-        if (!sub.cancelled) {
-          this.scheduleReconnect(sub, "stream closed by server");
-        }
-      } catch (err) {
-        if (sub.cancelled) return;
-        this.scheduleReconnect(sub, errorMessage(err));
-      } finally {
-        this.closeStream(sub);
-      }
+      const reason = await this.connectAndDrain(sub);
+      if (sub.cancelled) return;
+      // Hand off to the backoff state machine. The loop only re-enters
+      // after `scheduleReconnect`'s timer fires (or never, if we've
+      // exceeded the attempt cap). This prevents the previous bug where
+      // `while (!sub.cancelled)` re-iterated synchronously after
+      // `closeStream`, hammering the server instead of waiting out the
+      // intended backoff.
+      const result = this.scheduleReconnect(sub, reason);
+      if (result === "giveup" || result === "cancelled") return;
+      // Wait for the timer (resolved by the setTimeout callback, or
+      // rejected by `cancelSubscription` clearing the timer).
+      await this.waitForReconnectTimer();
     }
+  }
+
+  /**
+   * Open the SSE stream, drain events until the stream closes or errors,
+   * and return a short reason string for logging. The stream is always
+   * closed in `finally`. Does NOT schedule a reconnect — that's the
+   * caller's responsibility.
+   */
+  private async connectAndDrain(sub: ActiveSubscription): Promise<string> {
+    try {
+      const cursor = await this.computeResumeCursor(sub);
+      const stream = openSSEStream({
+        serverUrl: this.serverUrl,
+        groupIds: sub.groupIds,
+        cursor,
+        actorId: this.actorId,
+        fetchImpl: this.fetchImpl,
+      });
+      sub.stream = stream;
+      this.stateMachine.transition("live");
+
+      // Reset backoff only after we've successfully received at least
+      // one event from the server — opening the stream object is not
+      // proof of a healthy connection (the fetch can resolve 5xx and
+      // `openSSEStream` will still return; the error surfaces only
+      // when the iterator drains). Resetting on `transition("live")`
+      // used to defeat the attempt cap (every iteration reset to 0
+      // before `scheduleReconnect` could increment past 1).
+      let sawEvent = false;
+      for await (const event of stream.events()) {
+        if (sub.cancelled) break;
+        if (!sawEvent) {
+          this.reconnectAttempt = 0;
+          sawEvent = true;
+        }
+        await this.handleSSEEvent(event, sub);
+      }
+      return sub.cancelled ? "cancelled" : "stream closed by server";
+    } catch (err) {
+      return errorMessage(err);
+    } finally {
+      this.closeStream(sub);
+    }
+  }
+
+  /**
+   * Wait for the pending reconnect timer (if any) to fire or be cleared.
+   * Resolves immediately if no timer is pending.
+   */
+  private waitForReconnectTimer(): Promise<void> {
+    if (!this.reconnectTimer) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.reconnectTimerResolve = resolve;
+    });
   }
 
   private async handleSSEEvent(event: SSEEvent, sub: ActiveSubscription): Promise<void> {
@@ -481,13 +523,27 @@ export class SyncClient {
     return sub.fromGsn;
   }
 
-  private scheduleReconnect(sub: ActiveSubscription, reason: string): void {
-    if (sub.cancelled) return;
+  /**
+   * Compute the next backoff delay and arm a timer. The result tells
+   * the caller what to do next:
+   *   - `"wait"`: timer armed, caller should `await` it before retrying
+   *   - `"giveup"`: max attempts exceeded, caller should exit the loop
+   *   - `"cancelled"`: subscription was cancelled, caller should exit
+   *
+   * This no longer closes the stream itself — `connectAndDrain` does
+   * that in its `finally` block. The state transition to `"live"` is
+   * already done by `connectAndDrain` after a successful open.
+   */
+  private scheduleReconnect(
+    sub: ActiveSubscription,
+    reason: string,
+  ): "wait" | "giveup" | "cancelled" {
+    if (sub.cancelled) return "cancelled";
     if (this.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
       // eslint-disable-next-line no-console
       console.error(`[SyncClient] giving up after ${MAX_RECONNECT_ATTEMPTS} reconnect attempts`);
       this.stateMachine.transition("offline");
-      return;
+      return "giveup";
     }
     const delay = Math.min(
       this.reconnectMaxMs,
@@ -499,14 +555,16 @@ export class SyncClient {
     console.warn(
       `[SyncClient] SSE ${reason}; reconnecting in ${delay}ms (attempt ${this.reconnectAttempt})`,
     );
-    // Close the current stream so the for-await loop exits and the outer
-    // `while (!sub.cancelled)` re-enters to open a fresh stream.
-    this.closeStream(sub);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      if (sub.cancelled) return;
-      this.stateMachine.transition("connecting");
+      const resolve = this.reconnectTimerResolve;
+      this.reconnectTimerResolve = null;
+      if (resolve) resolve();
+      if (!sub.cancelled) {
+        this.stateMachine.transition("connecting");
+      }
     }, delay);
+    return "wait";
   }
 
   private cancelSubscription(sub: ActiveSubscription): void {
@@ -518,6 +576,11 @@ export class SyncClient {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+      // Wake up `runSubscriptionLoop` so it observes `sub.cancelled`
+      // and exits, instead of waiting on a dead timer.
+      const resolve = this.reconnectTimerResolve;
+      this.reconnectTimerResolve = null;
+      if (resolve) resolve();
     }
     this.stateMachine.transition("offline");
   }
