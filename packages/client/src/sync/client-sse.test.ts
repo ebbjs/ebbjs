@@ -17,7 +17,7 @@ describe("SyncClient.subscribe (SSE)", () => {
     const action: Action = {
       id: "act_1",
       actor_id: "a_alice",
-      hlc: "1711036800000:0",
+      hlc: "112134507724800000",
       gsn: 1,
       updates: [
         {
@@ -28,7 +28,7 @@ describe("SyncClient.subscribe (SSE)", () => {
           // User entities nest their fields under `data.fields` (mirrors
           // `EbbServer.Storage.ActionValidator.well_formed_data?/1`).
           data: {
-            fields: { title: { value: "Live", update_id: "u_1", hlc: "1711036800000:0" } },
+            fields: { title: { value: "Live", update_id: "u_1", hlc: "112134507724800000" } },
           } as never,
         },
       ],
@@ -101,7 +101,7 @@ describe("SyncClient.subscribe (SSE)", () => {
     const action: Action = {
       id: "act_sse",
       actor_id: "a_other",
-      hlc: "1711036800000:0",
+      hlc: "112134507724800000",
       gsn: 5,
       updates: [
         {
@@ -112,7 +112,7 @@ describe("SyncClient.subscribe (SSE)", () => {
           // User entities nest their fields under `data.fields` (mirrors
           // `EbbServer.Storage.ActionValidator.well_formed_data?/1`).
           data: {
-            fields: { x: { value: 1, update_id: "u_sse", hlc: "1711036800000:0" } },
+            fields: { x: { value: 1, update_id: "u_sse", hlc: "112134507724800000" } },
           } as never,
         },
       ],

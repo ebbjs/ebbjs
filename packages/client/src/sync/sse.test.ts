@@ -84,7 +84,7 @@ describe("applyAction", () => {
     const action: Action = {
       id: "a_1",
       actor_id: "a_user",
-      hlc: "1711036800000:0",
+      hlc: "112134507724800000",
       gsn: 1,
       updates: [
         {
@@ -93,7 +93,7 @@ describe("applyAction", () => {
           subject_type: "todo",
           method: "put",
           data: {
-            fields: { title: { value: "Hello", update_id: "u_1", hlc: "1711036800000:0" } },
+            fields: { title: { value: "Hello", update_id: "u_1", hlc: "112134507724800000" } },
           } as never,
         },
       ],
@@ -110,7 +110,7 @@ describe("applyAction", () => {
     const action: Action = {
       id: "a_1",
       actor_id: "a_user",
-      hlc: "1711036800000:0",
+      hlc: "112134507724800000",
       gsn: 5,
       updates: [
         {
@@ -119,7 +119,7 @@ describe("applyAction", () => {
           subject_type: "todo",
           method: "put",
           data: {
-            fields: { title: { value: "Hello", update_id: "u_1", hlc: "1711036800000:0" } },
+            fields: { title: { value: "Hello", update_id: "u_1", hlc: "112134507724800000" } },
           } as never,
         },
       ],
@@ -133,7 +133,7 @@ describe("applyAction", () => {
     const action: Action = {
       id: "a_1",
       actor_id: "a_user",
-      hlc: "1711036800000:0",
+      hlc: "112134507724800000",
       gsn: 0,
       updates: [],
     };
@@ -146,7 +146,7 @@ describe("applyAction", () => {
     const action: Action = {
       id: "a_1",
       actor_id: "a_user",
-      hlc: "1711036800000:0",
+      hlc: "112134507724800000",
       gsn: 1,
       updates: [
         {
@@ -155,7 +155,7 @@ describe("applyAction", () => {
           subject_type: "todo",
           method: "put",
           data: {
-            fields: { title: { value: "Hello", update_id: "u_1", hlc: "1711036800000:0" } },
+            fields: { title: { value: "Hello", update_id: "u_1", hlc: "112134507724800000" } },
           } as never,
         },
         {
@@ -164,7 +164,7 @@ describe("applyAction", () => {
           subject_type: "todo",
           method: "put",
           data: {
-            fields: { title: { value: "World", update_id: "u_2", hlc: "1711036800000:1" } },
+            fields: { title: { value: "World", update_id: "u_2", hlc: "112134507724800001" } },
           } as never,
         },
       ],
@@ -172,5 +172,62 @@ describe("applyAction", () => {
     const affected = await applyAction(storage, action);
     expect(affected).toHaveLength(2);
     expect(await storage.cursors.get("grp_1")).toBeNull();
+  });
+});
+
+// Exercises the patch path that calls `compare(existingValue.hlc,
+// patchValue.hlc)` internally — confirms the packed-BigInt HLC
+// fixtures round-trip through parse → compare → BigInt without
+// throwing.
+describe("applyAction HLC handling", () => {
+  it("applies a patch with packed BigInt HLCs without throwing", async () => {
+    const storage = createMemoryAdapter();
+    const putAction: Action = {
+      id: "a_put",
+      actor_id: "a_user",
+      hlc: "112134507724800000",
+      gsn: 1,
+      updates: [
+        {
+          id: "u_put",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "put",
+          data: {
+            fields: {
+              title: { value: "Hello", update_id: "u_put", hlc: "112134507724800000" },
+            },
+          } as never,
+        },
+      ],
+    };
+    const patchAction: Action = {
+      id: "a_patch",
+      actor_id: "a_user",
+      hlc: "112134507724800001",
+      gsn: 2,
+      updates: [
+        {
+          id: "u_patch",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "patch",
+          data: {
+            fields: {
+              title: { value: "Updated", update_id: "u_patch", hlc: "112134507724800001" },
+            },
+          } as never,
+        },
+      ],
+    };
+    await applyAction(storage, putAction, "grp_1");
+    // The patch calls `compare(existingValue.hlc, patchValue.hlc)` inside
+    // `mergeFields`. With the old `${ms}:0` strings, `BigInt()` threw
+    // `SyntaxError` here. With packed HLCs, it parses cleanly and the
+    // patch lands.
+    await expect(applyAction(storage, patchAction, "grp_1")).resolves.not.toThrow();
+    const entity = await storage.entities.get("todo_1");
+    expect(entity).not.toBeNull();
+    expect((entity!.data.fields.title as { value: unknown }).value).toBe("Updated");
   });
 });
