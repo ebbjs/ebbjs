@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { parseSSEBlock } from "./sse";
 import { createMemoryAdapter } from "@ebbjs/storage";
 import { applyAction } from "./storage";
-import type { Action } from "@ebbjs/core";
+import { makeHlc, type Action } from "@ebbjs/core";
 
 describe("parseSSEBlock", () => {
   it("parses a data event", () => {
@@ -84,7 +84,7 @@ describe("applyAction", () => {
     const action: Action = {
       id: "a_1",
       actor_id: "a_user",
-      hlc: "112134507724800000",
+      hlc: makeHlc(1711036800000),
       gsn: 1,
       updates: [
         {
@@ -93,7 +93,7 @@ describe("applyAction", () => {
           subject_type: "todo",
           method: "put",
           data: {
-            fields: { title: { value: "Hello", update_id: "u_1", hlc: "112134507724800000" } },
+            fields: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
           } as never,
         },
       ],
@@ -110,7 +110,7 @@ describe("applyAction", () => {
     const action: Action = {
       id: "a_1",
       actor_id: "a_user",
-      hlc: "112134507724800000",
+      hlc: makeHlc(1711036800000),
       gsn: 5,
       updates: [
         {
@@ -119,7 +119,7 @@ describe("applyAction", () => {
           subject_type: "todo",
           method: "put",
           data: {
-            fields: { title: { value: "Hello", update_id: "u_1", hlc: "112134507724800000" } },
+            fields: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
           } as never,
         },
       ],
@@ -133,7 +133,7 @@ describe("applyAction", () => {
     const action: Action = {
       id: "a_1",
       actor_id: "a_user",
-      hlc: "112134507724800000",
+      hlc: makeHlc(1711036800000),
       gsn: 0,
       updates: [],
     };
@@ -146,7 +146,7 @@ describe("applyAction", () => {
     const action: Action = {
       id: "a_1",
       actor_id: "a_user",
-      hlc: "112134507724800000",
+      hlc: makeHlc(1711036800000),
       gsn: 1,
       updates: [
         {
@@ -155,7 +155,7 @@ describe("applyAction", () => {
           subject_type: "todo",
           method: "put",
           data: {
-            fields: { title: { value: "Hello", update_id: "u_1", hlc: "112134507724800000" } },
+            fields: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
           } as never,
         },
         {
@@ -164,7 +164,7 @@ describe("applyAction", () => {
           subject_type: "todo",
           method: "put",
           data: {
-            fields: { title: { value: "World", update_id: "u_2", hlc: "112134507724800001" } },
+            fields: { title: { value: "World", update_id: "u_2", hlc: makeHlc(1711036800000, 1) } },
           } as never,
         },
       ],
@@ -185,7 +185,7 @@ describe("applyAction HLC handling", () => {
     const putAction: Action = {
       id: "a_put",
       actor_id: "a_user",
-      hlc: "112134507724800000",
+      hlc: makeHlc(1711036800000),
       gsn: 1,
       updates: [
         {
@@ -195,7 +195,7 @@ describe("applyAction HLC handling", () => {
           method: "put",
           data: {
             fields: {
-              title: { value: "Hello", update_id: "u_put", hlc: "112134507724800000" },
+              title: { value: "Hello", update_id: "u_put", hlc: makeHlc(1711036800000) },
             },
           } as never,
         },
@@ -204,7 +204,7 @@ describe("applyAction HLC handling", () => {
     const patchAction: Action = {
       id: "a_patch",
       actor_id: "a_user",
-      hlc: "112134507724800001",
+      hlc: makeHlc(1711036800000, 1),
       gsn: 2,
       updates: [
         {
@@ -214,7 +214,7 @@ describe("applyAction HLC handling", () => {
           method: "patch",
           data: {
             fields: {
-              title: { value: "Updated", update_id: "u_patch", hlc: "112134507724800001" },
+              title: { value: "Updated", update_id: "u_patch", hlc: makeHlc(1711036800000, 1) },
             },
           } as never,
         },

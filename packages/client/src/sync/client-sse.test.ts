@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { createClient } from "./client";
 import { createMemoryAdapter } from "@ebbjs/storage";
-import type { Action } from "@ebbjs/core";
+import { makeHlc, type Action } from "@ebbjs/core";
 import type { SSEEvent } from "./types";
 
 /**
@@ -168,7 +168,7 @@ describe("SyncClient.subscribe (SSE)", () => {
     const putAction: Action = {
       id: "act_put",
       actor_id: "a_alice",
-      hlc: "1711036800000000",
+      hlc: makeHlc(1711036800000),
       gsn: 1,
       updates: [
         {
@@ -177,7 +177,7 @@ describe("SyncClient.subscribe (SSE)", () => {
           subject_type: "todo",
           method: "put",
           data: {
-            fields: { title: { value: "Hello", update_id: "u_put", hlc: "1711036800000000" } },
+            fields: { title: { value: "Hello", update_id: "u_put", hlc: makeHlc(1711036800000) } },
           } as never,
         },
       ],
@@ -185,7 +185,7 @@ describe("SyncClient.subscribe (SSE)", () => {
     const patchAction: Action = {
       id: "act_patch",
       actor_id: "a_alice",
-      hlc: "1711036800000001",
+      hlc: makeHlc(1711036800000, 1),
       gsn: 2,
       updates: [
         {
@@ -195,7 +195,7 @@ describe("SyncClient.subscribe (SSE)", () => {
           method: "patch",
           data: {
             fields: {
-              title: { value: "Updated", update_id: "u_patch", hlc: "1711036800000001" },
+              title: { value: "Updated", update_id: "u_patch", hlc: makeHlc(1711036800000, 1) },
             },
           } as never,
         },
@@ -221,7 +221,7 @@ describe("SyncClient.subscribe (SSE)", () => {
     const putAction: Action = {
       id: "act_put",
       actor_id: "a_alice",
-      hlc: "1711036800000000",
+      hlc: makeHlc(1711036800000),
       gsn: 1,
       updates: [
         {
@@ -230,7 +230,7 @@ describe("SyncClient.subscribe (SSE)", () => {
           subject_type: "todo",
           method: "put",
           data: {
-            fields: { title: { value: "Hello", update_id: "u_put", hlc: "1711036800000000" } },
+            fields: { title: { value: "Hello", update_id: "u_put", hlc: makeHlc(1711036800000) } },
           } as never,
         },
       ],
@@ -238,7 +238,7 @@ describe("SyncClient.subscribe (SSE)", () => {
     const flatPatch: Action = {
       id: "act_flat_patch",
       actor_id: "a_alice",
-      hlc: "1711036800000001",
+      hlc: makeHlc(1711036800000, 1),
       gsn: 2,
       updates: [
         {
@@ -248,7 +248,11 @@ describe("SyncClient.subscribe (SSE)", () => {
           method: "patch",
           // NO `fields` wrapper — this is the bug shape.
           data: {
-            title: { value: "Should not stick", update_id: "u_flat", hlc: "1711036800000001" },
+            title: {
+              value: "Should not stick",
+              update_id: "u_flat",
+              hlc: makeHlc(1711036800000, 1),
+            },
           } as never,
         },
       ],
