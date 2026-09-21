@@ -231,9 +231,12 @@ jobs:
           # invalidates the cache. Previously keyed only on mix.lock,
           # which silently served stale releases when only .ex source
           # files changed (see issue #86).
+          #
+          # No `restore-keys` fallback: a prefix match could serve a
+          # stale release built from a different source snapshot under
+          # an older key. We want a full rebuild whenever the key
+          # changes.
           key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
-          restore-keys: |
-            release-${{ runner.os }}-${{ runner.arch }}-
 
   # ─────────────────────────────────────────────────────────
   # TypeScript jobs
@@ -294,11 +297,9 @@ jobs:
         with:
           path: packages/server/dist/ebb_server
           # Must match the key in `elixir-release` (incl. lib/config
-          # sources) so the TS-test job picks up the same fresh
-          # release as the build job. See #86.
+          # sources). No `restore-keys` — see elixir-release step for
+          # the rationale. See #86.
           key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
-          restore-keys: |
-            release-${{ runner.os }}-${{ runner.arch }}-
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm --recursive exec vitest --run --passWithNoTests
@@ -322,11 +323,9 @@ jobs:
         with:
           path: packages/server/dist/ebb_server
           # Must match the key in `elixir-release` (incl. lib/config
-          # sources) so the integration job picks up the same fresh
-          # release as the build job. See #86.
+          # sources). No `restore-keys` — see elixir-release step for
+          # the rationale. See #86.
           key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
-          restore-keys: |
-            release-${{ runner.os }}-${{ runner.arch }}-
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Start ebb_server
