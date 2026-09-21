@@ -24,6 +24,7 @@ import {
   getPositionOfRun,
   getRunAtPosition,
   mountEditorBridge,
+  setIdMapEffect,
 } from "@ebbjs/codemirror";
 
 interface Props {
@@ -127,6 +128,22 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
         }),
         EditorView.updateListener.of((u) => {
           if (u.selectionSet || u.docChanged) sendLocalCursor();
+        }),
+        // Re-broadcast the local cursor whenever the bridge refreshes
+        // the spans StateField. The first updateListener fires inside
+        // the same dispatch as a local edit's `docChanged` transaction,
+        // but at that point `idMapField` still holds the pre-edit
+        // spans — `getRunAtPosition` returns `undefined` for the just-
+        // typed position and `sendLocalCursor` silently no-ops. The
+        // bridge dispatches a follow-up transaction carrying
+        // `setIdMapEffect` once the new spans are in place; this
+        // listener catches that and re-invokes the cursor send. The
+        // 100ms presence debounce coalesces consecutive cursor moves
+        // so the extra call doesn't spam the server.
+        EditorView.updateListener.of((u) => {
+          if (u.transactions.some((tr) => tr.effects.some((e) => e.is(setIdMapEffect)))) {
+            sendLocalCursor();
+          }
         }),
         EditorView.theme({
           "&": { height: "100%" },
