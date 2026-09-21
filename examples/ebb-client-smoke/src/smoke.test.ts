@@ -20,7 +20,7 @@ import { existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createClient } from "@ebbjs/client";
-import { createAction, createClock } from "@ebbjs/core";
+import { createAction, createClock, localEvent } from "@ebbjs/core";
 import { buildSmokeSeed, SMOKE_ACTOR_ID, SMOKE_GROUP_ID, SMOKE_ENTITY_ID } from "./seed";
 
 // Lazy-import `@ebbjs/server` so the module is only loaded when the test
@@ -133,7 +133,7 @@ maybeDescribe("ebb client smoke (against running server)", () => {
               title: {
                 value: "Updated via SSE",
                 update_id: "upd_followup",
-                hlc: clock.l ? `${clock.l.toString()}:0` : "0",
+                hlc: localEvent(clock),
               },
             },
           },
