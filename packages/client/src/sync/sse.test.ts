@@ -175,12 +175,10 @@ describe("applyAction", () => {
   });
 });
 
-// Regression coverage for the packed-HLC format used by the test
-// fixtures in this file. Previously the fixtures used `${ms}:0`-style
-// strings (e.g. `"1711036800000:0"`) which `BigInt()` cannot parse.
-// The fixtures are now packed BigInt strings, and this test exercises
-// the patch path that calls `compare(existingValue.hlc, patchValue.hlc)`
-// internally — confirming the parse path no longer throws.
+// Exercises the patch path that calls `compare(existingValue.hlc,
+// patchValue.hlc)` internally — confirms the packed-BigInt HLC
+// fixtures round-trip through parse → compare → BigInt without
+// throwing.
 describe("applyAction HLC handling", () => {
   it("applies a patch with packed BigInt HLCs without throwing", async () => {
     const storage = createMemoryAdapter();
