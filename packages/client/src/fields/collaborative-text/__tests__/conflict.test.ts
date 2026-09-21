@@ -347,3 +347,83 @@ describe("ConflictDetector — self-replay", () => {
     expect(detector.all()).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Wire format: the server nests user-entity fields under `data.fields`,
+// not at the top level of `data`. The detector used to walk
+// `update.data` directly, which missed the wrapper key and silently
+// dropped every conflict. These tests lock the wrapped-shape behavior.
+// ---------------------------------------------------------------------------
+
+/** Build a wrapped-shape field-update Action (matches server wire format). */
+const makeWrappedFieldAction = (run: RunNode, hlc: HLCTimestamp, actionIdSuffix = ""): Action => ({
+  id: `act_w_${run.id}${actionIdSuffix}`,
+  actor_id: run.actorId,
+  hlc,
+  gsn: 0,
+  updates: [
+    {
+      id: `upd_w_${run.id}${actionIdSuffix}`,
+      subject_id: "doc_xxx",
+      subject_type: DEFAULT_DOC_SUBJECT_TYPE,
+      method: "patch",
+      data: {
+        // NOTE: nested under `fields`, the shape the SSE connection
+        // actually produces (see conflict.ts / wire.ts readRunFields).
+        fields: {
+          [formatRunFieldName(run.id)]: {
+            value: run,
+            update_id: `upd_w_${run.id}${actionIdSuffix}`,
+            hlc,
+          },
+        },
+      },
+    } as never,
+  ],
+});
+
+describe("ConflictDetector — server wire format (data.fields wrapped)", () => {
+  it("two concurrent wrapped-shape field updates to the same run fire a conflict", () => {
+    const detector = new ConflictDetector();
+    const run = makeRun(1000, "peer-A", "hello", "ROOT");
+
+    // Seed: first wrapped-shape insert.
+    let pre: DocState = createDocState();
+    const insertAction = makeWrappedFieldAction(run, run.hlc);
+    const r1 = applyActions(pre, [insertAction]);
+    pre = r1.state;
+    detector.observe(createDocState(), pre, [insertAction], "peer-A");
+
+    // Two concurrent wrapped-shape extensions to the same run.
+    const extA: RunNode = { ...run, text: "helloA", hlc: makeHlc(1005) };
+    const extB: RunNode = { ...run, text: "helloB", hlc: makeHlc(1005) };
+    const actA = makeWrappedFieldAction(extA, makeHlc(1005), "_A");
+    const actB = makeWrappedFieldAction(extB, makeHlc(1005), "_B");
+
+    const { state: post } = applyActions(pre, [actA, actB]);
+    const newConflicts = detector.observe(pre, post, [actA, actB], "peer-B");
+
+    expect(newConflicts).toHaveLength(1);
+    expect(newConflicts[0]!.runId).toBe(run.id);
+  });
+
+  it("sequential wrapped-shape field updates do not fire", () => {
+    const detector = new ConflictDetector();
+    const run = makeRun(1000, "peer-A", "hello", "ROOT");
+
+    let pre: DocState = createDocState();
+    const insertAction = makeWrappedFieldAction(run, run.hlc);
+    const r1 = applyActions(pre, [insertAction]);
+    pre = r1.state;
+    detector.observe(createDocState(), pre, [insertAction], "peer-A");
+
+    // Subsequent extension with a strictly later HLC → happens-before,
+    // not concurrent, no conflict.
+    const extended: RunNode = { ...run, text: "hello world", hlc: makeHlc(1010) };
+    const extendAction = makeWrappedFieldAction(extended, makeHlc(1010));
+    const { state: post } = applyActions(pre, [extendAction]);
+    const newConflicts = detector.observe(pre, post, [extendAction], "peer-A");
+
+    expect(newConflicts).toHaveLength(0);
+  });
+});

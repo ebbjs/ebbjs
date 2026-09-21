@@ -137,8 +137,13 @@ type ParsedField = {
  * Read the fields out of an Update that target runs. Silently ignores
  * fields with names that don't start with the run prefix (so non-run
  * fields on the doc — e.g., a `title` field — pass through untouched).
+ *
+ * Exported because the conflict detector also needs to walk the wire
+ * format to know which Update touched which run — there's no other
+ * surface that exposes this mapping. Keeping the read logic in one
+ * place ensures both code paths unwrap `data.fields` consistently.
  */
-const readRunFields = (update: Update): ParsedField[] => {
+export const readRunFields = (update: Update): ParsedField[] => {
   if (!update.data || typeof update.data !== "object") return [];
   // Wire format: user-entity fields are nested under `data.fields`.
   // Tolerate the unwrapped shape too (older peers / older tests).
