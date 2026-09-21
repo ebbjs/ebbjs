@@ -11,9 +11,16 @@ mix deps.get
 # Run tests
 mix test
 
-# Start dev server (http://localhost:4000)
+# Start dev server (http://localhost:4000) with lib/ auto-reload
 mix dev
 ```
+
+`mix dev` runs the application under `MIX_ENV=dev`. There is no file
+watcher — restart with `mix dev` after editing anything under `lib/`
+or `config/`.
+
+From the repo root, `pnpm dev` runs `mix dev` plus the
+`collaborative-text-demo` Vite app in the same terminal pane.
 
 ## Code Quality
 
