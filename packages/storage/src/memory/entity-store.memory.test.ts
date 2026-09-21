@@ -4,11 +4,15 @@ import { createMemoryActionLog } from "./action-log.memory";
 import { createMemoryDirtyTracker } from "./dirty-tracker.memory";
 import type { Action } from "@ebbjs/core";
 
+// Packed BigInt HLC (`ms << 16 | counter`), matching `@ebbjs/core`'s `localEvent`.
+const fixtureHlc = (ms: number, counter = 0): string =>
+  ((BigInt(ms) << 16n) | BigInt(counter)).toString();
+
 describe("MemoryEntityStore", () => {
   const action: Action = {
     id: "a_1",
     actor_id: "a_user1",
-    hlc: "1711036800000",
+    hlc: fixtureHlc(1711036800000),
     gsn: 1,
     updates: [
       {
@@ -16,7 +20,9 @@ describe("MemoryEntityStore", () => {
         subject_id: "todo_1",
         subject_type: "todo",
         method: "put",
-        data: { title: { value: "Hello", update_id: "u_1", hlc: "1711036800000" } },
+        data: {
+          title: { value: "Hello", update_id: "u_1", hlc: fixtureHlc(1711036800000) },
+        },
       },
     ],
   };
@@ -79,8 +85,8 @@ describe("MemoryEntityStore", () => {
         id: "todo_2",
         type: "todo",
         data: { fields: { title: { value: "Direct", update_id: "u_direct" } } },
-        created_hlc: "1711036800000",
-        updated_hlc: "1711036800000",
+        created_hlc: fixtureHlc(1711036800000),
+        updated_hlc: fixtureHlc(1711036800000),
         deleted_hlc: null,
         last_gsn: 0,
       });

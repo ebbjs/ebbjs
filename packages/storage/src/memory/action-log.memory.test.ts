@@ -2,11 +2,15 @@ import { describe, it, expect } from "vitest";
 import { createMemoryActionLog } from "./action-log.memory";
 import type { Action } from "@ebbjs/core";
 
+// Packed BigInt HLC (`ms << 16 | counter`), matching `@ebbjs/core`'s `localEvent`.
+const fixtureHlc = (ms: number, counter = 0): string =>
+  ((BigInt(ms) << 16n) | BigInt(counter)).toString();
+
 describe("MemoryActionLog", () => {
   const action: Action = {
     id: "a_1",
     actor_id: "a_user1",
-    hlc: "1711036800000",
+    hlc: fixtureHlc(1711036800000),
     gsn: 1,
     updates: [
       {

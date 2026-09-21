@@ -2,6 +2,10 @@ import { describe, it, expect } from "vitest";
 import { createMemoryAdapter } from "./memory-adapter";
 import type { Action } from "@ebbjs/core";
 
+// Packed BigInt HLC (`ms << 16 | counter`), matching `@ebbjs/core`'s `localEvent`.
+const fixtureHlc = (ms: number, counter = 0): string =>
+  ((BigInt(ms) << 16n) | BigInt(counter)).toString();
+
 describe("MemoryAdapter", () => {
   // User entities (todo) nest their fields under `data.fields` to mirror
   // `EbbServer.Storage.ActionValidator.well_formed_data?/1`. The static
@@ -10,7 +14,7 @@ describe("MemoryAdapter", () => {
   const action: Action = {
     id: "a_1",
     actor_id: "a_user1",
-    hlc: "1711036800000",
+    hlc: fixtureHlc(1711036800000),
     gsn: 1,
     updates: [
       {
@@ -19,7 +23,7 @@ describe("MemoryAdapter", () => {
         subject_type: "todo",
         method: "put",
         data: {
-          fields: { title: { value: "Hello", update_id: "u_1", hlc: "1711036800000" } },
+          fields: { title: { value: "Hello", update_id: "u_1", hlc: fixtureHlc(1711036800000) } },
         } as never,
       },
     ],
@@ -28,7 +32,7 @@ describe("MemoryAdapter", () => {
   const action2: Action = {
     id: "a_2",
     actor_id: "a_user1",
-    hlc: "1711036800001",
+    hlc: fixtureHlc(1711036800000, 1),
     gsn: 2,
     updates: [
       {
@@ -37,7 +41,9 @@ describe("MemoryAdapter", () => {
         subject_type: "todo",
         method: "patch",
         data: {
-          fields: { title: { value: "Updated", update_id: "u_2", hlc: "1711036800001" } },
+          fields: {
+            title: { value: "Updated", update_id: "u_2", hlc: fixtureHlc(1711036800000, 1) },
+          },
         } as never,
       },
     ],
@@ -130,6 +136,17 @@ describe("MemoryAdapter", () => {
       expect(after!.data.fields).not.toHaveProperty("fields");
     });
 
+    it("preserves packed BigInt HLCs through a put→patch sequence (issue #80)", async () => {
+      // Asserts the materialized field's HLC equals the packed fixture HLC.
+      const adapter = createMemoryAdapter();
+      await adapter.actions.append(action);
+      await adapter.actions.append(action2);
+
+      const after = await adapter.entities.get("todo_1");
+      expect(after).not.toBe(null);
+      expect((after!.data.fields.title as { hlc?: string }).hlc).toBe(fixtureHlc(1711036800000, 1));
+    });
+
     it("materializes a system entity (groupMember) with flat top-level data fields", async () => {
       // System entities ship flat keys in `data` (no `{ fields: ... }`
       // wrapping). Issue #43 collapsed `extractFields` and
@@ -138,7 +155,7 @@ describe("MemoryAdapter", () => {
       const groupMemberAction: Action = {
         id: "a_gm",
         actor_id: "a_user1",
-        hlc: "1711036800000",
+        hlc: fixtureHlc(1711036800000),
         gsn: 1,
         updates: [
           {
@@ -147,8 +164,8 @@ describe("MemoryAdapter", () => {
             subject_type: "groupMember",
             method: "put",
             data: {
-              actor_id: { value: "a_user1", update_id: "u_gm", hlc: "1711036800000" },
-              group_id: { value: "grp_1", update_id: "u_gm", hlc: "1711036800000" },
+              actor_id: { value: "a_user1", update_id: "u_gm", hlc: fixtureHlc(1711036800000) },
+              group_id: { value: "grp_1", update_id: "u_gm", hlc: fixtureHlc(1711036800000) },
             } as never,
           },
         ],
