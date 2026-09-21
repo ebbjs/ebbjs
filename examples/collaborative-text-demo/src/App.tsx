@@ -1,33 +1,52 @@
 /**
  * Top-level demo app.
  *
- * Reads the `?actor=<id>` URL parameter (default: "drew") and connects
- * to the server at http://localhost:4000. On first load it bootstraps
- * the demo group + member + doc via `seed()`.
+ * Connects to the server at http://localhost:4000 and bootstraps the
+ * demo group + member + doc via `seed()`.
+ *
+ * The actor identity is selected by:
+ *   1. The `?actor=<id>` URL parameter (initial deep-link seed, e.g.
+ *      `?actor=drew` for two-tab shareable demos), falling back to "drew".
+ *   2. The in-app ActorPicker header control, which overrides (1)
+ *      without touching the URL.
+ *
+ * Switching the actor triggers a full re-bootstrap: the old client's
+ * SSE subscription is torn down and a new one opens under the new
+ * identity. The same code path is exercised as a fresh tab load, which
+ * surfaces bugs that would otherwise hide behind sticky connections.
  *
  * Layout: full-width CodeMirror editor + connection badge in the
  * corner + a collapsible conflict panel on the right.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Editor } from "./Editor";
 import { ConnectionBadge } from "./ConnectionBadge";
 import { ConflictPanel } from "./ConflictPanel";
+import { ActorPicker, KNOWN_ACTORS, type ActorId, type KnownActor } from "./ActorPicker";
 import { bootstrap, type BootstrapResult } from "./bootstrap";
 import { DEMO_DOC_ID, DEMO_GROUP_ID } from "./seed";
 
 const SERVER_URL = "";
+const DEFAULT_ACTOR: ActorId = "drew";
+
+/** Resolve the actor id from `?actor=` once on first render. */
+function readInitialActor(): ActorId {
+  if (typeof window === "undefined") return DEFAULT_ACTOR;
+  const params = new URLSearchParams(window.location.search);
+  const fromUrl = params.get("actor");
+  if (fromUrl && KNOWN_ACTORS.includes(fromUrl as KnownActor)) return fromUrl as ActorId;
+  if (fromUrl) return fromUrl as ActorId;
+  return DEFAULT_ACTOR;
+}
+
 type AppState =
   | { status: "loading"; message: string }
   | { status: "error"; error: string }
   | { status: "ready"; bootstrap: BootstrapResult };
 
 export function App() {
-  const actorId = useMemo(() => {
-    const params = new URLSearchParams(window.location.search);
-    return params.get("actor") ?? "drew";
-  }, []);
-
+  const [actorId, setActorId] = useState<ActorId>(() => readInitialActor());
   const [state, setState] = useState<AppState>({
     status: "loading",
     message: "Connecting…",
@@ -37,7 +56,7 @@ export function App() {
     let cancelled = false;
     void (async () => {
       try {
-        setState({ status: "loading", message: "Seeding demo data…" });
+        setState({ status: "loading", message: `Connecting as ${actorId}\u2026` });
         const result = await bootstrap({ serverUrl: SERVER_URL, actorId });
         if (cancelled) return;
         setState({ status: "ready", bootstrap: result });
@@ -79,29 +98,47 @@ export function App() {
     );
   }
 
-  return <Ready bootstrap={state.bootstrap} actorId={actorId} serverUrl={SERVER_URL} />;
+  return (
+    <Ready
+      bootstrap={state.bootstrap}
+      actorId={actorId}
+      serverUrl={SERVER_URL}
+      onActorChange={setActorId}
+    />
+  );
 }
 
 function Ready({
   bootstrap,
   actorId,
   serverUrl,
+  onActorChange,
 }: {
   bootstrap: BootstrapResult;
-  actorId: string;
+  actorId: ActorId;
   serverUrl: string;
+  onActorChange: (actorId: ActorId) => void;
 }) {
   const { client, groupIds } = bootstrap;
   const [conflictsOpen, setConflictsOpen] = useState(false);
   const conflictsButtonRef = useRef<HTMLButtonElement>(null);
 
+  // Tear down the previous client's SSE subscription and any presence
+  // state before re-bootstrapping. The `useEffect([actorId])` in `App`
+  // is responsible for triggering a new bootstrap; we just need to
+  // dispose of the stale client so its timers and fetch streams don't
+  // outlive the React tree.
+  useEffect(() => {
+    return () => {
+      client.close();
+    };
+  }, [client]);
+
   return (
     <div className="flex h-screen flex-col">
       <header className="flex items-center gap-4 border-b border-stone-800 px-4 py-2">
         <div className="font-mono text-xs text-stone-500">ebb collaborative text demo</div>
-        <div className="font-mono text-xs text-stone-300">
-          actor: <span className="text-emerald-400">{actorId}</span>
-        </div>
+        <ActorPicker value={actorId} onChange={onActorChange} />
         <div className="font-mono text-xs text-stone-500 ml-auto">
           server: <span className="text-stone-300">{serverUrl}</span>
         </div>
@@ -134,7 +171,8 @@ function Ready({
 
       <footer className="border-t border-stone-800 px-4 py-2 font-mono text-xs text-stone-500">
         Open this URL in another tab with{" "}
-        <code className="bg-stone-800 px-1 rounded">?actor=alice</code> to see live editing.
+        <code className="bg-stone-800 px-1 rounded">?actor=alice</code> to see live editing, or pick
+        another actor above.
       </footer>
     </div>
   );
