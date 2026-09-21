@@ -49,6 +49,9 @@ defmodule EbbServer.Sync.SSEConnection do
     # Registering the module name caused every SSE attempt after the first
     # to fail with :already_started, which silently turned the stream into
     # a no-op (HTTP 200 + headers went out, then no chunks ever followed).
+    # Locked by the two-tab Playwright test, which opens two simultaneous
+    # SSE subscribers and asserts the second one both reaches "live" and
+    # receives the first tab's edits (see ebbjs/ebbjs#86).
     _ = opts
     GenServer.start_link(__MODULE__, {parent_pid, group_ids, cursors})
   end

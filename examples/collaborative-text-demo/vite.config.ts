@@ -19,14 +19,15 @@ export default defineConfig({
     // proxied through tailscale serve (https://vps.tail9b3b6.ts.net).
     //
     // SSE note: vite's built-in proxy passes chunked text/event-stream
-    // responses through fine (verified by hand). The earlier "SSE
-    // hangs" symptom was a server-side bug — `SSEConnection` was
-    // registering itself with the global name `__MODULE__` so every
-    // subsequent SSE attempt failed with `:already_started`. The
-    // first connection's HTTP 200 + headers went out but no chunks
-    // ever followed (because the SSEConnection GenServer never
-    // started). Removed the global-name registration in
-    // `sse_connection.ex` and SSE flows through vite just fine.
+    // responses through fine. The earlier "SSE hangs" symptom
+    // (every connection after the first failing with
+    // `:already_started` because `SSEConnection` registered itself
+    // with the global name `__MODULE__`) was a server-side bug. The
+    // global-name registration was removed in `sse_connection.ex`;
+    // the regression is now locked by the e2e two-tab test
+    // (`examples/collaborative-text-demo/e2e/two-tab.spec.ts`), which
+    // opens two simultaneous SSE subscribers and asserts the second
+    // one both reaches "live" and receives the first tab's edits.
     proxy: {
       "/sync": {
         target: "http://localhost:4000",
