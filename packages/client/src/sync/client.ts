@@ -495,19 +495,19 @@ export class SyncClient {
   }
 
   private handleControlEvent(control: ControlEvent, sub: ActiveSubscription): void {
-    if (control.reconnect && typeof control.catchUpFrom === "number") {
-      // Server told us our cursor is stale — close the current stream and
-      // re-open after catching up.
-      const from = control.catchUpFrom;
-      // eslint-disable-next-line no-console
-      console.warn(`[SyncClient] server reports stale cursor; catching up from GSN ${from}`);
-      for (const gid of sub.groupIds) {
-        this.groupCursors.set(gid, from);
-      }
-      // Force a stream restart by closing the current one; the loop will
-      // pick the new cursor up on the next iteration.
-      this.closeStream(sub);
+    if (!control.reconnect) return;
+    const from = control.catchUpFrom;
+    if (from === undefined) return;
+    // Server told us our cursor is stale — close the current stream and
+    // re-open after catching up.
+    // eslint-disable-next-line no-console
+    console.warn(`[SyncClient] server reports stale cursor; catching up from GSN ${from}`);
+    for (const gid of sub.groupIds) {
+      this.groupCursors.set(gid, from);
     }
+    // Force a stream restart by closing the current one; the loop will
+    // pick the new cursor up on the next iteration.
+    this.closeStream(sub);
   }
 
   private async computeResumeCursor(sub: ActiveSubscription): Promise<number> {
