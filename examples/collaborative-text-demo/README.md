@@ -29,6 +29,31 @@ Then open:
 
 Type in one tab — the text appears in the other within ~100ms. Concurrent edits at the same position appear in the "Show conflicts" panel on both tabs.
 
+### Running over Tailscale
+
+To open the demo from a second machine on your tailnet, expose the local vite server with `tailscale serve`. Tailscale terminates TLS using your node's magicDNS cert and serves the traffic as HTTP/2, so the browser multiplexes over one connection instead of hitting Chromium's per-origin HTTP/1.1 socket cap (which the SSE long-polls + bootstrap POSTs can exhaust — see [issue #105](https://github.com/ebbjs/ebbjs/issues/105)).
+
+```bash
+# On the node running bandit + vite, after `pnpm dev` is up:
+tailscale serve --https=8443 http://localhost:5173
+```
+
+Tailscale prints the URL to use — something like `https://<your-node>.<your-tailnet>.ts.net:8443`. Open that on another machine, appending `?actor=drew` or `?actor=alice` to each tab.
+
+### Running with Caddy
+
+For setups that don't use Tailscale (local dev on your own machine, or a deployment over a different network), the repo root ships a `Caddyfile` that fronts vite with HTTP/2 + TLS. The default config listens on `:8443` with `tls internal` so it works out of the box — the browser shows a one-time warning the first time you visit. Switch to an explicit Tailscale-issued cert (or any other cert) by editing the `tls` line; details are in the comments at the top of the file.
+
+Install Caddy by following the [official install instructions](https://caddyserver.com/docs/install) for your distro, then in three terminals (or under a process manager like tmux/foreman):
+
+```bash
+cd ebb_server && mix dev       # bandit on :4000
+pnpm dev                         # vite on :5173 via root pnpm dev
+caddy run --config Caddyfile     # Caddy on :8443, TLS terminates here
+```
+
+Open `https://localhost:8443/?actor=drew` and `?actor=alice` in two tabs (different machines if you're testing across the network).
+
 ## How it works
 
 1. The `?actor=` URL param sets the actor id (bypass auth mode).

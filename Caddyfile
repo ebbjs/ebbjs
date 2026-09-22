@@ -1,0 +1,32 @@
+# Caddyfile for the ebb collaborative-text demo.
+#
+# Fronts vite dev (HTTP/1.1 on :5173) with HTTP/2 so the browser
+# multiplexes requests over a single connection instead of hitting
+# Chromium's per-origin HTTP/1.1 socket cap. See issue #105.
+#
+# Defaults work out of the box on localhost: `tls internal` gives a
+# browser-warned-but-functional cert; Playwright's existing
+# `ignoreHTTPSErrors: true` covers the e2e suite. To deploy over
+# Tailscale (or any other network with a real cert), change the
+# site address to your hostname and swap `tls internal` for the
+# cert + key paths. See examples/collaborative-text-demo/README.md
+# for the full setup.
+{
+    # Caddy's default is to also listen on :80 and redirect to HTTPS.
+    # Disable so we can bind a non-standard port as a non-root user
+    # without conflicting with whatever else owns :80/:443.
+    auto_https off
+    admin off
+}
+
+https://localhost:8443 {
+    tls internal
+
+    reverse_proxy 127.0.0.1:5173 {
+        # Vite's HMR uses long-lived WebSocket upgrades. Caddy's
+        # reverse_proxy passes these through by default; the explicit
+        # header_up entries are belt-and-braces for the proxy chain.
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+    }
+}
