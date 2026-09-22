@@ -21,11 +21,20 @@ import { test, expect, openTwoActorTabs } from "./helpers";
  * The two halves are unit-tested independently; this spec is the
  * end-to-end check that the wire + DOM round-trip holds.
  *
+ * ## Empty-doc anchor (#101)
+ *
+ * The first test clicks into drew's empty editor without typing. For
+ * this to render alice's cursor widget, `idMapField` must always carry
+ * a (synthetic) run even when the doc has zero real runs — otherwise
+ * `sendLocalCursor` no-ops because `getRunAtPosition` returns
+ * undefined. The bridge seeds a zero-length `ROOT_ID` placeholder
+ * span for exactly this case; see `packages/codemirror/src/bridge.ts`
+ * (`ROOT_PLACEHOLDER_SPAN`, `ensureRootSpan`).
+ *
  * ## What this test does
  *
  * 1. Open the demo under `?actor=drew` and `?actor=alice`.
- * 2. Click into drew's editor and type a sentinel to materialize a
- *    run before asserting on the cursor widget.
+ * 2. Click into drew's editor (no typing — covers #101).
  * 3. Wait for drew's `POST /sync/presence` to round-trip through the
  *    server and arrive in alice's presence map.
  * 4. Wait for alice's CM6 ViewPlugin to re-render the cursor widget
@@ -40,17 +49,20 @@ import { test, expect, openTwoActorTabs } from "./helpers";
  *   `cm-remote-cursor-label`; we assert the actor id text inside it.
  */
 test.describe("remote cursor presence", () => {
-  test("drew's cursor appears as a colored caret + label in alice's tab", async ({ browser }) => {
+  test("drew's cursor appears in alice's tab after a click on the empty editor (#101)", async ({
+    browser,
+  }) => {
     const { firstPage: drewPage, secondPage: alicePage } = await openTwoActorTabs(browser, {
       first: "drew",
       second: "alice",
     });
 
-    // Click into drew's editor and type a sentinel to materialize
-    // a run before asserting on the cursor widget.
+    // Click into drew's empty editor. The bridge's idMapField carries
+    // a ROOT placeholder so sendLocalCursor resolves the click to
+    // (ROOT_ID, 0) and POSTs it; alice's cursor decoration then
+    // anchors to position 0 of her own empty editor.
     const drewEditor = drewPage.locator(".cm-content").first();
     await drewEditor.click();
-    await drewEditor.pressSequentially("a");
 
     // Wait for the remote cursor widget to render in alice's editor.
     // The widget is a span with class `cm-remote-cursor` (the cursor
