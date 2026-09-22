@@ -1,0 +1,46 @@
+# Caddyfile for the ebb collaborative-text demo.
+#
+# Fronts vite dev (HTTP/1.1 on :5173) with TLS-terminating HTTP/2, so
+# browsers connecting over Tailscale use h2 multiplexing and don't hit
+# Chromium's per-origin socket cap (the cause of #105).
+#
+# Layout on the VPS:
+#   bandit (4000)  ←──┐
+#   vite  (5173)   ←──┼── Caddy (:8443, h2)
+#                       ↑
+#   browser (https://vps.tail9b3b6.ts.net:8443, h2)
+#
+# Cert is issued by `tailscale cert <your-node>.<tailnet>.ts.net` and
+# lands at ~/.local/share/caddy/tailscale/. Tailscale auto-renews the
+# cert as long as this node stays on the tailnet, so the cert files
+# just need to be present at startup.
+#
+# The hostname and cert paths below are hardcoded for our deployment
+# (`vps.tail9b3b6.ts.net`). For other deployments, edit the site
+# address and the `tls` paths to match your magicDNS name and the
+# location of your Tailscale-issued cert files. See the README in
+# examples/collaborative-text-demo/ for the full setup walkthrough.
+#
+# See docs/investigations/issue-105-shared-ctx-burst.md for context.
+
+# Caddy's default behaviour is to also listen on :80 and redirect
+# plain-HTTP requests to HTTPS. We don't need that here (Dokploy has
+# :443 and :80, and we're deliberately on a non-standard port), and it
+# would fail to bind as a non-root user. Disable it.
+{
+    auto_https off
+    admin off
+}
+
+https://vps.tail9b3b6.ts.net:8443 {
+    tls /home/drew/.local/share/caddy/tailscale/vps.tail9b3b6.ts.net.crt \
+        /home/drew/.local/share/caddy/tailscale/vps.tail9b3b6.ts.net.key
+
+    reverse_proxy 127.0.0.1:5173 {
+        # Vite's HMR uses long-lived WebSocket upgrades. Caddy's
+        # reverse_proxy defaults pass them through; the explicit
+        # header_up entries are belt-and-braces for the proxy chain.
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+    }
+}
