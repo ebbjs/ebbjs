@@ -400,7 +400,7 @@ export class TextDocument {
     if (!update) return null;
 
     const action: Action = {
-      id: `a_del_${this.updateCounter++}`,
+      id: `a_del_${this.actorId}_${this.updateCounter++}`,
       actor_id: this.actorId,
       hlc: finalHlc,
       gsn: 0,
@@ -475,7 +475,10 @@ export class TextDocument {
     if (!update) return null;
 
     const action: Action = {
-      id: `a_ext_${this.updateCounter++}`,
+      // Actor-scoped counter so concurrent edits on two tabs don't
+      // produce colliding ids — the conflict detector treats
+      // matching ids as a redelivered action and skips the check.
+      id: `a_ext_${this.actorId}_${this.updateCounter++}`,
       actor_id: this.actorId,
       hlc: finalHlc,
       gsn: 0,

@@ -34,7 +34,7 @@
 
 import type { Action, HLCTimestamp } from "@ebbjs/core";
 import { parse } from "@ebbjs/core";
-import { applyActions, isDocSubjectUpdate, DEFAULT_DOC_SUBJECT_TYPE } from "./wire";
+import { applyActions, isDocSubjectUpdate, readRunFields, DEFAULT_DOC_SUBJECT_TYPE } from "./wire";
 import { reconstruct, type DocState } from "./tree";
 
 // ---------------------------------------------------------------------------
@@ -186,15 +186,19 @@ export class ConflictDetector {
     for (const action of actions) {
       for (const update of action.updates) {
         if (!isDocSubjectUpdate(update, DEFAULT_DOC_SUBJECT_TYPE)) continue;
-        if (!update.data || typeof update.data !== "object") continue;
-        const fields = update.data as Record<string, Record<string, unknown>>;
-        for (const [fieldName, field] of Object.entries(fields)) {
-          if (!fieldName.startsWith("run:")) continue;
-          if (!field || typeof field !== "object") continue;
-          const value = field["value"];
+        // Use the same field-extraction helper that `applyActions`
+        // uses internally — the wire format nests user-entity fields
+        // under `update.data.fields["run:<id>"]` (not at the top
+        // level of `update.data`). Walking `update.data` directly
+        // (an earlier implementation) misses the wrapper key and
+        // never finds any run fields, so conflicts were silently
+        // dropped. Keep the read logic in one place.
+        const parsedFields = readRunFields(update);
+
+        for (const { runId, field } of parsedFields) {
           // Tombstones are not non-trivial.
-          if (value === null) continue;
-          const runId = fieldName.slice("run:".length);
+          if (field.value === null) continue;
+          const value = field.value;
           const kind =
             value && typeof value === "object" && "id" in value
               ? preState.nodes.has(runId)
