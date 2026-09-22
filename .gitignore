@@ -5,7 +5,6 @@ dist/
 tsconfig.tsbuildinfo
 .env
 .netlify/
-test-results/
 
 .husky/
 erl_crash.dump

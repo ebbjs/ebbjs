@@ -31,12 +31,22 @@ Type in one tab — the text appears in the other within ~100ms. Concurrent edit
 
 ### Running over Tailscale
 
-For two-tab testing from a different machine on your Tailscale network, run Caddy in front of vite. The browser talks HTTP/2 to Caddy, which proxies to vite over HTTP/1.1. Without h2, burst typing in shared browser contexts can hang because Chromium's per-origin socket cap (6) is exceeded by the SSE long-polls + bootstrap POSTs — see [issue #105](../../docs/investigations/issue-105-shared-ctx-burst.md) for the full diagnosis.
-
-Caddy listens on `:8443` (`:443` is typically occupied by another service on the same host — e.g., Dokploy in our setup). Change the `:8443` in `Caddyfile` if you want a different port.
+To open the demo from a second machine on your tailnet, expose the local vite server with `tailscale serve`. Tailscale terminates TLS using your node's magicDNS cert and serves the traffic as HTTP/2, so the browser multiplexes over one connection instead of hitting Chromium's per-origin HTTP/1.1 socket cap (which the SSE long-polls + bootstrap POSTs can exhaust — see [issue #105](https://github.com/ebbjs/ebbjs/issues/105)).
 
 ```bash
-# One-time setup (on the Tailscale node running bandit + vite):
+# On the node running bandit + vite, after `pnpm dev` is up:
+tailscale serve --https=8443 http://localhost:5173
+```
+
+Tailscale prints the URL to use — something like `https://<your-node>.<your-tailnet>.ts.net:8443`. Open that on another machine, appending `?actor=drew` or `?actor=alice` to each tab.
+
+### Running with Caddy
+
+For setups that don't use Tailscale (local dev on your own machine, or a deployment over a different network), the repo root ships a `Caddyfile` that fronts vite with HTTP/2 + TLS. The default config listens on `:8443` with `tls internal` so it works out of the box — the browser shows a one-time warning the first time you visit. Switch to an explicit Tailscale-issued cert (or any other cert) by editing the `tls` line; details are in the comments at the top of the file.
+
+```bash
+# Install Caddy: see https://caddyserver.com/docs/install for your distro.
+# On Debian/Ubuntu:
 sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
   | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
@@ -44,31 +54,13 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/deb.debian.txt' \
   | sudo tee /etc/apt/sources.list.d/caddy-stable.list
 sudo apt update && sudo apt install caddy
 
-# Issue a Tailscale-issued Let's Encrypt cert for the node's magicDNS name.
-tailscale cert <your-node>.<your-tailnet>.ts.net
-# Move cert files into Caddy's expected location (Tailscale writes them
-# to the current directory by default).
-mkdir -p ~/.local/share/caddy/tailscale
-mv <your-node>.<your-tailnet>.ts.net.crt \
-   <your-node>.<your-tailnet>.ts.net.key \
-   ~/.local/share/caddy/tailscale/
-chmod 644 ~/.local/share/caddy/tailscale/*.crt
-chmod 600 ~/.local/share/caddy/tailscale/*.key
-```
-
-Edit `Caddyfile` at the repo root to match your hostname and cert paths, then run:
-
-```bash
 # Three terminals (or use a process manager like tmux/foreman):
-cd ebb_server && mix dev                                  # bandit on :4000
-pnpm dev                                                    # vite on :5173 via root pnpm dev
-caddy run --config Caddyfile                                # Caddy on :8443, TLS terminates here
+cd ebb_server && mix dev       # bandit on :4000
+pnpm dev                         # vite on :5173 via root pnpm dev
+caddy run --config Caddyfile     # Caddy on :8443, TLS terminates here
 ```
 
-Then from your other Tailscale machine, open:
-
-- `https://<your-node>.<your-tailnet>.ts.net:8443/?actor=drew`
-- `https://<your-node>.<your-tailnet>.ts.net:8443/?actor=alice`
+Open `https://localhost:8443/?actor=drew` and `?actor=alice` in two tabs (different machines if you're testing across the network).
 
 ## How it works
 
