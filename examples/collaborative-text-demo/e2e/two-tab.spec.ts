@@ -7,9 +7,8 @@ import { test, expect } from "@playwright/test";
  *
  * This is the foundational slice of the slice-4 e2e suite (#61) — it
  * exercises the full bootstrap → SSE → materializer → CodeMirror
- * bridge → DOM render path. Other test files (presence, conflicts,
- * connection-state, bootstrap-catchUp, actor-picker) build on the same
- * scaffolding and will be added in follow-up PRs.
+ * bridge → DOM render path. Other test files (conflicts,
+ * bootstrap-catchUp, actor-picker) build on the same scaffolding.
  *
  * ## Regression coverage (#86)
  *

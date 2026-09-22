@@ -9,14 +9,11 @@ import { addMember, buildDemoSeed, seed } from "./seed";
 
 /**
  * Shape of `window.__EBB_DEMO_TEST_CONFIG__` — opt-in test seams read
- * by `bootstrap()` (and the Editor) when present. Set by Playwright via
+ * by the Editor when present. Set by Playwright via
  * `page.addInitScript()` to influence the demo's runtime behavior
  * without baking test-only branches into production code paths.
  *
  * Currently:
- * - `reconnectInitialMs` / `reconnectMaxMs` shorten the SyncClient's
- *   backoff so the connection-state-transitions e2e can reach
- *   "reconnecting" and "offline" in seconds rather than minutes.
  * - `exposeState` makes the Editor publish a minimal handle on
  *   `window.__EBB_DEMO_TEST_STATE__` so the conflict-surfacing e2e
  *   can read run ids and dispatch a pinned-HLC `localExtend` without
@@ -26,8 +23,6 @@ import { addMember, buildDemoSeed, seed } from "./seed";
  * surface stays auditable in one place.
  */
 export interface DemoTestConfig {
-  reconnectInitialMs?: number;
-  reconnectMaxMs?: number;
   /**
    * If true, the Editor exposes the underlying TextDocument on
    * `window.__EBB_DEMO_TEST_STATE__` once mounted. Lets the conflict
@@ -94,18 +89,6 @@ export async function bootstrap(opts: {
   const client = createClient({
     serverUrl,
     actorId,
-    // Test seams: a Playwright spec can shorten reconnect backoff via
-    // `window.__EBB_DEMO_TEST_CONFIG__` to make the connection-state
-    // transitions testable in seconds rather than minutes. No effect
-    // when the config object isn't set.
-    ...(typeof window !== "undefined" &&
-      window.__EBB_DEMO_TEST_CONFIG__?.reconnectInitialMs !== undefined && {
-        reconnectInitialMs: window.__EBB_DEMO_TEST_CONFIG__.reconnectInitialMs,
-      }),
-    ...(typeof window !== "undefined" &&
-      window.__EBB_DEMO_TEST_CONFIG__?.reconnectMaxMs !== undefined && {
-        reconnectMaxMs: window.__EBB_DEMO_TEST_CONFIG__.reconnectMaxMs,
-      }),
   });
 
   // 1. Seed (best-effort).
