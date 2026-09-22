@@ -44,17 +44,9 @@ Tailscale prints the URL to use — something like `https://<your-node>.<your-ta
 
 For setups that don't use Tailscale (local dev on your own machine, or a deployment over a different network), the repo root ships a `Caddyfile` that fronts vite with HTTP/2 + TLS. The default config listens on `:8443` with `tls internal` so it works out of the box — the browser shows a one-time warning the first time you visit. Switch to an explicit Tailscale-issued cert (or any other cert) by editing the `tls` line; details are in the comments at the top of the file.
 
-```bash
-# Install Caddy: see https://caddyserver.com/docs/install for your distro.
-# On Debian/Ubuntu:
-sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-  | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/deb.debian.txt' \
-  | sudo tee /etc/apt/sources.list.d/caddy-stable.list
-sudo apt update && sudo apt install caddy
+Install Caddy by following the [official install instructions](https://caddyserver.com/docs/install) for your distro, then in three terminals (or under a process manager like tmux/foreman):
 
-# Three terminals (or use a process manager like tmux/foreman):
+```bash
 cd ebb_server && mix dev       # bandit on :4000
 pnpm dev                         # vite on :5173 via root pnpm dev
 caddy run --config Caddyfile     # Caddy on :8443, TLS terminates here
