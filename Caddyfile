@@ -2,43 +2,15 @@
 #
 # Fronts vite dev (HTTP/1.1 on :5173) with HTTP/2 so the browser
 # multiplexes requests over a single connection instead of hitting
-# Chromium's per-origin HTTP/1.1 socket cap. See issue #105 for the
-# diagnosis that motivates this.
+# Chromium's per-origin HTTP/1.1 socket cap. See issue #105.
 #
-# Layout on any host running the demo:
-#
-#   bandit (4000)  ←──┐
-#   vite  (5173)   ←──┼── Caddy (this file)
-#                       ↑
-#   browser (h2)
-#
-# For most setups, the site address and TLS config below are the only
-# things to change. Two common configurations:
-#
-# 1. **Local-only dev on your own machine** (no tailnet) — leave the
-#    site address as `https://localhost:8443`. Caddy uses an internal
-#    CA for the cert; the browser shows a one-time warning the first
-#    time you visit. Playwright's existing `ignoreHTTPSErrors: true`
-#    handles it in the e2e tests.
-#
-# 2. **Over Tailscale** (or any setup where you want a real public
-#    cert) — change the site address to your magicDNS name (e.g.
-#    `https://<your-node>.<your-tailnet>.ts.net:8443`) and swap the
-#    `tls internal` line for explicit cert paths, e.g.:
-#
-#        tls /home/<you>/.local/share/caddy/tailscale/<node>.<tailnet>.ts.net.crt \
-#            /home/<you>/.local/share/caddy/tailscale/<node>.<tailnet>.ts.net.key
-#
-#    Issue the cert with `tailscale cert <node>.<tailnet>.ts.net` and
-#    move the resulting .crt/.key into the path you reference here.
-#    If you're on the VPS and just want to expose the demo on the
-#    tailnet, `tailscale serve --https=8443 http://localhost:5173` is
-#    a one-command alternative that handles TLS automatically — see
-#    the demo README's "Running over Tailscale" section.
-#
-# Change the port (`:8443` here) if you need a different one. `:443`
-# is the default for Caddy's auto-HTTPS redirect, but we're disabling
-# that below; pick any port and update the URL accordingly.
+# Defaults work out of the box on localhost: `tls internal` gives a
+# browser-warned-but-functional cert; Playwright's existing
+# `ignoreHTTPSErrors: true` covers the e2e suite. To deploy over
+# Tailscale (or any other network with a real cert), change the
+# site address to your hostname and swap `tls internal` for the
+# cert + key paths. See examples/collaborative-text-demo/README.md
+# for the full setup.
 {
     # Caddy's default is to also listen on :80 and redirect to HTTPS.
     # Disable so we can bind a non-standard port as a non-root user
