@@ -6,7 +6,7 @@ defmodule EbbServer.Application do
   @impl true
   def start(_type, _args) do
     data_dir = runtime_data_dir()
-    port = Application.get_env(:ebb_server, :port, 4000)
+    port = runtime_port()
 
     children = [
       {EbbServer.Storage.Supervisor, [data_dir: data_dir]},
@@ -40,5 +40,32 @@ defmodule EbbServer.Application do
   # state into `./data` at the project root.
   defp runtime_data_dir do
     Application.get_env(:ebb_server, :data_dir) || System.get_env("EBB_DATA_DIR") || "./data"
+  end
+
+  @doc false
+  def runtime_port do
+    case {Application.get_env(:ebb_server, :port), parse_env_port()} do
+      {port, _} when is_integer(port) ->
+        port
+
+      {_, port} when is_integer(port) ->
+        port
+
+      _ ->
+        4000
+    end
+  end
+
+  defp parse_env_port do
+    case System.get_env("EBB_PORT") do
+      nil ->
+        nil
+
+      raw ->
+        case Integer.parse(raw) do
+          {port, ""} -> port
+          _ -> raise "EBB_PORT must be an integer, got #{inspect(raw)}"
+        end
+    end
   end
 end
