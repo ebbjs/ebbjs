@@ -7,17 +7,22 @@ defmodule EbbServer.StorageHygieneTest do
   `Application.get_env(:ebb_server, :data_dir)` setting (see
   `EbbServer.Integration.StorageCase`), so we assert against the
   filesystem rather than the live application env.
+
+  Tests in this module are `async: false` and pre-clean any `./data`
+  directory before the assertion runs. Without the pre-clean, a prior
+  interrupted `mix test` that left RocksDB state at the project root
+  would spuriously fail the assertion below — this test asserts on the
+  *current* boot's behaviour, not accumulated state from previous runs.
   """
 
   use ExUnit.Case, async: false
 
-  @project_root Path.expand("../..", __DIR__)
-
   test "Storage.Supervisor does not write to ./data during test boot" do
-    # The Application starts Storage.Supervisor eagerly. By the time this
-    # test runs it has already opened its database at the path from
-    # config/test.exs — nowhere under the project root.
     cwd_data = Path.expand("./data", File.cwd!())
+
+    if File.dir?(cwd_data) do
+      File.rm_rf!(cwd_data)
+    end
 
     refute File.dir?(cwd_data),
            "expected no ./data directory under the project tree " <>

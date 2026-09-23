@@ -17,4 +17,14 @@ ExUnit.after_suite(fn _ ->
   if String.starts_with?(app_storage, tmp_root) and File.dir?(app_storage) do
     File.rm_rf!(app_storage)
   end
+
+  # Also clean up any `data/` that landed at the project root — the
+  # storage layer is configured to never create that path under test, but
+  # if a previous interrupted run left state here we don't want it to
+  # contaminate the next run or pollute git status. See ebbjs/ebbjs#56.
+  cwd_data = Path.expand("./data", File.cwd!())
+
+  if File.dir?(cwd_data) do
+    File.rm_rf!(cwd_data)
+  end
 end)
