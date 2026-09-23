@@ -19,7 +19,6 @@ defmodule EbbServer.Application do
       # wasn't switched to chunked mode first). The Writer also needs the
       # FanOutRouter's registered name so it can notify it of each
       # committed batch; without that, SSE subscribers never see writes.
-      # See docs/investigations/seed-catchup-mismatch.md for the full chain.
       {EbbServer.Storage.Writer,
        watermark_tracker: EbbServer.Storage.WatermarkTracker,
        fan_out_router: EbbServer.Sync.FanOutRouter},
