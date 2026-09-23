@@ -1,29 +1,39 @@
 defmodule EbbServer.Sync.FanOutRouter do
   @moduledoc """
-  Routes committed action batches to subscribed GroupServers.
+  Routes committed Action batches from the Writer to per-group
+  GroupServers, in committed order, gated on the watermark.
 
-  Receives `{:batch_committed, from_gsn, to_gsn}` notifications from Writers,
-  gates delivery on the committed watermark to ensure ordering despite
-  concurrent writers, reads committed Actions from RocksDB, resolves affected
-  Groups, and dispatches to per-Group GenServers.
+  ## What this module does
 
-  ## Watermark Gating
+  The Writer is the only writer of the Action log and notifies
+  `FanOutRouter` after each commit. The Router then:
 
-  Writer batches may arrive out-of-order due to concurrent writes. The
-  FanOutRouter buffers notifications and only pushes contiguous GSN ranges
-  up to the committed watermark from WatermarkTracker.
+  1. Waits until the committed watermark from `WatermarkTracker` is past
+     the batch's end.
+  2. Reads the committed Actions from RocksDB.
+  3. Resolves the affected groups (per-Action, via RelationshipCache).
+  4. Dispatches each Action to the right GroupServer pid.
+
+  When multi-Writer pipelining ships (#130 references this path), the
+  Router needs ordered-fanout coordination so groups don't see one
+  writer's GSN 5 before another's GSN 3. Today, with one Writer, the
+  watermark gating is trivially satisfied.
 
   ## SSE out-of-order dispatch is safe
 
-  Even when `process_batch/4` returns multiple disjoint ranges in `to_push`
-  (possible when the watermark advances past buffered notifications in
-  arbitrary order), `dispatch_to_groups/1` writes each Action independently
-  to its group's pid. SSE tolerates out-of-order events, and clients
-  reconstruct ordered state via `catchUp` (the dedicated ordered backfill
-  endpoint) before consuming the SSE stream. So the FanOutRouter is free
-  to push in arrival order; clients converge.
+  Even when `process_batch/4` returns disjoint GSN ranges (possible when
+  the watermark advances past buffered notifications out of order),
+  `dispatch_to_groups/1` writes each Action independently to its group.
+  SSE tolerates out-of-order events, and clients reconstruct ordered
+  state via `catchUp` before consuming the live stream. The FanOutRouter
+  is free to push in arrival order; clients converge.
 
-  ## Supervision
+  ## Sibling modules
+
+  - `EbbServer.Sync.GroupServer` — one pid per active group; holds its
+    SSE subscribers' senders.
+  - `EbbServer.Sync.SSEConnection` — one pid per live `GET /sync/live`
+    subscription; receives pushes via its GroupServer.
 
   Started under `EbbServer.Sync.Supervisor`.
   """

@@ -1,13 +1,49 @@
 defmodule EbbServer.Storage.SQLite do
   @moduledoc """
-  GenServer that owns the SQLite database lifecycle for entity storage.
+  Owns the SQLite database that serves as the read-optimized materialized
+  entity cache.
 
-  On init, opens an SQLite database, runs PRAGMAs and DDL, and prepares
-  cached statements for entity UPSERT/SELECT operations. All reads and
-  writes are routed through `GenServer.call` using the prepared statements.
+  ## Why this exists
 
-  All public functions accept an optional `server` argument (defaulting to
-  `__MODULE__`) so that tests can run multiple isolated instances concurrently.
+  RocksDB (the write path) has no efficient per-attribute query API.
+  Reads of the form "entities of type X where field Y satisfies predicate
+  P, joined against the actor's group membership" are exactly what SQLite
+  is built for. The cache is **rebuildable** from `cf_actions` +
+  `cf_group_actions`; RocksDB is the source of truth, SQLite is the
+  materialization.
+
+  This module is the only place that talks to `exqlite`. Every other
+  storage module goes through this one for entity materialization and
+  read queries.
+
+  ## Lifecycle
+
+  On init, opens the SQLite database with PRAGMAs (WAL mode, 64MB cache,
+  5s busy timeout, foreign keys on) and runs the DDL to create or migrate
+  the schema. All reads and writes are routed through `GenServer.call`
+  using cached statements.
+
+  ## Schema (managed here)
+
+  Generated columns extract field values from the per-entity JSON `data`
+  so that `WHERE` clauses can reference them via `json_extract` without
+  parsing JSON at read time. Two column shapes coexist in the data
+  (`flat` and `nested`/`FieldValue`) because a relationship-shape
+  migration crossed the field boundary without a schema migration; the
+  DDL tolerates both shapes during reads.
+
+  ## Reads vs. writes
+
+  This module is **only** read+upsert against the cache. The Writer
+  commits to RocksDB and triggers on-demand materialization in this
+  module via `upsert_entity/1` / `upsert_entities/1`. We never write
+  to SQLite on the hot write path — that goes through RocksDB and
+  fans out to materialization after commit.
+
+  ## Isolated instances
+
+  Every accessor takes an optional `server` (default `__MODULE__`) so
+  concurrent tests can run multiple isolated DBs.
   """
 
   use GenServer

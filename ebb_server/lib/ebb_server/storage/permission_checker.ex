@@ -1,15 +1,41 @@
 defmodule EbbServer.Storage.PermissionChecker do
   @moduledoc """
-  Stateless module for validating and authorizing actions.
+  Facade for the action-level validation and authorization pipeline.
+  Every committed Action from `POST /sync/actions` flows through here
+  on its way into the Writer, so this is on the hot path.
 
-  This is a facade module that delegates to specialized modules:
-  - ActionValidator: validates action structure, actor, and HLC
-  - Authorizer: performs authorization checks
+  ## What it does
 
-  All state comes from ETS lookups via cache modules:
-  - GroupCache.get_permissions/3
-  - RelationshipCache.get_entity_group/2
-  - GroupCache.get_actor_groups/2
+  Two checks, in order:
+
+  1. **ActionValidator** — shape, actor, HLC bounds (logical time must be
+     in `[now - 24h, now + 120s]`).
+  2. **Authorizer** — for each Update, does the actor have the right
+     `<type>.<verb>` (or `<type>.*`) on the entity's group?
+
+  On success: returns the validated action to the Writer with the same
+  shape it came in with, but populates server-side denormalized fields
+  (`gsn`, `server_received_at_hlc`, etc.) so downstream code doesn't
+  re-derive them.
+
+  ## Stateless by design
+
+  All state comes from ETS lookups via the cache modules (`GroupCache`,
+  `RelationshipCache`, `EbbServer.Storage.AuthorizationContext`). The
+  permission decision for an Action is a pure function of the Action
+  + the actor's current group memberships. Keeping this stateless means
+  no supervision coordination on the write path.
+
+  ## What "permission" means here
+
+  Permissions are stored on the Group system entity as a list of
+  `<type>.<verb>` strings (e.g. `"todo.update"`, `"todo.*"`). The
+  actor's per-group permissions are loaded into `GroupCache` on startup;
+  a write to a Group updates the cache in place. Writes that arrive
+  referencing an entity whose group the actor is not a member of, or
+  referencing a permission the actor doesn't have, are rejected with
+  `not_authorized`. The error shape mirrors the Writer's other reject
+  reasons so the client can present a uniform error UI.
   """
 
   alias EbbServer.Storage.ActionValidator

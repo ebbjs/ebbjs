@@ -9,7 +9,7 @@ description: "What is actually in the Ebb repo today — components, endpoints, 
 
 ### Server — `ebb_server/`
 
-An Elixir/OTP application. Single-node sync server with a complete HTTP API. See [`ebb_server/README.md`](https://github.com/ebbjs/ebbjs/blob/main/ebb_server/README.md) for the architecture overview; slices 1–4 are shipped; server functions (slice 5) and peer replication (slice 6) are tracked as [Epic #112](https://github.com/ebbjs/ebbjs/issues/112) and [Epic #113](https://github.com/ebbjs/ebbjs/issues/113) respectively.
+An Elixir/OTP application. Single-node sync server with a complete HTTP API. See the architecture in [`ebb_server/README.md`](https://github.com/ebbjs/ebbjs/blob/main/ebb_server/README.md); slices 1–4 are shipped; slices 5 (server functions) and 6 (peer replication) are tracked as [Epic #112](https://github.com/ebbjs/ebbjs/issues/112) and [Epic #113](https://github.com/ebbjs/ebbjs/issues/113).
 
 | What                                                                              | Where                                                                                                                 | Tests                                                                                |
 | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
