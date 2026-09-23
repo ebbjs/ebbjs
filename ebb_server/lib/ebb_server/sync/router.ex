@@ -1,17 +1,42 @@
 defmodule EbbServer.Sync.Router do
   @moduledoc """
-  HTTP router for the EbbServer sync API.
+  HTTP router for the sync API. The full endpoint table is documented
+  in `EbbServer`'s top-level README (`@ebb_server/README.md` after #109
+  lands in PR 6).
 
-  Provides endpoints:
-  - POST /sync/actions — Write actions to the system
-  - GET /entities/:id — Read an entity by ID
-  - POST /entities/query — Query entities by type
-  - POST /sync/handshake — Initialize connection and get group membership
-  - GET /sync/live — SSE stream for live updates
-  - GET /sync/groups/:group_id — Catch-up for a group
-  - POST /sync/presence — Broadcast ephemeral presence data
+  ## What this module is
 
-  Returns appropriate HTTP status codes for various error conditions.
+  A `Plug.Router` with seven endpoints and one catch-all 404:
+
+    - `POST /sync/handshake` — returns actor identity, group memberships,
+      per-group cursors. Requires `x-ebb-actor-id` header (bypass mode).
+    - `GET /sync/groups/:group_id?offset=N` — paginated catch-up for one group.
+    - `GET /sync/live?groups=...&cursor=N` — SSE stream of live actions.
+    - `POST /sync/actions` — submit a batch of Actions for write.
+    - `POST /sync/presence` — broadcast ephemeral presence data on an entity.
+    - `GET /entities/:id` — fetch a materialized entity (permission-checked).
+    - `POST /entities/query` — query entities by type with `json_extract`
+      filter and permission JOINs (used by `ctx.query()`).
+
+  ## Status codes
+
+  All errors use the appropriate HTTP status code (`400` for malformed
+  body, `401` for auth failures, `403` for permission denied,
+  `404` for unknown entity, `409` for HLC drift, `500`/`502` for server
+  errors). The Action-submission endpoint also returns per-Action
+  rejections in a `rejected` array so the client can roll back optimistic
+  applies.
+
+  ## What this module is not
+
+  This is **request plumbing**; the actual business logic lives in:
+
+  - `EbbServer.Sync.AuthPlug` — actor identity extraction
+  - `EbbServer.Storage.PermissionChecker` — per-update auth
+  - `EbbServer.Storage.Writer` — write serialization
+  - `EbbServer.Storage.EntityStore` — reads with on-demand materialization
+  - `EbbServer.Sync.SSEHandler` — the SSE wire format
+  - `EbbServer.Sync.CatchUp` — paginated catch-up
   """
 
   use Plug.Router

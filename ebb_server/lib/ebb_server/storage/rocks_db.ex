@@ -1,17 +1,33 @@
 defmodule EbbServer.Storage.RocksDB do
   @moduledoc """
-  GenServer that owns the RocksDB database lifecycle.
+  Owns the RocksDB database lifecycle and exposes the column-family
+  handles the rest of the storage layer reads from and writes to.
 
-  On init, opens the database and stores all column family handles in
-  `:persistent_term` for lock-free access from any process. The GenServer
-  itself never receives read/write messages — it exists solely to open
-  the database on startup and close it on shutdown.
+  ## Why this exists
 
-  All public accessor and data functions accept an optional `name`
-  parameter (defaulting to `__MODULE__`) so that tests can run multiple
-  isolated instances concurrently.
+  RocksDB is the write path: every committed Action goes into
+  `cf_actions` and is the source of truth for the rest of the system.
+  SQLite only sees materialized entities and is rebuildable from
+  `cf_actions` + `cf_group_actions`; RocksDB is not. This module is
+  the only place that talks to the `rocksdb` hex package — every
+  other storage module goes through this one.
 
-  Column families and their key schemas:
+  ## Lifecycle
+
+  The GenServer exists only to open the database on init and close it
+  on terminate. All accessor and I/O functions look up handles from
+  `:persistent_term` and can be called from any process; the GenServer
+  mailbox is never used at runtime. This keeps the hot path free of
+  serialized message passing.
+
+  The DB opens with `enable_pipelined_write: true`, which lets multiple
+  Writer batches commit concurrently without serializing through a single
+  WAL. A 2-writer pipelined benchmark hit ~108k Actions/sec with full
+  durability; production currently runs a single Writer. Throughput
+  numbers are documented in GitHub issue #130 (see Epic #111 for the
+  storage architecture).
+
+  ## Column families
 
     default           - RocksDB default, unused
     cf_actions        - GSN (64-bit big-endian) -> action (ETF binary)
@@ -20,6 +36,17 @@ defmodule EbbServer.Storage.RocksDB do
     cf_type_entities  - (type, 0x00, entity_id) -> <<>> (presence index)
     cf_action_dedup   - action_id -> GSN (duplicate detection)
     cf_group_actions  - (group_id, GSN) -> action_id binary
+
+  Composite keys use a `0x00` byte as a separator. Callers must never
+  include null bytes in their `type`, `entity_id`, or `action_id`
+  components (enforced by `encode_update_key/2` and
+  `encode_type_entity_key/2`).
+
+  ## Isolated instances
+
+  Every accessor takes an optional `name` (default `__MODULE__`) so
+  concurrent tests can run multiple isolated DBs with disjoint
+  `:persistent_term` keys and disjoint supervision tree registrations.
   """
 
   use GenServer

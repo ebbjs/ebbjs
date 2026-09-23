@@ -1,15 +1,47 @@
 defmodule EbbServer.Storage.SystemCache do
   @moduledoc """
-  Supervisor GenServer for the storage cache layer.
+  Supervisor that owns the in-memory state used on the hot paths:
+  permission checks, dirty entity tracking, fan-out routing, and
+  GSN/watermark coordination.
 
-  Manages the lifecycle of cache subsystems:
-  - `DirtyTracker` - tracks dirty entity IDs
-  - `GroupCache` - manages group memberships
-  - `RelationshipCache` - manages entity relationships
+  ## Why this exists
 
-  Also manages the GSN counter via persistent_term.
+  A single Writer GenServer and a single SQLite connection wouldn't be
+  a bottleneck for 1k writes/s, but `POST /sync/actions` is not the only
+  reader — SSE fan-out reads GSN counters, `GET /entities/:id` hits
+  permission checks, `GET /sync/groups/:gid` reads group membership.
+  Putting all that state in ETS + `:atomics` lets the single Writer be
+  the only serialized path (correctness) while everything else reads in
+  parallel with no contention.
 
-  ## Child Start Arguments
+  ## Children
+
+    - `DirtyTracker`      — the set of `entity_id`s whose materialized form is stale.
+    - `GroupCache`        — per-group member sets; permission checks read this on every write.
+    - `RelationshipCache` — entity → group lookup; reaches in for fan-out and entity reads.
+    - `WatermarkTracker`  — committed-watermark ETS table + `:atomics` references.
+    - `GSNCounter`        — the next free GSN, exposed via `:atomics` for race-free claiming.
+
+  ## Lifecycle
+
+  On init, the supervisor populates `GroupCache` and `RelationshipCache`
+  from the system entities in RocksDB before returning. The supervision
+  tree uses `rest_for_one` so RocksDB is up before any cache child starts;
+  the supervision tree blocks accepting connections until this returns.
+
+  ## Load-bearing decisions
+
+  - **`rest_for_one` would be wrong.** All cache children share the same
+    lifecycle and must come up together after RocksDB is up.
+  - **No message-passing API.** All read paths are pure ETS reads from
+    `GenServer`-less modules; writes that need to go through a process
+    (WatermarkTracker, GSN claiming) keep coordination off the hot path
+    by using ETS + `:atomics` only, never mailbox messages.
+  - **Populate-on-startup only.** The caches are loaded once from RocksDB
+    on `init/1` and then mutated in-memory by the Writer; they do not
+    re-read from RocksDB on each access.
+
+  ## Child start arguments
 
   All child modules accept optional keyword arguments to override default ETS table names:
   - `:dirty_set` - defaults to `:ebb_dirty_set`

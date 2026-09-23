@@ -1,17 +1,42 @@
 defmodule EbbServer.Storage.EntityStore do
   @moduledoc """
-  Provides entity read access with on-demand materialization from RocksDB to SQLite.
+  Read interface for entity state with a zero-staleness guarantee: every
+  `get/2` or `query/3` call sees writes that completed before the call,
+  even if those writes have not been pre-materialized.
 
-  This module is NOT a GenServer for Slice 1. It composes the SQLite GenServer
-  (for cached reads) and the RocksDB GenServer (for materialization).
+  ## On-demand materialization
 
-  The `get/2,3` function is the main entry point:
-  - First checks if the entity is dirty in DirtyTracker
-  - If clean: reads directly from SQLite
-  - If dirty: materializes by replaying actions from RocksDB
+  The split between RocksDB (write path) and SQLite (read path) creates
+  a window where the materialized entity in SQLite does not reflect the
+  most recent committed Action. Closing that window is the job of this
+  module: a request checks `DirtyTracker`, and if the entity is dirty,
+  replays only the delta since the entity's `last_gsn` from RocksDB,
+  applies per-field typed merges, UPSERTs into SQLite, and clears the
+  dirty bit — all before returning. We never replay full history.
 
-  All public functions accept optional `:rocks_name` and `:sqlite_name` parameters
-  (defaulting to the module names) so that tests can run isolated instances.
+  This module is **not** a GenServer. It composes the `EbbServer.Storage.SQLite`
+  GenServer (for cached reads) and the `EbbServer.Storage.RocksDB` GenServer
+  (for the source-of-truth reads during materialization), plus ETS reads
+  from `DirtyTracker` and `EbbServer.Storage.EntityStore.GsnTracker`.
+
+  ## Merge rules
+
+  Per-field merge is uniform across all field types: HLC plus a
+  lexicographic `update_id` tiebreak. This deliberately keeps the
+  materialization logic simple — there is no per-type dispatch table
+  today. CRDT-style merging (e.g. G-Counter, causal-tree text) is **not**
+  a server-side concern: the per-field LWW rule on `value` blobs is
+  enough for the server's job (decide which blob wins), and the typed
+  reducer on the client is what interprets a `causal-tree` blob
+  correctly. See Epic #110 for how `e.collaborativeText()` is defined
+  and Epic #111 for the storage-architecture rationale.
+
+  ## Hot path
+
+  Clean entities: one ETS check + one SQLite SELECT. Dirty entities:
+  + one RocksDB range iterator + per-update merge + one SQLite UPSERT
+  + one ETS delete. The common case (most reads hit the cache) stays
+  close to an SQLite SELECT.
 
   ## Merge Semantics
 

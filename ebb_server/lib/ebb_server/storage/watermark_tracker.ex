@@ -1,18 +1,47 @@
 defmodule EbbServer.Storage.WatermarkTracker do
   @moduledoc """
-  GenServer that owns the committed watermark and committed ranges ETS table.
+  Owns the committed-watermark state that gates SSE fan-out.
 
-  Tracks which GSNs have been fully committed and flushed to storage.
-  The GenServer exists solely to own the ETS table and atomics reference
-  lifetime and manage startup/shutdown.
+  ## What the watermark is
 
-  All public functions are lock-free (ETS reads/writes, atomics operations)
-  and do not route through `GenServer.call`.
+  After the Writer commits a batch of Actions to RocksDB, it calls
+  `mark_range_committed/2` with the GSN range it just landed. The
+  watermark is the GSN up to which all prior GSNs are durable.
 
-  ## Data Structures
+  SSE subscribers send `cursor=N` with `GET /sync/live`; the Fan-Out
+  Router only forwards a batch to a subscriber once the committed
+  watermark has passed that batch's end. This makes per-subscriber
+  ordering independent of how many writes happened in the meantime
+  — a subscriber that disconnects for an hour and reconnects sees
+  GSNs strictly in committed order, never skips a range, never receives
+  a future GSN ahead of its own state.
 
-  - `:persistent_term {EbbServer.Storage.WatermarkTracker, :gsn_ref}` - atomics reference for watermark
-  - `:persistent_term {EbbServer.Storage.WatermarkTracker, :committed_ranges}` - table name
+  ## Data structures
+
+  - `:persistent_term {WatermarkTracker, :gsn_ref}` — the `:atomics.atomics/0`
+    reference holding the current committed watermark (one integer).
+  - `:persistent_term {WatermarkTracker, :committed_ranges}` — the ETS
+    table name holding `{gsn, pid}` pairs for in-flight writers (used
+    to skip the work of the same Writer catching up its own batches).
+
+  ## Lifecycle
+
+  The GenServer exists only to own the ETS table and `:atomics`
+  reference lifetimes and to manage startup/shutdown. **All public
+  functions are lock-free** — ETS reads, ETS writes, and `:atomics`
+  operations. No `GenServer.call` is ever made on the write path; the
+  single Writer (`EbbServer.Storage.Writer`) and `FanOutRouter` call
+  these functions directly from any process.
+
+  ## Why ETS, not a GenServer
+
+  Every committed batch triggers a watermark advance, and every SSE
+  subscriber's catch-up cursor comparison needs to read it. Routing
+  every read through a GenServer mailbox would put that load on the
+  Writer's mailbox. ETS + `:atomics` keeps the read path zero-copy and
+  avoids serializing through a single process for what should be
+  scalable hot-path state.
+
   - `:ets :committed_ranges` - ordered_set table, key is {gsn, pid}, value is true
   """
 
