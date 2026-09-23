@@ -368,7 +368,6 @@ defmodule EbbServer.Storage.Writer do
         # sibling helper build_intra_action_context/1 already does this;
         # without it, the lookup below misses intra_ctx and the cache
         # because we're searching for a map where the keys are strings.
-        # See docs/investigations/seed-catchup-mismatch.md.
         source_id = Fields.get(update.data || %{}, "source_id")
 
         if source_id do
