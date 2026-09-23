@@ -282,11 +282,11 @@ full generation algorithm.
 ## Build history
 
 The architecture was built in vertical slices; each slice ended with
-passing integration tests. Historical slice write-ups were preserved
-under `docs/ebb_server/slices/` for the implementation record but have
-been moved to GitHub issues ([Epic #112](https://github.com/ebbjs/ebbjs/issues/112)
-for slice 5; [Epic #113](https://github.com/ebbjs/ebbjs/issues/113)
-for slice 6). Slices 1–4 shipped; slices 5–6 are not built.
+passing integration tests. Slices 1–4 shipped; slices 5–6 are not built.
+Forward-looking slice write-ups for the deferred work live on GitHub
+([Epic #112](https://github.com/ebbjs/ebbjs/issues/112) for slice 5 —
+server functions; [Epic #113](https://github.com/ebbjs/ebbjs/issues/113)
+for slice 6 — peer replication).
 
 ## References
 
