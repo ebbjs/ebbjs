@@ -7,36 +7,14 @@ const sections = [
     ],
   },
   {
-    label: 'v1 target API (planned)',
+    label: 'Planned (tracked on GitHub)',
     links: [
-      { label: 'Overview', href: '/docs/v1-target/overview' },
-      { label: 'Getting started', href: '/docs/v1-target/getting-started' },
-    ],
-  },
-  {
-    label: 'v1 target — Core concepts',
-    links: [
-      { label: 'The data model', href: '/docs/v1-target/data-model' },
-      { label: 'Relationships', href: '/docs/v1-target/relationships' },
-      { label: 'Groups, membership & actors', href: '/docs/v1-target/groups' },
-    ],
-  },
-  {
-    label: 'v1 target — Architecture',
-    links: [
-      { label: 'Hybrid logical clocks', href: '/docs/v1-target/clock' },
-      { label: 'Sync protocol', href: '/docs/v1-target/sync' },
-      { label: 'Permission enforcement', href: '/docs/v1-target/permissions' },
-      { label: 'Conflict resolution', href: '/docs/v1-target/conflicts' },
-    ],
-  },
-  {
-    label: 'v1 target — Guides',
-    links: [
-      { label: 'The client', href: '/docs/v1-target/client' },
-      { label: 'Garbage collection', href: '/docs/v1-target/garbage-collection' },
-      { label: 'Schema evolution', href: '/docs/v1-target/schema-evolution' },
-      { label: 'Observability & analytics', href: '/docs/v1-target/observability' },
+      { label: 'v1 API surface — Epic', href: 'https://github.com/ebbjs/ebbjs/issues/115', external: true },
+      { label: 'Server functions — Epic', href: 'https://github.com/ebbjs/ebbjs/issues/112', external: true },
+      { label: 'Peer replication — Epic', href: 'https://github.com/ebbjs/ebbjs/issues/113', external: true },
+      { label: 'Server-side SDK — Epic', href: 'https://github.com/ebbjs/ebbjs/issues/114', external: true },
+      { label: 'Collaborative text — Epic', href: 'https://github.com/ebbjs/ebbjs/issues/110', external: true },
+      { label: 'Storage architecture (historical)', href: 'https://github.com/ebbjs/ebbjs/issues/111', external: true },
     ],
   },
 ];
@@ -50,10 +28,11 @@ const currentPath = Astro.url.pathname;
       <h2 class="text-xs font-semibold text-stone-400 uppercase tracking-wider mb-3">{section.label}</h2>
       <div class="space-y-1">
         {section.links.map((link) => {
-          const isActive = currentPath === link.href || currentPath === `${link.href}/`;
+          const isActive = !link.external && (currentPath === link.href || currentPath === `${link.href}/`);
           return (
             <a
               href={link.href}
+              {...(link.external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
               class:list={[
                 'block py-1.5 text-sm transition-colors border-b-2',
                 isActive

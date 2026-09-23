@@ -556,4 +556,4 @@ These came up during design but don't block the prototype. Resolve during or aft
 - [Current state docs](../../../packages/www/src/content/docs/) — what ships today
 - [Storage adapter README](../../../packages/storage/README.md) — the `StorageAdapter` interface the sync client writes into
 - POC architecture docs (the optimization-pass design) were removed under #109 PR 3; see Epic #110 for the production-integration slice plan.
-- [V1 data model](../../../packages/www/src/content/docs/v1-target/data-model.md) — the target typed-fields design (we diverge for the prototype)
+- [V1 data model](https://github.com/ebbjs/ebbjs/issues/116) — the target typed-fields design (we diverge for the prototype)

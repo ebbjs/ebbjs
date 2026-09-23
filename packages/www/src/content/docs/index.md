@@ -3,16 +3,13 @@ title: "Current State"
 description: "What is actually in the Ebb repo today — components, endpoints, and tests."
 ---
 
-> **Ebb is pre-alpha.** The documentation is split into two sections:
->
-> - **[Current state](#current-state)** (this page) — what's actually shipped: the Elixir sync server, `@ebbjs/core`, `@ebbjs/storage`, the `@ebbjs/server` test harness. Everything here runs and is tested.
-> - **[v1 Target API](/docs/v1-target/overview)** — the planned public surface (`defineModel`, `createClient`, `useQuery`, `defineFunction`, etc.). **None of this is implemented yet.** These pages describe where Ebb is going.
+> **Ebb is pre-alpha.** This page documents what's actually in the repo today. Forward-looking API surface (`defineModel`, `createClient`, `useQuery`, `defineFunction`, etc.) is tracked as Epics on GitHub; see the [v1 API surface Epic](https://github.com/ebbjs/ebbjs/issues/115) and the [GitHub issues list](https://github.com/ebbjs/ebbjs/issues) for what is being designed and built.
 
 ## Current state
 
 ### Server — `ebb_server/`
 
-An Elixir/OTP application. Single-node sync server with a complete HTTP API. Slices 1–4 of the [server design](https://github.com/ebbjs/ebbjs/blob/main/docs/ebb_server/README.md) are shipped; slices 5 (server functions) and 6 (peer replication) are design only.
+An Elixir/OTP application. Single-node sync server with a complete HTTP API. See [`ebb_server/README.md`](https://github.com/ebbjs/ebbjs/blob/main/ebb_server/README.md) for the architecture overview; slices 1–4 are shipped; server functions (slice 5) and peer replication (slice 6) are tracked as [Epic #112](https://github.com/ebbjs/ebbjs/issues/112) and [Epic #113](https://github.com/ebbjs/ebbjs/issues/113) respectively.
 
 | What                                                                              | Where                                                                                                                 | Tests                                                                                |
 | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
@@ -108,14 +105,15 @@ Currently one e2e test exists: `packages/server/src/test/e2e/sync.test.ts` (hand
 
 ## What's NOT in the repo
 
-| Area                                                 | State               | Where it's described                                                                                                                                                                                                                |
-| ---------------------------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@ebbjs/client` (sync SDK)                           | Stub (`export {};`) | Design: [`packages/client/docs/design/`](https://github.com/ebbjs/ebbjs/tree/main/packages/client/docs/design/)                                                                                                                     |
-| `@ebbjs/react`                                       | Not started         | [`v1-target/getting-started`](/docs/v1-target/getting-started)                                                                                                                                                                      |
-| Server functions (`defineFunction`)                  | Not started         | [`docs/ebb_server/slices/05-...`](/docs/ebb_server/slices/05-server-function-invocation)                                                                                                                                            |
-| Peer replication                                     | Not started         | [`docs/ebb_server/slices/06-...`](/docs/ebb_server/slices/06-peer-replication)                                                                                                                                                      |
-| CLI tooling                                          | Not started         | —                                                                                                                                                                                                                                   |
-| Persistent client storage (SQLite/IndexedDB adapter) | Not started         | `@ebbjs/storage` ships in-memory only                                                                                                                                                                                               |
-| Causal-tree collaborative text                       | POC only            | [`experiment/collaborative-text/`](https://github.com/ebbjs/ebbjs/tree/main/experiment/collaborative-text) + [devlog](https://github.com/ebbjs/ebbjs/blob/main/packages/www/src/content/devlog/how-collaborative-editing-works.mdx) |
+| Area                                                 | State               | Where it's tracked                                                                                                                                                                                                             |
+| ---------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@ebbjs/client` (sync SDK)                           | Stub (`export {};`) | [v1 API surface Epic](https://github.com/ebbjs/ebbjs/issues/115), especially [#118 (Client SDK)](https://github.com/ebbjs/ebbjs/issues/118) and [#132 (read-only v1 client design)](https://github.com/ebbjs/ebbjs/issues/132) |
+| `@ebbjs/react`                                       | Not started         | [v1 API surface Epic](https://github.com/ebbjs/ebbjs/issues/115)                                                                                                                                                               |
+| Server functions (`defineFunction`)                  | Not started         | [Epic #112](https://github.com/ebbjs/ebbjs/issues/112)                                                                                                                                                                         |
+| Peer replication                                     | Not started         | [Epic #113](https://github.com/ebbjs/ebbjs/issues/113)                                                                                                                                                                         |
+| Server-side SDK (SSR / external processes)           | Not started         | [Epic #114](https://github.com/ebbjs/ebbjs/issues/114)                                                                                                                                                                         |
+| CLI tooling                                          | Not started         | —                                                                                                                                                                                                                              |
+| Persistent client storage (SQLite/IndexedDB adapter) | Not started         | `@ebbjs/storage` ships in-memory only                                                                                                                                                                                          |
+| Causal-tree collaborative text                       | POC only            | [Epic #110](https://github.com/ebbjs/ebbjs/issues/110) + [devlog](https://github.com/ebbjs/ebbjs/blob/main/packages/www/src/content/devlog/how-collaborative-editing-works.mdx)                                                |
 
 For the marketing-facing roadmap, see [ebb.dev/#roadmap](https://ebb.dev/#roadmap). For an honest, repo-grounded roadmap, see the [GitHub README](https://github.com/ebbjs/ebbjs#current-state).

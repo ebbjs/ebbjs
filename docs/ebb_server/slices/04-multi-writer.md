@@ -97,7 +97,7 @@ Two Writer GenServers process Actions concurrently against a shared RocksDB inst
    - SSE delivery is in GSN order
    - No data corruption
 
-8. **Throughput benchmark.** Measure Actions/sec with 1 Writer vs. 2 Writers. Verify near-linear scaling (expect ~1.8-1.9x). Compare against the 108k benchmark from `docs/scratch/rocksdb-throughput-results.md`. _(Note: the production default is 1. Validating the 2-writer path was done in benchmark only; the deployment decision to ship 1 writer is documented in the [devlog](https://github.com/ebbjs/ebbjs/blob/main/packages/www/src/content/devlog/a-rocksdb-solid-start.md).)_
+8. **Throughput benchmark.** Measure Actions/sec with 1 Writer vs. 2 Writers. Verify near-linear scaling (expect ~1.8-1.9x). Compare against the 108k benchmark from the [RocksDB throughput benchmarks issue](https://github.com/ebbjs/ebbjs/issues/130). _(Note: the production default is 1. Validating the 2-writer path was done in benchmark only; the deployment decision to ship 1 writer is documented in the [devlog](https://github.com/ebbjs/ebbjs/blob/main/packages/www/src/content/devlog/a-rocksdb-solid-start.md).)_
 
 9. **Crash recovery test.** Kill a Writer mid-batch. Verify:
    - Supervisor restarts the Writer
