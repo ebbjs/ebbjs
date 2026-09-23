@@ -589,16 +589,7 @@ describe("getRunAtPosition at end of doc", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Empty-doc ROOT placeholder (#101)
-//
-// The bridge seeds the idMapField with a zero-length placeholder for
-// ROOT_ID so empty-doc cursor clicks can resolve to a (runId, offset)
-// pair — otherwise getRunAtPosition returns undefined and presence
-// silently no-ops. These tests cover the invariant end-to-end.
-// ---------------------------------------------------------------------------
-
-describe("empty-doc ROOT placeholder (#101)", () => {
+describe("empty-doc ROOT placeholder", () => {
   it("createIdMapField seeds with the ROOT placeholder", () => {
     const idMapField = createIdMapField();
     const state = EditorState.create({
@@ -622,10 +613,6 @@ describe("empty-doc ROOT placeholder (#101)", () => {
   });
 
   it("setIdMapEffect.of([]) still leaves the placeholder in the field", () => {
-    // The StateField re-seeds the placeholder on every dispatch, so an
-    // explicit empty-array effect doesn't strip it. This is the
-    // invariant that keeps remote "tombstone all runs" transitions
-    // from breaking empty-doc cursor anchoring.
     const idMapField = createIdMapField();
     const seeded = EditorState.create({
       doc: "",
@@ -659,17 +646,11 @@ describe("empty-doc ROOT placeholder (#101)", () => {
   });
 
   it("mountEditorBridge on an empty doc leaves the placeholder in idMapField", () => {
-    // The acceptance scenario for #101: a fresh doc + empty CM view
-    // + mount → cursor anchoring works without typing.
     const { view, idMapField } = setup();
     expect(view.state.field(idMapField)).toEqual([ROOT_PLACEHOLDER_SPAN]);
   });
 
   it("end-to-end: empty-doc local click resolves to (ROOT_ID, 0)", () => {
-    // This is the spec from #101. Without typing, the bridge's
-    // idMapField must hand out (ROOT_ID, 0) for any CM position so
-    // the demo's sendLocalCursor emits a POST instead of silently
-    // no-opping.
     const { view, idMapField } = setup();
     expect(getRunAtPosition(view.state, 0, idMapField)).toEqual({
       runId: ROOT_ID,
@@ -679,9 +660,6 @@ describe("empty-doc ROOT placeholder (#101)", () => {
   });
 
   it("first local edit replaces the placeholder with the real run", () => {
-    // After typing, idMapField should drop the placeholder and carry
-    // the real run only. The placeholder is purely a CM-side mirror
-    // and never represents real doc content.
     const { view, doc, idMapField } = setup();
     expect(view.state.field(idMapField)).toEqual([ROOT_PLACEHOLDER_SPAN]);
 
@@ -696,19 +674,11 @@ describe("empty-doc ROOT placeholder (#101)", () => {
   });
 
   it("remote tombstone of the only run re-seeds the placeholder", () => {
-    // Edge case: a remote peer deletes the only run we have. The
-    // spans StateField transitions back to empty. The invariant must
-    // hold across this transition so the next cursor click still
-    // anchors to (ROOT_ID, 0).
     const { view, doc, idMapField } = setup();
     doc.localInsert("x");
     expect(view.state.field(idMapField).length).toBe(1);
     const runId = doc.docState.children.get("ROOT")![0]!;
 
-    // Receive a remote tombstone for the only run via the wire path.
-    // The bridge's applyDocUpdateToCM dispatch goes through
-    // ensureRootSpan, so the placeholder comes back even though
-    // doc.docState.index.spans is now empty.
     doc.applyActions([
       {
         id: "act_del",
@@ -739,10 +709,6 @@ describe("empty-doc ROOT placeholder (#101)", () => {
   });
 
   it("placeholder never leaks into the doc tree's spans", () => {
-    // The placeholder is a CM-side mirror only. The doc tree's
-    // PositionIndex.spans must never carry a ROOT_ID span — that
-    // would be a run-id-collision risk per the analysis in #101
-    // (option 1).
     const { doc } = setup();
     expect(doc.docState.index.spans).toEqual([]);
     doc.localInsert("x");

@@ -44,8 +44,6 @@ import { ROOT_ID, type AppliedUpdate, type RunSpan, type TextDocument } from "@e
 // don't need to import it separately from @ebbjs/client.
 export type { RunSpan };
 
-// Re-export ROOT_ID so consumers can reference the placeholder run
-// without pulling from @ebbjs/client.
 export { ROOT_ID };
 
 // ---------------------------------------------------------------------------
@@ -68,33 +66,21 @@ export const setIdMapEffect = StateEffect.define<readonly RunSpan[]>();
 // ---------------------------------------------------------------------------
 
 /**
- * A zero-length placeholder span at the document root. Always present
- * in the StateField so empty-doc clicks can resolve to `(ROOT_ID, 0)`
- * for presence anchoring (see #101). The doc tree's `PositionIndex.spans`
- * never contains this — it lives only in the CM-side mirror.
+ * Zero-length span at the document root. The CM-side `idMapField`
+ * always carries this so empty-doc clicks resolve to `(ROOT_ID, 0)`
+ * for presence anchoring. The doc tree's `PositionIndex.spans` never
+ * contains this — it lives only in the CM mirror.
  */
 export const ROOT_PLACEHOLDER_SPAN: RunSpan = { runId: ROOT_ID, length: 0 };
 
-/**
- * Ensure the spans array carries the ROOT placeholder. The doc tree
- * uses an empty spans array as the "no runs yet" signal; the CM mirror
- * needs at least the placeholder so cursor anchoring always has a run
- * to land on. Call this at every boundary that dispatches
- * `setIdMapEffect` so the invariant survives the empty→first-run and
- * any-run→empty (remote tombstone of all visible runs) transitions.
- */
+/** Ensure the spans array carries the ROOT placeholder so the CM mirror never goes empty. */
 export const ensureRootSpan = (spans: readonly RunSpan[]): readonly RunSpan[] =>
   spans.length === 0 ? [ROOT_PLACEHOLDER_SPAN] : spans;
 
 /**
- * The CM StateField holding the current spans. Exposed so consumers
- * (presence, cursor anchoring, etc.) can read it via
- * `view.state.field(idMapField)`.
- *
- * Invariant: the field's value always contains at least the ROOT
- * placeholder. Even when the underlying doc is empty (zero runs),
- * consumers can resolve any CM position to a (runId, offset) pair —
- * which is what makes empty-doc presence clicks work (#101).
+ * CM StateField mirroring `doc.docState.index.spans`. Always carries
+ * at least the ROOT placeholder so empty-doc clicks resolve to
+ * `(ROOT_ID, 0)`.
  */
 export const createIdMapField = (): StateField<readonly RunSpan[]> =>
   StateField.define<readonly RunSpan[]>({
@@ -341,9 +327,7 @@ export function mountEditorBridge(
   localEdit?: LocalEditTracker,
 ): EditorBridge {
   // Initial sync: replace CM's doc text with the document's current
-  // text (if they differ) and seed the spans StateField. The seeded
-  // spans always carry the ROOT placeholder when the doc has no real
-  // runs, so empty-doc cursor clicks resolve to (ROOT_ID, 0) (#101).
+  // text (if they differ) and seed the spans StateField.
   const initialText = doc.text;
   const initialSpans = ensureRootSpan(spansToRunSpans(doc.docState.index.spans));
   if (view.state.doc.toString() !== initialText) {

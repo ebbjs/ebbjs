@@ -4,8 +4,6 @@ import { test, expect, openTwoActorTabs } from "./helpers";
  * Remote cursor presence — moving the cursor in tab 1 should show a
  * colored cursor caret + actor label in tab 2.
  *
- * ## Background
- *
  * The presence implementation lives in two places:
  *
  * - `packages/client/src/presence/presence.ts` owns the per-entity
@@ -21,27 +19,7 @@ import { test, expect, openTwoActorTabs } from "./helpers";
  * The two halves are unit-tested independently; this spec is the
  * end-to-end check that the wire + DOM round-trip holds.
  *
- * ## Empty-doc anchor (#101)
- *
- * The first test clicks into drew's empty editor without typing. For
- * this to render alice's cursor widget, `idMapField` must always carry
- * a (synthetic) run even when the doc has zero real runs — otherwise
- * `sendLocalCursor` no-ops because `getRunAtPosition` returns
- * undefined. The bridge seeds a zero-length `ROOT_ID` placeholder
- * span for exactly this case; see `packages/codemirror/src/bridge.ts`
- * (`ROOT_PLACEHOLDER_SPAN`, `ensureRootSpan`).
- *
- * ## What this test does
- *
- * 1. Open the demo under `?actor=drew` and `?actor=alice`.
- * 2. Click into drew's editor (no typing — covers #101).
- * 3. Wait for drew's `POST /sync/presence` to round-trip through the
- *    server and arrive in alice's presence map.
- * 4. Wait for alice's CM6 ViewPlugin to re-render the cursor widget
- *    with label "drew".
- *
- * ## Race conditions the spec absorbs
- *
+ * Race conditions the spec absorbs:
  * - `setLocalCursor` is debounced 100ms. We wait the debounce window
  *   plus server round-trip plus SSE delivery plus CM render.
  * - The remote cursor renders as an inline-block widget of width 0
@@ -57,10 +35,6 @@ test.describe("remote cursor presence", () => {
       second: "alice",
     });
 
-    // Click into drew's empty editor. The bridge's idMapField carries
-    // a ROOT placeholder so sendLocalCursor resolves the click to
-    // (ROOT_ID, 0) and POSTs it; alice's cursor decoration then
-    // anchors to position 0 of her own empty editor.
     const drewEditor = drewPage.locator(".cm-content").first();
     await drewEditor.click();
 
@@ -87,36 +61,28 @@ test.describe("remote cursor presence", () => {
   });
 
   test("cursor label updates when drew moves the cursor", async ({ browser }) => {
-    // Open two tabs and let them settle.
     const { firstPage: drewPage, secondPage: alicePage } = await openTwoActorTabs(browser, {
       first: "drew",
       second: "alice",
     });
 
-    // Type some text in drew's editor so there's room to move the
-    // cursor and observe a position change.
+    // Type some text so there's room to move the cursor and observe
+    // a position change.
     const drewEditor = drewPage.locator(".cm-content").first();
     await drewEditor.click();
     await drewEditor.pressSequentially("hello");
 
-    // Wait for drew's cursor label to appear in alice's editor at
-    // the end of "hello" (post-typing position).
     const drewLabel = alicePage.locator(".cm-remote-cursor-label", { hasText: "drew" });
     await expect(drewLabel).toBeVisible({ timeout: 15_000 });
 
-    // Move drew's cursor to position 2 (between "he" and "llo"). The
-    // cursor position is rendered relative to the run, so a move of
-    // more than 0 characters must re-render the widget (otherwise the
-    // ViewPlugin is caching stale positions).
+    // Move drew's cursor to position 2 (between "he" and "llo"). A
+    // move of more than 0 characters must re-render the widget
+    // (otherwise the ViewPlugin is caching stale positions).
     await drewEditor.click();
     await drewPage.keyboard.press("Home");
     await drewPage.keyboard.press("ArrowRight");
     await drewPage.keyboard.press("ArrowRight");
 
-    // Assert the widget is still visible after the move — a stale
-    // widget would either vanish or stay at the old position; either
-    // way the test would not pass if the ViewPlugin failed to
-    // re-render on selection change.
     await expect(drewLabel).toBeVisible({ timeout: 15_000 });
   });
 });
