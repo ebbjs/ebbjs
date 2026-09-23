@@ -60,3 +60,7 @@ Client receives action
 
 - **SQLite** — persistent browser/storage adapter
 - **IndexedDB** — persistent browser adapter
+- **Subscribe / Outbox** — push-style subscriptions and the write outbox
+  live in `@ebbjs/client` (see
+  [Epic #115](https://github.com/ebbjs/ebbjs/issues/115) and
+  [#132](https://github.com/ebbjs/ebbjs/issues/132)).
