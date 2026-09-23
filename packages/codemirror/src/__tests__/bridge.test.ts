@@ -20,12 +20,15 @@ import { TextDocument } from "@ebbjs/client";
 import {
   createBridgeExtension,
   createIdMapField,
+  ensureRootSpan,
   findRunRange,
   getPositionOfRun,
   getRunAtPosition,
   isRemote,
   lookupPositionFromSpans,
   mountEditorBridge,
+  ROOT_ID,
+  ROOT_PLACEHOLDER_SPAN,
   setIdMapEffect,
   type RunSpan,
 } from "../bridge";
@@ -54,6 +57,7 @@ function setup(initialDocText = ""): {
   view: EditorView;
   doc: TextDocument;
   bridge: { detach: () => void };
+  idMapField: import("@codemirror/state").StateField<readonly RunSpan[]>;
 } {
   const d = new TextDocument({ docId: "doc_test", actorId: "peer-A" });
   const idMapField = createIdMapField();
@@ -80,7 +84,7 @@ function setup(initialDocText = ""): {
   view = v;
   _doc = d;
   bridge = bridgeObj;
-  return { view: v, doc: d, bridge: bridgeObj };
+  return { view: v, doc: d, bridge: bridgeObj, idMapField };
 }
 
 /**
@@ -582,5 +586,133 @@ describe("getRunAtPosition at end of doc", () => {
       effects: setIdMapEffect.of([{ runId: "a", length: 5 }]),
     }).state;
     expect(getRunAtPosition(seeded, 6, idMapField)).toBeUndefined();
+  });
+});
+
+describe("empty-doc ROOT placeholder", () => {
+  it("createIdMapField seeds with the ROOT placeholder", () => {
+    const idMapField = createIdMapField();
+    const state = EditorState.create({
+      doc: "",
+      extensions: [idMapField],
+    });
+    expect(state.field(idMapField)).toEqual([ROOT_PLACEHOLDER_SPAN]);
+    expect(ROOT_PLACEHOLDER_SPAN).toEqual({ runId: ROOT_ID, length: 0 });
+  });
+
+  it("ensureRootSpan returns the placeholder for an empty array", () => {
+    expect(ensureRootSpan([])).toEqual([ROOT_PLACEHOLDER_SPAN]);
+  });
+
+  it("ensureRootSpan is a no-op for a non-empty array", () => {
+    const spans: readonly RunSpan[] = [
+      { runId: "a", length: 5 },
+      { runId: "b", length: 3 },
+    ];
+    expect(ensureRootSpan(spans)).toBe(spans);
+  });
+
+  it("setIdMapEffect.of([]) still leaves the placeholder in the field", () => {
+    const idMapField = createIdMapField();
+    const seeded = EditorState.create({
+      doc: "",
+      extensions: [idMapField],
+    }).update({
+      effects: setIdMapEffect.of([]),
+    }).state;
+    expect(seeded.field(idMapField)).toEqual([ROOT_PLACEHOLDER_SPAN]);
+  });
+
+  it("getRunAtPosition resolves position 0 to (ROOT_ID, 0) on an empty doc", () => {
+    const idMapField = createIdMapField();
+    const state = EditorState.create({
+      doc: "",
+      extensions: [idMapField],
+    });
+    expect(getRunAtPosition(state, 0, idMapField)).toEqual({
+      runId: ROOT_ID,
+      offset: 0,
+      spanIndex: 0,
+    });
+  });
+
+  it("getPositionOfRun resolves (ROOT_ID, 0) to document position 0 on an empty doc", () => {
+    const idMapField = createIdMapField();
+    const state = EditorState.create({
+      doc: "",
+      extensions: [idMapField],
+    });
+    expect(getPositionOfRun(state, ROOT_ID, 0, idMapField)).toBe(0);
+  });
+
+  it("mountEditorBridge on an empty doc leaves the placeholder in idMapField", () => {
+    const { view, idMapField } = setup();
+    expect(view.state.field(idMapField)).toEqual([ROOT_PLACEHOLDER_SPAN]);
+  });
+
+  it("end-to-end: empty-doc local click resolves to (ROOT_ID, 0)", () => {
+    const { view, idMapField } = setup();
+    expect(getRunAtPosition(view.state, 0, idMapField)).toEqual({
+      runId: ROOT_ID,
+      offset: 0,
+      spanIndex: 0,
+    });
+  });
+
+  it("first local edit replaces the placeholder with the real run", () => {
+    const { view, doc, idMapField } = setup();
+    expect(view.state.field(idMapField)).toEqual([ROOT_PLACEHOLDER_SPAN]);
+
+    localInsert(view, 0, "h");
+
+    expect(doc.text).toBe("h");
+    const spans = view.state.field(idMapField);
+    expect(spans).not.toEqual([ROOT_PLACEHOLDER_SPAN]);
+    expect(spans.length).toBe(1);
+    expect(spans[0]!.runId).not.toBe(ROOT_ID);
+    expect(spans[0]!.length).toBe(1);
+  });
+
+  it("remote tombstone of the only run re-seeds the placeholder", () => {
+    const { view, doc, idMapField } = setup();
+    doc.localInsert("x");
+    expect(view.state.field(idMapField).length).toBe(1);
+    const runId = doc.docState.children.get("ROOT")![0]!;
+
+    doc.applyActions([
+      {
+        id: "act_del",
+        actor_id: "peer-B",
+        hlc: "5000",
+        gsn: 0,
+        updates: [
+          {
+            id: "upd_del",
+            subject_id: "doc_test",
+            subject_type: "text_document",
+            method: "patch",
+            data: {
+              [`run:${runId}`]: {
+                value: null,
+                update_id: "upd_del",
+                hlc: "5000",
+              },
+            } as never,
+          },
+        ],
+      },
+    ]);
+
+    expect(doc.text).toBe("");
+    expect(view.state.doc.toString()).toBe("");
+    expect(view.state.field(idMapField)).toEqual([ROOT_PLACEHOLDER_SPAN]);
+  });
+
+  it("placeholder never leaks into the doc tree's spans", () => {
+    const { doc } = setup();
+    expect(doc.docState.index.spans).toEqual([]);
+    doc.localInsert("x");
+    const docSpanIds = doc.docState.index.spans.map((s) => s.runId);
+    expect(docSpanIds).not.toContain(ROOT_ID);
   });
 });

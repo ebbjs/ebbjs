@@ -34,7 +34,7 @@
 
 import { Annotation, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import type { AppliedUpdate, RunSpan, TextDocument } from "@ebbjs/client";
+import { ROOT_ID, type AppliedUpdate, type RunSpan, type TextDocument } from "@ebbjs/client";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -43,6 +43,8 @@ import type { AppliedUpdate, RunSpan, TextDocument } from "@ebbjs/client";
 // Re-export RunSpan so consumers of @ebbjs/codemirror
 // don't need to import it separately from @ebbjs/client.
 export type { RunSpan };
+
+export { ROOT_ID };
 
 // ---------------------------------------------------------------------------
 // Annotations & effects
@@ -64,17 +66,29 @@ export const setIdMapEffect = StateEffect.define<readonly RunSpan[]>();
 // ---------------------------------------------------------------------------
 
 /**
- * The CM StateField holding the current spans. Exposed so consumers
- * (presence, cursor anchoring, etc.) can read it via
- * `view.state.field(idMapField)`.
+ * Zero-length span at the document root. The CM-side `idMapField`
+ * always carries this so empty-doc clicks resolve to `(ROOT_ID, 0)`
+ * for presence anchoring. The doc tree's `PositionIndex.spans` never
+ * contains this — it lives only in the CM mirror.
+ */
+export const ROOT_PLACEHOLDER_SPAN: RunSpan = { runId: ROOT_ID, length: 0 };
+
+/** Ensure the spans array carries the ROOT placeholder so the CM mirror never goes empty. */
+export const ensureRootSpan = (spans: readonly RunSpan[]): readonly RunSpan[] =>
+  spans.length === 0 ? [ROOT_PLACEHOLDER_SPAN] : spans;
+
+/**
+ * CM StateField mirroring `doc.docState.index.spans`. Always carries
+ * at least the ROOT placeholder so empty-doc clicks resolve to
+ * `(ROOT_ID, 0)`.
  */
 export const createIdMapField = (): StateField<readonly RunSpan[]> =>
   StateField.define<readonly RunSpan[]>({
-    create: () => [],
+    create: () => [ROOT_PLACEHOLDER_SPAN],
     update: (value, tr) => {
       for (const effect of tr.effects) {
         if (effect.is(setIdMapEffect)) {
-          return effect.value;
+          return ensureRootSpan(effect.value);
         }
       }
       return value;
@@ -315,15 +329,16 @@ export function mountEditorBridge(
   // Initial sync: replace CM's doc text with the document's current
   // text (if they differ) and seed the spans StateField.
   const initialText = doc.text;
+  const initialSpans = ensureRootSpan(spansToRunSpans(doc.docState.index.spans));
   if (view.state.doc.toString() !== initialText) {
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: initialText },
-      effects: setIdMapEffect.of(spansToRunSpans(doc.docState.index.spans)),
+      effects: setIdMapEffect.of(initialSpans),
       annotations: isRemote.of(true),
     });
   } else {
     view.dispatch({
-      effects: setIdMapEffect.of(spansToRunSpans(doc.docState.index.spans)),
+      effects: setIdMapEffect.of(initialSpans),
       annotations: isRemote.of(true),
     });
   }
@@ -412,7 +427,7 @@ function applyDocUpdateToCM(
 
   view.dispatch({
     changes: cmChanges,
-    effects: setIdMapEffect.of(spansToRunSpans(doc.docState.index.spans)),
+    effects: setIdMapEffect.of(ensureRootSpan(spansToRunSpans(doc.docState.index.spans))),
     annotations: isRemote.of(true),
   });
 }
