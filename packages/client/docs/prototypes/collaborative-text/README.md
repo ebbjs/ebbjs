@@ -518,7 +518,7 @@ experiment/collaborative-text/src/causal-tree.ts        # moved OUT — now in p
 experiment/collaborative-text/src/presence.ts           # moved OUT — now in packages/client (slice 3)
 experiment/collaborative-text/src/relay.ts              # stays — used by experiment for testing the algorithm
 experiment/collaborative-text/src/__tests__/            # tests migrate to packages/client
-experiment/collaborative-text/PLAN.md                  # update or delete (this doc supersedes it)
+experiment/collaborative-text/PLAN.md                  # superseded by this doc; slated for deletion under #109 PR 3
 
 docs/prototypes/collaborative-text/                     # new — this design doc
 ```
@@ -555,5 +555,5 @@ These came up during design but don't block the prototype. Resolve during or aft
 - [Server design: docs/ebb_server/README.md](../../../ebb_server/README.md) — the sync protocol the client must speak
 - [Current state docs](../../../packages/www/src/content/docs/) — what ships today
 - [Storage adapter README](../../../packages/storage/README.md) — the `StorageAdapter` interface the sync client writes into
-- [POC architecture docs](../../../experiment/collaborative-text/architecture/) — the optimization-pass design that we're porting
+- POC architecture docs (the optimization-pass design) were removed under #109 PR 3; see Epic #110 for the production-integration slice plan.
 - [V1 data model](../../../packages/www/src/content/docs/v1-target/data-model.md) — the target typed-fields design (we diverge for the prototype)
