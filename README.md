@@ -46,7 +46,7 @@ What's actually in the repo today (last meaningful server work: Apr 2026; last c
 | Observability hooks                | **Partial**      | Telemetry events are wired through server components; no developer-facing `onAction` hook.                                                                                                                                                                            |
 | Peer replication                   | **Not started**  | Slice 6 design exists; no implementation.                                                                                                                                                                                                                             |
 
-For a more detailed breakdown, see [`docs/ebb_server/README.md`](docs/ebb_server/README.md) (server) and [`docs/packages/`](docs/packages/) (TS packages).
+For a more detailed breakdown, see [`ebb_server/README.md`](ebb_server/README.md) (server architecture) and the per-package READMEs under `packages/*/`.
 
 ## Packages
 
