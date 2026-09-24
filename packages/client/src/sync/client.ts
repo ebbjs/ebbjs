@@ -486,18 +486,14 @@ export class SyncClient {
    * cases.
    */
   relationship(input: RelationshipHandleInput): RelationshipHandle {
-    const rel =
-      this.registry.getRelationship(input.source.name, input.as) ??
-      ({
-        source: { name: input.source.name, fields: {} },
-        target: { name: input.target.name, fields: {} },
-        as: input.as,
-        sourceCardinality: "one" as const,
-        type: input.source.name,
-      } as unknown as RelationshipDef<
-        { readonly name: string; readonly fields: Record<string, never> },
-        { readonly name: string; readonly fields: Record<string, never> }
-      >);
+    const registered = this.registry.getRelationship(input.source.name, input.as);
+    const rel = registered ?? {
+      source: { name: input.source.name, fields: {} },
+      target: { name: input.target.name, fields: {} },
+      as: input.as,
+      sourceCardinality: "one" as const,
+      type: input.source.name,
+    };
     const sourceName = input.source.name;
     const targetName = input.target.name;
     const field = rel.as;

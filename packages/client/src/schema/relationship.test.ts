@@ -66,7 +66,17 @@ describe("EntityRegistry.registerRelationship", () => {
     const r = new EntityRegistry();
     const rel = defineRelationship({ source: todo, target: list, as: "list" });
     r.registerRelationship(rel);
-    expect(r.getRelationship("todo", "list")).toBe(rel);
+    // The registry returns a wire-level view reconstructed from the
+    // stored fields — the names and cardinality match the original,
+    // but the source/target field maps are empty (callers that need
+    // field-level metadata should keep the original `defineRelationship`
+    // reference). Compare on the wire-level surface.
+    const found = r.getRelationship("todo", "list");
+    expect(found?.as).toBe("list");
+    expect(found?.sourceCardinality).toBe("one");
+    expect(found?.type).toBe("todo");
+    expect(found?.source.name).toBe("todo");
+    expect(found?.target.name).toBe("list");
     expect(r.getRelationship("todo", "missing")).toBeUndefined();
   });
 

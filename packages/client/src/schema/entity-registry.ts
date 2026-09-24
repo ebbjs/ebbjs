@@ -50,21 +50,32 @@ type AnyEntityDef = EntityDef<Record<string, FieldMarker>>;
 type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
 
 /**
- * One registered relationship lookup, narrowed to the wire-level
- * fields the registry actually needs to enforce rules. The full
- * `RelationshipDef<S, T>` is preserved in the map so consumers can
- * recover `source` and `target` for traversal, but accessors only
- * need the wire-level view.
+ * Wire-level fields the registry needs at lookup time. The full
+ * `RelationshipDef<S, T>` shape is reconstructed from these on read.
  */
 interface RegisteredRelationship {
-  def: AnyRelationshipDef;
   sourceName: string;
   targetName: string;
   as: string;
   sourceCardinality: SourceCardinality;
+  type: string;
 }
 
 const relationshipKey = (sourceName: string, as: string): string => `${sourceName}::${as}`;
+
+/**
+ * Build the wire-level `RelationshipDef` view from a registered
+ * entry. The reconstructed source/target carry only their `name`;
+ * callers that need field-level metadata should keep the original
+ * `defineRelationship` reference.
+ */
+const toRelationshipDef = (r: RegisteredRelationship): AnyRelationshipDef => ({
+  source: { name: r.sourceName, fields: {} },
+  target: { name: r.targetName, fields: {} },
+  as: r.as,
+  sourceCardinality: r.sourceCardinality,
+  type: r.type,
+});
 
 export class EntityRegistry {
   private readonly entities = new Map<string, AnyEntityDef>();
@@ -90,20 +101,9 @@ export class EntityRegistry {
   }
 
   /**
-   * Register a relationship. Two relationships on the same source may
-   * not share an `as` name — that's a registry-level collision (the
-   * `as` is the field name on the source, and the source's field set
-   * is a flat string-keyed map). Re-registering the same `(source,
-   * as)` overwrites; the cardinality assertion only fires on initial
-   * registration, when the entry didn't exist before.
-   *
-   * Returns a `{ overwritten: true }` marker when the previous entry
-   * for the same `(source, as)` was replaced; `{ overwritten: false,
-   * previousCardinality? }` otherwise. Callers use this to surface a
-   * warning (§Design decisions resolved item 7) when a relationship
-   * with the same `as` is declared twice with conflicting cardinality
-   * — the runtime check is type-level only in v1, so the warning is a
-   * signal not a hard error.
+   * Register a relationship keyed by `(source, as)`. Re-registering
+   * the same pair overwrites; the returned marker lets callers
+   * detect the overwrite.
    */
   registerRelationship<
     S extends EntityDef<Record<string, FieldMarker>>,
@@ -111,14 +111,14 @@ export class EntityRegistry {
   >(def: RelationshipDef<S, T>): { overwritten: boolean; previousCardinality?: SourceCardinality } {
     const key = relationshipKey(def.source.name, def.as);
     const prev = this.relationships.get(key);
-    const registered: RegisteredRelationship = {
-      def: def as unknown as AnyRelationshipDef,
+    const entry: RegisteredRelationship = {
       sourceName: def.source.name,
       targetName: def.target.name,
       as: def.as,
       sourceCardinality: def.sourceCardinality,
+      type: def.type,
     };
-    this.relationships.set(key, registered);
+    this.relationships.set(key, entry);
     if (prev === undefined) {
       return { overwritten: false };
     }
@@ -127,14 +127,15 @@ export class EntityRegistry {
 
   /** Look up a registered relationship by source name + `as` accessor. */
   getRelationship(sourceName: string, as: string): AnyRelationshipDef | undefined {
-    return this.relationships.get(relationshipKey(sourceName, as))?.def;
+    const entry = this.relationships.get(relationshipKey(sourceName, as));
+    return entry === undefined ? undefined : toRelationshipDef(entry);
   }
 
   /** All relationships declared with `sourceName` as their source. */
   getRelationshipsForSource(sourceName: string): readonly AnyRelationshipDef[] {
     const out: AnyRelationshipDef[] = [];
     for (const r of this.relationships.values()) {
-      if (r.sourceName === sourceName) out.push(r.def);
+      if (r.sourceName === sourceName) out.push(toRelationshipDef(r));
     }
     return out;
   }
@@ -143,7 +144,7 @@ export class EntityRegistry {
   getRelationshipsForTarget(targetName: string): readonly AnyRelationshipDef[] {
     const out: AnyRelationshipDef[] = [];
     for (const r of this.relationships.values()) {
-      if (r.targetName === targetName) out.push(r.def);
+      if (r.targetName === targetName) out.push(toRelationshipDef(r));
     }
     return out;
   }
