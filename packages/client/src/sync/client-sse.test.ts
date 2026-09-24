@@ -5,6 +5,22 @@ import { makeHlc, type Action } from "@ebbjs/core";
 import type { SSEEvent } from "./types";
 
 /**
+ * Drive the private `_applyAction` method on a SyncClient. Mirrors the
+ * test-only pattern in `sse.test.ts`: tests that need to seed storage
+ * state without driving the full SSE / HTTP path use this.
+ */
+const callApplyAction = (
+  client: ReturnType<typeof createClient>,
+  action: Action,
+  groupId?: string,
+): Promise<{ entityId: string; entityType: string }[]> =>
+  (
+    client as unknown as {
+      _applyAction: (a: Action, g?: string) => Promise<{ entityId: string; entityType: string }[]>;
+    }
+  )._applyAction.call(client, action, groupId);
+
+/**
  * SSE-driven subscribe test.
  *
  * Uses fetch mocks with controlled streaming bodies. Verifies the read path:
@@ -199,10 +215,16 @@ describe("SyncClient.subscribe (SSE)", () => {
         },
       ],
     };
-    // Seed via the same wire path subscribe() uses.
-    const { applyAction } = await import("./storage");
-    await applyAction(storage, putAction, "grp_1");
-    await applyAction(storage, patchAction, "grp_1");
+    // Seed via the same wire path subscribe() uses. Tests construct a
+    // SyncClient bound to the local storage so we can drive the private
+    // `_applyAction` method without spinning up the full SSE stream.
+    const seedClient = createClient({
+      serverUrl: "http://localhost:0",
+      actorId: "a_alice",
+      storage,
+    });
+    await callApplyAction(seedClient, putAction, "grp_1");
+    await callApplyAction(seedClient, patchAction, "grp_1");
     const e = await storage.entities.get("todo_1");
     expect(e).not.toBeNull();
     expect((e!.data.fields.title as { value?: unknown }).value).toBe("Updated");
@@ -255,9 +277,13 @@ describe("SyncClient.subscribe (SSE)", () => {
         } as never,
       ],
     };
-    const { applyAction } = await import("./storage");
-    await applyAction(storage, putAction, "grp_1");
-    await applyAction(storage, flatPatch, "grp_1");
+    const seedClient = createClient({
+      serverUrl: "http://localhost:0",
+      actorId: "a_alice",
+      storage,
+    });
+    await callApplyAction(seedClient, putAction, "grp_1");
+    await callApplyAction(seedClient, flatPatch, "grp_1");
     const e = await storage.entities.get("todo_1");
     expect(e).not.toBeNull();
     // The flat patch must NOT have overwritten the put's title.

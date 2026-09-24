@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { parseSSEBlock } from "./sse";
+import { createClient } from "./client";
 import { createMemoryAdapter } from "@ebbjs/storage";
-import { applyAction } from "./storage";
 import { makeHlc, type Action } from "@ebbjs/core";
 
 describe("parseSSEBlock", () => {
@@ -74,7 +74,30 @@ describe("parseSSEBlock", () => {
   });
 });
 
-describe("applyAction", () => {
+/**
+ * Drive the private `_applyAction` method on a SyncClient. Tests
+ * migrated from the (now-deleted) top-level `applyAction` helper
+ * use this to seed storage state without spinning up the full
+ * SSE/HTTP path.
+ */
+const callApplyAction = async (
+  storage: ReturnType<typeof createMemoryAdapter>,
+  action: Action,
+  groupId?: string,
+): Promise<{ entityId: string; entityType: string }[]> => {
+  const client = createClient({
+    serverUrl: "http://localhost:0",
+    actorId: "a_test",
+    storage,
+  });
+  return (
+    client as unknown as {
+      _applyAction: (a: Action, g?: string) => Promise<{ entityId: string; entityType: string }[]>;
+    }
+  )._applyAction.call(client, action, groupId);
+};
+
+describe("_applyAction (storage path)", () => {
   it("appends action and marks entities dirty", async () => {
     const storage = createMemoryAdapter();
     const action: Action = {
@@ -94,7 +117,7 @@ describe("applyAction", () => {
         },
       ],
     };
-    const affected = await applyAction(storage, action, "grp_1");
+    const affected = await callApplyAction(storage, action, "grp_1");
     expect(affected).toEqual([{ entityId: "todo_1", entityType: "todo" }]);
     expect(await storage.isDirty("todo_1")).toBe(true);
     expect(await storage.cursors.get("grp_1")).toBe(1);
@@ -120,7 +143,7 @@ describe("applyAction", () => {
         },
       ],
     };
-    await applyAction(storage, action, "grp_1");
+    await callApplyAction(storage, action, "grp_1");
     expect(await storage.cursors.get("grp_1")).toBe(10);
   });
 
@@ -133,7 +156,7 @@ describe("applyAction", () => {
       gsn: 0,
       updates: [],
     };
-    await applyAction(storage, action, "grp_1");
+    await callApplyAction(storage, action, "grp_1");
     expect(await storage.cursors.get("grp_1")).toBeNull();
   });
 
@@ -165,7 +188,7 @@ describe("applyAction", () => {
         },
       ],
     };
-    const affected = await applyAction(storage, action);
+    const affected = await callApplyAction(storage, action);
     expect(affected).toHaveLength(2);
     expect(await storage.cursors.get("grp_1")).toBeNull();
   });
@@ -175,7 +198,7 @@ describe("applyAction", () => {
 // patchValue.hlc)` internally — confirms the packed-BigInt HLC
 // fixtures round-trip through parse → compare → BigInt without
 // throwing.
-describe("applyAction HLC handling", () => {
+describe("_applyAction HLC handling", () => {
   it("applies a patch with packed BigInt HLCs without throwing", async () => {
     const storage = createMemoryAdapter();
     const putAction: Action = {
@@ -216,12 +239,12 @@ describe("applyAction HLC handling", () => {
         },
       ],
     };
-    await applyAction(storage, putAction, "grp_1");
+    await callApplyAction(storage, putAction, "grp_1");
     // The patch calls `compare(existingValue.hlc, patchValue.hlc)` inside
     // `mergeFields`. With the old `${ms}:0` strings, `BigInt()` threw
     // `SyntaxError` here. With packed HLCs, it parses cleanly and the
     // patch lands.
-    await expect(applyAction(storage, patchAction, "grp_1")).resolves.not.toThrow();
+    await expect(callApplyAction(storage, patchAction, "grp_1")).resolves.not.toThrow();
     const entity = await storage.entities.get("todo_1");
     expect(entity).not.toBeNull();
     expect((entity!.data.fields.title as { value: unknown }).value).toBe("Updated");
