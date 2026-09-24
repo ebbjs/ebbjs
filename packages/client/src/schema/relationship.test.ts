@@ -647,83 +647,6 @@ describe("buildRelationshipWrite: registry cardinality lookup", () => {
   });
 });
 
-describe("QueryBuilder (sync/relationship)", () => {
-  const buildEntity = (
-    id: string,
-    fields: Record<string, unknown>,
-  ): import("@ebbjs/core").Entity => ({
-    id,
-    type: "todo",
-    data: {
-      fields: Object.fromEntries(
-        Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
-      ),
-    },
-    created_hlc: "1",
-    updated_hlc: "1",
-    deleted_hlc: null,
-    last_gsn: 0,
-  });
-
-  it("eq filters by field equality", async () => {
-    const { buildQueryBuilder } = await import("../sync/relationship");
-    const rows = [
-      buildEntity("1", { completed: false }),
-      buildEntity("2", { completed: true }),
-      buildEntity("3", { completed: false }),
-    ];
-    const out = await buildQueryBuilder(rows).eq("completed", false).find();
-    expect(out.map((r) => r.id)).toEqual(["1", "3"]);
-  });
-
-  it("orderBy sorts by field", async () => {
-    const { buildQueryBuilder } = await import("../sync/relationship");
-    const rows = [
-      buildEntity("1", { title: "banana" }),
-      buildEntity("2", { title: "apple" }),
-      buildEntity("3", { title: "cherry" }),
-    ];
-    const out = await buildQueryBuilder(rows).orderBy("title", "asc").find();
-    expect(out.map((r) => r.id)).toEqual(["2", "1", "3"]);
-  });
-
-  it("limit caps the result count", async () => {
-    const { buildQueryBuilder } = await import("../sync/relationship");
-    const rows = [
-      buildEntity("1", { x: 1 }),
-      buildEntity("2", { x: 2 }),
-      buildEntity("3", { x: 3 }),
-    ];
-    const out = await buildQueryBuilder(rows).limit(2).find();
-    expect(out.map((r) => r.id)).toEqual(["1", "2"]);
-  });
-
-  it("chains eq + orderBy + limit", async () => {
-    const { buildQueryBuilder } = await import("../sync/relationship");
-    const rows = [
-      buildEntity("1", { x: 1, y: false }),
-      buildEntity("2", { x: 2, y: true }),
-      buildEntity("3", { x: 3, y: true }),
-      buildEntity("4", { x: 4, y: true }),
-    ];
-    const out = await buildQueryBuilder(rows).eq("y", true).orderBy("x", "desc").limit(2).find();
-    expect(out.map((r) => r.id)).toEqual(["4", "3"]);
-  });
-
-  it("chains return new builders (no shared state)", async () => {
-    const { buildQueryBuilder } = await import("../sync/relationship");
-    const rows = [buildEntity("1", { y: false }), buildEntity("2", { y: true })];
-    const base = buildQueryBuilder(rows);
-    const a = base.eq("y", true);
-    const b = base.eq("y", false);
-    // `base` is untouched; both `a` and `b` carry their own filter.
-    expect((await a.find()).map((r) => r.id)).toEqual(["2"]);
-    expect((await b.find()).map((r) => r.id)).toEqual(["1"]);
-    // And calling `.find()` on the base again returns everything.
-    expect((await base.find()).map((r) => r.id)).toEqual(["1", "2"]);
-  });
-});
-
 describe("relationship() handle traversal", () => {
   const mkEntity = (
     id: string,
@@ -825,10 +748,8 @@ describe("relationship() handle traversal", () => {
     });
 
     const handle = client.relationship({ source: issue, target: list, as: "labels" });
-    const qb = (await handle.forward("issue_1")) as import("../sync/relationship").QueryBuilder<
-      import("@ebbjs/core").Entity
-    >;
-    const out = await qb.find();
+    const qb = (await handle.forward("issue_1")) as { toArray(): Promise<readonly unknown[]> };
+    const out = (await qb.toArray()) as import("@ebbjs/core").Entity[];
     expect(out.map((e) => e.id).sort()).toEqual(["list_1", "list_2"]);
   });
 
@@ -878,7 +799,7 @@ describe("relationship() handle traversal", () => {
 
     const handle = client.relationship({ source: todo, target: list, as: "list" });
     const qb = await handle.reverse("list_1");
-    const out = await qb.find();
+    const out = (await qb.toArray()) as import("@ebbjs/core").Entity[];
     expect(out.map((e) => e.id).sort()).toEqual(["todo_1", "todo_2"]);
   });
 });

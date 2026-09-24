@@ -1,18 +1,31 @@
 /**
- * Runtime handle for a single registered relationship.
+ * Relationship traversal helpers for the sync layer.
  *
- * `client.relationship({source, target, as})` returns one of these.
- * Mirrors the `client.textDocument(docId)` precedent — a regular
- * method on `SyncClient`, not a Proxy-mounted instance property.
+ * Owns the runtime bits of `#149`'s primitive relationship handle —
+ * the `client.relationship({...})` API and the `buildRelationshipWrite`
+ * builder used by `client.write` and the namespace collection.
  *
- * The handle is namespace-independent: it operates against the
- * client's materialized cache + the existing outbox without
- * requiring a top-level schema.
+ * The chainable `QueryBuilder<T>` is owned by
+ * `sync/query-builder.ts`; this file imports it for the
+ * forward-many / reverse traversal return types. The split keeps
+ * the namespace (`sync/namespace.ts`) and the chain DSL
+ * (`sync/query-builder.ts`) both free of relationship-domain
+ * internals, while this file stays focused on traversal + wire
+ * shape.
  */
 
 import type { Entity } from "@ebbjs/core";
 
 import type { EntityRegistry } from "../schema/entity-registry";
+import { getFieldValue, stripField } from "./entity-fields";
+import { buildQueryBuilder, type PrimitiveQueryBuilder } from "./query-builder";
+
+/**
+ * Re-export the entity-field helpers used by relationship write paths
+ * that pre-date the namespace. Internal callers use the imports
+ * above; external callers reach these via this module's existing
+ * surface (`stripRelationshipField` etc.).
+ */
 
 /**
  * Inputs to `client.relationship({...})`. Mirrors `defineRelationship`
@@ -128,103 +141,6 @@ export function normalizeManyPointers(value: ManyPointerValue, label: string): r
 }
 
 /**
- * Filter chain for relationship traversal. The same chain is
- * returned by reverse accessors and by `sourceCardinality: "many"`
- * forward accessors. `find()` materializes against the client's
- * local cache.
- *
- * The chain is immutable: every method returns a new builder with
- * the constraint added. This keeps the handle reusable across calls
- * without surprising state.
- */
-export interface QueryBuilder<T> {
-  /** Equality filter on a field of `T`. */
-  eq(field: string, value: unknown): QueryBuilder<T>;
-  /** Ordering on a field of `T`. */
-  orderBy(field: string, direction: "asc" | "desc"): QueryBuilder<T>;
-  /** Maximum number of rows. */
-  limit(n: number): QueryBuilder<T>;
-  /** Materialize the chain against the client's local cache. */
-  find(): Promise<readonly T[]>;
-}
-
-/** Chainable filter descriptor — accumulated by `eq`. */
-type EqFilter = { field: string; value: unknown };
-type OrderBy = { field: string; direction: "asc" | "desc" };
-
-/**
- * Build a QueryBuilder over a list of candidate entities. The
- * `loadEntities` callback hydrates ids → Entity; the chain applies
- * eq / orderBy / limit on top.
- *
- * Each chain method returns a *new* builder with the new constraint
- * appended — the original is untouched, so the same builder can be
- * reused across callers without surprising state.
- */
-export function buildQueryBuilder<T extends Entity>(candidates: readonly T[]): QueryBuilder<T> {
-  const make = (
-    filters: readonly EqFilter[],
-    order: OrderBy | null,
-    limitN: number | null,
-  ): QueryBuilder<T> => {
-    const apply = (rows: readonly T[]): T[] => {
-      let out = rows.slice();
-      if (filters.length > 0) {
-        out = out.filter((row) => filters.every((f) => eqField(row, f.field, f.value)));
-      }
-      if (order !== null) {
-        const { field, direction } = order;
-        out.sort((a, b) => cmpField(a, b, field, direction));
-      }
-      if (limitN !== null && limitN >= 0) {
-        out = out.slice(0, limitN);
-      }
-      return out;
-    };
-    return {
-      eq(field: string, value: unknown): QueryBuilder<T> {
-        return make([...filters, { field, value }], order, limitN);
-      },
-      orderBy(field: string, direction: "asc" | "desc"): QueryBuilder<T> {
-        return make(filters, { field, direction }, limitN);
-      },
-      limit(n: number): QueryBuilder<T> {
-        return make(filters, order, n);
-      },
-      async find(): Promise<readonly T[]> {
-        return apply(candidates);
-      },
-    };
-  };
-  return make([], null, null);
-}
-
-/** Pull `data.fields[field].value` off an Entity, returning `undefined` when absent. */
-function fieldValue(entity: Entity, field: string): unknown {
-  const fv = entity.data?.fields?.[field];
-  if (fv === undefined) return undefined;
-  return fv.value;
-}
-
-function eqField(entity: Entity, field: string, value: unknown): boolean {
-  return fieldValue(entity, field) === value;
-}
-
-function cmpField(a: Entity, b: Entity, field: string, direction: "asc" | "desc"): number {
-  const av = fieldValue(a, field);
-  const bv = fieldValue(b, field);
-  if (av === bv) return 0;
-  if (av === undefined) return 1;
-  if (bv === undefined) return -1;
-  if (typeof av === "number" && typeof bv === "number") {
-    return direction === "asc" ? av - bv : bv - av;
-  }
-  const as = String(av);
-  const bs = String(bv);
-  return direction === "asc" ? as.localeCompare(bs) : bs.localeCompare(as);
-}
-
-/**
  * Walk the local cache to collect all `Relationship` entities whose
  * `data.fields.field` matches the given accessor name and whose
  * `data.fields.type` matches the relationship's `type` string. The
@@ -238,9 +154,9 @@ export function findRelationshipsByField(
   return entities.filter((e) => {
     if (e.type !== "relationship") return false;
     if (e.deleted_hlc !== null) return false;
-    const f = e.data?.fields?.["field"];
-    const t = e.data?.fields?.["type"];
-    return f?.value === field && t?.value === type;
+    const f = getFieldValue(e, "field");
+    const t = getFieldValue(e, "type");
+    return f === field && t === type;
   });
 }
 
@@ -263,11 +179,10 @@ export async function forwardOne(
   const source = await readLocalEntity(sourceId);
   if (source === null) return undefined;
   if (source.type !== sourceName) return undefined;
-  const fv = source.data?.fields?.[field];
-  if (fv === undefined) return undefined;
-  if (fv.value === null || fv.value === undefined) return undefined;
-  if (typeof fv.value !== "string") return undefined;
-  const target = await readLocalEntity(fv.value);
+  const v = getFieldValue(source, field);
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "string") return undefined;
+  const target = await readLocalEntity(v);
   return target ?? undefined;
 }
 
@@ -284,28 +199,28 @@ export async function forwardMany(
   sourceName: string,
   targetName: string,
   field: string,
-): Promise<QueryBuilder<Entity>> {
+): Promise<PrimitiveQueryBuilder> {
   const source = await readLocalEntity(sourceId);
   if (source === null) {
-    return buildQueryBuilder<Entity>([]);
+    return buildQueryBuilder<Record<never, never>>([]);
   }
   if (source.type !== sourceName) {
-    return buildQueryBuilder<Entity>([]);
+    return buildQueryBuilder<Record<never, never>>([]);
   }
-  const fv = source.data?.fields?.[field];
-  if (fv === undefined || fv.value === null || fv.value === undefined) {
-    return buildQueryBuilder<Entity>([]);
+  const v = getFieldValue(source, field);
+  if (v === undefined || v === null) {
+    return buildQueryBuilder<Record<never, never>>([]);
   }
-  if (!Array.isArray(fv.value)) {
-    return buildQueryBuilder<Entity>([]);
+  if (!Array.isArray(v)) {
+    return buildQueryBuilder<Record<never, never>>([]);
   }
-  const ids = fv.value.filter((v): v is string => typeof v === "string");
+  const ids = v.filter((x): x is string => typeof x === "string");
   // The source holds the canonical set; we don't need to filter via
   // Relationship entities here (the set IS the relationship list).
   // Load every materialized entity of `targetName` and intersect.
   const allTargets = await queryEntitiesByType(targetName);
   const idSet = new Set(ids);
-  return buildQueryBuilder(allTargets.filter((t) => idSet.has(t.id)));
+  return buildQueryBuilder<Record<never, never>>(allTargets.filter((t) => idSet.has(t.id)));
 }
 
 /**
@@ -320,18 +235,17 @@ export async function reverse(
   sourceName: string,
   field: string,
   type: string,
-): Promise<QueryBuilder<Entity>> {
+): Promise<PrimitiveQueryBuilder> {
   const all = await queryEntitiesByType("relationship");
   const matching = findRelationshipsByField(all, field, type).filter((rel) => {
-    const t = rel.data?.fields?.["target_id"];
-    return t?.value === targetId;
+    return getFieldValue(rel, "target_id") === targetId;
   });
   const sourceIds = matching
-    .map((rel) => rel.data?.fields?.["source_id"]?.value)
+    .map((rel) => getFieldValue(rel, "source_id"))
     .filter((v): v is string => typeof v === "string");
   const allSources = await queryEntitiesByType(sourceName);
   const idSet = new Set(sourceIds);
-  return buildQueryBuilder(allSources.filter((s) => idSet.has(s.id)));
+  return buildQueryBuilder<Record<never, never>>(allSources.filter((s) => idSet.has(s.id)));
 }
 
 /**
@@ -389,3 +303,11 @@ export function buildRelationshipUpdate(args: {
     },
   };
 }
+
+/**
+ * Strip a relationship field from an entity Update. Re-exported for
+ * the pre-namespace write path; the canonical implementation lives
+ * in `entity-fields.ts` as `stripField`, sourced by `client.ts` and
+ * `relationship.ts` internally.
+ */
+export const stripRelationshipField = stripField;

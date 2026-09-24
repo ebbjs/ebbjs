@@ -13,6 +13,13 @@
  *
  * Slice 3 adds the bridge package `@ebbjs/codemirror` (peer dep) plus
  * presence (ephemeral cursors/selections).
+ *
+ * Issue #158 adds the typed ORM namespace:
+ * - `client.<entity>` (collection: create / update / delete / find)
+ * - `client.<entity>(id)` (typed handle with field getters + relationship
+ *   accessors)
+ * - Typed `QueryBuilder<TFields>` chain (`eq` / `orderBy` / `limit` /
+ *   `toArray()` / `find()`)
  */
 
 export {
@@ -22,8 +29,75 @@ export {
   type QueryOptions,
   type RelationshipHandle,
 } from "./sync/client";
+
 export { PresenceManager, type PresenceEntry, type CursorPresence } from "./presence/presence";
 
+// Schema layer (#143 / #149 / #150)
+export {
+  defineEntity,
+  type FieldValueFor,
+  type EntityDef,
+  type FieldMarker,
+} from "./schema/entity";
+
+export {
+  defineRelationship,
+  type RelationshipDef,
+  type SourceCardinality,
+  type DefineRelationshipInput,
+} from "./schema/relationship";
+
+export { defineSchema, type DefineSchemaInput, type Schema } from "./schema/schema";
+
+export {
+  EntityRegistry,
+  EntityValidationError,
+  type ValidationViolation,
+} from "./schema/entity-registry";
+
+// Typed ORM namespace (#158)
+export {
+  mountNamespace,
+  type EntityCollection,
+  type EntityHandle,
+  type CreateInput,
+  type UpdateInput,
+  type NamespacedClient,
+} from "./sync/namespace";
+
+export { buildEntityHandle } from "./sync/handle";
+
+export {
+  buildQueryBuilder,
+  apply as applyQueryPlan,
+  type QueryBuilder,
+  type NamespacedQueryBuilder,
+  type PrimitiveQueryBuilder,
+  type QueryPlan,
+  type EqFilter,
+  type OrderBy,
+} from "./sync/query-builder";
+
+export { getFieldValue, hasField, stripField } from "./sync/entity-fields";
+
+// Relationship traversal primitives (#149)
+export {
+  normalizePointer,
+  normalizeManyPointers,
+  findRelationshipsByField,
+  forwardOne,
+  forwardMany,
+  reverse,
+  resolveCardinality,
+  buildRelationshipUpdate,
+  type BuildRelationshipWriteOptions,
+  type BuildRelationshipWriteResult,
+  type PointerValue,
+  type ManyPointerValue,
+  type RelationshipHandleInput,
+} from "./sync/relationship";
+
+// Connection state + SSE
 export {
   ConnectionStateMachine,
   type ConnectionState,
@@ -37,6 +111,7 @@ export {
   type SSEOpenOptions,
 } from "./sync/sse";
 
+// Field-type subscribers (causal-tree)
 export {
   TextDocument,
   TextDocumentRegistry,
@@ -91,6 +166,7 @@ export {
   type PositionLookup,
 } from "./fields/collaborative-text/tree";
 
+// Wire-level types
 export type {
   Action,
   GroupInfo,
@@ -108,20 +184,3 @@ export type {
   RegistryViolationContext,
   RegistryViolationListener,
 } from "./sync/types";
-
-export { defineEntity, type EntityDef, type FieldMarker } from "./schema/entity";
-
-export {
-  defineRelationship,
-  type RelationshipDef,
-  type SourceCardinality,
-  type DefineRelationshipInput,
-} from "./schema/relationship";
-
-export {
-  EntityRegistry,
-  EntityValidationError,
-  type ValidationViolation,
-} from "./schema/entity-registry";
-
-export { defineSchema, type DefineSchemaInput, type Schema } from "./schema/schema";
