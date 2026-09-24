@@ -574,12 +574,15 @@ export class SyncClient {
     // the server is the authority.
     this.checkRelationshipPermission(sourceName);
 
-    // The relationship pointer field doesn't live on the entity
-    // Update's `data.fields` map at the wire level — relationship
-    // entities are separate `subject_type: "relationship"` Updates.
-    // We strip it from the entity Update so the developer can pass
-    // the same Update shape the namespace API (#158) will use.
-    const cleanEntityUpdate: Update = stripRelationshipField(entityUpdate, as);
+    // The relationship pointer field is carried on the entity Update
+    // for `sourceCardinality: "many"` (the canonical set lives on
+    // the source) and on the separate Relationship Update for
+    // `sourceCardinality: "one"` (the relationship is the canonical
+    // link). For "one", strip the field from the entity Update so
+    // the wire doesn't carry the FK twice. For "many", leave the
+    // field alone so the developer can carry the canonical set.
+    const cleanEntityUpdate: Update =
+      cardinality === "one" ? stripRelationshipField(entityUpdate, as) : entityUpdate;
 
     const sourceId = entityUpdate.subject_id;
 
