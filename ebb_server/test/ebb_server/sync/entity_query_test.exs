@@ -83,10 +83,12 @@ defmodule EbbServer.Sync.EntityQueryTest do
 
     {:ok, {_gsn2, _gsn2}, []} = Writer.write_actions([gm_action])
 
+    rel_hlc = generate_hlc()
+
     rel_action = %{
       id: "act_rel_" <> Nanoid.generate(),
       actor_id: actor_id,
-      hlc: generate_hlc(),
+      hlc: rel_hlc,
       updates: [
         %{
           id: "upd_rel_" <> Nanoid.generate(),
@@ -94,10 +96,12 @@ defmodule EbbServer.Sync.EntityQueryTest do
           subject_type: "relationship",
           method: :put,
           data: %{
-            "source_id" => group_id,
-            "target_id" => group_id,
-            "type" => group_id,
-            "field" => "group"
+            "fields" => %{
+              "source_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
+              "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
+              "type" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
+              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc}
+            }
           }
         }
       ]
@@ -135,10 +139,12 @@ defmodule EbbServer.Sync.EntityQueryTest do
 
     {:ok, {_gsn1, _gsn1}, []} = Writer.write_actions([todo_action])
 
+    rel_hlc = generate_hlc()
+
     rel_action = %{
       id: "act_rel_" <> Nanoid.generate(),
       actor_id: actor_id,
-      hlc: generate_hlc(),
+      hlc: rel_hlc,
       updates: [
         %{
           id: "upd_rel_" <> Nanoid.generate(),
@@ -146,10 +152,12 @@ defmodule EbbServer.Sync.EntityQueryTest do
           subject_type: "relationship",
           method: :put,
           data: %{
-            "source_id" => todo_id,
-            "target_id" => group_id,
-            "type" => "todo",
-            "field" => "group"
+            "fields" => %{
+              "source_id" => %{"type" => "lww", "value" => todo_id, "hlc" => rel_hlc},
+              "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
+              "type" => %{"type" => "lww", "value" => "todo", "hlc" => rel_hlc},
+              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc}
+            }
           }
         }
       ]

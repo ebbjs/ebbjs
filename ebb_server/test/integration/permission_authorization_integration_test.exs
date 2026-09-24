@@ -76,10 +76,12 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
             "subject_type" => "relationship",
             "method" => "put",
             "data" => %{
-              "source_id" => entity_id,
-              "target_id" => "group_1",
-              "type" => "todo",
-              "field" => "group"
+              "fields" => %{
+                "source_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
+                "target_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc},
+                "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
+                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc}
+              }
             }
           }
         ]

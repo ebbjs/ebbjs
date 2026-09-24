@@ -143,11 +143,11 @@ describe("MemoryAdapter", () => {
       expect((after!.data.fields.title as { hlc?: string }).hlc).toBe(makeHlc(1711036800000, 1));
     });
 
-    it("materializes a system entity (groupMember) with flat top-level data fields", async () => {
-      // System entities ship flat keys in `data` (no `{ fields: ... }`
-      // wrapping). Issue #43 collapsed `extractFields` and
-      // `extractPatchFields` into a single `unwrapFields` helper that
-      // branches on subject type — this pins the system-entity branch.
+    it("materializes a system entity (groupMember) using the same nested data shape as user entities", async () => {
+      // Every entity type — user or system — ships fields nested under
+      // `data.fields.X` (see ebbjs/ebbjs#140). The client materializer
+      // unwraps `data.fields` once, so a groupMember PUT lands its
+      // fields at `data.fields` the same way a `todo` PUT does.
       const groupMemberAction: Action = {
         id: "a_gm",
         actor_id: "a_user1",
@@ -160,8 +160,14 @@ describe("MemoryAdapter", () => {
             subject_type: "groupMember",
             method: "put",
             data: {
-              actor_id: { value: "a_user1", update_id: "u_gm", hlc: makeHlc(1711036800000) },
-              group_id: { value: "grp_1", update_id: "u_gm", hlc: makeHlc(1711036800000) },
+              fields: {
+                actor_id: {
+                  value: "a_user1",
+                  update_id: "u_gm",
+                  hlc: makeHlc(1711036800000),
+                },
+                group_id: { value: "grp_1", update_id: "u_gm", hlc: makeHlc(1711036800000) },
+              },
             } as never,
           },
         ],
@@ -172,7 +178,6 @@ describe("MemoryAdapter", () => {
 
       const entity = await adapter.entities.get("gm_1");
       expect(entity).not.toBe(null);
-      // Flat keys land at `data.fields` (no extra `fields` wrapper).
       expect(entity!.data.fields).toHaveProperty("actor_id");
       expect(entity!.data.fields).toHaveProperty("group_id");
       expect(entity!.data.fields).not.toHaveProperty("fields");

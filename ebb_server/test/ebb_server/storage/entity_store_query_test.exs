@@ -66,11 +66,12 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
     {:ok, {gsn1, gsn1}, []} = Writer.write_actions([gm_action], writer_name)
 
     rel_id = "rel_" <> Nanoid.generate()
+    rel_hlc = generate_hlc()
 
     rel_action = %{
       id: "act_" <> Nanoid.generate(),
       actor_id: actor_id,
-      hlc: generate_hlc(),
+      hlc: rel_hlc,
       updates: [
         %{
           id: "upd_" <> Nanoid.generate(),
@@ -78,10 +79,12 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
           subject_type: "relationship",
           method: :put,
           data: %{
-            "source_id" => group_id,
-            "target_id" => group_id,
-            "type" => group_id,
-            "field" => "group"
+            "fields" => %{
+              "source_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
+              "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
+              "type" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
+              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc}
+            }
           }
         }
       ]
@@ -119,11 +122,12 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
     {:ok, {gsn, gsn}, []} = Writer.write_actions([action], writer_name)
 
     rel_id = "rel_" <> Nanoid.generate()
+    rel_hlc = generate_hlc()
 
     rel_action = %{
       id: "act_" <> Nanoid.generate(),
       actor_id: actor_id,
-      hlc: generate_hlc(),
+      hlc: rel_hlc,
       updates: [
         %{
           id: "upd_" <> Nanoid.generate(),
@@ -131,10 +135,12 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
           subject_type: "relationship",
           method: :put,
           data: %{
-            "source_id" => todo_id,
-            "target_id" => group_id,
-            "type" => "todo",
-            "field" => "group"
+            "fields" => %{
+              "source_id" => %{"type" => "lww", "value" => todo_id, "hlc" => rel_hlc},
+              "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
+              "type" => %{"type" => "lww", "value" => "todo", "hlc" => rel_hlc},
+              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc}
+            }
           }
         }
       ]
@@ -376,11 +382,12 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
     {:ok, {gsn, gsn}, []} = Writer.write_actions([action], writer_name)
 
     rel_id = "rel_" <> Nanoid.generate()
+    rel_hlc = generate_hlc()
 
     rel_action = %{
       id: "act_" <> Nanoid.generate(),
       actor_id: actor_id,
-      hlc: generate_hlc(),
+      hlc: rel_hlc,
       updates: [
         %{
           id: "upd_" <> Nanoid.generate(),
@@ -388,10 +395,12 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
           subject_type: "relationship",
           method: :put,
           data: %{
-            "source_id" => post_id,
-            "target_id" => group_id,
-            "type" => "post",
-            "field" => "group"
+            "fields" => %{
+              "source_id" => %{"type" => "lww", "value" => post_id, "hlc" => rel_hlc},
+              "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
+              "type" => %{"type" => "lww", "value" => "post", "hlc" => rel_hlc},
+              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc}
+            }
           }
         }
       ]

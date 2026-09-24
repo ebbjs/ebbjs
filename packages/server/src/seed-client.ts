@@ -28,12 +28,14 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
       subject_type: "groupMember",
       method: "put" as const,
       data: {
-        actor_id: { value: member.actorId, update_id: "seed_update", hlc: localEvent(clock) },
-        group_id: { value: member.groupId, update_id: "seed_update", hlc: localEvent(clock) },
-        permissions: {
-          value: member.permissions,
-          update_id: "seed_update",
-          hlc: localEvent(clock),
+        fields: {
+          actor_id: { value: member.actorId, update_id: "seed_update", hlc: localEvent(clock) },
+          group_id: { value: member.groupId, update_id: "seed_update", hlc: localEvent(clock) },
+          permissions: {
+            value: member.permissions,
+            update_id: "seed_update",
+            hlc: localEvent(clock),
+          },
         },
       },
     });
@@ -61,10 +63,12 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
       subject_type: "relationship",
       method: "put" as const,
       data: {
-        source_id: { value: rel.sourceId, update_id: "seed_update", hlc: localEvent(clock) },
-        target_id: { value: rel.targetId, update_id: "seed_update", hlc: localEvent(clock) },
-        type: { value: rel.type, update_id: "seed_update", hlc: localEvent(clock) },
-        field: { value: rel.field, update_id: "seed_update", hlc: localEvent(clock) },
+        fields: {
+          source_id: { value: rel.sourceId, update_id: "seed_update", hlc: localEvent(clock) },
+          target_id: { value: rel.targetId, update_id: "seed_update", hlc: localEvent(clock) },
+          type: { value: rel.type, update_id: "seed_update", hlc: localEvent(clock) },
+          field: { value: rel.field, update_id: "seed_update", hlc: localEvent(clock) },
+        },
       },
     });
   }

@@ -244,9 +244,8 @@ defmodule EbbServer.Storage.Writer do
   defp handle_group_member_update(update, state) do
     case update.method do
       method when method in [:put, :patch] ->
-        data = update.data
+        data = update.data || %{}
 
-        # groupMember data may be nested: %{"actor_id" => "..."} or %{"fields" => %{"actor_id" => "..."}}
         actor_id = Fields.get(data, "actor_id")
         group_id = Fields.get(data, "group_id")
         permissions = Fields.get(data, "permissions")
@@ -269,9 +268,8 @@ defmodule EbbServer.Storage.Writer do
   defp handle_relationship_update(update, state) do
     case update.method do
       method when method in [:put, :patch] ->
-        data = update.data
+        data = update.data || %{}
 
-        # relationship data may be nested
         source_id = Fields.get(data, "source_id")
         target_id = Fields.get(data, "target_id")
         type = Fields.get(data, "type")
@@ -335,21 +333,12 @@ defmodule EbbServer.Storage.Writer do
           method_str =
             if is_atom(update.method), do: Atom.to_string(update.method), else: update.method
 
-          # For system entities, data is stored flat (not nested in "fields")
-          # For user entities, data uses nested format with "fields"
-          storage_data =
-            if update.subject_type in ["groupMember", "relationship"] do
-              update.data
-            else
-              update.data
-            end
-
           %{
             "id" => update.id,
             "subject_id" => update.subject_id,
             "subject_type" => update.subject_type,
             "method" => method_str,
-            "data" => storage_data
+            "data" => update.data
           }
         end)
     }
@@ -387,11 +376,9 @@ defmodule EbbServer.Storage.Writer do
   defp get_group_id_for_group_action_index(update, relationships, intra_ctx) do
     case update.subject_type do
       "relationship" ->
-        # NOTE: must use Fields.get so FieldValue-wrapped values
-        # ({value, update_id, hlc}) unwrap to the inner string. The
-        # sibling helper build_intra_action_context/1 already does this;
-        # without it, the lookup below misses intra_ctx and the cache
-        # because we're searching for a map where the keys are strings.
+        # `Fields.get/2` walks one level under `data.fields` and unwraps
+        # the `{"value": ...}` envelope, giving us the inner source_id
+        # string used to index into `intra_ctx` and the cache.
         source_id = Fields.get(update.data || %{}, "source_id")
 
         if source_id do
