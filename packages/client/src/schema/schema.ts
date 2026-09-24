@@ -95,7 +95,7 @@ export function defineSchema<
   }
   return Object.freeze({
     entities: input.entities,
-    relationships: input.relationships as TRelationships | undefined,
+    relationships: input.relationships,
     version: input.version,
     minSupportedVersion: input.minSupportedVersion,
     _registry: registry,
