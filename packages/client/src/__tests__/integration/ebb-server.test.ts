@@ -48,6 +48,7 @@ import {
 } from "@ebbjs/core";
 import { createClient, type SyncClient } from "../..";
 import { defineEntity } from "../../schema/entity";
+import { defineRelationship } from "../../schema/relationship";
 import { EntityRegistry, EntityValidationError } from "../../schema/entity-registry";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
@@ -779,6 +780,163 @@ describe("integration: defineEntity + EntityRegistry (#143)", () => {
       }
     } finally {
       receiverClient.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #149: defineRelationship + relationship primitives round-trip
+// ---------------------------------------------------------------------------
+
+/**
+ * The server's existing authorization model (`authorizer.ex`,
+ * `permission_helper.ex`) treats the relationship's `target_id` as a
+ * group id when the update's subject_type is `relationship`. For
+ * user-to-user relationships the rule falls out of intra-action
+ * resolution (`build_intra_action_context`), but #149's primitive
+ * doesn't compose a multi-entity atomic create — that's #153's job.
+ *
+ * The cleanest round-trip that exercises the new primitive without
+ * changing server code is: define a `todo` entity and a relationship
+ * from `todo` to the test group (the `ownedBy` shape the rest of the
+ * integration suite already uses). One Action, two Updates — the
+ * exact shape the server's `RelationshipCache` accepts.
+ *
+ * Round-trip asserts:
+ * - the wire Action carries exactly two Updates (entity +
+ *   relationship);
+ * - `client.write()` returns zero rejections;
+ * - the actor's perspective after `catchUp` shows the todo
+ *   materialized;
+ * - the reverse accessor surfaces the todo via the materialized
+ *   Relationship cache.
+ */
+describe("integration: defineRelationship + buildRelationshipWrite (#149)", () => {
+  it("creates a todo with a group pointer in one Action (two Updates)", async () => {
+    if (!(await shouldRun())) return;
+    const actor = `rel_roundtrip_${RUN_ID}`;
+    await addMemberWithTodoPerms(actor);
+    const client = createClient({ serverUrl: SERVER_URL, actorId: actor });
+    const { groups } = await client.handshake();
+    const ourGroup = groups.find((g) => g.id === TEST_GROUP_ID);
+    expect(ourGroup, `actor ${actor} did not join ${TEST_GROUP_ID}`).toBeDefined();
+    expect(ourGroup!.permissions).toContain("todo.*");
+    client.setState("live");
+
+    try {
+      const todo = defineEntity("todo", {
+        title: e.string(),
+        completed: e.boolean(),
+        list: e.string(),
+      });
+      // The `target` here is a stand-in for "the group the source
+      // belongs to"; the server's existing authorization treats the
+      // relationship's `target_id` as a group id. The `target`
+      // entity type on the builder doesn't need to match a real
+      // group entity type — the wire override (`type:`) and the
+      // `as:` accessor name are what travel.
+      const groupTarget = defineEntity("group", { name: e.string() });
+
+      const relationshipEntity = defineEntity("relationship", {
+        source_id: e.string(),
+        target_id: e.string(),
+        type: e.string(),
+        field: e.string(),
+      });
+      const registry = new EntityRegistry();
+      registry.register(todo);
+      // `relationship` is a system entity (see #127). The registry
+      // validates field membership against the registered entities,
+      // and the wire envelope uses { source_id, target_id, type,
+      // field } as fields on the relationship entity. Register it
+      // explicitly so client.write() doesn't reject the final Action
+      // updates that target it.
+      registry.register(relationshipEntity);
+      registry.registerRelationship(
+        defineRelationship({
+          source: todo,
+          target: groupTarget,
+          as: "ownedBy",
+          type: "todo",
+        }),
+      );
+      (client as unknown as { registry: EntityRegistry }).registry = registry;
+
+      const todoId = `todo_rel_${RUN_ID}`;
+
+      const hlc = makeHlc(Date.now());
+      const entityUpdate: Action["updates"][number] = {
+        id: "u_e",
+        subject_id: todoId,
+        subject_type: "todo",
+        method: "put",
+        data: {
+          fields: {
+            title: { value: "Ship it", update_id: "u_e", hlc },
+            completed: { value: false, update_id: "u_e", hlc },
+          },
+        },
+      };
+      const { entityUpdate: cleanEntityUpdate, relationshipUpdate } = client.buildRelationshipWrite(
+        {
+          source: todo,
+          target: groupTarget,
+          as: "ownedBy",
+          entityUpdate,
+          targetId: TEST_GROUP_ID,
+        },
+      );
+
+      // Sanity: the entity Update has the `list` field stripped
+      // (it lives on the relationship Update, not the entity). The
+      // builder doesn't actually consult the entityUpdate's
+      // fields — it strips the `as` name from the data map.
+      expect("ownedBy" in (cleanEntityUpdate.data?.fields ?? {})).toBe(false);
+
+      const relUpdates = Array.isArray(relationshipUpdate)
+        ? relationshipUpdate
+        : [relationshipUpdate];
+      expect(relUpdates).toHaveLength(1);
+      expect(relUpdates[0]!.method).toBe("put");
+      expect(relUpdates[0]!.subject_type).toBe("relationship");
+      expect(relUpdates[0]!.data?.fields.source_id.value).toBe(todoId);
+      expect(relUpdates[0]!.data?.fields.target_id.value).toBe(TEST_GROUP_ID);
+      expect(relUpdates[0]!.data?.fields.field.value).toBe("ownedBy");
+      expect(relUpdates[0]!.data?.fields.type.value).toBe("todo");
+
+      // Wrap the two Updates in a single wire Action and submit.
+      const { action } = createAction({
+        actorId: actor,
+        clock: createClock(),
+        updates: [cleanEntityUpdate, relUpdates[0]!],
+      });
+      const writeResult = await client.write([action]);
+      expect(writeResult.rejected).toEqual([]);
+
+      // Materialize locally and assert both Updates landed.
+      await client.catchUp(TEST_GROUP_ID);
+      const materializedTodo = await client.readLocalEntity(todoId);
+      expect(materializedTodo).not.toBeNull();
+      expect(materializedTodo!.type).toBe("todo");
+      expect(materializedTodo!.data?.fields.title.value).toBe("Ship it");
+
+      const materializedRel = await client.readLocalEntity(relUpdates[0]!.subject_id);
+      expect(materializedRel).not.toBeNull();
+      expect(materializedRel!.type).toBe("relationship");
+      expect(materializedRel!.data?.fields.target_id.value).toBe(TEST_GROUP_ID);
+
+      // Reverse accessor surfaces the todo via the materialized
+      // Relationship cache.
+      const handle = client.relationship({
+        source: todo,
+        target: groupTarget,
+        as: "ownedBy",
+      });
+      const qb = await handle.reverse(TEST_GROUP_ID);
+      const sources = await qb.find();
+      expect(sources.map((s) => s.id)).toContain(todoId);
+    } finally {
+      client.close();
     }
   });
 });
