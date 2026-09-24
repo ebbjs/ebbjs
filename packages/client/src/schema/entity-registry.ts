@@ -1,34 +1,21 @@
 /**
  * `EntityRegistry` — runtime container for declared entity definitions.
  *
- * The registry is the validation surface for the schema layer: outbound
- * `client.write()` calls and inbound SSE/catchUp actions consult it
- * before crossing any boundary. In #143 it only checks field-name
- * membership; field-shape validation (`e.counter()` data vs
- * `e.string()` data) is deferred behind #148 because the wire envelope
- * doesn't carry `type` tags.
- *
- * The registry deliberately lives apart from `TextDocumentRegistry`:
- * one holds passive definitions, the other holds live stateful
- * documents. They share a Map-shaped surface but solve different
- * problems.
+ * Validates field-name membership only. Field-shape validation is not
+ * done here because the wire envelope doesn't carry `type` tags.
  */
 
 import type { Action } from "@ebbjs/core";
 
 import type { EntityDef, FieldMarker } from "./entity";
 
-/**
- * One validation failure against a registered entity.
- *
- * `updateIndex` is the position of the offending Update in the action's
- * `updates[]` (omitted for filter violations, which aren't tied to an
- * update). `field` is omitted for violations about the subject_type
- * itself.
- */
+/** One validation failure against a registered entity. */
 export interface ValidationViolation {
+  /** Entity name; `"(unknown)"` if the offending update's subject_type wasn't registered. */
   entityName: string;
+  /** Position of the offending Update in the action's `updates[]`. Omitted for filter violations. */
   updateIndex?: number;
+  /** Field name; omitted for violations about the subject_type itself. */
   field?: string;
   message: string;
 }
@@ -36,8 +23,6 @@ export interface ValidationViolation {
 /**
  * Aggregated validation error. Thrown by `client.write()` and
  * `client.queryEntities()` when one or more violations are detected.
- * The `violations` field is the full list — callers can render them
- * grouped by entity, by update, or however they prefer.
  */
 export class EntityValidationError extends Error {
   readonly violations: readonly ValidationViolation[];
@@ -55,11 +40,7 @@ const formatViolations = (vs: readonly ValidationViolation[]): string => {
   return `EntityValidationError: ${vs.length} violation(s)\n${lines.join("\n")}`;
 };
 
-/**
- * Placeholder entity name when the offending update references a
- * subject_type that wasn't registered. Grouping violations by
- * entityName lets callers filter unknown-type reports separately.
- */
+/** Placeholder `entityName` when the offending subject_type wasn't registered. */
 const UNKNOWN_ENTITY = "(unknown)";
 
 type AnyEntityDef = EntityDef<Record<string, FieldMarker>>;
@@ -81,22 +62,11 @@ export class EntityRegistry {
   }
 
   /**
-   * Validate one action against the registry. Returns an array of
-   * violations (empty when the action is valid). Never throws —
-   * callers decide whether to throw, warn, or aggregate.
+   * Validate one action against the registry. Never throws; callers
+   * decide whether to throw, warn, or aggregate. Returns `[]` when
+   * no entities are registered (validation is a no-op).
    *
-   * An empty registry (no entities registered) imposes no
-   * constraints and returns `[]` — this matches the "no-op" behavior
-   * in `client.write()` and `_applyAction` when no registry was
-   * supplied to the SyncClient.
-   *
-   * Checks per `Update`:
-   * - `subject_type` is registered
-   * - each key in `data.fields` is declared on the entity
-   *
-   * Updates with `data === null` (delete method) skip the fields check
-   * — they carry no fields to validate. Field-shape compatibility is
-   * not checked; see file header.
+   * Updates with `data === null` (delete method) skip the fields check.
    */
   validateAction(action: Action): ValidationViolation[] {
     if (this.entities.size === 0) return [];
@@ -131,13 +101,7 @@ export class EntityRegistry {
 
   /**
    * Validate a filter against the registry for the given entity type.
-   * Returns an array of violations (empty when valid). Never throws.
-   *
-   * An empty registry (no entities registered) imposes no
-   * constraints and returns `[]` — matches `validateAction`.
-   *
-   * An empty filter `{}` is always valid (no fields to check).
-   * Unknown entity type yields one violation with no `field`.
+   * Never throws. Returns `[]` when no entities are registered.
    */
   validateFilter(type: string, filter: Record<string, unknown>): ValidationViolation[] {
     if (this.entities.size === 0) return [];

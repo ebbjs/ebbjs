@@ -92,8 +92,7 @@ export class SyncClient {
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
-    // Empty registry when none is supplied: validation becomes a no-op
-    // and `client.write()` behaves exactly as it did before #143.
+    // Empty registry makes validation a no-op.
     this.registry = opts.registry ?? new EntityRegistry();
     if (opts.onRegistryViolation !== undefined) {
       this.registryViolationListeners.add(opts.onRegistryViolation);
@@ -280,7 +279,7 @@ export class SyncClient {
     const nextOffset = nextOffsetHeader !== null ? Number(nextOffsetHeader) : null;
     const upToDate = upToDateHeader === "true" || nextOffset === null;
 
-    // Apply every action to local storage. We do this inline (rather than
+    // Apply every action to the storage adapter inline (rather than
     // waiting for `subscribe`) because catch-up happens before subscribing.
     // `_applyAction` validates against the registry (warn-and-log on
     // incoming violations) and advances `storage.cursors[groupId]` to the
@@ -644,15 +643,14 @@ export class SyncClient {
   // -------------------------------------------------------------------------
 
   /**
-   * Apply a received Action to local storage, validating against the
-   * schema registry first. This is the single funnel for all
+   * Materialize a received Action in the storage adapter, validating
+   * against the schema registry first. The single funnel for all
    * incoming actions (SSE and catch-up).
    *
-   * Incoming violations default to **warn-and-log** rather than throw —
-   * the server is the trust boundary, and forward-compat with newer
-   * clients that may have fields the local schema doesn't know about
-   * is the common case (#143, decision 3). The action still
-   * materializes regardless.
+   * Incoming violations default to **warn-and-log** rather than throw:
+   * the server is the trust boundary, and forward-compat with peers
+   * that may have fields the local schema doesn't know about is the
+   * common case. The action still materializes regardless.
    */
   private async _applyAction(
     action: Action,
