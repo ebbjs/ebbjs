@@ -88,10 +88,12 @@ defmodule EbbServer.Storage.ActionValidatorTest do
               "subject_type" => "relationship",
               "method" => "put",
               "data" => %{
-                "source_id" => "todo_1",
-                "target_id" => "g_1",
-                "type" => "todo",
-                "field" => "group"
+                "fields" => %{
+                  "source_id" => %{"value" => "todo_1"},
+                  "target_id" => %{"value" => "g_1"},
+                  "type" => %{"value" => "todo"},
+                  "field" => %{"value" => "group"}
+                }
               }
             }
           ]

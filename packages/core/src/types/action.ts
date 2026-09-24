@@ -25,10 +25,18 @@ export const FieldValueSchema = Type.Object({
 });
 export type FieldValue = Static<typeof FieldValueSchema>;
 
-export const PutDataSchema = Type.Record(Type.String(), FieldValueSchema);
+// An Update's `data` is a `{ fields: Record<string, FieldValue> }`
+// envelope. The same shape ships on the wire for every entity type
+// (user, groupMember, relationship), so the materializer and the
+// wire validator share one code path.
+const FieldsEnvelopeSchema = Type.Object({
+  fields: Type.Record(Type.String(), FieldValueSchema),
+});
+
+export const PutDataSchema = FieldsEnvelopeSchema;
 export type PutData = Static<typeof PutDataSchema>;
 
-export const PatchDataSchema = Type.Record(Type.String(), FieldValueSchema);
+export const PatchDataSchema = FieldsEnvelopeSchema;
 export type PatchData = Static<typeof PatchDataSchema>;
 
 const BaseUpdateFields = Type.Object({
@@ -41,7 +49,7 @@ export const UpdateInputSchema = Type.Intersect([
   BaseUpdateFields,
   Type.Object({
     id: Type.Optional(NanoIdSchema),
-    data: Type.Union([Type.Null(), Type.Record(Type.String(), Type.Unknown())]),
+    data: Type.Union([Type.Null(), FieldsEnvelopeSchema]),
   }),
 ]);
 export type UpdateInput = Static<typeof UpdateInputSchema>;

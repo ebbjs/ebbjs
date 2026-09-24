@@ -59,7 +59,13 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "subject_id" => "gm_1",
           "subject_type" => "groupMember",
           "method" => "put",
-          "data" => %{"actor_id" => "a_1", "group_id" => "g_1", "permissions" => ["group.read"]}
+          "data" => %{
+            "fields" => %{
+              "actor_id" => %{"value" => "a_1"},
+              "group_id" => %{"value" => "g_1"},
+              "permissions" => %{"value" => ["group.read"]}
+            }
+          }
         },
         %{
           "id" => "rel_1",
@@ -67,10 +73,12 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "subject_type" => "relationship",
           "method" => "put",
           "data" => %{
-            "source_id" => "todo_1",
-            "target_id" => "g_1",
-            "type" => "todo",
-            "field" => "group"
+            "fields" => %{
+              "source_id" => %{"value" => "todo_1"},
+              "target_id" => %{"value" => "g_1"},
+              "type" => %{"value" => "todo"},
+              "field" => %{"value" => "group"}
+            }
           }
         }
       ]
@@ -92,7 +100,12 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "subject_id" => "rel_1",
           "subject_type" => "relationship",
           "method" => "put",
-          "data" => %{"source_id" => "todo_1", "target_id" => "g_1"}
+          "data" => %{
+            "fields" => %{
+              "source_id" => %{"value" => "todo_1"},
+              "target_id" => %{"value" => "g_1"}
+            }
+          }
         }
       ]
 
@@ -113,7 +126,9 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "subject_id" => "gm_1",
           "subject_type" => "groupMember",
           "method" => "put",
-          "data" => %{"actor_id" => "a_1", "group_id" => "g_1"}
+          "data" => %{
+            "fields" => %{"actor_id" => %{"value" => "a_1"}, "group_id" => %{"value" => "g_1"}}
+          }
         }
       ]
 
@@ -131,7 +146,9 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "subject_id" => "gm_1",
           "subject_type" => "groupMember",
           "method" => "put",
-          "data" => %{"actor_id" => "a_1", "group_id" => "g_1"}
+          "data" => %{
+            "fields" => %{"actor_id" => %{"value" => "a_1"}, "group_id" => %{"value" => "g_1"}}
+          }
         }
       ]
 
@@ -152,14 +169,19 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "subject_id" => "gm_1",
           "subject_type" => "groupMember",
           "method" => "put",
-          "data" => %{"actor_id" => "a_different_actor", "group_id" => "g_1"}
+          "data" => %{
+            "fields" => %{
+              "actor_id" => %{"value" => "a_different_actor"},
+              "group_id" => %{"value" => "g_1"}
+            }
+          }
         },
         %{
           "id" => "rel_1",
           "subject_id" => "rel_1",
           "subject_type" => "relationship",
           "method" => "put",
-          "data" => %{"target_id" => "g_1"}
+          "data" => %{"fields" => %{"target_id" => %{"value" => "g_1"}}}
         }
       ]
 
@@ -180,14 +202,16 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "subject_id" => "gm_1",
           "subject_type" => "groupMember",
           "method" => "put",
-          "data" => %{"actor_id" => "a_1", "group_id" => "g_1"}
+          "data" => %{
+            "fields" => %{"actor_id" => %{"value" => "a_1"}, "group_id" => %{"value" => "g_1"}}
+          }
         },
         %{
           "id" => "rel_1",
           "subject_id" => "rel_1",
           "subject_type" => "relationship",
           "method" => "put",
-          "data" => %{"target_id" => "different_group"}
+          "data" => %{"fields" => %{"target_id" => %{"value" => "different_group"}}}
         }
       ]
 
@@ -202,13 +226,23 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "id" => "rel_1",
           "subject_type" => "relationship",
           "method" => "put",
-          "data" => %{"source_id" => "todo_1", "target_id" => "g_1"}
+          "data" => %{
+            "fields" => %{
+              "source_id" => %{"value" => "todo_1"},
+              "target_id" => %{"value" => "g_1"}
+            }
+          }
         },
         %{
           "id" => "rel_2",
           "subject_type" => "relationship",
           "method" => "put",
-          "data" => %{"source_id" => "post_1", "target_id" => "g_2"}
+          "data" => %{
+            "fields" => %{
+              "source_id" => %{"value" => "post_1"},
+              "target_id" => %{"value" => "g_2"}
+            }
+          }
         }
       ]
 
@@ -229,7 +263,12 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "id" => "rel_1",
           "subject_type" => "relationship",
           "method" => "put",
-          "data" => %{"source_id" => "todo_1", "target_id" => "g_1"}
+          "data" => %{
+            "fields" => %{
+              "source_id" => %{"value" => "todo_1"},
+              "target_id" => %{"value" => "g_1"}
+            }
+          }
         }
       ]
 
@@ -244,7 +283,12 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "id" => "rel_1",
           "subject_type" => "relationship",
           "method" => "delete",
-          "data" => %{"source_id" => "todo_1", "target_id" => "g_1"}
+          "data" => %{
+            "fields" => %{
+              "source_id" => %{"value" => "todo_1"},
+              "target_id" => %{"value" => "g_1"}
+            }
+          }
         }
       ]
 

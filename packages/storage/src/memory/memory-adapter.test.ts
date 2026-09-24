@@ -3,10 +3,6 @@ import { createMemoryAdapter } from "./memory-adapter";
 import { makeHlc, type Action } from "@ebbjs/core";
 
 describe("MemoryAdapter", () => {
-  // User entities (todo) nest their fields under `data.fields` to mirror
-  // `EbbServer.Storage.ActionValidator.well_formed_data?/1`. The static
-  // `Update.data` type is `PutData | PatchData | null`, neither of which
-  // models that wrapping, so we cast through `unknown` at the call site.
   const action: Action = {
     id: "a_1",
     actor_id: "a_user1",
@@ -20,7 +16,7 @@ describe("MemoryAdapter", () => {
         method: "put",
         data: {
           fields: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
-        } as never,
+        },
       },
     ],
   };
@@ -40,7 +36,7 @@ describe("MemoryAdapter", () => {
           fields: {
             title: { value: "Updated", update_id: "u_2", hlc: makeHlc(1711036800000, 1) },
           },
-        } as never,
+        },
       },
     ],
   };
@@ -111,13 +107,10 @@ describe("MemoryAdapter", () => {
       expect(await adapter.isDirty("todo_1")).toBe(false);
     });
 
-    it("applies a patch update to an existing entity (regression: was wrapping fields under data.fields)", async () => {
-      // Before the fix, mergeFields iterated the patch's top-level keys
-      // (`{ fields: {...} }`) and stored them under `data.fields`, producing
-      // `{ fields: { fields: {...}, title: {...} } }`. The client materializer
-      // now unwraps `data.fields` first (mirroring the server's
-      // ActionValidator.well_formed_data?/1), so the patch lands at
-      // `data.fields.title` as expected.
+    it("applies a patch update to an existing entity", async () => {
+      // The patch's fields merge into `data.fields` rather than nesting
+      // a second `fields` envelope, so `data.fields.title` is the field
+      // itself.
       const adapter = createMemoryAdapter();
       await adapter.actions.append(action);
       const before = await adapter.entities.get("todo_1");
@@ -143,11 +136,11 @@ describe("MemoryAdapter", () => {
       expect((after!.data.fields.title as { hlc?: string }).hlc).toBe(makeHlc(1711036800000, 1));
     });
 
-    it("materializes a system entity (groupMember) with flat top-level data fields", async () => {
-      // System entities ship flat keys in `data` (no `{ fields: ... }`
-      // wrapping). Issue #43 collapsed `extractFields` and
-      // `extractPatchFields` into a single `unwrapFields` helper that
-      // branches on subject type — this pins the system-entity branch.
+    it("materializes a system entity (groupMember) with its fields nested under data.fields", async () => {
+      // `groupMember` PUTs carry the same `{ fields: ... }` envelope as
+      // user entities. The materializer unwraps it once, so the
+      // system entity's fields land at `data.fields` the same way a
+      // `todo` PUT's do.
       const groupMemberAction: Action = {
         id: "a_gm",
         actor_id: "a_user1",
@@ -160,9 +153,15 @@ describe("MemoryAdapter", () => {
             subject_type: "groupMember",
             method: "put",
             data: {
-              actor_id: { value: "a_user1", update_id: "u_gm", hlc: makeHlc(1711036800000) },
-              group_id: { value: "grp_1", update_id: "u_gm", hlc: makeHlc(1711036800000) },
-            } as never,
+              fields: {
+                actor_id: {
+                  value: "a_user1",
+                  update_id: "u_gm",
+                  hlc: makeHlc(1711036800000),
+                },
+                group_id: { value: "grp_1", update_id: "u_gm", hlc: makeHlc(1711036800000) },
+              },
+            },
           },
         ],
       };
@@ -172,7 +171,6 @@ describe("MemoryAdapter", () => {
 
       const entity = await adapter.entities.get("gm_1");
       expect(entity).not.toBe(null);
-      // Flat keys land at `data.fields` (no extra `fields` wrapper).
       expect(entity!.data.fields).toHaveProperty("actor_id");
       expect(entity!.data.fields).toHaveProperty("group_id");
       expect(entity!.data.fields).not.toHaveProperty("fields");

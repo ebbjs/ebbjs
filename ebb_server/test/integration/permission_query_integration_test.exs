@@ -39,10 +39,12 @@ defmodule EbbServer.PermissionQueryIntegrationTest do
             "subject_type" => "relationship",
             "method" => "put",
             "data" => %{
-              "source_id" => "todo_1",
-              "target_id" => "group_1",
-              "type" => "todo",
-              "field" => "group"
+              "fields" => %{
+                "source_id" => %{"type" => "lww", "value" => "todo_1", "hlc" => hlc_1},
+                "target_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc_1},
+                "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc_1},
+                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc_1}
+              }
             }
           }
         ]
@@ -70,10 +72,12 @@ defmodule EbbServer.PermissionQueryIntegrationTest do
             "subject_type" => "relationship",
             "method" => "put",
             "data" => %{
-              "source_id" => "todo_2",
-              "target_id" => "group_2",
-              "type" => "todo",
-              "field" => "group"
+              "fields" => %{
+                "source_id" => %{"type" => "lww", "value" => "todo_2", "hlc" => hlc_2},
+                "target_id" => %{"type" => "lww", "value" => "group_2", "hlc" => hlc_2},
+                "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc_2},
+                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc_2}
+              }
             }
           }
         ]

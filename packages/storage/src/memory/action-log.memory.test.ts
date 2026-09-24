@@ -14,7 +14,7 @@ describe("MemoryActionLog", () => {
         subject_id: "todo_1",
         subject_type: "todo",
         method: "put",
-        data: { title: { value: "Hello", update_id: "u_1" } },
+        data: { fields: { title: { value: "Hello", update_id: "u_1" } } },
       },
     ],
   };

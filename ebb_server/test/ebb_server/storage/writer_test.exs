@@ -323,10 +323,12 @@ defmodule EbbServer.Storage.WriterTest do
             subject_type: "relationship",
             method: :put,
             data: %{
-              "source_id" => "todo_1",
-              "target_id" => "group_1",
-              "type" => "todo",
-              "field" => "group"
+              "fields" => %{
+                "source_id" => %{"type" => "lww", "value" => "todo_1", "hlc" => hlc},
+                "target_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc},
+                "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
+                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc}
+              }
             }
           }
         ]
@@ -409,10 +411,12 @@ defmodule EbbServer.Storage.WriterTest do
             subject_type: "relationship",
             method: :put,
             data: %{
-              "source_id" => "todo_1",
-              "target_id" => "group_1",
-              "type" => "todo",
-              "field" => "group"
+              "fields" => %{
+                "source_id" => %{"type" => "lww", "value" => "todo_1", "hlc" => hlc},
+                "target_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc},
+                "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
+                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc}
+              }
             }
           }
         ]

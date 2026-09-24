@@ -145,9 +145,11 @@ defmodule EbbServer.Sync.HandshakeTest do
           "subject_type" => "groupMember",
           "method" => "put",
           "data" => %{
-            "actor_id" => actor_id,
-            "group_id" => group_id,
-            "permissions" => permissions
+            "fields" => %{
+              "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
+              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
+              "permissions" => %{"type" => "lww", "value" => permissions, "hlc" => hlc}
+            }
           }
         },
         %{
@@ -156,10 +158,12 @@ defmodule EbbServer.Sync.HandshakeTest do
           "subject_type" => "relationship",
           "method" => "put",
           "data" => %{
-            "source_id" => "todo_bootstrap",
-            "target_id" => group_id,
-            "type" => "todo",
-            "field" => "group"
+            "fields" => %{
+              "source_id" => %{"type" => "lww", "value" => "todo_bootstrap", "hlc" => hlc},
+              "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
+              "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
+              "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc}
+            }
           }
         }
       ]

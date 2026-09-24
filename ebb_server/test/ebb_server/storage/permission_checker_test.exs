@@ -23,7 +23,13 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
             "subject_id" => "gm_1",
             "subject_type" => "groupMember",
             "method" => "put",
-            "data" => %{"actor_id" => "a_1", "group_id" => "g_1", "permissions" => ["group.read"]}
+            "data" => %{
+              "fields" => %{
+                "actor_id" => %{"value" => "a_1"},
+                "group_id" => %{"value" => "g_1"},
+                "permissions" => %{"value" => ["group.read"]}
+              }
+            }
           },
           %{
             "id" => "rel_1",
@@ -31,10 +37,12 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
             "subject_type" => "relationship",
             "method" => "put",
             "data" => %{
-              "source_id" => "todo_1",
-              "target_id" => "g_1",
-              "type" => "todo",
-              "field" => "group"
+              "fields" => %{
+                "source_id" => %{"value" => "todo_1"},
+                "target_id" => %{"value" => "g_1"},
+                "type" => %{"value" => "todo"},
+                "field" => %{"value" => "group"}
+              }
             }
           }
         ]
@@ -188,10 +196,12 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
             "subject_type" => "relationship",
             "method" => "put",
             "data" => %{
-              "source_id" => "todo_new",
-              "target_id" => "g_1",
-              "type" => "todo",
-              "field" => "group"
+              "fields" => %{
+                "source_id" => %{"value" => "todo_new"},
+                "target_id" => %{"value" => "g_1"},
+                "type" => %{"value" => "todo"},
+                "field" => %{"value" => "group"}
+              }
             }
           }
         ]

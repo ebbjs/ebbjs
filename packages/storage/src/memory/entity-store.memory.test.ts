@@ -17,7 +17,7 @@ describe("MemoryEntityStore", () => {
         subject_type: "todo",
         method: "put",
         data: {
-          title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) },
+          fields: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
         },
       },
     ],

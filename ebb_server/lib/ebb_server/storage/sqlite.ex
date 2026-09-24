@@ -27,10 +27,7 @@ defmodule EbbServer.Storage.SQLite do
 
   Generated columns extract field values from the per-entity JSON `data`
   so that `WHERE` clauses can reference them via `json_extract` without
-  parsing JSON at read time. Two column shapes coexist in the data
-  (`flat` and `nested`/`FieldValue`) because a relationship-shape
-  migration crossed the field boundary without a schema migration; the
-  DDL tolerates both shapes during reads.
+  parsing JSON at read time. Field values live at `data.fields.X.value`.
 
   ## Reads vs. writes
 
@@ -63,15 +60,7 @@ defmodule EbbServer.Storage.SQLite do
   """
 
   # Generated columns extract field values from entity `data` JSON.
-  # Two shapes exist in the wild (the relationship shape was migrated
-  # from flat to FieldValue-wrapped without a schema migration):
-  #
-  #   1. Flat (old): `{"source_id": "x", "target_id": "y", ...}`
-  #   2. Nested (new): `{"fields": {"source_id": {"value": "x", ...}, ...}}`
-  #
-  # We use COALESCE so both shapes yield the correct extracted value.
-  # The actor_id/group_id/permissions columns have always been nested
-  # (groupMember writes always used `fields.X.value` wrapping).
+  # Field values live at `data.fields.X.value`.
   @create_entities_table """
   CREATE TABLE IF NOT EXISTS entities (
     id TEXT PRIMARY KEY,
@@ -82,30 +71,10 @@ defmodule EbbServer.Storage.SQLite do
     deleted_hlc INTEGER,
     deleted_by TEXT,
     last_gsn INTEGER NOT NULL,
-    source_id TEXT GENERATED ALWAYS AS (
-      COALESCE(
-        json_extract(data, '$.source_id'),
-        json_extract(data, '$.fields.source_id.value')
-      )
-    ) STORED,
-    target_id TEXT GENERATED ALWAYS AS (
-      COALESCE(
-        json_extract(data, '$.target_id'),
-        json_extract(data, '$.fields.target_id.value')
-      )
-    ) STORED,
-    rel_type TEXT GENERATED ALWAYS AS (
-      COALESCE(
-        json_extract(data, '$.type'),
-        json_extract(data, '$.fields.type.value')
-      )
-    ) STORED,
-    rel_field TEXT GENERATED ALWAYS AS (
-      COALESCE(
-        json_extract(data, '$.field'),
-        json_extract(data, '$.fields.field.value')
-      )
-    ) STORED,
+    source_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.source_id.value')) STORED,
+    target_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.target_id.value')) STORED,
+    rel_type TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.type.value')) STORED,
+    rel_field TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.field.value')) STORED,
     actor_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.actor_id.value')) STORED,
     group_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.group_id.value')) STORED,
     permissions TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.permissions.value')) STORED
@@ -197,9 +166,6 @@ defmodule EbbServer.Storage.SQLite do
 
     # PRAGMAs
     :ok = Sqlite3.execute(db, @pragmas)
-
-    # Schema migration check
-    migrate_schema(db)
 
     # DDL
     :ok = Sqlite3.execute(db, @create_entities_table)
@@ -337,65 +303,6 @@ defmodule EbbServer.Storage.SQLite do
 
     Sqlite3.close(db)
   end
-
-  # ---------------------------------------------------------------------------
-  # Schema migration
-  # ---------------------------------------------------------------------------
-
-  defp migrate_schema(db) do
-    case Sqlite3.prepare(
-           db,
-           "SELECT sql FROM sqlite_master WHERE type='table' AND name='entities'"
-         ) do
-      {:ok, stmt} ->
-        result = check_schema_migration_needed(db, stmt)
-        Sqlite3.release(db, stmt)
-        if result == :needs_migration, do: Sqlite3.execute(db, "DROP TABLE entities")
-        result
-
-      _ ->
-        :ok
-    end
-  end
-
-  defp check_schema_migration_needed(db, stmt) do
-    case Sqlite3.step(db, stmt) do
-      {:row, [create_sql]} ->
-        needs_migration?(create_sql)
-
-      :done ->
-        :ok
-    end
-  end
-
-  defp needs_migration?(create_sql) when is_binary(create_sql) do
-    cond do
-      # Pre-nesting: actor_id was at the top level. Migrated when the
-      # writer started wrapping field values as `{value, update_id,
-      # hlc}` for system entities.
-      String.contains?(create_sql, "json_extract(data, '$.actor_id')") &&
-          not String.contains?(create_sql, "$.fields.actor_id.value") ->
-        :needs_migration
-
-      # Pre-CONSOLIDATE: source_id / target_id / rel_type / rel_field
-      # used flat paths while actor_id/group_id used nested paths.
-      # The nested-relationship write shape (used by the demo's
-      # seed.ts) stores them at `$.fields.X.value`, so the old
-      # extraction returned NULL for every relationship entity and
-      # the entity type query's JOIN produced zero rows. We detect
-      # this by checking whether the source_id extraction is wrapped
-      # in a COALESCE fallback — the new schema does, the old one
-      # doesn't.
-      String.contains?(create_sql, "json_extract(data, '$.source_id')") and
-          not String.contains?(create_sql, "COALESCE") ->
-        :needs_migration
-
-      true ->
-        :ok
-    end
-  end
-
-  defp needs_migration?(_), do: :ok
 
   # ---------------------------------------------------------------------------
   # Query helpers

@@ -201,8 +201,6 @@ defmodule EbbServer.Storage.SystemCache do
 
         member = %{
           id: entity_data.id,
-          # Use Fields.get/2 to handle both shapes: `{"actor_id" => "x"}`
-          # and `{"fields" => {"actor_id" => {"value" => "x"}}}`.
           actor_id: Fields.get(data, "actor_id"),
           group_id: Fields.get(data, "group_id"),
           permissions: Fields.get(data, "permissions")

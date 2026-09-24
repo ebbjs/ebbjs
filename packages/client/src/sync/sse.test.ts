@@ -75,10 +75,6 @@ describe("parseSSEBlock", () => {
 });
 
 describe("applyAction", () => {
-  // User entities (todo) nest their fields under `data.fields` to mirror
-  // `EbbServer.Storage.ActionValidator.well_formed_data?/1`. The static
-  // `Update.data` type is `PutData | PatchData | null`, so we cast through
-  // `never` at the call sites below.
   it("appends action and marks entities dirty", async () => {
     const storage = createMemoryAdapter();
     const action: Action = {
@@ -94,7 +90,7 @@ describe("applyAction", () => {
           method: "put",
           data: {
             fields: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
-          } as never,
+          },
         },
       ],
     };
@@ -120,7 +116,7 @@ describe("applyAction", () => {
           method: "put",
           data: {
             fields: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
-          } as never,
+          },
         },
       ],
     };
@@ -156,7 +152,7 @@ describe("applyAction", () => {
           method: "put",
           data: {
             fields: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
-          } as never,
+          },
         },
         {
           id: "u_2",
@@ -165,7 +161,7 @@ describe("applyAction", () => {
           method: "put",
           data: {
             fields: { title: { value: "World", update_id: "u_2", hlc: makeHlc(1711036800000, 1) } },
-          } as never,
+          },
         },
       ],
     };
@@ -197,7 +193,7 @@ describe("applyAction HLC handling", () => {
             fields: {
               title: { value: "Hello", update_id: "u_put", hlc: makeHlc(1711036800000) },
             },
-          } as never,
+          },
         },
       ],
     };
@@ -216,7 +212,7 @@ describe("applyAction HLC handling", () => {
             fields: {
               title: { value: "Updated", update_id: "u_patch", hlc: makeHlc(1711036800000, 1) },
             },
-          } as never,
+          },
         },
       ],
     };

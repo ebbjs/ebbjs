@@ -91,23 +91,49 @@ describe("FieldValue", () => {
 });
 
 describe("PutData", () => {
-  it("accepts valid put data", () => {
-    expect(Value.Check(PutDataSchema, {})).toBe(true);
-    expect(Value.Check(PutDataSchema, { name: { value: "test", update_id: "a_test" } })).toBe(true);
+  it("accepts an empty fields envelope", () => {
+    expect(Value.Check(PutDataSchema, { fields: {} })).toBe(true);
+  });
+
+  it("accepts a fields envelope with FieldValue entries", () => {
     expect(
       Value.Check(PutDataSchema, {
-        field1: { value: "a", update_id: "a_test" },
-        field2: { value: 1, update_id: "a_test2" },
+        fields: { name: { value: "test", update_id: "a_test" } },
       }),
     ).toBe(true);
+    expect(
+      Value.Check(PutDataSchema, {
+        fields: {
+          field1: { value: "a", update_id: "a_test" },
+          field2: { value: 1, update_id: "a_test2" },
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects a flat record (no fields envelope)", () => {
+    expect(Value.Check(PutDataSchema, { name: { value: "test", update_id: "a_test" } })).toBe(
+      false,
+    );
   });
 });
 
 describe("PatchData", () => {
-  it("accepts valid patch data", () => {
-    expect(Value.Check(PatchDataSchema, {})).toBe(true);
+  it("accepts an empty fields envelope", () => {
+    expect(Value.Check(PatchDataSchema, { fields: {} })).toBe(true);
+  });
+
+  it("accepts a fields envelope with FieldValue entries", () => {
+    expect(
+      Value.Check(PatchDataSchema, {
+        fields: { name: { value: "test", update_id: "a_test" } },
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects a flat record (no fields envelope)", () => {
     expect(Value.Check(PatchDataSchema, { name: { value: "test", update_id: "a_test" } })).toBe(
-      true,
+      false,
     );
   });
 });
@@ -119,7 +145,7 @@ describe("Update", () => {
       subject_id: "a_actor",
       subject_type: "group",
       method: "put",
-      data: { name: { value: "test", update_id: "u_upd1" } },
+      data: { fields: { name: { value: "test", update_id: "u_upd1" } } },
     };
     expect(Value.Check(UpdateSchema, update)).toBe(true);
   });
@@ -130,7 +156,7 @@ describe("Update", () => {
       subject_id: "a_actor",
       subject_type: "group",
       method: "patch",
-      data: { name: { value: "test", update_id: "u_upd1" } },
+      data: { fields: { name: { value: "test", update_id: "u_upd1" } } },
     };
     expect(Value.Check(UpdateSchema, update)).toBe(true);
   });
@@ -181,7 +207,7 @@ describe("Action", () => {
           subject_id: "a_actor",
           subject_type: "group",
           method: "put",
-          data: { name: { value: "test", update_id: "u_upd1" } },
+          data: { fields: { name: { value: "test", update_id: "u_upd1" } } },
         },
       ],
     };
@@ -200,14 +226,14 @@ describe("Action", () => {
           subject_id: "a_actor",
           subject_type: "group",
           method: "put",
-          data: { name: { value: "test", update_id: "u_upd1" } },
+          data: { fields: { name: { value: "test", update_id: "u_upd1" } } },
         },
         {
           id: "u_upd2",
           subject_id: "a_actor",
           subject_type: "group",
           method: "patch",
-          data: { desc: { value: "changed", update_id: "u_upd2" } },
+          data: { fields: { desc: { value: "changed", update_id: "u_upd2" } } },
         },
       ],
     };

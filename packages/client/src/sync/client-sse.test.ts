@@ -25,11 +25,9 @@ describe("SyncClient.subscribe (SSE)", () => {
           subject_id: "todo_1",
           subject_type: "todo",
           method: "put",
-          // User entities nest their fields under `data.fields` (mirrors
-          // `EbbServer.Storage.ActionValidator.well_formed_data?/1`).
           data: {
             fields: { title: { value: "Live", update_id: "u_1", hlc: "112134507724800000" } },
-          } as never,
+          },
         },
       ],
     };
@@ -113,7 +111,7 @@ describe("SyncClient.subscribe (SSE)", () => {
           // `EbbServer.Storage.ActionValidator.well_formed_data?/1`).
           data: {
             fields: { x: { value: 1, update_id: "u_sse", hlc: "112134507724800000" } },
-          } as never,
+          },
         },
       ],
     };
@@ -178,7 +176,7 @@ describe("SyncClient.subscribe (SSE)", () => {
           method: "put",
           data: {
             fields: { title: { value: "Hello", update_id: "u_put", hlc: makeHlc(1711036800000) } },
-          } as never,
+          },
         },
       ],
     };
@@ -197,7 +195,7 @@ describe("SyncClient.subscribe (SSE)", () => {
             fields: {
               title: { value: "Updated", update_id: "u_patch", hlc: makeHlc(1711036800000, 1) },
             },
-          } as never,
+          },
         },
       ],
     };
@@ -231,7 +229,7 @@ describe("SyncClient.subscribe (SSE)", () => {
           method: "put",
           data: {
             fields: { title: { value: "Hello", update_id: "u_put", hlc: makeHlc(1711036800000) } },
-          } as never,
+          },
         },
       ],
     };
@@ -253,8 +251,8 @@ describe("SyncClient.subscribe (SSE)", () => {
               update_id: "u_flat",
               hlc: makeHlc(1711036800000, 1),
             },
-          } as never,
-        },
+          },
+        } as never,
       ],
     };
     const { applyAction } = await import("./storage");

@@ -135,7 +135,7 @@ defmodule EbbServer.Storage.SQLiteTest do
       entity = %{
         id: "rel_abc",
         type: "relation",
-        data: ~s({"source_id": "src_1", "target_id": "tgt_1"}),
+        data: ~s({"fields":{"source_id":{"value":"src_1"},"target_id":{"value":"tgt_1"}}}),
         created_hlc: 1000,
         updated_hlc: 1000,
         deleted_hlc: nil,

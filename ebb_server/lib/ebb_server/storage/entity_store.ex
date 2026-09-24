@@ -55,7 +55,7 @@ defmodule EbbServer.Storage.EntityStore do
   since all use the same lexicographic string comparison rules.
   """
 
-  alias EbbServer.Storage.{DirtyTracker, Fields, RocksDB, SQLite}
+  alias EbbServer.Storage.{DirtyTracker, RocksDB, SQLite}
 
   @default_rocks_name EbbServer.Storage.RocksDB
   @default_sqlite_name EbbServer.Storage.SQLite
@@ -275,38 +275,14 @@ defmodule EbbServer.Storage.EntityStore do
     hlc = action["hlc"]
     subject_type = update["subject_type"]
 
-    new_data =
-      cond do
-        subject_type == "groupMember" ->
-          data = update["data"]
-
-          actor_id = Fields.get(data, "actor_id")
-          group_id = Fields.get(data, "group_id")
-          permissions = Fields.get(data, "permissions")
-
-          %{
-            "fields" => %{
-              "actor_id" => %{"value" => actor_id, "update_id" => update["id"]},
-              "group_id" => %{"value" => group_id, "update_id" => update["id"]},
-              "permissions" => %{"value" => permissions, "update_id" => update["id"]}
-            }
-          }
-
-        subject_type == "relationship" ->
-          update["data"]
-
-        true ->
-          fields_with_update_id =
-            Enum.into(update["data"]["fields"] || %{}, %{}, fn {field_name, field_value} ->
-              {field_name, Map.put(field_value, "update_id", update["id"])}
-            end)
-
-          %{"fields" => fields_with_update_id}
-      end
+    fields_with_update_id =
+      Enum.into(update["data"]["fields"] || %{}, %{}, fn {field_name, field_value} ->
+        {field_name, Map.put(field_value, "update_id", update["id"])}
+      end)
 
     %{
       acc
-      | data: new_data,
+      | data: %{"fields" => fields_with_update_id},
         type: subject_type,
         created_hlc: if(acc.created_hlc == nil, do: hlc, else: acc.created_hlc),
         updated_hlc: hlc,

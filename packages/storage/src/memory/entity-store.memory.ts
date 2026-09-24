@@ -61,7 +61,8 @@ const updateTypeIndexOnSet = (
 
 /**
  * Applies a single update to an entity during materialization.
- * Handles put, patch, and delete methods.
+ * PUT replaces the field set; PATCH merges with HLC + lexicographic
+ * `update_id` tiebreak.
  */
 const applyUpdate = (
   entity: Entity | null,
@@ -74,7 +75,7 @@ const applyUpdate = (
       return {
         id: update.subject_id,
         type: update.subject_type,
-        data: { fields: unwrapFields(update) },
+        data: { fields: readFields(update) },
         created_hlc: hlc,
         updated_hlc: hlc,
         deleted_hlc: null,
@@ -103,36 +104,10 @@ const applyUpdate = (
 };
 
 /**
- * Subject types whose updates ship flat top-level keys in `data` instead of
- * nesting fields under `data.fields`. For these, the update's `data` *is*
- * the field map.
+ * Pull the field map off an Update's `data`.
  */
-const SYSTEM_SUBJECT_TYPES: ReadonlySet<string> = new Set<string>(["groupMember", "relationship"]);
-
-/**
- * Unwrap an Update's `data` into the field map the entity store consumes.
- *
- * Mirrors `EbbServer.Storage.EntityStore.apply_put/4`:
- * - User entities (e.g. "todo") ship their fields nested under a "fields"
- *   key in `data`, e.g. `data = { fields: { title: FieldValue } }`. Use
- *   `data.fields` directly.
- * - System entities ("groupMember", "relationship") ship flat top-level
- *   keys, e.g. `data = { actor_id, group_id, permissions }`. Use `data`
- *   itself as the field map so the materialized shape matches what the
- *   server returns from `GET /entities/:id`.
- *
- * Without this branching, user-entity updates would double-wrap into
- * `{ fields: { fields: {...} } }` because `update.data` is already nested.
- */
-const unwrapFields = (update: Update): Record<string, FieldValue> => {
-  if (SYSTEM_SUBJECT_TYPES.has(update.subject_type)) {
-    return (update.data ?? {}) as Record<string, FieldValue>;
-  }
-  // Static `Update.data` is `PutData | PatchData | null`, neither of which
-  // models the `{ fields: {...} }` wrapping the wire carries, so cast
-  // through `unknown` at runtime.
-  const data = update.data as unknown as { fields?: Record<string, FieldValue> } | null;
-  return data?.fields ?? {};
+const readFields = (update: Update): Record<string, FieldValue> => {
+  return update.data?.fields ?? {};
 };
 
 /**
@@ -140,7 +115,7 @@ const unwrapFields = (update: Update): Record<string, FieldValue> => {
  * Higher HLC wins; equal HLC uses lexicographic update_id (newer >= older).
  */
 const mergeFields = (existing: Entity["data"], update: Update): Entity["data"] => {
-  const patch = unwrapFields(update);
+  const patch = readFields(update);
   const merged = { ...existing.fields };
 
   for (const [field, patchValue] of Object.entries(patch)) {

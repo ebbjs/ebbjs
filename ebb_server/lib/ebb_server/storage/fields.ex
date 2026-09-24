@@ -1,50 +1,36 @@
 defmodule EbbServer.Storage.Fields do
   @moduledoc """
-  Utilities for extracting field values from entity data structures.
+  Extracts field values from update data.
 
-  Handles:
-  - Nested data with `data["fields"]` fallback
-  - `{"value": ...}` wrapper unwrapping
-  - Binary value passthrough
+  Walks one level under `data.fields` and unwraps the `{"value": ...}`
+  envelope so callers get the underlying field value as a string,
+  number, list, etc.
   """
 
   @doc """
   Extracts a field value from data.
 
-  Options:
-  - `:nested?` - When true, falls back to `data["fields"]` if key not found directly (default: true)
-
   ## Examples
-
-      iex> Fields.get(%{"actor_id" => %{"value" => "user123"}}, "actor_id")
-      "user123"
 
       iex> Fields.get(%{"fields" => %{"actor_id" => %{"value" => "user123"}}}, "actor_id")
       "user123"
 
-      iex> Fields.get(%{"actor_id" => "user123"}, "actor_id")
-      "user123"
+      iex> Fields.get(%{"fields" => %{"count" => %{"value" => 3}}}, "count")
+      3
 
       iex> Fields.get(nil, "actor_id")
       nil
+
+      iex> Fields.get(%{"fields" => %{}}, "actor_id")
+      nil
   """
-  @spec get(map() | nil, String.t(), keyword()) :: any() | nil
-  def get(data, field, opts \\ [])
+  @spec get(map() | nil, String.t()) :: any() | nil
+  def get(nil, _field), do: nil
 
-  def get(nil, _field, _opts), do: nil
-
-  def get(data, field, opts) when is_map(data) do
-    nested? = Keyword.get(opts, :nested?, true)
-
-    cond do
-      Map.has_key?(data, field) ->
-        unwrap_value(data[field])
-
-      nested? and Map.has_key?(data, "fields") and is_map(data["fields"]) ->
-        get(data["fields"], field, nested?: false)
-
-      true ->
-        nil
+  def get(data, field) when is_map(data) do
+    case Map.get(data, "fields") do
+      %{} = fields when is_map(fields) -> unwrap_value(Map.get(fields, field))
+      _ -> nil
     end
   end
 
