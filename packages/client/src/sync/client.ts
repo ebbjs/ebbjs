@@ -54,9 +54,11 @@ import { generateId } from "@ebbjs/core";
 import type { EntityDef, FieldMarker } from "../schema/entity";
 import type { Schema } from "../schema/schema";
 
+type AnyEntityDef = EntityDef<Record<string, FieldMarker>>;
+type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
 type AnySchema = Schema<
-  Record<string, EntityDef<Record<string, FieldMarker>>>,
-  Record<string, unknown> | undefined
+  Record<string, AnyEntityDef>,
+  Record<string, AnyRelationshipDef> | undefined
 >;
 import type {
   CatchUpResponse,
@@ -991,17 +993,22 @@ export class SyncClient {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a fresh per-client `EntityRegistry` from a `Schema`'s
- * runtime registry. We copy every registered entity into a new
- * `EntityRegistry` rather than sharing `schema._registry` so a
- * client can mutate its own registry at runtime without bleeding
- * across clients that share the same `schema` value.
+ * Build a fresh per-client `EntityRegistry` from a `Schema`. We
+ * re-register every entity and relationship on a new registry rather
+ * than sharing `schema._registry` so a client can mutate its own
+ * registry at runtime without bleeding across clients that share
+ * the same `schema` value.
  */
 const buildRegistryFromSchema = (schema: AnySchema | undefined): EntityRegistry => {
   const registry = new EntityRegistry();
   if (schema === undefined) return registry;
   for (const entity of Object.values(schema.entities)) {
     registry.register(entity);
+  }
+  if (schema.relationships !== undefined) {
+    for (const rel of Object.values(schema.relationships)) {
+      registry.registerRelationship(rel);
+    }
   }
   return registry;
 };

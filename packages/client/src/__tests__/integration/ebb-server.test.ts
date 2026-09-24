@@ -954,13 +954,15 @@ describe("integration: defineSchema", () => {
     const user = defineEntity("user", {
       name: e.string(),
     });
+    const group = defineEntity("group", { name: e.string() });
+    const todo_ownedBy = defineRelationship({
+      source: todo,
+      target: group,
+      as: "ownedBy",
+    });
     const schema = defineSchema({
       entities: { todo, user },
-      // The relationship slot is deliberately open so callers can pass
-      // any metadata shape — `todo_ownedBy` exercises it end-to-end.
-      relationships: {
-        todo_ownedBy: { source: "todo", target: "group" },
-      },
+      relationships: { todo_ownedBy },
       version: 7,
       minSupportedVersion: 5,
     });
@@ -981,6 +983,12 @@ describe("integration: defineSchema", () => {
       expect(client.registry.has("user")).toBe(true);
       expect(client.registry.get("todo")).toBe(todo);
       expect(client.registry.get("user")).toBe(user);
+      // Relationships registered via defineSchema flow through to
+      // the per-client registry, so client.registry.getRelationship
+      // works the same as on a hand-built registry.
+      const registered = client.registry.getRelationship("todo", "ownedBy");
+      expect(registered?.source.name).toBe("todo");
+      expect(registered?.target.name).toBe("group");
 
       // The server tolerates schema_version / min_supported_version
       // fields it doesn't understand today.

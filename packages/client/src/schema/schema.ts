@@ -9,25 +9,34 @@
 
 import type { EntityDef, FieldMarker } from "./entity";
 import { EntityRegistry } from "./entity-registry";
+import type { RelationshipDef } from "./relationship";
+
+type AnyEntityDef = EntityDef<Record<string, FieldMarker>>;
+type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
 
 /**
  * The compiled schema handed to `createClient({ schema })`. The
  * `TEntities` / `TRelationships` generics are inferred from the
  * inputs so callers see typed entity and relationship shapes without
  * an explicit annotation.
+ *
+ * `TRelationships` defaults to `undefined` so callers that omit the
+ * `relationships` slot get a clean `s.relationships === undefined`
+ * at the type level. Passing `relationships` narrows it to the
+ * specific Record type.
  */
 export interface Schema<
-  TEntities extends Record<string, EntityDef<Record<string, FieldMarker>>>,
+  TEntities extends Record<string, AnyEntityDef>,
   TRelationships = undefined,
 > {
   readonly entities: TEntities;
   /**
-   * Optional relationship map. When `defineSchema` is called without a
-   * `relationships` input, `relationships` is `undefined` at runtime so
-   * callers can distinguish "no relationships" from "an empty
-   * relationship map".
+   * Relationship map. `undefined` when no `relationships` input was
+   * passed to `defineSchema`; a populated Record otherwise. Empty
+   * `{}` and `undefined` are distinguishable at runtime so callers
+   * can tell "no relationships declared" from "explicitly empty".
    */
-  readonly relationships: TRelationships | undefined;
+  readonly relationships: TRelationships;
   /** Schema version advertised to the server on handshake. */
   readonly version: number;
   /**
@@ -47,8 +56,8 @@ export interface Schema<
  * `minSupportedVersion` optional.
  */
 export interface DefineSchemaInput<
-  TEntities extends Record<string, EntityDef<Record<string, FieldMarker>>>,
-  TRelationships extends Record<string, unknown> = Record<string, never>,
+  TEntities extends Record<string, AnyEntityDef>,
+  TRelationships extends Record<string, AnyRelationshipDef> = Record<string, never>,
 > {
   readonly entities: TEntities;
   readonly relationships?: TRelationships;
@@ -60,14 +69,24 @@ export interface DefineSchemaInput<
  * Compose per-entity and per-relationship definitions into a single
  * `Schema` value. The result is frozen so accidental mutation is a
  * hard error rather than a silent failure.
+ *
+ * Entities are registered with `EntityRegistry.register` and
+ * relationships with `EntityRegistry.registerRelationship`. The
+ * registry owns the cardinality / overwrite rules; this builder
+ * delegates without adding its own.
  */
 export function defineSchema<
-  TEntities extends Record<string, EntityDef<Record<string, FieldMarker>>>,
-  TRelationships extends Record<string, unknown> = Record<string, never>,
+  TEntities extends Record<string, AnyEntityDef>,
+  TRelationships extends Record<string, AnyRelationshipDef> = Record<string, never>,
 >(input: DefineSchemaInput<TEntities, TRelationships>): Schema<TEntities, TRelationships> {
   const registry = new EntityRegistry();
   for (const entity of Object.values(input.entities)) {
     registry.register(entity);
+  }
+  if (input.relationships !== undefined) {
+    for (const rel of Object.values(input.relationships)) {
+      registry.registerRelationship(rel);
+    }
   }
   return Object.freeze({
     entities: input.entities,

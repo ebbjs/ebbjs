@@ -7,6 +7,7 @@ import { e, makeHlc, type Action } from "@ebbjs/core";
 
 import { defineEntity } from "./entity";
 import { EntityRegistry, EntityValidationError } from "./entity-registry";
+import { defineRelationship } from "./relationship";
 import { defineSchema, type Schema } from "./schema";
 
 const todo = defineEntity("todo", {
@@ -18,12 +19,16 @@ const user = defineEntity("user", {
   name: e.string(),
 });
 
-// `relationships` accepts any `Record<string, unknown>` shape — the
-// slot is deliberately open so callers can pass whatever relationship
-// metadata they want without `Schema`'s type pinning it down.
-const relationshipsFixture = {
-  todo_ownedBy: { source: "todo", target: "group", cardinality: "many-to-one" },
-} as const;
+const group = defineEntity("group", { name: e.string() });
+
+const todo_ownedBy = defineRelationship({
+  source: todo,
+  target: group,
+  as: "ownedBy",
+  sourceCardinality: "many",
+});
+
+const relationshipsFixture = { todo_ownedBy } as const;
 
 describe("defineSchema", () => {
   it("returns a frozen value with the declared entities and version", () => {
@@ -61,6 +66,19 @@ describe("defineSchema", () => {
     expect(schema._registry.get("user")).toBe(user);
   });
 
+  it("registers every relationship on the composed registry", () => {
+    const schema = defineSchema({
+      entities: { todo, group },
+      relationships: relationshipsFixture,
+      version: 1,
+    });
+    const registered = schema._registry.getRelationship("todo", "ownedBy");
+    expect(registered).toBeDefined();
+    expect(registered?.source.name).toBe("todo");
+    expect(registered?.target.name).toBe("group");
+    expect(registered?.sourceCardinality).toBe("many");
+  });
+
   it("accepts a relationships slot and threads it through the type", () => {
     const schema = defineSchema({
       entities: { todo },
@@ -68,7 +86,7 @@ describe("defineSchema", () => {
       version: 1,
     });
     expect(schema.relationships).toEqual(relationshipsFixture);
-    expect(schema.relationships?.todo_ownedBy).toEqual(relationshipsFixture.todo_ownedBy);
+    expect(schema.relationships?.todo_ownedBy).toEqual(todo_ownedBy);
   });
 
   it("omits the relationships slot when not provided", () => {
@@ -77,6 +95,7 @@ describe("defineSchema", () => {
       version: 1,
     });
     expect(schema.relationships).toBeUndefined();
+    expect(schema._registry.getRelationship("todo", "ownedBy")).toBeUndefined();
   });
 
   it("preserves the typed inference of TEntities in Schema<TEntities, TRelationships>", () => {

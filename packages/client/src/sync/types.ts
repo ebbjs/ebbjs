@@ -3,11 +3,14 @@ export type { Action } from "@ebbjs/core";
 // Bring `Action` into local scope so the interfaces below can use it.
 type Action = import("@ebbjs/core").Action;
 import type { EntityDef, FieldMarker } from "../schema/entity";
+import type { RelationshipDef } from "../schema/relationship";
 import type { Schema } from "../schema/schema";
 
+type AnyEntityDef = EntityDef<Record<string, FieldMarker>>;
+type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
 type AnySchema = Schema<
-  Record<string, EntityDef<Record<string, FieldMarker>>>,
-  Record<string, unknown> | undefined
+  Record<string, AnyEntityDef>,
+  Record<string, AnyRelationshipDef> | undefined
 >;
 
 /**
