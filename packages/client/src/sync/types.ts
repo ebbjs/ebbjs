@@ -149,4 +149,12 @@ export interface SyncClientOptions {
   reconnectInitialMs?: number;
   /** Maximum reconnect backoff in ms. Defaults to 60000. */
   reconnectMaxMs?: number;
+  /**
+   * Schema-layer entity registry. When provided, `client.write()` and
+   * `client.queryEntities()` validate against it before any network
+   * call, and incoming actions via SSE / catchUp warn-and-log
+   * violations. When omitted, an empty registry is constructed and
+   * validation is a no-op (matching how `storage?`, `fetchImpl?` work).
+   */
+  registry?: import("../schema/entity-registry").EntityRegistry;
 }

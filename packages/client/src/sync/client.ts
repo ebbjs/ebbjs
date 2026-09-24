@@ -29,9 +29,13 @@ import type { StorageAdapter } from "@ebbjs/storage";
 
 import { ConnectionStateMachine, type ConnectionState } from "./connection-state";
 import { PresenceManager } from "../presence/presence";
-import { applyAction } from "./storage";
 import { openSSEStream, type SSESubscription } from "./sse";
 import { TextDocument, TextDocumentRegistry } from "../fields/collaborative-text/text-document";
+import {
+  EntityRegistry,
+  EntityValidationError,
+  type ValidationViolation,
+} from "../schema/entity-registry";
 import type {
   CatchUpResponse,
   ControlEvent,
@@ -55,6 +59,7 @@ export class SyncClient {
   readonly actorId: string;
   readonly storage: StorageAdapter;
   readonly presence: PresenceManager;
+  readonly registry: EntityRegistry;
   private readonly fetchImpl: typeof fetch;
   private readonly reconnectInitialMs: number;
   private readonly reconnectMaxMs: number;
@@ -79,6 +84,9 @@ export class SyncClient {
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
+    // Empty registry when none is supplied: validation becomes a no-op
+    // and `client.write()` behaves exactly as it did before #143.
+    this.registry = opts.registry ?? new EntityRegistry();
     // PresenceManager wires itself to the SSE stream; the `presence`
     // field on the client is the public API for sending local
     // cursors and reading the map of remote ones. The manager lives
@@ -247,10 +255,11 @@ export class SyncClient {
 
     // Apply every action to local storage. We do this inline (rather than
     // waiting for `subscribe`) because catch-up happens before subscribing.
-    // `applyAction` already advances `storage.cursors[groupId]` to the max
-    // GSN it sees, so we read it back once instead of re-aggregating here.
+    // `_applyAction` validates against the registry (warn-and-log on
+    // incoming violations) and advances `storage.cursors[groupId]` to the
+    // max GSN it sees, so we read it back once instead of re-aggregating.
     for (const action of actions) {
-      await applyAction(this.storage, action, groupId);
+      await this._applyAction(action, groupId);
     }
     const stored = await this.storage.cursors.get(groupId);
     if (stored !== null) {
@@ -269,10 +278,20 @@ export class SyncClient {
    * The server may reject some (permissions, HLC drift, dedup). Returns the
    * rejected list; the caller decides how to handle the failure (rollback,
    * retry, surface to UI).
+   *
+   * Validates each action against the local `EntityRegistry` before any
+   * network call. Schema violations throw `EntityValidationError`
+   * aggregating every violation across the batch — matches the server's
+   * `rejected[]` mental model so callers handle client-side and server-side
+   * rejections uniformly.
    */
   async write(actions: readonly Action[]): Promise<WriteResponse> {
     if (actions.length === 0) {
       return { rejected: [] };
+    }
+    const violations = collectViolations(actions, this.registry);
+    if (violations.length > 0) {
+      throw new EntityValidationError(violations);
     }
     const body = encodeSync({ actions });
     const response = await this.fetchImpl(`${this.serverUrl}/sync/actions`, {
@@ -315,6 +334,12 @@ export class SyncClient {
 
   /** `POST /entities/query` — query entities by type. */
   async queryEntities(type: string, opts: QueryOptions = {}): Promise<EntityQueryResponse> {
+    if (opts.filter !== undefined) {
+      const violations = this.registry.validateFilter(type, opts.filter);
+      if (violations.length > 0) {
+        throw new EntityValidationError(violations);
+      }
+    }
     const response = await this.fetchImpl(`${this.serverUrl}/entities/query`, {
       method: "POST",
       headers: this.authHeaders({ "Content-Type": "application/json" }),
@@ -475,7 +500,7 @@ export class SyncClient {
       // group-scoped but the SSE event doesn't carry the group id, so we
       // pick the first subscribed group.
       const groupId = sub.groupIds[0];
-      await applyAction(this.storage, event.action, groupId);
+      await this._applyAction(event.action, groupId);
       if (event.action.gsn > 0) {
         for (const gid of sub.groupIds) {
           const prev = this.groupCursors.get(gid) ?? 0;
@@ -584,11 +609,67 @@ export class SyncClient {
     }
     this.stateMachine.transition("offline");
   }
+
+  // -------------------------------------------------------------------------
+  // Incoming action application
+  // -------------------------------------------------------------------------
+
+  /**
+   * Apply a received Action to local storage, validating against the
+   * schema registry first. This is the single funnel for all
+   * incoming actions (SSE and catch-up).
+   *
+   * Incoming violations default to **warn-and-log** rather than throw —
+   * the server is the trust boundary, and forward-compat with newer
+   * clients that may have fields the local schema doesn't know about
+   * is the common case (#143, decision 3). The action still
+   * materializes regardless.
+   */
+  private async _applyAction(
+    action: Action,
+    groupId?: string,
+  ): Promise<{ entityId: string; entityType: string }[]> {
+    const violations = this.registry.validateAction(action);
+    if (violations.length > 0) {
+      for (const v of violations) {
+        // eslint-disable-next-line no-console
+        console.warn("[EntityRegistry] incoming action violation:", v);
+      }
+    }
+    await this.storage.actions.append(action);
+    const affected = action.updates.map((u) => ({
+      entityId: u.subject_id,
+      entityType: u.subject_type,
+    }));
+    if (groupId !== undefined && action.gsn > 0) {
+      const prev = await this.storage.cursors.get(groupId);
+      if (prev === null || action.gsn > prev) {
+        await this.storage.cursors.set(groupId, action.gsn);
+      }
+    }
+    return affected;
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Aggregate `validateAction` violations across a write batch. The
+ * registry validates one action at a time; `write` calls this once per
+ * batch to mirror the server's `rejected[]` mental model.
+ */
+const collectViolations = (
+  actions: readonly Action[],
+  registry: EntityRegistry,
+): ValidationViolation[] => {
+  const out: ValidationViolation[] = [];
+  for (const action of actions) {
+    out.push(...registry.validateAction(action));
+  }
+  return out;
+};
 
 interface ActiveSubscription {
   groupIds: string[];
