@@ -31,8 +31,6 @@ export {
   type SSEOpenOptions,
 } from "./sync/sse";
 
-export { applyAction } from "./sync/storage";
-
 export {
   TextDocument,
   TextDocumentRegistry,
@@ -101,4 +99,14 @@ export type {
   ControlEvent,
   PresenceEvent,
   SyncClientOptions,
+  RegistryViolationContext,
+  RegistryViolationListener,
 } from "./sync/types";
+
+export { defineEntity, type EntityDef, type FieldMarker } from "./schema/entity";
+
+export {
+  EntityRegistry,
+  EntityValidationError,
+  type ValidationViolation,
+} from "./schema/entity-registry";

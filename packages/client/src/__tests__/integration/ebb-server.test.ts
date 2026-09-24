@@ -35,16 +35,20 @@
  * server — running it twice in a row does not collide.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   createAction,
   createClock,
+  e,
   encodeSync,
   localEvent,
+  makeHlc,
   type Action,
   type UpdateInput,
 } from "@ebbjs/core";
 import { createClient, type SyncClient } from "../..";
+import { defineEntity } from "../../schema/entity";
+import { EntityRegistry, EntityValidationError } from "../../schema/entity-registry";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
 
@@ -462,6 +466,319 @@ describe("integration: localDelete round-trip", () => {
     } finally {
       a.close();
       b.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #143: defineEntity + EntityRegistry round-trip
+// ---------------------------------------------------------------------------
+
+/**
+ * Add an actor as a member of the test group with `todo.*` permissions.
+ * The standard helper grants only text_document / relationship perms,
+ * which is insufficient for writes to user-defined entity types.
+ */
+async function addMemberWithTodoPerms(actorId: string): Promise<void> {
+  const clock = createClock();
+  const memberId = `gm_${actorId}`;
+  const update = {
+    subject_id: memberId,
+    subject_type: "groupMember",
+    method: "put" as const,
+    data: {
+      fields: {
+        actor_id: { value: actorId, update_id: "add", hlc: localEvent(clock) },
+        group_id: { value: TEST_GROUP_ID, update_id: "add", hlc: localEvent(clock) },
+        permissions: {
+          value: ["text_document.*", "group.read", "groupMember.*", "relationship.*", "todo.*"],
+          update_id: "add",
+          hlc: localEvent(clock),
+        },
+      },
+    },
+  };
+  const { action } = createAction({ actorId: TEST_SEEDER, updates: [update], clock });
+  const body = encodeSync({ actions: [action] });
+  const res = await fetch(`${SERVER_URL}/sync/actions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/msgpack",
+      "x-ebb-actor-id": TEST_SEEDER,
+    },
+    body: body as BodyInit,
+  });
+  if (!res.ok) {
+    throw new Error(`failed to add member ${actorId}: ${res.status} ${await res.text()}`);
+  }
+}
+
+/**
+ * Connect as an actor with `todo.*` permissions. Mirrors `connectAs`
+ * but uses the perm-granting helper above.
+ */
+async function connectAsTodoActor(actorId: string): Promise<SyncClient> {
+  await addMemberWithTodoPerms(actorId);
+  const client = createClient({ serverUrl: SERVER_URL, actorId });
+  const { groups } = await client.handshake();
+  if (!groups.find((g) => g.id === TEST_GROUP_ID)) {
+    throw new Error(`actor ${actorId} did not join ${TEST_GROUP_ID}`);
+  }
+  client.setState("live");
+  return client;
+}
+
+describe("integration: defineEntity + EntityRegistry (#143)", () => {
+  it("rejects a client-side unknown-field action before any fetch", async () => {
+    if (!(await shouldRun())) return;
+    const actor = "todo_validation_actor";
+    const client = await connectAsTodoActor(actor);
+    try {
+      const todo = defineEntity("todo", {
+        title: e.string(),
+        completed: e.boolean(),
+      });
+      const registry = new EntityRegistry();
+      registry.register(todo);
+      // Swap in our populated registry without rebuilding the client.
+      (client as unknown as { registry: EntityRegistry }).registry = registry;
+
+      // The fetch impl here is the *real* fetch — if validation let
+      // it through, this would 4xx at the server (unknown field is
+      // still valid at the protocol layer, so this assertion hinges on
+      // the client throwing first).
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const clock = createClock();
+        const hlc = localEvent(clock);
+        const action: Action = {
+          id: "act_bad",
+          actor_id: actor,
+          hlc,
+          gsn: 0,
+          updates: [
+            {
+              id: "u_1",
+              subject_id: "todo_rt_1",
+              subject_type: "todo",
+              method: "put",
+              data: {
+                fields: {
+                  // `typo` is not declared on the entity.
+                  typo: {
+                    value: "should be title",
+                    update_id: "u_1",
+                    hlc,
+                  },
+                },
+              },
+            },
+          ],
+        };
+        await expect(client.write([action])).rejects.toBeInstanceOf(EntityValidationError);
+        // No warn-and-log: write() rejects before _applyAction.
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    } finally {
+      client.close();
+    }
+  });
+
+  it("accepts a valid client-side action and the server stores it", async () => {
+    if (!(await shouldRun())) return;
+    const actor = "todo_valid_actor";
+    // Seed the entity + relationship via a no-registry client so the
+    // write path is unconstrained for the bootstrap (relationship is
+    // not in our test registry).
+    const seedClient = await connectAsTodoActor(actor);
+    const todoId = `todo_rt_${RUN_ID}`;
+    const relId = `rel_${RUN_ID}_${todoId}`;
+    const seedClock = createClock();
+    const seedHlc = localEvent(seedClock);
+    const { action: seedAction } = createAction({
+      actorId: actor,
+      clock: seedClock,
+      updates: [
+        {
+          subject_id: todoId,
+          subject_type: "todo",
+          method: "put",
+          data: { fields: {} },
+        },
+        {
+          subject_id: relId,
+          subject_type: "relationship",
+          method: "put",
+          data: {
+            fields: {
+              source_id: { value: todoId, update_id: "seed", hlc: seedHlc },
+              target_id: { value: TEST_GROUP_ID, update_id: "seed", hlc: seedHlc },
+              type: { value: "todo", update_id: "seed", hlc: seedHlc },
+              field: { value: "ownedBy", update_id: "seed", hlc: seedHlc },
+            },
+          },
+        },
+      ],
+    });
+    const seed = await seedClient.write([seedAction]);
+    expect(seed.rejected).toEqual([]);
+    seedClient.close();
+
+    // Now connect with a strict registry and write a schema-valid update.
+    await addMemberWithTodoPerms(actor);
+    const client = createClient({ serverUrl: SERVER_URL, actorId: actor });
+    const { groups } = await client.handshake();
+    expect(groups.find((g) => g.id === TEST_GROUP_ID)).toBeDefined();
+    client.setState("live");
+
+    try {
+      const registry = new EntityRegistry();
+      registry.register(
+        defineEntity("todo", {
+          title: e.string(),
+          completed: e.boolean(),
+        }),
+      );
+      (client as unknown as { registry: EntityRegistry }).registry = registry;
+
+      const hlc = makeHlc(Date.now());
+      const action: Action = {
+        id: "act_good",
+        actor_id: actor,
+        hlc,
+        gsn: 0,
+        updates: [
+          {
+            id: "u_1",
+            subject_id: todoId,
+            subject_type: "todo",
+            method: "put",
+            data: {
+              fields: {
+                title: { value: "Integration", update_id: "u_1", hlc },
+                completed: { value: false, update_id: "u_1", hlc },
+              },
+            },
+          },
+        ],
+      };
+      const result = await client.write([action]);
+      expect(result.rejected).toEqual([]);
+      // Server should have stored the entity; read back via getEntity.
+      const stored = await client.getEntity(todoId);
+      expect(stored).not.toBeNull();
+      expect(stored!.type).toBe("todo");
+    } finally {
+      client.close();
+    }
+  });
+
+  it("warn-and-logs on incoming catchUp that violates the local registry", async () => {
+    if (!(await shouldRun())) return;
+    const seeder = "todo_incoming_seeder";
+    const receiver = "todo_incoming_receiver";
+
+    // Seeder (no registry): seed the entity + ownedBy relationship,
+    // then write a schema-violating update. Both writes go through
+    // the wire because the seeder has no registry to check against.
+    const seederClient = await connectAsTodoActor(seeder);
+    const todoId = `todo_inc_${RUN_ID}`;
+    const relId = `rel_${RUN_ID}_${todoId}`;
+    const seedClock = createClock();
+    const seedHlc = localEvent(seedClock);
+    const { action: seedAction } = createAction({
+      actorId: seeder,
+      clock: seedClock,
+      updates: [
+        {
+          subject_id: todoId,
+          subject_type: "todo",
+          method: "put",
+          data: { fields: {} },
+        },
+        {
+          subject_id: relId,
+          subject_type: "relationship",
+          method: "put",
+          data: {
+            fields: {
+              source_id: { value: todoId, update_id: "seed", hlc: seedHlc },
+              target_id: { value: TEST_GROUP_ID, update_id: "seed", hlc: seedHlc },
+              type: { value: "todo", update_id: "seed", hlc: seedHlc },
+              field: { value: "ownedBy", update_id: "seed", hlc: seedHlc },
+            },
+          },
+        },
+      ],
+    });
+    const seedResult = await seederClient.write([seedAction]);
+    expect(seedResult.rejected).toEqual([]);
+
+    const badHlc = makeHlc(Date.now());
+    const badAction: Action = {
+      id: "act_incoming_bad",
+      actor_id: seeder,
+      hlc: badHlc,
+      gsn: 0,
+      updates: [
+        {
+          id: "u_1",
+          subject_id: todoId,
+          subject_type: "todo",
+          method: "put",
+          data: {
+            fields: {
+              title: { value: "Hi", update_id: "u_1", hlc: badHlc },
+              bogus: { value: 42, update_id: "u_1", hlc: badHlc },
+            },
+          },
+        },
+      ],
+    };
+    const seederResult = await seederClient.write([badAction]);
+    expect(seederResult.rejected).toEqual([]);
+    seederClient.close();
+
+    // Receiver (with strict registry): catchUp should warn-and-log on
+    // the violating action but still materialize the entity.
+    await addMemberWithTodoPerms(receiver);
+    const receiverClient = createClient({
+      serverUrl: SERVER_URL,
+      actorId: receiver,
+    });
+    const { groups } = await receiverClient.handshake();
+    expect(groups.find((g) => g.id === TEST_GROUP_ID)).toBeDefined();
+    receiverClient.setState("live");
+
+    try {
+      const registry = new EntityRegistry();
+      registry.register(
+        defineEntity("todo", {
+          title: e.string(),
+          completed: e.boolean(),
+        }),
+      );
+      (receiverClient as unknown as { registry: EntityRegistry }).registry = registry;
+
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await receiverClient.catchUp(TEST_GROUP_ID);
+        expect(warnSpy).toHaveBeenCalled();
+        const warned = warnSpy.mock.calls.some((call) =>
+          String(call[0] ?? "").includes("incoming action violation"),
+        );
+        expect(warned).toBe(true);
+        // The entity still materializes despite the warning — the
+        // title field is valid, even if `bogus` is not.
+        const local = await receiverClient.readLocalEntity(todoId);
+        expect(local).not.toBeNull();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    } finally {
+      receiverClient.close();
     }
   });
 });
