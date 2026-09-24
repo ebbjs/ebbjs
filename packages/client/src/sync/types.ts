@@ -2,6 +2,13 @@ import { Type, Static } from "@sinclair/typebox";
 export type { Action } from "@ebbjs/core";
 // Bring `Action` into local scope so the interfaces below can use it.
 type Action = import("@ebbjs/core").Action;
+import type { EntityDef, FieldMarker } from "../schema/entity";
+import type { Schema } from "../schema/schema";
+/** Open `Schema` shape accepted by `createClient`. The entity generics stay open so callers can pass any composition `defineSchema` produced, with or without a relationship slot. */
+type AnySchema = Schema<
+  Record<string, EntityDef<Record<string, FieldMarker>>>,
+  Record<string, unknown> | undefined
+>;
 
 /**
  * Wire-level types for the ebb sync protocol.
@@ -58,6 +65,14 @@ export interface HandshakeRequest {
   cursors?: Record<string, number>;
   /** Optional schema version; opaque to the server today. */
   schema_version?: number;
+  /**
+   * Optional floor of acceptable server-compatibility versions.
+   * When the server's stored schema is older than this, the server
+   * can reject the handshake with an "update required" error
+   * (server-side rejection logic lives in #124). When omitted,
+   * the client only advertises `schema_version`.
+   */
+  min_supported_version?: number;
 }
 
 /**
@@ -182,4 +197,16 @@ export interface SyncClientOptions {
    * pre-hook behavior.
    */
   onRegistryViolation?: RegistryViolationListener;
+  /**
+   * Composed schema (`defineSchema({ ... })`). When provided, the
+   * client builds a per-client `EntityRegistry` seeded from
+   * `schema._registry` (so runtime mutations don't bleed across
+   * clients sharing the same `schema` value) and advertises
+   * `schema.version` (and `minSupportedVersion` when set) in the
+   * handshake body. Mutually compatible with `registry?`: an
+   * explicit `registry` wins if both are passed — this is the
+   * escape hatch for tests that need to inject a registry after
+   * construction, and it's the same field #143 wired up.
+   */
+  schema?: AnySchema;
 }

@@ -51,6 +51,14 @@ import {
   type RelationshipHandleInput,
 } from "./relationship";
 import { generateId } from "@ebbjs/core";
+import type { EntityDef, FieldMarker } from "../schema/entity";
+import type { Schema } from "../schema/schema";
+
+/** Shape of `Schema` accepted by `createClient`. The entity generics stay open so callers can pass any composition `defineSchema` produced, with or without a relationship slot. */
+type AnySchema = Schema<
+  Record<string, EntityDef<Record<string, FieldMarker>>>,
+  Record<string, unknown> | undefined
+>;
 import type {
   CatchUpResponse,
   ControlEvent,
@@ -77,6 +85,14 @@ export class SyncClient {
   readonly storage: StorageAdapter;
   readonly presence: PresenceManager;
   readonly registry: EntityRegistry;
+  /**
+   * Composed schema passed via `createClient({ schema })`. Held by
+   * reference — the client treats it as immutable. Used in
+   * `handshake()` to advertise `schema.version` and (when set)
+   * `minSupportedVersion` so the server can negotiate
+   * compatibility.
+   */
+  readonly schema?: AnySchema;
   private readonly fetchImpl: typeof fetch;
   private readonly reconnectInitialMs: number;
   private readonly reconnectMaxMs: number;
@@ -114,8 +130,9 @@ export class SyncClient {
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
+    this.schema = opts.schema;
     // Empty registry makes validation a no-op.
-    this.registry = opts.registry ?? new EntityRegistry();
+    this.registry = opts.registry ?? buildRegistryFromSchema(opts.schema);
     if (opts.onRegistryViolation !== undefined) {
       this.registryViolationListeners.add(opts.onRegistryViolation);
     }
@@ -245,7 +262,8 @@ export class SyncClient {
     const url = `${this.serverUrl}/sync/handshake`;
     const body = JSON.stringify({
       cursors: opts.cursors ?? {},
-      schema_version: opts.schema_version,
+      schema_version: opts.schema_version ?? this.schema?.version,
+      min_supported_version: opts.min_supported_version ?? this.schema?.minSupportedVersion,
     });
 
     const response = await this.fetchImpl(url, {
@@ -979,6 +997,28 @@ export class SyncClient {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Build a fresh per-client `EntityRegistry` from a `Schema`'s
+ * runtime registry. We copy every registered entity into a new
+ * `EntityRegistry` rather than sharing `schema._registry` so a
+ * client can mutate its own registry at runtime (e.g., for tests,
+ * or future per-client relationship registrations added by #149)
+ * without bleeding across clients that share the same `schema`
+ * value.
+ *
+ * Returns an empty registry when no schema is provided, matching
+ * the pre-#150 behavior where `createClient({ ... })` constructed
+ * an empty registry and validation was a no-op.
+ */
+const buildRegistryFromSchema = (schema: AnySchema | undefined): EntityRegistry => {
+  const registry = new EntityRegistry();
+  if (schema === undefined) return registry;
+  for (const entity of Object.values(schema.entities)) {
+    registry.register(entity);
+  }
+  return registry;
+};
 
 /**
  * Aggregate `validateAction` violations across a write batch. The
