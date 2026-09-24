@@ -105,12 +105,14 @@ beforeAll(async () => {
       subject_type: "groupMember",
       method: "put" as const,
       data: {
-        actor_id: { value: TEST_SEEDER, update_id: "seed", hlc: localEvent(clock) },
-        group_id: { value: TEST_GROUP_ID, update_id: "seed", hlc: localEvent(clock) },
-        permissions: {
-          value: ["text_document.*", "group.*", "groupMember.*", "relationship.*"],
-          update_id: "seed",
-          hlc: localEvent(clock),
+        fields: {
+          actor_id: { value: TEST_SEEDER, update_id: "seed", hlc: localEvent(clock) },
+          group_id: { value: TEST_GROUP_ID, update_id: "seed", hlc: localEvent(clock) },
+          permissions: {
+            value: ["text_document.*", "group.*", "groupMember.*", "relationship.*"],
+            update_id: "seed",
+            hlc: localEvent(clock),
+          },
         },
       },
     },
@@ -125,10 +127,12 @@ beforeAll(async () => {
       subject_type: "relationship",
       method: "put" as const,
       data: {
-        source_id: { value: bootstrapDocId, update_id: "seed", hlc: localEvent(clock) },
-        target_id: { value: TEST_GROUP_ID, update_id: "seed", hlc: localEvent(clock) },
-        type: { value: "text_document", update_id: "seed", hlc: localEvent(clock) },
-        field: { value: "ownedBy", update_id: "seed", hlc: localEvent(clock) },
+        fields: {
+          source_id: { value: bootstrapDocId, update_id: "seed", hlc: localEvent(clock) },
+          target_id: { value: TEST_GROUP_ID, update_id: "seed", hlc: localEvent(clock) },
+          type: { value: "text_document", update_id: "seed", hlc: localEvent(clock) },
+          field: { value: "ownedBy", update_id: "seed", hlc: localEvent(clock) },
+        },
       },
     },
   ];
@@ -242,10 +246,12 @@ async function createTestDoc(docId: string): Promise<void> {
       subject_type: "relationship",
       method: "put" as const,
       data: {
-        source_id: { value: docId, update_id: "seed", hlc: localEvent(clock) },
-        target_id: { value: TEST_GROUP_ID, update_id: "seed", hlc: localEvent(clock) },
-        type: { value: "text_document", update_id: "seed", hlc: localEvent(clock) },
-        field: { value: "ownedBy", update_id: "seed", hlc: localEvent(clock) },
+        fields: {
+          source_id: { value: docId, update_id: "seed", hlc: localEvent(clock) },
+          target_id: { value: TEST_GROUP_ID, update_id: "seed", hlc: localEvent(clock) },
+          type: { value: "text_document", update_id: "seed", hlc: localEvent(clock) },
+          field: { value: "ownedBy", update_id: "seed", hlc: localEvent(clock) },
+        },
       },
     },
   ];
