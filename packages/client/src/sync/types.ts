@@ -135,6 +135,19 @@ export interface PresenceEvent {
   data: Record<string, unknown>;
 }
 
+/**
+ * Direction a registry violation came from. Lets a single observer
+ * distinguish outbound (the local app typed a bad field) from inbound
+ * (the wire carried a field this client doesn't recognize).
+ */
+export type RegistryViolationContext = { direction: "outbound" } | { direction: "inbound" };
+
+/** Observer for schema-registry violations. */
+export type RegistryViolationListener = (
+  violations: readonly import("../schema/entity-registry").ValidationViolation[],
+  context: RegistryViolationContext,
+) => void;
+
 /** Options for `createClient`. */
 export interface SyncClientOptions {
   /** Base URL of the ebb server (no trailing slash). */
@@ -157,4 +170,16 @@ export interface SyncClientOptions {
    * validation is a no-op (matching how `storage?`, `fetchImpl?` work).
    */
   registry?: import("../schema/entity-registry").EntityRegistry;
+  /**
+   * Observer fired for every batch of registry violations, both
+   * outbound (immediately before `client.write()` /
+   * `client.queryEntities()` throw `EntityValidationError`) and
+   * inbound (replacing the default `console.warn` on
+   * `_applyAction`). Multiple listeners are supported; a throwing
+   * listener is isolated and does not affect the others. When
+   * omitted and no listeners are registered, inbound violations
+   * fall back to `console.warn` for forward-compat with the
+   * pre-hook behavior.
+   */
+  onRegistryViolation?: RegistryViolationListener;
 }

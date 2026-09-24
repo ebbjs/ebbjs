@@ -806,3 +806,164 @@ describe("SyncClient._applyAction incoming validation (#143)", () => {
     }
   });
 });
+
+describe("SyncClient.onRegistryViolation hook", () => {
+  const callApplyAction = (
+    client: ReturnType<typeof createClient>,
+    action: Action,
+    groupId?: string,
+  ): Promise<{ entityId: string; entityType: string }[]> =>
+    (
+      client as unknown as {
+        _applyAction: (
+          a: Action,
+          g?: string,
+        ) => Promise<{ entityId: string; entityType: string }[]>;
+      }
+    )._applyAction.call(client, action, groupId);
+
+  const badAction = (): Action => ({
+    id: "act_bad",
+    actor_id: "a_other",
+    hlc: makeHlc(1711036800000),
+    gsn: 5,
+    updates: [
+      {
+        id: "u_1",
+        subject_id: "todo_1",
+        subject_type: "todo",
+        method: "put",
+        data: {
+          fields: {
+            typo: {
+              value: "x",
+              update_id: "u_1",
+              hlc: makeHlc(1711036800000),
+            },
+          },
+        },
+      },
+    ],
+  });
+
+  const todoEntity = () => {
+    const r = new EntityRegistry();
+    r.register(defineEntity("todo", { title: e.string() }));
+    return r;
+  };
+
+  it("fires for inbound violations and replaces console.warn", async () => {
+    const calls: Array<{
+      violations: unknown;
+      context: { direction: string };
+    }> = [];
+    const client = createClient({
+      serverUrl: "http://localhost:0",
+      actorId: "a_test",
+      registry: todoEntity(),
+      onRegistryViolation: (violations, context) => {
+        calls.push({ violations, context });
+      },
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await callApplyAction(client, badAction(), "grp_1");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.context).toEqual({ direction: "inbound" });
+      expect(calls[0]?.violations).toHaveLength(1);
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("fires for outbound violations before client.write throws", async () => {
+    const calls: Array<{
+      violations: unknown;
+      context: { direction: string };
+    }> = [];
+    const { fn } = makeFetchMock([]);
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+      registry: todoEntity(),
+      onRegistryViolation: (violations, context) => {
+        calls.push({ violations, context });
+      },
+    });
+    let caught: unknown;
+    try {
+      await client.write([badAction()]);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(EntityValidationError);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.context).toEqual({ direction: "outbound" });
+    expect(fn.mock.calls).toHaveLength(0);
+  });
+
+  it("falls back to console.warn on inbound when no listener registered", async () => {
+    const client = createClient({
+      serverUrl: "http://localhost:0",
+      actorId: "a_test",
+      registry: todoEntity(),
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await callApplyAction(client, badAction(), "grp_1");
+      expect(warnSpy).toHaveBeenCalled();
+      const message = String(warnSpy.mock.calls[0]?.[0] ?? "");
+      expect(message).toMatch(/incoming action violation/);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("isolates throwing listeners — others still fire", async () => {
+    const calls: number[] = [];
+    const client = createClient({
+      serverUrl: "http://localhost:0",
+      actorId: "a_test",
+      registry: todoEntity(),
+    });
+    client.onRegistryViolation(() => {
+      throw new Error("boom");
+    });
+    client.onRegistryViolation(() => {
+      calls.push(1);
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await callApplyAction(client, badAction(), "grp_1");
+      expect(calls).toEqual([1]);
+      expect(errorSpy).toHaveBeenCalled();
+      const message = String(errorSpy.mock.calls[0]?.[0] ?? "");
+      expect(message).toMatch(/onRegistryViolation handler threw/);
+      // console.warn was suppressed by the registered listener.
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("onRegistryViolation returns an unsubscribe function", async () => {
+    const calls: number[] = [];
+    const client = createClient({
+      serverUrl: "http://localhost:0",
+      actorId: "a_test",
+      registry: todoEntity(),
+    });
+    const unsub = client.onRegistryViolation(() => {
+      calls.push(1);
+    });
+    await callApplyAction(client, badAction(), "grp_1");
+    expect(calls).toHaveLength(1);
+    unsub();
+    await callApplyAction(client, badAction(), "grp_1");
+    expect(calls).toHaveLength(1);
+  });
+});

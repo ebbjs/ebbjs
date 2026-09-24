@@ -44,6 +44,8 @@ import type {
   GroupInfo,
   HandshakeRequest,
   HandshakeResponse,
+  RegistryViolationContext,
+  RegistryViolationListener,
   Rejection,
   SSEEvent,
   SyncClientOptions,
@@ -76,6 +78,12 @@ export class SyncClient {
   private groupCursors: Map<string, number> = new Map();
   /** TextDocument registry (one document per docId, per actor). */
   private readonly textDocumentRegistry = new TextDocumentRegistry();
+  /**
+   * User-registered listeners for schema-registry violations. Fired
+   * by `emitRegistryViolations`; replaces the default `console.warn`
+   * on inbound violations when at least one listener is present.
+   */
+  private readonly registryViolationListeners = new Set<RegistryViolationListener>();
 
   constructor(opts: SyncClientOptions) {
     this.serverUrl = opts.serverUrl.replace(/\/$/, "");
@@ -87,6 +95,9 @@ export class SyncClient {
     // Empty registry when none is supplied: validation becomes a no-op
     // and `client.write()` behaves exactly as it did before #143.
     this.registry = opts.registry ?? new EntityRegistry();
+    if (opts.onRegistryViolation !== undefined) {
+      this.registryViolationListeners.add(opts.onRegistryViolation);
+    }
     // PresenceManager wires itself to the SSE stream; the `presence`
     // field on the client is the public API for sending local
     // cursors and reading the map of remote ones. The manager lives
@@ -119,6 +130,22 @@ export class SyncClient {
    */
   setState(state: ConnectionState): void {
     this.stateMachine.transition(state);
+  }
+
+  /**
+   * Register an additional listener for schema-registry violations.
+   * Returns an unsubscribe function. Multiple listeners are
+   * supported; a throwing listener is isolated and does not affect
+   * the others. Listeners fire for both outbound (immediately
+   * before `client.write()` / `client.queryEntities()` throw
+   * `EntityValidationError`) and inbound (replacing the default
+   * `console.warn` on `_applyAction`) directions.
+   */
+  onRegistryViolation(cb: RegistryViolationListener): () => void {
+    this.registryViolationListeners.add(cb);
+    return () => {
+      this.registryViolationListeners.delete(cb);
+    };
   }
 
   /**
@@ -291,6 +318,7 @@ export class SyncClient {
     }
     const violations = collectViolations(actions, this.registry);
     if (violations.length > 0) {
+      this.emitRegistryViolations(violations, { direction: "outbound" });
       throw new EntityValidationError(violations);
     }
     const body = encodeSync({ actions });
@@ -337,6 +365,7 @@ export class SyncClient {
     if (opts.filter !== undefined) {
       const violations = this.registry.validateFilter(type, opts.filter);
       if (violations.length > 0) {
+        this.emitRegistryViolations(violations, { direction: "outbound" });
         throw new EntityValidationError(violations);
       }
     }
@@ -631,10 +660,7 @@ export class SyncClient {
   ): Promise<{ entityId: string; entityType: string }[]> {
     const violations = this.registry.validateAction(action);
     if (violations.length > 0) {
-      for (const v of violations) {
-        // eslint-disable-next-line no-console
-        console.warn("[EntityRegistry] incoming action violation:", v);
-      }
+      this.emitRegistryViolations(violations, { direction: "inbound" });
     }
     await this.storage.actions.append(action);
     const affected = action.updates.map((u) => ({
@@ -648,6 +674,21 @@ export class SyncClient {
       }
     }
     return affected;
+  }
+
+  /**
+   * Forward a batch of registry violations to every registered
+   * listener, with the same error-isolation guarantees as
+   * `TextDocument.onUpdate` / `onConflict`. When no listener is
+   * registered and the direction is `inbound`, falls back to
+   * `console.warn` so apps that don't opt in keep the pre-hook
+   * behavior.
+   */
+  private emitRegistryViolations(
+    violations: readonly ValidationViolation[],
+    context: RegistryViolationContext,
+  ): void {
+    emitRegistryViolations(this.registryViolationListeners, violations, context);
   }
 }
 
@@ -669,6 +710,39 @@ const collectViolations = (
     out.push(...registry.validateAction(action));
   }
   return out;
+};
+
+/**
+ * Fire `onRegistryViolation` for every registered listener. Throws
+ * from a listener are isolated (logged, not propagated) so one bad
+ * handler can't break the others — matches the existing
+ * `onUpdate` / `onConflict` error-isolation pattern on
+ * `TextDocument`. When no listener is registered and the direction is
+ * `inbound`, falls back to `console.warn` so apps that don't opt in
+ * keep the pre-hook behavior.
+ */
+const emitRegistryViolations = (
+  listeners: ReadonlySet<RegistryViolationListener>,
+  violations: readonly ValidationViolation[],
+  context: RegistryViolationContext,
+): void => {
+  if (listeners.size === 0) {
+    if (context.direction === "inbound") {
+      for (const v of violations) {
+        // eslint-disable-next-line no-console
+        console.warn("[EntityRegistry] incoming action violation:", v);
+      }
+    }
+    return;
+  }
+  for (const cb of listeners) {
+    try {
+      cb(violations, context);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[SyncClient] onRegistryViolation handler threw:", err);
+    }
+  }
 };
 
 interface ActiveSubscription {

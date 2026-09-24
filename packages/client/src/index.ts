@@ -99,6 +99,8 @@ export type {
   ControlEvent,
   PresenceEvent,
   SyncClientOptions,
+  RegistryViolationContext,
+  RegistryViolationListener,
 } from "./sync/types";
 
 export { defineEntity, type EntityDef, type FieldMarker } from "./schema/entity";
