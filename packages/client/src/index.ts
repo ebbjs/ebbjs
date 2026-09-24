@@ -15,7 +15,13 @@
  * presence (ephemeral cursors/selections).
  */
 
-export { SyncClient, createClient, type HandshakeResult, type QueryOptions } from "./sync/client";
+export {
+  SyncClient,
+  createClient,
+  type HandshakeResult,
+  type QueryOptions,
+  type RelationshipHandle,
+} from "./sync/client";
 export { PresenceManager, type PresenceEntry, type CursorPresence } from "./presence/presence";
 
 export {
@@ -104,6 +110,13 @@ export type {
 } from "./sync/types";
 
 export { defineEntity, type EntityDef, type FieldMarker } from "./schema/entity";
+
+export {
+  defineRelationship,
+  type RelationshipDef,
+  type SourceCardinality,
+  type DefineRelationshipInput,
+} from "./schema/relationship";
 
 export {
   EntityRegistry,
