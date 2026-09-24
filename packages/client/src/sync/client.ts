@@ -565,6 +565,19 @@ export class SyncClient {
     const { source, as, entityUpdate } = opts;
     const sourceName = source.name;
 
+    // Validate that the source is a registered entity. An unknown
+    // source name is the same class of error as an unknown
+    // subject_type in `validateAction` (#143); surface it as
+    // `EntityValidationError` so callers handle the rejection the
+    // same way.
+    //
+    // The target is treated as a wire-level id reference — the
+    // server validates its existence at write time, and primitives
+    // like the `ownedBy` pattern point the source at a group
+    // (system entity), not at a user entity. The validation here
+    // intentionally doesn't cover the target.
+    this.checkEntityRegistered(sourceName, "source");
+
     const cardinality = resolveCardinality(this.registry, sourceName, as, opts.sourceCardinality);
 
     // Run the client-side permission early-check. Match the server's
@@ -704,6 +717,23 @@ export class SyncClient {
         },
       ]);
     }
+  }
+
+  /**
+   * Surface unknown source/target entity names as a typed
+   * `EntityValidationError`. When no entities are registered at all
+   * (validation is a no-op across the SDK per #143) the call is
+   * skipped — the server is the authority in that case.
+   */
+  private checkEntityRegistered(name: string, role: "source" | "target"): void {
+    if (this.registry.isEmpty()) return;
+    if (this.registry.has(name)) return;
+    throw new EntityValidationError([
+      {
+        entityName: name,
+        message: `buildRelationshipWrite: ${role} entity "${name}" is not registered in the EntityRegistry`,
+      },
+    ]);
   }
 
   // -------------------------------------------------------------------------

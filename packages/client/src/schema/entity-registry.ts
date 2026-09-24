@@ -84,6 +84,11 @@ export class EntityRegistry {
     return this.entities.has(name);
   }
 
+  /** True when no entities and no relationships have been registered. */
+  isEmpty(): boolean {
+    return this.entities.size === 0 && this.relationships.size === 0;
+  }
+
   /**
    * Register a relationship. Two relationships on the same source may
    * not share an `as` name — that's a registry-level collision (the

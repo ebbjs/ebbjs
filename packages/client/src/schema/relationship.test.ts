@@ -118,6 +118,25 @@ describe("EntityRegistry.registerRelationship", () => {
   });
 });
 
+describe("EntityRegistry.isEmpty", () => {
+  it("is true for a fresh registry", () => {
+    const r = new EntityRegistry();
+    expect(r.isEmpty()).toBe(true);
+  });
+
+  it("is false after registering an entity", () => {
+    const r = new EntityRegistry();
+    r.register(todo);
+    expect(r.isEmpty()).toBe(false);
+  });
+
+  it("is false after registering a relationship", () => {
+    const r = new EntityRegistry();
+    r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
+    expect(r.isEmpty()).toBe(false);
+  });
+});
+
 describe("normalizePointer", () => {
   it("returns the same string when given a non-empty string id", () => {
     expect(normalizePointer("todo_1", "test")).toBe("todo_1");
@@ -339,6 +358,64 @@ describe("buildRelationshipWrite (SyncClient)", () => {
         targetId: 42 as unknown as string,
       }),
     ).toThrow();
+  });
+
+  it("throws EntityValidationError when the source entity is not registered", () => {
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      registry: (() => {
+        const r = new EntityRegistry();
+        // Only `list` is registered — `todo` is not.
+        r.register(list);
+        r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
+        return r;
+      })(),
+    });
+
+    let caught: unknown;
+    try {
+      client.buildRelationshipWrite({
+        source: todo,
+        target: list,
+        as: "list",
+        entityUpdate: buildEntityUpdate("todo_1"),
+        targetId: "list_1",
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(EntityValidationError);
+    expect((caught as EntityValidationError).violations[0]?.message).toMatch(
+      /source entity "todo" is not registered/,
+    );
+  });
+
+  it("does NOT throw when the target entity is not registered (server validates)", () => {
+    // The target is a wire-level id reference; the server validates
+    // its existence at write time. The ownedBy pattern (a source
+    // pointing at a group) doesn't have a registered target.
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      registry: (() => {
+        const r = new EntityRegistry();
+        r.register(todo);
+        // `list` not registered on purpose.
+        r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
+        return r;
+      })(),
+    });
+
+    expect(() =>
+      client.buildRelationshipWrite({
+        source: todo,
+        target: list,
+        as: "list",
+        entityUpdate: buildEntityUpdate("todo_1"),
+        targetId: "list_1",
+      }),
+    ).not.toThrow();
   });
 
   it("produces multiple put relationship updates for many-cardinality replace", () => {
