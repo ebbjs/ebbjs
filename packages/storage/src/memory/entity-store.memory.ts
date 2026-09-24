@@ -104,13 +104,10 @@ const applyUpdate = (
 };
 
 /**
- * Pull the field map off an Update's `data`. `Update.data`'s static
- * type (`PutData | PatchData | null`) doesn't model the `fields`
- * envelope, so we cast through `unknown` here.
+ * Pull the field map off an Update's `data`.
  */
 const readFields = (update: Update): Record<string, FieldValue> => {
-  const data = update.data as unknown as { fields?: Record<string, FieldValue> } | null;
-  return data?.fields ?? {};
+  return update.data?.fields ?? {};
 };
 
 /**
