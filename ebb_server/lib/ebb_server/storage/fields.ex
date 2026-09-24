@@ -1,10 +1,10 @@
 defmodule EbbServer.Storage.Fields do
   @moduledoc """
-  Utilities for extracting field values from entity data structures.
+  Extracts field values from update data.
 
-  Every entity's update `data` is now shaped as `{"fields": {name: FieldValue}}`
-  (see ebbjs/ebbjs#140). This module walks one level under `fields` and
-  unwraps the `{"value": ...}` envelope.
+  Walks one level under `data.fields` and unwraps the `{"value": ...}`
+  envelope so callers get the underlying field value as a string,
+  number, list, etc.
   """
 
   @doc """

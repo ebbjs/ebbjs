@@ -376,9 +376,6 @@ defmodule EbbServer.Storage.Writer do
   defp get_group_id_for_group_action_index(update, relationships, intra_ctx) do
     case update.subject_type do
       "relationship" ->
-        # `Fields.get/2` walks one level under `data.fields` and unwraps
-        # the `{"value": ...}` envelope, giving us the inner source_id
-        # string used to index into `intra_ctx` and the cache.
         source_id = Fields.get(update.data || %{}, "source_id")
 
         if source_id do

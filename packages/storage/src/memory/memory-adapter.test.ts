@@ -143,11 +143,11 @@ describe("MemoryAdapter", () => {
       expect((after!.data.fields.title as { hlc?: string }).hlc).toBe(makeHlc(1711036800000, 1));
     });
 
-    it("materializes a system entity (groupMember) using the same nested data shape as user entities", async () => {
-      // Every entity type — user or system — ships fields nested under
-      // `data.fields.X` (see ebbjs/ebbjs#140). The client materializer
-      // unwraps `data.fields` once, so a groupMember PUT lands its
-      // fields at `data.fields` the same way a `todo` PUT does.
+    it("materializes a system entity (groupMember) with its fields nested under data.fields", async () => {
+      // `groupMember` PUTs carry the same `{ fields: ... }` envelope as
+      // user entities. The materializer unwraps it once, so the
+      // system entity's fields land at `data.fields` the same way a
+      // `todo` PUT's do.
       const groupMemberAction: Action = {
         id: "a_gm",
         actor_id: "a_user1",

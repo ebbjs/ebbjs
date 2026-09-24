@@ -275,8 +275,6 @@ defmodule EbbServer.Storage.EntityStore do
     hlc = action["hlc"]
     subject_type = update["subject_type"]
 
-    # All entity types ship under `data.fields` (see ebbjs/ebbjs#140);
-    # the materialized shape and the wire shape match.
     fields_with_update_id =
       Enum.into(update["data"]["fields"] || %{}, %{}, fn {field_name, field_value} ->
         {field_name, Map.put(field_value, "update_id", update["id"])}

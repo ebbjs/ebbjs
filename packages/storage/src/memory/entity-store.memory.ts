@@ -61,11 +61,8 @@ const updateTypeIndexOnSet = (
 
 /**
  * Applies a single update to an entity during materialization.
- * Handles put, patch, and delete methods.
- *
- * Every entity type — user or system — ships fields nested under
- * `data.fields.X` (see ebbjs/ebbjs#140). PUTs replace the field set;
- * PATCHes merge with HLC + lexicographic `update_id` tiebreak.
+ * PUT replaces the field set; PATCH merges with HLC + lexicographic
+ * `update_id` tiebreak.
  */
 const applyUpdate = (
   entity: Entity | null,
@@ -107,10 +104,9 @@ const applyUpdate = (
 };
 
 /**
- * Pull the field map off an Update's `data`. The wire shape for every
- * entity type is `{ fields: Record<name, FieldValue> }`; this casts
- * through `unknown` because `Update.data` is `PutData | PatchData | null`,
- * neither of which models the `fields` envelope at the schema level.
+ * Pull the field map off an Update's `data`. `Update.data`'s static
+ * type (`PutData | PatchData | null`) doesn't model the `fields`
+ * envelope, so we cast through `unknown` here.
  */
 const readFields = (update: Update): Record<string, FieldValue> => {
   const data = update.data as unknown as { fields?: Record<string, FieldValue> } | null;

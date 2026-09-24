@@ -27,8 +27,7 @@ defmodule EbbServer.Storage.SQLite do
 
   Generated columns extract field values from the per-entity JSON `data`
   so that `WHERE` clauses can reference them via `json_extract` without
-  parsing JSON at read time. Every entity — user or system — ships
-  fields nested under `data.fields.X.value` (see ebbjs/ebbjs#140).
+  parsing JSON at read time. Field values live at `data.fields.X.value`.
 
   ## Reads vs. writes
 
@@ -61,8 +60,7 @@ defmodule EbbServer.Storage.SQLite do
   """
 
   # Generated columns extract field values from entity `data` JSON.
-  # Every entity — user or system — ships its fields nested under
-  # `data.fields.X.value` (see ebbjs/ebbjs#140).
+  # Field values live at `data.fields.X.value`.
   @create_entities_table """
   CREATE TABLE IF NOT EXISTS entities (
     id TEXT PRIMARY KEY,

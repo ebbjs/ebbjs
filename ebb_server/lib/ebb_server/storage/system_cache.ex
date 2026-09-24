@@ -201,8 +201,6 @@ defmodule EbbServer.Storage.SystemCache do
 
         member = %{
           id: entity_data.id,
-          # Every entity ships `data` as `{"fields": {...}}`; Fields.get
-          # walks one level under `fields` and unwraps the FieldValue envelope.
           actor_id: Fields.get(data, "actor_id"),
           group_id: Fields.get(data, "group_id"),
           permissions: Fields.get(data, "permissions")
