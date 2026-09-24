@@ -230,7 +230,9 @@ describe("SyncClient.write", () => {
             subject_id: "todo_1",
             subject_type: "todo",
             method: "put",
-            data: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
+            data: {
+              fields: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
+            },
           },
         ],
       },
@@ -246,7 +248,7 @@ describe("SyncClient.write", () => {
             subject_type: "todo",
             method: "put",
             data: {},
-          },
+          } as never,
         ],
       },
     ]);
@@ -303,7 +305,7 @@ describe("SyncClient.write", () => {
               subject_type: "todo",
               method: "put",
               data: {},
-            },
+            } as never,
           ],
         },
       ]),

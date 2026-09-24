@@ -252,7 +252,7 @@ describe("SyncClient.subscribe (SSE)", () => {
               hlc: makeHlc(1711036800000, 1),
             },
           },
-        },
+        } as never,
       ],
     };
     const { applyAction } = await import("./storage");

@@ -36,7 +36,14 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createAction, createClock, encodeSync, localEvent, type Action } from "@ebbjs/core";
+import {
+  createAction,
+  createClock,
+  encodeSync,
+  localEvent,
+  type Action,
+  type UpdateInput,
+} from "@ebbjs/core";
 import { createClient, type SyncClient } from "../..";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
@@ -87,16 +94,18 @@ beforeAll(async () => {
   const bootstrapDocId = testDocId("bootstrap");
   const bootstrapRelId = `rel_${RUN_ID}_bootstrap`;
   const clock = createClock();
-  const updates = [
+  const updates: UpdateInput[] = [
     {
       subject_id: TEST_GROUP_ID,
       subject_type: "group",
-      method: "put" as const,
+      method: "put",
       data: {
-        name: {
-          value: `Integration Test ${RUN_ID}`,
-          update_id: "seed",
-          hlc: localEvent(clock),
+        fields: {
+          name: {
+            value: `Integration Test ${RUN_ID}`,
+            update_id: "seed",
+            hlc: localEvent(clock),
+          },
         },
       },
     },
@@ -234,17 +243,17 @@ async function fetchActions(fromGsn = 0): Promise<readonly Action[]> {
  */
 async function createTestDoc(docId: string): Promise<void> {
   const clock = createClock();
-  const updates = [
+  const updates: UpdateInput[] = [
     {
       subject_id: docId,
       subject_type: "text_document",
-      method: "put" as const,
+      method: "put",
       data: { fields: {} },
     },
     {
       subject_id: `rel_${RUN_ID}_${docId}`,
       subject_type: "relationship",
-      method: "put" as const,
+      method: "put",
       data: {
         fields: {
           source_id: { value: docId, update_id: "seed", hlc: localEvent(clock) },

@@ -17,7 +17,9 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
       subject_type: "group",
       method: "put" as const,
       data: {
-        name: { value: group.name, update_id: "seed_update", hlc: localEvent(clock) },
+        fields: {
+          name: { value: group.name, update_id: "seed_update", hlc: localEvent(clock) },
+        },
       },
     });
   }
