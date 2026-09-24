@@ -562,9 +562,8 @@ export class SyncClient {
    * remains the final authority.
    */
   buildRelationshipWrite(opts: BuildRelationshipWriteOptions): BuildRelationshipWriteResult {
-    const { source, target, as, entityUpdate } = opts;
+    const { source, as, entityUpdate } = opts;
     const sourceName = source.name;
-    const targetName = target.name;
 
     const cardinality = resolveCardinality(this.registry, sourceName, as, opts.sourceCardinality);
 

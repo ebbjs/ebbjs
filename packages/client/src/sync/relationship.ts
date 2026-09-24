@@ -13,7 +13,6 @@
 import type { Entity } from "@ebbjs/core";
 
 import type { EntityRegistry } from "../schema/entity-registry";
-import type { RelationshipDef } from "../schema/relationship";
 
 /**
  * Inputs to `client.relationship({...})`. Mirrors `defineRelationship`
