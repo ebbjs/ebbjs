@@ -5,9 +5,9 @@
  * Mirrors the `client.textDocument(docId)` precedent — a regular
  * method on `SyncClient`, not a Proxy-mounted instance property.
  *
- * The handle is namespace-independent (#158's job): it works without
- * a `defineSchema` (#150) and operates against the client's
- * materialized cache + the existing outbox.
+ * The handle is namespace-independent: it operates against the
+ * client's materialized cache + the existing outbox without
+ * requiring a top-level schema.
  */
 
 import type { Entity } from "@ebbjs/core";
@@ -33,8 +33,7 @@ export interface RelationshipHandleInput {
  * - a materialized entity (anything with a string `.id`)
  *
  * Anything else is rejected by `buildRelationshipWrite` at
- * validation time, consistent with #143's "validate before encode"
- * stance. The wire always carries ids.
+ * validation time. The wire always carries ids.
  */
 export type PointerValue = string | { readonly id: string } | null | undefined;
 

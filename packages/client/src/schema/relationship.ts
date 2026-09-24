@@ -7,10 +7,10 @@
  * it, and `SyncClient.relationship({...})` consumes it to produce a
  * traversal handle.
  *
- * Pair with `defineEntity` (#143) — both ends of the link must be
- * `defineEntity` outputs. The wire shape (`Relationship` system entity
- * in `@ebbjs/core`) is unchanged; this builder is the schema-layer
- * surface that produces wire Updates via `SyncClient.buildRelationshipWrite`.
+ * Both ends of the link must be `defineEntity` outputs. The wire shape
+ * (`Relationship` system entity in `@ebbjs/core`) is unchanged; this
+ * builder is the schema-layer surface that produces wire Updates via
+ * `SyncClient.buildRelationshipWrite`.
  */
 
 import type { EntityDef, FieldMarker } from "./entity";
@@ -39,16 +39,15 @@ export interface RelationshipDef<
   /**
    * Accessor name on the source (the field name) and the lookup key
    * for the primitive handle. Single source of truth: the field on the
-   * source, the accessor key for `client.relationship({source, target, as})`,
-   * and the root of the namespace reverse accessor in #158.
+   * source and the accessor key for
+   * `client.relationship({source, target, as})`.
    */
   readonly as: string;
   readonly sourceCardinality: SourceCardinality;
   /**
    * Wire-level `relationship_type` string carried on the `Relationship`
    * Update's `data.fields.type` value. Defaults to the source entity
-   * name. Override for descriptive wire debugging or future
-   * server-enforced per-type rules.
+   * name. Override for descriptive wire debugging.
    */
   readonly type: string;
 }

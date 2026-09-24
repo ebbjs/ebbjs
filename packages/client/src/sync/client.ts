@@ -466,7 +466,7 @@ export class SyncClient {
   }
 
   // -------------------------------------------------------------------------
-  // Relationship handle (typed links between entities — #149)
+  // Relationship handle
   // -------------------------------------------------------------------------
 
   /**
@@ -479,12 +479,11 @@ export class SyncClient {
    * registering the relationship (or without having passed a registry
    * to the client) is allowed but the traversal functions will
    * silently miss. `buildRelationshipWrite` is the safer path because
-   * it validates the source/target names against the registry.
+   * it validates the source name against the registry.
    *
-   * The handle is namespace-independent — works without `defineSchema`
-   * (#150), without an EntityRegistry, and across server-side scripts
-   * / Node SSR use cases. The namespace mounting on `client.todo(id)`
-   * is #158's job.
+   * The handle is namespace-independent: it works without an
+   * `EntityRegistry` and across server-side scripts / Node SSR use
+   * cases.
    */
   relationship(input: RelationshipHandleInput): RelationshipHandle {
     const rel =
@@ -540,12 +539,11 @@ export class SyncClient {
   /**
    * Build an `(entityUpdate, relationshipUpdate)` pair for a single
    * relationship write. Mirrors the existing wire shape the server's
-   * `RelationshipCache` already accepts — no server changes required.
+   * `RelationshipCache` already accepts.
    *
    * Pointer values may be a string id or an entity-shape object
    * (anything with a string `.id`); both are normalized to the id at
-   * write time. Anything else is rejected with `EntityValidationError`
-   * — consistent with #143's "validate before encode" stance.
+   * write time. Anything else is rejected with `EntityValidationError`.
    *
    * For `sourceCardinality: "many"`, pass `targetIds` (not
    * `targetId`):
@@ -567,7 +565,7 @@ export class SyncClient {
 
     // Validate that the source is a registered entity. An unknown
     // source name is the same class of error as an unknown
-    // subject_type in `validateAction` (#143); surface it as
+    // subject_type in `validateAction`; surface it as
     // `EntityValidationError` so callers handle the rejection the
     // same way.
     //
@@ -622,9 +620,8 @@ export class SyncClient {
       // No-op: produce an empty relationship-update array. The
       // developer can still submit the entity update with no
       // relationship edges (matches `targetId: null` on the
-      // one-cardinality side, but the `many` side has no per-edge
-      // delete in this primitive — the namespace API in #158 will
-      // surface a clearer shape for "clear the set").
+      // one-cardinality side; the `many` side has no per-edge
+      // delete in this primitive).
       return { entityUpdate: cleanEntityUpdate, relationshipUpdate: updates };
     }
     const normalized = normalizeManyPointers(targetIds, `targetIds for "${as}"`);
@@ -696,8 +693,7 @@ export class SyncClient {
 
   /**
    * Early client-side permission check. The default rule mirrors the
-   * server's intra-action rule (`permission_helper.ex` + the
-   * matching `authorizer.ex` path): the actor must have
+   * server's intra-action rule: the actor must have
    * `<source_type>.update` (or `<source_type>.*`) in some group they
    * belong to. Best-effort: when `handshake()` hasn't populated the
    * group cache, the check is skipped.
@@ -722,8 +718,8 @@ export class SyncClient {
   /**
    * Surface unknown source/target entity names as a typed
    * `EntityValidationError`. When no entities are registered at all
-   * (validation is a no-op across the SDK per #143) the call is
-   * skipped — the server is the authority in that case.
+   * (validation is a no-op across the SDK) the call is skipped —
+   * the server is the authority in that case.
    */
   private checkEntityRegistered(name: string, role: "source" | "target"): void {
     if (this.registry.isEmpty()) return;

@@ -785,22 +785,19 @@ describe("integration: defineEntity + EntityRegistry (#143)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Issue #149: defineRelationship + relationship primitives round-trip
+// defineRelationship + buildRelationshipWrite round-trip
 // ---------------------------------------------------------------------------
 
 /**
- * The server's existing authorization model (`authorizer.ex`,
- * `permission_helper.ex`) treats the relationship's `target_id` as a
- * group id when the update's subject_type is `relationship`. For
- * user-to-user relationships the rule falls out of intra-action
- * resolution (`build_intra_action_context`), but #149's primitive
- * doesn't compose a multi-entity atomic create — that's #153's job.
+ * The server's existing authorization treats the relationship's
+ * `target_id` as a group id when the update's subject_type is
+ * `relationship`. User-to-user relationships require atomic
+ * cross-entity creation, which is outside this primitive's scope.
  *
- * The cleanest round-trip that exercises the new primitive without
- * changing server code is: define a `todo` entity and a relationship
- * from `todo` to the test group (the `ownedBy` shape the rest of the
- * integration suite already uses). One Action, two Updates — the
- * exact shape the server's `RelationshipCache` accepts.
+ * The round-trip exercises the primitive via the `ownedBy` shape
+ * the rest of the integration suite already uses: one Action, two
+ * Updates — the exact shape the server's `RelationshipCache`
+ * accepts.
  *
  * Round-trip asserts:
  * - the wire Action carries exactly two Updates (entity +
@@ -811,7 +808,7 @@ describe("integration: defineEntity + EntityRegistry (#143)", () => {
  * - the reverse accessor surfaces the todo via the materialized
  *   Relationship cache.
  */
-describe("integration: defineRelationship + buildRelationshipWrite (#149)", () => {
+describe("integration: defineRelationship + buildRelationshipWrite", () => {
   it("creates a todo with a group pointer in one Action (two Updates)", async () => {
     if (!(await shouldRun())) return;
     const actor = `rel_roundtrip_${RUN_ID}`;
@@ -845,12 +842,10 @@ describe("integration: defineRelationship + buildRelationshipWrite (#149)", () =
       });
       const registry = new EntityRegistry();
       registry.register(todo);
-      // `relationship` is a system entity (see #127). The registry
-      // validates field membership against the registered entities,
-      // and the wire envelope uses { source_id, target_id, type,
-      // field } as fields on the relationship entity. Register it
-      // explicitly so client.write() doesn't reject the final Action
-      // updates that target it.
+      // The wire envelope for a `relationship` Update carries
+      // { source_id, target_id, type, field } as field values. Register
+      // it explicitly so client.write() doesn't reject the final
+      // Action updates that target it.
       registry.register(relationshipEntity);
       registry.registerRelationship(
         defineRelationship({
