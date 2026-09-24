@@ -158,45 +158,47 @@ type OrderBy = { field: string; direction: "asc" | "desc" };
  * Build a QueryBuilder over a list of candidate entities. The
  * `loadEntities` callback hydrates ids → Entity; the chain applies
  * eq / orderBy / limit on top.
+ *
+ * Each chain method returns a *new* builder with the new constraint
+ * appended — the original is untouched, so the same builder can be
+ * reused across callers without surprising state.
  */
 export function buildQueryBuilder<T extends Entity>(candidates: readonly T[]): QueryBuilder<T> {
-  let filters: readonly EqFilter[] = [];
-  let order: OrderBy | null = null;
-  let limitN: number | null = null;
-
-  const apply = (rows: readonly T[]): T[] => {
-    let out = rows.slice();
-    if (filters.length > 0) {
-      out = out.filter((row) => filters.every((f) => eqField(row, f.field, f.value)));
-    }
-    if (order !== null) {
-      const { field, direction } = order;
-      out.sort((a, b) => cmpField(a, b, field, direction));
-    }
-    if (limitN !== null && limitN >= 0) {
-      out = out.slice(0, limitN);
-    }
-    return out;
+  const make = (
+    filters: readonly EqFilter[],
+    order: OrderBy | null,
+    limitN: number | null,
+  ): QueryBuilder<T> => {
+    const apply = (rows: readonly T[]): T[] => {
+      let out = rows.slice();
+      if (filters.length > 0) {
+        out = out.filter((row) => filters.every((f) => eqField(row, f.field, f.value)));
+      }
+      if (order !== null) {
+        const { field, direction } = order;
+        out.sort((a, b) => cmpField(a, b, field, direction));
+      }
+      if (limitN !== null && limitN >= 0) {
+        out = out.slice(0, limitN);
+      }
+      return out;
+    };
+    return {
+      eq(field: string, value: unknown): QueryBuilder<T> {
+        return make([...filters, { field, value }], order, limitN);
+      },
+      orderBy(field: string, direction: "asc" | "desc"): QueryBuilder<T> {
+        return make(filters, { field, direction }, limitN);
+      },
+      limit(n: number): QueryBuilder<T> {
+        return make(filters, order, n);
+      },
+      async find(): Promise<readonly T[]> {
+        return apply(candidates);
+      },
+    };
   };
-
-  const builder: QueryBuilder<T> = {
-    eq(field: string, value: unknown): QueryBuilder<T> {
-      filters = [...filters, { field, value }];
-      return builder;
-    },
-    orderBy(field: string, direction: "asc" | "desc"): QueryBuilder<T> {
-      order = { field, direction };
-      return builder;
-    },
-    limit(n: number): QueryBuilder<T> {
-      limitN = n;
-      return builder;
-    },
-    async find(): Promise<readonly T[]> {
-      return apply(candidates);
-    },
-  };
-  return builder;
+  return make([], null, null);
 }
 
 /** Pull `data.fields[field].value` off an Entity, returning `undefined` when absent. */

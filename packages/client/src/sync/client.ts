@@ -601,17 +601,18 @@ export class SyncClient {
 
     // sourceCardinality === "many"
     const targetIds = opts.targetIds;
-    if (targetIds === undefined) {
-      throw new EntityValidationError([
-        {
-          entityName: sourceName,
-          message: `buildRelationshipWrite: many-cardinality relationship "${as}" requires targetIds`,
-        },
-      ]);
-    }
-    const normalized = normalizeManyPointers(targetIds, `targetIds for "${as}"`);
     const wireType = this.wireTypeFor(sourceName, as);
     const updates: Update[] = [];
+    if (targetIds === undefined) {
+      // No-op: produce an empty relationship-update array. The
+      // developer can still submit the entity update with no
+      // relationship edges (matches `targetId: null` on the
+      // one-cardinality side, but the `many` side has no per-edge
+      // delete in this primitive — the namespace API in #158 will
+      // surface a clearer shape for "clear the set").
+      return { entityUpdate: cleanEntityUpdate, relationshipUpdate: updates };
+    }
+    const normalized = normalizeManyPointers(targetIds, `targetIds for "${as}"`);
     // For replace: emit a PUT per target id; the source entity's array
     // field carries the canonical set, and these Relationship Updates
     // materialize the link edges.
