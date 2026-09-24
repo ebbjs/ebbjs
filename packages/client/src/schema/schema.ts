@@ -36,9 +36,14 @@ export interface Schema<
    * (`Record<string, unknown>`) because #149's
    * `defineRelationship` primitive is still in flight; once it
    * lands this becomes `TRelationships` and the registry composes
-   * relationships through the same registration path.
+   * relationships through the same registration path. When
+   * `defineSchema` is called without a `relationships` input,
+   * `relationships` is `undefined` at runtime so callers can
+   * distinguish "no relationships" from "an empty relationship
+   * map" — that distinction matters once #149 lands its
+   * relationship cardinality checks.
    */
-  readonly relationships: TRelationships;
+  readonly relationships: TRelationships | undefined;
   /** Schema version advertised to the server on handshake. */
   readonly version: number;
   /**
@@ -90,7 +95,7 @@ export function defineSchema<
   }
   return Object.freeze({
     entities: input.entities,
-    relationships: input.relationships as TRelationships,
+    relationships: input.relationships as TRelationships | undefined,
     version: input.version,
     minSupportedVersion: input.minSupportedVersion,
     _registry: registry,

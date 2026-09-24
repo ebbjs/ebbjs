@@ -83,7 +83,7 @@ describe("defineSchema", () => {
     // preserves the relationship key set so downstream code can
     // index by relationship name.
     expect(schema.relationships).toEqual(relationshipsFixture);
-    expect(schema.relationships.todo_ownedBy).toEqual(relationshipsFixture.todo_ownedBy);
+    expect(schema.relationships?.todo_ownedBy).toEqual(relationshipsFixture.todo_ownedBy);
   });
 
   it("omits the relationships slot when not provided", () => {
