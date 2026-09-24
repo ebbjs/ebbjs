@@ -123,3 +123,5 @@ export {
   EntityValidationError,
   type ValidationViolation,
 } from "./schema/entity-registry";
+
+export { defineSchema, type DefineSchemaInput, type Schema } from "./schema/schema";
