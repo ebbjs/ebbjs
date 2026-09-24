@@ -4,6 +4,7 @@ import { decodeSync, e, makeHlc, type Action } from "@ebbjs/core";
 import { makeFetchMock } from "./test-utils";
 import { EntityRegistry, EntityValidationError } from "../schema/entity-registry";
 import { defineEntity } from "../schema/entity";
+import { defineSchema } from "../schema/schema";
 
 describe("SyncClient.handshake", () => {
   it("returns group membership and caches cursors", async () => {
@@ -83,6 +84,167 @@ describe("SyncClient.handshake", () => {
     const headers = (calls[0].init.headers ?? {}) as Record<string, string>;
     expect(headers["x-ebb-actor-id"]).toBe("alice");
     expect(headers["Content-Type"]).toBe("application/json");
+  });
+});
+
+describe("SyncClient schema option", () => {
+  it("builds the per-client registry from schema._registry and exposes it on client.registry", () => {
+    const todo = defineEntity("todo", {
+      title: e.string(),
+      completed: e.boolean(),
+    });
+    const { fn } = makeFetchMock([{ body: JSON.stringify({ actor_id: "a_test", groups: [] }) }]);
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+      schema: defineSchema({ entities: { todo }, version: 1 }),
+    });
+    expect(client.registry).toBeInstanceOf(EntityRegistry);
+    expect(client.registry.has("todo")).toBe(true);
+    expect(client.registry.get("todo")).toBe(todo);
+  });
+
+  it("seeds client.write() validation from the schema's registry", async () => {
+    const { fn } = makeFetchMock([{ body: JSON.stringify({ actor_id: "a_test", groups: [] }) }]);
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+      schema: defineSchema({
+        entities: {
+          todo: defineEntity("todo", {
+            title: e.string(),
+            completed: e.boolean(),
+          }),
+        },
+        version: 1,
+      }),
+    });
+
+    const hlc = makeHlc(1711036800000);
+    const bad: Action = {
+      id: "a_1",
+      actor_id: "a_test",
+      hlc,
+      gsn: 0,
+      updates: [
+        {
+          id: "u_1",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "put",
+          data: {
+            fields: {
+              typo: { value: "oops", update_id: "u_1", hlc },
+            },
+          },
+        },
+      ],
+    };
+    await expect(client.write([bad])).rejects.toBeInstanceOf(EntityValidationError);
+    // No fetch should have been issued for the rejected write.
+    const writeCalls = fn.mock.calls.filter(
+      (call) =>
+        (call[1] as RequestInit).method === "POST" && String(call[0]).endsWith("/sync/actions"),
+    );
+    expect(writeCalls).toHaveLength(0);
+  });
+
+  it("advertises schema.version on the handshake body", async () => {
+    const { fn, calls } = makeFetchMock([
+      { body: JSON.stringify({ actor_id: "a_test", groups: [] }) },
+    ]);
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+      schema: defineSchema({
+        entities: {
+          todo: defineEntity("todo", { title: e.string() }),
+        },
+        version: 4,
+      }),
+    });
+    await client.handshake();
+    const handshakeCall = calls.find((c) => c.url === "http://localhost:4000/sync/handshake");
+    expect(handshakeCall).toBeDefined();
+    const body = JSON.parse((handshakeCall!.init.body ?? "{}") as string);
+    expect(body.schema_version).toBe(4);
+  });
+
+  it("advertises minSupportedVersion on the handshake body when set", async () => {
+    const { fn, calls } = makeFetchMock([
+      { body: JSON.stringify({ actor_id: "a_test", groups: [] }) },
+    ]);
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+      schema: defineSchema({
+        entities: {
+          todo: defineEntity("todo", { title: e.string() }),
+        },
+        version: 5,
+        minSupportedVersion: 2,
+      }),
+    });
+    await client.handshake();
+    const handshakeCall = calls.find((c) => c.url === "http://localhost:4000/sync/handshake");
+    const body = JSON.parse((handshakeCall!.init.body ?? "{}") as string);
+    expect(body.schema_version).toBe(5);
+    expect(body.min_supported_version).toBe(2);
+  });
+
+  it("omits min_supported_version from the handshake when not configured", async () => {
+    const { fn, calls } = makeFetchMock([
+      { body: JSON.stringify({ actor_id: "a_test", groups: [] }) },
+    ]);
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+      schema: defineSchema({
+        entities: {
+          todo: defineEntity("todo", { title: e.string() }),
+        },
+        version: 1,
+      }),
+    });
+    await client.handshake();
+    const handshakeCall = calls.find((c) => c.url === "http://localhost:4000/sync/handshake");
+    const body = JSON.parse((handshakeCall!.init.body ?? "{}") as string);
+    expect(body).not.toHaveProperty("min_supported_version");
+  });
+
+  it("keeps the schema's registry isolated from other clients", () => {
+    const { fn } = makeFetchMock([{ body: JSON.stringify({ actor_id: "a_test", groups: [] }) }]);
+    const a = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+      schema: defineSchema({
+        entities: { todo: defineEntity("todo", { title: e.string() }) },
+        version: 1,
+      }),
+    });
+    const { fn: fn2 } = makeFetchMock([
+      { body: JSON.stringify({ actor_id: "b_test", groups: [] }) },
+    ]);
+    const b = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "b_test",
+      fetchImpl: fn2,
+      schema: defineSchema({
+        entities: { user: defineEntity("user", { name: e.string() }) },
+        version: 1,
+      }),
+    });
+    expect(a.registry).not.toBe(b.registry);
+    expect(a.registry.has("todo")).toBe(true);
+    expect(a.registry.has("user")).toBe(false);
+    expect(b.registry.has("todo")).toBe(false);
+    expect(b.registry.has("user")).toBe(true);
   });
 });
 

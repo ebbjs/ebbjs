@@ -50,6 +50,7 @@ import { createClient, type SyncClient } from "../..";
 import { defineEntity } from "../../schema/entity";
 import { defineRelationship } from "../../schema/relationship";
 import { EntityRegistry, EntityValidationError } from "../../schema/entity-registry";
+import { defineSchema } from "../../schema/schema";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
 
@@ -930,6 +931,70 @@ describe("integration: defineRelationship + buildRelationshipWrite", () => {
       const qb = await handle.reverse(TEST_GROUP_ID);
       const sources = await qb.find();
       expect(sources.map((s) => s.id)).toContain(todoId);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: defineSchema composer + handshake wiring
+// ---------------------------------------------------------------------------
+
+describe("integration: defineSchema", () => {
+  it("round-trips a schema-bearing handshake through the live server", async () => {
+    if (!(await shouldRun())) return;
+    const actor = "schema_handshake_actor";
+    await addMemberWithTodoPerms(actor);
+
+    const todo = defineEntity("todo", {
+      title: e.string(),
+      completed: e.boolean(),
+    });
+    const user = defineEntity("user", {
+      name: e.string(),
+    });
+    const group = defineEntity("group", { name: e.string() });
+    const todo_ownedBy = defineRelationship({
+      source: todo,
+      target: group,
+      as: "ownedBy",
+    });
+    const schema = defineSchema({
+      entities: { todo, user },
+      relationships: { todo_ownedBy },
+      version: 7,
+      minSupportedVersion: 5,
+    });
+
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: actor,
+      schema,
+    });
+    try {
+      // The schema is held by reference on the client for the
+      // handshake path; the unit tests cover the actual wire body.
+      expect(client.schema).toBe(schema);
+      expect(client.schema?.version).toBe(7);
+      expect(client.schema?.minSupportedVersion).toBe(5);
+
+      expect(client.registry.has("todo")).toBe(true);
+      expect(client.registry.has("user")).toBe(true);
+      expect(client.registry.get("todo")).toBe(todo);
+      expect(client.registry.get("user")).toBe(user);
+      // Relationships registered via defineSchema flow through to
+      // the per-client registry, so client.registry.getRelationship
+      // works the same as on a hand-built registry.
+      const registered = client.registry.getRelationship("todo", "ownedBy");
+      expect(registered?.source.name).toBe("todo");
+      expect(registered?.target.name).toBe("group");
+
+      // The server tolerates schema_version / min_supported_version
+      // fields it doesn't understand today.
+      const { groups } = await client.handshake();
+      expect(groups.find((g) => g.id === TEST_GROUP_ID)).toBeDefined();
+      client.setState("live");
     } finally {
       client.close();
     }
