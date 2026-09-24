@@ -54,7 +54,6 @@ import { generateId } from "@ebbjs/core";
 import type { EntityDef, FieldMarker } from "../schema/entity";
 import type { Schema } from "../schema/schema";
 
-/** Shape of `Schema` accepted by `createClient`. The entity generics stay open so callers can pass any composition `defineSchema` produced, with or without a relationship slot. */
 type AnySchema = Schema<
   Record<string, EntityDef<Record<string, FieldMarker>>>,
   Record<string, unknown> | undefined
@@ -85,13 +84,6 @@ export class SyncClient {
   readonly storage: StorageAdapter;
   readonly presence: PresenceManager;
   readonly registry: EntityRegistry;
-  /**
-   * Composed schema passed via `createClient({ schema })`. Held by
-   * reference — the client treats it as immutable. Used in
-   * `handshake()` to advertise `schema.version` and (when set)
-   * `minSupportedVersion` so the server can negotiate
-   * compatibility.
-   */
   readonly schema?: AnySchema;
   private readonly fetchImpl: typeof fetch;
   private readonly reconnectInitialMs: number;
@@ -1002,14 +994,8 @@ export class SyncClient {
  * Build a fresh per-client `EntityRegistry` from a `Schema`'s
  * runtime registry. We copy every registered entity into a new
  * `EntityRegistry` rather than sharing `schema._registry` so a
- * client can mutate its own registry at runtime (e.g., for tests,
- * or future per-client relationship registrations added by #149)
- * without bleeding across clients that share the same `schema`
- * value.
- *
- * Returns an empty registry when no schema is provided, matching
- * the pre-#150 behavior where `createClient({ ... })` constructed
- * an empty registry and validation was a no-op.
+ * client can mutate its own registry at runtime without bleeding
+ * across clients that share the same `schema` value.
  */
 const buildRegistryFromSchema = (schema: AnySchema | undefined): EntityRegistry => {
   const registry = new EntityRegistry();

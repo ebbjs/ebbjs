@@ -1,16 +1,5 @@
 /**
- * `defineSchema` — composes per-entity and per-relationship definitions
- * into a single `Schema` value with a runtime `_registry` the SDK
- * consumes. The builder is pure (no I/O, no side effects beyond a
- * frozen return value) so it can be called at module top level and
- * shared across clients.
- *
- * These tests cover:
- * - Typed inference of `TEntities` / `TRelationships` through the
- *   public `Schema<TEntities, TRelationships>` shape.
- * - Composition of multiple entities + relationships produces a
- *   working registry.
- * - The `_registry` rejects unknown field names per #143's rules.
+ * Tests for `defineSchema`.
  */
 
 import { describe, it, expect } from "vitest";
@@ -29,10 +18,9 @@ const user = defineEntity("user", {
   name: e.string(),
 });
 
-// Relationships aren't a real primitive yet (#149's work). The
-// builder accepts an open `Record<string, unknown>` for them so the
-// slot composes through the same `_registry` shape; #149 will fill
-// in the typed primitive.
+// `relationships` accepts any `Record<string, unknown>` shape — the
+// slot is deliberately open so callers can pass whatever relationship
+// metadata they want without `Schema`'s type pinning it down.
 const relationshipsFixture = {
   todo_ownedBy: { source: "todo", target: "group", cardinality: "many-to-one" },
 } as const;
@@ -79,9 +67,6 @@ describe("defineSchema", () => {
       relationships: relationshipsFixture,
       version: 1,
     });
-    // `schema.relationships` is the same shape we passed in — typing
-    // preserves the relationship key set so downstream code can
-    // index by relationship name.
     expect(schema.relationships).toEqual(relationshipsFixture);
     expect(schema.relationships?.todo_ownedBy).toEqual(relationshipsFixture.todo_ownedBy);
   });
@@ -126,7 +111,6 @@ describe("defineSchema", () => {
           method: "put",
           data: {
             fields: {
-              // `typo` is not declared on the todo entity.
               typo: { value: "oops", update_id: "u_1", hlc },
               title: { value: "Hello", update_id: "u_1", hlc },
             },
@@ -138,9 +122,8 @@ describe("defineSchema", () => {
     expect(violations).toHaveLength(1);
     expect(violations[0]?.field).toBe("typo");
     expect(violations[0]?.entityName).toBe("todo");
-    // The registry throws the same way the per-client registry does.
     expect(() => {
-      if (violations.length > 0) throw new EntityValidationError(violations);
+      throw new EntityValidationError(violations);
     }).toThrow(EntityValidationError);
   });
 
