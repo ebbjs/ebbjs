@@ -1,8 +1,8 @@
 # @ebbjs/core
 
 TypeScript foundation for the ebbjs domain model: shared types, HLC
-implementation, MessagePack wire codec, action creation helper, ID
-generation, and v1 typed-field markers.
+implementation, MessagePack wire codec, action creation helper, and ID
+generation.
 
 ## Module map
 
@@ -13,7 +13,6 @@ generation, and v1 typed-field markers.
 | `src/msgpack/`    | `encodeSync/1`, `decodeSync/1` (MessagePack wire format).                                             |
 | `src/id/`         | `nanoid(prefix)` and friends — generates `act_…`, `upd_…`, etc.                                       |
 | `src/action/`     | `createAction/1` — composes Update list into an `Action` with the right HLC + ID bookkeeping.         |
-| `src/fields/`     | `e` — typed-field markers (`e.string()`, `e.collaborativeText()`, …); see "Fields" below.             |
 | `src/validate.ts` | Runtime shape checks for inbound action/update payloads.                                              |
 
 110 tests across the package (`pnpm --filter @ebbjs/core test`).
@@ -53,28 +52,7 @@ inside an HLC. The server's validation rule (reject if `logical_time`
 is more than 120s in the future or 24h in the past) is documented in
 [#120](https://github.com/ebbjs/ebbjs/issues/120).
 
-## Fields
-
-The v1 typed-field API starts with markers — `e.string()`,
-`e.number()`, `e.boolean()`, `e.collaborativeText()`.
-Markers are tiny objects that describe the field's merge semantics;
-the actual merge algorithms live in the consumer package. Today,
-`LWW` fields (string/number/boolean) merge per the server's HLC +
-`update_id` tiebreak; `e.collaborativeText()` carries an opaque
-encoded tree blob whose algorithm lives in `@ebbjs/client` (Epic
-[#110](https://github.com/ebbjs/ebbjs/issues/110); the algorithm is
-prototyped in `experiment/collaborative-text/`).
-
 ## Dependencies
 
 TypeBox (schemas — only used inside validation paths) and `msgpackr`
 (wire codec). No other runtime deps.
-
-## Forward-looking work
-
-- `defineModel` / `defineSchema` — the typed-schema-builder layer that
-  makes `e.*` ergonomic from app code. Tracked in
-  [Epic #115](https://github.com/ebbjs/ebbjs/issues/115).
-- More typed-field markers (richer CRDT-style field types) — same Epic.
-- Spec coverage in
-  [v1 data model #116](https://github.com/ebbjs/ebbjs/issues/116).
