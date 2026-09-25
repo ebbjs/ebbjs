@@ -4,7 +4,7 @@
  * registry is the caller's job (via `EntityRegistry.register`).
  */
 
-export type FieldMarker = { type: "lww" } | { type: "counter" } | { type: "causal-tree" };
+export type FieldMarker = { type: "lww" };
 
 /** Passive entity definition value. The runtime registry consumes it. */
 export interface EntityDef<TFields extends Record<string, FieldMarker>> {

@@ -16,7 +16,7 @@ generation, and v1 typed-field markers.
 | `src/fields/`     | `e` — typed-field markers (`e.string()`, `e.collaborativeText()`, …); see "Fields" below.             |
 | `src/validate.ts` | Runtime shape checks for inbound action/update payloads.                                              |
 
-97 tests across the package (`pnpm --filter @ebbjs/core test`).
+110 tests across the package (`pnpm --filter @ebbjs/core test`).
 
 ## Usage
 
@@ -56,7 +56,7 @@ is more than 120s in the future or 24h in the past) is documented in
 ## Fields
 
 The v1 typed-field API starts with markers — `e.string()`,
-`e.number()`, `e.boolean()`, `e.counter()`, `e.collaborativeText()`.
+`e.number()`, `e.boolean()`, `e.collaborativeText()`.
 Markers are tiny objects that describe the field's merge semantics;
 the actual merge algorithms live in the consumer package. Today,
 `LWW` fields (string/number/boolean) merge per the server's HLC +

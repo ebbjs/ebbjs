@@ -12,7 +12,7 @@ describe("e.collaborativeText", () => {
   });
 });
 
-describe("e.lww / e.counter stubs", () => {
+describe("e.lww markers", () => {
   it("e.string returns the lww marker", () => {
     expect(e.string()).toEqual({ type: "lww" });
   });
@@ -23,9 +23,5 @@ describe("e.lww / e.counter stubs", () => {
 
   it("e.boolean returns the lww marker", () => {
     expect(e.boolean()).toEqual({ type: "lww" });
-  });
-
-  it("e.counter returns the counter marker", () => {
-    expect(e.counter()).toEqual({ type: "counter" });
   });
 });
