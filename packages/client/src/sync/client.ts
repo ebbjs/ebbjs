@@ -51,6 +51,7 @@ import {
 } from "./relationship";
 import { Type } from "@sinclair/typebox";
 import { type QueryBuilder, buildQueryBuilder } from "./query-builder";
+import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { generateId } from "@ebbjs/core";
 import type { EntityDef } from "../schema/entity";
 import type { Schema } from "../schema/schema";
@@ -1201,9 +1202,41 @@ function stripRelationshipField(update: Update, as: string): Update {
 }
 
 /**
+ * Returned by {@link createClient}. The client is a Proxy that
+ * exposes `client.<entityName>.query()` for every entity in the
+ * composed schema, alongside the standard `SyncClient` surface.
+ */
+export type NamespacedClient<S> = SyncClient & EntityNamespaces<S>;
+
+/**
  * Factory for {@link SyncClient}. Prefer this over `new SyncClient(...)`
  * so the import surface stays tidy.
+ *
+ * When `opts.schema` is a `Schema`, the returned client is a Proxy
+ * that exposes `client.<entityName>.query()` — the typed thenable
+ * chain — for every entity declared on the schema. The Proxy binds
+ * every method to the underlying `SyncClient` so private-field
+ * access inside the SDK still resolves correctly.
  */
-export function createClient(opts: SyncClientOptions): SyncClient {
-  return new SyncClient(opts);
+export function createClient<S extends AnySchema | undefined = undefined>(
+  opts: SyncClientOptions & { schema?: S },
+): NamespacedClient<S> {
+  const client = new SyncClient(opts);
+  if (opts.schema === undefined) {
+    return client as NamespacedClient<S>;
+  }
+  const namespaces = buildEntityNamespaces(opts.schema, client.storage);
+  return new Proxy(client, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string") {
+        const ns = (namespaces as Record<string, unknown>)[prop];
+        if (ns !== undefined) return ns;
+      }
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value === "function") {
+        return value.bind(target);
+      }
+      return value;
+    },
+  }) as NamespacedClient<S>;
 }
