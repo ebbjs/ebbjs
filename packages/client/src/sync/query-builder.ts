@@ -23,7 +23,7 @@ import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
  * Map a single materialized entity onto the schema's TypeBox shape.
  * Pure: the entity is read-only; the projected row is a fresh object.
  *
- * Three projection states per field, mirroring the issue body's spec:
+ * Three projection states per field:
  * - `data.fields[K].value = V` (set)     → `V`
  * - `data.fields[K].value = null`        → `null`
  * - `data.fields[K]` absent              → `undefined`

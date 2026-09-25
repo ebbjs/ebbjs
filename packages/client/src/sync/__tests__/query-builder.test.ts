@@ -184,7 +184,7 @@ describe("buildQueryBuilder — .toRaw() escape hatch", () => {
   });
 });
 
-describe("buildQueryBuilder — Path B value narrowing", () => {
+describe("buildQueryBuilder — value narrowing against the field map", () => {
   it("eq's value narrows to the field's TypeBox static type", () => {
     const rows: Entity[] = [];
     const builder = buildQueryBuilder(rows, todo.shape);
