@@ -49,7 +49,9 @@ import {
   type BuildRelationshipWriteResult,
   type RelationshipHandleInput,
 } from "./relationship";
-import type { QueryBuilder } from "./query-builder";
+import { stripField } from "./entity-fields";
+import type { PrimitiveQueryBuilder } from "./query-builder";
+import { mountNamespace } from "./namespace";
 import { generateId } from "@ebbjs/core";
 import type { EntityDef, FieldMarker } from "../schema/entity";
 import type { Schema } from "../schema/schema";
@@ -116,6 +118,16 @@ export class SyncClient {
    * on inbound violations when at least one listener is present.
    */
   private readonly registryViolationListeners = new Set<RegistryViolationListener>();
+  /**
+   * Synchronous snapshot of materialized entities. The handle's
+   * field getters (`client.todo(id).title`) read from this map
+   * rather than the storage adapter — the storage adapter's read
+   * API is async, but JS property access is synchronous. The
+   * snapshot is hydrated on every `readLocalEntity` call and on
+   * every `_applyAction` receipt so the latest state is always
+   * visible to the handle.
+   */
+  private readonly entitySnapshot = new Map<string, Entity>();
 
   constructor(opts: SyncClientOptions) {
     this.serverUrl = opts.serverUrl.replace(/\/$/, "");
@@ -137,6 +149,15 @@ export class SyncClient {
     // `client.close()` (already wired in the existing close path)
     // when tearing down.
     this.presence = new PresenceManager(this);
+    // Mount the per-entity namespace when a schema is provided.
+    // The runtime walks `schema.entities` once at construction
+    // time and installs every accessor via Object.defineProperty,
+    // matching design pin #1 in #158. When no schema is given, no
+    // accessors are mounted and the developer uses the generic
+    // `client.write` / `client.queryEntities` surface directly.
+    if (this.schema !== undefined) {
+      mountNamespace(this, this.schema as unknown as Parameters<typeof mountNamespace>[1]);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -422,14 +443,38 @@ export class SyncClient {
   }
 
   /**
+  /**
    * Read a materialized entity from the local storage adapter.
    *
    * This is the read path the storage layer exposes — for client-driven
    * reads (e.g., rendering), prefer this over `getEntity` to avoid a
    * network round trip.
+   *
+   * Side effect: hydrates the synchronous snapshot that
+   * `readLocalEntitySync` reads from so subsequent handle
+   * field-getter calls see the latest materialization without an
+   * extra round trip.
    */
   async readLocalEntity(id: string): Promise<Entity | null> {
-    return this.storage.entities.get(id);
+    const entity = await this.storage.entities.get(id);
+    if (entity !== null) {
+      this.entitySnapshot.set(id, entity);
+    }
+    return entity;
+  }
+
+  /**
+   * Synchronous read against the snapshot the handle's getters use.
+   * Returns `null` when the id isn't in the snapshot — callers can
+   * call `readLocalEntity(id)` first to hydrate.
+   */
+  readLocalEntitySync(id: string, _expectedType?: string, field?: string): unknown {
+    const entity = this.entitySnapshot.get(id);
+    if (entity === undefined) return undefined;
+    if (field === undefined) return entity;
+    const fv = entity.data?.fields?.[field];
+    if (fv === undefined) return undefined;
+    return fv.value;
   }
 
   /**
@@ -517,7 +562,7 @@ export class SyncClient {
       this.storage.entities.query(type);
 
     const handle: RelationshipHandle = {
-      forward: (sourceId: string): Promise<Entity | undefined> | Promise<QueryBuilder<Entity>> => {
+      forward: (sourceId: string): Promise<Entity | undefined> | Promise<PrimitiveQueryBuilder> => {
         if (cardinality === "one") {
           return forwardOne(readLocalEntity, sourceId, sourceName, field);
         }
@@ -530,7 +575,7 @@ export class SyncClient {
           field,
         );
       },
-      reverse: (targetId: string): Promise<QueryBuilder<Entity>> => {
+      reverse: (targetId: string): Promise<PrimitiveQueryBuilder> => {
         return reverseTraversal(
           readLocalEntity,
           queryEntitiesByType,
@@ -601,7 +646,7 @@ export class SyncClient {
     // the wire doesn't carry the FK twice. For "many", leave the
     // field alone so the developer can carry the canonical set.
     const cleanEntityUpdate: Update =
-      cardinality === "one" ? stripRelationshipField(entityUpdate, as) : entityUpdate;
+      cardinality === "one" ? stripField(entityUpdate, as) : entityUpdate;
 
     const sourceId = entityUpdate.subject_id;
 
@@ -959,6 +1004,17 @@ export class SyncClient {
       this.emitRegistryViolations(violations, { direction: "inbound" });
     }
     await this.storage.actions.append(action);
+    // Invalidate the synchronous snapshot for every entity affected
+    // by this action so the handle's getters re-read on their next
+    // access. We deliberately avoid hydrating here: the in-memory
+    // adapter's `entities.get` clears the dirty flag during
+    // materialization, which would break the
+    // `_applyAction` → `isDirty` invariant exercised by
+    // `src/sync/sse.test.ts`. Snapshot hydration is lazy through
+    // `readLocalEntity` instead.
+    for (const u of action.updates) {
+      this.entitySnapshot.delete(u.subject_id);
+    }
     const affected = action.updates.map((u) => ({
       entityId: u.subject_id,
       entityType: u.subject_type,
@@ -1100,40 +1156,39 @@ export interface QueryOptions {
  * Handle returned by {@link SyncClient.relationship}.
  *
  * `forward(sourceId)` returns `Promise<Entity | undefined>` for
- * `sourceCardinality: "one"` and `Promise<QueryBuilder<Entity>>` for
+ * `sourceCardinality: "one"` and `Promise<PrimitiveQueryBuilder>` for
  * `sourceCardinality: "many"`. The runtime narrows on the registered
  * relationship's cardinality; the union here is the conservative
  * type the handle's storage layer can't disambiguate without the
  * registry entry.
  */
 export interface RelationshipHandle {
-  forward(sourceId: string): Promise<Entity | undefined> | Promise<QueryBuilder<Entity>>;
-  reverse(targetId: string): Promise<QueryBuilder<Entity>>;
+  forward(sourceId: string): Promise<Entity | undefined> | Promise<PrimitiveQueryBuilder>;
+  reverse(targetId: string): Promise<PrimitiveQueryBuilder>;
 }
 
 /**
- * Strip the `as` field from an entity Update's `data.fields` map. The
- * relationship pointer lives on the separate `Relationship` Update,
- * not on the source entity's data — we don't want the wire to carry
- * the FK twice. Returns a new Update object when the field is
- * present, otherwise returns the input as-is.
+ * Factory overload: when `opts.schema` is set, the returned client
+ * carries the per-entity namespace from
+ * `sync/namespace.ts`. The shape of `client.<entity>.<method>`
+ * is derived from `schema.entities` so the static type narrows on
+ * `eq` / `orderBy` / `create` / `update` against each declared
+ * entity's field map.
+ *
+ * The runtime is identical to the un-overloaded version
+ * (the namespace is mounted in `SyncClient`'s constructor). The
+ * overload exists for the static type surface.
  */
-function stripRelationshipField(update: Update, as: string): Update {
-  if (update.data === null) return update;
-  const fields = update.data.fields;
-  if (!(as in fields)) return update;
-  const next: Record<string, (typeof fields)[string]> = {};
-  for (const k of Object.keys(fields)) {
-    if (k === as) continue;
-    next[k] = fields[k]!;
-  }
-  return { ...update, data: { fields: next } };
-}
-
+export function createClient<TSchema extends import("./types").AnySchema>(
+  opts: import("./types").CreateClientOptionsWithSchema<TSchema>,
+): SyncClient & import("./namespace").NamespacedClient<TSchema["entities"]>;
 /**
- * Factory for {@link SyncClient}. Prefer this over `new SyncClient(...)`
- * so the import surface stays tidy.
+ * Factory overload: when `opts.schema` is omitted, the returned
+ * client is a plain `SyncClient` with no per-entity namespace.
+ * Useful for low-level consumers (e.g., the integration tests
+ * that exercise the wire layer) that don't need the namespace.
  */
-export function createClient(opts: SyncClientOptions): SyncClient {
+export function createClient(opts: SyncClientOptions): SyncClient;
+export function createClient(opts: import("./types").SyncClientOptions): SyncClient {
   return new SyncClient(opts);
 }

@@ -13,7 +13,7 @@
 import type { Entity } from "@ebbjs/core";
 
 import type { EntityRegistry } from "../schema/entity-registry";
-import { buildQueryBuilder, type QueryBuilder } from "./query-builder";
+import { buildQueryBuilder, type PrimitiveQueryBuilder } from "./query-builder";
 
 /**
  * Inputs to `client.relationship({...})`. Mirrors `defineRelationship`
@@ -188,20 +188,20 @@ export async function forwardMany(
   sourceName: string,
   targetName: string,
   field: string,
-): Promise<QueryBuilder<Entity>> {
+): Promise<PrimitiveQueryBuilder> {
   const source = await readLocalEntity(sourceId);
   if (source === null) {
-    return buildQueryBuilder<Entity>([]);
+    return buildQueryBuilder<Record<never, never>>([]);
   }
   if (source.type !== sourceName) {
-    return buildQueryBuilder<Entity>([]);
+    return buildQueryBuilder<Record<never, never>>([]);
   }
   const fv = source.data?.fields?.[field];
   if (fv === undefined || fv.value === null || fv.value === undefined) {
-    return buildQueryBuilder<Entity>([]);
+    return buildQueryBuilder<Record<never, never>>([]);
   }
   if (!Array.isArray(fv.value)) {
-    return buildQueryBuilder<Entity>([]);
+    return buildQueryBuilder<Record<never, never>>([]);
   }
   const ids = fv.value.filter((v): v is string => typeof v === "string");
   // The source holds the canonical set; we don't need to filter via
@@ -209,7 +209,7 @@ export async function forwardMany(
   // Load every materialized entity of `targetName` and intersect.
   const allTargets = await queryEntitiesByType(targetName);
   const idSet = new Set(ids);
-  return buildQueryBuilder(allTargets.filter((t) => idSet.has(t.id)));
+  return buildQueryBuilder<Record<never, never>>(allTargets.filter((t) => idSet.has(t.id)));
 }
 
 /**
@@ -224,7 +224,7 @@ export async function reverse(
   sourceName: string,
   field: string,
   type: string,
-): Promise<QueryBuilder<Entity>> {
+): Promise<PrimitiveQueryBuilder> {
   const all = await queryEntitiesByType("relationship");
   const matching = findRelationshipsByField(all, field, type).filter((rel) => {
     const t = rel.data?.fields?.["target_id"];
@@ -235,7 +235,7 @@ export async function reverse(
     .filter((v): v is string => typeof v === "string");
   const allSources = await queryEntitiesByType(sourceName);
   const idSet = new Set(sourceIds);
-  return buildQueryBuilder(allSources.filter((s) => idSet.has(s.id)));
+  return buildQueryBuilder<Record<never, never>>(allSources.filter((s) => idSet.has(s.id)));
 }
 
 /**

@@ -1,7 +1,7 @@
 /**
- * Typed `QueryBuilder<T>` — the chainable filter DSL that
- * `sync/relationship.ts` returns from its forward-many / reverse
- * traversals.
+ * Typed `QueryBuilder<T>` — the chainable filter DSL the namespace
+ * mounts onto `client.<entity>.find()` (and that the relationship
+ * primitive handles return for forward-many / reverse traversals).
  *
  * Extracted from `sync/relationship.ts` so the chain DSL and the
  * relationship traversal helpers own separate files. Both import
@@ -11,25 +11,33 @@
  * Shape:
  *
  * - `QueryPlan<T>` is the data carrier: candidates, accumulated
- *    filters, optional order, optional limit. The terminal
- *    `apply(plan)` materializes.
- * - `QueryBuilder<T>` extends `QueryPlan<T>` with the chainable
- *    `eq` / `orderBy` / `limit` mutators (each returns a new
- *    builder) and the `toArray()` / `find()` terminals.
+ *    filters, optional order, optional limit. Terminals call
+ *    `apply(plan)` to materialize.
+ * - `QueryBuilder<TFields>` extends `QueryPlan<unknown>` with the
+ *    chainable `eq` / `orderBy` / `limit` mutators (each returns a
+ *    new builder) and the `toArray()` / `find()` terminals.
  *
  * Design pins (per #158, "Refactors bundled in this PR"):
  *
- * - **`T` is unconstrained.** The plan only reads
- *   `data.fields[field].value`; the constraint adds nothing.
+ * - **`TFields` is phantom over the entity-bound shape.** The
+ *   factory accepts the runtime `candidates` list and the caller
+ *   (typically the namespace mount site) supplies the schema's
+ *   `TFields` at construction time so `eq` / `orderBy` narrow the
+ *   field name to `keyof TFields` without adding a runtime
+ *   argument on every call site.
+ * - **No constraint on the chain row type.** The plan only reads
+ *   `data.fields[field].value`; forcing a `T extends Entity`
+ *   constraint adds nothing. The terminal returns `unknown[]`;
+ *   callers cast on the result to whatever shape they expect (the
+ *   namespace mount handles this consistently per entity).
  * - **`toArray()` is the public terminal, `find()` is the
- *   backward-compat alias.** The relationship primitive handle
- *   already used `find()`; the chain DSL's terminal is `toArray()`.
- * - **Phantom `TFields`** and **`FieldValueFor<FieldMarker>`** land
- *   in a follow-up PR (the namespace mount), keeping this refactor
- *   a pure file move.
+ *   backward-compat alias.** The namespace mounts `toArray()`;
+ *   the relationship primitive already used `find()` and keeps it.
  */
 
 import type { Entity } from "@ebbjs/core";
+
+import type { FieldMarker, FieldValueFor } from "../schema/entity";
 
 /**
  * Single equality constraint on the chain. Multiplexing through a
@@ -129,42 +137,61 @@ export function apply<T>(plan: QueryPlan<T>): readonly T[] {
 }
 
 /**
- * Chainable builder. Carries the chain's data plus the chainable
- * mutators (`eq` / `orderBy` / `limit`) and the `toArray()` /
- * `find()` terminals.
+ * Typed chainable builder. Carries `TFields` as a phantom so callers
+ * see `eq(field: keyof TFields, value: FieldValueFor<TFields[K]>)`
+ * without paying for it at runtime. The chain mutators return a new
+ * builder with the constraint appended — the original is untouched,
+ * so the same builder can be reused across callers without
+ * surprising state.
  *
  * The two terminals — `toArray()` and `find()` — are intentionally
  * the same evaluation (`apply(plan)`); `find()` exists as the
  * backward-compat alias used by `relationship.ts`'s primitive
- * handle. The follow-up namespace PR drops `.toArray()` as the
- * public terminal and adds a planned `.first()` / `.count()` per
- * #163.
+ * handle. Issue #163 will add `.first()` / `.count()` / iteration;
+ * each one is a small wrapper over `apply(plan)`.
  */
-export interface QueryBuilder<T> extends QueryPlan<T> {
-  /** Equality filter on a field of `T`. */
-  eq(field: string, value: unknown): QueryBuilder<T>;
-  /** Ordering on a field of `T`. */
-  orderBy(field: string, direction: "asc" | "desc"): QueryBuilder<T>;
+export interface QueryBuilder<
+  TFields extends Record<string, FieldMarker> = Record<string, FieldMarker>,
+> extends QueryPlan<unknown> {
+  /** Equality filter on a declared field. Typed against `TFields`. */
+  eq<K extends keyof TFields & string>(
+    field: K,
+    value: FieldValueFor<TFields[K]>,
+  ): QueryBuilder<TFields>;
+  /** Ordering on a declared field. Typed against `TFields`. */
+  orderBy<K extends keyof TFields & string>(
+    field: K,
+    direction: "asc" | "desc",
+  ): QueryBuilder<TFields>;
   /** Maximum number of rows. */
-  limit(n: number): QueryBuilder<T>;
+  limit(n: number): QueryBuilder<TFields>;
   /** Materialize the chain against the cached candidates. */
-  toArray(): Promise<readonly T[]>;
+  toArray(): Promise<readonly unknown[]>;
   /**
    * Alias of `toArray()`, kept because the relationship primitive
    * handle shipped `find()` already. Both terminals share the same
    * `apply(plan)` implementation; rename only matters at the
    * caller site.
    */
-  find(): Promise<readonly T[]>;
+  find(): Promise<readonly unknown[]>;
 }
 
-function makeBuilder<T>(
-  candidates: readonly T[],
+/**
+ * Internally we keep `candidates` as `readonly unknown[]` because
+ * `QueryPlan<T>` parameterizes on the row type — for the
+ * relationship primitive handles the row type is `Entity`, for the
+ * namespaced `client.<entity>.find()` it's the user's typed record
+ * shape. The handle read sites cast to the concrete type when they
+ * consume the terminal. The unconstrained `unknown` keeps the type
+ * algebra closed under mutation.
+ */
+function makeBuilder<TFields extends Record<string, FieldMarker>>(
+  candidates: readonly unknown[],
   filters: readonly EqFilter[],
   order: OrderBy | null,
   limitN: number | null,
-): QueryBuilder<T> {
-  const plan: QueryPlan<T> = {
+): QueryBuilder<TFields> {
+  const plan: QueryPlan<unknown> = {
     candidates,
     filters,
     order,
@@ -173,13 +200,13 @@ function makeBuilder<T>(
   return {
     ...plan,
     eq(field, value) {
-      return makeBuilder(candidates, [...filters, { field, value }], order, limitN);
+      return makeBuilder<TFields>(candidates, [...filters, { field, value }], order, limitN);
     },
     orderBy(field, direction) {
-      return makeBuilder(candidates, filters, { field, direction }, limitN);
+      return makeBuilder<TFields>(candidates, filters, { field, direction }, limitN);
     },
     limit(n) {
-      return makeBuilder(candidates, filters, order, n);
+      return makeBuilder<TFields>(candidates, filters, order, n);
     },
     async toArray() {
       return apply(plan);
@@ -191,10 +218,45 @@ function makeBuilder<T>(
 }
 
 /**
- * Build a fresh `QueryBuilder<T>` over the given candidate rows.
- * Each chain method call returns a new builder carrying the new
- * constraint; the original is untouched.
+ * Build a fresh typed `QueryBuilder<TFields>` over the given
+ * candidate rows. The factory is generic on `TFields` (the schema's
+ * declared field map) and accepts an unconstrained `candidates`
+ * array; the static type erases the row shape inside the chain,
+ * callers cast on the terminal result.
+ *
+ * Typical call site — the namespace mount in `sync/namespace.ts`:
+ *
+ * ```ts
+ * const qb = buildQueryBuilder<typeof schema.entities.todo.fields>([]);
+ * await qb.eq("completed", false).orderBy("createdAt", "desc").toArray();
+ * ```
+ *
+ * The phantom `TFields` carries the typing for `eq` / `orderBy`
+ * without a runtime argument, per design pin #4 of #158.
  */
-export function buildQueryBuilder<T>(candidates: readonly T[] = []): QueryBuilder<T> {
-  return makeBuilder(candidates, [], null, null);
+export function buildQueryBuilder<TFields extends Record<string, FieldMarker>>(
+  candidates: readonly unknown[] = [],
+): QueryBuilder<TFields> {
+  return makeBuilder<TFields>(candidates, [], null, null);
 }
+
+/**
+ * Convenience: a `QueryBuilder<T>` alias parameterized on the
+ * schema-shaped field map. Mirrors what callers see at the
+ * namespace mount: `client.todo.find()` returns a
+ * `NamespacedQueryBuilder<typeof schema.entities.todo.fields>`.
+ * The runtime value is a plain `QueryBuilder<TFields>` — no
+ * difference, this is purely a name alias so the mount sites read
+ * consistently.
+ */
+export type NamespacedQueryBuilder<TFields extends Record<string, FieldMarker>> =
+  QueryBuilder<TFields>;
+
+/**
+ * The QueryBuilder shape carried by primitive handles that don't
+ * have a schema in scope (`client.relationship({...})` returns one
+ * of these). The phantom `TFields` is empty so `eq` / `orderBy`
+ * are statically unreachable on the primitive — the primitive
+ * already filters by relationship key at the traversal level.
+ */
+export type PrimitiveQueryBuilder = QueryBuilder<Record<never, never>>;

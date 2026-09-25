@@ -136,3 +136,13 @@ export {
 } from "./sync/query-builder";
 
 export { getFieldValue, hasField, stripField } from "./sync/entity-fields";
+
+export { buildEntityHandle, type EntityHandle } from "./sync/handle";
+
+export {
+  mountNamespace,
+  type EntityCollection,
+  type CreateInput,
+  type UpdateInput,
+  type NamespacedClient,
+} from "./sync/namespace";

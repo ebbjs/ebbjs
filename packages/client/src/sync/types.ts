@@ -8,7 +8,7 @@ import type { Schema } from "../schema/schema";
 
 type AnyEntityDef = EntityDef<Record<string, FieldMarker>>;
 type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
-type AnySchema = Schema<
+export type AnySchema = Schema<
   Record<string, AnyEntityDef>,
   Record<string, AnyRelationshipDef> | undefined
 >;
@@ -166,7 +166,7 @@ export type RegistryViolationListener = (
 ) => void;
 
 /** Options for `createClient`. */
-export interface SyncClientOptions {
+export interface SyncClientOptions<TSchema extends AnySchema | undefined = AnySchema | undefined> {
   /** Base URL of the ebb server (no trailing slash). */
   serverUrl: string;
   /** Actor identity for bypass auth (`x-ebb-actor-id`). */
@@ -208,5 +208,18 @@ export interface SyncClientOptions {
    * handshake body. Mutually compatible with `registry?`: an
    * explicit `registry` wins if both are passed.
    */
-  schema?: AnySchema;
+  schema?: TSchema;
 }
+
+/**
+ * Input shape for `createClient` when **no** schema is provided.
+ * Modeled as an overload-friendly version of `SyncClientOptions` so
+ * `createClient` can pick between the un-namespaced return type and
+ * the namespaced one based on whether `schema?` is set.
+ */
+export type CreateClientOptionsWithSchema<TSchema extends AnySchema> = Omit<
+  SyncClientOptions<TSchema>,
+  "schema"
+> & {
+  schema: TSchema;
+};
