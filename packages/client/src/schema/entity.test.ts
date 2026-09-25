@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { defineEntity, e, type EntityDef, type NullableSchema } from "./entity";
+import { defineEntity, e, Optional, type EntityDef, type NullableSchema } from "./entity";
 
 describe("defineEntity", () => {
   it("returns a value with the given name and fields", () => {
@@ -103,5 +103,31 @@ describe("e.* primitives", () => {
     const s: NullableSchema<ReturnType<typeof Type.String>> = e.string();
     expect(typeof s.nullable).toBe("function");
     expect(Object.keys(s)).not.toContain("nullable");
+  });
+});
+
+describe("bare-field-map authoring", () => {
+  it("defineEntity accepts a bare field map; callers never write Type.Object", () => {
+    // The AC: callers write `{ title: e.string(), completed: e.boolean() }`
+    // and defineEntity wraps it internally. The shape axis carries the
+    // Type.Object wrapper; the call site doesn't construct it.
+    const todo = defineEntity("todo", {
+      title: e.string(),
+      completed: e.boolean(),
+      body: e.string().nullable(),
+    });
+    expect(todo.name).toBe("todo");
+    expect(todo.shape.type).toBe("object");
+  });
+
+  it("Optional from @ebbjs/client opts a field in without importing TypeBox directly", () => {
+    // The AC: `Optional` is re-exported so users can mark fields optional
+    // without adding @sinclair/typebox to their own dependencies.
+    const todo = defineEntity("todo", {
+      title: e.string(),
+      archivedAt: Optional(e.string()),
+    });
+    expect(Object.isFrozen(todo)).toBe(true);
+    expect(todo.shape.type).toBe("object");
   });
 });
