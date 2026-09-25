@@ -76,6 +76,12 @@ export interface HandshakeRequest {
    * When omitted, the client only advertises `schema_version`.
    */
   min_supported_version?: number;
+  /**
+   * Optional content hash of the composed schema. The server uses
+   * this to detect drift between the client's view and any stored
+   * schema. Derived from `schema` when not set explicitly.
+   */
+  schema_hash?: string;
 }
 
 /**
@@ -205,9 +211,10 @@ export interface SyncClientOptions {
    * client builds a per-client `EntityRegistry` seeded from
    * `schema._registry` (so runtime mutations don't bleed across
    * clients sharing the same `schema` value) and advertises
-   * `schema.version` (and `minSupportedVersion` when set) in the
-   * handshake body. Mutually compatible with `registry?`: an
-   * explicit `registry` wins if both are passed.
+   * `schema.version` (and `minSupportedVersion` when set) and a
+   * deterministic `schema_hash` in the handshake body. Mutually
+   * compatible with `registry?`: an explicit `registry` wins if
+   * both are passed.
    */
   schema?: AnySchema;
 }
