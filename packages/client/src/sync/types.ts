@@ -2,11 +2,12 @@ import { Type, Static } from "@sinclair/typebox";
 export type { Action } from "@ebbjs/core";
 // Bring `Action` into local scope so the interfaces below can use it.
 type Action = import("@ebbjs/core").Action;
-import type { EntityDef, FieldMarker } from "../schema/entity";
+import type { EntityDef } from "../schema/entity";
 import type { RelationshipDef } from "../schema/relationship";
 import type { Schema } from "../schema/schema";
+import type { TSchema } from "@sinclair/typebox/type";
 
-type AnyEntityDef = EntityDef<Record<string, FieldMarker>>;
+type AnyEntityDef = EntityDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
 type AnySchema = Schema<
   Record<string, AnyEntityDef>,

@@ -7,6 +7,7 @@
  */
 
 import type { Action } from "@ebbjs/core";
+import type { TSchema } from "@sinclair/typebox/type";
 
 import type { EntityDef, FieldMarker } from "./entity";
 import type { RelationshipDef, SourceCardinality } from "./relationship";
@@ -46,7 +47,7 @@ const formatViolations = (vs: readonly ValidationViolation[]): string => {
 /** Placeholder `entityName` when the offending subject_type wasn't registered. */
 const UNKNOWN_ENTITY = "(unknown)";
 
-type AnyEntityDef = EntityDef<Record<string, FieldMarker>>;
+type AnyEntityDef = EntityDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
 
 /**
@@ -70,8 +71,8 @@ const relationshipKey = (sourceName: string, as: string): string => `${sourceNam
  * `defineRelationship` reference.
  */
 const toRelationshipDef = (r: RegisteredRelationship): AnyRelationshipDef => ({
-  source: { name: r.sourceName, fields: {} },
-  target: { name: r.targetName, fields: {} },
+  source: { name: r.sourceName, fields: {} as Record<string, FieldMarker> } as AnyEntityDef,
+  target: { name: r.targetName, fields: {} as Record<string, FieldMarker> } as AnyEntityDef,
   as: r.as,
   sourceCardinality: r.sourceCardinality,
   type: r.type,
@@ -82,7 +83,7 @@ export class EntityRegistry {
   private readonly relationships = new Map<string, RegisteredRelationship>();
 
   /** Register an entity. Re-registering the same name overwrites. */
-  register<TFields extends Record<string, FieldMarker>>(entity: EntityDef<TFields>): void {
+  register<TFields extends Record<string, TSchema>>(entity: EntityDef<TFields>): void {
     this.entities.set(entity.name, entity as unknown as AnyEntityDef);
   }
 
@@ -106,8 +107,8 @@ export class EntityRegistry {
    * detect the overwrite.
    */
   registerRelationship<
-    S extends EntityDef<Record<string, FieldMarker>>,
-    T extends EntityDef<Record<string, FieldMarker>>,
+    S extends EntityDef<Record<string, TSchema>>,
+    T extends EntityDef<Record<string, TSchema>>,
   >(def: RelationshipDef<S, T>): { overwritten: boolean; previousCardinality?: SourceCardinality } {
     const key = relationshipKey(def.source.name, def.as);
     const prev = this.relationships.get(key);
