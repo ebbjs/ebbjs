@@ -39,7 +39,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   createAction,
   createClock,
-  e,
   encodeSync,
   localEvent,
   makeHlc,
@@ -47,7 +46,7 @@ import {
   type UpdateInput,
 } from "@ebbjs/core";
 import { createClient, type SyncClient } from "../..";
-import { defineEntity } from "../../schema/entity";
+import { defineEntity, e } from "../../schema/entity";
 import { defineRelationship } from "../../schema/relationship";
 import { EntityRegistry, EntityValidationError } from "../../schema/entity-registry";
 import { defineSchema } from "../../schema/schema";

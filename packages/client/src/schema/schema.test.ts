@@ -3,9 +3,9 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { e, makeHlc, type Action } from "@ebbjs/core";
+import { makeHlc, type Action } from "@ebbjs/core";
 
-import { defineEntity } from "./entity";
+import { defineEntity, e } from "./entity";
 import { EntityRegistry, EntityValidationError } from "./entity-registry";
 import { defineRelationship } from "./relationship";
 import { defineSchema, type Schema } from "./schema";
