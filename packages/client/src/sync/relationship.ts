@@ -13,6 +13,7 @@
 import type { Entity } from "@ebbjs/core";
 
 import type { EntityRegistry } from "../schema/entity-registry";
+import { buildQueryBuilder, type QueryBuilder } from "./query-builder";
 
 /**
  * Inputs to `client.relationship({...})`. Mirrors `defineRelationship`
@@ -125,103 +126,6 @@ export function normalizeManyPointers(value: ManyPointerValue, label: string): r
     }
   }
   return ids;
-}
-
-/**
- * Filter chain for relationship traversal. The same chain is
- * returned by reverse accessors and by `sourceCardinality: "many"`
- * forward accessors. `find()` materializes against the client's
- * local cache.
- *
- * The chain is immutable: every method returns a new builder with
- * the constraint added. This keeps the handle reusable across calls
- * without surprising state.
- */
-export interface QueryBuilder<T> {
-  /** Equality filter on a field of `T`. */
-  eq(field: string, value: unknown): QueryBuilder<T>;
-  /** Ordering on a field of `T`. */
-  orderBy(field: string, direction: "asc" | "desc"): QueryBuilder<T>;
-  /** Maximum number of rows. */
-  limit(n: number): QueryBuilder<T>;
-  /** Materialize the chain against the client's local cache. */
-  find(): Promise<readonly T[]>;
-}
-
-/** Chainable filter descriptor — accumulated by `eq`. */
-type EqFilter = { field: string; value: unknown };
-type OrderBy = { field: string; direction: "asc" | "desc" };
-
-/**
- * Build a QueryBuilder over a list of candidate entities. The
- * `loadEntities` callback hydrates ids → Entity; the chain applies
- * eq / orderBy / limit on top.
- *
- * Each chain method returns a *new* builder with the new constraint
- * appended — the original is untouched, so the same builder can be
- * reused across callers without surprising state.
- */
-export function buildQueryBuilder<T extends Entity>(candidates: readonly T[]): QueryBuilder<T> {
-  const make = (
-    filters: readonly EqFilter[],
-    order: OrderBy | null,
-    limitN: number | null,
-  ): QueryBuilder<T> => {
-    const apply = (rows: readonly T[]): T[] => {
-      let out = rows.slice();
-      if (filters.length > 0) {
-        out = out.filter((row) => filters.every((f) => eqField(row, f.field, f.value)));
-      }
-      if (order !== null) {
-        const { field, direction } = order;
-        out.sort((a, b) => cmpField(a, b, field, direction));
-      }
-      if (limitN !== null && limitN >= 0) {
-        out = out.slice(0, limitN);
-      }
-      return out;
-    };
-    return {
-      eq(field: string, value: unknown): QueryBuilder<T> {
-        return make([...filters, { field, value }], order, limitN);
-      },
-      orderBy(field: string, direction: "asc" | "desc"): QueryBuilder<T> {
-        return make(filters, { field, direction }, limitN);
-      },
-      limit(n: number): QueryBuilder<T> {
-        return make(filters, order, n);
-      },
-      async find(): Promise<readonly T[]> {
-        return apply(candidates);
-      },
-    };
-  };
-  return make([], null, null);
-}
-
-/** Pull `data.fields[field].value` off an Entity, returning `undefined` when absent. */
-function fieldValue(entity: Entity, field: string): unknown {
-  const fv = entity.data?.fields?.[field];
-  if (fv === undefined) return undefined;
-  return fv.value;
-}
-
-function eqField(entity: Entity, field: string, value: unknown): boolean {
-  return fieldValue(entity, field) === value;
-}
-
-function cmpField(a: Entity, b: Entity, field: string, direction: "asc" | "desc"): number {
-  const av = fieldValue(a, field);
-  const bv = fieldValue(b, field);
-  if (av === bv) return 0;
-  if (av === undefined) return 1;
-  if (bv === undefined) return -1;
-  if (typeof av === "number" && typeof bv === "number") {
-    return direction === "asc" ? av - bv : bv - av;
-  }
-  const as = String(av);
-  const bs = String(bv);
-  return direction === "asc" ? as.localeCompare(bs) : bs.localeCompare(as);
 }
 
 /**

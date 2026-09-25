@@ -666,7 +666,7 @@ describe("QueryBuilder (sync/relationship)", () => {
   });
 
   it("eq filters by field equality", async () => {
-    const { buildQueryBuilder } = await import("../sync/relationship");
+    const { buildQueryBuilder } = await import("../sync/query-builder");
     const rows = [
       buildEntity("1", { completed: false }),
       buildEntity("2", { completed: true }),
@@ -677,7 +677,7 @@ describe("QueryBuilder (sync/relationship)", () => {
   });
 
   it("orderBy sorts by field", async () => {
-    const { buildQueryBuilder } = await import("../sync/relationship");
+    const { buildQueryBuilder } = await import("../sync/query-builder");
     const rows = [
       buildEntity("1", { title: "banana" }),
       buildEntity("2", { title: "apple" }),
@@ -688,7 +688,7 @@ describe("QueryBuilder (sync/relationship)", () => {
   });
 
   it("limit caps the result count", async () => {
-    const { buildQueryBuilder } = await import("../sync/relationship");
+    const { buildQueryBuilder } = await import("../sync/query-builder");
     const rows = [
       buildEntity("1", { x: 1 }),
       buildEntity("2", { x: 2 }),
@@ -699,7 +699,7 @@ describe("QueryBuilder (sync/relationship)", () => {
   });
 
   it("chains eq + orderBy + limit", async () => {
-    const { buildQueryBuilder } = await import("../sync/relationship");
+    const { buildQueryBuilder } = await import("../sync/query-builder");
     const rows = [
       buildEntity("1", { x: 1, y: false }),
       buildEntity("2", { x: 2, y: true }),
@@ -711,7 +711,7 @@ describe("QueryBuilder (sync/relationship)", () => {
   });
 
   it("chains return new builders (no shared state)", async () => {
-    const { buildQueryBuilder } = await import("../sync/relationship");
+    const { buildQueryBuilder } = await import("../sync/query-builder");
     const rows = [buildEntity("1", { y: false }), buildEntity("2", { y: true })];
     const base = buildQueryBuilder(rows);
     const a = base.eq("y", true);
@@ -825,7 +825,7 @@ describe("relationship() handle traversal", () => {
     });
 
     const handle = client.relationship({ source: issue, target: list, as: "labels" });
-    const qb = (await handle.forward("issue_1")) as import("../sync/relationship").QueryBuilder<
+    const qb = (await handle.forward("issue_1")) as import("../sync/query-builder").QueryBuilder<
       import("@ebbjs/core").Entity
     >;
     const out = await qb.find();

@@ -125,3 +125,14 @@ export {
 } from "./schema/entity-registry";
 
 export { defineSchema, type DefineSchemaInput, type Schema } from "./schema/schema";
+
+export {
+  buildQueryBuilder,
+  apply as applyQueryPlan,
+  type QueryBuilder,
+  type QueryPlan,
+  type EqFilter,
+  type OrderBy,
+} from "./sync/query-builder";
+
+export { getFieldValue, hasField, stripField } from "./sync/entity-fields";

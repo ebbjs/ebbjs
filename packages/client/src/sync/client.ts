@@ -47,9 +47,9 @@ import {
   reverse as reverseTraversal,
   type BuildRelationshipWriteOptions,
   type BuildRelationshipWriteResult,
-  type QueryBuilder,
   type RelationshipHandleInput,
 } from "./relationship";
+import type { QueryBuilder } from "./query-builder";
 import { generateId } from "@ebbjs/core";
 import type { EntityDef, FieldMarker } from "../schema/entity";
 import type { Schema } from "../schema/schema";
