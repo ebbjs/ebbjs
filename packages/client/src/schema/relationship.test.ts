@@ -827,10 +827,11 @@ describe("relationship() handle traversal", () => {
     });
 
     const handle = client.relationship({ source: issue, target: list, as: "labels" });
-    const qb = (await handle.forward("issue_1")) as import("../sync/relationship").QueryBuilder<
-      typeof list.fields
-    >;
-    const out = await qb;
+    const qb = handle.forward("issue_1");
+    // The handle's static type is the union of one-cardinality and
+    // many-cardinality return shapes; cardinality is "many" here, so
+    // the awaited value is the projected array.
+    const out = (await qb) as readonly { name: string }[];
     expect(out.map((e) => e.name).sort()).toEqual(["A", "B"]);
   });
 
@@ -879,8 +880,8 @@ describe("relationship() handle traversal", () => {
     });
 
     const handle = client.relationship({ source: todo, target: list, as: "list" });
-    const qb = await handle.reverse("list_1");
-    const out = await qb;
+    const qb = handle.reverse("list_1");
+    const out = (await qb) as readonly { title: string }[];
     expect(out.map((e) => e.title).sort()).toEqual(["x", "y"]);
   });
 });

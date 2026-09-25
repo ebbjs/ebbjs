@@ -927,8 +927,8 @@ describe("integration: defineRelationship + buildRelationshipWrite", () => {
         target: groupTarget,
         as: "ownedBy",
       });
-      const qb = await handle.reverse(TEST_GROUP_ID);
-      const sources = await qb.find();
+      const qb = handle.reverse(TEST_GROUP_ID);
+      const sources = await qb.toRaw();
       expect(sources.map((s) => s.id)).toContain(todoId);
     } finally {
       client.close();

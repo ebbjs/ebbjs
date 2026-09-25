@@ -14,7 +14,7 @@ import type { Entity } from "@ebbjs/core";
 import type { TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { EntityRegistry } from "../schema/entity-registry";
-import { type QueryBuilder, buildQueryBuilder } from "./query-builder";
+import { type LoadEntities, type QueryBuilder, buildLazyQueryBuilder } from "./query-builder";
 
 /**
  * Inputs to `client.relationship({...})`. Mirrors `defineRelationship`
@@ -185,13 +185,16 @@ export async function forwardOne(
 /**
  * Build a forward-many accessor result. The source entity's field
  * holds an array of FKs; we materialize the source, collect the ids,
- * load each target, and return a typed QueryBuilder over the loaded
- * entities.
+ * and return a typed QueryBuilder that loads each target lazily on
+ * `await qb`.
  *
  * `targetShape` drives the projection on `await qb` — the chain is
  * generic over the target entity's field map.
+ *
+ * Synchronous: the chain defers the storage reads to a `LoadEntities`
+ * callback so the builder is thenable without an outer Promise.
  */
-export async function forwardMany<TFields extends Record<string, TSchema>>(
+export function forwardMany<TFields extends Record<string, TSchema>>(
   readLocalEntity: (id: string) => Promise<Entity | null>,
   queryEntitiesByType: (type: string) => Promise<readonly Entity[]>,
   sourceId: string,
@@ -199,31 +202,24 @@ export async function forwardMany<TFields extends Record<string, TSchema>>(
   targetName: string,
   targetShape: TObject<TFields>,
   field: string,
-): Promise<QueryBuilder<TFields>> {
-  const source = await readLocalEntity(sourceId);
-  if (source === null) {
-    return buildQueryBuilder<TFields>([], targetShape);
-  }
-  if (source.type !== sourceName) {
-    return buildQueryBuilder<TFields>([], targetShape);
-  }
-  const fv = source.data?.fields?.[field];
-  if (fv === undefined || fv.value === null || fv.value === undefined) {
-    return buildQueryBuilder<TFields>([], targetShape);
-  }
-  if (!Array.isArray(fv.value)) {
-    return buildQueryBuilder<TFields>([], targetShape);
-  }
-  const ids = fv.value.filter((v): v is string => typeof v === "string");
-  // The source holds the canonical set; we don't need to filter via
-  // Relationship entities here (the set IS the relationship list).
-  // Load every materialized entity of `targetName` and intersect.
-  const allTargets = await queryEntitiesByType(targetName);
-  const idSet = new Set(ids);
-  return buildQueryBuilder(
-    allTargets.filter((t) => idSet.has(t.id)),
-    targetShape,
-  );
+): QueryBuilder<TFields> {
+  const loader: LoadEntities = async () => {
+    const source = await readLocalEntity(sourceId);
+    if (source === null) return [];
+    if (source.type !== sourceName) return [];
+    const fv = source.data?.fields?.[field];
+    if (fv === undefined || fv.value === null || fv.value === undefined) return [];
+    if (!Array.isArray(fv.value)) return [];
+    const ids = fv.value.filter((v): v is string => typeof v === "string");
+    // The source holds the canonical set; we don't need to filter
+    // via Relationship entities here (the set IS the relationship
+    // list). Load every materialized entity of `targetName` and
+    // intersect.
+    const allTargets = await queryEntitiesByType(targetName);
+    const idSet = new Set(ids);
+    return allTargets.filter((t) => idSet.has(t.id));
+  };
+  return buildLazyQueryBuilder(loader, targetShape);
 }
 
 /**
@@ -233,8 +229,11 @@ export async function forwardMany<TFields extends Record<string, TSchema>>(
  *
  * `sourceShape` drives the projection on `await qb` — the chain is
  * generic over the source entity's field map.
+ *
+ * Synchronous: the chain defers the storage reads to a `LoadEntities`
+ * callback so the builder is thenable without an outer Promise.
  */
-export async function reverse<TFields extends Record<string, TSchema>>(
+export function reverse<TFields extends Record<string, TSchema>>(
   readLocalEntity: (id: string) => Promise<Entity | null>,
   queryEntitiesByType: (type: string) => Promise<readonly Entity[]>,
   targetId: string,
@@ -242,21 +241,21 @@ export async function reverse<TFields extends Record<string, TSchema>>(
   sourceShape: TObject<TFields>,
   field: string,
   type: string,
-): Promise<QueryBuilder<TFields>> {
-  const all = await queryEntitiesByType("relationship");
-  const matching = findRelationshipsByField(all, field, type).filter((rel) => {
-    const t = rel.data?.fields?.["target_id"];
-    return t?.value === targetId;
-  });
-  const sourceIds = matching
-    .map((rel) => rel.data?.fields?.["source_id"]?.value)
-    .filter((v): v is string => typeof v === "string");
-  const allSources = await queryEntitiesByType(sourceName);
-  const idSet = new Set(sourceIds);
-  return buildQueryBuilder(
-    allSources.filter((s) => idSet.has(s.id)),
-    sourceShape,
-  );
+): QueryBuilder<TFields> {
+  const loader: LoadEntities = async () => {
+    const all = await queryEntitiesByType("relationship");
+    const matching = findRelationshipsByField(all, field, type).filter((rel) => {
+      const t = rel.data?.fields?.["target_id"];
+      return t?.value === targetId;
+    });
+    const sourceIds = matching
+      .map((rel) => rel.data?.fields?.["source_id"]?.value)
+      .filter((v): v is string => typeof v === "string");
+    const allSources = await queryEntitiesByType(sourceName);
+    const idSet = new Set(sourceIds);
+    return allSources.filter((s) => idSet.has(s.id));
+  };
+  return buildLazyQueryBuilder(loader, sourceShape);
 }
 
 /**

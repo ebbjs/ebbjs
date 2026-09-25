@@ -9,7 +9,6 @@
  */
 
 import type { StorageAdapter } from "@ebbjs/storage";
-import { Type } from "@sinclair/typebox";
 import type { TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { EntityDef } from "../schema/entity";
@@ -49,13 +48,16 @@ export type EntityNamespaces<S> =
 /**
  * Build a namespace for one entity. The namespace's `query()` returns
  * a lazy QueryBuilder seeded from `storage.entities.query(entityName)`.
+ *
+ * `shape` is the entity's TypeBox object schema (the projection
+ * source); the builder reads it at materialization time to drive
+ * the per-field lookup.
  */
 export function createEntityNamespace<TFields extends Record<string, TSchema>>(
   entityName: string,
-  fields: TFields,
+  shape: TObject<TFields>,
   storage: StorageAdapter,
 ): EntityNamespace<TFields> {
-  const shape = Type.Object(fields) as TObject<TFields>;
   const loader: LoadEntities = async () => storage.entities.query(entityName);
   return {
     query(): QueryBuilder<TFields> {
@@ -75,7 +77,7 @@ export function buildEntityNamespaces<
 >(schema: S, storage: StorageAdapter): EntityNamespaces<S> {
   const out: Record<string, EntityNamespace<Record<string, TSchema>>> = {};
   for (const [name, def] of Object.entries(schema.entities)) {
-    out[name] = createEntityNamespace(name, def.fields, storage);
+    out[name] = createEntityNamespace(name, def.shape, storage);
   }
   return out as EntityNamespaces<S>;
 }

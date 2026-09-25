@@ -535,7 +535,7 @@ export class SyncClient {
     const handle: RelationshipHandle = {
       forward: (
         sourceId: string,
-      ): Promise<Entity | undefined> | Promise<QueryBuilder<Record<string, TSchema>>> => {
+      ): Promise<Entity | undefined> | QueryBuilder<Record<string, TSchema>> => {
         if (cardinality === "one") {
           return forwardOne(readLocalEntity, sourceId, sourceName, field);
         }
@@ -552,7 +552,7 @@ export class SyncClient {
           field,
         );
       },
-      reverse: (targetId: string): Promise<QueryBuilder<Record<string, TSchema>>> => {
+      reverse: (targetId: string): QueryBuilder<Record<string, TSchema>> => {
         if (sourceShape === undefined) {
           return buildQueryBuilder<Record<string, TSchema>>([], Type.Object({}));
         }
@@ -1168,18 +1168,15 @@ export interface QueryOptions {
  * Handle returned by {@link SyncClient.relationship}.
  *
  * `forward(sourceId)` returns `Promise<Entity | undefined>` for
- * `sourceCardinality: "one"` and `Promise<QueryBuilder<TTargetFields>>`
- * for `sourceCardinality: "many"`. `reverse(targetId)` returns
- * `Promise<QueryBuilder<TSourceFields>>`. The fields are projected
- * from the registry-stored `EntityDef.shape`; when the target or
- * source isn't registered, the chain is over `Record<string, TSchema>`
- * (no projection).
+ * `sourceCardinality: "one"` and a `QueryBuilder<TTargetFields>`
+ * (thenable) for `sourceCardinality: "many"`. `reverse(targetId)`
+ * returns a `QueryBuilder<TSourceFields>` (thenable). Awaiting the
+ * chain yields the projected rows; awaiting the one-cardinality
+ * `forward` resolves the single entity.
  */
 export interface RelationshipHandle {
-  forward(
-    sourceId: string,
-  ): Promise<Entity | undefined> | Promise<QueryBuilder<Record<string, TSchema>>>;
-  reverse(targetId: string): Promise<QueryBuilder<Record<string, TSchema>>>;
+  forward(sourceId: string): Promise<Entity | undefined> | QueryBuilder<Record<string, TSchema>>;
+  reverse(targetId: string): QueryBuilder<Record<string, TSchema>>;
 }
 
 /**
