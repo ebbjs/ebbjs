@@ -16,13 +16,7 @@ export const collaborativeTextFieldMarker = {
   type: "causal-tree",
 } as const;
 
-/**
- * Typed field markers for the v1 API.
- *
- * For the prototype, only `collaborativeText` matters. The other entries
- * are stubs that the prototype doesn't use but exist so the public API
- * shape matches the v1 docs.
- */
+/** Typed-field marker factories. LWW primitives plus `collaborativeText`. */
 export const e = {
   /** Last-writer-wins string field. */
   string: (): { type: "lww" } => ({ type: "lww" }),
@@ -30,8 +24,6 @@ export const e = {
   number: (): { type: "lww" } => ({ type: "lww" }),
   /** Last-writer-wins boolean field. */
   boolean: (): { type: "lww" } => ({ type: "lww" }),
-  /** Counter field (additive). */
-  counter: (): { type: "counter" } => ({ type: "counter" }),
   /**
    * Causal-tree collaborative text field.
    *
