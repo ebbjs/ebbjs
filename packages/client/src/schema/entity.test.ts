@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { defineEntity, e, Optional, type EntityDef, type NullableSchema } from "./entity";
+import { defineEntity, e, type EntityDef, type NullableSchema } from "./entity";
 
 describe("defineEntity", () => {
   it("returns a value with the given name and fields", () => {
@@ -112,15 +112,6 @@ describe("bare-field-map authoring", () => {
       body: e.string().nullable(),
     });
     expect(todo.name).toBe("todo");
-    expect(todo.shape.type).toBe("object");
-  });
-
-  it("Optional from @ebbjs/client opts a field in without importing TypeBox directly", () => {
-    const todo = defineEntity("todo", {
-      title: e.string(),
-      archivedAt: Optional(e.string()),
-    });
-    expect(Object.isFrozen(todo)).toBe(true);
     expect(todo.shape.type).toBe("object");
   });
 });

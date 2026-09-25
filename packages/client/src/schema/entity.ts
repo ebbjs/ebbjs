@@ -8,7 +8,7 @@
  * `EntityDef.fields`. Marker and shape are independent axes.
  */
 
-import { Optional, Type } from "@sinclair/typebox";
+import { Type } from "@sinclair/typebox";
 import type { TSchema } from "@sinclair/typebox/type";
 
 /** Merge-semantics marker. Marker and shape are independent axes. */
@@ -74,6 +74,4 @@ export function defineEntity<TFields extends Record<string, TSchema>>(
   });
 }
 
-/** Re-exported so app code can opt fields in/out without a direct TypeBox dependency. */
-export { Optional };
 export type { TSchema };

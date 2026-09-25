@@ -112,7 +112,6 @@ export type {
 export {
   defineEntity,
   e,
-  Optional,
   type EntityDef,
   type FieldMarker,
   type NullableSchema,
