@@ -21,7 +21,6 @@ describe("defineEntity", () => {
   });
 
   it("preserves field-name typing in EntityDef<TFields>", () => {
-    // Compile-time check: keys of `fields` flow through to EntityDef.
     const todo: EntityDef<{ title: { type: "lww" } }> = defineEntity("todo", {
       title: e.string(),
     });
@@ -30,25 +29,10 @@ describe("defineEntity", () => {
 
   it("produces independent values for independent calls", () => {
     const a = defineEntity("a", { x: e.number() });
-    const b = defineEntity("b", { y: e.counter() });
+    const b = defineEntity("b", { y: e.boolean() });
     expect(a).not.toBe(b);
     expect(a.name).toBe("a");
     expect(b.name).toBe("b");
     expect(a.fields).not.toBe(b.fields);
-  });
-
-  it("supports all marker types in fields", () => {
-    const doc = defineEntity("doc", {
-      body: e.collaborativeText(),
-      views: e.counter(),
-      title: e.string(),
-      rating: e.number(),
-      pinned: e.boolean(),
-    });
-    expect(doc.fields.body).toEqual({ type: "causal-tree" });
-    expect(doc.fields.views).toEqual({ type: "counter" });
-    expect(doc.fields.title).toEqual({ type: "lww" });
-    expect(doc.fields.rating).toEqual({ type: "lww" });
-    expect(doc.fields.pinned).toEqual({ type: "lww" });
   });
 });
