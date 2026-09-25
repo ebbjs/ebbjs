@@ -49,9 +49,6 @@ describe("defineRelationship", () => {
   });
 
   it("flows S and T into RelationshipDef<S, T> via inference", () => {
-    // Compile-time check: the source and target entity defs flow
-    // through `defineRelationship` into RelationshipDef<S, T> with
-    // their generic shape preserved.
     const rel = defineRelationship({ source: todo, target: list, as: "list" });
     type Inferred = RelationshipDef<typeof todo, typeof list>;
     const typed: Inferred = rel;

@@ -5,17 +5,14 @@
  * internally in `Type.Object(fields)` so callers never write the wrapper
  * themselves. The wrapped schema is stored as `EntityDef.shape`; the
  * unwrapped field map, with its merge-marker projection, is stored as
- * `EntityDef.fields`. The two are independent axes (Decision #3 in the
- * typed-ORM design).
+ * `EntityDef.fields`. Marker and shape are independent axes.
  */
 
 import { Optional, Type } from "@sinclair/typebox";
 import type { TSchema } from "@sinclair/typebox/type";
 
 /** Merge-semantics marker. Marker and shape are independent axes. */
-// Future counter / causal-tree markers extend this union in their own
-// issues; the derivation table inside `deriveMarker` keeps the mapping
-// in one place.
+// Future counter / causal-tree markers extend this union in their own issues.
 export type FieldMarker = { type: "lww" };
 
 /** Schema with a `.nullable()` chain producing `T | null`. */

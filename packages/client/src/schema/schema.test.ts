@@ -103,8 +103,6 @@ describe("defineSchema", () => {
       entities: { todo },
       version: 1,
     });
-    // Compile-time assertion: the entity def is reachable through
-    // the generic, not narrowed to `unknown`.
     const fields: Schema<{ todo: typeof todo }>["entities"]["todo"]["fields"] =
       schema.entities.todo.fields;
     expect(fields.title.type).toBe("lww");

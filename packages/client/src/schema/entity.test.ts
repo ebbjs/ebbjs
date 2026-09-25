@@ -42,8 +42,6 @@ describe("defineEntity", () => {
   });
 
   it("preserves the typed EntityDef<TFields> generic at the call site", () => {
-    // Compile-time assertion: the user-written field map flows
-    // through `defineEntity` into EntityDef<TFields>.
     const todo: EntityDef<{
       title: ReturnType<typeof e.string>;
       completed: ReturnType<typeof e.boolean>;
@@ -108,9 +106,6 @@ describe("e.* primitives", () => {
 
 describe("bare-field-map authoring", () => {
   it("defineEntity accepts a bare field map; callers never write Type.Object", () => {
-    // The AC: callers write `{ title: e.string(), completed: e.boolean() }`
-    // and defineEntity wraps it internally. The shape axis carries the
-    // Type.Object wrapper; the call site doesn't construct it.
     const todo = defineEntity("todo", {
       title: e.string(),
       completed: e.boolean(),
@@ -121,8 +116,6 @@ describe("bare-field-map authoring", () => {
   });
 
   it("Optional from @ebbjs/client opts a field in without importing TypeBox directly", () => {
-    // The AC: `Optional` is re-exported so users can mark fields optional
-    // without adding @sinclair/typebox to their own dependencies.
     const todo = defineEntity("todo", {
       title: e.string(),
       archivedAt: Optional(e.string()),

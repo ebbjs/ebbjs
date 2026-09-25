@@ -15,7 +15,7 @@ generation.
 | `src/action/`     | `createAction/1` — composes Update list into an `Action` with the right HLC + ID bookkeeping.         |
 | `src/validate.ts` | Runtime shape checks for inbound action/update payloads.                                              |
 
-110 tests across the package (`pnpm --filter @ebbjs/core test`).
+105 tests across the package (`pnpm --filter @ebbjs/core test`).
 
 ## Usage
 
