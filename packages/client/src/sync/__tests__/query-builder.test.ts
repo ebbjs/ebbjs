@@ -233,3 +233,36 @@ describe("buildQueryBuilder — Type.Optional field", () => {
     expect(out[1]?.note).toBeUndefined();
   });
 });
+
+describe("buildLazyQueryBuilder", () => {
+  it("loads candidates at materialization time, not at build time", async () => {
+    let calls = 0;
+    const loader = async () => {
+      calls += 1;
+      return [mkEntity("1", { title: "a", completed: false })];
+    };
+    const { buildLazyQueryBuilder } = await import("../query-builder");
+    const builder = buildLazyQueryBuilder(loader, todo.shape).eq("completed", false);
+    expect(calls).toBe(0);
+    const out = await builder;
+    expect(calls).toBe(1);
+    expect(out.map((r) => r.title)).toEqual(["a"]);
+  });
+
+  it("re-loads on every await (reflects the latest snapshot)", async () => {
+    let n = 0;
+    const loader = async () => [mkEntity("1", { title: String(n++), completed: false })];
+    const { buildLazyQueryBuilder } = await import("../query-builder");
+    const builder = buildLazyQueryBuilder(loader, todo.shape);
+    expect((await builder)[0]?.title).toBe("0");
+    expect((await builder)[0]?.title).toBe("1");
+  });
+
+  it("toRaw() also re-loads candidates", async () => {
+    const loader = async () => [mkEntity("1", { title: "a", completed: false })];
+    const { buildLazyQueryBuilder } = await import("../query-builder");
+    const out = await buildLazyQueryBuilder(loader, todo.shape).toRaw();
+    expect(out).toHaveLength(1);
+    expect(out[0]?.data?.fields?.title?.value).toBe("a");
+  });
+});

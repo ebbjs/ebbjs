@@ -56,6 +56,9 @@ type EqFilter<TFields extends Record<string, TSchema>> = {
 /** Ordering descriptor accumulated by `orderBy`. */
 type OrderBy = { field: string; direction: "asc" | "desc" };
 
+/** Loader for the candidate entity list. Resolved lazily on each materialization. */
+export type LoadEntities = () => Promise<readonly Entity[]>;
+
 /**
  * Typed thenable chain over a list of candidate entities. The same
  * chain is consumed by `client.<entity>.query()` and by the
@@ -96,6 +99,20 @@ export function buildQueryBuilder<TFields extends Record<string, TSchema>>(
   candidates: readonly Entity[],
   shape: TObject<TFields>,
 ): QueryBuilder<TFields> {
+  const loader: LoadEntities = async () => candidates;
+  return buildLazyQueryBuilder(loader, shape);
+}
+
+/**
+ * Like {@link buildQueryBuilder} but with a lazy candidate loader.
+ * The loader is called every time the chain materializes (via
+ * `await qb` or `.toRaw()`) so the chain reflects the latest
+ * snapshot of the underlying store.
+ */
+export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
+  loadCandidates: LoadEntities,
+  shape: TObject<TFields>,
+): QueryBuilder<TFields> {
   const make = (
     filters: readonly EqFilter<TFields>[],
     order: OrderBy | null,
@@ -126,12 +143,15 @@ export function buildQueryBuilder<TFields extends Record<string, TSchema>>(
         return make(filters, order, n);
       },
       async toRaw() {
+        const candidates = await loadCandidates();
         return apply(candidates);
       },
       // oxlint-disable-next-line no-thenable -- the QueryBuilder is intentionally a thenable; awaiting it projects the chain.
       then(onfulfilled, onrejected) {
-        const projected = projectRows(apply(candidates), shape);
-        return Promise.resolve(projected).then(onfulfilled, onrejected);
+        return loadCandidates().then((candidates) => {
+          const projected = projectRows(apply(candidates), shape);
+          return Promise.resolve(projected).then(onfulfilled, onrejected);
+        });
       },
     };
     return builder;
