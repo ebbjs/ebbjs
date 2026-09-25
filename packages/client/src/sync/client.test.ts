@@ -218,6 +218,101 @@ describe("SyncClient schema option", () => {
     expect(body).not.toHaveProperty("min_supported_version");
   });
 
+  it("advertises a deterministic schema_hash on the handshake body when a schema is configured", async () => {
+    const { fn, calls } = makeFetchMock([
+      { body: JSON.stringify({ actor_id: "a_test", groups: [] }) },
+    ]);
+    const schema = defineSchema({
+      entities: {
+        todo: defineEntity("todo", { title: e.string() }),
+      },
+      version: 1,
+    });
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+      schema,
+    });
+    await client.handshake();
+    const handshakeCall = calls.find((c) => c.url === "http://localhost:4000/sync/handshake");
+    const body = JSON.parse((handshakeCall!.init.body ?? "{}") as string);
+    expect(typeof body.schema_hash).toBe("string");
+    expect(body.schema_hash).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("produces the same schema_hash for equivalent schemas on independent clients", async () => {
+    const schemaA = defineSchema({
+      entities: {
+        todo: defineEntity("todo", { title: e.string() }),
+      },
+      version: 1,
+    });
+    const schemaB = defineSchema({
+      entities: {
+        todo: defineEntity("todo", { title: e.string() }),
+      },
+      version: 1,
+    });
+    const { fn: fnA } = makeFetchMock([
+      { body: JSON.stringify({ actor_id: "a_test", groups: [] }) },
+    ]);
+    const a = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fnA,
+      schema: schemaA,
+    });
+    await a.handshake();
+    const { fn: fnB } = makeFetchMock([
+      { body: JSON.stringify({ actor_id: "b_test", groups: [] }) },
+    ]);
+    const b = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "b_test",
+      fetchImpl: fnB,
+      schema: schemaB,
+    });
+    await b.handshake();
+    const bodyA = JSON.parse((fnA.mock.calls[0]?.[1] as RequestInit | undefined)?.body as string);
+    const bodyB = JSON.parse((fnB.mock.calls[0]?.[1] as RequestInit | undefined)?.body as string);
+    expect(bodyA.schema_hash).toBe(bodyB.schema_hash);
+  });
+
+  it("omits schema_hash from the handshake when no schema is configured", async () => {
+    const { fn, calls } = makeFetchMock([
+      { body: JSON.stringify({ actor_id: "a_test", groups: [] }) },
+    ]);
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+    });
+    await client.handshake();
+    const handshakeCall = calls.find((c) => c.url === "http://localhost:4000/sync/handshake");
+    const body = JSON.parse((handshakeCall!.init.body ?? "{}") as string);
+    expect(body).not.toHaveProperty("schema_hash");
+  });
+
+  it("accepts a per-call schema_hash override on handshake()", async () => {
+    const { fn, calls } = makeFetchMock([
+      { body: JSON.stringify({ actor_id: "a_test", groups: [] }) },
+    ]);
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+      schema: defineSchema({
+        entities: { todo: defineEntity("todo", { title: e.string() }) },
+        version: 1,
+      }),
+    });
+    await client.handshake({ schema_hash: "deadbeefcafebabe" });
+    const handshakeCall = calls.find((c) => c.url === "http://localhost:4000/sync/handshake");
+    const body = JSON.parse((handshakeCall!.init.body ?? "{}") as string);
+    expect(body.schema_hash).toBe("deadbeefcafebabe");
+  });
+
   it("keeps the schema's registry isolated from other clients", () => {
     const { fn } = makeFetchMock([{ body: JSON.stringify({ actor_id: "a_test", groups: [] }) }]);
     const a = createClient({

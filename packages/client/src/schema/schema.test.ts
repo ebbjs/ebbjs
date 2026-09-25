@@ -225,3 +225,57 @@ describe("defineSchema", () => {
     expect(a._registry).not.toBe(b._registry);
   });
 });
+
+describe("defineSchema TypeBox shape axis", () => {
+  it("exposes the implicit Type.Object wrapper as schema.entities.X.shape", () => {
+    const schema = defineSchema({
+      entities: { todo },
+      version: 1,
+    });
+    expect(schema.entities.todo.shape.type).toBe("object");
+    expect(schema.entities.todo.shape.properties).toEqual(
+      expect.objectContaining({
+        title: expect.objectContaining({ type: "string" }),
+        completed: expect.objectContaining({ type: "boolean" }),
+      }),
+    );
+  });
+
+  it("exposes the derived FieldMarker map as schema.entities.X.fields alongside shape", () => {
+    const schema = defineSchema({
+      entities: { todo },
+      version: 1,
+    });
+    // Marker axis: FieldMarker map derived from the field set.
+    expect(schema.entities.todo.fields).toEqual({
+      title: { type: "lww" },
+      completed: { type: "lww" },
+    });
+    // Shape axis: implicit Type.Object wrapper, separate projection.
+    expect(schema.entities.todo.shape.type).toBe("object");
+    expect(schema.entities.todo.shape).not.toBe(schema.entities.todo.fields);
+  });
+
+  it("threads the shape and fields axes independently across multiple entities", () => {
+    const schema = defineSchema({
+      entities: { todo, user, group },
+      version: 1,
+    });
+    for (const entity of [todo, user, group]) {
+      expect(schema.entities[entity.name as "todo" | "user" | "group"].shape).toBe(entity.shape);
+      expect(schema.entities[entity.name as "todo" | "user" | "group"].fields).toBe(entity.fields);
+    }
+  });
+
+  it("preserves the type-level reachability of Schema<TEntities, TRelationships>.entities.X.shape", () => {
+    const schema = defineSchema({
+      entities: { todo },
+      version: 1,
+    });
+    // Both axes are reachable at the type level without casting.
+    const shape: typeof schema.entities.todo.shape = schema.entities.todo.shape;
+    const fields: typeof schema.entities.todo.fields = schema.entities.todo.fields;
+    expect(shape.type).toBe("object");
+    expect(fields.title.type).toBe("lww");
+  });
+});

@@ -103,6 +103,12 @@ export class SyncClient {
   /** Latest per-group cursors, refreshed by `catchUp` and SSE receipt. */
   private groupCursors: Map<string, number> = new Map();
   /**
+   * Deterministic content hash of the composed schema. Computed
+   * once at construction and advertised as `schema_hash` on every
+   * handshake. `undefined` when no schema was configured.
+   */
+  private readonly schemaHash: string | undefined;
+  /**
    * Latest actor's group memberships with permissions, populated by
    * `handshake()`. The relationship write path uses this for the
    * client-side early permission check (the `<source_type>.update`
@@ -126,6 +132,7 @@ export class SyncClient {
     this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
     this.schema = opts.schema;
+    this.schemaHash = opts.schema === undefined ? undefined : computeSchemaHash(opts.schema);
     // Empty registry makes validation a no-op.
     this.registry = opts.registry ?? buildRegistryFromSchema(opts.schema);
     if (opts.onRegistryViolation !== undefined) {
@@ -259,6 +266,7 @@ export class SyncClient {
       cursors: opts.cursors ?? {},
       schema_version: opts.schema_version ?? this.schema?.version,
       min_supported_version: opts.min_supported_version ?? this.schema?.minSupportedVersion,
+      schema_hash: opts.schema_hash ?? this.schemaHash,
     });
 
     const response = await this.fetchImpl(url, {
@@ -1012,6 +1020,48 @@ const buildRegistryFromSchema = (schema: AnySchema | undefined): EntityRegistry 
     }
   }
   return registry;
+};
+
+/**
+ * Deterministic content hash of a composed schema. The 64-bit FNV-1a
+ * digest of a JSON canonical form (object keys sorted at every
+ * level) is enough for the server-side drift check; the hash is not
+ * a security primitive.
+ *
+ * Entity and relationship records are walked by value — the schema
+ * itself is frozen, but TypeBox shapes carry non-enumerable
+ * `nullable` chains and other helpers that `JSON.stringify` ignores
+ * by default, so two schemas that differ only in those helpers hash
+ * the same.
+ */
+const computeSchemaHash = (schema: AnySchema): string => fnv1a64(stableStringify(schema));
+
+/** JSON.stringify with object keys sorted at every level. Arrays keep insertion order. */
+const stableStringify = (value: unknown): string => {
+  if (value === null) return "null";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number" || typeof value === "boolean") return JSON.stringify(value);
+  if (typeof value === "undefined" || typeof value === "function") return "null";
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
+  }
+  return "null";
+};
+
+const FNV_OFFSET_64 = 0xcbf29ce484222325n;
+const FNV_PRIME_64 = 0x100000001b3n;
+
+/** 64-bit FNV-1a, returned as a 16-char lowercase hex string. */
+const fnv1a64 = (input: string): string => {
+  let hash = FNV_OFFSET_64;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= BigInt(input.charCodeAt(i));
+    hash = BigInt.asUintN(64, hash * FNV_PRIME_64);
+  }
+  return hash.toString(16).padStart(16, "0");
 };
 
 /**

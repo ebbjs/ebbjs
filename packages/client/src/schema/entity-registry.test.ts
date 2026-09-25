@@ -64,6 +64,19 @@ describe("EntityRegistry register / get / has", () => {
     r.register(v2);
     expect(r.get("todo")).toBe(v2);
   });
+
+  it("preserves the TypeBox shape on get", () => {
+    const r = new EntityRegistry();
+    r.register(todo);
+    const got = r.get("todo");
+    expect(got?.shape.type).toBe("object");
+    expect(got?.shape.properties).toEqual(
+      expect.objectContaining({
+        title: expect.objectContaining({ type: "string" }),
+        completed: expect.objectContaining({ type: "boolean" }),
+      }),
+    );
+  });
 });
 
 describe("EntityRegistry.validateAction", () => {
