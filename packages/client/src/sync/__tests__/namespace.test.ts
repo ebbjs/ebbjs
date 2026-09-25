@@ -163,4 +163,16 @@ describe("createClient without a schema", () => {
     // No schema → no typed entity access; property access returns undefined.
     expect((client as unknown as Record<string, unknown>)["todo"]).toBeUndefined();
   });
+
+  it("preserves SyncClient methods and private-field access", async () => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const storage = createMemoryAdapter();
+    const client = createClient({ serverUrl: "http://x", actorId: "a", storage });
+    expect(typeof client.subscribe).toBe("function");
+    expect(typeof client.handshake).toBe("function");
+    client.setState("live");
+    expect(client.state).toBe("live");
+    client.close();
+    expect(client.state).toBe("offline");
+  });
 });
