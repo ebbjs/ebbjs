@@ -109,7 +109,14 @@ export type {
   RegistryViolationListener,
 } from "./sync/types";
 
-export { defineEntity, type EntityDef, type FieldMarker } from "./schema/entity";
+export {
+  defineEntity,
+  e,
+  type EntityDef,
+  type FieldMarker,
+  type NullableSchema,
+  type TSchema,
+} from "./schema/entity";
 
 export {
   defineRelationship,

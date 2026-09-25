@@ -51,10 +51,11 @@ import {
   type RelationshipHandleInput,
 } from "./relationship";
 import { generateId } from "@ebbjs/core";
-import type { EntityDef, FieldMarker } from "../schema/entity";
+import type { EntityDef } from "../schema/entity";
 import type { Schema } from "../schema/schema";
+import type { TSchema } from "@sinclair/typebox/type";
 
-type AnyEntityDef = EntityDef<Record<string, FieldMarker>>;
+type AnyEntityDef = EntityDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
 type AnySchema = Schema<
   Record<string, AnyEntityDef>,

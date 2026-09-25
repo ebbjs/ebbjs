@@ -7,11 +7,12 @@
  * call at module top level and share the value across clients.
  */
 
-import type { EntityDef, FieldMarker } from "./entity";
+import type { EntityDef } from "./entity";
 import { EntityRegistry } from "./entity-registry";
 import type { RelationshipDef } from "./relationship";
+import type { TSchema } from "@sinclair/typebox/type";
 
-type AnyEntityDef = EntityDef<Record<string, FieldMarker>>;
+type AnyEntityDef = EntityDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
 
 /**

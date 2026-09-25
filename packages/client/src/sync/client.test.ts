@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { createClient } from "./client";
-import { decodeSync, e, makeHlc, type Action } from "@ebbjs/core";
+import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
+import { e } from "../schema/entity";
 import { makeFetchMock } from "./test-utils";
 import { EntityRegistry, EntityValidationError } from "../schema/entity-registry";
 import { defineEntity } from "../schema/entity";

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { e, makeHlc, type Action } from "@ebbjs/core";
+import { makeHlc, type Action } from "@ebbjs/core";
 import { EntityRegistry, EntityValidationError } from "./entity-registry";
-import { defineEntity } from "./entity";
+import { defineEntity, e } from "./entity";
 
 const todo = defineEntity("todo", {
   title: e.string(),

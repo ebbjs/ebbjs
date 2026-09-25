@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { e } from "@ebbjs/core";
-import { defineEntity, type EntityDef } from "./entity";
+import { defineEntity, e } from "./entity";
 import { defineRelationship, type RelationshipDef } from "./relationship";
 import { EntityRegistry, EntityValidationError } from "./entity-registry";
 import {
@@ -50,14 +49,11 @@ describe("defineRelationship", () => {
   });
 
   it("flows S and T into RelationshipDef<S, T> via inference", () => {
-    // Compile-time check: passing a todo EntityDef flows S into the
-    // resulting RelationshipDef<S, T>.
-    const rel: RelationshipDef<
-      EntityDef<{ title: { type: "lww" } }>,
-      typeof list
-    > = defineRelationship({ source: todo, target: list, as: "list" });
-    expect(rel.source.name).toBe("todo");
-    expect(rel.target.name).toBe("list");
+    const rel = defineRelationship({ source: todo, target: list, as: "list" });
+    type Inferred = RelationshipDef<typeof todo, typeof list>;
+    const typed: Inferred = rel;
+    expect(typed.source.name).toBe("todo");
+    expect(typed.target.name).toBe("list");
   });
 });
 

@@ -3,9 +3,9 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { e, makeHlc, type Action } from "@ebbjs/core";
+import { makeHlc, type Action } from "@ebbjs/core";
 
-import { defineEntity } from "./entity";
+import { defineEntity, e } from "./entity";
 import { EntityRegistry, EntityValidationError } from "./entity-registry";
 import { defineRelationship } from "./relationship";
 import { defineSchema, type Schema } from "./schema";
@@ -103,8 +103,6 @@ describe("defineSchema", () => {
       entities: { todo },
       version: 1,
     });
-    // Compile-time assertion: the entity def is reachable through
-    // the generic, not narrowed to `unknown`.
     const fields: Schema<{ todo: typeof todo }>["entities"]["todo"]["fields"] =
       schema.entities.todo.fields;
     expect(fields.title.type).toBe("lww");

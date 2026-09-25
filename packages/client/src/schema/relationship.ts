@@ -13,7 +13,8 @@
  * `SyncClient.buildRelationshipWrite`.
  */
 
-import type { EntityDef, FieldMarker } from "./entity";
+import type { EntityDef } from "./entity";
+import type { TSchema } from "@sinclair/typebox/type";
 
 /**
  * Source-side cardinality. Describes how the source entity holds the
@@ -31,8 +32,8 @@ export type SourceCardinality = "one" | "many";
  * relationship knows the entity names it links.
  */
 export interface RelationshipDef<
-  S extends EntityDef<Record<string, FieldMarker>>,
-  T extends EntityDef<Record<string, FieldMarker>>,
+  S extends EntityDef<Record<string, TSchema>>,
+  T extends EntityDef<Record<string, TSchema>>,
 > {
   readonly source: S;
   readonly target: T;
@@ -58,8 +59,8 @@ export interface RelationshipDef<
  * entity name when omitted.
  */
 export interface DefineRelationshipInput<
-  S extends EntityDef<Record<string, FieldMarker>>,
-  T extends EntityDef<Record<string, FieldMarker>>,
+  S extends EntityDef<Record<string, TSchema>>,
+  T extends EntityDef<Record<string, TSchema>>,
 > {
   source: S;
   target: T;
@@ -70,8 +71,8 @@ export interface DefineRelationshipInput<
 
 /** Define a relationship by source, target, and accessor name. Frozen. */
 export function defineRelationship<
-  S extends EntityDef<Record<string, FieldMarker>>,
-  T extends EntityDef<Record<string, FieldMarker>>,
+  S extends EntityDef<Record<string, TSchema>>,
+  T extends EntityDef<Record<string, TSchema>>,
 >(opts: DefineRelationshipInput<S, T>): RelationshipDef<S, T> {
   const sourceCardinality: SourceCardinality = opts.sourceCardinality ?? "one";
   const type: string = opts.type ?? opts.source.name;
