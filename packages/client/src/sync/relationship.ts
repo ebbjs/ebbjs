@@ -11,8 +11,10 @@
  */
 
 import type { Entity } from "@ebbjs/core";
+import type { TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { EntityRegistry } from "../schema/entity-registry";
+import { type QueryBuilder, buildQueryBuilder } from "./query-builder";
 
 /**
  * Inputs to `client.relationship({...})`. Mirrors `defineRelationship`
@@ -127,102 +129,11 @@ export function normalizeManyPointers(value: ManyPointerValue, label: string): r
   return ids;
 }
 
-/**
- * Filter chain for relationship traversal. The same chain is
- * returned by reverse accessors and by `sourceCardinality: "many"`
- * forward accessors. `find()` materializes against the client's
- * local cache.
- *
- * The chain is immutable: every method returns a new builder with
- * the constraint added. This keeps the handle reusable across calls
- * without surprising state.
- */
-export interface QueryBuilder<T> {
-  /** Equality filter on a field of `T`. */
-  eq(field: string, value: unknown): QueryBuilder<T>;
-  /** Ordering on a field of `T`. */
-  orderBy(field: string, direction: "asc" | "desc"): QueryBuilder<T>;
-  /** Maximum number of rows. */
-  limit(n: number): QueryBuilder<T>;
-  /** Materialize the chain against the client's local cache. */
-  find(): Promise<readonly T[]>;
-}
+/** Re-exported from `./query-builder` so existing imports of `QueryBuilder` from `../sync/relationship` resolve. */
+export type { QueryBuilder } from "./query-builder";
 
-/** Chainable filter descriptor — accumulated by `eq`. */
-type EqFilter = { field: string; value: unknown };
-type OrderBy = { field: string; direction: "asc" | "desc" };
-
-/**
- * Build a QueryBuilder over a list of candidate entities. The
- * `loadEntities` callback hydrates ids → Entity; the chain applies
- * eq / orderBy / limit on top.
- *
- * Each chain method returns a *new* builder with the new constraint
- * appended — the original is untouched, so the same builder can be
- * reused across callers without surprising state.
- */
-export function buildQueryBuilder<T extends Entity>(candidates: readonly T[]): QueryBuilder<T> {
-  const make = (
-    filters: readonly EqFilter[],
-    order: OrderBy | null,
-    limitN: number | null,
-  ): QueryBuilder<T> => {
-    const apply = (rows: readonly T[]): T[] => {
-      let out = rows.slice();
-      if (filters.length > 0) {
-        out = out.filter((row) => filters.every((f) => eqField(row, f.field, f.value)));
-      }
-      if (order !== null) {
-        const { field, direction } = order;
-        out.sort((a, b) => cmpField(a, b, field, direction));
-      }
-      if (limitN !== null && limitN >= 0) {
-        out = out.slice(0, limitN);
-      }
-      return out;
-    };
-    return {
-      eq(field: string, value: unknown): QueryBuilder<T> {
-        return make([...filters, { field, value }], order, limitN);
-      },
-      orderBy(field: string, direction: "asc" | "desc"): QueryBuilder<T> {
-        return make(filters, { field, direction }, limitN);
-      },
-      limit(n: number): QueryBuilder<T> {
-        return make(filters, order, n);
-      },
-      async find(): Promise<readonly T[]> {
-        return apply(candidates);
-      },
-    };
-  };
-  return make([], null, null);
-}
-
-/** Pull `data.fields[field].value` off an Entity, returning `undefined` when absent. */
-function fieldValue(entity: Entity, field: string): unknown {
-  const fv = entity.data?.fields?.[field];
-  if (fv === undefined) return undefined;
-  return fv.value;
-}
-
-function eqField(entity: Entity, field: string, value: unknown): boolean {
-  return fieldValue(entity, field) === value;
-}
-
-function cmpField(a: Entity, b: Entity, field: string, direction: "asc" | "desc"): number {
-  const av = fieldValue(a, field);
-  const bv = fieldValue(b, field);
-  if (av === bv) return 0;
-  if (av === undefined) return 1;
-  if (bv === undefined) return -1;
-  if (typeof av === "number" && typeof bv === "number") {
-    return direction === "asc" ? av - bv : bv - av;
-  }
-  const as = String(av);
-  const bs = String(bv);
-  return direction === "asc" ? as.localeCompare(bs) : bs.localeCompare(as);
-}
+/** Re-exported from `./query-builder` for the same reason. */
+export { buildQueryBuilder } from "./query-builder";
 
 /**
  * Walk the local cache to collect all `Relationship` entities whose
@@ -274,30 +185,34 @@ export async function forwardOne(
 /**
  * Build a forward-many accessor result. The source entity's field
  * holds an array of FKs; we materialize the source, collect the ids,
- * load each target, and return a QueryBuilder over the loaded
+ * load each target, and return a typed QueryBuilder over the loaded
  * entities.
+ *
+ * `targetShape` drives the projection on `await qb` — the chain is
+ * generic over the target entity's field map.
  */
-export async function forwardMany(
+export async function forwardMany<TFields extends Record<string, TSchema>>(
   readLocalEntity: (id: string) => Promise<Entity | null>,
   queryEntitiesByType: (type: string) => Promise<readonly Entity[]>,
   sourceId: string,
   sourceName: string,
   targetName: string,
+  targetShape: TObject<TFields>,
   field: string,
-): Promise<QueryBuilder<Entity>> {
+): Promise<QueryBuilder<TFields>> {
   const source = await readLocalEntity(sourceId);
   if (source === null) {
-    return buildQueryBuilder<Entity>([]);
+    return buildQueryBuilder<TFields>([], targetShape);
   }
   if (source.type !== sourceName) {
-    return buildQueryBuilder<Entity>([]);
+    return buildQueryBuilder<TFields>([], targetShape);
   }
   const fv = source.data?.fields?.[field];
   if (fv === undefined || fv.value === null || fv.value === undefined) {
-    return buildQueryBuilder<Entity>([]);
+    return buildQueryBuilder<TFields>([], targetShape);
   }
   if (!Array.isArray(fv.value)) {
-    return buildQueryBuilder<Entity>([]);
+    return buildQueryBuilder<TFields>([], targetShape);
   }
   const ids = fv.value.filter((v): v is string => typeof v === "string");
   // The source holds the canonical set; we don't need to filter via
@@ -305,22 +220,29 @@ export async function forwardMany(
   // Load every materialized entity of `targetName` and intersect.
   const allTargets = await queryEntitiesByType(targetName);
   const idSet = new Set(ids);
-  return buildQueryBuilder(allTargets.filter((t) => idSet.has(t.id)));
+  return buildQueryBuilder(
+    allTargets.filter((t) => idSet.has(t.id)),
+    targetShape,
+  );
 }
 
 /**
  * Build a reverse accessor result. We scan the cache for `Relationship`
  * entities with `target_id === targetId` and the matching `field`/`type`,
  * then load each `source_id`.
+ *
+ * `sourceShape` drives the projection on `await qb` — the chain is
+ * generic over the source entity's field map.
  */
-export async function reverse(
+export async function reverse<TFields extends Record<string, TSchema>>(
   readLocalEntity: (id: string) => Promise<Entity | null>,
   queryEntitiesByType: (type: string) => Promise<readonly Entity[]>,
   targetId: string,
   sourceName: string,
+  sourceShape: TObject<TFields>,
   field: string,
   type: string,
-): Promise<QueryBuilder<Entity>> {
+): Promise<QueryBuilder<TFields>> {
   const all = await queryEntitiesByType("relationship");
   const matching = findRelationshipsByField(all, field, type).filter((rel) => {
     const t = rel.data?.fields?.["target_id"];
@@ -331,7 +253,10 @@ export async function reverse(
     .filter((v): v is string => typeof v === "string");
   const allSources = await queryEntitiesByType(sourceName);
   const idSet = new Set(sourceIds);
-  return buildQueryBuilder(allSources.filter((s) => idSet.has(s.id)));
+  return buildQueryBuilder(
+    allSources.filter((s) => idSet.has(s.id)),
+    sourceShape,
+  );
 }
 
 /**

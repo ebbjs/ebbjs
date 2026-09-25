@@ -47,9 +47,10 @@ import {
   reverse as reverseTraversal,
   type BuildRelationshipWriteOptions,
   type BuildRelationshipWriteResult,
-  type QueryBuilder,
   type RelationshipHandleInput,
 } from "./relationship";
+import { Type } from "@sinclair/typebox";
+import { type QueryBuilder, buildQueryBuilder } from "./query-builder";
 import { generateId } from "@ebbjs/core";
 import type { EntityDef } from "../schema/entity";
 import type { Schema } from "../schema/schema";
@@ -520,15 +521,25 @@ export class SyncClient {
     const field = rel.as;
     const relType = rel.type;
     const cardinality = rel.sourceCardinality;
+    // The target's shape drives the projection on `await qb`. Looked
+    // up from the registry (which stores the full EntityDef) so the
+    // chain's typed projection reflects the target's actual fields.
+    const targetShape = this.registry.get(targetName)?.shape;
+    const sourceShape = this.registry.get(sourceName)?.shape;
 
     const readLocalEntity = (id: string): Promise<Entity | null> => this.storage.entities.get(id);
     const queryEntitiesByType = (type: string): Promise<readonly Entity[]> =>
       this.storage.entities.query(type);
 
     const handle: RelationshipHandle = {
-      forward: (sourceId: string): Promise<Entity | undefined> | Promise<QueryBuilder<Entity>> => {
+      forward: (
+        sourceId: string,
+      ): Promise<Entity | undefined> | Promise<QueryBuilder<Record<string, TSchema>>> => {
         if (cardinality === "one") {
           return forwardOne(readLocalEntity, sourceId, sourceName, field);
+        }
+        if (targetShape === undefined) {
+          return buildQueryBuilder<Record<string, TSchema>>([], Type.Object({}));
         }
         return forwardMany(
           readLocalEntity,
@@ -536,15 +547,20 @@ export class SyncClient {
           sourceId,
           sourceName,
           targetName,
+          targetShape,
           field,
         );
       },
-      reverse: (targetId: string): Promise<QueryBuilder<Entity>> => {
+      reverse: (targetId: string): Promise<QueryBuilder<Record<string, TSchema>>> => {
+        if (sourceShape === undefined) {
+          return buildQueryBuilder<Record<string, TSchema>>([], Type.Object({}));
+        }
         return reverseTraversal(
           readLocalEntity,
           queryEntitiesByType,
           targetId,
           sourceName,
+          sourceShape,
           field,
           relType,
         );
@@ -1151,15 +1167,18 @@ export interface QueryOptions {
  * Handle returned by {@link SyncClient.relationship}.
  *
  * `forward(sourceId)` returns `Promise<Entity | undefined>` for
- * `sourceCardinality: "one"` and `Promise<QueryBuilder<Entity>>` for
- * `sourceCardinality: "many"`. The runtime narrows on the registered
- * relationship's cardinality; the union here is the conservative
- * type the handle's storage layer can't disambiguate without the
- * registry entry.
+ * `sourceCardinality: "one"` and `Promise<QueryBuilder<TTargetFields>>`
+ * for `sourceCardinality: "many"`. `reverse(targetId)` returns
+ * `Promise<QueryBuilder<TSourceFields>>`. The fields are projected
+ * from the registry-stored `EntityDef.shape`; when the target or
+ * source isn't registered, the chain is over `Record<string, TSchema>`
+ * (no projection).
  */
 export interface RelationshipHandle {
-  forward(sourceId: string): Promise<Entity | undefined> | Promise<QueryBuilder<Entity>>;
-  reverse(targetId: string): Promise<QueryBuilder<Entity>>;
+  forward(
+    sourceId: string,
+  ): Promise<Entity | undefined> | Promise<QueryBuilder<Record<string, TSchema>>>;
+  reverse(targetId: string): Promise<QueryBuilder<Record<string, TSchema>>>;
 }
 
 /**
