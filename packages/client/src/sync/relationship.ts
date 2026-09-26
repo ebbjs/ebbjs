@@ -156,37 +156,73 @@ export function findRelationshipsByField(
 }
 
 /**
- * Build a forward-singular accessor result. For
- * `sourceCardinality: "one"` the source entity holds a single FK
- * (`string | undefined`). We materialize the source and follow the
- * pointer to the target.
+ * Find the single target id for a one-cardinality forward
+ * relationship. Scans the cache for `Relationship` entities with
+ * `source_id === sourceId` and matching `field`/`type`.
  *
- * Returns `undefined` for both "the source has no pointer" and "the
- * target id is unknown"; callers don't distinguish (a `null` FK and a
- * dangling FK are both "no target").
+ * Returns:
+ * - `null` when no edge exists (the link was cleared or never set)
+ * - `string` when an edge exists (target may be dangling — callers
+ *   decide whether dangling reads as `undefined` via
+ *   {@link resolveForwardOne})
+ */
+function findForwardOneTargetId(
+  entities: readonly Entity[],
+  sourceId: string,
+  field: string,
+  type: string,
+): string | null {
+  const matching = findRelationshipsByField(entities, field, type).filter((rel) => {
+    const s = rel.data?.fields?.["source_id"];
+    return s?.value === sourceId;
+  });
+  if (matching.length === 0) return null;
+  const targetId = matching[0]?.data?.fields?.["target_id"]?.value;
+  return typeof targetId === "string" ? targetId : null;
+}
+
+/**
+ * Build a forward-singular accessor result. For
+ * `sourceCardinality: "one"` the canonical FK lives on a materialized
+ * `Relationship` entity (scanned by `source_id + field + type`), not
+ * on the source entity's data fields. Users don't have to declare
+ * the FK field on the source — `defineRelationship({source, target,
+ * as})` alone wires the link.
+ *
+ * Returns:
+ * - `null` when no Relationship record exists for `(sourceId, field,
+ *   type)` — the link was cleared or never set
+ * - `undefined` when an edge exists in metadata but the target id is
+ *   dangling (target missing from the cache)
+ * - `Entity` when both the edge and target resolve
+ *
+ * Source-mismatch (`source.type !== sourceName`) and missing-source
+ * also return `undefined` to keep the surface uniform with the other
+ * accessors.
  */
 export async function forwardOne(
   readLocalEntity: (id: string) => Promise<Entity | null>,
+  queryEntitiesByType: (type: string) => Promise<readonly Entity[]>,
   sourceId: string,
   sourceName: string,
   field: string,
-): Promise<Entity | undefined> {
+  type: string,
+): Promise<Entity | null | undefined> {
   const source = await readLocalEntity(sourceId);
   if (source === null) return undefined;
   if (source.type !== sourceName) return undefined;
-  const fv = source.data?.fields?.[field];
-  if (fv === undefined) return undefined;
-  if (fv.value === null || fv.value === undefined) return undefined;
-  if (typeof fv.value !== "string") return undefined;
-  const target = await readLocalEntity(fv.value);
+  const all = await queryEntitiesByType("relationship");
+  const targetId = findForwardOneTargetId(all, sourceId, field, type);
+  if (targetId === null) return null;
+  const target = await readLocalEntity(targetId);
   return target ?? undefined;
 }
 
 /**
- * Build a forward-many accessor result. The source entity's field
- * holds an array of FKs; we materialize the source, collect the ids,
- * and return a typed QueryBuilder that loads each target lazily on
- * `await qb`.
+ * Build a forward-many accessor result. The canonical FK set lives
+ * on materialized `Relationship` entities (scanned by `source_id +
+ * field + type`), not on the source entity's data fields. The set
+ * of matching target ids is the relationship's set of links.
  *
  * `targetShape` drives the projection on `await qb` — the chain is
  * generic over the target entity's field map.
@@ -202,21 +238,19 @@ export function forwardMany<TFields extends Record<string, TSchema>>(
   targetName: string,
   targetShape: TObject<TFields>,
   field: string,
+  type: string,
 ): QueryBuilder<TFields> {
   const loader: LoadEntities = async () => {
     const source = await readLocalEntity(sourceId);
     if (source === null) return [];
     if (source.type !== sourceName) return [];
-    const fv = source.data?.fields?.[field];
-    if (fv === undefined || fv.value === null || fv.value === undefined) return [];
-    if (!Array.isArray(fv.value)) return [];
-    const ids = fv.value.filter((v): v is string => typeof v === "string");
-    // The source holds the canonical set; we don't need to filter
-    // via Relationship entities here (the set IS the relationship
-    // list). Load every materialized entity of `targetName` and
-    // intersect.
-    const allTargets = await queryEntitiesByType(targetName);
+    const all = await queryEntitiesByType("relationship");
+    const ids = findRelationshipsByField(all, field, type)
+      .filter((rel) => rel.data?.fields?.["source_id"]?.value === sourceId)
+      .map((rel) => rel.data?.fields?.["target_id"]?.value)
+      .filter((v): v is string => typeof v === "string");
     const idSet = new Set(ids);
+    const allTargets = await queryEntitiesByType(targetName);
     return allTargets.filter((t) => idSet.has(t.id));
   };
   return buildLazyQueryBuilder(loader, targetShape);
