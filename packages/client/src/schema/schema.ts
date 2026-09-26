@@ -11,6 +11,7 @@ import type { EntityDef } from "./entity";
 import { EntityRegistry } from "./entity-registry";
 import type { RelationshipDef } from "./relationship";
 import type { TSchema } from "@sinclair/typebox/type";
+import { relationshipSystemEntity } from "./system-entities";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
@@ -73,7 +74,11 @@ export interface DefineSchemaInput<
  *
  * Entities are registered with `EntityRegistry.register` and
  * relationships with `EntityRegistry.registerRelationship`. The
- * registry owns the cardinality / overwrite rules; this builder
+ * `Relationship` system entity (carrying
+ * `{source_id, target_id, type, field}`) is registered alongside
+ * user entities so the public relationship-write path
+ * (`link` / `unlink` / `setLinks`) can submit Relationship Updates.
+ * The registry owns the cardinality / overwrite rules; this builder
  * delegates without adding its own.
  */
 export function defineSchema<
@@ -81,6 +86,7 @@ export function defineSchema<
   TRelationships extends Record<string, AnyRelationshipDef> = Record<string, never>,
 >(input: DefineSchemaInput<TEntities, TRelationships>): Schema<TEntities, TRelationships> {
   const registry = new EntityRegistry();
+  registry.register(relationshipSystemEntity);
   for (const entity of Object.values(input.entities)) {
     registry.register(entity);
   }
