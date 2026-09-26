@@ -183,6 +183,38 @@ export async function forwardOne(
 }
 
 /**
+ * Like {@link forwardOne} but distinguishes an explicit `null` FK
+ * (returns `null`) from an absent FK field or a dangling FK target
+ * (returns `undefined`). Used by `client.<entity>.get(id)` row
+ * accessors when the source's relationship field is declared
+ * `e.string().nullable()` — the schema's "this pointer is allowed to
+ * be cleared" intent is preserved at the read site.
+ *
+ * Returns `undefined` for "no source row", "FK field absent", and
+ * "FK target missing" — the runtime only distinguishes "explicitly
+ * nulled" from "no target here". Callers that want the static type
+ * to surface `null` separately use this primitive; callers that want
+ * the collapsed `undefined` semantics use {@link forwardOne}.
+ */
+export async function forwardOneNullable(
+  readLocalEntity: (id: string) => Promise<Entity | null>,
+  sourceId: string,
+  sourceName: string,
+  field: string,
+): Promise<Entity | null | undefined> {
+  const source = await readLocalEntity(sourceId);
+  if (source === null) return undefined;
+  if (source.type !== sourceName) return undefined;
+  const fv = source.data?.fields?.[field];
+  if (fv === undefined) return undefined;
+  if (fv.value === null) return null;
+  if (fv.value === undefined) return undefined;
+  if (typeof fv.value !== "string") return undefined;
+  const target = await readLocalEntity(fv.value);
+  return target ?? undefined;
+}
+
+/**
  * Build a forward-many accessor result. The source entity's field
  * holds an array of FKs; we materialize the source, collect the ids,
  * and return a typed QueryBuilder that loads each target lazily on
