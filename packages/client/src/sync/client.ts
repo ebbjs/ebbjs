@@ -47,9 +47,11 @@ import {
   reverse as reverseTraversal,
   type BuildRelationshipWriteOptions,
   type BuildRelationshipWriteResult,
-  type QueryBuilder,
   type RelationshipHandleInput,
 } from "./relationship";
+import { Type } from "@sinclair/typebox";
+import { type QueryBuilder, buildQueryBuilder } from "./query-builder";
+import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { generateId } from "@ebbjs/core";
 import type { EntityDef } from "../schema/entity";
 import type { Schema } from "../schema/schema";
@@ -520,15 +522,25 @@ export class SyncClient {
     const field = rel.as;
     const relType = rel.type;
     const cardinality = rel.sourceCardinality;
+    // The target's shape drives the projection on `await qb`. Looked
+    // up from the registry (which stores the full EntityDef) so the
+    // chain's typed projection reflects the target's actual fields.
+    const targetShape = this.registry.get(targetName)?.shape;
+    const sourceShape = this.registry.get(sourceName)?.shape;
 
     const readLocalEntity = (id: string): Promise<Entity | null> => this.storage.entities.get(id);
     const queryEntitiesByType = (type: string): Promise<readonly Entity[]> =>
       this.storage.entities.query(type);
 
     const handle: RelationshipHandle = {
-      forward: (sourceId: string): Promise<Entity | undefined> | Promise<QueryBuilder<Entity>> => {
+      forward: (
+        sourceId: string,
+      ): Promise<Entity | undefined> | QueryBuilder<Record<string, TSchema>> => {
         if (cardinality === "one") {
           return forwardOne(readLocalEntity, sourceId, sourceName, field);
+        }
+        if (targetShape === undefined) {
+          return buildQueryBuilder<Record<string, TSchema>>([], Type.Object({}));
         }
         return forwardMany(
           readLocalEntity,
@@ -536,15 +548,20 @@ export class SyncClient {
           sourceId,
           sourceName,
           targetName,
+          targetShape,
           field,
         );
       },
-      reverse: (targetId: string): Promise<QueryBuilder<Entity>> => {
+      reverse: (targetId: string): QueryBuilder<Record<string, TSchema>> => {
+        if (sourceShape === undefined) {
+          return buildQueryBuilder<Record<string, TSchema>>([], Type.Object({}));
+        }
         return reverseTraversal(
           readLocalEntity,
           queryEntitiesByType,
           targetId,
           sourceName,
+          sourceShape,
           field,
           relType,
         );
@@ -1151,15 +1168,15 @@ export interface QueryOptions {
  * Handle returned by {@link SyncClient.relationship}.
  *
  * `forward(sourceId)` returns `Promise<Entity | undefined>` for
- * `sourceCardinality: "one"` and `Promise<QueryBuilder<Entity>>` for
- * `sourceCardinality: "many"`. The runtime narrows on the registered
- * relationship's cardinality; the union here is the conservative
- * type the handle's storage layer can't disambiguate without the
- * registry entry.
+ * `sourceCardinality: "one"` and a `QueryBuilder<TTargetFields>`
+ * (thenable) for `sourceCardinality: "many"`. `reverse(targetId)`
+ * returns a `QueryBuilder<TSourceFields>` (thenable). Awaiting the
+ * chain yields the projected rows; awaiting the one-cardinality
+ * `forward` resolves the single entity.
  */
 export interface RelationshipHandle {
-  forward(sourceId: string): Promise<Entity | undefined> | Promise<QueryBuilder<Entity>>;
-  reverse(targetId: string): Promise<QueryBuilder<Entity>>;
+  forward(sourceId: string): Promise<Entity | undefined> | QueryBuilder<Record<string, TSchema>>;
+  reverse(targetId: string): QueryBuilder<Record<string, TSchema>>;
 }
 
 /**
@@ -1182,9 +1199,41 @@ function stripRelationshipField(update: Update, as: string): Update {
 }
 
 /**
+ * Returned by {@link createClient}. The client is a Proxy that
+ * exposes `client.<entityName>.query()` for every entity in the
+ * composed schema, alongside the standard `SyncClient` surface.
+ */
+export type NamespacedClient<S> = SyncClient & EntityNamespaces<S>;
+
+/**
  * Factory for {@link SyncClient}. Prefer this over `new SyncClient(...)`
  * so the import surface stays tidy.
+ *
+ * When `opts.schema` is a `Schema`, the returned client is a Proxy
+ * that exposes `client.<entityName>.query()` — the typed thenable
+ * chain — for every entity declared on the schema. The Proxy binds
+ * every method to the underlying `SyncClient` so private-field
+ * access inside the SDK still resolves correctly.
  */
-export function createClient(opts: SyncClientOptions): SyncClient {
-  return new SyncClient(opts);
+export function createClient<S extends AnySchema | undefined = undefined>(
+  opts: SyncClientOptions & { schema?: S },
+): NamespacedClient<S> {
+  const client = new SyncClient(opts);
+  if (opts.schema === undefined) {
+    return client as NamespacedClient<S>;
+  }
+  const namespaces = buildEntityNamespaces(opts.schema, client.storage);
+  return new Proxy(client, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string") {
+        const ns = (namespaces as Record<string, unknown>)[prop];
+        if (ns !== undefined) return ns;
+      }
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value === "function") {
+        return value.bind(target);
+      }
+      return value;
+    },
+  }) as NamespacedClient<S>;
 }

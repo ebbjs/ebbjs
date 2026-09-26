@@ -19,9 +19,27 @@ export {
   SyncClient,
   createClient,
   type HandshakeResult,
+  type NamespacedClient,
   type QueryOptions,
   type RelationshipHandle,
 } from "./sync/client";
+
+export {
+  type QueryBuilder,
+  projectEntity,
+  projectRows,
+  buildQueryBuilder,
+  buildLazyQueryBuilder,
+  type LoadEntities,
+} from "./sync/query-builder";
+
+export {
+  type EntityNamespace,
+  type EntityFields,
+  type EntityNamespaces,
+  createEntityNamespace,
+  buildEntityNamespaces,
+} from "./sync/namespace";
 export { PresenceManager, type PresenceEntry, type CursorPresence } from "./presence/presence";
 
 export {

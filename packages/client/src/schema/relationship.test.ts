@@ -664,59 +664,65 @@ describe("QueryBuilder (sync/relationship)", () => {
   it("eq filters by field equality", async () => {
     const { buildQueryBuilder } = await import("../sync/relationship");
     const rows = [
-      buildEntity("1", { completed: false }),
-      buildEntity("2", { completed: true }),
-      buildEntity("3", { completed: false }),
+      buildEntity("1", { title: "a", completed: false }),
+      buildEntity("2", { title: "b", completed: true }),
+      buildEntity("3", { title: "c", completed: false }),
     ];
-    const out = await buildQueryBuilder(rows).eq("completed", false).find();
-    expect(out.map((r) => r.id)).toEqual(["1", "3"]);
+    const out = await buildQueryBuilder(rows, todo.shape).eq("completed", false);
+    expect(out.map((r) => r.title)).toEqual(["a", "c"]);
   });
 
   it("orderBy sorts by field", async () => {
     const { buildQueryBuilder } = await import("../sync/relationship");
     const rows = [
-      buildEntity("1", { title: "banana" }),
-      buildEntity("2", { title: "apple" }),
-      buildEntity("3", { title: "cherry" }),
+      buildEntity("1", { title: "banana", completed: false }),
+      buildEntity("2", { title: "apple", completed: false }),
+      buildEntity("3", { title: "cherry", completed: false }),
     ];
-    const out = await buildQueryBuilder(rows).orderBy("title", "asc").find();
-    expect(out.map((r) => r.id)).toEqual(["2", "1", "3"]);
+    const out = await buildQueryBuilder(rows, todo.shape).orderBy("title", "asc");
+    expect(out.map((r) => r.title)).toEqual(["apple", "banana", "cherry"]);
   });
 
   it("limit caps the result count", async () => {
     const { buildQueryBuilder } = await import("../sync/relationship");
     const rows = [
-      buildEntity("1", { x: 1 }),
-      buildEntity("2", { x: 2 }),
-      buildEntity("3", { x: 3 }),
+      buildEntity("1", { title: "a", completed: false }),
+      buildEntity("2", { title: "b", completed: false }),
+      buildEntity("3", { title: "c", completed: false }),
     ];
-    const out = await buildQueryBuilder(rows).limit(2).find();
-    expect(out.map((r) => r.id)).toEqual(["1", "2"]);
+    const out = await buildQueryBuilder(rows, todo.shape).limit(2);
+    expect(out.map((r) => r.title)).toEqual(["a", "b"]);
   });
 
   it("chains eq + orderBy + limit", async () => {
     const { buildQueryBuilder } = await import("../sync/relationship");
     const rows = [
-      buildEntity("1", { x: 1, y: false }),
-      buildEntity("2", { x: 2, y: true }),
-      buildEntity("3", { x: 3, y: true }),
-      buildEntity("4", { x: 4, y: true }),
+      buildEntity("1", { title: "a", completed: false }),
+      buildEntity("2", { title: "b", completed: true }),
+      buildEntity("3", { title: "c", completed: true }),
+      buildEntity("4", { title: "d", completed: true }),
     ];
-    const out = await buildQueryBuilder(rows).eq("y", true).orderBy("x", "desc").limit(2).find();
-    expect(out.map((r) => r.id)).toEqual(["4", "3"]);
+    const out = await buildQueryBuilder(rows, todo.shape)
+      .eq("completed", true)
+      .orderBy("title", "desc")
+      .limit(2);
+    expect(out.map((r) => r.title)).toEqual(["d", "c"]);
   });
 
   it("chains return new builders (no shared state)", async () => {
     const { buildQueryBuilder } = await import("../sync/relationship");
-    const rows = [buildEntity("1", { y: false }), buildEntity("2", { y: true })];
-    const base = buildQueryBuilder(rows);
-    const a = base.eq("y", true);
-    const b = base.eq("y", false);
+    const rows = [
+      buildEntity("1", { title: "a", completed: false }),
+      buildEntity("2", { title: "b", completed: true }),
+    ];
+    const base = buildQueryBuilder(rows, todo.shape);
+    const a = base.eq("completed", true);
+    const b = base.eq("completed", false);
     // `base` is untouched; both `a` and `b` carry their own filter.
-    expect((await a.find()).map((r) => r.id)).toEqual(["2"]);
-    expect((await b.find()).map((r) => r.id)).toEqual(["1"]);
-    // And calling `.find()` on the base again returns everything.
-    expect((await base.find()).map((r) => r.id)).toEqual(["1", "2"]);
+    expect((await a).map((r) => r.title)).toEqual(["b"]);
+    expect((await b).map((r) => r.title)).toEqual(["a"]);
+    // And awaiting the base again returns everything.
+    expect((await base).map((r) => r.title).sort()).toEqual(["a", "b"]);
   });
 });
 
@@ -821,11 +827,12 @@ describe("relationship() handle traversal", () => {
     });
 
     const handle = client.relationship({ source: issue, target: list, as: "labels" });
-    const qb = (await handle.forward("issue_1")) as import("../sync/relationship").QueryBuilder<
-      import("@ebbjs/core").Entity
-    >;
-    const out = await qb.find();
-    expect(out.map((e) => e.id).sort()).toEqual(["list_1", "list_2"]);
+    const qb = handle.forward("issue_1");
+    // The handle's static type is the union of one-cardinality and
+    // many-cardinality return shapes; cardinality is "many" here, so
+    // the awaited value is the projected array.
+    const out = (await qb) as readonly { name: string }[];
+    expect(out.map((e) => e.name).sort()).toEqual(["A", "B"]);
   });
 
   it("reverse(id) returns the sources linked via Relationship entities", async () => {
@@ -873,8 +880,8 @@ describe("relationship() handle traversal", () => {
     });
 
     const handle = client.relationship({ source: todo, target: list, as: "list" });
-    const qb = await handle.reverse("list_1");
-    const out = await qb.find();
-    expect(out.map((e) => e.id).sort()).toEqual(["todo_1", "todo_2"]);
+    const qb = handle.reverse("list_1");
+    const out = (await qb) as readonly { title: string }[];
+    expect(out.map((e) => e.title).sort()).toEqual(["x", "y"]);
   });
 });
