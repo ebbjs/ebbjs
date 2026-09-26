@@ -35,12 +35,12 @@ import {
 } from "./relationship";
 
 /**
- * Runtime shape of a single relationship accessor attached to a
- * row. The union covers the three dispatch paths the relationship
- * primitive supports; narrowing at the accessor call site is a
- * type-level follow-up (TS recursion limits bite when walking the
- * schema's relationship map), but the runtime picks the right path
- * based on the registered relationship.
+ * Runtime shape of a single relationship accessor on a row. The
+ * union covers every cardinality the relationship primitive
+ * dispatches; the runtime picks the right path based on the
+ * registered relationship, not the static type. Per-accessor
+ * narrowing is a type-level follow-up (TS recursion limits bite
+ * when walking the schema's relationship map).
  */
 export type RowAccessor = Promise<Entity | null> | QueryBuilder<Record<string, TSchema>>;
 
@@ -228,15 +228,11 @@ function buildRowAccessors(
 }
 
 /**
- * Detect whether a TypeBox field schema is nullable — i.e., the
- * `Type.Union([<inner>, Type.Null()])` shape produced by
- * `e.string().nullable()` (and the other `e.*().nullable()`
- * chains). We look for an `anyOf` union whose last element is the
- * TypeBox `null` marker; that's the shape `Type.Union` emits for
- * any nullable chain.
- *
- * Returns `false` for everything else, including plain primitives,
- * arrays, and unions that don't include a null literal.
+ * Detect the `e.string().nullable()` chain — TypeBox emits a
+ * `Type.Union([<inner>, Type.Null()])` shape, so we look for an
+ * `anyOf` array whose last element is the `null` literal. Used by
+ * the row-accessor forward-one dispatch to pick
+ * {@link forwardOneNullable} over {@link forwardOne}.
  */
 function isNullableSchema(schema: unknown): boolean {
   if (schema === null || typeof schema !== "object") return false;
