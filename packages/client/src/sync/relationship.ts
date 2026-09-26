@@ -353,3 +353,60 @@ export function buildRelationshipUpdate(args: {
     },
   };
 }
+
+/**
+ * Build a `put` Update for the source entity carrying the canonical
+ * FK set on `data.fields[as]`. Used by the many-cardinality
+ * relationship-write path: the entity Update is one half of the
+ * wire shape, with N `Relationship` Updates being the other half.
+ *
+ * `hlc` is the freshly-minted local HLC; `updateId` is the Update's
+ * id. Both surface in the field's `update_id` so the wire envelope
+ * is self-contained.
+ */
+export function buildManyEntityUpdate(args: {
+  sourceId: string;
+  sourceEntityName: string;
+  as: string;
+  targetIds: readonly string[];
+  updateId: string;
+  hlc: string;
+}): import("@ebbjs/core").Update {
+  return {
+    id: args.updateId,
+    subject_id: args.sourceId,
+    subject_type: args.sourceEntityName,
+    method: "put",
+    data: {
+      fields: {
+        [args.as]: {
+          value: [...args.targetIds],
+          update_id: args.updateId,
+          hlc: args.hlc,
+        },
+      },
+    },
+  };
+}
+
+/**
+ * Normalize a many-pointer patch to a deduplicated id list, dropping
+ * `null` / `undefined` entries (the caller already validated they're
+ * not present). Used by the namespace's many-cardinality entry
+ * point before constructing the canonical-FK Update.
+ */
+export function collectManyTargetIds(patch: ManyPointerValue): readonly string[] {
+  const all: readonly PointerValue[] =
+    "replace" in patch ? patch.replace : [...patch.add, ...patch.remove];
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const v of all) {
+    if (v === null || v === undefined) continue;
+    const id = typeof v === "string" ? v : v.id;
+    if (!seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  return ids;
+}

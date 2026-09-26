@@ -23,7 +23,16 @@
  * ```
  */
 
-import { encodeSync, type Action, type Entity, type Update } from "@ebbjs/core";
+import {
+  encodeSync,
+  type Action,
+  createClock,
+  type Entity,
+  type HLCState,
+  localEvent,
+  receiveRemoteHLC,
+  type Update,
+} from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage";
 import type { StorageAdapter } from "@ebbjs/storage";
 
@@ -55,6 +64,7 @@ import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { generateId } from "@ebbjs/core";
 import type { EntityDef } from "../schema/entity";
 import type { Schema } from "../schema/schema";
+import { relationshipSystemEntity } from "../schema/system-entities";
 import type { TSchema } from "@sinclair/typebox/type";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
@@ -117,6 +127,13 @@ export class SyncClient {
    * rule the server also enforces — see `permission_checker.ex`).
    */
   private actorGroups: { id: string; permissions: readonly string[] }[] = [];
+  /**
+   * Per-client HLC clock. Advanced on every local event by
+   * {@link submitRelationshipUpdates}; remote HLCs flow in via
+   * `_applyAction`. The clock is per-client so writes stay
+   * monotonic against the client's own catch-up window.
+   */
+  private readonly clock: HLCState = createClock();
   /** TextDocument registry (one document per docId, per actor). */
   private readonly textDocumentRegistry = new TextDocumentRegistry();
   /**
@@ -387,6 +404,64 @@ export class SyncClient {
 
     const rejected = parsed.rejected ?? [];
     return { rejected };
+  }
+
+  /**
+   * Wrap a batch of pre-built Updates in a single Action and submit
+   * via `write`. The namespace's `link` / `unlink` / `setLinks`
+   * methods use this to ship wire Updates without the caller
+   * hand-rolling `createAction` calls.
+   *
+   * HLC ordering: the Action's HLC is minted from the client's
+   * internal clock. Remote HLCs received on the SSE stream merge
+   * into the same clock via {@link receiveRemoteHLC} so subsequent
+   * local events stay monotonic. The clock is best-effort — a
+   * malformed or drift-exceeding remote HLC is logged and ignored
+   * rather than rejecting the inbound Action.
+   */
+  async submitRelationshipUpdates(updates: readonly Update[]): Promise<WriteResponse> {
+    if (updates.length === 0) {
+      return { rejected: [] };
+    }
+    const { createAction } = await import("@ebbjs/core");
+    // Advance the clock for the local event so the Action's HLC
+    // is monotonically greater than any prior local / remote HLC.
+    this.freshHlc();
+    const { action } = createAction({
+      actorId: this.actorId,
+      updates: [...updates],
+      clock: this.clock,
+    });
+    return this.write([action]);
+  }
+
+  /**
+   * Advance the client's HLC clock for a local event and return
+   * the freshly-minted HLC string. Used by the namespace's
+   * `setLinks` path to stamp the entity Update it constructs.
+   */
+  freshHlc(): string {
+    return localEvent(this.clock);
+  }
+
+  /** Mint a fresh Update id. Used by the namespace's `setLinks` path. */
+  generateUpdateId(): string {
+    return generateId("u");
+  }
+
+  /**
+   * Merge a remote HLC into the client's clock. Called from the
+   * inbound-Action path so the next local event is guaranteed
+   * monotonic against the server's authoritative HLC. Best-effort:
+   * a malformed or drift-exceeding HLC is swallowed so the storage
+   * materialization still happens.
+   */
+  private mergeRemoteHLC(remoteHlc: string): void {
+    try {
+      receiveRemoteHLC(this.clock, remoteHlc);
+    } catch {
+      // ignore — see comment above
+    }
   }
 
   /** `GET /entities/:id` — read a materialized entity. */
@@ -950,6 +1025,9 @@ export class SyncClient {
     if (violations.length > 0) {
       this.emitRegistryViolations(violations, { direction: "inbound" });
     }
+    if (action.hlc !== undefined) {
+      this.mergeRemoteHLC(action.hlc);
+    }
     await this.storage.actions.append(action);
     const affected = action.updates.map((u) => ({
       entityId: u.subject_id,
@@ -989,11 +1067,14 @@ export class SyncClient {
  * re-register every entity and relationship on a new registry rather
  * than sharing `schema._registry` so a client can mutate its own
  * registry at runtime without bleeding across clients that share
- * the same `schema` value.
+ * the same `schema` value. The `Relationship` system entity is
+ * seeded so the public relationship-write path (`link` / `unlink` /
+ * `setLinks`) can submit Relationship Updates.
  */
 const buildRegistryFromSchema = (schema: AnySchema | undefined): EntityRegistry => {
   const registry = new EntityRegistry();
   if (schema === undefined) return registry;
+  registry.register(relationshipSystemEntity);
   for (const entity of Object.values(schema.entities)) {
     registry.register(entity);
   }
@@ -1203,7 +1284,17 @@ export function createClient<S extends AnySchema | undefined = undefined>(
   if (opts.schema === undefined) {
     return client as NamespacedClient<S>;
   }
-  const namespaces = buildEntityNamespaces(opts.schema, client.storage, client.registry);
+  // Narrow capability the namespace consults for write-side
+  // operations. Keeps the namespace free of the cyclic
+  // `client → namespace → client` reference.
+  const writeCap = {
+    registry: client.registry,
+    buildRelationshipWrite: client.buildRelationshipWrite.bind(client),
+    submitRelationshipUpdates: client.submitRelationshipUpdates.bind(client),
+    freshHlc: () => client.freshHlc(),
+    generateUpdateId: () => client.generateUpdateId(),
+  };
+  const namespaces = buildEntityNamespaces(opts.schema, client.storage, writeCap);
   return new Proxy(client, {
     get(target, prop, receiver) {
       if (typeof prop === "string") {

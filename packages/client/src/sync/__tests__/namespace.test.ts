@@ -9,6 +9,7 @@ import type { Entity } from "@ebbjs/core";
 import { defineEntity, e } from "../../schema/entity";
 import { defineSchema } from "../../schema/schema";
 import { defineRelationship } from "../../schema/relationship";
+import { EntityValidationError } from "../../schema/entity-registry";
 import { createClient } from "../client";
 
 const todo = defineEntity("todo", {
@@ -575,5 +576,140 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
       void _row.title.toUpperCase();
     };
     expect(typeof check).toBe("function");
+  });
+});
+
+/**
+ * `client.<entity>.link(id, "as", target)` /
+ * `client.<entity>.unlink(id, "as")` /
+ * `client.<entity>.setLinks(id, "as", { replace | add | remove })`
+ *
+ * The public surface that lets callers mutate relationships without
+ * hand-rolling Update[] arrays. Each method builds the wire Update(s),
+ * wraps them in `createAction`, and submits via `client.write()`.
+ *
+ * The link/unlink methods are one-cardinality; setLinks is
+ * many-cardinality. The split matches the wire shape (one Update
+ * for one-cardinality, one entity Update + N Relationship Updates
+ * for many-cardinality).
+ *
+ * Tests stub `fetch` so the wire Action is acknowledged without a
+ * live server. The handshake stub returns groups with `todo.*,
+ * list.*` so the early permission check passes.
+ */
+describe("client.<entity>.link / unlink / setLinks", () => {
+  const list = defineEntity("list", { name: e.string() });
+
+  // `todo` declares a `tags` field carrying the canonical FK set
+  // so the many-cardinality `setLinks` entity Update validates.
+  const todoWithTags = defineEntity("todo", {
+    title: e.string(),
+    completed: e.boolean(),
+    tags: { type: "array", items: { type: "string" } } as never,
+  });
+
+  const schemaWithRels = defineSchema({
+    entities: { todo: todoWithTags, user, list },
+    relationships: {
+      todo_list: defineRelationship({ source: todoWithTags, target: list, as: "list" }),
+      todo_tags: defineRelationship({
+        source: todoWithTags,
+        target: list,
+        as: "tags",
+        sourceCardinality: "many",
+      }),
+    },
+    version: 1,
+  });
+
+  /**
+   * Stub fetch for the link/unlink/setLinks tests. Handshake
+   * returns groups with `todo.*, list.*` so the early permission
+   * check passes; `/sync/actions` always accepts (returns
+   * `rejected: []`).
+   */
+  const mkStubFetch = (): typeof fetch => {
+    return (async (url: string, _init: RequestInit): Promise<Response> => {
+      if (url.endsWith("/sync/handshake")) {
+        return new Response(
+          JSON.stringify({
+            actor_id: "actor_1",
+            groups: [
+              {
+                id: "g_1",
+                permissions: ["todo.*", "list.*"],
+                cursor_valid: true,
+                reason: null,
+                cursor: 0,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/sync/actions")) {
+        return new Response(JSON.stringify({ rejected: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+  };
+
+  const mkClient = async () => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      storage,
+      schema: schemaWithRels,
+      fetchImpl: mkStubFetch(),
+    });
+    await client.handshake();
+    return { client, storage };
+  };
+
+  it("link() submits a single Relationship Update for one-cardinality", async () => {
+    const { client } = await mkClient();
+    const response = await client.todo.link("todo_1", "list", "list_1");
+    expect(response.rejected).toEqual([]);
+  });
+
+  it("link() accepts an entity-shape pointer and normalizes to .id", async () => {
+    const { client } = await mkClient();
+    const response = await client.todo.link("todo_1", "list", { id: "list_99" });
+    expect(response.rejected).toEqual([]);
+  });
+
+  it("unlink() submits a single Relationship Delete Update", async () => {
+    const { client } = await mkClient();
+    const response = await client.todo.unlink("todo_1", "list");
+    expect(response.rejected).toEqual([]);
+  });
+
+  it("setLinks({ replace }) emits one entity Update + N Relationship Updates", async () => {
+    const { client } = await mkClient();
+    const response = await client.todo.setLinks("todo_1", "tags", {
+      replace: ["list_1", "list_2", { id: "list_3" }],
+    });
+    expect(response.rejected).toEqual([]);
+  });
+
+  it("setLinks({ add, remove }) emits the patch shape", async () => {
+    const { client } = await mkClient();
+    const response = await client.todo.setLinks("todo_1", "tags", {
+      add: ["list_1"],
+      remove: ["list_2"],
+    });
+    expect(response.rejected).toEqual([]);
+  });
+
+  it("throws EntityValidationError when the relationship's `as` is not declared on the entity", async () => {
+    const { client } = await mkClient();
+    await expect(client.todo.link("todo_1", "bogus", "list_1")).rejects.toBeInstanceOf(
+      EntityValidationError,
+    );
   });
 });

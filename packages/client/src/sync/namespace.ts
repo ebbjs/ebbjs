@@ -14,7 +14,7 @@
  * primitives `client.relationship({...})` already consumes.
  */
 
-import type { Entity } from "@ebbjs/core";
+import type { Entity, WriteResponse } from "@ebbjs/core";
 import type { StorageAdapter } from "@ebbjs/storage";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
@@ -27,7 +27,13 @@ import {
   type LoadEntities,
   type QueryBuilder,
 } from "./query-builder";
-import { forwardMany, forwardOne, reverse as reverseTraversal } from "./relationship";
+import {
+  forwardMany,
+  forwardOne,
+  type ManyPointerValue,
+  type PointerValue,
+  reverse as reverseTraversal,
+} from "./relationship";
 
 /**
  * Runtime shape of a single relationship accessor on a row. The
@@ -87,8 +93,13 @@ export type EntityWithAccessors<
  * and attaches relationship accessors for every declared
  * relationship on the entity.
  *
- * `TAs` is reserved for future per-entity accessor key typing;
- * today every namespace carries `TAs = never` and the static type
+ * `link` / `unlink` / `setLinks` build the wire Update(s) and
+ * submit via the client's write path. Users never see wire-level
+ * Update arrays; the runtime wraps them in `createAction` and
+ * hands them to `client.submitRelationshipUpdates`.
+ *
+ * `TAs` is reserved for per-entity accessor key typing; today
+ * every namespace carries `TAs = never` and the static type
  * surfaces only the projected fields. See {@link EntityNamespaces}
  * for why the relationship map isn't walked at the type level.
  */
@@ -98,6 +109,24 @@ export interface EntityNamespace<
 > {
   query(): QueryBuilder<TFields>;
   get(id: string): Promise<EntityWithAccessors<TFields, TAs> | null>;
+  /**
+   * One-cardinality link. Emits a single Relationship Update and
+   * submits. Throws `EntityValidationError` when `as` is not a
+   * declared relationship on the entity or when the actor lacks
+   * `<source_type>.update`.
+   */
+  link(id: string, as: string, targetId: PointerValue): Promise<WriteResponse>;
+  /**
+   * One-cardinality unlink. Emits a single Relationship Delete
+   * Update and submits.
+   */
+  unlink(id: string, as: string): Promise<WriteResponse>;
+  /**
+   * Many-cardinality set. Emits one entity Update + N Relationship
+   * Updates and submits. The canonical FK set lives on the source
+   * entity's data field.
+   */
+  setLinks(id: string, as: string, patch: ManyPointerValue): Promise<WriteResponse>;
 }
 
 /**
@@ -220,13 +249,35 @@ function buildRowAccessors(
 }
 
 /**
+ * Capability the namespace consults for write-side operations. The
+ * client supplies this at construction time so the namespace stays
+ * free of the cyclic `client → namespace → client` reference. The
+ * namespace delegates Action submission; HLC and clock management
+ * stay inside the client.
+ */
+export interface WriteCapability {
+  readonly registry: EntityRegistry;
+  buildRelationshipWrite(
+    opts: import("./relationship").BuildRelationshipWriteOptions,
+  ): import("./relationship").BuildRelationshipWriteResult;
+  submitRelationshipUpdates(
+    updates: readonly import("@ebbjs/core").Update[],
+  ): Promise<WriteResponse>;
+  /** Mint a fresh local HLC and return the timestamp string. */
+  freshHlc(): string;
+  /** Mint a fresh Update id. */
+  generateUpdateId(): string;
+}
+
+/**
  * Build a namespace for one entity. The namespace's `query()` returns
  * a lazy QueryBuilder seeded from `storage.entities.query(entityName)`.
  *
  * `shape` is the entity's TypeBox object schema (the projection
  * source); the builder reads it at materialization time to drive
- * the per-field lookup. `registry` supplies the relationship
- * declarations the row-with-accessors consult at `get(id)` time.
+ * the per-field lookup. `registry` and `write` supply the runtime
+ * pieces the relationship-write surface (`link` / `unlink` /
+ * `setLinks`) consults.
  */
 export function createEntityNamespace<
   TFields extends Record<string, TSchema>,
@@ -235,8 +286,9 @@ export function createEntityNamespace<
   entityName: string,
   shape: TObject<TFields>,
   storage: StorageAdapter,
-  registry: EntityRegistry,
+  write: WriteCapability,
 ): EntityNamespace<TFields, TAs> {
+  const registry = write.registry;
   const loader: LoadEntities = async () => storage.entities.query(entityName);
   return {
     query(): QueryBuilder<TFields> {
@@ -253,7 +305,74 @@ export function createEntityNamespace<
       const accessors = buildRowAccessors(entityName, id, storage, registry);
       return { ...projected, ...accessors } as EntityWithAccessors<TFields, TAs>;
     },
+    async link(id: string, as: string, targetId: PointerValue): Promise<WriteResponse> {
+      return submitRelationshipWrite(write, entityName, id, as, { targetId });
+    },
+    async unlink(id: string, as: string): Promise<WriteResponse> {
+      return submitRelationshipWrite(write, entityName, id, as, { targetId: null });
+    },
+    async setLinks(id: string, as: string, patch: ManyPointerValue): Promise<WriteResponse> {
+      return submitRelationshipWrite(write, entityName, id, as, { targetIds: patch });
+    },
   };
+}
+
+/**
+ * Look up the relationship by `(source, as)`, build the wire
+ * Update(s), and submit. Throws `EntityValidationError` when `as`
+ * is not a declared relationship on the entity.
+ */
+async function submitRelationshipWrite(
+  write: WriteCapability,
+  entityName: string,
+  sourceId: string,
+  as: string,
+  pointer: { targetId?: PointerValue; targetIds?: ManyPointerValue },
+): Promise<WriteResponse> {
+  const rel = write.registry.getRelationship(entityName, as);
+  if (rel === undefined) {
+    const { EntityValidationError } = await import("../schema/entity-registry");
+    throw new EntityValidationError([
+      {
+        entityName,
+        message: `submitRelationshipWrite: relationship "${as}" is not declared on entity "${entityName}"`,
+      },
+    ]);
+  }
+  // Many-cardinality needs an entity Update carrying the canonical
+  // FK set on `data.fields[as]`. The patch shape (`replace` /
+  // `add`/`remove`) is collapsed to a flat id list and emitted as
+  // the field's `value`. The wire-builder treats the canonical set
+  // as the source of truth.
+  const { buildManyEntityUpdate, collectManyTargetIds } = await import("./relationship");
+  let entityUpdate: import("@ebbjs/core").Update | undefined;
+  if (rel.sourceCardinality === "many" && pointer.targetIds !== undefined) {
+    const ids = collectManyTargetIds(pointer.targetIds);
+    const updateId = write.generateUpdateId();
+    entityUpdate = buildManyEntityUpdate({
+      sourceId,
+      sourceEntityName: entityName,
+      as,
+      targetIds: ids,
+      updateId,
+      hlc: write.freshHlc(),
+    });
+  }
+  const result = write.buildRelationshipWrite({
+    source: { name: entityName },
+    target: { name: rel.target.name },
+    as,
+    sourceId,
+    entityUpdate,
+    ...pointer,
+  });
+  const rels = Array.isArray(result.relationshipUpdate)
+    ? result.relationshipUpdate
+    : [result.relationshipUpdate];
+  const updates: import("@ebbjs/core").Update[] = [];
+  if (result.entityUpdate !== undefined) updates.push(result.entityUpdate);
+  for (const r of rels) updates.push(r);
+  return write.submitRelationshipUpdates(updates);
 }
 
 /**
@@ -264,7 +383,7 @@ export function createEntityNamespace<
  */
 export function buildEntityNamespaces<
   S extends Schema<Record<string, EntityDef<Record<string, TSchema>>>, unknown>,
->(schema: S, storage: StorageAdapter, registry: EntityRegistry): EntityNamespaces<S> {
+>(schema: S, storage: StorageAdapter, write: WriteCapability): EntityNamespaces<S> {
   const out: Record<string, EntityNamespace<Record<string, TSchema>>> = {};
   for (const [name, def] of Object.entries(schema.entities)) {
     // Per-entity `TAs` stays at the default `never` (see
@@ -275,7 +394,7 @@ export function buildEntityNamespaces<
       name,
       def.shape,
       storage,
-      registry,
+      write,
     );
   }
   return out as EntityNamespaces<S>;
