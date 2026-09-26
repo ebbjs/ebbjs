@@ -14,7 +14,8 @@
  * primitives `client.relationship({...})` already consumes.
  */
 
-import type { Entity, WriteResponse } from "@ebbjs/core";
+import type { Entity } from "@ebbjs/core";
+import type { WriteResponse } from "./types";
 import type { StorageAdapter } from "@ebbjs/storage";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
