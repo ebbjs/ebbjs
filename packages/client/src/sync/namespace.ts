@@ -27,12 +27,7 @@ import {
   type LoadEntities,
   type QueryBuilder,
 } from "./query-builder";
-import {
-  forwardMany,
-  forwardOne,
-  forwardOneNullable,
-  reverse as reverseTraversal,
-} from "./relationship";
+import { forwardMany, forwardOne, reverse as reverseTraversal } from "./relationship";
 
 /**
  * Runtime shape of a single relationship accessor on a row. The
@@ -42,10 +37,10 @@ import {
  * narrowing is a type-level follow-up (TS recursion limits bite
  * when walking the schema's relationship map).
  *
- * The forward-one branch accepts `Entity | null | undefined` to
- * match {@link forwardOneNullable}'s return shape; callers narrow
- * at the call site. The collapsed `Entity | undefined` from
- * {@link forwardOne} fits inside the same union.
+ * The forward-one branch accepts `Entity | null | undefined` —
+ * `null` when no Relationship edge exists, `undefined` when the
+ * edge exists but the target is missing, `Entity` when both
+ * resolve.
  */
 export type RowAccessor =
   | Promise<Entity | null | undefined>
@@ -145,11 +140,13 @@ export type EntityNamespaces<S> =
  * registry for relationships where the entity is the source (forward)
  * or the target (reverse) and dispatches per cardinality:
  *
- * - forward-many → `QueryBuilder<TargetFields>` (thenable)
- * - forward-one → `Promise<Entity | null>` (collapses null/absent
- *   to `undefined`; nullable FKs distinguish explicit `null` from
- *   absent/missing)
- * - reverse → `QueryBuilder<SourceFields>` (thenable)
+ * - forward-many → `QueryBuilder<TargetFields>` (thenable to
+ *   `readonly TargetShape[]`). The FK set lives on the materialized
+ *   `Relationship` entities, not the source's data fields.
+ * - forward-one → `Promise<Entity | null | undefined>`. Distinguishes
+ *   "no Relationship edge" (null), "edge exists but target missing"
+ *   (undefined), and "edge + target both resolve" (Entity).
+ * - reverse → `QueryBuilder<SourceFields>` (thenable).
  *
  * Forward accessors are looked up via
  * `getRelationshipsForSource(entityName)`; reverse accessors via
@@ -163,7 +160,6 @@ export type EntityNamespaces<S> =
 function buildRowAccessors(
   entityName: string,
   sourceId: string,
-  shape: TObject<Record<string, TSchema>>,
   storage: StorageAdapter,
   registry: EntityRegistry,
 ): Record<string, RowAccessor> {
@@ -176,6 +172,7 @@ function buildRowAccessors(
   for (const rel of registry.getRelationshipsForSource(entityName)) {
     const targetName = rel.target.name;
     const field = rel.as;
+    const relType = rel.type;
     const targetShape = registry.get(targetName)?.shape;
     if (rel.sourceCardinality === "many") {
       if (targetShape === undefined) continue;
@@ -187,28 +184,25 @@ function buildRowAccessors(
         targetName,
         targetShape,
         field,
+        relType,
       );
       continue;
     }
-    // forward-one: branch on FK nullability. The source entity's
-    // TypeBox shape tells us whether the field was declared
-    // `e.string().nullable()` — TypeBox represents it as a union
-    // `anyOf: [<inner>, {type: "null"}]`. Anything else collapses
-    // to `undefined` semantics.
-    const fieldSchema = shape.properties?.[field];
-    const nullable = isNullableSchema(fieldSchema);
-    if (nullable) {
-      out[field] = forwardOneNullable(readLocalEntity, sourceId, entityName, field);
-    } else {
-      out[field] = forwardOne(readLocalEntity, sourceId, entityName, field);
-    }
+    out[field] = forwardOne(
+      readLocalEntity,
+      queryEntitiesByType,
+      sourceId,
+      entityName,
+      field,
+      relType,
+    );
   }
 
   // Reverse accessors — relationships where this entity is the target.
   for (const rel of registry.getRelationshipsForTarget(entityName)) {
     const sourceName = rel.source.name;
     const field = rel.as;
-    const type = rel.type;
+    const relType = rel.type;
     const sourceShape = registry.get(sourceName)?.shape;
     if (sourceShape === undefined) continue;
     out[field] = reverseTraversal(
@@ -218,28 +212,11 @@ function buildRowAccessors(
       sourceName,
       sourceShape,
       field,
-      type,
+      relType,
     );
   }
 
   return out;
-}
-
-/**
- * Detect the `e.string().nullable()` chain — TypeBox emits a
- * `Type.Union([<inner>, Type.Null()])` shape, so we look for an
- * `anyOf` array whose last element is the `null` literal. Used by
- * the row-accessor forward-one dispatch to pick
- * {@link forwardOneNullable} over {@link forwardOne}.
- */
-function isNullableSchema(schema: unknown): boolean {
-  if (schema === null || typeof schema !== "object") return false;
-  const s = schema as { anyOf?: unknown };
-  if (!Array.isArray(s.anyOf)) return false;
-  const last = s.anyOf[s.anyOf.length - 1];
-  if (last === null || typeof last !== "object") return false;
-  const t = (last as { type?: unknown }).type;
-  return t === "null";
 }
 
 /**
@@ -273,13 +250,7 @@ export function createEntityNamespace<
       // row and a wrong-type row are both "no row here".
       if (entity.type !== entityName) return null;
       const projected = projectEntity(entity, shape);
-      const accessors = buildRowAccessors(
-        entityName,
-        id,
-        shape as unknown as TObject<Record<string, TSchema>>,
-        storage,
-        registry,
-      );
+      const accessors = buildRowAccessors(entityName, id, storage, registry);
       return { ...projected, ...accessors } as EntityWithAccessors<TFields, TAs>;
     },
   };

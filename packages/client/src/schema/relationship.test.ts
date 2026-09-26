@@ -13,7 +13,6 @@ import type { Update } from "@ebbjs/core";
 const todo = defineEntity("todo", {
   title: e.string(),
   completed: e.boolean(),
-  list: e.string(),
 });
 const list = defineEntity("list", { name: e.string() });
 
@@ -745,11 +744,26 @@ describe("relationship() handle traversal", () => {
     last_gsn: 0,
   });
 
-  it("forward(id) returns the target entity for sourceCardinality:one", async () => {
+  const mkRel = (
+    id: string,
+    sourceId: string,
+    targetId: string,
+    field: string,
+    type: string,
+  ): import("@ebbjs/core").Entity =>
+    mkEntity(id, "relationship", {
+      source_id: sourceId,
+      target_id: targetId,
+      type,
+      field,
+    });
+
+  it("forward(id) returns the target entity when a Relationship edge exists", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("list_1", "list", { name: "Today" }));
-    await storage.entities.set(mkEntity("todo_1", "todo", { title: "Ship", list: "list_1" }));
+    await storage.entities.set(mkEntity("todo_1", "todo", { title: "Ship" }));
+    await storage.entities.set(mkRel("rel-1", "todo_1", "list_1", "list", "todo"));
 
     const client = createClient({
       serverUrl: "http://localhost:4000",
@@ -766,12 +780,12 @@ describe("relationship() handle traversal", () => {
 
     const handle = client.relationship({ source: todo, target: list, as: "list" });
     const result = await (handle.forward("todo_1") as Promise<
-      import("@ebbjs/core").Entity | undefined
+      import("@ebbjs/core").Entity | null | undefined
     >);
     expect(result?.id).toBe("list_1");
   });
 
-  it("forward(id) returns undefined when the source has no pointer", async () => {
+  it("forward(id) returns null when no Relationship edge exists", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("todo_1", "todo", { title: "Ship" }));
@@ -791,9 +805,9 @@ describe("relationship() handle traversal", () => {
 
     const handle = client.relationship({ source: todo, target: list, as: "list" });
     const result = await (handle.forward("todo_1") as Promise<
-      import("@ebbjs/core").Entity | undefined
+      import("@ebbjs/core").Entity | null | undefined
     >);
-    expect(result).toBeUndefined();
+    expect(result).toBeNull();
   });
 
   it("forward(id) returns a QueryBuilder for sourceCardinality:many", async () => {
@@ -802,11 +816,11 @@ describe("relationship() handle traversal", () => {
     await storage.entities.set(mkEntity("list_1", "list", { name: "A" }));
     await storage.entities.set(mkEntity("list_2", "list", { name: "B" }));
     await storage.entities.set(mkEntity("list_3", "list", { name: "C" }));
-    await storage.entities.set(
-      mkEntity("issue_1", "issue", { title: "Bug", labels: ["list_1", "list_2"] }),
-    );
+    await storage.entities.set(mkEntity("issue_1", "issue", { title: "Bug" }));
+    await storage.entities.set(mkRel("rel-a", "issue_1", "list_1", "labels", "issue"));
+    await storage.entities.set(mkRel("rel-b", "issue_1", "list_2", "labels", "issue"));
 
-    const issue = defineEntity("issue", { title: e.string(), labels: e.string() });
+    const issue = defineEntity("issue", { title: e.string() });
     const r = new EntityRegistry();
     r.register(issue);
     r.register(list);
@@ -839,33 +853,12 @@ describe("relationship() handle traversal", () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("list_1", "list", { name: "A" }));
-    await storage.entities.set(mkEntity("todo_1", "todo", { title: "x", list: "list_1" }));
-    await storage.entities.set(mkEntity("todo_2", "todo", { title: "y", list: "list_1" }));
-    await storage.entities.set(mkEntity("todo_3", "todo", { title: "z", list: "list_other" }));
-    await storage.entities.set(
-      mkEntity("rel_a", "relationship", {
-        source_id: "todo_1",
-        target_id: "list_1",
-        type: "todo",
-        field: "list",
-      }),
-    );
-    await storage.entities.set(
-      mkEntity("rel_b", "relationship", {
-        source_id: "todo_2",
-        target_id: "list_1",
-        type: "todo",
-        field: "list",
-      }),
-    );
-    await storage.entities.set(
-      mkEntity("rel_c", "relationship", {
-        source_id: "todo_3",
-        target_id: "list_other",
-        type: "todo",
-        field: "list",
-      }),
-    );
+    await storage.entities.set(mkEntity("todo_1", "todo", { title: "x" }));
+    await storage.entities.set(mkEntity("todo_2", "todo", { title: "y" }));
+    await storage.entities.set(mkEntity("todo_3", "todo", { title: "z" }));
+    await storage.entities.set(mkRel("rel_a", "todo_1", "list_1", "list", "todo"));
+    await storage.entities.set(mkRel("rel_b", "todo_2", "list_1", "list", "todo"));
+    await storage.entities.set(mkRel("rel_c", "todo_3", "list_other", "list", "todo"));
 
     const r = new EntityRegistry();
     r.register(todo);

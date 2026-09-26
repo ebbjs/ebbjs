@@ -535,9 +535,16 @@ export class SyncClient {
     const handle: RelationshipHandle = {
       forward: (
         sourceId: string,
-      ): Promise<Entity | undefined> | QueryBuilder<Record<string, TSchema>> => {
+      ): Promise<Entity | null | undefined> | QueryBuilder<Record<string, TSchema>> => {
         if (cardinality === "one") {
-          return forwardOne(readLocalEntity, sourceId, sourceName, field);
+          return forwardOne(
+            readLocalEntity,
+            queryEntitiesByType,
+            sourceId,
+            sourceName,
+            field,
+            relType,
+          );
         }
         if (targetShape === undefined) {
           return buildQueryBuilder<Record<string, TSchema>>([], Type.Object({}));
@@ -550,6 +557,7 @@ export class SyncClient {
           targetName,
           targetShape,
           field,
+          relType,
         );
       },
       reverse: (targetId: string): QueryBuilder<Record<string, TSchema>> => {
@@ -1167,15 +1175,19 @@ export interface QueryOptions {
 /**
  * Handle returned by {@link SyncClient.relationship}.
  *
- * `forward(sourceId)` returns `Promise<Entity | undefined>` for
- * `sourceCardinality: "one"` and a `QueryBuilder<TTargetFields>`
+ * `forward(sourceId)` returns `Promise<Entity | null | undefined>`
+ * for `sourceCardinality: "one"` and a `QueryBuilder<TTargetFields>`
  * (thenable) for `sourceCardinality: "many"`. `reverse(targetId)`
  * returns a `QueryBuilder<TSourceFields>` (thenable). Awaiting the
  * chain yields the projected rows; awaiting the one-cardinality
- * `forward` resolves the single entity.
+ * `forward` resolves the single entity. The forward-one result
+ * distinguishes "no edge exists" (null) from "edge exists but target
+ * missing" (undefined).
  */
 export interface RelationshipHandle {
-  forward(sourceId: string): Promise<Entity | undefined> | QueryBuilder<Record<string, TSchema>>;
+  forward(
+    sourceId: string,
+  ): Promise<Entity | null | undefined> | QueryBuilder<Record<string, TSchema>>;
   reverse(targetId: string): QueryBuilder<Record<string, TSchema>>;
 }
 
