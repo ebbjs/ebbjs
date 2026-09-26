@@ -9,19 +9,26 @@
  */
 
 import type { StorageAdapter } from "@ebbjs/storage";
-import type { TObject, TSchema } from "@sinclair/typebox/type";
+import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { EntityDef } from "../schema/entity";
 import type { Schema } from "../schema/schema";
-import { buildLazyQueryBuilder, type LoadEntities, type QueryBuilder } from "./query-builder";
+import {
+  buildLazyQueryBuilder,
+  projectEntity,
+  type LoadEntities,
+  type QueryBuilder,
+} from "./query-builder";
 
 /**
  * Mount surface for one entity. `query()` returns a fresh
  * QueryBuilder over the entity's projected field map; awaiting it
- * resolves to the typed rows.
+ * resolves to the typed rows. `get(id)` reads a single row directly
+ * via the storage adapter and projects it to the same TypeBox shape.
  */
 export interface EntityNamespace<TFields extends Record<string, TSchema>> {
   query(): QueryBuilder<TFields>;
+  get(id: string): Promise<Static<TObject<TFields>> | null>;
 }
 
 /**
@@ -62,6 +69,15 @@ export function createEntityNamespace<TFields extends Record<string, TSchema>>(
   return {
     query(): QueryBuilder<TFields> {
       return buildLazyQueryBuilder(loader, shape);
+    },
+    async get(id: string): Promise<Static<TObject<TFields>> | null> {
+      const entity = await storage.entities.get(id);
+      if (entity === null) return null;
+      // Wrong-type reads (different `entity.type`) resolve to `null`
+      // alongside unknown ids. Callers don't distinguish — a missing
+      // row and a wrong-type row are both "no row here".
+      if (entity.type !== entityName) return null;
+      return projectEntity(entity, shape);
     },
   };
 }
