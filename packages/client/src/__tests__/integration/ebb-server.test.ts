@@ -812,7 +812,7 @@ describe("integration: defineEntity + EntityRegistry (#143)", () => {
  * `relationship`. User-to-user relationships require atomic
  * cross-entity creation, which is outside this primitive's scope.
  *
- * The round-trip exercises the public link/unlink surface via the
+ * The round-trip exercises the public link surface via the
  * `ownedBy` shape the rest of the integration suite already uses.
  * One-cardinality writes submit a single Relationship Update —
  * no entity Update. The server's `RelationshipCache` resolves the
@@ -825,9 +825,13 @@ describe("integration: defineEntity + EntityRegistry (#143)", () => {
  * - the reverse accessor surfaces the source via the materialized
  *   Relationship cache.
  *
- * `unlink()` is not exercised here: the server's `validate_update_data`
- * rejects `data: null` on relationship deletes today (pre-existing
- * server issue). Tracking in a follow-up.
+ * `unlink()` is not exercised here: the server's
+ * `get_group_id_for_update` reads `target_id` from the wire's
+ * `data` envelope, but a delete Update ships `data: null` per
+ * the `Relationship` system wire convention. The `unlink()` API
+ * surface and the unit-level path work; only the over-the-wire
+ * round-trip is held until the authorizer learns to look up the
+ * existing relationship for a delete.
  */
 describe("integration: client.<entity>.link / unlink", () => {
   it("creates a todo + group link via the public link() API", async () => {
@@ -937,6 +941,12 @@ describe("integration: client.<entity>.link / unlink", () => {
       const qb = handle.reverse(TEST_GROUP_ID);
       const sources = await qb.toRaw();
       expect(sources.map((s) => s.id)).toContain(todoId);
+
+      // The unlink() over-the-wire round-trip is held: the server's
+      // authorization reads `target_id` from the wire's `data`
+      // envelope, but a delete Update ships `data: null` per the
+      // `Relationship` system wire convention. See the PR body's
+      // follow-up section. The unit-level unlink() path works.
     } finally {
       client.close();
     }
