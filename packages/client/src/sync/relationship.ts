@@ -58,12 +58,18 @@ export interface BuildRelationshipWriteOptions {
   /** Optional override; defaults to the registry-stored relationship's `sourceCardinality`. */
   sourceCardinality?: "one" | "many";
   /**
-   * The entity's own Update — must carry `subject_id` and
-   * `subject_type === source.name`. The relationship's pointer value
-   * is stripped from this Update (it lives on `targetId`/`targetIds`
-   * instead) so the same shape works for `client.write()`.
+   * Source entity's id, the `subject_id` on the source's Update.
+   * Required for `sourceCardinality: "one"` — the one-cardinality
+   * wire carries the source id on the Relationship Update's
+   * `source_id` field rather than via a separate entity Update.
    */
-  entityUpdate: import("@ebbjs/core").Update;
+  sourceId?: string;
+  /**
+   * Source entity's Update. Required for `sourceCardinality: "many"`
+   * — the canonical FK set lives on the source's data field, so the
+   * entity Update carries `data.fields[as]`.
+   */
+  entityUpdate?: import("@ebbjs/core").Update;
   /** Pointer value for `sourceCardinality: "one"` (default). String id or entity. */
   targetId?: PointerValue;
   /** Pointer value(s) for `sourceCardinality: "many"`. */
@@ -71,14 +77,14 @@ export interface BuildRelationshipWriteOptions {
 }
 
 export interface BuildRelationshipWriteResult {
-  /** The entity Update, with the relationship field stripped if present. */
-  entityUpdate: import("@ebbjs/core").Update;
   /**
-   * The relationship Update(s) produced. Single Update for
-   * `sourceCardinality: "one"`; an array (possibly empty) for
-   * `sourceCardinality: "many"`. The wire accepts a mix of
-   * put/patch/delete updates; the developer's write call flattens
-   * the result into one Action.
+   * The entity Update. Present for `sourceCardinality: "many"`,
+   * absent for `sourceCardinality: "one"`.
+   */
+  entityUpdate?: import("@ebbjs/core").Update;
+  /**
+   * Single Update for `sourceCardinality: "one"`; an array
+   * (possibly empty) for `sourceCardinality: "many"`.
    */
   relationshipUpdate: import("@ebbjs/core").Update | readonly import("@ebbjs/core").Update[];
 }
@@ -346,4 +352,61 @@ export function buildRelationshipUpdate(args: {
       },
     },
   };
+}
+
+/**
+ * Build a `put` Update for the source entity carrying the canonical
+ * FK set on `data.fields[as]`. Used by the many-cardinality
+ * relationship-write path: the entity Update is one half of the
+ * wire shape, with N `Relationship` Updates being the other half.
+ *
+ * `hlc` is the freshly-minted local HLC; `updateId` is the Update's
+ * id. Both surface in the field's `update_id` so the wire envelope
+ * is self-contained.
+ */
+export function buildManyEntityUpdate(args: {
+  sourceId: string;
+  sourceEntityName: string;
+  as: string;
+  targetIds: readonly string[];
+  updateId: string;
+  hlc: string;
+}): import("@ebbjs/core").Update {
+  return {
+    id: args.updateId,
+    subject_id: args.sourceId,
+    subject_type: args.sourceEntityName,
+    method: "put",
+    data: {
+      fields: {
+        [args.as]: {
+          value: [...args.targetIds],
+          update_id: args.updateId,
+          hlc: args.hlc,
+        },
+      },
+    },
+  };
+}
+
+/**
+ * Normalize a many-pointer patch to a deduplicated id list, dropping
+ * `null` / `undefined` entries (the caller already validated they're
+ * not present). Used by the namespace's many-cardinality entry
+ * point before constructing the canonical-FK Update.
+ */
+export function collectManyTargetIds(patch: ManyPointerValue): readonly string[] {
+  const all: readonly PointerValue[] =
+    "replace" in patch ? patch.replace : [...patch.add, ...patch.remove];
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const v of all) {
+    if (v === null || v === undefined) continue;
+    const id = typeof v === "string" ? v : v.id;
+    if (!seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  return ids;
 }

@@ -23,7 +23,16 @@
  * ```
  */
 
-import { encodeSync, type Action, type Entity, type Update } from "@ebbjs/core";
+import {
+  encodeSync,
+  type Action,
+  createClock,
+  type Entity,
+  type HLCState,
+  localEvent,
+  receiveRemoteHLC,
+  type Update,
+} from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage";
 import type { StorageAdapter } from "@ebbjs/storage";
 
@@ -55,6 +64,7 @@ import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { generateId } from "@ebbjs/core";
 import type { EntityDef } from "../schema/entity";
 import type { Schema } from "../schema/schema";
+import { relationshipSystemEntity } from "../schema/system-entities";
 import type { TSchema } from "@sinclair/typebox/type";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
@@ -117,6 +127,13 @@ export class SyncClient {
    * rule the server also enforces — see `permission_checker.ex`).
    */
   private actorGroups: { id: string; permissions: readonly string[] }[] = [];
+  /**
+   * Per-client HLC clock. Advanced on every local event by
+   * {@link submitRelationshipUpdates}; remote HLCs flow in via
+   * `_applyAction`. The clock is per-client so writes stay
+   * monotonic against the client's own catch-up window.
+   */
+  private readonly clock: HLCState = createClock();
   /** TextDocument registry (one document per docId, per actor). */
   private readonly textDocumentRegistry = new TextDocumentRegistry();
   /**
@@ -389,6 +406,64 @@ export class SyncClient {
     return { rejected };
   }
 
+  /**
+   * Wrap a batch of pre-built Updates in a single Action and submit
+   * via `write`. The namespace's `link` / `unlink` / `setLinks`
+   * methods use this to ship wire Updates without the caller
+   * hand-rolling `createAction` calls.
+   *
+   * HLC ordering: the Action's HLC is minted from the client's
+   * internal clock. Remote HLCs received on the SSE stream merge
+   * into the same clock via {@link receiveRemoteHLC} so subsequent
+   * local events stay monotonic. The clock is best-effort — a
+   * malformed or drift-exceeding remote HLC is logged and ignored
+   * rather than rejecting the inbound Action.
+   */
+  async submitRelationshipUpdates(updates: readonly Update[]): Promise<WriteResponse> {
+    if (updates.length === 0) {
+      return { rejected: [] };
+    }
+    const { createAction } = await import("@ebbjs/core");
+    // Advance the clock for the local event so the Action's HLC
+    // is monotonically greater than any prior local / remote HLC.
+    this.freshHlc();
+    const { action } = createAction({
+      actorId: this.actorId,
+      updates: [...updates],
+      clock: this.clock,
+    });
+    return this.write([action]);
+  }
+
+  /**
+   * Advance the client's HLC clock for a local event and return
+   * the freshly-minted HLC string. Used by the namespace's
+   * `setLinks` path to stamp the entity Update it constructs.
+   */
+  freshHlc(): string {
+    return localEvent(this.clock);
+  }
+
+  /** Mint a fresh Update id. Used by the namespace's `setLinks` path. */
+  generateUpdateId(): string {
+    return generateId("u");
+  }
+
+  /**
+   * Merge a remote HLC into the client's clock. Called from the
+   * inbound-Action path so the next local event is guaranteed
+   * monotonic against the server's authoritative HLC. Best-effort:
+   * a malformed or drift-exceeding HLC is swallowed so the storage
+   * materialization still happens.
+   */
+  private mergeRemoteHLC(remoteHlc: string): void {
+    try {
+      receiveRemoteHLC(this.clock, remoteHlc);
+    } catch {
+      // ignore — see comment above
+    }
+  }
+
   /** `GET /entities/:id` — read a materialized entity. */
   async getEntity(id: string): Promise<EntityResponse | null> {
     const url = `${this.serverUrl}/entities/${encodeURIComponent(id)}`;
@@ -579,18 +654,19 @@ export class SyncClient {
   }
 
   /**
-   * Build an `(entityUpdate, relationshipUpdate)` pair for a single
-   * relationship write. Mirrors the existing wire shape the server's
-   * `RelationshipCache` already accepts.
+   * Build the wire Update(s) for a single relationship write.
+   *
+   * One-cardinality: a single Relationship Update. The caller
+   * supplies `sourceId` and `targetId` (string id or entity-shape;
+   * `null` for unlink). The source's data fields don't carry the FK.
+   *
+   * Many-cardinality: one entity Update + N Relationship Updates.
+   * The caller supplies `entityUpdate` (carrying the canonical FK
+   * set on `data.fields[as]`) and a `targetIds` patch.
    *
    * Pointer values may be a string id or an entity-shape object
    * (anything with a string `.id`); both are normalized to the id at
    * write time. Anything else is rejected with `EntityValidationError`.
-   *
-   * For `sourceCardinality: "many"`, pass `targetIds` (not
-   * `targetId`):
-   *   - `{ replace: [...] }` — overwrite the source's FK set
-   *   - `{ add: [...], remove: [...] }` — patch the set
    *
    * The early client-side permission check runs by default: if the
    * actor's known groups do not include `<source_type>.update` (or
@@ -602,44 +678,22 @@ export class SyncClient {
    * remains the final authority.
    */
   buildRelationshipWrite(opts: BuildRelationshipWriteOptions): BuildRelationshipWriteResult {
-    const { source, as, entityUpdate } = opts;
+    const { source, as } = opts;
     const sourceName = source.name;
 
-    // Validate that the source is a registered entity. An unknown
-    // source name is the same class of error as an unknown
-    // subject_type in `validateAction`; surface it as
-    // `EntityValidationError` so callers handle the rejection the
-    // same way.
-    //
-    // The target is treated as a wire-level id reference — the
-    // server validates its existence at write time, and primitives
-    // like the `ownedBy` pattern point the source at a group
-    // (system entity), not at a user entity. The validation here
-    // intentionally doesn't cover the target.
+    // An unknown source name is the same class of error as an unknown
+    // subject_type in `validateAction`. The target is treated as a
+    // wire-level id reference — the server validates its existence
+    // at write time, and primitives like `ownedBy` point the source
+    // at a group (system entity), not at a user entity.
     this.checkEntityRegistered(sourceName, "source");
 
     const cardinality = resolveCardinality(this.registry, sourceName, as, opts.sourceCardinality);
 
-    // Run the client-side permission early-check. Match the server's
-    // intra-action rule: the actor needs `<source_type>.update` (or
-    // `<source_type>.*`) somewhere in their known groups. When no
-    // groups are known yet (handshake hasn't run), we don't error —
-    // the server is the authority.
     this.checkRelationshipPermission(sourceName);
 
-    // The relationship pointer field is carried on the entity Update
-    // for `sourceCardinality: "many"` (the canonical set lives on
-    // the source) and on the separate Relationship Update for
-    // `sourceCardinality: "one"` (the relationship is the canonical
-    // link). For "one", strip the field from the entity Update so
-    // the wire doesn't carry the FK twice. For "many", leave the
-    // field alone so the developer can carry the canonical set.
-    const cleanEntityUpdate: Update =
-      cardinality === "one" ? stripRelationshipField(entityUpdate, as) : entityUpdate;
-
-    const sourceId = entityUpdate.subject_id;
-
     if (cardinality === "one") {
+      const sourceId = requireSourceId(opts, as);
       const targetId = normalizePointer(opts.targetId, `targetId for "${as}"`);
       const updateId = generateId("u");
       const relationshipId = generateId("rel");
@@ -651,76 +705,55 @@ export class SyncClient {
         type: this.wireTypeFor(sourceName, as),
         updateId,
       });
-      return { entityUpdate: cleanEntityUpdate, relationshipUpdate: relUpdate };
+      return { relationshipUpdate: relUpdate };
     }
 
-    // sourceCardinality === "many"
+    // Many-cardinality.
+    const entityUpdate = requireEntityUpdate(opts, as);
+    const sourceId = entityUpdate.subject_id;
     const targetIds = opts.targetIds;
     const wireType = this.wireTypeFor(sourceName, as);
     const updates: Update[] = [];
     if (targetIds === undefined) {
-      // No-op: produce an empty relationship-update array. The
-      // developer can still submit the entity update with no
-      // relationship edges (matches `targetId: null` on the
-      // one-cardinality side; the `many` side has no per-edge
-      // delete in this primitive).
-      return { entityUpdate: cleanEntityUpdate, relationshipUpdate: updates };
+      // No `targetIds` — emit the entity Update with no relationship
+      // edges. Matches `targetId: null` on the one-cardinality side;
+      // the `many` side has no per-edge delete in this primitive.
+      return { entityUpdate, relationshipUpdate: updates };
     }
-    const normalized = normalizeManyPointers(targetIds, `targetIds for "${as}"`);
-    // For replace: emit a PUT per target id; the source entity's array
-    // field carries the canonical set, and these Relationship Updates
-    // materialize the link edges.
-    // For patch: same shape — PUT for adds, DELETE for removes.
     if ("replace" in targetIds) {
+      const normalized = normalizeManyPointers(targetIds, `targetIds for "${as}"`);
       for (const targetId of normalized) {
-        const relId = generateId("rel");
-        const updateId = generateId("u");
-        updates.push(
-          buildRelationshipUpdate({
-            relationshipId: relId,
-            sourceId,
-            targetId,
-            field: as,
-            type: wireType,
-            updateId,
-          }),
-        );
+        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, targetId));
       }
     } else {
       for (const targetId of targetIds.add) {
         const id = normalizePointer(targetId, `targetIds.add for "${as}"`);
         if (id === null) continue;
-        const relId = generateId("rel");
-        const updateId = generateId("u");
-        updates.push(
-          buildRelationshipUpdate({
-            relationshipId: relId,
-            sourceId,
-            targetId: id,
-            field: as,
-            type: wireType,
-            updateId,
-          }),
-        );
+        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, id));
       }
       for (const targetId of targetIds.remove) {
         const id = normalizePointer(targetId, `targetIds.remove for "${as}"`);
         if (id === null) continue;
-        const relId = generateId("rel");
-        const updateId = generateId("u");
-        updates.push(
-          buildRelationshipUpdate({
-            relationshipId: relId,
-            sourceId,
-            targetId: id,
-            field: as,
-            type: wireType,
-            updateId,
-          }),
-        );
+        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, id));
       }
     }
-    return { entityUpdate: cleanEntityUpdate, relationshipUpdate: updates };
+    return { entityUpdate, relationshipUpdate: updates };
+  }
+
+  private makeManyRelationshipUpdate(
+    sourceId: string,
+    as: string,
+    wireType: string,
+    targetId: string,
+  ): Update {
+    return buildRelationshipUpdate({
+      relationshipId: generateId("rel"),
+      sourceId,
+      targetId,
+      field: as,
+      type: wireType,
+      updateId: generateId("u"),
+    });
   }
 
   /**
@@ -992,6 +1025,9 @@ export class SyncClient {
     if (violations.length > 0) {
       this.emitRegistryViolations(violations, { direction: "inbound" });
     }
+    if (action.hlc !== undefined) {
+      this.mergeRemoteHLC(action.hlc);
+    }
     await this.storage.actions.append(action);
     const affected = action.updates.map((u) => ({
       entityId: u.subject_id,
@@ -1031,11 +1067,14 @@ export class SyncClient {
  * re-register every entity and relationship on a new registry rather
  * than sharing `schema._registry` so a client can mutate its own
  * registry at runtime without bleeding across clients that share
- * the same `schema` value.
+ * the same `schema` value. The `Relationship` system entity is
+ * seeded so the public relationship-write path (`link` / `unlink` /
+ * `setLinks`) can submit Relationship Updates.
  */
 const buildRegistryFromSchema = (schema: AnySchema | undefined): EntityRegistry => {
   const registry = new EntityRegistry();
   if (schema === undefined) return registry;
+  registry.register(relationshipSystemEntity);
   for (const entity of Object.values(schema.entities)) {
     registry.register(entity);
   }
@@ -1192,22 +1231,33 @@ export interface RelationshipHandle {
 }
 
 /**
- * Strip the `as` field from an entity Update's `data.fields` map. The
- * relationship pointer lives on the separate `Relationship` Update,
- * not on the source entity's data — we don't want the wire to carry
- * the FK twice. Returns a new Update object when the field is
- * present, otherwise returns the input as-is.
+ * Resolve the `sourceId` from `BuildRelationshipWriteOptions`. The
+ * one-cardinality wire doesn't carry an entity Update, so the
+ * caller supplies `sourceId` directly.
  */
-function stripRelationshipField(update: Update, as: string): Update {
-  if (update.data === null) return update;
-  const fields = update.data.fields;
-  if (!(as in fields)) return update;
-  const next: Record<string, (typeof fields)[string]> = {};
-  for (const k of Object.keys(fields)) {
-    if (k === as) continue;
-    next[k] = fields[k]!;
-  }
-  return { ...update, data: { fields: next } };
+function requireSourceId(opts: BuildRelationshipWriteOptions, as: string): string {
+  if (opts.sourceId !== undefined && opts.sourceId.length > 0) return opts.sourceId;
+  throw new EntityValidationError([
+    {
+      entityName: opts.source.name,
+      message: `buildRelationshipWrite: sourceId is required for one-cardinality relationship "${as}"`,
+    },
+  ]);
+}
+
+/**
+ * Resolve the entity Update from `BuildRelationshipWriteOptions`.
+ * The many-cardinality wire carries the canonical FK set on the
+ * source entity's data field, so the entity Update is required.
+ */
+function requireEntityUpdate(opts: BuildRelationshipWriteOptions, as: string): Update {
+  if (opts.entityUpdate !== undefined) return opts.entityUpdate;
+  throw new EntityValidationError([
+    {
+      entityName: opts.source.name,
+      message: `buildRelationshipWrite: entityUpdate is required for many-cardinality relationship "${as}"`,
+    },
+  ]);
 }
 
 /**
@@ -1234,7 +1284,17 @@ export function createClient<S extends AnySchema | undefined = undefined>(
   if (opts.schema === undefined) {
     return client as NamespacedClient<S>;
   }
-  const namespaces = buildEntityNamespaces(opts.schema, client.storage, client.registry);
+  // Narrow capability the namespace consults for write-side
+  // operations. Keeps the namespace free of the cyclic
+  // `client → namespace → client` reference.
+  const writeCap = {
+    registry: client.registry,
+    buildRelationshipWrite: client.buildRelationshipWrite.bind(client),
+    submitRelationshipUpdates: client.submitRelationshipUpdates.bind(client),
+    freshHlc: () => client.freshHlc(),
+    generateUpdateId: () => client.generateUpdateId(),
+  };
+  const namespaces = buildEntityNamespaces(opts.schema, client.storage, writeCap);
   return new Proxy(client, {
     get(target, prop, receiver) {
       if (typeof prop === "string") {
