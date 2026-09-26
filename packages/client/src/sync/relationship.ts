@@ -183,6 +183,34 @@ export async function forwardOne(
 }
 
 /**
+ * Build a forward-singular accessor for a nullable FK. Mirrors
+ * {@link forwardOne} but distinguishes "FK is null" (returns
+ * `null`) from "FK is absent or target is missing" (returns
+ * `undefined`). The static type at the handle's accessor site is
+ * `Promise<Entity | null | undefined>`; the runtime's `null`
+ * matches the schema's `.nullable()` annotation per #171.
+ *
+ * Pre-existing `forwardOne` collapses `null` and `undefined` into a
+ * single `undefined`; this variant preserves the distinction.
+ */
+export async function forwardOneNullable(
+  readLocalEntity: (id: string) => Promise<Entity | null>,
+  sourceId: string,
+  sourceName: string,
+  field: string,
+): Promise<Entity | null | undefined> {
+  const source = await readLocalEntity(sourceId);
+  if (source === null) return undefined;
+  if (source.type !== sourceName) return undefined;
+  const fv = source.data?.fields?.[field];
+  if (fv === undefined) return undefined;
+  if (fv.value === null) return null;
+  if (typeof fv.value !== "string") return undefined;
+  const target = await readLocalEntity(fv.value);
+  return target ?? undefined;
+}
+
+/**
  * Build a forward-many accessor result. The source entity's field
  * holds an array of FKs; we materialize the source, collect the ids,
  * and return a typed QueryBuilder that loads each target lazily on

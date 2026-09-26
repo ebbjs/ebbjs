@@ -37,6 +37,9 @@ export {
   type EntityNamespace,
   type EntityFields,
   type EntityNamespaces,
+  type EntityHandle,
+  type EntityRelationshipAccessors,
+  type HandleField,
   createEntityNamespace,
   buildEntityNamespaces,
 } from "./sync/namespace";

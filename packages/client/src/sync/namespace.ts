@@ -1,6 +1,7 @@
 /**
  * Per-entity namespace mounted on `client.<entityName>`.
  *
+ * `client.<entity>(id)` returns a typed instance handle (per #171).
  * `client.<entity>.query()` returns the same typed thenable chain
  * the relationship handle consumes — one chain, one projection. The
  * namespace is a thin layer over the client's `storage` adapter;
@@ -8,6 +9,7 @@
  * chain reflects the latest snapshot.
  */
 
+import type { Entity } from "@ebbjs/core";
 import type { StorageAdapter } from "@ebbjs/storage";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
@@ -21,12 +23,91 @@ import {
 } from "./query-builder";
 
 /**
+ * Per-field getter type on a handle. Absent fields resolve to
+ * `undefined` (per Path A on #158); set fields resolve to the
+ * TypeBox static type; nulled fields resolve to `null` for nullable
+ * schemas.
+ */
+export type HandleField<T extends TSchema> = Static<T> | undefined;
+
+/**
+ * Promise-shaped accessor for a forward-one relationship. The runtime
+ * resolves to `Entity | null | undefined`; users who declare the FK
+ * as `.nullable()` get the `| null` narrowing in the static type.
+ *
+ * For non-nullable FKs the static type is `Promise<Entity | null>`
+ * too — `null` is impossible at the wire (the FK is non-null) but
+ * the runtime's `undefined` for missing targets fits within the
+ * union. This matches the existing `forwardOne` primitive's
+ * behavior.
+ */
+export type ForwardOneAccessor<
+  TSourceFields extends Record<string, TSchema>,
+  K extends keyof TSourceFields & string,
+> = null extends Static<TSourceFields[K]> ? Promise<Entity | null> : Promise<Entity | null>;
+
+/** Forward-many accessor — a QueryBuilder over the target entity's fields. */
+export type ForwardManyAccessor<TTargetFields extends Record<string, TSchema>> =
+  QueryBuilder<TTargetFields>;
+
+/** Reverse accessor — a QueryBuilder over the source entity's fields. */
+export type ReverseAccessor<TSourceFields extends Record<string, TSchema>> =
+  QueryBuilder<TSourceFields>;
+
+/**
+ * Relationship accessor record carried on a handle. The record
+ * keys are the relationship `as` names — entries are the typed
+ * accessor (forward-many / forward-one / reverse) the relationship
+ * primitive returns at runtime.
+ *
+ * The default empty record is what clients without relationships
+ * see. When the schema has relationships, the per-entity mapping
+ * extends the record with the relevant accessors.
+ *
+ * The handle's intersection with this record is what narrows the
+ * relationship accessor surface: declared fields come from `TFields`,
+ * declared accessors come from this record, and `handle.bogus`
+ * fails to compile because neither source declares the key.
+ */
+// eslint-disable-next-line @typescript-eslint/ban-types
+export type EntityRelationshipAccessors<
+  _TSourceFields extends Record<string, TSchema> = Record<string, never>,
+  _TTargetFields extends Record<string, TSchema> = Record<string, never>,
+> = {};
+
+/**
+ * Handle returned by `client.<entity>(id)`. Combines the entity's
+ * typed field getters, an `entity` escape hatch, and the
+ * relationship-accessor record.
+ *
+ * The intersection (`TFields` + `TRelAccessors`) means the static
+ * type narrows for declared fields and relationship accessors;
+ * accessing `handle.bogus` is a compile error because the
+ * mapped-type key set is exactly `keyof TFields | keyof TRelAccessors`.
+ */
+export type EntityHandle<
+  TFields extends Record<string, TSchema>,
+  TRelAccessors extends EntityRelationshipAccessors = EntityRelationshipAccessors<TFields>,
+> = {
+  readonly id: string;
+  readonly entity: Entity;
+} & {
+  readonly [K in keyof TFields]: HandleField<TFields[K]>;
+} & TRelAccessors;
+
+/**
  * Mount surface for one entity. `query()` returns a fresh
  * QueryBuilder over the entity's projected field map; awaiting it
- * resolves to the typed rows. `get(id)` reads a single row directly
- * via the storage adapter and projects it to the same TypeBox shape.
+ * resolves to the typed rows. The call signature `(id)` returns a
+ * typed instance handle (per #171); `get(id)` reads a single row
+ * directly via the storage adapter and projects it to the same
+ * TypeBox shape (per #178).
  */
-export interface EntityNamespace<TFields extends Record<string, TSchema>> {
+export interface EntityNamespace<
+  TFields extends Record<string, TSchema>,
+  TRelAccessors extends EntityRelationshipAccessors<TFields> = EntityRelationshipAccessors<TFields>,
+> {
+  (id: string): EntityHandle<TFields, TRelAccessors>;
   query(): QueryBuilder<TFields>;
   get(id: string): Promise<Static<TObject<TFields>> | null>;
 }
@@ -42,13 +123,32 @@ export type EntityFields<D> = D extends EntityDef<infer F> ? F : never;
  * with a `Schema`. Each schema-entity name becomes a property whose
  * value is an `EntityNamespace` over that entity's field map.
  *
- * `S extends Schema<infer TEntities, ...>` distributes over the
- * generic so each entity gets its own field map; clients without
- * a schema see no extra properties.
+ * `S extends Schema<infer TEntities, infer TRelationships>`
+ * distributes over the generic so each entity gets its own field
+ * map; clients without a schema see no extra properties.
+ *
+ * The per-entity relationship accessor record defaults to the
+ * empty record — the type-level walk needed to narrow each
+ * declared relationship accessor exceeds TypeScript's recursion
+ * budget for moderately-sized schemas (5+ entities, 10+
+ * relationships). The runtime walks the relationship map at
+ * `createEntityNamespace` time and installs each accessor via
+ * `Object.defineProperty` on the handle; `await` projects to
+ * typed rows regardless of the static narrowing. Users who want
+ * strict typing for a specific `as` can read
+ * `schema.relationships[key]` directly and annotate locally.
+ *
+ * The strict-typing AC for `handle.bogus` is preserved by the
+ * empty record: unknown properties fail to compile.
  */
 export type EntityNamespaces<S> =
   S extends Schema<infer TEntities, unknown>
-    ? { [K in keyof TEntities & string]: EntityNamespace<EntityFields<TEntities[K]>> }
+    ? {
+        [K in keyof TEntities & string]: EntityNamespace<
+          EntityFields<TEntities[K]>,
+          EntityRelationshipAccessors<EntityFields<TEntities[K]>>
+        >;
+      }
     : // eslint-disable-next-line @typescript-eslint/ban-types
       {};
 
@@ -58,28 +158,34 @@ export type EntityNamespaces<S> =
  *
  * `shape` is the entity's TypeBox object schema (the projection
  * source); the builder reads it at materialization time to drive
- * the per-field lookup.
+ * the per-field lookup. `buildHandle` is the runtime for the
+ * instance accessor (per #171).
  */
-export function createEntityNamespace<TFields extends Record<string, TSchema>>(
+export function createEntityNamespace<
+  TFields extends Record<string, TSchema>,
+  TRelAccessors extends EntityRelationshipAccessors<TFields>,
+>(
   entityName: string,
   shape: TObject<TFields>,
   storage: StorageAdapter,
-): EntityNamespace<TFields> {
+  buildHandle: (id: string) => EntityHandle<TFields, TRelAccessors>,
+): EntityNamespace<TFields, TRelAccessors> {
   const loader: LoadEntities = async () => storage.entities.query(entityName);
-  return {
-    query(): QueryBuilder<TFields> {
-      return buildLazyQueryBuilder(loader, shape);
-    },
-    async get(id: string): Promise<Static<TObject<TFields>> | null> {
-      const entity = await storage.entities.get(id);
-      if (entity === null) return null;
-      // Wrong-type reads (different `entity.type`) resolve to `null`
-      // alongside unknown ids. Callers don't distinguish — a missing
-      // row and a wrong-type row are both "no row here".
-      if (entity.type !== entityName) return null;
-      return projectEntity(entity, shape);
-    },
+  const namespace = ((id: string) => buildHandle(id)) as unknown as EntityNamespace<
+    TFields,
+    TRelAccessors
+  >;
+  namespace.query = (): QueryBuilder<TFields> => buildLazyQueryBuilder(loader, shape);
+  namespace.get = async (id: string): Promise<Static<TObject<TFields>> | null> => {
+    const entity = await storage.entities.get(id);
+    if (entity === null) return null;
+    // Wrong-type reads (different `entity.type`) resolve to `null`
+    // alongside unknown ids. Callers don't distinguish — a missing
+    // row and a wrong-type row are both "no row here".
+    if (entity.type !== entityName) return null;
+    return projectEntity(entity, shape);
   };
+  return namespace;
 }
 
 /**
@@ -87,13 +193,35 @@ export function createEntityNamespace<TFields extends Record<string, TSchema>>(
  * whose keys are the schema's entity names and whose values are the
  * per-entity `EntityNamespace`s. The Proxy layer in
  * {@link SyncClient} forwards unknown property access to this map.
+ *
+ * `buildHandle(name, id)` produces the per-entity instance handle.
+ * The shape is opaque at the static type level; the per-entity
+ * namespace knows how to invoke the right shape at runtime.
  */
 export function buildEntityNamespaces<
   S extends Schema<Record<string, EntityDef<Record<string, TSchema>>>, unknown>,
->(schema: S, storage: StorageAdapter): EntityNamespaces<S> {
-  const out: Record<string, EntityNamespace<Record<string, TSchema>>> = {};
+>(
+  schema: S,
+  storage: StorageAdapter,
+  buildHandle: (entityName: string, id: string) => unknown,
+): EntityNamespaces<S> {
+  const out: Record<
+    string,
+    EntityNamespace<Record<string, TSchema>, EntityRelationshipAccessors<Record<string, TSchema>>>
+  > = {};
   for (const [name, def] of Object.entries(schema.entities)) {
-    out[name] = createEntityNamespace(name, def.shape, storage);
+    const entityBuildHandle = (id: string): unknown => buildHandle(name, id);
+    out[name] = createEntityNamespace(
+      name,
+      def.shape,
+      storage,
+      entityBuildHandle as (
+        id: string,
+      ) => EntityHandle<
+        Record<string, TSchema>,
+        EntityRelationshipAccessors<Record<string, TSchema>>
+      >,
+    ) as never;
   }
   return out as EntityNamespaces<S>;
 }

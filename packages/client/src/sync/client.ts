@@ -51,6 +51,7 @@ import {
 } from "./relationship";
 import { Type } from "@sinclair/typebox";
 import { type QueryBuilder, buildQueryBuilder } from "./query-builder";
+import { buildEntityHandle } from "./handle";
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { generateId } from "@ebbjs/core";
 import type { EntityDef } from "../schema/entity";
@@ -104,6 +105,13 @@ export class SyncClient {
   private reconnectTimerResolve: (() => void) | null = null;
   /** Latest per-group cursors, refreshed by `catchUp` and SSE receipt. */
   private groupCursors: Map<string, number> = new Map();
+  /**
+   * Synchronous per-id entity cache. Populated by `readLocalEntity`
+   * and every `_applyAction` receipt; drives the handle's per-field
+   * getters and `.entity` escape hatch. Cleared by close() so a
+   * reused client doesn't carry stale snapshots across lifecycles.
+   */
+  private readonly entitySnapshot: Map<string, Entity> = new Map();
   /**
    * Deterministic content hash of the composed schema. Computed
    * once at construction and advertised as `schema_hash` on every
@@ -438,9 +446,36 @@ export class SyncClient {
    * This is the read path the storage layer exposes — for client-driven
    * reads (e.g., rendering), prefer this over `getEntity` to avoid a
    * network round trip.
+   *
+   * Populates the synchronous snapshot on success so subsequent
+   * `readLocalEntitySync` reads (the handle's field getters and
+   * `.entity` escape hatch) don't need a re-fetch.
    */
   async readLocalEntity(id: string): Promise<Entity | null> {
-    return this.storage.entities.get(id);
+    const entity = await this.storage.entities.get(id);
+    if (entity !== null) {
+      this.entitySnapshot.set(entity.id, entity);
+    }
+    return entity;
+  }
+
+  /**
+   * Synchronous read off the cached entity snapshot. Populated by
+   * `readLocalEntity` and by every `_applyAction` receipt; drives
+   * the handle's per-field getters and `entity` escape hatch.
+   *
+   * When `field` is provided, returns just that field's value
+   * (or `undefined` if absent or the entity isn't materialized).
+   * Without `field`, returns the full entity envelope (or
+   * `undefined` if not materialized).
+   */
+  readLocalEntitySync(id: string, entityName?: string, field?: string): unknown {
+    const entity = this.entitySnapshot.get(id);
+    if (entity === undefined) return undefined;
+    if (entityName !== undefined && entity.type !== entityName) return undefined;
+    if (field === undefined) return entity;
+    const fv = entity.data?.fields?.[field];
+    return fv === undefined ? undefined : fv.value;
   }
 
   /**
@@ -459,6 +494,7 @@ export class SyncClient {
       this.cancelSubscription(this.activeSub);
     }
     this.stateMachine.transition("offline");
+    this.entitySnapshot.clear();
     this.presence.dispose();
   }
 
@@ -985,6 +1021,16 @@ export class SyncClient {
       this.emitRegistryViolations(violations, { direction: "inbound" });
     }
     await this.storage.actions.append(action);
+    // Invalidate the sync snapshot for every entity affected by
+    // this action. Hydration is lazy through `readLocalEntity` (the
+    // handle's first field read after a write fetches and caches)
+    // — eager hydration here would call `storage.entities.get`
+    // which clears the dirty flag in the memory adapter, breaking
+    // the `_applyAction` → `isDirty` invariant exercised by
+    // `src/sync/sse.test.ts`.
+    for (const u of action.updates) {
+      this.entitySnapshot.delete(u.subject_id);
+    }
     const affected = action.updates.map((u) => ({
       entityId: u.subject_id,
       entityType: u.subject_type,
@@ -1222,7 +1268,20 @@ export function createClient<S extends AnySchema | undefined = undefined>(
   if (opts.schema === undefined) {
     return client as NamespacedClient<S>;
   }
-  const namespaces = buildEntityNamespaces(opts.schema, client.storage);
+  const buildHandle = (entityName: string, id: string): unknown => {
+    const def = opts.schema?.entities[entityName];
+    if (def === undefined) return undefined;
+    // Cast through `unknown` — the per-entity `TFields` is narrower
+    // than `Record<string, TSchema>`; the handle builder captures
+    // the narrow shape via the `shape` argument.
+    return buildEntityHandle(
+      client,
+      entityName,
+      id,
+      def.shape as Parameters<typeof buildEntityHandle>[3],
+    );
+  };
+  const namespaces = buildEntityNamespaces(opts.schema, client.storage, buildHandle);
   return new Proxy(client, {
     get(target, prop, receiver) {
       if (typeof prop === "string") {
