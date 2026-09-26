@@ -38,7 +38,6 @@ import type { Entity } from "@ebbjs/core";
 import type { TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { SyncClient } from "./client";
-import type { QueryBuilder } from "./query-builder";
 import type {
   EntityHandle,
   EntityRelationshipAccessors,
@@ -81,17 +80,13 @@ export function buildEntityHandle<
     id: entityId,
   };
 
-  // Kick off the (async) materialization into the sync snapshot.
-  // The getter's read is synchronous; if the user reads a field
-  // before the materialization completes, they get `undefined`.
-  // For most usage the user calls `await client.catchUp(...)`
-  // before `client.<entity>(id)`, so the snapshot is already
-  // populated. The background read is a UX nicety, not a
-  // correctness requirement.
+  // Fire-and-forget hydration so the snapshot is warm by the
+  // time the user reads a field — the getter's read is sync, so
+  // without this kick the first field read would be `undefined`.
+  // Callers who already awaited `client.catchUp(...)` don't need
+  // this; the background read is a UX nicety.
   void client.readLocalEntity(entityId).catch(() => {});
 
-  // `entity` — the raw wire envelope. Reads from the sync snapshot;
-  // returns `undefined` when not materialized.
   Object.defineProperty(handle, "entity", {
     configurable: true,
     enumerable: true,
@@ -100,8 +95,7 @@ export function buildEntityHandle<
     },
   });
 
-  // Own-field getters: read from the synchronous snapshot. Per #158
-  // acceptance criterion 6, getters only — no setters. Writes go
+  // Per #158 acceptance criterion 6: getters only. Writes go
   // through `client.<entity>.update(id, patch)`.
   for (const field of Object.keys(shape.properties) as (keyof TFields & string)[]) {
     Object.defineProperty(handle, field, {
@@ -113,35 +107,24 @@ export function buildEntityHandle<
     });
   }
 
-  // Forward relationships: for each `defineRelationship` with
-  // `entityName` as the source, expose `<as>` as either a
-  // `Promise<Entity | null>` (one) or a typed QueryBuilder (many).
   const forwardRels = client.registry.getRelationshipsForSource(entityName);
   for (const rel of forwardRels) {
-    const targetName = rel.target.name;
-    const as = rel.as;
-    const cardinality = rel.sourceCardinality;
-    Object.defineProperty(handle, as, {
+    Object.defineProperty(handle, rel.as, {
       configurable: true,
       enumerable: true,
       get() {
-        return invokeForward(client, entityName, entityId, targetName, as, cardinality, shape);
+        return invokeForward(rel, client, entityName, entityId, shape);
       },
     });
   }
 
-  // Reverse relationships: for each relationship whose target is
-  // `entityName`, expose the source set as a typed QueryBuilder.
   const reverseRels = client.registry.getRelationshipsForTarget(entityName);
   for (const rel of reverseRels) {
-    const sourceName = rel.source.name;
-    const as = rel.as;
-    const relType = rel.type;
-    Object.defineProperty(handle, as, {
+    Object.defineProperty(handle, rel.as, {
       configurable: true,
       enumerable: true,
       get() {
-        return invokeReverse(client, entityName, sourceName, entityId, as, relType);
+        return invokeReverse(rel, client, entityName, entityId);
       },
     });
   }
@@ -164,13 +147,51 @@ export function buildEntityHandle<
  * `sourceCardinality: "many"` → `QueryBuilder<TTargetFields>` over
  * the target entity's TypeBox shape (projected on `await`).
  */
+// (Old invokeForward removed; see the new signature below.)
+
+/**
+ * True when the schema's field at `as` is nullable. Drives the
+ * runtime dispatch between `forwardOne` (collapses null/absent)
+ * and `forwardOneNullable` (preserves the null distinction) — per
+ * the spec, the nullable FK case surfaces `null` for cleared fields.
+ *
+ * Type.Union emits `{ anyOf: [...] }` or `{ type: [...] }`; we
+ * accept either shape. Type.Optional isn't enumerated here because
+ * its accessors return `undefined`, not `null`.
+ */
+function isNullableField(shape: TObject<Record<string, TSchema>>, fieldName: string): boolean {
+  const fieldSchema = (shape.properties as Record<string, unknown>)[fieldName] as
+    | { anyOf?: unknown[]; type?: unknown }
+    | undefined;
+  if (fieldSchema === undefined) return false;
+  const unionMembers: readonly unknown[] = Array.isArray(fieldSchema.anyOf)
+    ? fieldSchema.anyOf
+    : Array.isArray(fieldSchema.type)
+      ? (fieldSchema.type as unknown[])
+      : [];
+  return unionMembers.some((m) => {
+    if (typeof m !== "object" || m === null) return false;
+    return (m as { type?: unknown }).type === "null";
+  });
+}
+
+/**
+ * Build a forward accessor result. Cardinality determines the
+ * shape: `one` → `Promise<Entity | null>` (nullable FK narrows
+ * via `forwardOneNullable` to preserve the null vs. undefined
+ * distinction); `many` → a typed QueryBuilder projected on
+ * `await`.
+ */
 function invokeForward(
+  rel: {
+    source: { name: string };
+    target: { name: string };
+    as: string;
+    sourceCardinality: "one" | "many";
+  },
   client: SyncClient,
-  sourceName: string,
+  sourceEntityName: string,
   sourceId: string,
-  targetName: string,
-  as: string,
-  cardinality: "one" | "many",
   sourceShape: TObject<Record<string, TSchema>>,
 ):
   | ForwardOneAccessor<Record<string, TSchema>, string>
@@ -178,20 +199,21 @@ function invokeForward(
   const readLocalEntity = (id: string): Promise<Entity | null> => client.storage.entities.get(id);
   const queryEntitiesByType = (type: string): Promise<readonly Entity[]> =>
     client.storage.entities.query(type);
-  if (cardinality === "one") {
-    const fkNullable = isNullableField(sourceShape, as);
-    if (fkNullable) {
-      return forwardOneNullable(readLocalEntity, sourceId, sourceName, as) as ForwardOneAccessor<
-        Record<string, TSchema>,
-        string
-      >;
+  if (rel.sourceCardinality === "one") {
+    if (isNullableField(sourceShape, rel.as)) {
+      return forwardOneNullable(
+        readLocalEntity,
+        sourceId,
+        sourceEntityName,
+        rel.as,
+      ) as ForwardOneAccessor<Record<string, TSchema>, string>;
     }
-    return forwardOne(readLocalEntity, sourceId, sourceName, as) as ForwardOneAccessor<
+    return forwardOne(readLocalEntity, sourceId, sourceEntityName, rel.as) as ForwardOneAccessor<
       Record<string, TSchema>,
       string
     >;
   }
-  const targetShape = client.registry.get(targetName)?.shape;
+  const targetShape = client.registry.get(rel.target.name)?.shape;
   if (targetShape === undefined) {
     // oxlint-disable-next-line no-thenable -- guard clause; caller never awaits this branch.
     return { then: () => Promise.resolve([]) } as unknown as ForwardManyAccessor<
@@ -202,58 +224,28 @@ function invokeForward(
     readLocalEntity,
     queryEntitiesByType,
     sourceId,
-    sourceName,
-    targetName,
+    sourceEntityName,
+    rel.target.name,
     targetShape,
-    as,
+    rel.as,
   );
 }
 
 /**
- * True when the schema's field at `as` is nullable (`Type.Union` that
- * includes `Type.Null()`, or `Type.Optional`). Drives the runtime
- * dispatch between `forwardOne` (collapses null/absent) and
- * `forwardOneNullable` (preserves the null distinction) — per the
- * spec, the nullable FK case surfaces `null` for cleared fields.
- */
-function isNullableField(shape: TObject<Record<string, TSchema>>, as: string): boolean {
-  const fieldSchema = (shape.properties as Record<string, unknown>)[as] as
-    | { anyOf?: unknown[]; type?: unknown }
-    | undefined;
-  if (fieldSchema === undefined) return false;
-  // Type.Union emits `{ anyOf: [...] }` or `{ type: [...] }`. We
-  // accept either; the runtime's `fieldSchema` shape is whatever
-  // TypeBox returns for `Type.Union([T, Type.Null()])`.
-  const unionMembers: readonly unknown[] = Array.isArray(fieldSchema.anyOf)
-    ? fieldSchema.anyOf
-    : Array.isArray(fieldSchema.type)
-      ? (fieldSchema.type as unknown[])
-      : [];
-  return unionMembers.some((m) => {
-    if (typeof m !== "object" || m === null) return false;
-    const t = (m as { type?: unknown }).type;
-    return t === "null";
-  });
-}
-
-/**
- * Build a reverse accessor result. Reverse accessors always return a
- * `QueryBuilder<TSourceFields>` (per #149: the source side is
- * always a collection). The chain's projection reads from the
- * source entity's TypeBox shape, populated by the registry.
+ * Build a reverse accessor result. Reverse accessors always return
+ * a `QueryBuilder<TSourceFields>` (per #149: the source side is
+ * always a collection).
  */
 function invokeReverse(
+  rel: { source: { name: string }; as: string; type: string },
   client: SyncClient,
   targetName: string,
-  sourceName: string,
   targetId: string,
-  as: string,
-  relType: string,
 ): ReverseAccessor<Record<string, TSchema>> {
   const readLocalEntity = (id: string): Promise<Entity | null> => client.storage.entities.get(id);
   const queryEntitiesByType = (type: string): Promise<readonly Entity[]> =>
     client.storage.entities.query(type);
-  const sourceShape = client.registry.get(sourceName)?.shape;
+  const sourceShape = client.registry.get(rel.source.name)?.shape;
   if (sourceShape === undefined) {
     // oxlint-disable-next-line no-thenable -- guard clause; caller never awaits this branch.
     return { then: () => Promise.resolve([]) } as unknown as ReverseAccessor<
@@ -264,15 +256,12 @@ function invokeReverse(
     readLocalEntity,
     queryEntitiesByType,
     targetId,
-    sourceName,
+    rel.source.name,
     sourceShape,
-    as,
-    relType,
+    rel.as,
+    rel.type,
   );
 }
 
 // Re-export the handle type so callers can import from `handle.ts`.
 export type { EntityHandle };
-// Reference QueryBuilder to keep the import live (used in invokeReverse's
-// signature via ReverseAccessor's resolution).
-export type { QueryBuilder };

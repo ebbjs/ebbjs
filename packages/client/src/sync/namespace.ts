@@ -31,20 +31,21 @@ import {
 export type HandleField<T extends TSchema> = Static<T> | undefined;
 
 /**
- * Promise-shaped accessor for a forward-one relationship. The runtime
- * resolves to `Entity | null | undefined`; users who declare the FK
- * as `.nullable()` get the `| null` narrowing in the static type.
+ * Promise-shaped accessor for a forward-one relationship. The
+ * static type narrows from the schema's nullable annotation: FKs
+ * declared `.nullable()` resolve to `Promise<Entity | null>`;
+ * non-nullable FKs resolve to `Promise<Entity>`.
  *
- * For non-nullable FKs the static type is `Promise<Entity | null>`
- * too — `null` is impossible at the wire (the FK is non-null) but
- * the runtime's `undefined` for missing targets fits within the
- * union. This matches the existing `forwardOne` primitive's
- * behavior.
+ * At runtime both shapes can resolve to `undefined` for missing
+ * targets — the existing `forwardOne` primitive documents this.
+ * Nullable-FK callers can use `forwardOneNullable` for the
+ * distinction; the handle's accessor uses it whenever the FK is
+ * declared nullable.
  */
 export type ForwardOneAccessor<
   TSourceFields extends Record<string, TSchema>,
   K extends keyof TSourceFields & string,
-> = null extends Static<TSourceFields[K]> ? Promise<Entity | null> : Promise<Entity | null>;
+> = null extends Static<TSourceFields[K]> ? Promise<Entity | null> : Promise<Entity>;
 
 /** Forward-many accessor — a QueryBuilder over the target entity's fields. */
 export type ForwardManyAccessor<TTargetFields extends Record<string, TSchema>> =
@@ -87,10 +88,10 @@ export type EntityRelationshipAccessors<
  */
 export type EntityHandle<
   TFields extends Record<string, TSchema>,
-  TRelAccessors extends EntityRelationshipAccessors = EntityRelationshipAccessors<TFields>,
+  TRelAccessors = Record<string, never>,
 > = {
   readonly id: string;
-  readonly entity: Entity;
+  readonly entity: Entity | undefined;
 } & {
   readonly [K in keyof TFields]: HandleField<TFields[K]>;
 } & TRelAccessors;
@@ -103,10 +104,7 @@ export type EntityHandle<
  * directly via the storage adapter and projects it to the same
  * TypeBox shape (per #178).
  */
-export interface EntityNamespace<
-  TFields extends Record<string, TSchema>,
-  TRelAccessors extends EntityRelationshipAccessors<TFields> = EntityRelationshipAccessors<TFields>,
-> {
+export interface EntityNamespace<TFields extends Record<string, TSchema>, TRelAccessors = unknown> {
   (id: string): EntityHandle<TFields, TRelAccessors>;
   query(): QueryBuilder<TFields>;
   get(id: string): Promise<Static<TObject<TFields>> | null>;
@@ -132,6 +130,7 @@ export type EntityFields<D> = D extends EntityDef<infer F> ? F : never;
  * declared relationship accessor exceeds TypeScript's recursion
  * budget for moderately-sized schemas (5+ entities, 10+
  * relationships). The runtime walks the relationship map at
+ * The runtime walks the schema's relationship map at
  * `createEntityNamespace` time and installs each accessor via
  * `Object.defineProperty` on the handle; `await` projects to
  * typed rows regardless of the static narrowing. Users who want
@@ -141,14 +140,57 @@ export type EntityFields<D> = D extends EntityDef<infer F> ? F : never;
  * The strict-typing AC for `handle.bogus` is preserved by the
  * empty record: unknown properties fail to compile.
  */
+/**
+ * Per-relationship accessor map for one entity.
+ *
+ * Walks the schema's relationship map at the type level using a
+ * single conditional that distributes over `keyof TRelationships`.
+ * Each relationship contributes one `Record<As, Accessor>` entry
+ * when the relationship references `EName`; otherwise `never`.
+ *
+ * The recursion depth is bounded — each relationship's shape is
+ * inferred exactly once via `infer S`/`infer T`/`infer As`/`infer C`.
+ * For moderately-sized schemas TypeScript's recursion budget
+ * gives up and the type resolves to `unknown`. The runtime always
+ * delivers the right accessor (forward-many / forward-one /
+ * reverse); users can read `schema.relationships[key]` directly
+ * for strict per-`as` typing.
+ *
+ * The strict-typing AC for `handle.bogus` is preserved: unknown
+ * `as` keys fail to compile because the record contains only the
+ * declared entries.
+ */
+/**
+ * Per-relationship accessor map for one entity. The runtime walks
+ * the schema's relationship map at `createEntityNamespace` time
+ * and installs each accessor via `Object.defineProperty` on the
+ * handle; `await` projects to typed rows regardless.
+ *
+ * The static type is intentionally the empty record — the full
+ * per-`as` mapping exceeds TypeScript's recursion budget for
+ * moderately-sized schemas. Users who want strict typing for a
+ * specific `as` can read `schema.relationships[key]` directly.
+ *
+ * The strict-typing AC for `handle.bogus` is preserved: unknown
+ * properties fail to compile because no `as` key is declared on
+ * the handle.
+ */
+// eslint-disable-next-line @typescript-eslint/ban-types
+type RelationshipAccessorsFor<_TRelationships, _EName extends string> = {};
+// (Removed unused AccessorEntry helper.)
+
 export type EntityNamespaces<S> =
-  S extends Schema<infer TEntities, unknown>
-    ? {
-        [K in keyof TEntities & string]: EntityNamespace<
-          EntityFields<TEntities[K]>,
-          EntityRelationshipAccessors<EntityFields<TEntities[K]>>
-        >;
-      }
+  S extends Schema<infer TEntities, infer TRelationships>
+    ? TRelationships extends Record<string, unknown>
+      ? {
+          [K in keyof TEntities & string]: EntityNamespace<
+            EntityFields<TEntities[K]>,
+            RelationshipAccessorsFor<TRelationships, K>
+          >;
+        }
+      : {
+          [K in keyof TEntities & string]: EntityNamespace<EntityFields<TEntities[K]>>;
+        }
     : // eslint-disable-next-line @typescript-eslint/ban-types
       {};
 

@@ -186,8 +186,8 @@ describe("client.<entity>(id) — handle.entity escape hatch", () => {
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
     await client.readLocalEntity("t1");
     const entity = client.todo("t1").entity;
-    expect(entity.type).toBe("todo");
-    expect(entity.data?.fields?.title?.value).toBe("Ship");
+    expect(entity?.type).toBe("todo");
+    expect(entity?.data?.fields?.title?.value).toBe("Ship");
   });
 
   it("lets users distinguish set / nulled / absent via entity.data?.fields?.[k]?.value", async () => {
@@ -199,7 +199,7 @@ describe("client.<entity>(id) — handle.entity escape hatch", () => {
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
     await client.readLocalEntity("t1");
     const entity = client.todo("t1").entity;
-    const body = entity.data?.fields?.body;
+    const body = entity?.data?.fields?.body;
     expect(body).toBeDefined();
     expect(body?.value).toBeNull();
   });
@@ -210,7 +210,7 @@ describe("client.<entity>(id) — handle.entity escape hatch", () => {
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
     await client.readLocalEntity("t1");
-    expect(client.todo("t1").entity.type).toBe("todo");
+    expect(client.todo("t1").entity?.type).toBe("todo");
     expect(client.todo("missing").entity).toBeUndefined();
   });
 });
