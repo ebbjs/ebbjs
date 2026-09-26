@@ -119,6 +119,77 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
     end
 
+    # data: nil is valid for system entities (the update handler
+    # ignores `data` for them) and for any delete (the data fields
+    # are dropped on the wire).
+    test "relationship delete with nil data passes" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "u_del",
+              "subject_id" => "rel_1",
+              "subject_type" => "relationship",
+              "method" => "delete",
+              "data" => nil
+            }
+          ]
+        })
+
+      assert ActionValidator.validate_structure(action) == :ok
+    end
+
+    test "group delete with nil data passes" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "u_del",
+              "subject_id" => "grp_1",
+              "subject_type" => "group",
+              "method" => "delete",
+              "data" => nil
+            }
+          ]
+        })
+
+      assert ActionValidator.validate_structure(action) == :ok
+    end
+
+    test "groupMember delete with nil data passes" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "u_del",
+              "subject_id" => "gm_1",
+              "subject_type" => "groupMember",
+              "method" => "delete",
+              "data" => nil
+            }
+          ]
+        })
+
+      assert ActionValidator.validate_structure(action) == :ok
+    end
+
+    test "user entity delete with nil data passes" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "u_del",
+              "subject_id" => "todo_1",
+              "subject_type" => "todo",
+              "method" => "delete",
+              "data" => nil
+            }
+          ]
+        })
+
+      assert ActionValidator.validate_structure(action) == :ok
+    end
+
     test "string HLC accepted" do
       action = Map.put(sample_action(), "hlc", "#{generate_hlc()}")
       assert ActionValidator.validate_structure(action) == :ok

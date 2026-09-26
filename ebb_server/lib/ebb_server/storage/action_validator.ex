@@ -150,26 +150,24 @@ defmodule EbbServer.Storage.ActionValidator do
   end
 
   defp validate_update_data(update) do
-    if is_map(update["data"]) and well_formed_data?(update),
-      do: :ok,
-      else:
+    # System entities accept any data shape (including `nil`); the
+    # server's update handler ignores `data` for these. For a delete
+    # the data is dropped on the wire. For a user-entity put/patch
+    # `data.fields` must be present.
+    cond do
+      update["subject_type"] in @system_entity_types ->
+        :ok
+
+      update["method"] == "delete" ->
+        :ok
+
+      update["method"] in ["put", "patch"] and is_map(update["data"]) and
+          is_map(get_in(update, ["data", "fields"])) ->
+        :ok
+
+      true ->
         {:error, "invalid_structure",
          "update data must be a well-formed map for put/patch/delete on user entities"}
-  end
-
-  defp well_formed_data?(update) do
-    subject_type = update["subject_type"]
-    method = update["method"]
-    data = update["data"]
-
-    if subject_type in @system_entity_types do
-      true
-    else
-      case method do
-        m when m in ["put", "patch"] -> is_map(data["fields"])
-        "delete" -> true
-        _ -> false
-      end
     end
   end
 
