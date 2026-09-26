@@ -1222,7 +1222,7 @@ export function createClient<S extends AnySchema | undefined = undefined>(
   if (opts.schema === undefined) {
     return client as NamespacedClient<S>;
   }
-  const namespaces = buildEntityNamespaces(opts.schema, client.storage);
+  const namespaces = buildEntityNamespaces(opts.schema, client.storage, client.registry);
   return new Proxy(client, {
     get(target, prop, receiver) {
       if (typeof prop === "string") {
