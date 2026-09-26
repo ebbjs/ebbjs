@@ -794,26 +794,49 @@ describe("integration: defineEntity + EntityRegistry (#143)", () => {
  * `relationship`. User-to-user relationships require atomic
  * cross-entity creation, which is outside this primitive's scope.
  *
- * The round-trip exercises the primitive via the `ownedBy` shape
- * the rest of the integration suite already uses: one Action, two
- * Updates — the exact shape the server's `RelationshipCache`
- * accepts.
+ * The round-trip exercises the public link/unlink surface via the
+ * `ownedBy` shape the rest of the integration suite already uses.
+ * One-cardinality writes submit a single Relationship Update —
+ * no entity Update. The server's `RelationshipCache` resolves the
+ * group via the relationship's `target_id`.
  *
  * Round-trip asserts:
- * - the wire Action carries exactly two Updates (entity +
- *   relationship);
- * - `client.write()` returns zero rejections;
- * - the actor's perspective after `catchUp` shows the todo
+ * - `client.todo.link(id, "ownedBy", groupId)` returns zero rejections;
+ * - the actor's perspective after `catchUp` shows the relationship
  *   materialized;
- * - the reverse accessor surfaces the todo via the materialized
- *   Relationship cache.
+ * - the reverse accessor surfaces the source via the materialized
+ *   Relationship cache;
+ * - `client.todo.unlink(id, "ownedBy")` clears the link.
  */
-describe("integration: defineRelationship + buildRelationshipWrite", () => {
-  it("creates a todo with a group pointer in one Action (two Updates)", async () => {
+describe("integration: client.<entity>.link / unlink", () => {
+  it("creates a todo + group link via the public link() API", async () => {
     if (!(await shouldRun())) return;
     const actor = `rel_roundtrip_${RUN_ID}`;
     await addMemberWithTodoPerms(actor);
-    const client = createClient({ serverUrl: SERVER_URL, actorId: actor });
+    const todo = defineEntity("todo", {
+      title: e.string(),
+      completed: e.boolean(),
+    });
+    // The `target` here is a stand-in for "the group the source
+    // belongs to"; the server's existing authorization treats the
+    // relationship's `target_id` as a group id.
+    const groupTarget = defineEntity("group", { name: e.string() });
+    const ownedBy = defineRelationship({
+      source: todo,
+      target: groupTarget,
+      as: "ownedBy",
+      type: "todo",
+    });
+    const schema = defineSchema({
+      entities: { todo },
+      relationships: { ownedBy },
+      version: 1,
+    });
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: actor,
+      schema,
+    });
     const { groups } = await client.handshake();
     const ourGroup = groups.find((g) => g.id === TEST_GROUP_ID);
     expect(ourGroup, `actor ${actor} did not join ${TEST_GROUP_ID}`).toBeDefined();
@@ -821,106 +844,24 @@ describe("integration: defineRelationship + buildRelationshipWrite", () => {
     client.setState("live");
 
     try {
-      const todo = defineEntity("todo", {
-        title: e.string(),
-        completed: e.boolean(),
-        list: e.string(),
-      });
-      // The `target` here is a stand-in for "the group the source
-      // belongs to"; the server's existing authorization treats the
-      // relationship's `target_id` as a group id. The `target`
-      // entity type on the builder doesn't need to match a real
-      // group entity type — the wire override (`type:`) and the
-      // `as:` accessor name are what travel.
-      const groupTarget = defineEntity("group", { name: e.string() });
-
-      const relationshipEntity = defineEntity("relationship", {
-        source_id: e.string(),
-        target_id: e.string(),
-        type: e.string(),
-        field: e.string(),
-      });
-      const registry = new EntityRegistry();
-      registry.register(todo);
-      // The wire envelope for a `relationship` Update carries
-      // { source_id, target_id, type, field } as field values. Register
-      // it explicitly so client.write() doesn't reject the final
-      // Action updates that target it.
-      registry.register(relationshipEntity);
-      registry.registerRelationship(
-        defineRelationship({
-          source: todo,
-          target: groupTarget,
-          as: "ownedBy",
-          type: "todo",
-        }),
-      );
-      (client as unknown as { registry: EntityRegistry }).registry = registry;
-
       const todoId = `todo_rel_${RUN_ID}`;
 
-      const hlc = makeHlc(Date.now());
-      const entityUpdate: Action["updates"][number] = {
-        id: "u_e",
-        subject_id: todoId,
-        subject_type: "todo",
-        method: "put",
-        data: {
-          fields: {
-            title: { value: "Ship it", update_id: "u_e", hlc },
-            completed: { value: false, update_id: "u_e", hlc },
-          },
-        },
-      };
-      const { entityUpdate: cleanEntityUpdate, relationshipUpdate } = client.buildRelationshipWrite(
-        {
-          source: todo,
-          target: groupTarget,
-          as: "ownedBy",
-          entityUpdate,
-          targetId: TEST_GROUP_ID,
-        },
-      );
+      const linkResult = await client.todo.link(todoId, "ownedBy", TEST_GROUP_ID);
+      expect(linkResult.rejected).toEqual([]);
 
-      // Sanity: the entity Update has the `list` field stripped
-      // (it lives on the relationship Update, not the entity). The
-      // builder doesn't actually consult the entityUpdate's
-      // fields — it strips the `as` name from the data map.
-      expect("ownedBy" in (cleanEntityUpdate.data?.fields ?? {})).toBe(false);
-
-      const relUpdates = Array.isArray(relationshipUpdate)
-        ? relationshipUpdate
-        : [relationshipUpdate];
-      expect(relUpdates).toHaveLength(1);
-      expect(relUpdates[0]!.method).toBe("put");
-      expect(relUpdates[0]!.subject_type).toBe("relationship");
-      expect(relUpdates[0]!.data?.fields.source_id.value).toBe(todoId);
-      expect(relUpdates[0]!.data?.fields.target_id.value).toBe(TEST_GROUP_ID);
-      expect(relUpdates[0]!.data?.fields.field.value).toBe("ownedBy");
-      expect(relUpdates[0]!.data?.fields.type.value).toBe("todo");
-
-      // Wrap the two Updates in a single wire Action and submit.
-      const { action } = createAction({
-        actorId: actor,
-        clock: createClock(),
-        updates: [cleanEntityUpdate, relUpdates[0]!],
-      });
-      const writeResult = await client.write([action]);
-      expect(writeResult.rejected).toEqual([]);
-
-      // Materialize locally and assert both Updates landed.
+      // Materialize locally and assert the link Update landed.
       await client.catchUp(TEST_GROUP_ID);
-      const materializedTodo = await client.readLocalEntity(todoId);
-      expect(materializedTodo).not.toBeNull();
-      expect(materializedTodo!.type).toBe("todo");
-      expect(materializedTodo!.data?.fields.title.value).toBe("Ship it");
+      const links = await client.storage.entities.query("relationship");
+      const materializedLink = links.find(
+        (e) =>
+          e.data?.fields?.["source_id"]?.value === todoId &&
+          e.data?.fields?.["field"]?.value === "ownedBy",
+      );
+      expect(materializedLink).toBeDefined();
+      expect(materializedLink!.data?.fields?.["target_id"]?.value).toBe(TEST_GROUP_ID);
+      expect(materializedLink!.data?.fields?.["type"]?.value).toBe("todo");
 
-      const materializedRel = await client.readLocalEntity(relUpdates[0]!.subject_id);
-      expect(materializedRel).not.toBeNull();
-      expect(materializedRel!.type).toBe("relationship");
-      expect(materializedRel!.data?.fields.target_id.value).toBe(TEST_GROUP_ID);
-
-      // Reverse accessor surfaces the todo via the materialized
+      // The reverse accessor surfaces the todo via the materialized
       // Relationship cache.
       const handle = client.relationship({
         source: todo,
@@ -930,6 +871,19 @@ describe("integration: defineRelationship + buildRelationshipWrite", () => {
       const qb = handle.reverse(TEST_GROUP_ID);
       const sources = await qb.toRaw();
       expect(sources.map((s) => s.id)).toContain(todoId);
+
+      // The unlink() API clears the link.
+      const unlinkResult = await client.todo.unlink(todoId, "ownedBy");
+      expect(unlinkResult.rejected).toEqual([]);
+      await client.catchUp(TEST_GROUP_ID);
+      const linksAfter = await client.storage.entities.query("relationship");
+      const liveLinks = linksAfter.filter(
+        (e) =>
+          e.deleted_hlc === null &&
+          e.data?.fields?.["source_id"]?.value === todoId &&
+          e.data?.fields?.["field"]?.value === "ownedBy",
+      );
+      expect(liveLinks).toHaveLength(0);
     } finally {
       client.close();
     }
