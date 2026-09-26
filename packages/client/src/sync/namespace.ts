@@ -41,39 +41,48 @@ import {
  * registered relationship, not the static type. Per-accessor
  * narrowing is a type-level follow-up (TS recursion limits bite
  * when walking the schema's relationship map).
+ *
+ * The forward-one branch accepts `Entity | null | undefined` to
+ * match {@link forwardOneNullable}'s return shape; callers narrow
+ * at the call site. The collapsed `Entity | undefined` from
+ * {@link forwardOne} fits inside the same union.
  */
-export type RowAccessor = Promise<Entity | null> | QueryBuilder<Record<string, TSchema>>;
+export type RowAccessor =
+  | Promise<Entity | null | undefined>
+  | QueryBuilder<Record<string, TSchema>>;
 
 /**
  * Row with attached relationship accessors. The projected TypeBox
- * shape (the entity's field map) is intersected with an accessor
- * record keyed by the relationship's `as` name.
+ * shape (the entity's field map) is the static type the user sees;
+ * relationship accessors are attached at runtime and overwrite the
+ * matching field's value (the field name and the relationship's
+ * `as` name are the same key, by design).
+ *
+ * The accessor record's value type is the loose `RowAccessor` union
+ * — per-accessor narrowing (forward-many → `QueryBuilder`,
+ * forward-one → `Promise<Entity | null>`, reverse → `QueryBuilder`)
+ * is a follow-up because TS recursion limits bite when walking the
+ * schema's relationship map at the type level.
  *
  * `TAs` is a string-literal union of declared relationship names
- * on the entity (forward + reverse). The runtime attaches one
- * accessor for each declared `as` key; the static type carries the
- * same set. Unknown keys (`row.bogus`) are a compile error because
- * they're not in the projected row and not in `TAs`.
+ * on the entity. Today it's `never` for every namespace — see
+ * {@link EntityNamespaces} for why a per-entity walker isn't
+ * threaded through. The runtime attaches one accessor for each
+ * declared `as` key; the static type intentionally keeps the
+ * projected fields without an explicit accessor record, so unknown
+ * `as` names that don't overlap with a field (`row.bogus` on an
+ * entity where `bogus` isn't a field) are a compile error.
  *
- * Static narrowing of the accessor value type per accessor
- * (forward-many → `QueryBuilder`, forward-one → `Promise<Entity | null>`,
- * reverse → `QueryBuilder`) is a follow-up — TS recursion limits
- * bite when walking the schema's relationship map at the type
- * level. Today every accessor is the loose `RowAccessor` union so
- * awaiting works regardless of cardinality.
- *
- * Defaults `TAs` to `never` so callers that don't thread the
- * relationship map still see the projected row without an accessor
- * record. Callers that pass `TAs` get the static enumeration.
+ * Forward accessors that overlap with a field key (e.g.,
+ * `row.tags` where `tags` is both a field and a relationship)
+ * resolve at runtime to the accessor value, but the static type
+ * still surfaces the field's value type — tests that need to read
+ * the accessor's resolved value cast through `unknown`.
  */
 export type EntityWithAccessors<
   TFields extends Record<string, TSchema>,
   TAs extends string = never,
-> = TAs extends never
-  ? Static<TObject<TFields>>
-  : Static<TObject<TFields>> & {
-      [K in TAs]: RowAccessor | Static<TObject<TFields>>[keyof TFields & string];
-    };
+> = [TAs] extends [never] ? Static<TObject<TFields>> : never;
 
 /**
  * Mount surface for one entity. `query()` returns a fresh
@@ -83,9 +92,10 @@ export type EntityWithAccessors<
  * and attaches relationship accessors for every declared
  * relationship on the entity.
  *
- * `TAs` is the string-literal union of declared relationship `as`
- * names on the entity (forward + reverse). Threading it through
- * keeps the static type in sync with the runtime accessor record.
+ * `TAs` is reserved for future per-entity accessor key typing;
+ * today every namespace carries `TAs = never` and the static type
+ * surfaces only the projected fields. See {@link EntityNamespaces}
+ * for why the relationship map isn't walked at the type level.
  */
 export interface EntityNamespace<
   TFields extends Record<string, TSchema>,
@@ -109,38 +119,26 @@ export type EntityFields<D> = D extends EntityDef<infer F> ? F : never;
  * `S extends Schema<infer TEntities, ...>` distributes over the
  * generic so each entity gets its own field map; clients without
  * a schema see no extra properties.
+ *
+ * The `TAs` parameter defaults to `never` and isn't threaded from
+ * the schema's relationship map — `RelationshipDef`'s source/target
+ * types are generic `EntityDef<...>` parameters with `name: string`
+ * (not literal names), so a type-level walker can't recover the
+ * per-entity accessor key set without coupling to the schema's
+ * relationship-record key naming convention. The runtime walks the
+ * `EntityRegistry` and attaches one accessor per declared `as` name;
+ * the static type carries `TAs = never` for every entity, meaning
+ * `row.bogus` fails to compile because it's not in the projected
+ * row's keys (forward overlap) or only fails when the entity has no
+ * field with that name (reverse accessors stay type-loose).
  */
 export type EntityNamespaces<S> =
   S extends Schema<infer TEntities, unknown>
     ? {
-        [K in keyof TEntities & string]: EntityNamespace<
-          EntityFields<TEntities[K]>,
-          RelationshipAccessorKeys<S, K>
-        >;
+        [K in keyof TEntities & string]: EntityNamespace<EntityFields<TEntities[K]>>;
       }
     : // eslint-disable-next-line @typescript-eslint/ban-types
       {};
-
-/**
- * Walk a `Schema`'s relationship map and collect the `as` keys that
- * touch a specific entity — either as the source (forward accessor)
- * or as the target (reverse accessor). Returns a string-literal
- * union of those `as` names.
- *
- * The walker is intentionally shallow: it doesn't recurse into the
- * relationship's source/target types, just inspects the `as` /
- * `source` / `target` surface for membership. TS recursion limits
- * would otherwise bite when an entity is the target of a
- * relationship whose target is itself a typed entity.
- */
-type RelationshipAccessorKeys<S, K extends string> =
-  S extends Schema<infer _TEntities, infer TRelationships>
-    ? TRelationships extends Record<string, infer R>
-      ? R extends import("../schema/relationship").RelationshipDef<infer SRel, infer TRel>
-        ? (SRel["name"] extends K ? R["as"] : never) | (TRel["name"] extends K ? R["as"] : never)
-        : never
-      : never
-    : never;
 
 /**
  * Build the runtime accessor record for a single row. Walks the
@@ -298,12 +296,10 @@ export function buildEntityNamespaces<
 >(schema: S, storage: StorageAdapter, registry: EntityRegistry): EntityNamespaces<S> {
   const out: Record<string, EntityNamespace<Record<string, TSchema>>> = {};
   for (const [name, def] of Object.entries(schema.entities)) {
-    // The TAs generic for each entity is computed at the call site
-    // via {@link EntityNamespaces} — `buildEntityNamespaces` is
-    // called with the schema-typed value, so the runtime registry
-    // walks match the static type. We pass `never` here and let the
-    // type-level override happen in {@link EntityNamespaces} via the
-    // wrapper cast.
+    // Per-entity `TAs` stays at the default `never` (see
+    // {@link EntityNamespaces} for why); the runtime registry is the
+    // authority for accessor dispatch, and the static type surfaces
+    // only the projected fields.
     out[name] = createEntityNamespace<Record<string, TSchema>, never>(
       name,
       def.shape,

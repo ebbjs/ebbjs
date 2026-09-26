@@ -271,9 +271,9 @@ describe("client.<entity>.get(id)", () => {
     // The projection is the flat TypeBox shape — no `id`, no `data`,
     // no `type`. Users wanting the wire envelope use
     // `client.readLocalEntity(id)` instead.
-    expect((row as Record<string, unknown>)["id"]).toBeUndefined();
-    expect((row as Record<string, unknown>)["data"]).toBeUndefined();
-    expect((row as Record<string, unknown>)["type"]).toBeUndefined();
+    expect((row as unknown as Record<string, unknown>)["id"]).toBeUndefined();
+    expect((row as unknown as Record<string, unknown>)["data"]).toBeUndefined();
+    expect((row as unknown as Record<string, unknown>)["type"]).toBeUndefined();
   });
 });
 
@@ -382,7 +382,10 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     if (row === null) throw new Error("expected row");
     const tags = await row.tags;
     expect(Array.isArray(tags)).toBe(true);
-    expect((tags as readonly { name: string }[]).map((t) => t.name).sort()).toEqual(["a", "b"]);
+    expect((tags as unknown as readonly { name: string }[]).map((t) => t.name).sort()).toEqual([
+      "a",
+      "b",
+    ]);
   });
 
   it("forward-one accessor (non-nullable FK) returns the target entity", async () => {
@@ -409,8 +412,8 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     // Non-nullable FK + collapsed semantics: null/absent collapses
     // to undefined. The happy path resolves to the target entity.
     const owner = await row.owner;
-    expect((owner as { id: string } | undefined)?.id).toBe("u1");
-    expect((owner as { type: string } | undefined)?.type).toBe("user");
+    expect((owner as unknown as { id: string } | undefined)?.id).toBe("u1");
+    expect((owner as unknown as { type: string } | undefined)?.type).toBe("user");
   });
 
   it("forward-one accessor (nullable FK) returns null on explicit null", async () => {
@@ -451,8 +454,8 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     const row2 = await client.todo.get("t1");
     if (row2 === null) throw new Error("expected row");
     const list2 = await row2.parentList;
-    expect(list2?.id).toBe("l1");
-    expect(list2?.type).toBe("list");
+    expect((list2 as unknown as { id: string } | null)?.id).toBe("l1");
+    expect((list2 as unknown as { type: string } | null)?.type).toBe("list");
   });
 
   it("reverse accessor awaits to readonly SourceShape[] via the namespace", async () => {
@@ -519,10 +522,19 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     });
     const list = await client.list.get("l1");
     if (list === null) throw new Error("expected row");
-    const todos = await list.parentList;
+    // The reverse accessor lives on the row at runtime but isn't
+    // enumerated in the static type — RelationshipDef's source/target
+    // generics widen the inferred `name` to `string`, so a
+    // type-level walker can't recover the per-entity accessor key
+    // set (TS recursion limits, per the spec). Static narrowing is
+    // a documented follow-up; the runtime dispatches via the
+    // registry and surfaces the right accessor on `await`.
+    const todos = await (list as unknown as { parentList: Promise<unknown> }).parentList;
     // The reverse projection carries the source's FK field
     // (`parentList`), not the source id. Walk by FK match.
-    const fks = (todos as readonly { parentList: string }[]).map((r) => r.parentList).sort();
+    const fks = (todos as unknown as readonly { parentList: string }[])
+      .map((r) => r.parentList)
+      .sort();
     expect(fks).toEqual(["l1", "l1"]);
   });
 
