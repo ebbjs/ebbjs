@@ -224,7 +224,8 @@ defmodule EbbServer.Storage.Writer do
             gsn,
             rocks_name,
             state.relationships,
-            state.relationships_by_id
+            state.relationships_by_id,
+            state.group_members_by_id
           )
         end)
 
@@ -328,7 +329,14 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
-  defp build_action_ops(action, gsn, rocks_name, relationships, relationships_by_id) do
+  defp build_action_ops(
+         action,
+         gsn,
+         rocks_name,
+         relationships,
+         relationships_by_id,
+         group_members_by_id
+       ) do
     action_with_gsn = to_storage_format(action, gsn)
     action_etf = :erlang.term_to_binary(action_with_gsn)
 
@@ -346,6 +354,7 @@ defmodule EbbServer.Storage.Writer do
           rocks_name,
           relationships,
           relationships_by_id,
+          group_members_by_id,
           intra_ctx
         )
       end)
@@ -391,6 +400,7 @@ defmodule EbbServer.Storage.Writer do
          rocks_name,
          relationships,
          relationships_by_id,
+         group_members_by_id,
          intra_ctx
        ) do
     update_etf = :erlang.term_to_binary(update)
@@ -413,6 +423,7 @@ defmodule EbbServer.Storage.Writer do
         rocks_name,
         relationships,
         relationships_by_id,
+        group_members_by_id,
         intra_ctx
       )
   end
@@ -424,6 +435,7 @@ defmodule EbbServer.Storage.Writer do
          _rocks_name,
          nil,
          _relationships_by_id,
+         _group_members_by_id,
          _intra_ctx
        ),
        do: []
@@ -435,10 +447,17 @@ defmodule EbbServer.Storage.Writer do
          rocks_name,
          relationships,
          relationships_by_id,
+         group_members_by_id,
          intra_ctx
        ) do
     group_id =
-      get_group_id_for_group_action_index(update, relationships, relationships_by_id, intra_ctx)
+      get_group_id_for_group_action_index(
+        update,
+        relationships,
+        relationships_by_id,
+        group_members_by_id,
+        intra_ctx
+      )
 
     if group_id do
       key = <<group_id::binary, gsn::unsigned-big-integer-size(64)>>
@@ -448,10 +467,17 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
-  defp get_group_id_for_group_action_index(update, relationships, relationships_by_id, intra_ctx) do
+  defp get_group_id_for_group_action_index(
+         update,
+         relationships,
+         relationships_by_id,
+         group_members_by_id,
+         intra_ctx
+       ) do
     EntityIndex.resolve_group(update.subject_type, update.subject_id,
       relationships: relationships,
-      relationships_by_id: relationships_by_id
+      relationships_by_id: relationships_by_id,
+      group_members_by_id: group_members_by_id
     ) || Map.get(intra_ctx, update.subject_id)
   end
 end

@@ -131,12 +131,16 @@ defmodule EbbServer.Storage.EntityIndexTest do
                nil
     end
 
-    test "returns nil when the underlying table doesn't exist (defensive)" do
+    test "raises when a required table is missing from opts" do
       _t = tables()
 
-      assert EntityIndex.resolve_group("relationship", "rel_1",
-               relationships_by_id: :no_such_table
-             ) == nil
+      assert_raise KeyError, fn ->
+        EntityIndex.resolve_group("relationship", "rel_1", [])
+      end
+
+      assert_raise KeyError, fn ->
+        EntityIndex.resolve_group("groupMember", "gm_1", [])
+      end
     end
   end
 end

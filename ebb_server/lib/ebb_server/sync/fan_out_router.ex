@@ -46,10 +46,18 @@ defmodule EbbServer.Sync.FanOutRouter do
   @type t :: %__MODULE__{
           pending_notifications: [{non_neg_integer(), non_neg_integer()}],
           last_pushed_gsn: non_neg_integer(),
-          subscriptions: %{pid() => [String.t()]}
+          subscriptions: %{pid() => [String.t()]},
+          relationships_by_id: atom(),
+          group_members_by_id: atom()
         }
 
-  defstruct pending_notifications: [], last_pushed_gsn: 0, subscriptions: %{}
+  defstruct [
+    :relationships_by_id,
+    :group_members_by_id,
+    pending_notifications: [],
+    last_pushed_gsn: 0,
+    subscriptions: %{}
+  ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -72,8 +80,12 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   @impl true
-  def init(_opts) do
-    {:ok, %__MODULE__{}}
+  def init(opts) do
+    {:ok,
+     %__MODULE__{
+       relationships_by_id: Keyword.fetch!(opts, :relationships_by_id),
+       group_members_by_id: Keyword.fetch!(opts, :group_members_by_id)
+     }}
   end
 
   @impl true
@@ -83,10 +95,16 @@ defmodule EbbServer.Sync.FanOutRouter do
     {to_push, remaining, new_last} = process_batch(state, from_gsn, to_gsn, watermark)
 
     for {from, to} <- to_push do
-      push_gsn_range(from, to)
+      push_gsn_range(from, to, state)
     end
 
     {:noreply, %{state | pending_notifications: remaining, last_pushed_gsn: new_last}}
+  end
+
+  @impl true
+  def handle_call({:backfill_range, from_gsn, to_gsn}, _from, state) do
+    push_gsn_range(from_gsn, to_gsn, state)
+    {:reply, :ok, state}
   end
 
   @impl true
@@ -241,25 +259,30 @@ defmodule EbbServer.Sync.FanOutRouter do
   """
   @spec backfill_range(non_neg_integer(), non_neg_integer()) :: :ok
   def backfill_range(from_gsn, to_gsn) when from_gsn <= to_gsn do
-    push_gsn_range(from_gsn, to_gsn)
+    GenServer.call(__MODULE__, {:backfill_range, from_gsn, to_gsn})
   end
 
-  defp push_gsn_range(from_gsn, to_gsn) do
+  defp push_gsn_range(from_gsn, to_gsn, state) do
     cf = RocksDB.cf_actions()
     from_key = RocksDB.encode_gsn_key(from_gsn)
     to_key = RocksDB.encode_gsn_key(to_gsn + 1)
 
+    resolve_opts = [
+      relationships_by_id: state.relationships_by_id,
+      group_members_by_id: state.group_members_by_id
+    ]
+
     RocksDB.range_iterator(cf, from_key, to_key)
     |> Stream.map(fn {_key, value} -> :erlang.binary_to_term(value, [:safe]) end)
-    |> Stream.each(&dispatch_to_groups/1)
+    |> Stream.each(&dispatch_to_groups(&1, resolve_opts))
     |> Stream.run()
   end
 
-  defp dispatch_to_groups(action) do
+  defp dispatch_to_groups(action, resolve_opts) do
     group_ids =
       action["updates"]
       |> Enum.map(fn update ->
-        EntityIndex.resolve_group(update["subject_type"], update["subject_id"])
+        EntityIndex.resolve_group(update["subject_type"], update["subject_id"], resolve_opts)
       end)
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
