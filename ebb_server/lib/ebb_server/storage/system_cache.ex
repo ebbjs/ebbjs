@@ -48,6 +48,7 @@ defmodule EbbServer.Storage.SystemCache do
   - `:table` (GroupCache) - defaults to `:ebb_group_members`
   - `:relationships` - defaults to `:ebb_relationships`
   - `:relationships_by_group` - defaults to `:ebb_relationships_by_group`
+  - `:relationships_by_id` - defaults to `:ebb_relationships_by_id`
 
   ## Example
 
@@ -82,7 +83,7 @@ defmodule EbbServer.Storage.SystemCache do
   without spinning up a fresh supervisor.
 
   Accepts the same keyword options as `init/1` (`:rocks_name`,
-  `:table`, `:relationships`, `:relationships_by_group`,
+  `:table`, `:relationships`, `:relationships_by_group`, `:relationships_by_id`,
   `:sqlite_name`) so callers can drive the rebuild against isolated
   stores without relying on global `:persistent_term` state.
   """
@@ -101,6 +102,10 @@ defmodule EbbServer.Storage.SystemCache do
       Keyword.get(opts, :relationships_by_group) ||
         :persistent_term.get({RelationshipCache, :relationships_by_group})
 
+    rbi_table =
+      Keyword.get(opts, :relationships_by_id) ||
+        :persistent_term.get({RelationshipCache, :relationships_by_id}, :ebb_relationships_by_id)
+
     dirty_set =
       Keyword.get(opts, :dirty_set) ||
         :persistent_term.get({DirtyTracker, :dirty_set}, @default_dirty_set_name)
@@ -112,6 +117,7 @@ defmodule EbbServer.Storage.SystemCache do
       gm_table,
       rel_table,
       rbg_table,
+      rbi_table,
       dirty_set,
       opts
     )
@@ -123,7 +129,9 @@ defmodule EbbServer.Storage.SystemCache do
 
     dirty_set_opts = Keyword.take(opts, [:dirty_set])
     group_cache_opts = Keyword.take(opts, [:table])
-    rel_cache_opts = Keyword.take(opts, [:relationships, :relationships_by_group])
+
+    rel_cache_opts =
+      Keyword.take(opts, [:relationships, :relationships_by_group, :relationships_by_id])
 
     children = [
       {DirtyTracker, dirty_set_opts},
@@ -137,7 +145,13 @@ defmodule EbbServer.Storage.SystemCache do
 
         try do
           populate_system_caches(
-            Keyword.take(opts, [:rocks_name, :table, :relationships, :relationships_by_group])
+            Keyword.take(opts, [
+              :rocks_name,
+              :table,
+              :relationships,
+              :relationships_by_group,
+              :relationships_by_id
+            ])
           )
         rescue
           e ->
@@ -187,6 +201,7 @@ defmodule EbbServer.Storage.SystemCache do
          gm_table,
          rel_table,
          rbg_table,
+         rbi_table,
          dirty_set,
          opts
        ) do
@@ -227,7 +242,8 @@ defmodule EbbServer.Storage.SystemCache do
             field: Fields.get(data, "field")
           },
           relationships: rel_table,
-          relationships_by_group: rbg_table
+          relationships_by_group: rbg_table,
+          relationships_by_id: rbi_table
         )
       end,
       sqlite_opts

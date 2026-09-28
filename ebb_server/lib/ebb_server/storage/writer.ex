@@ -75,8 +75,10 @@ defmodule EbbServer.Storage.Writer do
           dirty_set: atom(),
           gsn_counter: :atomics.atomics(),
           group_members: atom(),
+          group_members_by_id: atom(),
           relationships: atom(),
           relationships_by_group: atom(),
+          relationships_by_id: atom(),
           fan_out_router: GenServer.name(),
           watermark_tracker: GenServer.name()
         }
@@ -85,8 +87,10 @@ defmodule EbbServer.Storage.Writer do
     :dirty_set,
     :gsn_counter,
     :group_members,
+    :group_members_by_id,
     :relationships,
     :relationships_by_group,
+    :relationships_by_id,
     :fan_out_router,
     :watermark_tracker
   ]
@@ -126,6 +130,16 @@ defmodule EbbServer.Storage.Writer do
         :persistent_term.get({GroupCache, :group_members}, :ebb_group_members)
       )
 
+    group_members_by_id =
+      Keyword.get(
+        opts,
+        :group_members_by_id,
+        :persistent_term.get(
+          {GroupCache, :group_members_by_id},
+          :ebb_group_members_by_id
+        )
+      )
+
     relationships =
       Keyword.get(
         opts,
@@ -143,6 +157,13 @@ defmodule EbbServer.Storage.Writer do
         )
       )
 
+    relationships_by_id =
+      Keyword.get(
+        opts,
+        :relationships_by_id,
+        :persistent_term.get({RelationshipCache, :relationships_by_id}, :ebb_relationships_by_id)
+      )
+
     fan_out_router = Keyword.get(opts, :fan_out_router, nil)
     watermark_tracker = Keyword.get(opts, :watermark_tracker, nil)
 
@@ -152,8 +173,10 @@ defmodule EbbServer.Storage.Writer do
        dirty_set: dirty_set,
        gsn_counter: gsn_counter,
        group_members: group_members,
+       group_members_by_id: group_members_by_id,
        relationships: relationships,
        relationships_by_group: relationships_by_group,
+       relationships_by_id: relationships_by_id,
        fan_out_router: fan_out_router,
        watermark_tracker: watermark_tracker
      }}
@@ -284,14 +307,16 @@ defmodule EbbServer.Storage.Writer do
             field: field
           },
           relationships: state.relationships,
-          relationships_by_group: state.relationships_by_group
+          relationships_by_group: state.relationships_by_group,
+          relationships_by_id: state.relationships_by_id
         )
 
       :delete ->
         RelationshipCache.delete_relationship(
           update.subject_id,
           relationships: state.relationships,
-          relationships_by_group: state.relationships_by_group
+          relationships_by_group: state.relationships_by_group,
+          relationships_by_id: state.relationships_by_id
         )
     end
   end
