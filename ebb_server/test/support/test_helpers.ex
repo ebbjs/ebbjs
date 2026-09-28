@@ -231,8 +231,10 @@ defmodule EbbServer.TestHelpers do
         dirty_set: opts.dirty_set,
         gsn_counter: opts.gsn_counter,
         group_members: opts[:group_members],
+        group_members_by_id: opts[:group_members_by_id],
         relationships: opts[:relationships],
         relationships_by_group: opts[:relationships_by_group],
+        relationships_by_id: opts[:relationships_by_id],
         watermark_tracker: opts[:watermark_tracker],
         fan_out_router: opts[:fan_out_router]
       )
@@ -299,8 +301,10 @@ defmodule EbbServer.TestHelpers do
   def auth_opts(tables) do
     [
       group_members: tables.group_members,
+      group_members_by_id: tables.group_members_by_id,
       relationships: tables.relationships,
-      relationships_by_group: tables.relationships_by_group
+      relationships_by_group: tables.relationships_by_group,
+      relationships_by_id: tables.relationships_by_id
     ]
   end
 

@@ -40,7 +40,7 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   use GenServer
 
-  alias EbbServer.Storage.{RelationshipCache, RocksDB, WatermarkTracker}
+  alias EbbServer.Storage.{EntityIndex, RelationshipCache, RocksDB, WatermarkTracker}
   alias EbbServer.Sync.{GroupDynamicSupervisor, GroupServer}
 
   @type t :: %__MODULE__{
@@ -258,8 +258,9 @@ defmodule EbbServer.Sync.FanOutRouter do
   defp dispatch_to_groups(action) do
     group_ids =
       action["updates"]
-      |> Enum.map(& &1["subject_id"])
-      |> Enum.map(&RelationshipCache.get_entity_group/1)
+      |> Enum.map(fn update ->
+        EntityIndex.resolve_group(update["subject_type"], update["subject_id"])
+      end)
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
 

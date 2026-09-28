@@ -23,8 +23,10 @@ defmodule EbbServer.Storage.SystemCacheTest do
     %{
       dirty_set: dirty_set,
       group_members: gm_table,
+      group_members_by_id: gm_by_id_table,
       relationships: rel_table,
-      relationships_by_group: rbg_table
+      relationships_by_group: rbg_table,
+      relationships_by_id: rbi_table
     } = TestHelpers.start_isolated_cache()
 
     %{name: rocks_name, dir: rocks_dir} = TestHelpers.start_rocks(%{test: "sys_cache_#{unique}"})
@@ -37,8 +39,10 @@ defmodule EbbServer.Storage.SystemCacheTest do
         dirty_set: dirty_set,
         gsn_counter: :atomics.new(1, signed: false),
         group_members: gm_table,
+        group_members_by_id: gm_by_id_table,
         relationships: rel_table,
-        relationships_by_group: rbg_table
+        relationships_by_group: rbg_table,
+        relationships_by_id: rbi_table
       })
 
     %{
@@ -47,8 +51,10 @@ defmodule EbbServer.Storage.SystemCacheTest do
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
       gm_table: gm_table,
+      gm_by_id_table: gm_by_id_table,
       rel_table: rel_table,
-      rbg_table: rbg_table
+      rbg_table: rbg_table,
+      rbi_table: rbi_table
     }
   end
 

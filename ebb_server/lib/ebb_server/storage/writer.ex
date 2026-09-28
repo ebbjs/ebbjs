@@ -60,6 +60,7 @@ defmodule EbbServer.Storage.Writer do
 
   alias EbbServer.Storage.{
     DirtyTracker,
+    EntityIndex,
     Fields,
     GroupCache,
     GsnCounter,
@@ -218,7 +219,13 @@ defmodule EbbServer.Storage.Writer do
         filtered
         |> Enum.with_index(gsn_start)
         |> Enum.flat_map(fn {action, gsn} ->
-          build_action_ops(action, gsn, rocks_name, state.relationships)
+          build_action_ops(
+            action,
+            gsn,
+            rocks_name,
+            state.relationships,
+            state.relationships_by_id
+          )
         end)
 
       write_and_respond(ops, filtered, gsn_start, gsn_end, state, rocks_name)
@@ -321,7 +328,7 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
-  defp build_action_ops(action, gsn, rocks_name, relationships) do
+  defp build_action_ops(action, gsn, rocks_name, relationships, relationships_by_id) do
     action_with_gsn = to_storage_format(action, gsn)
     action_etf = :erlang.term_to_binary(action_with_gsn)
 
@@ -332,7 +339,15 @@ defmodule EbbServer.Storage.Writer do
       {:put, RocksDB.cf_action_dedup(rocks_name), action.id, RocksDB.encode_gsn_key(gsn)}
     ] ++
       Enum.flat_map(action.updates, fn update ->
-        build_update_ops(action.id, update, gsn, rocks_name, relationships, intra_ctx)
+        build_update_ops(
+          action.id,
+          update,
+          gsn,
+          rocks_name,
+          relationships,
+          relationships_by_id,
+          intra_ctx
+        )
       end)
   end
 
@@ -369,7 +384,15 @@ defmodule EbbServer.Storage.Writer do
     }
   end
 
-  defp build_update_ops(action_id, update, gsn, rocks_name, relationships, intra_ctx) do
+  defp build_update_ops(
+         action_id,
+         update,
+         gsn,
+         rocks_name,
+         relationships,
+         relationships_by_id,
+         intra_ctx
+       ) do
     update_etf = :erlang.term_to_binary(update)
 
     [
@@ -382,13 +405,40 @@ defmodule EbbServer.Storage.Writer do
          update.subject_type,
          update.subject_id
        ), <<>>}
-    ] ++ build_group_action_index(action_id, gsn, update, rocks_name, relationships, intra_ctx)
+    ] ++
+      build_group_action_index(
+        action_id,
+        gsn,
+        update,
+        rocks_name,
+        relationships,
+        relationships_by_id,
+        intra_ctx
+      )
   end
 
-  defp build_group_action_index(_action_id, _gsn, _update, _rocks_name, nil, _intra_ctx), do: []
+  defp build_group_action_index(
+         _action_id,
+         _gsn,
+         _update,
+         _rocks_name,
+         nil,
+         _relationships_by_id,
+         _intra_ctx
+       ),
+       do: []
 
-  defp build_group_action_index(action_id, gsn, update, rocks_name, relationships, intra_ctx) do
-    group_id = get_group_id_for_group_action_index(update, relationships, intra_ctx)
+  defp build_group_action_index(
+         action_id,
+         gsn,
+         update,
+         rocks_name,
+         relationships,
+         relationships_by_id,
+         intra_ctx
+       ) do
+    group_id =
+      get_group_id_for_group_action_index(update, relationships, relationships_by_id, intra_ctx)
 
     if group_id do
       key = <<group_id::binary, gsn::unsigned-big-integer-size(64)>>
@@ -398,20 +448,10 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
-  defp get_group_id_for_group_action_index(update, relationships, intra_ctx) do
-    case update.subject_type do
-      "relationship" ->
-        source_id = Fields.get(update.data || %{}, "source_id")
-
-        if source_id do
-          Map.get(intra_ctx, source_id) ||
-            RelationshipCache.get_entity_group(source_id, relationships)
-        else
-          nil
-        end
-
-      _ ->
-        RelationshipCache.get_entity_group(update.subject_id, relationships)
-    end
+  defp get_group_id_for_group_action_index(update, relationships, relationships_by_id, intra_ctx) do
+    EntityIndex.resolve_group(update.subject_type, update.subject_id,
+      relationships: relationships,
+      relationships_by_id: relationships_by_id
+    ) || Map.get(intra_ctx, update.subject_id)
   end
 end

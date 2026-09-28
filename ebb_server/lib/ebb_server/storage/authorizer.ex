@@ -7,10 +7,10 @@ defmodule EbbServer.Storage.Authorizer do
   """
 
   alias EbbServer.Storage.AuthorizationContext
+  alias EbbServer.Storage.EntityIndex
   alias EbbServer.Storage.Fields
   alias EbbServer.Storage.GroupCache
   alias EbbServer.Storage.PermissionHelper
-  alias EbbServer.Storage.RelationshipCache
 
   @system_entity_types PermissionHelper.system_entity_types()
 
@@ -78,20 +78,24 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   defp authorize_system_entity_update(update, actor_id, ctx) do
-    group_id = get_group_id_for_update(update)
+    group_id = get_group_id_for_update(update, ctx)
     check_group_membership(actor_id, group_id, ctx)
   end
 
-  defp get_group_id_for_update(%{subject_type: "group", subject_id: group_id}) do
+  # The wire carries the group identifier when the data envelope is
+  # present (PUT, PATCH on puts that need target_id / group_id to be
+  # resolvable from the data alone). When the data envelope is nil
+  # — system-entity deletes per the #184 convention — resolve the
+  # group via `EntityIndex`, which looks up the entity by its id
+  # across the per-type tables.
+  defp get_group_id_for_update(%{subject_type: "group", subject_id: group_id}, _ctx) do
     group_id
   end
 
-  defp get_group_id_for_update(%{subject_type: "groupMember", data: data}) do
-    Fields.get(data, "group_id")
-  end
-
-  defp get_group_id_for_update(%{subject_type: "relationship", data: data}) do
-    Fields.get(data, "target_id")
+  defp get_group_id_for_update(%{subject_type: type, data: data, subject_id: id}, ctx)
+       when type in ["groupMember", "relationship"] do
+    wire_group_id = Fields.get(data, wire_group_key(type))
+    wire_group_id || EntityIndex.resolve_group(type, id, ctx_to_opts(ctx))
   end
 
   defp check_group_membership(_actor_id, nil, _ctx) do
@@ -110,7 +114,7 @@ defmodule EbbServer.Storage.Authorizer do
     subject_type = update.subject_type
 
     group_id =
-      RelationshipCache.get_entity_group(subject_id, ctx.relationships_table) ||
+      EntityIndex.resolve_group(subject_type, subject_id, ctx_to_opts(ctx)) ||
         Map.get(intra_ctx, subject_id)
 
     if group_id do
@@ -118,6 +122,17 @@ defmodule EbbServer.Storage.Authorizer do
     else
       check_actor_can_create_entity(actor_id, subject_type, update.method, ctx)
     end
+  end
+
+  defp wire_group_key("groupMember"), do: "group_id"
+  defp wire_group_key("relationship"), do: "target_id"
+
+  defp ctx_to_opts(ctx) do
+    [
+      relationships: ctx.relationships_table,
+      relationships_by_id: ctx.relationships_by_id_table,
+      group_members_by_id: ctx.group_members_by_id_table
+    ]
   end
 
   defp check_group_permissions(group_id, actor_id, subject_type, method, ctx) do
