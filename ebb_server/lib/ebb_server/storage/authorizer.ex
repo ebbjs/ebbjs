@@ -82,12 +82,9 @@ defmodule EbbServer.Storage.Authorizer do
     check_group_membership(actor_id, group_id, ctx)
   end
 
-  # The wire carries the group identifier when the data envelope is
-  # present (PUT, PATCH on puts that need target_id / group_id to be
-  # resolvable from the data alone). When the data envelope is nil
-  # — system-entity deletes per the #184 convention — resolve the
-  # group via `EntityIndex`, which looks up the entity by its id
-  # across the per-type tables.
+  # When the data envelope carries the group id, prefer it (first-wins);
+  # otherwise resolve via the by-id index — required for system-entity
+  # deletes, whose wire form drops the data fields.
   defp get_group_id_for_update(%{subject_type: "group", subject_id: group_id}, _ctx) do
     group_id
   end

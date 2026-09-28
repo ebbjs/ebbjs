@@ -297,11 +297,10 @@ defmodule EbbServer.Storage.AuthorizerTest do
     end
   end
 
-  # Regression tests for #192: a system-entity delete carries `data: nil`
-  # on the wire (per the system-entity convention). The authorizer cannot
-  # read `data.target_id` / `data.group_id` and must instead look the
-  # entity up by its id in the by-id index tables to recover the group.
-  describe "authorize/3 - system-entity delete with data:nil (#192)" do
+  # System-entity deletes arrive on the wire with `data: nil` (the data
+  # fields are dropped); the authorizer must recover the owning group
+  # from the by-id index tables rather than from the wire envelope.
+  describe "authorize/3 - system-entity delete with data:nil" do
     test "relationship delete resolves target_id from cache after a put" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)

@@ -224,10 +224,8 @@ defmodule EbbServer.TestHelpers do
   def start_writer(opts) when is_map(opts) do
     name = :"writer_#{System.unique_integer([:positive])}"
 
-    # All five table fields are required. The whole point of this
-    # helper is to give tests a fully-isolated writer that owns its
-    # cache tables; a missing key indicates the caller forgot to
-    # thread a table from start_isolated_cache/0.
+    # A half-initialized cache should surface as a setup-time error,
+    # not a crash on the writer's first lookup.
     required_keys = [
       :rocks_name,
       :dirty_set,

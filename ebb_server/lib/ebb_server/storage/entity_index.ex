@@ -20,11 +20,9 @@ defmodule EbbServer.Storage.EntityIndex do
     - `"groupMember"`  → `:ebb_group_members_by_id` (member id)
     - user types       → `:ebb_relationships` (source_id key)
 
-  Both by-id tables are required in opts. Hiding them behind a
-  global fallback was tried and removed: it let one test's
-  `:persistent_term` leak reach a later test's resolution path
-  via stale table references. Every caller passes its own tables
-  explicitly now.
+  Each caller supplies its own table names; the module never falls
+  back to globals, so a stale `:persistent_term` cannot reach a later
+  caller's resolution path.
   """
 
   alias EbbServer.Storage.{GroupCache, RelationshipCache}

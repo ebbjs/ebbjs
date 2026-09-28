@@ -31,8 +31,6 @@ defmodule EbbServer.Storage.GroupCache do
   Stores a group membership entry.
 
   Accepts both atom keys (`:actor_id`) and string keys (`"actor_id"`).
-  The by-id index table is resolved from `:persistent_term` so callers
-  don't have to thread it through.
 
   ## Examples
 
@@ -201,10 +199,8 @@ defmodule EbbServer.Storage.GroupCache do
     end
   end
 
-  # The by-id table is registered at boot via `:persistent_term`.
-  # Fall back to the default name when running outside a started
-  # supervisor (e.g. standalone unit tests), so lookups return
-  # `nil` instead of crashing.
+  # By-id table name is published by the supervisor at boot; the default
+  # here lets unit tests run without standing the supervisor up.
   defp by_id_table do
     :persistent_term.get({__MODULE__, :group_members_by_id}, @default_group_members_by_id)
   end
