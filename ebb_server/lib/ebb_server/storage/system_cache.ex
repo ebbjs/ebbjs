@@ -60,6 +60,7 @@ defmodule EbbServer.Storage.SystemCache do
   require Logger
 
   alias EbbServer.Storage.{
+    CacheTables,
     DirtyTracker,
     EntityStore,
     Fields,
@@ -92,19 +93,16 @@ defmodule EbbServer.Storage.SystemCache do
   @spec populate_system_caches(keyword()) :: :ok
   def populate_system_caches(opts \\ []) do
     rocks_name = Keyword.get(opts, :rocks_name, EbbServer.Storage.RocksDB)
-    gm_table = Keyword.get(opts, :table) || :persistent_term.get({GroupCache, :group_members})
+    gm_table = Keyword.get(opts, :table) || CacheTables.group_members()
 
     rel_table =
-      Keyword.get(opts, :relationships) ||
-        :persistent_term.get({RelationshipCache, :relationships})
+      Keyword.get(opts, :relationships) || CacheTables.relationships()
 
     rbg_table =
-      Keyword.get(opts, :relationships_by_group) ||
-        :persistent_term.get({RelationshipCache, :relationships_by_group})
+      Keyword.get(opts, :relationships_by_group) || CacheTables.relationships_by_group()
 
     rbi_table =
-      Keyword.get(opts, :relationships_by_id) ||
-        :persistent_term.get({RelationshipCache, :relationships_by_id}, :ebb_relationships_by_id)
+      Keyword.get(opts, :relationships_by_id) || CacheTables.relationships_by_id()
 
     dirty_set =
       Keyword.get(opts, :dirty_set) ||

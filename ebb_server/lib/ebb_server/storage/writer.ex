@@ -59,6 +59,7 @@ defmodule EbbServer.Storage.Writer do
   alias EbbServer.Storage.WatermarkTracker
 
   alias EbbServer.Storage.{
+    CacheTables,
     DirtyTracker,
     EntityIndex,
     Fields,
@@ -128,7 +129,7 @@ defmodule EbbServer.Storage.Writer do
       Keyword.get(
         opts,
         :group_members,
-        :persistent_term.get({GroupCache, :group_members}, :ebb_group_members)
+        CacheTables.group_members()
       )
 
     group_members_by_id =
@@ -140,17 +141,14 @@ defmodule EbbServer.Storage.Writer do
       Keyword.get(
         opts,
         :relationships,
-        :persistent_term.get({RelationshipCache, :relationships}, :ebb_relationships)
+        CacheTables.relationships()
       )
 
     relationships_by_group =
       Keyword.get(
         opts,
         :relationships_by_group,
-        :persistent_term.get(
-          {RelationshipCache, :relationships_by_group},
-          :ebb_relationships_by_group
-        )
+        CacheTables.relationships_by_group()
       )
 
     relationships_by_id =

@@ -36,26 +36,10 @@ defmodule EbbServer.Sync.HandshakeTest do
 
     case Writer.start_link(
            name: Writer,
-           group_members:
-             :persistent_term.get(
-               {EbbServer.Storage.GroupCache, :group_members},
-               :ebb_group_members
-             ),
-           group_members_by_id:
-             :persistent_term.get(
-               {EbbServer.Storage.GroupCache, :group_members_by_id},
-               :ebb_group_members_by_id
-             ),
-           relationships:
-             :persistent_term.get(
-               {EbbServer.Storage.RelationshipCache, :relationships},
-               :ebb_relationships
-             ),
-           relationships_by_id:
-             :persistent_term.get(
-               {EbbServer.Storage.RelationshipCache, :relationships_by_id},
-               :ebb_relationships_by_id
-             )
+           group_members: EbbServer.Storage.CacheTables.group_members(),
+           group_members_by_id: EbbServer.Storage.CacheTables.group_members_by_id(),
+           relationships: EbbServer.Storage.CacheTables.relationships(),
+           relationships_by_id: EbbServer.Storage.CacheTables.relationships_by_id()
          ) do
       {:ok, _pid} -> :ok
       {:error, {:already_started, _pid}} -> :ok
