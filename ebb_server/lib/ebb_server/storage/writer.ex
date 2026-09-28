@@ -132,14 +132,9 @@ defmodule EbbServer.Storage.Writer do
       )
 
     group_members_by_id =
-      Keyword.get(
-        opts,
-        :group_members_by_id,
-        :persistent_term.get(
-          {GroupCache, :group_members_by_id},
-          :ebb_group_members_by_id
-        )
-      )
+      Keyword.get(opts, :group_members_by_id) ||
+        raise ArgumentError,
+              "#{__MODULE__}.init/1 requires :group_members_by_id (pass it from the supervisor that owns the cache — see Sync.Supervisor for the boot wiring)"
 
     relationships =
       Keyword.get(
@@ -159,11 +154,9 @@ defmodule EbbServer.Storage.Writer do
       )
 
     relationships_by_id =
-      Keyword.get(
-        opts,
-        :relationships_by_id,
-        :persistent_term.get({RelationshipCache, :relationships_by_id}, :ebb_relationships_by_id)
-      )
+      Keyword.get(opts, :relationships_by_id) ||
+        raise ArgumentError,
+              "#{__MODULE__}.init/1 requires :relationships_by_id (pass it from the supervisor that owns the cache — see Sync.Supervisor for the boot wiring)"
 
     fan_out_router = Keyword.get(opts, :fan_out_router, nil)
     watermark_tracker = Keyword.get(opts, :watermark_tracker, nil)

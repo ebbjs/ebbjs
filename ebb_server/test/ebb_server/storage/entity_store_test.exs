@@ -33,12 +33,30 @@ defmodule EbbServer.Storage.EntityStoreTest do
   import EbbServer.TestHelpers
 
   setup do
-    %{dirty_set: dirty_set, gsn_counter: gsn_counter} = start_isolated_cache()
+    %{
+      dirty_set: dirty_set,
+      gsn_counter: gsn_counter,
+      group_members: group_members,
+      group_members_by_id: group_members_by_id,
+      relationships: relationships,
+      relationships_by_group: relationships_by_group,
+      relationships_by_id: relationships_by_id
+    } = start_isolated_cache()
+
     %{name: rocks_name, dir: rocks_dir} = start_rocks()
     %{name: sqlite_name} = start_sqlite(rocks_dir)
 
     %{name: writer_name} =
-      start_writer(%{rocks_name: rocks_name, dirty_set: dirty_set, gsn_counter: gsn_counter})
+      start_writer(%{
+        rocks_name: rocks_name,
+        dirty_set: dirty_set,
+        gsn_counter: gsn_counter,
+        group_members: group_members,
+        group_members_by_id: group_members_by_id,
+        relationships: relationships,
+        relationships_by_group: relationships_by_group,
+        relationships_by_id: relationships_by_id
+      })
 
     %{
       rocks_name: rocks_name,

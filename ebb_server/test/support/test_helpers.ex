@@ -221,8 +221,31 @@ defmodule EbbServer.TestHelpers do
     - name: Writer process name
     - pid: Writer process ID
   """
-  def start_writer(opts) do
+  def start_writer(opts) when is_map(opts) do
     name = :"writer_#{System.unique_integer([:positive])}"
+
+    # All five table fields are required. The whole point of this
+    # helper is to give tests a fully-isolated writer that owns its
+    # cache tables; a missing key indicates the caller forgot to
+    # thread a table from start_isolated_cache/0.
+    required_keys = [
+      :rocks_name,
+      :dirty_set,
+      :gsn_counter,
+      :group_members,
+      :group_members_by_id,
+      :relationships,
+      :relationships_by_group,
+      :relationships_by_id
+    ]
+
+    missing = Enum.reject(required_keys, fn key -> Map.get(opts, key) end)
+
+    unless missing == [] do
+      raise ArgumentError,
+            "start_writer/1 missing required opts: #{inspect(missing)}. " <>
+              "Get them from start_isolated_cache/0."
+    end
 
     {:ok, pid} =
       Writer.start_link(
@@ -230,11 +253,11 @@ defmodule EbbServer.TestHelpers do
         rocks_name: opts.rocks_name,
         dirty_set: opts.dirty_set,
         gsn_counter: opts.gsn_counter,
-        group_members: opts[:group_members],
-        group_members_by_id: opts[:group_members_by_id],
-        relationships: opts[:relationships],
-        relationships_by_group: opts[:relationships_by_group],
-        relationships_by_id: opts[:relationships_by_id],
+        group_members: opts.group_members,
+        group_members_by_id: opts.group_members_by_id,
+        relationships: opts.relationships,
+        relationships_by_group: opts.relationships_by_group,
+        relationships_by_id: opts.relationships_by_id,
         watermark_tracker: opts[:watermark_tracker],
         fan_out_router: opts[:fan_out_router]
       )

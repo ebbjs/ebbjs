@@ -107,7 +107,30 @@ defmodule EbbServer.Integration.StorageCase do
 
     ensure_started(EbbServer.Sync.Supervisor, [])
     ensure_started(EbbServer.Sync.GroupDynamicSupervisor, [])
-    ensure_started(EbbServer.Storage.Writer, name: EbbServer.Storage.Writer)
+
+    ensure_started(EbbServer.Storage.Writer,
+      name: EbbServer.Storage.Writer,
+      group_members:
+        :persistent_term.get(
+          {EbbServer.Storage.GroupCache, :group_members},
+          :ebb_group_members
+        ),
+      group_members_by_id:
+        :persistent_term.get(
+          {EbbServer.Storage.GroupCache, :group_members_by_id},
+          :ebb_group_members_by_id
+        ),
+      relationships:
+        :persistent_term.get(
+          {EbbServer.Storage.RelationshipCache, :relationships},
+          :ebb_relationships
+        ),
+      relationships_by_id:
+        :persistent_term.get(
+          {EbbServer.Storage.RelationshipCache, :relationships_by_id},
+          :ebb_relationships_by_id
+        )
+    )
 
     %{tmp_dir: tmp_dir}
   end

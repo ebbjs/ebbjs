@@ -19,7 +19,14 @@ defmodule EbbServer.Application do
       # wasn't switched to chunked mode first). The Writer also needs the
       # FanOutRouter's registered name so it can notify it of each
       # committed batch; without that, SSE subscribers never see writes.
+      # The two by-id table names are resolved through the storage
+      # caches' :persistent_term entries which are populated by the
+      # Storage.Supervisor during boot.
       {EbbServer.Storage.Writer,
+       group_members: persistent_term_group_members(),
+       group_members_by_id: persistent_term_group_members_by_id(),
+       relationships: persistent_term_relationships(),
+       relationships_by_id: persistent_term_relationships_by_id(),
        watermark_tracker: EbbServer.Storage.WatermarkTracker,
        fan_out_router: EbbServer.Sync.FanOutRouter},
       {Bandit, plug: EbbServer.Sync.Router, port: port}
@@ -67,4 +74,32 @@ defmodule EbbServer.Application do
         end
     end
   end
+
+  defp persistent_term_group_members,
+    do:
+      :persistent_term.get(
+        {EbbServer.Storage.GroupCache, :group_members},
+        :ebb_group_members
+      )
+
+  defp persistent_term_group_members_by_id,
+    do:
+      :persistent_term.get(
+        {EbbServer.Storage.GroupCache, :group_members_by_id},
+        :ebb_group_members_by_id
+      )
+
+  defp persistent_term_relationships,
+    do:
+      :persistent_term.get(
+        {EbbServer.Storage.RelationshipCache, :relationships},
+        :ebb_relationships
+      )
+
+  defp persistent_term_relationships_by_id,
+    do:
+      :persistent_term.get(
+        {EbbServer.Storage.RelationshipCache, :relationships_by_id},
+        :ebb_relationships_by_id
+      )
 end
