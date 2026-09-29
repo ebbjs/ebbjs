@@ -11,7 +11,7 @@ defmodule EbbServer.Sync.FanOutRouter do
   1. Waits until the committed watermark from `WatermarkTracker` is past
      the batch's end.
   2. Reads the committed Actions from RocksDB.
-  3. Resolves the affected groups (per-Action, via RelationshipCache).
+  3. Resolves the affected groups (per-Action, via `EntityIndex`).
   4. Dispatches each Action to the right GroupServer pid.
 
   When multi-Writer pipelining ships (#130 references this path), the
@@ -40,16 +40,24 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   use GenServer
 
-  alias EbbServer.Storage.{RelationshipCache, RocksDB, WatermarkTracker}
+  alias EbbServer.Storage.{CacheTables, EntityIndex, RelationshipCache, RocksDB, WatermarkTracker}
   alias EbbServer.Sync.{GroupDynamicSupervisor, GroupServer}
 
   @type t :: %__MODULE__{
           pending_notifications: [{non_neg_integer(), non_neg_integer()}],
           last_pushed_gsn: non_neg_integer(),
-          subscriptions: %{pid() => [String.t()]}
+          subscriptions: %{pid() => [String.t()]},
+          relationships_table: atom(),
+          relationships_by_id_table: atom(),
+          group_members_by_id_table: atom()
         }
 
-  defstruct pending_notifications: [], last_pushed_gsn: 0, subscriptions: %{}
+  defstruct pending_notifications: [],
+            last_pushed_gsn: 0,
+            subscriptions: %{},
+            relationships_table: CacheTables.relationships(),
+            relationships_by_id_table: CacheTables.relationships_by_id(),
+            group_members_by_id_table: CacheTables.group_members_by_id()
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -73,7 +81,15 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   @impl true
   def init(_opts) do
-    {:ok, %__MODULE__{}}
+    # Resolution tables for dispatch — captured at boot so the per-Action
+    # fan-out path doesn't re-read `:persistent_term` for every commit.
+    # See `resolve_group_ids/2` for the full set of lookups these support.
+    {:ok,
+     %__MODULE__{
+       relationships_table: CacheTables.relationships(),
+       relationships_by_id_table: CacheTables.relationships_by_id(),
+       group_members_by_id_table: CacheTables.group_members_by_id()
+     }}
   end
 
   @impl true
@@ -83,7 +99,7 @@ defmodule EbbServer.Sync.FanOutRouter do
     {to_push, remaining, new_last} = process_batch(state, from_gsn, to_gsn, watermark)
 
     for {from, to} <- to_push do
-      push_gsn_range(from, to)
+      push_gsn_range(from, to, state)
     end
 
     {:noreply, %{state | pending_notifications: remaining, last_pushed_gsn: new_last}}
@@ -134,6 +150,12 @@ defmodule EbbServer.Sync.FanOutRouter do
 
     new_subscriptions = Map.delete(state.subscriptions, connection_pid)
     {:reply, :ok, %{state | subscriptions: new_subscriptions}}
+  end
+
+  @impl true
+  def handle_call({:backfill_range, from_gsn, to_gsn}, _from, state) do
+    push_gsn_range(from_gsn, to_gsn, state)
+    {:reply, :ok, state}
   end
 
   @impl true
@@ -241,27 +263,55 @@ defmodule EbbServer.Sync.FanOutRouter do
   """
   @spec backfill_range(non_neg_integer(), non_neg_integer()) :: :ok
   def backfill_range(from_gsn, to_gsn) when from_gsn <= to_gsn do
-    push_gsn_range(from_gsn, to_gsn)
+    GenServer.call(__MODULE__, {:backfill_range, from_gsn, to_gsn}, 30_000)
   end
 
-  defp push_gsn_range(from_gsn, to_gsn) do
+  @doc """
+  Resolves the set of group ids an Action should fan out to.
+
+  Each Update carries `(subject_type, subject_id)`; `EntityIndex`
+  knows how to look up the right group for each kind of subject:
+
+    - `"group"` resolves to the subject id itself
+    - `"relationship"` resolves via `:relationships_by_id`
+    - `"groupMember"` resolves via `:group_members_by_id`
+    - user types resolve via `:relationships` (source_id key)
+
+  Required options mirror `EntityIndex.resolve_group/3`. Updates
+  whose entity is missing from the index are silently dropped — the
+  caller will catch up via `/sync/groups/:id?offset=` if needed.
+
+  Public for unit testing; not part of the GenServer contract.
+  """
+  @spec resolve_group_ids(map(), keyword()) :: [String.t()]
+  def resolve_group_ids(action, opts) do
+    action["updates"]
+    |> Enum.map(fn update ->
+      EntityIndex.resolve_group(update["subject_type"], update["subject_id"], opts)
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp push_gsn_range(from_gsn, to_gsn, state) do
     cf = RocksDB.cf_actions()
     from_key = RocksDB.encode_gsn_key(from_gsn)
     to_key = RocksDB.encode_gsn_key(to_gsn + 1)
 
+    resolve_opts = [
+      relationships: state.relationships_table,
+      relationships_by_id: state.relationships_by_id_table,
+      group_members_by_id: state.group_members_by_id_table
+    ]
+
     RocksDB.range_iterator(cf, from_key, to_key)
     |> Stream.map(fn {_key, value} -> :erlang.binary_to_term(value, [:safe]) end)
-    |> Stream.each(&dispatch_to_groups/1)
+    |> Stream.each(&dispatch_to_groups(&1, resolve_opts))
     |> Stream.run()
   end
 
-  defp dispatch_to_groups(action) do
-    group_ids =
-      action["updates"]
-      |> Enum.map(& &1["subject_id"])
-      |> Enum.map(&RelationshipCache.get_entity_group/1)
-      |> Enum.reject(&is_nil/1)
-      |> Enum.uniq()
+  defp dispatch_to_groups(action, resolve_opts) do
+    group_ids = resolve_group_ids(action, resolve_opts)
 
     for group_id <- group_ids do
       case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do
