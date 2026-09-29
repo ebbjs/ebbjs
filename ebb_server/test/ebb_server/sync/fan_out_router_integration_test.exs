@@ -52,14 +52,12 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
 
   describe "system-entity fan-out (#197)" do
     test "relationship and groupMember actions reach the per-group GroupServer" do
-      # The pre-#197 dispatch keyed on subject_id alone, so a relationship
-      # action (subject_id = relationship id) never resolved to its
-      # target group. Subscribe an SSEConnection to the bootstrap group,
-      # write the seed via ActionHelpers, and verify the listener
-      # receives an SSE chunk carrying the group, groupMember, and
-      # relationship updates — i.e., the fan-out is no longer dropping
-      # them. The SSEConnection is parented to `self()` so `assert_receive`
-      # can drain chunks directly.
+      # Pinned by #197: the FanOutRouter must route relationship /
+      # groupMember / group updates to the right GroupServer. Subscribe
+      # an SSEConnection to the bootstrap group, write the seed, and
+      # verify the chunk carries all three system-entity subject types.
+      # Parent the SSEConnection to `self()` so `assert_receive` can
+      # drain chunks directly.
       group_id = "g_197_#{:erlang.unique_integer([:positive])}"
       actor_id = "a_197_#{:erlang.unique_integer([:positive])}"
 
@@ -74,10 +72,6 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
         "todo.create"
       ])
 
-      # FanOutRouter dispatches via GenServer.cast → GroupServer →
-      # SSEConnection.handle_cast → `{:sse_chunk, "data", payload}` to
-      # this test process. Wait for one such chunk (the bootstrap Action
-      # carries all three system updates in a single batch).
       assert_receive {:sse_chunk, "data", json}, 5_000
       payload = Jason.decode!(json)
 
@@ -87,7 +81,6 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
         |> Enum.uniq()
         |> Enum.sort()
 
-      # Bootstrap emits one of each: group, groupMember, relationship.
       assert "group" in subject_types
       assert "groupMember" in subject_types
       assert "relationship" in subject_types

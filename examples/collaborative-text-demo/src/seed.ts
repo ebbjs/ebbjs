@@ -183,10 +183,6 @@ export function buildAddMemberAction(
   groupId: string = DEMO_GROUP_ID,
 ): ReturnType<typeof createAction>["action"] {
   const clock = createClock();
-  // When `groupId` is the demo default, use the actor-keyed member id
-  // (`gm_<actorId>`) so multiple demo users don't collide on the same
-  // member entity. When `groupId` is a per-spec isolated id, the
-  // actor is only in this one group, so `gm_<actorId>` stays unique.
   const memberId = `gm_${actorId}`;
   const update = {
     subject_id: memberId,

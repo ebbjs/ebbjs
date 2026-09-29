@@ -46,18 +46,10 @@ defmodule EbbServer.Sync.FanOutRouter do
   @type t :: %__MODULE__{
           pending_notifications: [{non_neg_integer(), non_neg_integer()}],
           last_pushed_gsn: non_neg_integer(),
-          subscriptions: %{pid() => [String.t()]},
-          relationships_table: atom(),
-          relationships_by_id_table: atom(),
-          group_members_by_id_table: atom()
+          subscriptions: %{pid() => [String.t()]}
         }
 
-  defstruct pending_notifications: [],
-            last_pushed_gsn: 0,
-            subscriptions: %{},
-            relationships_table: CacheTables.relationships(),
-            relationships_by_id_table: CacheTables.relationships_by_id(),
-            group_members_by_id_table: CacheTables.group_members_by_id()
+  defstruct pending_notifications: [], last_pushed_gsn: 0, subscriptions: %{}
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -81,15 +73,7 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   @impl true
   def init(_opts) do
-    # Resolution tables for dispatch — captured at boot so the per-Action
-    # fan-out path doesn't re-read `:persistent_term` for every commit.
-    # See `resolve_group_ids/2` for the full set of lookups these support.
-    {:ok,
-     %__MODULE__{
-       relationships_table: CacheTables.relationships(),
-       relationships_by_id_table: CacheTables.relationships_by_id(),
-       group_members_by_id_table: CacheTables.group_members_by_id()
-     }}
+    {:ok, %__MODULE__{}}
   end
 
   @impl true
@@ -99,7 +83,7 @@ defmodule EbbServer.Sync.FanOutRouter do
     {to_push, remaining, new_last} = process_batch(state, from_gsn, to_gsn, watermark)
 
     for {from, to} <- to_push do
-      push_gsn_range(from, to, state)
+      push_gsn_range(from, to)
     end
 
     {:noreply, %{state | pending_notifications: remaining, last_pushed_gsn: new_last}}
@@ -150,12 +134,6 @@ defmodule EbbServer.Sync.FanOutRouter do
 
     new_subscriptions = Map.delete(state.subscriptions, connection_pid)
     {:reply, :ok, %{state | subscriptions: new_subscriptions}}
-  end
-
-  @impl true
-  def handle_call({:backfill_range, from_gsn, to_gsn}, _from, state) do
-    push_gsn_range(from_gsn, to_gsn, state)
-    {:reply, :ok, state}
   end
 
   @impl true
@@ -253,33 +231,13 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   @doc """
-  Pushes a single range to subscribers regardless of contiguity.
-
-  Used when a new SSE subscriber joins: backfill them with everything
-  in [from, watermark] so they're caught up. Avoids the contiguity
-  check that would otherwise reject actions whose GSN exceeds the
-  global `last_pushed_gsn` (e.g., the very first action committed
-  after the system starts).
-  """
-  @spec backfill_range(non_neg_integer(), non_neg_integer()) :: :ok
-  def backfill_range(from_gsn, to_gsn) when from_gsn <= to_gsn do
-    GenServer.call(__MODULE__, {:backfill_range, from_gsn, to_gsn}, 30_000)
-  end
-
-  @doc """
   Resolves the set of group ids an Action should fan out to.
 
-  Each Update carries `(subject_type, subject_id)`; `EntityIndex`
-  knows how to look up the right group for each kind of subject:
-
-    - `"group"` resolves to the subject id itself
-    - `"relationship"` resolves via `:relationships_by_id`
-    - `"groupMember"` resolves via `:group_members_by_id`
-    - user types resolve via `:relationships` (source_id key)
-
-  Required options mirror `EntityIndex.resolve_group/3`. Updates
-  whose entity is missing from the index are silently dropped — the
-  caller will catch up via `/sync/groups/:id?offset=` if needed.
+  Dispatches each Update's `(subject_type, subject_id)` pair through
+  `EntityIndex.resolve_group/3` — see that module for the per-type
+  resolution rules. Updates whose entity is missing from the index
+  are silently dropped; the client catches them up via
+  `/sync/groups/:id?offset=` instead.
 
   Public for unit testing; not part of the GenServer contract.
   """
@@ -293,15 +251,15 @@ defmodule EbbServer.Sync.FanOutRouter do
     |> Enum.uniq()
   end
 
-  defp push_gsn_range(from_gsn, to_gsn, state) do
+  defp push_gsn_range(from_gsn, to_gsn) do
     cf = RocksDB.cf_actions()
     from_key = RocksDB.encode_gsn_key(from_gsn)
     to_key = RocksDB.encode_gsn_key(to_gsn + 1)
 
     resolve_opts = [
-      relationships: state.relationships_table,
-      relationships_by_id: state.relationships_by_id_table,
-      group_members_by_id: state.group_members_by_id_table
+      relationships: CacheTables.relationships(),
+      relationships_by_id: CacheTables.relationships_by_id(),
+      group_members_by_id: CacheTables.group_members_by_id()
     ]
 
     RocksDB.range_iterator(cf, from_key, to_key)

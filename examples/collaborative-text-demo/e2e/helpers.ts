@@ -20,9 +20,9 @@ import { test, expect, type Browser, type BrowserContext, type Page } from "@pla
  * Boot the demo in two browser contexts under `?actor=<first>` and
  * `?actor=<second>` and wait for both to reach the "live" badge.
  *
- * Each call seeds a fresh isolated group so the two tabs in the
- * same test invocation share a doc/relationship without leaking
- * state from a prior spec under `workers: 1`. Pass an explicit
+ * Each call isolates the test to a fresh group id (see
+ * `isolateTestGroup/2`) so the two tabs share a doc without leaking
+ * state from prior specs under `workers: 1`. Pass an explicit
  * `groupId` to share one across nested helpers within a test.
  *
  * Returns the contexts and pages so callers can drive the scenario.

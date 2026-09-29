@@ -20,7 +20,7 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
   alias EbbServer.Storage.{GroupCache, RelationshipCache}
   alias EbbServer.Sync.FanOutRouter
 
-  defp tables do
+  setup do
     rel = :"for_rel_#{System.unique_integer([:positive])}"
     rbi = :"for_rbi_#{System.unique_integer([:positive])}"
     rbg = :"for_rbg_#{System.unique_integer([:positive])}"
@@ -60,13 +60,15 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
       end
     end)
 
-    %{
+    t = %{
       relationships: rel,
       relationships_by_id: rbi,
       relationships_by_group: rbg,
       group_members: gm,
       group_members_by_id: gm_by_id
     }
+
+    {:ok, tables: t, resolve_opts: opts(t)}
   end
 
   defp opts(t),
@@ -76,17 +78,18 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
       group_members_by_id: t.group_members_by_id
     ]
 
-  describe "resolve_group_ids/2 — user-entity updates (#197)" do
-    test "routes a user-entity update to its group's id" do
-      t = tables()
+  defp put_relationship(t, id, source_id, target_id) do
+    RelationshipCache.put_relationship(
+      %{id: id, source_id: source_id, target_id: target_id, type: "todo", field: "group"},
+      relationships: t.relationships,
+      relationships_by_group: t.relationships_by_group,
+      relationships_by_id: t.relationships_by_id
+    )
+  end
 
-      :ok =
-        RelationshipCache.put_relationship(
-          %{id: "rel_1", source_id: "todo_1", target_id: "g_1", type: "todo", field: "group"},
-          relationships: t.relationships,
-          relationships_by_group: t.relationships_by_group,
-          relationships_by_id: t.relationships_by_id
-        )
+  describe "resolve_group_ids/2 — user-entity updates (#197)" do
+    test "routes a user-entity update to its group's id", %{tables: t} do
+      :ok = put_relationship(t, "rel_1", "todo_1", "g_1")
 
       action = %{"updates" => [%{"subject_type" => "todo", "subject_id" => "todo_1"}]}
 
@@ -95,33 +98,21 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
   end
 
   describe "resolve_group_ids/2 — system-entity updates (#197)" do
-    test "routes a group update to the group itself" do
-      _t = tables()
-
+    test "routes a group update to the group itself", %{resolve_opts: opts} do
       action = %{"updates" => [%{"subject_type" => "group", "subject_id" => "g_1"}]}
 
-      assert FanOutRouter.resolve_group_ids(action, opts(tables())) == ["g_1"]
+      assert FanOutRouter.resolve_group_ids(action, opts) == ["g_1"]
     end
 
-    test "routes a relationship update to the relationship's target group" do
-      t = tables()
-
-      :ok =
-        RelationshipCache.put_relationship(
-          %{id: "rel_1", source_id: "todo_1", target_id: "g_1", type: "todo", field: "group"},
-          relationships: t.relationships,
-          relationships_by_group: t.relationships_by_group,
-          relationships_by_id: t.relationships_by_id
-        )
+    test "routes a relationship update to the relationship's target group", %{tables: t} do
+      :ok = put_relationship(t, "rel_1", "todo_1", "g_1")
 
       action = %{"updates" => [%{"subject_type" => "relationship", "subject_id" => "rel_1"}]}
 
       assert FanOutRouter.resolve_group_ids(action, opts(t)) == ["g_1"]
     end
 
-    test "routes a groupMember update to the member's group" do
-      t = tables()
-
+    test "routes a groupMember update to the member's group", %{tables: t} do
       :ok =
         GroupCache.put_group_member(
           %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
@@ -133,24 +124,9 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
       assert FanOutRouter.resolve_group_ids(action, opts(t)) == ["g_1"]
     end
 
-    test "deduplicates when multiple updates target the same group" do
-      t = tables()
-
-      :ok =
-        RelationshipCache.put_relationship(
-          %{id: "rel_1", source_id: "todo_1", target_id: "g_1", type: "todo", field: "group"},
-          relationships: t.relationships,
-          relationships_by_group: t.relationships_by_group,
-          relationships_by_id: t.relationships_by_id
-        )
-
-      :ok =
-        RelationshipCache.put_relationship(
-          %{id: "rel_2", source_id: "todo_2", target_id: "g_1", type: "todo", field: "group"},
-          relationships: t.relationships,
-          relationships_by_group: t.relationships_by_group,
-          relationships_by_id: t.relationships_by_id
-        )
+    test "deduplicates when multiple updates target the same group", %{tables: t} do
+      :ok = put_relationship(t, "rel_1", "todo_1", "g_1")
+      :ok = put_relationship(t, "rel_2", "todo_2", "g_1")
 
       action = %{
         "updates" => [
@@ -162,9 +138,8 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
       assert FanOutRouter.resolve_group_ids(action, opts(t)) == ["g_1"]
     end
 
-    test "drops updates whose entity is not in the cache (silent drop is fine for fan-out)" do
-      _t = tables()
-
+    test "drops updates whose entity is not in the cache (silent drop is fine for fan-out)",
+         %{resolve_opts: opts} do
       action = %{
         "updates" => [
           %{"subject_type" => "relationship", "subject_id" => "rel_unknown"},
@@ -172,27 +147,12 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
         ]
       }
 
-      assert FanOutRouter.resolve_group_ids(action, opts(tables())) == []
+      assert FanOutRouter.resolve_group_ids(action, opts) == []
     end
 
-    test "handles a mixed action with user and system updates across groups" do
-      t = tables()
-
-      :ok =
-        RelationshipCache.put_relationship(
-          %{id: "rel_1", source_id: "todo_1", target_id: "g_1", type: "todo", field: "group"},
-          relationships: t.relationships,
-          relationships_by_group: t.relationships_by_group,
-          relationships_by_id: t.relationships_by_id
-        )
-
-      :ok =
-        RelationshipCache.put_relationship(
-          %{id: "rel_2", source_id: "todo_2", target_id: "g_2", type: "todo", field: "group"},
-          relationships: t.relationships,
-          relationships_by_group: t.relationships_by_group,
-          relationships_by_id: t.relationships_by_id
-        )
+    test "handles a mixed action with user and system updates across groups", %{tables: t} do
+      :ok = put_relationship(t, "rel_1", "todo_1", "g_1")
+      :ok = put_relationship(t, "rel_2", "todo_2", "g_2")
 
       action = %{
         "updates" => [
