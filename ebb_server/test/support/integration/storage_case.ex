@@ -113,7 +113,14 @@ defmodule EbbServer.Integration.StorageCase do
       group_members: EbbServer.Storage.CacheTables.group_members(),
       group_members_by_id: EbbServer.Storage.CacheTables.group_members_by_id(),
       relationships: EbbServer.Storage.CacheTables.relationships(),
-      relationships_by_id: EbbServer.Storage.CacheTables.relationships_by_id()
+      relationships_by_id: EbbServer.Storage.CacheTables.relationships_by_id(),
+      # Without these, the Writer skips post-write work that the
+      # FanOutRouter integration tests rely on (watermark advancement,
+      # batch_committed notification). Tests that don't exercise
+      # fan-out don't notice; tests that do (like #197) would hang
+      # waiting for chunks the watermark gate will never release.
+      watermark_tracker: EbbServer.Storage.WatermarkTracker,
+      fan_out_router: EbbServer.Sync.FanOutRouter
     )
 
     %{tmp_dir: tmp_dir}
