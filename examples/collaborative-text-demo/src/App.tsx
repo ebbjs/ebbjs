@@ -25,7 +25,6 @@ import { ConnectionBadge } from "./ConnectionBadge";
 import { ConflictPanel } from "./ConflictPanel";
 import { ActorPicker, KNOWN_ACTORS, type ActorId, type KnownActor } from "./ActorPicker";
 import { bootstrap, type BootstrapResult } from "./bootstrap";
-import { DEMO_DOC_ID, DEMO_GROUP_ID } from "./seed";
 
 const SERVER_URL = "";
 const DEFAULT_ACTOR: ActorId = "drew";
@@ -119,7 +118,7 @@ function Ready({
   serverUrl: string;
   onActorChange: (actorId: ActorId) => void;
 }) {
-  const { client, groupIds } = bootstrap;
+  const { client, groupIds, docId, docGroupId } = bootstrap;
   const [conflictsOpen, setConflictsOpen] = useState(false);
   const conflictsButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -156,7 +155,7 @@ function Ready({
         <div className="flex-1 min-w-0">
           <Editor
             client={client}
-            docId={DEMO_DOC_ID}
+            docId={docId}
             actorId={actorId}
             groupIds={groupIds}
             caughtUpActions={bootstrap.caughtUpActions}
@@ -164,7 +163,7 @@ function Ready({
         </div>
         {conflictsOpen && (
           <aside className="w-80 shrink-0 border-l border-stone-800 overflow-y-auto">
-            <ConflictPanel client={client} docId={DEMO_DOC_ID} groupId={DEMO_GROUP_ID} />
+            <ConflictPanel client={client} docId={docId} groupId={docGroupId} />
           </aside>
         )}
       </div>

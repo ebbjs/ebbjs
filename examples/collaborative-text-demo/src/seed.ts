@@ -17,6 +17,24 @@ export const DEMO_MEMBER_ID = "gm_demo";
 export const DEMO_RELATIONSHIP_ID = "rel_demo";
 export const DEMO_DOC_ID = "doc_demo";
 
+/**
+ * Derived seed IDs for a given group id. Used by `bootstrap` to seed
+ * an isolated group per Playwright spec so `cf_actions` from a prior
+ * spec doesn't leak into the next one (see #197). Same prefixes as
+ * the demo defaults so the seed shape stays uniform.
+ */
+export function deriveSeedIds(groupId: string): {
+  memberId: string;
+  relationshipId: string;
+  docId: string;
+} {
+  return {
+    memberId: `gm_${groupId}`,
+    relationshipId: `rel_${groupId}`,
+    docId: `doc_${groupId}`,
+  };
+}
+
 /** A permissive shape for seed data — matches `SeedData` in @ebbjs/server. */
 export interface SeedData {
   groups: ReadonlyArray<{ id: string; name: string }>;
@@ -43,30 +61,32 @@ export interface SeedData {
 }
 
 /** Build the seed payload for the demo: one group, one member, one empty doc. */
-export function buildDemoSeed(): SeedData {
+export function buildDemoSeed(groupId: string = DEMO_GROUP_ID): SeedData {
+  const { memberId, relationshipId, docId } = deriveSeedIds(groupId);
+
   return {
-    groups: [{ id: DEMO_GROUP_ID, name: "Demo Group" }],
+    groups: [{ id: groupId, name: "Demo Group" }],
     groupMembers: [
       {
-        id: DEMO_MEMBER_ID,
+        id: memberId,
         actorId: "demo-seeder", // Seed runs as a dedicated actor
-        groupId: DEMO_GROUP_ID,
+        groupId,
         // Wildcard permission so anyone in the group can write the doc.
         permissions: ["text_document.*", "group.*", "groupMember.*", "relationship.*"],
       },
     ],
     entities: [
       {
-        id: DEMO_DOC_ID,
+        id: docId,
         type: "text_document",
         patches: [{ fields: {} }], // empty document
       },
     ],
     relationships: [
       {
-        id: DEMO_RELATIONSHIP_ID,
-        sourceId: DEMO_DOC_ID,
-        targetId: DEMO_GROUP_ID,
+        id: relationshipId,
+        sourceId: docId,
+        targetId: groupId,
         type: "text_document",
         field: "ownedBy",
       },
@@ -163,6 +183,10 @@ export function buildAddMemberAction(
   groupId: string = DEMO_GROUP_ID,
 ): ReturnType<typeof createAction>["action"] {
   const clock = createClock();
+  // When `groupId` is the demo default, use the actor-keyed member id
+  // (`gm_<actorId>`) so multiple demo users don't collide on the same
+  // member entity. When `groupId` is a per-spec isolated id, the
+  // actor is only in this one group, so `gm_<actorId>` stays unique.
   const memberId = `gm_${actorId}`;
   const update = {
     subject_id: memberId,

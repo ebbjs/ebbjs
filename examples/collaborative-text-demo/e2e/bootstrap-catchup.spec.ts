@@ -1,4 +1,4 @@
-import { test, expect, waitForLive } from "./helpers";
+import { test, expect, isolateTestGroup, waitForLive } from "./helpers";
 
 /**
  * Bootstrap catchUp — pre-populate a doc with N actions, open a fresh
@@ -40,6 +40,10 @@ test.describe("bootstrap catchUp", () => {
     // Open tab A as drew, type a long string so we exercise multiple
     // actions (each character is an EXTEND under the same leaf run).
     const drewCtx = await browser.newContext();
+    const bobCtx = await browser.newContext();
+    const groupId = await isolateTestGroup(drewCtx);
+    await isolateTestGroup(bobCtx, groupId);
+
     const drewPage = await drewCtx.newPage();
     await drewPage.goto("/?actor=drew");
     await waitForLive(drewPage);
@@ -65,7 +69,6 @@ test.describe("bootstrap catchUp", () => {
     // Open tab B as a different actor. Bob needs to be added to the
     // group first — but bootstrap calls addMember() idempotently on
     // every load, so this works without explicit setup.
-    const bobCtx = await browser.newContext();
     const bobPage = await bobCtx.newPage();
     await bobPage.goto("/?actor=bob");
     await waitForLive(bobPage);

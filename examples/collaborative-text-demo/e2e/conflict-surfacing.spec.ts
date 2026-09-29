@@ -1,4 +1,4 @@
-import { test, expect, applyTestConfig } from "./helpers";
+import { test, expect, applyTestConfig, isolateTestGroup } from "./helpers";
 
 /**
  * Conflict surfacing — concurrent edits at the same position should
@@ -55,6 +55,8 @@ test.describe("conflict surfacing", () => {
   }) => {
     const firstCtx = await browser.newContext();
     const secondCtx = await browser.newContext();
+    const groupId = await isolateTestGroup(firstCtx);
+    await isolateTestGroup(secondCtx, groupId);
     await applyTestConfig(firstCtx, { exposeState: true });
     await applyTestConfig(secondCtx, { exposeState: true });
 
