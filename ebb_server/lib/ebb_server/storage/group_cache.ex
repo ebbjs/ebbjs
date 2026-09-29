@@ -1,9 +1,11 @@
 defmodule EbbServer.Storage.GroupCache do
   @moduledoc """
-  GenServer that owns the group membership ETS table.
+  GenServer that owns the group membership ETS tables.
 
-  Manages actor-to-group mappings and permissions. The GenServer exists
-  solely to own the ETS table lifetime and manage startup/shutdown.
+  Manages actor-to-group mappings, permissions, and a secondary
+  index keyed by member id that allows resolving a membership by
+  its entity id. The GenServer exists solely to own the ETS table
+  lifetime and manage startup/shutdown.
 
   All public functions are lock-free (ETS reads/writes) and do not
   route through `GenServer.call`.
@@ -12,11 +14,13 @@ defmodule EbbServer.Storage.GroupCache do
   use GenServer
 
   @default_group_members :ebb_group_members
+  @default_group_members_by_id :ebb_group_members_by_id
 
   @type t :: %__MODULE__{
-          group_members: atom()
+          group_members: atom(),
+          group_members_by_id: atom()
         }
-  defstruct [:group_members]
+  defstruct [:group_members, :group_members_by_id]
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -35,6 +39,8 @@ defmodule EbbServer.Storage.GroupCache do
   """
   @spec put_group_member(map(), atom()) :: :ok | {:error, :nil_values_not_allowed}
   def put_group_member(member, table \\ @default_group_members) do
+    by_id_table = by_id_table()
+
     actor_id = member[:actor_id] || member["actor_id"]
     group_id = member[:group_id] || member["group_id"]
     entry_id = member[:id] || member["id"]
@@ -45,11 +51,13 @@ defmodule EbbServer.Storage.GroupCache do
       entry = %{
         id: entry_id,
         group_id: group_id,
+        actor_id: actor_id,
         permissions: member[:permissions] || member["permissions"]
       }
 
       delete_group_member_by_id(entry.id, actor_id, table)
       :ets.insert(table, {actor_id, entry})
+      :ets.insert(by_id_table, {entry_id, entry})
       :ok
     end
   end
@@ -64,15 +72,51 @@ defmodule EbbServer.Storage.GroupCache do
   """
   @spec delete_group_member(String.t(), atom()) :: :ok
   def delete_group_member(member_id, table \\ @default_group_members) do
+    by_id_table = by_id_table()
+
+    case :ets.lookup(by_id_table, member_id) do
+      [{_, %{actor_id: actor_id}}] ->
+        delete_from_primary(table, member_id, actor_id)
+        :ok
+
+      [] ->
+        :ok
+    end
+
+    :ets.delete(by_id_table, member_id)
+    :ok
+  end
+
+  defp delete_from_primary(table, member_id, actor_id) do
     table
     |> :ets.tab2list()
-    |> Enum.each(fn object ->
-      if object |> elem(1) |> Map.get(:id) == member_id do
-        :ets.delete_object(table, object)
+    |> Enum.each(fn entry ->
+      [stored_actor_id, stored_entry] = Tuple.to_list(entry)
+      entry_id = stored_entry[:id] || stored_entry["id"]
+
+      if stored_actor_id == actor_id && entry_id == member_id do
+        :ets.delete_object(table, entry)
       end
     end)
+  end
 
-    :ok
+  @doc """
+  Looks up a group membership entry by its member id.
+
+  ## Examples
+
+      iex> GroupCache.get_group_member("gm_1")
+      %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["read"]}
+
+      iex> GroupCache.get_group_member("unknown")
+      nil
+  """
+  @spec get_group_member(String.t(), atom()) :: map() | nil
+  def get_group_member(member_id, table \\ @default_group_members_by_id) do
+    case :ets.lookup(table, member_id) do
+      [{_, entry}] -> entry
+      [] -> nil
+    end
   end
 
   @doc """
@@ -136,17 +180,29 @@ defmodule EbbServer.Storage.GroupCache do
   """
   @spec reset(atom()) :: :ok
   def reset(table \\ @default_group_members) do
+    reset_table(table, :bag)
+    reset_table(by_id_table(), :set)
+    :ok
+  end
+
+  defp reset_table(table, type) do
     case :ets.info(table, :name) do
       :undefined ->
-        :ets.new(table, [:bag, :public, :named_table])
+        :ets.new(table, [type, :public, :named_table])
 
       _ ->
         try do
           :ets.delete_all_objects(table)
         rescue
-          ArgumentError -> :ets.new(table, [:bag, :public, :named_table])
+          ArgumentError -> :ets.new(table, [type, :public, :named_table])
         end
     end
+  end
+
+  # By-id table name is published by the supervisor at boot; the default
+  # here lets unit tests run without standing the supervisor up.
+  defp by_id_table do
+    :persistent_term.get({__MODULE__, :group_members_by_id}, @default_group_members_by_id)
   end
 
   defp resolve_table(nil), do: nil
@@ -154,16 +210,7 @@ defmodule EbbServer.Storage.GroupCache do
   defp resolve_table(table) when is_atom(table), do: table
 
   defp delete_group_member_by_id(member_id, actor_id, table) do
-    table
-    |> :ets.tab2list()
-    |> Enum.each(fn entry ->
-      [stored_actor_id, stored_entry] = Tuple.to_list(entry)
-      entry_id = stored_entry[:id] || stored_entry["id"]
-
-      if stored_actor_id == actor_id && entry_id == member_id do
-        :ets.delete_object(table, entry)
-      end
-    end)
+    delete_from_primary(table, member_id, actor_id)
   end
 
   defp flat_map_permissions(entries, group_id) do
@@ -175,18 +222,24 @@ defmodule EbbServer.Storage.GroupCache do
   @impl true
   def init(opts) do
     table = Keyword.get(opts, :table, @default_group_members)
-    :persistent_term.put({__MODULE__, :group_members}, table)
-    :ets.new(table, [:bag, :public, :named_table])
+    by_id_table = Keyword.get(opts, :group_members_by_id, @default_group_members_by_id)
 
-    {:ok, %__MODULE__{group_members: table}}
+    :persistent_term.put({__MODULE__, :group_members}, table)
+    :persistent_term.put({__MODULE__, :group_members_by_id}, by_id_table)
+    :ets.new(table, [:bag, :public, :named_table])
+    :ets.new(by_id_table, [:set, :public, :named_table])
+
+    {:ok, %__MODULE__{group_members: table, group_members_by_id: by_id_table}}
   end
 
   @impl true
   def terminate(_reason, state) do
-    try do
-      :ets.delete(state.group_members)
-    rescue
-      ArgumentError -> :ok
+    for table <- [state.group_members, state.group_members_by_id] do
+      try do
+        :ets.delete(table)
+      rescue
+        ArgumentError -> :ok
+      end
     end
 
     :ok

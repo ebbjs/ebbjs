@@ -59,7 +59,9 @@ defmodule EbbServer.Storage.Writer do
   alias EbbServer.Storage.WatermarkTracker
 
   alias EbbServer.Storage.{
+    CacheTables,
     DirtyTracker,
+    EntityIndex,
     Fields,
     GroupCache,
     GsnCounter,
@@ -75,8 +77,10 @@ defmodule EbbServer.Storage.Writer do
           dirty_set: atom(),
           gsn_counter: :atomics.atomics(),
           group_members: atom(),
+          group_members_by_id: atom(),
           relationships: atom(),
           relationships_by_group: atom(),
+          relationships_by_id: atom(),
           fan_out_router: GenServer.name(),
           watermark_tracker: GenServer.name()
         }
@@ -85,8 +89,10 @@ defmodule EbbServer.Storage.Writer do
     :dirty_set,
     :gsn_counter,
     :group_members,
+    :group_members_by_id,
     :relationships,
     :relationships_by_group,
+    :relationships_by_id,
     :fan_out_router,
     :watermark_tracker
   ]
@@ -123,25 +129,32 @@ defmodule EbbServer.Storage.Writer do
       Keyword.get(
         opts,
         :group_members,
-        :persistent_term.get({GroupCache, :group_members}, :ebb_group_members)
+        CacheTables.group_members()
       )
+
+    group_members_by_id =
+      Keyword.get(opts, :group_members_by_id) ||
+        raise ArgumentError,
+              "#{__MODULE__}.init/1 requires :group_members_by_id (pass it from the supervisor that owns the cache — see Sync.Supervisor for the boot wiring)"
 
     relationships =
       Keyword.get(
         opts,
         :relationships,
-        :persistent_term.get({RelationshipCache, :relationships}, :ebb_relationships)
+        CacheTables.relationships()
       )
 
     relationships_by_group =
       Keyword.get(
         opts,
         :relationships_by_group,
-        :persistent_term.get(
-          {RelationshipCache, :relationships_by_group},
-          :ebb_relationships_by_group
-        )
+        CacheTables.relationships_by_group()
       )
+
+    relationships_by_id =
+      Keyword.get(opts, :relationships_by_id) ||
+        raise ArgumentError,
+              "#{__MODULE__}.init/1 requires :relationships_by_id (pass it from the supervisor that owns the cache — see Sync.Supervisor for the boot wiring)"
 
     fan_out_router = Keyword.get(opts, :fan_out_router, nil)
     watermark_tracker = Keyword.get(opts, :watermark_tracker, nil)
@@ -152,8 +165,10 @@ defmodule EbbServer.Storage.Writer do
        dirty_set: dirty_set,
        gsn_counter: gsn_counter,
        group_members: group_members,
+       group_members_by_id: group_members_by_id,
        relationships: relationships,
        relationships_by_group: relationships_by_group,
+       relationships_by_id: relationships_by_id,
        fan_out_router: fan_out_router,
        watermark_tracker: watermark_tracker
      }}
@@ -195,7 +210,14 @@ defmodule EbbServer.Storage.Writer do
         filtered
         |> Enum.with_index(gsn_start)
         |> Enum.flat_map(fn {action, gsn} ->
-          build_action_ops(action, gsn, rocks_name, state.relationships)
+          build_action_ops(
+            action,
+            gsn,
+            rocks_name,
+            state.relationships,
+            state.relationships_by_id,
+            state.group_members_by_id
+          )
         end)
 
       write_and_respond(ops, filtered, gsn_start, gsn_end, state, rocks_name)
@@ -284,19 +306,28 @@ defmodule EbbServer.Storage.Writer do
             field: field
           },
           relationships: state.relationships,
-          relationships_by_group: state.relationships_by_group
+          relationships_by_group: state.relationships_by_group,
+          relationships_by_id: state.relationships_by_id
         )
 
       :delete ->
         RelationshipCache.delete_relationship(
           update.subject_id,
           relationships: state.relationships,
-          relationships_by_group: state.relationships_by_group
+          relationships_by_group: state.relationships_by_group,
+          relationships_by_id: state.relationships_by_id
         )
     end
   end
 
-  defp build_action_ops(action, gsn, rocks_name, relationships) do
+  defp build_action_ops(
+         action,
+         gsn,
+         rocks_name,
+         relationships,
+         relationships_by_id,
+         group_members_by_id
+       ) do
     action_with_gsn = to_storage_format(action, gsn)
     action_etf = :erlang.term_to_binary(action_with_gsn)
 
@@ -307,7 +338,16 @@ defmodule EbbServer.Storage.Writer do
       {:put, RocksDB.cf_action_dedup(rocks_name), action.id, RocksDB.encode_gsn_key(gsn)}
     ] ++
       Enum.flat_map(action.updates, fn update ->
-        build_update_ops(action.id, update, gsn, rocks_name, relationships, intra_ctx)
+        build_update_ops(
+          action.id,
+          update,
+          gsn,
+          rocks_name,
+          relationships,
+          relationships_by_id,
+          group_members_by_id,
+          intra_ctx
+        )
       end)
   end
 
@@ -344,7 +384,16 @@ defmodule EbbServer.Storage.Writer do
     }
   end
 
-  defp build_update_ops(action_id, update, gsn, rocks_name, relationships, intra_ctx) do
+  defp build_update_ops(
+         action_id,
+         update,
+         gsn,
+         rocks_name,
+         relationships,
+         relationships_by_id,
+         group_members_by_id,
+         intra_ctx
+       ) do
     update_etf = :erlang.term_to_binary(update)
 
     [
@@ -357,13 +406,49 @@ defmodule EbbServer.Storage.Writer do
          update.subject_type,
          update.subject_id
        ), <<>>}
-    ] ++ build_group_action_index(action_id, gsn, update, rocks_name, relationships, intra_ctx)
+    ] ++
+      build_group_action_index(
+        action_id,
+        gsn,
+        update,
+        rocks_name,
+        relationships,
+        relationships_by_id,
+        group_members_by_id,
+        intra_ctx
+      )
   end
 
-  defp build_group_action_index(_action_id, _gsn, _update, _rocks_name, nil, _intra_ctx), do: []
+  defp build_group_action_index(
+         _action_id,
+         _gsn,
+         _update,
+         _rocks_name,
+         nil,
+         _relationships_by_id,
+         _group_members_by_id,
+         _intra_ctx
+       ),
+       do: []
 
-  defp build_group_action_index(action_id, gsn, update, rocks_name, relationships, intra_ctx) do
-    group_id = get_group_id_for_group_action_index(update, relationships, intra_ctx)
+  defp build_group_action_index(
+         action_id,
+         gsn,
+         update,
+         rocks_name,
+         relationships,
+         relationships_by_id,
+         group_members_by_id,
+         intra_ctx
+       ) do
+    group_id =
+      get_group_id_for_group_action_index(
+        update,
+        relationships,
+        relationships_by_id,
+        group_members_by_id,
+        intra_ctx
+      )
 
     if group_id do
       key = <<group_id::binary, gsn::unsigned-big-integer-size(64)>>
@@ -373,20 +458,17 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
-  defp get_group_id_for_group_action_index(update, relationships, intra_ctx) do
-    case update.subject_type do
-      "relationship" ->
-        source_id = Fields.get(update.data || %{}, "source_id")
-
-        if source_id do
-          Map.get(intra_ctx, source_id) ||
-            RelationshipCache.get_entity_group(source_id, relationships)
-        else
-          nil
-        end
-
-      _ ->
-        RelationshipCache.get_entity_group(update.subject_id, relationships)
-    end
+  defp get_group_id_for_group_action_index(
+         update,
+         relationships,
+         relationships_by_id,
+         group_members_by_id,
+         intra_ctx
+       ) do
+    EntityIndex.resolve_group(update.subject_type, update.subject_id,
+      relationships: relationships,
+      relationships_by_id: relationships_by_id,
+      group_members_by_id: group_members_by_id
+    ) || Map.get(intra_ctx, update.subject_id)
   end
 end

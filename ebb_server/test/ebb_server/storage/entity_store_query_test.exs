@@ -10,8 +10,10 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       dirty_set: dirty_set,
       gsn_counter: gsn_counter,
       group_members: group_members,
+      group_members_by_id: group_members_by_id,
       relationships: relationships,
-      relationships_by_group: relationships_by_group
+      relationships_by_group: relationships_by_group,
+      relationships_by_id: relationships_by_id
     } = start_isolated_cache()
 
     %{name: rocks_name, dir: rocks_dir} = start_rocks()
@@ -23,8 +25,10 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
         dirty_set: dirty_set,
         gsn_counter: gsn_counter,
         group_members: group_members,
+        group_members_by_id: group_members_by_id,
         relationships: relationships,
-        relationships_by_group: relationships_by_group
+        relationships_by_group: relationships_by_group,
+        relationships_by_id: relationships_by_id
       })
 
     %{
@@ -33,8 +37,10 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       writer_name: writer_name,
       dirty_set: dirty_set,
       group_members: group_members,
+      group_members_by_id: group_members_by_id,
       relationships: relationships,
-      relationships_by_group: relationships_by_group
+      relationships_by_group: relationships_by_group,
+      relationships_by_id: relationships_by_id
     }
   end
 
@@ -155,8 +161,10 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       dirty_set: dirty_set,
       gsn_counter: gsn_counter,
       group_members: gm_table,
+      group_members_by_id: gm_by_id_table,
       relationships: rel_table,
-      relationships_by_group: rbg_table
+      relationships_by_group: rbg_table,
+      relationships_by_id: rbi_table
     } = start_isolated_cache()
 
     %{name: rocks_name, dir: rocks_dir} = start_rocks()
@@ -168,8 +176,10 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
         dirty_set: dirty_set,
         gsn_counter: gsn_counter,
         group_members: gm_table,
+        group_members_by_id: gm_by_id_table,
         relationships: rel_table,
-        relationships_by_group: rbg_table
+        relationships_by_group: rbg_table,
+        relationships_by_id: rbi_table
       })
 
     %{

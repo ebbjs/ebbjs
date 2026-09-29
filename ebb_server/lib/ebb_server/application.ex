@@ -3,6 +3,8 @@ defmodule EbbServer.Application do
 
   use Application
 
+  alias EbbServer.Storage.CacheTables
+
   @impl true
   def start(_type, _args) do
     data_dir = runtime_data_dir()
@@ -19,7 +21,15 @@ defmodule EbbServer.Application do
       # wasn't switched to chunked mode first). The Writer also needs the
       # FanOutRouter's registered name so it can notify it of each
       # committed batch; without that, SSE subscribers never see writes.
+      # The cache table names are resolved through CacheTables, which
+      # reads the :persistent_term entries populated by Storage.Supervisor
+      # during boot. Per-call publication keeps a stale :persistent_term
+      # from reaching a later writer.
       {EbbServer.Storage.Writer,
+       group_members: CacheTables.group_members(),
+       group_members_by_id: CacheTables.group_members_by_id(),
+       relationships: CacheTables.relationships(),
+       relationships_by_id: CacheTables.relationships_by_id(),
        watermark_tracker: EbbServer.Storage.WatermarkTracker,
        fan_out_router: EbbServer.Sync.FanOutRouter},
       {Bandit, plug: EbbServer.Sync.Router, port: port}

@@ -107,7 +107,14 @@ defmodule EbbServer.Integration.StorageCase do
 
     ensure_started(EbbServer.Sync.Supervisor, [])
     ensure_started(EbbServer.Sync.GroupDynamicSupervisor, [])
-    ensure_started(EbbServer.Storage.Writer, name: EbbServer.Storage.Writer)
+
+    ensure_started(EbbServer.Storage.Writer,
+      name: EbbServer.Storage.Writer,
+      group_members: EbbServer.Storage.CacheTables.group_members(),
+      group_members_by_id: EbbServer.Storage.CacheTables.group_members_by_id(),
+      relationships: EbbServer.Storage.CacheTables.relationships(),
+      relationships_by_id: EbbServer.Storage.CacheTables.relationships_by_id()
+    )
 
     %{tmp_dir: tmp_dir}
   end

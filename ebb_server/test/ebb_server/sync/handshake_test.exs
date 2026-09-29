@@ -34,7 +34,13 @@ defmodule EbbServer.Sync.HandshakeTest do
       {:error, {:already_started, _pid}} -> :ok
     end
 
-    case Writer.start_link(name: Writer) do
+    case Writer.start_link(
+           name: Writer,
+           group_members: EbbServer.Storage.CacheTables.group_members(),
+           group_members_by_id: EbbServer.Storage.CacheTables.group_members_by_id(),
+           relationships: EbbServer.Storage.CacheTables.relationships(),
+           relationships_by_id: EbbServer.Storage.CacheTables.relationships_by_id()
+         ) do
       {:ok, _pid} -> :ok
       {:error, {:already_started, _pid}} -> :ok
     end

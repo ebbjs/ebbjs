@@ -39,8 +39,10 @@ defmodule EbbServer.Storage.WriterTest do
       dirty_set: dirty_set,
       gsn_counter: gsn_counter,
       group_members: group_members,
+      group_members_by_id: group_members_by_id,
       relationships: relationships,
-      relationships_by_group: relationships_by_group
+      relationships_by_group: relationships_by_group,
+      relationships_by_id: relationships_by_id
     } = start_isolated_cache()
 
     %{name: rocks_name, dir: rocks_dir} = start_rocks()
@@ -51,8 +53,10 @@ defmodule EbbServer.Storage.WriterTest do
         dirty_set: dirty_set,
         gsn_counter: gsn_counter,
         group_members: group_members,
+        group_members_by_id: group_members_by_id,
         relationships: relationships,
-        relationships_by_group: relationships_by_group
+        relationships_by_group: relationships_by_group,
+        relationships_by_id: relationships_by_id
       })
 
     %{
@@ -62,8 +66,10 @@ defmodule EbbServer.Storage.WriterTest do
       dirty_set: dirty_set,
       gsn_counter: gsn_counter,
       group_members: group_members,
+      group_members_by_id: group_members_by_id,
       relationships: relationships,
-      relationships_by_group: relationships_by_group
+      relationships_by_group: relationships_by_group,
+      relationships_by_id: relationships_by_id
     }
   end
 
@@ -193,7 +199,12 @@ defmodule EbbServer.Storage.WriterTest do
   describe "durability" do
     test "data survives Writer and RocksDB restart", %{
       dirty_set: dirty_set,
-      gsn_counter: gsn_counter
+      gsn_counter: gsn_counter,
+      group_members: group_members,
+      group_members_by_id: group_members_by_id,
+      relationships: relationships,
+      relationships_by_group: relationships_by_group,
+      relationships_by_id: relationships_by_id
     } do
       dir =
         tmp_dir(%{module: __MODULE__, test: "durability_#{System.unique_integer([:positive])}"})
@@ -210,7 +221,12 @@ defmodule EbbServer.Storage.WriterTest do
           name: writer_name1,
           rocks_name: rocks_name1,
           dirty_set: dirty_set,
-          gsn_counter: gsn_counter
+          gsn_counter: gsn_counter,
+          group_members: group_members,
+          group_members_by_id: group_members_by_id,
+          relationships: relationships,
+          relationships_by_group: relationships_by_group,
+          relationships_by_id: relationships_by_id
         )
 
       Writer.write_actions([action], writer_name1)
@@ -228,7 +244,12 @@ defmodule EbbServer.Storage.WriterTest do
           name: writer_name2,
           rocks_name: rocks_name2,
           dirty_set: dirty_set,
-          gsn_counter: gsn_counter
+          gsn_counter: gsn_counter,
+          group_members: group_members,
+          group_members_by_id: group_members_by_id,
+          relationships: relationships,
+          relationships_by_group: relationships_by_group,
+          relationships_by_id: relationships_by_id
         )
 
       on_exit(fn ->

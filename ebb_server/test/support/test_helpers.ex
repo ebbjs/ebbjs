@@ -93,16 +93,20 @@ defmodule EbbServer.TestHelpers do
     - dirty_set: ETS set name for dirty tracking
     - gsn_counter: :atomics reference
     - group_members: ETS table name
+    - group_members_by_id: ETS table name
     - relationships: ETS table name
     - relationships_by_group: ETS table name
+    - relationships_by_id: ETS table name
   """
   def start_isolated_cache do
     unique_id = System.unique_integer([:positive])
     dirty_set_name = :"ebb_dirty_#{unique_id}"
     gsn_counter_name = :"ebb_gsn_#{unique_id}"
     gm_table = :"ebb_gm_#{unique_id}"
+    gm_by_id_table = :"ebb_gm_by_id_#{unique_id}"
     rel_table = :"ebb_rel_#{unique_id}"
     rbg_table = :"ebb_rbg_#{unique_id}"
+    rbi_table = :"ebb_rbi_#{unique_id}"
     dt_name = :"dt_#{unique_id}"
     gc_name = :"gc_#{unique_id}"
     rc_name = :"rc_#{unique_id}"
@@ -113,17 +117,22 @@ defmodule EbbServer.TestHelpers do
     :persistent_term.put(gsn_counter_name, counter)
     :persistent_term.put({DirtyTracker, :dirty_set}, dirty_set_name)
     :persistent_term.put({GroupCache, :group_members}, gm_table)
+    :persistent_term.put({GroupCache, :group_members_by_id}, gm_by_id_table)
     :persistent_term.put({RelationshipCache, :relationships}, rel_table)
     :persistent_term.put({RelationshipCache, :relationships_by_group}, rbg_table)
+    :persistent_term.put({RelationshipCache, :relationships_by_id}, rbi_table)
 
     {:ok, _pid_dt} = DirtyTracker.start_link(name: dt_name, dirty_set: dirty_set_name)
-    {:ok, _pid_gc} = GroupCache.start_link(name: gc_name, table: gm_table)
+
+    {:ok, _pid_gc} =
+      GroupCache.start_link(name: gc_name, table: gm_table, group_members_by_id: gm_by_id_table)
 
     {:ok, _pid_rc} =
       RelationshipCache.start_link(
         name: rc_name,
         relationships: rel_table,
-        relationships_by_group: rbg_table
+        relationships_by_group: rbg_table,
+        relationships_by_id: rbi_table
       )
 
     {:ok, _pid_wt} = WatermarkTracker.start_link(name: wt_name, table: wt_table, initial_gsn: 0)
@@ -136,6 +145,7 @@ defmodule EbbServer.TestHelpers do
       :persistent_term.erase(gsn_counter_name)
       :persistent_term.erase({DirtyTracker, :dirty_set})
       :persistent_term.erase({GroupCache, :group_members})
+      :persistent_term.erase({GroupCache, :group_members_by_id})
       :persistent_term.erase({RelationshipCache, :relationships})
       :persistent_term.erase({RelationshipCache, :relationships_by_group})
     end)
@@ -144,8 +154,10 @@ defmodule EbbServer.TestHelpers do
       dirty_set: dirty_set_name,
       gsn_counter: counter,
       group_members: gm_table,
+      group_members_by_id: gm_by_id_table,
       relationships: rel_table,
       relationships_by_group: rbg_table,
+      relationships_by_id: rbi_table,
       watermark_tracker: wt_name
     }
   end
@@ -209,8 +221,29 @@ defmodule EbbServer.TestHelpers do
     - name: Writer process name
     - pid: Writer process ID
   """
-  def start_writer(opts) do
+  def start_writer(opts) when is_map(opts) do
     name = :"writer_#{System.unique_integer([:positive])}"
+
+    # A half-initialized cache should surface as a setup-time error,
+    # not a crash on the writer's first lookup.
+    required_keys = [
+      :rocks_name,
+      :dirty_set,
+      :gsn_counter,
+      :group_members,
+      :group_members_by_id,
+      :relationships,
+      :relationships_by_group,
+      :relationships_by_id
+    ]
+
+    missing = Enum.reject(required_keys, fn key -> Map.get(opts, key) end)
+
+    unless missing == [] do
+      raise ArgumentError,
+            "start_writer/1 missing required opts: #{inspect(missing)}. " <>
+              "Get them from start_isolated_cache/0."
+    end
 
     {:ok, pid} =
       Writer.start_link(
@@ -218,9 +251,11 @@ defmodule EbbServer.TestHelpers do
         rocks_name: opts.rocks_name,
         dirty_set: opts.dirty_set,
         gsn_counter: opts.gsn_counter,
-        group_members: opts[:group_members],
-        relationships: opts[:relationships],
-        relationships_by_group: opts[:relationships_by_group],
+        group_members: opts.group_members,
+        group_members_by_id: opts.group_members_by_id,
+        relationships: opts.relationships,
+        relationships_by_group: opts.relationships_by_group,
+        relationships_by_id: opts.relationships_by_id,
         watermark_tracker: opts[:watermark_tracker],
         fan_out_router: opts[:fan_out_router]
       )
@@ -235,26 +270,33 @@ defmodule EbbServer.TestHelpers do
   @doc """
   Creates isolated ETS tables for authorization testing.
 
-  Creates unique group_members, relationships, and relationships_by_group tables
-  and registers cleanup callbacks.
+  Creates unique group_members, group_members_by_id, relationships,
+  relationships_by_group, and relationships_by_id tables and registers
+  cleanup callbacks.
 
   Returns a map with:
     - group_members: ETS table name
+    - group_members_by_id: ETS table name
     - relationships: ETS table name
     - relationships_by_group: ETS table name
+    - relationships_by_id: ETS table name
   """
   def create_isolated_tables do
     uid = System.unique_integer([:positive])
     gm = :"test_gm_#{uid}"
+    gm_by_id = :"test_gm_by_id_#{uid}"
     rel = :"test_rel_#{uid}"
     rbg = :"test_rbg_#{uid}"
+    rbi = :"test_rbi_#{uid}"
 
     :ets.new(gm, [:bag, :public, :named_table])
+    :ets.new(gm_by_id, [:set, :public, :named_table])
     :ets.new(rel, [:set, :public, :named_table])
     :ets.new(rbg, [:bag, :public, :named_table])
+    :ets.new(rbi, [:set, :public, :named_table])
 
     on_exit(fn ->
-      for t <- [gm, rel, rbg] do
+      for t <- [gm, gm_by_id, rel, rbg, rbi] do
         try do
           :ets.delete(t)
         rescue
@@ -263,7 +305,13 @@ defmodule EbbServer.TestHelpers do
       end
     end)
 
-    %{group_members: gm, relationships: rel, relationships_by_group: rbg}
+    %{
+      group_members: gm,
+      group_members_by_id: gm_by_id,
+      relationships: rel,
+      relationships_by_group: rbg,
+      relationships_by_id: rbi
+    }
   end
 
   @doc """
@@ -274,8 +322,10 @@ defmodule EbbServer.TestHelpers do
   def auth_opts(tables) do
     [
       group_members: tables.group_members,
+      group_members_by_id: tables.group_members_by_id,
       relationships: tables.relationships,
-      relationships_by_group: tables.relationships_by_group
+      relationships_by_group: tables.relationships_by_group,
+      relationships_by_id: tables.relationships_by_id
     ]
   end
 

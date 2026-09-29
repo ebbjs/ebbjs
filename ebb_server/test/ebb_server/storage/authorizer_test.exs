@@ -7,8 +7,10 @@ defmodule EbbServer.Storage.AuthorizerTest do
   defp auth_context(tables) do
     AuthorizationContext.build(
       group_members: tables.group_members,
+      group_members_by_id: tables.group_members_by_id,
       relationships: tables.relationships,
-      relationships_by_group: tables.relationships_by_group
+      relationships_by_group: tables.relationships_by_group,
+      relationships_by_id: tables.relationships_by_id
     )
   end
 
@@ -292,6 +294,172 @@ defmodule EbbServer.Storage.AuthorizerTest do
       ctx = auth_context(tables)
 
       assert Authorizer.authorize([], "a_1", ctx) == :ok
+    end
+  end
+
+  # System-entity deletes arrive on the wire with `data: nil` (the data
+  # fields are dropped); the authorizer must recover the owning group
+  # from the by-id index tables rather than from the wire envelope.
+  describe "authorize/3 - system-entity delete with data:nil" do
+    test "relationship delete resolves target_id from cache after a put" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      :ets.insert(
+        tables.group_members,
+        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["relationship.update"]}}
+      )
+
+      :ets.insert(
+        tables.relationships_by_id,
+        {"rel_1",
+         %{
+           id: "rel_1",
+           source_id: "todo_1",
+           target_id: "g_1",
+           type: "todo",
+           field: "group"
+         }}
+      )
+
+      action = %{
+        id: "act_1",
+        actor_id: "a_1",
+        hlc: generate_hlc(),
+        updates: [
+          %{
+            id: "upd_del",
+            subject_id: "rel_1",
+            subject_type: "relationship",
+            method: :delete,
+            data: nil
+          }
+        ]
+      }
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+
+    test "relationship delete rejects actor not a member of the resolved group" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      :ets.insert(
+        tables.relationships_by_id,
+        {"rel_1",
+         %{
+           id: "rel_1",
+           source_id: "todo_1",
+           target_id: "g_1",
+           type: "todo",
+           field: "group"
+         }}
+      )
+
+      action = %{
+        id: "act_1",
+        actor_id: "a_1",
+        hlc: generate_hlc(),
+        updates: [
+          %{
+            id: "upd_del",
+            subject_id: "rel_1",
+            subject_type: "relationship",
+            method: :delete,
+            data: nil
+          }
+        ]
+      }
+
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+    end
+
+    test "relationship delete rejects when the relationship is not in cache" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      action = %{
+        id: "act_1",
+        actor_id: "a_1",
+        hlc: generate_hlc(),
+        updates: [
+          %{
+            id: "upd_del",
+            subject_id: "rel_unknown",
+            subject_type: "relationship",
+            method: :delete,
+            data: nil
+          }
+        ]
+      }
+
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+    end
+
+    test "groupMember delete resolves group_id from cache after a put" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      :ets.insert(
+        tables.group_members,
+        {"a_1", %{id: "gm_2", group_id: "g_1", permissions: ["group.read"]}}
+      )
+
+      :ets.insert(
+        tables.group_members_by_id,
+        {"gm_1", %{id: "gm_1", actor_id: "a_2", group_id: "g_1", permissions: ["group.read"]}}
+      )
+
+      action = %{
+        id: "act_1",
+        actor_id: "a_1",
+        hlc: generate_hlc(),
+        updates: [
+          %{
+            id: "upd_del",
+            subject_id: "gm_1",
+            subject_type: "groupMember",
+            method: :delete,
+            data: nil
+          }
+        ]
+      }
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+
+    test "relationship put with explicit data.target_id still wins over cache" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      :ets.insert(
+        tables.group_members,
+        {"a_1", %{id: "gm_1", group_id: "g_explicit", permissions: ["relationship.update"]}}
+      )
+
+      action = %{
+        id: "act_1",
+        actor_id: "a_1",
+        hlc: generate_hlc(),
+        updates: [
+          %{
+            id: "upd_put",
+            subject_id: "rel_1",
+            subject_type: "relationship",
+            method: :put,
+            data: %{
+              "fields" => %{
+                "source_id" => %{"value" => "todo_1"},
+                "target_id" => %{"value" => "g_explicit"},
+                "type" => %{"value" => "todo"},
+                "field" => %{"value" => "group"}
+              }
+            }
+          }
+        ]
+      }
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
     end
   end
 end

@@ -8,8 +8,9 @@ defmodule EbbServer.Storage.AuthorizationContextTest do
       ctx = AuthorizationContext.build([])
 
       assert ctx.group_members_table == :ebb_group_members
+      assert ctx.group_members_by_id_table == :ebb_group_members_by_id
       assert ctx.relationships_table == :ebb_relationships
-      assert ctx.relationships_by_group_table == :ebb_relationships_by_group
+      assert ctx.relationships_by_id_table == :ebb_relationships_by_id
       assert ctx.now_ms == nil
     end
 
@@ -17,13 +18,15 @@ defmodule EbbServer.Storage.AuthorizationContextTest do
       ctx =
         AuthorizationContext.build(
           group_members: :custom_gm,
+          group_members_by_id: :custom_gm_by_id,
           relationships: :custom_rel,
-          relationships_by_group: :custom_rbg
+          relationships_by_id: :custom_rbi
         )
 
       assert ctx.group_members_table == :custom_gm
+      assert ctx.group_members_by_id_table == :custom_gm_by_id
       assert ctx.relationships_table == :custom_rel
-      assert ctx.relationships_by_group_table == :custom_rbg
+      assert ctx.relationships_by_id_table == :custom_rbi
     end
 
     test "accepts now_ms for time-sensitive tests" do
@@ -53,8 +56,9 @@ defmodule EbbServer.Storage.AuthorizationContextTest do
       ctx = AuthorizationContext.build()
 
       assert Map.has_key?(ctx, :group_members_table)
+      assert Map.has_key?(ctx, :group_members_by_id_table)
       assert Map.has_key?(ctx, :relationships_table)
-      assert Map.has_key?(ctx, :relationships_by_group_table)
+      assert Map.has_key?(ctx, :relationships_by_id_table)
       assert Map.has_key?(ctx, :now_ms)
     end
   end
