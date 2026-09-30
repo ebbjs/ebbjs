@@ -17,7 +17,31 @@ defmodule EbbServer.Storage.CacheTablesTest do
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.CacheTables
+  alias EbbServer.Storage.{CacheTables, GroupCache, RelationshipCache}
+
+  # Erase the published keys before any test in this module runs so a
+  # prior test's leftover `:persistent_term` (e.g., from
+  # `entity_index_test.exs`, which starts RelationshipCache/GroupCache
+  # in-process and only cleans up the ETS tables) doesn't make the
+  # "no publication yet" assertions fail. The test was order-dependent
+  # on `mix test` ExUnit scheduling — see #197 follow-up.
+  setup_all do
+    for {module, key} <- [
+          {RelationshipCache, :relationships},
+          {RelationshipCache, :relationships_by_group},
+          {RelationshipCache, :relationships_by_id},
+          {GroupCache, :group_members},
+          {GroupCache, :group_members_by_id}
+        ] do
+      try do
+        :persistent_term.erase({module, key})
+      catch
+        _, _ -> :ok
+      end
+    end
+
+    :ok
+  end
 
   # Each test publishes a unique table name, then erases on exit so
   # parallel or subsequent tests see the canonical default rather than
