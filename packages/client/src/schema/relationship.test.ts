@@ -256,28 +256,22 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       })(),
     });
 
+    // One-cardinality: no entityUpdate; the FK lives on the
+    // Relationship Update, not the source's data fields.
     const result = client.buildRelationshipWrite({
       source: todo,
       target: list,
       as: "list",
-      entityUpdate: buildEntityUpdate("todo_1"),
+      sourceId: "todo_1",
       targetId: "list_1",
     });
 
-    expect(result.entityUpdate.subject_id).toBe("todo_1");
-    expect(result.entityUpdate.subject_type).toBe("todo");
-    // The `list` field was stripped from the entity update — it
-    // lives on the relationship update, not the entity update.
-    expect("list" in (result.entityUpdate.data?.fields ?? {})).toBe(false);
-    expect(result.entityUpdate.data?.fields.title.value).toBe("Ship it");
-
-    const relUpdates = Array.isArray(result.relationshipUpdate)
-      ? result.relationshipUpdate
-      : [result.relationshipUpdate];
-    expect(relUpdates).toHaveLength(1);
-    const rel = relUpdates[0]!;
+    expect(result.entityUpdate).toBeUndefined();
+    expect(Array.isArray(result.relationshipUpdate)).toBe(false);
+    const rel = result.relationshipUpdate as Update;
     expect(rel.method).toBe("put");
     expect(rel.subject_type).toBe("relationship");
+    expect(rel.data?.fields.source_id.value).toBe("todo_1");
     expect(rel.data?.fields.target_id.value).toBe("list_1");
     expect(rel.data?.fields.field.value).toBe("list");
     expect(rel.data?.fields.type.value).toBe("todo");
@@ -300,15 +294,13 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       source: todo,
       target: list,
       as: "list",
-      entityUpdate: buildEntityUpdate("todo_1"),
+      sourceId: "todo_1",
       targetId: null,
     });
 
-    const relUpdates = Array.isArray(result.relationshipUpdate)
-      ? result.relationshipUpdate
-      : [result.relationshipUpdate];
-    expect(relUpdates).toHaveLength(1);
-    expect(relUpdates[0]!.method).toBe("delete");
+    expect(result.entityUpdate).toBeUndefined();
+    const rel = result.relationshipUpdate as Update;
+    expect(rel.method).toBe("delete");
   });
 
   it("normalizes an entity-shape pointer to its .id", () => {
@@ -328,20 +320,16 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       source: todo,
       target: list,
       as: "list",
-      entityUpdate: buildEntityUpdate("todo_1"),
+      sourceId: "todo_1",
       targetId: { id: "list_99" },
     });
-    const relUpdates = Array.isArray(result.relationshipUpdate)
-      ? result.relationshipUpdate
-      : [result.relationshipUpdate];
-    expect(relUpdates[0]!.data?.fields.target_id.value).toBe("list_99");
+    const rel = result.relationshipUpdate as Update;
+    expect(rel.data?.fields.target_id.value).toBe("list_99");
   });
 
   it("rejects a non-id, non-entity pointer value", () => {
-    // The validate-before-encode stance rejects anything that isn't
-    // a string id or an entity-shape object. The unit-level check
-    // lives in `normalizePointer` (covered above); here we pin that
-    // buildRelationshipWrite propagates the same error type.
+    // The unit-level check lives in `normalizePointer`; here we pin
+    // that `buildRelationshipWrite` propagates the same error.
     const client = createClient({
       serverUrl: "http://localhost:4000",
       actorId: "actor_1",
@@ -359,7 +347,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
         source: todo,
         target: list,
         as: "list",
-        entityUpdate: buildEntityUpdate("todo_1"),
+        sourceId: "todo_1",
         targetId: 42 as unknown as string,
       }),
     ).toThrow();
@@ -384,7 +372,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
         source: todo,
         target: list,
         as: "list",
-        entityUpdate: buildEntityUpdate("todo_1"),
+        sourceId: "todo_1",
         targetId: "list_1",
       });
     } catch (err) {
@@ -417,7 +405,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
         source: todo,
         target: list,
         as: "list",
-        entityUpdate: buildEntityUpdate("todo_1"),
+        sourceId: "todo_1",
         targetId: "list_1",
       }),
     ).not.toThrow();
@@ -503,7 +491,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
         source: todo,
         target: list,
         as: "list",
-        entityUpdate: buildEntityUpdate("todo_1"),
+        sourceId: "todo_1",
         targetId: "list_1",
       }),
     ).not.toThrow();
@@ -549,7 +537,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
         source: todo,
         target: list,
         as: "list",
-        entityUpdate: buildEntityUpdate("todo_1"),
+        sourceId: "todo_1",
         targetId: "list_1",
       }),
     ).toThrow(EntityValidationError);
@@ -593,7 +581,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
         source: todo,
         target: list,
         as: "list",
-        entityUpdate: buildEntityUpdate("todo_1"),
+        sourceId: "todo_1",
         targetId: "list_1",
       }),
     ).not.toThrow();
