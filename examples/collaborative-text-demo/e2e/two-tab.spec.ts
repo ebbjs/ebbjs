@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { isolateTestGroup } from "./helpers";
 
 /**
  * Two-tab happy path: open the demo in two browser contexts under
@@ -48,6 +49,8 @@ test.describe("two-tab collaborative editing", () => {
   test("text typed in tab 1 appears in tab 2 within a few seconds", async ({ browser }) => {
     const drew = await browser.newContext();
     const alice = await browser.newContext();
+    const groupId = await isolateTestGroup(drew);
+    await isolateTestGroup(alice, groupId);
 
     const drewPage = await drew.newPage();
     const alicePage = await alice.newPage();

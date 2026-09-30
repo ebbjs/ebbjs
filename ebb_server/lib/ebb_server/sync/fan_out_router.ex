@@ -11,7 +11,7 @@ defmodule EbbServer.Sync.FanOutRouter do
   1. Waits until the committed watermark from `WatermarkTracker` is past
      the batch's end.
   2. Reads the committed Actions from RocksDB.
-  3. Resolves the affected groups (per-Action, via RelationshipCache).
+  3. Resolves the affected groups (per-Action, via `EntityIndex`).
   4. Dispatches each Action to the right GroupServer pid.
 
   When multi-Writer pipelining ships (#130 references this path), the
@@ -40,7 +40,7 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   use GenServer
 
-  alias EbbServer.Storage.{RelationshipCache, RocksDB, WatermarkTracker}
+  alias EbbServer.Storage.{CacheTables, EntityIndex, RelationshipCache, RocksDB, WatermarkTracker}
   alias EbbServer.Sync.{GroupDynamicSupervisor, GroupServer}
 
   @type t :: %__MODULE__{
@@ -231,17 +231,24 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   @doc """
-  Pushes a single range to subscribers regardless of contiguity.
+  Resolves the set of group ids an Action should fan out to.
 
-  Used when a new SSE subscriber joins: backfill them with everything
-  in [from, watermark] so they're caught up. Avoids the contiguity
-  check that would otherwise reject actions whose GSN exceeds the
-  global `last_pushed_gsn` (e.g., the very first action committed
-  after the system starts).
+  Dispatches each Update's `(subject_type, subject_id)` pair through
+  `EntityIndex.resolve_group/3` — see that module for the per-type
+  resolution rules. Updates whose entity is missing from the index
+  are silently dropped; the client catches them up via
+  `/sync/groups/:id?offset=` instead.
+
+  Public for unit testing; not part of the GenServer contract.
   """
-  @spec backfill_range(non_neg_integer(), non_neg_integer()) :: :ok
-  def backfill_range(from_gsn, to_gsn) when from_gsn <= to_gsn do
-    push_gsn_range(from_gsn, to_gsn)
+  @spec resolve_group_ids(map(), keyword()) :: [String.t()]
+  def resolve_group_ids(action, opts) do
+    action["updates"]
+    |> Enum.map(fn update ->
+      EntityIndex.resolve_group(update["subject_type"], update["subject_id"], opts)
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
   end
 
   defp push_gsn_range(from_gsn, to_gsn) do
@@ -249,19 +256,20 @@ defmodule EbbServer.Sync.FanOutRouter do
     from_key = RocksDB.encode_gsn_key(from_gsn)
     to_key = RocksDB.encode_gsn_key(to_gsn + 1)
 
+    resolve_opts = [
+      relationships: CacheTables.relationships(),
+      relationships_by_id: CacheTables.relationships_by_id(),
+      group_members_by_id: CacheTables.group_members_by_id()
+    ]
+
     RocksDB.range_iterator(cf, from_key, to_key)
     |> Stream.map(fn {_key, value} -> :erlang.binary_to_term(value, [:safe]) end)
-    |> Stream.each(&dispatch_to_groups/1)
+    |> Stream.each(&dispatch_to_groups(&1, resolve_opts))
     |> Stream.run()
   end
 
-  defp dispatch_to_groups(action) do
-    group_ids =
-      action["updates"]
-      |> Enum.map(& &1["subject_id"])
-      |> Enum.map(&RelationshipCache.get_entity_group/1)
-      |> Enum.reject(&is_nil/1)
-      |> Enum.uniq()
+  defp dispatch_to_groups(action, resolve_opts) do
+    group_ids = resolve_group_ids(action, resolve_opts)
 
     for group_id <- group_ids do
       case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do

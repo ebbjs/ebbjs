@@ -1,4 +1,4 @@
-import { test, expect, waitForLive } from "./helpers";
+import { test, expect, isolateTestGroup, waitForLive } from "./helpers";
 
 /**
  * Actor-picker UI — switching the actor identity via the in-app
@@ -44,6 +44,10 @@ test.describe("actor picker UI", () => {
   test("switching actor via picker re-bootstraps; new peer receives edits", async ({ browser }) => {
     // Tab A: open as drew, then switch to alice via the picker.
     const tabACtx = await browser.newContext();
+    const peerCtx = await browser.newContext();
+    const groupId = await isolateTestGroup(tabACtx);
+    await isolateTestGroup(peerCtx, groupId);
+
     const tabAPage = await tabACtx.newPage();
     await tabAPage.goto("/?actor=drew");
     await waitForLive(tabAPage);
@@ -68,7 +72,6 @@ test.describe("actor picker UI", () => {
 
     // Open a fresh peer tab as alice (separate context = separate
     // cookies / SSE state, simulating a second user opening the URL).
-    const peerCtx = await browser.newContext();
     const peerPage = await peerCtx.newPage();
     await peerPage.goto("/?actor=alice");
     await waitForLive(peerPage);

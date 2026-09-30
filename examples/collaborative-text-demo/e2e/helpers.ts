@@ -20,21 +20,30 @@ import { test, expect, type Browser, type BrowserContext, type Page } from "@pla
  * Boot the demo in two browser contexts under `?actor=<first>` and
  * `?actor=<second>` and wait for both to reach the "live" badge.
  *
+ * Each call isolates the test to a fresh group id (see
+ * `isolateTestGroup/2`) so the two tabs share a doc without leaking
+ * state from prior specs under `workers: 1`. Pass an explicit
+ * `groupId` to share one across nested helpers within a test.
+ *
  * Returns the contexts and pages so callers can drive the scenario.
  * The contexts are not auto-closed; callers must close them (or let
  * the test fixture close them).
  */
 export async function openTwoActorTabs(
   browser: Browser,
-  opts: { first: string; second: string },
+  opts: { first: string; second: string; groupId?: string },
 ): Promise<{
   firstCtx: BrowserContext;
   secondCtx: BrowserContext;
   firstPage: Page;
   secondPage: Page;
+  groupId: string;
 }> {
   const firstCtx = await browser.newContext();
   const secondCtx = await browser.newContext();
+  const groupId = await isolateTestGroup(firstCtx, opts.groupId);
+  await isolateTestGroup(secondCtx, groupId);
+
   const firstPage = await firstCtx.newPage();
   const secondPage = await secondCtx.newPage();
 
@@ -44,7 +53,7 @@ export async function openTwoActorTabs(
   await waitForLive(firstPage);
   await waitForLive(secondPage);
 
-  return { firstCtx, secondCtx, firstPage, secondPage };
+  return { firstCtx, secondCtx, firstPage, secondPage, groupId };
 }
 
 /**
@@ -87,6 +96,41 @@ export async function applyTestConfig(
   await context.addInitScript((cfg) => {
     (window as unknown as { __EBB_DEMO_TEST_CONFIG__?: unknown }).__EBB_DEMO_TEST_CONFIG__ = cfg;
   }, config);
+}
+
+/**
+ * Build a fresh, unique group id for a Playwright spec invocation.
+ *
+ * Each call returns a different id so tests that share the server's
+ * action log under `workers: 1` don't cross-contaminate. The id is
+ * scoped to a single test run via a random suffix; reusing one
+ * across runs would defeat the purpose.
+ *
+ * Paired with `isolateTestGroup/2` below — most specs only need
+ * `isolateTestGroup(context)` which combines this with `applyTestConfig`.
+ */
+export function freshGroupId(): string {
+  const suffix = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  return `grp_test_${suffix}`;
+}
+
+/**
+ * Seed the demo with a fresh, isolated group for the given context.
+ *
+ * The bootstrap path reads `__EBB_DEMO_TEST_CONFIG__.groupId` and
+ * seeds/joins that group instead of the shared `grp_demo`. Two tabs
+ * in the same test invocation that call this with the same id end
+ * up in the same group and see each other's writes; tabs from a
+ * prior test run stay in their own groups.
+ *
+ * Returns the id so callers can echo it into assertions or names.
+ */
+export async function isolateTestGroup(
+  context: BrowserContext,
+  groupId: string = freshGroupId(),
+): Promise<string> {
+  await applyTestConfig(context, { groupId });
+  return groupId;
 }
 
 /**

@@ -5,7 +5,7 @@
  */
 
 import { createClient, type Action, type SyncClient } from "@ebbjs/client";
-import { addMember, buildDemoSeed, seed } from "./seed";
+import { addMember, buildDemoSeed, DEMO_GROUP_ID, deriveSeedIds, seed } from "./seed";
 
 /**
  * Shape of `window.__EBB_DEMO_TEST_CONFIG__` — opt-in test seams read
@@ -18,6 +18,9 @@ import { addMember, buildDemoSeed, seed } from "./seed";
  *   `window.__EBB_DEMO_TEST_STATE__` so the conflict-surfacing e2e
  *   can read run ids and dispatch a pinned-HLC `localExtend` without
  *   poking through React internals.
+ * - `groupId` swaps the seed group for an isolated one so each Playwright
+ *   spec gets its own `cf_actions` namespace (see #197). When set,
+ *   `bootstrap` seeds `deriveSeedIds(groupId)` and joins that group.
  *
  * Adding new test seams: prefer reading from this object so the
  * surface stays auditable in one place.
@@ -30,6 +33,13 @@ export interface DemoTestConfig {
    * through React internals.
    */
   exposeState?: boolean;
+  /**
+   * Override the demo's seed group id. Each Playwright spec that sets
+   * this gets a fresh group (with its own member / relationship / doc)
+   * so actions from prior specs don't leak into the next via catchUp.
+   * See #197 for the latent bug this isolates.
+   */
+  groupId?: string;
 }
 
 declare global {
@@ -58,6 +68,15 @@ declare global {
 export interface BootstrapResult {
   client: SyncClient;
   groupIds: readonly string[];
+  /**
+   * The group id the demo's doc belongs to. Mirrors `groupIds[0]`
+   * in the default config but is the isolated `groupId` test config
+   * set when present. Callers pass it to the editor and conflict
+   * panel so they don't have to hardcode `DEMO_GROUP_ID`.
+   */
+  docGroupId: string;
+  /** The doc entity id derived from the seeded group. */
+  docId: string;
   /** True if we ran the seed call (group may or may not be new). */
   didSeed: boolean;
   /**
@@ -86,6 +105,15 @@ export async function bootstrap(opts: {
   const { serverUrl, actorId } = opts;
   const ensureSeeded = opts.ensureSeeded ?? true;
 
+  // `__EBB_DEMO_TEST_CONFIG__.groupId` lets a Playwright spec seed an
+  // isolated group instead of the shared `grp_demo`. See #197 — under
+  // `workers: 1` the spec's `cf_actions` would otherwise carry the
+  // previous spec's data into its catchUp replay.
+  const testConfig = typeof window !== "undefined" ? window.__EBB_DEMO_TEST_CONFIG__ : undefined;
+  const seedGroupId = testConfig?.groupId;
+  const fallbackGroupId = seedGroupId ?? DEMO_GROUP_ID;
+  const { docId } = deriveSeedIds(fallbackGroupId);
+
   const client = createClient({
     serverUrl,
     actorId,
@@ -95,7 +123,7 @@ export async function bootstrap(opts: {
   let didSeed = false;
   if (ensureSeeded) {
     try {
-      await seed(serverUrl, "demo-seeder", buildDemoSeed());
+      await seed(serverUrl, "demo-seeder", buildDemoSeed(seedGroupId));
       didSeed = true;
     } catch (err) {
       // Already-seeded is fine; re-throw anything else.
@@ -110,7 +138,7 @@ export async function bootstrap(opts: {
   // Without this the handshake would return zero groups and the demo
   // would have nothing to subscribe to.
   try {
-    await addMember(serverUrl, actorId);
+    await addMember(serverUrl, actorId, seedGroupId);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn("[bootstrap] addMember warning:", err);
@@ -149,5 +177,12 @@ export async function bootstrap(opts: {
   // machine to "live" once the stream connects — no need to set it
   // manually here.
 
-  return { client, groupIds, didSeed, caughtUpActions };
+  return {
+    client,
+    groupIds,
+    docGroupId: fallbackGroupId,
+    docId,
+    didSeed,
+    caughtUpActions,
+  };
 }
