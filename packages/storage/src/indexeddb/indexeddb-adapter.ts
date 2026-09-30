@@ -1,0 +1,107 @@
+import { openDB, type IDBPDatabase } from "idb";
+import type { Action } from "@ebbjs/core";
+import type { StorageAdapter } from "../types/storage-adapter";
+import { createEbbStores, type EbbDBSchema } from "./schema";
+
+import { createIndexedDBActionLog } from "./action-log.indexeddb";
+import { createIndexedDBCursorStore } from "./cursor-store.indexeddb";
+import { createIndexedDBDirtyTracker } from "./dirty-tracker.indexeddb";
+import { createIndexedDBEntityStore } from "./entity-store.indexeddb";
+
+export interface IndexedDBAdapterOptions {
+  dbName?: string;
+}
+
+/**
+ * Creates a `StorageAdapter` backed by IndexedDB.
+ *
+ * ## Usage
+ * ```ts
+ * const adapter = await createIndexedDBAdapter({ dbName: "my-app" });
+ * await adapter.actions.append(action);
+ * ```
+ *
+ * ## Browser-only
+ * This adapter requires `indexedDB` in the global scope. In Node /
+ * test environments it must be run inside a DOM environment that
+ * provides the API (e.g. `happy-dom`).
+ *
+ * ## Concurrency
+ * Single-tab ownership is assumed for v1. Multi-tab coordination is
+ * out of scope per issue #145.
+ */
+export const createIndexedDBAdapter = async (
+  options: IndexedDBAdapterOptions = {},
+): Promise<StorageAdapter> => {
+  const dbName = options.dbName ?? "ebb-storage";
+
+  const db: IDBPDatabase<EbbDBSchema> = await openDB<EbbDBSchema>(dbName, 1, {
+    upgrade: createEbbStores,
+  });
+
+  const actionLog = createIndexedDBActionLog(db);
+  const dirtyTracker = createIndexedDBDirtyTracker(db);
+  const entityStore = createIndexedDBEntityStore(db, actionLog, dirtyTracker);
+  const cursorStore = createIndexedDBCursorStore(db);
+
+  return {
+    actions: {
+      async append(action: Action): Promise<void> {
+        await actionLog.append(action);
+        for (const update of action.updates) {
+          await dirtyTracker.mark(update.subject_id, update.subject_type);
+        }
+      },
+
+      async getAll(): Promise<readonly Action[]> {
+        return actionLog.getAll();
+      },
+
+      async getForEntity(entityId: string): Promise<readonly Action[]> {
+        return actionLog.getForEntity(entityId);
+      },
+
+      async clear(): Promise<void> {
+        await actionLog.clear();
+        await dirtyTracker.clearAll();
+        await entityStore.reset();
+      },
+    },
+
+    entities: entityStore,
+
+    dirtyTracker: {
+      async mark(entityId: string, entityType: string): Promise<void> {
+        await dirtyTracker.mark(entityId, entityType);
+      },
+
+      async isDirty(entityId: string): Promise<boolean> {
+        return dirtyTracker.isDirty(entityId);
+      },
+
+      async getDirtyForType(entityType: string): Promise<readonly string[]> {
+        return dirtyTracker.getDirtyForType(entityType);
+      },
+
+      async clear(entityId: string): Promise<void> {
+        await dirtyTracker.clear(entityId);
+      },
+
+      async clearAll(): Promise<void> {
+        await dirtyTracker.clearAll();
+      },
+    },
+
+    cursors: cursorStore,
+
+    async isDirty(entityId: string): Promise<boolean> {
+      return dirtyTracker.isDirty(entityId);
+    },
+
+    async reset(): Promise<void> {
+      await actionLog.clear();
+      await dirtyTracker.clearAll();
+      await entityStore.reset();
+    },
+  };
+};
