@@ -951,6 +951,117 @@ describe("integration: client.<entity>.link / unlink", () => {
       client.close();
     }
   });
+
+  it("removes a relationship via the public unlink() API over the wire", async () => {
+    if (!(await shouldRun())) return;
+    const actor = `rel_unlink_${RUN_ID}`;
+    await addMemberWithTodoPerms(actor);
+
+    const todo = defineEntity("todo", {
+      title: e.string(),
+      completed: e.boolean(),
+    });
+    const groupTarget = defineEntity("group", { name: e.string() });
+    const ownedBy = defineRelationship({
+      source: todo,
+      target: groupTarget,
+      as: "ownedBy",
+      type: "todo",
+    });
+    const schema = defineSchema({
+      entities: { todo },
+      relationships: { ownedBy },
+      version: 1,
+    });
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: actor,
+      schema,
+    });
+    const { groups } = await client.handshake();
+    const ourGroup = groups.find((g) => g.id === TEST_GROUP_ID);
+    expect(ourGroup, `actor ${actor} did not join ${TEST_GROUP_ID}`).toBeDefined();
+    expect(ourGroup!.permissions).toContain("relationship.*");
+    client.setState("live");
+
+    try {
+      const todoId = `todo_unlink_${RUN_ID}`;
+
+      // Seed the entity + relationship in one Action so the writer's
+      // intra-action context resolves the source entity's group.
+      const seedClock = createClock();
+      const seedHlc = localEvent(seedClock);
+      const seedEntityUpdate = {
+        id: "u_seed",
+        subject_id: todoId,
+        subject_type: "todo",
+        method: "put" as const,
+        data: {
+          fields: {
+            title: { value: "Seed", update_id: "u_seed", hlc: seedHlc },
+          },
+        },
+      };
+      const seedWireResult = client.buildRelationshipWrite({
+        source: todo,
+        target: groupTarget,
+        as: "ownedBy",
+        sourceId: todoId,
+        targetId: TEST_GROUP_ID,
+      });
+      const relUpdate = Array.isArray(seedWireResult.relationshipUpdate)
+        ? seedWireResult.relationshipUpdate[0]!
+        : seedWireResult.relationshipUpdate;
+      const { action: seedAction } = createAction({
+        actorId: actor,
+        clock: seedClock,
+        updates: [seedEntityUpdate, relUpdate],
+      });
+      const seedResult = await client.write([seedAction]);
+      expect(seedResult.rejected).toEqual([]);
+      await catchUpUntilCurrent(client, TEST_GROUP_ID);
+
+      // Sanity-check the link landed before unlinking it.
+      let links = await client.storage.entities.query("relationship");
+      const materializedLink = links.find(
+        (e) =>
+          e.data?.fields?.["source_id"]?.value === todoId &&
+          e.data?.fields?.["field"]?.value === "ownedBy",
+      );
+      expect(materializedLink).toBeDefined();
+      const relationshipSubjectId = materializedLink!.id;
+
+      const unlinkResult = await client.todo.unlink(todoId, "ownedBy");
+      expect(unlinkResult.rejected).toEqual([]);
+
+      // Materialize locally and assert the delete landed in the
+      // server-side RelationshipCache (forward direction). The
+      // server tombstones the row rather than erasing it, so the
+      // materialized entity either disappears or carries a
+      // non-null `deleted_hlc`.
+      await catchUpUntilCurrent(client, TEST_GROUP_ID);
+      links = await client.storage.entities.query("relationship");
+      const stillMaterialized = links.find((e) => e.id === relationshipSubjectId);
+      const isTombstoned =
+        stillMaterialized?.deleted_hlc !== null && stillMaterialized?.deleted_hlc !== undefined;
+      const isGone = stillMaterialized === undefined;
+      expect(
+        isGone || isTombstoned,
+        `expected the relationship ${relationshipSubjectId} to be removed or tombstoned after unlink(); got ${JSON.stringify(stillMaterialized)}`,
+      ).toBe(true);
+
+      // The reverse accessor should also no longer surface the source.
+      const handle = client.relationship({
+        source: todo,
+        target: groupTarget,
+        as: "ownedBy",
+      });
+      const sources = await handle.reverse(TEST_GROUP_ID).toRaw();
+      expect(sources.map((s) => s.id)).not.toContain(todoId);
+    } finally {
+      client.close();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

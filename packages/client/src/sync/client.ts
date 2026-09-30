@@ -696,7 +696,7 @@ export class SyncClient {
       const sourceId = requireSourceId(opts, as);
       const targetId = normalizePointer(opts.targetId, `targetId for "${as}"`);
       const updateId = generateId("u");
-      const relationshipId = generateId("rel");
+      const relationshipId = opts.relationshipSubjectId ?? generateId("rel");
       const relUpdate = buildRelationshipUpdate({
         relationshipId,
         sourceId,

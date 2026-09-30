@@ -307,13 +307,13 @@ export function createEntityNamespace<
       return { ...projected, ...accessors } as EntityWithAccessors<TFields, TAs>;
     },
     async link(id: string, as: string, targetId: PointerValue): Promise<WriteResponse> {
-      return submitRelationshipWrite(write, entityName, id, as, { targetId });
+      return submitRelationshipWrite(write, entityName, id, as, { targetId }, storage);
     },
     async unlink(id: string, as: string): Promise<WriteResponse> {
-      return submitRelationshipWrite(write, entityName, id, as, { targetId: null });
+      return submitRelationshipWrite(write, entityName, id, as, { targetId: null }, storage);
     },
     async setLinks(id: string, as: string, patch: ManyPointerValue): Promise<WriteResponse> {
-      return submitRelationshipWrite(write, entityName, id, as, { targetIds: patch });
+      return submitRelationshipWrite(write, entityName, id, as, { targetIds: patch }, storage);
     },
   };
 }
@@ -329,6 +329,7 @@ async function submitRelationshipWrite(
   sourceId: string,
   as: string,
   pointer: { targetId?: PointerValue; targetIds?: ManyPointerValue },
+  storage: StorageAdapter,
 ): Promise<WriteResponse> {
   const rel = write.registry.getRelationship(entityName, as);
   if (rel === undefined) {
@@ -359,12 +360,45 @@ async function submitRelationshipWrite(
       hlc: write.freshHlc(),
     });
   }
+  // One-cardinality delete: the wire Update's `subject_id` must
+  // match the existing relationship's id so the server's authorizer
+  // can recover the group from the cache. Look the existing row up
+  // by `(sourceId, as)` in the materialized Relationship cache;
+  // throw a clear validation error when no such relationship exists
+  // locally (the caller hasn't materialized the link yet, or the
+  // link was created by another client that hasn't synced to us).
+  let relationshipSubjectId: string | undefined;
+  if (
+    rel.sourceCardinality === "one" &&
+    pointer.targetId === null &&
+    pointer.targetIds === undefined
+  ) {
+    const all = await storage.entities.query("relationship");
+    const wireType = rel.type ?? entityName;
+    const match = all.find(
+      (e) =>
+        e.data?.fields?.["source_id"]?.value === sourceId &&
+        e.data?.fields?.["field"]?.value === as &&
+        e.data?.fields?.["type"]?.value === wireType,
+    );
+    if (match === undefined) {
+      const { EntityValidationError } = await import("../schema/entity-registry");
+      throw new EntityValidationError([
+        {
+          entityName,
+          message: `unlink("${as}"): no relationship found for source "${sourceId}" in the materialized cache; did you link() first and wait for catchUp?`,
+        },
+      ]);
+    }
+    relationshipSubjectId = match.id;
+  }
   const result = write.buildRelationshipWrite({
     source: { name: entityName },
     target: { name: rel.target.name },
     as,
     sourceId,
     entityUpdate,
+    relationshipSubjectId,
     ...pointer,
   });
   const rels = Array.isArray(result.relationshipUpdate)

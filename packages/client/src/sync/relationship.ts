@@ -74,6 +74,15 @@ export interface BuildRelationshipWriteOptions {
   targetId?: PointerValue;
   /** Pointer value(s) for `sourceCardinality: "many"`. */
   targetIds?: ManyPointerValue;
+  /**
+   * Override the `subject_id` of the Relationship Update on the
+   * wire. When set, `buildRelationshipWrite` uses this value instead
+   * of minting a fresh id — required when deleting an existing
+   * relationship by natural key (the wire Update's `subject_id`
+   * must match the existing row's id for the server's authorizer
+   * to recover the relationship's group).
+   */
+  relationshipSubjectId?: string;
 }
 
 export interface BuildRelationshipWriteResult {

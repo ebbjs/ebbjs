@@ -684,9 +684,30 @@ describe("client.<entity>.link / unlink / setLinks", () => {
   });
 
   it("unlink() submits a single Relationship Delete Update", async () => {
-    const { client } = await mkClient();
+    const { client, storage } = await mkClient();
+    // Pre-seed the materialized Relationship cache with a row
+    // keyed at the same `(source, field, type)` the wire unlink()
+    // is about to address — unlink() must look up the existing
+    // relationship's id from the local cache so the wire Update's
+    // `subject_id` matches the row to delete.
+    await storage.entities.set(
+      mkEntity("rel_seeded_1", "relationship", {
+        source_id: "todo_1",
+        target_id: "list_1",
+        field: "list",
+        type: "todo",
+      }),
+    );
     const response = await client.todo.unlink("todo_1", "list");
     expect(response.rejected).toEqual([]);
+  });
+
+  it("unlink() throws EntityValidationError when no relationship exists locally", async () => {
+    const { client } = await mkClient();
+    // Empty materialized cache — nothing to unlink.
+    await expect(client.todo.unlink("todo_1", "list")).rejects.toBeInstanceOf(
+      EntityValidationError,
+    );
   });
 
   it("setLinks({ replace }) emits one entity Update + N Relationship Updates", async () => {
