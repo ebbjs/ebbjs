@@ -142,6 +142,45 @@ describe("client.<entity>.subscribe(filter, cb)", () => {
     unsub();
   });
 
+  it("the snapshot carries EntitySnapshot<TFields> rows (id + entity escape hatch per Path C)", async () => {
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      storage,
+      schema,
+    });
+
+    let snapshotShape: unknown = null;
+    const unsub = client.todo.subscribe({ completed: false }, (snapshot) => {
+      snapshotShape = snapshot;
+    });
+
+    await callApplyAction(client, mkAction(1, "todo_1", false), "grp_1");
+
+    // Compile-time check: each entity carries the projected
+    // field shape AND the wire-envelope escape hatch (`id` and
+    // `entity`). Path C's typed-snapshot signature.
+    const snap = snapshotShape as {
+      entities: readonly {
+        title: string;
+        completed: boolean;
+        id: string;
+        entity: { id: string; type: string };
+      }[];
+      filter: unknown;
+      count: number;
+    };
+    expect(snap.entities[0]?.title).toBe("T1");
+    expect(snap.entities[0]?.completed).toBe(false);
+    expect(snap.entities[0]?.id).toBe("todo_1");
+    expect(snap.entities[0]?.entity.id).toBe("todo_1");
+    expect(snap.entities[0]?.entity.type).toBe("todo");
+    expect(snap.count).toBe(1);
+
+    unsub();
+  });
+
   it("the snapshot carries the typed rows (per-entity static projection)", async () => {
     const storage = createMemoryAdapter();
     const client = createClient({

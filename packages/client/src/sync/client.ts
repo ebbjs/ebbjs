@@ -1047,23 +1047,11 @@ export class SyncClient {
         await this.storage.cursors.set(groupId, action.gsn);
       }
     }
-    // Force-materialize every affected entity so the storage
-    // adapter's change emitter fires for each one. The emitter
-    // only fires on a materialization step (or on set), so without
-    // this the subscribers see nothing until an explicit query or
-    // get runs. The dedicated `materializeKeepDirty` variant on
-    // the adapter (when present) replays the action log and fires
-    // the emitter WITHOUT clearing the dirty flag, so the
-    // `_applyAction` → `isDirty` invariant the SSE suite verifies
-    // is intact. Adapters that don't ship the variant fall back to a
-    // regular get() and clear it; the only correctness loss is
-    // that consumers checking `isDirty` post-receipt on those
-    // adapters will see clean rather than dirty.
     if (this.storage.changeEmitter !== undefined) {
-      const replier = this.storage.materializeKeepDirty;
+      const keepDirty = this.storage.materializeKeepDirty;
       for (const { entityId } of affected) {
-        if (replier !== undefined) {
-          await replier(entityId);
+        if (keepDirty !== undefined) {
+          await keepDirty(entityId);
         } else {
           await this.storage.entities.get(entityId);
         }

@@ -88,24 +88,41 @@ export type EntityWithAccessors<
 > = [TAs] extends [never] ? Static<TObject<TFields>> : never;
 
 /**
- * Filter shape for `client.<entity>.subscribe(filter, cb)`.
- * Field-name → equality-value. A subset of the chain's `eq`
- * semantics, sufficient for static subscribe shapes. Path C
- * pins this exact shape (see the design comment on #161).
+ * Per-entity snapshot for reactive subscribe. Path C pins this
+ * shape (#161's design comment): the projected row fields plus
+ * an `id` and an `entity` escape hatch so subscribers can pull
+ * the wire envelope (`deleted_hlc`, HLC timestamps, etc.) without
+ * losing the strict per-field typing.
+ *
+ * The per-entity instance handle's `subscribe(cb)` uses the same
+ * shape (#171 follow-up). Defining it here means the per-entity
+ * subscribe that lands with #171 reuses this type verbatim — no
+ * migration when #171 merges.
  */
-export type CollectionSubscribeFilter<TFields extends Record<string, TSchema>> = {
+export type EntitySnapshot<TFields extends Record<string, TSchema>> = Static<TObject<TFields>> & {
+  readonly id: string;
+  readonly entity: Entity;
+};
+
+/**
+ * Filter shape for `client.<entity>.subscribe(filter, cb)`.
+ * Field-name → equality-value. Path C pins this exact shape (see
+ * the design comment on #161).
+ */
+export type QueryFilter<TFields extends Record<string, TSchema>> = {
   [K in keyof TFields]?: Static<TFields[K]>;
 };
 
 /**
  * Snapshot passed to a collection subscribe listener on each fired event.
- * Carries the typed projected rows, the active filter (so the
- * callback can compare if it needs to), and a count for the
- * common `length === count` check.
+ * Carries the typed projected row snapshots, the active filter, and
+ * a count. Each row in `entities` is an `EntitySnapshot<TFields>`
+ * so consumers can read the per-field projection AND the wire
+ * envelope (`row.id`, `row.entity`) from the same shape.
  */
 export type CollectionSnapshot<TFields extends Record<string, TSchema>> = {
-  readonly entities: readonly Static<TObject<TFields>>[];
-  readonly filter: CollectionSubscribeFilter<TFields>;
+  readonly entities: readonly EntitySnapshot<TFields>[];
+  readonly filter: QueryFilter<TFields>;
   readonly count: number;
 };
 
@@ -150,7 +167,7 @@ export interface EntityNamespace<
    * as a no-op (the listener never fires).
    */
   subscribe(
-    filter: CollectionSubscribeFilter<TFields>,
+    filter: QueryFilter<TFields>,
     cb: (snapshot: CollectionSnapshot<TFields>) => void,
   ): () => void;
   /**
@@ -350,26 +367,17 @@ export function createEntityNamespace<
       return { ...projected, ...accessors } as EntityWithAccessors<TFields, TAs>;
     },
     subscribe(
-      filter: CollectionSubscribeFilter<TFields>,
+      filter: QueryFilter<TFields>,
       cb: (snapshot: CollectionSnapshot<TFields>) => void,
     ): () => void {
       const emitter = storage.changeEmitter;
-      // Adapters that don't ship a change emitter get a no-op.
-      // The snapshot can still be computed via the query() chain
-      // for one-shot reads; subscribe has no read-driven trigger
-      // without an emitter to subscribe to.
       if (emitter === undefined) {
+        // No emitter → no reactive trigger. The snapshot can still
+        // be polled via `client.<entity>.query()` for one-shot reads.
         return () => {
           // no-op
         };
       }
-      // The matching set, maintained incrementally. On each
-      // type-change emit we update the affected entity's row in
-      // place (add/remove/update) and re-check the filter. If
-      // the matching id list changed, we fire the listener
-      // synchronously. Synchronous firing keeps the callback in
-      // lock-step with the storage emit — callers can
-      // `useSyncExternalStore` against this without timing hazards.
       const matching = new Map<string, Entity>();
       const matches = (entity: Entity): boolean => {
         for (const [field, value] of Object.entries(filter)) {
@@ -379,33 +387,19 @@ export function createEntityNamespace<
         }
         return true;
       };
-      const computeSnapshot = (): CollectionSnapshot<TFields> => {
+      const buildSnapshot = (): CollectionSnapshot<TFields> => {
         const rows = [...matching.values()];
-        const projected = projectRows(rows, shape);
-        return {
-          entities: projected as Static<TObject<TFields>>[],
-          filter,
-          count: projected.length,
-        };
+        const projected = projectRows(rows, shape) as Static<TObject<TFields>>[];
+        const entities: EntitySnapshot<TFields>[] = projected.map((row, i) => ({
+          ...row,
+          id: rows[i]!.id,
+          entity: rows[i]!,
+        }));
+        return { entities, filter, count: entities.length };
       };
-      // Track the matching id set as a stable, sorted string so
-      // deduping "same set, different order" is cheap. Only fire
-      // when the matching set's id signature actually changes; a
-      // patch on an already-matching row leaves the set unchanged.
+      const idSignature = (ids: Iterable<string>): string => [...ids].sort().join("\n");
       let prevIds = "";
-      // Hydration flag: set during the initial query() and the
-      // emitter listener's updates are buffered (not fired) until
-      // hydration completes. Prevents the hydration's own re-
-      // materialization step from spuriously firing the listener.
-      let hydrating = true;
-      const tryFire = (): void => {
-        if (hydrating) return;
-        const ids = [...matching.keys()].sort().join("\n");
-        if (ids === prevIds) return;
-        prevIds = ids;
-        cb(computeSnapshot());
-      };
-      const onEntityChange = (entity: Entity): void => {
+      const update = (entity: Entity): void => {
         const wasIn = matching.has(entity.id);
         const matchesNow = matches(entity);
         if (matchesNow) {
@@ -414,24 +408,42 @@ export function createEntityNamespace<
           matching.delete(entity.id);
         }
         if (wasIn !== matchesNow) {
-          tryFire();
+          const ids = idSignature(matching.keys());
+          if (ids !== prevIds) {
+            prevIds = ids;
+            cb(buildSnapshot());
+          }
         }
       };
-      // Hydration runs first; the emitter listener is attached
-      // after hydration lands. Hydration re-fires the emitter (it
-      // re-materializes dirty rows), so attaching the listener
-      // first would yield a fire for the hydration itself.
-      const unsubEmitter = emitter.onTypeChange(entityName, onEntityChange);
+      // Hydrate the matching set BEFORE the listener attaches so
+      // the hydration's own re-materialization doesn't fire the
+      // callback. Concurrent emits during the async hydration
+      // window are buffered and replayed on attach.
+      let hydrating = true;
+      const buffered: Entity[] = [];
+      const listener = (entity: Entity): void => {
+        if (hydrating) {
+          buffered.push(entity);
+        } else {
+          update(entity);
+        }
+      };
+      let unsubEmitter: (() => void) | null = null;
       void (async (): Promise<void> => {
         const rows = await storage.entities.query(entityName);
         for (const row of rows) {
           if (matches(row)) matching.set(row.id, row);
         }
-        prevIds = [...matching.keys()].sort().join("\n");
+        prevIds = idSignature(matching.keys());
+        unsubEmitter = emitter.onTypeChange(entityName, listener);
         hydrating = false;
+        if (buffered.length > 0) {
+          const replay = buffered.splice(0, buffered.length);
+          for (const entity of replay) update(entity);
+        }
       })();
       return () => {
-        unsubEmitter();
+        if (unsubEmitter !== null) unsubEmitter();
         matching.clear();
       };
     },
