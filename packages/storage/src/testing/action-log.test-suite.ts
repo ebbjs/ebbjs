@@ -83,6 +83,35 @@ export const defineActionLogTests = ({ name, factory }: ActionLogTestSuiteOption
         const found = await log.getForEntity("todo_1");
         expect(found.map((a: Action) => a.gsn)).toEqual([1, 2]);
       });
+
+      it("returns an action with multiple subjects to every entity it touches", async () => {
+        const log = await factory();
+        const HLC_BASE = 1_711_036_800_000;
+        await log.append({
+          id: "a_multi",
+          actor_id: "a_user1",
+          hlc: makeHlc(HLC_BASE),
+          gsn: 1,
+          updates: [
+            {
+              id: "u_multi_1",
+              subject_id: "todo_1",
+              subject_type: "todo",
+              method: "put",
+              data: { fields: {} },
+            },
+            {
+              id: "u_multi_2",
+              subject_id: "todo_2",
+              subject_type: "todo",
+              method: "put",
+              data: { fields: {} },
+            },
+          ],
+        });
+        expect((await log.getForEntity("todo_1")).map((a: Action) => a.id)).toEqual(["a_multi"]);
+        expect((await log.getForEntity("todo_2")).map((a: Action) => a.id)).toEqual(["a_multi"]);
+      });
     });
 
     describe("clear", () => {
