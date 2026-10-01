@@ -14,12 +14,14 @@
  * primitives `client.relationship({...})` already consumes.
  */
 
-import type { Entity } from "@ebbjs/core";
+import type { Entity, Update } from "@ebbjs/core";
+import { generateId } from "@ebbjs/core";
 import type { WriteResponse } from "./types";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { EntityDef } from "../schema/entity";
+import { EntityValidationError, validatePayload } from "../schema/entity-registry";
 import type { EntityRegistry } from "../schema/entity-registry";
 import type { Schema } from "../schema/schema";
 import {
@@ -111,6 +113,31 @@ export interface EntityNamespace<
   query(): QueryBuilder<TFields>;
   get(id: string): Promise<EntityWithAccessors<TFields, TAs> | null>;
   /**
+   * Create a new entity row. The input is the typed
+   * `Static<TObject<TFields>>` projection — fields are checked
+   * against the entity's TypeBox shape via `Value.Check` *before*
+   * any network call, and a non-conforming payload throws
+   * `EntityValidationError` with one violation per bad field.
+   *
+   * A fresh `subject_id` is minted client-side; the wire Update
+   * carries `method: "put"`. Pass `{ validate: false }` to skip the
+   * local check (useful for tests or pre-validated inputs).
+   */
+  create(input: Static<TObject<TFields>>, opts?: EntityWriteOptions): Promise<WriteResponse>;
+  /**
+   * Patch an existing entity row. The patch is
+   * `Partial<Static<TObject<TFields>>>` — keys are checked for
+   * membership and values for type conformance against the
+   * entity's TypeBox shape, same as `create`. The wire Update
+   * carries `method: "patch"`. Pass `{ validate: false }` to skip
+   * the local check.
+   */
+  update(
+    id: string,
+    patch: Partial<Static<TObject<TFields>>>,
+    opts?: EntityWriteOptions,
+  ): Promise<WriteResponse>;
+  /**
    * One-cardinality link. Emits a single Relationship Update and
    * submits. Throws `EntityValidationError` when `as` is not a
    * declared relationship on the entity or when the actor lacks
@@ -128,6 +155,17 @@ export interface EntityNamespace<
    * entity's data field.
    */
   setLinks(id: string, as: string, patch: ManyPointerValue): Promise<WriteResponse>;
+}
+
+/**
+ * Per-write options consumed by `EntityNamespace.create` and
+ * `EntityNamespace.update`. Validation is on by default; pass
+ * `validate: false` to opt out (useful for tests / pre-validated
+ * upstream callers). The opt-out doesn't bypass the server — it
+ * just skips the local `Value.Check` pass.
+ */
+export interface EntityWriteOptions {
+  validate?: boolean;
 }
 
 /**
@@ -306,6 +344,31 @@ export function createEntityNamespace<
       const accessors = buildRowAccessors(entityName, id, storage, registry);
       return { ...projected, ...accessors } as EntityWithAccessors<TFields, TAs>;
     },
+    async create(
+      input: Static<TObject<TFields>>,
+      opts?: EntityWriteOptions,
+    ): Promise<WriteResponse> {
+      return submitEntityWrite(write, entityName, shape, {
+        method: "put",
+        subjectId: generateId("e"),
+        payload: input,
+        partial: false,
+        validate: opts?.validate,
+      });
+    },
+    async update(
+      id: string,
+      patch: Partial<Static<TObject<TFields>>>,
+      opts?: EntityWriteOptions,
+    ): Promise<WriteResponse> {
+      return submitEntityWrite(write, entityName, shape, {
+        method: "patch",
+        subjectId: id,
+        payload: patch,
+        partial: true,
+        validate: opts?.validate,
+      });
+    },
     async link(id: string, as: string, targetId: PointerValue): Promise<WriteResponse> {
       return submitRelationshipWrite(write, entityName, id, as, { targetId }, storage);
     },
@@ -317,6 +380,80 @@ export function createEntityNamespace<
     },
   };
 }
+
+/**
+ * Options for {@link submitEntityWrite}. `method` selects put vs
+ * patch; `subjectId` is the entity id (caller-minted for `create`,
+ * caller-supplied for `update`); `payload` is the typed field map
+ * the user passed in; `partial` flips the validator from full-shape
+ * (create) to per-field (update); `validate` defaults to on.
+ */
+interface SubmitEntityWriteInput {
+  method: "put" | "patch";
+  subjectId: string;
+  payload: unknown;
+  partial: boolean;
+  validate: boolean | undefined;
+}
+
+/**
+ * Run `Value.Check` against the entity shape and submit a single
+ * entity Update. Throws `EntityValidationError` when the payload
+ * doesn't conform and validation is on. The validation result is
+ * the SDK's local contract — the server may still reject the
+ * write for other reasons (permissions, conflicts).
+ *
+ * Each field value is wrapped into the `{ value, update_id, hlc }`
+ * envelope the wire Update carries. `update_id` reuses the
+ * namespace's freshly-minted id (one id per Update); `hlc` is the
+ * local clock so concurrent writers can detect a causal-order
+ * inversion on the server.
+ */
+async function submitEntityWrite<TFields extends Record<string, TSchema>>(
+  write: WriteCapability,
+  entityName: string,
+  shape: TObject<TFields>,
+  input: SubmitEntityWriteInput,
+): Promise<WriteResponse> {
+  if (input.validate !== false) {
+    const violations = validatePayload(shape, input.payload, entityName, input.partial);
+    if (violations.length > 0) {
+      throw new EntityValidationError(violations);
+    }
+  }
+  const hlc = write.freshHlc();
+  const updateId = write.generateUpdateId();
+  const fields = wrapFields(input.payload, updateId, hlc);
+  const update: Update = {
+    id: updateId,
+    subject_id: input.subjectId,
+    subject_type: entityName,
+    method: input.method,
+    data: { fields },
+  };
+  return write.submitRelationshipUpdates([update]);
+}
+
+/**
+ * Wrap a flat `{ fieldName: value }` payload into the wire
+ * envelope `{ fields: { fieldName: { value, update_id, hlc } } }`.
+ * `undefined` fields are dropped (the wire envelope is absent, not
+ * explicitly `undefined`). `null` is preserved as the field's value
+ * so nullable fields round-trip cleanly.
+ */
+const wrapFields = (
+  payload: unknown,
+  updateId: string,
+  hlc: string,
+): Record<string, { value: unknown; update_id: string; hlc: string }> => {
+  const out: Record<string, { value: unknown; update_id: string; hlc: string }> = {};
+  if (payload === null || typeof payload !== "object") return out;
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined) continue;
+    out[key] = { value, update_id: updateId, hlc };
+  }
+  return out;
+};
 
 /**
  * Look up the relationship by `(source, as)`, build the wire
