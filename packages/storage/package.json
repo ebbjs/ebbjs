@@ -37,6 +37,13 @@
   "dependencies": {
     "@ebbjs/core": "workspace:*"
   },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.5",
+    "happy-dom": "^15.11.7",
+    "idb": "^8.0.3",
+    "tsx": "^4.20.4",
+    "vitest": "^3.2.4"
+  },
   "peerDependencies": {
     "idb": "^8.0.3"
   },
@@ -44,12 +51,5 @@
     "idb": {
       "optional": true
     }
-  },
-  "devDependencies": {
-    "fake-indexeddb": "^6.2.5",
-    "happy-dom": "^15.11.7",
-    "idb": "^8.0.3",
-    "tsx": "^4.20.4",
-    "vitest": "^3.2.4"
   }
 }
