@@ -43,10 +43,11 @@ export const createMemoryAdapter = (): StorageAdapter => {
   // The entity-store factory constructs the observer surface
   // alongside the store so the adapter can expose it through
   // `changeEmitter` without reaching into store internals.
-  const { store: entityStore, emitter: changeEmitter } = createMemoryEntityStore(
-    actionLog,
-    dirtyTracker,
-  );
+  const {
+    store: entityStore,
+    emitter: changeEmitter,
+    materializeKeepDirty,
+  } = createMemoryEntityStore(actionLog, dirtyTracker);
   const cursorStore = createMemoryCursorStore();
 
   return {
@@ -100,6 +101,18 @@ export const createMemoryAdapter = (): StorageAdapter => {
     cursors: cursorStore,
 
     changeEmitter,
+
+    /**
+     * Replay actions for `entityId` and fire the change emitter
+     * without clearing the dirty flag. Used by the SyncClient fan-
+     * out so subscribers on the emitter observe inbound actions
+     * while preserving the dirty-flag invariant. Optional on the
+     * shared `StorageAdapter` — adapters that don't ship an
+     * emitter also don't need this.
+     */
+    async materializeKeepDirty(entityId: string): Promise<void> {
+      await materializeKeepDirty(entityId);
+    },
 
     async isDirty(entityId: string): Promise<boolean> {
       return dirtyTracker.isDirty(entityId);

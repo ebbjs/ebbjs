@@ -1016,6 +1016,14 @@ export class SyncClient {
    * the server is the trust boundary, and forward-compat with peers
    * that may have fields the local schema doesn't know about is the
    * common case. The action still materializes regardless.
+   *
+   * After the action lands in the action log and the affected
+   * entities are marked dirty, this method force-materializes each
+   * affected entity so subscribers on the storage adapter's change
+   * emitter observe the new state immediately. The materialize-on-
+   * read contract would otherwise require every consumer to issue
+   * a read first — not viable for per-collection subscribe, which
+   * must surface changes without a forced read.
    */
   private async _applyAction(
     action: Action,
@@ -1037,6 +1045,28 @@ export class SyncClient {
       const prev = await this.storage.cursors.get(groupId);
       if (prev === null || action.gsn > prev) {
         await this.storage.cursors.set(groupId, action.gsn);
+      }
+    }
+    // Force-materialize every affected entity so the storage
+    // adapter's change emitter fires for each one. The emitter
+    // only fires on a materialization step (or on set), so without
+    // this the subscribers see nothing until an explicit query or
+    // get runs. The dedicated `materializeKeepDirty` variant on
+    // the adapter (when present) replays the action log and fires
+    // the emitter WITHOUT clearing the dirty flag, so the
+    // `_applyAction` → `isDirty` invariant the SSE suite verifies
+    // is intact. Adapters that don't ship the variant fall back to a
+    // regular get() and clear it; the only correctness loss is
+    // that consumers checking `isDirty` post-receipt on those
+    // adapters will see clean rather than dirty.
+    if (this.storage.changeEmitter !== undefined) {
+      const replier = this.storage.materializeKeepDirty;
+      for (const { entityId } of affected) {
+        if (replier !== undefined) {
+          await replier(entityId);
+        } else {
+          await this.storage.entities.get(entityId);
+        }
       }
     }
     return affected;
