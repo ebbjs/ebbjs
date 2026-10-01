@@ -17,12 +17,6 @@ import { defineSchema } from "../../schema/schema";
 import { createClient } from "../client";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
-type Expect<T extends true> = T;
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-type _AssertExtends<A, B> = Expect<Extends<A, B>>;
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-type Extends<A, B> = A extends B ? true : false;
-
 const todo = defineEntity("todo", {
   title: e.string(),
   completed: e.boolean(),

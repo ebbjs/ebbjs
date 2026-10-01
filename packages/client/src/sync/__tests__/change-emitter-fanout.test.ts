@@ -58,7 +58,7 @@ describe("SyncClient._applyAction fan-out to storage change emitter", () => {
 
     const seen: string[] = [];
     const unsub = storage.changeEmitter.onEntityChange("todo_1", (e) => {
-      if (e !== null) seen.push(e.data.fields.title.value);
+      if (e !== null) seen.push(String(e.data.fields.title.value));
     });
 
     await callApplyAction(client, mkAction(1, "todo_1"), "grp_1");
