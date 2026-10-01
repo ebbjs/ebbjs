@@ -82,14 +82,16 @@ Output from a developer machine (your numbers will vary):
 
 | Adapter   | append (ops/sec) | get (ops/sec) | query (ops/sec) | reset (ms) |
 | --------- | ---------------: | ------------: | --------------: | ---------: |
-| Memory    |           63,952 |        10,392 |          18,728 |       0.03 |
-| IndexedDB |            3,361 |           124 |             125 |       1.37 |
+| Memory    |           67,894 |         9,865 |          18,902 |       0.03 |
+| IndexedDB |            4,269 |           799 |             652 |       1.88 |
 
 A few honest reads:
 
-- **append** — the IndexedDB adapter is ~19× slower. Each action is two awaits (`db.put(actions, action)`, then `dirtyTracker.mark()`). The in-memory path is one synchronous mutation. That's the structural cost of a per-write transaction.
-- **get / query** — the gap widens to ~80–150×. Materialization is async-by-construction in IDB: `getForEntity(id)` does a full table scan, then for each update we await another DB call to read the entity back. The in-memory equivalent is a closure over `state.actions`. The win is that after the first read, subsequent gets come from the materialized cache (still true in IDB) — the cost above is the _cold-materialize_ path. `getForEntity` doesn't use a secondary index yet; that becomes worth doing if action logs grow large.
-- **reset** — sub-millisecond on both, but IDB is ~46× slower because clearing a store is still an IDB transaction.
+- **append** — the IndexedDB adapter is ~16× slower. Each action is two awaits (`db.put(actions, action)`, then `dirtyTracker.mark()`), and the action log now also denormalizes a `subject_ids[]` array so the secondary index has something to key on. The in-memory path is one synchronous mutation. That's the structural cost of a per-write transaction.
+- **get / query** — the gap is ~12–30×, down from ~80–150× before the `subject_id` index landed. `getForEntity` now range-scans the `subject_id` multiEntry index (one index entry per unique subject an action touches) instead of full-table-scanning the action log. The result set is still sorted in-memory by gsn to match the in-memory adapter's contract, so per-entity ordering is preserved. After the first read, subsequent gets come from the materialized cache (still true in IDB) — the cost above is the _cold-materialize_ path.
+- **reset** — sub-millisecond on both, but IDB is ~63× slower because clearing a store is still an IDB transaction.
+
+Followed up from the initial numbers in this post via issue #202 (add the `subject_id` index) and #204 (consolidate relationship writes).
 
 ## What I'd consider next
 
