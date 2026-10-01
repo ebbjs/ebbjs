@@ -314,28 +314,6 @@ export interface WriteCapability {
 }
 
 /**
- * Apply a flat `{ field: value }` filter to a list of entities.
- * Pure: the input array is not mutated. The filter is `eq`-style
- * equality per declared field; absent fields on an entity resolve
- * to `undefined` and never match a non-undefined filter value.
- */
-const applyFilter = <TFields extends Record<string, TSchema>>(
-  rows: readonly Entity[],
-  filters: CollectionSubscribeFilter<TFields>,
-): Entity[] => {
-  const entries = Object.entries(filters) as [string, unknown][];
-  if (entries.length === 0) return [...rows];
-  return rows.filter((row) => {
-    for (const [field, value] of entries) {
-      const fieldEntry = row.data?.fields?.[field];
-      const current = fieldEntry === undefined ? undefined : fieldEntry.value;
-      if (current !== value) return false;
-    }
-    return true;
-  });
-};
-
-/**
  * Build a namespace for one entity. The namespace's `query()` returns
  * a lazy QueryBuilder seeded from `storage.entities.query(entityName)`.
  *
