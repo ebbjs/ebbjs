@@ -2,6 +2,7 @@ import type { Entity } from "@ebbjs/core";
 import type { EntityStore } from "../types/entity-store";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
+import type { EntityChangeEmitter } from "../types/entity-change-emitter";
 import { applyUpdate } from "../internal/materialize";
 
 /**
@@ -29,6 +30,80 @@ interface EntityStoreState {
   entities: Record<string, Entity>;
   typeIndex: Record<string, Set<string>>;
 }
+
+/**
+ * In-memory observer fan-out. The factory returns both the public
+ * `EntityChangeEmitter` (subscribe-side) and an internal `fire`
+ * pair the entity store calls on materialize/set. Listeners are
+ * keyed by entityId and by type; emit-on-materialize dispatches
+ * to both groups. Throwing listeners are caught and logged so one
+ * bad subscriber can't break the others (matches the SDK's wider
+ * error-isolation pattern).
+ */
+const createMemoryChangeEmitter = (): {
+  emitter: EntityChangeEmitter;
+  emit: (id: string, entity: Entity) => void;
+} => {
+  const byId = new Map<string, Set<(entity: Entity | null) => void>>();
+  const byType = new Map<string, Set<(entity: Entity) => void>>();
+  const fireId = (id: string, entity: Entity | null): void => {
+    const listeners = byId.get(id);
+    if (listeners === undefined) return;
+    for (const cb of listeners) {
+      try {
+        cb(entity);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[EntityChangeEmitter] onEntityChange handler threw:", err);
+      }
+    }
+  };
+  const fireType = (entity: Entity): void => {
+    const listeners = byType.get(entity.type);
+    if (listeners === undefined) return;
+    for (const cb of listeners) {
+      try {
+        cb(entity);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[EntityChangeEmitter] onTypeChange handler threw:", err);
+      }
+    }
+  };
+  const emit = (id: string, entity: Entity): void => {
+    fireId(id, entity);
+    fireType(entity);
+  };
+  const emitter: EntityChangeEmitter = {
+    onEntityChange(id, listener) {
+      let bucket = byId.get(id);
+      if (bucket === undefined) {
+        bucket = new Set();
+        byId.set(id, bucket);
+      }
+      bucket.add(listener);
+      return () => {
+        bucket?.delete(listener);
+      };
+    },
+    onTypeChange(type, listener) {
+      let bucket = byType.get(type);
+      if (bucket === undefined) {
+        bucket = new Set();
+        byType.set(type, bucket);
+      }
+      bucket.add(listener);
+      return () => {
+        bucket?.delete(listener);
+      };
+    },
+    reset() {
+      byId.clear();
+      byType.clear();
+    },
+  };
+  return { emitter, emit };
+};
 
 const copyEntity = (entity: Entity): Entity => JSON.parse(JSON.stringify(entity));
 
@@ -60,8 +135,9 @@ const updateTypeIndexOnSet = (
 export const createMemoryEntityStore = (
   actionLog: ActionLog,
   dirtyTracker: DirtyTracker,
-): EntityStore => {
+): { store: EntityStore; emitter: EntityChangeEmitter } => {
   let state: EntityStoreState = { entities: {}, typeIndex: {} };
+  const { emitter, emit } = createMemoryChangeEmitter();
 
   const materialize = async (entityId: string): Promise<void> => {
     const isEntityDirty = await dirtyTracker.isDirty(entityId);
@@ -88,9 +164,16 @@ export const createMemoryEntityStore = (
     };
 
     await dirtyTracker.clear(entityId);
+
+    // Fire after the materialization lands so subscribers reading
+    // through the adapter see the new state. Delete Updates land
+    // here with `deleted_hlc` set; the listener gets the deleted
+    // envelope (the spec leaves delete semantics to the consumer —
+    // a future filter could surface a `deleted: true` flag).
+    emit(entityId, state.entities[entityId]);
   };
 
-  return {
+  const store: EntityStore = {
     async get(id: string): Promise<Entity | null> {
       await materialize(id);
       const entity = state.entities[id];
@@ -103,6 +186,7 @@ export const createMemoryEntityStore = (
         entities: { ...state.entities, [entity.id]: copyEntity(entity) },
         typeIndex: updateTypeIndexOnSet(state.typeIndex, entity, oldEntity?.type),
       };
+      emit(entity.id, state.entities[entity.id]);
     },
 
     async query(type: string): Promise<readonly Entity[]> {
@@ -118,6 +202,9 @@ export const createMemoryEntityStore = (
 
     async reset(): Promise<void> {
       state = { entities: {}, typeIndex: {} };
+      emitter.reset();
     },
   };
+
+  return { store, emitter };
 };

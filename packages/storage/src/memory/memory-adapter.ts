@@ -40,7 +40,13 @@ import { createMemoryCursorStore } from "./cursor-store.memory";
 export const createMemoryAdapter = (): StorageAdapter => {
   const actionLog = createMemoryActionLog();
   const dirtyTracker = createMemoryDirtyTracker();
-  const entityStore = createMemoryEntityStore(actionLog, dirtyTracker);
+  // The entity-store factory constructs the observer surface
+  // alongside the store so the adapter can expose it through
+  // `changeEmitter` without reaching into store internals.
+  const { store: entityStore, emitter: changeEmitter } = createMemoryEntityStore(
+    actionLog,
+    dirtyTracker,
+  );
   const cursorStore = createMemoryCursorStore();
 
   return {
@@ -92,6 +98,8 @@ export const createMemoryAdapter = (): StorageAdapter => {
     },
 
     cursors: cursorStore,
+
+    changeEmitter,
 
     async isDirty(entityId: string): Promise<boolean> {
       return dirtyTracker.isDirty(entityId);
