@@ -12,7 +12,7 @@ let counter = 0;
  */
 export const openTestDb = async (prefix: string): Promise<IDBPDatabase<EbbDBSchema>> => {
   const dbName = `ebb-${prefix}-${Date.now()}-${++counter}`;
-  return openDB<EbbDBSchema>(dbName, 1, {
+  return openDB<EbbDBSchema>(dbName, 2, {
     upgrade: createEbbStores,
   });
 };

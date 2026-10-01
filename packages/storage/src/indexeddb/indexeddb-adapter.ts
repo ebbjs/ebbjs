@@ -35,7 +35,7 @@ export const createIndexedDBAdapter = async (
 ): Promise<StorageAdapter> => {
   const dbName = options.dbName ?? "ebb-storage";
 
-  const db: IDBPDatabase<EbbDBSchema> = await openDB<EbbDBSchema>(dbName, 1, {
+  const db: IDBPDatabase<EbbDBSchema> = await openDB<EbbDBSchema>(dbName, 2, {
     upgrade: createEbbStores,
   });
 
