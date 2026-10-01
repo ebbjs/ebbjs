@@ -113,24 +113,14 @@ export interface EntityNamespace<
   query(): QueryBuilder<TFields>;
   get(id: string): Promise<EntityWithAccessors<TFields, TAs> | null>;
   /**
-   * Create a new entity row. The input is the typed
-   * `Static<TObject<TFields>>` projection — fields are checked
-   * against the entity's TypeBox shape via `Value.Check` *before*
-   * any network call, and a non-conforming payload throws
-   * `EntityValidationError` with one violation per bad field.
-   *
-   * A fresh `subject_id` is minted client-side; the wire Update
-   * carries `method: "put"`. Pass `{ validate: false }` to skip the
-   * local check (useful for tests or pre-validated inputs).
+   * Create a new entity row. Non-conforming inputs throw
+   * `EntityValidationError` before any network call. `subject_id`
+   * is minted client-side; the wire Update is a `put`.
    */
   create(input: Static<TObject<TFields>>, opts?: EntityWriteOptions): Promise<WriteResponse>;
   /**
-   * Patch an existing entity row. The patch is
-   * `Partial<Static<TObject<TFields>>>` — keys are checked for
-   * membership and values for type conformance against the
-   * entity's TypeBox shape, same as `create`. The wire Update
-   * carries `method: "patch"`. Pass `{ validate: false }` to skip
-   * the local check.
+   * Patch an existing entity row, validated the same way as
+   * `create`'s input. The wire Update is a `patch`.
    */
   update(
     id: string,
@@ -158,11 +148,9 @@ export interface EntityNamespace<
 }
 
 /**
- * Per-write options consumed by `EntityNamespace.create` and
- * `EntityNamespace.update`. Validation is on by default; pass
- * `validate: false` to opt out (useful for tests / pre-validated
- * upstream callers). The opt-out doesn't bypass the server — it
- * just skips the local `Value.Check` pass.
+ * Per-write options. `validate: false` skips the local `Value.Check`
+ * pass — useful for tests / pre-validated upstream callers. The
+ * registry's name-membership check at `client.write()` still runs.
  */
 export interface EntityWriteOptions {
   validate?: boolean;
@@ -349,7 +337,6 @@ export function createEntityNamespace<
       opts?: EntityWriteOptions,
     ): Promise<WriteResponse> {
       return submitEntityWrite(write, entityName, shape, {
-        method: "put",
         subjectId: generateId("e"),
         payload: input,
         partial: false,
@@ -362,7 +349,6 @@ export function createEntityNamespace<
       opts?: EntityWriteOptions,
     ): Promise<WriteResponse> {
       return submitEntityWrite(write, entityName, shape, {
-        method: "patch",
         subjectId: id,
         payload: patch,
         partial: true,
@@ -382,14 +368,11 @@ export function createEntityNamespace<
 }
 
 /**
- * Options for {@link submitEntityWrite}. `method` selects put vs
- * patch; `subjectId` is the entity id (caller-minted for `create`,
- * caller-supplied for `update`); `payload` is the typed field map
- * the user passed in; `partial` flips the validator from full-shape
- * (create) to per-field (update); `validate` defaults to on.
+ * Internal options for {@link submitEntityWrite}. `partial=true`
+ * flips the validator from full-shape to per-field and routes the
+ * wire Update through `method: "patch"`.
  */
 interface SubmitEntityWriteInput {
-  method: "put" | "patch";
   subjectId: string;
   payload: unknown;
   partial: boolean;
@@ -397,17 +380,15 @@ interface SubmitEntityWriteInput {
 }
 
 /**
- * Run `Value.Check` against the entity shape and submit a single
- * entity Update. Throws `EntityValidationError` when the payload
- * doesn't conform and validation is on. The validation result is
- * the SDK's local contract — the server may still reject the
- * write for other reasons (permissions, conflicts).
+ * Validate the payload against the entity shape and ship a single
+ * entity Update. Throws `EntityValidationError` on shape mismatch
+ * (or empty patch) when validation is on. The local validator is
+ * the SDK's contract; the server may still reject the write for
+ * permissions, conflicts, or schema drift.
  *
- * Each field value is wrapped into the `{ value, update_id, hlc }`
- * envelope the wire Update carries. `update_id` reuses the
- * namespace's freshly-minted id (one id per Update); `hlc` is the
- * local clock so concurrent writers can detect a causal-order
- * inversion on the server.
+ * `update_id` is minted once per Update so concurrent writers
+ * can't collide on the same id; `hlc` is the local clock so the
+ * server can detect a causal-order inversion.
  */
 async function submitEntityWrite<TFields extends Record<string, TSchema>>(
   write: WriteCapability,
@@ -420,6 +401,14 @@ async function submitEntityWrite<TFields extends Record<string, TSchema>>(
     if (violations.length > 0) {
       throw new EntityValidationError(violations);
     }
+    if (input.partial && isEmptyPayload(input.payload)) {
+      throw new EntityValidationError([
+        {
+          entityName,
+          message: `update: patch must contain at least one field`,
+        },
+      ]);
+    }
   }
   const hlc = write.freshHlc();
   const updateId = write.generateUpdateId();
@@ -428,18 +417,25 @@ async function submitEntityWrite<TFields extends Record<string, TSchema>>(
     id: updateId,
     subject_id: input.subjectId,
     subject_type: entityName,
-    method: input.method,
+    method: input.partial ? "patch" : "put",
     data: { fields },
   };
   return write.submitRelationshipUpdates([update]);
 }
 
+/** True when the payload is `{}` or every field is `undefined` — a no-op the caller almost certainly didn't intend. */
+const isEmptyPayload = (payload: unknown): boolean => {
+  if (payload === null || typeof payload !== "object") return true;
+  for (const value of Object.values(payload)) {
+    if (value !== undefined) return false;
+  }
+  return true;
+};
+
 /**
- * Wrap a flat `{ fieldName: value }` payload into the wire
- * envelope `{ fields: { fieldName: { value, update_id, hlc } } }`.
- * `undefined` fields are dropped (the wire envelope is absent, not
- * explicitly `undefined`). `null` is preserved as the field's value
- * so nullable fields round-trip cleanly.
+ * Flatten a payload into the wire envelope. `undefined` fields are
+ * dropped (the wire envelope is absent, not explicitly undefined);
+ * `null` is preserved so nullable fields round-trip cleanly.
  */
 const wrapFields = (
   payload: unknown,

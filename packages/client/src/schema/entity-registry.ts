@@ -219,27 +219,16 @@ export class EntityRegistry {
 }
 
 /**
- * Validate a write-time payload against the entity's TypeBox shape
- * via `Value.Check`. Used by `client.<entity>.create()` and
- * `client.<entity>.update()` to reject malformed input before any
- * network call — the schema stops being decoration and becomes a
- * contract.
+ * Validate a write-time payload against the entity's TypeBox shape.
+ * `partial=false` requires the full entity shape (create semantics);
+ * `partial=true` accepts a subset (update semantics, missing keys
+ * are allowed).
  *
- * `partial` selects create vs. update semantics:
- *
- * - `false` (create): the payload is the full entity shape.
- *   Unknown keys are rejected, present keys are type-checked, and
- *   the full `Value.Check` enforces required-field membership.
- * - `true` (update): the payload is a partial patch. Unknown keys
- *   are rejected, present keys are type-checked against their
- *   individual field schema, and missing required fields are
- *   allowed (that's the whole point of a patch).
- *
- * Both paths combine field-name membership with type conformance
- * so the user gets a single `EntityValidationError` enumerating
- * every problem. Each violation carries the entity name and the
- * offending field so the SDK's existing
- * `formatViolations` produces a self-locating message.
+ * TypeBox doesn't reject unknown properties by default, so the
+ * function explicitly enforces field-name membership alongside
+ * `Value.Check`'s type conformance. Every violation surfaces in
+ * one `EntityValidationError` so the caller sees the whole problem
+ * list at once.
  */
 export const validatePayload = <T extends TSchema>(
   shape: T,
@@ -260,10 +249,6 @@ export const validatePayload = <T extends TSchema>(
   const properties = readObjectProperties(shape);
   const declaredKeys = properties === undefined ? null : new Set(Object.keys(properties));
 
-  // Field-name membership: every key in the payload must be a
-  // declared field. TypeBox doesn't reject unknown properties by
-  // default, so this check lives here rather than relying on
-  // `Value.Check` alone.
   if (declaredKeys !== null) {
     for (const key of Object.keys(obj)) {
       if (!declaredKeys.has(key)) {
@@ -276,49 +261,27 @@ export const validatePayload = <T extends TSchema>(
     }
   }
 
-  if (partial) {
-    // Type-check each present value against its individual field
-    // schema. Missing keys are allowed (that's the point of a
-    // patch). Unknown keys were reported above.
-    if (properties !== undefined) {
-      for (const [key, value] of Object.entries(obj)) {
-        if (value === undefined) continue;
-        const fieldSchema = properties[key];
-        if (fieldSchema === undefined) continue;
-        collectFieldTypeErrors(violations, fieldSchema, value, entityName, key);
-      }
-    } else {
-      // No property map reachable — fall back to the whole-shape
-      // check so we still catch shape-level mismatches.
-      collectShapeErrors(violations, shape, payload, entityName);
+  if (partial && properties !== undefined) {
+    for (const [key, value] of Object.entries(obj)) {
+      if (value === undefined) continue;
+      const fieldSchema = properties[key];
+      if (fieldSchema === undefined) continue;
+      collectFieldTypeErrors(violations, fieldSchema, value, entityName, key);
     }
   } else {
-    // Full-shape check: catches wrong types AND missing required
-    // fields. TypeBox's required-property errors land here.
     collectShapeErrors(violations, shape, payload, entityName);
   }
   return violations;
 };
 
-/**
- * Read the `properties` map out of a `TObject` shape. The shape is
- * opaque from the SDK's perspective (a `TSchema` is too wide to
- * narrow structurally without a cast), so we duck-type-check for the
- * `properties` field and bail out when it's absent (e.g., for
- * `Type.Union`, `Type.Array`, primitive schemas passed by mistake).
- */
+/** Extract a `TObject` shape's `properties` map. Returns `undefined` for non-object shapes. */
 const readObjectProperties = (shape: TSchema): Record<string, TSchema> | undefined => {
   const candidate = shape as { properties?: unknown };
   if (candidate.properties === null || typeof candidate.properties !== "object") return undefined;
   return candidate.properties as Record<string, TSchema>;
 };
 
-/**
- * Run `Value.Errors` against the shape and append every mapped
- * violation to `out`. Each TypeBox error carries a `path` (the
- * dotted field path with a leading `/`); the leading slash is
- * stripped before the value lands in `ValidationViolation.field`.
- */
+/** Append one violation per `Value.Errors` entry; the entity name is stamped from the caller. */
 const collectShapeErrors = (
   out: ValidationViolation[],
   shape: TSchema,
@@ -331,11 +294,7 @@ const collectShapeErrors = (
   }
 };
 
-/**
- * Run `Value.Errors` against one field's schema and append mapped
- * violations with the field name baked into the message — the
- * TypeBox path is empty here because the schema is the leaf.
- */
+/** Same as `collectShapeErrors` but on a single field — the field name is the message prefix. */
 const collectFieldTypeErrors = (
   out: ValidationViolation[],
   fieldSchema: TSchema,
@@ -362,12 +321,7 @@ const collectFieldTypeErrors = (
   }
 };
 
-/**
- * Best-effort human-readable name for a TypeBox schema. Used as a
- * fallback message when `Value.Errors` yields zero entries (rare,
- * but happens for some schema kinds). Falls back to "value" when
- * the schema doesn't carry a recognizable `type` discriminator.
- */
+/** Fallback for `Value.Errors` returning zero entries — read the schema's `type` discriminator. */
 const describeSchema = (schema: TSchema): string => {
   const s = schema as { type?: unknown };
   if (typeof s.type === "string") return s.type;
@@ -375,13 +329,7 @@ const describeSchema = (schema: TSchema): string => {
   return "value";
 };
 
-/**
- * Convert one TypeBox `ValueError` into the SDK's
- * `ValidationViolation` shape. Field path is the bare dotted path
- * with leading `/` stripped; the entity name is stamped from the
- * caller so the violation stays tied to its declaring schema even
- * when shapes are nested.
- */
+/** Map one TypeBox `ValueError` to a `ValidationViolation`; the leading `/` on the path is stripped. */
 const toViolation = (error: ValueError, entityName: string): ValidationViolation => {
   const field = stripLeadingSlash(error.path);
   const message = field === "" ? error.message : `${field}: ${error.message}`;
@@ -392,5 +340,5 @@ const toViolation = (error: ValueError, entityName: string): ValidationViolation
   };
 };
 
-/** Strip the leading `/` TypeBox prepends to error paths. Empty path → empty string. */
+/** TypeBox prepends `/` to error paths; empty path stays empty. */
 const stripLeadingSlash = (path: string): string => (path.startsWith("/") ? path.slice(1) : path);

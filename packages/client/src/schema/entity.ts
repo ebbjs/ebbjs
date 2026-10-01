@@ -21,11 +21,10 @@ export type NullableSchema<T extends TSchema> = T & {
 };
 
 /**
- * Non-enumerable marker `defineEntity` uses to recognize fields that
- * came through `.nullable()`. The union returned by `.nullable()` is
- * a fresh schema without the `.nullable` method, so the chain
- * marker is the only way to recover the original intent at the
- * field-map level.
+ * Marker stamped onto the union returned by `.nullable()` so
+ * `defineEntity` can recognize the field came through the chain
+ * even though the union itself doesn't carry the `.nullable`
+ * method.
  */
 const NULLABLE_MARKER = Symbol.for("@ebbjs/nullable");
 
@@ -34,9 +33,6 @@ const withNullable = <T extends TSchema>(schema: T): NullableSchema<T> => {
   Object.defineProperty(self, "nullable", {
     value: () => {
       const union = Type.Union([schema, Type.Null()]);
-      // Stamp the marker onto the union so `defineEntity` can
-      // detect this field came through `.nullable()` even though
-      // the union itself doesn't carry the `.nullable` method.
       Object.defineProperty(union, NULLABLE_MARKER, { value: true, enumerable: false });
       return union;
     },
@@ -92,21 +88,11 @@ export function defineEntity<TFields extends Record<string, TSchema>>(
 }
 
 /**
- * Mark every field whose schema carries the nullable sentinel as
- * `Type.Optional(...)`. Nullable means the field's value can be
- * `null` *or absent*, matching the wire envelope's three states
- * (set / nulled / absent) — the query-builder and row-accessor
- * tests already project `undefined` for absent fields. Without
- * this wrap, TypeBox would require the field to be present in any
- * `Value.Check` payload even when the user logically treats it as
- * optional, and the SDK's local validator would reject valid
- * create/update calls.
- *
- * The wrap is applied only at runtime; the static type still
- * requires nullable fields in `Static<TObject<TFields>>`. Callers
- * that want optional fields at the type level should pass
- * `Type.Optional` explicitly, or use the `Partial` modifier on
- * `update`'s patch input.
+ * Wrap every nullable field in `Type.Optional` so `Value.Check`
+ * treats absent values as valid (matching the wire envelope's
+ * set / nulled / absent projection). The static type still
+ * requires nullable fields — `Static<TObject<TFields>>` only sees
+ * `TOptional` when callers write it explicitly.
  */
 const withImplicitOptional = <TFields extends Record<string, TSchema>>(
   fields: TFields,
@@ -120,14 +106,7 @@ const withImplicitOptional = <TFields extends Record<string, TSchema>>(
   return out;
 };
 
-/**
- * Duck-type check for the nullable sentinel that `withNullable`
- * attaches to the schema. The original primitive (e.g.,
- * `e.string()`) carries `.nullable`; the union returned by
- * `.nullable()` carries the `NULLABLE_MARKER` symbol so the
- * signal survives across the chain. Either is enough to flag
- * the field as nullable-and-therefore-optional.
- */
+/** True for fields that came through `.nullable()` — either the chain method or the marker. */
 const isNullableSchema = (schema: TSchema): boolean => {
   const candidate = schema as unknown as { nullable?: unknown };
   if (typeof candidate.nullable === "function") return true;
