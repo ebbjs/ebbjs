@@ -18,6 +18,8 @@
  * mock object.
  */
 import { vi, type MockInstance } from "vitest";
+import type { Action } from "@ebbjs/core";
+import type { createClient } from "./client";
 
 /** A non-streaming `Response` shape — body is a string or binary buffer. */
 export interface FetchMockResponse {
@@ -31,6 +33,25 @@ export interface FetchCall {
   url: string;
   init: RequestInit;
 }
+
+/**
+ * Drive the private `_applyAction` method on a SyncClient.
+ *
+ * Tests that need to seed storage state without driving the full SSE /
+ * HTTP path call this through the test-only cast pattern. The two-arg
+ * shape (`groupId?`) matches the production method so callers can
+ * omit the group when irrelevant.
+ */
+export const callApplyAction = (
+  client: ReturnType<typeof createClient>,
+  action: Action,
+  groupId?: string,
+): Promise<{ entityId: string; entityType: string }[]> =>
+  (
+    client as unknown as {
+      _applyAction: (a: Action, g?: string) => Promise<{ entityId: string; entityType: string }[]>;
+    }
+  )._applyAction.call(client, action, groupId);
 
 /**
  * Build a `fetch` mock that records calls and returns canned responses

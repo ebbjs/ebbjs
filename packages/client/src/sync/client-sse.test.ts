@@ -3,22 +3,7 @@ import { createClient } from "./client";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { makeHlc, type Action } from "@ebbjs/core";
 import type { SSEEvent } from "./types";
-
-/**
- * Drive the private `_applyAction` method on a SyncClient. Mirrors the
- * test-only pattern in `sse.test.ts`: tests that need to seed storage
- * state without driving the full SSE / HTTP path use this.
- */
-const callApplyAction = (
-  client: ReturnType<typeof createClient>,
-  action: Action,
-  groupId?: string,
-): Promise<{ entityId: string; entityType: string }[]> =>
-  (
-    client as unknown as {
-      _applyAction: (a: Action, g?: string) => Promise<{ entityId: string; entityType: string }[]>;
-    }
-  )._applyAction.call(client, action, groupId);
+import { callApplyAction } from "./test-utils";
 
 /**
  * SSE-driven subscribe test.

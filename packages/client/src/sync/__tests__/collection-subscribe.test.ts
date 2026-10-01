@@ -16,6 +16,7 @@ import { defineEntity, e } from "../../schema/entity";
 import { defineSchema } from "../../schema/schema";
 import { createClient } from "../client";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
+import { callApplyAction } from "../test-utils";
 
 const todo = defineEntity("todo", {
   title: e.string(),
@@ -26,17 +27,6 @@ const schema = defineSchema({
   entities: { todo },
   version: 1,
 });
-
-const callApplyAction = (
-  client: ReturnType<typeof createClient>,
-  action: Action,
-  groupId?: string,
-): Promise<{ entityId: string; entityType: string }[]> =>
-  (
-    client as unknown as {
-      _applyAction: (a: Action, g?: string) => Promise<{ entityId: string; entityType: string }[]>;
-    }
-  )._applyAction.call(client, action, groupId);
 
 const mkAction = (gsn: number, subjectId: string, completed: boolean): Action => ({
   id: `act_${gsn}`,

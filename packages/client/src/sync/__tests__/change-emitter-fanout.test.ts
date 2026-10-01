@@ -14,17 +14,7 @@ import { describe, it, expect } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
 import { createClient } from "../client";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-
-const callApplyAction = (
-  client: ReturnType<typeof createClient>,
-  action: Action,
-  groupId?: string,
-): Promise<{ entityId: string; entityType: string }[]> =>
-  (
-    client as unknown as {
-      _applyAction: (a: Action, g?: string) => Promise<{ entityId: string; entityType: string }[]>;
-    }
-  )._applyAction.call(client, action, groupId);
+import { callApplyAction } from "../test-utils";
 
 const mkAction = (gsn: number, subjectId: string): Action => ({
   id: `act_${gsn}`,
