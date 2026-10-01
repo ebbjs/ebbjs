@@ -161,12 +161,25 @@ describe("client.<entity>.subscribe(filter, cb)", () => {
       filter: unknown;
       count: number;
     };
-    expect(snap.entities[0]?.title).toBe("T1");
-    expect(snap.entities[0]?.completed).toBe(false);
-    expect(snap.entities[0]?.id).toBe("todo_1");
-    expect(snap.entities[0]?.entity.id).toBe("todo_1");
-    expect(snap.entities[0]?.entity.type).toBe("todo");
-    expect(snap.count).toBe(1);
+    globalExpect(snap.entities[0]?.title).toBe("T1");
+    globalExpect(snap.entities[0]?.completed).toBe(false);
+    globalExpect(snap.entities[0]?.id).toBe("todo_1");
+    globalExpect(snap.entities[0]?.entity.id).toBe("todo_1");
+    globalExpect(snap.entities[0]?.entity.type).toBe("todo");
+    globalExpect(snap.count).toBe(1);
+
+    // Compile-time check: bogus isn't a column on the snapshot.
+    const _typecheck: (s: {
+      count: number;
+      entities: { title: string; completed: boolean }[];
+      filter: unknown;
+    }) => void = (s) => {
+      // @ts-expect-error — `bogus` is not a field on the snapshot.
+      void s.bogus;
+      void s.count;
+      void s.entities;
+    };
+    void _typecheck;
 
     unsub();
   });
