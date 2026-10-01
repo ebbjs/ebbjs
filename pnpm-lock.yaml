@@ -249,9 +249,6 @@ importers:
       '@ebbjs/core':
         specifier: workspace:*
         version: link:../core
-      idb:
-        specifier: ^8.0.3
-        version: 8.0.3
     devDependencies:
       fake-indexeddb:
         specifier: ^6.2.5
@@ -259,6 +256,9 @@ importers:
       happy-dom:
         specifier: ^15.11.7
         version: 15.11.7
+      idb:
+        specifier: ^8.0.3
+        version: 8.0.3
       tsx:
         specifier: ^4.20.4
         version: 4.21.0

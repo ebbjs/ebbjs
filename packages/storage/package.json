@@ -4,12 +4,21 @@
   "private": true,
   "description": "Storage components for ebbjs",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "sideEffects": false,
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "types": "./dist/types/index.d.ts"
+    },
+    "./memory": {
+      "types": "./dist/memory/index.d.ts",
+      "import": "./dist/memory/index.js"
+    },
+    "./indexeddb": {
+      "types": "./dist/indexeddb/index.d.ts",
+      "import": "./dist/indexeddb/index.js"
+    },
+    "./types": {
+      "types": "./dist/types/index.d.ts"
     }
   },
   "scripts": {
@@ -18,6 +27,7 @@
     "test": "vitest --run",
     "test:watch": "vitest",
     "benchmark": "tsx src/benchmark/run.ts",
+    "bundle-check": "tsx scripts/bundle-check.ts",
     "typecheck": "tsc --noEmit",
     "lint": "pnpm --root ../../ lint",
     "lint:fix": "pnpm --root ../../ lint:fix",
@@ -25,13 +35,21 @@
     "fmt:check": "pnpm --root ../../ fmt:check"
   },
   "dependencies": {
-    "@ebbjs/core": "workspace:*",
-    "idb": "^8.0.3"
+    "@ebbjs/core": "workspace:*"
   },
   "devDependencies": {
     "fake-indexeddb": "^6.2.5",
     "happy-dom": "^15.11.7",
+    "idb": "^8.0.3",
     "tsx": "^4.20.4",
     "vitest": "^3.2.4"
+  },
+  "peerDependencies": {
+    "idb": "^8.0.3"
+  },
+  "peerDependenciesMeta": {
+    "idb": {
+      "optional": true
+    }
   }
 }

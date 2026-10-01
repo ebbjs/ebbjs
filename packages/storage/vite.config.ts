@@ -28,7 +28,9 @@ export default defineConfig({
   build: {
     lib: {
       entry: {
-        index: "./src/index.ts",
+        "memory/index": "./src/memory/index.ts",
+        "indexeddb/index": "./src/indexeddb/index.ts",
+        "types/index": "./src/types/index.ts",
       },
       name: "@ebbjs/storage",
       formats: ["es"],

@@ -33,8 +33,8 @@ import {
   receiveRemoteHLC,
   type Update,
 } from "@ebbjs/core";
-import { createMemoryAdapter } from "@ebbjs/storage";
-import type { StorageAdapter } from "@ebbjs/storage";
+import { createMemoryAdapter } from "@ebbjs/storage/memory";
+import type { StorageAdapter } from "@ebbjs/storage/types";
 
 import { ConnectionStateMachine, type ConnectionState } from "./connection-state";
 import { PresenceManager } from "../presence/presence";

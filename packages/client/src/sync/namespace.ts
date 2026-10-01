@@ -16,7 +16,7 @@
 
 import type { Entity } from "@ebbjs/core";
 import type { WriteResponse } from "./types";
-import type { StorageAdapter } from "@ebbjs/storage";
+import type { StorageAdapter } from "@ebbjs/storage/types";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { EntityDef } from "../schema/entity";

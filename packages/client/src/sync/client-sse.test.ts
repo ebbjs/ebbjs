@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { createClient } from "./client";
-import { createMemoryAdapter } from "@ebbjs/storage";
+import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { makeHlc, type Action } from "@ebbjs/core";
 import type { SSEEvent } from "./types";
 
