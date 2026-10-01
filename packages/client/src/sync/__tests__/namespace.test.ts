@@ -50,7 +50,7 @@ describe("client.<entity>.query()", () => {
       entities: { todo: todoWithNullable },
       version: 1,
     });
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "a", body: "note" }));
     await storage.entities.set(mkEntity("t2", "todo", { title: "b", body: null }));
@@ -68,7 +68,7 @@ describe("client.<entity>.query()", () => {
   });
 
   it(".toRaw() returns readonly Entity[] — the untyped wire shape", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "a", completed: false }));
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
@@ -78,7 +78,7 @@ describe("client.<entity>.query()", () => {
   });
 
   it("client.todo.query() awaits to typed todo rows", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "a", completed: false }));
     await storage.entities.set(mkEntity("t2", "todo", { title: "b", completed: true }));
@@ -88,7 +88,7 @@ describe("client.<entity>.query()", () => {
   });
 
   it("rows are readonly Todo[] where Todo = Static<typeof schema.entities.todo.shape>", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
@@ -99,7 +99,7 @@ describe("client.<entity>.query()", () => {
   });
 
   it("rows.map((r) => r.bogus) is a compile error", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
@@ -111,7 +111,7 @@ describe("client.<entity>.query()", () => {
   });
 
   it("filters via chain mutators and projects to the entity shape", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "a", completed: false }));
     await storage.entities.set(mkEntity("t2", "todo", { title: "b", completed: true }));
@@ -122,7 +122,7 @@ describe("client.<entity>.query()", () => {
   });
 
   it(".toRaw() returns the untyped wire shape", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "a", completed: false }));
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
@@ -131,7 +131,7 @@ describe("client.<entity>.query()", () => {
   });
 
   it("exposes a separate namespace per schema entity", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("u1", "user", { name: "Ada" }));
     await storage.entities.set(mkEntity("t1", "todo", { title: "a", completed: false }));
@@ -143,7 +143,7 @@ describe("client.<entity>.query()", () => {
   });
 
   it("preserves every SyncClient method through the Proxy", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
     expect(typeof client.subscribe).toBe("function");
@@ -159,7 +159,7 @@ describe("client.<entity>.query()", () => {
 
 describe("createClient without a schema", () => {
   it("does not expose entity namespaces", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage });
     // No schema → no typed entity access; property access returns undefined.
@@ -167,7 +167,7 @@ describe("createClient without a schema", () => {
   });
 
   it("preserves SyncClient methods and private-field access", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage });
     expect(typeof client.subscribe).toBe("function");
@@ -181,7 +181,7 @@ describe("createClient without a schema", () => {
 
 describe("client.<entity>.get(id)", () => {
   it("resolves to Todo | null where Todo = Static<typeof schema.entities.todo.shape>", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
@@ -193,7 +193,7 @@ describe("client.<entity>.get(id)", () => {
   });
 
   it("returns null for an unknown id", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
@@ -202,7 +202,7 @@ describe("client.<entity>.get(id)", () => {
   });
 
   it("returns null when the materialized entity's type differs", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     // `user` is in the schema but the stored entity has type "todo".
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
@@ -221,7 +221,7 @@ describe("client.<entity>.get(id)", () => {
       entities: { todo: todoWithNullable },
       version: 1,
     });
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "a", body: "note" }));
     await storage.entities.set(mkEntity("t2", "todo", { title: "b", body: null }));
@@ -238,7 +238,7 @@ describe("client.<entity>.get(id)", () => {
   });
 
   it("the untyped wire shape stays reachable via client.readLocalEntity(id)", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
@@ -264,7 +264,7 @@ describe("client.<entity>.get(id)", () => {
   });
 
   it("does not expose the untyped wire envelope on the projected row", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
@@ -365,7 +365,7 @@ const mkRelEntity = (
 
 describe("client.<entity>.get(id) — row with relationship accessors", () => {
   it("row.<field> types flow from the entity's field map (no FK fields required)", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     const client = createClient({
@@ -385,7 +385,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
   });
 
   it("forward-many accessor awaits to readonly TargetShape[]", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     await storage.entities.set(mkEntity("lbl-a", "label", { name: "a" }));
@@ -416,7 +416,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
   });
 
   it("forward-one accessor returns the target entity when the edge exists", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     await storage.entities.set(mkEntity("u1", "user", { name: "Ada" }));
@@ -435,7 +435,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
   });
 
   it("forward-one accessor returns null when no Relationship edge exists", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     await storage.entities.set(mkEntity("l1", "list", { name: "Work" }));
@@ -461,7 +461,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
   });
 
   it("forward-one accessor returns undefined when the edge target is missing (dangling)", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     await storage.entities.set(mkRelEntity("rel-ghost", "t1", "ghost", "owner", "todo"));
@@ -479,7 +479,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
   });
 
   it("reverse accessor awaits to readonly SourceShape[] via the namespace", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("l1", "list", { name: "Work" }));
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
@@ -509,7 +509,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
   });
 
   it("row.bogus (un-declared relationship) is a compile error", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     const client = createClient({
@@ -540,7 +540,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     // `user` has no outgoing/incoming relationships in `schemaWithRels`,
     // so `client.user.get(id)` returns the bare projection (no
     // accessor record entries).
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("u1", "user", { name: "Ada" }));
     const client = createClient({
@@ -555,7 +555,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
   });
 
   it("row is null when the id is unknown (no accessor leak)", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     const client = createClient({
       serverUrl: "http://x",
@@ -658,7 +658,7 @@ describe("client.<entity>.link / unlink / setLinks", () => {
   };
 
   const mkClient = async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     const client = createClient({
       serverUrl: "http://localhost:4000",

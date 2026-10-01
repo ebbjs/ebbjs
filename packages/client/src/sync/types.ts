@@ -179,7 +179,7 @@ export interface SyncClientOptions {
   /** Actor identity for bypass auth (`x-ebb-actor-id`). */
   actorId: string;
   /** Storage adapter for received actions. Defaults to in-memory adapter. */
-  storage?: import("@ebbjs/storage").StorageAdapter;
+  storage?: import("@ebbjs/storage/types").StorageAdapter;
   /** Custom fetch implementation (for tests / non-Node runtimes). */
   fetchImpl?: typeof fetch;
   /** Initial reconnect backoff in ms. Defaults to 1000. */

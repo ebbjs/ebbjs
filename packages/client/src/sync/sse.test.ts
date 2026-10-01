@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { parseSSEBlock } from "./sse";
 import { createClient } from "./client";
-import { createMemoryAdapter } from "@ebbjs/storage";
+import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { makeHlc, type Action } from "@ebbjs/core";
 
 describe("parseSSEBlock", () => {

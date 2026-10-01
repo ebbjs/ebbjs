@@ -747,7 +747,7 @@ describe("relationship() handle traversal", () => {
     });
 
   it("forward(id) returns the target entity when a Relationship edge exists", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("list_1", "list", { name: "Today" }));
     await storage.entities.set(mkEntity("todo_1", "todo", { title: "Ship" }));
@@ -774,7 +774,7 @@ describe("relationship() handle traversal", () => {
   });
 
   it("forward(id) returns null when no Relationship edge exists", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("todo_1", "todo", { title: "Ship" }));
 
@@ -799,7 +799,7 @@ describe("relationship() handle traversal", () => {
   });
 
   it("forward(id) returns a QueryBuilder for sourceCardinality:many", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("list_1", "list", { name: "A" }));
     await storage.entities.set(mkEntity("list_2", "list", { name: "B" }));
@@ -838,7 +838,7 @@ describe("relationship() handle traversal", () => {
   });
 
   it("reverse(id) returns the sources linked via Relationship entities", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage");
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("list_1", "list", { name: "A" }));
     await storage.entities.set(mkEntity("todo_1", "todo", { title: "x" }));
