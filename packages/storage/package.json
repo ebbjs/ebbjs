@@ -17,6 +17,7 @@
     "dev": "vite build --watch",
     "test": "vitest --run",
     "test:watch": "vitest",
+    "benchmark": "tsx src/benchmark/run.ts",
     "typecheck": "tsc --noEmit",
     "lint": "pnpm --root ../../ lint",
     "lint:fix": "pnpm --root ../../ lint:fix",
@@ -24,9 +25,12 @@
     "fmt:check": "pnpm --root ../../ fmt:check"
   },
   "dependencies": {
-    "@ebbjs/core": "workspace:*"
+    "@ebbjs/core": "workspace:*",
+    "idb": "^8.0.3"
   },
   "devDependencies": {
+    "fake-indexeddb": "^6.2.5",
+    "happy-dom": "^15.11.7",
     "tsx": "^4.20.4",
     "vitest": "^3.2.4"
   }

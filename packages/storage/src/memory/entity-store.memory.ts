@@ -1,8 +1,8 @@
-import type { Entity, Update, FieldValue, HLCTimestamp } from "@ebbjs/core";
-import { compare } from "@ebbjs/core";
+import type { Entity } from "@ebbjs/core";
 import type { EntityStore } from "../types/entity-store";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
+import { applyUpdate } from "../internal/materialize";
 
 /**
  * MemoryEntityStore — in-memory implementation of EntityStore.
@@ -19,10 +19,8 @@ import type { DirtyTracker } from "../types/dirty-tracker";
  * 5. Dirty flag is cleared
  *
  * ## Merge Semantics
- * - **put**: full entity replacement
- * - **patch**: field-level LWW (higher HLC wins; tiebreak by lexicographic update_id >=)
- * - **delete**: soft delete (sets deleted_hlc); patch-on-deleted is ignored
- * - **updated_hlc**: set to later of entity.updated_hlc and action hlc
+ * Merge logic lives in `../internal/materialize` and is shared with the
+ * IndexedDB adapter. See that module for LWW rules.
  *
  * ## Immutability
  * All public methods return copies of entities to prevent external mutation.
@@ -57,88 +55,6 @@ const updateTypeIndexOnSet = (
   newTypeIndex[entity.type] = new Set(newTypeIndex[entity.type]).add(entity.id);
 
   return newTypeIndex;
-};
-
-/**
- * Applies a single update to an entity during materialization.
- * PUT replaces the field set; PATCH merges with HLC + lexicographic
- * `update_id` tiebreak.
- */
-const applyUpdate = (
-  entity: Entity | null,
-  update: Update,
-  gsn: number,
-  hlc: HLCTimestamp,
-): Entity => {
-  switch (update.method) {
-    case "put":
-      return {
-        id: update.subject_id,
-        type: update.subject_type,
-        data: { fields: readFields(update) },
-        created_hlc: hlc,
-        updated_hlc: hlc,
-        deleted_hlc: null,
-        last_gsn: gsn,
-      };
-
-    case "patch":
-      if (!entity) throw new Error("Cannot patch non-existent entity");
-      if (entity.deleted_hlc) return entity;
-      return {
-        ...entity,
-        data: mergeFields(entity.data, update),
-        updated_hlc: laterHlc(entity.updated_hlc, hlc) ? hlc : entity.updated_hlc,
-        last_gsn: Math.max(entity.last_gsn, gsn),
-      };
-
-    case "delete":
-      if (!entity) throw new Error("Cannot delete non-existent entity");
-      return {
-        ...entity,
-        deleted_hlc: hlc,
-        updated_hlc: hlc,
-        last_gsn: Math.max(entity.last_gsn, gsn),
-      };
-  }
-};
-
-/**
- * Pull the field map off an Update's `data`.
- */
-const readFields = (update: Update): Record<string, FieldValue> => {
-  return update.data?.fields ?? {};
-};
-
-/**
- * Merges patch fields into existing entity data using LWW semantics.
- * Higher HLC wins; equal HLC uses lexicographic update_id (newer >= older).
- */
-const mergeFields = (existing: Entity["data"], update: Update): Entity["data"] => {
-  const patch = readFields(update);
-  const merged = { ...existing.fields };
-
-  for (const [field, patchValue] of Object.entries(patch)) {
-    const existingValue = merged[field];
-    if (!existingValue) {
-      merged[field] = patchValue;
-    } else {
-      const hlcCmp = compare(existingValue.hlc ?? "", patchValue.hlc ?? "");
-      if (hlcCmp < 0) {
-        merged[field] = patchValue;
-      } else if (hlcCmp === 0) {
-        if (patchValue.update_id >= existingValue.update_id) {
-          merged[field] = patchValue;
-        }
-      }
-    }
-  }
-
-  return { fields: merged };
-};
-
-const laterHlc = (a: HLCTimestamp, b: HLCTimestamp): boolean => {
-  return compare(a, b) > 0;
 };
 
 export const createMemoryEntityStore = (
