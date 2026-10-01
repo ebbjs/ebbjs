@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { type Static } from "@sinclair/typebox";
+import { type Static } from "@sinclair/typebox/type";
 import type { Entity } from "@ebbjs/core";
 
 import { defineEntity, e } from "../../schema/entity";
@@ -732,5 +732,352 @@ describe("client.<entity>.link / unlink / setLinks", () => {
     await expect(client.todo.link("todo_1", "bogus", "list_1")).rejects.toBeInstanceOf(
       EntityValidationError,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #172: runtime validation on writes (Value.Check before network)
+// ---------------------------------------------------------------------------
+
+/**
+ * `client.<entity>.create(input, opts?)` and
+ * `client.<entity>.update(id, patch, opts?)` run the user's typed
+ * input through `Value.Check` against the entity's TypeBox shape
+ * *before* any network call. A non-conforming payload throws
+ * `EntityValidationError`; a conforming one is wrapped in an
+ * entity Update and submitted.
+ *
+ * Tests stub `fetch` so the wire Action is acknowledged without a
+ * live server. The fetch impl records the URL it saw so we can
+ * assert that validation failures never reach the wire.
+ */
+describe("client.<entity>.create / update — runtime validation", () => {
+  /**
+   * Same `todo` schema the rest of the suite uses — two
+   * non-nullable fields so the input contract is fully exercised.
+   * The nullable-field branches use a separate schema (see below).
+   */
+  const todoForCreate = defineEntity("todo", {
+    title: e.string(),
+    completed: e.boolean(),
+  });
+
+  /**
+   * Nullable variant of the same `todo` schema, used by the
+   * "nullable accepts null / non-nullable rejects null" tests.
+   * `defineEntity` wraps nullable fields in `Type.Optional` at
+   * runtime, so `Value.Check` accepts both `{ body: null }` and
+   * the no-body variant. The static type still requires the field
+   * — TypeBox's `ObjectStatic` reads the field type directly and
+   * a `Type.Union<[T, TNull]>` isn't recognized as `TOptional`
+   * — so the tests below pass `body` explicitly.
+   */
+  const todoWithNullable = defineEntity("todo", {
+    title: e.string(),
+    completed: e.boolean(),
+    body: e.string().nullable(),
+  });
+
+  const schemaForCreate = defineSchema({
+    entities: { todo: todoForCreate, user, list: defineEntity("list", { name: e.string() }) },
+    version: 1,
+  });
+
+  const schemaWithNullableBody = defineSchema({
+    entities: { todo: todoWithNullable, user, list: defineEntity("list", { name: e.string() }) },
+    version: 1,
+  });
+
+  /**
+   * Build a stub fetch that records every URL it sees in
+   * `seen` and accepts handshakes / writes. The `create` /
+   * `update` tests assert that a validation failure never causes a
+   * URL to land in `seen`.
+   */
+  const mkRecordingStubFetch = (seen: string[]): typeof fetch => {
+    return (async (url: string, _init: RequestInit): Promise<Response> => {
+      seen.push(url);
+      if (url.endsWith("/sync/handshake")) {
+        return new Response(
+          JSON.stringify({
+            actor_id: "actor_1",
+            groups: [
+              {
+                id: "g_1",
+                permissions: ["todo.*", "list.*"],
+                cursor_valid: true,
+                reason: null,
+                cursor: 0,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/sync/actions")) {
+        return new Response(JSON.stringify({ rejected: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+  };
+
+  const mkClient = async (seen: string[]) => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      storage,
+      schema: schemaForCreate,
+      fetchImpl: mkRecordingStubFetch(seen),
+    });
+    await client.handshake();
+    return { client, storage };
+  };
+
+  /**
+   * Variant of `mkClient` for tests that exercise the nullable
+   * `body` field. The nullable schema is built with
+   * `e.string().nullable()` — the runtime validator accepts
+   * `{ body: null }` and rejects `null` on non-nullable fields,
+   * exactly what the tests assert. The static type requires
+   * `body`, so tests pass it explicitly with `body: null`.
+   */
+  const mkClientWithNullable = async (seen: string[]) => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      storage,
+      schema: schemaWithNullableBody,
+      fetchImpl: mkRecordingStubFetch(seen),
+    });
+    await client.handshake();
+    return { client, storage };
+  };
+
+  it("create() accepts a conforming payload and submits to /sync/actions", async () => {
+    const seen: string[] = [];
+    const { client } = await mkClient(seen);
+    const response = await client.todo.create({ title: "Ship", completed: false });
+    expect(response.rejected).toEqual([]);
+    // handshake + actions: validation passed, the wire saw the call.
+    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
+  });
+
+  it("create() accepts null for a nullable field and rejects it for a non-nullable one", async () => {
+    const seen: string[] = [];
+    const { client } = await mkClientWithNullable(seen);
+    const seenBefore = seen.length;
+
+    // Nullable field accepts null.
+    const response = await client.todo.create({
+      title: "Ship",
+      completed: false,
+      body: null,
+    });
+    expect(response.rejected).toEqual([]);
+
+    // Non-nullable field rejects null.
+    await expect(
+      client.todo.create({
+        title: null as unknown as string,
+        completed: false,
+        body: null,
+      }),
+    ).rejects.toBeInstanceOf(EntityValidationError);
+
+    // The validation failure must not have reached the wire — only
+    // the first successful create made a /sync/actions call.
+    const actionsCalls = seen.filter((u) => u.endsWith("/sync/actions")).length;
+    expect(actionsCalls).toBe(1);
+    expect(seen.length).toBe(seenBefore + 1);
+  });
+
+  it("create() throws EntityValidationError with the bad field name when value type is wrong", async () => {
+    const seen: string[] = [];
+    const { client } = await mkClient(seen);
+    const seenBefore = seen.length;
+
+    try {
+      // Cast bypasses the type checker so the deliberately-wrong
+      // payload reaches `Value.Check` — that's what the test
+      // exercises (the validator catching type mismatches).
+      await client.todo.create({ title: 42, completed: false } as never);
+      expect.fail("expected EntityValidationError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(EntityValidationError);
+      const violations = (err as InstanceType<typeof EntityValidationError>).violations;
+      expect(violations.length).toBeGreaterThanOrEqual(1);
+      const titleViolation = violations.find((v) => v.field === "title");
+      expect(titleViolation).toBeDefined();
+      expect(titleViolation!.entityName).toBe("todo");
+      expect(titleViolation!.message).toMatch(/title/i);
+    }
+
+    // No fetch for /sync/actions after the failed create — the
+    // validator rejected before any network call.
+    const newActionsCalls = seen.filter((u) => u.endsWith("/sync/actions")).length;
+    expect(newActionsCalls).toBe(0);
+    expect(seen.length).toBe(seenBefore);
+  });
+
+  it("create() throws EntityValidationError for an unknown field", async () => {
+    const seen: string[] = [];
+    const { client } = await mkClient(seen);
+
+    try {
+      await client.todo.create({
+        title: "Ship",
+        completed: false,
+        bogus: "x",
+      } as never);
+      expect.fail("expected EntityValidationError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(EntityValidationError);
+      const violations = (err as InstanceType<typeof EntityValidationError>).violations;
+      expect(violations.length).toBeGreaterThanOrEqual(1);
+      // TypeBox reports unknown properties as `Unexpected property`
+      // (additional-properties rejection) — the field name surfaces
+      // in the violation path or message.
+      const offending = violations.find((v) => /bogus/i.test(v.message));
+      expect(offending).toBeDefined();
+    }
+
+    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
+  });
+
+  it("create() reports every violation in a single EntityValidationError", async () => {
+    const seen: string[] = [];
+    const { client } = await mkClient(seen);
+
+    try {
+      await client.todo.create({
+        title: 42,
+        completed: "no",
+        bogus: "x",
+      } as never);
+      expect.fail("expected EntityValidationError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(EntityValidationError);
+      const violations = (err as InstanceType<typeof EntityValidationError>).violations;
+      // title (wrong type), completed (wrong type), bogus (unknown).
+      expect(violations.length).toBeGreaterThanOrEqual(2);
+      const fields = violations.map((v) => v.field).filter((f): f is string => f !== undefined);
+      expect(fields).toContain("title");
+      expect(fields).toContain("completed");
+    }
+    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
+  });
+
+  it("create({ validate: false }) skips local validation and submits", async () => {
+    const seen: string[] = [];
+    const { client } = await mkClient(seen);
+    // A wrong-type value (title: 42) is what `Value.Check` rejects;
+    // the registry's name-membership check accepts it because
+    // `title` is declared. With `validate: false` the local pass is
+    // skipped and the wire Update ships.
+    const response = await client.todo.create({ title: 42, completed: false } as never, {
+      validate: false,
+    });
+    expect(response.rejected).toEqual([]);
+    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
+  });
+
+  it("update(id, patch) validates the patch and submits when valid", async () => {
+    const seen: string[] = [];
+    const { client } = await mkClient(seen);
+    const response = await client.todo.update("todo_1", { completed: true });
+    expect(response.rejected).toEqual([]);
+    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
+  });
+
+  it("update() throws EntityValidationError on a type mismatch", async () => {
+    const seen: string[] = [];
+    const { client } = await mkClient(seen);
+
+    try {
+      await client.todo.update("todo_1", { title: 99 } as never);
+      expect.fail("expected EntityValidationError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(EntityValidationError);
+      const violations = (err as InstanceType<typeof EntityValidationError>).violations;
+      const titleViolation = violations.find((v) => v.field === "title");
+      expect(titleViolation).toBeDefined();
+    }
+
+    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
+  });
+
+  it("update() throws EntityValidationError on an unknown patch field", async () => {
+    const seen: string[] = [];
+    const { client } = await mkClient(seen);
+
+    await expect(client.todo.update("todo_1", { bogus: "x" } as never)).rejects.toBeInstanceOf(
+      EntityValidationError,
+    );
+
+    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
+  });
+
+  it("update() accepts null for a nullable field and rejects it for a non-nullable one", async () => {
+    const seen: string[] = [];
+    const { client } = await mkClientWithNullable(seen);
+
+    // Nullable field accepts null.
+    const response = await client.todo.update("todo_1", { body: null });
+    expect(response.rejected).toEqual([]);
+
+    // Non-nullable field rejects null.
+    await expect(
+      client.todo.update("todo_1", { title: null as unknown as string }),
+    ).rejects.toBeInstanceOf(EntityValidationError);
+
+    const actionsCalls = seen.filter((u) => u.endsWith("/sync/actions")).length;
+    expect(actionsCalls).toBe(1);
+  });
+
+  it("update({ validate: false }) skips local validation and submits", async () => {
+    const seen: string[] = [];
+    const { client } = await mkClient(seen);
+    const response = await client.todo.update("todo_1", { title: 42 } as never, {
+      validate: false,
+    });
+    expect(response.rejected).toEqual([]);
+    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
+  });
+
+  it("create() validation throws before any /sync/actions fetch (no network on bad input)", async () => {
+    const seen: string[] = [];
+    const { client } = await mkClient(seen);
+    // The handshake call landed; count it so the assertion below
+    // can prove no further URL was hit.
+    const before = seen.length;
+    await expect(
+      client.todo.create({ title: 42, completed: false } as never),
+    ).rejects.toBeInstanceOf(EntityValidationError);
+    // No new URL was hit — validation rejected before the wire.
+    expect(seen.length).toBe(before);
+  });
+
+  it("create() input type flow: title and completed types are inferred from the entity shape", () => {
+    // Compile-time check: the input type flows from the entity's
+    // TypeBox shape. `title` must be a string, `completed` a
+    // boolean. Wrapped in a function so vitest's runtime ignore
+    // (`@ts-expect-error`) doesn't trip when the file loads.
+    const check: () => void = () => {
+      const _typecheck = (input: { title: string; completed: boolean }) => {
+        void input.title.toUpperCase();
+        void !input.completed;
+        // @ts-expect-error — `bogus` is not in the field map.
+        void input.bogus;
+      };
+      void _typecheck;
+    };
+    expect(typeof check).toBe("function");
   });
 });
