@@ -726,7 +726,7 @@ const isEmptyPayload = (payload: unknown): boolean => {
  * dropped (the wire envelope is absent, not explicitly undefined);
  * `null` is preserved so nullable fields round-trip cleanly.
  */
-const wrapFields = (
+export const wrapFields = (
   payload: unknown,
   updateId: string,
   hlc: string,
