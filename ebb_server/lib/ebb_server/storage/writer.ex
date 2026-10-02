@@ -29,33 +29,34 @@ defmodule EbbServer.Storage.Writer do
 
   ## cf_group_actions index and intra-action context
 
-  When building the `cf_group_actions` index entry for a relationship
-  update, the Writer must resolve which group the relationship belongs
-  to. This is straightforward when the relationship's `source_id`
-  already exists — look it up in `RelationshipCache`. When the
-  `source_id` is being created in the same action (e.g. a "create todo"
-  update paired with a "todo.owns" relationship update), the cache has
-  no entry yet.
+  When building the `cf_group_actions` index entry for an update, the
+  Writer resolves the group **set** the update belongs to. This is
+  straightforward when the entity already exists — look it up in
+  `RelationshipCache`. When the membership edge is being created in the
+  same action (e.g. a "create todo" update paired with a
+  `kind: "member"` relationship update), the cache has no entry yet.
 
   To handle that, the Writer builds an **intra-action context** before
-  processing updates: it maps each `source_id` to its corresponding
-  `target_id` for all relationship updates in the action. When a
-  relationship's `source_id` appears in this context, the Writer uses
-  the `target_id` to look up the group instead.
+  processing updates: it maps each `source_id` to the group ids carried
+  by its `kind: "member"` relationship updates. `EntityIndex` unions
+  that with the cached membership set, so an update is indexed once per
+  group in the set.
 
   Example: an action with two updates:
-  1. Create entity `todo_123` (targeting group `g_1`)
-  2. Add relationship `rel_456` with `source_id: "todo_123", target_id: "col_1"`
+  1. Create entity `todo_123` inside group `g_1` and `g_2`
+  2. Add membership edges `rel_a` (`todo_123` → `g_1`) and `rel_b`
+     (`todo_123` → `g_2`), both `kind: "member"`
 
-  The intra-action context becomes `%{"todo_123" => "col_1"}`. When
-  building the `cf_group_actions` index for `rel_456`, the Writer sees
-  that `source_id` is in the context and uses `col_1` to find the
-  group, rather than failing to look up `todo_123` in the cache.
+  The intra-action context becomes
+  `%{"todo_123" => ["g_1", "g_2"]}`. The Writer indexes the create
+  and both edges into `g_1` and `g_2`. Domain links (`kind: "link"`,
+  or no kind) do not move an entity between groups.
   """
 
   use GenServer
 
   alias EbbServer.Storage.PermissionChecker
+  alias EbbServer.Storage.PermissionHelper
   alias EbbServer.Storage.WatermarkTracker
 
   alias EbbServer.Storage.{
@@ -296,6 +297,7 @@ defmodule EbbServer.Storage.Writer do
         target_id = Fields.get(data, "target_id")
         type = Fields.get(data, "type")
         field = Fields.get(data, "field")
+        kind = Fields.get(data, "kind")
 
         RelationshipCache.put_relationship(
           %{
@@ -303,7 +305,8 @@ defmodule EbbServer.Storage.Writer do
             source_id: source_id,
             target_id: target_id,
             type: type,
-            field: field
+            field: field,
+            kind: kind
           },
           relationships: state.relationships,
           relationships_by_group: state.relationships_by_group,
@@ -352,14 +355,7 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp build_intra_action_context(updates) do
-    updates
-    |> Enum.filter(fn u -> u.subject_type == "relationship" end)
-    |> Enum.reduce(%{}, fn u, acc ->
-      data = u.data || %{}
-      source_id = Fields.get(data, "source_id")
-      target_id = Fields.get(data, "target_id")
-      if source_id && target_id, do: Map.put(acc, source_id, target_id), else: acc
-    end)
+    PermissionHelper.build_intra_action_context(updates)
   end
 
   defp to_storage_format(action, gsn) do
@@ -441,8 +437,8 @@ defmodule EbbServer.Storage.Writer do
          group_members_by_id,
          intra_ctx
        ) do
-    group_id =
-      get_group_id_for_group_action_index(
+    group_ids =
+      get_group_ids_for_group_action_index(
         update,
         relationships,
         relationships_by_id,
@@ -450,25 +446,38 @@ defmodule EbbServer.Storage.Writer do
         intra_ctx
       )
 
-    if group_id do
+    Enum.map(group_ids, fn group_id ->
       key = <<group_id::binary, gsn::unsigned-big-integer-size(64)>>
-      [{:put, RocksDB.cf_group_actions(rocks_name), key, action_id}]
-    else
-      []
-    end
+      {:put, RocksDB.cf_group_actions(rocks_name), key, action_id}
+    end)
   end
 
-  defp get_group_id_for_group_action_index(
+  defp get_group_ids_for_group_action_index(
          update,
          relationships,
          relationships_by_id,
          group_members_by_id,
          intra_ctx
        ) do
-    EntityIndex.resolve_group(update.subject_type, update.subject_id,
+    opts = [
       relationships: relationships,
       relationships_by_id: relationships_by_id,
-      group_members_by_id: group_members_by_id
-    ) || Map.get(intra_ctx, update.subject_id)
+      group_members_by_id: group_members_by_id,
+      intra_action: intra_ctx
+    ]
+
+    case update.subject_type do
+      "relationship" ->
+        wire_source_id = Fields.get(update.data, "source_id")
+
+        if wire_source_id do
+          EntityIndex.source_groups(wire_source_id, opts)
+        else
+          EntityIndex.resolve_groups("relationship", update.subject_id, opts)
+        end
+
+      type ->
+        EntityIndex.resolve_groups(type, update.subject_id, opts)
+    end
   end
 end

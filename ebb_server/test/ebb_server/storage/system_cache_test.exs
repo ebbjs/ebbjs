@@ -111,7 +111,8 @@ defmodule EbbServer.Storage.SystemCacheTest do
                 "source_id" => %{"value" => "doc_test", "update_id" => "u1"},
                 "target_id" => %{"value" => "grp_test", "update_id" => "u1"},
                 "type" => %{"value" => "text_document", "update_id" => "u1"},
-                "field" => %{"value" => "ownedBy", "update_id" => "u1"}
+                "field" => %{"value" => "ownedBy", "update_id" => "u1"},
+                "kind" => %{"value" => "member", "update_id" => "u1"}
               }
             }
           }
@@ -212,7 +213,8 @@ defmodule EbbServer.Storage.SystemCacheTest do
                 "source_id" => %{"value" => "doc_demo", "update_id" => "u1"},
                 "target_id" => %{"value" => "grp_demo", "update_id" => "u1"},
                 "type" => %{"value" => "text_document", "update_id" => "u1"},
-                "field" => %{"value" => "ownedBy", "update_id" => "u1"}
+                "field" => %{"value" => "ownedBy", "update_id" => "u1"},
+                "kind" => %{"value" => "member", "update_id" => "u1"}
               }
             }
           }

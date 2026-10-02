@@ -54,32 +54,55 @@ defmodule EbbServer.Storage.EntityIndexTest do
     }
   end
 
-  describe "resolve_group/3" do
-    test "returns group id for a group subject type" do
+  defp opts(t) do
+    [
+      relationships: t.relationships,
+      relationships_by_id: t.relationships_by_id,
+      group_members_by_id: t.group_members_by_id
+    ]
+  end
+
+  defp put_rel(t, rel) do
+    RelationshipCache.put_relationship(rel,
+      relationships: t.relationships,
+      relationships_by_group: t.relationships_by_group,
+      relationships_by_id: t.relationships_by_id
+    )
+  end
+
+  defp member(source_id, target_id, id) do
+    %{
+      id: id,
+      source_id: source_id,
+      target_id: target_id,
+      type: "todo",
+      field: "group",
+      kind: "member"
+    }
+  end
+
+  describe "resolve_groups/3" do
+    test "returns the group id for a group subject type" do
       _ = tables()
-      assert EntityIndex.resolve_group("group", "g_1") == "g_1"
+      assert EntityIndex.resolve_groups("group", "g_1") == ["g_1"]
     end
 
-    test "resolves a relationship subject via the by-id table" do
+    test "resolves a relationship subject via its source's membership set" do
       t = tables()
 
-      :ok =
-        RelationshipCache.put_relationship(
-          %{
-            id: "rel_1",
-            source_id: "todo_1",
-            target_id: "g_1",
-            type: "todo",
-            field: "group"
-          },
-          relationships: t.relationships,
-          relationships_by_group: t.relationships_by_group,
-          relationships_by_id: t.relationships_by_id
-        )
+      :ok = put_rel(t, member("todo_1", "g_1", "rel_member"))
 
-      assert EntityIndex.resolve_group("relationship", "rel_1",
-               relationships_by_id: t.relationships_by_id
-             ) == "g_1"
+      :ok =
+        put_rel(t, %{
+          id: "rel_link",
+          source_id: "todo_1",
+          target_id: "col_1",
+          type: "todo",
+          field: "column",
+          kind: "link"
+        })
+
+      assert EntityIndex.resolve_groups("relationship", "rel_link", opts(t)) == ["g_1"]
     end
 
     test "resolves a groupMember subject via the by-id table" do
@@ -91,56 +114,105 @@ defmodule EbbServer.Storage.EntityIndexTest do
           t.group_members
         )
 
-      assert EntityIndex.resolve_group("groupMember", "gm_1",
-               group_members_by_id: t.group_members_by_id
-             ) == "g_1"
+      assert EntityIndex.resolve_groups("groupMember", "gm_1", opts(t)) == ["g_1"]
     end
 
-    test "resolves a user entity via the relationships table" do
+    test "returns every group for a multi-membership source" do
+      t = tables()
+
+      :ok = put_rel(t, member("todo_1", "g_1", "rel_1"))
+      :ok = put_rel(t, member("todo_1", "g_2", "rel_2"))
+
+      assert EntityIndex.resolve_groups("todo", "todo_1", opts(t)) |> Enum.sort() == [
+               "g_1",
+               "g_2"
+             ]
+    end
+
+    test "unions cached membership with intra-action membership" do
+      t = tables()
+
+      :ok = put_rel(t, member("todo_1", "g_1", "rel_1"))
+
+      assert EntityIndex.resolve_groups(
+               "todo",
+               "todo_1",
+               opts(t) ++ [intra_action: %{"todo_1" => ["g_2"]}]
+             )
+             |> Enum.sort() == ["g_1", "g_2"]
+    end
+
+    test "a link target is not treated as a group" do
       t = tables()
 
       :ok =
-        RelationshipCache.put_relationship(
-          %{
-            id: "rel_1",
-            source_id: "todo_1",
-            target_id: "g_1",
-            type: "todo",
-            field: "group"
-          },
-          relationships: t.relationships,
-          relationships_by_group: t.relationships_by_group,
-          relationships_by_id: t.relationships_by_id
-        )
+        put_rel(t, %{
+          id: "rel_link",
+          source_id: "todo_1",
+          target_id: "g_1",
+          type: "todo",
+          field: "owns",
+          kind: "link"
+        })
 
-      assert EntityIndex.resolve_group("todo", "todo_1", relationships: t.relationships) == "g_1"
+      assert EntityIndex.resolve_groups("todo", "todo_1", opts(t)) == []
+      assert EntityIndex.resolve_groups("relationship", "rel_link", opts(t)) == []
     end
 
-    test "returns nil when the entity isn't in the index" do
+    test "returns an empty list when the entity isn't in the index" do
       t = tables()
 
-      assert EntityIndex.resolve_group("relationship", "rel_unknown",
-               relationships_by_id: t.relationships_by_id
-             ) == nil
-
-      assert EntityIndex.resolve_group("groupMember", "gm_unknown",
-               group_members_by_id: t.group_members_by_id
-             ) == nil
-
-      assert EntityIndex.resolve_group("todo", "todo_unknown", relationships: t.relationships) ==
-               nil
+      assert EntityIndex.resolve_groups("relationship", "rel_unknown", opts(t)) == []
+      assert EntityIndex.resolve_groups("groupMember", "gm_unknown", opts(t)) == []
+      assert EntityIndex.resolve_groups("todo", "todo_unknown", opts(t)) == []
     end
 
     test "raises when a required table is missing from opts" do
       _t = tables()
 
       assert_raise KeyError, fn ->
-        EntityIndex.resolve_group("relationship", "rel_1", [])
+        EntityIndex.resolve_groups("relationship", "rel_1", [])
       end
 
       assert_raise KeyError, fn ->
-        EntityIndex.resolve_group("groupMember", "gm_1", [])
+        EntityIndex.resolve_groups("groupMember", "gm_1", [])
       end
+
+      assert_raise KeyError, fn ->
+        EntityIndex.resolve_groups("todo", "todo_1", [])
+      end
+    end
+  end
+
+  describe "resolve_group/3" do
+    test "returns the first group of the entity's set" do
+      t = tables()
+
+      :ok = put_rel(t, member("todo_1", "g_1", "rel_1"))
+
+      assert EntityIndex.resolve_group("todo", "todo_1", opts(t)) == "g_1"
+    end
+
+    test "returns nil when the set is empty" do
+      t = tables()
+
+      assert EntityIndex.resolve_group("todo", "todo_unknown", opts(t)) == nil
+    end
+  end
+
+  describe "source_groups/2" do
+    test "returns membership targets plus intra-action targets" do
+      t = tables()
+
+      :ok = put_rel(t, member("todo_1", "g_1", "rel_1"))
+
+      assert EntityIndex.source_groups("todo_1", opts(t)) == ["g_1"]
+
+      assert EntityIndex.source_groups(
+               "todo_1",
+               opts(t) ++ [intra_action: %{"todo_1" => ["g_2"]}]
+             )
+             |> Enum.sort() == ["g_1", "g_2"]
     end
   end
 end

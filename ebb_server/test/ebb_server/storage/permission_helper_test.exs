@@ -220,7 +220,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
   end
 
   describe "build_intra_action_context/1" do
-    test "extracts relationship puts into map" do
+    test "extracts member relationship puts into a source => groups map" do
       updates = [
         %{
           "id" => "rel_1",
@@ -229,7 +229,8 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "data" => %{
             "fields" => %{
               "source_id" => %{"value" => "todo_1"},
-              "target_id" => %{"value" => "g_1"}
+              "target_id" => %{"value" => "g_1"},
+              "kind" => %{"value" => "member"}
             }
           }
         },
@@ -240,7 +241,8 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "data" => %{
             "fields" => %{
               "source_id" => %{"value" => "post_1"},
-              "target_id" => %{"value" => "g_2"}
+              "target_id" => %{"value" => "g_2"},
+              "kind" => %{"value" => "member"}
             }
           }
         }
@@ -248,7 +250,70 @@ defmodule EbbServer.Storage.PermissionHelperTest do
 
       ctx = PermissionHelper.build_intra_action_context(updates)
 
-      assert ctx == %{"todo_1" => "g_1", "post_1" => "g_2"}
+      assert ctx == %{"todo_1" => ["g_1"], "post_1" => ["g_2"]}
+    end
+
+    test "collects several member edges for the same source" do
+      updates = [
+        %{
+          "id" => "rel_1",
+          "subject_type" => "relationship",
+          "method" => "put",
+          "data" => %{
+            "fields" => %{
+              "source_id" => %{"value" => "todo_1"},
+              "target_id" => %{"value" => "g_1"},
+              "kind" => %{"value" => "member"}
+            }
+          }
+        },
+        %{
+          "id" => "rel_2",
+          "subject_type" => "relationship",
+          "method" => "put",
+          "data" => %{
+            "fields" => %{
+              "source_id" => %{"value" => "todo_1"},
+              "target_id" => %{"value" => "g_2"},
+              "kind" => %{"value" => "member"}
+            }
+          }
+        }
+      ]
+
+      assert PermissionHelper.build_intra_action_context(updates) == %{
+               "todo_1" => ["g_1", "g_2"]
+             }
+    end
+
+    test "ignores link edges and edges without a kind" do
+      updates = [
+        %{
+          "id" => "rel_link",
+          "subject_type" => "relationship",
+          "method" => "put",
+          "data" => %{
+            "fields" => %{
+              "source_id" => %{"value" => "todo_1"},
+              "target_id" => %{"value" => "g_1"},
+              "kind" => %{"value" => "link"}
+            }
+          }
+        },
+        %{
+          "id" => "rel_unmarked",
+          "subject_type" => "relationship",
+          "method" => "put",
+          "data" => %{
+            "fields" => %{
+              "source_id" => %{"value" => "todo_2"},
+              "target_id" => %{"value" => "g_1"}
+            }
+          }
+        }
+      ]
+
+      assert PermissionHelper.build_intra_action_context(updates) == %{}
     end
 
     test "ignores non-relationship updates" do
@@ -266,7 +331,8 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "data" => %{
             "fields" => %{
               "source_id" => %{"value" => "todo_1"},
-              "target_id" => %{"value" => "g_1"}
+              "target_id" => %{"value" => "g_1"},
+              "kind" => %{"value" => "member"}
             }
           }
         }
@@ -274,7 +340,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
 
       ctx = PermissionHelper.build_intra_action_context(updates)
 
-      assert ctx == %{"todo_1" => "g_1"}
+      assert ctx == %{"todo_1" => ["g_1"]}
     end
 
     test "ignores delete methods" do
@@ -286,7 +352,8 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "data" => %{
             "fields" => %{
               "source_id" => %{"value" => "todo_1"},
-              "target_id" => %{"value" => "g_1"}
+              "target_id" => %{"value" => "g_1"},
+              "kind" => %{"value" => "member"}
             }
           }
         }

@@ -103,25 +103,29 @@ defmodule EbbServer.Storage.PermissionHelper do
   end
 
   @doc """
-  Builds an intra-action context map for relationship resolution.
+  Builds an intra-action context map for membership resolution.
 
-  Maps source_id to target_id for relationship puts within the same action.
-  This allows new entities to be linked in a single action.
+  Maps source_id to the list of group ids carried by `kind: "member"`
+  relationship puts within the same action. Domain links (and edges
+  with no kind, which default to `"link"`) are ignored: only
+  membership edges move an entity into a group.
   """
-  @spec build_intra_action_context([map()]) :: %{String.t() => String.t()}
+  @spec build_intra_action_context([map()]) :: %{String.t() => [String.t()]}
   def build_intra_action_context(updates) do
     updates
     |> Enum.filter(fn u ->
-      get_subject_type(u) == "relationship" and normalize_method(get_method(u)) == "put"
+      get_subject_type(u) == "relationship" and normalize_method(get_method(u)) == "put" and
+        get_data_field(u, "kind") == "member"
     end)
     |> Enum.reduce(%{}, fn u, acc ->
-      data = Map.get(u, "data") || Map.get(u, :data)
+      source_id = get_data_field(u, "source_id")
+      target_id = get_data_field(u, "target_id")
 
-      source_id = if is_map(data), do: Fields.get(data, "source_id")
-
-      target_id = if is_map(data), do: Fields.get(data, "target_id")
-
-      if source_id && target_id, do: Map.put(acc, source_id, target_id), else: acc
+      if source_id && target_id do
+        Map.update(acc, source_id, [target_id], &Enum.sort(Enum.uniq([target_id | &1])))
+      else
+        acc
+      end
     end)
   end
 end

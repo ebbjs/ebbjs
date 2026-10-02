@@ -23,7 +23,8 @@ defmodule EbbServer.Sync.RouterTest do
         source_id: entity_id,
         target_id: group_id,
         type: "todo",
-        field: "group"
+        field: "group",
+        kind: "member"
       })
   end
 

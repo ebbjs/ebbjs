@@ -5,9 +5,13 @@ defmodule EbbServer.Storage.RelationshipCache do
   Manages entity-to-group and group-to-entity relationship mappings,
   with secondary indexes that allow lookups by relationship id.
   Uses three ETS tables:
-  - `:ebb_relationships` - maps source entity to group
+  - `:ebb_relationships` - `:bag` of `{source_id, entry}`, one row per edge
   - `:ebb_relationships_by_group` - maps group to source entities
   - `:ebb_relationships_by_id` - maps relationship id to entry
+
+  Membership is the subset of edges with `kind: "member"`; domain
+  edges carry `kind: "link"`. Entries stored before `kind` existed
+  have no kind and are treated as `"link"`.
 
   The GenServer exists solely to own the ETS table lifetime and
   manage startup/shutdown. All public functions are lock-free.
@@ -53,20 +57,29 @@ defmodule EbbServer.Storage.RelationshipCache do
     rbg_table = Keyword.get(opts, :relationships_by_group, @default_relationships_by_group)
     rbi_table = Keyword.get(opts, :relationships_by_id, @default_relationships_by_id)
 
-    source_id = rel[:source_id] || rel["source_id"]
-    target_id = rel[:target_id] || rel["target_id"]
-    entry_id = rel[:id] || rel["id"]
+    source_id = field(rel, :source_id)
+    target_id = field(rel, :target_id)
+    entry_id = field(rel, :id)
 
-    if is_nil(source_id) or is_nil(target_id) or is_nil(entry_id) do
+    if nil_ids?(source_id, target_id, entry_id) do
       {:error, :nil_values_not_allowed}
     else
       entry = %{
         id: entry_id,
         source_id: source_id,
         target_id: target_id,
-        type: rel[:type] || rel["type"],
-        field: rel[:field] || rel["field"]
+        type: field(rel, :type),
+        field: field(rel, :field),
+        kind: field(rel, :kind) || "link"
       }
+
+      # A re-put replaces the row for the same id. Leaving the previous
+      # row in the bag would let a stale target keep resolving.
+      delete_relationship(entry_id,
+        relationships: rel_table,
+        relationships_by_group: rbg_table,
+        relationships_by_id: rbi_table
+      )
 
       :ets.insert(rel_table, {source_id, entry})
       :ets.insert(rbg_table, {target_id, source_id})
@@ -90,8 +103,11 @@ defmodule EbbServer.Storage.RelationshipCache do
     rbi_table = Keyword.get(opts, :relationships_by_id, @default_relationships_by_id)
 
     case :ets.lookup(rbi_table, rel_id) do
-      [{_, %{source_id: source_id, target_id: target_id}}] ->
-        :ets.delete(rel_table, source_id)
+      [{_, entry}] ->
+        source_id = entry_source_id(entry)
+        target_id = entry_target_id(entry)
+
+        :ets.delete_object(rel_table, {source_id, entry})
         :ets.delete_object(rbg_table, {target_id, source_id})
         :ets.delete(rbi_table, rel_id)
         :ok
@@ -136,10 +152,33 @@ defmodule EbbServer.Storage.RelationshipCache do
   """
   @spec get_entity_group(String.t(), atom()) :: String.t() | nil
   def get_entity_group(entity_id, table \\ @default_relationships) do
-    case :ets.lookup(table, entity_id) do
-      [{_source_id, %{target_id: group_id}}] -> group_id
+    case membership_groups(entity_id, table) do
+      [group_id | _] -> group_id
       [] -> nil
     end
+  end
+
+  @doc """
+  Returns the distinct group ids a source belongs to through
+  `kind: "member"` edges. Entries without a `kind` predate membership
+  marking and are treated as `"link"`.
+
+  ## Examples
+
+      iex> RelationshipCache.membership_groups("todo_1")
+      ["g_1", "g_2"]
+
+      iex> RelationshipCache.membership_groups("unknown")
+      []
+  """
+  @spec membership_groups(String.t(), atom()) :: [String.t()]
+  def membership_groups(source_id, table \\ @default_relationships) do
+    table
+    |> :ets.lookup(source_id)
+    |> Enum.flat_map(fn {_source_id, entry} ->
+      if member?(entry), do: [entry_target_id(entry)], else: []
+    end)
+    |> Enum.uniq()
   end
 
   @doc """
@@ -170,7 +209,7 @@ defmodule EbbServer.Storage.RelationshipCache do
     rbg_table = Keyword.get(opts, :relationships_by_group, @default_relationships_by_group)
     rbi_table = Keyword.get(opts, :relationships_by_id, @default_relationships_by_id)
 
-    reset_table(rel_table, :set)
+    reset_table(rel_table, :bag)
     reset_table(rbg_table, :bag)
     reset_table(rbi_table, :set)
 
@@ -204,7 +243,7 @@ defmodule EbbServer.Storage.RelationshipCache do
     :persistent_term.put({__MODULE__, :relationships}, relationships)
     :persistent_term.put({__MODULE__, :relationships_by_group}, relationships_by_group)
     :persistent_term.put({__MODULE__, :relationships_by_id}, relationships_by_id)
-    :ets.new(relationships, [:set, :public, :named_table])
+    :ets.new(relationships, [:bag, :public, :named_table])
     :ets.new(relationships_by_group, [:bag, :public, :named_table])
     :ets.new(relationships_by_id, [:set, :public, :named_table])
 
@@ -227,5 +266,16 @@ defmodule EbbServer.Storage.RelationshipCache do
     end
 
     :ok
+  end
+
+  defp member?(entry), do: field(entry, :kind) == "member"
+
+  defp entry_source_id(entry), do: field(entry, :source_id)
+  defp entry_target_id(entry), do: field(entry, :target_id)
+
+  defp field(map, key), do: map[key] || map[to_string(key)]
+
+  defp nil_ids?(source_id, target_id, entry_id) do
+    is_nil(source_id) or is_nil(target_id) or is_nil(entry_id)
   end
 end

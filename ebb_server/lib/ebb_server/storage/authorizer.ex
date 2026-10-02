@@ -63,6 +63,9 @@ defmodule EbbServer.Storage.Authorizer do
     Enum.reduce_while(updates, :ok, fn update, _acc ->
       result =
         case update.subject_type do
+          "relationship" ->
+            authorize_relationship_update(update, actor_id, intra_ctx, ctx)
+
           type when type in @system_entity_types ->
             authorize_system_entity_update(update, actor_id, ctx)
 
@@ -77,52 +80,84 @@ defmodule EbbServer.Storage.Authorizer do
     end)
   end
 
+  # A relationship is authorized against its source's membership set,
+  # never its own `target_id`: an app may hold a domain link to a group
+  # entity. Puts and patches carry the source on the wire; deletes drop
+  # the data, so the by-id index supplies the source instead.
+  defp authorize_relationship_update(update, actor_id, intra_ctx, ctx) do
+    wire_source_id = Fields.get(update.data, "source_id")
+    opts = Keyword.put(ctx_to_opts(ctx), :intra_action, intra_ctx)
+
+    group_ids =
+      if(wire_source_id, do: EntityIndex.source_groups(wire_source_id, opts), else: []) ++
+        EntityIndex.resolve_groups("relationship", update.subject_id, opts)
+
+    check_any_group_membership(actor_id, group_ids, ctx)
+  end
+
   defp authorize_system_entity_update(update, actor_id, ctx) do
-    group_id = get_group_id_for_update(update, ctx)
-    check_group_membership(actor_id, group_id, ctx)
+    check_any_group_membership(actor_id, system_entity_group_ids(update, ctx), ctx)
   end
 
   # When the data envelope carries the group id, prefer it (first-wins);
   # otherwise resolve via the by-id index — required for system-entity
   # deletes, whose wire form drops the data fields.
-  defp get_group_id_for_update(%{subject_type: "group", subject_id: group_id}, _ctx) do
-    group_id
+  defp system_entity_group_ids(%{subject_type: "group", subject_id: group_id}, _ctx) do
+    [group_id]
   end
 
-  defp get_group_id_for_update(%{subject_type: type, data: data, subject_id: id}, ctx)
-       when type in ["groupMember", "relationship"] do
-    wire_group_id = Fields.get(data, wire_group_key(type))
-    wire_group_id || EntityIndex.resolve_group(type, id, ctx_to_opts(ctx))
+  defp system_entity_group_ids(%{subject_type: type, data: data, subject_id: id}, ctx) do
+    case Fields.get(data, "group_id") do
+      nil -> EntityIndex.resolve_groups(type, id, ctx_to_opts(ctx))
+      group_id -> [group_id]
+    end
   end
 
-  defp check_group_membership(_actor_id, nil, _ctx) do
-    {:error, "not_authorized", "actor is not a member of the group"}
-  end
-
-  defp check_group_membership(actor_id, group_id, ctx) do
-    case GroupCache.get_permissions(actor_id, group_id, ctx.group_members_table) do
-      nil -> {:error, "not_authorized", "actor is not a member of the group"}
-      _perms -> :ok
+  defp check_any_group_membership(actor_id, group_ids, ctx) do
+    if Enum.any?(group_ids, fn group_id ->
+         GroupCache.get_permissions(actor_id, group_id, ctx.group_members_table) != nil
+       end) do
+      :ok
+    else
+      {:error, "not_authorized", "actor is not a member of the group"}
     end
   end
 
   defp authorize_user_entity_update(update, actor_id, intra_ctx, ctx) do
-    subject_id = update.subject_id
-    subject_type = update.subject_type
+    opts = Keyword.put(ctx_to_opts(ctx), :intra_action, intra_ctx)
 
-    group_id =
-      EntityIndex.resolve_group(subject_type, subject_id, ctx_to_opts(ctx)) ||
-        Map.get(intra_ctx, subject_id)
-
-    if group_id do
-      check_group_permissions(group_id, actor_id, subject_type, update.method, ctx)
-    else
-      check_actor_can_create_entity(actor_id, subject_type, update.method, ctx)
+    case EntityIndex.resolve_groups(update.subject_type, update.subject_id, opts) do
+      [] -> check_actor_can_create_entity(actor_id, update.subject_type, update.method, ctx)
+      group_ids -> check_any_group_permission(group_ids, actor_id, update, ctx)
     end
   end
 
-  defp wire_group_key("groupMember"), do: "group_id"
-  defp wire_group_key("relationship"), do: "target_id"
+  # Union semantics: the actor may hold the permission in any group of
+  # the entity's set; the write is indexed into every group separately.
+  defp check_any_group_permission(group_ids, actor_id, update, ctx) do
+    required_permission = PermissionHelper.method_to_permission(Atom.to_string(update.method))
+
+    has_permission =
+      Enum.any?(group_ids, fn group_id ->
+        case GroupCache.get_permissions(actor_id, group_id, ctx.group_members_table) do
+          nil ->
+            false
+
+          permissions ->
+            PermissionHelper.check_permission(
+              permissions,
+              update.subject_type,
+              required_permission
+            )
+        end
+      end)
+
+    if has_permission do
+      :ok
+    else
+      {:error, "not_authorized", "missing required permission"}
+    end
+  end
 
   defp ctx_to_opts(ctx) do
     [
@@ -130,21 +165,6 @@ defmodule EbbServer.Storage.Authorizer do
       relationships_by_id: ctx.relationships_by_id_table,
       group_members_by_id: ctx.group_members_by_id_table
     ]
-  end
-
-  defp check_group_permissions(group_id, actor_id, subject_type, method, ctx) do
-    with {:ok, _} <- ensure_group(group_id),
-         {:ok, permissions} <- fetch_permissions(actor_id, group_id, ctx),
-         :ok <-
-           ensure_has_permission(
-             permissions,
-             subject_type,
-             PermissionHelper.method_to_permission(Atom.to_string(method))
-           ) do
-      :ok
-    else
-      {:error, reason, details} -> {:error, reason, details}
-    end
   end
 
   defp check_actor_can_create_entity(actor_id, subject_type, method, ctx) do
@@ -165,21 +185,5 @@ defmodule EbbServer.Storage.Authorizer do
     else
       {:error, "not_authorized", "actor has no group with required permission"}
     end
-  end
-
-  defp ensure_group(nil), do: {:error, "not_authorized", "entity has no group"}
-  defp ensure_group(_), do: {:ok, :group_found}
-
-  defp fetch_permissions(actor_id, group_id, ctx) do
-    case GroupCache.get_permissions(actor_id, group_id, ctx.group_members_table) do
-      nil -> {:error, "not_authorized", "actor is not a member of the group"}
-      permissions -> {:ok, permissions}
-    end
-  end
-
-  defp ensure_has_permission(permissions, subject_type, required_permission) do
-    if PermissionHelper.check_permission(permissions, subject_type, required_permission),
-      do: :ok,
-      else: {:error, "not_authorized", "missing required permission"}
   end
 end

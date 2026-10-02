@@ -75,12 +75,20 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
     do: [
       relationships: t.relationships,
       relationships_by_id: t.relationships_by_id,
-      group_members_by_id: t.group_members_by_id
+      group_members_by_id: t.group_members_by_id,
+      relationships_by_group: t.relationships_by_group
     ]
 
-  defp put_relationship(t, id, source_id, target_id) do
+  defp put_relationship(t, id, source_id, target_id, kind \\ "member") do
     RelationshipCache.put_relationship(
-      %{id: id, source_id: source_id, target_id: target_id, type: "todo", field: "group"},
+      %{
+        id: id,
+        source_id: source_id,
+        target_id: target_id,
+        type: "todo",
+        field: "group",
+        kind: kind
+      },
       relationships: t.relationships,
       relationships_by_group: t.relationships_by_group,
       relationships_by_id: t.relationships_by_id
@@ -104,12 +112,52 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
       assert FanOutRouter.resolve_group_ids(action, opts) == ["g_1"]
     end
 
-    test "routes a relationship update to the relationship's target group", %{tables: t} do
+    test "routes a relationship update to its source's group", %{tables: t} do
       :ok = put_relationship(t, "rel_1", "todo_1", "g_1")
 
       action = %{"updates" => [%{"subject_type" => "relationship", "subject_id" => "rel_1"}]}
 
       assert FanOutRouter.resolve_group_ids(action, opts(t)) == ["g_1"]
+    end
+
+    test "resolves groups from the Action's own membership edges", %{resolve_opts: opts} do
+      action = %{
+        "updates" => [
+          %{"subject_type" => "todo", "subject_id" => "todo_new"},
+          %{
+            "id" => "rel_new",
+            "subject_type" => "relationship",
+            "subject_id" => "rel_new",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{
+                "source_id" => %{"value" => "todo_new"},
+                "target_id" => %{"value" => "g_intra"},
+                "kind" => %{"value" => "member"}
+              }
+            }
+          }
+        ]
+      }
+
+      assert FanOutRouter.resolve_group_ids(action, opts) == ["g_intra"]
+    end
+
+    test "returns every group for a multi-membership source", %{tables: t} do
+      :ok = put_relationship(t, "rel_1", "todo_1", "g_1")
+      :ok = put_relationship(t, "rel_2", "todo_1", "g_2")
+
+      action = %{"updates" => [%{"subject_type" => "todo", "subject_id" => "todo_1"}]}
+
+      assert FanOutRouter.resolve_group_ids(action, opts(t)) |> Enum.sort() == ["g_1", "g_2"]
+    end
+
+    test "a link edge to a non-group target does not add a group", %{tables: t} do
+      :ok = put_relationship(t, "rel_link", "todo_1", "doc_1", "link")
+
+      action = %{"updates" => [%{"subject_type" => "relationship", "subject_id" => "rel_link"}]}
+
+      assert FanOutRouter.resolve_group_ids(action, opts(t)) == []
     end
 
     test "routes a groupMember update to the member's group", %{tables: t} do

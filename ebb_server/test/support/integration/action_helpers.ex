@@ -105,7 +105,8 @@ defmodule EbbServer.Integration.ActionHelpers do
               "source_id" => %{"type" => "lww", "value" => "todo_bootstrap", "hlc" => hlc},
               "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
               "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
-              "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc}
+              "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc},
+              "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc}
             }
           }
         }
@@ -141,7 +142,8 @@ defmodule EbbServer.Integration.ActionHelpers do
               "source_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
               "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
               "type" => %{"type" => "lww", "value" => entity_type, "hlc" => hlc},
-              "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc}
+              "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc},
+              "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc}
             }
           }
         }

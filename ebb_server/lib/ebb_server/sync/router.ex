@@ -42,10 +42,11 @@ defmodule EbbServer.Sync.Router do
   use Plug.Router
 
   alias EbbServer.Storage.{
+    CacheTables,
+    EntityIndex,
     EntityStore,
     GroupCache,
     PermissionChecker,
-    RelationshipCache,
     WatermarkTracker,
     Writer
   }
@@ -281,17 +282,21 @@ defmodule EbbServer.Sync.Router do
     case Jason.decode(body) do
       {:ok, %{"entity_id" => entity_id, "data" => data}}
       when is_binary(entity_id) and entity_id != "" ->
-        case RelationshipCache.get_entity_group(entity_id) do
-          nil ->
+        group_ids =
+          EntityIndex.source_groups(entity_id, relationships: CacheTables.relationships())
+
+        member_group_ids = Enum.filter(group_ids, &GroupCache.get_permissions(actor_id, &1))
+
+        cond do
+          group_ids == [] ->
             send_json(conn, 404, %{"error" => "entity_not_found"})
 
-          group_id ->
-            if GroupCache.get_permissions(actor_id, group_id) do
-              FanOutRouter.broadcast_presence(entity_id, actor_id, data)
-              send_resp(conn, 204, "")
-            else
-              send_json(conn, 403, %{"error" => "not_member"})
-            end
+          member_group_ids == [] ->
+            send_json(conn, 403, %{"error" => "not_member"})
+
+          true ->
+            FanOutRouter.broadcast_presence(member_group_ids, entity_id, actor_id, data)
+            send_resp(conn, 204, "")
         end
 
       {:ok, _} ->

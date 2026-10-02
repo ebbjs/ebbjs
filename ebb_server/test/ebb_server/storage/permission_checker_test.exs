@@ -41,7 +41,8 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
                 "source_id" => %{"value" => "todo_1"},
                 "target_id" => %{"value" => "g_1"},
                 "type" => %{"value" => "todo"},
-                "field" => %{"value" => "group"}
+                "field" => %{"value" => "group"},
+                "kind" => %{"value" => "member"}
               }
             }
           }
@@ -63,7 +64,15 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
 
       :ets.insert(
         tables.relationships,
-        {"todo_1", %{id: "rel_1", target_id: "g_1", type: "todo", field: "group"}}
+        {"todo_1",
+         %{
+           id: "rel_1",
+           source_id: "todo_1",
+           target_id: "g_1",
+           type: "todo",
+           field: "group",
+           kind: "member"
+         }}
       )
 
       action =
@@ -88,7 +97,15 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
 
       :ets.insert(
         tables.relationships,
-        {"todo_1", %{id: "rel_1", target_id: "g_1", type: "todo", field: "group"}}
+        {"todo_1",
+         %{
+           id: "rel_1",
+           source_id: "todo_1",
+           target_id: "g_1",
+           type: "todo",
+           field: "group",
+           kind: "member"
+         }}
       )
 
       action =
@@ -119,7 +136,15 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
 
       :ets.insert(
         tables.relationships,
-        {"todo_1", %{id: "rel_1", target_id: "g_1", type: "todo", field: "group"}}
+        {"todo_1",
+         %{
+           id: "rel_1",
+           source_id: "todo_1",
+           target_id: "g_1",
+           type: "todo",
+           field: "group",
+           kind: "member"
+         }}
       )
 
       action =
@@ -150,7 +175,15 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
 
       :ets.insert(
         tables.relationships,
-        {"todo_1", %{id: "rel_1", target_id: "g_1", type: "todo", field: "group"}}
+        {"todo_1",
+         %{
+           id: "rel_1",
+           source_id: "todo_1",
+           target_id: "g_1",
+           type: "todo",
+           field: "group",
+           kind: "member"
+         }}
       )
 
       action =
@@ -200,7 +233,8 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
                 "source_id" => %{"value" => "todo_new"},
                 "target_id" => %{"value" => "g_1"},
                 "type" => %{"value" => "todo"},
-                "field" => %{"value" => "group"}
+                "field" => %{"value" => "group"},
+                "kind" => %{"value" => "member"}
               }
             }
           }
@@ -285,7 +319,15 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
 
       :ets.insert(
         tables.relationships,
-        {"todo_1", %{id: "rel_1", target_id: "g_1", type: "todo", field: "group"}}
+        {"todo_1",
+         %{
+           id: "rel_1",
+           source_id: "todo_1",
+           target_id: "g_1",
+           type: "todo",
+           field: "group",
+           kind: "member"
+         }}
       )
 
       valid_action = %{
