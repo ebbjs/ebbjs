@@ -11,8 +11,16 @@ defmodule EbbServer.Sync.FanOutRouter do
   1. Waits until the committed watermark from `WatermarkTracker` is past
      the batch's end.
   2. Reads the committed Actions from RocksDB.
-  3. Resolves the affected groups (per-Action, via `EntityIndex`).
+  3. Takes each Action's group set from the Writer's commit snapshot,
+     falling back to `resolve_group_ids/2` (per-Action, via
+     `EntityIndex`) only when the notifier did not annotate the GSN.
   4. Dispatches each Action to the right GroupServer pid.
+
+  Using the Writer's snapshot keeps live fan-out in agreement with the
+  `cf_group_actions` index catch-up reads: the cache has already moved
+  by dispatch time, so re-resolving a `relationship`/`groupMember`
+  delete there returns `[]` (its by-id entry is gone and the wire form
+  carries no `source_id`).
 
   When multi-Writer pipelining ships (#130 references this path), the
   Router needs ordered-fanout coordination so groups don't see one
@@ -23,7 +31,7 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   Even when `process_batch/4` returns disjoint GSN ranges (possible when
   the watermark advances past buffered notifications out of order),
-  `dispatch_to_groups/1` writes each Action independently to its group.
+  `dispatch_to_groups/3` writes each Action independently to its group.
   SSE tolerates out-of-order events, and clients reconstruct ordered
   state via `catchUp` before consuming the live stream. The FanOutRouter
   is free to push in arrival order; clients converge.
@@ -53,11 +61,12 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   @type t :: %__MODULE__{
           pending_notifications: [{non_neg_integer(), non_neg_integer()}],
+          pending_groups: %{non_neg_integer() => [String.t()]},
           last_pushed_gsn: non_neg_integer(),
           subscriptions: %{pid() => [String.t()]}
         }
 
-  defstruct pending_notifications: [], last_pushed_gsn: 0, subscriptions: %{}
+  defstruct pending_notifications: [], pending_groups: %{}, last_pushed_gsn: 0, subscriptions: %{}
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -85,16 +94,30 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   @impl true
-  def handle_info({:batch_committed, from_gsn, to_gsn}, state) do
+  def handle_info({:batch_committed, from_gsn, to_gsn, groups_by_gsn}, state) do
     watermark = WatermarkTracker.committed_watermark()
+
+    # Keep the Writer-provided group sets alongside the buffered ranges,
+    # so a range that waits for the watermark still dispatches from the
+    # commit snapshot instead of the by-then-mutated caches.
+    pending_groups = Map.merge(state.pending_groups, groups_by_gsn)
+    state = %{state | pending_groups: pending_groups}
 
     {to_push, remaining, new_last} = process_batch(state, from_gsn, to_gsn, watermark)
 
+    pushed_gsns = Enum.flat_map(to_push, fn {from, to} -> Enum.to_list(from..to) end)
+
     for {from, to} <- to_push do
-      push_gsn_range(from, to)
+      push_gsn_range(from, to, pending_groups)
     end
 
-    {:noreply, %{state | pending_notifications: remaining, last_pushed_gsn: new_last}}
+    {:noreply,
+     %{
+       state
+       | pending_notifications: remaining,
+         pending_groups: Map.drop(pending_groups, pushed_gsns),
+         last_pushed_gsn: new_last
+     }}
   end
 
   @impl true
@@ -244,6 +267,12 @@ defmodule EbbServer.Sync.FanOutRouter do
   is missing from the index are silently dropped; the client catches
   them up via `/sync/groups/:id?offset=` instead.
 
+  This is the **fallback** path: the Writer normally hands the Router
+  the group set it used to build `cf_group_actions`, from the commit
+  snapshot. Resolution here re-reads the caches, which have already
+  moved for deletes, so it is only used for GSNs a notifier did not
+  annotate.
+
   Public for unit testing; not part of the GenServer contract.
   """
   @spec resolve_group_ids(map(), keyword()) :: [String.t()]
@@ -269,7 +298,7 @@ defmodule EbbServer.Sync.FanOutRouter do
     EntityIndex.resolve_groups(update["subject_type"], update["subject_id"], opts)
   end
 
-  defp push_gsn_range(from_gsn, to_gsn) do
+  defp push_gsn_range(from_gsn, to_gsn, groups_by_gsn) do
     cf = RocksDB.cf_actions()
     from_key = RocksDB.encode_gsn_key(from_gsn)
     to_key = RocksDB.encode_gsn_key(to_gsn + 1)
@@ -282,12 +311,16 @@ defmodule EbbServer.Sync.FanOutRouter do
 
     RocksDB.range_iterator(cf, from_key, to_key)
     |> Stream.map(fn {_key, value} -> :erlang.binary_to_term(value, [:safe]) end)
-    |> Stream.each(&dispatch_to_groups(&1, resolve_opts))
+    |> Stream.each(&dispatch_to_groups(&1, resolve_opts, groups_by_gsn))
     |> Stream.run()
   end
 
-  defp dispatch_to_groups(action, resolve_opts) do
-    group_ids = resolve_group_ids(action, resolve_opts)
+  defp dispatch_to_groups(action, resolve_opts, groups_by_gsn) do
+    group_ids =
+      case Map.fetch(groups_by_gsn, action["gsn"]) do
+        {:ok, group_ids} -> group_ids
+        :error -> resolve_group_ids(action, resolve_opts)
+      end
 
     for group_id <- group_ids do
       case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do
