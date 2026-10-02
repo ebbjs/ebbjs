@@ -25,6 +25,7 @@ import type { Schema } from "../schema/schema";
 import {
   buildLazyQueryBuilder,
   projectEntity,
+  projectRows,
   type LoadEntities,
   type QueryBuilder,
 } from "./query-builder";
@@ -87,12 +88,58 @@ export type EntityWithAccessors<
 > = [TAs] extends [never] ? Static<TObject<TFields>> : never;
 
 /**
+ * Per-entity snapshot for reactive subscribe. Path C pins this
+ * shape (#161's design comment): the projected row fields plus
+ * an `id` and an `entity` escape hatch so subscribers can pull
+ * the wire envelope (`deleted_hlc`, HLC timestamps, etc.) without
+ * losing the strict per-field typing.
+ *
+ * The per-entity instance handle's `subscribe(cb)` uses the same
+ * shape (#171 follow-up). Defining it here means the per-entity
+ * subscribe that lands with #171 reuses this type verbatim — no
+ * migration when #171 merges.
+ */
+export type EntitySnapshot<TFields extends Record<string, TSchema>> = Static<TObject<TFields>> & {
+  readonly id: string;
+  readonly entity: Entity;
+};
+
+/**
+ * Filter shape for `client.<entity>.subscribe(filter, cb)`.
+ * Field-name → equality-value. Path C pins this exact shape (see
+ * the design comment on #161).
+ */
+export type QueryFilter<TFields extends Record<string, TSchema>> = {
+  [K in keyof TFields]?: Static<TFields[K]>;
+};
+
+/**
+ * Snapshot passed to a collection subscribe listener on each fired event.
+ * Carries the typed projected row snapshots, the active filter, and
+ * a count. Each row in `entities` is an `EntitySnapshot<TFields>`
+ * so consumers can read the per-field projection AND the wire
+ * envelope (`row.id`, `row.entity`) from the same shape.
+ */
+export type CollectionSnapshot<TFields extends Record<string, TSchema>> = {
+  readonly entities: readonly EntitySnapshot<TFields>[];
+  readonly filter: QueryFilter<TFields>;
+  readonly count: number;
+};
+
+/**
  * Mount surface for one entity. `query()` returns a fresh
  * QueryBuilder over the entity's projected field map; awaiting it
  * resolves to the typed rows. `get(id)` reads a single row directly
  * via the storage adapter, projects it to the same TypeBox shape,
  * and attaches relationship accessors for every declared
  * relationship on the entity.
+ *
+ * `subscribe(filter, cb)` registers a reactive listener on the
+ * storage adapter's change emitter. The callback fires whenever
+ * the set of entities matching `filter` changes (referential
+ * equality on the projected row list; deep-equal is over-engineered
+ * per #161's body). Each fire carries a typed `CollectionSnapshot`
+ * of the new matching set.
  *
  * `link` / `unlink` / `setLinks` build the wire Update(s) and
  * submit via the client's write path. Users never see wire-level
@@ -110,6 +157,19 @@ export interface EntityNamespace<
 > {
   query(): QueryBuilder<TFields>;
   get(id: string): Promise<EntityWithAccessors<TFields, TAs> | null>;
+  /**
+   * Reactive subscribe on the matching set. Returns an
+   * unsubscribe function. The callback fires when the set
+   * changes, not on every storage emit — referential equality
+   * on the projected row array is the no-op guard. The
+   * underlying emitter is the storage adapter's per-type
+   * observer; adapters that don't ship an emitter surface this
+   * as a no-op (the listener never fires).
+   */
+  subscribe(
+    filter: QueryFilter<TFields>,
+    cb: (snapshot: CollectionSnapshot<TFields>) => void,
+  ): () => void;
   /**
    * One-cardinality link. Emits a single Relationship Update and
    * submits. Throws `EntityValidationError` when `as` is not a
@@ -305,6 +365,87 @@ export function createEntityNamespace<
       const projected = projectEntity(entity, shape);
       const accessors = buildRowAccessors(entityName, id, storage, registry);
       return { ...projected, ...accessors } as EntityWithAccessors<TFields, TAs>;
+    },
+    subscribe(
+      filter: QueryFilter<TFields>,
+      cb: (snapshot: CollectionSnapshot<TFields>) => void,
+    ): () => void {
+      const emitter = storage.changeEmitter;
+      if (emitter === undefined) {
+        // No emitter → no reactive trigger. The snapshot can still
+        // be polled via `client.<entity>.query()` for one-shot reads.
+        return () => {
+          // no-op
+        };
+      }
+      const matching = new Map<string, Entity>();
+      const matches = (entity: Entity): boolean => {
+        for (const [field, value] of Object.entries(filter)) {
+          const fieldEntry = entity.data?.fields?.[field];
+          const current = fieldEntry === undefined ? undefined : fieldEntry.value;
+          if (current !== value) return false;
+        }
+        return true;
+      };
+      const buildSnapshot = (): CollectionSnapshot<TFields> => {
+        const rows = [...matching.values()];
+        const projected = projectRows(rows, shape) as Static<TObject<TFields>>[];
+        const entities: EntitySnapshot<TFields>[] = projected.map((row, i) => ({
+          ...row,
+          id: rows[i]!.id,
+          entity: rows[i]!,
+        }));
+        return { entities, filter, count: entities.length };
+      };
+      const idSignature = (ids: Iterable<string>): string => [...ids].sort().join("\n");
+      let prevIds = "";
+      const update = (entity: Entity): void => {
+        const wasIn = matching.has(entity.id);
+        const matchesNow = matches(entity);
+        if (matchesNow) {
+          matching.set(entity.id, entity);
+        } else {
+          matching.delete(entity.id);
+        }
+        if (wasIn !== matchesNow) {
+          const ids = idSignature(matching.keys());
+          if (ids !== prevIds) {
+            prevIds = ids;
+            cb(buildSnapshot());
+          }
+        }
+      };
+      // Hydrate the matching set BEFORE the listener attaches so
+      // the hydration's own re-materialization doesn't fire the
+      // callback. Concurrent emits during the async hydration
+      // window are buffered and replayed on attach.
+      let hydrating = true;
+      const buffered: Entity[] = [];
+      const listener = (entity: Entity): void => {
+        if (hydrating) {
+          buffered.push(entity);
+        } else {
+          update(entity);
+        }
+      };
+      let unsubEmitter: (() => void) | null = null;
+      void (async (): Promise<void> => {
+        const rows = await storage.entities.query(entityName);
+        for (const row of rows) {
+          if (matches(row)) matching.set(row.id, row);
+        }
+        prevIds = idSignature(matching.keys());
+        unsubEmitter = emitter.onTypeChange(entityName, listener);
+        hydrating = false;
+        if (buffered.length > 0) {
+          const replay = buffered.splice(0, buffered.length);
+          for (const entity of replay) update(entity);
+        }
+      })();
+      return () => {
+        if (unsubEmitter !== null) unsubEmitter();
+        matching.clear();
+      };
     },
     async link(id: string, as: string, targetId: PointerValue): Promise<WriteResponse> {
       return submitRelationshipWrite(write, entityName, id, as, { targetId }, storage);

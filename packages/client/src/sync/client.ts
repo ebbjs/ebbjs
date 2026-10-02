@@ -1016,6 +1016,14 @@ export class SyncClient {
    * the server is the trust boundary, and forward-compat with peers
    * that may have fields the local schema doesn't know about is the
    * common case. The action still materializes regardless.
+   *
+   * After the action lands in the action log and the affected
+   * entities are marked dirty, this method force-materializes each
+   * affected entity so subscribers on the storage adapter's change
+   * emitter observe the new state immediately. The materialize-on-
+   * read contract would otherwise require every consumer to issue
+   * a read first — not viable for per-collection subscribe, which
+   * must surface changes without a forced read.
    */
   private async _applyAction(
     action: Action,
@@ -1037,6 +1045,16 @@ export class SyncClient {
       const prev = await this.storage.cursors.get(groupId);
       if (prev === null || action.gsn > prev) {
         await this.storage.cursors.set(groupId, action.gsn);
+      }
+    }
+    if (this.storage.changeEmitter !== undefined) {
+      const keepDirty = this.storage.materializeKeepDirty;
+      for (const { entityId } of affected) {
+        if (keepDirty !== undefined) {
+          await keepDirty(entityId);
+        } else {
+          await this.storage.entities.get(entityId);
+        }
       }
     }
     return affected;
