@@ -14,12 +14,14 @@
  * primitives `client.relationship({...})` already consumes.
  */
 
-import type { Entity } from "@ebbjs/core";
+import type { Entity, Update } from "@ebbjs/core";
+import { generateId } from "@ebbjs/core";
 import type { WriteResponse } from "./types";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { EntityDef } from "../schema/entity";
+import { EntityValidationError, validatePayload } from "../schema/entity-registry";
 import type { EntityRegistry } from "../schema/entity-registry";
 import type { Schema } from "../schema/schema";
 import {
@@ -171,6 +173,21 @@ export interface EntityNamespace<
     cb: (snapshot: CollectionSnapshot<TFields>) => void,
   ): () => void;
   /**
+   * Create a new entity row. Non-conforming inputs throw
+   * `EntityValidationError` before any network call. `subject_id`
+   * is minted client-side; the wire Update is a `put`.
+   */
+  create(input: Static<TObject<TFields>>, opts?: EntityWriteOptions): Promise<WriteResponse>;
+  /**
+   * Patch an existing entity row, validated the same way as
+   * `create`'s input. The wire Update is a `patch`.
+   */
+  update(
+    id: string,
+    patch: Partial<Static<TObject<TFields>>>,
+    opts?: EntityWriteOptions,
+  ): Promise<WriteResponse>;
+  /**
    * One-cardinality link. Emits a single Relationship Update and
    * submits. Throws `EntityValidationError` when `as` is not a
    * declared relationship on the entity or when the actor lacks
@@ -188,6 +205,15 @@ export interface EntityNamespace<
    * entity's data field.
    */
   setLinks(id: string, as: string, patch: ManyPointerValue): Promise<WriteResponse>;
+}
+
+/**
+ * Per-write options. `validate: false` skips the local `Value.Check`
+ * pass — useful for tests / pre-validated upstream callers. The
+ * registry's name-membership check at `client.write()` still runs.
+ */
+export interface EntityWriteOptions {
+  validate?: boolean;
 }
 
 /**
@@ -447,6 +473,29 @@ export function createEntityNamespace<
         matching.clear();
       };
     },
+    async create(
+      input: Static<TObject<TFields>>,
+      opts?: EntityWriteOptions,
+    ): Promise<WriteResponse> {
+      return submitEntityWrite(write, entityName, shape, {
+        subjectId: generateId("e"),
+        payload: input,
+        partial: false,
+        validate: opts?.validate,
+      });
+    },
+    async update(
+      id: string,
+      patch: Partial<Static<TObject<TFields>>>,
+      opts?: EntityWriteOptions,
+    ): Promise<WriteResponse> {
+      return submitEntityWrite(write, entityName, shape, {
+        subjectId: id,
+        payload: patch,
+        partial: true,
+        validate: opts?.validate,
+      });
+    },
     async link(id: string, as: string, targetId: PointerValue): Promise<WriteResponse> {
       return submitRelationshipWrite(write, entityName, id, as, { targetId }, storage);
     },
@@ -458,6 +507,90 @@ export function createEntityNamespace<
     },
   };
 }
+
+/**
+ * Internal options for {@link submitEntityWrite}. `partial=true`
+ * flips the validator from full-shape to per-field and routes the
+ * wire Update through `method: "patch"`.
+ */
+interface SubmitEntityWriteInput {
+  subjectId: string;
+  payload: unknown;
+  partial: boolean;
+  validate: boolean | undefined;
+}
+
+/**
+ * Validate the payload against the entity shape and ship a single
+ * entity Update. Throws `EntityValidationError` on shape mismatch
+ * (or empty patch) when validation is on. The local validator is
+ * the SDK's contract; the server may still reject the write for
+ * permissions, conflicts, or schema drift.
+ *
+ * `update_id` is minted once per Update so concurrent writers
+ * can't collide on the same id; `hlc` is the local clock so the
+ * server can detect a causal-order inversion.
+ */
+async function submitEntityWrite<TFields extends Record<string, TSchema>>(
+  write: WriteCapability,
+  entityName: string,
+  shape: TObject<TFields>,
+  input: SubmitEntityWriteInput,
+): Promise<WriteResponse> {
+  if (input.validate !== false) {
+    const violations = validatePayload(shape, input.payload, entityName, input.partial);
+    if (violations.length > 0) {
+      throw new EntityValidationError(violations);
+    }
+    if (input.partial && isEmptyPayload(input.payload)) {
+      throw new EntityValidationError([
+        {
+          entityName,
+          message: `update: patch must contain at least one field`,
+        },
+      ]);
+    }
+  }
+  const hlc = write.freshHlc();
+  const updateId = write.generateUpdateId();
+  const fields = wrapFields(input.payload, updateId, hlc);
+  const update: Update = {
+    id: updateId,
+    subject_id: input.subjectId,
+    subject_type: entityName,
+    method: input.partial ? "patch" : "put",
+    data: { fields },
+  };
+  return write.submitRelationshipUpdates([update]);
+}
+
+/** True when the payload is `{}` or every field is `undefined` — a no-op the caller almost certainly didn't intend. */
+const isEmptyPayload = (payload: unknown): boolean => {
+  if (payload === null || typeof payload !== "object") return true;
+  for (const value of Object.values(payload)) {
+    if (value !== undefined) return false;
+  }
+  return true;
+};
+
+/**
+ * Flatten a payload into the wire envelope. `undefined` fields are
+ * dropped (the wire envelope is absent, not explicitly undefined);
+ * `null` is preserved so nullable fields round-trip cleanly.
+ */
+const wrapFields = (
+  payload: unknown,
+  updateId: string,
+  hlc: string,
+): Record<string, { value: unknown; update_id: string; hlc: string }> => {
+  const out: Record<string, { value: unknown; update_id: string; hlc: string }> = {};
+  if (payload === null || typeof payload !== "object") return out;
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined) continue;
+    out[key] = { value, update_id: updateId, hlc };
+  }
+  return out;
+};
 
 /**
  * Look up the relationship by `(source, as)`, build the wire

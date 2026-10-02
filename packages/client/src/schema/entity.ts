@@ -20,10 +20,22 @@ export type NullableSchema<T extends TSchema> = T & {
   readonly nullable: () => ReturnType<typeof Type.Union<[T, ReturnType<typeof Type.Null>]>>;
 };
 
+/**
+ * Marker stamped onto the union returned by `.nullable()` so
+ * `defineEntity` can recognize the field came through the chain
+ * even though the union itself doesn't carry the `.nullable`
+ * method.
+ */
+const NULLABLE_MARKER = Symbol.for("@ebbjs/nullable");
+
 const withNullable = <T extends TSchema>(schema: T): NullableSchema<T> => {
   const self = schema as NullableSchema<T>;
   Object.defineProperty(self, "nullable", {
-    value: () => Type.Union([schema, Type.Null()]),
+    value: () => {
+      const union = Type.Union([schema, Type.Null()]);
+      Object.defineProperty(union, NULLABLE_MARKER, { value: true, enumerable: false });
+      return union;
+    },
     enumerable: false,
   });
   return self;
@@ -64,14 +76,42 @@ export function defineEntity<TFields extends Record<string, TSchema>>(
   name: string,
   fields: TFields,
 ): EntityDef<TFields> {
+  const shapeFields = withImplicitOptional(fields);
   const derivedFields = Object.fromEntries(
     Object.keys(fields).map((k) => [k, deriveMarker(fields[k] as TSchema)]),
   ) as { [K in keyof TFields]: FieldMarker };
   return Object.freeze({
     name,
-    shape: Type.Object(fields) as EntityShape<TFields>,
+    shape: Type.Object(shapeFields) as EntityShape<TFields>,
     fields: derivedFields,
   });
 }
+
+/**
+ * Wrap every nullable field in `Type.Optional` so `Value.Check`
+ * treats absent values as valid (matching the wire envelope's
+ * set / nulled / absent projection). The static type still
+ * requires nullable fields — `Static<TObject<TFields>>` only sees
+ * `TOptional` when callers write it explicitly.
+ */
+const withImplicitOptional = <TFields extends Record<string, TSchema>>(
+  fields: TFields,
+): Record<string, TSchema> => {
+  const out: Record<string, TSchema> = {};
+  for (const [key, schema] of Object.entries(fields)) {
+    out[key] = isNullableSchema(schema)
+      ? Type.Optional(schema as Parameters<typeof Type.Optional>[0])
+      : schema;
+  }
+  return out;
+};
+
+/** True for fields that came through `.nullable()` — either the chain method or the marker. */
+const isNullableSchema = (schema: TSchema): boolean => {
+  const candidate = schema as unknown as { nullable?: unknown };
+  if (typeof candidate.nullable === "function") return true;
+  const marked = schema as unknown as Record<symbol, unknown>;
+  return marked[NULLABLE_MARKER] === true;
+};
 
 export type { TSchema };

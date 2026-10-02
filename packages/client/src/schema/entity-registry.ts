@@ -7,6 +7,7 @@
  */
 
 import type { Action } from "@ebbjs/core";
+import { Value, type ValueError } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox/type";
 
 import type { EntityDef, FieldMarker } from "./entity";
@@ -216,3 +217,128 @@ export class EntityRegistry {
     return violations;
   }
 }
+
+/**
+ * Validate a write-time payload against the entity's TypeBox shape.
+ * `partial=false` requires the full entity shape (create semantics);
+ * `partial=true` accepts a subset (update semantics, missing keys
+ * are allowed).
+ *
+ * TypeBox doesn't reject unknown properties by default, so the
+ * function explicitly enforces field-name membership alongside
+ * `Value.Check`'s type conformance. Every violation surfaces in
+ * one `EntityValidationError` so the caller sees the whole problem
+ * list at once.
+ */
+export const validatePayload = <T extends TSchema>(
+  shape: T,
+  payload: unknown,
+  entityName: string,
+  partial: boolean,
+): ValidationViolation[] => {
+  if (payload === null || typeof payload !== "object") {
+    return [
+      {
+        entityName,
+        message: `payload must be an object, got ${payload === null ? "null" : typeof payload}`,
+      },
+    ];
+  }
+  const obj = payload as Record<string, unknown>;
+  const violations: ValidationViolation[] = [];
+  const properties = readObjectProperties(shape);
+  const declaredKeys = properties === undefined ? null : new Set(Object.keys(properties));
+
+  if (declaredKeys !== null) {
+    for (const key of Object.keys(obj)) {
+      if (!declaredKeys.has(key)) {
+        violations.push({
+          entityName,
+          field: key,
+          message: `Field "${key}" is not declared on entity "${entityName}"`,
+        });
+      }
+    }
+  }
+
+  if (partial && properties !== undefined) {
+    for (const [key, value] of Object.entries(obj)) {
+      if (value === undefined) continue;
+      const fieldSchema = properties[key];
+      if (fieldSchema === undefined) continue;
+      collectFieldTypeErrors(violations, fieldSchema, value, entityName, key);
+    }
+  } else {
+    collectShapeErrors(violations, shape, payload, entityName);
+  }
+  return violations;
+};
+
+/** Extract a `TObject` shape's `properties` map. Returns `undefined` for non-object shapes. */
+const readObjectProperties = (shape: TSchema): Record<string, TSchema> | undefined => {
+  const candidate = shape as { properties?: unknown };
+  if (candidate.properties === null || typeof candidate.properties !== "object") return undefined;
+  return candidate.properties as Record<string, TSchema>;
+};
+
+/** Append one violation per `Value.Errors` entry; the entity name is stamped from the caller. */
+const collectShapeErrors = (
+  out: ValidationViolation[],
+  shape: TSchema,
+  payload: unknown,
+  entityName: string,
+): void => {
+  if (Value.Check(shape, payload)) return;
+  for (const error of Value.Errors(shape, payload)) {
+    out.push(toViolation(error, entityName));
+  }
+};
+
+/** Same as `collectShapeErrors` but on a single field — the field name is the message prefix. */
+const collectFieldTypeErrors = (
+  out: ValidationViolation[],
+  fieldSchema: TSchema,
+  value: unknown,
+  entityName: string,
+  fieldName: string,
+): void => {
+  if (Value.Check(fieldSchema, value)) return;
+  const leafErrors = [...Value.Errors(fieldSchema, value)];
+  if (leafErrors.length === 0) {
+    out.push({
+      entityName,
+      field: fieldName,
+      message: `${fieldName}: expected ${describeSchema(fieldSchema)}`,
+    });
+    return;
+  }
+  for (const error of leafErrors) {
+    out.push({
+      entityName,
+      field: fieldName,
+      message: `${fieldName}: ${error.message}`,
+    });
+  }
+};
+
+/** Fallback for `Value.Errors` returning zero entries — read the schema's `type` discriminator. */
+const describeSchema = (schema: TSchema): string => {
+  const s = schema as { type?: unknown };
+  if (typeof s.type === "string") return s.type;
+  if (Array.isArray(s.type)) return s.type.join("|");
+  return "value";
+};
+
+/** Map one TypeBox `ValueError` to a `ValidationViolation`; the leading `/` on the path is stripped. */
+const toViolation = (error: ValueError, entityName: string): ValidationViolation => {
+  const field = stripLeadingSlash(error.path);
+  const message = field === "" ? error.message : `${field}: ${error.message}`;
+  return {
+    entityName,
+    field: field === "" ? undefined : field,
+    message,
+  };
+};
+
+/** TypeBox prepends `/` to error paths; empty path stays empty. */
+const stripLeadingSlash = (path: string): string => (path.startsWith("/") ? path.slice(1) : path);

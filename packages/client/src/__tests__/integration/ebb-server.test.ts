@@ -1127,3 +1127,148 @@ describe("integration: defineSchema", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Integration: runtime validation on writes (#172)
+// ---------------------------------------------------------------------------
+
+/**
+ * Tests in this block run without a live ebb server — the
+ * validator must throw before any HTTP call, so the wire stub
+ * never needs to round-trip a real response.
+ */
+describe("integration: client.<entity>.create() runtime validation (#172)", () => {
+  /** Records every URL it sees so tests can assert the wire was reached (or wasn't). */
+  const mkRecordingFetch = (seen: string[]): typeof fetch => {
+    return (async (url: string, _init: RequestInit): Promise<Response> => {
+      seen.push(url);
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+  };
+
+  it("rejects create({ title: 42 }) before any /sync/actions fetch", async () => {
+    const seen: string[] = [];
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    const todo = defineEntity("todo", {
+      title: e.string(),
+      completed: e.boolean(),
+    });
+    const schema = defineSchema({ entities: { todo }, version: 1 });
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: "validation_actor",
+      storage,
+      schema,
+      fetchImpl: mkRecordingFetch(seen),
+    });
+    try {
+      await expect(
+        client.todo.create({ title: 42, completed: false } as never),
+      ).rejects.toBeInstanceOf(EntityValidationError);
+      expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
+    } finally {
+      client.close();
+    }
+  });
+
+  it("rejects create({ title: 'Ship', bogus: 'x' }) for an undeclared field", async () => {
+    const seen: string[] = [];
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    const todo = defineEntity("todo", {
+      title: e.string(),
+      completed: e.boolean(),
+    });
+    const schema = defineSchema({ entities: { todo }, version: 1 });
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: "validation_actor",
+      storage,
+      schema,
+      fetchImpl: mkRecordingFetch(seen),
+    });
+    try {
+      await expect(
+        client.todo.create({ title: "Ship", completed: false, bogus: "x" } as never),
+      ).rejects.toBeInstanceOf(EntityValidationError);
+      expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
+    } finally {
+      client.close();
+    }
+  });
+
+  it("rejects update(id, { title: 99 }) before any /sync/actions fetch", async () => {
+    const seen: string[] = [];
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    const todo = defineEntity("todo", {
+      title: e.string(),
+      completed: e.boolean(),
+    });
+    const schema = defineSchema({ entities: { todo }, version: 1 });
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: "validation_actor",
+      storage,
+      schema,
+      fetchImpl: mkRecordingFetch(seen),
+    });
+    try {
+      await expect(client.todo.update("todo_1", { title: 99 } as never)).rejects.toBeInstanceOf(
+        EntityValidationError,
+      );
+      expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
+    } finally {
+      client.close();
+    }
+  });
+
+  it("accepts a conforming create() and submits the wire Update", async () => {
+    if (!(await shouldRun())) return;
+    const actor = "validation_roundtrip";
+    await addMemberWithTodoPerms(actor);
+    const todo = defineEntity("todo", {
+      title: e.string(),
+      completed: e.boolean(),
+    });
+    const schema = defineSchema({ entities: { todo }, version: 1 });
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: actor,
+      schema,
+    });
+    try {
+      const { groups } = await client.handshake();
+      expect(groups.find((g) => g.id === TEST_GROUP_ID)).toBeDefined();
+      client.setState("live");
+
+      const response = await client.todo.create({
+        title: "Hello",
+        completed: false,
+      });
+      expect(response.rejected).toEqual([]);
+      const createdId = await findCreatedTodoId(client);
+      const stored = await client.getEntity(createdId);
+      expect(stored).not.toBeNull();
+      expect(stored!.type).toBe("todo");
+    } finally {
+      client.close();
+    }
+  });
+});
+
+/**
+ * Locate the just-written todo by scanning storage after
+ * catch-up. The id-mint lives inside `submitEntityWrite`; this
+ * helper exposes it to the test without leaking the API.
+ */
+async function findCreatedTodoId(client: import("../..").SyncClient): Promise<string> {
+  await catchUpUntilCurrent(client, TEST_GROUP_ID);
+  const stored = await client.storage.entities.query("todo");
+  if (stored.length === 0) {
+    throw new Error("findCreatedTodoId: no todo entity found in storage");
+  }
+  const sorted = [...stored].sort((a, b) => (a.created_hlc < b.created_hlc ? 1 : -1));
+  return sorted[0]!.id;
+}
