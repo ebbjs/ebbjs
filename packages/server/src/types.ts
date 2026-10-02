@@ -40,6 +40,8 @@ export interface RelationshipSeed {
   targetId: string;
   type: string;
   field: string;
+  /** `"member"` (default) for a group membership edge, `"link"` for a domain edge. */
+  kind?: string;
 }
 
 export interface SeedData {
