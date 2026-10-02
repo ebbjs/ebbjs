@@ -155,7 +155,6 @@ describe("client.<entity>.query()", () => {
     expect(typeof client.handshake).toBe("function");
     expect(typeof client.getEntity).toBe("function");
     expect(typeof client.queryEntities).toBe("function");
-    expect(typeof client.relationship).toBe("function");
     expect(typeof client.textDocument).toBe("function");
     expect(typeof client.readLocalEntity).toBe("function");
   });

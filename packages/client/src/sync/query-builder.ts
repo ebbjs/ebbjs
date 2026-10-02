@@ -68,8 +68,8 @@ export type LoadEntities = () => Promise<readonly Entity[]>;
 /**
  * Typed thenable chain over a list of candidate entities. The same
  * chain is consumed by `client.<entity>.query()` and by the
- * relationship handle's `reverse` / `forward` accessors — one chain,
- * one projection.
+ * relationship accessors on a projected row — one chain, one
+ * projection.
  */
 export interface QueryBuilder<TFields extends Record<string, TSchema>> {
   /** Equality filter on a field of `TFields`. Value type narrows per field. */

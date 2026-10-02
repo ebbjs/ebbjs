@@ -21,7 +21,6 @@ export {
   type HandshakeResult,
   type NamespacedClient,
   type QueryOptions,
-  type RelationshipHandle,
 } from "./sync/client";
 
 export {

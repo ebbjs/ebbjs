@@ -48,18 +48,12 @@ import {
 import type { RelationshipDef } from "../schema/relationship";
 import {
   buildRelationshipUpdate,
-  forwardMany,
-  forwardOne,
   normalizeManyPointers,
   normalizePointer,
   resolveCardinality,
-  reverse as reverseTraversal,
   type BuildRelationshipWriteOptions,
   type BuildRelationshipWriteResult,
-  type RelationshipHandleInput,
 } from "./relationship";
-import { Type } from "@sinclair/typebox";
-import { type QueryBuilder, buildQueryBuilder } from "./query-builder";
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { generateId } from "@ebbjs/core";
 import type { EntityDef } from "../schema/entity";
@@ -561,96 +555,6 @@ export class SyncClient {
    */
   textDocument(docId: string): TextDocument {
     return this.textDocumentRegistry.open({ docId, actorId: this.actorId });
-  }
-
-  // -------------------------------------------------------------------------
-  // Relationship handle
-  // -------------------------------------------------------------------------
-
-  /**
-   * Open a relationship handle. Returns an object with `forward(id)`
-   * and `reverse(id)` accessors that operate against the client's
-   * materialized cache.
-   *
-   * The handle looks the relationship up in the local
-   * `EntityRegistry`; calling `relationship({...})` without first
-   * registering the relationship (or without having passed a registry
-   * to the client) is allowed but the traversal functions will
-   * silently miss. `buildRelationshipWrite` is the safer path because
-   * it validates the source name against the registry.
-   *
-   * The handle is namespace-independent: it works without an
-   * `EntityRegistry` and across server-side scripts / Node SSR use
-   * cases.
-   */
-  relationship(input: RelationshipHandleInput): RelationshipHandle {
-    const registered = this.registry.getRelationship(input.source.name, input.as);
-    const rel = registered ?? {
-      source: { name: input.source.name, fields: {} },
-      target: { name: input.target.name, fields: {} },
-      as: input.as,
-      sourceCardinality: "one" as const,
-      type: input.source.name,
-    };
-    const sourceName = input.source.name;
-    const targetName = input.target.name;
-    const field = rel.as;
-    const relType = rel.type;
-    const cardinality = rel.sourceCardinality;
-    // The target's shape drives the projection on `await qb`. Looked
-    // up from the registry (which stores the full EntityDef) so the
-    // chain's typed projection reflects the target's actual fields.
-    const targetShape = this.registry.get(targetName)?.shape;
-    const sourceShape = this.registry.get(sourceName)?.shape;
-
-    const readLocalEntity = (id: string): Promise<Entity | null> => this.storage.entities.get(id);
-    const queryEntitiesByType = (type: string): Promise<readonly Entity[]> =>
-      this.storage.entities.query(type);
-
-    const handle: RelationshipHandle = {
-      forward: (
-        sourceId: string,
-      ): Promise<Entity | null | undefined> | QueryBuilder<Record<string, TSchema>> => {
-        if (cardinality === "one") {
-          return forwardOne(
-            readLocalEntity,
-            queryEntitiesByType,
-            sourceId,
-            sourceName,
-            field,
-            relType,
-          );
-        }
-        if (targetShape === undefined) {
-          return buildQueryBuilder<Record<string, TSchema>>([], Type.Object({}));
-        }
-        return forwardMany(
-          readLocalEntity,
-          queryEntitiesByType,
-          sourceId,
-          sourceName,
-          targetName,
-          targetShape,
-          field,
-          relType,
-        );
-      },
-      reverse: (targetId: string): QueryBuilder<Record<string, TSchema>> => {
-        if (sourceShape === undefined) {
-          return buildQueryBuilder<Record<string, TSchema>>([], Type.Object({}));
-        }
-        return reverseTraversal(
-          readLocalEntity,
-          queryEntitiesByType,
-          targetId,
-          sourceName,
-          sourceShape,
-          field,
-          relType,
-        );
-      },
-    };
-    return handle;
   }
 
   /**
@@ -1227,25 +1131,6 @@ export interface QueryOptions {
   filter?: Record<string, unknown>;
   limit?: number;
   offset?: number;
-}
-
-/**
- * Handle returned by {@link SyncClient.relationship}.
- *
- * `forward(sourceId)` returns `Promise<Entity | null | undefined>`
- * for `sourceCardinality: "one"` and a `QueryBuilder<TTargetFields>`
- * (thenable) for `sourceCardinality: "many"`. `reverse(targetId)`
- * returns a `QueryBuilder<TSourceFields>` (thenable). Awaiting the
- * chain yields the projected rows; awaiting the one-cardinality
- * `forward` resolves the single entity. The forward-one result
- * distinguishes "no edge exists" (null) from "edge exists but target
- * missing" (undefined).
- */
-export interface RelationshipHandle {
-  forward(
-    sourceId: string,
-  ): Promise<Entity | null | undefined> | QueryBuilder<Record<string, TSchema>>;
-  reverse(targetId: string): QueryBuilder<Record<string, TSchema>>;
 }
 
 /**

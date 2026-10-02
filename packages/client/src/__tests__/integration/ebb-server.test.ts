@@ -822,7 +822,7 @@ describe("integration: defineEntity + EntityRegistry (#143)", () => {
  * - `client.todo.link(id, "ownedBy", groupId)` returns zero rejections;
  * - the actor's perspective after `catchUp` shows the relationship
  *   materialized;
- * - the reverse accessor surfaces the source via the materialized
+ * - the reverse row accessor surfaces the source via the materialized
  *   Relationship cache.
  *
  * `unlink()` is not exercised here: the server's
@@ -833,6 +833,26 @@ describe("integration: defineEntity + EntityRegistry (#143)", () => {
  * round-trip is held until the authorizer learns to look up the
  * existing relationship for a delete.
  */
+
+/**
+ * Read a many-cardinality (reverse) row accessor and return the raw
+ * linked entities. Accessor keys aren't in the projected static type
+ * (per-entity accessor typing is a documented follow-up), and the
+ * thenable chain projects fields only, so the read reaches through
+ * `toRaw()` to keep the entity ids.
+ */
+const readLinkedRaw = async (
+  row: Promise<unknown>,
+  as: string,
+): Promise<readonly { id: string }[]> => {
+  const resolved = await row;
+  if (resolved === null || resolved === undefined) {
+    throw new Error(`expected row before reading accessor "${as}"`);
+  }
+  const builder = (resolved as Record<string, { toRaw(): Promise<readonly { id: string }[]> }>)[as];
+  return builder.toRaw();
+};
+
 describe("integration: client.<entity>.link / unlink", () => {
   it("creates a todo + group link via the public link() API", async () => {
     if (!(await shouldRun())) return;
@@ -853,7 +873,9 @@ describe("integration: client.<entity>.link / unlink", () => {
       type: "todo",
     });
     const schema = defineSchema({
-      entities: { todo },
+      // `group` is in `entities` so the reverse row accessor is
+      // reachable on the target side (`client.group.get(id)`).
+      entities: { todo, group: groupTarget },
       relationships: { ownedBy },
       version: 1,
     });
@@ -931,15 +953,9 @@ describe("integration: client.<entity>.link / unlink", () => {
       expect(materializedLink!.data?.fields?.["target_id"]?.value).toBe(TEST_GROUP_ID);
       expect(materializedLink!.data?.fields?.["type"]?.value).toBe("todo");
 
-      // The reverse accessor surfaces the todo via the materialized
-      // Relationship cache.
-      const handle = client.relationship({
-        source: todo,
-        target: groupTarget,
-        as: "ownedBy",
-      });
-      const qb = handle.reverse(TEST_GROUP_ID);
-      const sources = await qb.toRaw();
+      // The reverse row accessor surfaces the todo via the
+      // materialized Relationship cache.
+      const sources = await readLinkedRaw(client.group.get(TEST_GROUP_ID), "ownedBy");
       expect(sources.map((s) => s.id)).toContain(todoId);
 
       // The unlink() over-the-wire round-trip is held: the server's
@@ -969,7 +985,9 @@ describe("integration: client.<entity>.link / unlink", () => {
       type: "todo",
     });
     const schema = defineSchema({
-      entities: { todo },
+      // `group` is in `entities` so the reverse row accessor is
+      // reachable on the target side (`client.group.get(id)`).
+      entities: { todo, group: groupTarget },
       relationships: { ownedBy },
       version: 1,
     });
@@ -1050,13 +1068,8 @@ describe("integration: client.<entity>.link / unlink", () => {
         `expected the relationship ${relationshipSubjectId} to be removed or tombstoned after unlink(); got ${JSON.stringify(stillMaterialized)}`,
       ).toBe(true);
 
-      // The reverse accessor should also no longer surface the source.
-      const handle = client.relationship({
-        source: todo,
-        target: groupTarget,
-        as: "ownedBy",
-      });
-      const sources = await handle.reverse(TEST_GROUP_ID).toRaw();
+      // The reverse row accessor should also no longer surface the source.
+      const sources = await readLinkedRaw(client.group.get(TEST_GROUP_ID), "ownedBy");
       expect(sources.map((s) => s.id)).not.toContain(todoId);
     } finally {
       client.close();
