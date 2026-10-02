@@ -4,12 +4,14 @@
 
 import { describe, it, expect } from "vitest";
 import { type Static } from "@sinclair/typebox/type";
+import { decodeSync, type Action } from "@ebbjs/core";
 import type { Entity } from "@ebbjs/core";
 
 import { defineEntity, e } from "../../schema/entity";
 import { defineSchema } from "../../schema/schema";
 import { defineRelationship } from "../../schema/relationship";
 import { EntityValidationError } from "../../schema/entity-registry";
+import type { WriteResponse } from "../types";
 import { createClient } from "../client";
 
 const todo = defineEntity("todo", {
@@ -1095,5 +1097,96 @@ describe("client.<entity>.create / update — runtime validation", () => {
     const seen: string[] = [];
     const { client } = await mkClientWithNullable(seen);
     await expect(client.todo.create({ title: "Ship", completed: false })).resolves.toBeDefined();
+  });
+});
+
+describe("client.<entity>.delete", () => {
+  const todoForDelete = defineEntity("todo", {
+    title: e.string(),
+    completed: e.boolean(),
+  });
+  const schemaForDelete = defineSchema({ entities: { todo: todoForDelete }, version: 1 });
+
+  const jsonResponse = (body: unknown): Response =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+
+  /** Handshake payload; `todo.*` is the permission the delete path needs. */
+  const handshakeBody = {
+    actor_id: "actor_1",
+    groups: [{ id: "g_1", permissions: ["todo.*"], cursor_valid: true, reason: null, cursor: 0 }],
+  };
+
+  /**
+   * Stub fetch that answers the handshake and routes every other
+   * request to `handle`, so each test only states the response it
+   * cares about.
+   */
+  const mkFetch = (handle: (url: string, init: RequestInit) => Response): typeof fetch => {
+    return (async (url: string, init: RequestInit): Promise<Response> => {
+      if (url.endsWith("/sync/handshake")) return jsonResponse(handshakeBody);
+      return handle(url, init);
+    }) as unknown as typeof fetch;
+  };
+
+  const mkClient = async (fetchImpl: typeof fetch) => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      storage,
+      schema: schemaForDelete,
+      fetchImpl,
+    });
+    await client.handshake();
+    return { client, storage };
+  };
+
+  /** Wraps a fetch so every `POST /sync/actions` body lands in `captured`. */
+  const captureActions = (captured: Action[][]): typeof fetch =>
+    mkFetch((url, init) => {
+      if (url.endsWith("/sync/actions")) {
+        const body = init.body as unknown as Uint8Array;
+        captured.push(decodeSync<{ actions: Action[] }>(body).actions);
+      }
+      return jsonResponse({ rejected: [] });
+    });
+
+  it("delete(id) ships one method:'delete' Update with data null", async () => {
+    const captured: Action[][] = [];
+    const { client } = await mkClient(captureActions(captured));
+
+    const response = await client.todo.delete("todo_1");
+
+    expect(response.rejected).toEqual([]);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toHaveLength(1);
+    const updates = captured[0]![0]!.updates;
+    expect(updates).toHaveLength(1);
+    const update = updates[0]!;
+    expect(update.subject_id).toBe("todo_1");
+    expect(update.subject_type).toBe("todo");
+    expect(update.method).toBe("delete");
+    expect(update.data).toBeNull();
+  });
+
+  it("delete(id) forwards the server's rejection list", async () => {
+    const { client } = await mkClient(
+      mkFetch(() => jsonResponse({ rejected: [{ id: "act_1", reason: "permission_denied" }] })),
+    );
+
+    const response = await client.todo.delete("todo_1");
+
+    expect(response.rejected).toEqual([{ id: "act_1", reason: "permission_denied" }]);
+  });
+
+  it("delete(id) is typed as Promise<WriteResponse>", async () => {
+    const captured: Action[][] = [];
+    const { client } = await mkClient(captureActions(captured));
+    const result: Promise<WriteResponse> = client.todo.delete("todo_1");
+    await expect(result).resolves.toEqual({ rejected: [] });
   });
 });

@@ -1258,6 +1258,92 @@ describe("integration: client.<entity>.create() runtime validation (#172)", () =
   });
 });
 
+describe("integration: client.<entity>.delete", () => {
+  it("tombstones a todo over the wire via the public delete() API", async () => {
+    if (!(await shouldRun())) return;
+    const actor = `delete_roundtrip_${RUN_ID}`;
+    await addMemberWithTodoPerms(actor);
+
+    const todo = defineEntity("todo", {
+      title: e.string(),
+      completed: e.boolean(),
+    });
+    // Stand-in for "the group the todo belongs to"; the server's
+    // authorizer reads the target_id of the source's relationship to
+    // resolve the group on a delete (whose wire data is null).
+    const groupTarget = defineEntity("group", { name: e.string() });
+    const ownedBy = defineRelationship({
+      source: todo,
+      target: groupTarget,
+      as: "ownedBy",
+      type: "todo",
+    });
+    const schema = defineSchema({
+      entities: { todo },
+      relationships: { ownedBy },
+      version: 1,
+    });
+    const client = createClient({ serverUrl: SERVER_URL, actorId: actor, schema });
+    const { groups } = await client.handshake();
+    expect(groups.find((g) => g.id === TEST_GROUP_ID)).toBeDefined();
+    client.setState("live");
+
+    try {
+      const todoId = `todo_delete_${RUN_ID}`;
+
+      // Seed the entity + relationship in one Action so the
+      // writer's intra-action context resolves the source's group
+      // and cf_group_actions indexes the row for catchUp.
+      const seedClock = createClock();
+      const seedHlc = localEvent(seedClock);
+      const seedEntityUpdate = {
+        id: "u_seed",
+        subject_id: todoId,
+        subject_type: "todo",
+        method: "put" as const,
+        data: {
+          fields: {
+            title: { value: "Seed", update_id: "u_seed", hlc: seedHlc },
+          },
+        },
+      };
+      const seedWireResult = client.buildRelationshipWrite({
+        source: todo,
+        target: groupTarget,
+        as: "ownedBy",
+        sourceId: todoId,
+        targetId: TEST_GROUP_ID,
+      });
+      const relUpdate = Array.isArray(seedWireResult.relationshipUpdate)
+        ? seedWireResult.relationshipUpdate[0]!
+        : seedWireResult.relationshipUpdate;
+      const { action: seedAction } = createAction({
+        actorId: actor,
+        clock: seedClock,
+        updates: [seedEntityUpdate, relUpdate],
+      });
+      const seedResult = await client.write([seedAction]);
+      expect(seedResult.rejected).toEqual([]);
+      await catchUpUntilCurrent(client, TEST_GROUP_ID);
+
+      const before = await client.storage.entities.query("todo");
+      expect(before.map((e) => e.id)).toContain(todoId);
+
+      const deleteResult = await client.todo.delete(todoId);
+      expect(deleteResult.rejected).toEqual([]);
+
+      // The server tombstones the row rather than erasing it, so the
+      // materialized entity survives with a non-null `deleted_hlc`.
+      await catchUpUntilCurrent(client, TEST_GROUP_ID);
+      const tombstone = await client.storage.entities.get(todoId);
+      expect(tombstone).not.toBeNull();
+      expect(tombstone!.deleted_hlc).not.toBeNull();
+    } finally {
+      client.close();
+    }
+  });
+});
+
 /**
  * Locate the just-written todo by scanning storage after
  * catch-up. The id-mint lives inside `submitEntityWrite`; this
