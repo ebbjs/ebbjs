@@ -4,6 +4,7 @@ import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
 import type { EntityChangeEmitter } from "../types/entity-change-emitter";
 import { applyUpdate } from "../internal/materialize";
+import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
 
 /**
  * MemoryEntityStore — in-memory implementation of EntityStore.
@@ -30,80 +31,6 @@ interface EntityStoreState {
   entities: Record<string, Entity>;
   typeIndex: Record<string, Set<string>>;
 }
-
-/**
- * In-memory observer fan-out. The factory returns both the public
- * `EntityChangeEmitter` (subscribe-side) and an internal `emit`
- * pair the entity store calls on materialize/set. Listeners are
- * keyed by entityId and by type; emit-on-materialize dispatches
- * to both groups. Throwing listeners are caught and logged so one
- * bad subscriber can't break the others (matches the SDK's wider
- * error-isolation pattern).
- */
-const createMemoryChangeEmitter = (): {
-  emitter: EntityChangeEmitter;
-  emit: (id: string, entity: Entity) => void;
-} => {
-  const byId = new Map<string, Set<(entity: Entity | null) => void>>();
-  const byType = new Map<string, Set<(entity: Entity) => void>>();
-  const fireId = (id: string, entity: Entity | null): void => {
-    const listeners = byId.get(id);
-    if (listeners === undefined) return;
-    for (const cb of listeners) {
-      try {
-        cb(entity);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[EntityChangeEmitter] onEntityChange handler threw:", err);
-      }
-    }
-  };
-  const fireType = (entity: Entity): void => {
-    const listeners = byType.get(entity.type);
-    if (listeners === undefined) return;
-    for (const cb of listeners) {
-      try {
-        cb(entity);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[EntityChangeEmitter] onTypeChange handler threw:", err);
-      }
-    }
-  };
-  const emit = (id: string, entity: Entity): void => {
-    fireId(id, entity);
-    fireType(entity);
-  };
-  const emitter: EntityChangeEmitter = {
-    onEntityChange(id, listener) {
-      let bucket = byId.get(id);
-      if (bucket === undefined) {
-        bucket = new Set();
-        byId.set(id, bucket);
-      }
-      bucket.add(listener);
-      return () => {
-        bucket?.delete(listener);
-      };
-    },
-    onTypeChange(type, listener) {
-      let bucket = byType.get(type);
-      if (bucket === undefined) {
-        bucket = new Set();
-        byType.set(type, bucket);
-      }
-      bucket.add(listener);
-      return () => {
-        bucket?.delete(listener);
-      };
-    },
-    reset() {
-      byId.clear();
-      byType.clear();
-    },
-  };
-  return { emitter, emit };
-};
 
 const copyEntity = (entity: Entity): Entity => JSON.parse(JSON.stringify(entity));
 
@@ -150,7 +77,7 @@ export const createMemoryEntityStore = (
   dirtyTracker: DirtyTracker,
 ): MemoryEntityStoreBundle => {
   let state: EntityStoreState = { entities: {}, typeIndex: {} };
-  const { emitter, emit } = createMemoryChangeEmitter();
+  const { emitter, emit } = createEntityChangeEmitter();
 
   /**
    * Replay actions for `entityId` into the cache. The `clearDirty`

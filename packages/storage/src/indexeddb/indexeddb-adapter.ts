@@ -41,7 +41,11 @@ export const createIndexedDBAdapter = async (
 
   const actionLog = createIndexedDBActionLog(db);
   const dirtyTracker = createIndexedDBDirtyTracker(db);
-  const entityStore = createIndexedDBEntityStore(db, actionLog, dirtyTracker);
+  const {
+    store: entityStore,
+    emitter: changeEmitter,
+    materializeKeepDirty,
+  } = createIndexedDBEntityStore(db, actionLog, dirtyTracker);
   const cursorStore = createIndexedDBCursorStore(db);
 
   return {
@@ -93,6 +97,12 @@ export const createIndexedDBAdapter = async (
     },
 
     cursors: cursorStore,
+
+    changeEmitter,
+
+    async materializeKeepDirty(entityId: string): Promise<void> {
+      await materializeKeepDirty(entityId);
+    },
 
     async isDirty(entityId: string): Promise<boolean> {
       return dirtyTracker.isDirty(entityId);
