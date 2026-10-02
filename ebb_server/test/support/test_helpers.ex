@@ -291,7 +291,7 @@ defmodule EbbServer.TestHelpers do
 
     :ets.new(gm, [:bag, :public, :named_table])
     :ets.new(gm_by_id, [:set, :public, :named_table])
-    :ets.new(rel, [:set, :public, :named_table])
+    :ets.new(rel, [:bag, :public, :named_table])
     :ets.new(rbg, [:bag, :public, :named_table])
     :ets.new(rbi, [:set, :public, :named_table])
 

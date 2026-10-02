@@ -225,12 +225,12 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       :ets.insert(
         tables.group_members,
-        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.read"]}}
+        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.create"]}}
       )
 
       :ets.insert(
         tables.group_members,
-        {"a_1", %{id: "gm_2", group_id: "g_2", permissions: ["todo.create"]}}
+        {"a_1", %{id: "gm_2", group_id: "g_2", permissions: ["todo.read"]}}
       )
 
       :ets.insert(
