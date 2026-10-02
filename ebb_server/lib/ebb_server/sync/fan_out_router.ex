@@ -258,10 +258,11 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   # A relationship belongs to its source's groups, never its own target.
   defp resolve_update_group_ids(%{"subject_type" => "relationship"} = update, opts) do
-    case Fields.get(update["data"], "source_id") do
-      nil -> EntityIndex.resolve_groups("relationship", update["subject_id"], opts)
-      source_id -> EntityIndex.source_groups(source_id, opts)
-    end
+    EntityIndex.relationship_groups(
+      Fields.get(update["data"], "source_id"),
+      update["subject_id"],
+      opts
+    )
   end
 
   defp resolve_update_group_ids(update, opts) do

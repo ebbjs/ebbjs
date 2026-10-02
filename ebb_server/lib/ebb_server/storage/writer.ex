@@ -468,13 +468,11 @@ defmodule EbbServer.Storage.Writer do
 
     case update.subject_type do
       "relationship" ->
-        wire_source_id = Fields.get(update.data, "source_id")
-
-        if wire_source_id do
-          EntityIndex.source_groups(wire_source_id, opts)
-        else
-          EntityIndex.resolve_groups("relationship", update.subject_id, opts)
-        end
+        EntityIndex.relationship_groups(
+          Fields.get(update.data, "source_id"),
+          update.subject_id,
+          opts
+        )
 
       type ->
         EntityIndex.resolve_groups(type, update.subject_id, opts)

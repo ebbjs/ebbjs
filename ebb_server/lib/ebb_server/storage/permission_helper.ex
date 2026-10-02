@@ -4,6 +4,7 @@ defmodule EbbServer.Storage.PermissionHelper do
   """
 
   alias EbbServer.Storage.Fields
+  alias EbbServer.Storage.RelationshipCache
 
   @system_entity_types ["group", "groupMember", "relationship"]
   @method_atoms %{"put" => :put, "patch" => :patch, "delete" => :delete}
@@ -115,7 +116,7 @@ defmodule EbbServer.Storage.PermissionHelper do
     updates
     |> Enum.filter(fn u ->
       get_subject_type(u) == "relationship" and normalize_method(get_method(u)) == "put" and
-        get_data_field(u, "kind") == "member"
+        get_data_field(u, "kind") == RelationshipCache.member_kind()
     end)
     |> Enum.reduce(%{}, fn u, acc ->
       source_id = get_data_field(u, "source_id")

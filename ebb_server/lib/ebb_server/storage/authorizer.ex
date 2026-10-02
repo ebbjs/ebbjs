@@ -34,8 +34,9 @@ defmodule EbbServer.Storage.Authorizer do
 
   Each action must pass authorization checks:
   - Group bootstrap allowed without prior permissions
-  - System entities (group, groupMember, relationship) require group membership
-  - User entities require group permissions
+  - `group` / `groupMember` updates require membership in the entity's group
+  - `relationship` updates require membership in the edge's **source** group set
+  - User entities require the permission in at least one group of the entity's set
   """
   @spec authorize([validated_action()], String.t(), AuthorizationContext.t()) ::
           :ok | {:error, String.t(), String.t()}
@@ -88,11 +89,11 @@ defmodule EbbServer.Storage.Authorizer do
     wire_source_id = Fields.get(update.data, "source_id")
     opts = Keyword.put(ctx_to_opts(ctx), :intra_action, intra_ctx)
 
-    group_ids =
-      if(wire_source_id, do: EntityIndex.source_groups(wire_source_id, opts), else: []) ++
-        EntityIndex.resolve_groups("relationship", update.subject_id, opts)
-
-    check_any_group_membership(actor_id, group_ids, ctx)
+    check_any_group_membership(
+      actor_id,
+      EntityIndex.relationship_groups(wire_source_id, update.subject_id, opts),
+      ctx
+    )
   end
 
   defp authorize_system_entity_update(update, actor_id, ctx) do

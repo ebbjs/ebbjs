@@ -23,6 +23,20 @@ defmodule EbbServer.Storage.RelationshipCache do
   @default_relationships_by_group :ebb_relationships_by_group
   @default_relationships_by_id :ebb_relationships_by_id
 
+  # Membership is the subset of edges marked with this kind; every
+  # other edge (including rows stored before `kind` existed) is a
+  # domain link.
+  @member_kind "member"
+  @link_kind "link"
+
+  @doc "The `kind` value marking an entity↔Group membership edge."
+  @spec member_kind() :: String.t()
+  def member_kind, do: @member_kind
+
+  @doc "The default `kind` for a domain relationship edge."
+  @spec link_kind() :: String.t()
+  def link_kind, do: @link_kind
+
   @type t :: %__MODULE__{
           relationships: atom(),
           relationships_by_group: atom(),
@@ -70,7 +84,7 @@ defmodule EbbServer.Storage.RelationshipCache do
         target_id: target_id,
         type: field(rel, :type),
         field: field(rel, :field),
-        kind: field(rel, :kind) || "link"
+        kind: field(rel, :kind) || @link_kind
       }
 
       # A re-put replaces the row for the same id. Leaving the previous
@@ -121,12 +135,13 @@ defmodule EbbServer.Storage.RelationshipCache do
   Looks up a relationship entry by its id.
 
   Returns the full entry map (with `:id`, `:source_id`, `:target_id`,
-  `:type`, `:field`) or `nil` if no relationship with that id exists.
+  `:type`, `:field`, `:kind`) or `nil` if no relationship with that id
+  exists.
 
   ## Examples
 
       iex> RelationshipCache.get_relationship("rel_1")
-      %{id: "rel_1", source_id: "todo_1", target_id: "g_1", type: "todo", field: "group"}
+      %{id: "rel_1", source_id: "todo_1", target_id: "g_1", type: "todo", field: "group", kind: "member"}
 
       iex> RelationshipCache.get_relationship("unknown")
       nil
@@ -268,7 +283,7 @@ defmodule EbbServer.Storage.RelationshipCache do
     :ok
   end
 
-  defp member?(entry), do: field(entry, :kind) == "member"
+  defp member?(entry), do: field(entry, :kind) == @member_kind
 
   defp entry_source_id(entry), do: field(entry, :source_id)
   defp entry_target_id(entry), do: field(entry, :target_id)

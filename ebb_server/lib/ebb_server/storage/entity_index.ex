@@ -92,6 +92,16 @@ defmodule EbbServer.Storage.EntityIndex do
   end
 
   @doc """
+  Returns the group set for a `relationship` update: the wire
+  `source_id`'s membership set when the Update carries it, otherwise
+  the by-id edge's source (the delete wire form drops the data
+  envelope).
+  """
+  @spec relationship_groups(String.t() | nil, subject_id(), keyword()) :: [String.t()]
+  def relationship_groups(nil, rel_id, opts), do: resolve_groups("relationship", rel_id, opts)
+  def relationship_groups(source_id, _rel_id, opts), do: source_groups(source_id, opts)
+
+  @doc """
   Returns the first group in the entity's set, or `nil` when the set is
   empty. Prefer `resolve_groups/3` when every group matters.
   """
