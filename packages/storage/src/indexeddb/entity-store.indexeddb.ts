@@ -1,9 +1,11 @@
 import type { IDBPDatabase } from "idb";
 import type { Entity } from "@ebbjs/core";
 import type { EntityStore } from "../types/entity-store";
+import type { EntityChangeEmitter } from "../types/entity-change-emitter";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
 import { applyUpdate } from "../internal/materialize";
+import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
 import type { EbbDBSchema } from "./schema";
 
 /**
@@ -26,14 +28,33 @@ import type { EbbDBSchema } from "./schema";
  * `../internal/materialize`). All public methods return copies via
  * `structuredClone` to prevent external mutation.
  */
+export interface IndexedDBEntityStoreBundle {
+  store: EntityStore;
+  emitter: EntityChangeEmitter;
+  /**
+   * Replay actions for `entityId` into the cache and fire the
+   * emitter without clearing the dirty flag. Mirrors the
+   * memory adapter's hook so callers see identical subscribe
+   * semantics across backends.
+   */
+  materializeKeepDirty(entityId: string): Promise<void>;
+}
+
 export const createIndexedDBEntityStore = (
   db: IDBPDatabase<EbbDBSchema>,
   actionLog: ActionLog,
   dirtyTracker: DirtyTracker,
-): EntityStore => {
+): IndexedDBEntityStoreBundle => {
   const copyEntity = (entity: Entity): Entity => structuredClone(entity);
+  const { emitter, emit } = createEntityChangeEmitter();
 
-  const materialize = async (entityId: string): Promise<void> => {
+  /**
+   * Replay actions for `entityId` into the cache. `clearDirty`
+   * toggles whether the dirty flag is reset — false keeps the
+   * flag set so the eager fan-out can observe the emit without
+   * disturbing a subsequent `isDirty` check.
+   */
+  const replay = async (entityId: string, clearDirty: boolean): Promise<void> => {
     const isEntityDirty = await dirtyTracker.isDirty(entityId);
     if (!isEntityDirty) return;
 
@@ -52,25 +73,31 @@ export const createIndexedDBEntityStore = (
     if (entity === null) return;
 
     await db.put("entities", copyEntity(entity) as EbbDBSchema["entities"]["value"]);
-    await dirtyTracker.clear(entityId);
+
+    if (clearDirty) {
+      await dirtyTracker.clear(entityId);
+    }
+
+    emit(entityId, entity);
   };
 
-  return {
+  const store: EntityStore = {
     async get(id: string): Promise<Entity | null> {
-      await materialize(id);
+      await replay(id, true);
       const entity = (await db.get("entities", id)) as unknown as Entity | undefined;
       return entity ? copyEntity(entity) : null;
     },
 
     async set(entity: Entity): Promise<void> {
       await db.put("entities", copyEntity(entity) as EbbDBSchema["entities"]["value"]);
+      emit(entity.id, entity);
     },
 
     async query(type: string): Promise<readonly Entity[]> {
       const dirtyIds = await dirtyTracker.getDirtyForType(type);
 
       for (const id of dirtyIds) {
-        await materialize(id);
+        await replay(id, true);
       }
 
       const entities = (await db.getAllFromIndex("entities", "type", type)) as unknown as Entity[];
@@ -79,6 +106,9 @@ export const createIndexedDBEntityStore = (
 
     async reset(): Promise<void> {
       await db.clear("entities");
+      emitter.reset();
     },
   };
+
+  return { store, emitter, materializeKeepDirty: (id) => replay(id, false) };
 };

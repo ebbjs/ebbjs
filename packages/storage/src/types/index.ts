@@ -9,4 +9,5 @@ export type { ActionLog } from "./action-log";
 export type { DirtyTracker } from "./dirty-tracker";
 export type { EntityStore } from "./entity-store";
 export type { CursorStore } from "./cursor-store";
+export type { EntityChangeEmitter } from "./entity-change-emitter";
 export type { StorageAdapter } from "./storage-adapter";
