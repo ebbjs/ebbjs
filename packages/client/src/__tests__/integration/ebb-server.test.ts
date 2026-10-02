@@ -1133,23 +1133,12 @@ describe("integration: defineSchema", () => {
 // ---------------------------------------------------------------------------
 
 /**
- * `client.<entity>.create()` and `client.<entity>.update()` run
- * the user's typed input through `Value.Check` against the
- * entity's TypeBox shape *before* any network call. The tests
- * below verify the SDK rejects malformed payloads without ever
- * touching `/sync/actions` — the fetch stub records every URL it
- * sees, so the assertion is a literal `seen.length` comparison.
- *
- * The tests run even when the live ebb server isn't reachable:
- * the validator must throw before any HTTP call, so the wire
- * stub never needs to round-trip a real response.
+ * Tests in this block run without a live ebb server — the
+ * validator must throw before any HTTP call, so the wire stub
+ * never needs to round-trip a real response.
  */
 describe("integration: client.<entity>.create() runtime validation (#172)", () => {
-  /**
-   * Build a fetch stub that records every URL it sees. The stub
-   * accepts every request it does receive — the tests assert the
-   * stub saw no `/sync/actions` URL after a validation failure.
-   */
+  /** Records every URL it sees so tests can assert the wire was reached (or wasn't). */
   const mkRecordingFetch = (seen: string[]): typeof fetch => {
     return (async (url: string, _init: RequestInit): Promise<Response> => {
       seen.push(url);
@@ -1177,8 +1166,6 @@ describe("integration: client.<entity>.create() runtime validation (#172)", () =
       await expect(
         client.todo.create({ title: 42, completed: false } as never),
       ).rejects.toBeInstanceOf(EntityValidationError);
-      // The validator rejected before the wire — no /sync/actions
-      // call was made.
       expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
     } finally {
       client.close();
@@ -1261,7 +1248,6 @@ describe("integration: client.<entity>.create() runtime validation (#172)", () =
         completed: false,
       });
       expect(response.rejected).toEqual([]);
-      // The server stored the entity; read it back to confirm.
       const createdId = await findCreatedTodoId(client);
       const stored = await client.getEntity(createdId);
       expect(stored).not.toBeNull();
@@ -1273,10 +1259,9 @@ describe("integration: client.<entity>.create() runtime validation (#172)", () =
 });
 
 /**
- * Find the most-recently-created `todo` entity in the test group by
- * scanning catch-up history. Used by the validation round-trip
- * integration test to look up the id `client.todo.create()` minted
- * without leaking the id-mint through the public API.
+ * Locate the just-written todo by scanning storage after
+ * catch-up. The id-mint lives inside `submitEntityWrite`; this
+ * helper exposes it to the test without leaking the API.
  */
 async function findCreatedTodoId(client: import("../..").SyncClient): Promise<string> {
   await catchUpUntilCurrent(client, TEST_GROUP_ID);
@@ -1284,7 +1269,6 @@ async function findCreatedTodoId(client: import("../..").SyncClient): Promise<st
   if (stored.length === 0) {
     throw new Error("findCreatedTodoId: no todo entity found in storage");
   }
-  // The just-written entity is the one with the largest `created_hlc`.
   const sorted = [...stored].sort((a, b) => (a.created_hlc < b.created_hlc ? 1 : -1));
   return sorted[0]!.id;
 }
