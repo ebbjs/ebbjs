@@ -24,8 +24,11 @@ defmodule EbbServer.Storage.Writer do
   resolves FieldValue-wrapped data, builds the `cf_group_actions` index
   via intra-action context (see below), assembles the WriteBatch, commits
   with `sync: true`, advances the watermark, marks entities dirty, and
-  notifies `FanOutRouter`. If anything fails, no GSNs are returned to
-  the caller.
+  notifies `FanOutRouter`. The notification carries the per-Action
+  group set this pass resolved, so live fan-out indexes the same
+  snapshot `cf_group_actions` was built from rather than re-deriving
+  groups after the system caches have moved. If anything fails, no GSNs
+  are returned to the caller.
 
   ## cf_group_actions index and intra-action context
 
@@ -207,25 +210,36 @@ defmodule EbbServer.Storage.Writer do
 
       rocks_name = state.rocks_name
 
-      ops =
+      {ops, groups_by_gsn} =
         filtered
         |> Enum.with_index(gsn_start)
-        |> Enum.flat_map(fn {action, gsn} ->
-          build_action_ops(
-            action,
-            gsn,
-            rocks_name,
-            state.relationships,
-            state.relationships_by_id,
-            state.group_members_by_id
-          )
+        |> Enum.map_reduce(%{}, fn {action, gsn}, acc ->
+          {action_ops, group_ids} =
+            build_action_ops(
+              action,
+              gsn,
+              rocks_name,
+              state.relationships,
+              state.relationships_by_id,
+              state.group_members_by_id
+            )
+
+          {action_ops, Map.put(acc, gsn, group_ids)}
         end)
 
-      write_and_respond(ops, filtered, gsn_start, gsn_end, state, rocks_name)
+      write_and_respond(
+        List.flatten(ops),
+        filtered,
+        gsn_start,
+        gsn_end,
+        groups_by_gsn,
+        state,
+        rocks_name
+      )
     end
   end
 
-  defp write_and_respond(ops, filtered, gsn_start, gsn_end, state, rocks_name) do
+  defp write_and_respond(ops, filtered, gsn_start, gsn_end, groups_by_gsn, state, rocks_name) do
     case RocksDB.write_batch(ops, name: rocks_name) do
       :ok ->
         entity_ids =
@@ -243,7 +257,7 @@ defmodule EbbServer.Storage.Writer do
         end
 
         if state.fan_out_router && Process.whereis(state.fan_out_router) do
-          send(state.fan_out_router, {:batch_committed, gsn_start, gsn_end})
+          send(state.fan_out_router, {:batch_committed, gsn_start, gsn_end, groups_by_gsn})
         end
 
         {:reply, {:ok, {gsn_start, gsn_end}, []}, state}
@@ -336,22 +350,36 @@ defmodule EbbServer.Storage.Writer do
 
     intra_ctx = build_intra_action_context(action.updates)
 
-    [
-      {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), action_etf},
-      {:put, RocksDB.cf_action_dedup(rocks_name), action.id, RocksDB.encode_gsn_key(gsn)}
-    ] ++
-      Enum.flat_map(action.updates, fn update ->
-        build_update_ops(
-          action.id,
-          update,
-          gsn,
-          rocks_name,
-          relationships,
-          relationships_by_id,
-          group_members_by_id,
-          intra_ctx
-        )
+    {update_ops, group_ids_by_update} =
+      Enum.map_reduce(action.updates, [], fn update, acc ->
+        {ops, group_ids} =
+          build_update_ops(
+            action.id,
+            update,
+            gsn,
+            rocks_name,
+            relationships,
+            relationships_by_id,
+            group_members_by_id,
+            intra_ctx
+          )
+
+        {ops, [group_ids | acc]}
       end)
+
+    group_ids =
+      group_ids_by_update
+      |> Enum.reverse()
+      |> List.flatten()
+      |> Enum.uniq()
+
+    ops =
+      [
+        {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), action_etf},
+        {:put, RocksDB.cf_action_dedup(rocks_name), action.id, RocksDB.encode_gsn_key(gsn)}
+      ] ++ List.flatten(update_ops)
+
+    {ops, group_ids}
   end
 
   defp build_intra_action_context(updates) do
@@ -392,34 +420,39 @@ defmodule EbbServer.Storage.Writer do
        ) do
     update_etf = :erlang.term_to_binary(update)
 
-    [
-      {:put, RocksDB.cf_updates(rocks_name), RocksDB.encode_update_key(action_id, update.id),
-       update_etf},
-      {:put, RocksDB.cf_entity_actions(rocks_name),
-       RocksDB.encode_entity_gsn_key(update.subject_id, gsn), action_id},
-      {:put, RocksDB.cf_type_entities(rocks_name),
-       RocksDB.encode_type_entity_key(
-         update.subject_type,
-         update.subject_id
-       ), <<>>}
-    ] ++
-      build_group_action_index(
-        action_id,
-        gsn,
+    group_ids =
+      group_ids_for_update(
         update,
-        rocks_name,
         relationships,
         relationships_by_id,
         group_members_by_id,
         intra_ctx
       )
+
+    index_ops =
+      Enum.map(group_ids, fn group_id ->
+        key = <<group_id::binary, gsn::unsigned-big-integer-size(64)>>
+        {:put, RocksDB.cf_group_actions(rocks_name), key, action_id}
+      end)
+
+    ops =
+      [
+        {:put, RocksDB.cf_updates(rocks_name), RocksDB.encode_update_key(action_id, update.id),
+         update_etf},
+        {:put, RocksDB.cf_entity_actions(rocks_name),
+         RocksDB.encode_entity_gsn_key(update.subject_id, gsn), action_id},
+        {:put, RocksDB.cf_type_entities(rocks_name),
+         RocksDB.encode_type_entity_key(
+           update.subject_type,
+           update.subject_id
+         ), <<>>}
+      ] ++ index_ops
+
+    {ops, group_ids}
   end
 
-  defp build_group_action_index(
-         _action_id,
-         _gsn,
+  defp group_ids_for_update(
          _update,
-         _rocks_name,
          nil,
          _relationships_by_id,
          _group_members_by_id,
@@ -427,32 +460,7 @@ defmodule EbbServer.Storage.Writer do
        ),
        do: []
 
-  defp build_group_action_index(
-         action_id,
-         gsn,
-         update,
-         rocks_name,
-         relationships,
-         relationships_by_id,
-         group_members_by_id,
-         intra_ctx
-       ) do
-    group_ids =
-      get_group_ids_for_group_action_index(
-        update,
-        relationships,
-        relationships_by_id,
-        group_members_by_id,
-        intra_ctx
-      )
-
-    Enum.map(group_ids, fn group_id ->
-      key = <<group_id::binary, gsn::unsigned-big-integer-size(64)>>
-      {:put, RocksDB.cf_group_actions(rocks_name), key, action_id}
-    end)
-  end
-
-  defp get_group_ids_for_group_action_index(
+  defp group_ids_for_update(
          update,
          relationships,
          relationships_by_id,

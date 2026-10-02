@@ -629,6 +629,72 @@ defmodule EbbServer.Storage.WriterTest do
     end
   end
 
+  describe "batch_committed groups snapshot (#251)" do
+    test "carries the pre-update group set for a relationship delete", %{
+      rocks_name: rocks_name,
+      dirty_set: dirty_set,
+      gsn_counter: gsn_counter,
+      group_members: group_members,
+      group_members_by_id: group_members_by_id,
+      relationships: relationships,
+      relationships_by_group: relationships_by_group,
+      relationships_by_id: relationships_by_id
+    } do
+      router_name = :"fan_out_router_test_#{System.unique_integer([:positive])}"
+      true = Process.register(self(), router_name)
+
+      %{name: writer_name} =
+        start_writer(%{
+          rocks_name: rocks_name,
+          dirty_set: dirty_set,
+          gsn_counter: gsn_counter,
+          group_members: group_members,
+          group_members_by_id: group_members_by_id,
+          relationships: relationships,
+          relationships_by_group: relationships_by_group,
+          relationships_by_id: relationships_by_id,
+          fan_out_router: router_name
+        })
+
+      hlc = generate_hlc()
+
+      put = %{
+        id: "act_snapshot_put",
+        actor_id: "actor_1",
+        hlc: hlc,
+        updates: [
+          relationship_update("rel_snapshot", "todo_snapshot", "g_snapshot", "member", hlc)
+        ]
+      }
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([put], writer_name)
+      assert_receive {:batch_committed, 1, 1, %{1 => ["g_snapshot"]}}
+
+      delete = %{
+        id: "act_snapshot_delete",
+        actor_id: "actor_1",
+        hlc: generate_hlc(),
+        updates: [
+          %{
+            id: "upd_snapshot_delete",
+            subject_id: "rel_snapshot",
+            subject_type: "relationship",
+            method: :delete,
+            data: nil
+          }
+        ]
+      }
+
+      assert {:ok, {2, 2}, []} = Writer.write_actions([delete], writer_name)
+
+      # The by-id entry is gone once the caches update, so the delete's
+      # group set must come from the same pre-update pass that built
+      # cf_group_actions — not from a later re-resolution.
+      assert RelationshipCache.membership_groups("todo_snapshot", relationships) == []
+      assert_receive {:batch_committed, 2, 2, %{2 => ["g_snapshot"]}}
+    end
+  end
+
   defp relationship_update(id, source_id, target_id, kind, hlc) do
     %{
       id: id,
