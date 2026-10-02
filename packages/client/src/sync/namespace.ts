@@ -20,7 +20,7 @@ import type { WriteResponse } from "./types";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
-import type { EntityDef } from "../schema/entity";
+import type { EntityDef, ShapeFields } from "../schema/entity";
 import { EntityValidationError, validatePayload } from "../schema/entity-registry";
 import type { EntityRegistry } from "../schema/entity-registry";
 import type { Schema } from "../schema/schema";
@@ -87,7 +87,7 @@ export type RowAccessor =
 export type EntityWithAccessors<
   TFields extends Record<string, TSchema>,
   TAs extends string = never,
-> = [TAs] extends [never] ? Static<TObject<TFields>> : never;
+> = [TAs] extends [never] ? Static<TObject<ShapeFields<TFields>>> : never;
 
 /**
  * Per-entity snapshot for reactive subscribe. Path C pins this
@@ -101,7 +101,9 @@ export type EntityWithAccessors<
  * subscribe that lands with #171 reuses this type verbatim — no
  * migration when #171 merges.
  */
-export type EntitySnapshot<TFields extends Record<string, TSchema>> = Static<TObject<TFields>> & {
+export type EntitySnapshot<TFields extends Record<string, TSchema>> = Static<
+  TObject<ShapeFields<TFields>>
+> & {
   readonly id: string;
   readonly entity: Entity;
 };
@@ -177,14 +179,17 @@ export interface EntityNamespace<
    * `EntityValidationError` before any network call. `subject_id`
    * is minted client-side; the wire Update is a `put`.
    */
-  create(input: Static<TObject<TFields>>, opts?: EntityWriteOptions): Promise<WriteResponse>;
+  create(
+    input: Static<TObject<ShapeFields<TFields>>>,
+    opts?: EntityWriteOptions,
+  ): Promise<WriteResponse>;
   /**
    * Patch an existing entity row, validated the same way as
    * `create`'s input. The wire Update is a `patch`.
    */
   update(
     id: string,
-    patch: Partial<Static<TObject<TFields>>>,
+    patch: Partial<Static<TObject<ShapeFields<TFields>>>>,
     opts?: EntityWriteOptions,
   ): Promise<WriteResponse>;
   /**
@@ -415,7 +420,7 @@ export function createEntityNamespace<
       };
       const buildSnapshot = (): CollectionSnapshot<TFields> => {
         const rows = [...matching.values()];
-        const projected = projectRows(rows, shape) as Static<TObject<TFields>>[];
+        const projected = projectRows(rows, shape) as Static<TObject<ShapeFields<TFields>>>[];
         const entities: EntitySnapshot<TFields>[] = projected.map((row, i) => ({
           ...row,
           id: rows[i]!.id,
@@ -474,7 +479,7 @@ export function createEntityNamespace<
       };
     },
     async create(
-      input: Static<TObject<TFields>>,
+      input: Static<TObject<ShapeFields<TFields>>>,
       opts?: EntityWriteOptions,
     ): Promise<WriteResponse> {
       return submitEntityWrite(write, entityName, shape, {
@@ -486,7 +491,7 @@ export function createEntityNamespace<
     },
     async update(
       id: string,
-      patch: Partial<Static<TObject<TFields>>>,
+      patch: Partial<Static<TObject<ShapeFields<TFields>>>>,
       opts?: EntityWriteOptions,
     ): Promise<WriteResponse> {
       return submitEntityWrite(write, entityName, shape, {
