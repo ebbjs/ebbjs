@@ -11,6 +11,8 @@ import { defineEntity, e } from "../../schema/entity";
 import { defineSchema } from "../../schema/schema";
 import { defineRelationship } from "../../schema/relationship";
 import { EntityValidationError } from "../../schema/entity-registry";
+import type { EntityFields } from "../namespace";
+import type { QueryBuilder } from "../query-builder";
 import type { WriteResponse } from "../types";
 import { createClient } from "../client";
 
@@ -404,17 +406,9 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     });
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
-    // The forward-many accessor lives on the row at runtime but the
-    // static type surfaces only the projected fields (per-entity
-    // accessor key typing is a documented follow-up). Cast through
-    // `unknown` to reach the runtime accessor.
-    const tags = await (row as unknown as { tags: Promise<unknown> }).tags;
-    expect(Array.isArray(tags)).toBe(true);
-    expect((tags as unknown as readonly { name: string }[]).map((t) => t.name).sort()).toEqual([
-      "a",
-      "b",
-      "c",
-    ]);
+    const tags: QueryBuilder<EntityFields<typeof labelEntity>> = row.tags;
+    const resolved: readonly { name: string }[] = await tags;
+    expect(resolved.map((t) => t.name).sort()).toEqual(["a", "b", "c"]);
   });
 
   it("forward-one accessor returns the target entity when the edge exists", async () => {
@@ -431,9 +425,10 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     });
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
-    const owner = await (row as unknown as { owner: Promise<unknown> }).owner;
-    expect((owner as unknown as { id: string } | null | undefined)?.id).toBe("u1");
-    expect((owner as unknown as { type: string } | null | undefined)?.type).toBe("user");
+    const ownerPromise: Promise<Entity | null | undefined> = row.owner;
+    const owner: Entity | null | undefined = await ownerPromise;
+    expect(owner?.id).toBe("u1");
+    expect(owner?.type).toBe("user");
   });
 
   it("forward-one accessor returns null when no Relationship edge exists", async () => {
@@ -450,16 +445,17 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     });
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
-    const list = await (row as unknown as { parentList: Promise<unknown> }).parentList;
+    const parentList: Promise<Entity | null | undefined> = row.parentList;
+    const list: Entity | null | undefined = await parentList;
     // No edge in metadata → null.
     expect(list).toBeNull();
     // Add the edge and the accessor surfaces the target.
     await storage.entities.set(mkRelEntity("rel-parentList", "t1", "l1", "parentList", "todo"));
     const row2 = await client.todo.get("t1");
     if (row2 === null) throw new Error("expected row");
-    const list2 = await (row2 as unknown as { parentList: Promise<unknown> }).parentList;
-    expect((list2 as unknown as { id: string } | null | undefined)?.id).toBe("l1");
-    expect((list2 as unknown as { type: string } | null | undefined)?.type).toBe("list");
+    const list2: Entity | null | undefined = await row2.parentList;
+    expect(list2?.id).toBe("l1");
+    expect(list2?.type).toBe("list");
   });
 
   it("forward-one accessor returns undefined when the edge target is missing (dangling)", async () => {
@@ -475,7 +471,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     });
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
-    const owner = await (row as unknown as { owner: Promise<unknown> }).owner;
+    const owner: Entity | null | undefined = await row.owner;
     // Edge exists but target_id is dangling → undefined.
     expect(owner).toBeUndefined();
   });
@@ -498,16 +494,80 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     });
     const list = await client.list.get("l1");
     if (list === null) throw new Error("expected row");
-    // The reverse accessor lives on the row at runtime but isn't
-    // enumerated in the static type — RelationshipDef's source/target
-    // generics widen the inferred `name` to `string`, so a
-    // type-level walker can't recover the per-entity accessor key
-    // set (TS recursion limits, per the spec). Static narrowing is
-    // a documented follow-up; the runtime dispatches via the
-    // registry and surfaces the right accessor on `await`.
-    const todos = await (list as unknown as { parentList: Promise<unknown> }).parentList;
-    const titles = (todos as readonly { title: string }[]).map((r) => r.title).sort();
+    const todos: QueryBuilder<EntityFields<typeof todoEntity>> = list.parentList;
+    const titles = (await todos).map((r) => r.title).sort();
     expect(titles).toEqual(["Other", "Ship"]);
+  });
+
+  it("accessor key wins over a same-named field", async () => {
+    // `card` declares a `tags` field AND a forward-many `tags`
+    // relationship. The runtime overwrites the projected field with
+    // the accessor; the static type follows (`Omit<...> & accessors`).
+    const card = defineEntity("card", {
+      title: e.string(),
+      tags: { type: "array", items: { type: "string" } } as never,
+    });
+    const tag = defineEntity("tag", { name: e.string() });
+    const schemaWithOverlap = defineSchema({
+      entities: { card, tag },
+      relationships: {
+        card_tags: defineRelationship({
+          source: card,
+          target: tag,
+          as: "tags",
+          sourceCardinality: "many",
+        }),
+      },
+      version: 1,
+    });
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    await storage.entities.set(mkEntity("c1", "card", { title: "C", tags: ["stale"] }));
+    await storage.entities.set(mkEntity("g1", "tag", { name: "a" }));
+    await storage.entities.set(mkRelEntity("rel-1", "c1", "g1", "tags", "card"));
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: schemaWithOverlap,
+    });
+    const row = await client.card.get("c1");
+    if (row === null) throw new Error("expected row");
+    // The accessor type (a QueryBuilder), not the `string[]` field type.
+    const tags: QueryBuilder<EntityFields<typeof tag>> = row.tags;
+    const resolved: readonly { name: string }[] = await tags;
+    expect(resolved.map((t) => t.name)).toEqual(["a"]);
+  });
+
+  it("a self-referential relationship's reverse accessor shadows the forward slot", async () => {
+    // `node.parent` is both a forward-one (`node` → `node`) and a
+    // reverse (`node` ← `node`). The runtime attaches forward then
+    // reverse, so the reverse `QueryBuilder` wins; the static type
+    // mirrors that precedence rather than producing an intersection.
+    const node = defineEntity("node", { label: e.string() });
+    const schemaWithSelf = defineSchema({
+      entities: { node },
+      relationships: {
+        node_parent: defineRelationship({ source: node, target: node, as: "parent" }),
+      },
+      version: 1,
+    });
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    await storage.entities.set(mkEntity("n1", "node", { label: "root" }));
+    await storage.entities.set(mkEntity("n2", "node", { label: "child" }));
+    await storage.entities.set(mkRelEntity("rel-1", "n2", "n1", "parent", "node"));
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: schemaWithSelf,
+    });
+    const row = await client.node.get("n1");
+    if (row === null) throw new Error("expected row");
+    const parent: QueryBuilder<EntityFields<typeof node>> = row.parent;
+    const nodes = await parent;
+    expect(nodes.map((n) => n.label)).toEqual(["child"]);
   });
 
   it("row.bogus (un-declared relationship) is a compile error", async () => {
@@ -522,26 +582,24 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     });
     const row = await client.todo.get("t1");
     expect(row).not.toBeNull();
-    // Compile-time check. The static type surfaces only the
-    // projected fields (`title`, `completed`), so any relationship
-    // accessor key is a compile error — including un-declared
-    // relationships like `bogus` and the declared ones (`tags`,
-    // `parentList`, `owner`) until per-entity accessor key typing
-    // is added (TS recursion limits, per the spec). Wrapped in a
-    // function so vitest's runtime ignore (`@ts-expect-error`)
-    // doesn't trip when the file is loaded.
+    // Compile-time check. Declared accessors (`tags`, `parentList`,
+    // `owner`) are part of the row type; `bogus` is neither a
+    // projected field nor a declared relationship, so it's a compile
+    // error. Wrapped in a function so vitest's runtime ignore
+    // (`@ts-expect-error`) doesn't trip when the file is loaded.
     const check: () => void = () => {
       if (row === null) return;
+      void row.tags;
+      void row.parentList;
       // @ts-expect-error — `bogus` is not a declared field on todo.
       void row.bogus;
     };
     void check;
   });
 
-  it("does not attach accessors for entities with no declared relationships", async () => {
-    // `user` has no outgoing/incoming relationships in `schemaWithRels`,
-    // so `client.user.get(id)` returns the bare projection (no
-    // accessor record entries).
+  it("entities whose only relationships are reverse carry the reverse accessor", async () => {
+    // `user` is the target of `todo.owner`, so `client.user.get(id)`
+    // carries the reverse `owner` accessor alongside its fields.
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("u1", "user", { name: "Ada" }));
@@ -554,6 +612,29 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     const row = await client.user.get("u1");
     expect(row).not.toBeNull();
     expect(row?.name).toBe("Ada");
+    const check: () => void = () => {
+      if (row === null) return;
+      const _owner: QueryBuilder<EntityFields<typeof todoEntity>> = row.owner;
+      void _owner;
+    };
+    void check;
+  });
+
+  it("entities with no declared relationships carry no accessors", async () => {
+    // The top-level `schema` declares no relationships, so
+    // `client.todo.get(id)` returns the bare projection.
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
+    const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
+    const row = await client.todo.get("t1");
+    expect(row?.title).toBe("Ship");
+    const check: () => void = () => {
+      if (row === null) return;
+      // @ts-expect-error — no relationships declared, so no `tags` accessor.
+      void row.tags;
+    };
+    void check;
   });
 
   it("row is null when the id is unknown (no accessor leak)", async () => {
