@@ -86,6 +86,17 @@ React bindings (`@ebbjs/react`), a Bun-based server-function runtime, and a CLI 
 
 See the website [roadmap](https://ebb.dev/#roadmap) for the marketing-facing version of this list.
 
+## Development
+
+```bash
+pnpm install          # install dependencies and wire git hooks
+pnpm setup:ebb-server # install Elixir system dependencies (first time only)
+pnpm build            # build every package — required before testing
+pnpm test             # run the test suite
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full local-setup notes.
+
 ## Repository Layout
 
 ```

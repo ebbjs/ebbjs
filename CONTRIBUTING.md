@@ -62,9 +62,15 @@ PR body uses [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.
 
 ```bash
 pnpm install          # installs hooks + wires commit.template (via scripts/install-dev-tools.sh)
-pnpm typecheck        # typecheck (root-level project references)
-pnpm core:build       # build a single package
 pnpm setup:ebb-server # install Elixir system deps (see scripts/setup-ebb-server.sh)
+pnpm build            # build every package — required before pnpm test
+pnpm test             # run the test suite
+pnpm typecheck        # typecheck (root-level project references)
+pnpm core:build       # rebuild a single package
 ```
+
+Tests import sibling workspaces through their built `dist/` entry points, so
+`pnpm build` is a prerequisite for `pnpm test`. The root `pretest` hook checks
+for missing build output and points back here if you skipped it.
 
 See `ebb_server/README.md` for the Elixir server's own setup notes.
