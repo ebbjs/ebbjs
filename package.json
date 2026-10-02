@@ -7,6 +7,7 @@
   "scripts": {
     "build": "pnpm --recursive build",
     "dev": "concurrently -n server,demo -c blue,magenta 'cd ebb_server && mix dev' 'pnpm --filter collaborative-text-demo dev'",
+    "pretest": "node scripts/ensure-built.mjs",
     "test": "pnpm --recursive exec vitest --run --passWithNoTests",
     "client": "pnpm --filter @ebbjs/client",
     "core": "pnpm --filter @ebbjs/core",
