@@ -41,9 +41,9 @@ defmodule EbbServer.Storage.RelationshipCacheTest do
     )
   end
 
-  defp member(source_id, target_id, id \\ nil) do
+  defp member(source_id, target_id, id) do
     %{
-      id: id || "rel_#{source_id}_#{target_id}",
+      id: id,
       source_id: source_id,
       target_id: target_id,
       type: "todo",

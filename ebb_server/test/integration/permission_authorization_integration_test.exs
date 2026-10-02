@@ -4,6 +4,51 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
 
   import EbbServer.TestHelpers
   import EbbServer.Integration.ActionHelpers
+  import Plug.Conn
+  import Plug.Test
+
+  alias EbbServer.Sync.Router
+
+  describe "multi-group membership" do
+    test "authorizes by union and indexes the action into every group" do
+      # The actor holds `todo.create` only in group_2; the write must be
+      # authorized by the union across group_1 and group_2, and must reach
+      # both groups' action streams.
+      bootstrap_group("actor_1", "group_1", ["todo.read"])
+      bootstrap_group("actor_1", "group_2", ["todo.create", "todo.read"])
+
+      hlc = generate_hlc()
+      entity_id = "todo_multi_#{Nanoid.generate()}"
+
+      action = %{
+        "id" => "act_multi_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          %{
+            "id" => "upd_multi_#{Nanoid.generate()}",
+            "subject_id" => entity_id,
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{"title" => %{"type" => "lww", "value" => "Multi", "hlc" => hlc}}
+            }
+          },
+          member_edge(entity_id, "group_1", hlc),
+          member_edge(entity_id, "group_2", hlc)
+        ]
+      }
+
+      conn = post_actions(msgpack_encode!(%{"actions" => [action]}), "actor_1")
+      assert conn.status == 200
+      assert Jason.decode!(conn.resp_body) == %{"rejected" => []}
+
+      Process.sleep(50)
+
+      assert entity_id in action_ids("group_1", "actor_1")
+      assert entity_id in action_ids("group_2", "actor_1")
+    end
+  end
 
   describe "authorized write" do
     setup do
@@ -158,5 +203,37 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       rejection = hd(response["rejected"])
       assert rejection["reason"] == "actor_mismatch"
     end
+  end
+
+  defp member_edge(entity_id, group_id, hlc) do
+    rel_id = "rel_#{Nanoid.generate()}"
+
+    %{
+      "id" => rel_id,
+      "subject_id" => rel_id,
+      "subject_type" => "relationship",
+      "method" => "put",
+      "data" => %{
+        "fields" => %{
+          "source_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
+          "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
+          "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
+          "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc},
+          "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc}
+        }
+      }
+    }
+  end
+
+  defp action_ids(group_id, actor_id) do
+    conn =
+      conn(:get, "/sync/groups/#{group_id}")
+      |> put_req_header("x-ebb-actor-id", actor_id)
+      |> Router.call([])
+
+    conn.resp_body
+    |> Jason.decode!()
+    |> Enum.flat_map(& &1["updates"])
+    |> Enum.map(& &1["subject_id"])
   end
 end

@@ -592,7 +592,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
             data: %{
               "fields" => %{
                 "source_id" => %{"value" => "todo_1"},
-                "target_id" => %{"value" => "g_other"},
+                "target_id" => %{"value" => "col_other"},
                 "type" => %{"value" => "todo"},
                 "field" => %{"value" => "column"},
                 "kind" => %{"value" => "link"}
