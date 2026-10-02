@@ -2,7 +2,7 @@
  * Per-entity namespace mounted on `client.<entityName>`.
  *
  * `client.<entity>.query()` returns the same typed thenable chain
- * the relationship handle consumes — one chain, one projection. The
+ * the relationship accessors consume — one chain, one projection. The
  * namespace is a thin layer over the client's `storage` adapter;
  * candidate rows are loaded lazily on each materialization so the
  * chain reflects the latest snapshot.
@@ -10,8 +10,8 @@
  * `client.<entity>.get(id)` returns the typed projection for a
  * single row with relationship accessors attached for every
  * declared relationship on the entity (forward-many,
- * forward-one, reverse). The accessor dispatch reuses the same
- * primitives `client.relationship({...})` already consumes.
+ * forward-one, reverse). The accessor dispatch reuses the traversal
+ * primitives in ./relationship.
  */
 
 import type { Entity, Update } from "@ebbjs/core";

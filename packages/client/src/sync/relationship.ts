@@ -1,13 +1,11 @@
 /**
- * Runtime handle for a single registered relationship.
+ * Runtime primitives for traversing relationships against the
+ * client's materialized cache.
  *
- * `client.relationship({source, target, as})` returns one of these.
- * Mirrors the `client.textDocument(docId)` precedent — a regular
- * method on `SyncClient`, not a Proxy-mounted instance property.
- *
- * The handle is namespace-independent: it operates against the
- * client's materialized cache + the existing outbox without
- * requiring a top-level schema.
+ * The public read surface is the row-with-accessors returned by
+ * `client.<entity>.get(id)`; the namespace dispatches into the
+ * `forwardOne` / `forwardMany` / `reverse` helpers below. They stay
+ * SDK-internal so the traversal has one entry point.
  */
 
 import type { Entity } from "@ebbjs/core";
@@ -15,19 +13,6 @@ import type { TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { EntityRegistry } from "../schema/entity-registry";
 import { type LoadEntities, type QueryBuilder, buildLazyQueryBuilder } from "./query-builder";
-
-/**
- * Inputs to `client.relationship({...})`. Mirrors `defineRelationship`
- * but lighter — `sourceCardinality` and `type` come from the
- * registry's stored relationship rather than from this call site, so
- * `as` alone disambiguates between two relationships on the same
- * source/target pair (with different `type` overrides).
- */
-export interface RelationshipHandleInput {
-  source: { readonly name: string };
-  target: { readonly name: string };
-  as: string;
-}
 
 /**
  * A single pointer value. Accepts either:

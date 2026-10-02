@@ -4,8 +4,8 @@
  * The builder is a pure factory returning a frozen relationship
  * definition; no behavior at registration time. The runtime registry
  * (`EntityRegistry`) consumes the definition when the caller registers
- * it, and `SyncClient.relationship({...})` consumes it to produce a
- * traversal handle.
+ * it, and the row accessors on `client.<entity>.get(id)` consume it
+ * for traversal.
  *
  * Both ends of the link must be `defineEntity` outputs. The wire shape
  * (`Relationship` system entity in `@ebbjs/core`) is unchanged; this
@@ -26,7 +26,7 @@ export type SourceCardinality = "one" | "many";
 /**
  * Definition of one typed link between two entity definitions. Returned
  * by `defineRelationship`; consumed by `EntityRegistry.registerRelationship`
- * and `SyncClient.relationship({...})`.
+ * and the row accessors.
  *
  * `S` and `T` flow from the source and target `EntityDef` values so the
  * relationship knows the entity names it links.
@@ -39,9 +39,9 @@ export interface RelationshipDef<
   readonly target: T;
   /**
    * Accessor name on the source (the field name) and the lookup key
-   * for the primitive handle. Single source of truth: the field on the
-   * source and the accessor key for
-   * `client.relationship({source, target, as})`.
+   * for the row accessor. Single source of truth: the field on the
+   * source and the accessor key on
+   * `client.<entity>.get(id)`.
    */
   readonly as: string;
   readonly sourceCardinality: SourceCardinality;
