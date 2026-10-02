@@ -27,7 +27,6 @@ import type { Schema } from "../schema/schema";
 import {
   buildLazyQueryBuilder,
   projectEntity,
-  projectRows,
   type LoadEntities,
   type QueryBuilder,
 } from "./query-builder";
@@ -96,16 +95,35 @@ export type EntityWithAccessors<
  * the wire envelope (`deleted_hlc`, HLC timestamps, etc.) without
  * losing the strict per-field typing.
  *
- * The per-entity instance handle's `subscribe(cb)` uses the same
- * shape (#171 follow-up). Defining it here means the per-entity
- * subscribe that lands with #171 reuses this type verbatim — no
- * migration when #171 merges.
+ * `client.<entity>.get(id)`'s row carries `subscribe(cb)` and
+ * fires this shape on every materialization of the row. The
+ * snapshot is data, not a handle: relationship accessors are async
+ * and stay on the row, not in the snapshot.
  */
 export type EntitySnapshot<TFields extends Record<string, TSchema>> = Static<
   TObject<ShapeFields<TFields>>
 > & {
   readonly id: string;
   readonly entity: Entity;
+};
+
+/**
+ * Row returned by `client.<entity>.get(id)`: the projected fields,
+ * the runtime relationship accessors, and the per-entity reactive
+ * `subscribe(cb)`.
+ *
+ * `subscribe` fires an `EntitySnapshot<TFields>` on every
+ * materialization of the row, and never on subscribe itself:
+ * `get(id)` already materialized before the listener attaches.
+ * Emits for a wrong-type row are skipped, mirroring `get`'s own
+ * type guard. Adapters without an emitter surface a no-op
+ * unsubscribe.
+ */
+export type EntityRow<
+  TFields extends Record<string, TSchema>,
+  TAs extends string = never,
+> = EntityWithAccessors<TFields, TAs> & {
+  subscribe(cb: (snapshot: EntitySnapshot<TFields>) => void): () => void;
 };
 
 /**
@@ -135,8 +153,8 @@ export type CollectionSnapshot<TFields extends Record<string, TSchema>> = {
  * QueryBuilder over the entity's projected field map; awaiting it
  * resolves to the typed rows. `get(id)` reads a single row directly
  * via the storage adapter, projects it to the same TypeBox shape,
- * and attaches relationship accessors for every declared
- * relationship on the entity.
+ * and attaches relationship accessors plus the per-entity
+ * `subscribe(cb)` for every declared relationship on the entity.
  *
  * `subscribe(filter, cb)` registers a reactive listener on the
  * storage adapter's change emitter. The callback fires whenever
@@ -160,7 +178,7 @@ export interface EntityNamespace<
   TAs extends string = never,
 > {
   query(): QueryBuilder<TFields>;
-  get(id: string): Promise<EntityWithAccessors<TFields, TAs> | null>;
+  get(id: string): Promise<EntityRow<TFields, TAs> | null>;
   /**
    * Reactive subscribe on the matching set. Returns an
    * unsubscribe function. The callback fires when the set
@@ -341,6 +359,45 @@ function buildRowAccessors(
 }
 
 /**
+ * Project a materialized entity into the subscribe snapshot shape:
+ * the typed field projection plus the `id` and `entity` escape
+ * hatches. Shared by the per-collection and per-entity subscribe
+ * paths so the snapshot shape has one definition.
+ */
+const toEntitySnapshot = <TFields extends Record<string, TSchema>>(
+  entity: Entity,
+  shape: TObject<TFields>,
+): EntitySnapshot<TFields> => ({
+  ...projectEntity(entity, shape),
+  id: entity.id,
+  entity,
+});
+
+/**
+ * Attach the per-entity reactive listener for `id`. Adapters without
+ * an emitter have no reactive trigger, so the returned unsubscribe is
+ * a no-op.
+ *
+ * A `null` emit (the interface's hard-removal signal) is dropped:
+ * the pinned `EntitySnapshot` has no null variant, and both shipped
+ * adapters emit the soft-deleted entity (`deleted_hlc` set) instead.
+ */
+const subscribeToEntity = <TFields extends Record<string, TSchema>>(
+  storage: StorageAdapter,
+  entityName: string,
+  id: string,
+  shape: TObject<TFields>,
+  cb: (snapshot: EntitySnapshot<TFields>) => void,
+): (() => void) => {
+  const emitter = storage.changeEmitter;
+  if (emitter === undefined) return () => {};
+  return emitter.onEntityChange(id, (next) => {
+    if (next === null || next.type !== entityName) return;
+    cb(toEntitySnapshot(next, shape));
+  });
+};
+
+/**
  * Capability the namespace consults for write-side operations. The
  * client supplies this at construction time so the namespace stays
  * free of the cyclic `client → namespace → client` reference. The
@@ -386,7 +443,7 @@ export function createEntityNamespace<
     query(): QueryBuilder<TFields> {
       return buildLazyQueryBuilder(loader, shape);
     },
-    async get(id: string): Promise<EntityWithAccessors<TFields, TAs> | null> {
+    async get(id: string): Promise<EntityRow<TFields, TAs> | null> {
       const entity = await storage.entities.get(id);
       if (entity === null) return null;
       // Wrong-type reads (different `entity.type`) resolve to `null`
@@ -395,7 +452,9 @@ export function createEntityNamespace<
       if (entity.type !== entityName) return null;
       const projected = projectEntity(entity, shape);
       const accessors = buildRowAccessors(entityName, id, storage, registry);
-      return { ...projected, ...accessors } as EntityWithAccessors<TFields, TAs>;
+      const subscribe = (cb: (snapshot: EntitySnapshot<TFields>) => void): (() => void) =>
+        subscribeToEntity(storage, entityName, id, shape, cb);
+      return { ...projected, ...accessors, subscribe } as EntityRow<TFields, TAs>;
     },
     subscribe(
       filter: QueryFilter<TFields>,
@@ -419,13 +478,7 @@ export function createEntityNamespace<
         return true;
       };
       const buildSnapshot = (): CollectionSnapshot<TFields> => {
-        const rows = [...matching.values()];
-        const projected = projectRows(rows, shape) as Static<TObject<ShapeFields<TFields>>>[];
-        const entities: EntitySnapshot<TFields>[] = projected.map((row, i) => ({
-          ...row,
-          id: rows[i]!.id,
-          entity: rows[i]!,
-        }));
+        const entities = [...matching.values()].map((entity) => toEntitySnapshot(entity, shape));
         return { entities, filter, count: entities.length };
       };
       const idSignature = (ids: Iterable<string>): string => [...ids].sort().join("\n");

@@ -37,6 +37,8 @@ export {
   type EntityNamespace,
   type EntityFields,
   type EntityNamespaces,
+  type EntityRow,
+  type EntitySnapshot,
   type EntityWithAccessors,
   type RowAccessor,
   createEntityNamespace,
