@@ -98,9 +98,17 @@ export type EntityShape<TFields extends Record<string, TSchema>> = ReturnType<
   typeof Type.Object<ShapeFields<TFields>>
 >;
 
-/** Passive entity definition value. The runtime registry consumes it. */
-export interface EntityDef<TFields extends Record<string, TSchema>> {
-  readonly name: string;
+/**
+ * Passive entity definition value. The runtime registry consumes it.
+ *
+ * `TName` carries the literal name passed to `defineEntity` so
+ * downstream type-level walkers (e.g. the per-accessor row type) can
+ * match a relationship's `source` / `target` back to an entity. The
+ * default `string` keeps erased usages (`EntityDef<...>`, the runtime
+ * registry) compiling without a name argument.
+ */
+export interface EntityDef<TFields extends Record<string, TSchema>, TName extends string = string> {
+  readonly name: TName;
   /** TypeBox schema — drives value-shape typing. Implicit `Type.Object` wrapper. */
   readonly shape: EntityShape<TFields>;
   /** Merge-semantics markers — derived from the field map. */
@@ -108,10 +116,10 @@ export interface EntityDef<TFields extends Record<string, TSchema>> {
 }
 
 /** Define an entity by name and field map. The result is frozen. */
-export function defineEntity<TFields extends Record<string, TSchema>>(
-  name: string,
+export function defineEntity<TFields extends Record<string, TSchema>, TName extends string>(
+  name: TName,
   fields: TFields,
-): EntityDef<TFields> {
+): EntityDef<TFields, TName> {
   const shapeFields = withImplicitOptional(fields) as unknown as ShapeFields<TFields>;
   const derivedFields = Object.fromEntries(
     Object.keys(fields).map((k) => [k, deriveMarker(fields[k] as TSchema)]),
