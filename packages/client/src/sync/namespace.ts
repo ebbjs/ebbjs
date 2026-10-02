@@ -193,6 +193,13 @@ export interface EntityNamespace<
     opts?: EntityWriteOptions,
   ): Promise<WriteResponse>;
   /**
+   * Soft-delete an entity row. Ships a single `method: "delete"`
+   * Update whose `data` is `null` — the server tombstones the row
+   * rather than rewriting its fields. There's no payload to
+   * validate, so this takes no `EntityWriteOptions`.
+   */
+  delete(id: string): Promise<WriteResponse>;
+  /**
    * One-cardinality link. Emits a single Relationship Update and
    * submits. Throws `EntityValidationError` when `as` is not a
    * declared relationship on the entity or when the actor lacks
@@ -501,6 +508,9 @@ export function createEntityNamespace<
         validate: opts?.validate,
       });
     },
+    async delete(id: string): Promise<WriteResponse> {
+      return submitEntityDelete(write, entityName, id);
+    },
     async link(id: string, as: string, targetId: PointerValue): Promise<WriteResponse> {
       return submitRelationshipWrite(write, entityName, id, as, { targetId }, storage);
     },
@@ -565,6 +575,27 @@ async function submitEntityWrite<TFields extends Record<string, TSchema>>(
     subject_type: entityName,
     method: input.partial ? "patch" : "put",
     data: { fields },
+  };
+  return write.submitRelationshipUpdates([update]);
+}
+
+/**
+ * Build and submit the single `method: "delete"` Update for an
+ * entity row. `data` is `null` per the wire convention; the
+ * enclosing Action carries the HLC (see
+ * `submitRelationshipUpdates`).
+ */
+async function submitEntityDelete(
+  write: WriteCapability,
+  entityName: string,
+  id: string,
+): Promise<WriteResponse> {
+  const update: Update = {
+    id: write.generateUpdateId(),
+    subject_id: id,
+    subject_type: entityName,
+    method: "delete",
+    data: null,
   };
   return write.submitRelationshipUpdates([update]);
 }
