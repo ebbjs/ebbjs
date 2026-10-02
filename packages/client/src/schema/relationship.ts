@@ -29,11 +29,15 @@ export type SourceCardinality = "one" | "many";
  * and `SyncClient.relationship({...})`.
  *
  * `S` and `T` flow from the source and target `EntityDef` values so the
- * relationship knows the entity names it links.
+ * relationship knows the entity names it links. `A` carries the literal
+ * `as` accessor name and `C` the literal `sourceCardinality`, so a
+ * type-level walker can pick the right accessor value type per slot.
  */
 export interface RelationshipDef<
   S extends EntityDef<Record<string, TSchema>>,
   T extends EntityDef<Record<string, TSchema>>,
+  A extends string = string,
+  C extends SourceCardinality = SourceCardinality,
 > {
   readonly source: S;
   readonly target: T;
@@ -43,8 +47,8 @@ export interface RelationshipDef<
    * source and the accessor key for
    * `client.relationship({source, target, as})`.
    */
-  readonly as: string;
-  readonly sourceCardinality: SourceCardinality;
+  readonly as: A;
+  readonly sourceCardinality: C;
   /**
    * Wire-level `relationship_type` string carried on the `Relationship`
    * Update's `data.fields.type` value. Defaults to the source entity
@@ -61,11 +65,13 @@ export interface RelationshipDef<
 export interface DefineRelationshipInput<
   S extends EntityDef<Record<string, TSchema>>,
   T extends EntityDef<Record<string, TSchema>>,
+  A extends string = string,
+  C extends SourceCardinality = SourceCardinality,
 > {
   source: S;
   target: T;
-  as: string;
-  sourceCardinality?: SourceCardinality;
+  as: A;
+  sourceCardinality?: C;
   type?: string;
 }
 
@@ -73,8 +79,10 @@ export interface DefineRelationshipInput<
 export function defineRelationship<
   S extends EntityDef<Record<string, TSchema>>,
   T extends EntityDef<Record<string, TSchema>>,
->(opts: DefineRelationshipInput<S, T>): RelationshipDef<S, T> {
-  const sourceCardinality: SourceCardinality = opts.sourceCardinality ?? "one";
+  const A extends string,
+  const C extends SourceCardinality = "one",
+>(opts: DefineRelationshipInput<S, T, A, C>): RelationshipDef<S, T, A, C> {
+  const sourceCardinality = (opts.sourceCardinality ?? "one") as C;
   const type: string = opts.type ?? opts.source.name;
   return Object.freeze({
     source: opts.source,
