@@ -3,7 +3,7 @@ title: "Current State"
 description: "What is actually in the Ebb repo today — components, endpoints, and tests."
 ---
 
-> **Ebb is pre-alpha.** This page documents what's actually in the repo today. Forward-looking API surface (`defineModel`, `createClient`, `useQuery`, `defineFunction`, etc.) is tracked as Epics on GitHub; see the [v1 API surface Epic](https://github.com/ebbjs/ebbjs/issues/115) and the [GitHub issues list](https://github.com/ebbjs/ebbjs/issues) for what is being designed and built.
+> **Ebb is pre-alpha.** This page documents what's actually in the repo today. Forward-looking API surface (`defineModel`, `useQuery`, `defineFunction`, etc.) is tracked as Epics on GitHub; see the [v1 API surface Epic](https://github.com/ebbjs/ebbjs/issues/115) and the [GitHub issues list](https://github.com/ebbjs/ebbjs/issues) for what is being designed and built.
 
 ## Current state
 
@@ -38,7 +38,7 @@ See [`ebb_server/openapi.yaml`](https://github.com/ebbjs/ebbjs/blob/main/ebb_ser
 
 ### `@ebbjs/core`
 
-TypeScript foundation — schemas, HLC, MessagePack, action creation, ID generation. 97 tests pass.
+TypeScript foundation — schemas, HLC, MessagePack, action creation, ID generation. 105 tests pass.
 
 ```ts
 import { createAction, createClock, localEvent } from "@ebbjs/core";
@@ -68,10 +68,11 @@ See [`packages/core/src/`](https://github.com/ebbjs/ebbjs/tree/main/packages/cor
 
 ### `@ebbjs/storage`
 
-In-memory `StorageAdapter` for the client. 43 tests pass.
+Storage adapters for the client — in-memory and IndexedDB. 147 tests pass.
 
 ```ts
-import { createMemoryAdapter } from "@ebbjs/storage";
+import { createMemoryAdapter } from "@ebbjs/storage/memory";
+// or: import { createIndexedDBAdapter } from "@ebbjs/storage/indexeddb";
 
 const storage = createMemoryAdapter();
 
@@ -87,7 +88,57 @@ Composed of:
 - `EntityStore` — materialize entities on `get`/`query` (HLC + lexicographic `update_id` tiebreak)
 - `CursorStore` — per-group GSN cursors
 
-Documented as **v1 is read-only**: write path (outbox, optimistic writes) is deferred to `@ebbjs/client`. See [`packages/storage/README.md`](https://github.com/ebbjs/ebbjs/blob/main/packages/storage/README.md).
+The root `@ebbjs/storage` entry is types-only; adapter constructors live on per-adapter subpaths (`@ebbjs/storage/memory`, `@ebbjs/storage/indexeddb`) so a memory-only consumer does not pull `idb` into their bundle. The adapter stores the read path only — locally-produced Actions are submitted by `@ebbjs/client`. See [`packages/storage/README.md`](https://github.com/ebbjs/ebbjs/blob/main/packages/storage/README.md).
+
+### `@ebbjs/client`
+
+Local-first sync SDK — handshake, catch-up, live SSE, and a typed ORM namespace over materialized entities. 440 unit tests pass, plus integration tests that round-trip against a live `ebb_server`.
+
+```ts
+import { createClient, defineEntity, defineSchema, e } from "@ebbjs/client";
+
+const todo = defineEntity("todo", { title: e.string(), completed: e.boolean() });
+const schema = defineSchema({ entities: { todo }, version: 1 });
+
+const client = createClient({
+  serverUrl: "http://localhost:4000",
+  actorId: "user_123",
+  schema,
+});
+
+const { groups } = await client.handshake();
+await client.catchUp(groups[0].id, groups[0].cursor);
+
+// Open the live stream; remote actions land in local storage.
+client.subscribe(
+  groups.map((group) => group.id),
+  groups[0].cursor,
+  () => {},
+);
+
+// Reactive read: fires when the matching set changes.
+client.todo.subscribe({ completed: false }, (snapshot) => {
+  console.log(snapshot.count, snapshot.entities);
+});
+
+// Writes POST /sync/actions directly.
+const { rejected } = await client.todo.create({ title: "Buy milk", completed: false });
+
+// `toRaw()` exposes the wire envelope (including `id`).
+const [row] = await client.todo.query().eq("completed", false).toRaw();
+if (row !== undefined) {
+  await client.todo.update(row.id, { completed: true });
+}
+```
+
+Shipped primitives:
+
+- **Typed ORM namespace** — `client.<entity>.query()` / `get()` / `create()` / `update()`, plus `link` / `unlink` for relationships. Payloads are validated against the schema with TypeBox at runtime.
+- **Reactive subscribe** — `client.<entity>.subscribe(filter, cb)` fires on matching-set changes; `client.onStateChange(cb)` tracks the connection state machine.
+- **Presence** — `client.presence` broadcasts and reads ephemeral cursors and selections.
+- **Collaborative text** — `client.textDocument(docId)` opens a causal-tree document with a local edit API and conflict events; `@ebbjs/codemirror` bridges it to a CodeMirror 6 view.
+
+See [`packages/client/src/`](https://github.com/ebbjs/ebbjs/tree/main/packages/client/src).
 
 ### `@ebbjs/server` (TS)
 
@@ -101,19 +152,17 @@ await seed(server.url, "actor_test", seedData);
 await server.kill();
 ```
 
-Currently one e2e test exists: `packages/server/src/test/e2e/sync.test.ts` (handshake after seed). More tests to come as `@ebbjs/client` is built and exercised against the real server.
+`packages/server/src/test/e2e/sync.test.ts` is the one e2e test (handshake after seed). The `@ebbjs/client` integration tests under `packages/client/src/__tests__/integration/` exercise the fuller round-trip — handshake, catch-up, write, presence, and collaborative-text edits — against a real server.
 
 ## What's NOT in the repo
 
-| Area                                                 | State               | Where it's tracked                                                                                                                                                                                                             |
-| ---------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@ebbjs/client` (sync SDK)                           | Stub (`export {};`) | [v1 API surface Epic](https://github.com/ebbjs/ebbjs/issues/115), especially [#118 (Client SDK)](https://github.com/ebbjs/ebbjs/issues/118) and [#132 (read-only v1 client design)](https://github.com/ebbjs/ebbjs/issues/132) |
-| `@ebbjs/react`                                       | Not started         | [v1 API surface Epic](https://github.com/ebbjs/ebbjs/issues/115)                                                                                                                                                               |
-| Server functions (`defineFunction`)                  | Not started         | [Epic #112](https://github.com/ebbjs/ebbjs/issues/112)                                                                                                                                                                         |
-| Peer replication                                     | Not started         | [Epic #113](https://github.com/ebbjs/ebbjs/issues/113)                                                                                                                                                                         |
-| Server-side SDK (SSR / external processes)           | Not started         | [Epic #114](https://github.com/ebbjs/ebbjs/issues/114)                                                                                                                                                                         |
-| CLI tooling                                          | Not started         | —                                                                                                                                                                                                                              |
-| Persistent client storage (SQLite/IndexedDB adapter) | Not started         | `@ebbjs/storage` ships in-memory only                                                                                                                                                                                          |
-| Causal-tree collaborative text                       | POC only            | [Epic #110](https://github.com/ebbjs/ebbjs/issues/110) + [devlog](https://github.com/ebbjs/ebbjs/blob/main/packages/www/src/content/devlog/how-collaborative-editing-works.mdx)                                                |
+| Area                                       | State       | Where it's tracked                                                                |
+| ------------------------------------------ | ----------- | --------------------------------------------------------------------------------- |
+| `@ebbjs/react`                             | Not started | [v1 API surface Epic](https://github.com/ebbjs/ebbjs/issues/115)                  |
+| Server functions (`defineFunction`)        | Not started | [Epic #112](https://github.com/ebbjs/ebbjs/issues/112)                            |
+| Peer replication                           | Not started | [Epic #113](https://github.com/ebbjs/ebbjs/issues/113)                            |
+| Server-side SDK (SSR / external processes) | Not started | [Epic #114](https://github.com/ebbjs/ebbjs/issues/114)                            |
+| CLI tooling                                | Not started | —                                                                                 |
+| Persistent client storage (SQLite adapter) | Not started | `@ebbjs/storage` ships in-memory + IndexedDB adapters; SQLite is a future adapter |
 
 For the marketing-facing roadmap, see [ebb.dev/#roadmap](https://ebb.dev/#roadmap). For an honest, repo-grounded roadmap, see the [GitHub README](https://github.com/ebbjs/ebbjs#current-state).
