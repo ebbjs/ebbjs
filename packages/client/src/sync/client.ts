@@ -39,6 +39,7 @@ import type { StorageAdapter } from "@ebbjs/storage/types";
 import { ConnectionStateMachine, type ConnectionState } from "./connection-state";
 import { PresenceManager } from "../presence/presence";
 import { openSSEStream, type SSESubscription } from "./sse";
+import { createOutbox, type Outbox } from "./outbox";
 import { TextDocument, TextDocumentRegistry } from "../fields/collaborative-text/text-document";
 import {
   EntityRegistry,
@@ -94,6 +95,13 @@ export class SyncClient {
   readonly presence: PresenceManager;
   readonly registry: EntityRegistry;
   readonly schema?: AnySchema;
+  /**
+   * Local write buffer. Every locally-authored Action passes through
+   * here — `write()` enqueues (optimistically applying it) and flushes
+   * — so the pending list is observable and later stages can add
+   * durability and retry without touching write callers.
+   */
+  readonly outbox: Outbox;
   private readonly fetchImpl: typeof fetch;
   private readonly reconnectInitialMs: number;
   private readonly reconnectMaxMs: number;
@@ -158,6 +166,10 @@ export class SyncClient {
     // `client.close()` (already wired in the existing close path)
     // when tearing down.
     this.presence = new PresenceManager(this);
+    this.outbox = createOutbox({
+      applyOptimistic: (action) => this.applyLocalAction(action),
+      submit: (actions) => this.submitActions(actions),
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -356,17 +368,19 @@ export class SyncClient {
   }
 
   /**
-   * `POST /sync/actions` — submit a batch of locally-produced Actions.
+   * `POST /sync/actions` — submit a batch of locally-produced Actions
+   * via the {@link Outbox}.
    *
-   * The server may reject some (permissions, HLC drift, dedup). Returns the
-   * rejected list; the caller decides how to handle the failure (rollback,
-   * retry, surface to UI).
+   * Validates each action against the local `EntityRegistry`, then
+   * enqueues it (optimistically applying its Updates to the local
+   * cache) and flushes the buffer. Returns the server's response; the
+   * server may reject some actions (permissions, HLC drift, dedup) and
+   * the caller decides how to handle them.
    *
-   * Validates each action against the local `EntityRegistry` before any
-   * network call. Schema violations throw `EntityValidationError`
-   * aggregating every violation across the batch — matches the server's
-   * `rejected[]` mental model so callers handle client-side and server-side
-   * rejections uniformly.
+   * Schema violations throw `EntityValidationError` aggregating every
+   * violation across the batch before anything is enqueued — matches
+   * the server's `rejected[]` mental model so callers handle
+   * client-side and server-side rejections uniformly.
    */
   async write(actions: readonly Action[]): Promise<WriteResponse> {
     if (actions.length === 0) {
@@ -377,6 +391,18 @@ export class SyncClient {
       this.emitRegistryViolations(violations, { direction: "outbound" });
       throw new EntityValidationError(violations);
     }
+    for (const action of actions) {
+      await this.outbox.enqueue(action);
+    }
+    return this.outbox.flush();
+  }
+
+  /**
+   * The network leg of the write path. Called by the Outbox's
+   * `flush()`; callers go through `write()` so validation and
+   * optimistic apply happen first.
+   */
+  private async submitActions(actions: readonly Action[]): Promise<WriteResponse> {
     const body = encodeSync({ actions });
     const response = await this.fetchImpl(`${this.serverUrl}/sync/actions`, {
       method: "POST",
@@ -965,6 +991,29 @@ export class SyncClient {
   }
 
   /**
+   * Optimistically apply a locally-authored Action to the cached
+   * entities, firing the change emitter so local reads and subscribers
+   * reflect the write before the server echo. The Action is not
+   * appended to the action log: the log is the replay source the
+   * materializer orders by GSN, and an unacknowledged Action has no
+   * GSN to order by. The echo — appended with its server GSN — is what
+   * eventually lands in the log, and re-deriving from it converges on
+   * the same state.
+   *
+   * A patch or delete whose base row is not cached has nothing to
+   * apply to; it is skipped and the echo (or a later catch-up)
+   * supplies the base.
+   */
+  private async applyLocalAction(action: Action): Promise<void> {
+    for (const update of action.updates) {
+      const current = await this.storage.entities.get(update.subject_id);
+      const next = applyLocalUpdate(current, update, action.hlc);
+      if (next === null) continue;
+      await this.storage.entities.set(next);
+    }
+  }
+
+  /**
    * Forward a batch of registry violations to every registered
    * listener, with the same error-isolation guarantees as
    * `TextDocument.onUpdate` / `onConflict`. When no listener is
@@ -1064,6 +1113,45 @@ const collectViolations = (
     out.push(...registry.validateAction(action));
   }
   return out;
+};
+
+/**
+ * Project a locally-authored Update onto the cached Entity for the
+ * optimistic apply. Returns `null` when a patch or delete has no base
+ * row to apply to — the server echo (or a later catch-up) supplies it.
+ *
+ * Unlike the storage materializer's full LWW merge, a field-level
+ * spread is enough: the Update was stamped from this client's HLC
+ * clock after every HLC the cache has seen, so each patched field is
+ * newer than the cached one and wins outright.
+ */
+const applyLocalUpdate = (current: Entity | null, update: Update, hlc: string): Entity | null => {
+  const fields = update.data?.fields ?? {};
+  switch (update.method) {
+    case "put":
+      return {
+        id: update.subject_id,
+        type: update.subject_type,
+        data: { fields },
+        created_hlc: hlc,
+        updated_hlc: hlc,
+        deleted_hlc: null,
+        last_gsn: 0,
+      };
+    case "patch":
+      if (current === null) return null;
+      if (current.deleted_hlc) return current;
+      return {
+        ...current,
+        data: { fields: { ...current.data.fields, ...fields } },
+        // `applyUpdate` keeps the existing `updated_hlc` on a patch, so
+        // the optimistic entity carries it too and the post-echo replay
+        // lands on an identical entity.
+      };
+    case "delete":
+      if (current === null) return null;
+      return { ...current, deleted_hlc: hlc, updated_hlc: hlc };
+  }
 };
 
 /**

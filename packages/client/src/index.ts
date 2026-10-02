@@ -51,6 +51,8 @@ export {
   type StateChangeListener,
 } from "./sync/connection-state";
 
+export { type Outbox, type OutboxEntry, type OutboxStatus } from "./sync/outbox";
+
 export {
   openSSEStream,
   parseSSEBlock,
