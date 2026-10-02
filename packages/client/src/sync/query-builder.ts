@@ -7,8 +7,13 @@
  * the field map: `field` narrows to `keyof TFields` and `value`
  * narrows to the field's TypeBox static type.
  *
- * `.toRaw()` is the untyped escape hatch — returns `readonly Entity[]`
- * directly, skipping the per-row projection.
+ * The terminal methods materialize the chain:
+ * - `await qb` / `.then(...)` — projected rows.
+ * - `.first()` — first projected survivor, or `undefined`.
+ * - `.count()` — number of survivors.
+ * - `.exists()` — whether any row survives.
+ * - `[Symbol.asyncIterator]()` — streaming iterator of projected rows.
+ * - `.toRaw()` — untyped escape hatch returning `readonly Entity[]`.
  *
  * The builder is thenable (has a `.then` method), not a Promise, so
  * `await qb` and `qb.then(...)` work via the standard thenable
@@ -75,6 +80,14 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
   ): QueryBuilder<TFields>;
   /** Maximum number of rows. */
   limit(n: number): QueryBuilder<TFields>;
+  /** First projected survivor, or `undefined` when the chain is empty. */
+  first(): Promise<Static<TObject<TFields>> | undefined>;
+  /** Count of survivors after the chain runs. */
+  count(): Promise<number>;
+  /** `true` when at least one row survives the chain. */
+  exists(): Promise<boolean>;
+  /** Streaming iterator over projected survivors. */
+  [Symbol.asyncIterator](): AsyncIterableIterator<Static<TObject<TFields>>>;
   /** Materialize the untyped entities, skipping the projection. */
   toRaw(): Promise<readonly Entity[]>;
   /** Thenable — `await qb` resolves to the projected rows. */
@@ -141,6 +154,29 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
       },
       limit(n) {
         return make(filters, order, n);
+      },
+      async first() {
+        const candidates = await loadCandidates();
+        const survivors = apply(candidates);
+        const head = survivors[0];
+        return head === undefined ? undefined : projectEntity(head, shape);
+      },
+      async count() {
+        const candidates = await loadCandidates();
+        return apply(candidates).length;
+      },
+      async exists() {
+        const candidates = await loadCandidates();
+        return apply(candidates).length > 0;
+      },
+      [Symbol.asyncIterator]() {
+        const iter = async function* () {
+          const candidates = await loadCandidates();
+          for (const row of apply(candidates)) {
+            yield projectEntity(row, shape);
+          }
+        };
+        return iter();
       },
       async toRaw() {
         const candidates = await loadCandidates();

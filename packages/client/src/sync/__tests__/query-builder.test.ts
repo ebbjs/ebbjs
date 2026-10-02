@@ -234,6 +234,193 @@ describe("buildQueryBuilder — Type.Optional field", () => {
   });
 });
 
+describe("buildQueryBuilder — .first()", () => {
+  it("returns the first projected survivor", async () => {
+    const rows = [
+      mkEntity("1", { title: "a", completed: false }),
+      mkEntity("2", { title: "b", completed: true }),
+      mkEntity("3", { title: "c", completed: false }),
+    ];
+    const first = await buildQueryBuilder(rows, todo.shape).eq("completed", false).first();
+    expect(first?.title).toBe("a");
+  });
+
+  it("returns undefined when no rows match", async () => {
+    const rows = [mkEntity("1", { title: "a", completed: true })];
+    const first = await buildQueryBuilder(rows, todo.shape).eq("completed", false).first();
+    expect(first).toBeUndefined();
+  });
+
+  it("returns undefined when there are no candidates", async () => {
+    const first = await buildQueryBuilder([], todo.shape).first();
+    expect(first).toBeUndefined();
+  });
+
+  it("projects the row through the schema shape", async () => {
+    const rows = [mkEntity("1", { title: "a", completed: false, body: null })];
+    const first = await buildQueryBuilder(rows, todo.shape).first();
+    expect(first?.body).toBeNull();
+  });
+
+  it("honors orderBy before picking the first", async () => {
+    const rows = [
+      mkEntity("1", { title: "banana", completed: false }),
+      mkEntity("2", { title: "apple", completed: false }),
+      mkEntity("3", { title: "cherry", completed: false }),
+    ];
+    const first = await buildQueryBuilder(rows, todo.shape).orderBy("title", "asc").first();
+    expect(first?.title).toBe("apple");
+  });
+});
+
+describe("buildQueryBuilder — .count()", () => {
+  it("counts the surviving rows", async () => {
+    const rows = [
+      mkEntity("1", { title: "a", completed: false }),
+      mkEntity("2", { title: "b", completed: true }),
+      mkEntity("3", { title: "c", completed: false }),
+    ];
+    const n = await buildQueryBuilder(rows, todo.shape).eq("completed", false).count();
+    expect(n).toBe(2);
+  });
+
+  it("returns 0 when no rows match", async () => {
+    const rows = [mkEntity("1", { title: "a", completed: true })];
+    const n = await buildQueryBuilder(rows, todo.shape).eq("completed", false).count();
+    expect(n).toBe(0);
+  });
+
+  it("returns 0 when there are no candidates", async () => {
+    const n = await buildQueryBuilder([], todo.shape).count();
+    expect(n).toBe(0);
+  });
+
+  it("honors limit when counting", async () => {
+    const rows = [
+      mkEntity("1", { title: "a", completed: false }),
+      mkEntity("2", { title: "b", completed: false }),
+      mkEntity("3", { title: "c", completed: false }),
+    ];
+    const n = await buildQueryBuilder(rows, todo.shape).limit(2).count();
+    expect(n).toBe(2);
+  });
+});
+
+describe("buildQueryBuilder — .exists()", () => {
+  it("returns true when at least one row matches", async () => {
+    const rows = [
+      mkEntity("1", { title: "a", completed: false }),
+      mkEntity("2", { title: "b", completed: true }),
+    ];
+    const exists = await buildQueryBuilder(rows, todo.shape).eq("completed", false).exists();
+    expect(exists).toBe(true);
+  });
+
+  it("returns false when no rows match", async () => {
+    const rows = [mkEntity("1", { title: "a", completed: true })];
+    const exists = await buildQueryBuilder(rows, todo.shape).eq("completed", false).exists();
+    expect(exists).toBe(false);
+  });
+
+  it("returns false when there are no candidates", async () => {
+    const exists = await buildQueryBuilder([], todo.shape).exists();
+    expect(exists).toBe(false);
+  });
+
+  it("honors limit when checking existence", async () => {
+    const rows = [mkEntity("1", { title: "a", completed: false })];
+    const exists = await buildQueryBuilder(rows, todo.shape).limit(0).exists();
+    expect(exists).toBe(false);
+  });
+});
+
+describe("buildQueryBuilder — [Symbol.asyncIterator]", () => {
+  it("yields each projected survivor", async () => {
+    const rows = [
+      mkEntity("1", { title: "a", completed: false }),
+      mkEntity("2", { title: "b", completed: true }),
+      mkEntity("3", { title: "c", completed: false }),
+    ];
+    const titles: string[] = [];
+    for await (const row of buildQueryBuilder(rows, todo.shape).eq("completed", false)) {
+      titles.push(row.title);
+    }
+    expect(titles).toEqual(["a", "c"]);
+  });
+
+  it("yields nothing when no rows match", async () => {
+    const rows = [mkEntity("1", { title: "a", completed: true })];
+    const out: Todo[] = [];
+    for await (const row of buildQueryBuilder(rows, todo.shape).eq("completed", false)) {
+      out.push(row);
+    }
+    expect(out).toEqual([]);
+  });
+
+  it("yields nothing when there are no candidates", async () => {
+    const out: Todo[] = [];
+    for await (const row of buildQueryBuilder([], todo.shape)) {
+      out.push(row);
+    }
+    expect(out).toEqual([]);
+  });
+
+  it("honors orderBy when iterating", async () => {
+    const rows = [
+      mkEntity("1", { title: "banana", completed: false }),
+      mkEntity("2", { title: "apple", completed: false }),
+    ];
+    const titles: string[] = [];
+    for await (const row of buildQueryBuilder(rows, todo.shape).orderBy("title", "asc")) {
+      titles.push(row.title);
+    }
+    expect(titles).toEqual(["apple", "banana"]);
+  });
+
+  it("honors limit when iterating", async () => {
+    const rows = [
+      mkEntity("1", { title: "a", completed: false }),
+      mkEntity("2", { title: "b", completed: false }),
+      mkEntity("3", { title: "c", completed: false }),
+    ];
+    const titles: string[] = [];
+    for await (const row of buildQueryBuilder(rows, todo.shape).limit(2)) {
+      titles.push(row.title);
+    }
+    expect(titles).toEqual(["a", "b"]);
+  });
+
+  it("works with break (closes the iterator early)", async () => {
+    const rows = [
+      mkEntity("1", { title: "a", completed: false }),
+      mkEntity("2", { title: "b", completed: false }),
+      mkEntity("3", { title: "c", completed: false }),
+    ];
+    const titles: string[] = [];
+    for await (const row of buildQueryBuilder(rows, todo.shape)) {
+      titles.push(row.title);
+      if (titles.length === 2) break;
+    }
+    expect(titles).toEqual(["a", "b"]);
+  });
+
+  it("supports Symbol.asyncIterator protocol (manual .next())", async () => {
+    const rows = [
+      mkEntity("1", { title: "a", completed: false }),
+      mkEntity("2", { title: "b", completed: false }),
+    ];
+    const iter = buildQueryBuilder(rows, todo.shape)[Symbol.asyncIterator]();
+    const first = await iter.next();
+    expect(first.done).toBe(false);
+    expect(first.value?.title).toBe("a");
+    const second = await iter.next();
+    expect(second.done).toBe(false);
+    expect(second.value?.title).toBe("b");
+    const third = await iter.next();
+    expect(third.done).toBe(true);
+  });
+});
+
 describe("buildLazyQueryBuilder", () => {
   it("loads candidates at materialization time, not at build time", async () => {
     let calls = 0;
