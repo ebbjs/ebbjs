@@ -184,9 +184,9 @@ All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 
 ### Observability
 
-Every component emits `:telemetry` events. Key metrics:
+Server-side `:telemetry` instrumentation is **not implemented yet** — there are no `:telemetry.execute/3` calls anywhere in `ebb_server/`. The developer-facing `onAction` hook is likewise unbuilt ([#125](https://github.com/ebbjs/ebbjs/issues/125)). The table below is the **target** metric set, not current behavior:
 
-| Metric                                    | Source       | Type                          |
+| Planned metric                            | Source       | Type                          |
 | ----------------------------------------- | ------------ | ----------------------------- |
 | `ebb.writer.batch_size`                   | Writer       | Histogram                     |
 | `ebb.writer.batch_latency_ms`             | Writer       | Histogram                     |
