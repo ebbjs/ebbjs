@@ -184,22 +184,6 @@ defmodule EbbServer.Storage.EntityIndexTest do
     end
   end
 
-  describe "resolve_group/3" do
-    test "returns the first group of the entity's set" do
-      t = tables()
-
-      :ok = put_rel(t, member("todo_1", "g_1", "rel_1"))
-
-      assert EntityIndex.resolve_group("todo", "todo_1", opts(t)) == "g_1"
-    end
-
-    test "returns nil when the set is empty" do
-      t = tables()
-
-      assert EntityIndex.resolve_group("todo", "todo_unknown", opts(t)) == nil
-    end
-  end
-
   describe "source_groups/2" do
     test "returns membership targets plus intra-action targets" do
       t = tables()

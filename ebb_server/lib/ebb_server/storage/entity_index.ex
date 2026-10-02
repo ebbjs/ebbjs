@@ -101,18 +101,6 @@ defmodule EbbServer.Storage.EntityIndex do
   def relationship_groups(nil, rel_id, opts), do: resolve_groups("relationship", rel_id, opts)
   def relationship_groups(source_id, _rel_id, opts), do: source_groups(source_id, opts)
 
-  @doc """
-  Returns the first group in the entity's set, or `nil` when the set is
-  empty. Prefer `resolve_groups/3` when every group matters.
-  """
-  @spec resolve_group(subject_type(), subject_id(), keyword()) :: String.t() | nil
-  def resolve_group(subject_type, subject_id, opts \\ []) do
-    case resolve_groups(subject_type, subject_id, opts) do
-      [group_id | _] -> group_id
-      [] -> nil
-    end
-  end
-
   defp entry_source_id(entry), do: entry[:source_id] || entry["source_id"]
   defp entry_group_id(entry), do: entry[:group_id] || entry["group_id"]
 end
