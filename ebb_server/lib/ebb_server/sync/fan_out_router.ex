@@ -40,7 +40,15 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   use GenServer
 
-  alias EbbServer.Storage.{CacheTables, EntityIndex, RelationshipCache, RocksDB, WatermarkTracker}
+  alias EbbServer.Storage.{
+    CacheTables,
+    EntityIndex,
+    Fields,
+    PermissionHelper,
+    RocksDB,
+    WatermarkTracker
+  }
+
   alias EbbServer.Sync.{GroupDynamicSupervisor, GroupServer}
 
   @type t :: %__MODULE__{
@@ -66,9 +74,9 @@ defmodule EbbServer.Sync.FanOutRouter do
     GenServer.call(__MODULE__, {:unsubscribe, connection_pid}, 30_000)
   end
 
-  @spec broadcast_presence(String.t(), String.t(), map()) :: :ok
-  def broadcast_presence(entity_id, actor_id, data) do
-    GenServer.cast(__MODULE__, {:broadcast_presence, entity_id, actor_id, data})
+  @spec broadcast_presence([String.t()], String.t(), String.t(), map()) :: :ok
+  def broadcast_presence(group_ids, entity_id, actor_id, data) do
+    GenServer.cast(__MODULE__, {:broadcast_presence, group_ids, entity_id, actor_id, data})
   end
 
   @impl true
@@ -137,16 +145,12 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   @impl true
-  def handle_cast({:broadcast_presence, entity_id, actor_id, data}, state) do
-    case RelationshipCache.get_entity_group(entity_id) do
-      nil ->
-        :ok
-
-      group_id ->
-        case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do
-          [{pid, _}] -> GroupServer.broadcast_presence(pid, entity_id, actor_id, data)
-          [] -> :ok
-        end
+  def handle_cast({:broadcast_presence, group_ids, entity_id, actor_id, data}, state) do
+    for group_id <- group_ids do
+      case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do
+        [{pid, _}] -> GroupServer.broadcast_presence(pid, entity_id, actor_id, data)
+        [] -> :ok
+      end
     end
 
     {:noreply, state}
@@ -233,22 +237,36 @@ defmodule EbbServer.Sync.FanOutRouter do
   @doc """
   Resolves the set of group ids an Action should fan out to.
 
-  Dispatches each Update's `(subject_type, subject_id)` pair through
-  `EntityIndex.resolve_group/3` — see that module for the per-type
-  resolution rules. Updates whose entity is missing from the index
-  are silently dropped; the client catches them up via
-  `/sync/groups/:id?offset=` instead.
+  Dispatches each Update through `EntityIndex`, folding in the
+  membership edges carried by the Action itself so that a create and
+  its `kind: "member"` edges land in the same groups. See
+  `EntityIndex` for the per-type resolution rules. Updates whose entity
+  is missing from the index are silently dropped; the client catches
+  them up via `/sync/groups/:id?offset=` instead.
 
   Public for unit testing; not part of the GenServer contract.
   """
   @spec resolve_group_ids(map(), keyword()) :: [String.t()]
   def resolve_group_ids(action, opts) do
+    intra_action = PermissionHelper.build_intra_action_context(action["updates"] || [])
+    opts = Keyword.put(opts, :intra_action, intra_action)
+
     action["updates"]
-    |> Enum.map(fn update ->
-      EntityIndex.resolve_group(update["subject_type"], update["subject_id"], opts)
-    end)
-    |> Enum.reject(&is_nil/1)
+    |> Enum.flat_map(&resolve_update_group_ids(&1, opts))
     |> Enum.uniq()
+  end
+
+  # A relationship belongs to its source's groups, never its own target.
+  defp resolve_update_group_ids(%{"subject_type" => "relationship"} = update, opts) do
+    EntityIndex.relationship_groups(
+      Fields.get(update["data"], "source_id"),
+      update["subject_id"],
+      opts
+    )
+  end
+
+  defp resolve_update_group_ids(update, opts) do
+    EntityIndex.resolve_groups(update["subject_type"], update["subject_id"], opts)
   end
 
   defp push_gsn_range(from_gsn, to_gsn) do

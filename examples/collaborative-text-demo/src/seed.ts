@@ -160,6 +160,7 @@ function buildSeedAction(actorId: string, data: SeedData) {
           target_id: { value: rel.targetId, update_id: "seed_update", hlc: localEvent(clock) },
           type: { value: rel.type, update_id: "seed_update", hlc: localEvent(clock) },
           field: { value: rel.field, update_id: "seed_update", hlc: localEvent(clock) },
+          kind: { value: "member", update_id: "seed_update", hlc: localEvent(clock) },
         },
       },
     });

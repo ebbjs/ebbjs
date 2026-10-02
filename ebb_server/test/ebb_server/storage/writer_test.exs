@@ -348,7 +348,8 @@ defmodule EbbServer.Storage.WriterTest do
                 "source_id" => %{"type" => "lww", "value" => "todo_1", "hlc" => hlc},
                 "target_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc},
                 "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
-                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc}
+                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc},
+                "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc}
               }
             }
           }
@@ -436,7 +437,8 @@ defmodule EbbServer.Storage.WriterTest do
                 "source_id" => %{"type" => "lww", "value" => "todo_1", "hlc" => hlc},
                 "target_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc},
                 "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
-                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc}
+                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc},
+                "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc}
               }
             }
           }
@@ -525,6 +527,128 @@ defmodule EbbServer.Storage.WriterTest do
       assert [%{group_id: "group_1"}] = GroupCache.get_actor_groups("actor_1", gm_table)
       assert nil == RelationshipCache.get_entity_group("todo_1", rel_table)
     end
+  end
+
+  describe "cf_group_actions index" do
+    test "indexes a create into every group in its membership set", %{
+      writer_name: writer_name,
+      rocks_name: rocks_name
+    } do
+      hlc = generate_hlc()
+
+      action = %{
+        id: "act_multi",
+        actor_id: "actor_1",
+        hlc: hlc,
+        updates: [
+          %{
+            id: "upd_todo",
+            subject_id: "todo_multi",
+            subject_type: "todo",
+            method: :put,
+            data: %{
+              "fields" => %{"title" => %{"type" => "lww", "value" => "x", "hlc" => hlc}}
+            }
+          },
+          relationship_update("rel_g1", "todo_multi", "g_1", "member", hlc),
+          relationship_update("rel_g2", "todo_multi", "g_2", "member", hlc)
+        ]
+      }
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      cf = RocksDB.cf_group_actions(rocks_name)
+
+      assert {:ok, "act_multi"} = RocksDB.get(cf, group_gsn_key("g_1", 1), name: rocks_name)
+      assert {:ok, "act_multi"} = RocksDB.get(cf, group_gsn_key("g_2", 1), name: rocks_name)
+      assert :not_found = RocksDB.get(cf, group_gsn_key("g_3", 1), name: rocks_name)
+    end
+
+    test "a link edge to a non-group target adds no group index", %{
+      writer_name: writer_name,
+      rocks_name: rocks_name
+    } do
+      hlc = generate_hlc()
+
+      action = %{
+        id: "act_link",
+        actor_id: "actor_1",
+        hlc: hlc,
+        updates: [
+          %{
+            id: "upd_todo",
+            subject_id: "todo_link",
+            subject_type: "todo",
+            method: :put,
+            data: %{
+              "fields" => %{"title" => %{"type" => "lww", "value" => "x", "hlc" => hlc}}
+            }
+          },
+          relationship_update("rel_member", "todo_link", "g_1", "member", hlc),
+          relationship_update("rel_domain", "todo_link", "doc_1", "link", hlc)
+        ]
+      }
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      cf = RocksDB.cf_group_actions(rocks_name)
+
+      assert {:ok, "act_link"} = RocksDB.get(cf, group_gsn_key("g_1", 1), name: rocks_name)
+      assert :not_found = RocksDB.get(cf, group_gsn_key("doc_1", 1), name: rocks_name)
+    end
+
+    test "a re-put moves the source to the new group for later writes", %{
+      writer_name: writer_name,
+      rocks_name: rocks_name,
+      relationships: rel_table
+    } do
+      hlc = generate_hlc()
+
+      first = %{
+        id: "act_first",
+        actor_id: "actor_1",
+        hlc: hlc,
+        updates: [relationship_update("rel_1", "todo_move", "g_1", "member", hlc)]
+      }
+
+      second = %{
+        id: "act_second",
+        actor_id: "actor_1",
+        hlc: hlc,
+        updates: [relationship_update("rel_1", "todo_move", "g_2", "member", hlc)]
+      }
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([first], writer_name)
+      assert {:ok, {2, 2}, []} = Writer.write_actions([second], writer_name)
+
+      assert RelationshipCache.membership_groups("todo_move", rel_table) == ["g_2"]
+
+      cf = RocksDB.cf_group_actions(rocks_name)
+      assert {:ok, "act_first"} = RocksDB.get(cf, group_gsn_key("g_1", 1), name: rocks_name)
+      assert {:ok, "act_second"} = RocksDB.get(cf, group_gsn_key("g_2", 2), name: rocks_name)
+    end
+  end
+
+  defp relationship_update(id, source_id, target_id, kind, hlc) do
+    %{
+      id: id,
+      subject_id: id,
+      subject_type: "relationship",
+      method: :put,
+      data: %{
+        "fields" => %{
+          "source_id" => %{"type" => "lww", "value" => source_id, "hlc" => hlc},
+          "target_id" => %{"type" => "lww", "value" => target_id, "hlc" => hlc},
+          "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
+          "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc},
+          "kind" => %{"type" => "lww", "value" => kind, "hlc" => hlc}
+        }
+      }
+    }
+  end
+
+  defp group_gsn_key(group_id, gsn) do
+    <<group_id::binary, gsn::unsigned-big-integer-size(64)>>
   end
 
   defp to_storage_format(action, gsn) do

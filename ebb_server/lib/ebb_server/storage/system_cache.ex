@@ -237,7 +237,8 @@ defmodule EbbServer.Storage.SystemCache do
             source_id: Fields.get(data, "source_id"),
             target_id: Fields.get(data, "target_id"),
             type: Fields.get(data, "type"),
-            field: Fields.get(data, "field")
+            field: Fields.get(data, "field"),
+            kind: Fields.get(data, "kind")
           },
           relationships: rel_table,
           relationships_by_group: rbg_table,

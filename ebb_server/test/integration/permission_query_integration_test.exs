@@ -43,7 +43,8 @@ defmodule EbbServer.PermissionQueryIntegrationTest do
                 "source_id" => %{"type" => "lww", "value" => "todo_1", "hlc" => hlc_1},
                 "target_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc_1},
                 "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc_1},
-                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc_1}
+                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc_1},
+                "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc_1}
               }
             }
           }
@@ -76,7 +77,8 @@ defmodule EbbServer.PermissionQueryIntegrationTest do
                 "source_id" => %{"type" => "lww", "value" => "todo_2", "hlc" => hlc_2},
                 "target_id" => %{"type" => "lww", "value" => "group_2", "hlc" => hlc_2},
                 "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc_2},
-                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc_2}
+                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc_2},
+                "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc_2}
               }
             }
           }
