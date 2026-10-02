@@ -752,13 +752,13 @@ describe("client.<entity>.create / update — runtime validation", () => {
 
   /**
    * Nullable variant of the same `todo` schema, used by the
-   * "nullable accepts null / non-nullable rejects null" tests.
-   * `defineEntity` wraps nullable fields in `Type.Optional` at
-   * runtime, so `Value.Check` accepts both `{ body: null }` and
-   * the no-body variant. The static type still requires the field
-   * — TypeBox's `ObjectStatic` reads the field type directly and
-   * a `Type.Union<[T, TNull]>` isn't recognized as `TOptional`
-   * — so the tests below pass `body` explicitly.
+   * "nullable accepts null / non-nullable rejects null" tests and
+   * the type-asymmetry tests below (#212). `defineEntity` wraps
+   * nullable fields in `Type.Optional` at runtime, so `Value.Check`
+   * accepts both `{ body: null }` and the no-body variant. The
+   * static type mirrors that wrap via `ShapeFields` so callers can
+   * write `{ title, completed }` (omitting `body`) and have it
+   * both typecheck and run.
    */
   const todoWithNullable = defineEntity("todo", {
     title: e.string(),
@@ -1055,5 +1055,45 @@ describe("client.<entity>.create / update — runtime validation", () => {
     };
     void typecheck;
     expect(true).toBe(true);
+  });
+
+  it("create() with a nullable schema: omitting the nullable field typechecks and runs (#212)", async () => {
+    // The static type for nullable fields must be `T | null | undefined`,
+    // not `T | null`. The runtime accepts omission (Type.Optional wrap
+    // in withImplicitOptional), and the type system should agree so
+    // callers don't have to pass `null` for fields they want to leave
+    // unset.
+    const seen: string[] = [];
+    const { client } = await mkClientWithNullable(seen);
+    const response = await client.todo.create({ title: "Ship", completed: false });
+    expect(response.rejected).toEqual([]);
+    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
+  });
+
+  it("create() with a nullable schema: static type still rejects wrong inner type (#212)", () => {
+    // Static type must NOT accept `body: 42` — `body` is `string | null`,
+    // and `42` isn't either. The optional wrapping only changes whether
+    // the field can be omitted, not the inner type's coercion.
+    const typecheck: () => void = () => {
+      const _input: { title: string; completed: boolean; body?: string | null } = {
+        title: "",
+        completed: false,
+        body: null,
+      };
+      void _input.body?.length;
+      // @ts-expect-error — body is string | null, not number.
+      void ({ ..._input, body: 42 } as typeof _input);
+    };
+    void typecheck;
+    expect(true).toBe(true);
+  });
+
+  it("create() with a nullable schema: omitting the field at runtime does not throw EntityValidationError (#212)", async () => {
+    // Round-trip: omitting body passes both the static type check and
+    // Value.Check. Catches any drift between the runtime shape
+    // (Type.Optional wrap) and the static type after the fix.
+    const seen: string[] = [];
+    const { client } = await mkClientWithNullable(seen);
+    await expect(client.todo.create({ title: "Ship", completed: false })).resolves.toBeDefined();
   });
 });

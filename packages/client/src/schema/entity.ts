@@ -9,7 +9,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { TSchema } from "@sinclair/typebox/type";
+import type { TSchema, TOptional, TUnion, TNull } from "@sinclair/typebox/type";
 
 /** Merge-semantics marker. Marker and shape are independent axes. */
 // Future counter / causal-tree markers extend this union in their own issues.
@@ -52,14 +52,50 @@ export const e = {
 const deriveMarker = (_schema: TSchema): FieldMarker => ({ type: "lww" });
 
 /**
+ * True at the type level when `T` is the union shape produced by
+ * `.nullable()`: `Type.Union<[T, TNull]>`. The chain helper drops
+ * its `.nullable` method when called, so the resulting `TUnion` is
+ * the user-facing marker that a field is nullable.
+ */
+type IsNullableUnion<T> =
+  T extends TUnion<infer Members>
+    ? Members extends readonly [unknown, infer Second]
+      ? Second extends TNull
+        ? true
+        : false
+      : false
+    : false;
+
+/**
+ * Type-level mirror of {@link withImplicitOptional}: nullable fields
+ * become `TOptional<T>` in the static type so `Static<TObject<...>>`
+ * agrees with the runtime shape (`Type.Optional(...)` wrap that
+ * `Value.Check` accepts). Non-nullable fields pass through untouched.
+ *
+ * Detection keys on the union shape produced by `.nullable()` rather
+ * than the `.nullable` chain method (which every `e.*()` builder
+ * carries by default and would over-eagerly mark every field
+ * optional).
+ */
+type WithImplicitOptional<T extends TSchema> = IsNullableUnion<T> extends true ? TOptional<T> : T;
+
+export type ShapeFields<TFields extends Record<string, TSchema>> = {
+  [K in keyof TFields]: WithImplicitOptional<TFields[K]>;
+};
+
+/**
  * The TypeBox object schema wrapping a field map. Returned by
  * `defineEntity` as `EntityDef.shape`. Field-value types flow through
  * `Static<TObject<TFields>>` (TypeBox's static resolver); callers can
  * reach them with `Static<typeof def["shape"]>` if they want explicit
  * value-type extraction.
+ *
+ * Nullable fields are represented as `TOptional<T>` in the static type
+ * to match the runtime `Type.Optional(...)` wrap applied by
+ * `withImplicitOptional` — see `ShapeFields`.
  */
 export type EntityShape<TFields extends Record<string, TSchema>> = ReturnType<
-  typeof Type.Object<TFields>
+  typeof Type.Object<ShapeFields<TFields>>
 >;
 
 /** Passive entity definition value. The runtime registry consumes it. */
@@ -76,7 +112,7 @@ export function defineEntity<TFields extends Record<string, TSchema>>(
   name: string,
   fields: TFields,
 ): EntityDef<TFields> {
-  const shapeFields = withImplicitOptional(fields);
+  const shapeFields = withImplicitOptional(fields) as unknown as ShapeFields<TFields>;
   const derivedFields = Object.fromEntries(
     Object.keys(fields).map((k) => [k, deriveMarker(fields[k] as TSchema)]),
   ) as { [K in keyof TFields]: FieldMarker };
@@ -90,9 +126,9 @@ export function defineEntity<TFields extends Record<string, TSchema>>(
 /**
  * Wrap every nullable field in `Type.Optional` so `Value.Check`
  * treats absent values as valid (matching the wire envelope's
- * set / nulled / absent projection). The static type still
- * requires nullable fields — `Static<TObject<TFields>>` only sees
- * `TOptional` when callers write it explicitly.
+ * set / nulled / absent projection). The static type mirrors this
+ * wrap via `ShapeFields` so `Static<TObject<...>>` agrees — nullable
+ * fields are optional at both runtime and compile time.
  */
 const withImplicitOptional = <TFields extends Record<string, TSchema>>(
   fields: TFields,

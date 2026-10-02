@@ -1,7 +1,7 @@
 /**
  * Typed thenable QueryBuilder.
  *
- * `await qb` resolves to `readonly Static<TObject<TFields>>[]` after
+ * `await qb` resolves to `readonly Static<TObject<ShapeFields<TFields>>>[]` after
  * projecting each materialized entity to the schema's TypeBox shape.
  * The chain mutators (`eq` / `orderBy` / `limit`) are typed against
  * the field map: `field` narrows to `keyof TFields` and `value`
@@ -23,6 +23,7 @@
 
 import type { Entity } from "@ebbjs/core";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
+import type { ShapeFields } from "../schema/entity";
 
 /**
  * Map a single materialized entity onto the schema's TypeBox shape.
@@ -36,20 +37,20 @@ import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 export function projectEntity<TFields extends Record<string, TSchema>>(
   entity: Entity,
   shape: TObject<TFields>,
-): Static<TObject<TFields>> {
+): Static<TObject<ShapeFields<TFields>>> {
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(shape.properties) as (keyof TFields & string)[]) {
     const field = entity.data?.fields?.[key];
     out[key] = field === undefined ? undefined : field.value;
   }
-  return out as Static<TObject<TFields>>;
+  return out as Static<TObject<ShapeFields<TFields>>>;
 }
 
 /** Project every row in a list. Pure. */
 export function projectRows<TFields extends Record<string, TSchema>>(
   rows: readonly Entity[],
   shape: TObject<TFields>,
-): readonly Static<TObject<TFields>>[] {
+): readonly Static<TObject<ShapeFields<TFields>>>[] {
   return rows.map((row) => projectEntity(row, shape));
 }
 
@@ -81,19 +82,21 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
   /** Maximum number of rows. */
   limit(n: number): QueryBuilder<TFields>;
   /** First projected survivor, or `undefined` when the chain is empty. */
-  first(): Promise<Static<TObject<TFields>> | undefined>;
+  first(): Promise<Static<TObject<ShapeFields<TFields>>> | undefined>;
   /** Count of survivors after the chain runs. */
   count(): Promise<number>;
   /** `true` when at least one row survives the chain. */
   exists(): Promise<boolean>;
   /** Streaming iterator over projected survivors. */
-  [Symbol.asyncIterator](): AsyncIterableIterator<Static<TObject<TFields>>>;
+  [Symbol.asyncIterator](): AsyncIterableIterator<Static<TObject<ShapeFields<TFields>>>>;
   /** Materialize the untyped entities, skipping the projection. */
   toRaw(): Promise<readonly Entity[]>;
   /** Thenable — `await qb` resolves to the projected rows. */
-  then<TResult1 = readonly Static<TObject<TFields>>[], TResult2 = never>(
+  then<TResult1 = readonly Static<TObject<ShapeFields<TFields>>>[], TResult2 = never>(
     onfulfilled?:
-      | ((value: readonly Static<TObject<TFields>>[]) => TResult1 | PromiseLike<TResult1>)
+      | ((
+          value: readonly Static<TObject<ShapeFields<TFields>>>[],
+        ) => TResult1 | PromiseLike<TResult1>)
       | null,
     onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): PromiseLike<TResult1 | TResult2>;
