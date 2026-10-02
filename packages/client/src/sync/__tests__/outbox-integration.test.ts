@@ -1,0 +1,322 @@
+/**
+ * Integration tests for the Outbox seam (#227).
+ *
+ * These pin the behaviour the seam must preserve or add on top of the
+ * direct-POST write path:
+ *
+ * - every write funnels through `client.outbox` (enqueue + flush);
+ * - the local cache reflects the write before the server echo;
+ * - the echo arriving over the sync path re-applies without changing
+ *   the converged state (the materializer is HLC-ordered);
+ * - a failed flush leaves the entries observable as pending.
+ */
+
+import { describe, it, expect } from "vitest";
+import { decodeSync, makeHlc, type Action, type Update } from "@ebbjs/core";
+import { createMemoryAdapter } from "@ebbjs/storage/memory";
+
+import { createClient } from "../client";
+import { callApplyAction } from "../test-utils";
+import { defineEntity, e } from "../../schema/entity";
+import { defineSchema } from "../../schema/schema";
+
+const SERVER_URL = "http://localhost:4000";
+const ACTOR_ID = "actor_1";
+
+const todo = defineEntity("todo", {
+  title: e.string(),
+  completed: e.boolean(),
+});
+
+const schema = defineSchema({ entities: { todo }, version: 1 });
+
+const mkAction = (): Action => ({
+  id: "act_1",
+  actor_id: ACTOR_ID,
+  hlc: makeHlc(1_711_036_800_000),
+  gsn: 0,
+  updates: [
+    {
+      id: "u_1",
+      subject_id: "todo_1",
+      subject_type: "todo",
+      method: "put",
+      data: {
+        fields: {
+          title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1_711_036_800_000) },
+          completed: { value: false, update_id: "u_1", hlc: makeHlc(1_711_036_800_000) },
+        },
+      },
+    },
+  ],
+});
+
+interface StubFetch {
+  fn: typeof fetch;
+  calls: { url: string; init: RequestInit }[];
+}
+
+/**
+ * Recording fetch stub. Responses come from a FIFO queue; once drained
+ * it accepts writes with `{ rejected: [] }`.
+ */
+const mkStubFetch = (responses: { status?: number; body?: string }[] = []): StubFetch => {
+  const calls: { url: string; init: RequestInit }[] = [];
+  const queue = [...responses];
+  const fn = (async (input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
+    const url = typeof input === "string" ? input : input.toString();
+    calls.push({ url, init });
+    const next = queue.shift();
+    if (next !== undefined) {
+      return new Response(next.body ?? "", { status: next.status ?? 200 });
+    }
+    return new Response(JSON.stringify({ rejected: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  return { fn, calls };
+};
+
+const mkClient = (fetchImpl: typeof fetch, storage?: ReturnType<typeof createMemoryAdapter>) =>
+  createClient({
+    serverUrl: SERVER_URL,
+    actorId: ACTOR_ID,
+    fetchImpl,
+    ...(storage === undefined ? {} : { storage }),
+  });
+
+const actionCalls = (calls: { url: string }[]): number =>
+  calls.filter((c) => c.url.endsWith("/sync/actions")).length;
+
+describe("client.outbox", () => {
+  it("is exposed on the client and starts empty", () => {
+    const client = mkClient(mkStubFetch().fn);
+
+    expect(client.outbox.size()).toBe(0);
+    expect(client.outbox.pending()).toEqual([]);
+  });
+
+  it("client.write() enqueues + flushes and leaves nothing pending on success", async () => {
+    const { fn, calls } = mkStubFetch();
+    const client = mkClient(fn);
+
+    await client.write([mkAction()]);
+
+    expect(client.outbox.size()).toBe(0);
+    expect(actionCalls(calls)).toBe(1);
+  });
+
+  it("client.write() applies the action locally before the echo", async () => {
+    const { fn } = mkStubFetch();
+    const client = mkClient(fn);
+
+    await client.write([mkAction()]);
+
+    const row = await client.readLocalEntity("todo_1");
+    expect(row?.data.fields.title.value).toBe("Hello");
+  });
+
+  it("client.write() fires the storage change emitter before the echo", async () => {
+    const { fn } = mkStubFetch();
+    const storage = createMemoryAdapter();
+    const client = mkClient(fn, storage);
+    if (storage.changeEmitter === undefined) {
+      throw new Error("memory adapter must ship a change emitter");
+    }
+    const seen: unknown[] = [];
+    storage.changeEmitter.onEntityChange("todo_1", (entity) => {
+      if (entity !== null) seen.push(entity.data.fields.title.value);
+    });
+
+    await client.write([mkAction()]);
+
+    expect(seen).toEqual(["Hello"]);
+  });
+
+  it("batches a multi-action write into a single request", async () => {
+    const { fn, calls } = mkStubFetch();
+    const client = mkClient(fn);
+    const second: Action = {
+      ...mkAction(),
+      id: "act_2",
+      updates: [
+        {
+          id: "u_2",
+          subject_id: "todo_2",
+          subject_type: "todo",
+          method: "put",
+          data: { fields: {} },
+        } as never,
+      ],
+    };
+
+    await client.write([mkAction(), second]);
+
+    expect(actionCalls(calls)).toBe(1);
+    const body = calls.find((c) => c.url.endsWith("/sync/actions"))?.init.body as Uint8Array;
+    const decoded = decodeSync<{ actions: unknown[] }>(body);
+    expect(decoded.actions).toHaveLength(2);
+  });
+
+  it("keeps the entries pending and rethrows when the flush fails", async () => {
+    const { fn } = mkStubFetch([{ status: 500, body: "boom" }]);
+    const client = mkClient(fn);
+
+    await expect(client.write([mkAction()])).rejects.toThrow(/write failed: 500/);
+
+    expect(client.outbox.size()).toBe(1);
+    expect(client.outbox.pending()[0]?.action.id).toBe("act_1");
+  });
+
+  it("re-applying the server echo converges on the optimistically-applied state", async () => {
+    const { fn } = mkStubFetch();
+    const client = mkClient(fn);
+
+    await client.write([mkAction()]);
+    const optimistic = await client.readLocalEntity("todo_1");
+    const echo: Action = { ...mkAction(), gsn: 7 };
+
+    await callApplyAction(client, echo);
+    const afterEcho = await client.readLocalEntity("todo_1");
+    await callApplyAction(client, echo);
+    const afterDuplicate = await client.readLocalEntity("todo_1");
+
+    expect(afterEcho?.data.fields).toEqual(optimistic?.data.fields);
+    expect(afterDuplicate).toEqual(afterEcho);
+  });
+
+  it("updates a server-originated row without breaking materialization", async () => {
+    const { fn } = mkStubFetch();
+    const client = mkClient(fn);
+    // Seed the row through the inbound path, as catch-up would.
+    await callApplyAction(client, { ...mkAction(), gsn: 1 });
+    const patch: Action = {
+      id: "act_patch",
+      actor_id: ACTOR_ID,
+      hlc: makeHlc(1_711_036_800_000, 1),
+      gsn: 0,
+      updates: [
+        {
+          id: "u_patch",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "patch",
+          data: {
+            fields: {
+              title: {
+                value: "Patched",
+                update_id: "u_patch",
+                hlc: makeHlc(1_711_036_800_000, 1),
+              },
+            },
+          },
+        },
+      ],
+    };
+
+    await client.write([patch]);
+
+    expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("Patched");
+    // The echo must land on top of the server's base put, not trip over
+    // the optimistic patch (which never enters the replay log).
+    await callApplyAction(client, { ...patch, gsn: 2 });
+    expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("Patched");
+  });
+
+  it("deletes a server-originated row without breaking materialization", async () => {
+    const { fn } = mkStubFetch();
+    const client = mkClient(fn);
+    await callApplyAction(client, { ...mkAction(), gsn: 1 });
+    const remove: Action = {
+      id: "act_delete",
+      actor_id: ACTOR_ID,
+      hlc: makeHlc(1_711_036_800_000, 1),
+      gsn: 0,
+      updates: [
+        {
+          id: "u_delete",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "delete",
+          data: null,
+        },
+      ],
+    };
+
+    await client.write([remove]);
+
+    expect((await client.readLocalEntity("todo_1"))?.deleted_hlc).not.toBeNull();
+    await callApplyAction(client, { ...remove, gsn: 2 });
+    expect((await client.readLocalEntity("todo_1"))?.deleted_hlc).not.toBeNull();
+  });
+
+  it("submitRelationshipUpdates() applies locally through the outbox", async () => {
+    const { fn, calls } = mkStubFetch();
+    const client = mkClient(fn);
+    const update: Update = {
+      id: "u_rel_1",
+      subject_id: "rel_1",
+      subject_type: "relationship",
+      method: "put",
+      data: {
+        fields: { source_id: { value: "todo_1", update_id: "u_rel_1" } },
+      },
+    };
+
+    await client.submitRelationshipUpdates([update]);
+
+    expect(client.outbox.size()).toBe(0);
+    expect(actionCalls(calls)).toBe(1);
+    expect(await client.readLocalEntity("rel_1")).not.toBeNull();
+  });
+});
+
+describe("client.<entity> writes through the outbox", () => {
+  const mkSchemaClient = () => {
+    const storage = createMemoryAdapter();
+    const stub = mkStubFetch();
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: ACTOR_ID,
+      storage,
+      schema,
+      fetchImpl: stub.fn,
+    });
+    return { client, storage, ...stub };
+  };
+
+  it("create() is visible to a local read before the echo", async () => {
+    const { client } = mkSchemaClient();
+
+    await client.todo.create({ title: "Ship", completed: false });
+
+    const rows = await client.todo.query();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.title).toBe("Ship");
+    expect(client.outbox.size()).toBe(0);
+  });
+
+  it("update() optimistically patches the local row", async () => {
+    const { client, storage } = mkSchemaClient();
+    await client.todo.create({ title: "Ship", completed: false });
+    const id = (await storage.entities.query("todo"))[0]!.id;
+
+    await client.todo.update(id, { completed: true });
+
+    const row = await client.readLocalEntity(id);
+    expect(row?.data.fields.completed.value).toBe(true);
+    expect(row?.data.fields.title.value).toBe("Ship");
+  });
+
+  it("delete() optimistically tombstones the local row", async () => {
+    const { client, storage } = mkSchemaClient();
+    await client.todo.create({ title: "Ship", completed: false });
+    const id = (await storage.entities.query("todo"))[0]!.id;
+
+    await client.todo.delete(id);
+
+    const row = await client.readLocalEntity(id);
+    expect(row?.deleted_hlc).not.toBeNull();
+  });
+});
