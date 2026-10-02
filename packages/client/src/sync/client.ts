@@ -61,6 +61,7 @@ import {
 import { Type } from "@sinclair/typebox";
 import { type QueryBuilder, buildQueryBuilder } from "./query-builder";
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
+import { createAtomicRuntime, type AtomicClient } from "./atomic";
 import { generateId } from "@ebbjs/core";
 import type { EntityDef } from "../schema/entity";
 import type { Schema } from "../schema/schema";
@@ -1281,9 +1282,10 @@ function requireEntityUpdate(opts: BuildRelationshipWriteOptions, as: string): U
 /**
  * Returned by {@link createClient}. The client is a Proxy that
  * exposes `client.<entityName>.query()` for every entity in the
- * composed schema, alongside the standard `SyncClient` surface.
+ * composed schema, plus `client.atomic(...)` when a schema is present,
+ * alongside the standard `SyncClient` surface.
  */
-export type NamespacedClient<S> = SyncClient & EntityNamespaces<S>;
+export type NamespacedClient<S> = SyncClient & EntityNamespaces<S> & AtomicClient<S>;
 
 /**
  * Factory for {@link SyncClient}. Prefer this over `new SyncClient(...)`
@@ -1313,6 +1315,15 @@ export function createClient<S extends AnySchema | undefined = undefined>(
     generateUpdateId: () => client.generateUpdateId(),
   };
   const namespaces = buildEntityNamespaces(opts.schema, client.storage, writeCap);
+  // `client.atomic` needs the same write capability the namespace
+  // uses. Defining it on the instance keeps the typed surface on
+  // `NamespacedClient` while leaving bare `SyncClient` without it
+  // (the resolver requires a schema).
+  Object.defineProperty(client, "atomic", {
+    value: createAtomicRuntime(opts.schema, writeCap),
+    enumerable: false,
+    configurable: true,
+  });
   return new Proxy(client, {
     get(target, prop, receiver) {
       if (typeof prop === "string") {

@@ -25,6 +25,15 @@ export {
 } from "./sync/client";
 
 export {
+  AtomicResolutionError,
+  type AtomicClient,
+  type AtomicCreateInput,
+  type AtomicDraftNamespace,
+  type AtomicDrafts,
+  type CreatedEntity,
+} from "./sync/atomic";
+
+export {
   type QueryBuilder,
   projectEntity,
   projectRows,
