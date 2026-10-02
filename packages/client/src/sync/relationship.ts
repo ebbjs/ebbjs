@@ -311,9 +311,17 @@ export function resolveCardinality(
 }
 
 /**
+ * Membership is an edge to the `group` system entity; every other edge
+ * is a domain link. The server identifies membership by the wire
+ * `kind`, so the client marks it at write time.
+ */
+export const kindForTarget = (targetName: string): string =>
+  targetName === "group" ? "member" : "link";
+
+/**
  * Build the wire-level `Relationship` Update for a single link.
  * Returns `method: "delete"` when the target is null; otherwise
- * `method: "put"` with the four standard fields.
+ * `method: "put"` with the five standard fields.
  */
 export function buildRelationshipUpdate(args: {
   relationshipId: string;
@@ -321,6 +329,7 @@ export function buildRelationshipUpdate(args: {
   targetId: string | null;
   field: string;
   type: string;
+  kind: string;
   updateId: string;
 }): import("@ebbjs/core").Update {
   if (args.targetId === null) {
@@ -343,6 +352,7 @@ export function buildRelationshipUpdate(args: {
         target_id: { value: args.targetId, update_id: args.updateId },
         type: { value: args.type, update_id: args.updateId },
         field: { value: args.field, update_id: args.updateId },
+        kind: { value: args.kind, update_id: args.updateId },
       },
     },
   };

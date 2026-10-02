@@ -49,6 +49,7 @@ import {
 import type { RelationshipDef } from "../schema/relationship";
 import {
   buildRelationshipUpdate,
+  kindForTarget,
   normalizeManyPointers,
   normalizePointer,
   resolveCardinality,
@@ -633,6 +634,7 @@ export class SyncClient {
         targetId,
         field: as,
         type: this.wireTypeFor(sourceName, as),
+        kind: kindForTarget(opts.target.name),
         updateId,
       });
       return { relationshipUpdate: relUpdate };
@@ -643,6 +645,7 @@ export class SyncClient {
     const sourceId = entityUpdate.subject_id;
     const targetIds = opts.targetIds;
     const wireType = this.wireTypeFor(sourceName, as);
+    const kind = kindForTarget(opts.target.name);
     const updates: Update[] = [];
     if (targetIds === undefined) {
       // No `targetIds` — emit the entity Update with no relationship
@@ -653,18 +656,18 @@ export class SyncClient {
     if ("replace" in targetIds) {
       const normalized = normalizeManyPointers(targetIds, `targetIds for "${as}"`);
       for (const targetId of normalized) {
-        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, targetId));
+        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, kind, targetId));
       }
     } else {
       for (const targetId of targetIds.add) {
         const id = normalizePointer(targetId, `targetIds.add for "${as}"`);
         if (id === null) continue;
-        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, id));
+        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, kind, id));
       }
       for (const targetId of targetIds.remove) {
         const id = normalizePointer(targetId, `targetIds.remove for "${as}"`);
         if (id === null) continue;
-        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, id));
+        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, kind, id));
       }
     }
     return { entityUpdate, relationshipUpdate: updates };
@@ -674,6 +677,7 @@ export class SyncClient {
     sourceId: string,
     as: string,
     wireType: string,
+    kind: string,
     targetId: string,
   ): Update {
     return buildRelationshipUpdate({
@@ -682,6 +686,7 @@ export class SyncClient {
       targetId,
       field: as,
       type: wireType,
+      kind,
       updateId: generateId("u"),
     });
   }

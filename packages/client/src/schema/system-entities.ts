@@ -15,13 +15,17 @@ import { defineEntity, e } from "./entity";
 /**
  * Wire shape of a `Relationship` record. The server stores
  * relationship edges as `Relationship` entities carrying
- * `{source_id, target_id, type, field}` as field values; `target_id`
- * is nullable because the `delete` method uses `data: null` (no
- * fields) and a one-cardinality delete leaves the FK cleared.
+ * `{source_id, target_id, type, field, kind}` as field values;
+ * `target_id` is nullable because the `delete` method uses `data:
+ * null` (no fields) and a one-cardinality delete leaves the FK
+ * cleared. `kind` is `"member"` for an entity↔Group membership edge
+ * and `"link"` for a domain edge; the server treats an absent kind as
+ * `"link"`.
  */
 export const relationshipSystemEntity = defineEntity("relationship", {
   source_id: e.string(),
   target_id: e.string().nullable(),
   type: e.string(),
   field: e.string(),
+  kind: e.string(),
 });
