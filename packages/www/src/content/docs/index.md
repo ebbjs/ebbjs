@@ -125,7 +125,7 @@ client.todo.subscribe({ completed: false }, (snapshot) => {
 const { rejected } = await client.todo.create({ title: "Buy milk", completed: false });
 
 // `toRaw()` exposes the wire envelope (including `id`).
-const [row] = await client.todo.query().eq("completed", false).toRaw();
+const [row] = await client.todo.query().where("completed", false).toRaw();
 if (row !== undefined) {
   await client.todo.update(row.id, { completed: true });
 }
