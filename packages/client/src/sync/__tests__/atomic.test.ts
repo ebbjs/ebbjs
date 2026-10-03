@@ -287,6 +287,47 @@ describe("client.atomic — one Action, forward references", () => {
 
     expect(seen.length).toBe(before);
   });
+
+  it("tags a `group` target as kind=member and every other target as kind=link", async () => {
+    const group = defineEntity("group", { name: e.string() });
+    const kindSchema = defineSchema({
+      entities: { todo, group, list },
+      relationships: {
+        todo_ownedBy: defineRelationship({
+          source: todo,
+          target: group,
+          as: "ownedBy",
+          sourceCardinality: "many",
+        }),
+        todo_list: defineRelationship({
+          source: todo,
+          target: list,
+          as: "list",
+          sourceCardinality: "many",
+        }),
+      },
+      version: 1,
+    });
+    const { client, seen } = mkClient(kindSchema);
+    await client.handshake();
+
+    const created = await client.atomic(({ todo, group, list }) => {
+      const team = group.create({ name: "Team" });
+      const today = list.create({ name: "Today" });
+      return { todo: todo.create({ title: "Ship", ownedBy: team, list: today }), team, today };
+    });
+
+    const relUpdates = decodeActions(actionCalls(seen)[0]!)[0]!.updates.filter(
+      (u) => u.subject_type === "relationship",
+    );
+    const memberUpdate = relUpdates.find((u) => u.data?.fields?.["field"]?.value === "ownedBy")!;
+    expect(memberUpdate.data?.fields?.["kind"]?.value).toBe("member");
+    expect(memberUpdate.data?.fields?.["target_id"]?.value).toBe(created.team.id);
+
+    const linkUpdate = relUpdates.find((u) => u.data?.fields?.["field"]?.value === "list")!;
+    expect(linkUpdate.data?.fields?.["kind"]?.value).toBe("link");
+    expect(linkUpdate.data?.fields?.["target_id"]?.value).toBe(created.today.id);
+  });
 });
 
 describe("resolveReferences", () => {
