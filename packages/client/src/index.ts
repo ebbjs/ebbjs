@@ -29,6 +29,7 @@ export {
   type AtomicCreateInput,
   type AtomicDraftNamespace,
   type AtomicDrafts,
+  type AtomicRuntime,
   type CreatedEntity,
 } from "./sync/atomic";
 
@@ -164,3 +165,13 @@ export {
 } from "./schema/entity-registry";
 
 export { defineSchema, type DefineSchemaInput, type Schema } from "./schema/schema";
+
+export {
+  defineAction,
+  type ActionDef,
+  type ActionHandles,
+  type ActionPointer,
+  type ActionValues,
+  type ActionWrite,
+  type DefineActionInput,
+} from "./schema/action";
