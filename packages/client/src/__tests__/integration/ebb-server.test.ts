@@ -847,6 +847,57 @@ const buildLinkTestSchema = () => {
   });
 };
 
+describe("integration: client.<entity>.create membership", () => {
+  it("writes one kind:member edge per group in the same Action", async () => {
+    if (!(await shouldRun())) return;
+    const actor = `membership_${RUN_ID}`;
+    await addMemberWithTodoPerms(actor);
+    const todo = defineEntity("todo", {
+      title: e.string(),
+      completed: e.boolean(),
+    });
+    const schema = defineSchema({ entities: { todo }, version: 1 });
+    const client = createClient({ serverUrl: SERVER_URL, actorId: actor, schema });
+    const { groups } = await client.handshake();
+    expect(groups.find((g) => g.id === TEST_GROUP_ID)).toBeDefined();
+    client.setState("live");
+
+    try {
+      const title = `Membership ${RUN_ID}`;
+      // A second group id the server doesn't know about: the write is
+      // authorized against the actor's membership in TEST_GROUP_ID,
+      // and the edge is materialized regardless.
+      const ghostGroupId = `grp_ghost_${RUN_ID}`;
+      const response = await client.todo.create(
+        { title, completed: false },
+        { groups: [TEST_GROUP_ID, ghostGroupId] },
+      );
+      expect(response.rejected).toEqual([]);
+      const todoId = await findTodoByTitle(client, title);
+
+      await catchUpUntilCurrent(client, TEST_GROUP_ID);
+      const rels = await client.storage.entities.query("relationship");
+      const memberEdges = rels.filter(
+        (e) =>
+          e.data?.fields?.["source_id"]?.value === todoId &&
+          e.data?.fields?.["field"]?.value === "groups" &&
+          e.data?.fields?.["kind"]?.value === "member",
+      );
+      expect(memberEdges.map((e) => e.data?.fields?.["target_id"]?.value).sort()).toEqual(
+        [TEST_GROUP_ID, ghostGroupId].sort(),
+      );
+
+      // doc.groups resolves the materialized group.
+      const row = await client.todo.get(todoId);
+      if (row === null) throw new Error("expected row");
+      const resolved = await row.groups.toRaw();
+      expect(resolved.map((g) => g.id)).toContain(TEST_GROUP_ID);
+    } finally {
+      client.close();
+    }
+  });
+});
+
 describe("integration: client.<entity>.link / unlink", () => {
   it("links a domain edge and resolves membership via doc.groups", async () => {
     if (!(await shouldRun())) return;
