@@ -175,6 +175,44 @@ defmodule EbbServer.Storage.RelationshipCacheTest do
       assert "todo_1" in entities
       assert "todo_2" in entities
     end
+
+    test "excludes domain links to the group" do
+      cache = with_isolated_cache()
+
+      :ok = put(cache, member("todo_1", "g_1", "rel_1"))
+
+      :ok =
+        put(cache, %{
+          id: "rel_link",
+          source_id: "todo_link",
+          target_id: "g_1",
+          type: "todo",
+          field: "owns",
+          kind: "link"
+        })
+
+      assert RelationshipCache.get_group_entities("g_1", cache.relationships_by_group) == [
+               "todo_1"
+             ]
+    end
+
+    test "a re-put from member to link drops the group index row" do
+      cache = with_isolated_cache()
+
+      :ok = put(cache, member("todo_1", "g_1", "rel_1"))
+
+      :ok =
+        put(cache, %{
+          id: "rel_1",
+          source_id: "todo_1",
+          target_id: "g_1",
+          type: "todo",
+          field: "owns",
+          kind: "link"
+        })
+
+      assert RelationshipCache.get_group_entities("g_1", cache.relationships_by_group) == []
+    end
   end
 
   describe "delete_relationship/2" do

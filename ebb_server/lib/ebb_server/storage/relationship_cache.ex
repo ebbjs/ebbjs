@@ -6,7 +6,8 @@ defmodule EbbServer.Storage.RelationshipCache do
   with secondary indexes that allow lookups by relationship id.
   Uses three ETS tables:
   - `:ebb_relationships` - `:bag` of `{source_id, entry}`, one row per edge
-  - `:ebb_relationships_by_group` - maps group to source entities
+  - `:ebb_relationships_by_group` - `:bag` of `{group_id, source_id}` for
+    `kind: "member"` edges only, so group→entity lookups cannot see links
   - `:ebb_relationships_by_id` - maps relationship id to entry
 
   Membership is the subset of edges with `kind: "member"`; domain
@@ -96,7 +97,13 @@ defmodule EbbServer.Storage.RelationshipCache do
       )
 
       :ets.insert(rel_table, {source_id, entry})
-      :ets.insert(rbg_table, {target_id, source_id})
+
+      # Only membership edges belong in the group index; a domain link to a
+      # group entity must not make its source look like a group member.
+      if member?(entry) do
+        :ets.insert(rbg_table, {target_id, source_id})
+      end
+
       :ets.insert(rbi_table, {entry_id, entry})
       :ok
     end
@@ -197,7 +204,8 @@ defmodule EbbServer.Storage.RelationshipCache do
   end
 
   @doc """
-  Gets all entity IDs that belong to a group.
+  Gets all entity IDs that belong to a group through a `kind: "member"`
+  edge. Domain links to the group are not included.
 
   ## Examples
 
