@@ -1,5 +1,5 @@
 import { openDB, type IDBPDatabase } from "idb";
-import { createEbbStores, type EbbDBSchema } from "./schema";
+import { createEbbStores, EBB_SCHEMA_VERSION, type EbbDBSchema } from "./schema";
 
 let counter = 0;
 
@@ -8,11 +8,13 @@ let counter = 0;
  * a brand-new DB so tests cannot pollute one another.
  *
  * Schema matches `EbbDBSchema` exactly so test DBs can be passed
- * straight to the production factories without a cast.
+ * straight to the production factories without a cast. Version comes
+ * from `EBB_SCHEMA_VERSION` so the test and production schemas cannot
+ * drift apart.
  */
 export const openTestDb = async (prefix: string): Promise<IDBPDatabase<EbbDBSchema>> => {
   const dbName = `ebb-${prefix}-${Date.now()}-${++counter}`;
-  return openDB<EbbDBSchema>(dbName, 2, {
+  return openDB<EbbDBSchema>(dbName, EBB_SCHEMA_VERSION, {
     upgrade: createEbbStores,
   });
 };

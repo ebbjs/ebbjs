@@ -1,10 +1,18 @@
 import type { Entity } from "@ebbjs/core";
-import type { EntityStore } from "../types/entity-store";
+import type { EntityStore, RelationshipIndexQuery } from "../types/entity-store";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
 import type { EntityChangeEmitter } from "../types/entity-change-emitter";
 import { applyUpdate } from "../internal/materialize";
 import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
+import {
+  applyRelationshipDelta,
+  liveSourceIds,
+  relationshipIndexDelta,
+  relationshipIndexKey,
+  RELATIONSHIP_ENTITY_TYPE,
+  type RelationshipIndex,
+} from "../internal/relationship-index";
 
 /**
  * MemoryEntityStore — in-memory implementation of EntityStore.
@@ -12,6 +20,8 @@ import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
  * ## State
  * - `entities` — Record<entityId, Entity> — O(1) entity lookup
  * - `typeIndex` — Record<type, Set<entityId>> — O(1) query by type
+ * - `relationshipIndex` — Record<indexKey, rowId → sourceId> — O(1) reverse
+ *   relationship lookup; indexKey is the `(field, type, target_id)` triple
  *
  * ## Materialization Flow
  * 1. Caller invokes `append()` on ActionLog
@@ -30,6 +40,7 @@ import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
 interface EntityStoreState {
   entities: Record<string, Entity>;
   typeIndex: Record<string, Set<string>>;
+  relationshipIndex: RelationshipIndex;
 }
 
 const copyEntity = (entity: Entity): Entity => JSON.parse(JSON.stringify(entity));
@@ -59,6 +70,18 @@ const updateTypeIndexOnSet = (
   return newTypeIndex;
 };
 
+/**
+ * Rebuild the relationship index around a single entity write. The
+ * delta comes from the previous and next versions of the row, so a
+ * patch that re-points or re-keys a row, or a tombstone that hides
+ * one, leaves no stale row behind.
+ */
+const updateRelationshipIndex = (
+  index: RelationshipIndex,
+  previous: Entity | undefined,
+  next: Entity | undefined,
+): RelationshipIndex => applyRelationshipDelta(index, relationshipIndexDelta(previous, next));
+
 export interface MemoryEntityStoreBundle {
   store: EntityStore;
   emitter: EntityChangeEmitter;
@@ -76,7 +99,7 @@ export const createMemoryEntityStore = (
   actionLog: ActionLog,
   dirtyTracker: DirtyTracker,
 ): MemoryEntityStoreBundle => {
-  let state: EntityStoreState = { entities: {}, typeIndex: {} };
+  let state: EntityStoreState = { entities: {}, typeIndex: {}, relationshipIndex: {} };
   const { emitter, emit } = createEntityChangeEmitter();
 
   /**
@@ -111,6 +134,7 @@ export const createMemoryEntityStore = (
     state = {
       entities: { ...state.entities, [entityId]: copyEntity(entity) },
       typeIndex: updateTypeIndexOnSet(state.typeIndex, entity, oldEntity?.type),
+      relationshipIndex: updateRelationshipIndex(state.relationshipIndex, oldEntity, entity),
     };
 
     if (clearDirty) {
@@ -132,6 +156,7 @@ export const createMemoryEntityStore = (
       state = {
         entities: { ...state.entities, [entity.id]: copyEntity(entity) },
         typeIndex: updateTypeIndexOnSet(state.typeIndex, entity, oldEntity?.type),
+        relationshipIndex: updateRelationshipIndex(state.relationshipIndex, oldEntity, entity),
       };
       emit(entity.id, state.entities[entity.id]);
     },
@@ -147,8 +172,22 @@ export const createMemoryEntityStore = (
       return [...entityIds].map((id) => copyEntity(state.entities[id])).filter(Boolean);
     },
 
+    async queryByRelationship({
+      as,
+      type,
+      targetId,
+    }: RelationshipIndexQuery): Promise<readonly string[]> {
+      const dirtyIds = await dirtyTracker.getDirtyForType(RELATIONSHIP_ENTITY_TYPE);
+
+      for (const id of dirtyIds) {
+        await replay(id, true);
+      }
+
+      return liveSourceIds(state.relationshipIndex[relationshipIndexKey(as, type, targetId)]);
+    },
+
     async reset(): Promise<void> {
-      state = { entities: {}, typeIndex: {} };
+      state = { entities: {}, typeIndex: {}, relationshipIndex: {} };
       emitter.reset();
     },
   };

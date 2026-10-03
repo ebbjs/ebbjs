@@ -10,4 +10,11 @@ describe("EbbDBSchema", () => {
       expect(indexes).toContain("subject_id");
     });
   });
+
+  describe("relationships store", () => {
+    it("is created at the current schema version", async () => {
+      const db = await openTestDb("schema");
+      expect(Array.from(db.objectStoreNames)).toContain("relationships");
+    });
+  });
 });

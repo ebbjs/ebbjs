@@ -1,11 +1,21 @@
 import type { IDBPDatabase } from "idb";
 import type { Entity } from "@ebbjs/core";
-import type { EntityStore } from "../types/entity-store";
+import type { EntityStore, RelationshipIndexQuery } from "../types/entity-store";
 import type { EntityChangeEmitter } from "../types/entity-change-emitter";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
 import { applyUpdate } from "../internal/materialize";
 import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
+import {
+  addRelationshipRow,
+  liveSourceIds,
+  relationshipIndexDelta,
+  relationshipIndexKey,
+  removeRelationshipRow,
+  RELATIONSHIP_ENTITY_TYPE,
+  type RelationshipEntry,
+  type RelationshipRows,
+} from "../internal/relationship-index";
 import type { EbbDBSchema } from "./schema";
 
 /**
@@ -16,6 +26,11 @@ import type { EbbDBSchema } from "./schema";
  * `entities` store is the materialized cache; the `actions` store holds
  * the source-of-truth log. Materialization is driven by the same
  * DirtyTracker that drives the in-memory adapter.
+ *
+ * The `relationships` object store mirrors the in-memory adapter's
+ * reverse relationship index: one record per `(field, type, target_id)`
+ * composite key mapping each live relationship row id to its source id.
+ * It is rewritten alongside the entity store on every materialization.
  *
  * ## Materialization Flow
  * 1. Caller invokes `append()` on ActionLog
@@ -48,6 +63,35 @@ export const createIndexedDBEntityStore = (
   const copyEntity = (entity: Entity): Entity => structuredClone(entity);
   const { emitter, emit } = createEntityChangeEmitter();
 
+  const writeRows = async (key: string, rows: RelationshipRows | null): Promise<void> => {
+    if (rows === null) await db.delete("relationships", key);
+    else await db.put("relationships", { key, rows });
+  };
+
+  /**
+   * Read-modify-write one row into the `relationships` store. A row is
+   * keyed by its id, so a tombstone or re-key drops only that row and
+   * leaves sibling rows on the same natural key intact.
+   */
+  const addRelationshipEntry = async (entry: RelationshipEntry): Promise<void> => {
+    const record = await db.get("relationships", entry.key);
+    await writeRows(entry.key, addRelationshipRow(record?.rows, entry));
+  };
+
+  const removeRelationshipEntry = async (entry: RelationshipEntry): Promise<void> => {
+    const record = await db.get("relationships", entry.key);
+    await writeRows(entry.key, removeRelationshipRow(record?.rows, entry));
+  };
+
+  const updateRelationshipIndex = async (
+    previous: Entity | undefined,
+    next: Entity | undefined,
+  ): Promise<void> => {
+    const delta = relationshipIndexDelta(previous, next);
+    if (delta.remove !== null) await removeRelationshipEntry(delta.remove);
+    if (delta.add !== null) await addRelationshipEntry(delta.add);
+  };
+
   /**
    * Replay actions for `entityId` into the cache. `clearDirty`
    * toggles whether the dirty flag is reset — false keeps the
@@ -72,7 +116,9 @@ export const createIndexedDBEntityStore = (
 
     if (entity === null) return;
 
+    const previous = (await db.get("entities", entityId)) as unknown as Entity | undefined;
     await db.put("entities", copyEntity(entity) as EbbDBSchema["entities"]["value"]);
+    await updateRelationshipIndex(previous, entity);
 
     if (clearDirty) {
       await dirtyTracker.clear(entityId);
@@ -89,7 +135,9 @@ export const createIndexedDBEntityStore = (
     },
 
     async set(entity: Entity): Promise<void> {
+      const previous = (await db.get("entities", entity.id)) as unknown as Entity | undefined;
       await db.put("entities", copyEntity(entity) as EbbDBSchema["entities"]["value"]);
+      await updateRelationshipIndex(previous, entity);
       emit(entity.id, entity);
     },
 
@@ -104,7 +152,23 @@ export const createIndexedDBEntityStore = (
       return entities.map(copyEntity);
     },
 
+    async queryByRelationship({
+      as,
+      type,
+      targetId,
+    }: RelationshipIndexQuery): Promise<readonly string[]> {
+      const dirtyIds = await dirtyTracker.getDirtyForType(RELATIONSHIP_ENTITY_TYPE);
+
+      for (const id of dirtyIds) {
+        await replay(id, true);
+      }
+
+      const record = await db.get("relationships", relationshipIndexKey(as, type, targetId));
+      return liveSourceIds(record?.rows);
+    },
+
     async reset(): Promise<void> {
+      await db.clear("relationships");
       await db.clear("entities");
       emitter.reset();
     },
