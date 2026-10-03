@@ -443,6 +443,17 @@ describe("client.atomic — ActionDef form", () => {
     expect(relUpdate.data?.fields?.["kind"]?.value).toBe("link");
   });
 
+  it("rejects a non-callback, non-ActionDef argument with a clear error", async () => {
+    const { client, seen } = mkClient();
+    await client.handshake();
+
+    await expect(client.atomic(undefined as never)).rejects.toBeInstanceOf(AtomicResolutionError);
+    await expect(client.atomic(undefined as never)).rejects.toThrow(
+      /expected a callback or an ActionDef with a "writes" field/,
+    );
+    expect(actionCalls(seen)).toHaveLength(0);
+  });
+
   it("rejects a relationship whose endpoint has no values entry", async () => {
     const { client } = mkClient();
     await client.handshake();

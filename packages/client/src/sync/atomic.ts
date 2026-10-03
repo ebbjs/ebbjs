@@ -17,8 +17,11 @@
  *
  * The declaration form (`defineAction`) lowers into exactly this path:
  * the collected writes, pointer resolution, and flattening are shared,
- * so a declaration and the equivalent callback compose the same Action.
- * The permission-coherence check is #233.
+ * so a declaration and the equivalent callback compose the same
+ * canonical Action content. A declaration creates auto-wired targets in
+ * dependency order rather than `writes` order, so the emitted update
+ * ordering can differ from a callback. The permission-coherence check is
+ * #233.
  */
 
 import { generateId, type Update } from "@ebbjs/core";
@@ -350,7 +353,9 @@ const entityCreateOrder = (
  * runs on the shared draft collector. A declared relationship whose
  * source input omits its `as` key auto-wires the target created in the
  * same Action; an explicit `as` value is left to the resolver, which
- * links the pre-existing id.
+ * links the pre-existing id. Auto-wired targets are created before
+ * their sources (dependency order), not in `writes` order, so the
+ * emitted update ordering follows dependency order.
  */
 const lowerActionDef = (
   def: ActionDef<readonly ActionWrite[]>,
@@ -424,6 +429,16 @@ const lowerActionDef = (
   };
 };
 
+const isActionDef = (value: unknown): value is ActionDef<readonly ActionWrite[]> =>
+  typeof value === "object" && value !== null && "writes" in value;
+
+const rejectAtomicInput = (input: unknown): never => {
+  const kind = input === null ? "null" : typeof input;
+  throw new AtomicResolutionError(
+    `client.atomic: expected a callback or an ActionDef with a "writes" field, received ${kind}`,
+  );
+};
+
 /**
  * Build the `client.atomic` runtime for a schema. Each call gets a
  * fresh collector, gathers writes, flattens them into one Action, and
@@ -444,7 +459,9 @@ export function createAtomicRuntime<S extends Schema<Record<string, AnyEntityDef
         ? (input as (
             drafts: Record<string, AtomicDraftNamespace<Record<string, TSchema>>>,
           ) => unknown)
-        : lowerActionDef(input as ActionDef<readonly ActionWrite[]>, cap);
+        : isActionDef(input)
+          ? lowerActionDef(input, cap)
+          : rejectAtomicInput(input);
     const result = build(drafts);
     const updates = buildUpdates(writes, cap);
     if (updates.length > 0) {
