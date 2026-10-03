@@ -24,11 +24,13 @@ export {
 } from "./sync/client";
 
 export {
+  AtomicActionError,
   AtomicResolutionError,
   type AtomicClient,
   type AtomicCreateInput,
   type AtomicDraftNamespace,
   type AtomicDrafts,
+  type AtomicRejection,
   type AtomicRuntime,
   type CreatedEntity,
 } from "./sync/atomic";

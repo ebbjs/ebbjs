@@ -52,6 +52,58 @@ export class AtomicResolutionError extends Error {
   }
 }
 
+/**
+ * One refused Update. `id` / `subjectType` identify the wire subject
+ * the refusal is attributed to, `reason` is a stable machine-readable
+ * code, and `details` is free-form human text.
+ *
+ * A rejection read off the server's response carries its `rejected[]`
+ * fields verbatim — today that report is per-Action, so `id` is the
+ * refused Action's id and `subjectType` is absent. The server follow-up
+ * linked from #233 asks for per-Update detail carrying
+ * `subject_id` / `subject_type`.
+ */
+export interface AtomicRejection {
+  /** Refused Update's `subject_id`; the refused Action's id for a server report. */
+  readonly id: string;
+  /** Refused Update's `subject_type`; absent on a server report. */
+  readonly subjectType?: string;
+  readonly reason: string;
+  readonly details?: string;
+}
+
+/**
+ * Aggregated refusal of an atomic call: a client-side permission
+ * coherence failure, or the server's `rejected[]` for the submitted
+ * Action. Mirrors `EntityValidationError` — same `Error` shape, named
+ * subclass, structured readonly reasons, message formatted from them.
+ *
+ * Thrown before submission for a coherence failure, so no Action
+ * reaches the outbox.
+ */
+export class AtomicActionError extends Error {
+  readonly rejections: readonly AtomicRejection[];
+
+  constructor(rejections: readonly AtomicRejection[]) {
+    super(formatRejections(rejections));
+    this.name = "AtomicActionError";
+    this.rejections = rejections;
+  }
+}
+
+const formatRejections = (rejections: readonly AtomicRejection[]): string => {
+  if (rejections.length === 0) return "AtomicActionError";
+  const lines = rejections.map((rejection) => `  - ${describeRejection(rejection)}`);
+  return `AtomicActionError: ${rejections.length} rejected update(s)\n${lines.join("\n")}`;
+};
+
+const describeRejection = (rejection: AtomicRejection): string => {
+  const subject =
+    rejection.subjectType === undefined ? rejection.id : `${rejection.subjectType} ${rejection.id}`;
+  const details = rejection.details === undefined ? "" : ` (${rejection.details})`;
+  return `${subject}: ${rejection.reason}${details}`;
+};
+
 /** Handle returned by a draft namespace's `create`. Carries the id eagerly. */
 export type CreatedEntity<TFields extends Record<string, TSchema>> = Static<
   TObject<ShapeFields<TFields>>
