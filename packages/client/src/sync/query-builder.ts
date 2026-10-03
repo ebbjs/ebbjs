@@ -27,6 +27,7 @@
 
 import type { Entity } from "@ebbjs/core";
 import type { StorageAdapter } from "@ebbjs/storage/types";
+import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { ShapeFields } from "../schema/entity";
 import { EntityValidationError, type EntityRegistry } from "../schema/entity-registry";
@@ -66,8 +67,9 @@ export function projectRows<TFields extends Record<string, TSchema>>(
  * - a handle with a string `.id` (a materialized entity, say)
  * - `null` / `undefined` — no live edge (see {@link resolveTargetIds})
  *
- * Re-exported by `./relationship` so existing imports keep
- * resolving without a `relationship → query-builder` cycle.
+ * Defined here so this module need not import `./relationship`
+ * (which imports this module) to name the type; `./relationship`
+ * re-exports it for existing callers.
  */
 export type PointerValue = string | { readonly id: string } | null | undefined;
 
@@ -114,13 +116,15 @@ type FieldFilter = { readonly kind: "field"; readonly key: string; readonly valu
 /**
  * Filter over a relationship edge. `targetIds` is the resolved any-of
  * set, or `null` when the pointer names no live edge — that matches
- * nothing.
+ * nothing. `context` carries the adapter and registry the index read
+ * needs, captured when the filter is built.
  */
 type RelationshipFilter = {
   readonly kind: "relationship";
   readonly as: string;
   readonly type: string;
   readonly targetIds: readonly string[] | null;
+  readonly context: QueryContext;
 };
 
 type Filter = FieldFilter | RelationshipFilter;
@@ -146,6 +150,12 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
    * id, a handle, or an array meaning any-of. Chained calls are ANDed.
    */
   where<K extends keyof TFields & string>(key: K, value: Static<TFields[K]>): QueryBuilder<TFields>;
+  /**
+   * Relationship-target overload. It stays open over every key because
+   * the registry decides field vs. edge at runtime and a relationship
+   * wins a same-named field — so any field-named key may be an edge.
+   * Typing the exact relationship keys is the #181 follow-up.
+   */
   where(key: string, target: PointerValue | readonly PointerValue[]): QueryBuilder<TFields>;
   /** Ordering on a field of `TFields`. */
   orderBy<K extends keyof TFields & string>(
@@ -210,7 +220,7 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
     limitN: number | null,
   ): QueryBuilder<TFields> => {
     const apply = async (rows: readonly Entity[]): Promise<Entity[]> => {
-      let out = await applyFilters(rows, filters, context);
+      let out = await applyFilters(rows, filters);
       if (order !== null) {
         const { field, direction } = order;
         out.sort((a, b) => cmpField(a, b, field, direction));
@@ -290,9 +300,24 @@ function buildFilter<TFields extends Record<string, TSchema>>(
       as: key,
       type: rel.type,
       targetIds: resolveTargetIds(value as PointerValue | readonly PointerValue[], label),
+      context,
     };
   }
   if (Object.prototype.hasOwnProperty.call(shape.properties, key)) {
+    const entityName = context?.entityName ?? "(unknown)";
+    // A non-null object or array may have missed the registry and landed
+    // here as a field predicate. Accept it only when the field's declared
+    // type admits it (array/object-typed fields stay filterable); otherwise
+    // reject rather than compare a scalar to an object/array and match nothing.
+    if (value !== null && typeof value === "object" && !Value.Check(shape.properties[key], value)) {
+      throw new EntityValidationError([
+        {
+          entityName,
+          field: key,
+          message: `where("${key}"): array/object values are only valid for a relationship key or a field whose declared type accepts them`,
+        },
+      ]);
+    }
     return { kind: "field", key, value };
   }
   const entityName = context?.entityName ?? "(unknown)";
@@ -327,11 +352,10 @@ function resolveTargetIds(
   return ids.length === 0 ? null : ids;
 }
 
-/** Apply every filter in order. Field filters are synchronous; relationship filters read the index. */
+/** Apply every filter in order; the pass is async because relationship filters read the index. */
 async function applyFilters(
   rows: readonly Entity[],
   filters: readonly Filter[],
-  context: QueryContext | undefined,
 ): Promise<Entity[]> {
   let out = rows.slice();
   for (const filter of filters) {
@@ -339,10 +363,7 @@ async function applyFilters(
       out = out.filter((row) => eqField(row, filter.key, filter.value));
       continue;
     }
-    if (context === undefined) {
-      throw new Error("QueryBuilder: relationship filter built without a registry context");
-    }
-    const ids = await relationshipIdSet(filter, context);
+    const ids = await relationshipIdSet(filter);
     out = out.filter((row) => ids.has(row.id));
   }
   return out;
@@ -354,15 +375,12 @@ async function applyFilters(
  * union and chained filters intersect by filtering the row list in
  * turn.
  */
-async function relationshipIdSet(
-  filter: RelationshipFilter,
-  context: QueryContext,
-): Promise<ReadonlySet<string>> {
+async function relationshipIdSet(filter: RelationshipFilter): Promise<ReadonlySet<string>> {
   const ids = new Set<string>();
   if (filter.targetIds === null) return ids;
   const perTarget = await Promise.all(
     filter.targetIds.map((targetId) =>
-      context.storage.entities.queryByRelationship({
+      filter.context.storage.entities.queryByRelationship({
         as: filter.as,
         type: filter.type,
         targetId,

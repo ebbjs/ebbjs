@@ -11,6 +11,7 @@ import { Type, type Static } from "@sinclair/typebox";
 import type { Entity } from "@ebbjs/core";
 
 import { defineEntity, e } from "../../schema/entity";
+import { EntityValidationError } from "../../schema/entity-registry";
 import { buildQueryBuilder, projectEntity, projectRows } from "../query-builder";
 
 const todo = defineEntity("todo", {
@@ -214,22 +215,28 @@ describe("buildQueryBuilder — value narrowing against the field map", () => {
   it("rejects a value that is neither a field type nor a pointer", () => {
     const rows: Entity[] = [];
     const builder = buildQueryBuilder(rows, todo.shape);
-    // @ts-expect-error — 42 is neither `completed`'s boolean nor a PointerValue.
-    builder.where("completed", 42);
-    // @ts-expect-error — 42 is neither `title`'s string nor a PointerValue.
-    builder.where("title", 42);
-    // @ts-expect-error — an object without a string `.id` is not a PointerValue.
-    builder.where("title", { id: 42 });
-    expect(true).toBe(true);
+    // Never invoked: the @ts-expect-error lines below are the assertion.
+    const invoke = () => {
+      // @ts-expect-error — 42 is neither `completed`'s boolean nor a PointerValue.
+      builder.where("completed", 42);
+      // @ts-expect-error — 42 is neither `title`'s string nor a PointerValue.
+      builder.where("title", 42);
+      // @ts-expect-error — an object without a string `.id` is not a PointerValue.
+      builder.where("title", { id: 42 });
+    };
+    expect(invoke).toBeTypeOf("function");
   });
 
   it("rejects an unknown field name at compile time", () => {
     const rows: Entity[] = [];
     const builder = buildQueryBuilder(rows, todo.shape);
-    expect(() => {
+    // Never invoked: the @ts-expect-error below is the assertion. The
+    // runtime throw for an unknown key is pinned by the test that follows.
+    const invoke = () => {
       // @ts-expect-error — `bogus` is not in the field map and `true` is not a pointer.
       builder.where("bogus", true);
-    }).toThrow(/not a field/);
+    };
+    expect(invoke).toBeTypeOf("function");
   });
 
   it("throws on an unknown key at runtime", () => {
@@ -238,6 +245,29 @@ describe("buildQueryBuilder — value narrowing against the field map", () => {
     // `bogus` is accepted by the relationship overload (any string
     // key, string pointer) but no field or relationship declares it.
     expect(() => builder.where("bogus", "x")).toThrow(/not a field/);
+  });
+
+  it("rejects a pointer-shaped value that cannot predicate a scalar field", () => {
+    const rows: Entity[] = [];
+    const builder = buildQueryBuilder(rows, todo.shape);
+    // Both type-check against the open relationship overload; the field
+    // branch must reject them instead of comparing a scalar to them.
+    expect(() => builder.where("title", { id: "x" })).toThrow(EntityValidationError);
+    expect(() => builder.where("completed", ["a", "b"])).toThrow(EntityValidationError);
+  });
+
+  it("still accepts an array value for an array-typed field", async () => {
+    const tagged = defineEntity("tagged", {
+      title: e.string(),
+      tags: Type.Array(Type.String()),
+    });
+    // Field equality is strict (see `eqField`), so the row and the
+    // predicate must share the array reference; the point is that a
+    // schema-valid array reaches the field filter rather than throwing.
+    const tags = ["a", "b"];
+    const rows: Entity[] = [mkEntity("1", { title: "x", tags })];
+    const out = await buildQueryBuilder(rows, tagged.shape).where("tags", tags);
+    expect(out.map((r) => r.title)).toEqual(["x"]);
   });
 
   it(".eq is gone", () => {
