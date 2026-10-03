@@ -27,7 +27,7 @@ import type { EntityDef, ShapeFields } from "../schema/entity";
 import type { EntityRegistry } from "../schema/entity-registry";
 import { EntityValidationError, validatePayload } from "../schema/entity-registry";
 import type { Schema } from "../schema/schema";
-import { buildRelationshipUpdate, normalizePointer } from "./relationship";
+import { buildRelationshipUpdate, kindForTarget, normalizePointer } from "./relationship";
 import { wrapFields, type EntityFields } from "./namespace";
 import type { WriteResponse } from "./types";
 
@@ -100,6 +100,7 @@ export interface AtomicWriteCapability {
 interface PendingPointer {
   readonly as: string;
   readonly type: string;
+  readonly kind: string;
   readonly targetId: string;
 }
 
@@ -206,7 +207,12 @@ const createDraftNamespace = (
         // records.
         if (declaresField(def, key)) fields[key] = targets;
         for (const targetId of targets) {
-          pointers.push({ as: key, type: rel.type, targetId });
+          pointers.push({
+            as: key,
+            type: rel.type,
+            kind: kindForTarget(rel.target.name),
+            targetId,
+          });
         }
       } else {
         if (targets.length > 1) {
@@ -217,7 +223,12 @@ const createDraftNamespace = (
         const targetId = targets[0];
         handle[key] = targetId ?? null;
         if (targetId !== undefined) {
-          pointers.push({ as: key, type: rel.type, targetId });
+          pointers.push({
+            as: key,
+            type: rel.type,
+            kind: kindForTarget(rel.target.name),
+            targetId,
+          });
         }
       }
     }
@@ -270,6 +281,7 @@ const buildUpdates = (writes: readonly PendingWrite[], cap: AtomicWriteCapabilit
           targetId: pointer.targetId,
           field: pointer.as,
           type: pointer.type,
+          kind: pointer.kind,
           updateId: cap.generateUpdateId(),
         }),
       );
