@@ -7,9 +7,11 @@ import type { DirtyTracker } from "../types/dirty-tracker";
 import { applyUpdate } from "../internal/materialize";
 import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
 import {
-  relationshipEntryFor,
+  applyRelationshipEntry,
+  liveSourceIds,
+  relationshipIndexDelta,
   relationshipIndexKey,
-  sortSourceIds,
+  RELATIONSHIP_ENTITY_TYPE,
   type RelationshipEntry,
 } from "../internal/relationship-index";
 import type { EbbDBSchema } from "./schema";
@@ -25,8 +27,8 @@ import type { EbbDBSchema } from "./schema";
  *
  * The `relationships` object store mirrors the in-memory adapter's
  * reverse relationship index: one record per `(field, type, target_id)`
- * composite key holding the source ids that point through it. It is
- * rewritten alongside the entity store on every materialization.
+ * composite key mapping each live relationship row id to its source id.
+ * It is rewritten alongside the entity store on every materialization.
  *
  * ## Materialization Flow
  * 1. Caller invokes `append()` on ActionLog
@@ -60,47 +62,28 @@ export const createIndexedDBEntityStore = (
   const { emitter, emit } = createEntityChangeEmitter();
 
   /**
-   * Read-modify-write the reverse index around a single entity write.
-   * Removal is driven by the entity's previous entry so a patch that
-   * re-points a row or a tombstone that hides one leaves no stale
-   * source behind.
+   * Read-modify-write one index entry into the `relationships` store.
+   * A row is keyed by its id, so a tombstone or re-key drops only that
+   * row and leaves sibling rows on the same natural key intact.
    */
-  const applyRelationshipEntry = async (
-    entry: RelationshipEntry | null,
+  const writeRelationshipEntry = async (
+    entry: RelationshipEntry,
     present: boolean,
   ): Promise<void> => {
-    if (entry === null) return;
-
     const record = await db.get("relationships", entry.key);
-    const current = record?.source_ids ?? [];
+    const rows = applyRelationshipEntry(record?.rows, entry, present);
 
-    if (present) {
-      if (current.includes(entry.sourceId)) return;
-      await db.put("relationships", {
-        key: entry.key,
-        source_ids: [...current, entry.sourceId],
-      });
-      return;
-    }
-
-    const remaining = current.filter((id) => id !== entry.sourceId);
-    if (remaining.length === 0) await db.delete("relationships", entry.key);
-    else await db.put("relationships", { key: entry.key, source_ids: remaining });
+    if (rows === null) await db.delete("relationships", entry.key);
+    else await db.put("relationships", { key: entry.key, rows });
   };
 
   const updateRelationshipIndex = async (
     previous: Entity | undefined,
     next: Entity | undefined,
   ): Promise<void> => {
-    const previousEntry = previous === undefined ? null : relationshipEntryFor(previous);
-    const nextEntry = next === undefined ? null : relationshipEntryFor(next);
-
-    if (previousEntry?.key === nextEntry?.key && previousEntry?.sourceId === nextEntry?.sourceId) {
-      return;
-    }
-
-    await applyRelationshipEntry(previousEntry, false);
-    await applyRelationshipEntry(nextEntry, true);
+    const delta = relationshipIndexDelta(previous, next);
+    if (delta.remove !== null) await writeRelationshipEntry(delta.remove, false);
+    if (delta.add !== null) await writeRelationshipEntry(delta.add, true);
   };
 
   /**
@@ -168,14 +151,14 @@ export const createIndexedDBEntityStore = (
       type,
       targetId,
     }: RelationshipIndexQuery): Promise<readonly string[]> {
-      const dirtyIds = await dirtyTracker.getDirtyForType("relationship");
+      const dirtyIds = await dirtyTracker.getDirtyForType(RELATIONSHIP_ENTITY_TYPE);
 
       for (const id of dirtyIds) {
         await replay(id, true);
       }
 
       const record = await db.get("relationships", relationshipIndexKey(as, type, targetId));
-      return sortSourceIds(record?.source_ids ?? []);
+      return liveSourceIds(record?.rows);
     },
 
     async reset(): Promise<void> {

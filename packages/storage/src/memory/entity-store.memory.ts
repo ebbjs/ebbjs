@@ -6,9 +6,13 @@ import type { EntityChangeEmitter } from "../types/entity-change-emitter";
 import { applyUpdate } from "../internal/materialize";
 import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
 import {
-  relationshipEntryFor,
+  applyRelationshipEntry,
+  liveSourceIds,
+  relationshipIndexDelta,
   relationshipIndexKey,
-  sortSourceIds,
+  RELATIONSHIP_ENTITY_TYPE,
+  type RelationshipEntry,
+  type RelationshipRows,
 } from "../internal/relationship-index";
 
 /**
@@ -17,7 +21,7 @@ import {
  * ## State
  * - `entities` — Record<entityId, Entity> — O(1) entity lookup
  * - `typeIndex` — Record<type, Set<entityId>> — O(1) query by type
- * - `relationshipIndex` — Record<indexKey, Set<sourceId>> — O(1) reverse
+ * - `relationshipIndex` — Record<indexKey, rowId → sourceId> — O(1) reverse
  *   relationship lookup; indexKey is the `(field, type, target_id)` triple
  *
  * ## Materialization Flow
@@ -37,7 +41,7 @@ import {
 interface EntityStoreState {
   entities: Record<string, Entity>;
   typeIndex: Record<string, Set<string>>;
-  relationshipIndex: Record<string, Set<string>>;
+  relationshipIndex: Record<string, RelationshipRows>;
 }
 
 const copyEntity = (entity: Entity): Entity => JSON.parse(JSON.stringify(entity));
@@ -68,33 +72,35 @@ const updateTypeIndexOnSet = (
 };
 
 /**
- * Rebuild the relationship index around a single entity write.
- * Removal is driven by the entity's previous entry (derived from the
- * previous row) so a patch that re-points a row or a tombstone that
- * hides one leaves no stale source behind.
+ * Rebuild the relationship index around a single entity write. The
+ * delta comes from the previous and next versions of the row, so a
+ * patch that re-points or re-keys a row, or a tombstone that hides
+ * one, leaves no stale row behind.
  */
 const updateRelationshipIndex = (
-  index: Record<string, Set<string>>,
+  index: Readonly<Record<string, RelationshipRows>>,
   previous: Entity | undefined,
   next: Entity | undefined,
-): Record<string, Set<string>> => {
-  const previousEntry = previous === undefined ? null : relationshipEntryFor(previous);
-  const nextEntry = next === undefined ? null : relationshipEntryFor(next);
+): Record<string, RelationshipRows> => {
+  const delta = relationshipIndexDelta(previous, next);
+  if (delta.remove === null && delta.add === null) return index as Record<string, RelationshipRows>;
 
-  if (previousEntry?.key === nextEntry?.key && previousEntry?.sourceId === nextEntry?.sourceId) {
-    return index;
-  }
+  let out: Record<string, RelationshipRows> = { ...index };
 
-  const out = { ...index };
-  if (previousEntry !== null) {
-    const sources = new Set(out[previousEntry.key] ?? []);
-    sources.delete(previousEntry.sourceId);
-    if (sources.size === 0) delete out[previousEntry.key];
-    else out[previousEntry.key] = sources;
-  }
-  if (nextEntry !== null) {
-    out[nextEntry.key] = new Set(out[nextEntry.key] ?? []).add(nextEntry.sourceId);
-  }
+  const apply = (entry: RelationshipEntry, present: boolean): void => {
+    const rows = applyRelationshipEntry(out[entry.key], entry, present);
+    if (rows === null) {
+      const rest = { ...out };
+      delete rest[entry.key];
+      out = rest;
+    } else {
+      out = { ...out, [entry.key]: rows };
+    }
+  };
+
+  if (delta.remove !== null) apply(delta.remove, false);
+  if (delta.add !== null) apply(delta.add, true);
+
   return out;
 };
 
@@ -193,13 +199,13 @@ export const createMemoryEntityStore = (
       type,
       targetId,
     }: RelationshipIndexQuery): Promise<readonly string[]> {
-      const dirtyIds = await dirtyTracker.getDirtyForType("relationship");
+      const dirtyIds = await dirtyTracker.getDirtyForType(RELATIONSHIP_ENTITY_TYPE);
 
       for (const id of dirtyIds) {
         await replay(id, true);
       }
 
-      return sortSourceIds(state.relationshipIndex[relationshipIndexKey(as, type, targetId)] ?? []);
+      return liveSourceIds(state.relationshipIndex[relationshipIndexKey(as, type, targetId)]);
     },
 
     async reset(): Promise<void> {
