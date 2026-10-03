@@ -238,7 +238,7 @@ describe("client.atomic — one Action, forward references", () => {
     const calls = actionCalls(seen);
     expect(calls).toHaveLength(1);
     const updates = decodeActions(calls[0]!)[0]!.updates;
-    // 3 entity puts + 3 membership edges + 2 domain relationship puts.
+    // 3 entity puts + 3 entityGroup puts + 2 domain relationship puts.
     expect(updates).toHaveLength(8);
     const relTargets = updates
       .filter((u) => u.subject_type === "relationship")
@@ -257,7 +257,7 @@ describe("client.atomic — one Action, forward references", () => {
 
     expect(created.todo.list).toBe("list_existing");
     const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
-    // 1 entity put + 1 membership edge + 1 domain relationship put.
+    // 1 entity put + 1 entityGroup put + 1 domain relationship put.
     expect(updates).toHaveLength(3);
     const relUpdate = updates.find(
       (u) => u.subject_type === "relationship" && u.data?.fields?.["field"]?.value === "list",
@@ -294,7 +294,7 @@ describe("client.atomic — one Action, forward references", () => {
 
     expect(created.todo.tags).toEqual([created.a.id, created.b.id]);
     const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
-    // 3 entity puts + 3 membership edges + 2 domain relationship puts.
+    // 3 entity puts + 3 entityGroup puts + 2 domain relationship puts.
     expect(updates).toHaveLength(8);
     const todoUpdate = updates.find((u) => u.subject_type === "todo")!;
     expect(todoUpdate.data?.fields?.["tags"]?.value).toEqual([created.a.id, created.b.id]);

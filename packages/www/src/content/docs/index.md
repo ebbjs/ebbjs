@@ -122,7 +122,7 @@ client.todo.subscribe({ completed: false }, (snapshot) => {
 });
 
 // Writes POST /sync/actions directly. `groups` must be passed
-// explicitly; the SDK injects the membership edges.
+// explicitly; the SDK injects the membership rows.
 const { rejected } = await client.todo.create(
   { title: "Buy milk", completed: false },
   { groups: groups.map((group) => group.id) },

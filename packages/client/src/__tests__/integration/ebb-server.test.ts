@@ -902,7 +902,7 @@ describe("integration: client.<entity>.link / unlink", () => {
       expect(createResult.rejected).toEqual([]);
       const todoId = await findTodoByTitle(client, title);
 
-      // The canonical create() membership edge resolves through doc.groups.
+      // The canonical create() membership row resolves through doc.groups.
       const row = await client.todo.get(todoId);
       if (row === null) throw new Error("expected row");
       const membership = await row.groups.toRaw();

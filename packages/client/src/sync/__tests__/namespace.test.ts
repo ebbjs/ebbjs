@@ -1313,10 +1313,10 @@ describe("client.<entity>.create / update — runtime validation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Issue #244: canonical membership edges on create()
+// Issue #244: canonical entityGroup rows on create()
 // ---------------------------------------------------------------------------
 
-describe("client.<entity>.create — membership edges", () => {
+describe("client.<entity>.create — entityGroup rows", () => {
   interface RecordedRequest {
     readonly url: string;
     readonly body: Uint8Array | undefined;

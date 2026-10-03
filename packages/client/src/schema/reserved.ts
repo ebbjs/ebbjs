@@ -1,6 +1,6 @@
 /**
  * Names the SDK reserves for its system entities and the injected
- * membership relationship. `defineEntity` / `defineRelationship`
+ * membership accessor. `defineEntity` / `defineRelationship`
  * reject an app-authored collision at schema build time so the
  * canonical membership surface can't be shadowed.
  */
