@@ -69,13 +69,13 @@ describe("projectRows", () => {
 });
 
 describe("buildQueryBuilder — chain mutators", () => {
-  it("eq filters by field equality", async () => {
+  it("where filters by field equality", async () => {
     const rows = [
       mkEntity("1", { title: "a", completed: false }),
       mkEntity("2", { title: "b", completed: true }),
       mkEntity("3", { title: "c", completed: false }),
     ];
-    const out = await buildQueryBuilder(rows, todo.shape).eq("completed", false);
+    const out = await buildQueryBuilder(rows, todo.shape).where("completed", false);
     expect(out.map((r) => r.title)).toEqual(["a", "c"]);
   });
 
@@ -99,7 +99,7 @@ describe("buildQueryBuilder — chain mutators", () => {
     expect(out.map((r) => r.title)).toEqual(["a", "b"]);
   });
 
-  it("chains eq + orderBy + limit", async () => {
+  it("chains where + orderBy + limit", async () => {
     const rows = [
       mkEntity("1", { title: "a", completed: false }),
       mkEntity("2", { title: "b", completed: true }),
@@ -107,7 +107,7 @@ describe("buildQueryBuilder — chain mutators", () => {
       mkEntity("4", { title: "d", completed: true }),
     ];
     const out = await buildQueryBuilder(rows, todo.shape)
-      .eq("completed", true)
+      .where("completed", true)
       .orderBy("title", "desc")
       .limit(2);
     expect(out.map((r) => r.title)).toEqual(["d", "c"]);
@@ -119,8 +119,8 @@ describe("buildQueryBuilder — chain mutators", () => {
       mkEntity("2", { title: "b", completed: true }),
     ];
     const base = buildQueryBuilder(rows, todo.shape);
-    const a = base.eq("completed", true);
-    const b = base.eq("completed", false);
+    const a = base.where("completed", true);
+    const b = base.where("completed", false);
     expect((await a).map((r) => r.title)).toEqual(["b"]);
     expect((await b).map((r) => r.title)).toEqual(["a"]);
     expect((await base).map((r) => r.title).sort()).toEqual(["a", "b"]);
@@ -160,7 +160,7 @@ describe("buildQueryBuilder — thenable projection", () => {
 describe("buildQueryBuilder — .toRaw() escape hatch", () => {
   it("returns readonly Entity[] without projection", async () => {
     const rows = [mkEntity("1", { title: "a", completed: false })];
-    const out = await buildQueryBuilder(rows, todo.shape).eq("completed", false).toRaw();
+    const out = await buildQueryBuilder(rows, todo.shape).where("completed", false).toRaw();
     expect(out).toHaveLength(1);
     expect(out[0]?.id).toBe("1");
     expect(out[0]?.data?.fields?.title?.value).toBe("a");
@@ -171,7 +171,7 @@ describe("buildQueryBuilder — .toRaw() escape hatch", () => {
       mkEntity("1", { title: "a", completed: false }),
       mkEntity("2", { title: "b", completed: true }),
     ];
-    const out = await buildQueryBuilder(rows, todo.shape).eq("completed", false).toRaw();
+    const out = await buildQueryBuilder(rows, todo.shape).where("completed", false).toRaw();
     expect(out.map((e) => e.id)).toEqual(["1"]);
   });
 
@@ -185,37 +185,67 @@ describe("buildQueryBuilder — .toRaw() escape hatch", () => {
 });
 
 describe("buildQueryBuilder — value narrowing against the field map", () => {
-  it("eq's value narrows to the field's TypeBox static type", () => {
+  it("where's field value narrows to the field's TypeBox static type", () => {
     const rows: Entity[] = [];
     const builder = buildQueryBuilder(rows, todo.shape);
     // Title is e.string() → value is string.
-    builder.eq("title", "hello");
-    builder.eq("title", "world");
+    builder.where("title", "hello");
+    builder.where("title", "world");
     // Body is e.string().nullable() → value is string | null.
-    builder.eq("body", null);
-    builder.eq("body", "note");
+    builder.where("body", null);
+    builder.where("body", "note");
     // Completed is e.boolean() → value is boolean.
-    builder.eq("completed", false);
-    builder.eq("completed", true);
+    builder.where("completed", false);
+    builder.where("completed", true);
     expect(true).toBe(true);
   });
 
-  it("rejects a mismatched value type at compile time", () => {
+  it("the relationship overload accepts a pointer string on any key", () => {
     const rows: Entity[] = [];
     const builder = buildQueryBuilder(rows, todo.shape);
-    // @ts-expect-error — `completed` is e.boolean(); "not a boolean" is not assignable.
-    builder.eq("completed", "not a boolean");
-    // @ts-expect-error — `title` is e.string(); 42 is not assignable.
-    builder.eq("title", 42);
+    // The relationship overload's target is `PointerValue`, and a
+    // string is one — so this type-checks even though `completed` is
+    // boolean. The registry decides field vs. edge at runtime; this
+    // is the documented escape hatch of the overload pair.
+    builder.where("completed", "not a boolean");
+    expect(true).toBe(true);
+  });
+
+  it("rejects a value that is neither a field type nor a pointer", () => {
+    const rows: Entity[] = [];
+    const builder = buildQueryBuilder(rows, todo.shape);
+    // @ts-expect-error — 42 is neither `completed`'s boolean nor a PointerValue.
+    builder.where("completed", 42);
+    // @ts-expect-error — 42 is neither `title`'s string nor a PointerValue.
+    builder.where("title", 42);
+    // @ts-expect-error — an object without a string `.id` is not a PointerValue.
+    builder.where("title", { id: 42 });
     expect(true).toBe(true);
   });
 
   it("rejects an unknown field name at compile time", () => {
     const rows: Entity[] = [];
     const builder = buildQueryBuilder(rows, todo.shape);
-    // @ts-expect-error — `bogus` is not in the field map.
-    builder.eq("bogus", true);
-    expect(true).toBe(true);
+    expect(() => {
+      // @ts-expect-error — `bogus` is not in the field map and `true` is not a pointer.
+      builder.where("bogus", true);
+    }).toThrow(/not a field/);
+  });
+
+  it("throws on an unknown key at runtime", () => {
+    const rows: Entity[] = [];
+    const builder = buildQueryBuilder(rows, todo.shape);
+    // `bogus` is accepted by the relationship overload (any string
+    // key, string pointer) but no field or relationship declares it.
+    expect(() => builder.where("bogus", "x")).toThrow(/not a field/);
+  });
+
+  it(".eq is gone", () => {
+    const rows: Entity[] = [];
+    const builder = buildQueryBuilder(rows, todo.shape);
+    // @ts-expect-error — `.eq` was removed in #247; `.where` is the single predicate.
+    const legacy = builder.eq;
+    expect(legacy).toBeUndefined();
   });
 });
 
@@ -241,13 +271,13 @@ describe("buildQueryBuilder — .first()", () => {
       mkEntity("2", { title: "b", completed: true }),
       mkEntity("3", { title: "c", completed: false }),
     ];
-    const first = await buildQueryBuilder(rows, todo.shape).eq("completed", false).first();
+    const first = await buildQueryBuilder(rows, todo.shape).where("completed", false).first();
     expect(first?.title).toBe("a");
   });
 
   it("returns undefined when no rows match", async () => {
     const rows = [mkEntity("1", { title: "a", completed: true })];
-    const first = await buildQueryBuilder(rows, todo.shape).eq("completed", false).first();
+    const first = await buildQueryBuilder(rows, todo.shape).where("completed", false).first();
     expect(first).toBeUndefined();
   });
 
@@ -280,13 +310,13 @@ describe("buildQueryBuilder — .count()", () => {
       mkEntity("2", { title: "b", completed: true }),
       mkEntity("3", { title: "c", completed: false }),
     ];
-    const n = await buildQueryBuilder(rows, todo.shape).eq("completed", false).count();
+    const n = await buildQueryBuilder(rows, todo.shape).where("completed", false).count();
     expect(n).toBe(2);
   });
 
   it("returns 0 when no rows match", async () => {
     const rows = [mkEntity("1", { title: "a", completed: true })];
-    const n = await buildQueryBuilder(rows, todo.shape).eq("completed", false).count();
+    const n = await buildQueryBuilder(rows, todo.shape).where("completed", false).count();
     expect(n).toBe(0);
   });
 
@@ -312,13 +342,13 @@ describe("buildQueryBuilder — .exists()", () => {
       mkEntity("1", { title: "a", completed: false }),
       mkEntity("2", { title: "b", completed: true }),
     ];
-    const exists = await buildQueryBuilder(rows, todo.shape).eq("completed", false).exists();
+    const exists = await buildQueryBuilder(rows, todo.shape).where("completed", false).exists();
     expect(exists).toBe(true);
   });
 
   it("returns false when no rows match", async () => {
     const rows = [mkEntity("1", { title: "a", completed: true })];
-    const exists = await buildQueryBuilder(rows, todo.shape).eq("completed", false).exists();
+    const exists = await buildQueryBuilder(rows, todo.shape).where("completed", false).exists();
     expect(exists).toBe(false);
   });
 
@@ -342,7 +372,7 @@ describe("buildQueryBuilder — [Symbol.asyncIterator]", () => {
       mkEntity("3", { title: "c", completed: false }),
     ];
     const titles: string[] = [];
-    for await (const row of buildQueryBuilder(rows, todo.shape).eq("completed", false)) {
+    for await (const row of buildQueryBuilder(rows, todo.shape).where("completed", false)) {
       titles.push(row.title);
     }
     expect(titles).toEqual(["a", "c"]);
@@ -351,7 +381,7 @@ describe("buildQueryBuilder — [Symbol.asyncIterator]", () => {
   it("yields nothing when no rows match", async () => {
     const rows = [mkEntity("1", { title: "a", completed: true })];
     const out: Todo[] = [];
-    for await (const row of buildQueryBuilder(rows, todo.shape).eq("completed", false)) {
+    for await (const row of buildQueryBuilder(rows, todo.shape).where("completed", false)) {
       out.push(row);
     }
     expect(out).toEqual([]);
@@ -429,7 +459,7 @@ describe("buildLazyQueryBuilder", () => {
       return [mkEntity("1", { title: "a", completed: false })];
     };
     const { buildLazyQueryBuilder } = await import("../query-builder");
-    const builder = buildLazyQueryBuilder(loader, todo.shape).eq("completed", false);
+    const builder = buildLazyQueryBuilder(loader, todo.shape).where("completed", false);
     expect(calls).toBe(0);
     const out = await builder;
     expect(calls).toBe(1);
