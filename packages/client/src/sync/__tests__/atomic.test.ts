@@ -20,7 +20,8 @@ import { defineSchema } from "../../schema/schema";
 import type { Schema } from "../../schema/schema";
 import { defineAction, type ActionDef, type ActionWrite } from "../../schema/action";
 import { EntityValidationError } from "../../schema/entity-registry";
-import { AtomicResolutionError, resolveReferences } from "../atomic";
+import { AtomicActionError, AtomicResolutionError, resolveReferences } from "../atomic";
+import type { Rejection } from "../types";
 import { createClient } from "../client";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
@@ -35,8 +36,13 @@ interface RecordedRequest {
   readonly body: Uint8Array | undefined;
 }
 
+/** Per-action rejections the stub server should return from `POST /sync/actions`. */
+interface StubWriteOptions {
+  readonly rejected?: readonly Rejection[];
+}
+
 /** Stub `fetch` recording request bodies and accepting handshakes / writes. */
-const mkRecordingFetch = (seen: RecordedRequest[]): typeof fetch => {
+const mkRecordingFetch = (seen: RecordedRequest[], opts: StubWriteOptions = {}): typeof fetch => {
   return (async (url: string, init: RequestInit): Promise<Response> => {
     const body =
       init.body instanceof Uint8Array
@@ -63,7 +69,7 @@ const mkRecordingFetch = (seen: RecordedRequest[]): typeof fetch => {
       );
     }
     if (url.endsWith("/sync/actions")) {
-      return new Response(JSON.stringify({ rejected: [] }), {
+      return new Response(JSON.stringify({ rejected: opts.rejected ?? [] }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -85,6 +91,7 @@ const schema = defineSchema({
 
 const mkClient = <S extends AnySchema>(
   schemaOverride: S = schema as unknown as S,
+  writeOpts: StubWriteOptions = {},
 ): {
   client: ReturnType<typeof createClient<S>>;
   seen: RecordedRequest[];
@@ -94,7 +101,7 @@ const mkClient = <S extends AnySchema>(
     serverUrl: "http://localhost:4000",
     actorId: "actor_1",
     schema: schemaOverride,
-    fetchImpl: mkRecordingFetch(seen),
+    fetchImpl: mkRecordingFetch(seen, writeOpts),
   });
   return { client, seen };
 };
@@ -558,6 +565,175 @@ describe("client.atomic — ActionDef form", () => {
     const todoUpdate = updates.find((u) => u.subject_type === "todo")!;
     expect(todoUpdate.data?.fields?.["tags"]?.value).toEqual([created.label.id]);
     expect(updates.filter((u) => u.subject_type === "relationship")).toHaveLength(1);
+  });
+});
+
+describe("client.atomic — permission coherence (#233)", () => {
+  const group = defineEntity("group", { name: e.string() });
+  const coherentTodo = defineEntity("todo", { title: e.string() });
+  const coherentList = defineEntity("list", { name: e.string() });
+  // Membership is a `kind: "member"` edge to the `group` entity; the
+  // check reads the group set off those edges, not off the accessor
+  // name, so `memberOf` stands in for the injected `groups` edge #244
+  // will add.
+  const memberOf = defineRelationship({
+    source: coherentTodo,
+    target: group,
+    as: "memberOf",
+    sourceCardinality: "many",
+  });
+  const listMemberOf = defineRelationship({
+    source: coherentList,
+    target: group,
+    as: "memberOf",
+    sourceCardinality: "many",
+  });
+  const coherenceSchema = defineSchema({
+    entities: { todo: coherentTodo, list: coherentList, group },
+    relationships: { memberOf, listMemberOf },
+    version: 1,
+  });
+
+  it("accepts an Action whose writes all carry the same group set", async () => {
+    const { client, seen } = mkClient(coherenceSchema);
+    await client.handshake();
+
+    const created = await client.atomic(({ todo, list }) => {
+      const today = list.create({ name: "Today", memberOf: ["g_1"] });
+      return { todo: todo.create({ title: "Ship it", memberOf: ["g_1"] }), list: today };
+    });
+
+    expect(created.todo.memberOf).toEqual(["g_1"]);
+    const calls = actionCalls(seen);
+    expect(calls).toHaveLength(1);
+    const updates = decodeActions(calls[0]!)[0]!.updates;
+    expect(updates.filter((u) => u.subject_type === "relationship")).toHaveLength(2);
+    for (const rel of updates.filter((u) => u.subject_type === "relationship")) {
+      expect(rel.data?.fields?.["kind"]?.value).toBe("member");
+      expect(rel.data?.fields?.["target_id"]?.value).toBe("g_1");
+    }
+  });
+
+  it("accepts an Action whose writes share a multi-group membership set", async () => {
+    const { client, seen } = mkClient(coherenceSchema);
+    await client.handshake();
+
+    await client.atomic(({ todo, list }) => ({
+      todo: todo.create({ title: "Ship it", memberOf: ["g_2", "g_1"] }),
+      list: list.create({ name: "Today", memberOf: ["g_1", "g_2"] }),
+    }));
+
+    // Two member edges per write, in one Action.
+    const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
+    expect(updates.filter((u) => u.subject_type === "relationship")).toHaveLength(4);
+  });
+
+  it("refuses a cross-group Action before any write is submitted", async () => {
+    const { client, seen } = mkClient(coherenceSchema);
+    await client.handshake();
+    const requestsBefore = seen.length;
+
+    const error = await client
+      .atomic(({ todo, list }) => ({
+        list: list.create({ name: "Today", memberOf: ["g_1"] }),
+        todo: todo.create({ title: "Ship it", memberOf: ["g_2"] }),
+      }))
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(AtomicActionError);
+    expect(actionCalls(seen)).toHaveLength(0);
+    expect(seen.length).toBe(requestsBefore);
+  });
+
+  it("counts membership edges in the check and names every subject whose set differs", async () => {
+    const { client, seen } = mkClient(coherenceSchema);
+    await client.handshake();
+
+    let handles: Record<string, { id: string }> = {};
+    const error = (await client
+      .atomic(({ todo, list }) => {
+        handles = {
+          todo: todo.create({ title: "Ship it", memberOf: ["g_1"] }),
+          list: list.create({ name: "Today", memberOf: ["g_2"] }),
+        };
+        return handles;
+      })
+      .catch((err: unknown) => err)) as AtomicActionError;
+
+    expect(actionCalls(seen)).toHaveLength(0);
+    expect(error.rejections).toHaveLength(2);
+    expect(error.rejections.map((r) => r.id).sort()).toEqual(
+      [handles.todo!.id, handles.list!.id].sort(),
+    );
+    expect(error.rejections.map((r) => r.subjectType)).toEqual(["todo", "list"]);
+    for (const rejection of error.rejections) {
+      expect(rejection.reason).toBe("group_mismatch");
+      expect(rejection.details).toContain("g_1");
+      expect(rejection.details).toContain("g_2");
+    }
+    expect(error.message).toContain(handles.todo!.id);
+    expect(error.message).toContain(handles.list!.id);
+    expect(error.message.split("\n")).toHaveLength(3);
+  });
+
+  it("names a write whose membership is a strict subset of the Action's group set", async () => {
+    const { client, seen } = mkClient(coherenceSchema);
+    await client.handshake();
+
+    let handles: Record<string, { id: string }> = {};
+    const error = (await client
+      .atomic(({ todo, list }) => {
+        handles = {
+          todo: todo.create({ title: "Ship it", memberOf: ["g_1", "g_2"] }),
+          list: list.create({ name: "Today", memberOf: ["g_1"] }),
+        };
+        return handles;
+      })
+      .catch((err: unknown) => err)) as AtomicActionError;
+
+    expect(actionCalls(seen)).toHaveLength(0);
+    expect(error.rejections).toHaveLength(1);
+    expect(error.rejections[0]).toMatchObject({
+      id: handles.list!.id,
+      subjectType: "list",
+      reason: "group_mismatch",
+    });
+  });
+
+  it("refuses a cross-group ActionDef on the shared resolver path", async () => {
+    const { client, seen } = mkClient(coherenceSchema);
+    await client.handshake();
+
+    const crossGroup = defineAction({
+      writes: [coherentTodo, coherentList, memberOf, listMemberOf],
+      values: {
+        todo: { title: "Ship it", memberOf: ["g_2"] },
+        list: { name: "Today", memberOf: ["g_1"] },
+      },
+    });
+
+    await expect(client.atomic(crossGroup)).rejects.toBeInstanceOf(AtomicActionError);
+    expect(actionCalls(seen)).toHaveLength(0);
+  });
+
+  it("raises AtomicActionError populated from the server's rejected[]", async () => {
+    const rejection: Rejection = {
+      id: "act_1",
+      reason: "not_authorized",
+      details: "actor lacks todo.put in group g_1",
+    };
+    const { client, seen } = mkClient(coherenceSchema, { rejected: [rejection] });
+    await client.handshake();
+
+    const error = (await client
+      .atomic(({ todo }) => ({ todo: todo.create({ title: "Ship it", memberOf: ["g_1"] }) }))
+      .catch((err: unknown) => err)) as AtomicActionError;
+
+    expect(actionCalls(seen)).toHaveLength(1);
+    expect(error).toBeInstanceOf(AtomicActionError);
+    expect(error.rejections).toEqual([rejection]);
+    expect(error.message).toContain("not_authorized");
+    expect(error.message).toContain("actor lacks todo.put in group g_1");
   });
 });
 

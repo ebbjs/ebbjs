@@ -20,8 +20,19 @@
  * so a declaration and the equivalent callback compose the same
  * canonical Action content. A declaration creates auto-wired targets in
  * dependency order rather than `writes` order, so the emitted update
- * ordering can differ from a callback. The permission-coherence check is
- * #233.
+ * ordering can differ from a callback.
+ *
+ * ### Permission coherence (#233)
+ *
+ * #127 makes an Action fully visible or fully invisible to a client, so
+ * every write in one call must carry the identical group set. The check
+ * runs over the collected writes before submission, and the server's
+ * `rejected[]` becomes the same typed failure. A write's group set comes
+ * from its membership edges — pointers the resolver marked
+ * `kind: "member"` — because the create surface has no explicit `groups`
+ * argument yet. Once #244 lands `create(input, { groups })`, the
+ * explicit argument is the source of those same edges and the check
+ * reads them unchanged.
  */
 
 import { generateId, type Update } from "@ebbjs/core";
@@ -35,7 +46,7 @@ import type { RelationshipDef } from "../schema/relationship";
 import type { Schema } from "../schema/schema";
 import { buildRelationshipUpdate, kindForTarget, normalizePointer } from "./relationship";
 import { wrapFields, type EntityFields } from "./namespace";
-import type { WriteResponse } from "./types";
+import type { Rejection, WriteResponse } from "./types";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
@@ -356,6 +367,72 @@ const buildUpdates = (writes: readonly PendingWrite[], cap: AtomicWriteCapabilit
   return [...entityUpdates, ...relationshipUpdates];
 };
 
+/** Wire `kind` marking an entity↔Group membership edge (#127). */
+const MEMBERSHIP_KIND = "member";
+
+/** Membership group ids a pending write carries, sorted and deduplicated. */
+const membershipGroupsOf = (write: PendingWrite): readonly string[] =>
+  [
+    ...new Set(
+      write.pointers
+        .filter((pointer) => pointer.kind === MEMBERSHIP_KIND)
+        .map((pointer) => pointer.targetId),
+    ),
+  ].sort();
+
+const sameGroups = (a: readonly string[], b: readonly string[]): boolean =>
+  a.length === b.length && a.every((group, index) => group === b[index]);
+
+const formatGroups = (groups: readonly string[]): string => `[${groups.join(", ")}]`;
+
+/**
+ * #127's strict permission-coherence rule: every write in one Action
+ * must have the identical group set, because an Action is fully
+ * visible or fully invisible to a client. Refusing here keeps an
+ * incoherent batch out of the outbox entirely.
+ *
+ * A write's group set is the target ids of its membership edges
+ * (`kind: "member"`), so membership drags the edges into the check
+ * rather than sitting beside it. The Action's group set is the union
+ * of every write's edges, which is exactly the common set when the
+ * rule holds — order-independent, so a declaration and the equivalent
+ * callback refuse the same writes. Every write whose set differs from
+ * that union is reported, naming the subject and both group sets.
+ *
+ * Returns rejections instead of throwing so the caller owns the
+ * failure type. A write set with no membership edges at all is
+ * coherent by this rule; "an entity must belong to at least one
+ * group" is a separate precondition (#245).
+ */
+const permissionCoherenceRejections = (
+  writes: readonly PendingWrite[],
+): readonly AtomicRejection[] => {
+  const grouped = writes.map((write) => ({ write, groups: membershipGroupsOf(write) }));
+  const actionGroups = [...new Set(grouped.flatMap(({ groups }) => groups))].sort();
+  return grouped.flatMap(({ write, groups }) =>
+    sameGroups(groups, actionGroups)
+      ? []
+      : [
+          {
+            id: write.id,
+            subjectType: write.entity,
+            reason: "group_mismatch",
+            details: `belongs to group(s) ${formatGroups(groups)}; the Action writes to ${formatGroups(actionGroups)}`,
+          },
+        ],
+  );
+};
+
+/** Adapt the server's `rejected[]` (per-Action today) to the typed shape. */
+const serverRejections = (rejected: readonly Rejection[]): readonly AtomicRejection[] =>
+  rejected.map((rejection) => ({
+    id: rejection.id,
+    reason: rejection.reason,
+    ...(rejection.details === undefined || rejection.details === null
+      ? {}
+      : { details: rejection.details }),
+  }));
+
 /** True for an `ActionDef` write that names an entity type (has `name` / `shape`). */
 const isEntityWrite = (write: ActionWrite): write is AnyEntityDef =>
   typeof (write as { name?: unknown }).name === "string" &&
@@ -515,9 +592,16 @@ export function createAtomicRuntime<S extends Schema<Record<string, AnyEntityDef
           ? lowerActionDef(input, cap)
           : rejectAtomicInput(input);
     const result = build(drafts);
+    const rejections = permissionCoherenceRejections(writes);
+    if (rejections.length > 0) {
+      throw new AtomicActionError(rejections);
+    }
     const updates = buildUpdates(writes, cap);
     if (updates.length > 0) {
-      await cap.submitRelationshipUpdates(updates);
+      const response = await cap.submitRelationshipUpdates(updates);
+      if (response.rejected.length > 0) {
+        throw new AtomicActionError(serverRejections(response.rejected));
+      }
     }
     return result;
   };
