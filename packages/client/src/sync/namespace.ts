@@ -29,13 +29,13 @@ import {
   buildLazyQueryBuilder,
   projectEntity,
   type LoadEntities,
+  type PointerValue,
   type QueryBuilder,
 } from "./query-builder";
 import {
   forwardMany,
   forwardOne,
   type ManyPointerValue,
-  type PointerValue,
   reverse as reverseTraversal,
 } from "./relationship";
 
