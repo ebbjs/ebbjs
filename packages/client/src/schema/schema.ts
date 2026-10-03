@@ -11,7 +11,13 @@ import type { EntityDef } from "./entity";
 import { EntityRegistry } from "./entity-registry";
 import type { RelationshipDef } from "./relationship";
 import type { TSchema } from "@sinclair/typebox/type";
-import { relationshipSystemEntity } from "./system-entities";
+import { assertAccessorNameAvailable, assertEntityNameAvailable } from "./reserved";
+import {
+  entityGroupSystemEntity,
+  groupMemberSystemEntity,
+  groupSystemEntity,
+  relationshipSystemEntity,
+} from "./system-entities";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
@@ -74,27 +80,21 @@ export interface DefineSchemaInput<
  *
  * Entities are registered with `EntityRegistry.register` and
  * relationships with `EntityRegistry.registerRelationship`. The
- * `Relationship` system entity (carrying
- * `{source_id, target_id, type, field}`) is registered alongside
- * user entities so the public relationship-write path
- * (`link` / `unlink` / `setLinks`) can submit Relationship Updates.
- * The registry owns the cardinality / overwrite rules; this builder
- * delegates without adding its own.
+ * system entities (`relationship`, `group`, `groupMember`,
+ * `entityGroup`) are registered alongside user entities so the
+ * public relationship-write path (`link` / `unlink` / `setLinks`)
+ * can submit Relationship Updates and the membership write path can
+ * submit `entityGroup` Updates. Membership is a dedicated
+ * `entityGroup` row, not an injected relationship. The registry owns
+ * the cardinality / overwrite rules; this builder delegates without
+ * adding its own.
  */
 export function defineSchema<
   TEntities extends Record<string, AnyEntityDef>,
   TRelationships extends Record<string, AnyRelationshipDef> = Record<string, never>,
 >(input: DefineSchemaInput<TEntities, TRelationships>): Schema<TEntities, TRelationships> {
   const registry = new EntityRegistry();
-  registry.register(relationshipSystemEntity);
-  for (const entity of Object.values(input.entities)) {
-    registry.register(entity);
-  }
-  if (input.relationships !== undefined) {
-    for (const rel of Object.values(input.relationships)) {
-      registry.registerRelationship(rel);
-    }
-  }
+  seedRegistry(registry, input.entities, input.relationships);
   return Object.freeze({
     entities: input.entities,
     relationships: input.relationships,
@@ -102,4 +102,31 @@ export function defineSchema<
     minSupportedVersion: input.minSupportedVersion,
     _registry: registry,
   }) as Schema<TEntities, TRelationships>;
+}
+
+/**
+ * Register the system entities and the user entities/relationships
+ * onto `registry`. Shared by `defineSchema` and the per-client
+ * registry builder so the two can't drift. Rejects app-authored
+ * names that collide with the reserved system / membership names.
+ */
+export function seedRegistry(
+  registry: EntityRegistry,
+  entities: Record<string, AnyEntityDef>,
+  relationships: Record<string, AnyRelationshipDef> | undefined,
+): void {
+  registry.register(relationshipSystemEntity);
+  registry.register(groupSystemEntity);
+  registry.register(groupMemberSystemEntity);
+  registry.register(entityGroupSystemEntity);
+  for (const entity of Object.values(entities)) {
+    assertEntityNameAvailable(entity.name);
+    registry.register(entity);
+  }
+  if (relationships !== undefined) {
+    for (const rel of Object.values(relationships)) {
+      assertAccessorNameAvailable(rel.source.name, rel.as);
+      registry.registerRelationship(rel);
+    }
+  }
 }

@@ -49,7 +49,6 @@ import {
 import type { RelationshipDef } from "../schema/relationship";
 import {
   buildRelationshipUpdate,
-  kindForTarget,
   normalizeManyPointers,
   normalizePointer,
   resolveCardinality,
@@ -60,8 +59,7 @@ import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { createAtomicRuntime, type AtomicClient } from "./atomic";
 import { generateId } from "@ebbjs/core";
 import type { EntityDef } from "../schema/entity";
-import type { Schema } from "../schema/schema";
-import { relationshipSystemEntity } from "../schema/system-entities";
+import { seedRegistry, type Schema } from "../schema/schema";
 import type { TSchema } from "@sinclair/typebox/type";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
@@ -635,7 +633,6 @@ export class SyncClient {
         targetId,
         field: as,
         type: this.wireTypeFor(sourceName, as),
-        kind: kindForTarget(opts.target.name),
         updateId,
       });
       return { relationshipUpdate: relUpdate };
@@ -646,7 +643,6 @@ export class SyncClient {
     const sourceId = entityUpdate.subject_id;
     const targetIds = opts.targetIds;
     const wireType = this.wireTypeFor(sourceName, as);
-    const kind = kindForTarget(opts.target.name);
     const updates: Update[] = [];
     if (targetIds === undefined) {
       // No `targetIds` — emit the entity Update with no relationship
@@ -657,18 +653,18 @@ export class SyncClient {
     if ("replace" in targetIds) {
       const normalized = normalizeManyPointers(targetIds, `targetIds for "${as}"`);
       for (const targetId of normalized) {
-        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, kind, targetId));
+        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, targetId));
       }
     } else {
       for (const targetId of targetIds.add) {
         const id = normalizePointer(targetId, `targetIds.add for "${as}"`);
         if (id === null) continue;
-        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, kind, id));
+        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, id));
       }
       for (const targetId of targetIds.remove) {
         const id = normalizePointer(targetId, `targetIds.remove for "${as}"`);
         if (id === null) continue;
-        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, kind, id));
+        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, id));
       }
     }
     return { entityUpdate, relationshipUpdate: updates };
@@ -678,7 +674,6 @@ export class SyncClient {
     sourceId: string,
     as: string,
     wireType: string,
-    kind: string,
     targetId: string,
   ): Update {
     return buildRelationshipUpdate({
@@ -687,7 +682,6 @@ export class SyncClient {
       targetId,
       field: as,
       type: wireType,
-      kind,
       updateId: generateId("u"),
     });
   }
@@ -1051,15 +1045,7 @@ export class SyncClient {
 const buildRegistryFromSchema = (schema: AnySchema | undefined): EntityRegistry => {
   const registry = new EntityRegistry();
   if (schema === undefined) return registry;
-  registry.register(relationshipSystemEntity);
-  for (const entity of Object.values(schema.entities)) {
-    registry.register(entity);
-  }
-  if (schema.relationships !== undefined) {
-    for (const rel of Object.values(schema.relationships)) {
-      registry.registerRelationship(rel);
-    }
-  }
+  seedRegistry(registry, schema.entities, schema.relationships);
   return registry;
 };
 

@@ -14,7 +14,7 @@ import { createAction, createClock, encodeSync, localEvent } from "@ebbjs/core";
 
 export const DEMO_GROUP_ID = "grp_demo";
 export const DEMO_MEMBER_ID = "gm_demo";
-export const DEMO_RELATIONSHIP_ID = "rel_demo";
+export const DEMO_MEMBERSHIP_ID = "eg_demo";
 export const DEMO_DOC_ID = "doc_demo";
 
 /**
@@ -25,12 +25,12 @@ export const DEMO_DOC_ID = "doc_demo";
  */
 export function deriveSeedIds(groupId: string): {
   memberId: string;
-  relationshipId: string;
+  membershipId: string;
   docId: string;
 } {
   return {
     memberId: `gm_${groupId}`,
-    relationshipId: `rel_${groupId}`,
+    membershipId: `eg_${groupId}`,
     docId: `doc_${groupId}`,
   };
 }
@@ -58,11 +58,16 @@ export interface SeedData {
     type: string;
     field: string;
   }>;
+  entityGroups?: ReadonlyArray<{
+    id: string;
+    entityId: string;
+    groupId: string;
+  }>;
 }
 
 /** Build the seed payload for the demo: one group, one member, one empty doc. */
 export function buildDemoSeed(groupId: string = DEMO_GROUP_ID): SeedData {
-  const { memberId, relationshipId, docId } = deriveSeedIds(groupId);
+  const { memberId, membershipId, docId } = deriveSeedIds(groupId);
 
   return {
     groups: [{ id: groupId, name: "Demo Group" }],
@@ -82,13 +87,11 @@ export function buildDemoSeed(groupId: string = DEMO_GROUP_ID): SeedData {
         patches: [{ fields: {} }], // empty document
       },
     ],
-    relationships: [
+    entityGroups: [
       {
-        id: relationshipId,
-        sourceId: docId,
-        targetId: groupId,
-        type: "text_document",
-        field: "ownedBy",
+        id: membershipId,
+        entityId: docId,
+        groupId,
       },
     ],
   };
@@ -149,18 +152,23 @@ function buildSeedAction(actorId: string, data: SeedData) {
     });
   }
 
-  for (const rel of data.relationships ?? []) {
+  for (const membership of data.entityGroups ?? []) {
     updates.push({
-      subject_id: rel.id,
-      subject_type: "relationship",
+      subject_id: membership.id,
+      subject_type: "entityGroup",
       method: "put" as const,
       data: {
         fields: {
-          source_id: { value: rel.sourceId, update_id: "seed_update", hlc: localEvent(clock) },
-          target_id: { value: rel.targetId, update_id: "seed_update", hlc: localEvent(clock) },
-          type: { value: rel.type, update_id: "seed_update", hlc: localEvent(clock) },
-          field: { value: rel.field, update_id: "seed_update", hlc: localEvent(clock) },
-          kind: { value: "member", update_id: "seed_update", hlc: localEvent(clock) },
+          entity_id: {
+            value: membership.entityId,
+            update_id: "seed_update",
+            hlc: localEvent(clock),
+          },
+          group_id: {
+            value: membership.groupId,
+            update_id: "seed_update",
+            hlc: localEvent(clock),
+          },
         },
       },
     });

@@ -105,13 +105,16 @@ const decodeActions = (request: RecordedRequest): readonly Action[] =>
   decodeSync<{ actions: Action[] }>(request.body!).actions;
 
 describe("client.atomic — one Action, forward references", () => {
-  it("emits exactly one POST with an entity Update per create and a Relationship Update per pointer", async () => {
+  /** Membership option every `create` in this block carries (#244). */
+  const groups = { groups: ["g_1"] } as const;
+
+  it("emits exactly one POST with an entity Update per create and an entityGroup row per group", async () => {
     const { client, seen } = mkClient();
     await client.handshake();
 
     const created = await client.atomic(({ todo, list }) => {
-      const today = list.create({ name: "Today" });
-      const item = todo.create({ title: "Ship it", list: today });
+      const today = list.create({ name: "Today" }, groups);
+      const item = todo.create({ title: "Ship it", list: today }, groups);
       return { todo: item, list: today };
     });
 
@@ -120,12 +123,17 @@ describe("client.atomic — one Action, forward references", () => {
     const actions = decodeActions(calls[0]!);
     expect(actions).toHaveLength(1);
     const updates = actions[0]!.updates;
-    // 2 entity puts + 1 relationship put.
-    expect(updates).toHaveLength(3);
+    // 2 entity puts + 2 membership rows + 1 domain relationship put.
+    expect(updates).toHaveLength(5);
 
     const todoUpdate = updates.find((u) => u.subject_type === "todo")!;
     const listUpdate = updates.find((u) => u.subject_type === "list")!;
-    const relUpdate = updates.find((u) => u.subject_type === "relationship")!;
+
+    const domainRel = updates.find(
+      (u) => u.subject_type === "relationship" && u.data?.fields?.["field"]?.value === "list",
+    )!;
+    const membershipRows = updates.filter((u) => u.subject_type === "entityGroup");
+    expect(membershipRows).toHaveLength(2);
 
     expect(todoUpdate.method).toBe("put");
     expect(todoUpdate.subject_id).toBe(created.todo.id);
@@ -136,11 +144,53 @@ describe("client.atomic — one Action, forward references", () => {
     expect(listUpdate.subject_id).toBe(created.list.id);
     expect(listUpdate.data?.fields?.["name"]?.value).toBe("Today");
 
-    expect(relUpdate.method).toBe("put");
-    expect(relUpdate.data?.fields?.["source_id"]?.value).toBe(created.todo.id);
-    expect(relUpdate.data?.fields?.["target_id"]?.value).toBe(created.list.id);
-    expect(relUpdate.data?.fields?.["field"]?.value).toBe("list");
-    expect(relUpdate.data?.fields?.["type"]?.value).toBe("todo");
+    expect(domainRel.method).toBe("put");
+    expect(domainRel.data?.fields?.["source_id"]?.value).toBe(created.todo.id);
+    expect(domainRel.data?.fields?.["target_id"]?.value).toBe(created.list.id);
+    expect(domainRel.data?.fields?.["type"]?.value).toBe("todo");
+
+    for (const row of membershipRows) {
+      expect(row.method).toBe("put");
+      expect(row.data?.fields?.["group_id"]?.value).toBe("g_1");
+    }
+    const membershipEntities = membershipRows
+      .map((r) => r.data?.fields?.["entity_id"]?.value)
+      .sort();
+    expect(membershipEntities).toEqual([created.list.id, created.todo.id].sort());
+  });
+
+  it("emits one entityGroup row per group into the same Action", async () => {
+    const { client, seen } = mkClient();
+    await client.handshake();
+
+    const created = await client.atomic(({ todo }) =>
+      todo.create({ title: "Ship" }, { groups: ["g_1", "g_2"] }),
+    );
+
+    const actions = actionCalls(seen);
+    expect(actions).toHaveLength(1);
+    const membershipRows = decodeActions(actions[0]!)[0]!.updates.filter(
+      (u) => u.subject_type === "entityGroup",
+    );
+    expect(membershipRows).toHaveLength(2);
+    for (const row of membershipRows) {
+      expect(row.data?.fields?.["entity_id"]?.value).toBe(created.id);
+    }
+    expect(membershipRows.map((r) => r.data?.fields?.["group_id"]?.value).sort()).toEqual([
+      "g_1",
+      "g_2",
+    ]);
+  });
+
+  it("rejects a missing groups option before any network call", async () => {
+    const { client, seen } = mkClient();
+    await client.handshake();
+    const before = seen.length;
+
+    await expect(
+      client.atomic(({ todo }) => todo.create({ title: "Ship" }, undefined as never)),
+    ).rejects.toBeInstanceOf(EntityValidationError);
+    expect(seen.length).toBe(before);
   });
 
   it("returns handles with ids and materialized fields, substituting refs with generated ids", async () => {
@@ -148,8 +198,8 @@ describe("client.atomic — one Action, forward references", () => {
     await client.handshake();
 
     const created = await client.atomic(({ todo, list }) => {
-      const today = list.create({ name: "Today" });
-      return { todo: todo.create({ title: "Ship it", list: today }), list: today };
+      const today = list.create({ name: "Today" }, groups);
+      return { todo: todo.create({ title: "Ship it", list: today }, groups), list: today };
     });
 
     expect(created.list.id).toMatch(/^e_[a-z0-9]+$/);
@@ -176,9 +226,9 @@ describe("client.atomic — one Action, forward references", () => {
     await client.handshake();
 
     const created = await client.atomic(({ a, b, c }) => {
-      const aHandle = a.create({ name: "a" });
-      const bHandle = b.create({ label: "b", a: aHandle });
-      const cHandle = c.create({ tag: "c", b: bHandle });
+      const aHandle = a.create({ name: "a" }, groups);
+      const bHandle = b.create({ label: "b", a: aHandle }, groups);
+      const cHandle = c.create({ tag: "c", b: bHandle }, groups);
       return { a: aHandle, b: bHandle, c: cHandle };
     });
 
@@ -188,8 +238,8 @@ describe("client.atomic — one Action, forward references", () => {
     const calls = actionCalls(seen);
     expect(calls).toHaveLength(1);
     const updates = decodeActions(calls[0]!)[0]!.updates;
-    // 3 entity puts + 2 relationship puts.
-    expect(updates).toHaveLength(5);
+    // 3 entity puts + 3 membership edges + 2 domain relationship puts.
+    expect(updates).toHaveLength(8);
     const relTargets = updates
       .filter((u) => u.subject_type === "relationship")
       .map((u) => u.data?.fields?.["target_id"]?.value);
@@ -202,13 +252,16 @@ describe("client.atomic — one Action, forward references", () => {
     await client.handshake();
 
     const created = await client.atomic(({ todo }) => ({
-      todo: todo.create({ title: "Existing list", list: "list_existing" }),
+      todo: todo.create({ title: "Existing list", list: "list_existing" }, groups),
     }));
 
     expect(created.todo.list).toBe("list_existing");
     const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
-    expect(updates).toHaveLength(2);
-    const relUpdate = updates.find((u) => u.subject_type === "relationship")!;
+    // 1 entity put + 1 membership edge + 1 domain relationship put.
+    expect(updates).toHaveLength(3);
+    const relUpdate = updates.find(
+      (u) => u.subject_type === "relationship" && u.data?.fields?.["field"]?.value === "list",
+    )!;
     expect(relUpdate.data?.fields?.["target_id"]?.value).toBe("list_existing");
   });
 
@@ -234,15 +287,15 @@ describe("client.atomic — one Action, forward references", () => {
     await client.handshake();
 
     const created = await client.atomic(({ todo, label }) => {
-      const a = label.create({ name: "a" });
-      const b = label.create({ name: "b" });
-      return { todo: todo.create({ title: "Tagged", tags: [a, b] }), a, b };
+      const a = label.create({ name: "a" }, groups);
+      const b = label.create({ name: "b" }, groups);
+      return { todo: todo.create({ title: "Tagged", tags: [a, b] }, groups), a, b };
     });
 
     expect(created.todo.tags).toEqual([created.a.id, created.b.id]);
     const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
-    // 3 entity puts + 2 relationship puts.
-    expect(updates).toHaveLength(5);
+    // 3 entity puts + 3 membership edges + 2 domain relationship puts.
+    expect(updates).toHaveLength(8);
     const todoUpdate = updates.find((u) => u.subject_type === "todo")!;
     expect(todoUpdate.data?.fields?.["tags"]?.value).toEqual([created.a.id, created.b.id]);
   });
@@ -253,9 +306,9 @@ describe("client.atomic — one Action, forward references", () => {
 
     await expect(
       client.atomic(({ todo, list }) => {
-        const a = list.create({ name: "a" });
-        const b = list.create({ name: "b" });
-        return { todo: todo.create({ title: "Ship", list: [a, b] }) };
+        const a = list.create({ name: "a" }, groups);
+        const b = list.create({ name: "b" }, groups);
+        return { todo: todo.create({ title: "Ship", list: [a, b] }, groups) };
       }),
     ).rejects.toBeInstanceOf(AtomicResolutionError);
   });
@@ -265,12 +318,14 @@ describe("client.atomic — one Action, forward references", () => {
     await client.handshake();
 
     await client.atomic(({ todo, list }) => {
-      list.create({ name: "Orphan" });
-      return { todo: todo.create({ title: "Returned" }) };
+      list.create({ name: "Orphan" }, groups);
+      return { todo: todo.create({ title: "Returned" }, groups) };
     });
 
     const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
-    const entityUpdates = updates.filter((u) => u.subject_type !== "relationship");
+    const entityUpdates = updates.filter(
+      (u) => u.subject_type !== "relationship" && u.subject_type !== "entityGroup",
+    );
     expect(entityUpdates).toHaveLength(2);
   });
 
@@ -281,52 +336,11 @@ describe("client.atomic — one Action, forward references", () => {
 
     await expect(
       client.atomic(({ todo }) => ({
-        todo: todo.create({ title: "Ship", bogus: 1 } as never),
+        todo: todo.create({ title: "Ship", bogus: 1 } as never, groups),
       })),
     ).rejects.toBeInstanceOf(EntityValidationError);
 
     expect(seen.length).toBe(before);
-  });
-
-  it("tags a `group` target as kind=member and every other target as kind=link", async () => {
-    const group = defineEntity("group", { name: e.string() });
-    const kindSchema = defineSchema({
-      entities: { todo, group, list },
-      relationships: {
-        todo_ownedBy: defineRelationship({
-          source: todo,
-          target: group,
-          as: "ownedBy",
-          sourceCardinality: "many",
-        }),
-        todo_list: defineRelationship({
-          source: todo,
-          target: list,
-          as: "list",
-          sourceCardinality: "many",
-        }),
-      },
-      version: 1,
-    });
-    const { client, seen } = mkClient(kindSchema);
-    await client.handshake();
-
-    const created = await client.atomic(({ todo, group, list }) => {
-      const team = group.create({ name: "Team" });
-      const today = list.create({ name: "Today" });
-      return { todo: todo.create({ title: "Ship", ownedBy: team, list: today }), team, today };
-    });
-
-    const relUpdates = decodeActions(actionCalls(seen)[0]!)[0]!.updates.filter(
-      (u) => u.subject_type === "relationship",
-    );
-    const memberUpdate = relUpdates.find((u) => u.data?.fields?.["field"]?.value === "ownedBy")!;
-    expect(memberUpdate.data?.fields?.["kind"]?.value).toBe("member");
-    expect(memberUpdate.data?.fields?.["target_id"]?.value).toBe(created.team.id);
-
-    const linkUpdate = relUpdates.find((u) => u.data?.fields?.["field"]?.value === "list")!;
-    expect(linkUpdate.data?.fields?.["kind"]?.value).toBe("link");
-    expect(linkUpdate.data?.fields?.["target_id"]?.value).toBe(created.today.id);
   });
 });
 

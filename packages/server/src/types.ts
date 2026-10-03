@@ -40,8 +40,13 @@ export interface RelationshipSeed {
   targetId: string;
   type: string;
   field: string;
-  /** `"member"` (default) for a group membership edge, `"link"` for a domain edge. */
-  kind?: string;
+}
+
+/** One entity↔Group membership row, submitted as an `entityGroup` put. */
+export interface EntityGroupSeed {
+  id: string;
+  entityId: string;
+  groupId: string;
 }
 
 export interface SeedData {
@@ -49,6 +54,7 @@ export interface SeedData {
   groupMembers: GroupMemberSeed[];
   entities: EntitySeed[];
   relationships?: RelationshipSeed[];
+  entityGroups?: EntityGroupSeed[];
   baseHlc?: number;
 }
 

@@ -11,13 +11,12 @@ export function buildSingleEntitySeed(): SeedData {
         permissions: ["read", "write"],
       },
     ],
-    relationships: [
+    relationships: [],
+    entityGroups: [
       {
-        id: "rel_001",
-        sourceId: "ent_001",
-        targetId: "grp_001",
-        type: "todo",
-        field: "ownedBy",
+        id: "eg_001",
+        entityId: "ent_001",
+        groupId: "grp_001",
       },
     ],
   };

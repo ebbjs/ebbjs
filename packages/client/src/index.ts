@@ -27,6 +27,7 @@ export {
   AtomicResolutionError,
   type AtomicClient,
   type AtomicCreateInput,
+  type AtomicCreateOptions,
   type AtomicDraftNamespace,
   type AtomicDrafts,
   type CreatedEntity,
@@ -48,7 +49,11 @@ export {
   type EntityRow,
   type EntitySnapshot,
   type EntityWithAccessors,
+  type MembershipAccessors,
   type RowAccessor,
+  type CreateOptions,
+  type EntityWriteOptions,
+  type GroupRef,
   createEntityNamespace,
   buildEntityNamespaces,
 } from "./sync/namespace";
@@ -164,3 +169,19 @@ export {
 } from "./schema/entity-registry";
 
 export { defineSchema, type DefineSchemaInput, type Schema } from "./schema/schema";
+
+export {
+  ReservedNameError,
+  RESERVED_ENTITY_NAMES,
+  RESERVED_MEMBERSHIP_NAMES,
+} from "./schema/reserved";
+
+export {
+  relationshipSystemEntity,
+  groupSystemEntity,
+  groupMemberSystemEntity,
+  entityGroupSystemEntity,
+  GROUPS_ACCESSOR,
+  type GroupFields,
+  type EntityGroupFields,
+} from "./schema/system-entities";

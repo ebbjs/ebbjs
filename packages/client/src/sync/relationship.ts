@@ -8,7 +8,7 @@
  * SDK-internal so the traversal has one entry point.
  */
 
-import type { Entity } from "@ebbjs/core";
+import { generateId, type Entity } from "@ebbjs/core";
 import type { TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { EntityRegistry } from "../schema/entity-registry";
@@ -257,6 +257,32 @@ export function forwardMany<TFields extends Record<string, TSchema>>(
 }
 
 /**
+ * Build the built-in membership accessor result: the `group` rows
+ * whose ids appear as `group_id` on `entityGroup` rows whose
+ * `entity_id` is `sourceId`. Reads the local cache, same lazy shape
+ * as {@link forwardMany}.
+ */
+export function membershipGroups<TFields extends Record<string, TSchema>>(
+  queryEntitiesByType: (type: string) => Promise<readonly Entity[]>,
+  sourceId: string,
+  targetName: string,
+  targetShape: TObject<TFields>,
+): QueryBuilder<TFields> {
+  const loader: LoadEntities = async () => {
+    const memberships = await queryEntitiesByType("entityGroup");
+    const ids = memberships
+      .filter((m) => m.deleted_hlc === null)
+      .filter((m) => m.data?.fields?.["entity_id"]?.value === sourceId)
+      .map((m) => m.data?.fields?.["group_id"]?.value)
+      .filter((v): v is string => typeof v === "string");
+    const idSet = new Set(ids);
+    const allTargets = await queryEntitiesByType(targetName);
+    return allTargets.filter((t) => idSet.has(t.id));
+  };
+  return buildLazyQueryBuilder(loader, targetShape);
+}
+
+/**
  * Build a reverse accessor result. We scan the cache for `Relationship`
  * entities with `target_id === targetId` and the matching `field`/`type`,
  * then load each `source_id`.
@@ -311,17 +337,9 @@ export function resolveCardinality(
 }
 
 /**
- * Membership is an edge to the `group` system entity; every other edge
- * is a domain link. The server identifies membership by the wire
- * `kind`, so the client marks it at write time.
- */
-export const kindForTarget = (targetName: string): string =>
-  targetName === "group" ? "member" : "link";
-
-/**
  * Build the wire-level `Relationship` Update for a single link.
  * Returns `method: "delete"` when the target is null; otherwise
- * `method: "put"` with the five standard fields.
+ * `method: "put"` with the four standard fields.
  */
 export function buildRelationshipUpdate(args: {
   relationshipId: string;
@@ -329,7 +347,6 @@ export function buildRelationshipUpdate(args: {
   targetId: string | null;
   field: string;
   type: string;
-  kind: string;
   updateId: string;
 }): import("@ebbjs/core").Update {
   if (args.targetId === null) {
@@ -352,10 +369,53 @@ export function buildRelationshipUpdate(args: {
         target_id: { value: args.targetId, update_id: args.updateId },
         type: { value: args.type, update_id: args.updateId },
         field: { value: args.field, update_id: args.updateId },
-        kind: { value: args.kind, update_id: args.updateId },
       },
     },
   };
+}
+
+/**
+ * Build a `put` Update for an `entityGroup` membership row, scoping
+ * `entityId` to `groupId`. One row per (entity, group).
+ */
+export function buildEntityGroupUpdate(args: {
+  membershipId: string;
+  entityId: string;
+  groupId: string;
+  updateId: string;
+}): import("@ebbjs/core").Update {
+  return {
+    id: args.updateId,
+    subject_id: args.membershipId,
+    subject_type: "entityGroup",
+    method: "put",
+    data: {
+      fields: {
+        entity_id: { value: args.entityId, update_id: args.updateId },
+        group_id: { value: args.groupId, update_id: args.updateId },
+      },
+    },
+  };
+}
+
+/**
+ * Build one `entityGroup` `put` Update per group. Shared by the
+ * entity namespace's `create` and the atomic resolver's `buildUpdates`
+ * so membership emission has one definition.
+ */
+export function buildEntityGroupUpdates(
+  entityId: string,
+  groupIds: readonly string[],
+  generateUpdateId: () => string,
+): import("@ebbjs/core").Update[] {
+  return groupIds.map((groupId) =>
+    buildEntityGroupUpdate({
+      membershipId: generateId("eg"),
+      entityId,
+      groupId,
+      updateId: generateUpdateId(),
+    }),
+  );
 }
 
 /**

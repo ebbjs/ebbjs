@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { defineEntity, e } from "./entity";
 import { defineRelationship, type RelationshipDef } from "./relationship";
+import { ReservedNameError } from "./reserved";
 import { EntityRegistry, EntityValidationError } from "./entity-registry";
 import {
   buildRelationshipUpdate,
@@ -45,6 +46,15 @@ describe("defineRelationship", () => {
       type: "todo.belongsTo.list",
     });
     expect(rel.type).toBe("todo.belongsTo.list");
+  });
+
+  it("rejects the injected groups accessor name", () => {
+    expect(() => defineRelationship({ source: todo, target: list, as: "groups" })).toThrow(
+      ReservedNameError,
+    );
+    expect(() => defineRelationship({ source: todo, target: list, as: "groups" })).toThrow(
+      /reserved/,
+    );
   });
 
   it("flows S and T into RelationshipDef<S, T> via inference", () => {
@@ -194,14 +204,13 @@ describe("normalizeManyPointers", () => {
 });
 
 describe("buildRelationshipUpdate", () => {
-  it("produces a put Update with source_id, target_id, type, field, kind", () => {
+  it("produces a put Update with source_id, target_id, type, field", () => {
     const u = buildRelationshipUpdate({
       relationshipId: "rel_1",
       sourceId: "todo_1",
       targetId: "list_1",
       field: "list",
       type: "todo",
-      kind: "link",
       updateId: "u_1",
     });
     expect(u.id).toBe("u_1");
@@ -212,7 +221,6 @@ describe("buildRelationshipUpdate", () => {
     expect(u.data?.fields.target_id.value).toBe("list_1");
     expect(u.data?.fields.type.value).toBe("todo");
     expect(u.data?.fields.field.value).toBe("list");
-    expect(u.data?.fields.kind.value).toBe("link");
   });
 
   it("produces a delete Update when targetId is null", () => {
@@ -222,7 +230,6 @@ describe("buildRelationshipUpdate", () => {
       targetId: null,
       field: "list",
       type: "todo",
-      kind: "link",
       updateId: "u_1",
     });
     expect(u.method).toBe("delete");

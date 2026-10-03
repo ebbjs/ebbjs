@@ -8,7 +8,13 @@ import { makeHlc, type Action } from "@ebbjs/core";
 import { defineEntity, e } from "./entity";
 import { EntityRegistry, EntityValidationError } from "./entity-registry";
 import { defineRelationship } from "./relationship";
+import { ReservedNameError } from "./reserved";
 import { defineSchema, type Schema } from "./schema";
+import {
+  entityGroupSystemEntity,
+  groupMemberSystemEntity,
+  groupSystemEntity,
+} from "./system-entities";
 
 const todo = defineEntity("todo", {
   title: e.string(),
@@ -19,7 +25,7 @@ const user = defineEntity("user", {
   name: e.string(),
 });
 
-const group = defineEntity("group", { name: e.string() });
+const group = groupSystemEntity;
 
 const todo_ownedBy = defineRelationship({
   source: todo,
@@ -68,7 +74,7 @@ describe("defineSchema", () => {
 
   it("registers every relationship on the composed registry", () => {
     const schema = defineSchema({
-      entities: { todo, group },
+      entities: { todo },
       relationships: relationshipsFixture,
       version: 1,
     });
@@ -226,6 +232,48 @@ describe("defineSchema", () => {
   });
 });
 
+describe("defineSchema system entities + membership", () => {
+  it("registers the system entities alongside user entities", () => {
+    const schema = defineSchema({ entities: { todo }, version: 1 });
+    expect(schema._registry.has("relationship")).toBe(true);
+    expect(schema._registry.has("group")).toBe(true);
+    expect(schema._registry.has("groupMember")).toBe(true);
+    expect(schema._registry.has("entityGroup")).toBe(true);
+    expect(schema._registry.get("group")).toBe(groupSystemEntity);
+    expect(schema._registry.get("groupMember")).toBe(groupMemberSystemEntity);
+    expect(schema._registry.get("entityGroup")).toBe(entityGroupSystemEntity);
+  });
+
+  it("does not inject a groups relationship for user entities", () => {
+    const schema = defineSchema({ entities: { todo, user }, version: 1 });
+    for (const name of ["todo", "user"] as const) {
+      expect(schema._registry.getRelationship(name, "groups")).toBeUndefined();
+    }
+  });
+
+  it("rejects an app entity that collides with a system entity name", () => {
+    expect(() => defineSchema({ entities: { group: groupSystemEntity }, version: 1 })).toThrow(
+      ReservedNameError,
+    );
+    expect(() =>
+      defineSchema({ entities: { entityGroup: entityGroupSystemEntity }, version: 1 }),
+    ).toThrow(ReservedNameError);
+  });
+
+  it("rejects an app relationship that collides with the groups accessor", () => {
+    const colliding = {
+      source: todo,
+      target: groupSystemEntity,
+      as: "groups",
+      sourceCardinality: "many" as const,
+      type: "todo",
+    };
+    expect(() =>
+      defineSchema({ entities: { todo }, relationships: { bad: colliding }, version: 1 }),
+    ).toThrow(ReservedNameError);
+  });
+});
+
 describe("defineSchema TypeBox shape axis", () => {
   it("exposes the implicit Type.Object wrapper as schema.entities.X.shape", () => {
     const schema = defineSchema({
@@ -258,12 +306,12 @@ describe("defineSchema TypeBox shape axis", () => {
 
   it("threads the shape and fields axes independently across multiple entities", () => {
     const schema = defineSchema({
-      entities: { todo, user, group },
+      entities: { todo, user },
       version: 1,
     });
-    for (const entity of [todo, user, group]) {
-      expect(schema.entities[entity.name as "todo" | "user" | "group"].shape).toBe(entity.shape);
-      expect(schema.entities[entity.name as "todo" | "user" | "group"].fields).toBe(entity.fields);
+    for (const entity of [todo, user]) {
+      expect(schema.entities[entity.name as "todo" | "user"].shape).toBe(entity.shape);
+      expect(schema.entities[entity.name as "todo" | "user"].fields).toBe(entity.fields);
     }
   });
 

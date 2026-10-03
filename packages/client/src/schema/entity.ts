@@ -11,6 +11,8 @@
 import { Type } from "@sinclair/typebox";
 import type { TSchema, TOptional, TUnion, TNull } from "@sinclair/typebox/type";
 
+import { assertEntityNameAvailable, assertFieldNamesAvailable } from "./reserved";
+
 /** Merge-semantics marker. Marker and shape are independent axes. */
 // Future counter / causal-tree markers extend this union in their own issues.
 export type FieldMarker = { type: "lww" };
@@ -115,8 +117,26 @@ export interface EntityDef<TFields extends Record<string, TSchema>, TName extend
   readonly fields: { [K in keyof TFields]: FieldMarker };
 }
 
-/** Define an entity by name and field map. The result is frozen. */
+/**
+ * Define an entity by name and field map. The result is frozen.
+ * Throws {@link ReservedNameError} when the name is a system entity
+ * or the field map declares the injected `groups` accessor.
+ */
 export function defineEntity<TFields extends Record<string, TSchema>, TName extends string>(
+  name: TName,
+  fields: TFields,
+): EntityDef<TFields, TName> {
+  assertEntityNameAvailable(name);
+  assertFieldNamesAvailable(name, fields);
+  return buildEntityDef(name, fields);
+}
+
+/**
+ * Unchecked entity factory. `defineEntity` validates reserved names
+ * first; the SDK's own system entities (`group`, `groupMember`,
+ * `relationship`) build through here.
+ */
+export function buildEntityDef<TFields extends Record<string, TSchema>, TName extends string>(
   name: TName,
   fields: TFields,
 ): EntityDef<TFields, TName> {
