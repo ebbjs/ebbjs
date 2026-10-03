@@ -36,9 +36,13 @@ interface RecordedRequest {
   readonly body: Uint8Array | undefined;
 }
 
-/** Per-action rejections the stub server should return from `POST /sync/actions`. */
+/**
+ * Rejections the stub server returns from `POST /sync/actions`. Receives
+ * the decoded Actions so a test can attribute a rejection to the Action
+ * it submitted — or deliberately to a different one.
+ */
 interface StubWriteOptions {
-  readonly rejected?: readonly Rejection[];
+  readonly rejectFor?: (actions: readonly Action[]) => readonly Rejection[];
 }
 
 /** Stub `fetch` recording request bodies and accepting handshakes / writes. */
@@ -69,7 +73,8 @@ const mkRecordingFetch = (seen: RecordedRequest[], opts: StubWriteOptions = {}):
       );
     }
     if (url.endsWith("/sync/actions")) {
-      return new Response(JSON.stringify({ rejected: opts.rejected ?? [] }), {
+      const actions = body === undefined ? [] : decodeSync<{ actions: Action[] }>(body).actions;
+      return new Response(JSON.stringify({ rejected: opts.rejectFor?.(actions) ?? [] }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -716,13 +721,16 @@ describe("client.atomic — permission coherence (#233)", () => {
     expect(actionCalls(seen)).toHaveLength(0);
   });
 
-  it("raises AtomicActionError populated from the server's rejected[]", async () => {
-    const rejection: Rejection = {
-      id: "act_1",
-      reason: "not_authorized",
-      details: "actor lacks todo.put in group g_1",
-    };
-    const { client, seen } = mkClient(coherenceSchema, { rejected: [rejection] });
+  it("raises AtomicActionError populated from the server's rejected[] for the submitted Action", async () => {
+    const { client, seen } = mkClient(coherenceSchema, {
+      rejectFor: (actions) => [
+        {
+          id: actions[0]!.id,
+          reason: "not_authorized",
+          details: "actor lacks todo.put in group g_1",
+        },
+      ],
+    });
     await client.handshake();
 
     const error = (await client
@@ -730,10 +738,48 @@ describe("client.atomic — permission coherence (#233)", () => {
       .catch((err: unknown) => err)) as AtomicActionError;
 
     expect(actionCalls(seen)).toHaveLength(1);
+    const submitted = decodeActions(actionCalls(seen)[0]!)[0]!;
     expect(error).toBeInstanceOf(AtomicActionError);
-    expect(error.rejections).toEqual([rejection]);
+    expect(error.rejections).toEqual([
+      {
+        id: submitted.id,
+        reason: "not_authorized",
+        details: "actor lacks todo.put in group g_1",
+      },
+    ]);
     expect(error.message).toContain("not_authorized");
     expect(error.message).toContain("actor lacks todo.put in group g_1");
+  });
+
+  it("resolves when the server rejects a different queued Action, not the submitted one", async () => {
+    const { client, seen } = mkClient(coherenceSchema, {
+      rejectFor: () => [{ id: "act_someone_else", reason: "not_authorized" }],
+    });
+    await client.handshake();
+
+    const created = await client.atomic(({ todo }) => ({
+      todo: todo.create({ title: "Ship it", memberOf: ["g_1"] }),
+    }));
+
+    expect(actionCalls(seen)).toHaveLength(1);
+    expect(created.todo.id).toMatch(/^e_/);
+  });
+
+  it("raises only for a rejection attributed to the submitted Action", async () => {
+    const { client, seen } = mkClient(coherenceSchema, {
+      rejectFor: (actions) => [
+        { id: "act_someone_else", reason: "not_authorized" },
+        { id: actions[0]!.id, reason: "permission_denied" },
+      ],
+    });
+    await client.handshake();
+
+    const error = (await client
+      .atomic(({ todo }) => ({ todo: todo.create({ title: "Ship it", memberOf: ["g_1"] }) }))
+      .catch((err: unknown) => err)) as AtomicActionError;
+
+    const submitted = decodeActions(actionCalls(seen)[0]!)[0]!;
+    expect(error.rejections).toEqual([{ id: submitted.id, reason: "permission_denied" }]);
   });
 });
 
