@@ -27,6 +27,7 @@ export {
   AtomicResolutionError,
   type AtomicClient,
   type AtomicCreateInput,
+  type AtomicCreateOptions,
   type AtomicDraftNamespace,
   type AtomicDrafts,
   type CreatedEntity,
@@ -50,6 +51,9 @@ export {
   type EntityWithAccessors,
   type MembershipAccessors,
   type RowAccessor,
+  type CreateOptions,
+  type EntityWriteOptions,
+  type GroupRef,
   createEntityNamespace,
   buildEntityNamespaces,
 } from "./sync/namespace";

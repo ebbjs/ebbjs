@@ -26,6 +26,7 @@ import type { EntityRegistry } from "../schema/entity-registry";
 import type { RelationshipDef } from "../schema/relationship";
 import type { Schema } from "../schema/schema";
 import type { GroupFields } from "../schema/system-entities";
+import { GROUPS_ACCESSOR, MEMBERSHIP_KIND } from "../schema/system-entities";
 import {
   buildLazyQueryBuilder,
   projectEntity,
@@ -33,9 +34,11 @@ import {
   type QueryBuilder,
 } from "./query-builder";
 import {
+  buildRelationshipUpdate,
   forwardMany,
   forwardOne,
   type ManyPointerValue,
+  normalizePointer,
   type PointerValue,
   reverse as reverseTraversal,
 } from "./relationship";
@@ -270,11 +273,12 @@ export interface EntityNamespace<
    * Create a new entity row. Non-conforming inputs throw
    * `EntityValidationError` before any network call. `subject_id`
    * is minted client-side; the wire Update is a `put`.
+   *
+   * `opts.groups` is required and non-empty: one `kind: "member"`
+   * membership edge is emitted per group in the same Action as the
+   * entity, so the row is indexed into each group atomically.
    */
-  create(
-    input: Static<TObject<ShapeFields<TFields>>>,
-    opts?: EntityWriteOptions,
-  ): Promise<WriteResponse>;
+  create(input: Static<TObject<ShapeFields<TFields>>>, opts: CreateOptions): Promise<WriteResponse>;
   /**
    * Patch an existing entity row, validated the same way as
    * `create`'s input. The wire Update is a `patch`.
@@ -318,6 +322,18 @@ export interface EntityNamespace<
  */
 export interface EntityWriteOptions {
   validate?: boolean;
+}
+
+/** A group reference accepted by `create`: a group id or an entity-shape handle. */
+export type GroupRef = string | { readonly id: string };
+
+/**
+ * Options for `client.<entity>.create(input, opts)`. `groups` is the
+ * required, non-empty membership set; one `kind: "member"` edge is
+ * emitted per group in the same Action as the entity.
+ */
+export interface CreateOptions extends EntityWriteOptions {
+  readonly groups: readonly GroupRef[];
 }
 
 /**
@@ -608,14 +624,31 @@ export function createEntityNamespace<
     },
     async create(
       input: Static<TObject<ShapeFields<TFields>>>,
-      opts?: EntityWriteOptions,
+      opts: CreateOptions,
     ): Promise<WriteResponse> {
-      return submitEntityWrite(write, entityName, shape, {
-        subjectId: generateId("e"),
+      const subjectId = generateId("e");
+      const groupIds = resolveGroupIds(opts?.groups, entityName);
+      const entityUpdate = buildEntityWriteUpdate(write, entityName, shape, {
+        subjectId,
         payload: input,
         partial: false,
         validate: opts?.validate,
       });
+      const updates = [entityUpdate];
+      for (const targetId of groupIds) {
+        updates.push(
+          buildRelationshipUpdate({
+            relationshipId: generateId("rel"),
+            sourceId: subjectId,
+            targetId,
+            field: GROUPS_ACCESSOR,
+            type: entityName,
+            kind: MEMBERSHIP_KIND,
+            updateId: write.generateUpdateId(),
+          }),
+        );
+      }
+      return write.submitRelationshipUpdates(updates);
     },
     async update(
       id: string,
@@ -673,6 +706,21 @@ async function submitEntityWrite<TFields extends Record<string, TSchema>>(
   shape: TObject<TFields>,
   input: SubmitEntityWriteInput,
 ): Promise<WriteResponse> {
+  return write.submitRelationshipUpdates([buildEntityWriteUpdate(write, entityName, shape, input)]);
+}
+
+/**
+ * Validate the payload against the entity shape and build the single
+ * entity Update. Throws `EntityValidationError` on shape mismatch
+ * (or empty patch) when validation is on. Shared by `create`,
+ * `update`, and the membership-emitting create path.
+ */
+function buildEntityWriteUpdate<TFields extends Record<string, TSchema>>(
+  write: WriteCapability,
+  entityName: string,
+  shape: TObject<TFields>,
+  input: SubmitEntityWriteInput,
+): Update {
   if (input.validate !== false) {
     const violations = validatePayload(shape, input.payload, entityName, input.partial);
     if (violations.length > 0) {
@@ -690,15 +738,57 @@ async function submitEntityWrite<TFields extends Record<string, TSchema>>(
   const hlc = write.freshHlc();
   const updateId = write.generateUpdateId();
   const fields = wrapFields(input.payload, updateId, hlc);
-  const update: Update = {
+  return {
     id: updateId,
     subject_id: input.subjectId,
     subject_type: entityName,
     method: input.partial ? "patch" : "put",
     data: { fields },
   };
-  return write.submitRelationshipUpdates([update]);
 }
+
+/**
+ * Normalize the required `{ groups }` option into a de-duplicated,
+ * non-empty id list. Throws `EntityValidationError` when the option
+ * is missing, empty, or carries a malformed pointer.
+ */
+export const resolveGroupIds = (
+  groups: readonly GroupRef[] | undefined,
+  entityName: string,
+): readonly string[] => {
+  if (groups === undefined || groups.length === 0) {
+    throw new EntityValidationError([
+      {
+        entityName,
+        message: `create: "groups" is required and must contain at least one group id`,
+      },
+    ]);
+  }
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const group of groups) {
+    let id: string | null;
+    try {
+      id = normalizePointer(group, `groups for "${entityName}"`);
+    } catch (err) {
+      throw new EntityValidationError([
+        { entityName, message: err instanceof Error ? err.message : String(err) },
+      ]);
+    }
+    if (id === null || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  if (ids.length === 0) {
+    throw new EntityValidationError([
+      {
+        entityName,
+        message: `create: "groups" is required and must contain at least one group id`,
+      },
+    ]);
+  }
+  return ids;
+};
 
 /**
  * Build and submit the single `method: "delete"` Update for an

@@ -1182,7 +1182,7 @@ describe("integration: client.<entity>.create() runtime validation (#172)", () =
     });
     try {
       await expect(
-        client.todo.create({ title: 42, completed: false } as never),
+        client.todo.create({ title: 42, completed: false } as never, { groups: ["g_1"] }),
       ).rejects.toBeInstanceOf(EntityValidationError);
       expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
     } finally {
@@ -1208,7 +1208,9 @@ describe("integration: client.<entity>.create() runtime validation (#172)", () =
     });
     try {
       await expect(
-        client.todo.create({ title: "Ship", completed: false, bogus: "x" } as never),
+        client.todo.create({ title: "Ship", completed: false, bogus: "x" } as never, {
+          groups: ["g_1"],
+        }),
       ).rejects.toBeInstanceOf(EntityValidationError);
       expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
     } finally {
@@ -1261,10 +1263,13 @@ describe("integration: client.<entity>.create() runtime validation (#172)", () =
       expect(groups.find((g) => g.id === TEST_GROUP_ID)).toBeDefined();
       client.setState("live");
 
-      const response = await client.todo.create({
-        title: "Hello",
-        completed: false,
-      });
+      const response = await client.todo.create(
+        {
+          title: "Hello",
+          completed: false,
+        },
+        { groups: [TEST_GROUP_ID] },
+      );
       expect(response.rejected).toEqual([]);
       const createdId = await findCreatedTodoId(client);
       const stored = await client.getEntity(createdId);
@@ -1423,9 +1428,15 @@ describe("integration: client.atomic", () => {
 
     try {
       const created = await client.atomic(({ todo, list }) => {
-        const today = list.create({ name: "Today", ownedBy: TEST_GROUP_ID });
+        const today = list.create(
+          { name: "Today", ownedBy: TEST_GROUP_ID },
+          { groups: [TEST_GROUP_ID] },
+        );
         return {
-          todo: todo.create({ title: "Ship it", ownedBy: TEST_GROUP_ID }),
+          todo: todo.create(
+            { title: "Ship it", ownedBy: TEST_GROUP_ID },
+            { groups: [TEST_GROUP_ID] },
+          ),
           list: today,
         };
       });

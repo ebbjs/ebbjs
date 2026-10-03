@@ -28,7 +28,8 @@ import type { EntityRegistry } from "../schema/entity-registry";
 import { EntityValidationError, validatePayload } from "../schema/entity-registry";
 import type { Schema } from "../schema/schema";
 import { buildRelationshipUpdate, normalizePointer } from "./relationship";
-import { wrapFields, type EntityFields } from "./namespace";
+import { resolveGroupIds, wrapFields, type EntityFields, type GroupRef } from "./namespace";
+import { GROUPS_ACCESSOR, MEMBERSHIP_KIND } from "../schema/system-entities";
 import type { WriteResponse } from "./types";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
@@ -60,9 +61,18 @@ export type CreatedEntity<TFields extends Record<string, TSchema>> = Static<
  */
 export type AtomicCreateInput = Record<string, unknown>;
 
+/**
+ * Options for a draft namespace's `create`. Mirrors the entity
+ * namespace's create signature: `groups` is required and non-empty,
+ * and one `kind: "member"` edge per group lands in the same Action.
+ */
+export interface AtomicCreateOptions {
+  readonly groups: readonly GroupRef[];
+}
+
 /** Per-entity draft surface passed to the `client.atomic` callback. */
 export interface AtomicDraftNamespace<TFields extends Record<string, TSchema>> {
-  create(input: AtomicCreateInput): CreatedEntity<TFields>;
+  create(input: AtomicCreateInput, opts: AtomicCreateOptions): CreatedEntity<TFields>;
 }
 
 /** Draft namespaces keyed by schema entity name. */
@@ -184,7 +194,7 @@ const createDraftNamespace = (
   cap: AtomicWriteCapability,
   writes: PendingWrite[],
 ): AtomicDraftNamespace<Record<string, TSchema>> => ({
-  create(input) {
+  create(input, opts) {
     const id = generateId("e");
     const source = (input ?? {}) as Record<string, unknown>;
     const fields: Record<string, unknown> = {};
@@ -221,6 +231,17 @@ const createDraftNamespace = (
           pointers.push({ as: key, type: rel.type, kind: rel.kind, targetId });
         }
       }
+    }
+
+    // Membership is separate from the entity's field map: one
+    // `kind: "member"` edge per group, emitted into the same Action.
+    for (const targetId of resolveGroupIds(opts?.groups, entityName)) {
+      pointers.push({
+        as: GROUPS_ACCESSOR,
+        type: entityName,
+        kind: MEMBERSHIP_KIND,
+        targetId,
+      });
     }
 
     const violations = validatePayload(def.shape, fields, entityName, false);
