@@ -3,6 +3,7 @@ import { defineEntity, e } from "./entity";
 import { defineRelationship, type RelationshipDef } from "./relationship";
 import { ReservedNameError } from "./reserved";
 import { EntityRegistry, EntityValidationError } from "./entity-registry";
+import { groupSystemEntity, groupsRelationshipFor } from "./system-entities";
 import {
   buildRelationshipUpdate,
   normalizeManyPointers,
@@ -48,19 +49,17 @@ describe("defineRelationship", () => {
     expect(rel.type).toBe("todo.belongsTo.list");
   });
 
-  it('defaults kind to "link" so app-authored domain edges are unchanged', () => {
+  it('carries kind "link" for every app-authored relationship', () => {
     const rel = defineRelationship({ source: todo, target: list, as: "list" });
     expect(rel.kind).toBe("link");
   });
 
-  it('honors an explicit kind of "member"', () => {
-    const rel = defineRelationship({
-      source: todo,
-      target: list,
-      as: "list",
-      kind: "member",
-    });
+  it('injects kind "member" for the canonical groups relationship', () => {
+    const rel = groupsRelationshipFor(todo);
     expect(rel.kind).toBe("member");
+    expect(rel.as).toBe("groups");
+    expect(rel.target).toBe(groupSystemEntity);
+    expect(rel.sourceCardinality).toBe("many");
   });
 
   it("rejects the injected groups accessor name", () => {
@@ -101,12 +100,10 @@ describe("EntityRegistry.registerRelationship", () => {
     expect(r.getRelationship("todo", "missing")).toBeUndefined();
   });
 
-  it("round-trips an explicit membership kind", () => {
+  it("round-trips an injected membership kind", () => {
     const r = new EntityRegistry();
-    r.registerRelationship(
-      defineRelationship({ source: todo, target: list, as: "parent", kind: "member" }),
-    );
-    expect(r.getRelationship("todo", "parent")?.kind).toBe("member");
+    r.registerRelationship(groupsRelationshipFor(todo));
+    expect(r.getRelationship("todo", "groups")?.kind).toBe("member");
   });
 
   it("lists relationships for a source", () => {
@@ -338,30 +335,31 @@ describe("buildRelationshipWrite (SyncClient)", () => {
     expect(rel.data?.fields.kind.value).toBe("link");
   });
 
-  it("emits the relationship's declared membership kind", () => {
+  it("emits the injected membership kind for the groups relationship", () => {
     const client = createClient({
       serverUrl: "http://localhost:4000",
       actorId: "actor_1",
       registry: (() => {
         const r = new EntityRegistry();
         r.register(todo);
-        r.register(list);
-        r.registerRelationship(
-          defineRelationship({ source: todo, target: list, as: "parent", kind: "member" }),
-        );
+        r.register(groupSystemEntity);
+        r.registerRelationship(groupsRelationshipFor(todo));
         return r;
       })(),
     });
 
     const result = client.buildRelationshipWrite({
       source: todo,
-      target: list,
-      as: "parent",
+      target: groupSystemEntity,
+      as: "groups",
       sourceId: "todo_1",
-      targetId: "list_1",
+      entityUpdate: buildEntityUpdate("todo_1"),
+      targetIds: { replace: ["grp_1"] },
     });
-    const rel = result.relationshipUpdate as Update;
-    expect(rel.data?.fields.kind.value).toBe("member");
+    const rels = Array.isArray(result.relationshipUpdate)
+      ? result.relationshipUpdate
+      : [result.relationshipUpdate];
+    expect(rels[0]?.data?.fields.kind.value).toBe("member");
   });
 
   it("falls back to the group-target heuristic for an unregistered relationship", () => {

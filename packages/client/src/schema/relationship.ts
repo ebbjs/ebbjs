@@ -77,6 +77,9 @@ export interface RelationshipDef<
  * Input shape for `defineRelationship`. `sourceCardinality` and `type`
  * are optional; `sourceCardinality` is `"one"` and `type` is the source
  * entity name when omitted.
+ *
+ * Deliberately omits `kind`: membership kind is injected by the client,
+ * never declared by an app (see {@link RelationshipKind}).
  */
 export interface DefineRelationshipInput<
   S extends EntityDef<Record<string, TSchema>>,
@@ -89,6 +92,20 @@ export interface DefineRelationshipInput<
   as: A;
   sourceCardinality?: C;
   type?: string;
+}
+
+/**
+ * Internal input shape for {@link buildRelationshipDef}. Extends the
+ * public input with the wire `kind` so the injected membership
+ * relationship can declare `"member"` without exposing the knob to
+ * apps. Not part of the published surface.
+ */
+export interface BuildRelationshipInput<
+  S extends EntityDef<Record<string, TSchema>>,
+  T extends EntityDef<Record<string, TSchema>>,
+  A extends string = string,
+  C extends SourceCardinality = SourceCardinality,
+> extends DefineRelationshipInput<S, T, A, C> {
   kind?: RelationshipKind;
 }
 
@@ -116,7 +133,7 @@ export function buildRelationshipDef<
   T extends EntityDef<Record<string, TSchema>>,
   const A extends string,
   const C extends SourceCardinality = "one",
->(opts: DefineRelationshipInput<S, T, A, C>): RelationshipDef<S, T, A, C> {
+>(opts: BuildRelationshipInput<S, T, A, C>): RelationshipDef<S, T, A, C> {
   const sourceCardinality = (opts.sourceCardinality ?? "one") as C;
   const type: string = opts.type ?? opts.source.name;
   return Object.freeze({
