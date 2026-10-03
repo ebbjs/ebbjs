@@ -38,7 +38,6 @@ export function buildSmokeSeed(): SeedData {
         sourceId: SMOKE_ENTITY_ID,
         targetId: SMOKE_GROUP_ID,
         type: "todo",
-        field: "ownedBy",
       },
     ],
     entities: [

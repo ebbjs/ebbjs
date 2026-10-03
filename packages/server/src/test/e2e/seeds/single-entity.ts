@@ -17,7 +17,6 @@ export function buildSingleEntitySeed(): SeedData {
         sourceId: "ent_001",
         targetId: "grp_001",
         type: "todo",
-        field: "ownedBy",
       },
     ],
   };

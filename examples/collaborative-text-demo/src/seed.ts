@@ -88,7 +88,7 @@ export function buildDemoSeed(groupId: string = DEMO_GROUP_ID): SeedData {
         sourceId: docId,
         targetId: groupId,
         type: "text_document",
-        field: "ownedBy",
+        field: "groups",
       },
     ],
   };

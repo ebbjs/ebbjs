@@ -39,7 +39,8 @@ export interface RelationshipSeed {
   sourceId: string;
   targetId: string;
   type: string;
-  field: string;
+  /** Wire `field`; defaults to the canonical membership accessor `"groups"`. */
+  field?: string;
   /** `"member"` (default) for a group membership edge, `"link"` for a domain edge. */
   kind?: string;
 }
