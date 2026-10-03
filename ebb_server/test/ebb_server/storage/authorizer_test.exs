@@ -81,7 +81,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
            source_id: "todo_1",
            target_id: "g_1",
            type: "todo",
-           field: "group",
+           field: "groups",
            kind: "member"
          }}
       )
@@ -116,7 +116,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
            source_id: "todo_1",
            target_id: "g_1",
            type: "todo",
-           field: "group",
+           field: "groups",
            kind: "member"
          }}
       )
@@ -156,7 +156,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
            source_id: "todo_1",
            target_id: "g_1",
            type: "todo",
-           field: "group",
+           field: "groups",
            kind: "member"
          }}
       )
@@ -196,7 +196,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
            source_id: "todo_1",
            target_id: "g_1",
            type: "todo",
-           field: "group",
+           field: "groups",
            kind: "member"
          }}
       )
@@ -242,7 +242,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
             source_id: "todo_1",
             target_id: "g_1",
             type: "todo",
-            field: "group",
+            field: "groups",
             kind: "member"
           }
         }
@@ -257,7 +257,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
             source_id: "todo_1",
             target_id: "g_2",
             type: "todo",
-            field: "group",
+            field: "groups",
             kind: "member"
           }
         }
@@ -312,7 +312,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
                 "source_id" => %{"value" => "todo_new"},
                 "target_id" => %{"value" => "g_1"},
                 "type" => %{"value" => "todo"},
-                "field" => %{"value" => "group"},
+                "field" => %{"value" => "groups"},
                 "kind" => %{"value" => "member"}
               }
             }
@@ -347,6 +347,70 @@ defmodule EbbServer.Storage.AuthorizerTest do
             subject_type: "todo",
             method: :put,
             data: %{"fields" => %{"title" => %{"value" => "Test"}}}
+          }
+        ]
+      }
+
+      assert {:error, "missing_ownership", details} =
+               Authorizer.authorize([action], "a_1", ctx)
+
+      assert details =~ "membership"
+    end
+
+    test "orphan entity patch is rejected as missing_ownership" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      # An orphan: the entity was materialized without any `kind: "member"`
+      # edge, so the relationship cache has no group for it. The update
+      # method does not matter to the empty-group branch; the actor's
+      # `todo.update` permission must not resurrect the write.
+      :ets.insert(
+        tables.group_members,
+        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.update"]}}
+      )
+
+      action = %{
+        id: "act_1",
+        actor_id: "a_1",
+        hlc: generate_hlc(),
+        updates: [
+          %{
+            id: "upd_1",
+            subject_id: "todo_orphan_patch",
+            subject_type: "todo",
+            method: :patch,
+            data: %{"fields" => %{"title" => %{"value" => "Test"}}}
+          }
+        ]
+      }
+
+      assert {:error, "missing_ownership", details} =
+               Authorizer.authorize([action], "a_1", ctx)
+
+      assert details =~ "membership"
+    end
+
+    test "orphan entity delete is rejected as missing_ownership" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      :ets.insert(
+        tables.group_members,
+        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.delete"]}}
+      )
+
+      action = %{
+        id: "act_1",
+        actor_id: "a_1",
+        hlc: generate_hlc(),
+        updates: [
+          %{
+            id: "upd_1",
+            subject_id: "todo_orphan_delete",
+            subject_type: "todo",
+            method: :delete,
+            data: nil
           }
         ]
       }
@@ -490,7 +554,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
             source_id: "todo_1",
             target_id: "g_1",
             type: "todo",
-            field: "group",
+            field: "groups",
             kind: "member"
           }
         }
@@ -504,7 +568,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
            source_id: "todo_1",
            target_id: "g_1",
            type: "todo",
-           field: "group",
+           field: "groups",
            kind: "member"
          }}
       )
@@ -540,7 +604,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
             source_id: "todo_1",
             target_id: "g_1",
             type: "todo",
-            field: "group",
+            field: "groups",
             kind: "member"
           }
         }
@@ -554,7 +618,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
            source_id: "todo_1",
            target_id: "g_1",
            type: "todo",
-           field: "group",
+           field: "groups",
            kind: "member"
          }}
       )
@@ -649,7 +713,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
             source_id: "todo_1",
             target_id: "g_source",
             type: "todo",
-            field: "group",
+            field: "groups",
             kind: "member"
           }
         }

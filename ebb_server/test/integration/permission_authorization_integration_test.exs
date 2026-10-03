@@ -7,6 +7,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
   import Plug.Conn
   import Plug.Test
 
+  alias EbbServer.Storage.SQLite
   alias EbbServer.Sync.Router
 
   describe "multi-group membership" do
@@ -185,6 +186,10 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       rejection = conn.resp_body |> Jason.decode!() |> Map.fetch!("rejected") |> hd()
       assert rejection["reason"] == "missing_ownership"
       assert rejection["details"] =~ "membership"
+
+      # The rejection precedes materialization: the entity must not exist
+      # in storage, the symptom #245 is fixing.
+      assert SQLite.get_entity(entity_id) == :not_found
     end
 
     test "actor identity mismatch is rejected" do
