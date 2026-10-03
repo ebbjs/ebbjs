@@ -488,6 +488,30 @@ describe("client.<entity>.query().where() — relationship-aware predicate", () 
     expect(out.map((r) => r.title)).toEqual(["a"]);
   });
 
+  it("intersects a field predicate with a relationship predicate", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(todo("t1", "a", false));
+    await storage.entities.set(todo("t2", "b", false));
+    await storage.entities.set(todo("t3", "c", true));
+    await storage.entities.set(mkRelEntity("r1", "t1", "l1", "list", "todo"));
+    await storage.entities.set(mkRelEntity("r2", "t2", "l2", "list", "todo"));
+    await storage.entities.set(mkRelEntity("r3", "t3", "l1", "list", "todo"));
+    const out = await client.todo.query().where("completed", false).where("list", "l1");
+    expect(out.map((r) => r.title)).toEqual(["a"]);
+  });
+
+  it("excludes a source whose relationship row is tombstoned", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(todo("t1", "a"));
+    await storage.entities.set(mkRelEntity("r1", "t1", "l1", "list", "todo"));
+    expect(await client.todo.query().where("list", "l1")).toHaveLength(1);
+    await storage.entities.set({
+      ...mkRelEntity("r1", "t1", "l1", "list", "todo"),
+      deleted_hlc: "2",
+    });
+    expect(await client.todo.query().where("list", "l1")).toEqual([]);
+  });
+
   it("accepts a { id } handle and a materialized entity as relationship targets", async () => {
     const { storage, client } = await buildClient();
     await storage.entities.set(todo("t1", "a"));
