@@ -2,6 +2,7 @@ defmodule EbbServer.Storage.RelationshipCacheTest do
   use ExUnit.Case, async: false
 
   alias EbbServer.Storage.RelationshipCache
+  alias EbbServer.Storage.SQLite
 
   defp with_isolated_cache do
     rel_name = :"test_rel_#{System.unique_integer([:positive])}"
@@ -49,6 +50,17 @@ defmodule EbbServer.Storage.RelationshipCacheTest do
       type: "todo",
       field: "group",
       kind: "member"
+    }
+  end
+
+  defp link(source_id, target_id, id) do
+    %{
+      id: id,
+      source_id: source_id,
+      target_id: target_id,
+      type: "todo",
+      field: "owns",
+      kind: "link"
     }
   end
 
@@ -258,6 +270,67 @@ defmodule EbbServer.Storage.RelationshipCacheTest do
                "todo_1"
              ]
     end
+
+    test "deleting a link edge keeps the group index row its member edge shares" do
+      cache = with_isolated_cache()
+
+      :ok = put(cache, member("todo_1", "g_1", "rel_member"))
+      :ok = put(cache, link("todo_1", "g_1", "rel_link"))
+
+      assert RelationshipCache.get_group_entities("g_1", cache.relationships_by_group) == [
+               "todo_1"
+             ]
+
+      :ok =
+        RelationshipCache.delete_relationship("rel_link",
+          relationships: cache.relationships,
+          relationships_by_group: cache.relationships_by_group,
+          relationships_by_id: cache.relationships_by_id
+        )
+
+      assert RelationshipCache.get_group_entities("g_1", cache.relationships_by_group) == [
+               "todo_1"
+             ]
+
+      assert RelationshipCache.membership_groups("todo_1", cache.relationships) == ["g_1"]
+    end
+
+    test "deleting the last member edge drops the group index row" do
+      cache = with_isolated_cache()
+
+      :ok = put(cache, member("todo_1", "g_1", "rel_member"))
+      :ok = put(cache, link("todo_1", "g_1", "rel_link"))
+
+      :ok =
+        RelationshipCache.delete_relationship("rel_member",
+          relationships: cache.relationships,
+          relationships_by_group: cache.relationships_by_group,
+          relationships_by_id: cache.relationships_by_id
+        )
+
+      assert RelationshipCache.get_group_entities("g_1", cache.relationships_by_group) == []
+      assert RelationshipCache.membership_groups("todo_1", cache.relationships) == []
+    end
+
+    test "deleting one of two member edges to a group keeps the index row" do
+      cache = with_isolated_cache()
+
+      :ok = put(cache, member("todo_1", "g_1", "rel_1"))
+      :ok = put(cache, member("todo_1", "g_1", "rel_2"))
+
+      :ok =
+        RelationshipCache.delete_relationship("rel_1",
+          relationships: cache.relationships,
+          relationships_by_group: cache.relationships_by_group,
+          relationships_by_id: cache.relationships_by_id
+        )
+
+      assert RelationshipCache.get_group_entities("g_1", cache.relationships_by_group) == [
+               "todo_1"
+             ]
+
+      assert RelationshipCache.membership_groups("todo_1", cache.relationships) == ["g_1"]
+    end
   end
 
   describe "get_relationship/2" do
@@ -298,6 +371,12 @@ defmodule EbbServer.Storage.RelationshipCacheTest do
       assert RelationshipCache.get_entity_group("todo_1", cache.relationships) == nil
       assert RelationshipCache.get_group_entities("g_1", cache.relationships_by_group) == []
       assert RelationshipCache.get_relationship("rel_1", cache.relationships_by_id) == nil
+    end
+  end
+
+  describe "member_kind/0" do
+    test "matches the kind literal used by the SQL membership predicate" do
+      assert SQLite.membership_kind() == RelationshipCache.member_kind()
     end
   end
 end

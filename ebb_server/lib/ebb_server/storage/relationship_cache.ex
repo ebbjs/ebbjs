@@ -130,6 +130,15 @@ defmodule EbbServer.Storage.RelationshipCache do
 
         :ets.delete_object(rel_table, {source_id, entry})
         :ets.delete_object(rbg_table, {target_id, source_id})
+
+        # The by-group bag dedups identical tuples, so this row is shared by
+        # every edge from the source to the group. Put it back when a member
+        # edge survives, otherwise deleting a link would drop a live
+        # membership row.
+        if member_edge_exists?(rel_table, source_id, target_id) do
+          :ets.insert(rbg_table, {target_id, source_id})
+        end
+
         :ets.delete(rbi_table, rel_id)
         :ok
 
@@ -292,6 +301,14 @@ defmodule EbbServer.Storage.RelationshipCache do
   end
 
   defp member?(entry), do: field(entry, :kind) == @member_kind
+
+  defp member_edge_exists?(rel_table, source_id, target_id) do
+    rel_table
+    |> :ets.lookup(source_id)
+    |> Enum.any?(fn {_source_id, entry} ->
+      member?(entry) and entry_target_id(entry) == target_id
+    end)
+  end
 
   defp entry_source_id(entry), do: field(entry, :source_id)
   defp entry_target_id(entry), do: field(entry, :target_id)

@@ -114,6 +114,12 @@ defmodule EbbServer.Storage.SQLite do
   # generated column to a database that already exists.
   @membership_kind "member"
 
+  # The SQL predicate and `RelationshipCache.member_kind/0` must agree on
+  # what counts as membership; a drift test guards the pair.
+  @doc false
+  @spec membership_kind() :: String.t()
+  def membership_kind, do: @membership_kind
+
   # ---------------------------------------------------------------------------
   # Public API — start / stop
   # ---------------------------------------------------------------------------
