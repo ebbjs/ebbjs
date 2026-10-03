@@ -7,12 +7,14 @@ import type { DirtyTracker } from "../types/dirty-tracker";
 import { applyUpdate } from "../internal/materialize";
 import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
 import {
-  applyRelationshipEntry,
+  addRelationshipRow,
   liveSourceIds,
   relationshipIndexDelta,
   relationshipIndexKey,
+  removeRelationshipRow,
   RELATIONSHIP_ENTITY_TYPE,
   type RelationshipEntry,
+  type RelationshipRows,
 } from "../internal/relationship-index";
 import type { EbbDBSchema } from "./schema";
 
@@ -61,20 +63,24 @@ export const createIndexedDBEntityStore = (
   const copyEntity = (entity: Entity): Entity => structuredClone(entity);
   const { emitter, emit } = createEntityChangeEmitter();
 
-  /**
-   * Read-modify-write one index entry into the `relationships` store.
-   * A row is keyed by its id, so a tombstone or re-key drops only that
-   * row and leaves sibling rows on the same natural key intact.
-   */
-  const writeRelationshipEntry = async (
-    entry: RelationshipEntry,
-    present: boolean,
-  ): Promise<void> => {
-    const record = await db.get("relationships", entry.key);
-    const rows = applyRelationshipEntry(record?.rows, entry, present);
+  const writeRows = async (key: string, rows: RelationshipRows | null): Promise<void> => {
+    if (rows === null) await db.delete("relationships", key);
+    else await db.put("relationships", { key, rows });
+  };
 
-    if (rows === null) await db.delete("relationships", entry.key);
-    else await db.put("relationships", { key: entry.key, rows });
+  /**
+   * Read-modify-write one row into the `relationships` store. A row is
+   * keyed by its id, so a tombstone or re-key drops only that row and
+   * leaves sibling rows on the same natural key intact.
+   */
+  const addRelationshipEntry = async (entry: RelationshipEntry): Promise<void> => {
+    const record = await db.get("relationships", entry.key);
+    await writeRows(entry.key, addRelationshipRow(record?.rows, entry));
+  };
+
+  const removeRelationshipEntry = async (entry: RelationshipEntry): Promise<void> => {
+    const record = await db.get("relationships", entry.key);
+    await writeRows(entry.key, removeRelationshipRow(record?.rows, entry));
   };
 
   const updateRelationshipIndex = async (
@@ -82,8 +88,8 @@ export const createIndexedDBEntityStore = (
     next: Entity | undefined,
   ): Promise<void> => {
     const delta = relationshipIndexDelta(previous, next);
-    if (delta.remove !== null) await writeRelationshipEntry(delta.remove, false);
-    if (delta.add !== null) await writeRelationshipEntry(delta.add, true);
+    if (delta.remove !== null) await removeRelationshipEntry(delta.remove);
+    if (delta.add !== null) await addRelationshipEntry(delta.add);
   };
 
   /**
