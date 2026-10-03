@@ -100,7 +100,8 @@ defmodule EbbServer.Sync.EntityQueryTest do
               "source_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
               "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
               "type" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
-              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc}
+              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc},
+              "kind" => %{"type" => "lww", "value" => "member", "hlc" => rel_hlc}
             }
           }
         }
@@ -114,6 +115,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
   defp write_todo(todo_id, group_id, actor_id, opts \\ []) do
     title = Keyword.get(opts, :title, "Test todo")
     completed = Keyword.get(opts, :completed, false)
+    kind = Keyword.get(opts, :kind, "member")
     hlc = generate_hlc()
     rel_id = "rel_" <> Nanoid.generate()
 
@@ -156,7 +158,8 @@ defmodule EbbServer.Sync.EntityQueryTest do
               "source_id" => %{"type" => "lww", "value" => todo_id, "hlc" => rel_hlc},
               "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
               "type" => %{"type" => "lww", "value" => "todo", "hlc" => rel_hlc},
-              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc}
+              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc},
+              "kind" => %{"type" => "lww", "value" => kind, "hlc" => rel_hlc}
             }
           }
         }
@@ -259,6 +262,32 @@ defmodule EbbServer.Sync.EntityQueryTest do
       {:ok, response} = Jason.decode(conn.resp_body)
       assert length(response) == 1
       assert hd(response)["data"]["fields"]["completed"]["value"] == true
+    end
+
+    test "query excludes entities linked to a group but not members" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      bootstrap_group("a_link", "g_link_1", ["todo.*"])
+      write_todo("todo_link_1", "g_link_1", "a_link", kind: "link")
+
+      conn = post_query(%{"type" => "todo"}, "a_link")
+
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert response == []
+    end
+
+    test "query includes entities with a member edge to the actor's group" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      bootstrap_group("a_member", "g_member_1", ["todo.*"])
+      write_todo("todo_member_1", "g_member_1", "a_member", kind: "member")
+
+      conn = post_query(%{"type" => "todo"}, "a_member")
+
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert Enum.map(response, & &1["id"]) == ["todo_member_1"]
     end
   end
 end

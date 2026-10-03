@@ -107,6 +107,13 @@ defmodule EbbServer.Storage.SQLite do
 
   @get_last_gsn_sql "SELECT last_gsn FROM entities WHERE id = ?"
 
+  # Membership edges carry `kind: "member"` on the wire (#127); every
+  # other relationship (including rows predating `kind`) is a domain
+  # link. The predicate reads `data` directly rather than a generated
+  # column because `CREATE TABLE IF NOT EXISTS` cannot add a STORED
+  # generated column to a database that already exists.
+  @membership_kind "member"
+
   # ---------------------------------------------------------------------------
   # Public API — start / stop
   # ---------------------------------------------------------------------------
@@ -256,6 +263,7 @@ defmodule EbbServer.Storage.SQLite do
     INNER JOIN entities r ON r.type = 'relationship'
       AND r.source_id = e.id
       AND r.deleted_hlc IS NULL
+      AND json_extract(r.data, '$.fields.kind.value') = '#{@membership_kind}'
     INNER JOIN entities gm ON gm.type = 'groupMember'
       AND gm.group_id = r.target_id
       AND gm.actor_id = ?

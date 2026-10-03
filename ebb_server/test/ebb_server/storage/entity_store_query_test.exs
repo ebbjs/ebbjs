@@ -89,7 +89,8 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
               "source_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
               "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
               "type" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
-              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc}
+              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc},
+              "kind" => %{"type" => "lww", "value" => "member", "hlc" => rel_hlc}
             }
           }
         }
@@ -103,6 +104,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
   defp write_todo(todo_id, group_id, actor_id, writer_name, opts \\ []) do
     title = Keyword.get(opts, :title, "Test todo")
     completed = Keyword.get(opts, :completed, false)
+    kind = Keyword.get(opts, :kind, "member")
     hlc = generate_hlc()
 
     action = %{
@@ -145,7 +147,8 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
               "source_id" => %{"type" => "lww", "value" => todo_id, "hlc" => rel_hlc},
               "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
               "type" => %{"type" => "lww", "value" => "todo", "hlc" => rel_hlc},
-              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc}
+              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc},
+              "kind" => %{"type" => "lww", "value" => kind, "hlc" => rel_hlc}
             }
           }
         }
@@ -267,6 +270,50 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       assert hd(a2_todos).id == "todo_g2"
     end
 
+    test "query hides an entity whose only edge to the group is a link", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      group_id = "g_link_#{System.unique_integer([:positive])}"
+      actor_id = "a_link_#{System.unique_integer([:positive])}"
+
+      bootstrap_group(group_id, actor_id, writer_name)
+      write_todo("todo_link", group_id, actor_id, writer_name, kind: "link")
+
+      {:ok, todos} =
+        EntityStore.query("todo", nil, actor_id,
+          rocks_name: rocks_name,
+          sqlite_name: sqlite_name,
+          dirty_set: dirty_set
+        )
+
+      assert todos == []
+    end
+
+    test "query returns an entity with a member edge to the actor's group", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      group_id = "g_member_#{System.unique_integer([:positive])}"
+      actor_id = "a_member_#{System.unique_integer([:positive])}"
+
+      bootstrap_group(group_id, actor_id, writer_name)
+      write_todo("todo_member", group_id, actor_id, writer_name, kind: "member")
+
+      {:ok, todos} =
+        EntityStore.query("todo", nil, actor_id,
+          rocks_name: rocks_name,
+          sqlite_name: sqlite_name,
+          dirty_set: dirty_set
+        )
+
+      assert Enum.map(todos, & &1.id) == ["todo_member"]
+    end
+
     test "query with filter", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
@@ -369,6 +416,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
 
   defp write_post(post_id, group_id, actor_id, writer_name, opts \\ []) do
     title = Keyword.get(opts, :title, "Test post")
+    kind = Keyword.get(opts, :kind, "member")
 
     action = %{
       id: "act_" <> Nanoid.generate(),
@@ -409,7 +457,8 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
               "source_id" => %{"type" => "lww", "value" => post_id, "hlc" => rel_hlc},
               "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
               "type" => %{"type" => "lww", "value" => "post", "hlc" => rel_hlc},
-              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc}
+              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc},
+              "kind" => %{"type" => "lww", "value" => kind, "hlc" => rel_hlc}
             }
           }
         }

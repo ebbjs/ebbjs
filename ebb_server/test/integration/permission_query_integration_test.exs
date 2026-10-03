@@ -104,5 +104,51 @@ defmodule EbbServer.PermissionQueryIntegrationTest do
       assert "todo_2" in entity_ids
       refute "todo_1" in entity_ids
     end
+
+    test "a domain link to a group does not grant query visibility" do
+      hlc = generate_hlc()
+
+      action = %{
+        "id" => "act_q_link_" <> Nanoid.generate(),
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          %{
+            "id" => "upd_q_link_" <> Nanoid.generate(),
+            "subject_id" => "todo_linked",
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{
+                "title" => %{"type" => "lww", "value" => "Linked todo", "hlc" => hlc}
+              }
+            }
+          },
+          %{
+            "id" => "rel_q_link_" <> Nanoid.generate(),
+            "subject_id" => "rel_q_link_" <> Nanoid.generate(),
+            "subject_type" => "relationship",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{
+                "source_id" => %{"type" => "lww", "value" => "todo_linked", "hlc" => hlc},
+                "target_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc},
+                "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
+                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc},
+                "kind" => %{"type" => "lww", "value" => "link", "hlc" => hlc}
+              }
+            }
+          }
+        ]
+      }
+
+      post_actions(msgpack_encode!(%{"actions" => [action]}), "actor_1")
+
+      conn = post_query(%{"type" => "todo"}, "actor_1")
+      assert conn.status == 200
+
+      {:ok, response} = Jason.decode(conn.resp_body)
+      refute Enum.any?(response, &(&1["id"] == "todo_linked"))
+    end
   end
 end
