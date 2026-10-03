@@ -73,18 +73,38 @@ export const sortSourceIds = (ids: Iterable<string>): string[] => [...ids].sort(
 export const liveSourceIds = (rows: RelationshipRows | undefined): string[] =>
   sortSourceIds(new Set(Object.values(rows ?? {})));
 
-/**
- * Apply one row to a key's live-row map, returning the next map. A
- * `null` return means no live rows remain, so the caller drops the key.
- */
-export const applyRelationshipEntry = (
+/** Live rows per composite key — the shape both adapters persist. */
+export type RelationshipIndex = Readonly<Record<string, RelationshipRows>>;
+
+const applyRow = (
   rows: RelationshipRows | undefined,
   entry: RelationshipEntry,
   present: boolean,
-): RelationshipRows | null => {
+): Record<string, string> => {
   const next: Record<string, string> = { ...rows };
   if (present) next[entry.rowId] = entry.sourceId;
   else delete next[entry.rowId];
+  return next;
+};
+
+/**
+ * Record one live relationship row under its key. Never empty: the
+ * added row is always present.
+ */
+export const addRelationshipRow = (
+  rows: RelationshipRows | undefined,
+  entry: RelationshipEntry,
+): RelationshipRows => applyRow(rows, entry, true);
+
+/**
+ * Drop one relationship row from its key, returning the next map. A
+ * `null` return means no live rows remain, so the caller drops the key.
+ */
+export const removeRelationshipRow = (
+  rows: RelationshipRows | undefined,
+  entry: RelationshipEntry,
+): RelationshipRows | null => {
+  const next = applyRow(rows, entry, false);
   return Object.keys(next).length === 0 ? null : next;
 };
 
@@ -109,4 +129,42 @@ export const relationshipIndexDelta = (
   const remove = previous === undefined ? null : relationshipEntryFor(previous);
   const add = next === undefined ? null : relationshipEntryFor(next);
   return sameEntry(remove, add) ? { remove: null, add: null } : { remove, add };
+};
+
+const withEntry = (
+  index: RelationshipIndex,
+  entry: RelationshipEntry,
+  rows: RelationshipRows | null,
+): RelationshipIndex => {
+  if (rows === null) {
+    const rest = { ...index };
+    delete rest[entry.key];
+    return rest;
+  }
+  return { ...index, [entry.key]: rows };
+};
+
+/**
+ * Apply a row delta to a whole index, returning the next index. An
+ * empty delta returns the input unchanged; a key the delta emptied is
+ * dropped.
+ */
+export const applyRelationshipDelta = (
+  index: RelationshipIndex,
+  delta: RelationshipIndexDelta,
+): RelationshipIndex => {
+  if (delta.remove === null && delta.add === null) return index;
+
+  let next = index;
+  if (delta.remove !== null) {
+    next = withEntry(
+      next,
+      delta.remove,
+      removeRelationshipRow(next[delta.remove.key], delta.remove),
+    );
+  }
+  if (delta.add !== null) {
+    next = withEntry(next, delta.add, addRelationshipRow(next[delta.add.key], delta.add));
+  }
+  return next;
 };

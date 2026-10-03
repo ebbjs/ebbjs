@@ -6,13 +6,12 @@ import type { EntityChangeEmitter } from "../types/entity-change-emitter";
 import { applyUpdate } from "../internal/materialize";
 import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
 import {
-  applyRelationshipEntry,
+  applyRelationshipDelta,
   liveSourceIds,
   relationshipIndexDelta,
   relationshipIndexKey,
   RELATIONSHIP_ENTITY_TYPE,
-  type RelationshipEntry,
-  type RelationshipRows,
+  type RelationshipIndex,
 } from "../internal/relationship-index";
 
 /**
@@ -41,7 +40,7 @@ import {
 interface EntityStoreState {
   entities: Record<string, Entity>;
   typeIndex: Record<string, Set<string>>;
-  relationshipIndex: Record<string, RelationshipRows>;
+  relationshipIndex: RelationshipIndex;
 }
 
 const copyEntity = (entity: Entity): Entity => JSON.parse(JSON.stringify(entity));
@@ -78,31 +77,10 @@ const updateTypeIndexOnSet = (
  * one, leaves no stale row behind.
  */
 const updateRelationshipIndex = (
-  index: Readonly<Record<string, RelationshipRows>>,
+  index: RelationshipIndex,
   previous: Entity | undefined,
   next: Entity | undefined,
-): Record<string, RelationshipRows> => {
-  const delta = relationshipIndexDelta(previous, next);
-  if (delta.remove === null && delta.add === null) return index as Record<string, RelationshipRows>;
-
-  let out: Record<string, RelationshipRows> = { ...index };
-
-  const apply = (entry: RelationshipEntry, present: boolean): void => {
-    const rows = applyRelationshipEntry(out[entry.key], entry, present);
-    if (rows === null) {
-      const rest = { ...out };
-      delete rest[entry.key];
-      out = rest;
-    } else {
-      out = { ...out, [entry.key]: rows };
-    }
-  };
-
-  if (delta.remove !== null) apply(delta.remove, false);
-  if (delta.add !== null) apply(delta.add, true);
-
-  return out;
-};
+): RelationshipIndex => applyRelationshipDelta(index, relationshipIndexDelta(previous, next));
 
 export interface MemoryEntityStoreBundle {
   store: EntityStore;
