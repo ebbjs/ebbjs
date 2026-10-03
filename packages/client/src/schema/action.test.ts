@@ -33,6 +33,9 @@ describe("defineAction", () => {
     expect(def.values).toEqual({ todo: { title: "Ship it" }, list: { name: "Today" } });
     expect(Object.isFrozen(def)).toBe(true);
     expect(Object.isFrozen(def.writes)).toBe(true);
+    expect(Object.isFrozen(def.values)).toBe(true);
+    expect(Object.isFrozen(def.values.todo)).toBe(true);
+    expect(Object.isFrozen(def.values.list)).toBe(true);
   });
 
   it("allocates no ids and mutates nothing at definition time", () => {
@@ -44,22 +47,61 @@ describe("defineAction", () => {
       values: { todo: todoValues, list: listValues },
     });
 
-    // The declaration keeps the caller's values by reference; eager id
+    // `defineAction` copies the value containers it owns and freezes the
+    // copies; the caller's objects stay unfrozen and unmutated. Eager id
     // allocation happens on submit, never in `defineAction`.
-    expect(def.values.todo).toBe(todoValues);
-    expect(def.values.list).toBe(listValues);
+    expect(def.values.todo).not.toBe(todoValues);
+    expect(def.values.list).not.toBe(listValues);
+    expect(def.values.todo).toEqual(todoValues);
+    expect(def.values.list).toEqual(listValues);
+    expect(Object.isFrozen(def.values)).toBe(true);
+    expect(Object.isFrozen(def.values.todo)).toBe(true);
+    expect(Object.isFrozen(def.values.list)).toBe(true);
+    expect(Object.isFrozen(todoValues)).toBe(false);
+    expect(Object.isFrozen(listValues)).toBe(false);
     expect(todoValues).not.toHaveProperty("id");
     expect(listValues).not.toHaveProperty("id");
   });
 
+  it("freezes array-valued pointer entries without mutating the caller's array", () => {
+    const taggedTodo = defineEntity("todo", {
+      title: e.string(),
+      tags: Type.Array(Type.String()),
+    });
+    const label = defineEntity("label", { name: e.string() });
+    const tags = defineRelationship({
+      source: taggedTodo,
+      target: label,
+      as: "tags",
+      sourceCardinality: "many",
+    });
+    const tagIds = ["label_1", "label_2"];
+
+    const def = defineAction({
+      writes: [taggedTodo, label, tags],
+      values: { todo: { title: "Ship it", tags: tagIds }, label: { name: "Today" } },
+    });
+
+    expect(def.values.todo).toEqual({ title: "Ship it", tags: ["label_1", "label_2"] });
+    expect(Object.isFrozen(def.values.todo)).toBe(true);
+    expect(Object.isFrozen(def.values.todo.tags)).toBe(true);
+    expect(def.values.todo.tags).not.toBe(tagIds);
+    expect(Object.isFrozen(tagIds)).toBe(false);
+  });
+
   it("does not allocate an id even when the same definition is reused", () => {
+    const todoValues = { title: "Ship it" };
+    const listValues = { name: "Today" };
     const def = defineAction({
       writes: [todo, list, rel],
-      values: { todo: { title: "Ship it" }, list: { name: "Today" } },
+      values: { todo: todoValues, list: listValues },
     });
     const first = def.values.todo;
     expect(def.values.todo).toBe(first);
     expect(Object.isFrozen(def)).toBe(true);
+    expect(Object.isFrozen(def.values.todo)).toBe(true);
+    expect(Object.isFrozen(todoValues)).toBe(false);
+    expect(todoValues).not.toHaveProperty("id");
   });
 });
 

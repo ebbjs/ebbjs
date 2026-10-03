@@ -14,6 +14,12 @@
  * declaration, which runs the same resolver as the callback form (see
  * `../sync/atomic`). The declaration is safe to build at module load
  * and share across clients.
+ *
+ * `defineAction` copies the containers it owns — the `writes` tuple, the
+ * `values` map, each per-entity value record, and array-valued pointer
+ * entries — and freezes them. It never freezes or mutates the caller's
+ * objects. Copying is one level deep: nested objects inside a field
+ * value stay by reference.
  */
 
 import type { Static, TSchema } from "@sinclair/typebox/type";
@@ -105,6 +111,33 @@ export interface DefineActionInput<Writes extends readonly ActionWrite[]> {
   readonly values: ActionValues<Writes>;
 }
 
+/** Copy a field value one level deep and freeze the copy when it is an array. */
+const freezeFieldValue = (value: unknown): unknown =>
+  Array.isArray(value) ? Object.freeze([...value]) : value;
+
+/**
+ * Copy the value containers `defineAction` owns and freeze them. One
+ * level of container / array copying only: per-entity field records and
+ * array-valued pointer entries are copied and frozen, while nested
+ * objects inside a field value stay by reference and stay mutable.
+ */
+const freezeValues = (values: Record<string, unknown>): Record<string, unknown> =>
+  Object.freeze(
+    Object.fromEntries(
+      Object.entries(values).map(([name, fields]) => [
+        name,
+        Object.freeze(
+          Object.fromEntries(
+            Object.entries(fields as Record<string, unknown>).map(([key, value]) => [
+              key,
+              freezeFieldValue(value),
+            ]),
+          ),
+        ),
+      ]),
+    ),
+  );
+
 /**
  * Declare an Action by the entity types it writes and the values to
  * create. Frozen; no ids are allocated and no writes are staged until
@@ -115,14 +148,16 @@ export interface DefineActionInput<Writes extends readonly ActionWrite[]> {
  * set it to an existing id to link a pre-existing entity. `client.atomic`
  * creates auto-wired targets before their sources (independent entities
  * keep `writes` order) and resolves to the created handles keyed by
- * entity name.
+ * entity name. Because that order is dependency order rather than
+ * `writes` order, the emitted update ordering can differ from an
+ * equivalent callback even though the canonical Action content matches.
  */
 export function defineAction<const Writes extends readonly ActionWrite[]>(
   input: DefineActionInput<Writes>,
 ): ActionDef<Writes> {
   const def: ActionDef<Writes> = {
     writes: Object.freeze([...input.writes]) as unknown as Writes,
-    values: { ...input.values },
+    values: freezeValues(input.values as Record<string, unknown>) as ActionValues<Writes>,
   };
   return Object.freeze(def);
 }
