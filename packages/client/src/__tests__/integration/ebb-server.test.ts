@@ -50,6 +50,7 @@ import { defineEntity, e } from "../../schema/entity";
 import { defineRelationship } from "../../schema/relationship";
 import { EntityRegistry, EntityValidationError } from "../../schema/entity-registry";
 import { defineSchema } from "../../schema/schema";
+import { defineAction } from "../../schema/action";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
 
@@ -1394,19 +1395,21 @@ describe("integration: client.atomic", () => {
   const atomicTodo = defineEntity("todo", { title: e.string() });
   const atomicList = defineEntity("list", { name: e.string() });
   const atomicGroup = defineEntity("group", { name: e.string() });
+  const atomicTodoOwnedBy = defineRelationship({
+    source: atomicTodo,
+    target: atomicGroup,
+    as: "ownedBy",
+  });
+  const atomicListOwnedBy = defineRelationship({
+    source: atomicList,
+    target: atomicGroup,
+    as: "ownedBy",
+  });
   const atomicSchema = defineSchema({
     entities: { todo: atomicTodo, list: atomicList },
     relationships: {
-      todo_ownedBy: defineRelationship({
-        source: atomicTodo,
-        target: atomicGroup,
-        as: "ownedBy",
-      }),
-      list_ownedBy: defineRelationship({
-        source: atomicList,
-        target: atomicGroup,
-        as: "ownedBy",
-      }),
+      todo_ownedBy: atomicTodoOwnedBy,
+      list_ownedBy: atomicListOwnedBy,
     },
     version: 1,
   });
@@ -1428,6 +1431,49 @@ describe("integration: client.atomic", () => {
           list: today,
         };
       });
+
+      expect(created.todo.id).toMatch(/^e_/);
+      expect(created.list.id).toMatch(/^e_/);
+      expect(created.todo.ownedBy).toBe(TEST_GROUP_ID);
+      expect(created.list.ownedBy).toBe(TEST_GROUP_ID);
+
+      await catchUpUntilCurrent(client, TEST_GROUP_ID);
+      const todos = await client.storage.entities.query("todo");
+      const lists = await client.storage.entities.query("list");
+      expect(todos.map((e) => e.id)).toContain(created.todo.id);
+      expect(lists.map((e) => e.id)).toContain(created.list.id);
+
+      const rels = await client.storage.entities.query("relationship");
+      const linksFor = (sourceId: string): boolean =>
+        rels.some(
+          (e) =>
+            e.data?.fields?.["source_id"]?.value === sourceId &&
+            e.data?.fields?.["target_id"]?.value === TEST_GROUP_ID,
+        );
+      expect(linksFor(created.todo.id)).toBe(true);
+      expect(linksFor(created.list.id)).toBe(true);
+    } finally {
+      client.close();
+    }
+  });
+  it("creates multiple entities + their group links from a shared ActionDef", async () => {
+    if (!(await shouldRun())) return;
+    const actor = `atomicdef_${RUN_ID}`;
+    await addMemberWithTodoAndListPerms(actor);
+    const client = createClient({ serverUrl: SERVER_URL, actorId: actor, schema: atomicSchema });
+    const { groups } = await client.handshake();
+    expect(groups.find((g) => g.id === TEST_GROUP_ID)).toBeDefined();
+    client.setState("live");
+
+    try {
+      const action = defineAction({
+        writes: [atomicTodo, atomicList, atomicTodoOwnedBy, atomicListOwnedBy],
+        values: {
+          todo: { title: "Ship it", ownedBy: TEST_GROUP_ID },
+          list: { name: "Today", ownedBy: TEST_GROUP_ID },
+        },
+      });
+      const created = await client.atomic(action);
 
       expect(created.todo.id).toMatch(/^e_/);
       expect(created.list.id).toMatch(/^e_/);

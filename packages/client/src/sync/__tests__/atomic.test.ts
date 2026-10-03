@@ -18,6 +18,7 @@ import { defineRelationship } from "../../schema/relationship";
 import type { RelationshipDef } from "../../schema/relationship";
 import { defineSchema } from "../../schema/schema";
 import type { Schema } from "../../schema/schema";
+import { defineAction, type ActionDef, type ActionWrite } from "../../schema/action";
 import { EntityValidationError } from "../../schema/entity-registry";
 import { AtomicResolutionError, resolveReferences } from "../atomic";
 import { createClient } from "../client";
@@ -354,6 +355,198 @@ describe("client.atomic — one Action, forward references", () => {
     const linkUpdate = relUpdates.find((u) => u.data?.fields?.["field"]?.value === "list")!;
     expect(linkUpdate.data?.fields?.["kind"]?.value).toBe("link");
     expect(linkUpdate.data?.fields?.["target_id"]?.value).toBe(created.today.id);
+  });
+});
+
+describe("client.atomic — ActionDef form", () => {
+  const todoList = defineRelationship({ source: todo, target: list, as: "list" });
+
+  const sharedAction = defineAction({
+    writes: [todo, list, todoList],
+    values: { todo: { title: "Ship it" }, list: { name: "Today" } },
+  });
+
+  /** Wire-shape projection that drops volatile ids (update ids, HLCs, minted entity/relationship ids). */
+  const canonicalAction = (action: Action, handles: Record<string, { id: string }>): unknown => {
+    const label = new Map(Object.entries(handles).map(([name, handle]) => [handle.id, name]));
+    const relationshipLabels = new Map<string, string>();
+    return action.updates.map((update) => {
+      const subject =
+        label.get(update.subject_id) ??
+        relationshipLabels.get(update.subject_id) ??
+        `relationship#${relationshipLabels.size}`;
+      relationshipLabels.set(update.subject_id, subject);
+      return {
+        subject_type: update.subject_type,
+        subject,
+        method: update.method,
+        fields:
+          update.data === null
+            ? null
+            : Object.fromEntries(
+                Object.entries(update.data.fields).map(([key, entry]) => [
+                  key,
+                  label.get(String(entry.value)) ?? entry.value,
+                ]),
+              ),
+      };
+    });
+  };
+
+  it("composes the same single Action as the equivalent callback", async () => {
+    const { client, seen } = mkClient();
+    await client.handshake();
+
+    const fromCallback = await client.atomic(({ todo, list }) => {
+      const today = list.create({ name: "Today" });
+      const item = todo.create({ title: "Ship it", list: today });
+      return { todo: item, list: today };
+    });
+    const callbackAction = decodeActions(actionCalls(seen).at(-1)!)[0]!;
+
+    const fromActionDef = await client.atomic(sharedAction);
+    const defAction = decodeActions(actionCalls(seen).at(-1)!)[0]!;
+
+    expect(canonicalAction(callbackAction, fromCallback)).toEqual(
+      canonicalAction(defAction, fromActionDef),
+    );
+    expect(actionCalls(seen)).toHaveLength(2);
+  });
+
+  it("returns materialized handles keyed by entity name", async () => {
+    const { client, seen } = mkClient();
+    await client.handshake();
+
+    const created = await client.atomic(sharedAction);
+
+    expect(created.todo.id).toMatch(/^e_/);
+    expect(created.list.id).toMatch(/^e_/);
+    expect(created.todo.title).toBe("Ship it");
+    expect(created.list.name).toBe("Today");
+    expect(created.todo.list).toBe(created.list.id);
+    expect(actionCalls(seen)).toHaveLength(1);
+    expect(decodeActions(actionCalls(seen)[0]!)).toHaveLength(1);
+  });
+
+  it("auto-wires the declared relationship edge", async () => {
+    const { client, seen } = mkClient();
+    await client.handshake();
+
+    const created = await client.atomic(sharedAction);
+
+    const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
+    const relUpdate = updates.find((u) => u.subject_type === "relationship")!;
+    expect(relUpdate.data?.fields?.["source_id"]?.value).toBe(created.todo.id);
+    expect(relUpdate.data?.fields?.["target_id"]?.value).toBe(created.list.id);
+    expect(relUpdate.data?.fields?.["field"]?.value).toBe("list");
+    expect(relUpdate.data?.fields?.["type"]?.value).toBe("todo");
+    expect(relUpdate.data?.fields?.["kind"]?.value).toBe("link");
+  });
+
+  it("rejects a relationship whose endpoint has no values entry", async () => {
+    const { client } = mkClient();
+    await client.handshake();
+
+    const broken = {
+      writes: [todo, list, todoList],
+      values: { todo: { title: "Ship it" } },
+    } as unknown as ActionDef<readonly ActionWrite[]>;
+
+    await expect(client.atomic(broken)).rejects.toBeInstanceOf(AtomicResolutionError);
+  });
+
+  it("rejects a cyclic relationship declaration", async () => {
+    const a = defineEntity("a", { name: e.string() });
+    const b = defineEntity("b", { name: e.string() });
+    const aToB = defineRelationship({ source: a, target: b, as: "b" });
+    const bToA = defineRelationship({ source: b, target: a, as: "a" });
+    const cyclicSchema = defineSchema({
+      entities: { a, b },
+      relationships: { aToB, bToA },
+      version: 1,
+    });
+    const { client } = mkClient(cyclicSchema);
+    await client.handshake();
+
+    const cyclic = defineAction({
+      writes: [a, b, aToB, bToA],
+      values: { a: { name: "a" }, b: { name: "b" } },
+    });
+
+    await expect(client.atomic(cyclic)).rejects.toBeInstanceOf(AtomicResolutionError);
+  });
+
+  it("rejects an entity that is not registered on the schema", async () => {
+    const { client } = mkClient();
+    await client.handshake();
+
+    const stray = defineEntity("stray", { name: e.string() });
+    const strayRel = defineRelationship({ source: todo, target: stray, as: "stray" });
+    const strayAction = defineAction({
+      writes: [todo, stray, strayRel],
+      values: { todo: { title: "x" }, stray: { name: "y" } },
+    });
+
+    await expect(client.atomic(strayAction)).rejects.toBeInstanceOf(AtomicResolutionError);
+  });
+
+  it("links a pre-existing target when values supplies an explicit pointer", async () => {
+    const { client, seen } = mkClient();
+    await client.handshake();
+
+    const action = defineAction({
+      writes: [todo, todoList],
+      values: { todo: { title: "Ship it", list: "list_existing" } },
+    });
+
+    const fromCallback = await client.atomic(({ todo }) => ({
+      todo: todo.create({ title: "Ship it", list: "list_existing" }),
+    }));
+    const callbackAction = decodeActions(actionCalls(seen).at(-1)!)[0]!;
+
+    const fromActionDef = await client.atomic(action);
+    const defAction = decodeActions(actionCalls(seen).at(-1)!)[0]!;
+
+    expect(canonicalAction(callbackAction, fromCallback)).toEqual(
+      canonicalAction(defAction, fromActionDef),
+    );
+    expect(defAction.updates).toHaveLength(2);
+    const relUpdate = defAction.updates.find((u) => u.subject_type === "relationship")!;
+    expect(relUpdate.data?.fields?.["target_id"]?.value).toBe("list_existing");
+  });
+
+  it("auto-wires a many-cardinality edge and carries the FK set", async () => {
+    const taggedTodo = defineEntity("todo", {
+      title: e.string(),
+      tags: Type.Array(Type.String()),
+    });
+    const label = defineEntity("label", { name: e.string() });
+    const tagsRel = defineRelationship({
+      source: taggedTodo,
+      target: label,
+      as: "tags",
+      sourceCardinality: "many",
+    });
+    const manySchema = defineSchema({
+      entities: { todo: taggedTodo, label },
+      relationships: { tagsRel },
+      version: 1,
+    });
+    const { client, seen } = mkClient(manySchema);
+    await client.handshake();
+
+    const created = await client.atomic(
+      defineAction({
+        writes: [taggedTodo, label, tagsRel],
+        values: { todo: { title: "Tagged" }, label: { name: "a" } },
+      }),
+    );
+
+    expect(created.todo.tags).toEqual([created.label.id]);
+    const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
+    const todoUpdate = updates.find((u) => u.subject_type === "todo")!;
+    expect(todoUpdate.data?.fields?.["tags"]?.value).toEqual([created.label.id]);
+    expect(updates.filter((u) => u.subject_type === "relationship")).toHaveLength(1);
   });
 });
 

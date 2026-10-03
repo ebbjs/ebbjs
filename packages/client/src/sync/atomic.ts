@@ -15,23 +15,27 @@
  * `createAction`-shaped batch and submitted through the client's write
  * path, so the server sees a single Action and commits it atomically.
  *
- * The declaration form (`defineAction`) and the permission-coherence
- * check are separate issues (#232, #233); this module is the resolver
- * both consume.
+ * The declaration form (`defineAction`) lowers into exactly this path:
+ * the collected writes, pointer resolution, and flattening are shared,
+ * so a declaration and the equivalent callback compose the same Action.
+ * The permission-coherence check is #233.
  */
 
 import { generateId, type Update } from "@ebbjs/core";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
+import type { ActionDef, ActionHandles, ActionWrite } from "../schema/action";
 import type { EntityDef, ShapeFields } from "../schema/entity";
 import type { EntityRegistry } from "../schema/entity-registry";
 import { EntityValidationError, validatePayload } from "../schema/entity-registry";
+import type { RelationshipDef } from "../schema/relationship";
 import type { Schema } from "../schema/schema";
 import { buildRelationshipUpdate, kindForTarget, normalizePointer } from "./relationship";
 import { wrapFields, type EntityFields } from "./namespace";
 import type { WriteResponse } from "./types";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
+type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
 
 /**
  * Error raised when the resolver cannot turn the collected drafts into
@@ -55,8 +59,8 @@ export type CreatedEntity<TFields extends Record<string, TSchema>> = Static<
  * relationship pointers (a handle, id, or array of either) share one
  * loose record: the resolver distinguishes them by the registry's
  * relationship declarations, and validates the entity fields before
- * submission. Typing the input against the entity shape and the
- * relationship keys is #232's job.
+ * submission. The declaration form's `values` is typed against the
+ * entity shape instead (see `defineAction`).
  */
 export type AtomicCreateInput = Record<string, unknown>;
 
@@ -73,14 +77,21 @@ export type AtomicDrafts<S> =
 
 /**
  * `client.atomic` surface, present only when the client was built with
- * a `Schema`. `T` is the callback's return value, so the caller reads
- * the eagerly-created handles straight off the awaited result.
+ * a `Schema`. The callback overload's `T` is the callback's return
+ * value, so the caller reads the eagerly-created handles straight off
+ * the awaited result; the `ActionDef` overload resolves to the created
+ * handles keyed by entity name.
  */
+export interface AtomicRuntime<S> {
+  <T>(build: (drafts: AtomicDrafts<S>) => T): Promise<T>;
+  <Writes extends readonly ActionWrite[]>(def: ActionDef<Writes>): Promise<ActionHandles<Writes>>;
+}
+
+/** Typed `atomic` slot the Proxy client exposes when a schema is present. */
 export type AtomicClient<S> =
   S extends Schema<Record<string, AnyEntityDef>, unknown>
-    ? { atomic<T>(build: (drafts: AtomicDrafts<S>) => T): Promise<T> }
-    : // eslint-disable-next-line @typescript-eslint/ban-types
-      {};
+    ? { atomic: AtomicRuntime<S> } // eslint-disable-next-line @typescript-eslint/ban-types
+    : {};
 
 /**
  * Write-side capability the runtime consumes. The client supplies it
@@ -290,25 +301,156 @@ const buildUpdates = (writes: readonly PendingWrite[], cap: AtomicWriteCapabilit
   return [...entityUpdates, ...relationshipUpdates];
 };
 
+/** True for an `ActionDef` write that names an entity type (has `name` / `shape`). */
+const isEntityWrite = (write: ActionWrite): write is AnyEntityDef =>
+  typeof (write as { name?: unknown }).name === "string" &&
+  (write as { shape?: unknown }).shape !== undefined;
+
+/** The entity writes in an `ActionDef`, in declaration order. */
+const entityWritesOf = (writes: readonly ActionWrite[]): readonly AnyEntityDef[] =>
+  writes.filter(isEntityWrite);
+
+/** The relationship writes in an `ActionDef`, in declaration order. */
+const relationshipWritesOf = (writes: readonly ActionWrite[]): readonly AnyRelationshipDef[] =>
+  writes.filter((write): write is AnyRelationshipDef => !isEntityWrite(write));
+
+/**
+ * Entity creation order for an `ActionDef`: a relationship's target is
+ * created before its source, so the source's pointer input can carry
+ * the target's eager handle. Independent entities keep `writes` order.
+ * A cycle (including a self-relationship) has no such order — the
+ * handles would have to exist before they are minted.
+ */
+const entityCreateOrder = (
+  entities: readonly AnyEntityDef[],
+  relationships: readonly AnyRelationshipDef[],
+): readonly string[] => {
+  const names = entities.map((entity) => entity.name);
+  const pending = new Set(names);
+  const order: string[] = [];
+  while (pending.size > 0) {
+    const next = names.find(
+      (name) =>
+        pending.has(name) &&
+        relationships.every((rel) => rel.source.name !== name || !pending.has(rel.target.name)),
+    );
+    if (next === undefined) {
+      throw new AtomicResolutionError(
+        `defineAction: cyclic relationship declarations among [${names.filter((name) => pending.has(name)).join(", ")}]`,
+      );
+    }
+    order.push(next);
+    pending.delete(next);
+  }
+  return order;
+};
+
+/**
+ * Validate an `ActionDef` against the schema and return a builder that
+ * runs on the shared draft collector. A declared relationship whose
+ * source input omits its `as` key auto-wires the target created in the
+ * same Action; an explicit `as` value is left to the resolver, which
+ * links the pre-existing id.
+ */
+const lowerActionDef = (
+  def: ActionDef<readonly ActionWrite[]>,
+  cap: AtomicWriteCapability,
+): ((
+  drafts: Record<string, AtomicDraftNamespace<Record<string, TSchema>>>,
+) => Record<string, unknown>) => {
+  const entities = entityWritesOf(def.writes);
+  const relationships = relationshipWritesOf(def.writes);
+  const declared = new Set(entities.map((entity) => entity.name));
+  const values = def.values as Record<string, Record<string, unknown>>;
+  const hasExplicitPointer = (rel: AnyRelationshipDef): boolean =>
+    values[rel.source.name]?.[rel.as] !== undefined;
+
+  for (const entity of entities) {
+    if (!Object.prototype.hasOwnProperty.call(values, entity.name)) {
+      throw new AtomicResolutionError(
+        `defineAction: entity "${entity.name}" is declared in writes but has no values entry`,
+      );
+    }
+    if (cap.registry.get(entity.name) === undefined) {
+      throw new AtomicResolutionError(
+        `defineAction: entity "${entity.name}" is not registered on the schema`,
+      );
+    }
+  }
+  for (const key of Object.keys(values)) {
+    if (!declared.has(key)) {
+      throw new AtomicResolutionError(
+        `defineAction: values entry "${key}" has no matching entity in writes`,
+      );
+    }
+  }
+  for (const rel of relationships) {
+    if (!declared.has(rel.source.name)) {
+      throw new AtomicResolutionError(
+        `defineAction: relationship "${rel.source.name}.${rel.as}" has no source entity in writes`,
+      );
+    }
+    if (!declared.has(rel.target.name) && !hasExplicitPointer(rel)) {
+      throw new AtomicResolutionError(
+        `defineAction: relationship "${rel.source.name}.${rel.as}" references an entity that is not created in this Action; set "${rel.source.name}.${rel.as}" to an existing id`,
+      );
+    }
+    const registered = cap.registry.getRelationship(rel.source.name, rel.as);
+    if (registered === undefined) {
+      throw new AtomicResolutionError(
+        `defineAction: relationship "${rel.source.name}.${rel.as}" is not registered on the schema`,
+      );
+    }
+    if (registered.target.name !== rel.target.name) {
+      throw new AtomicResolutionError(
+        `defineAction: relationship "${rel.source.name}.${rel.as}" targets "${registered.target.name}" on the schema but "${rel.target.name}" in writes`,
+      );
+    }
+  }
+
+  const autoWired = relationships.filter((rel) => !hasExplicitPointer(rel));
+  const order = entityCreateOrder(entities, autoWired);
+  return (drafts) => {
+    const handles: Record<string, unknown> = {};
+    for (const name of order) {
+      const input: Record<string, unknown> = { ...values[name] };
+      for (const rel of autoWired) {
+        if (rel.source.name !== name) continue;
+        input[rel.as] = handles[rel.target.name];
+      }
+      handles[name] = drafts[name]!.create(input);
+    }
+    return handles;
+  };
+};
+
 /**
  * Build the `client.atomic` runtime for a schema. Each call gets a
- * fresh collector, runs the callback to gather writes, flattens them
- * into one Action, and submits once before resolving to the callback's
- * return value.
+ * fresh collector, gathers writes, flattens them into one Action, and
+ * submits once before resolving to the created handles. Both entry
+ * points — a callback and an `ActionDef` — run the same collector,
+ * pointer resolution, and flattening.
  */
 export function createAtomicRuntime<S extends Schema<Record<string, AnyEntityDef>, unknown>>(
   schema: S,
   cap: AtomicWriteCapability,
-): <T>(build: (drafts: AtomicDrafts<S>) => T) => Promise<T> {
+): AtomicRuntime<S> {
   const entityDefs = schema.entities as Record<string, AnyEntityDef>;
-  return async function atomic<T>(build: (drafts: AtomicDrafts<S>) => T): Promise<T> {
+  const atomic = async (input: unknown): Promise<unknown> => {
     const writes: PendingWrite[] = [];
     const drafts = buildDrafts(entityDefs, cap, writes);
-    const result = build(drafts as AtomicDrafts<S>);
+    const build =
+      typeof input === "function"
+        ? (input as (
+            drafts: Record<string, AtomicDraftNamespace<Record<string, TSchema>>>,
+          ) => unknown)
+        : lowerActionDef(input as ActionDef<readonly ActionWrite[]>, cap);
+    const result = build(drafts);
     const updates = buildUpdates(writes, cap);
     if (updates.length > 0) {
       await cap.submitRelationshipUpdates(updates);
     }
     return result;
   };
+  return atomic as unknown as AtomicRuntime<S>;
 }
