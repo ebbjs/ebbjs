@@ -76,7 +76,7 @@ describe("client.<entity>.query()", () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "a", completed: false }));
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
-    const out = await client.todo.query().eq("completed", false).toRaw();
+    const out = await client.todo.query().where("completed", false).toRaw();
     expect(out[0]?.type).toBe("todo");
     expect(out[0]?.data?.fields?.title?.value).toBe("a");
   });
@@ -121,7 +121,7 @@ describe("client.<entity>.query()", () => {
     await storage.entities.set(mkEntity("t2", "todo", { title: "b", completed: true }));
     await storage.entities.set(mkEntity("t3", "todo", { title: "c", completed: false }));
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
-    const out = await client.todo.query().eq("completed", false).orderBy("title", "asc");
+    const out = await client.todo.query().where("completed", false).orderBy("title", "asc");
     expect(out.map((r) => r.title)).toEqual(["a", "c"]);
   });
 
@@ -130,7 +130,7 @@ describe("client.<entity>.query()", () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "a", completed: false }));
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
-    const out = await client.todo.query().eq("completed", false).toRaw();
+    const out = await client.todo.query().where("completed", false).toRaw();
     expect(out[0]?.data?.fields?.title?.value).toBe("a");
   });
 
@@ -364,6 +364,196 @@ const mkRelEntity = (
   updated_hlc: "1",
   deleted_hlc: null,
   last_gsn: 0,
+});
+
+// ---------------------------------------------------------------------------
+// client.<entity>.query().where() — relationship-aware predicate (#247)
+// ---------------------------------------------------------------------------
+
+/** Entity for the `document.groups` membership edge. */
+const groupEntity = defineEntity("group", { name: e.string() });
+
+/**
+ * `todo` carries an `owner` FIELD alongside an `owner` RELATIONSHIP so
+ * the collision test can prove the relationship wins. The other
+ * relationships exercise one-cardinality (`list`) and many-cardinality
+ * (`groups`) inference.
+ */
+const whereTodo = defineEntity("todo", {
+  title: e.string(),
+  completed: e.boolean(),
+  owner: e.string().nullable(),
+});
+const whereDocument = defineEntity("document", { title: e.string() });
+
+const schemaForWhere = defineSchema({
+  entities: {
+    todo: whereTodo,
+    list: listEntity,
+    group: groupEntity,
+    document: whereDocument,
+    user: userEntity,
+  },
+  relationships: {
+    todo_list: defineRelationship({ source: whereTodo, target: listEntity, as: "list" }),
+    todo_owner: defineRelationship({ source: whereTodo, target: userEntity, as: "owner" }),
+    document_groups: defineRelationship({
+      source: whereDocument,
+      target: groupEntity,
+      as: "groups",
+      sourceCardinality: "many",
+    }),
+  },
+  version: 1,
+});
+
+describe("client.<entity>.query().where() — relationship-aware predicate", () => {
+  const buildClient = async () => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: schemaForWhere,
+    });
+    return { storage, client };
+  };
+
+  const todo = (id: string, title: string, completed = false, owner: string | null = null) =>
+    mkEntity(id, "todo", { title, completed, owner });
+
+  it("infers a field predicate when the key is not a registered relationship", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(todo("t1", "a", false));
+    await storage.entities.set(todo("t2", "b", true));
+    const out = await client.todo.query().where("completed", false);
+    expect(out.map((r) => r.title)).toEqual(["a"]);
+  });
+
+  it('infers a relationship predicate from the registry: where("list", listId)', async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(todo("t1", "a"));
+    await storage.entities.set(todo("t2", "b"));
+    await storage.entities.set(mkRelEntity("r1", "t1", "l1", "list", "todo"));
+    await storage.entities.set(mkRelEntity("r2", "t2", "l2", "list", "todo"));
+    const out = await client.todo.query().where("list", "l1");
+    expect(out.map((r) => r.title)).toEqual(["a"]);
+  });
+
+  it('where("groups", groupId) returns the documents whose membership includes it', async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(mkEntity("d1", "document", { title: "one" }));
+    await storage.entities.set(mkEntity("d2", "document", { title: "two" }));
+    await storage.entities.set(mkRelEntity("rg1", "d1", "g1", "groups", "document"));
+    await storage.entities.set(mkRelEntity("rg2", "d2", "g2", "groups", "document"));
+    const out = await client.document.query().where("groups", "g1");
+    expect(out.map((r) => r.title)).toEqual(["one"]);
+  });
+
+  it("a relationship key wins over a same-named field", async () => {
+    const { storage, client } = await buildClient();
+    // t1's field says u1, but its edge points at u2.
+    await storage.entities.set(todo("t1", "a", false, "u1"));
+    // t2's field says u2, but it has no edge at all.
+    await storage.entities.set(todo("t2", "b", false, "u2"));
+    await storage.entities.set(mkRelEntity("r1", "t1", "u2", "owner", "todo"));
+    const out = await client.todo.query().where("owner", "u2");
+    expect(out.map((r) => r.title)).toEqual(["a"]);
+  });
+
+  it("an array target means any-of", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(todo("t1", "a"));
+    await storage.entities.set(todo("t2", "b"));
+    await storage.entities.set(todo("t3", "c"));
+    await storage.entities.set(mkRelEntity("r1", "t1", "l1", "list", "todo"));
+    await storage.entities.set(mkRelEntity("r2", "t2", "l2", "list", "todo"));
+    await storage.entities.set(mkRelEntity("r3", "t3", "l3", "list", "todo"));
+    const out = await client.todo.query().where("list", ["l1", "l3"]);
+    expect(out.map((r) => r.title).sort()).toEqual(["a", "c"]);
+  });
+
+  it("chained where(...) calls are ANDed (all-of)", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(todo("t1", "a"));
+    await storage.entities.set(todo("t2", "b"));
+    await storage.entities.set(todo("t3", "c"));
+    await storage.entities.set(mkRelEntity("r1", "t1", "l1", "list", "todo"));
+    await storage.entities.set(mkRelEntity("r2", "t2", "l1", "list", "todo"));
+    await storage.entities.set(mkRelEntity("r3", "t3", "l2", "list", "todo"));
+    await storage.entities.set(mkRelEntity("o1", "t1", "u1", "owner", "todo"));
+    await storage.entities.set(mkRelEntity("o2", "t2", "u2", "owner", "todo"));
+    const out = await client.todo.query().where("list", "l1").where("owner", "u1");
+    expect(out.map((r) => r.title)).toEqual(["a"]);
+  });
+
+  it("intersects a field predicate with a relationship predicate", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(todo("t1", "a", false));
+    await storage.entities.set(todo("t2", "b", false));
+    await storage.entities.set(todo("t3", "c", true));
+    await storage.entities.set(mkRelEntity("r1", "t1", "l1", "list", "todo"));
+    await storage.entities.set(mkRelEntity("r2", "t2", "l2", "list", "todo"));
+    await storage.entities.set(mkRelEntity("r3", "t3", "l1", "list", "todo"));
+    const out = await client.todo.query().where("completed", false).where("list", "l1");
+    expect(out.map((r) => r.title)).toEqual(["a"]);
+  });
+
+  it("excludes a source whose relationship row is tombstoned", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(todo("t1", "a"));
+    await storage.entities.set(mkRelEntity("r1", "t1", "l1", "list", "todo"));
+    expect(await client.todo.query().where("list", "l1")).toHaveLength(1);
+    await storage.entities.set({
+      ...mkRelEntity("r1", "t1", "l1", "list", "todo"),
+      deleted_hlc: "2",
+    });
+    expect(await client.todo.query().where("list", "l1")).toEqual([]);
+  });
+
+  it("accepts a { id } handle and a materialized entity as relationship targets", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(todo("t1", "a"));
+    await storage.entities.set(mkEntity("l1", "list", { name: "inbox" }));
+    await storage.entities.set(mkRelEntity("r1", "t1", "l1", "list", "todo"));
+    const byHandle = await client.todo.query().where("list", { id: "l1" });
+    expect(byHandle.map((r) => r.title)).toEqual(["a"]);
+    const handle = await storage.entities.get("l1");
+    if (handle === null) throw new Error("unreachable");
+    const byRow = await client.todo.query().where("list", handle);
+    expect(byRow.map((r) => r.title)).toEqual(["a"]);
+  });
+
+  it("a null / undefined / empty target names no live edge and matches nothing", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(todo("t1", "a"));
+    await storage.entities.set(mkRelEntity("r1", "t1", "l1", "list", "todo"));
+    expect(await client.todo.query().where("list", null)).toEqual([]);
+    expect(await client.todo.query().where("list", undefined)).toEqual([]);
+    expect(await client.todo.query().where("list", [])).toEqual([]);
+  });
+
+  it("composes relationship predicates with orderBy and limit", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(mkEntity("d1", "document", { title: "b" }));
+    await storage.entities.set(mkEntity("d2", "document", { title: "a" }));
+    await storage.entities.set(mkEntity("d3", "document", { title: "c" }));
+    await storage.entities.set(mkRelEntity("rg1", "d1", "g1", "groups", "document"));
+    await storage.entities.set(mkRelEntity("rg2", "d2", "g1", "groups", "document"));
+    await storage.entities.set(mkRelEntity("rg3", "d3", "g1", "groups", "document"));
+    const out = await client.document
+      .query()
+      .where("groups", "g1")
+      .orderBy("title", "asc")
+      .limit(2);
+    expect(out.map((r) => r.title)).toEqual(["a", "b"]);
+  });
+
+  it("throws on a key that is neither a field nor a declared relationship", async () => {
+    const { client } = await buildClient();
+    expect(() => client.todo.query().where("nope", "x")).toThrow(/not a field/);
+  });
 });
 
 describe("client.<entity>.get(id) — row with relationship accessors", () => {

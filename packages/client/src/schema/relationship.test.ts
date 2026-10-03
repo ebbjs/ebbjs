@@ -651,14 +651,14 @@ describe("QueryBuilder (sync/relationship)", () => {
     last_gsn: 0,
   });
 
-  it("eq filters by field equality", async () => {
+  it("where filters by field equality", async () => {
     const { buildQueryBuilder } = await import("../sync/relationship");
     const rows = [
       buildEntity("1", { title: "a", completed: false }),
       buildEntity("2", { title: "b", completed: true }),
       buildEntity("3", { title: "c", completed: false }),
     ];
-    const out = await buildQueryBuilder(rows, todo.shape).eq("completed", false);
+    const out = await buildQueryBuilder(rows, todo.shape).where("completed", false);
     expect(out.map((r) => r.title)).toEqual(["a", "c"]);
   });
 
@@ -684,7 +684,7 @@ describe("QueryBuilder (sync/relationship)", () => {
     expect(out.map((r) => r.title)).toEqual(["a", "b"]);
   });
 
-  it("chains eq + orderBy + limit", async () => {
+  it("chains where + orderBy + limit", async () => {
     const { buildQueryBuilder } = await import("../sync/relationship");
     const rows = [
       buildEntity("1", { title: "a", completed: false }),
@@ -693,7 +693,7 @@ describe("QueryBuilder (sync/relationship)", () => {
       buildEntity("4", { title: "d", completed: true }),
     ];
     const out = await buildQueryBuilder(rows, todo.shape)
-      .eq("completed", true)
+      .where("completed", true)
       .orderBy("title", "desc")
       .limit(2);
     expect(out.map((r) => r.title)).toEqual(["d", "c"]);
@@ -706,8 +706,8 @@ describe("QueryBuilder (sync/relationship)", () => {
       buildEntity("2", { title: "b", completed: true }),
     ];
     const base = buildQueryBuilder(rows, todo.shape);
-    const a = base.eq("completed", true);
-    const b = base.eq("completed", false);
+    const a = base.where("completed", true);
+    const b = base.where("completed", false);
     // `base` is untouched; both `a` and `b` carry their own filter.
     expect((await a).map((r) => r.title)).toEqual(["b"]);
     expect((await b).map((r) => r.title)).toEqual(["a"]);
