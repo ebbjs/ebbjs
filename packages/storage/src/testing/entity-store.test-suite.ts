@@ -359,6 +359,35 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(await listQuery(entityStore)).toEqual(["todo_2"]);
       });
 
+      it("re-keys the source when a re-put changes the row's natural key", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
+        expect(await listQuery(entityStore)).toEqual(["todo_1"]);
+
+        await actionLog.append(
+          buildRelationshipPutAction(
+            {
+              id: "rel_1",
+              sourceId: "todo_2",
+              targetId: "list_2",
+              field: "owner",
+              type: "todo_user",
+            },
+            2,
+          ),
+        );
+        await dirtyTracker.mark("rel_1", "relationship");
+
+        expect(await listQuery(entityStore)).toEqual([]);
+        expect(
+          await entityStore.queryByRelationship({
+            as: "owner",
+            type: "todo_user",
+            targetId: "list_2",
+          }),
+        ).toEqual(["todo_2"]);
+      });
+
       it("drops the source from its new key when a mutated row is tombstoned", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
