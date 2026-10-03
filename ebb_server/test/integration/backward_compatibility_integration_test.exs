@@ -30,7 +30,8 @@ defmodule EbbServer.BackwardCompatibilityIntegrationTest do
                 "title" => %{"type" => "lww", "value" => "Compatibility Test", "hlc" => hlc}
               }
             }
-          }
+          },
+          member_edge(entity_id, "g_test", "todo", hlc)
         ]
       }
 

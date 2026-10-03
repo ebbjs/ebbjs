@@ -66,7 +66,6 @@ defmodule EbbServer.Integration.ActionHelpers do
   def bootstrap_group(actor_id, group_id, permissions) do
     hlc = TestHelpers.generate_hlc()
     gm_id = "gm_" <> Nanoid.generate()
-    rel_id = "rel_" <> Nanoid.generate()
 
     action = %{
       "id" => "act_bootstrap_" <> Nanoid.generate(),
@@ -95,21 +94,7 @@ defmodule EbbServer.Integration.ActionHelpers do
             }
           }
         },
-        %{
-          "id" => rel_id,
-          "subject_id" => rel_id,
-          "subject_type" => "relationship",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "source_id" => %{"type" => "lww", "value" => "todo_bootstrap", "hlc" => hlc},
-              "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-              "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
-              "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc},
-              "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc}
-            }
-          }
-        }
+        member_edge("todo_bootstrap", group_id, "todo", hlc)
       ]
     }
 
@@ -118,7 +103,6 @@ defmodule EbbServer.Integration.ActionHelpers do
 
   def write_entity_in_group(actor_id, entity_id, entity_type, group_id, fields) do
     hlc = TestHelpers.generate_hlc()
-    rel_id = "rel_" <> Nanoid.generate()
 
     action = %{
       "id" => "act_write_" <> Nanoid.generate(),
@@ -132,24 +116,35 @@ defmodule EbbServer.Integration.ActionHelpers do
           "method" => "put",
           "data" => %{"fields" => fields}
         },
-        %{
-          "id" => rel_id,
-          "subject_id" => rel_id,
-          "subject_type" => "relationship",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "source_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
-              "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-              "type" => %{"type" => "lww", "value" => entity_type, "hlc" => hlc},
-              "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc},
-              "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc}
-            }
-          }
-        }
+        member_edge(entity_id, group_id, entity_type, hlc)
       ]
     }
 
     post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
+  end
+
+  @doc """
+  Builds a `kind: "member"` relationship update placing `entity_id`
+  in `group_id`. Membership is required for every user-entity write, so
+  tests pair this with the entity's own update in the same Action.
+  """
+  def member_edge(entity_id, group_id, entity_type, hlc) do
+    rel_id = "rel_" <> Nanoid.generate()
+
+    %{
+      "id" => rel_id,
+      "subject_id" => rel_id,
+      "subject_type" => "relationship",
+      "method" => "put",
+      "data" => %{
+        "fields" => %{
+          "source_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
+          "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
+          "type" => %{"type" => "lww", "value" => entity_type, "hlc" => hlc},
+          "field" => %{"type" => "lww", "value" => "groups", "hlc" => hlc},
+          "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc}
+        }
+      }
+    }
   end
 end
