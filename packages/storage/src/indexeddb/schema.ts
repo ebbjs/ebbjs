@@ -2,7 +2,15 @@ import type { IDBPDatabase, DBSchema } from "idb";
 import type { Action, Entity } from "@ebbjs/core";
 
 /**
- * Structural schema for the four object stores the IndexedDB adapter
+ * Schema version for the IndexedDB adapter. Bump when adding or
+ * changing object stores. The production adapter and the test helper
+ * both open at this version so the upgrade path cannot be exercised
+ * at one version and shipped at another.
+ */
+export const EBB_SCHEMA_VERSION = 3;
+
+/**
+ * Structural schema for the five object stores the IndexedDB adapter
  * uses. Component factories (`action-log.indexeddb`, etc.) are typed
  * against this interface so the production schema and any test schema
  * satisfying the same shape can both be passed in without a cast.
@@ -28,6 +36,18 @@ export interface EbbDBSchema extends DBSchema {
     value: Entity;
     indexes: { type: string };
   };
+  /**
+   * Reverse relationship index: one record per
+   * `(field, type, target_id)` composite key, holding the ids of the
+   * source entities whose Relationship rows point at `target_id`
+   * through that accessor. Maintained alongside `entities` on every
+   * materialization so a relationship-aware query avoids scanning the
+   * whole Relationship table.
+   */
+  relationships: {
+    key: string;
+    value: { key: string; source_ids: readonly string[] };
+  };
   dirty: {
     key: string;
     value: { entityId: string; entityType: string };
@@ -40,7 +60,7 @@ export interface EbbDBSchema extends DBSchema {
 }
 
 /**
- * Idempotently creates the four Ebb object stores on a database. Used
+ * Idempotently creates the five Ebb object stores on a database. Used
  * by both the production adapter (during the first `openDB` upgrade)
  * and the test helper (to spin up a fresh DB per test). Safe to call
  * against a database that already has the stores — existing stores are
@@ -62,6 +82,9 @@ export const createEbbStores = (database: IDBPDatabase<EbbDBSchema>): void => {
   if (!database.objectStoreNames.contains("entities")) {
     const store = database.createObjectStore("entities", { keyPath: "id" });
     if (!store.indexNames.contains("type")) store.createIndex("type", "type");
+  }
+  if (!database.objectStoreNames.contains("relationships")) {
+    database.createObjectStore("relationships", { keyPath: "key" });
   }
   if (!database.objectStoreNames.contains("dirty")) {
     const store = database.createObjectStore("dirty", { keyPath: "entityId" });
