@@ -36,7 +36,9 @@ defmodule EbbServer.Storage.Authorizer do
   - Group bootstrap allowed without prior permissions
   - `group` / `groupMember` updates require membership in the entity's group
   - `relationship` updates require membership in the edge's **source** group set
-  - User entities require the permission in at least one group of the entity's set
+  - User entities require the permission in at least one group of the entity's set;
+    an entity with no group set at all is rejected as `missing_ownership`, a
+    structural failure distinct from a permission failure
   """
   @spec authorize([validated_action()], String.t(), AuthorizationContext.t()) ::
           :ok | {:error, String.t(), String.t()}
@@ -128,8 +130,13 @@ defmodule EbbServer.Storage.Authorizer do
     opts = Keyword.put(ctx_to_opts(ctx), :intra_action, intra_ctx)
 
     case EntityIndex.resolve_groups(update.subject_type, update.subject_id, opts) do
-      [] -> check_actor_can_create_entity(actor_id, update.subject_type, update.method, ctx)
-      group_ids -> check_any_group_permission(group_ids, actor_id, update, ctx)
+      [] ->
+        {:error, "missing_ownership",
+         "entity has no group membership; a kind: \"member\" edge to at least one group " <>
+           "must be part of the same action"}
+
+      group_ids ->
+        check_any_group_permission(group_ids, actor_id, update, ctx)
     end
   end
 
@@ -166,25 +173,5 @@ defmodule EbbServer.Storage.Authorizer do
       relationships_by_id: ctx.relationships_by_id_table,
       group_members_by_id: ctx.group_members_by_id_table
     ]
-  end
-
-  defp check_actor_can_create_entity(actor_id, subject_type, method, ctx) do
-    required_permission = PermissionHelper.method_to_permission(Atom.to_string(method))
-
-    actor_groups = GroupCache.get_actor_groups(actor_id, ctx.group_members_table)
-
-    has_permission =
-      Enum.any?(actor_groups, fn group_entry ->
-        %{group_id: group_id, permissions: permissions} = group_entry
-
-        group_id != nil and
-          PermissionHelper.check_permission(permissions, subject_type, required_permission)
-      end)
-
-    if has_permission do
-      :ok
-    else
-      {:error, "not_authorized", "actor has no group with required permission"}
-    end
   end
 end

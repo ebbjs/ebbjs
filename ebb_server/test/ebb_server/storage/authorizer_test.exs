@@ -323,6 +323,82 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert Authorizer.authorize([action], "a_1", ctx) == :ok
     end
 
+    test "unowned entity put is rejected as missing_ownership, not not_authorized" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      # The actor holds the create permission in a group, so the old
+      # create fallback would have accepted this write. Without a
+      # membership edge the entity would be materialized globally and
+      # never indexed into any group, so it must be rejected.
+      :ets.insert(
+        tables.group_members,
+        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.create"]}}
+      )
+
+      action = %{
+        id: "act_1",
+        actor_id: "a_1",
+        hlc: generate_hlc(),
+        updates: [
+          %{
+            id: "upd_1",
+            subject_id: "todo_1",
+            subject_type: "todo",
+            method: :put,
+            data: %{"fields" => %{"title" => %{"value" => "Test"}}}
+          }
+        ]
+      }
+
+      assert {:error, "missing_ownership", details} =
+               Authorizer.authorize([action], "a_1", ctx)
+
+      assert details =~ "membership"
+    end
+
+    test "entity put with a same-action membership edge is accepted" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      :ets.insert(
+        tables.group_members,
+        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.create"]}}
+      )
+
+      action = %{
+        id: "act_1",
+        actor_id: "a_1",
+        hlc: generate_hlc(),
+        updates: [
+          %{
+            id: "upd_1",
+            subject_id: "todo_1",
+            subject_type: "todo",
+            method: :put,
+            data: %{"fields" => %{"title" => %{"value" => "Test"}}}
+          },
+          %{
+            id: "rel_1",
+            subject_id: "rel_1",
+            subject_type: "relationship",
+            method: :put,
+            data: %{
+              "fields" => %{
+                "source_id" => %{"value" => "todo_1"},
+                "target_id" => %{"value" => "g_1"},
+                "type" => %{"value" => "todo"},
+                "field" => %{"value" => "groups"},
+                "kind" => %{"value" => "member"}
+              }
+            }
+          }
+        ]
+      }
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+
     test "system entity update authorized when actor is group member" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)

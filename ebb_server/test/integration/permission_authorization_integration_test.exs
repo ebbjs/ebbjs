@@ -60,26 +60,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       entity_id = "todo_auth_1"
       hlc = generate_hlc()
 
-      action_body = %{
-        "id" => "act_auth_" <> Nanoid.generate(),
-        "actor_id" => "actor_1",
-        "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_auth_" <> Nanoid.generate(),
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Authorized Todo", "hlc" => hlc}
-              }
-            }
-          }
-        ]
-      }
+      conn =
+        write_entity_in_group("actor_1", entity_id, "todo", "group_1", %{
+          "title" => %{"type" => "lww", "value" => "Authorized Todo", "hlc" => hlc}
+        })
 
-      conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}), "actor_1")
       assert conn.status == 200
 
       {:ok, response} = Jason.decode(conn.resp_body)
@@ -169,6 +154,37 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
 
       rejection = hd(response["rejected"])
       assert rejection["reason"] == "not_authorized"
+    end
+
+    test "entity put with no membership is rejected as missing_ownership" do
+      entity_id = "todo_unowned_1"
+      hlc = generate_hlc()
+
+      action = %{
+        "id" => "act_unowned_" <> Nanoid.generate(),
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          %{
+            "id" => "upd_unowned_" <> Nanoid.generate(),
+            "subject_id" => entity_id,
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{
+                "title" => %{"type" => "lww", "value" => "Unowned", "hlc" => hlc}
+              }
+            }
+          }
+        ]
+      }
+
+      conn = post_actions(msgpack_encode!(%{"actions" => [action]}), "actor_1")
+      assert conn.status == 200
+
+      rejection = conn.resp_body |> Jason.decode!() |> Map.fetch!("rejected") |> hd()
+      assert rejection["reason"] == "missing_ownership"
+      assert rejection["details"] =~ "membership"
     end
 
     test "actor identity mismatch is rejected" do
