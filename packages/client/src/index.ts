@@ -170,6 +170,7 @@ export {
   defineAction,
   type ActionDef,
   type ActionHandles,
+  type ActionPointer,
   type ActionValues,
   type ActionWrite,
   type DefineActionInput,
