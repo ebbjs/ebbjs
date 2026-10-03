@@ -141,6 +141,33 @@ describe("client.atomic — one Action, forward references", () => {
     expect(relUpdate.data?.fields?.["target_id"]?.value).toBe(created.list.id);
     expect(relUpdate.data?.fields?.["field"]?.value).toBe("list");
     expect(relUpdate.data?.fields?.["type"]?.value).toBe("todo");
+    expect(relUpdate.data?.fields?.["kind"]?.value).toBe("link");
+  });
+
+  it('emits kind: "member" when a pointer targets the group entity', async () => {
+    const memberTodo = defineEntity("todo", { title: e.string() });
+    const group = defineEntity("group", { name: e.string() });
+    const memberSchema = defineSchema({
+      entities: { todo: memberTodo, group },
+      relationships: {
+        todo_ownedBy: defineRelationship({ source: memberTodo, target: group, as: "ownedBy" }),
+      },
+      version: 1,
+    });
+    const { client, seen } = mkClient(memberSchema);
+    await client.handshake();
+
+    const created = await client.atomic(({ todo }) => ({
+      todo: todo.create({ title: "Ship it", ownedBy: "g_1" }),
+    }));
+
+    expect(created.todo.ownedBy).toBe("g_1");
+    const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
+    const relUpdate = updates.find((u) => u.subject_type === "relationship")!;
+    expect(relUpdate.data?.fields?.["source_id"]?.value).toBe(created.todo.id);
+    expect(relUpdate.data?.fields?.["target_id"]?.value).toBe("g_1");
+    expect(relUpdate.data?.fields?.["field"]?.value).toBe("ownedBy");
+    expect(relUpdate.data?.fields?.["kind"]?.value).toBe("member");
   });
 
   it("returns handles with ids and materialized fields, substituting refs with generated ids", async () => {
