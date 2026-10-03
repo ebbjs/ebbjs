@@ -1,7 +1,7 @@
 import { openDB, type IDBPDatabase } from "idb";
 import type { Action } from "@ebbjs/core";
 import type { StorageAdapter } from "../types/storage-adapter";
-import { createEbbStores, type EbbDBSchema } from "./schema";
+import { createEbbStores, EBB_SCHEMA_VERSION, type EbbDBSchema } from "./schema";
 
 import { createIndexedDBActionLog } from "./action-log.indexeddb";
 import { createIndexedDBCursorStore } from "./cursor-store.indexeddb";
@@ -29,13 +29,17 @@ export interface IndexedDBAdapterOptions {
  * ## Concurrency
  * Single-tab ownership is assumed for v1. Multi-tab coordination is
  * out of scope per issue #145.
+ *
+ * ## Schema version
+ * Opens at `EBB_SCHEMA_VERSION`; `openTestDb` opens the test schema at
+ * the same version so the two cannot drift.
  */
 export const createIndexedDBAdapter = async (
   options: IndexedDBAdapterOptions = {},
 ): Promise<StorageAdapter> => {
   const dbName = options.dbName ?? "ebb-storage";
 
-  const db: IDBPDatabase<EbbDBSchema> = await openDB<EbbDBSchema>(dbName, 2, {
+  const db: IDBPDatabase<EbbDBSchema> = await openDB<EbbDBSchema>(dbName, EBB_SCHEMA_VERSION, {
     upgrade: createEbbStores,
   });
 

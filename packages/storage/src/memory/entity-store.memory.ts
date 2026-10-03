@@ -1,10 +1,15 @@
 import type { Entity } from "@ebbjs/core";
-import type { EntityStore } from "../types/entity-store";
+import type { EntityStore, RelationshipIndexQuery } from "../types/entity-store";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
 import type { EntityChangeEmitter } from "../types/entity-change-emitter";
 import { applyUpdate } from "../internal/materialize";
 import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
+import {
+  relationshipEntryFor,
+  relationshipIndexKey,
+  sortSourceIds,
+} from "../internal/relationship-index";
 
 /**
  * MemoryEntityStore — in-memory implementation of EntityStore.
@@ -12,6 +17,8 @@ import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
  * ## State
  * - `entities` — Record<entityId, Entity> — O(1) entity lookup
  * - `typeIndex` — Record<type, Set<entityId>> — O(1) query by type
+ * - `relationshipIndex` — Record<indexKey, Set<sourceId>> — O(1) reverse
+ *   relationship lookup; indexKey is the `(field, type, target_id)` triple
  *
  * ## Materialization Flow
  * 1. Caller invokes `append()` on ActionLog
@@ -30,6 +37,7 @@ import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
 interface EntityStoreState {
   entities: Record<string, Entity>;
   typeIndex: Record<string, Set<string>>;
+  relationshipIndex: Record<string, Set<string>>;
 }
 
 const copyEntity = (entity: Entity): Entity => JSON.parse(JSON.stringify(entity));
@@ -59,6 +67,37 @@ const updateTypeIndexOnSet = (
   return newTypeIndex;
 };
 
+/**
+ * Rebuild the relationship index around a single entity write.
+ * Removal is driven by the entity's previous entry (derived from the
+ * previous row) so a patch that re-points a row or a tombstone that
+ * hides one leaves no stale source behind.
+ */
+const updateRelationshipIndex = (
+  index: Record<string, Set<string>>,
+  previous: Entity | undefined,
+  next: Entity | undefined,
+): Record<string, Set<string>> => {
+  const previousEntry = previous === undefined ? null : relationshipEntryFor(previous);
+  const nextEntry = next === undefined ? null : relationshipEntryFor(next);
+
+  if (previousEntry?.key === nextEntry?.key && previousEntry?.sourceId === nextEntry?.sourceId) {
+    return index;
+  }
+
+  const out = { ...index };
+  if (previousEntry !== null) {
+    const sources = new Set(out[previousEntry.key] ?? []);
+    sources.delete(previousEntry.sourceId);
+    if (sources.size === 0) delete out[previousEntry.key];
+    else out[previousEntry.key] = sources;
+  }
+  if (nextEntry !== null) {
+    out[nextEntry.key] = new Set(out[nextEntry.key] ?? []).add(nextEntry.sourceId);
+  }
+  return out;
+};
+
 export interface MemoryEntityStoreBundle {
   store: EntityStore;
   emitter: EntityChangeEmitter;
@@ -76,7 +115,7 @@ export const createMemoryEntityStore = (
   actionLog: ActionLog,
   dirtyTracker: DirtyTracker,
 ): MemoryEntityStoreBundle => {
-  let state: EntityStoreState = { entities: {}, typeIndex: {} };
+  let state: EntityStoreState = { entities: {}, typeIndex: {}, relationshipIndex: {} };
   const { emitter, emit } = createEntityChangeEmitter();
 
   /**
@@ -111,6 +150,7 @@ export const createMemoryEntityStore = (
     state = {
       entities: { ...state.entities, [entityId]: copyEntity(entity) },
       typeIndex: updateTypeIndexOnSet(state.typeIndex, entity, oldEntity?.type),
+      relationshipIndex: updateRelationshipIndex(state.relationshipIndex, oldEntity, entity),
     };
 
     if (clearDirty) {
@@ -132,6 +172,7 @@ export const createMemoryEntityStore = (
       state = {
         entities: { ...state.entities, [entity.id]: copyEntity(entity) },
         typeIndex: updateTypeIndexOnSet(state.typeIndex, entity, oldEntity?.type),
+        relationshipIndex: updateRelationshipIndex(state.relationshipIndex, oldEntity, entity),
       };
       emit(entity.id, state.entities[entity.id]);
     },
@@ -147,8 +188,22 @@ export const createMemoryEntityStore = (
       return [...entityIds].map((id) => copyEntity(state.entities[id])).filter(Boolean);
     },
 
+    async queryByRelationship({
+      as,
+      type,
+      targetId,
+    }: RelationshipIndexQuery): Promise<readonly string[]> {
+      const dirtyIds = await dirtyTracker.getDirtyForType("relationship");
+
+      for (const id of dirtyIds) {
+        await replay(id, true);
+      }
+
+      return sortSourceIds(state.relationshipIndex[relationshipIndexKey(as, type, targetId)] ?? []);
+    },
+
     async reset(): Promise<void> {
-      state = { entities: {}, typeIndex: {} };
+      state = { entities: {}, typeIndex: {}, relationshipIndex: {} };
       emitter.reset();
     },
   };
