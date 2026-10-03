@@ -1375,3 +1375,114 @@ async function findCreatedTodoId(client: import("../..").SyncClient): Promise<st
   const sorted = [...stored].sort((a, b) => (a.created_hlc < b.created_hlc ? 1 : -1));
   return sorted[0]!.id;
 }
+
+// ---------------------------------------------------------------------------
+// Integration: client.atomic (multi-entity Action)
+// ---------------------------------------------------------------------------
+
+/**
+ * `client.atomic(...)` creates several entities plus their
+ * relationships in one wire Action. The server commits the Action
+ * atomically and materializes every Update, so a multi-entity create
+ * round-trips as one unit.
+ *
+ * The relationships here target the test group: the server resolves a
+ * user entity's group from a Relationship Update, so the entities in
+ * the bundle have to be linked to their group in the same Action.
+ */
+describe("integration: client.atomic", () => {
+  const atomicTodo = defineEntity("todo", { title: e.string() });
+  const atomicList = defineEntity("list", { name: e.string() });
+  const atomicGroup = defineEntity("group", { name: e.string() });
+  const atomicSchema = defineSchema({
+    entities: { todo: atomicTodo, list: atomicList },
+    relationships: {
+      todo_ownedBy: defineRelationship({
+        source: atomicTodo,
+        target: atomicGroup,
+        as: "ownedBy",
+      }),
+      list_ownedBy: defineRelationship({
+        source: atomicList,
+        target: atomicGroup,
+        as: "ownedBy",
+      }),
+    },
+    version: 1,
+  });
+
+  it("creates multiple entities + their group links in one Action", async () => {
+    if (!(await shouldRun())) return;
+    const actor = `atomic_${RUN_ID}`;
+    await addMemberWithTodoAndListPerms(actor);
+    const client = createClient({ serverUrl: SERVER_URL, actorId: actor, schema: atomicSchema });
+    const { groups } = await client.handshake();
+    expect(groups.find((g) => g.id === TEST_GROUP_ID)).toBeDefined();
+    client.setState("live");
+
+    try {
+      const created = await client.atomic(({ todo, list }) => {
+        const today = list.create({ name: "Today", ownedBy: TEST_GROUP_ID });
+        return {
+          todo: todo.create({ title: "Ship it", ownedBy: TEST_GROUP_ID }),
+          list: today,
+        };
+      });
+
+      expect(created.todo.id).toMatch(/^e_/);
+      expect(created.list.id).toMatch(/^e_/);
+      expect(created.todo.ownedBy).toBe(TEST_GROUP_ID);
+      expect(created.list.ownedBy).toBe(TEST_GROUP_ID);
+
+      await catchUpUntilCurrent(client, TEST_GROUP_ID);
+      const todos = await client.storage.entities.query("todo");
+      const lists = await client.storage.entities.query("list");
+      expect(todos.map((e) => e.id)).toContain(created.todo.id);
+      expect(lists.map((e) => e.id)).toContain(created.list.id);
+
+      const rels = await client.storage.entities.query("relationship");
+      const linksFor = (sourceId: string): boolean =>
+        rels.some(
+          (e) =>
+            e.data?.fields?.["source_id"]?.value === sourceId &&
+            e.data?.fields?.["target_id"]?.value === TEST_GROUP_ID,
+        );
+      expect(linksFor(created.todo.id)).toBe(true);
+      expect(linksFor(created.list.id)).toBe(true);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+/** Add an actor with `todo.*`, `list.*`, and `relationship.*` on the test group. */
+async function addMemberWithTodoAndListPerms(actorId: string): Promise<void> {
+  const clock = createClock();
+  const memberId = `gm_${actorId}`;
+  const update = {
+    subject_id: memberId,
+    subject_type: "groupMember",
+    method: "put" as const,
+    data: {
+      fields: {
+        actor_id: { value: actorId, update_id: "add", hlc: localEvent(clock) },
+        group_id: { value: TEST_GROUP_ID, update_id: "add", hlc: localEvent(clock) },
+        permissions: {
+          value: ["todo.*", "list.*", "relationship.*"],
+          update_id: "add",
+          hlc: localEvent(clock),
+        },
+      },
+    },
+  };
+  const { action } = createAction({ actorId: TEST_SEEDER, updates: [update], clock });
+  const body = encodeSync({ actions: [action] });
+  const res = await fetch(`${SERVER_URL}/sync/actions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/msgpack", "x-ebb-actor-id": TEST_SEEDER },
+    body: body as BodyInit,
+  });
+  if (!res.ok) {
+    throw new Error(`failed to add member ${actorId}: ${res.status} ${await res.text()}`);
+  }
+}
