@@ -1253,14 +1253,24 @@ describe("client.<entity>.delete", () => {
     expect(update.data).toBeNull();
   });
 
-  it("delete(id) forwards the server's rejection list", async () => {
+  it("delete(id) scopes the server's rejection list to the submitted Action", async () => {
+    let submittedId = "";
     const { client } = await mkClient(
-      mkFetch(() => jsonResponse({ rejected: [{ id: "act_1", reason: "permission_denied" }] })),
+      mkFetch((_url, init) => {
+        const actions = decodeSync<{ actions: Action[] }>(init.body as Uint8Array).actions;
+        submittedId = actions[0]!.id;
+        return jsonResponse({
+          rejected: [
+            { id: "act_someone_else", reason: "not_authorized" },
+            { id: submittedId, reason: "permission_denied" },
+          ],
+        });
+      }),
     );
 
     const response = await client.todo.delete("todo_1");
 
-    expect(response.rejected).toEqual([{ id: "act_1", reason: "permission_denied" }]);
+    expect(response.rejected).toEqual([{ id: submittedId, reason: "permission_denied" }]);
   });
 
   it("delete(id) is typed as Promise<WriteResponse>", async () => {
