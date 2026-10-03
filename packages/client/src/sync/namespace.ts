@@ -507,7 +507,7 @@ export function createEntityNamespace<
   const loader: LoadEntities = async () => storage.entities.query(entityName);
   return {
     query(): QueryBuilder<TFields> {
-      return buildLazyQueryBuilder(loader, shape);
+      return buildLazyQueryBuilder(loader, shape, { entityName, registry, storage });
     },
     async get(id: string): Promise<EntityRow<TFields, TAccessors> | null> {
       const entity = await storage.entities.get(id);

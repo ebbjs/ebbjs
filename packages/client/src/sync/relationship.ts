@@ -12,17 +12,13 @@ import type { Entity } from "@ebbjs/core";
 import type { TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { EntityRegistry } from "../schema/entity-registry";
-import { type LoadEntities, type QueryBuilder, buildLazyQueryBuilder } from "./query-builder";
-
-/**
- * A single pointer value. Accepts either:
- * - a string id
- * - a materialized entity (anything with a string `.id`)
- *
- * Anything else is rejected by `buildRelationshipWrite` at
- * validation time. The wire always carries ids.
- */
-export type PointerValue = string | { readonly id: string } | null | undefined;
+import {
+  type LoadEntities,
+  type PointerValue,
+  type QueryBuilder,
+  buildLazyQueryBuilder,
+  normalizePointer,
+} from "./query-builder";
 
 /**
  * The value shape for `sourceCardinality: "many"` updates.
@@ -84,30 +80,6 @@ export interface BuildRelationshipWriteResult {
 }
 
 /**
- * Normalize a pointer value to a string id.
- * Returns `null` for `null`/`undefined` (clear semantics);
- * throws `EntityValidationError` for anything that isn't a string
- * or an entity-shape object with a string `.id`.
- */
-export function normalizePointer(value: unknown, label: string): string | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value === "string") {
-    if (value.length === 0) {
-      throw new Error(`${label}: empty string is not a valid pointer id`);
-    }
-    return value;
-  }
-  if (typeof value === "object") {
-    const obj = value as { id?: unknown };
-    if (typeof obj.id === "string" && obj.id.length > 0) {
-      return obj.id;
-    }
-    throw new Error(`${label}: object pointer must have a non-empty string .id`);
-  }
-  throw new Error(`${label}: pointer must be a string id, an entity with .id, or null/undefined`);
-}
-
-/**
  * Normalize many-pointer values. Returns a flat array of distinct
  * string ids (or throws on bad input). For `{add, remove}` patches,
  * the caller computes the resulting set and passes it as `replace`.
@@ -129,11 +101,12 @@ export function normalizeManyPointers(value: ManyPointerValue, label: string): r
   return ids;
 }
 
-/** Re-exported from `./query-builder` so existing imports of `QueryBuilder` from `../sync/relationship` resolve. */
-export type { QueryBuilder } from "./query-builder";
+/** Re-exported from `./query-builder` so existing imports of `PointerValue` /
+ * `QueryBuilder` from `../sync/relationship` resolve. */
+export type { PointerValue, QueryBuilder } from "./query-builder";
 
 /** Re-exported from `./query-builder` for the same reason. */
-export { buildQueryBuilder } from "./query-builder";
+export { buildQueryBuilder, normalizePointer } from "./query-builder";
 
 /**
  * Walk the local cache to collect all `Relationship` entities whose
