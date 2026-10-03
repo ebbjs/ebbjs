@@ -10,7 +10,7 @@ import type { SeedData } from "@ebbjs/server";
 
 export const SMOKE_GROUP_ID = "grp_smoke";
 export const SMOKE_MEMBER_ID = "gm_smoke";
-export const SMOKE_RELATIONSHIP_ID = "rel_smoke";
+export const SMOKE_MEMBERSHIP_ID = "eg_smoke";
 export const SMOKE_ENTITY_ID = "ent_smoke";
 export const SMOKE_ACTOR_ID = "actor_smoke";
 
@@ -32,13 +32,11 @@ export function buildSmokeSeed(): SeedData {
         permissions: ["todo.*"],
       },
     ],
-    relationships: [
+    entityGroups: [
       {
-        id: SMOKE_RELATIONSHIP_ID,
-        sourceId: SMOKE_ENTITY_ID,
-        targetId: SMOKE_GROUP_ID,
-        type: "todo",
-        field: "ownedBy",
+        id: SMOKE_MEMBERSHIP_ID,
+        entityId: SMOKE_ENTITY_ID,
+        groupId: SMOKE_GROUP_ID,
       },
     ],
     entities: [

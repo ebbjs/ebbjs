@@ -38,8 +38,10 @@ defmodule EbbServer.Storage.EntityStoreTest do
       gsn_counter: gsn_counter,
       group_members: group_members,
       group_members_by_id: group_members_by_id,
+      entity_groups: entity_groups,
+      entity_groups_by_id: entity_groups_by_id,
+      entity_groups_by_group: entity_groups_by_group,
       relationships: relationships,
-      relationships_by_group: relationships_by_group,
       relationships_by_id: relationships_by_id
     } = start_isolated_cache()
 
@@ -53,8 +55,10 @@ defmodule EbbServer.Storage.EntityStoreTest do
         gsn_counter: gsn_counter,
         group_members: group_members,
         group_members_by_id: group_members_by_id,
+        entity_groups: entity_groups,
+        entity_groups_by_id: entity_groups_by_id,
+        entity_groups_by_group: entity_groups_by_group,
         relationships: relationships,
-        relationships_by_group: relationships_by_group,
         relationships_by_id: relationships_by_id
       })
 

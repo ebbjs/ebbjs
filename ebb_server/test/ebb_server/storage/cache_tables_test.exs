@@ -17,7 +17,7 @@ defmodule EbbServer.Storage.CacheTablesTest do
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{CacheTables, GroupCache, RelationshipCache}
+  alias EbbServer.Storage.{CacheTables, EntityGroupCache, GroupCache, RelationshipCache}
 
   # Erase the published keys before any test in this module runs so a
   # prior test's leftover `:persistent_term` (e.g., from
@@ -28,10 +28,12 @@ defmodule EbbServer.Storage.CacheTablesTest do
   setup_all do
     for {module, key} <- [
           {RelationshipCache, :relationships},
-          {RelationshipCache, :relationships_by_group},
           {RelationshipCache, :relationships_by_id},
           {GroupCache, :group_members},
-          {GroupCache, :group_members_by_id}
+          {GroupCache, :group_members_by_id},
+          {EntityGroupCache, :entity_groups},
+          {EntityGroupCache, :entity_groups_by_id},
+          {EntityGroupCache, :entity_groups_by_group}
         ] do
       try do
         :persistent_term.erase({module, key})
@@ -86,6 +88,45 @@ defmodule EbbServer.Storage.CacheTablesTest do
     end
   end
 
+  describe "entity_groups/0" do
+    test "returns the canonical default when EntityGroupCache has not published" do
+      assert CacheTables.entity_groups() == :ebb_entity_groups
+    end
+
+    test "returns whatever EntityGroupCache published" do
+      name = :"eg_published_#{System.unique_integer([:positive])}"
+      publish_and_cleanup(EntityGroupCache, :entity_groups, name)
+
+      assert CacheTables.entity_groups() == name
+    end
+  end
+
+  describe "entity_groups_by_id/0" do
+    test "returns the canonical default when EntityGroupCache has not published" do
+      assert CacheTables.entity_groups_by_id() == :ebb_entity_groups_by_id
+    end
+
+    test "returns whatever EntityGroupCache published" do
+      name = :"eg_by_id_published_#{System.unique_integer([:positive])}"
+      publish_and_cleanup(EntityGroupCache, :entity_groups_by_id, name)
+
+      assert CacheTables.entity_groups_by_id() == name
+    end
+  end
+
+  describe "entity_groups_by_group/0" do
+    test "returns the canonical default when EntityGroupCache has not published" do
+      assert CacheTables.entity_groups_by_group() == :ebb_entity_groups_by_group
+    end
+
+    test "returns whatever EntityGroupCache published" do
+      name = :"eg_by_group_published_#{System.unique_integer([:positive])}"
+      publish_and_cleanup(EntityGroupCache, :entity_groups_by_group, name)
+
+      assert CacheTables.entity_groups_by_group() == name
+    end
+  end
+
   describe "relationships/0" do
     test "returns the canonical default when RelationshipCache has not published" do
       assert CacheTables.relationships() == :ebb_relationships
@@ -96,19 +137,6 @@ defmodule EbbServer.Storage.CacheTablesTest do
       publish_and_cleanup(EbbServer.Storage.RelationshipCache, :relationships, name)
 
       assert CacheTables.relationships() == name
-    end
-  end
-
-  describe "relationships_by_group/0" do
-    test "returns the canonical default when RelationshipCache has not published" do
-      assert CacheTables.relationships_by_group() == :ebb_relationships_by_group
-    end
-
-    test "returns whatever RelationshipCache published" do
-      name = :"rbg_published_#{System.unique_integer([:positive])}"
-      publish_and_cleanup(EbbServer.Storage.RelationshipCache, :relationships_by_group, name)
-
-      assert CacheTables.relationships_by_group() == name
     end
   end
 

@@ -51,8 +51,8 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
   end
 
   describe "system-entity fan-out (#197)" do
-    test "relationship and groupMember actions reach the per-group GroupServer" do
-      # Pinned by #197: the FanOutRouter must route relationship /
+    test "entityGroup and groupMember actions reach the per-group GroupServer" do
+      # Pinned by #197: the FanOutRouter must route entityGroup /
       # groupMember / group updates to the right GroupServer. Subscribe
       # an SSEConnection to the bootstrap group, write the seed, and
       # verify the chunk carries all three system-entity subject types.
@@ -83,7 +83,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
 
       assert "group" in subject_types
       assert "groupMember" in subject_types
-      assert "relationship" in subject_types
+      assert "entityGroup" in subject_types
 
       :ok = FanOutRouter.unsubscribe(sse_pid)
     end

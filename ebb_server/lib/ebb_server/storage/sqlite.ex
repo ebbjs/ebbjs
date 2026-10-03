@@ -76,6 +76,7 @@ defmodule EbbServer.Storage.SQLite do
     rel_type TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.type.value')) STORED,
     rel_field TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.field.value')) STORED,
     actor_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.actor_id.value')) STORED,
+    entity_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.entity_id.value')) STORED,
     group_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.group_id.value')) STORED,
     permissions TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.permissions.value')) STORED
   );
@@ -86,6 +87,7 @@ defmodule EbbServer.Storage.SQLite do
   CREATE INDEX IF NOT EXISTS idx_entities_type_gsn ON entities(type, last_gsn);
   CREATE INDEX IF NOT EXISTS idx_entities_source_id ON entities(source_id) WHERE type = 'relationship' AND deleted_hlc IS NULL;
   CREATE INDEX IF NOT EXISTS idx_entities_group_member ON entities(group_id, actor_id) WHERE type = 'groupMember' AND deleted_hlc IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_entities_entity_group ON entities(entity_id, group_id) WHERE type = 'entityGroup' AND deleted_hlc IS NULL;
   """
 
   @upsert_sql """
@@ -253,11 +255,11 @@ defmodule EbbServer.Storage.SQLite do
     base_sql = """
     SELECT e.id, e.type, e.data, e.created_hlc, e.updated_hlc, e.deleted_hlc, e.deleted_by, e.last_gsn
     FROM entities e
-    INNER JOIN entities r ON r.type = 'relationship'
-      AND r.source_id = e.id
-      AND r.deleted_hlc IS NULL
+    INNER JOIN entities m ON m.type = 'entityGroup'
+      AND m.entity_id = e.id
+      AND m.deleted_hlc IS NULL
     INNER JOIN entities gm ON gm.type = 'groupMember'
-      AND gm.group_id = r.target_id
+      AND gm.group_id = m.group_id
       AND gm.actor_id = ?
       AND gm.deleted_hlc IS NULL
     WHERE e.type = ?

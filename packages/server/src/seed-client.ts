@@ -2,9 +2,24 @@ import { encodeSync } from "@ebbjs/core";
 import { Action } from "@ebbjs/core";
 import { createAction } from "@ebbjs/core";
 import { createClock, localEvent } from "@ebbjs/core";
-import { GroupSeed, GroupMemberSeed, EntitySeed, RelationshipSeed, SeedData } from "./types";
+import {
+  GroupSeed,
+  GroupMemberSeed,
+  EntitySeed,
+  RelationshipSeed,
+  EntityGroupSeed,
+  SeedData,
+} from "./types";
 
-export type { GroupSeed, GroupMemberSeed, EntitySeed, RelationshipSeed, SeedData, Action };
+export type {
+  GroupSeed,
+  GroupMemberSeed,
+  EntitySeed,
+  RelationshipSeed,
+  EntityGroupSeed,
+  SeedData,
+  Action,
+};
 
 export function buildSeedAction(actorId: string, data: SeedData): Action {
   const clock = createClock();
@@ -70,7 +85,28 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
           target_id: { value: rel.targetId, update_id: "seed_update", hlc: localEvent(clock) },
           type: { value: rel.type, update_id: "seed_update", hlc: localEvent(clock) },
           field: { value: rel.field, update_id: "seed_update", hlc: localEvent(clock) },
-          kind: { value: rel.kind ?? "member", update_id: "seed_update", hlc: localEvent(clock) },
+        },
+      },
+    });
+  }
+
+  for (const membership of data.entityGroups ?? []) {
+    updates.push({
+      subject_id: membership.id,
+      subject_type: "entityGroup",
+      method: "put" as const,
+      data: {
+        fields: {
+          entity_id: {
+            value: membership.entityId,
+            update_id: "seed_update",
+            hlc: localEvent(clock),
+          },
+          group_id: {
+            value: membership.groupId,
+            update_id: "seed_update",
+            hlc: localEvent(clock),
+          },
         },
       },
     });

@@ -66,7 +66,7 @@ defmodule EbbServer.Integration.ActionHelpers do
   def bootstrap_group(actor_id, group_id, permissions) do
     hlc = TestHelpers.generate_hlc()
     gm_id = "gm_" <> Nanoid.generate()
-    rel_id = "rel_" <> Nanoid.generate()
+    eg_id = "eg_" <> Nanoid.generate()
 
     action = %{
       "id" => "act_bootstrap_" <> Nanoid.generate(),
@@ -96,17 +96,14 @@ defmodule EbbServer.Integration.ActionHelpers do
           }
         },
         %{
-          "id" => rel_id,
-          "subject_id" => rel_id,
-          "subject_type" => "relationship",
+          "id" => eg_id,
+          "subject_id" => eg_id,
+          "subject_type" => "entityGroup",
           "method" => "put",
           "data" => %{
             "fields" => %{
-              "source_id" => %{"type" => "lww", "value" => "todo_bootstrap", "hlc" => hlc},
-              "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-              "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
-              "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc},
-              "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc}
+              "entity_id" => %{"type" => "lww", "value" => "todo_bootstrap", "hlc" => hlc},
+              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
             }
           }
         }
@@ -118,7 +115,7 @@ defmodule EbbServer.Integration.ActionHelpers do
 
   def write_entity_in_group(actor_id, entity_id, entity_type, group_id, fields) do
     hlc = TestHelpers.generate_hlc()
-    rel_id = "rel_" <> Nanoid.generate()
+    eg_id = "eg_" <> Nanoid.generate()
 
     action = %{
       "id" => "act_write_" <> Nanoid.generate(),
@@ -133,17 +130,14 @@ defmodule EbbServer.Integration.ActionHelpers do
           "data" => %{"fields" => fields}
         },
         %{
-          "id" => rel_id,
-          "subject_id" => rel_id,
-          "subject_type" => "relationship",
+          "id" => eg_id,
+          "subject_id" => eg_id,
+          "subject_type" => "entityGroup",
           "method" => "put",
           "data" => %{
             "fields" => %{
-              "source_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
-              "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-              "type" => %{"type" => "lww", "value" => entity_type, "hlc" => hlc},
-              "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc},
-              "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc}
+              "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
+              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
             }
           }
         }

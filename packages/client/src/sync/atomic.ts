@@ -27,8 +27,8 @@ import type { EntityDef, ShapeFields } from "../schema/entity";
 import type { EntityRegistry } from "../schema/entity-registry";
 import { EntityValidationError, validatePayload } from "../schema/entity-registry";
 import type { Schema } from "../schema/schema";
-import { buildRelationshipUpdate, kindForTarget, normalizePointer } from "./relationship";
-import { wrapFields, type EntityFields } from "./namespace";
+import { buildEntityGroupUpdates, buildRelationshipUpdate, normalizePointer } from "./relationship";
+import { resolveGroupIds, wrapFields, type EntityFields, type GroupRef } from "./namespace";
 import type { WriteResponse } from "./types";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
@@ -60,9 +60,18 @@ export type CreatedEntity<TFields extends Record<string, TSchema>> = Static<
  */
 export type AtomicCreateInput = Record<string, unknown>;
 
+/**
+ * Options for a draft namespace's `create`. Mirrors the entity
+ * namespace's create signature: `groups` is required and non-empty,
+ * and one `entityGroup` row per group lands in the same Action.
+ */
+export interface AtomicCreateOptions {
+  readonly groups: readonly GroupRef[];
+}
+
 /** Per-entity draft surface passed to the `client.atomic` callback. */
 export interface AtomicDraftNamespace<TFields extends Record<string, TSchema>> {
-  create(input: AtomicCreateInput): CreatedEntity<TFields>;
+  create(input: AtomicCreateInput, opts: AtomicCreateOptions): CreatedEntity<TFields>;
 }
 
 /** Draft namespaces keyed by schema entity name. */
@@ -100,7 +109,6 @@ export interface AtomicWriteCapability {
 interface PendingPointer {
   readonly as: string;
   readonly type: string;
-  readonly kind: string;
   readonly targetId: string;
 }
 
@@ -109,6 +117,7 @@ interface PendingWrite {
   readonly id: string;
   readonly fields: Record<string, unknown>;
   readonly pointers: readonly PendingPointer[];
+  readonly groups: readonly string[];
 }
 
 const ATOMIC_HANDLE = Symbol.for("@ebbjs/atomic-handle");
@@ -184,12 +193,13 @@ const createDraftNamespace = (
   cap: AtomicWriteCapability,
   writes: PendingWrite[],
 ): AtomicDraftNamespace<Record<string, TSchema>> => ({
-  create(input) {
+  create(input, opts) {
     const id = generateId("e");
     const source = (input ?? {}) as Record<string, unknown>;
     const fields: Record<string, unknown> = {};
     const pointers: PendingPointer[] = [];
     const handle: Record<string, unknown> = { id };
+    const groups = resolveGroupIds(opts?.groups, entityName);
 
     for (const [key, value] of Object.entries(source)) {
       const rel = cap.registry.getRelationship(entityName, key);
@@ -207,12 +217,7 @@ const createDraftNamespace = (
         // records.
         if (declaresField(def, key)) fields[key] = targets;
         for (const targetId of targets) {
-          pointers.push({
-            as: key,
-            type: rel.type,
-            kind: kindForTarget(rel.target.name),
-            targetId,
-          });
+          pointers.push({ as: key, type: rel.type, targetId });
         }
       } else {
         if (targets.length > 1) {
@@ -223,12 +228,7 @@ const createDraftNamespace = (
         const targetId = targets[0];
         handle[key] = targetId ?? null;
         if (targetId !== undefined) {
-          pointers.push({
-            as: key,
-            type: rel.type,
-            kind: kindForTarget(rel.target.name),
-            targetId,
-          });
+          pointers.push({ as: key, type: rel.type, targetId });
         }
       }
     }
@@ -238,7 +238,7 @@ const createDraftNamespace = (
       throw new EntityValidationError(violations);
     }
 
-    writes.push({ entity: entityName, id, fields, pointers });
+    writes.push({ entity: entityName, id, fields, pointers, groups });
     return markHandle(handle) as unknown as CreatedEntity<Record<string, TSchema>>;
   },
 });
@@ -257,8 +257,9 @@ const buildDrafts = (
 
 /**
  * Flatten the collected writes into the wire Update list: one entity
- * `put` per created entity, followed by one `Relationship` `put` per
- * resolved pointer. The caller wraps the list in one Action.
+ * `put` per created entity, one `Relationship` `put` per resolved
+ * pointer, and one `entityGroup` `put` per group. The caller wraps
+ * the list in one Action.
  */
 const buildUpdates = (writes: readonly PendingWrite[], cap: AtomicWriteCapability): Update[] => {
   const entityUpdates: Update[] = [];
@@ -281,11 +282,13 @@ const buildUpdates = (writes: readonly PendingWrite[], cap: AtomicWriteCapabilit
           targetId: pointer.targetId,
           field: pointer.as,
           type: pointer.type,
-          kind: pointer.kind,
           updateId: cap.generateUpdateId(),
         }),
       );
     }
+    relationshipUpdates.push(
+      ...buildEntityGroupUpdates(write.id, write.groups, () => cap.generateUpdateId()),
+    );
   }
   return [...entityUpdates, ...relationshipUpdates];
 };

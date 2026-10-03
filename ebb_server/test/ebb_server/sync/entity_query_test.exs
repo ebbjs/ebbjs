@@ -39,7 +39,6 @@ defmodule EbbServer.Sync.EntityQueryTest do
   defp bootstrap_group(actor_id, group_id, permissions) do
     hlc = generate_hlc()
     gm_id = "gm_" <> Nanoid.generate()
-    rel_id = "rel_" <> Nanoid.generate()
 
     group_action = %{
       id: "act_group_" <> Nanoid.generate(),
@@ -83,31 +82,30 @@ defmodule EbbServer.Sync.EntityQueryTest do
 
     {:ok, {_gsn2, _gsn2}, []} = Writer.write_actions([gm_action])
 
-    rel_hlc = generate_hlc()
+    eg_id = "eg_" <> Nanoid.generate()
+    eg_hlc = generate_hlc()
 
-    rel_action = %{
-      id: "act_rel_" <> Nanoid.generate(),
+    eg_action = %{
+      id: "act_eg_" <> Nanoid.generate(),
       actor_id: actor_id,
-      hlc: rel_hlc,
+      hlc: eg_hlc,
       updates: [
         %{
-          id: "upd_rel_" <> Nanoid.generate(),
-          subject_id: rel_id,
-          subject_type: "relationship",
+          id: "upd_eg_" <> Nanoid.generate(),
+          subject_id: eg_id,
+          subject_type: "entityGroup",
           method: :put,
           data: %{
             "fields" => %{
-              "source_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
-              "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
-              "type" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
-              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc}
+              "entity_id" => %{"type" => "lww", "value" => group_id, "hlc" => eg_hlc},
+              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => eg_hlc}
             }
           }
         }
       ]
     }
 
-    {:ok, {_gsn3, _gsn3}, []} = Writer.write_actions([rel_action])
+    {:ok, {_gsn3, _gsn3}, []} = Writer.write_actions([eg_action])
     :ok
   end
 
@@ -115,7 +113,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
     title = Keyword.get(opts, :title, "Test todo")
     completed = Keyword.get(opts, :completed, false)
     hlc = generate_hlc()
-    rel_id = "rel_" <> Nanoid.generate()
+    eg_id = "eg_" <> Nanoid.generate()
 
     todo_action = %{
       id: "act_" <> Nanoid.generate(),
@@ -139,31 +137,29 @@ defmodule EbbServer.Sync.EntityQueryTest do
 
     {:ok, {_gsn1, _gsn1}, []} = Writer.write_actions([todo_action])
 
-    rel_hlc = generate_hlc()
+    eg_hlc = generate_hlc()
 
-    rel_action = %{
-      id: "act_rel_" <> Nanoid.generate(),
+    eg_action = %{
+      id: "act_eg_" <> Nanoid.generate(),
       actor_id: actor_id,
-      hlc: rel_hlc,
+      hlc: eg_hlc,
       updates: [
         %{
-          id: "upd_rel_" <> Nanoid.generate(),
-          subject_id: rel_id,
-          subject_type: "relationship",
+          id: "upd_eg_" <> Nanoid.generate(),
+          subject_id: eg_id,
+          subject_type: "entityGroup",
           method: :put,
           data: %{
             "fields" => %{
-              "source_id" => %{"type" => "lww", "value" => todo_id, "hlc" => rel_hlc},
-              "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => rel_hlc},
-              "type" => %{"type" => "lww", "value" => "todo", "hlc" => rel_hlc},
-              "field" => %{"type" => "lww", "value" => "group", "hlc" => rel_hlc}
+              "entity_id" => %{"type" => "lww", "value" => todo_id, "hlc" => eg_hlc},
+              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => eg_hlc}
             }
           }
         }
       ]
     }
 
-    {:ok, {_gsn2, _gsn2}, []} = Writer.write_actions([rel_action])
+    {:ok, {_gsn2, _gsn2}, []} = Writer.write_actions([eg_action])
     :ok
   end
 

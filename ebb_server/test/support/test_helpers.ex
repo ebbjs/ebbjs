@@ -36,6 +36,7 @@ defmodule EbbServer.TestHelpers do
 
   alias EbbServer.Storage.{
     DirtyTracker,
+    EntityGroupCache,
     GroupCache,
     RelationshipCache,
     RocksDB,
@@ -94,8 +95,10 @@ defmodule EbbServer.TestHelpers do
     - gsn_counter: :atomics reference
     - group_members: ETS table name
     - group_members_by_id: ETS table name
+    - entity_groups: ETS table name
+    - entity_groups_by_id: ETS table name
+    - entity_groups_by_group: ETS table name
     - relationships: ETS table name
-    - relationships_by_group: ETS table name
     - relationships_by_id: ETS table name
   """
   def start_isolated_cache do
@@ -104,11 +107,14 @@ defmodule EbbServer.TestHelpers do
     gsn_counter_name = :"ebb_gsn_#{unique_id}"
     gm_table = :"ebb_gm_#{unique_id}"
     gm_by_id_table = :"ebb_gm_by_id_#{unique_id}"
+    eg_table = :"ebb_eg_#{unique_id}"
+    eg_by_id_table = :"ebb_eg_by_id_#{unique_id}"
+    eg_by_group_table = :"ebb_eg_by_group_#{unique_id}"
     rel_table = :"ebb_rel_#{unique_id}"
-    rbg_table = :"ebb_rbg_#{unique_id}"
     rbi_table = :"ebb_rbi_#{unique_id}"
     dt_name = :"dt_#{unique_id}"
     gc_name = :"gc_#{unique_id}"
+    egc_name = :"egc_#{unique_id}"
     rc_name = :"rc_#{unique_id}"
     wt_name = :"wt_#{unique_id}"
     wt_table = :"wt_ranges_#{unique_id}"
@@ -118,8 +124,10 @@ defmodule EbbServer.TestHelpers do
     :persistent_term.put({DirtyTracker, :dirty_set}, dirty_set_name)
     :persistent_term.put({GroupCache, :group_members}, gm_table)
     :persistent_term.put({GroupCache, :group_members_by_id}, gm_by_id_table)
+    :persistent_term.put({EntityGroupCache, :entity_groups}, eg_table)
+    :persistent_term.put({EntityGroupCache, :entity_groups_by_id}, eg_by_id_table)
+    :persistent_term.put({EntityGroupCache, :entity_groups_by_group}, eg_by_group_table)
     :persistent_term.put({RelationshipCache, :relationships}, rel_table)
-    :persistent_term.put({RelationshipCache, :relationships_by_group}, rbg_table)
     :persistent_term.put({RelationshipCache, :relationships_by_id}, rbi_table)
 
     {:ok, _pid_dt} = DirtyTracker.start_link(name: dt_name, dirty_set: dirty_set_name)
@@ -127,18 +135,25 @@ defmodule EbbServer.TestHelpers do
     {:ok, _pid_gc} =
       GroupCache.start_link(name: gc_name, table: gm_table, group_members_by_id: gm_by_id_table)
 
+    {:ok, _pid_egc} =
+      EntityGroupCache.start_link(
+        name: egc_name,
+        entity_groups: eg_table,
+        entity_groups_by_id: eg_by_id_table,
+        entity_groups_by_group: eg_by_group_table
+      )
+
     {:ok, _pid_rc} =
       RelationshipCache.start_link(
         name: rc_name,
         relationships: rel_table,
-        relationships_by_group: rbg_table,
         relationships_by_id: rbi_table
       )
 
     {:ok, _pid_wt} = WatermarkTracker.start_link(name: wt_name, table: wt_table, initial_gsn: 0)
 
     on_exit(fn ->
-      for name <- [dt_name, gc_name, rc_name, wt_name],
+      for name <- [dt_name, gc_name, egc_name, rc_name, wt_name],
           pid = Process.whereis(name),
           do: safe_stop(pid)
 
@@ -146,8 +161,10 @@ defmodule EbbServer.TestHelpers do
       :persistent_term.erase({DirtyTracker, :dirty_set})
       :persistent_term.erase({GroupCache, :group_members})
       :persistent_term.erase({GroupCache, :group_members_by_id})
+      :persistent_term.erase({EntityGroupCache, :entity_groups})
+      :persistent_term.erase({EntityGroupCache, :entity_groups_by_id})
+      :persistent_term.erase({EntityGroupCache, :entity_groups_by_group})
       :persistent_term.erase({RelationshipCache, :relationships})
-      :persistent_term.erase({RelationshipCache, :relationships_by_group})
     end)
 
     %{
@@ -155,8 +172,10 @@ defmodule EbbServer.TestHelpers do
       gsn_counter: counter,
       group_members: gm_table,
       group_members_by_id: gm_by_id_table,
+      entity_groups: eg_table,
+      entity_groups_by_id: eg_by_id_table,
+      entity_groups_by_group: eg_by_group_table,
       relationships: rel_table,
-      relationships_by_group: rbg_table,
       relationships_by_id: rbi_table,
       watermark_tracker: wt_name
     }
@@ -232,8 +251,10 @@ defmodule EbbServer.TestHelpers do
       :gsn_counter,
       :group_members,
       :group_members_by_id,
+      :entity_groups,
+      :entity_groups_by_id,
+      :entity_groups_by_group,
       :relationships,
-      :relationships_by_group,
       :relationships_by_id
     ]
 
@@ -253,8 +274,10 @@ defmodule EbbServer.TestHelpers do
         gsn_counter: opts.gsn_counter,
         group_members: opts.group_members,
         group_members_by_id: opts.group_members_by_id,
+        entity_groups: opts.entity_groups,
+        entity_groups_by_id: opts.entity_groups_by_id,
+        entity_groups_by_group: opts.entity_groups_by_group,
         relationships: opts.relationships,
-        relationships_by_group: opts.relationships_by_group,
         relationships_by_id: opts.relationships_by_id,
         watermark_tracker: opts[:watermark_tracker],
         fan_out_router: opts[:fan_out_router]
@@ -270,33 +293,40 @@ defmodule EbbServer.TestHelpers do
   @doc """
   Creates isolated ETS tables for authorization testing.
 
-  Creates unique group_members, group_members_by_id, relationships,
-  relationships_by_group, and relationships_by_id tables and registers
+  Creates unique group_members, group_members_by_id, entity_groups,
+  entity_groups_by_id, entity_groups_by_group, relationships,
+  and relationships_by_id tables and registers
   cleanup callbacks.
 
   Returns a map with:
     - group_members: ETS table name
     - group_members_by_id: ETS table name
+    - entity_groups: ETS table name
+    - entity_groups_by_id: ETS table name
+    - entity_groups_by_group: ETS table name
     - relationships: ETS table name
-    - relationships_by_group: ETS table name
     - relationships_by_id: ETS table name
   """
   def create_isolated_tables do
     uid = System.unique_integer([:positive])
     gm = :"test_gm_#{uid}"
     gm_by_id = :"test_gm_by_id_#{uid}"
+    eg = :"test_eg_#{uid}"
+    eg_by_id = :"test_eg_by_id_#{uid}"
+    eg_by_group = :"test_eg_by_group_#{uid}"
     rel = :"test_rel_#{uid}"
-    rbg = :"test_rbg_#{uid}"
     rbi = :"test_rbi_#{uid}"
 
     :ets.new(gm, [:bag, :public, :named_table])
     :ets.new(gm_by_id, [:set, :public, :named_table])
+    :ets.new(eg, [:bag, :public, :named_table])
+    :ets.new(eg_by_id, [:set, :public, :named_table])
+    :ets.new(eg_by_group, [:bag, :public, :named_table])
     :ets.new(rel, [:bag, :public, :named_table])
-    :ets.new(rbg, [:bag, :public, :named_table])
     :ets.new(rbi, [:set, :public, :named_table])
 
     on_exit(fn ->
-      for t <- [gm, gm_by_id, rel, rbg, rbi] do
+      for t <- [gm, gm_by_id, eg, eg_by_id, eg_by_group, rel, rbi] do
         try do
           :ets.delete(t)
         rescue
@@ -308,8 +338,10 @@ defmodule EbbServer.TestHelpers do
     %{
       group_members: gm,
       group_members_by_id: gm_by_id,
+      entity_groups: eg,
+      entity_groups_by_id: eg_by_id,
+      entity_groups_by_group: eg_by_group,
       relationships: rel,
-      relationships_by_group: rbg,
       relationships_by_id: rbi
     }
   end
@@ -323,8 +355,8 @@ defmodule EbbServer.TestHelpers do
     [
       group_members: tables.group_members,
       group_members_by_id: tables.group_members_by_id,
-      relationships: tables.relationships,
-      relationships_by_group: tables.relationships_by_group,
+      entity_groups: tables.entity_groups,
+      entity_groups_by_id: tables.entity_groups_by_id,
       relationships_by_id: tables.relationships_by_id
     ]
   end

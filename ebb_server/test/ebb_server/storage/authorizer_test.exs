@@ -8,9 +8,23 @@ defmodule EbbServer.Storage.AuthorizerTest do
     AuthorizationContext.build(
       group_members: tables.group_members,
       group_members_by_id: tables.group_members_by_id,
-      relationships: tables.relationships,
-      relationships_by_group: tables.relationships_by_group,
+      entity_groups: tables.entity_groups,
+      entity_groups_by_id: tables.entity_groups_by_id,
       relationships_by_id: tables.relationships_by_id
+    )
+  end
+
+  defp put_membership(tables, entity_id, group_id, id) do
+    :ets.insert(
+      tables.entity_groups,
+      {entity_id, %{id: id, entity_id: entity_id, group_id: group_id}}
+    )
+  end
+
+  defp put_group_member(tables, group_id, permissions, id \\ "gm_1") do
+    :ets.insert(
+      tables.group_members,
+      {"a_1", %{id: id, group_id: group_id, permissions: permissions}}
     )
   end
 
@@ -45,16 +59,14 @@ defmodule EbbServer.Storage.AuthorizerTest do
             }
           },
           %{
-            id: "rel_1",
-            subject_id: "rel_1",
-            subject_type: "relationship",
+            id: "eg_1",
+            subject_id: "eg_1",
+            subject_type: "entityGroup",
             method: :put,
             data: %{
               "fields" => %{
-                "source_id" => %{"value" => "todo_1"},
-                "target_id" => %{"value" => "g_1"},
-                "type" => %{"value" => "todo"},
-                "field" => %{"value" => "group"}
+                "entity_id" => %{"value" => "todo_1"},
+                "group_id" => %{"value" => "g_1"}
               }
             }
           }
@@ -68,23 +80,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      :ets.insert(
-        tables.group_members,
-        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.create", "todo.update"]}}
-      )
-
-      :ets.insert(
-        tables.relationships,
-        {"todo_1",
-         %{
-           id: "rel_1",
-           source_id: "todo_1",
-           target_id: "g_1",
-           type: "todo",
-           field: "group",
-           kind: "member"
-         }}
-      )
+      put_group_member(tables, "g_1", ["todo.create", "todo.update"])
+      put_membership(tables, "todo_1", "g_1", "eg_1")
 
       action = %{
         id: "act_1",
@@ -108,18 +105,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      :ets.insert(
-        tables.relationships,
-        {"todo_1",
-         %{
-           id: "rel_1",
-           source_id: "todo_1",
-           target_id: "g_1",
-           type: "todo",
-           field: "group",
-           kind: "member"
-         }}
-      )
+      put_membership(tables, "todo_1", "g_1", "eg_1")
 
       action = %{
         id: "act_1",
@@ -143,23 +129,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      :ets.insert(
-        tables.group_members,
-        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["post.create"]}}
-      )
-
-      :ets.insert(
-        tables.relationships,
-        {"todo_1",
-         %{
-           id: "rel_1",
-           source_id: "todo_1",
-           target_id: "g_1",
-           type: "todo",
-           field: "group",
-           kind: "member"
-         }}
-      )
+      put_group_member(tables, "g_1", ["post.create"])
+      put_membership(tables, "todo_1", "g_1", "eg_1")
 
       action = %{
         id: "act_1",
@@ -183,23 +154,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      :ets.insert(
-        tables.group_members,
-        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.*"]}}
-      )
-
-      :ets.insert(
-        tables.relationships,
-        {"todo_1",
-         %{
-           id: "rel_1",
-           source_id: "todo_1",
-           target_id: "g_1",
-           type: "todo",
-           field: "group",
-           kind: "member"
-         }}
-      )
+      put_group_member(tables, "g_1", ["todo.*"])
+      put_membership(tables, "todo_1", "g_1", "eg_1")
 
       action = %{
         id: "act_1",
@@ -223,45 +179,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      :ets.insert(
-        tables.group_members,
-        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.create"]}}
-      )
+      put_group_member(tables, "g_1", ["todo.create"])
+      put_group_member(tables, "g_2", ["todo.read"], "gm_2")
 
-      :ets.insert(
-        tables.group_members,
-        {"a_1", %{id: "gm_2", group_id: "g_2", permissions: ["todo.read"]}}
-      )
-
-      :ets.insert(
-        tables.relationships,
-        {
-          "todo_1",
-          %{
-            id: "rel_1",
-            source_id: "todo_1",
-            target_id: "g_1",
-            type: "todo",
-            field: "group",
-            kind: "member"
-          }
-        }
-      )
-
-      :ets.insert(
-        tables.relationships,
-        {
-          "todo_1",
-          %{
-            id: "rel_2",
-            source_id: "todo_1",
-            target_id: "g_2",
-            type: "todo",
-            field: "group",
-            kind: "member"
-          }
-        }
-      )
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_membership(tables, "todo_1", "g_2", "eg_2")
 
       action = %{
         id: "act_1",
@@ -285,10 +207,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      :ets.insert(
-        tables.group_members,
-        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["todo.create"]}}
-      )
+      put_group_member(tables, "g_1", ["todo.create"])
 
       action = %{
         id: "act_1",
@@ -303,17 +222,14 @@ defmodule EbbServer.Storage.AuthorizerTest do
             data: %{"fields" => %{"title" => %{"value" => "Test"}}}
           },
           %{
-            id: "rel_1",
-            subject_id: "rel_new",
-            subject_type: "relationship",
+            id: "eg_1",
+            subject_id: "eg_new",
+            subject_type: "entityGroup",
             method: :put,
             data: %{
               "fields" => %{
-                "source_id" => %{"value" => "todo_new"},
-                "target_id" => %{"value" => "g_1"},
-                "type" => %{"value" => "todo"},
-                "field" => %{"value" => "group"},
-                "kind" => %{"value" => "member"}
+                "entity_id" => %{"value" => "todo_new"},
+                "group_id" => %{"value" => "g_1"}
               }
             }
           }
@@ -327,10 +243,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      :ets.insert(
-        tables.group_members,
-        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["group.read"]}}
-      )
+      put_group_member(tables, "g_1", ["group.read"])
 
       action = %{
         id: "act_1",
@@ -396,41 +309,73 @@ defmodule EbbServer.Storage.AuthorizerTest do
   # fields are dropped); the authorizer must recover the owning group
   # from the by-id index tables rather than from the wire envelope.
   describe "authorize/3 - system-entity delete with data:nil" do
-    test "relationship delete resolves the source's membership after a put" do
+    test "entityGroup delete resolves the target group from the by-id index" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["group.read"])
+
+      :ets.insert(
+        tables.entity_groups_by_id,
+        {"eg_1", %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"}}
+      )
+
+      action = %{
+        id: "act_1",
+        actor_id: "a_1",
+        hlc: generate_hlc(),
+        updates: [
+          %{
+            id: "upd_del",
+            subject_id: "eg_1",
+            subject_type: "entityGroup",
+            method: :delete,
+            data: nil
+          }
+        ]
+      }
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+
+    test "entityGroup delete rejects an actor outside the target group" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
       :ets.insert(
-        tables.group_members,
-        {"a_1", %{id: "gm_1", group_id: "g_1", permissions: ["relationship.update"]}}
+        tables.entity_groups_by_id,
+        {"eg_1", %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"}}
       )
 
-      :ets.insert(
-        tables.relationships,
-        {
-          "todo_1",
+      action = %{
+        id: "act_1",
+        actor_id: "a_1",
+        hlc: generate_hlc(),
+        updates: [
           %{
-            id: "rel_1",
-            source_id: "todo_1",
-            target_id: "g_1",
-            type: "todo",
-            field: "group",
-            kind: "member"
+            id: "upd_del",
+            subject_id: "eg_1",
+            subject_type: "entityGroup",
+            method: :delete,
+            data: nil
           }
-        }
-      )
+        ]
+      }
+
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+    end
+
+    test "relationship delete resolves the source's membership after a put" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["relationship.update"])
+      put_membership(tables, "todo_1", "g_1", "eg_1")
 
       :ets.insert(
         tables.relationships_by_id,
         {"rel_1",
-         %{
-           id: "rel_1",
-           source_id: "todo_1",
-           target_id: "g_1",
-           type: "todo",
-           field: "group",
-           kind: "member"
-         }}
+         %{id: "rel_1", source_id: "todo_1", target_id: "col_1", type: "todo", field: "column"}}
       )
 
       action = %{
@@ -455,32 +400,12 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      :ets.insert(
-        tables.relationships,
-        {
-          "todo_1",
-          %{
-            id: "rel_1",
-            source_id: "todo_1",
-            target_id: "g_1",
-            type: "todo",
-            field: "group",
-            kind: "member"
-          }
-        }
-      )
+      put_membership(tables, "todo_1", "g_1", "eg_1")
 
       :ets.insert(
         tables.relationships_by_id,
         {"rel_1",
-         %{
-           id: "rel_1",
-           source_id: "todo_1",
-           target_id: "g_1",
-           type: "todo",
-           field: "group",
-           kind: "member"
-         }}
+         %{id: "rel_1", source_id: "todo_1", target_id: "col_1", type: "todo", field: "column"}}
       )
 
       action = %{
@@ -527,10 +452,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      :ets.insert(
-        tables.group_members,
-        {"a_1", %{id: "gm_2", group_id: "g_1", permissions: ["group.read"]}}
-      )
+      put_group_member(tables, "g_1", ["group.read"])
 
       :ets.insert(
         tables.group_members_by_id,
@@ -559,25 +481,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      :ets.insert(
-        tables.group_members,
-        {"a_1", %{id: "gm_1", group_id: "g_source", permissions: ["relationship.update"]}}
-      )
-
-      :ets.insert(
-        tables.relationships,
-        {
-          "todo_1",
-          %{
-            id: "rel_member",
-            source_id: "todo_1",
-            target_id: "g_source",
-            type: "todo",
-            field: "group",
-            kind: "member"
-          }
-        }
-      )
+      put_group_member(tables, "g_source", ["relationship.update"])
+      put_membership(tables, "todo_1", "g_source", "eg_1")
 
       action = %{
         id: "act_1",
@@ -594,8 +499,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
                 "source_id" => %{"value" => "todo_1"},
                 "target_id" => %{"value" => "col_other"},
                 "type" => %{"value" => "todo"},
-                "field" => %{"value" => "column"},
-                "kind" => %{"value" => "link"}
+                "field" => %{"value" => "column"}
               }
             }
           }
@@ -609,10 +513,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      :ets.insert(
-        tables.group_members,
-        {"a_1", %{id: "gm_1", group_id: "g_target", permissions: ["relationship.update"]}}
-      )
+      put_group_member(tables, "g_target", ["relationship.update"])
 
       action = %{
         id: "act_1",
@@ -629,8 +530,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
                 "source_id" => %{"value" => "todo_1"},
                 "target_id" => %{"value" => "g_target"},
                 "type" => %{"value" => "todo"},
-                "field" => %{"value" => "group"},
-                "kind" => %{"value" => "link"}
+                "field" => %{"value" => "column"}
               }
             }
           }

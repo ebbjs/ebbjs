@@ -3,35 +3,36 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
   Tests for the system-entity fan-out bug surfaced in #197.
 
   `FanOutRouter.dispatch_to_groups/1` previously keyed its group lookup
-  on `subject_id` only, calling `RelationshipCache.get_entity_group/1`
-  which is keyed on `source_id`. For `relationship`, `groupMember`,
-  and `group` updates the `subject_id` is the entity's own id — not a
-  `source_id` — so the lookup silently returned `nil` and the update
-  never reached the per-group `GroupServer`.
+  on `subject_id` only, treating every entity id as though it were a
+  membership source. For `relationship`, `groupMember`, and `group`
+  updates the `subject_id` is the entity's own id — not a membership
+  source — so the lookup silently returned `nil` and the update never
+  reached the per-group `GroupServer`.
 
   The fix routes resolution by `subject_type` through
-  `EntityIndex.resolve_group/3` so each kind of update lands in the
+  `EntityIndex.resolve_groups/3` so each kind of update lands in the
   right group. These tests pin the resolution surface end-to-end for
   every subject type the router can encounter.
   """
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{GroupCache, RelationshipCache}
+  alias EbbServer.Storage.{EntityGroupCache, GroupCache, RelationshipCache}
   alias EbbServer.Sync.FanOutRouter
 
   setup do
     rel = :"for_rel_#{System.unique_integer([:positive])}"
     rbi = :"for_rbi_#{System.unique_integer([:positive])}"
-    rbg = :"for_rbg_#{System.unique_integer([:positive])}"
     gm = :"for_gm_#{System.unique_integer([:positive])}"
     gm_by_id = :"for_gmbi_#{System.unique_integer([:positive])}"
+    eg = :"for_eg_#{System.unique_integer([:positive])}"
+    eg_by_id = :"for_egbi_#{System.unique_integer([:positive])}"
+    eg_by_group = :"for_egbg_#{System.unique_integer([:positive])}"
 
     {:ok, _} =
       RelationshipCache.start_link(
         name: :"for_rc_#{System.unique_integer([:positive])}",
         relationships: rel,
-        relationships_by_group: rbg,
         relationships_by_id: rbi
       )
 
@@ -42,16 +43,29 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
         group_members_by_id: gm_by_id
       )
 
+    {:ok, _} =
+      EntityGroupCache.start_link(
+        name: :"for_egc_#{System.unique_integer([:positive])}",
+        entity_groups: eg,
+        entity_groups_by_id: eg_by_id,
+        entity_groups_by_group: eg_by_group
+      )
+
     on_exit(fn ->
       RelationshipCache.reset(
         relationships: rel,
-        relationships_by_group: rbg,
         relationships_by_id: rbi
       )
 
       GroupCache.reset(gm)
 
-      for t <- [rel, rbi, rbg, gm, gm_by_id] do
+      EntityGroupCache.reset(
+        entity_groups: eg,
+        entity_groups_by_id: eg_by_id,
+        entity_groups_by_group: eg_by_group
+      )
+
+      for t <- [rel, rbi, gm, gm_by_id, eg, eg_by_id, eg_by_group] do
         try do
           :ets.delete(t)
         rescue
@@ -63,9 +77,11 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
     t = %{
       relationships: rel,
       relationships_by_id: rbi,
-      relationships_by_group: rbg,
       group_members: gm,
-      group_members_by_id: gm_by_id
+      group_members_by_id: gm_by_id,
+      entity_groups: eg,
+      entity_groups_by_id: eg_by_id,
+      entity_groups_by_group: eg_by_group
     }
 
     {:ok, tables: t, resolve_opts: opts(t)}
@@ -73,31 +89,38 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
 
   defp opts(t),
     do: [
-      relationships: t.relationships,
+      entity_groups: t.entity_groups,
+      entity_groups_by_id: t.entity_groups_by_id,
       relationships_by_id: t.relationships_by_id,
-      group_members_by_id: t.group_members_by_id,
-      relationships_by_group: t.relationships_by_group
+      group_members_by_id: t.group_members_by_id
     ]
 
-  defp put_relationship(t, id, source_id, target_id, kind \\ "member") do
+  defp put_membership(t, entity_id, group_id, id) do
+    EntityGroupCache.put_entity_group(
+      %{id: id, entity_id: entity_id, group_id: group_id},
+      entity_groups: t.entity_groups,
+      entity_groups_by_id: t.entity_groups_by_id,
+      entity_groups_by_group: t.entity_groups_by_group
+    )
+  end
+
+  defp put_relationship(t, id, source_id, target_id) do
     RelationshipCache.put_relationship(
       %{
         id: id,
         source_id: source_id,
         target_id: target_id,
         type: "todo",
-        field: "group",
-        kind: kind
+        field: "owns"
       },
       relationships: t.relationships,
-      relationships_by_group: t.relationships_by_group,
       relationships_by_id: t.relationships_by_id
     )
   end
 
   describe "resolve_group_ids/2 — user-entity updates (#197)" do
     test "routes a user-entity update to its group's id", %{tables: t} do
-      :ok = put_relationship(t, "rel_1", "todo_1", "g_1")
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
       action = %{"updates" => [%{"subject_type" => "todo", "subject_id" => "todo_1"}]}
 
@@ -113,27 +136,27 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
     end
 
     test "routes a relationship update to its source's group", %{tables: t} do
-      :ok = put_relationship(t, "rel_1", "todo_1", "g_1")
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+      :ok = put_relationship(t, "rel_1", "todo_1", "col_1")
 
       action = %{"updates" => [%{"subject_type" => "relationship", "subject_id" => "rel_1"}]}
 
       assert FanOutRouter.resolve_group_ids(action, opts(t)) == ["g_1"]
     end
 
-    test "resolves groups from the Action's own membership edges", %{resolve_opts: opts} do
+    test "resolves groups from the Action's own membership rows", %{resolve_opts: opts} do
       action = %{
         "updates" => [
           %{"subject_type" => "todo", "subject_id" => "todo_new"},
           %{
-            "id" => "rel_new",
-            "subject_type" => "relationship",
-            "subject_id" => "rel_new",
+            "id" => "eg_new",
+            "subject_type" => "entityGroup",
+            "subject_id" => "eg_new",
             "method" => "put",
             "data" => %{
               "fields" => %{
-                "source_id" => %{"value" => "todo_new"},
-                "target_id" => %{"value" => "g_intra"},
-                "kind" => %{"value" => "member"}
+                "entity_id" => %{"value" => "todo_new"},
+                "group_id" => %{"value" => "g_intra"}
               }
             }
           }
@@ -144,16 +167,16 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
     end
 
     test "returns every group for a multi-membership source", %{tables: t} do
-      :ok = put_relationship(t, "rel_1", "todo_1", "g_1")
-      :ok = put_relationship(t, "rel_2", "todo_1", "g_2")
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+      :ok = put_membership(t, "todo_1", "g_2", "eg_2")
 
       action = %{"updates" => [%{"subject_type" => "todo", "subject_id" => "todo_1"}]}
 
       assert FanOutRouter.resolve_group_ids(action, opts(t)) |> Enum.sort() == ["g_1", "g_2"]
     end
 
-    test "a link edge to a non-group target does not add a group", %{tables: t} do
-      :ok = put_relationship(t, "rel_link", "todo_1", "doc_1", "link")
+    test "a relationship whose source has no membership adds no group", %{tables: t} do
+      :ok = put_relationship(t, "rel_link", "todo_1", "doc_1")
 
       action = %{"updates" => [%{"subject_type" => "relationship", "subject_id" => "rel_link"}]}
 
@@ -173,8 +196,10 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
     end
 
     test "deduplicates when multiple updates target the same group", %{tables: t} do
-      :ok = put_relationship(t, "rel_1", "todo_1", "g_1")
-      :ok = put_relationship(t, "rel_2", "todo_2", "g_1")
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+      :ok = put_membership(t, "todo_2", "g_1", "eg_2")
+      :ok = put_relationship(t, "rel_1", "todo_1", "col_1")
+      :ok = put_relationship(t, "rel_2", "todo_2", "col_2")
 
       action = %{
         "updates" => [
@@ -199,8 +224,9 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
     end
 
     test "handles a mixed action with user and system updates across groups", %{tables: t} do
-      :ok = put_relationship(t, "rel_1", "todo_1", "g_1")
-      :ok = put_relationship(t, "rel_2", "todo_2", "g_2")
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+      :ok = put_membership(t, "todo_2", "g_2", "eg_2")
+      :ok = put_relationship(t, "rel_2", "todo_2", "col_2")
 
       action = %{
         "updates" => [

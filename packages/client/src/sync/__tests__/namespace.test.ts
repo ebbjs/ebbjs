@@ -10,6 +10,7 @@ import type { Entity } from "@ebbjs/core";
 import { defineEntity, e } from "../../schema/entity";
 import { defineSchema } from "../../schema/schema";
 import { defineRelationship } from "../../schema/relationship";
+import { groupSystemEntity } from "../../schema/system-entities";
 import { EntityValidationError } from "../../schema/entity-registry";
 import type { EntityFields } from "../namespace";
 import type { QueryBuilder } from "../query-builder";
@@ -366,6 +367,22 @@ const mkRelEntity = (
   last_gsn: 0,
 });
 
+/** Materialize one `entityGroup` membership row into the local cache. */
+const mkEntityGroup = (id: string, entityId: string, groupId: string): Entity => ({
+  id,
+  type: "entityGroup",
+  data: {
+    fields: {
+      entity_id: { value: entityId, update_id: "u" },
+      group_id: { value: groupId, update_id: "u" },
+    },
+  },
+  created_hlc: "1",
+  updated_hlc: "1",
+  deleted_hlc: null,
+  last_gsn: 0,
+});
+
 describe("client.<entity>.get(id) — row with relationship accessors", () => {
   it("row.<field> types flow from the entity's field map (no FK fields required)", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
@@ -661,6 +678,63 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
   });
 });
 
+describe("doc.groups — built-in membership accessor", () => {
+  const groupsSchema = defineSchema({ entities: { todo: todoEntity }, version: 1 });
+
+  it("resolves the group rows linked through entityGroup membership rows", async () => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
+    await storage.entities.set(mkEntity("g1", "group", { name: "Demo" }));
+    await storage.entities.set(mkEntityGroup("eg-1", "t1", "g1"));
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: groupsSchema,
+    });
+    const row = await client.todo.get("t1");
+    if (row === null) throw new Error("expected row");
+    const groups: QueryBuilder<EntityFields<typeof groupSystemEntity>> = row.groups;
+    const resolved: readonly { name: string }[] = await groups;
+    expect(resolved.map((g) => g.name)).toEqual(["Demo"]);
+  });
+
+  it("awaits an empty list for an entity with no membership rows", async () => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: groupsSchema,
+    });
+    const row = await client.todo.get("t1");
+    if (row === null) throw new Error("expected row");
+    expect(await row.groups).toEqual([]);
+  });
+
+  it("exposes no reverse accessor and no group namespace in v1", async () => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: groupsSchema,
+    });
+    // `group` is a registry system entity, not a schema namespace.
+    expect((client as unknown as Record<string, unknown>)["group"]).toBeUndefined();
+  });
+
+  it("keeps the groups accessor out of the entity's data fields on the wire", () => {
+    // `groups` is an accessor, not a field: the field map has no
+    // `groups` key, so a row's projected shape can't shadow it.
+    expect(Object.keys(todoEntity.shape.properties)).not.toContain("groups");
+  });
+});
+
 /**
  * `client.<entity>.link(id, "as", target)` /
  * `client.<entity>.unlink(id, "as")` /
@@ -710,8 +784,9 @@ describe("client.<entity>.link / unlink / setLinks", () => {
    * check passes; `/sync/actions` always accepts (returns
    * `rejected: []`).
    */
-  const mkStubFetch = (): typeof fetch => {
+  const mkStubFetch = (seen: string[] = []): typeof fetch => {
     return (async (url: string, _init: RequestInit): Promise<Response> => {
+      seen.push(url);
       if (url.endsWith("/sync/handshake")) {
         return new Response(
           JSON.stringify({
@@ -739,7 +814,7 @@ describe("client.<entity>.link / unlink / setLinks", () => {
     }) as unknown as typeof fetch;
   };
 
-  const mkClient = async () => {
+  const mkClient = async (seen: string[] = []) => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     const client = createClient({
@@ -747,10 +822,10 @@ describe("client.<entity>.link / unlink / setLinks", () => {
       actorId: "actor_1",
       storage,
       schema: schemaWithRels,
-      fetchImpl: mkStubFetch(),
+      fetchImpl: mkStubFetch(seen),
     });
     await client.handshake();
-    return { client, storage };
+    return { client, storage, seen };
   };
 
   it("link() submits a single Relationship Update for one-cardinality", async () => {
@@ -814,6 +889,45 @@ describe("client.<entity>.link / unlink / setLinks", () => {
     await expect(client.todo.link("todo_1", "bogus", "list_1")).rejects.toBeInstanceOf(
       EntityValidationError,
     );
+  });
+
+  // #127 defers membership mutation (share/unshare). The injected
+  // `groups` accessor must not be reachable through the generic
+  // relationship-write path, and the reject must happen before any
+  // network call.
+  describe("rejects membership mutation on the deferred link/unlink/setLinks path", () => {
+    const expectDeferred = async (
+      call: (client: Awaited<ReturnType<typeof mkClient>>["client"]) => Promise<unknown>,
+    ): Promise<void> => {
+      const { client, seen } = await mkClient();
+      const seenBefore = seen.length;
+      let caught: unknown;
+      try {
+        await call(client);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(EntityValidationError);
+      expect((caught as EntityValidationError).violations[0]?.message).toMatch(/deferred/);
+      expect((caught as EntityValidationError).violations[0]?.message).toMatch(
+        /create\(input, \{ groups \}\)/,
+      );
+      expect(seen.length).toBe(seenBefore);
+    };
+
+    it("link()", async () => {
+      await expectDeferred((client) => client.todo.link("todo_1", "groups", "g_1"));
+    });
+
+    it("unlink()", async () => {
+      await expectDeferred((client) => client.todo.unlink("todo_1", "groups"));
+    });
+
+    it("setLinks()", async () => {
+      await expectDeferred((client) =>
+        client.todo.setLinks("todo_1", "groups", { replace: ["g_1", "g_2"] }),
+      );
+    });
   });
 });
 
@@ -923,10 +1037,13 @@ describe("client.<entity>.create / update — runtime validation", () => {
     return { client, storage };
   };
 
+  /** Membership option every `create()` in this block carries (#244). */
+  const createOpts = { groups: ["g_1"] } as const;
+
   it("create() accepts a conforming payload and submits to /sync/actions", async () => {
     const seen: string[] = [];
     const { client } = await mkClient(seen);
-    const response = await client.todo.create({ title: "Ship", completed: false });
+    const response = await client.todo.create({ title: "Ship", completed: false }, createOpts);
     expect(response.rejected).toEqual([]);
     // handshake + actions: validation passed, the wire saw the call.
     expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
@@ -937,19 +1054,25 @@ describe("client.<entity>.create / update — runtime validation", () => {
     const { client } = await mkClientWithNullable(seen);
     const seenBefore = seen.length;
 
-    const response = await client.todo.create({
-      title: "Ship",
-      completed: false,
-      body: null,
-    });
+    const response = await client.todo.create(
+      {
+        title: "Ship",
+        completed: false,
+        body: null,
+      },
+      createOpts,
+    );
     expect(response.rejected).toEqual([]);
 
     await expect(
-      client.todo.create({
-        title: null as unknown as string,
-        completed: false,
-        body: null,
-      }),
+      client.todo.create(
+        {
+          title: null as unknown as string,
+          completed: false,
+          body: null,
+        },
+        createOpts,
+      ),
     ).rejects.toBeInstanceOf(EntityValidationError);
 
     // The validation failure must not have reached the wire — only
@@ -968,7 +1091,7 @@ describe("client.<entity>.create / update — runtime validation", () => {
     try {
       // The cast bypasses the type checker so the deliberately-wrong
       // payload reaches `Value.Check`.
-      await client.todo.create({ title: 42, completed: false } as never);
+      await client.todo.create({ title: 42, completed: false } as never, createOpts);
       expect.fail("expected EntityValidationError");
     } catch (err) {
       expect(err).toBeInstanceOf(EntityValidationError);
@@ -992,11 +1115,14 @@ describe("client.<entity>.create / update — runtime validation", () => {
     const { client } = await mkClient(seen);
 
     try {
-      await client.todo.create({
-        title: "Ship",
-        completed: false,
-        bogus: "x",
-      } as never);
+      await client.todo.create(
+        {
+          title: "Ship",
+          completed: false,
+          bogus: "x",
+        } as never,
+        createOpts,
+      );
       expect.fail("expected EntityValidationError");
     } catch (err) {
       expect(err).toBeInstanceOf(EntityValidationError);
@@ -1017,11 +1143,14 @@ describe("client.<entity>.create / update — runtime validation", () => {
     const { client } = await mkClient(seen);
 
     try {
-      await client.todo.create({
-        title: 42,
-        completed: "no",
-        bogus: "x",
-      } as never);
+      await client.todo.create(
+        {
+          title: 42,
+          completed: "no",
+          bogus: "x",
+        } as never,
+        createOpts,
+      );
       expect.fail("expected EntityValidationError");
     } catch (err) {
       expect(err).toBeInstanceOf(EntityValidationError);
@@ -1042,6 +1171,7 @@ describe("client.<entity>.create / update — runtime validation", () => {
     // name-membership check at `client.write()` still accepts it.
     const response = await client.todo.create({ title: 42, completed: false } as never, {
       validate: false,
+      ...createOpts,
     });
     expect(response.rejected).toEqual([]);
     expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
@@ -1120,7 +1250,7 @@ describe("client.<entity>.create / update — runtime validation", () => {
     const { client } = await mkClient(seen);
     const before = seen.length;
     await expect(
-      client.todo.create({ title: 42, completed: false } as never),
+      client.todo.create({ title: 42, completed: false } as never, createOpts),
     ).rejects.toBeInstanceOf(EntityValidationError);
     expect(seen.length).toBe(before);
   });
@@ -1147,7 +1277,7 @@ describe("client.<entity>.create / update — runtime validation", () => {
     // unset.
     const seen: string[] = [];
     const { client } = await mkClientWithNullable(seen);
-    const response = await client.todo.create({ title: "Ship", completed: false });
+    const response = await client.todo.create({ title: "Ship", completed: false }, createOpts);
     expect(response.rejected).toEqual([]);
     expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
   });
@@ -1176,7 +1306,148 @@ describe("client.<entity>.create / update — runtime validation", () => {
     // (Type.Optional wrap) and the static type after the fix.
     const seen: string[] = [];
     const { client } = await mkClientWithNullable(seen);
-    await expect(client.todo.create({ title: "Ship", completed: false })).resolves.toBeDefined();
+    await expect(
+      client.todo.create({ title: "Ship", completed: false }, { groups: ["g_1"] }),
+    ).resolves.toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #244: canonical entityGroup rows on create()
+// ---------------------------------------------------------------------------
+
+describe("client.<entity>.create — entityGroup rows", () => {
+  interface RecordedRequest {
+    readonly url: string;
+    readonly body: Uint8Array | undefined;
+  }
+
+  /** Handshake + actions stub that records request bodies for decoding. */
+  const mkFetch = (seen: RecordedRequest[]): typeof fetch => {
+    return (async (url: string, init: RequestInit): Promise<Response> => {
+      const body =
+        init.body instanceof Uint8Array
+          ? init.body
+          : typeof init.body === "string"
+            ? new TextEncoder().encode(init.body)
+            : undefined;
+      seen.push({ url, body });
+      if (url.endsWith("/sync/handshake")) {
+        return new Response(
+          JSON.stringify({
+            actor_id: "actor_1",
+            groups: [
+              {
+                id: "g_1",
+                permissions: ["todo.*"],
+                cursor_valid: true,
+                reason: null,
+                cursor: 0,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/sync/actions")) {
+        return new Response(JSON.stringify({ rejected: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+  };
+
+  const memberTodo = defineEntity("todo", { title: e.string() });
+  const memberSchema = defineSchema({ entities: { todo: memberTodo }, version: 1 });
+
+  const mkMemberClient = async (): Promise<{
+    client: ReturnType<typeof createClient<typeof memberSchema>>;
+    seen: RecordedRequest[];
+  }> => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const seen: RecordedRequest[] = [];
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      storage: createMemoryAdapter(),
+      schema: memberSchema,
+      fetchImpl: mkFetch(seen),
+    });
+    await client.handshake();
+    return { client, seen };
+  };
+
+  const actionRequests = (seen: readonly RecordedRequest[]): RecordedRequest[] =>
+    seen.filter((r) => r.url.endsWith("/sync/actions"));
+
+  const decodeFirstAction = (request: RecordedRequest): Action =>
+    decodeSync<{ actions: Action[] }>(request.body!).actions[0]!;
+
+  it("emits the entity put plus one entityGroup row per group in one Action", async () => {
+    const { client, seen } = await mkMemberClient();
+    const response = await client.todo.create({ title: "Ship" }, { groups: ["g_1", "g_2"] });
+    expect(response.rejected).toEqual([]);
+
+    const actions = actionRequests(seen);
+    expect(actions).toHaveLength(1);
+    const updates = decodeFirstAction(actions[0]!).updates;
+    // 1 entity put + 2 membership rows.
+    expect(updates).toHaveLength(3);
+
+    const entityUpdate = updates.find((u) => u.subject_type === "todo")!;
+    expect(entityUpdate.method).toBe("put");
+    expect(entityUpdate.data?.fields?.["title"]?.value).toBe("Ship");
+
+    const memberships = updates.filter((u) => u.subject_type === "entityGroup");
+    expect(memberships).toHaveLength(2);
+    for (const membership of memberships) {
+      expect(membership.method).toBe("put");
+      expect(membership.data?.fields?.["entity_id"]?.value).toBe(entityUpdate.subject_id);
+    }
+    const targets = memberships.map((m) => m.data?.fields?.["group_id"]?.value).sort();
+    expect(targets).toEqual(["g_1", "g_2"]);
+  });
+
+  it("accepts entity-shape group refs and de-duplicates ids", async () => {
+    const { client, seen } = await mkMemberClient();
+    await client.todo.create({ title: "Ship" }, { groups: ["g_1", { id: "g_1" }, { id: "g_2" }] });
+    const updates = decodeFirstAction(actionRequests(seen)[0]!).updates;
+    const memberships = updates.filter((u) => u.subject_type === "entityGroup");
+    expect(memberships.map((m) => m.data?.fields?.["group_id"]?.value).sort()).toEqual([
+      "g_1",
+      "g_2",
+    ]);
+  });
+
+  it("rejects a missing or empty groups option before any network call", async () => {
+    const { client, seen } = await mkMemberClient();
+    await expect(client.todo.create({ title: "Ship" }, undefined as never)).rejects.toBeInstanceOf(
+      EntityValidationError,
+    );
+    await expect(client.todo.create({ title: "Ship" }, { groups: [] })).rejects.toBeInstanceOf(
+      EntityValidationError,
+    );
+    expect(actionRequests(seen)).toHaveLength(0);
+  });
+
+  it("rejects a malformed group ref with EntityValidationError", async () => {
+    const { client, seen } = await mkMemberClient();
+    await expect(
+      client.todo.create({ title: "Ship" }, { groups: [42 as never] }),
+    ).rejects.toBeInstanceOf(EntityValidationError);
+    expect(actionRequests(seen)).toHaveLength(0);
+  });
+
+  it("requires the groups option at the type level", () => {
+    const typecheck: () => void = () => {
+      const client = null as unknown as ReturnType<typeof createClient<typeof memberSchema>>;
+      // @ts-expect-error — create() requires a `{ groups }` option.
+      void client.todo.create({ title: "Ship" });
+      void client.todo.create({ title: "Ship" }, { groups: ["g_1"] });
+    };
+    expect(typeof typecheck).toBe("function");
   });
 });
 
