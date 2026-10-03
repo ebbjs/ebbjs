@@ -1,9 +1,7 @@
 /**
  * Shape tests for `AtomicActionError`, the typed failure the atomic
  * resolver throws for a coherence refusal and for a server-side
- * rejection. Mirrors `EntityValidationError`: extends `Error`, sets
- * `name`, carries the structured reasons as a readonly array, and
- * formats a multi-line `message` from them.
+ * rejection.
  */
 
 import { describe, expect, it } from "vitest";
@@ -54,7 +52,7 @@ describe("AtomicActionError", () => {
 
     expect(atomic).toBeInstanceOf(Error);
     expect(validation).toBeInstanceOf(Error);
-    expect(atomic.name.endsWith("Error")).toBe(true);
+    expect(atomic.name).toBe("AtomicActionError");
     expect(Array.isArray(atomic.rejections)).toBe(true);
     expect(validation.violations).toHaveLength(1);
     expect(atomic.rejections).toHaveLength(1);

@@ -64,24 +64,11 @@ export class AtomicResolutionError extends Error {
 }
 
 /**
- * One refused Update. `id` / `subjectType` identify the wire subject
- * the refusal is attributed to, `reason` is a stable machine-readable
- * code, and `details` is free-form human text.
- *
- * A rejection read off the server's response carries its `rejected[]`
- * fields verbatim — today that report is per-Action, so `id` is the
- * refused Action's id and `subjectType` is absent. The server follow-up
- * linked from #233 asks for per-Update detail carrying
- * `subject_id` / `subject_type`.
+ * One refused Update. Extends the wire `Rejection` with the per-Update
+ * `subjectType` the client-side coherence check can attribute, which
+ * the server's per-Action report does not carry today.
  */
-export interface AtomicRejection {
-  /** Refused Update's `subject_id`; the refused Action's id for a server report. */
-  readonly id: string;
-  /** Refused Update's `subject_type`; absent on a server report. */
-  readonly subjectType?: string;
-  readonly reason: string;
-  readonly details?: string;
-}
+export type AtomicRejection = Rejection & { readonly subjectType?: string };
 
 /**
  * Aggregated refusal of an atomic call: a client-side permission
@@ -111,7 +98,8 @@ const formatRejections = (rejections: readonly AtomicRejection[]): string => {
 const describeRejection = (rejection: AtomicRejection): string => {
   const subject =
     rejection.subjectType === undefined ? rejection.id : `${rejection.subjectType} ${rejection.id}`;
-  const details = rejection.details === undefined ? "" : ` (${rejection.details})`;
+  const details =
+    rejection.details === undefined || rejection.details === null ? "" : ` (${rejection.details})`;
   return `${subject}: ${rejection.reason}${details}`;
 };
 
@@ -370,7 +358,6 @@ const buildUpdates = (writes: readonly PendingWrite[], cap: AtomicWriteCapabilit
 /** Wire `kind` marking an entity↔Group membership edge (#127). */
 const MEMBERSHIP_KIND = "member";
 
-/** Membership group ids a pending write carries, sorted and deduplicated. */
 const membershipGroupsOf = (write: PendingWrite): readonly string[] =>
   [
     ...new Set(
@@ -422,16 +409,6 @@ const permissionCoherenceRejections = (
         ],
   );
 };
-
-/** Adapt the server's `rejected[]` (per-Action today) to the typed shape. */
-const serverRejections = (rejected: readonly Rejection[]): readonly AtomicRejection[] =>
-  rejected.map((rejection) => ({
-    id: rejection.id,
-    reason: rejection.reason,
-    ...(rejection.details === undefined || rejection.details === null
-      ? {}
-      : { details: rejection.details }),
-  }));
 
 /** True for an `ActionDef` write that names an entity type (has `name` / `shape`). */
 const isEntityWrite = (write: ActionWrite): write is AnyEntityDef =>
@@ -600,7 +577,7 @@ export function createAtomicRuntime<S extends Schema<Record<string, AnyEntityDef
     if (updates.length > 0) {
       const response = await cap.submitRelationshipUpdates(updates);
       if (response.rejected.length > 0) {
-        throw new AtomicActionError(serverRejections(response.rejected));
+        throw new AtomicActionError(response.rejected);
       }
     }
     return result;
