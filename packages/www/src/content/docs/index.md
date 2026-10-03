@@ -121,8 +121,12 @@ client.todo.subscribe({ completed: false }, (snapshot) => {
   console.log(snapshot.count, snapshot.entities);
 });
 
-// Writes POST /sync/actions directly.
-const { rejected } = await client.todo.create({ title: "Buy milk", completed: false });
+// Writes POST /sync/actions directly. `groups` must be passed
+// explicitly; the SDK injects the membership edges.
+const { rejected } = await client.todo.create(
+  { title: "Buy milk", completed: false },
+  { groups: groups.map((group) => group.id) },
+);
 
 // `toRaw()` exposes the wire envelope (including `id`).
 const [row] = await client.todo.query().eq("completed", false).toRaw();
