@@ -2,8 +2,9 @@ import type { IDBPDatabase, IDBPTransaction, DBSchema, StoreNames } from "idb";
 import { unwrap } from "idb";
 import type { Action, Entity } from "@ebbjs/core";
 import {
-  applyRelationshipEntry,
+  applyRelationshipDelta,
   relationshipEntryFor,
+  type RelationshipIndex,
   type RelationshipRows,
 } from "../internal/relationship-index";
 
@@ -73,30 +74,33 @@ export interface EbbDBSchema extends DBSchema {
  * dirty flag to replay, so without this every pre-existing edge would
  * be invisible to `queryByRelationship`. The cursor keeps the
  * versionchange transaction alive across the walk (idb does not await
- * the upgrade callback, so it must stay synchronous).
+ * the upgrade callback, so it must stay synchronous). A cursor failure
+ * aborts the transaction: silently continuing would leave a live but
+ * empty index that the next open never re-backfills.
  */
 const backfillRelationshipIndex = (
   transaction: IDBPTransaction<EbbDBSchema, StoreNames<EbbDBSchema>[], "versionchange">,
 ): void => {
   const relationships = unwrap(transaction.objectStore("relationships"));
   const request = unwrap(transaction.objectStore("entities")).openCursor();
-  let rowsByKey: Record<string, RelationshipRows> = {};
+  let index: RelationshipIndex = {};
 
   request.onsuccess = () => {
     const cursor = request.result;
     if (cursor === null) {
-      for (const [key, rows] of Object.entries(rowsByKey)) {
+      for (const [key, rows] of Object.entries(index)) {
         relationships.put({ key, rows });
       }
       return;
     }
 
     const entry = relationshipEntryFor(cursor.value as Entity);
-    if (entry !== null) {
-      const rows = applyRelationshipEntry(rowsByKey[entry.key], entry, true);
-      if (rows !== null) rowsByKey = { ...rowsByKey, [entry.key]: rows };
-    }
+    if (entry !== null) index = applyRelationshipDelta(index, { remove: null, add: entry });
     cursor.continue();
+  };
+
+  request.onerror = () => {
+    unwrap(transaction).abort();
   };
 };
 
