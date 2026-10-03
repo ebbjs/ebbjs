@@ -10,6 +10,7 @@ import type { Entity } from "@ebbjs/core";
 import { defineEntity, e } from "../../schema/entity";
 import { defineSchema } from "../../schema/schema";
 import { defineRelationship } from "../../schema/relationship";
+import { groupSystemEntity } from "../../schema/system-entities";
 import { EntityValidationError } from "../../schema/entity-registry";
 import type { EntityFields } from "../namespace";
 import type { QueryBuilder } from "../query-builder";
@@ -658,6 +659,63 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
       void _row.title.toUpperCase();
     };
     expect(typeof check).toBe("function");
+  });
+});
+
+describe("doc.groups — built-in membership accessor", () => {
+  const groupsSchema = defineSchema({ entities: { todo: todoEntity }, version: 1 });
+
+  it("resolves the group rows linked through the injected membership relationship", async () => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
+    await storage.entities.set(mkEntity("g1", "group", { name: "Demo" }));
+    await storage.entities.set(mkRelEntity("rel-g1", "t1", "g1", "groups", "todo"));
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: groupsSchema,
+    });
+    const row = await client.todo.get("t1");
+    if (row === null) throw new Error("expected row");
+    const groups: QueryBuilder<EntityFields<typeof groupSystemEntity>> = row.groups;
+    const resolved: readonly { name: string }[] = await groups;
+    expect(resolved.map((g) => g.name)).toEqual(["Demo"]);
+  });
+
+  it("awaits an empty list for an entity with no membership edges", async () => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: groupsSchema,
+    });
+    const row = await client.todo.get("t1");
+    if (row === null) throw new Error("expected row");
+    expect(await row.groups).toEqual([]);
+  });
+
+  it("exposes no reverse accessor and no group namespace in v1", async () => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: groupsSchema,
+    });
+    // `group` is a registry system entity, not a schema namespace.
+    expect((client as unknown as Record<string, unknown>)["group"]).toBeUndefined();
+  });
+
+  it("keeps the injected membership kind out of the entity's data fields on the wire", () => {
+    // `groups` is an accessor, not a field: the field map has no
+    // `groups` key, so a row's projected shape can't shadow it.
+    expect(Object.keys(todoEntity.shape.properties)).not.toContain("groups");
   });
 });
 

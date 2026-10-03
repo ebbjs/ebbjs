@@ -60,8 +60,7 @@ import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { createAtomicRuntime, type AtomicClient } from "./atomic";
 import { generateId } from "@ebbjs/core";
 import type { EntityDef } from "../schema/entity";
-import type { Schema } from "../schema/schema";
-import { relationshipSystemEntity } from "../schema/system-entities";
+import { seedRegistry, type Schema } from "../schema/schema";
 import type { TSchema } from "@sinclair/typebox/type";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
@@ -1062,15 +1061,7 @@ export class SyncClient {
 const buildRegistryFromSchema = (schema: AnySchema | undefined): EntityRegistry => {
   const registry = new EntityRegistry();
   if (schema === undefined) return registry;
-  registry.register(relationshipSystemEntity);
-  for (const entity of Object.values(schema.entities)) {
-    registry.register(entity);
-  }
-  if (schema.relationships !== undefined) {
-    for (const rel of Object.values(schema.relationships)) {
-      registry.registerRelationship(rel);
-    }
-  }
+  seedRegistry(registry, schema.entities, schema.relationships);
   return registry;
 };
 

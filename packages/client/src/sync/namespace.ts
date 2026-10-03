@@ -25,6 +25,7 @@ import { EntityValidationError, validatePayload } from "../schema/entity-registr
 import type { EntityRegistry } from "../schema/entity-registry";
 import type { RelationshipDef } from "../schema/relationship";
 import type { Schema } from "../schema/schema";
+import type { GroupFields } from "../schema/system-entities";
 import {
   buildLazyQueryBuilder,
   projectEntity,
@@ -103,6 +104,14 @@ type AccessorValueAt<R, TEnd extends RelationshipEnd> = TEnd extends "target"
 type AccessorsAt<TRels, TEnd extends RelationshipEnd, TName extends string> = {
   [K in keyof TRels as AccessorKeyAt<TRels[K], TEnd, TName>]: AccessorValueAt<TRels[K], TEnd>;
 };
+
+/**
+ * Built-in membership accessor carried by every projected row.
+ * `doc.groups` is a forward-many {@link QueryBuilder} over the
+ * `group` system entity, injected by `defineSchema` for every
+ * declared entity. There is no built-in reverse accessor in v1.
+ */
+export type MembershipAccessors = { readonly groups: QueryBuilder<GroupFields> };
 
 /**
  * Per-`as` accessor record for the entity named `TName`, derived from
@@ -335,7 +344,7 @@ export type EntityNamespaces<S> =
     ? {
         [K in keyof TEntities & string]: EntityNamespace<
           EntityFields<TEntities[K]>,
-          RowAccessorRecord<TRels, EntityNameOf<TEntities[K]>>
+          RowAccessorRecord<TRels, EntityNameOf<TEntities[K]>> & MembershipAccessors
         >;
       }
     : NoAccessors;

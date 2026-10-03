@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Type } from "@sinclair/typebox";
 import { defineEntity, e, type EntityDef, type NullableSchema } from "./entity";
+import { ReservedNameError, RESERVED_ENTITY_NAMES } from "./reserved";
 
 describe("defineEntity", () => {
   it("returns a value with the given name and fields", () => {
@@ -59,6 +60,23 @@ describe("defineEntity", () => {
     expect(a.name).toBe("a");
     expect(b.name).toBe("b");
     expect(a.fields).not.toBe(b.fields);
+  });
+});
+
+describe("defineEntity reserved names", () => {
+  it.each(RESERVED_ENTITY_NAMES)("rejects the system entity name %s", (name) => {
+    expect(() => defineEntity(name, { name: e.string() })).toThrow(ReservedNameError);
+    expect(() => defineEntity(name, { name: e.string() })).toThrow(/reserved/);
+  });
+
+  it("rejects a field named groups — the injected membership accessor", () => {
+    expect(() => defineEntity("todo", { groups: e.string() })).toThrow(ReservedNameError);
+    expect(() => defineEntity("todo", { groups: e.string() })).toThrow(/reserved/);
+  });
+
+  it("still accepts app names and fields that don't collide", () => {
+    const todo = defineEntity("todo", { title: e.string(), grouping: e.string() });
+    expect(todo.name).toBe("todo");
   });
 });
 

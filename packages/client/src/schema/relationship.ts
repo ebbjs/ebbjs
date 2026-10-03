@@ -16,6 +16,8 @@
 import type { EntityDef } from "./entity";
 import type { TSchema } from "@sinclair/typebox/type";
 
+import { assertAccessorNameAvailable } from "./reserved";
+
 /**
  * Source-side cardinality. Describes how the source entity holds the
  * pointer to the target. The reverse direction is always a collection
@@ -90,8 +92,26 @@ export interface DefineRelationshipInput<
   kind?: RelationshipKind;
 }
 
-/** Define a relationship by source, target, and accessor name. Frozen. */
+/**
+ * Define a relationship by source, target, and accessor name. Frozen.
+ * Throws when `as` collides with the injected membership accessor.
+ */
 export function defineRelationship<
+  S extends EntityDef<Record<string, TSchema>>,
+  T extends EntityDef<Record<string, TSchema>>,
+  const A extends string,
+  const C extends SourceCardinality = "one",
+>(opts: DefineRelationshipInput<S, T, A, C>): RelationshipDef<S, T, A, C> {
+  assertAccessorNameAvailable(opts.source.name, opts.as);
+  return buildRelationshipDef(opts);
+}
+
+/**
+ * Unchecked relationship factory. `defineRelationship` validates the
+ * reserved accessor name first; the injected membership relationship
+ * (`as: "groups"`, `kind: "member"`) builds through here.
+ */
+export function buildRelationshipDef<
   S extends EntityDef<Record<string, TSchema>>,
   T extends EntityDef<Record<string, TSchema>>,
   const A extends string,

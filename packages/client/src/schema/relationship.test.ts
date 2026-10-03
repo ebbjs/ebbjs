@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { defineEntity, e } from "./entity";
 import { defineRelationship, type RelationshipDef } from "./relationship";
+import { ReservedNameError } from "./reserved";
 import { EntityRegistry, EntityValidationError } from "./entity-registry";
 import {
   buildRelationshipUpdate,
@@ -60,6 +61,15 @@ describe("defineRelationship", () => {
       kind: "member",
     });
     expect(rel.kind).toBe("member");
+  });
+
+  it("rejects the injected groups accessor name", () => {
+    expect(() => defineRelationship({ source: todo, target: list, as: "groups" })).toThrow(
+      ReservedNameError,
+    );
+    expect(() => defineRelationship({ source: todo, target: list, as: "groups" })).toThrow(
+      /reserved/,
+    );
   });
 
   it("flows S and T into RelationshipDef<S, T> via inference", () => {

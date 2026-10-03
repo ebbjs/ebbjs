@@ -50,6 +50,7 @@ import { defineEntity, e } from "../../schema/entity";
 import { defineRelationship } from "../../schema/relationship";
 import { EntityRegistry, EntityValidationError } from "../../schema/entity-registry";
 import { defineSchema } from "../../schema/schema";
+import { groupSystemEntity } from "../../schema/system-entities";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
 
@@ -1393,7 +1394,7 @@ async function findCreatedTodoId(client: import("../..").SyncClient): Promise<st
 describe("integration: client.atomic", () => {
   const atomicTodo = defineEntity("todo", { title: e.string() });
   const atomicList = defineEntity("list", { name: e.string() });
-  const atomicGroup = defineEntity("group", { name: e.string() });
+  const atomicGroup = groupSystemEntity;
   const atomicSchema = defineSchema({
     entities: { todo: atomicTodo, list: atomicList },
     relationships: {

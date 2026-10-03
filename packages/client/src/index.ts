@@ -48,6 +48,7 @@ export {
   type EntityRow,
   type EntitySnapshot,
   type EntityWithAccessors,
+  type MembershipAccessors,
   type RowAccessor,
   createEntityNamespace,
   buildEntityNamespaces,
@@ -165,3 +166,18 @@ export {
 } from "./schema/entity-registry";
 
 export { defineSchema, type DefineSchemaInput, type Schema } from "./schema/schema";
+
+export {
+  ReservedNameError,
+  RESERVED_ENTITY_NAMES,
+  RESERVED_MEMBERSHIP_NAMES,
+} from "./schema/reserved";
+
+export {
+  relationshipSystemEntity,
+  groupSystemEntity,
+  groupMemberSystemEntity,
+  GROUPS_ACCESSOR,
+  MEMBERSHIP_KIND,
+  type GroupFields,
+} from "./schema/system-entities";
