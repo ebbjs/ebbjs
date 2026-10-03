@@ -2,11 +2,11 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
   @moduledoc """
   Regression tests for #251.
 
-  A `relationship` or `groupMember` delete is indexed into
+  An `entityGroup` or `groupMember` delete is indexed into
   `cf_group_actions` from the *pre-update* cache, so catch-up delivers
   it. The FanOutRouter used to re-resolve the Action's groups from the
   *post-update* cache at dispatch time: by then the by-id entry is gone
-  (`data: nil` carries no `source_id`), it resolved to `[]`, and live
+  (`data: nil` carries no `group_id`), it resolved to `[]`, and live
   SSE never saw the delete.
 
   The Writer now hands the Router the same group set it used to build
@@ -23,15 +23,15 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
   alias EbbServer.TestHelpers
 
   describe "delete fan-out uses the commit snapshot (#251)" do
-    test "relationship delete reaches live subscribers and cf_group_actions" do
-      %{actor_id: actor_id, group_id: group_id, rel_id: rel_id} = setup_membership()
+    test "entityGroup delete reaches live subscribers and cf_group_actions" do
+      %{actor_id: actor_id, group_id: group_id, eg_id: eg_id} = setup_membership()
 
       {:ok, sse_pid} = subscribe(group_id, actor_id)
 
-      delete = relationship_delete_action(actor_id, rel_id)
+      delete = entity_group_delete_action(actor_id, eg_id)
       :ok = post!(delete, actor_id)
 
-      pushed = assert_pushed(group_id, actor_id, rel_id)
+      pushed = assert_pushed(group_id, actor_id, eg_id)
       assert_same_action(pushed, group_id)
 
       :ok = FanOutRouter.unsubscribe(sse_pid)
@@ -128,14 +128,14 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
   end
 
   # Creates the group, the actor's membership, and a single entity whose
-  # *only* membership edge is `rel_id`. Deleting `rel_id` therefore
-  # empties the source's post-update group set, which is what used to
-  # break resolution.
+  # *only* membership row is `eg_id`. Deleting `eg_id` therefore empties
+  # the entity's post-update group set, which is what used to break
+  # resolution.
   defp setup_membership do
     actor_id = "a_251_#{:erlang.unique_integer([:positive])}"
     group_id = "g_251_#{:erlang.unique_integer([:positive])}"
     todo_id = "todo_251_#{:erlang.unique_integer([:positive])}"
-    rel_id = "rel_251_#{:erlang.unique_integer([:positive])}"
+    eg_id = "eg_251_#{:erlang.unique_integer([:positive])}"
 
     ActionHelpers.bootstrap_group(actor_id, group_id, ["todo.read", "todo.write", "todo.*"])
 
@@ -157,23 +157,21 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
             }
           }
         },
-        relationship_update(rel_id, todo_id, group_id, "put", hlc)
+        entity_group_update(eg_id, todo_id, group_id, "put", hlc)
       ]
     }
 
     :ok = post!(action, actor_id)
 
-    %{actor_id: actor_id, group_id: group_id, todo_id: todo_id, rel_id: rel_id}
+    %{actor_id: actor_id, group_id: group_id, todo_id: todo_id, eg_id: eg_id}
   end
 
-  defp relationship_delete_action(actor_id, rel_id) do
+  defp entity_group_delete_action(actor_id, eg_id) do
     %{
       "id" => "act_251_del_#{:erlang.unique_integer([:positive])}",
       "actor_id" => actor_id,
       "hlc" => TestHelpers.generate_hlc(),
-      "updates" => [
-        relationship_update(rel_id, nil, nil, "delete", TestHelpers.generate_hlc())
-      ]
+      "updates" => [entity_group_update(eg_id, nil, nil, "delete", TestHelpers.generate_hlc())]
     }
   end
 
@@ -219,26 +217,23 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
     }
   end
 
-  defp relationship_update(rel_id, source_id, target_id, method, hlc) do
+  defp entity_group_update(eg_id, entity_id, group_id, method, hlc) do
     data =
       if method == "delete" do
         nil
       else
         %{
           "fields" => %{
-            "source_id" => %{"type" => "lww", "value" => source_id, "hlc" => hlc},
-            "target_id" => %{"type" => "lww", "value" => target_id, "hlc" => hlc},
-            "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
-            "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc},
-            "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc}
+            "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
+            "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
           }
         }
       end
 
     %{
-      "id" => "upd_251_rel_#{:erlang.unique_integer([:positive])}",
-      "subject_id" => rel_id,
-      "subject_type" => "relationship",
+      "id" => "upd_251_eg_#{:erlang.unique_integer([:positive])}",
+      "subject_id" => eg_id,
+      "subject_type" => "entityGroup",
       "method" => method,
       "data" => data
     }

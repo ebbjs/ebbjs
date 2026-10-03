@@ -283,7 +283,7 @@ defmodule EbbServer.Sync.Router do
       {:ok, %{"entity_id" => entity_id, "data" => data}}
       when is_binary(entity_id) and entity_id != "" ->
         group_ids =
-          EntityIndex.source_groups(entity_id, relationships: CacheTables.relationships())
+          EntityIndex.source_groups(entity_id, entity_groups: CacheTables.entity_groups())
 
         member_group_ids = Enum.filter(group_ids, &GroupCache.get_permissions(actor_id, &1))
 

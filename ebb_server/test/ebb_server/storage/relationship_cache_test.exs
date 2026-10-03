@@ -5,7 +5,6 @@ defmodule EbbServer.Storage.RelationshipCacheTest do
 
   defp with_isolated_cache do
     rel_name = :"test_rel_#{System.unique_integer([:positive])}"
-    rbg_name = :"test_rbg_#{System.unique_integer([:positive])}"
     rbi_name = :"test_rbi_#{System.unique_integer([:positive])}"
     cache_name = :"test_rc_#{System.unique_integer([:positive])}"
 
@@ -13,21 +12,18 @@ defmodule EbbServer.Storage.RelationshipCacheTest do
       RelationshipCache.start_link(
         name: cache_name,
         relationships: rel_name,
-        relationships_by_group: rbg_name,
         relationships_by_id: rbi_name
       )
 
     on_exit(fn ->
       RelationshipCache.reset(
         relationships: rel_name,
-        relationships_by_group: rbg_name,
         relationships_by_id: rbi_name
       )
     end)
 
     %{
       relationships: rel_name,
-      relationships_by_group: rbg_name,
       relationships_by_id: rbi_name,
       cache_name: cache_name
     }
@@ -36,19 +32,17 @@ defmodule EbbServer.Storage.RelationshipCacheTest do
   defp put(cache, rel) do
     RelationshipCache.put_relationship(rel,
       relationships: cache.relationships,
-      relationships_by_group: cache.relationships_by_group,
       relationships_by_id: cache.relationships_by_id
     )
   end
 
-  defp member(source_id, target_id, id) do
+  defp edge(source_id, target_id, id) do
     %{
       id: id,
       source_id: source_id,
       target_id: target_id,
       type: "todo",
-      field: "group",
-      kind: "member"
+      field: "owns"
     }
   end
 
@@ -56,24 +50,11 @@ defmodule EbbServer.Storage.RelationshipCacheTest do
     test "stores relationship entry" do
       cache = with_isolated_cache()
 
-      :ok = put(cache, member("todo_1", "g_1", "rel_1"))
+      :ok = put(cache, edge("todo_1", "g_1", "rel_1"))
 
-      assert RelationshipCache.get_entity_group("todo_1", cache.relationships) == "g_1"
-    end
-
-    test "defaults a missing kind to link" do
-      cache = with_isolated_cache()
-
-      :ok =
-        put(cache, %{
-          id: "rel_1",
-          source_id: "todo_1",
-          target_id: "g_1",
-          type: "todo",
-          field: "group"
-        })
-
-      assert RelationshipCache.membership_groups("todo_1", cache.relationships) == []
+      entry = RelationshipCache.get_relationship("rel_1", cache.relationships_by_id)
+      assert entry.source_id == "todo_1"
+      assert entry.target_id == "g_1"
     end
 
     test "rejects nil values" do
@@ -83,107 +64,24 @@ defmodule EbbServer.Storage.RelationshipCacheTest do
                put(cache, %{id: nil, source_id: "todo_1", target_id: "g_1"})
     end
 
-    test "a re-put replaces the prior entry and its group index row" do
+    test "a re-put replaces the prior entry" do
       cache = with_isolated_cache()
 
-      :ok = put(cache, member("todo_1", "g_1", "rel_1"))
-      :ok = put(cache, member("todo_1", "g_2", "rel_1"))
-
-      assert RelationshipCache.membership_groups("todo_1", cache.relationships) == ["g_2"]
+      :ok = put(cache, edge("todo_1", "g_1", "rel_1"))
+      :ok = put(cache, edge("todo_1", "g_2", "rel_1"))
 
       assert RelationshipCache.get_relationship("rel_1", cache.relationships_by_id).target_id ==
                "g_2"
 
-      assert RelationshipCache.get_group_entities("g_1", cache.relationships_by_group) == []
-
-      assert RelationshipCache.get_group_entities("g_2", cache.relationships_by_group) == [
-               "todo_1"
-             ]
-    end
-  end
-
-  describe "membership_groups/2" do
-    test "returns only kind member targets, unioned and deduplicated" do
-      cache = with_isolated_cache()
-
-      :ok = put(cache, member("todo_1", "g_1", "rel_1"))
-      :ok = put(cache, member("todo_1", "g_2", "rel_2"))
-      :ok = put(cache, member("todo_1", "g_1", "rel_3"))
-
-      :ok =
-        put(cache, %{
-          id: "rel_link",
-          source_id: "todo_1",
-          target_id: "g_3",
-          type: "todo",
-          field: "owns",
-          kind: "link"
-        })
-
-      assert RelationshipCache.membership_groups("todo_1", cache.relationships) |> Enum.sort() ==
-               ["g_1", "g_2"]
-    end
-
-    test "returns an empty list for an unknown source" do
-      cache = with_isolated_cache()
-
-      assert RelationshipCache.membership_groups("unknown", cache.relationships) == []
-    end
-  end
-
-  describe "get_entity_group/2" do
-    test "returns a group for a member edge" do
-      cache = with_isolated_cache()
-
-      :ok = put(cache, member("todo_1", "g_1", "rel_1"))
-
-      assert RelationshipCache.get_entity_group("todo_1", cache.relationships) == "g_1"
-    end
-
-    test "returns nil for a link-only source" do
-      cache = with_isolated_cache()
-
-      :ok =
-        put(cache, %{
-          id: "rel_1",
-          source_id: "todo_1",
-          target_id: "col_1",
-          type: "todo",
-          field: "column",
-          kind: "link"
-        })
-
-      assert RelationshipCache.get_entity_group("todo_1", cache.relationships) == nil
-    end
-
-    test "returns nil for unknown entity" do
-      cache = with_isolated_cache()
-
-      assert RelationshipCache.get_entity_group("unknown", cache.relationships) == nil
-    end
-  end
-
-  describe "get_group_entities/2" do
-    test "returns all entities in group" do
-      cache = with_isolated_cache()
-
-      :ok = put(cache, member("todo_1", "g_1", "rel_1"))
-      :ok = put(cache, member("todo_2", "g_1", "rel_2"))
-
-      entities = RelationshipCache.get_group_entities("g_1", cache.relationships_by_group)
-      assert length(entities) == 2
-      assert "todo_1" in entities
-      assert "todo_2" in entities
+      assert [{"todo_1", %{target_id: "g_2"}}] = :ets.lookup(cache.relationships, "todo_1")
     end
   end
 
   describe "delete_relationship/2" do
-    test "removes relationship from all three tables" do
+    test "removes the relationship from both tables" do
       cache = with_isolated_cache()
 
-      :ok = put(cache, member("todo_1", "g_1", "rel_1"))
-
-      assert RelationshipCache.get_entity_group("todo_1", cache.relationships) == "g_1"
+      :ok = put(cache, edge("todo_1", "g_1", "rel_1"))
 
       assert RelationshipCache.get_relationship("rel_1", cache.relationships_by_id).target_id ==
                "g_1"
@@ -191,34 +89,27 @@ defmodule EbbServer.Storage.RelationshipCacheTest do
       :ok =
         RelationshipCache.delete_relationship("rel_1",
           relationships: cache.relationships,
-          relationships_by_group: cache.relationships_by_group,
           relationships_by_id: cache.relationships_by_id
         )
 
-      assert RelationshipCache.get_entity_group("todo_1", cache.relationships) == nil
-      assert RelationshipCache.get_group_entities("g_1", cache.relationships_by_group) == []
       assert RelationshipCache.get_relationship("rel_1", cache.relationships_by_id) == nil
+      assert :ets.lookup(cache.relationships, "todo_1") == []
     end
 
     test "removes only the deleted edge when a source has several" do
       cache = with_isolated_cache()
 
-      :ok = put(cache, member("todo_1", "g_1", "rel_1"))
-      :ok = put(cache, member("todo_1", "g_2", "rel_2"))
+      :ok = put(cache, edge("todo_1", "g_1", "rel_1"))
+      :ok = put(cache, edge("todo_1", "g_2", "rel_2"))
 
       :ok =
         RelationshipCache.delete_relationship("rel_1",
           relationships: cache.relationships,
-          relationships_by_group: cache.relationships_by_group,
           relationships_by_id: cache.relationships_by_id
         )
 
-      assert RelationshipCache.membership_groups("todo_1", cache.relationships) == ["g_2"]
-      assert RelationshipCache.get_group_entities("g_1", cache.relationships_by_group) == []
-
-      assert RelationshipCache.get_group_entities("g_2", cache.relationships_by_group) == [
-               "todo_1"
-             ]
+      assert RelationshipCache.get_relationship("rel_2", cache.relationships_by_id) != nil
+      assert length(:ets.lookup(cache.relationships, "todo_1")) == 1
     end
   end
 
@@ -226,15 +117,14 @@ defmodule EbbServer.Storage.RelationshipCacheTest do
     test "returns relationship entry by id" do
       cache = with_isolated_cache()
 
-      :ok = put(cache, member("todo_1", "g_1", "rel_1"))
+      :ok = put(cache, edge("todo_1", "g_1", "rel_1"))
 
       entry = RelationshipCache.get_relationship("rel_1", cache.relationships_by_id)
       assert entry.id == "rel_1"
       assert entry.source_id == "todo_1"
       assert entry.target_id == "g_1"
       assert entry.type == "todo"
-      assert entry.field == "group"
-      assert entry.kind == "member"
+      assert entry.field == "owns"
     end
 
     test "returns nil for unknown id" do
@@ -248,18 +138,16 @@ defmodule EbbServer.Storage.RelationshipCacheTest do
     test "clears all relationships" do
       cache = with_isolated_cache()
 
-      :ok = put(cache, member("todo_1", "g_1", "rel_1"))
+      :ok = put(cache, edge("todo_1", "g_1", "rel_1"))
 
       :ok =
         RelationshipCache.reset(
           relationships: cache.relationships,
-          relationships_by_group: cache.relationships_by_group,
           relationships_by_id: cache.relationships_by_id
         )
 
-      assert RelationshipCache.get_entity_group("todo_1", cache.relationships) == nil
-      assert RelationshipCache.get_group_entities("g_1", cache.relationships_by_group) == []
       assert RelationshipCache.get_relationship("rel_1", cache.relationships_by_id) == nil
+      assert :ets.lookup(cache.relationships, "todo_1") == []
     end
   end
 end

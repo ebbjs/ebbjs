@@ -261,11 +261,11 @@ defmodule EbbServer.Sync.FanOutRouter do
   Resolves the set of group ids an Action should fan out to.
 
   Dispatches each Update through `EntityIndex`, folding in the
-  membership edges carried by the Action itself so that a create and
-  its `kind: "member"` edges land in the same groups. See
-  `EntityIndex` for the per-type resolution rules. Updates whose entity
-  is missing from the index are silently dropped; the client catches
-  them up via `/sync/groups/:id?offset=` instead.
+  membership rows carried by the Action itself so that a create and
+  its `entityGroup` rows land in the same groups. See `EntityIndex`
+  for the per-type resolution rules. Updates whose entity is missing
+  from the index are silently dropped; the client catches them up via
+  `/sync/groups/:id?offset=` instead.
 
   This is the **fallback** path: the Writer normally hands the Router
   the group set it used to build `cf_group_actions`, from the commit
@@ -304,7 +304,8 @@ defmodule EbbServer.Sync.FanOutRouter do
     to_key = RocksDB.encode_gsn_key(to_gsn + 1)
 
     resolve_opts = [
-      relationships: CacheTables.relationships(),
+      entity_groups: CacheTables.entity_groups(),
+      entity_groups_by_id: CacheTables.entity_groups_by_id(),
       relationships_by_id: CacheTables.relationships_by_id(),
       group_members_by_id: CacheTables.group_members_by_id()
     ]

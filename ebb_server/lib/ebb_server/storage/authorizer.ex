@@ -33,8 +33,8 @@ defmodule EbbServer.Storage.Authorizer do
   Authorizes a list of validated actions.
 
   Each action must pass authorization checks:
-  - Group bootstrap allowed without prior permissions
-  - `group` / `groupMember` updates require membership in the entity's group
+  - `group` bootstrap allowed without prior permissions
+  - `group` / `groupMember` / `entityGroup` updates require membership in the entity's group
   - `relationship` updates require membership in the edge's **source** group set
   - User entities require the permission in at least one group of the entity's set
   """
@@ -162,7 +162,8 @@ defmodule EbbServer.Storage.Authorizer do
 
   defp ctx_to_opts(ctx) do
     [
-      relationships: ctx.relationships_table,
+      entity_groups: ctx.entity_groups_table,
+      entity_groups_by_id: ctx.entity_groups_by_id_table,
       relationships_by_id: ctx.relationships_by_id_table,
       group_members_by_id: ctx.group_members_by_id_table
     ]

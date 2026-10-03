@@ -35,25 +35,25 @@ defmodule EbbServer.Storage.Writer do
   When building the `cf_group_actions` index entry for an update, the
   Writer resolves the group **set** the update belongs to. This is
   straightforward when the entity already exists — look it up in
-  `RelationshipCache`. When the membership edge is being created in the
-  same action (e.g. a "create todo" update paired with a
-  `kind: "member"` relationship update), the cache has no entry yet.
+  `EntityGroupCache`. When the membership row is being created in the
+  same action (e.g. a "create todo" update paired with an `entityGroup`
+  update), the cache has no entry yet.
 
   To handle that, the Writer builds an **intra-action context** before
-  processing updates: it maps each `source_id` to the group ids carried
-  by its `kind: "member"` relationship updates. `EntityIndex` unions
-  that with the cached membership set, so an update is indexed once per
-  group in the set.
+  processing updates: it maps each `entity_id` to the group ids carried
+  by its `entityGroup` updates. `EntityIndex` unions that with the
+  cached membership set, so an update is indexed once per group in the
+  set.
 
   Example: an action with two updates:
   1. Create entity `todo_123` inside group `g_1` and `g_2`
-  2. Add membership edges `rel_a` (`todo_123` → `g_1`) and `rel_b`
-     (`todo_123` → `g_2`), both `kind: "member"`
+  2. Add memberships `eg_a` (`todo_123` → `g_1`) and `eg_b`
+     (`todo_123` → `g_2`)
 
   The intra-action context becomes
   `%{"todo_123" => ["g_1", "g_2"]}`. The Writer indexes the create
-  and both edges into `g_1` and `g_2`. Domain links (`kind: "link"`,
-  or no kind) do not move an entity between groups.
+  and both membership rows into `g_1` and `g_2`. Domain relationship
+  edges do not move an entity between groups.
   """
 
   use GenServer
@@ -65,6 +65,7 @@ defmodule EbbServer.Storage.Writer do
   alias EbbServer.Storage.{
     CacheTables,
     DirtyTracker,
+    EntityGroupCache,
     EntityIndex,
     Fields,
     GroupCache,
@@ -82,8 +83,10 @@ defmodule EbbServer.Storage.Writer do
           gsn_counter: :atomics.atomics(),
           group_members: atom(),
           group_members_by_id: atom(),
+          entity_groups: atom(),
+          entity_groups_by_id: atom(),
+          entity_groups_by_group: atom(),
           relationships: atom(),
-          relationships_by_group: atom(),
           relationships_by_id: atom(),
           fan_out_router: GenServer.name(),
           watermark_tracker: GenServer.name()
@@ -94,8 +97,10 @@ defmodule EbbServer.Storage.Writer do
     :gsn_counter,
     :group_members,
     :group_members_by_id,
+    :entity_groups,
+    :entity_groups_by_id,
+    :entity_groups_by_group,
     :relationships,
-    :relationships_by_group,
     :relationships_by_id,
     :fan_out_router,
     :watermark_tracker
@@ -141,18 +146,30 @@ defmodule EbbServer.Storage.Writer do
         raise ArgumentError,
               "#{__MODULE__}.init/1 requires :group_members_by_id (pass it from the supervisor that owns the cache — see Sync.Supervisor for the boot wiring)"
 
+    entity_groups =
+      Keyword.get(
+        opts,
+        :entity_groups,
+        CacheTables.entity_groups()
+      )
+
+    entity_groups_by_id =
+      Keyword.get(opts, :entity_groups_by_id) ||
+        raise ArgumentError,
+              "#{__MODULE__}.init/1 requires :entity_groups_by_id (pass it from the supervisor that owns the cache — see Sync.Supervisor for the boot wiring)"
+
+    entity_groups_by_group =
+      Keyword.get(
+        opts,
+        :entity_groups_by_group,
+        CacheTables.entity_groups_by_group()
+      )
+
     relationships =
       Keyword.get(
         opts,
         :relationships,
         CacheTables.relationships()
-      )
-
-    relationships_by_group =
-      Keyword.get(
-        opts,
-        :relationships_by_group,
-        CacheTables.relationships_by_group()
       )
 
     relationships_by_id =
@@ -170,8 +187,10 @@ defmodule EbbServer.Storage.Writer do
        gsn_counter: gsn_counter,
        group_members: group_members,
        group_members_by_id: group_members_by_id,
+       entity_groups: entity_groups,
+       entity_groups_by_id: entity_groups_by_id,
+       entity_groups_by_group: entity_groups_by_group,
        relationships: relationships,
-       relationships_by_group: relationships_by_group,
        relationships_by_id: relationships_by_id,
        fan_out_router: fan_out_router,
        watermark_tracker: watermark_tracker
@@ -209,20 +228,14 @@ defmodule EbbServer.Storage.Writer do
       {gsn_start, gsn_end} = GsnCounter.claim_gsn_range(batch_size, state.gsn_counter)
 
       rocks_name = state.rocks_name
+      resolve_opts = resolve_cache_opts(state)
 
       {ops, groups_by_gsn} =
         filtered
         |> Enum.with_index(gsn_start)
         |> Enum.map_reduce(%{}, fn {action, gsn}, acc ->
           {action_ops, group_ids} =
-            build_action_ops(
-              action,
-              gsn,
-              rocks_name,
-              state.relationships,
-              state.relationships_by_id,
-              state.group_members_by_id
-            )
+            build_action_ops(action, gsn, rocks_name, resolve_opts)
 
           {action_ops, Map.put(acc, gsn, group_ids)}
         end)
@@ -270,37 +283,88 @@ defmodule EbbServer.Storage.Writer do
   defp update_system_caches(actions, state) do
     for action <- actions,
         update <- action.updates,
-        update.subject_type in ["groupMember", "relationship"] do
+        update.subject_type in ["groupMember", "entityGroup", "relationship"] do
       case update.subject_type do
         "groupMember" -> handle_group_member_update(update, state)
+        "entityGroup" -> handle_entity_group_update(update, state)
         "relationship" -> handle_relationship_update(update, state)
       end
     end
   end
 
+  # A patch carries only the changed fields, so merge them over the
+  # cached by-id entry before writing. Skipping a row whose required
+  # fields still resolve to nil keeps the cache and the persisted
+  # Update from diverging (the cache never stores a partial row).
   defp handle_group_member_update(update, state) do
     case update.method do
       method when method in [:put, :patch] ->
         data = update.data || %{}
+        existing = existing_group_member(update, state)
 
-        actor_id = Fields.get(data, "actor_id")
-        group_id = Fields.get(data, "group_id")
-        permissions = Fields.get(data, "permissions")
+        actor_id = Fields.get(data, "actor_id") || existing[:actor_id]
+        group_id = Fields.get(data, "group_id") || existing[:group_id]
+        permissions = Fields.get(data, "permissions") || existing[:permissions]
 
-        GroupCache.put_group_member(
-          %{
-            id: update.subject_id,
-            actor_id: actor_id,
-            group_id: group_id,
-            permissions: permissions
-          },
-          state.group_members
-        )
+        if is_nil(actor_id) or is_nil(group_id) do
+          :ok
+        else
+          GroupCache.put_group_member(
+            %{
+              id: update.subject_id,
+              actor_id: actor_id,
+              group_id: group_id,
+              permissions: permissions
+            },
+            state.group_members
+          )
+        end
 
       :delete ->
         GroupCache.delete_group_member(update.subject_id, state.group_members)
     end
   end
+
+  defp existing_group_member(%{method: :patch} = update, state) do
+    GroupCache.get_group_member(update.subject_id, state.group_members_by_id) || %{}
+  end
+
+  defp existing_group_member(_update, _state), do: %{}
+
+  defp handle_entity_group_update(update, state) do
+    case update.method do
+      method when method in [:put, :patch] ->
+        data = update.data || %{}
+        existing = existing_entity_group(update, state)
+
+        entity_id = Fields.get(data, "entity_id") || existing[:entity_id]
+        group_id = Fields.get(data, "group_id") || existing[:group_id]
+
+        if is_nil(entity_id) or is_nil(group_id) do
+          :ok
+        else
+          EntityGroupCache.put_entity_group(
+            %{id: update.subject_id, entity_id: entity_id, group_id: group_id},
+            entity_groups: state.entity_groups,
+            entity_groups_by_id: state.entity_groups_by_id,
+            entity_groups_by_group: state.entity_groups_by_group
+          )
+        end
+
+      :delete ->
+        EntityGroupCache.delete_entity_group(update.subject_id,
+          entity_groups: state.entity_groups,
+          entity_groups_by_id: state.entity_groups_by_id,
+          entity_groups_by_group: state.entity_groups_by_group
+        )
+    end
+  end
+
+  defp existing_entity_group(%{method: :patch} = update, state) do
+    EntityGroupCache.get_entity_group(update.subject_id, state.entity_groups_by_id) || %{}
+  end
+
+  defp existing_entity_group(_update, _state), do: %{}
 
   defp handle_relationship_update(update, state) do
     case update.method do
@@ -311,7 +375,6 @@ defmodule EbbServer.Storage.Writer do
         target_id = Fields.get(data, "target_id")
         type = Fields.get(data, "type")
         field = Fields.get(data, "field")
-        kind = Fields.get(data, "kind")
 
         RelationshipCache.put_relationship(
           %{
@@ -319,11 +382,9 @@ defmodule EbbServer.Storage.Writer do
             source_id: source_id,
             target_id: target_id,
             type: type,
-            field: field,
-            kind: kind
+            field: field
           },
           relationships: state.relationships,
-          relationships_by_group: state.relationships_by_group,
           relationships_by_id: state.relationships_by_id
         )
 
@@ -331,20 +392,12 @@ defmodule EbbServer.Storage.Writer do
         RelationshipCache.delete_relationship(
           update.subject_id,
           relationships: state.relationships,
-          relationships_by_group: state.relationships_by_group,
           relationships_by_id: state.relationships_by_id
         )
     end
   end
 
-  defp build_action_ops(
-         action,
-         gsn,
-         rocks_name,
-         relationships,
-         relationships_by_id,
-         group_members_by_id
-       ) do
+  defp build_action_ops(action, gsn, rocks_name, resolve_opts) do
     action_with_gsn = to_storage_format(action, gsn)
     action_etf = :erlang.term_to_binary(action_with_gsn)
 
@@ -353,16 +406,7 @@ defmodule EbbServer.Storage.Writer do
     {update_ops, group_ids_by_update} =
       Enum.map_reduce(action.updates, [], fn update, acc ->
         {ops, group_ids} =
-          build_update_ops(
-            action.id,
-            update,
-            gsn,
-            rocks_name,
-            relationships,
-            relationships_by_id,
-            group_members_by_id,
-            intra_ctx
-          )
+          build_update_ops(action.id, update, gsn, rocks_name, resolve_opts, intra_ctx)
 
         {ops, [group_ids | acc]}
       end)
@@ -380,6 +424,15 @@ defmodule EbbServer.Storage.Writer do
       ] ++ List.flatten(update_ops)
 
     {ops, group_ids}
+  end
+
+  defp resolve_cache_opts(state) do
+    [
+      entity_groups: state.entity_groups,
+      entity_groups_by_id: state.entity_groups_by_id,
+      relationships_by_id: state.relationships_by_id,
+      group_members_by_id: state.group_members_by_id
+    ]
   end
 
   defp build_intra_action_context(updates) do
@@ -408,26 +461,10 @@ defmodule EbbServer.Storage.Writer do
     }
   end
 
-  defp build_update_ops(
-         action_id,
-         update,
-         gsn,
-         rocks_name,
-         relationships,
-         relationships_by_id,
-         group_members_by_id,
-         intra_ctx
-       ) do
+  defp build_update_ops(action_id, update, gsn, rocks_name, resolve_opts, intra_ctx) do
     update_etf = :erlang.term_to_binary(update)
 
-    group_ids =
-      group_ids_for_update(
-        update,
-        relationships,
-        relationships_by_id,
-        group_members_by_id,
-        intra_ctx
-      )
+    group_ids = group_ids_for_update(update, resolve_opts, intra_ctx)
 
     index_ops =
       Enum.map(group_ids, fn group_id ->
@@ -451,28 +488,15 @@ defmodule EbbServer.Storage.Writer do
     {ops, group_ids}
   end
 
-  defp group_ids_for_update(
-         _update,
-         nil,
-         _relationships_by_id,
-         _group_members_by_id,
-         _intra_ctx
-       ),
-       do: []
+  defp group_ids_for_update(update, resolve_opts, intra_ctx) do
+    case Keyword.get(resolve_opts, :entity_groups) do
+      nil -> []
+      _table -> resolve_update_groups(update, resolve_opts, intra_ctx)
+    end
+  end
 
-  defp group_ids_for_update(
-         update,
-         relationships,
-         relationships_by_id,
-         group_members_by_id,
-         intra_ctx
-       ) do
-    opts = [
-      relationships: relationships,
-      relationships_by_id: relationships_by_id,
-      group_members_by_id: group_members_by_id,
-      intra_action: intra_ctx
-    ]
+  defp resolve_update_groups(update, resolve_opts, intra_ctx) do
+    opts = Keyword.put(resolve_opts, :intra_action, intra_ctx)
 
     case update.subject_type do
       "relationship" ->
@@ -482,8 +506,20 @@ defmodule EbbServer.Storage.Writer do
           opts
         )
 
+      type when type in ["entityGroup", "groupMember"] ->
+        wire_group_or_resolve(update, type, opts)
+
       type ->
         EntityIndex.resolve_groups(type, update.subject_id, opts)
+    end
+  end
+
+  # The by-id cache is empty at write_batch time for a brand-new
+  # membership row, so prefer the group on the wire.
+  defp wire_group_or_resolve(update, type, opts) do
+    case Fields.get(update.data, "group_id") do
+      nil -> EntityIndex.resolve_groups(type, update.subject_id, opts)
+      group_id -> [group_id]
     end
   end
 end

@@ -34,17 +34,14 @@ defmodule EbbServer.PermissionQueryIntegrationTest do
             }
           },
           %{
-            "id" => "rel_q1_" <> Nanoid.generate(),
-            "subject_id" => "rel_q1_" <> Nanoid.generate(),
-            "subject_type" => "relationship",
+            "id" => "eg_q1_" <> Nanoid.generate(),
+            "subject_id" => "eg_q1_" <> Nanoid.generate(),
+            "subject_type" => "entityGroup",
             "method" => "put",
             "data" => %{
               "fields" => %{
-                "source_id" => %{"type" => "lww", "value" => "todo_1", "hlc" => hlc_1},
-                "target_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc_1},
-                "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc_1},
-                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc_1},
-                "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc_1}
+                "entity_id" => %{"type" => "lww", "value" => "todo_1", "hlc" => hlc_1},
+                "group_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc_1}
               }
             }
           }
@@ -68,17 +65,14 @@ defmodule EbbServer.PermissionQueryIntegrationTest do
             }
           },
           %{
-            "id" => "rel_q2_" <> Nanoid.generate(),
-            "subject_id" => "rel_q2_" <> Nanoid.generate(),
-            "subject_type" => "relationship",
+            "id" => "eg_q2_" <> Nanoid.generate(),
+            "subject_id" => "eg_q2_" <> Nanoid.generate(),
+            "subject_type" => "entityGroup",
             "method" => "put",
             "data" => %{
               "fields" => %{
-                "source_id" => %{"type" => "lww", "value" => "todo_2", "hlc" => hlc_2},
-                "target_id" => %{"type" => "lww", "value" => "group_2", "hlc" => hlc_2},
-                "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc_2},
-                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc_2},
-                "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc_2}
+                "entity_id" => %{"type" => "lww", "value" => "todo_2", "hlc" => hlc_2},
+                "group_id" => %{"type" => "lww", "value" => "group_2", "hlc" => hlc_2}
               }
             }
           }
