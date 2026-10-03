@@ -624,6 +624,8 @@ export class SyncClient {
 
     this.checkRelationshipPermission(sourceName);
 
+    const kind = this.wireKindFor(sourceName, as, opts.target.name);
+
     if (cardinality === "one") {
       const sourceId = requireSourceId(opts, as);
       const targetId = normalizePointer(opts.targetId, `targetId for "${as}"`);
@@ -635,7 +637,7 @@ export class SyncClient {
         targetId,
         field: as,
         type: this.wireTypeFor(sourceName, as),
-        kind: kindForTarget(opts.target.name),
+        kind,
         updateId,
       });
       return { relationshipUpdate: relUpdate };
@@ -646,7 +648,6 @@ export class SyncClient {
     const sourceId = entityUpdate.subject_id;
     const targetIds = opts.targetIds;
     const wireType = this.wireTypeFor(sourceName, as);
-    const kind = kindForTarget(opts.target.name);
     const updates: Update[] = [];
     if (targetIds === undefined) {
       // No `targetIds` — emit the entity Update with no relationship
@@ -690,6 +691,16 @@ export class SyncClient {
       kind,
       updateId: generateId("u"),
     });
+  }
+
+  /**
+   * Resolve the wire-level `kind` for a relationship: prefer the
+   * registry's declared kind (default `"link"`); fall back to the
+   * group-target heuristic for edges the registry doesn't know about
+   * (hand-built wire writes).
+   */
+  private wireKindFor(sourceName: string, as: string, targetName: string): string {
+    return this.registry.getRelationship(sourceName, as)?.kind ?? kindForTarget(targetName);
   }
 
   /**

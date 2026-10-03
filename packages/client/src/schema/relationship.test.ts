@@ -47,6 +47,21 @@ describe("defineRelationship", () => {
     expect(rel.type).toBe("todo.belongsTo.list");
   });
 
+  it('defaults kind to "link" so app-authored domain edges are unchanged', () => {
+    const rel = defineRelationship({ source: todo, target: list, as: "list" });
+    expect(rel.kind).toBe("link");
+  });
+
+  it('honors an explicit kind of "member"', () => {
+    const rel = defineRelationship({
+      source: todo,
+      target: list,
+      as: "list",
+      kind: "member",
+    });
+    expect(rel.kind).toBe("member");
+  });
+
   it("flows S and T into RelationshipDef<S, T> via inference", () => {
     const rel = defineRelationship({ source: todo, target: list, as: "list" });
     type Inferred = RelationshipDef<typeof todo, typeof list>;
@@ -70,9 +85,18 @@ describe("EntityRegistry.registerRelationship", () => {
     expect(found?.as).toBe("list");
     expect(found?.sourceCardinality).toBe("one");
     expect(found?.type).toBe("todo");
+    expect(found?.kind).toBe("link");
     expect(found?.source.name).toBe("todo");
     expect(found?.target.name).toBe("list");
     expect(r.getRelationship("todo", "missing")).toBeUndefined();
+  });
+
+  it("round-trips an explicit membership kind", () => {
+    const r = new EntityRegistry();
+    r.registerRelationship(
+      defineRelationship({ source: todo, target: list, as: "parent", kind: "member" }),
+    );
+    expect(r.getRelationship("todo", "parent")?.kind).toBe("member");
   });
 
   it("lists relationships for a source", () => {
@@ -278,6 +302,78 @@ describe("buildRelationshipWrite (SyncClient)", () => {
     expect(rel.data?.fields.target_id.value).toBe("list_1");
     expect(rel.data?.fields.field.value).toBe("list");
     expect(rel.data?.fields.type.value).toBe("todo");
+  });
+
+  it("emits link for an app-authored domain edge", () => {
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      registry: (() => {
+        const r = new EntityRegistry();
+        r.register(todo);
+        r.register(list);
+        r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
+        return r;
+      })(),
+    });
+
+    const result = client.buildRelationshipWrite({
+      source: todo,
+      target: list,
+      as: "list",
+      sourceId: "todo_1",
+      targetId: "list_1",
+    });
+    const rel = result.relationshipUpdate as Update;
+    expect(rel.data?.fields.kind.value).toBe("link");
+  });
+
+  it("emits the relationship's declared membership kind", () => {
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      registry: (() => {
+        const r = new EntityRegistry();
+        r.register(todo);
+        r.register(list);
+        r.registerRelationship(
+          defineRelationship({ source: todo, target: list, as: "parent", kind: "member" }),
+        );
+        return r;
+      })(),
+    });
+
+    const result = client.buildRelationshipWrite({
+      source: todo,
+      target: list,
+      as: "parent",
+      sourceId: "todo_1",
+      targetId: "list_1",
+    });
+    const rel = result.relationshipUpdate as Update;
+    expect(rel.data?.fields.kind.value).toBe("member");
+  });
+
+  it("falls back to the group-target heuristic for an unregistered relationship", () => {
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      registry: (() => {
+        const r = new EntityRegistry();
+        r.register(todo);
+        return r;
+      })(),
+    });
+
+    const result = client.buildRelationshipWrite({
+      source: todo,
+      target: { name: "group" },
+      as: "ownedBy",
+      sourceId: "todo_1",
+      targetId: "grp_1",
+    });
+    const rel = result.relationshipUpdate as Update;
+    expect(rel.data?.fields.kind.value).toBe("member");
   });
 
   it("produces a delete relationship update for one-cardinality with null targetId", () => {

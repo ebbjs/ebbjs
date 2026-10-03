@@ -24,6 +24,14 @@ import type { TSchema } from "@sinclair/typebox/type";
 export type SourceCardinality = "one" | "many";
 
 /**
+ * Wire-level edge kind. `"member"` marks an entity↔Group membership
+ * edge; `"link"` a domain edge. The server identifies membership by
+ * this value, so an app-authored domain edge must stay `"link"` (the
+ * default).
+ */
+export type RelationshipKind = "link" | "member";
+
+/**
  * Definition of one typed link between two entity definitions. Returned
  * by `defineRelationship`; consumed by `EntityRegistry.registerRelationship`
  * and the row accessors.
@@ -55,6 +63,12 @@ export interface RelationshipDef<
    * name. Override for descriptive wire debugging.
    */
   readonly type: string;
+  /**
+   * Wire-level `kind` carried on the `Relationship` Update's
+   * `data.fields.kind` value. Defaults to `"link"`; the injected
+   * membership relationship declares `"member"`.
+   */
+  readonly kind: RelationshipKind;
 }
 
 /**
@@ -73,6 +87,7 @@ export interface DefineRelationshipInput<
   as: A;
   sourceCardinality?: C;
   type?: string;
+  kind?: RelationshipKind;
 }
 
 /** Define a relationship by source, target, and accessor name. Frozen. */
@@ -90,5 +105,6 @@ export function defineRelationship<
     as: opts.as,
     sourceCardinality,
     type,
+    kind: opts.kind ?? "link",
   });
 }

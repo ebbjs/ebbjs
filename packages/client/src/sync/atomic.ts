@@ -27,7 +27,7 @@ import type { EntityDef, ShapeFields } from "../schema/entity";
 import type { EntityRegistry } from "../schema/entity-registry";
 import { EntityValidationError, validatePayload } from "../schema/entity-registry";
 import type { Schema } from "../schema/schema";
-import { buildRelationshipUpdate, kindForTarget, normalizePointer } from "./relationship";
+import { buildRelationshipUpdate, normalizePointer } from "./relationship";
 import { wrapFields, type EntityFields } from "./namespace";
 import type { WriteResponse } from "./types";
 
@@ -207,12 +207,7 @@ const createDraftNamespace = (
         // records.
         if (declaresField(def, key)) fields[key] = targets;
         for (const targetId of targets) {
-          pointers.push({
-            as: key,
-            type: rel.type,
-            kind: kindForTarget(rel.target.name),
-            targetId,
-          });
+          pointers.push({ as: key, type: rel.type, kind: rel.kind, targetId });
         }
       } else {
         if (targets.length > 1) {
@@ -223,12 +218,7 @@ const createDraftNamespace = (
         const targetId = targets[0];
         handle[key] = targetId ?? null;
         if (targetId !== undefined) {
-          pointers.push({
-            as: key,
-            type: rel.type,
-            kind: kindForTarget(rel.target.name),
-            targetId,
-          });
+          pointers.push({ as: key, type: rel.type, kind: rel.kind, targetId });
         }
       }
     }

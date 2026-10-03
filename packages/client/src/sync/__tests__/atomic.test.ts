@@ -141,6 +141,7 @@ describe("client.atomic — one Action, forward references", () => {
     expect(relUpdate.data?.fields?.["target_id"]?.value).toBe(created.list.id);
     expect(relUpdate.data?.fields?.["field"]?.value).toBe("list");
     expect(relUpdate.data?.fields?.["type"]?.value).toBe("todo");
+    expect(relUpdate.data?.fields?.["kind"]?.value).toBe("link");
   });
 
   it("returns handles with ids and materialized fields, substituting refs with generated ids", async () => {
