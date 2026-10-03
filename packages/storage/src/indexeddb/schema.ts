@@ -1,5 +1,11 @@
-import type { IDBPDatabase, DBSchema } from "idb";
+import type { IDBPDatabase, IDBPTransaction, DBSchema, StoreNames } from "idb";
+import { unwrap } from "idb";
 import type { Action, Entity } from "@ebbjs/core";
+import {
+  applyRelationshipEntry,
+  relationshipEntryFor,
+  type RelationshipRows,
+} from "../internal/relationship-index";
 
 /**
  * Schema version for the IndexedDB adapter. Bump when adding or
@@ -38,15 +44,16 @@ export interface EbbDBSchema extends DBSchema {
   };
   /**
    * Reverse relationship index: one record per
-   * `(field, type, target_id)` composite key, holding the ids of the
-   * source entities whose Relationship rows point at `target_id`
-   * through that accessor. Maintained alongside `entities` on every
-   * materialization so a relationship-aware query avoids scanning the
-   * whole Relationship table.
+   * `(field, type, target_id)` composite key, mapping each live
+   * relationship row id to its source id. Keying on the row (not the
+   * source) keeps a duplicate-natural-key row from erasing a source
+   * its sibling still supplies. Maintained alongside `entities` on
+   * every materialization and backfilled when a pre-#248 database is
+   * upgraded.
    */
   relationships: {
     key: string;
-    value: { key: string; source_ids: readonly string[] };
+    value: { key: string; rows: RelationshipRows };
   };
   dirty: {
     key: string;
@@ -60,13 +67,58 @@ export interface EbbDBSchema extends DBSchema {
 }
 
 /**
- * Idempotently creates the five Ebb object stores on a database. Used
- * by both the production adapter (during the first `openDB` upgrade)
- * and the test helper (to spin up a fresh DB per test). Safe to call
- * against a database that already has the stores — existing stores are
- * left alone.
+ * Walks the materialized `entities` store inside the upgrade
+ * transaction and writes the derived reverse-index rows. A v2 client
+ * already materialized its Relationship rows but has no index and no
+ * dirty flag to replay, so without this every pre-existing edge would
+ * be invisible to `queryByRelationship`. The cursor keeps the
+ * versionchange transaction alive across the walk (idb does not await
+ * the upgrade callback, so it must stay synchronous).
  */
-export const createEbbStores = (database: IDBPDatabase<EbbDBSchema>): void => {
+const backfillRelationshipIndex = (
+  transaction: IDBPTransaction<EbbDBSchema, StoreNames<EbbDBSchema>[], "versionchange">,
+): void => {
+  const relationships = unwrap(transaction.objectStore("relationships"));
+  const request = unwrap(transaction.objectStore("entities")).openCursor();
+  let rowsByKey: Record<string, RelationshipRows> = {};
+
+  request.onsuccess = () => {
+    const cursor = request.result;
+    if (cursor === null) {
+      for (const [key, rows] of Object.entries(rowsByKey)) {
+        relationships.put({ key, rows });
+      }
+      return;
+    }
+
+    const entry = relationshipEntryFor(cursor.value as Entity);
+    if (entry !== null) {
+      const rows = applyRelationshipEntry(rowsByKey[entry.key], entry, true);
+      if (rows !== null) rowsByKey = { ...rowsByKey, [entry.key]: rows };
+    }
+    cursor.continue();
+  };
+};
+
+/**
+ * Idempotently creates the five Ebb object stores on a database. Used
+ * by both the production adapter (during the `openDB` upgrade) and the
+ * test helper (to spin up a fresh DB per test). Safe to call against a
+ * database that already has the stores — existing stores are left
+ * alone.
+ *
+ * When the `relationships` store is first added to a database that
+ * already holds materialized entities, the index is backfilled from
+ * them in the same upgrade transaction.
+ */
+export const createEbbStores = (
+  database: IDBPDatabase<EbbDBSchema>,
+  oldVersion: number,
+  _newVersion: number | null,
+  transaction: IDBPTransaction<EbbDBSchema, StoreNames<EbbDBSchema>[], "versionchange">,
+): void => {
+  const backfillRelationships =
+    oldVersion > 0 && !database.objectStoreNames.contains("relationships");
   if (!database.objectStoreNames.contains("actions")) {
     const store = database.createObjectStore("actions", { keyPath: "id" });
     // multiEntry on `subject_ids`: every element of the denormalized
@@ -93,4 +145,6 @@ export const createEbbStores = (database: IDBPDatabase<EbbDBSchema>): void => {
   if (!database.objectStoreNames.contains("cursors")) {
     database.createObjectStore("cursors", { keyPath: "groupId" });
   }
+
+  if (backfillRelationships) backfillRelationshipIndex(transaction);
 };
