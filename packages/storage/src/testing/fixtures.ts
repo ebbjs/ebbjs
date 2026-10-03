@@ -94,36 +94,56 @@ export const buildRelationshipPutAction = (row: RelationshipRowFixture, gsn = 1)
   };
 };
 
-/** Build a `patch` Action that re-points a Relationship row at a new target. */
-export const buildRelationshipRetargetAction = (
-  args: { id: string; targetId: string },
+export interface RelationshipPatchFixture {
+  id: string;
+  sourceId?: string;
+  targetId?: string;
+  /** Accessor name — the `as` of the relationship. */
+  field?: string;
+  /** Relationship type string. */
+  type?: string;
+}
+
+/**
+ * Build a `patch` Action that changes one or more natural-key fields
+ * of a Relationship row.
+ */
+export const buildRelationshipPatchAction = (
+  patch: RelationshipPatchFixture,
   gsn: number,
 ): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
-  const updateId = `u_${args.id}_retarget`;
+  const updateId = `u_${patch.id}_patch`;
+  const field = (value: string) => ({ value, update_id: updateId, hlc });
+  const fields: Record<string, { value: string; update_id: string; hlc: string }> = {};
+  if (patch.sourceId !== undefined) fields.source_id = field(patch.sourceId);
+  if (patch.targetId !== undefined) fields.target_id = field(patch.targetId);
+  if (patch.type !== undefined) fields.type = field(patch.type);
+  if (patch.field !== undefined) fields.field = field(patch.field);
 
   return {
-    id: `a_${args.id}_retarget`,
+    id: `a_${patch.id}_patch`,
     actor_id: "a_user1",
     hlc,
     gsn,
     updates: [
       {
         id: updateId,
-        subject_id: args.id,
+        subject_id: patch.id,
         subject_type: "relationship",
         method: "patch",
-        data: {
-          fields: {
-            target_id: { value: args.targetId, update_id: updateId, hlc },
-          },
-        },
+        data: { fields },
       },
     ],
   };
 };
 
-/** Build a soft-delete Action for a Relationship row. */
+/** Build a `patch` Action that re-points a Relationship row at a new target. */
+export const buildRelationshipRetargetAction = (
+  args: { id: string; targetId: string },
+  gsn: number,
+): Action => buildRelationshipPatchAction({ id: args.id, targetId: args.targetId }, gsn);
+
 export const buildRelationshipDeleteAction = (args: { id: string }, gsn: number): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
 
