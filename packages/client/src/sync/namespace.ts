@@ -23,7 +23,7 @@ import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { EntityDef, ShapeFields } from "../schema/entity";
 import { EntityValidationError, validatePayload } from "../schema/entity-registry";
 import type { EntityRegistry } from "../schema/entity-registry";
-import type { RelationshipDef } from "../schema/relationship";
+import type { RelationshipDef, RelationshipKind } from "../schema/relationship";
 import type { Schema } from "../schema/schema";
 import type { GroupFields } from "../schema/system-entities";
 import { GROUPS_ACCESSOR, MEMBERSHIP_KIND } from "../schema/system-entities";
@@ -636,14 +636,15 @@ export function createEntityNamespace<
       });
       const updates = [entityUpdate];
       for (const targetId of groupIds) {
+        const edge = membershipPointerFor(entityName, targetId);
         updates.push(
           buildRelationshipUpdate({
             relationshipId: generateId("rel"),
             sourceId: subjectId,
-            targetId,
-            field: GROUPS_ACCESSOR,
-            type: entityName,
-            kind: MEMBERSHIP_KIND,
+            targetId: edge.targetId,
+            field: edge.as,
+            type: edge.type,
+            kind: edge.kind,
             updateId: write.generateUpdateId(),
           }),
         );
@@ -748,6 +749,21 @@ function buildEntityWriteUpdate<TFields extends Record<string, TSchema>>(
 }
 
 /**
+ * Build the canonical membership edge `(as: "groups", type: entityName,
+ * kind: "member", targetId)` shared by the entity `create` path and the
+ * atomic draft resolver, so the two cannot drift.
+ */
+export const membershipPointerFor = (
+  entityName: string,
+  targetId: string,
+): { as: typeof GROUPS_ACCESSOR; type: string; kind: RelationshipKind; targetId: string } => ({
+  as: GROUPS_ACCESSOR,
+  type: entityName,
+  kind: MEMBERSHIP_KIND,
+  targetId,
+});
+
+/**
  * Normalize the required `{ groups }` option into a de-duplicated,
  * non-empty id list. Throws `EntityValidationError` when the option
  * is missing, empty, or carries a malformed pointer.
@@ -756,13 +772,15 @@ export const resolveGroupIds = (
   groups: readonly GroupRef[] | undefined,
   entityName: string,
 ): readonly string[] => {
-  if (groups === undefined || groups.length === 0) {
-    throw new EntityValidationError([
+  const groupsRequired = (): EntityValidationError =>
+    new EntityValidationError([
       {
         entityName,
         message: `create: "groups" is required and must contain at least one group id`,
       },
     ]);
+  if (groups === undefined || groups.length === 0) {
+    throw groupsRequired();
   }
   const ids: string[] = [];
   const seen = new Set<string>();
@@ -780,12 +798,7 @@ export const resolveGroupIds = (
     ids.push(id);
   }
   if (ids.length === 0) {
-    throw new EntityValidationError([
-      {
-        entityName,
-        message: `create: "groups" is required and must contain at least one group id`,
-      },
-    ]);
+    throw groupsRequired();
   }
   return ids;
 };

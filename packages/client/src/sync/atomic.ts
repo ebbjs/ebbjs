@@ -28,8 +28,14 @@ import type { EntityRegistry } from "../schema/entity-registry";
 import { EntityValidationError, validatePayload } from "../schema/entity-registry";
 import type { Schema } from "../schema/schema";
 import { buildRelationshipUpdate, normalizePointer } from "./relationship";
-import { resolveGroupIds, wrapFields, type EntityFields, type GroupRef } from "./namespace";
-import { GROUPS_ACCESSOR, MEMBERSHIP_KIND } from "../schema/system-entities";
+import {
+  membershipPointerFor,
+  resolveGroupIds,
+  wrapFields,
+  type EntityFields,
+  type GroupRef,
+} from "./namespace";
+import type { RelationshipKind } from "../schema/relationship";
 import type { WriteResponse } from "./types";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
@@ -110,7 +116,7 @@ export interface AtomicWriteCapability {
 interface PendingPointer {
   readonly as: string;
   readonly type: string;
-  readonly kind: string;
+  readonly kind: RelationshipKind;
   readonly targetId: string;
 }
 
@@ -236,12 +242,7 @@ const createDraftNamespace = (
     // Membership is separate from the entity's field map: one
     // `kind: "member"` edge per group, emitted into the same Action.
     for (const targetId of resolveGroupIds(opts?.groups, entityName)) {
-      pointers.push({
-        as: GROUPS_ACCESSOR,
-        type: entityName,
-        kind: MEMBERSHIP_KIND,
-        targetId,
-      });
+      pointers.push(membershipPointerFor(entityName, targetId));
     }
 
     const violations = validatePayload(def.shape, fields, entityName, false);
