@@ -768,8 +768,9 @@ describe("client.<entity>.link / unlink / setLinks", () => {
    * check passes; `/sync/actions` always accepts (returns
    * `rejected: []`).
    */
-  const mkStubFetch = (): typeof fetch => {
+  const mkStubFetch = (seen: string[] = []): typeof fetch => {
     return (async (url: string, _init: RequestInit): Promise<Response> => {
+      seen.push(url);
       if (url.endsWith("/sync/handshake")) {
         return new Response(
           JSON.stringify({
@@ -797,7 +798,7 @@ describe("client.<entity>.link / unlink / setLinks", () => {
     }) as unknown as typeof fetch;
   };
 
-  const mkClient = async () => {
+  const mkClient = async (seen: string[] = []) => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     const client = createClient({
@@ -805,10 +806,10 @@ describe("client.<entity>.link / unlink / setLinks", () => {
       actorId: "actor_1",
       storage,
       schema: schemaWithRels,
-      fetchImpl: mkStubFetch(),
+      fetchImpl: mkStubFetch(seen),
     });
     await client.handshake();
-    return { client, storage };
+    return { client, storage, seen };
   };
 
   it("link() submits a single Relationship Update for one-cardinality", async () => {
@@ -872,6 +873,45 @@ describe("client.<entity>.link / unlink / setLinks", () => {
     await expect(client.todo.link("todo_1", "bogus", "list_1")).rejects.toBeInstanceOf(
       EntityValidationError,
     );
+  });
+
+  // #127 defers membership mutation (share/unshare). The injected
+  // `groups` accessor must not be reachable through the generic
+  // relationship-write path, and the reject must happen before any
+  // network call.
+  describe("rejects membership mutation on the deferred link/unlink/setLinks path", () => {
+    const expectDeferred = async (
+      call: (client: Awaited<ReturnType<typeof mkClient>>["client"]) => Promise<unknown>,
+    ): Promise<void> => {
+      const { client, seen } = await mkClient();
+      const seenBefore = seen.length;
+      let caught: unknown;
+      try {
+        await call(client);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(EntityValidationError);
+      expect((caught as EntityValidationError).violations[0]?.message).toMatch(/deferred/);
+      expect((caught as EntityValidationError).violations[0]?.message).toMatch(
+        /create\(input, \{ groups \}\)/,
+      );
+      expect(seen.length).toBe(seenBefore);
+    };
+
+    it("link()", async () => {
+      await expectDeferred((client) => client.todo.link("todo_1", "groups", "g_1"));
+    });
+
+    it("unlink()", async () => {
+      await expectDeferred((client) => client.todo.unlink("todo_1", "groups"));
+    });
+
+    it("setLinks()", async () => {
+      await expectDeferred((client) =>
+        client.todo.setLinks("todo_1", "groups", { replace: ["g_1", "g_2"] }),
+      );
+    });
   });
 });
 

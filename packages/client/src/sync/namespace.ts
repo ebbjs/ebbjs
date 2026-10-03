@@ -865,6 +865,14 @@ async function submitRelationshipWrite(
   pointer: { targetId?: PointerValue; targetIds?: ManyPointerValue },
   storage: StorageAdapter,
 ): Promise<WriteResponse> {
+  if (as === GROUPS_ACCESSOR) {
+    throw new EntityValidationError([
+      {
+        entityName,
+        message: `link/unlink/setLinks: membership mutation of "${GROUPS_ACCESSOR}" is deferred; create(input, { groups }) is the only membership path`,
+      },
+    ]);
+  }
   const rel = write.registry.getRelationship(entityName, as);
   if (rel === undefined) {
     const { EntityValidationError } = await import("../schema/entity-registry");
