@@ -5,6 +5,7 @@ type Action = import("@ebbjs/core").Action;
 import type { EntityDef } from "../schema/entity";
 import type { RelationshipDef } from "../schema/relationship";
 import type { Schema } from "../schema/schema";
+import type { AnyActionDef } from "../schema/action";
 import type { TSchema } from "@sinclair/typebox/type";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
@@ -217,4 +218,10 @@ export interface SyncClientOptions {
    * both are passed.
    */
   schema?: AnySchema;
+  /**
+   * Schema-bound actions to mount as `client.actions.<name>`. Requires
+   * a `schema`, and every definition must be built against that same
+   * schema (strict reference equality).
+   */
+  actions?: Record<string, AnyActionDef>;
 }

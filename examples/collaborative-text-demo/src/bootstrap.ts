@@ -4,7 +4,8 @@
  * configured `SyncClient` ready for use.
  */
 
-import { createClient, type Action, type SyncClient } from "@ebbjs/client";
+import { createClient, type SyncClient } from "@ebbjs/client";
+import type { Action } from "@ebbjs/core";
 import { addMember, buildDemoSeed, DEMO_GROUP_ID, deriveSeedIds, seed } from "./seed";
 
 /**

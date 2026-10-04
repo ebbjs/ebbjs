@@ -57,6 +57,13 @@ import {
 } from "./relationship";
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { createAtomicRuntime, type AtomicClient } from "./atomic";
+import {
+  ActionDefinitionError,
+  RUN,
+  type Action as BoundAction,
+  type ActionDef,
+  type AnyActionDef,
+} from "../schema/action";
 import { generateId } from "@ebbjs/core";
 import type { EntityDef } from "../schema/entity";
 import { seedRegistry, type Schema } from "../schema/schema";
@@ -1244,12 +1251,39 @@ function requireEntityUpdate(opts: BuildRelationshipWriteOptions, as: string): U
 }
 
 /**
- * Returned by {@link createClient}. The client is a Proxy that
- * exposes `client.<entityName>.query()` for every entity in the
- * composed schema, plus `client.atomic(...)` when a schema is present,
- * alongside the standard `SyncClient` surface.
+ * Params declared by a definition, or `never` when it can't be read.
  */
-export type NamespacedClient<S> = SyncClient & EntityNamespaces<S> & AtomicClient<S>;
+type ParamsOf<D> = D extends ActionDef<infer _S, infer P, infer _R> ? P : never;
+
+/** Return value declared by a definition. */
+type ResultOf<D> = D extends ActionDef<infer _S, infer _P, infer R> ? R : never;
+
+/**
+ * `client.actions` surface, keyed by the names in `actions`. Present
+ * only when the client was built with a `Schema`; empty when no
+ * actions were passed.
+ */
+export type ActionNamespaces<
+  S,
+  TActions extends Record<string, AnyActionDef> = Record<string, never>,
+> =
+  S extends Schema<Record<string, AnyEntityDef>, unknown>
+    ? {
+        readonly actions: {
+          [K in keyof TActions]: BoundAction<S, ParamsOf<TActions[K]>, ResultOf<TActions[K]>>;
+        };
+      }
+    : // eslint-disable-next-line @typescript-eslint/ban-types
+      {};
+
+/**
+ * Returned by {@link createClient}: the standard `SyncClient` surface
+ * plus typed entity namespaces, `atomic(...)`, and `actions`.
+ */
+export type NamespacedClient<
+  S,
+  TActions extends Record<string, AnyActionDef> = Record<string, never>,
+> = SyncClient & EntityNamespaces<S> & AtomicClient<S> & ActionNamespaces<S, TActions>;
 
 /**
  * Factory for {@link SyncClient}. Prefer this over `new SyncClient(...)`
@@ -1257,16 +1291,21 @@ export type NamespacedClient<S> = SyncClient & EntityNamespaces<S> & AtomicClien
  *
  * When `opts.schema` is a `Schema`, the returned client is a Proxy
  * that exposes `client.<entityName>.query()` — the typed thenable
- * chain — for every entity declared on the schema. The Proxy binds
- * every method to the underlying `SyncClient` so private-field
- * access inside the SDK still resolves correctly.
+ * chain — for every entity declared on the schema, plus `client.atomic`
+ * and `client.actions`. The Proxy binds every method to the underlying
+ * `SyncClient` so private-field access inside the SDK still resolves
+ * correctly.
  */
-export function createClient<S extends AnySchema | undefined = undefined>(
-  opts: SyncClientOptions & { schema?: S },
-): NamespacedClient<S> {
+export function createClient<
+  S extends AnySchema | undefined = undefined,
+  TActions extends Record<string, AnyActionDef> = Record<string, never>,
+>(opts: SyncClientOptions & { schema?: S; actions?: TActions }): NamespacedClient<S, TActions> {
+  if (opts.actions !== undefined && opts.schema === undefined) {
+    throw new ActionDefinitionError([{ message: "createClient: `actions` requires a `schema`" }]);
+  }
   const client = new SyncClient(opts);
   if (opts.schema === undefined) {
-    return client as NamespacedClient<S>;
+    return client as NamespacedClient<S, TActions>;
   }
   // Narrow capability the namespace consults for write-side
   // operations. Keeps the namespace free of the cyclic
@@ -1283,8 +1322,33 @@ export function createClient<S extends AnySchema | undefined = undefined>(
   // uses. Defining it on the instance keeps the typed surface on
   // `NamespacedClient` while leaving bare `SyncClient` without it
   // (the resolver requires a schema).
+  const atomicRuntime = createAtomicRuntime(opts.schema, writeCap);
   Object.defineProperty(client, "atomic", {
-    value: createAtomicRuntime(opts.schema, writeCap),
+    value: atomicRuntime,
+    enumerable: false,
+    configurable: true,
+  });
+  // Each action mounts as a fresh wrapper so one definition can be
+  // reused across clients; `.name` carries the map key.
+  const actionNamespaces: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(opts.actions ?? {})) {
+    if (raw.schema !== opts.schema) {
+      throw new ActionDefinitionError([
+        { actionName: key, message: "action was defined against a different schema" },
+      ]);
+    }
+    // The descriptor's erased view; Params / Result are restored on
+    // `client.actions` via the `TActions` generic.
+    const run = (
+      raw as unknown as { readonly [RUN]: (drafts: unknown, params: unknown) => unknown }
+    )[RUN];
+    const wrapper = (params: unknown): Promise<unknown> =>
+      atomicRuntime((drafts) => run(drafts, params));
+    Object.defineProperty(wrapper, "name", { value: key, configurable: true });
+    actionNamespaces[key] = wrapper;
+  }
+  Object.defineProperty(client, "actions", {
+    value: actionNamespaces,
     enumerable: false,
     configurable: true,
   });
@@ -1300,5 +1364,5 @@ export function createClient<S extends AnySchema | undefined = undefined>(
       }
       return value;
     },
-  }) as NamespacedClient<S>;
+  }) as NamespacedClient<S, TActions>;
 }

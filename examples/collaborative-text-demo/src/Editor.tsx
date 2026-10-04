@@ -16,7 +16,8 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from "@codemirror/view";
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from "@codemirror/language";
-import { createClient, type Action } from "@ebbjs/client";
+import { createClient } from "@ebbjs/client";
+import type { Action } from "@ebbjs/core";
 import {
   createBridgeExtension,
   createIdMapField,
