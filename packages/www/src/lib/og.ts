@@ -1,40 +1,35 @@
 import satori from "satori";
 import { Resvg } from "@resvg/resvg-js";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 
 // ── Font loading ────────────────────────────────────────────────────────────
 
-export async function loadGoogleFont(family: string, weight: number): Promise<ArrayBuffer> {
-  const params = new URLSearchParams({
-    family: `${family}:wght@${weight}`,
-    display: "swap",
-  });
-  const css = await fetch(`https://fonts.googleapis.com/css2?${params}`, {
-    headers: {
-      // Request TrueType format
-      "User-Agent":
-        "Mozilla/5.0 (Macintosh; U; Intel Mac OS X 10_6_8; de-at) AppleWebKit/533.21.1 (KHTML, like Gecko) Version/5.0.5 Safari/533.21.1",
-    },
-  }).then((res) => res.text());
+const require = createRequire(import.meta.url);
 
-  const match = css.match(/src: url\((.+?)\)/);
-  if (!match) throw new Error(`Could not find font URL for ${family}:${weight}`);
-
-  return fetch(match[1]).then((res) => res.arrayBuffer());
-}
+// Satori reads TTF/OTF/WOFF and rejects the WOFF2 files that the variable
+// @fontsource packages ship, so the OG cards read the static WOFF builds. They
+// resolve from node_modules at build time, which keeps image generation off the
+// network (a Google Fonts outage must not fail `astro build`).
+const FONT_PATHS = {
+  inter400: "@fontsource/inter/files/inter-latin-400-normal.woff",
+  inter700: "@fontsource/inter/files/inter-latin-700-normal.woff",
+  jetbrainsMono400: "@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff",
+} as const;
 
 let fontCache: {
-  inter400: ArrayBuffer;
-  inter700: ArrayBuffer;
-  jetbrainsMono400: ArrayBuffer;
+  inter400: Buffer;
+  inter700: Buffer;
+  jetbrainsMono400: Buffer;
 } | null = null;
 
 export async function loadFonts() {
   if (fontCache) return fontCache;
 
   const [inter400, inter700, jetbrainsMono400] = await Promise.all([
-    loadGoogleFont("Inter", 400),
-    loadGoogleFont("Inter", 700),
-    loadGoogleFont("JetBrains Mono", 400),
+    readFile(require.resolve(FONT_PATHS.inter400)),
+    readFile(require.resolve(FONT_PATHS.inter700)),
+    readFile(require.resolve(FONT_PATHS.jetbrainsMono400)),
   ]);
 
   fontCache = { inter400, inter700, jetbrainsMono400 };
