@@ -459,7 +459,11 @@ export class SyncClient {
       updates: [...updates],
       clock: this.clock,
     });
-    return this.write([action]);
+    const response = await this.write([action]);
+    // `flush()` submits every buffered Action, so the server's `rejected[]`
+    // can name Actions other than the one minted here. Report only this
+    // Action's refusal — rejections are a per-call return, not outbox state.
+    return { rejected: response.rejected.filter((rejection) => rejection.id === action.id) };
   }
 
   /**
