@@ -15,9 +15,9 @@
  * `createAction`-shaped batch and submitted through the client's write
  * path, so the server sees a single Action and commits it atomically.
  *
- * The declaration form (`defineAction`) and the permission-coherence
- * check are separate issues (#232, #233); this module is the resolver
- * both consume.
+ * The schema-bound `defineAction` form (#232) and the
+ * permission-coherence check (#233) layer on top of this resolver;
+ * this module stays independent of both.
  */
 
 import { generateId, type Update } from "@ebbjs/core";
@@ -55,8 +55,7 @@ export type CreatedEntity<TFields extends Record<string, TSchema>> = Static<
  * relationship pointers (a handle, id, or array of either) share one
  * loose record: the resolver distinguishes them by the registry's
  * relationship declarations, and validates the entity fields before
- * submission. Typing the input against the entity shape and the
- * relationship keys is #232's job.
+ * submission.
  */
 export type AtomicCreateInput = Record<string, unknown>;
 

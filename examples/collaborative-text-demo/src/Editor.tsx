@@ -16,7 +16,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from "@codemirror/view";
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from "@codemirror/language";
-import { createClient, type Action } from "@ebbjs/client";
+import { createClient, type SyncAction } from "@ebbjs/client";
 import {
   createBridgeExtension,
   createIdMapField,
@@ -37,7 +37,7 @@ interface Props {
    * catchUp — without this, a new tab starts with an empty document
    * even if other tabs (or earlier sessions) have written to it.
    */
-  caughtUpActions: readonly Action[];
+  caughtUpActions: readonly SyncAction[];
 }
 
 const FLUSH_INTERVAL_MS = 250;

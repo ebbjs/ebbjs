@@ -129,7 +129,7 @@ export {
 } from "./fields/collaborative-text/tree";
 
 export type {
-  Action,
+  Action as SyncAction,
   GroupInfo,
   HandshakeResponse,
   HandshakeRequest,
@@ -145,6 +145,15 @@ export type {
   RegistryViolationContext,
   RegistryViolationListener,
 } from "./sync/types";
+
+export {
+  defineAction,
+  ActionDefinitionError,
+  type Action,
+  type ActionDef,
+  type ActionDefinitionViolation,
+  type AnyActionDef,
+} from "./schema/action";
 
 export {
   defineEntity,

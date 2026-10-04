@@ -39,13 +39,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   createAction,
   createClock,
+  decodeSync,
   encodeSync,
   localEvent,
   makeHlc,
   type Action,
   type UpdateInput,
 } from "@ebbjs/core";
-import { createClient, type SyncClient } from "../..";
+import { createClient, defineAction, type SyncClient } from "../..";
 import { defineEntity, e } from "../../schema/entity";
 import { defineRelationship } from "../../schema/relationship";
 import { EntityRegistry, EntityValidationError } from "../../schema/entity-registry";
@@ -1335,3 +1336,75 @@ async function addMemberWithTodoAndListPerms(actorId: string): Promise<void> {
     throw new Error(`failed to add member ${actorId}: ${res.status} ${await res.text()}`);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Integration: client.actions (schema-bound defineAction)
+// ---------------------------------------------------------------------------
+
+/**
+ * A `defineAction` mounted as `client.actions.<name>` runs the same
+ * resolver as the callback form: fresh drafts per call, one collector,
+ * one wire Action, one `POST /sync/actions`. Each draft's `{ groups }`
+ * option emits its `entityGroup` row into that same Action.
+ */
+describe("integration: client.actions (defineAction)", () => {
+  const actionTodo = defineEntity("todo", { title: e.string() });
+  const actionList = defineEntity("list", { name: e.string() });
+  const actionSchema = defineSchema({
+    entities: { todo: actionTodo, list: actionList },
+    version: 1,
+  });
+  const createList = defineAction(actionSchema, ({ todo, list }, params: { title: string }) => {
+    const today = list.create({ name: params.title }, { groups: [TEST_GROUP_ID] });
+    return { todo: todo.create({ title: "Ship it" }, { groups: [TEST_GROUP_ID] }), list: today };
+  });
+
+  it("composes one Action and round-trips both entities", async () => {
+    if (!(await shouldRun())) return;
+    const actor = `actions_${RUN_ID}`;
+    await addMemberWithTodoAndListPerms(actor);
+
+    const written: Action[] = [];
+    const recordingFetch: typeof fetch = async (input, init) => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/sync/actions") && init?.body instanceof Uint8Array) {
+        written.push(...decodeSync<{ actions: Action[] }>(init.body).actions);
+      }
+      return fetch(input, init);
+    };
+
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: actor,
+      schema: actionSchema,
+      actions: { createList },
+      fetchImpl: recordingFetch,
+    });
+    const { groups } = await client.handshake();
+    expect(groups.find((g) => g.id === TEST_GROUP_ID)).toBeDefined();
+    client.setState("live");
+
+    try {
+      const created = await client.actions.createList({ title: "Today" });
+      expect(created.todo.id).toMatch(/^e_/);
+      expect(created.list.id).toMatch(/^e_/);
+
+      // One call ⇒ one Action; both entities and both membership rows
+      // ride in that Action.
+      expect(written).toHaveLength(1);
+      const updates = written[0]!.updates;
+      expect(updates.some((u) => u.subject_type === "todo")).toBe(true);
+      expect(updates.some((u) => u.subject_type === "list")).toBe(true);
+      expect(updates.filter((u) => u.subject_type === "entityGroup")).toHaveLength(2);
+
+      await catchUpUntilCurrent(client, TEST_GROUP_ID);
+      const todos = await client.storage.entities.query("todo");
+      const lists = await client.storage.entities.query("list");
+      expect(todos.map((e) => e.id)).toContain(created.todo.id);
+      expect(lists.map((e) => e.id)).toContain(created.list.id);
+    } finally {
+      client.close();
+    }
+  });
+});
