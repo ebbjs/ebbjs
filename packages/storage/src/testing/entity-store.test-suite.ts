@@ -58,7 +58,6 @@ const makeRelationshipEntity = (
         target_id: field(overrides.targetId ?? "list_1"),
         type: field(overrides.type ?? "todo_list"),
         field: field(overrides.field ?? "list"),
-        kind: field("link"),
       },
     },
     created_hlc: makeHlc(1),

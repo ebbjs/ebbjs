@@ -57,7 +57,6 @@ export interface RelationshipRowFixture {
   field: string;
   /** Relationship type string. */
   type: string;
-  kind?: string;
 }
 
 /**
@@ -86,7 +85,6 @@ export const buildRelationshipPutAction = (row: RelationshipRowFixture, gsn = 1)
             target_id: field(row.targetId),
             type: field(row.type),
             field: field(row.field),
-            kind: field(row.kind ?? "link"),
           },
         },
       },
