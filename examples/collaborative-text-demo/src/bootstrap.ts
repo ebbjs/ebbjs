@@ -4,7 +4,8 @@
  * configured `SyncClient` ready for use.
  */
 
-import { createClient, type SyncAction, type SyncClient } from "@ebbjs/client";
+import { createClient, type SyncClient } from "@ebbjs/client";
+import type { Action } from "@ebbjs/core";
 import { addMember, buildDemoSeed, DEMO_GROUP_ID, deriveSeedIds, seed } from "./seed";
 
 /**
@@ -86,7 +87,7 @@ export interface BootstrapResult {
    * the same `?actor=` as an existing one) starts with the current
    * document state instead of an empty doc.
    */
-  caughtUpActions: readonly SyncAction[];
+  caughtUpActions: readonly Action[];
 }
 
 /**
@@ -158,7 +159,7 @@ export async function bootstrap(opts: {
   // demo doc starts with the current state. Without this, a fresh
   // tab (even for an actor that was already connected in another
   // tab) would start empty and only catch up on the next SSE event.
-  const caughtUpActions: SyncAction[] = [];
+  const caughtUpActions: Action[] = [];
   for (const gid of groupIds) {
     let cursor = 0;
     // catchUp is paginated but the demo has at most a handful of

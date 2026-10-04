@@ -129,7 +129,6 @@ export {
 } from "./fields/collaborative-text/tree";
 
 export type {
-  Action as SyncAction,
   GroupInfo,
   HandshakeResponse,
   HandshakeRequest,
