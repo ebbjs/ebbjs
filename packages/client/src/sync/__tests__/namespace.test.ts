@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from "vitest";
 import { type Static } from "@sinclair/typebox/type";
-import { decodeSync, type Action } from "@ebbjs/core";
+import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
 import type { Entity } from "@ebbjs/core";
 
 import { defineEntity, e } from "../../schema/entity";
@@ -520,6 +520,50 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     await storage.entities.set(mkRelEntity("r1", "t1", "l1", "list", "todo"));
     const out = await client.todo.query().where("groups", "g1").where("list", "l1");
     expect(out.map((r) => r.title)).toEqual(["a"]);
+  });
+
+  it("intersects membership with membership (both groups must include the entity)", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(mkEntity("d1", "document", { title: "one" }));
+    await storage.entities.set(mkEntity("d2", "document", { title: "two" }));
+    await storage.entities.set(mkEntityGroup("eg1", "d1", "g1"));
+    await storage.entities.set(mkEntityGroup("eg2", "d1", "g2"));
+    await storage.entities.set(mkEntityGroup("eg3", "d2", "g1"));
+    const out = await client.document.query().where("groups", "g1").where("groups", "g2");
+    expect(out.map((r) => r.title)).toEqual(["one"]);
+  });
+
+  it("picks up an entityGroup row that is only in the action log (dirty replay)", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(mkEntity("d1", "document", { title: "one" }));
+    // The membership exists only as an Action: `entities.set` was never
+    // called, so the row is dirty and unmaterialized. The predicate's
+    // `entities.query("entityGroup")` has to replay it.
+    const hlc = makeHlc(1711036800000);
+    const action: Action = {
+      id: "a_1",
+      actor_id: "a_1",
+      hlc,
+      gsn: 1,
+      updates: [
+        {
+          id: "u_1",
+          subject_id: "eg1",
+          subject_type: "entityGroup",
+          method: "put",
+          data: {
+            fields: {
+              entity_id: { value: "d1", update_id: "u_1", hlc },
+              group_id: { value: "g1", update_id: "u_1", hlc },
+            },
+          },
+        },
+      ],
+    };
+    await storage.actions.append(action);
+    expect(await storage.dirtyTracker.isDirty("eg1")).toBe(true);
+    const out = await client.document.query().where("groups", "g1");
+    expect(out.map((r) => r.title)).toEqual(["one"]);
   });
 
   it("a relationship key wins over a same-named field", async () => {
