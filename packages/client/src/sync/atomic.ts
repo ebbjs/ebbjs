@@ -18,6 +18,15 @@
  * The schema-bound `defineAction` form (#232) and the
  * permission-coherence check (#233) layer on top of this resolver;
  * this module stays independent of both.
+ *
+ * ### Permission coherence (#233)
+ *
+ * #127 makes an Action fully visible or fully invisible to a client, so
+ * every write in one call must carry the identical group set. The check
+ * runs over the collected writes before submission, and the server's
+ * `rejected[]` becomes the same typed failure. A write's group set comes
+ * from the required per-create `groups` option (#244), which emits the
+ * `entityGroup` rows the check reads.
  */
 
 import { generateId, type Update } from "@ebbjs/core";
@@ -29,7 +38,7 @@ import { EntityValidationError, validatePayload } from "../schema/entity-registr
 import type { Schema } from "../schema/schema";
 import { buildEntityGroupUpdates, buildRelationshipUpdate, normalizePointer } from "./relationship";
 import { resolveGroupIds, wrapFields, type EntityFields, type GroupRef } from "./namespace";
-import type { WriteResponse } from "./types";
+import type { Rejection, WriteResponse } from "./types";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
 
@@ -44,6 +53,46 @@ export class AtomicResolutionError extends Error {
     this.name = "AtomicResolutionError";
   }
 }
+
+/**
+ * One refused Update. Extends the wire `Rejection` with the per-Update
+ * `subjectType` the client-side coherence check can attribute, which
+ * the server's per-Action report does not carry today.
+ */
+export type AtomicRejection = Rejection & { readonly subjectType?: string };
+
+/**
+ * Aggregated refusal of an atomic call: a client-side permission
+ * coherence failure, or the server's `rejected[]` for the submitted
+ * Action. Mirrors `EntityValidationError` — same `Error` shape, named
+ * subclass, structured readonly reasons, message formatted from them.
+ *
+ * Thrown before submission for a coherence failure, so no Action
+ * reaches the outbox.
+ */
+export class AtomicActionError extends Error {
+  readonly rejections: readonly AtomicRejection[];
+
+  constructor(rejections: readonly AtomicRejection[]) {
+    super(formatRejections(rejections));
+    this.name = "AtomicActionError";
+    this.rejections = rejections;
+  }
+}
+
+const formatRejections = (rejections: readonly AtomicRejection[]): string => {
+  if (rejections.length === 0) return "AtomicActionError";
+  const lines = rejections.map((rejection) => `  - ${describeRejection(rejection)}`);
+  return `AtomicActionError: ${rejections.length} rejected update(s)\n${lines.join("\n")}`;
+};
+
+const describeRejection = (rejection: AtomicRejection): string => {
+  const subject =
+    rejection.subjectType === undefined ? rejection.id : `${rejection.subjectType} ${rejection.id}`;
+  const details =
+    rejection.details === undefined || rejection.details === null ? "" : ` (${rejection.details})`;
+  return `${subject}: ${rejection.reason}${details}`;
+};
 
 /** Handle returned by a draft namespace's `create`. Carries the id eagerly. */
 export type CreatedEntity<TFields extends Record<string, TSchema>> = Static<
@@ -293,6 +342,55 @@ const buildUpdates = (writes: readonly PendingWrite[], cap: AtomicWriteCapabilit
 };
 
 /**
+ * Group set of one write, read from the required per-create `groups`
+ * option (#244) that also emitted its `entityGroup` rows. Sorted and
+ * de-duplicated so the coherence comparison is order-independent.
+ */
+const membershipGroupsOf = (write: PendingWrite): readonly string[] =>
+  [...new Set(write.groups)].sort();
+
+const sameGroups = (a: readonly string[], b: readonly string[]): boolean =>
+  a.length === b.length && a.every((group, index) => group === b[index]);
+
+const formatGroups = (groups: readonly string[]): string => `[${groups.join(", ")}]`;
+
+/**
+ * #127's strict permission-coherence rule: every write in one Action
+ * must have the identical group set, because an Action is fully
+ * visible or fully invisible to a client. Refusing here keeps an
+ * incoherent batch out of the outbox entirely.
+ *
+ * The Action's group set is the union of every write's groups, which
+ * is exactly the common set when the rule holds — order-independent,
+ * so a declaration and the equivalent callback refuse the same writes.
+ * Every write whose set differs from that union is reported, naming
+ * the subject and both group sets.
+ *
+ * Returns rejections instead of throwing so the caller owns the
+ * failure type. A write set with no groups at all is coherent by this
+ * rule; "an entity must belong to at least one group" is a separate
+ * precondition (#245).
+ */
+const permissionCoherenceRejections = (
+  writes: readonly PendingWrite[],
+): readonly AtomicRejection[] => {
+  const grouped = writes.map((write) => ({ write, groups: membershipGroupsOf(write) }));
+  const actionGroups = [...new Set(grouped.flatMap(({ groups }) => groups))].sort();
+  return grouped.flatMap(({ write, groups }) =>
+    sameGroups(groups, actionGroups)
+      ? []
+      : [
+          {
+            id: write.id,
+            subjectType: write.entity,
+            reason: "group_mismatch",
+            details: `belongs to group(s) ${formatGroups(groups)}; the Action writes to ${formatGroups(actionGroups)}`,
+          },
+        ],
+  );
+};
+
+/**
  * Build the `client.atomic` runtime for a schema. Each call gets a
  * fresh collector, runs the callback to gather writes, flattens them
  * into one Action, and submits once before resolving to the callback's
@@ -307,9 +405,16 @@ export function createAtomicRuntime<S extends Schema<Record<string, AnyEntityDef
     const writes: PendingWrite[] = [];
     const drafts = buildDrafts(entityDefs, cap, writes);
     const result = build(drafts as AtomicDrafts<S>);
+    const rejections = permissionCoherenceRejections(writes);
+    if (rejections.length > 0) {
+      throw new AtomicActionError(rejections);
+    }
     const updates = buildUpdates(writes, cap);
     if (updates.length > 0) {
-      await cap.submitRelationshipUpdates(updates);
+      const response = await cap.submitRelationshipUpdates(updates);
+      if (response.rejected.length > 0) {
+        throw new AtomicActionError(response.rejected);
+      }
     }
     return result;
   };
