@@ -7,9 +7,10 @@
  * the field map: a field key narrows to `keyof TFields` and its value
  * to the field's TypeBox static type. A key that names a registered
  * relationship on the entity filters that edge instead — see
- * {@link QueryContext}. Relationship predicates read the storage
- * relationship index, so the filter pass is asynchronous; every
- * terminal already is.
+ * {@link QueryContext}. The reserved `groups` key filters built-in
+ * membership by scanning `entityGroup` rows (no storage membership
+ * index yet — #267). Both predicate kinds read storage, so the filter
+ * pass is asynchronous; every terminal already is.
  *
  * The terminal methods materialize the chain:
  * - `await qb` / `.then(...)` — projected rows.
@@ -31,6 +32,7 @@ import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { ShapeFields } from "../schema/entity";
 import { EntityValidationError, type EntityRegistry } from "../schema/entity-registry";
+import { GROUPS_ACCESSOR } from "../schema/system-entities";
 
 /**
  * Map a single materialized entity onto the schema's TypeBox shape.
@@ -127,7 +129,19 @@ type RelationshipFilter = {
   readonly context: QueryContext;
 };
 
-type Filter = FieldFilter | RelationshipFilter;
+/**
+ * Filter over built-in group membership. `targetIds` is the resolved
+ * any-of group-id set, or `null` when the pointer names no group —
+ * that matches nothing. `context` carries the adapter the
+ * `entityGroup` scan needs, captured when the filter is built.
+ */
+type MembershipFilter = {
+  readonly kind: "membership";
+  readonly targetIds: readonly string[] | null;
+  readonly context: QueryContext;
+};
+
+type Filter = FieldFilter | RelationshipFilter | MembershipFilter;
 
 /** Ordering descriptor accumulated by `orderBy`. */
 type OrderBy = { field: string; direction: "asc" | "desc" };
@@ -145,9 +159,10 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
   /**
    * Equality predicate. A registered relationship key filters that
    * edge — relationship wins over a same-named field, matching the row
-   * accessors; any other key filters the data field. Field values
-   * narrow to the field's static type; relationship targets accept an
-   * id, a handle, or an array meaning any-of. Chained calls are ANDed.
+   * accessors. The reserved `groups` key filters built-in membership.
+   * Any other key filters the data field. Field values narrow to the
+   * field's static type; relationship targets accept an id, a handle,
+   * or an array meaning any-of. Chained calls are ANDed.
    */
   where<K extends keyof TFields & string>(key: K, value: Static<TFields[K]>): QueryBuilder<TFields>;
   /**
@@ -291,6 +306,17 @@ function buildFilter<TFields extends Record<string, TSchema>>(
   shape: TObject<TFields>,
   context: QueryContext | undefined,
 ): Filter {
+  // `groups` is reserved, so it can never be a declared relationship or
+  // a field. It always means built-in membership, and membership needs a
+  // storage adapter to scan `entityGroup`.
+  if (key === GROUPS_ACCESSOR && context !== undefined) {
+    const label = `where("${GROUPS_ACCESSOR}") on "${context.entityName}"`;
+    return {
+      kind: "membership",
+      targetIds: resolveTargetIds(value as PointerValue | readonly PointerValue[], label),
+      context,
+    };
+  }
   const rel =
     context === undefined ? undefined : context.registry.getRelationship(context.entityName, key);
   if (rel !== undefined && context !== undefined) {
@@ -352,7 +378,7 @@ function resolveTargetIds(
   return ids.length === 0 ? null : ids;
 }
 
-/** Apply every filter in order; the pass is async because relationship filters read the index. */
+/** Apply every filter in order; the pass is async because membership and relationship filters read storage. */
 async function applyFilters(
   rows: readonly Entity[],
   filters: readonly Filter[],
@@ -361,6 +387,11 @@ async function applyFilters(
   for (const filter of filters) {
     if (filter.kind === "field") {
       out = out.filter((row) => eqField(row, filter.key, filter.value));
+      continue;
+    }
+    if (filter.kind === "membership") {
+      const ids = await membershipIdSet(filter);
+      out = out.filter((row) => ids.has(row.id));
       continue;
     }
     const ids = await relationshipIdSet(filter);
@@ -389,6 +420,28 @@ async function relationshipIdSet(filter: RelationshipFilter): Promise<ReadonlySe
   );
   for (const sourceIds of perTarget) {
     for (const id of sourceIds) ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * Resolve a membership filter to the set of member entity ids. Storage
+ * has no membership index yet (#267), so this scans every live
+ * `entityGroup` row and keeps those whose `group_id` the predicate
+ * names. A tombstoned row is not a membership.
+ */
+async function membershipIdSet(filter: MembershipFilter): Promise<ReadonlySet<string>> {
+  const ids = new Set<string>();
+  if (filter.targetIds === null) return ids;
+  const groupIds = new Set(filter.targetIds);
+  const rows = await filter.context.storage.entities.query("entityGroup");
+  for (const row of rows) {
+    if (row.deleted_hlc !== null) continue;
+    const groupId = row.data?.fields?.["group_id"]?.value;
+    const entityId = row.data?.fields?.["entity_id"]?.value;
+    if (typeof groupId !== "string" || typeof entityId !== "string") continue;
+    if (!groupIds.has(groupId)) continue;
+    ids.add(entityId);
   }
   return ids;
 }

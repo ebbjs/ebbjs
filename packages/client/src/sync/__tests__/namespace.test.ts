@@ -381,18 +381,17 @@ const mkEntityGroup = (id: string, entityId: string, groupId: string): Entity =>
   updated_hlc: "1",
   deleted_hlc: null,
   last_gsn: 0,
-// ---------------------------------------------------------------------------
-// client.<entity>.query().where() — relationship-aware predicate (#247)
-// ---------------------------------------------------------------------------
+});
 
-/** Entity for the `document.groups` membership edge. */
-const groupEntity = defineEntity("group", { name: e.string() });
+// ---------------------------------------------------------------------------
+// client.<entity>.query().where() — registry-aware predicate (#247)
+// ---------------------------------------------------------------------------
 
 /**
  * `todo` carries an `owner` FIELD alongside an `owner` RELATIONSHIP so
- * the collision test can prove the relationship wins. The other
- * relationships exercise one-cardinality (`list`) and many-cardinality
- * (`groups`) inference.
+ * the collision test can prove the relationship wins. `document`
+ * exercises built-in `groups` membership, answered from `entityGroup`
+ * rows rather than a declared relationship.
  */
 const whereTodo = defineEntity("todo", {
   title: e.string(),
@@ -405,24 +404,17 @@ const schemaForWhere = defineSchema({
   entities: {
     todo: whereTodo,
     list: listEntity,
-    group: groupEntity,
     document: whereDocument,
     user: userEntity,
   },
   relationships: {
     todo_list: defineRelationship({ source: whereTodo, target: listEntity, as: "list" }),
     todo_owner: defineRelationship({ source: whereTodo, target: userEntity, as: "owner" }),
-    document_groups: defineRelationship({
-      source: whereDocument,
-      target: groupEntity,
-      as: "groups",
-      sourceCardinality: "many",
-    }),
   },
   version: 1,
 });
 
-describe("client.<entity>.query().where() — relationship-aware predicate", () => {
+describe("client.<entity>.query().where() — registry-aware predicate", () => {
   const buildClient = async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
@@ -460,10 +452,74 @@ describe("client.<entity>.query().where() — relationship-aware predicate", () 
     const { storage, client } = await buildClient();
     await storage.entities.set(mkEntity("d1", "document", { title: "one" }));
     await storage.entities.set(mkEntity("d2", "document", { title: "two" }));
-    await storage.entities.set(mkRelEntity("rg1", "d1", "g1", "groups", "document"));
-    await storage.entities.set(mkRelEntity("rg2", "d2", "g2", "groups", "document"));
+    await storage.entities.set(mkEntityGroup("eg1", "d1", "g1"));
+    await storage.entities.set(mkEntityGroup("eg2", "d2", "g2"));
     const out = await client.document.query().where("groups", "g1");
     expect(out.map((r) => r.title)).toEqual(["one"]);
+  });
+
+  it('where("groups", [...]) unions the named groups (any-of)', async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(mkEntity("d1", "document", { title: "one" }));
+    await storage.entities.set(mkEntity("d2", "document", { title: "two" }));
+    await storage.entities.set(mkEntity("d3", "document", { title: "three" }));
+    await storage.entities.set(mkEntityGroup("eg1", "d1", "g1"));
+    await storage.entities.set(mkEntityGroup("eg2", "d2", "g2"));
+    await storage.entities.set(mkEntityGroup("eg3", "d3", "g3"));
+    const out = await client.document.query().where("groups", ["g1", "g3"]);
+    expect(out.map((r) => r.title).sort()).toEqual(["one", "three"]);
+  });
+
+  it("a tombstoned entityGroup row is not a membership", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(mkEntity("d1", "document", { title: "one" }));
+    await storage.entities.set(mkEntityGroup("eg1", "d1", "g1"));
+    expect(await client.document.query().where("groups", "g1")).toHaveLength(1);
+    await storage.entities.set({ ...mkEntityGroup("eg1", "d1", "g1"), deleted_hlc: "2" });
+    expect(await client.document.query().where("groups", "g1")).toEqual([]);
+  });
+
+  it("accepts a { id } handle and a materialized entity as membership targets", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(mkEntity("d1", "document", { title: "one" }));
+    await storage.entities.set(mkEntity("grp1", "group", { name: "team" }));
+    await storage.entities.set(mkEntityGroup("eg1", "d1", "grp1"));
+    const byHandle = await client.document.query().where("groups", { id: "grp1" });
+    expect(byHandle.map((r) => r.title)).toEqual(["one"]);
+    const handle = await storage.entities.get("grp1");
+    if (handle === null) throw new Error("unreachable");
+    const byRow = await client.document.query().where("groups", handle);
+    expect(byRow.map((r) => r.title)).toEqual(["one"]);
+  });
+
+  it("a null / undefined / empty membership target matches nothing", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(mkEntity("d1", "document", { title: "one" }));
+    await storage.entities.set(mkEntityGroup("eg1", "d1", "g1"));
+    expect(await client.document.query().where("groups", null)).toEqual([]);
+    expect(await client.document.query().where("groups", undefined)).toEqual([]);
+    expect(await client.document.query().where("groups", [])).toEqual([]);
+  });
+
+  it("intersects membership with a field predicate", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(mkEntity("d1", "document", { title: "one" }));
+    await storage.entities.set(mkEntity("d2", "document", { title: "two" }));
+    await storage.entities.set(mkEntityGroup("eg1", "d1", "g1"));
+    await storage.entities.set(mkEntityGroup("eg2", "d2", "g1"));
+    const out = await client.document.query().where("groups", "g1").where("title", "one");
+    expect(out.map((r) => r.title)).toEqual(["one"]);
+  });
+
+  it("intersects membership with a domain relationship predicate", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(todo("t1", "a"));
+    await storage.entities.set(todo("t2", "b"));
+    await storage.entities.set(mkEntityGroup("eg1", "t1", "g1"));
+    await storage.entities.set(mkEntityGroup("eg2", "t2", "g1"));
+    await storage.entities.set(mkRelEntity("r1", "t1", "l1", "list", "todo"));
+    const out = await client.todo.query().where("groups", "g1").where("list", "l1");
+    expect(out.map((r) => r.title)).toEqual(["a"]);
   });
 
   it("a relationship key wins over a same-named field", async () => {
@@ -549,14 +605,14 @@ describe("client.<entity>.query().where() — relationship-aware predicate", () 
     expect(await client.todo.query().where("list", [])).toEqual([]);
   });
 
-  it("composes relationship predicates with orderBy and limit", async () => {
+  it("composes predicates with orderBy and limit", async () => {
     const { storage, client } = await buildClient();
     await storage.entities.set(mkEntity("d1", "document", { title: "b" }));
     await storage.entities.set(mkEntity("d2", "document", { title: "a" }));
     await storage.entities.set(mkEntity("d3", "document", { title: "c" }));
-    await storage.entities.set(mkRelEntity("rg1", "d1", "g1", "groups", "document"));
-    await storage.entities.set(mkRelEntity("rg2", "d2", "g1", "groups", "document"));
-    await storage.entities.set(mkRelEntity("rg3", "d3", "g1", "groups", "document"));
+    await storage.entities.set(mkEntityGroup("eg1", "d1", "g1"));
+    await storage.entities.set(mkEntityGroup("eg2", "d2", "g1"));
+    await storage.entities.set(mkEntityGroup("eg3", "d3", "g1"));
     const out = await client.document
       .query()
       .where("groups", "g1")
