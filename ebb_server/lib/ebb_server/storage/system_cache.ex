@@ -18,14 +18,15 @@ defmodule EbbServer.Storage.SystemCache do
 
     - `DirtyTracker`      — the set of `entity_id`s whose materialized form is stale.
     - `GroupCache`        — per-group member sets; permission checks read this on every write.
-    - `RelationshipCache` — entity → group lookup; reaches in for fan-out and entity reads.
+    - `EntityGroupCache`  — entity → group membership; reaches in for fan-out and entity reads.
+    - `RelationshipCache` — domain relationship edges; reaches in for relationship resolution.
     - `WatermarkTracker`  — committed-watermark ETS table + `:atomics` references.
     - `GSNCounter`        — the next free GSN, exposed via `:atomics` for race-free claiming.
 
   ## Lifecycle
 
-  On init, the supervisor populates `GroupCache` and `RelationshipCache`
-  from the system entities in RocksDB before returning. The supervision
+  On init, the supervisor populates `GroupCache`, `EntityGroupCache` and
+  `RelationshipCache` from the system entities in RocksDB before returning. The supervision
   tree uses `rest_for_one` so RocksDB is up before any cache child starts;
   the supervision tree blocks accepting connections until this returns.
 
@@ -46,8 +47,10 @@ defmodule EbbServer.Storage.SystemCache do
   All child modules accept optional keyword arguments to override default ETS table names:
   - `:dirty_set` - defaults to `:ebb_dirty_set`
   - `:table` (GroupCache) - defaults to `:ebb_group_members`
+  - `:entity_groups` - defaults to `:ebb_entity_groups`
+  - `:entity_groups_by_id` - defaults to `:ebb_entity_groups_by_id`
+  - `:entity_groups_by_group` - defaults to `:ebb_entity_groups_by_group`
   - `:relationships` - defaults to `:ebb_relationships`
-  - `:relationships_by_group` - defaults to `:ebb_relationships_by_group`
   - `:relationships_by_id` - defaults to `:ebb_relationships_by_id`
 
   ## Example
@@ -62,6 +65,7 @@ defmodule EbbServer.Storage.SystemCache do
   alias EbbServer.Storage.{
     CacheTables,
     DirtyTracker,
+    EntityGroupCache,
     EntityStore,
     Fields,
     GroupCache,
@@ -84,7 +88,7 @@ defmodule EbbServer.Storage.SystemCache do
   without spinning up a fresh supervisor.
 
   Accepts the same keyword options as `init/1` (`:rocks_name`,
-  `:table`, `:relationships`, `:relationships_by_group`, `:relationships_by_id`,
+  `:table`, `:relationships`, `:relationships_by_id`,
   `:sqlite_name`) so callers can drive the rebuild against isolated
   stores without relying on global `:persistent_term` state.
   """
@@ -98,11 +102,17 @@ defmodule EbbServer.Storage.SystemCache do
     rel_table =
       Keyword.get(opts, :relationships) || CacheTables.relationships()
 
-    rbg_table =
-      Keyword.get(opts, :relationships_by_group) || CacheTables.relationships_by_group()
-
     rbi_table =
       Keyword.get(opts, :relationships_by_id) || CacheTables.relationships_by_id()
+
+    eg_table =
+      Keyword.get(opts, :entity_groups) || CacheTables.entity_groups()
+
+    egbid_table =
+      Keyword.get(opts, :entity_groups_by_id) || CacheTables.entity_groups_by_id()
+
+    egbg_table =
+      Keyword.get(opts, :entity_groups_by_group) || CacheTables.entity_groups_by_group()
 
     dirty_set =
       Keyword.get(opts, :dirty_set) ||
@@ -110,15 +120,16 @@ defmodule EbbServer.Storage.SystemCache do
 
     backfill_type_entities(rocks_name)
 
-    populate_caches_from_indexes(
-      rocks_name,
-      gm_table,
-      rel_table,
-      rbg_table,
-      rbi_table,
-      dirty_set,
-      opts
-    )
+    tables = %{
+      group_members: gm_table,
+      relationships: rel_table,
+      relationships_by_id: rbi_table,
+      entity_groups: eg_table,
+      entity_groups_by_id: egbid_table,
+      entity_groups_by_group: egbg_table
+    }
+
+    populate_caches_from_indexes(rocks_name, tables, dirty_set, opts)
   end
 
   @impl true
@@ -128,12 +139,15 @@ defmodule EbbServer.Storage.SystemCache do
     dirty_set_opts = Keyword.take(opts, [:dirty_set])
     group_cache_opts = Keyword.take(opts, [:table])
 
-    rel_cache_opts =
-      Keyword.take(opts, [:relationships, :relationships_by_group, :relationships_by_id])
+    rel_cache_opts = Keyword.take(opts, [:relationships, :relationships_by_id])
+
+    entity_group_cache_opts =
+      Keyword.take(opts, [:entity_groups, :entity_groups_by_id, :entity_groups_by_group])
 
     children = [
       {DirtyTracker, dirty_set_opts},
       {GroupCache, group_cache_opts},
+      {EntityGroupCache, entity_group_cache_opts},
       {RelationshipCache, rel_cache_opts}
     ]
 
@@ -147,8 +161,10 @@ defmodule EbbServer.Storage.SystemCache do
               :rocks_name,
               :table,
               :relationships,
-              :relationships_by_group,
-              :relationships_by_id
+              :relationships_by_id,
+              :entity_groups,
+              :entity_groups_by_id,
+              :entity_groups_by_group
             ])
           )
         rescue
@@ -194,15 +210,7 @@ defmodule EbbServer.Storage.SystemCache do
     counter
   end
 
-  defp populate_caches_from_indexes(
-         rocks_name,
-         gm_table,
-         rel_table,
-         rbg_table,
-         rbi_table,
-         dirty_set,
-         opts
-       ) do
+  defp populate_caches_from_indexes(rocks_name, tables, dirty_set, opts) do
     sqlite_opts = Keyword.take(opts, [:sqlite_name])
 
     populate_type(
@@ -219,7 +227,28 @@ defmodule EbbServer.Storage.SystemCache do
           permissions: Fields.get(data, "permissions")
         }
 
-        GroupCache.put_group_member(member, gm_table)
+        GroupCache.put_group_member(member, tables.group_members)
+      end,
+      sqlite_opts
+    )
+
+    populate_type(
+      "entityGroup",
+      rocks_name,
+      dirty_set,
+      fn entity_data ->
+        data = entity_data.data || %{}
+
+        EntityGroupCache.put_entity_group(
+          %{
+            id: entity_data.id,
+            entity_id: Fields.get(data, "entity_id"),
+            group_id: Fields.get(data, "group_id")
+          },
+          entity_groups: tables.entity_groups,
+          entity_groups_by_id: tables.entity_groups_by_id,
+          entity_groups_by_group: tables.entity_groups_by_group
+        )
       end,
       sqlite_opts
     )
@@ -237,12 +266,10 @@ defmodule EbbServer.Storage.SystemCache do
             source_id: Fields.get(data, "source_id"),
             target_id: Fields.get(data, "target_id"),
             type: Fields.get(data, "type"),
-            field: Fields.get(data, "field"),
-            kind: Fields.get(data, "kind")
+            field: Fields.get(data, "field")
           },
-          relationships: rel_table,
-          relationships_by_group: rbg_table,
-          relationships_by_id: rbi_table
+          relationships: tables.relationships,
+          relationships_by_id: tables.relationships_by_id
         )
       end,
       sqlite_opts

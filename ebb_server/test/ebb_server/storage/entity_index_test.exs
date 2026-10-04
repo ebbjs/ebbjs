@@ -1,6 +1,7 @@
 defmodule EbbServer.Storage.EntityIndexTest do
   use ExUnit.Case, async: false
 
+  alias EbbServer.Storage.EntityGroupCache
   alias EbbServer.Storage.EntityIndex
   alias EbbServer.Storage.GroupCache
   alias EbbServer.Storage.RelationshipCache
@@ -10,13 +11,14 @@ defmodule EbbServer.Storage.EntityIndexTest do
     rbi = :"ei_rbi_#{System.unique_integer([:positive])}"
     gm = :"ei_gm_#{System.unique_integer([:positive])}"
     gm_by_id = :"ei_gmbi_#{System.unique_integer([:positive])}"
-    rbg = :"ei_rbg_#{System.unique_integer([:positive])}"
+    eg = :"ei_eg_#{System.unique_integer([:positive])}"
+    eg_by_id = :"ei_egbi_#{System.unique_integer([:positive])}"
+    eg_by_group = :"ei_egbg_#{System.unique_integer([:positive])}"
 
     {:ok, _} =
       RelationshipCache.start_link(
         name: :"ei_rc_#{System.unique_integer([:positive])}",
         relationships: rel,
-        relationships_by_group: rbg,
         relationships_by_id: rbi
       )
 
@@ -27,16 +29,29 @@ defmodule EbbServer.Storage.EntityIndexTest do
         group_members_by_id: gm_by_id
       )
 
+    {:ok, _} =
+      EntityGroupCache.start_link(
+        name: :"ei_egc_#{System.unique_integer([:positive])}",
+        entity_groups: eg,
+        entity_groups_by_id: eg_by_id,
+        entity_groups_by_group: eg_by_group
+      )
+
     on_exit(fn ->
       RelationshipCache.reset(
         relationships: rel,
-        relationships_by_group: rbg,
         relationships_by_id: rbi
       )
 
       GroupCache.reset(gm)
 
-      for t <- [rel, rbi, rbg, gm, gm_by_id] do
+      EntityGroupCache.reset(
+        entity_groups: eg,
+        entity_groups_by_id: eg_by_id,
+        entity_groups_by_group: eg_by_group
+      )
+
+      for t <- [rel, rbi, gm, gm_by_id, eg, eg_by_id, eg_by_group] do
         try do
           :ets.delete(t)
         rescue
@@ -50,13 +65,16 @@ defmodule EbbServer.Storage.EntityIndexTest do
       relationships_by_id: rbi,
       group_members: gm,
       group_members_by_id: gm_by_id,
-      relationships_by_group: rbg
+      entity_groups: eg,
+      entity_groups_by_id: eg_by_id,
+      entity_groups_by_group: eg_by_group
     }
   end
 
   defp opts(t) do
     [
-      relationships: t.relationships,
+      entity_groups: t.entity_groups,
+      entity_groups_by_id: t.entity_groups_by_id,
       relationships_by_id: t.relationships_by_id,
       group_members_by_id: t.group_members_by_id
     ]
@@ -65,20 +83,21 @@ defmodule EbbServer.Storage.EntityIndexTest do
   defp put_rel(t, rel) do
     RelationshipCache.put_relationship(rel,
       relationships: t.relationships,
-      relationships_by_group: t.relationships_by_group,
       relationships_by_id: t.relationships_by_id
     )
   end
 
-  defp member(source_id, target_id, id) do
-    %{
-      id: id,
-      source_id: source_id,
-      target_id: target_id,
-      type: "todo",
-      field: "group",
-      kind: "member"
-    }
+  defp put_membership(t, entity_id, group_id, id) do
+    EntityGroupCache.put_entity_group(
+      %{id: id, entity_id: entity_id, group_id: group_id},
+      entity_groups: t.entity_groups,
+      entity_groups_by_id: t.entity_groups_by_id,
+      entity_groups_by_group: t.entity_groups_by_group
+    )
+  end
+
+  defp link_rel(id, source_id, target_id) do
+    %{id: id, source_id: source_id, target_id: target_id, type: "todo", field: "owns"}
   end
 
   describe "resolve_groups/3" do
@@ -87,20 +106,19 @@ defmodule EbbServer.Storage.EntityIndexTest do
       assert EntityIndex.resolve_groups("group", "g_1") == ["g_1"]
     end
 
+    test "resolves an entityGroup subject via the by-id table" do
+      t = tables()
+
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+
+      assert EntityIndex.resolve_groups("entityGroup", "eg_1", opts(t)) == ["g_1"]
+    end
+
     test "resolves a relationship subject via its source's membership set" do
       t = tables()
 
-      :ok = put_rel(t, member("todo_1", "g_1", "rel_member"))
-
-      :ok =
-        put_rel(t, %{
-          id: "rel_link",
-          source_id: "todo_1",
-          target_id: "col_1",
-          type: "todo",
-          field: "column",
-          kind: "link"
-        })
+      :ok = put_membership(t, "todo_1", "g_1", "eg_member")
+      :ok = put_rel(t, link_rel("rel_link", "todo_1", "col_1"))
 
       assert EntityIndex.resolve_groups("relationship", "rel_link", opts(t)) == ["g_1"]
     end
@@ -120,8 +138,8 @@ defmodule EbbServer.Storage.EntityIndexTest do
     test "returns every group for a multi-membership source" do
       t = tables()
 
-      :ok = put_rel(t, member("todo_1", "g_1", "rel_1"))
-      :ok = put_rel(t, member("todo_1", "g_2", "rel_2"))
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+      :ok = put_membership(t, "todo_1", "g_2", "eg_2")
 
       assert EntityIndex.resolve_groups("todo", "todo_1", opts(t)) |> Enum.sort() == [
                "g_1",
@@ -132,7 +150,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
     test "unions cached membership with intra-action membership" do
       t = tables()
 
-      :ok = put_rel(t, member("todo_1", "g_1", "rel_1"))
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
       assert EntityIndex.resolve_groups(
                "todo",
@@ -142,18 +160,10 @@ defmodule EbbServer.Storage.EntityIndexTest do
              |> Enum.sort() == ["g_1", "g_2"]
     end
 
-    test "a link target is not treated as a group" do
+    test "a domain link to a group is not treated as membership" do
       t = tables()
 
-      :ok =
-        put_rel(t, %{
-          id: "rel_link",
-          source_id: "todo_1",
-          target_id: "g_1",
-          type: "todo",
-          field: "owns",
-          kind: "link"
-        })
+      :ok = put_rel(t, link_rel("rel_link", "todo_1", "g_1"))
 
       assert EntityIndex.resolve_groups("todo", "todo_1", opts(t)) == []
       assert EntityIndex.resolve_groups("relationship", "rel_link", opts(t)) == []
@@ -164,6 +174,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
 
       assert EntityIndex.resolve_groups("relationship", "rel_unknown", opts(t)) == []
       assert EntityIndex.resolve_groups("groupMember", "gm_unknown", opts(t)) == []
+      assert EntityIndex.resolve_groups("entityGroup", "eg_unknown", opts(t)) == []
       assert EntityIndex.resolve_groups("todo", "todo_unknown", opts(t)) == []
     end
 
@@ -179,6 +190,10 @@ defmodule EbbServer.Storage.EntityIndexTest do
       end
 
       assert_raise KeyError, fn ->
+        EntityIndex.resolve_groups("entityGroup", "eg_1", [])
+      end
+
+      assert_raise KeyError, fn ->
         EntityIndex.resolve_groups("todo", "todo_1", [])
       end
     end
@@ -188,7 +203,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
     test "returns membership targets plus intra-action targets" do
       t = tables()
 
-      :ok = put_rel(t, member("todo_1", "g_1", "rel_1"))
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
       assert EntityIndex.source_groups("todo_1", opts(t)) == ["g_1"]
 
@@ -197,6 +212,25 @@ defmodule EbbServer.Storage.EntityIndexTest do
                opts(t) ++ [intra_action: %{"todo_1" => ["g_2"]}]
              )
              |> Enum.sort() == ["g_1", "g_2"]
+    end
+  end
+
+  describe "relationship_groups/3" do
+    test "prefers the wire source_id when the Update carries it" do
+      t = tables()
+
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+
+      assert EntityIndex.relationship_groups("todo_1", "rel_new", opts(t)) == ["g_1"]
+    end
+
+    test "falls back to the by-id edge's source on a delete (no wire source)" do
+      t = tables()
+
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+      :ok = put_rel(t, link_rel("rel_1", "todo_1", "col_1"))
+
+      assert EntityIndex.relationship_groups(nil, "rel_1", opts(t)) == ["g_1"]
     end
   end
 end

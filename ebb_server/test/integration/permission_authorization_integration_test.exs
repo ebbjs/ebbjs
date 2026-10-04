@@ -34,8 +34,8 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
               "fields" => %{"title" => %{"type" => "lww", "value" => "Multi", "hlc" => hlc}}
             }
           },
-          member_edge(entity_id, "group_1", hlc),
-          member_edge(entity_id, "group_2", hlc)
+          entity_group_update(entity_id, "group_1", hlc),
+          entity_group_update(entity_id, "group_2", hlc)
         ]
       }
 
@@ -92,12 +92,12 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       assert entity["data"]["fields"]["title"]["value"] == "Authorized Todo"
     end
 
-    test "intra-action resolution: new entity + relationship in same action" do
+    test "intra-action resolution: new entity + entityGroup in same action" do
       bootstrap_group("actor_1", "group_1", ["todo.*", "post.*"])
 
       entity_id = "todo_intra_1"
       hlc = generate_hlc()
-      rel_id = "rel_intra_" <> Nanoid.generate()
+      eg_id = "eg_intra_" <> Nanoid.generate()
 
       action = %{
         "id" => "act_intra_" <> Nanoid.generate(),
@@ -116,17 +116,14 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
             }
           },
           %{
-            "id" => rel_id,
-            "subject_id" => rel_id,
-            "subject_type" => "relationship",
+            "id" => eg_id,
+            "subject_id" => eg_id,
+            "subject_type" => "entityGroup",
             "method" => "put",
             "data" => %{
               "fields" => %{
-                "source_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
-                "target_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc},
-                "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
-                "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc},
-                "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc}
+                "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
+                "group_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc}
               }
             }
           }
@@ -205,21 +202,18 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     end
   end
 
-  defp member_edge(entity_id, group_id, hlc) do
-    rel_id = "rel_#{Nanoid.generate()}"
+  defp entity_group_update(entity_id, group_id, hlc) do
+    eg_id = "eg_#{Nanoid.generate()}"
 
     %{
-      "id" => rel_id,
-      "subject_id" => rel_id,
-      "subject_type" => "relationship",
+      "id" => eg_id,
+      "subject_id" => eg_id,
+      "subject_type" => "entityGroup",
       "method" => "put",
       "data" => %{
         "fields" => %{
-          "source_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
-          "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-          "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
-          "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc},
-          "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc}
+          "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
+          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
         }
       }
     }

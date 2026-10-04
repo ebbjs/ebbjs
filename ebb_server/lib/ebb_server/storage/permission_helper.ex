@@ -4,9 +4,8 @@ defmodule EbbServer.Storage.PermissionHelper do
   """
 
   alias EbbServer.Storage.Fields
-  alias EbbServer.Storage.RelationshipCache
 
-  @system_entity_types ["group", "groupMember", "relationship"]
+  @system_entity_types ["group", "groupMember", "relationship", "entityGroup"]
   @method_atoms %{"put" => :put, "patch" => :patch, "delete" => :delete}
 
   @doc """
@@ -49,7 +48,7 @@ defmodule EbbServer.Storage.PermissionHelper do
   A valid group bootstrap requires:
   1. At least one group put
   2. A groupMember put for the actor in one of those groups
-  3. A relationship put targeting one of those groups
+  3. An entityGroup put scoping an entity to one of those groups
   """
   @spec group_bootstrap?([map()], String.t()) :: boolean()
   def group_bootstrap?(updates, actor_id) do
@@ -69,14 +68,14 @@ defmodule EbbServer.Storage.PermissionHelper do
           MapSet.member?(group_ids, get_data_field(u, "group_id"))
       end)
 
-    has_matching_relationship =
+    has_matching_membership =
       Enum.any?(updates, fn u ->
-        get_subject_type(u) == "relationship" and
+        get_subject_type(u) == "entityGroup" and
           normalize_method(get_method(u)) == "put" and
-          MapSet.member?(group_ids, get_data_field(u, "target_id"))
+          MapSet.member?(group_ids, get_data_field(u, "group_id"))
       end)
 
-    MapSet.size(group_ids) > 0 and has_matching_member and has_matching_relationship
+    MapSet.size(group_ids) > 0 and has_matching_member and has_matching_membership
   end
 
   defp get_subject_type(map) do
@@ -106,24 +105,22 @@ defmodule EbbServer.Storage.PermissionHelper do
   @doc """
   Builds an intra-action context map for membership resolution.
 
-  Maps source_id to the list of group ids carried by `kind: "member"`
-  relationship puts within the same action. Domain links (and edges
-  with no kind, which default to `"link"`) are ignored: only
-  membership edges move an entity into a group.
+  Maps `entity_id` to the list of group ids carried by `entityGroup`
+  puts within the same action. Domain relationship puts do not move an
+  entity into a group.
   """
   @spec build_intra_action_context([map()]) :: %{String.t() => [String.t()]}
   def build_intra_action_context(updates) do
     updates
     |> Enum.filter(fn u ->
-      get_subject_type(u) == "relationship" and normalize_method(get_method(u)) == "put" and
-        get_data_field(u, "kind") == RelationshipCache.member_kind()
+      get_subject_type(u) == "entityGroup" and normalize_method(get_method(u)) == "put"
     end)
     |> Enum.reduce(%{}, fn u, acc ->
-      source_id = get_data_field(u, "source_id")
-      target_id = get_data_field(u, "target_id")
+      entity_id = get_data_field(u, "entity_id")
+      group_id = get_data_field(u, "group_id")
 
-      if source_id && target_id do
-        Map.update(acc, source_id, [target_id], &Enum.sort(Enum.uniq([target_id | &1])))
+      if entity_id && group_id do
+        Map.update(acc, entity_id, [group_id], &Enum.sort(Enum.uniq([group_id | &1])))
       else
         acc
       end

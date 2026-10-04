@@ -105,6 +105,7 @@ defmodule EbbServer.Storage.DirtyTracker do
     type_prefixes =
       case type do
         "groupMember" -> ["gm_", "groupMember_"]
+        "entityGroup" -> ["eg_", "entityGroup_"]
         "relationship" -> ["rel_", "relationship_"]
         _ -> [type <> "_"]
       end

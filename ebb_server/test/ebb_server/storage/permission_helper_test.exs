@@ -68,16 +68,14 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           }
         },
         %{
-          "id" => "rel_1",
-          "subject_id" => "rel_1",
-          "subject_type" => "relationship",
+          "id" => "eg_1",
+          "subject_id" => "eg_1",
+          "subject_type" => "entityGroup",
           "method" => "put",
           "data" => %{
             "fields" => %{
-              "source_id" => %{"value" => "todo_1"},
-              "target_id" => %{"value" => "g_1"},
-              "type" => %{"value" => "todo"},
-              "field" => %{"value" => "group"}
+              "entity_id" => %{"value" => "todo_1"},
+              "group_id" => %{"value" => "g_1"}
             }
           }
         }
@@ -96,14 +94,14 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "data" => %{}
         },
         %{
-          "id" => "rel_1",
-          "subject_id" => "rel_1",
-          "subject_type" => "relationship",
+          "id" => "eg_1",
+          "subject_id" => "eg_1",
+          "subject_type" => "entityGroup",
           "method" => "put",
           "data" => %{
             "fields" => %{
-              "source_id" => %{"value" => "todo_1"},
-              "target_id" => %{"value" => "g_1"}
+              "entity_id" => %{"value" => "todo_1"},
+              "group_id" => %{"value" => "g_1"}
             }
           }
         }
@@ -112,7 +110,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
       assert PermissionHelper.group_bootstrap?(updates, "a_1") == false
     end
 
-    test "missing relationship returns false" do
+    test "missing entityGroup returns false" do
       updates = [
         %{
           "id" => "g_1",
@@ -177,18 +175,18 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           }
         },
         %{
-          "id" => "rel_1",
-          "subject_id" => "rel_1",
-          "subject_type" => "relationship",
+          "id" => "eg_1",
+          "subject_id" => "eg_1",
+          "subject_type" => "entityGroup",
           "method" => "put",
-          "data" => %{"fields" => %{"target_id" => %{"value" => "g_1"}}}
+          "data" => %{"fields" => %{"group_id" => %{"value" => "g_1"}}}
         }
       ]
 
       assert PermissionHelper.group_bootstrap?(updates, "a_1") == false
     end
 
-    test "relationship target must match group_id" do
+    test "entityGroup group_id must match a group put" do
       updates = [
         %{
           "id" => "g_1",
@@ -207,11 +205,11 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           }
         },
         %{
-          "id" => "rel_1",
-          "subject_id" => "rel_1",
-          "subject_type" => "relationship",
+          "id" => "eg_1",
+          "subject_id" => "eg_1",
+          "subject_type" => "entityGroup",
           "method" => "put",
-          "data" => %{"fields" => %{"target_id" => %{"value" => "different_group"}}}
+          "data" => %{"fields" => %{"group_id" => %{"value" => "different_group"}}}
         }
       ]
 
@@ -220,29 +218,27 @@ defmodule EbbServer.Storage.PermissionHelperTest do
   end
 
   describe "build_intra_action_context/1" do
-    test "extracts member relationship puts into a source => groups map" do
+    test "extracts entityGroup puts into an entity => groups map" do
       updates = [
         %{
-          "id" => "rel_1",
-          "subject_type" => "relationship",
+          "id" => "eg_1",
+          "subject_type" => "entityGroup",
           "method" => "put",
           "data" => %{
             "fields" => %{
-              "source_id" => %{"value" => "todo_1"},
-              "target_id" => %{"value" => "g_1"},
-              "kind" => %{"value" => "member"}
+              "entity_id" => %{"value" => "todo_1"},
+              "group_id" => %{"value" => "g_1"}
             }
           }
         },
         %{
-          "id" => "rel_2",
-          "subject_type" => "relationship",
+          "id" => "eg_2",
+          "subject_type" => "entityGroup",
           "method" => "put",
           "data" => %{
             "fields" => %{
-              "source_id" => %{"value" => "post_1"},
-              "target_id" => %{"value" => "g_2"},
-              "kind" => %{"value" => "member"}
+              "entity_id" => %{"value" => "post_1"},
+              "group_id" => %{"value" => "g_2"}
             }
           }
         }
@@ -253,29 +249,27 @@ defmodule EbbServer.Storage.PermissionHelperTest do
       assert ctx == %{"todo_1" => ["g_1"], "post_1" => ["g_2"]}
     end
 
-    test "collects several member edges for the same source" do
+    test "collects several memberships for the same entity" do
       updates = [
         %{
-          "id" => "rel_1",
-          "subject_type" => "relationship",
+          "id" => "eg_1",
+          "subject_type" => "entityGroup",
           "method" => "put",
           "data" => %{
             "fields" => %{
-              "source_id" => %{"value" => "todo_1"},
-              "target_id" => %{"value" => "g_1"},
-              "kind" => %{"value" => "member"}
+              "entity_id" => %{"value" => "todo_1"},
+              "group_id" => %{"value" => "g_1"}
             }
           }
         },
         %{
-          "id" => "rel_2",
-          "subject_type" => "relationship",
+          "id" => "eg_2",
+          "subject_type" => "entityGroup",
           "method" => "put",
           "data" => %{
             "fields" => %{
-              "source_id" => %{"value" => "todo_1"},
-              "target_id" => %{"value" => "g_2"},
-              "kind" => %{"value" => "member"}
+              "entity_id" => %{"value" => "todo_1"},
+              "group_id" => %{"value" => "g_2"}
             }
           }
         }
@@ -286,7 +280,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
              }
     end
 
-    test "ignores link edges and edges without a kind" do
+    test "ignores domain relationship edges" do
       updates = [
         %{
           "id" => "rel_link",
@@ -296,18 +290,8 @@ defmodule EbbServer.Storage.PermissionHelperTest do
             "fields" => %{
               "source_id" => %{"value" => "todo_1"},
               "target_id" => %{"value" => "g_1"},
-              "kind" => %{"value" => "link"}
-            }
-          }
-        },
-        %{
-          "id" => "rel_unmarked",
-          "subject_type" => "relationship",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "source_id" => %{"value" => "todo_2"},
-              "target_id" => %{"value" => "g_1"}
+              "type" => %{"value" => "todo"},
+              "field" => %{"value" => "owns"}
             }
           }
         }
@@ -316,7 +300,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
       assert PermissionHelper.build_intra_action_context(updates) == %{}
     end
 
-    test "ignores non-relationship updates" do
+    test "ignores non-membership updates" do
       updates = [
         %{
           "id" => "todo_1",
@@ -325,14 +309,13 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           "data" => %{}
         },
         %{
-          "id" => "rel_1",
-          "subject_type" => "relationship",
+          "id" => "eg_1",
+          "subject_type" => "entityGroup",
           "method" => "put",
           "data" => %{
             "fields" => %{
-              "source_id" => %{"value" => "todo_1"},
-              "target_id" => %{"value" => "g_1"},
-              "kind" => %{"value" => "member"}
+              "entity_id" => %{"value" => "todo_1"},
+              "group_id" => %{"value" => "g_1"}
             }
           }
         }
@@ -346,14 +329,13 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     test "ignores delete methods" do
       updates = [
         %{
-          "id" => "rel_1",
-          "subject_type" => "relationship",
+          "id" => "eg_1",
+          "subject_type" => "entityGroup",
           "method" => "delete",
           "data" => %{
             "fields" => %{
-              "source_id" => %{"value" => "todo_1"},
-              "target_id" => %{"value" => "g_1"},
-              "kind" => %{"value" => "member"}
+              "entity_id" => %{"value" => "todo_1"},
+              "group_id" => %{"value" => "g_1"}
             }
           }
         }
@@ -367,8 +349,8 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     test "handles missing data" do
       updates = [
         %{
-          "id" => "rel_1",
-          "subject_type" => "relationship",
+          "id" => "eg_1",
+          "subject_type" => "entityGroup",
           "method" => "put",
           "data" => %{}
         }
@@ -390,6 +372,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
       assert "group" in types
       assert "groupMember" in types
       assert "relationship" in types
+      assert "entityGroup" in types
     end
   end
 

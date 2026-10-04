@@ -9,21 +9,24 @@ defmodule EbbServer.Storage.AuthorizationContext do
   @enforce_keys []
   defstruct group_members_table: :ebb_group_members,
             group_members_by_id_table: :ebb_group_members_by_id,
-            relationships_table: :ebb_relationships,
+            entity_groups_table: :ebb_entity_groups,
+            entity_groups_by_id_table: :ebb_entity_groups_by_id,
             relationships_by_id_table: :ebb_relationships_by_id,
             now_ms: nil
 
   @type t :: %__MODULE__{
           group_members_table: atom(),
           group_members_by_id_table: atom(),
-          relationships_table: atom(),
+          entity_groups_table: atom(),
+          entity_groups_by_id_table: atom(),
           relationships_by_id_table: atom(),
           now_ms: non_neg_integer() | nil
         }
 
   @default_group_members :ebb_group_members
   @default_group_members_by_id :ebb_group_members_by_id
-  @default_relationships :ebb_relationships
+  @default_entity_groups :ebb_entity_groups
+  @default_entity_groups_by_id :ebb_entity_groups_by_id
   @default_relationships_by_id :ebb_relationships_by_id
 
   @doc """
@@ -38,7 +41,9 @@ defmodule EbbServer.Storage.AuthorizationContext do
       group_members_table: resolve_table(opts, :group_members, @default_group_members),
       group_members_by_id_table:
         resolve_table(opts, :group_members_by_id, @default_group_members_by_id),
-      relationships_table: resolve_table(opts, :relationships, @default_relationships),
+      entity_groups_table: resolve_table(opts, :entity_groups, @default_entity_groups),
+      entity_groups_by_id_table:
+        resolve_table(opts, :entity_groups_by_id, @default_entity_groups_by_id),
       relationships_by_id_table:
         resolve_table(opts, :relationships_by_id, @default_relationships_by_id),
       now_ms: Keyword.get(opts, :now_ms)

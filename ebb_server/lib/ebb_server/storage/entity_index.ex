@@ -3,17 +3,20 @@ defmodule EbbServer.Storage.EntityIndex do
   Single resolution surface for "which groups own this entity?".
 
   Every entity — user-defined rows, `Relationship` rows,
-  `groupMember` rows — belongs to one or more Groups. Membership is a
-  `Relationship` edge with `kind: "member"`; domain edges carry
-  `kind: "link"`. The authorizer, the Writer's `cf_group_actions`
-  index, the fan-out router, and the presence router all ask the same
-  question through this module and expect the same answer.
+  `entityGroup` membership rows, `groupMember` rows — belongs to one
+  or more Groups. Entity↔Group membership is a dedicated `entityGroup`
+  system entity (`{entity_id, group_id}`); it is the only thing that
+  moves a user entity between groups. The authorizer, the Writer's
+  `cf_group_actions` index, the fan-out router, and the presence router
+  all ask the same question through this module and expect the same
+  answer.
 
   Resolution is dispatched by `subject_type`:
 
     - `"group"`        → the group is its own id
-    - `"relationship"` → the membership set of the edge's source
+    - `"entityGroup"`  → the membership's `group_id`
     - `"groupMember"`  → the membership's `group_id`
+    - `"relationship"` → the membership set of the edge's source
     - user types       → the source's membership set
 
   A relationship resolves through its **source**, never its own
@@ -23,15 +26,15 @@ defmodule EbbServer.Storage.EntityIndex do
   `source_groups/2` is the same resolution for a caller that already
   knows an entity id — for example a relationship being created in the
   current Action, which is not in the cache yet. Its group set is the
-  cached membership unioned with membership edges carried by the
-  Action (`:intra_action`).
+  cached membership unioned with membership carried by the Action
+  (`:intra_action`).
 
   Each caller supplies its own table names; the module never falls
   back to globals, so a stale `:persistent_term` cannot reach a later
   caller's resolution path.
   """
 
-  alias EbbServer.Storage.{GroupCache, RelationshipCache}
+  alias EbbServer.Storage.{EntityGroupCache, GroupCache, RelationshipCache}
 
   @typep subject_type :: String.t()
   @typep subject_id :: String.t()
@@ -41,11 +44,12 @@ defmodule EbbServer.Storage.EntityIndex do
 
   Required options:
 
-    - `:relationships`           — used for user-entity resolution
+    - `:entity_groups`           — used for user-entity resolution
+    - `:entity_groups_by_id`     — used for `"entityGroup"` resolution
     - `:relationships_by_id`     — used for `"relationship"` resolution
     - `:group_members_by_id`     — used for `"groupMember"` resolution
-    - `:intra_action`            — optional membership edges from the
-      current Action, keyed by source id
+    - `:intra_action`            — optional membership from the
+      current Action, keyed by entity id
 
   Missing required options raise `ArgumentError` rather than silently
   falling back to a global default.
@@ -54,6 +58,15 @@ defmodule EbbServer.Storage.EntityIndex do
   def resolve_groups(subject_type, subject_id, opts \\ [])
 
   def resolve_groups("group", group_id, _opts), do: [group_id]
+
+  def resolve_groups("entityGroup", membership_id, opts) do
+    table = Keyword.fetch!(opts, :entity_groups_by_id)
+
+    case EntityGroupCache.get_entity_group(membership_id, table) do
+      nil -> []
+      entry -> List.wrap(entry_group_id(entry))
+    end
+  end
 
   def resolve_groups("relationship", rel_id, opts) do
     table = Keyword.fetch!(opts, :relationships_by_id)
@@ -78,16 +91,15 @@ defmodule EbbServer.Storage.EntityIndex do
   end
 
   @doc """
-  Returns the group set for a known entity id: cached `kind: "member"`
-  targets unioned with the Action's membership edges.
+  Returns the group set for a known entity id: cached `entityGroup`
+  targets unioned with the Action's membership rows.
   """
   @spec source_groups(subject_id(), keyword()) :: [String.t()]
   def source_groups(source_id, opts) do
-    table = Keyword.fetch!(opts, :relationships)
+    table = Keyword.fetch!(opts, :entity_groups)
     intra_action = Keyword.get(opts, :intra_action, %{})
 
-    (RelationshipCache.membership_groups(source_id, table) ++
-       Map.get(intra_action, source_id, []))
+    (EntityGroupCache.entity_groups(source_id, table) ++ Map.get(intra_action, source_id, []))
     |> Enum.uniq()
   end
 

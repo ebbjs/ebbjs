@@ -112,6 +112,9 @@ defmodule EbbServer.Integration.StorageCase do
       name: EbbServer.Storage.Writer,
       group_members: EbbServer.Storage.CacheTables.group_members(),
       group_members_by_id: EbbServer.Storage.CacheTables.group_members_by_id(),
+      entity_groups: EbbServer.Storage.CacheTables.entity_groups(),
+      entity_groups_by_id: EbbServer.Storage.CacheTables.entity_groups_by_id(),
+      entity_groups_by_group: EbbServer.Storage.CacheTables.entity_groups_by_group(),
       relationships: EbbServer.Storage.CacheTables.relationships(),
       relationships_by_id: EbbServer.Storage.CacheTables.relationships_by_id(),
       # Mirror the production Writer boot wiring so writes advance the

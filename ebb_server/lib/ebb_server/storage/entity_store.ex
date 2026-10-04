@@ -407,7 +407,7 @@ defmodule EbbServer.Storage.EntityStore do
   end
 
   defp materialize_system_entities(rocks_name, sqlite_name, dirty_set) do
-    system_prefixes = ["gm_", "rel_"]
+    system_prefixes = ["gm_", "eg_", "rel_"]
 
     dirty_set
     |> :ets.tab2list()

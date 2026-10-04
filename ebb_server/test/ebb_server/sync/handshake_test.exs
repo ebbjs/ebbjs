@@ -38,6 +38,9 @@ defmodule EbbServer.Sync.HandshakeTest do
            name: Writer,
            group_members: EbbServer.Storage.CacheTables.group_members(),
            group_members_by_id: EbbServer.Storage.CacheTables.group_members_by_id(),
+           entity_groups: EbbServer.Storage.CacheTables.entity_groups(),
+           entity_groups_by_id: EbbServer.Storage.CacheTables.entity_groups_by_id(),
+           entity_groups_by_group: EbbServer.Storage.CacheTables.entity_groups_by_group(),
            relationships: EbbServer.Storage.CacheTables.relationships(),
            relationships_by_id: EbbServer.Storage.CacheTables.relationships_by_id()
          ) do
@@ -129,7 +132,7 @@ defmodule EbbServer.Sync.HandshakeTest do
   defp bootstrap_group(actor_id, group_id, permissions) do
     hlc = generate_hlc()
     gm_id = "gm_" <> Nanoid.generate()
-    rel_id = "rel_" <> Nanoid.generate()
+    eg_id = "eg_" <> Nanoid.generate()
 
     action = %{
       "id" => "act_bootstrap_" <> Nanoid.generate(),
@@ -159,17 +162,14 @@ defmodule EbbServer.Sync.HandshakeTest do
           }
         },
         %{
-          "id" => rel_id,
-          "subject_id" => rel_id,
-          "subject_type" => "relationship",
+          "id" => eg_id,
+          "subject_id" => eg_id,
+          "subject_type" => "entityGroup",
           "method" => "put",
           "data" => %{
             "fields" => %{
-              "source_id" => %{"type" => "lww", "value" => "todo_bootstrap", "hlc" => hlc},
-              "target_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-              "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
-              "field" => %{"type" => "lww", "value" => "group", "hlc" => hlc},
-              "kind" => %{"type" => "lww", "value" => "member", "hlc" => hlc}
+              "entity_id" => %{"type" => "lww", "value" => "todo_bootstrap", "hlc" => hlc},
+              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
             }
           }
         }

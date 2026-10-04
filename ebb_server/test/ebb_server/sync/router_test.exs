@@ -4,7 +4,7 @@ defmodule EbbServer.Sync.RouterTest do
 
   import Plug.Test
   import Plug.Conn
-  alias EbbServer.Storage.{GroupCache, RelationshipCache}
+  alias EbbServer.Storage.{CacheTables, EntityGroupCache, GroupCache}
   alias EbbServer.Sync.Router
 
   defp post_presence(body, actor_id \\ "a_member") do
@@ -14,18 +14,16 @@ defmodule EbbServer.Sync.RouterTest do
     |> Router.call([])
   end
 
-  defp setup_entity_relationship(entity_id, group_id) do
-    rel_id = "rel_" <> Nanoid.generate()
+  defp setup_entity_group(entity_id, group_id) do
+    eg_id = "eg_" <> Nanoid.generate()
 
     :ok =
-      RelationshipCache.put_relationship(%{
-        id: rel_id,
-        source_id: entity_id,
-        target_id: group_id,
-        type: "todo",
-        field: "group",
-        kind: "member"
-      })
+      EntityGroupCache.put_entity_group(
+        %{id: eg_id, entity_id: entity_id, group_id: group_id},
+        entity_groups: CacheTables.entity_groups(),
+        entity_groups_by_id: CacheTables.entity_groups_by_id(),
+        entity_groups_by_group: CacheTables.entity_groups_by_group()
+      )
   end
 
   defp setup_group_membership(actor_id, group_id, permissions \\ ["read", "write"]) do
@@ -47,7 +45,7 @@ defmodule EbbServer.Sync.RouterTest do
       actor_id = "a_member"
 
       setup_group_membership(actor_id, group_id)
-      setup_entity_relationship(entity_id, group_id)
+      setup_entity_group(entity_id, group_id)
 
       conn =
         post_presence(
@@ -82,7 +80,7 @@ defmodule EbbServer.Sync.RouterTest do
       actor_id = "a_outsider"
 
       setup_group_membership("a_member", group_id)
-      setup_entity_relationship(entity_id, group_id)
+      setup_entity_group(entity_id, group_id)
 
       conn =
         post_presence(
