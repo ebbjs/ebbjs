@@ -9,8 +9,9 @@
  * relationship on the entity filters that edge instead — see
  * {@link QueryContext}. The reserved `groups` key filters built-in
  * membership by scanning `entityGroup` rows (no storage membership
- * index yet — #267). Both predicate kinds read storage, so the filter
- * pass is asynchronous; every terminal already is.
+ * index yet — #267). Relationship and membership predicates read
+ * storage, so the filter pass is asynchronous; every terminal already
+ * is.
  *
  * The terminal methods materialize the chain:
  * - `await qb` / `.then(...)` — projected rows.
@@ -33,6 +34,7 @@ import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { ShapeFields } from "../schema/entity";
 import { EntityValidationError, type EntityRegistry } from "../schema/entity-registry";
 import { GROUPS_ACCESSOR } from "../schema/system-entities";
+import { liveMembership } from "./entity-group";
 
 /**
  * Map a single materialized entity onto the schema's TypeBox shape.
@@ -118,8 +120,9 @@ type FieldFilter = { readonly kind: "field"; readonly key: string; readonly valu
 /**
  * Filter over a relationship edge. `targetIds` is the resolved any-of
  * set, or `null` when the pointer names no live edge — that matches
- * nothing. `context` carries the adapter and registry the index read
- * needs, captured when the filter is built.
+ * nothing. `context` is captured when the filter is built: the
+ * registry resolved the edge at build time, and only `.storage` is
+ * read at apply time.
  */
 type RelationshipFilter = {
   readonly kind: "relationship";
@@ -307,8 +310,10 @@ function buildFilter<TFields extends Record<string, TSchema>>(
   context: QueryContext | undefined,
 ): Filter {
   // `groups` is reserved, so it can never be a declared relationship or
-  // a field. It always means built-in membership, and membership needs a
-  // storage adapter to scan `entityGroup`.
+  // a field. With a query context it always means built-in membership,
+  // which needs a storage adapter to scan `entityGroup`; a bare builder
+  // carries no adapter, so the key falls through to the unknown-field
+  // throw below.
   if (key === GROUPS_ACCESSOR && context !== undefined) {
     const label = `where("${GROUPS_ACCESSOR}") on "${context.entityName}"`;
     return {
@@ -436,12 +441,10 @@ async function membershipIdSet(filter: MembershipFilter): Promise<ReadonlySet<st
   const groupIds = new Set(filter.targetIds);
   const rows = await filter.context.storage.entities.query("entityGroup");
   for (const row of rows) {
-    if (row.deleted_hlc !== null) continue;
-    const groupId = row.data?.fields?.["group_id"]?.value;
-    const entityId = row.data?.fields?.["entity_id"]?.value;
-    if (typeof groupId !== "string" || typeof entityId !== "string") continue;
-    if (!groupIds.has(groupId)) continue;
-    ids.add(entityId);
+    const membership = liveMembership(row);
+    if (membership === null) continue;
+    if (!groupIds.has(membership.groupId)) continue;
+    ids.add(membership.entityId);
   }
   return ids;
 }

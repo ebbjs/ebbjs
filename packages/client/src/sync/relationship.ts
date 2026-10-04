@@ -12,6 +12,7 @@ import { generateId, type Entity } from "@ebbjs/core";
 import type { TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { EntityRegistry } from "../schema/entity-registry";
+import { type LiveMembership, liveMembership } from "./entity-group";
 import {
   type LoadEntities,
   type PointerValue,
@@ -244,10 +245,10 @@ export function membershipGroups<TFields extends Record<string, TSchema>>(
   const loader: LoadEntities = async () => {
     const memberships = await queryEntitiesByType("entityGroup");
     const ids = memberships
-      .filter((m) => m.deleted_hlc === null)
-      .filter((m) => m.data?.fields?.["entity_id"]?.value === sourceId)
-      .map((m) => m.data?.fields?.["group_id"]?.value)
-      .filter((v): v is string => typeof v === "string");
+      .map(liveMembership)
+      .filter((m): m is LiveMembership => m !== null)
+      .filter((m) => m.entityId === sourceId)
+      .map((m) => m.groupId);
     const idSet = new Set(ids);
     const allTargets = await queryEntitiesByType(targetName);
     return allTargets.filter((t) => idSet.has(t.id));
