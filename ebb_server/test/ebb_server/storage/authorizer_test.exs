@@ -584,6 +584,88 @@ defmodule EbbServer.Storage.AuthorizerTest do
     end
   end
 
+  # #121 "Add Entity to Group": a same-Action entity create filed into
+  # several groups is authorized per target group, not by the union of
+  # the entity's group set.
+  describe "authorize/3 - entityGroup put target group" do
+    test "requires <type>.create in the target group, not the entity's whole set" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_2", ["todo.create"])
+
+      action =
+        build_action([
+          entity_put("todo_multi", "todo"),
+          entity_group_put("eg_1", "todo_multi", "g_1"),
+          entity_group_put("eg_2", "todo_multi", "g_2")
+        ])
+
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+    end
+
+    test "accepts when the actor holds <type>.create in each target group" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.create"])
+      put_group_member(tables, "g_2", ["todo.create"], "gm_2")
+
+      action =
+        build_action([
+          entity_put("todo_multi", "todo"),
+          entity_group_put("eg_1", "todo_multi", "g_1"),
+          entity_group_put("eg_2", "todo_multi", "g_2")
+        ])
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+  end
+
+  # #246 known limitations: `AuthorizationContext` carries no group/entity
+  # existence signal, so these stay open until one is plumbed in. The tests
+  # below characterize the current, unfixed behaviour — they are not an
+  # endorsement. See the `Authorizer` moduledoc "Residuals".
+  describe "authorize/3 - known limitations" do
+    # Known limitation: `bootstrap_group_permissions/2` checks only that the
+    # Action `put`s the group id, so an id that already names a group can be
+    # re-bootstrapped and self-granted.
+    test "characterization: a bootstrap can re-put an existing group id and self-grant" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      action =
+        build_action([
+          group_put("g_existing"),
+          group_member_put("gm_1", "a_1", "g_existing", ["*"])
+        ])
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+
+    # Known limitation: `created_subject_ids/1` counts every user-entity
+    # `put` id as created without checking existence, so a bootstrap
+    # `entityGroup` put can ride the exemption for an entity that already
+    # exists.
+    test "characterization: a same-Action put files an existing entity via the bootstrap" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_membership(tables, "todo_existing", "g_other", "eg_other")
+      put_group_member(tables, "g_other", ["todo.create"])
+
+      action =
+        build_action([
+          group_put("g_1"),
+          group_member_put("gm_1", "a_1", "g_1", ["group.read"]),
+          entity_put("todo_existing", "todo"),
+          entity_group_put("eg_graft", "todo_existing", "g_1")
+        ])
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+  end
+
   # #246: an actor with only `group.read` in a group must not mutate the
   # group's system-entity rows.
   describe "authorize/3 - group.read-only member" do
