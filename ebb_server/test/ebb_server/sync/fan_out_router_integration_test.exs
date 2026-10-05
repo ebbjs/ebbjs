@@ -88,4 +88,46 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       :ok = FanOutRouter.unsubscribe(sse_pid)
     end
   end
+
+  describe "subscriber lifecycle (#278)" do
+    test "dead subscriber pid is removed from subscriptions" do
+      conn = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      :ok = FanOutRouter.subscribe(["reap_test_group"], conn, "actor_reap")
+      assert Map.has_key?(router_subscriptions(), conn)
+
+      Process.exit(conn, :kill)
+
+      assert eventually(fn -> not Map.has_key?(router_subscriptions(), conn) end),
+             "expected dead subscriber #{inspect(conn)} to be reaped from subscriptions"
+    end
+
+    test "explicit unsubscribe/1 still removes a live subscriber" do
+      conn = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      :ok = FanOutRouter.subscribe(["reap_test_explicit"], conn, "actor_reap")
+      assert Map.has_key?(router_subscriptions(), conn)
+
+      :ok = FanOutRouter.unsubscribe(conn)
+      refute Map.has_key?(router_subscriptions(), conn)
+
+      Process.exit(conn, :kill)
+    end
+  end
+
+  defp router_subscriptions do
+    :sys.get_state(FanOutRouter).subscriptions
+  end
+
+  defp eventually(fun, attempts \\ 100)
+  defp eventually(fun, 0), do: fun.()
+
+  defp eventually(fun, attempts) do
+    if fun.() do
+      true
+    else
+      Process.sleep(10)
+      eventually(fun, attempts - 1)
+    end
+  end
 end
