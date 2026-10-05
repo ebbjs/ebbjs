@@ -3,6 +3,7 @@ import type { DirtyTracker } from "./dirty-tracker";
 import type { EntityStore } from "./entity-store";
 import type { CursorStore } from "./cursor-store";
 import type { EntityChangeEmitter } from "./entity-change-emitter";
+import type { OutboxStore } from "./outbox-store";
 
 /**
  * StorageAdapter — unified interface composing all storage components.
@@ -15,16 +16,19 @@ import type { EntityChangeEmitter } from "./entity-change-emitter";
  * - `entities` — EntityStore for materialized entity cache
  * - `dirtyTracker` — DirtyTracker for tracking entities needing materialization
  * - `cursors` — CursorStore for per-group GSN tracking
+ * - `outbox` — OutboxStore for durable pending local Actions
  *
  * ## Cross-cutting Methods
  * - `isDirty(entityId)` — delegates to dirtyTracker
- * - `reset()` — clears all components
+ * - `reset()` — clears the action log, dirty flags, and entity cache;
+ *   pending outbox entries are durable user data and survive a reset
  */
 export interface StorageAdapter {
   readonly actions: ActionLog;
   readonly entities: EntityStore;
   readonly dirtyTracker: DirtyTracker;
   readonly cursors: CursorStore;
+  readonly outbox: OutboxStore;
   /**
    * Observer surface for entity-change notifications. Optional —
    * adapters that don't ship an emitter can omit the field, and
@@ -46,3 +50,4 @@ export interface StorageAdapter {
 }
 
 export type { ActionLog, DirtyTracker, EntityStore, CursorStore, EntityChangeEmitter };
+export type { OutboxStore, OutboxEntry, OutboxStatus } from "./outbox-store";

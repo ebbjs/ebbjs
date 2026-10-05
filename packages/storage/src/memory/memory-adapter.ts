@@ -5,6 +5,7 @@ import { createMemoryActionLog } from "./action-log.memory";
 import { createMemoryDirtyTracker } from "./dirty-tracker.memory";
 import { createMemoryEntityStore } from "./entity-store.memory";
 import { createMemoryCursorStore } from "./cursor-store.memory";
+import { createMemoryOutboxStore } from "./outbox-store.memory";
 
 /**
  * MemoryAdapter — in-memory implementation of StorageAdapter for v1.
@@ -14,6 +15,7 @@ import { createMemoryCursorStore } from "./cursor-store.memory";
  * - DirtyTracker — tracks dirty entities, queryable by type
  * - EntityStore — materialized entity cache
  * - CursorStore — per-group GSN cursors
+ * - OutboxStore — durable pending local Actions
  *
  * ## Usage
  * ```typescript
@@ -49,6 +51,7 @@ export const createMemoryAdapter = (): StorageAdapter => {
     materializeKeepDirty,
   } = createMemoryEntityStore(actionLog, dirtyTracker);
   const cursorStore = createMemoryCursorStore();
+  const outboxStore = createMemoryOutboxStore();
 
   return {
     actions: {
@@ -99,6 +102,8 @@ export const createMemoryAdapter = (): StorageAdapter => {
     },
 
     cursors: cursorStore,
+
+    outbox: outboxStore,
 
     changeEmitter,
 
