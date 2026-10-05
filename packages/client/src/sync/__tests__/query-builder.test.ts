@@ -200,6 +200,28 @@ describe("buildQueryBuilder — .toRaw() escape hatch", () => {
   });
 });
 
+describe("buildQueryBuilder — tombstone exclusion", () => {
+  const tombstone = (entity: Entity): Entity => ({ ...entity, deleted_hlc: "9" });
+
+  it("excludes a tombstoned candidate from every terminal", async () => {
+    const dead = tombstone(mkEntity("1", { title: "gone", completed: false }));
+    const live = mkEntity("2", { title: "here", completed: false });
+    const builder = buildQueryBuilder([dead, live], todo.shape);
+
+    expect((await builder).map((r) => r.title)).toEqual(["here"]);
+    expect(await builder.count()).toBe(1);
+    expect((await builder.first())?.title).toBe("here");
+    expect((await builder.toRaw()).map((e) => e.id)).toEqual(["2"]);
+  });
+
+  it("keeps a live row that carries the same fields as a tombstone", async () => {
+    const fields = { title: "same", completed: false };
+    const rows = [tombstone(mkEntity("1", fields)), mkEntity("2", fields)];
+    const out = await buildQueryBuilder(rows, todo.shape);
+    expect(out.map((r) => r.title)).toEqual(["same"]);
+  });
+});
+
 describe("buildQueryBuilder — value narrowing against the field map", () => {
   it("where's field value narrows to the field's TypeBox static type", () => {
     const rows: Entity[] = [];
