@@ -102,13 +102,34 @@ defmodule EbbServer.Storage.WatermarkTracker do
 
   defp do_advance_loop(gsn_ref, table_name) do
     current_watermark = :atomics.get(gsn_ref, 1)
+    prune_committed(table_name, current_watermark)
     next_gsn = current_watermark + 1
 
     if has_committed?(table_name, next_gsn) do
       attempt_advance_from(gsn_ref, table_name, current_watermark, next_gsn)
     else
-      current_watermark
+      # A concurrent advance may have pruned `next_gsn` between our read
+      # of the watermark and this lookup. Re-read and retry rather than
+      # returning a watermark we know is stale.
+      if :atomics.get(gsn_ref, 1) > current_watermark do
+        do_advance_loop(gsn_ref, table_name)
+      else
+        current_watermark
+      end
     end
+  end
+
+  # The watermark is the GSN up to which all prior GSNs are durable, so
+  # every tuple at or below it is dead weight: `has_committed?/2` only
+  # ever looks at `watermark + 1` and beyond. Dropping them here keeps
+  # the table bounded over the life of the node. Deletes are keyed by
+  # GSN, so a concurrent writer's higher-GSN tuples are untouched.
+  defp prune_committed(_table_name, watermark) when watermark <= 0, do: 0
+
+  defp prune_committed(table_name, watermark) do
+    :ets.select_delete(table_name, [
+      {{{:"$1", :_}, true}, [{:"=<", :"$1", watermark}], [true]}
+    ])
   end
 
   # Has any tuple {gsn, _pid} with this gsn been committed?
@@ -124,6 +145,8 @@ defmodule EbbServer.Storage.WatermarkTracker do
   defp attempt_advance_from(gsn_ref, table_name, prev, gsn) do
     case :atomics.compare_exchange(gsn_ref, 1, prev, gsn) do
       :ok ->
+        prune_committed(table_name, gsn)
+
         if has_committed?(table_name, gsn + 1) do
           attempt_advance_from(gsn_ref, table_name, gsn, gsn + 1)
         else
