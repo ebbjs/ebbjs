@@ -2,26 +2,54 @@
 
 React bindings for [`@ebbjs/client`](https://github.com/ebbjs/ebbjs/tree/main/packages/client). A thin adapter over the client's namespace and reactivity primitives — no state-management library, no `define*` symbols.
 
-This first slice ships the plumbing every later hook builds on:
+This slice ships the client plumbing plus the first data hook:
 
-- `EbbProvider` — context carrying the `SyncClient`.
-- `useClient()` — read the client, throwing outside a provider.
+- `EbbProvider` — context carrying a `NamespacedClient<S, TActions>`.
+- `useClient<S>()` — read the client, typed by the caller's schema.
 - `useConnection()` — `useSyncExternalStore` over `client.onStateChange`, returning the `ConnectionState`.
+- `useQuery()` — subscribe a component to a materialized collection query.
 
-Data hooks (`useQuery`, `useEntity`, `useEntityMutations`) land in follow-up slices. SSR / Suspense are out of scope for now.
+`useEntity` and `useEntityMutations` land in follow-up slices. SSR / Suspense are out of scope for now.
 
 ## Usage
 
 ```tsx
-import { createClient } from "@ebbjs/client";
-import { EbbProvider, useClient, useConnection } from "@ebbjs/react";
+import { createClient, defineEntity, defineSchema, e } from "@ebbjs/client";
+import { EbbProvider, useClient, useConnection, useQuery } from "@ebbjs/react";
+
+const todo = defineEntity("todo", { title: e.string(), completed: e.boolean() });
+const schema = defineSchema({ entities: { todo }, version: 1 });
+
+type Schema = typeof schema;
 
 // Own the client outside React so remounts don't tear down the connection.
-const client = createClient({ serverUrl: "http://localhost:4000", actorId: "alice" });
+const client = createClient({
+  serverUrl: "http://localhost:4000",
+  actorId: "alice",
+  schema,
+});
+
+function OpenTodos() {
+  // No cast: `useClient<Schema>()` restores the typed namespaces.
+  const client = useClient<Schema>();
+  const { data, loading, error } = useQuery(() =>
+    client.todo.query().where("completed", false).limit(50),
+  );
+
+  if (loading) return <span>loading…</span>;
+  if (error) return <span>{error.message}</span>;
+  return (
+    <ul>
+      {data.map((row, i) => (
+        <li key={i}>{row.title}</li>
+      ))}
+    </ul>
+  );
+}
 
 function ConnectionBadge() {
   const state = useConnection();
-  const { actorId } = useClient();
+  const { actorId } = useClient<Schema>();
   return <span>{`${actorId}: ${state}`}</span>;
 }
 
@@ -29,20 +57,31 @@ export function App() {
   return (
     <EbbProvider client={client}>
       <ConnectionBadge />
+      <OpenTodos />
     </EbbProvider>
   );
 }
 ```
 
+`useQuery(build, deps?)` builds the query once per `deps` change (`deps`
+must keep a stable length) and re-renders the component when the query's
+source entity changes. The trigger is the builder's source-entity change
+stream, so a matching row whose non-filtered field changed still
+re-renders; a change that leaves the materialized rows identical is
+suppressed by a structural snapshot compare.
+
 ## API
 
-| Export             | What                                                                             |
-| ------------------ | -------------------------------------------------------------------------------- |
-| `EbbProvider`      | Makes a `SyncClient` available to hooks below it. Props: `{ client, children }`. |
-| `useClient()`      | Returns the nearest provider's client; throws a clear error when there is none.  |
-| `useConnection()`  | Subscribes to connection state and re-renders on transitions.                    |
-| `EbbProviderProps` | The provider's prop type.                                                        |
-| `ConnectionState`  | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.       |
+| Export             | What                                                                           |
+| ------------------ | ------------------------------------------------------------------------------ |
+| `EbbProvider`      | Makes a `NamespacedClient<S, TActions>` available to hooks below it.           |
+| `useClient<S>()`   | Returns the nearest provider's client typed by `S`; throws outside a provider. |
+| `useConnection()`  | Subscribes to connection state and re-renders on transitions.                  |
+| `useQuery(build)`  | Subscribes to a materialized collection query; `{ data, loading, error }`.     |
+| `EbbProviderProps` | The provider's prop type.                                                      |
+| `UseQueryResult`   | The `useQuery` result type.                                                    |
+| `QueryRows`        | The projected row-list type a `QueryBuilder` resolves to.                      |
+| `ConnectionState`  | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.     |
 
 ## Peer dependencies
 
