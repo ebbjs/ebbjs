@@ -63,10 +63,15 @@ defmodule EbbServer.Sync.FanOutRouter do
           pending_notifications: [{non_neg_integer(), non_neg_integer()}],
           pending_groups: %{non_neg_integer() => [String.t()]},
           last_pushed_gsn: non_neg_integer(),
-          subscriptions: %{pid() => [String.t()]}
+          subscriptions: %{pid() => [String.t()]},
+          monitors: %{pid() => reference()}
         }
 
-  defstruct pending_notifications: [], pending_groups: %{}, last_pushed_gsn: 0, subscriptions: %{}
+  defstruct pending_notifications: [],
+            pending_groups: %{},
+            last_pushed_gsn: 0,
+            subscriptions: %{},
+            monitors: %{}
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -120,6 +125,10 @@ defmodule EbbServer.Sync.FanOutRouter do
      }}
   end
 
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    {:noreply, forget_subscriber(state, pid)}
+  end
+
   @impl true
   def handle_call({:subscribe, group_ids, connection_pid, actor_id}, _from, state) do
     for group_id <- group_ids do
@@ -149,7 +158,15 @@ defmodule EbbServer.Sync.FanOutRouter do
         Enum.uniq(existing ++ group_ids)
       end)
 
-    {:reply, :ok, %{state | subscriptions: new_subscriptions}}
+    # Monitor on the first subscribe only; a re-subscribe from the same
+    # connection would otherwise stack monitor refs and DOWN messages.
+    monitors =
+      case Map.fetch(state.monitors, connection_pid) do
+        {:ok, _ref} -> state.monitors
+        :error -> Map.put(state.monitors, connection_pid, Process.monitor(connection_pid))
+      end
+
+    {:reply, :ok, %{state | subscriptions: new_subscriptions, monitors: monitors}}
   end
 
   @impl true
@@ -163,8 +180,7 @@ defmodule EbbServer.Sync.FanOutRouter do
       end
     end
 
-    new_subscriptions = Map.delete(state.subscriptions, connection_pid)
-    {:reply, :ok, %{state | subscriptions: new_subscriptions}}
+    {:reply, :ok, forget_subscriber(state, connection_pid)}
   end
 
   @impl true
@@ -296,6 +312,16 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   defp resolve_update_group_ids(update, opts) do
     EntityIndex.resolve_groups(update["subject_type"], update["subject_id"], opts)
+  end
+
+  # GroupServers monitor their own subscribers and drop them on exit, so
+  # the router only has to forget the connection and its monitor ref.
+  defp forget_subscriber(state, pid) do
+    {ref, monitors} = Map.pop(state.monitors, pid)
+
+    if ref, do: Process.demonitor(ref, [:flush])
+
+    %{state | subscriptions: Map.delete(state.subscriptions, pid), monitors: monitors}
   end
 
   defp push_gsn_range(from_gsn, to_gsn, groups_by_gsn) do
