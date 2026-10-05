@@ -160,4 +160,55 @@ defmodule EbbServer.Storage.WatermarkTrackerTest do
       assert WatermarkTracker.advance_watermark(name) == 5
     end
   end
+
+  describe "committed range pruning (#277)" do
+    test "deletes entries below the advanced watermark" do
+      %{table: table, name: name} = with_isolated_tracker()
+
+      WatermarkTracker.mark_range_committed(1, 5, name)
+      assert WatermarkTracker.advance_watermark(name) == 5
+
+      assert :ets.tab2list(table) == []
+    end
+
+    test "keeps entries above the watermark" do
+      %{table: table, name: name} = with_isolated_tracker()
+
+      WatermarkTracker.mark_range_committed(1, 2, name)
+      WatermarkTracker.mark_range_committed(4, 4, name)
+
+      assert WatermarkTracker.advance_watermark(name) == 2
+
+      remaining =
+        table
+        |> :ets.tab2list()
+        |> Enum.map(fn {{gsn, _pid}, _} -> gsn end)
+        |> Enum.sort()
+
+      assert remaining == [4]
+    end
+
+    test "table stays bounded over a long commit sequence" do
+      %{table: table, name: name} = with_isolated_tracker()
+
+      for gsn <- 1..500 do
+        WatermarkTracker.mark_range_committed(gsn, gsn, name)
+        WatermarkTracker.advance_watermark(name)
+      end
+
+      assert WatermarkTracker.committed_watermark(name) == 500
+      assert :ets.info(table, :size) == 0
+    end
+
+    test "advancement still works after pruning" do
+      %{table: table, name: name} = with_isolated_tracker()
+
+      WatermarkTracker.mark_range_committed(1, 3, name)
+      assert WatermarkTracker.advance_watermark(name) == 3
+      assert :ets.tab2list(table) == []
+
+      WatermarkTracker.mark_range_committed(4, 6, name)
+      assert WatermarkTracker.advance_watermark(name) == 6
+    end
+  end
 end
