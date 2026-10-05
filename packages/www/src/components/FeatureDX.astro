@@ -32,24 +32,20 @@ const files = [
     name: "app.ts",
     html: `<span class="text-stone-400">import</span> { <span class="text-stone-200">client</span> } <span class="text-stone-400">from</span> <span class="text-stone-400">"./client"</span>;
 
-<span class="text-stone-400">const</span> { <span class="text-stone-200">groups</span> } = <span class="text-stone-400">await</span> client.<span class="text-stone-300">handshake</span>();
-
 <span class="text-stone-600">// Create</span>
-<span class="text-stone-400">await</span> client.todo.<span class="text-stone-300">create</span>(
-  { <span class="text-stone-300">title</span>: <span class="text-stone-400">"Ship it"</span>, <span class="text-stone-300">completed</span>: <span class="text-stone-200">false</span> },
-  { <span class="text-stone-300">groups</span>: groups.<span class="text-stone-300">map</span>((<span class="text-stone-200">group</span>) => group.id) },
-);
-
-<span class="text-stone-600">// Query &mdash; works offline</span>
-<span class="text-stone-400">const</span> [<span class="text-stone-200">todo</span>] = <span class="text-stone-400">await</span> client.todo
-  .<span class="text-stone-300">query</span>()
-  .<span class="text-stone-300">where</span>(<span class="text-stone-400">"completed"</span>, <span class="text-stone-200">false</span>)
-  .<span class="text-stone-300">orderBy</span>(<span class="text-stone-400">"createdAt"</span>, <span class="text-stone-400">"desc"</span>);
+<span class="text-stone-400">const</span> <span class="text-stone-200">todo</span> = <span class="text-stone-400">await</span> client.todo.<span class="text-stone-300">create</span>({
+  <span class="text-stone-300">title</span>: <span class="text-stone-400">"Ship it"</span>,
+  <span class="text-stone-300">completed</span>: <span class="text-stone-200">false</span>,
+});
 
 <span class="text-stone-600">// Update</span>
-<span class="text-stone-400">if</span> (todo) {
-  <span class="text-stone-400">await</span> client.todo.<span class="text-stone-300">update</span>(todo.id, { <span class="text-stone-300">completed</span>: <span class="text-stone-200">true</span> });
-}`,
+<span class="text-stone-400">await</span> client.todo.<span class="text-stone-300">update</span>(todo.id, { <span class="text-stone-300">completed</span>: <span class="text-stone-200">true</span> });
+
+<span class="text-stone-600">// Query &mdash; works offline</span>
+<span class="text-stone-400">const</span> <span class="text-stone-200">openTodos</span> = <span class="text-stone-400">await</span> client.todo
+  .<span class="text-stone-300">query</span>()
+  .<span class="text-stone-300">where</span>(<span class="text-stone-400">"completed"</span>, <span class="text-stone-200">false</span>)
+  .<span class="text-stone-300">orderBy</span>(<span class="text-stone-400">"createdAt"</span>, <span class="text-stone-400">"desc"</span>);`,
   },
 ];
 ---
