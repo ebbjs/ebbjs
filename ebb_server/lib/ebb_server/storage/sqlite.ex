@@ -100,6 +100,7 @@ defmodule EbbServer.Storage.SQLite do
     deleted_hlc = excluded.deleted_hlc,
     deleted_by = excluded.deleted_by,
     last_gsn = excluded.last_gsn
+  WHERE excluded.last_gsn >= entities.last_gsn
   """
 
   @get_entity_sql """
@@ -125,6 +126,11 @@ defmodule EbbServer.Storage.SQLite do
 
   @doc """
   Upserts an entity row into the entities table.
+
+  The upsert is monotonic in `last_gsn`: it only advances a row, never
+  regresses it. Concurrent materializations of the same dirty entity can
+  finish out of order, and an older snapshot must not clobber a newer one.
+  An equal `last_gsn` still applies, so rematerialization stays idempotent.
 
   `entity_row` must be a map with keys: `:id`, `:type`, `:data`,
   `:created_hlc`, `:updated_hlc`, `:deleted_hlc`, `:deleted_by`, `:last_gsn`.

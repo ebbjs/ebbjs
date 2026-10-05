@@ -746,5 +746,118 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert entity2.last_gsn == 3
       refute DirtyTracker.dirty?(entity_id, dirty_set)
     end
+
+    test "a newer materialization is not regressed by an older one", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_m1m2"
+
+      action1 =
+        validated_action(%{
+          "id" => "act_1",
+          "hlc" => hlc_from(1_000),
+          "updates" => [
+            validated_update(%{
+              "id" => "upd_1",
+              "subject_id" => entity_id,
+              "data" => %{
+                "fields" => %{
+                  "title" => %{"type" => "lww", "value" => "First", "hlc" => hlc_from(1_000)}
+                }
+              }
+            })
+          ]
+        })
+
+      action2 =
+        validated_action(%{
+          "id" => "act_2",
+          "hlc" => hlc_from(2_000),
+          "updates" => [
+            validated_update(%{
+              "id" => "upd_2",
+              "subject_id" => entity_id,
+              "method" => "patch",
+              "data" => %{
+                "fields" => %{
+                  "title" => %{"type" => "lww", "value" => "Second", "hlc" => hlc_from(2_000)}
+                }
+              }
+            })
+          ]
+        })
+
+      action3 =
+        validated_action(%{
+          "id" => "act_3",
+          "hlc" => hlc_from(3_000),
+          "updates" => [
+            validated_update(%{
+              "id" => "upd_3",
+              "subject_id" => entity_id,
+              "method" => "patch",
+              "data" => %{
+                "fields" => %{
+                  "title" => %{"type" => "lww", "value" => "Third", "hlc" => hlc_from(3_000)}
+                }
+              }
+            })
+          ]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action1], writer_name)
+
+      # Materialize E at GSN 1 and leave it clean.
+      assert {:ok, entity1} =
+               EntityStore.get(entity_id, "a_test",
+                 rocks_name: rocks_name,
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
+               )
+
+      assert entity1.last_gsn == 1
+      assert entity1.data["fields"]["title"]["value"] == "First"
+      refute DirtyTracker.dirty?(entity_id, dirty_set)
+
+      # GSN 2 makes E dirty; M1 observes this mark.
+      assert {:ok, {2, 2}, []} = Writer.write_actions([action2], writer_name)
+      assert DirtyTracker.dirty?(entity_id, dirty_set)
+
+      opts = [
+        rocks_name: rocks_name,
+        sqlite_name: sqlite_name,
+        dirty_set: dirty_set
+      ]
+
+      # M1 scans [gsn2] before the hook. The hook lands GSN 3 and lets a
+      # second materializer M2 replay [gsn2, gsn3] and upsert last_gsn = 3.
+      # M1 then resumes and upserts last_gsn = 2 over the newer row.
+      hook = fn ->
+        assert {:ok, {3, 3}, []} = Writer.write_actions([action3], writer_name)
+        assert {:ok, entity_m2} = EntityStore.materialize(entity_id, opts)
+        assert entity_m2.last_gsn == 3
+        assert entity_m2.data["fields"]["title"]["value"] == "Third"
+      end
+
+      assert {:ok, m1_result} =
+               EntityStore.materialize(entity_id, Keyword.put(opts, :after_scan, hook))
+
+      # M1's stale write was rejected; it still returns its own snapshot.
+      assert m1_result.last_gsn == 2
+
+      # The entity is clean again, so every later read takes the cache path.
+      refute DirtyTracker.dirty?(entity_id, dirty_set)
+
+      # Permanent staleness: the clean read serves M1's GSN 2 row, not M2's GSN 3.
+      assert {:ok, entity_final} = EntityStore.get(entity_id, "a_test", opts)
+      assert entity_final.data["fields"]["title"]["value"] == "Third"
+
+      # Root cause: M1's stale upsert regressed last_gsn from 3 back to 2.
+      assert {:ok, row_after} = SQLite.get_entity(entity_id, sqlite_name)
+      assert row_after.last_gsn == 3
+    end
   end
 end

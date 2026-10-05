@@ -25,6 +25,13 @@ defmodule EbbServer.Storage.EntityStore do
   the newer mark in place, so the next read materializes the missing
   Action.
 
+  Two materializations of the same dirty entity can also race each
+  other, with the older scan finishing last and trying to write an older
+  `last_gsn`. `SQLite.upsert_entity/2` is monotonic in `last_gsn`, so
+  that stale write is rejected and the newer row stands. The losing
+  materializer still returns its own snapshot — its call began before
+  the newer commit — but the cache row and every later read converge.
+
   This module is **not** a GenServer. It composes the `EbbServer.Storage.SQLite`
   GenServer (for cached reads) and the `EbbServer.Storage.RocksDB` GenServer
   (for the source-of-truth reads during materialization), plus ETS reads
