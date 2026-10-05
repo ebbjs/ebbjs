@@ -19,6 +19,14 @@ defmodule EbbServer.Storage.PermissionHelper do
   as usual, using the permissions the actor grants themselves in their
   own `groupMember` put (the membership row is not in the cache yet
   while the Action is being authorized).
+
+  The exemption is structural: it trusts the Action's own `put`s, and
+  the authorization context carries no group/entity **existence**
+  signal. Two residuals follow — a bootstrap may re-`put` an existing
+  group id and self-grant permissions, and a same-Action `entityGroup`
+  put may file an existing entity. See
+  `EbbServer.Storage.Authorizer` "Residuals" for details; both need an
+  existence source in the authz context.
   """
 
   alias EbbServer.Storage.Fields
@@ -85,16 +93,13 @@ defmodule EbbServer.Storage.PermissionHelper do
 
   defp group_put_ids(updates) do
     updates
-    |> Enum.filter(fn update ->
-      get_subject_type(update) == "group" and normalize_method(get_method(update)) == "put"
-    end)
+    |> Enum.filter(&put_of?(&1, "group"))
     |> Enum.map(&get_subject_id/1)
     |> MapSet.new()
   end
 
   defp own_group_member_put?(update, actor_id, group_ids) do
-    get_subject_type(update) == "groupMember" and
-      normalize_method(get_method(update)) == "put" and
+    put_of?(update, "groupMember") and
       get_data_field(update, "actor_id") == actor_id and
       MapSet.member?(group_ids, get_data_field(update, "group_id"))
   end
@@ -109,8 +114,8 @@ defmodule EbbServer.Storage.PermissionHelper do
   @spec created_subject_ids([map()]) :: MapSet.t(String.t())
   def created_subject_ids(updates) do
     updates
-    |> Enum.filter(&user_entity_put?/1)
-    |> Enum.map(&get_subject_id/1)
+    |> created_entity_types()
+    |> Map.keys()
     |> MapSet.new()
   end
 
@@ -156,21 +161,17 @@ defmodule EbbServer.Storage.PermissionHelper do
   end
 
   defp group_bootstrap_update?(update, bootstrap) do
-    get_subject_type(update) == "group" and
-      normalize_method(get_method(update)) == "put" and
-      Map.has_key?(bootstrap, get_subject_id(update))
+    put_of?(update, "group") and Map.has_key?(bootstrap, get_subject_id(update))
   end
 
   defp own_membership_bootstrap_update?(update, actor_id, bootstrap) do
-    get_subject_type(update) == "groupMember" and
-      normalize_method(get_method(update)) == "put" and
+    put_of?(update, "groupMember") and
       get_data_field(update, "actor_id") == actor_id and
       Map.has_key?(bootstrap, get_data_field(update, "group_id"))
   end
 
   defp entity_group_bootstrap_update?(update, bootstrap, created_ids) do
-    get_subject_type(update) == "entityGroup" and
-      normalize_method(get_method(update)) == "put" and
+    put_of?(update, "entityGroup") and
       Map.has_key?(bootstrap, get_data_field(update, "group_id")) and
       MapSet.member?(created_ids, get_data_field(update, "entity_id"))
   end
@@ -185,9 +186,7 @@ defmodule EbbServer.Storage.PermissionHelper do
   @spec build_intra_action_context([map()]) :: %{String.t() => [String.t()]}
   def build_intra_action_context(updates) do
     updates
-    |> Enum.filter(fn update ->
-      get_subject_type(update) == "entityGroup" and normalize_method(get_method(update)) == "put"
-    end)
+    |> Enum.filter(&put_of?(&1, "entityGroup"))
     |> Enum.reduce(%{}, fn update, acc ->
       entity_id = get_data_field(update, "entity_id")
       group_id = get_data_field(update, "group_id")
@@ -202,6 +201,10 @@ defmodule EbbServer.Storage.PermissionHelper do
 
   defp get_subject_type(map) do
     Map.get(map, "subject_type") || Map.get(map, :subject_type)
+  end
+
+  defp put_of?(update, type) do
+    get_subject_type(update) == type and normalize_method(get_method(update)) == "put"
   end
 
   defp get_method(map) do

@@ -35,8 +35,9 @@ defmodule EbbServer.Storage.Authorizer do
       `groupMember.update` / `groupMember.delete` in the target group.
       Adding an actor to a group is `groupMember.create` in that group;
       the bootstrap covers only the acting actor's own membership.
-    - `entityGroup` put → the added entity's `<type>.create` in any group
-      of the entity's group set (union, mirroring the entity write). The
+    - `entityGroup` put → the added entity's `<type>.create` in the
+      target group: the group(s) the put files the entity into (#121's
+      "Add Entity to Group" row), not the entity's whole group set. The
       type is recovered from a same-Action entity put; when the entity is
       not in the Action the system-entity permission
       `entityGroup.create` in the target group applies instead.
@@ -46,15 +47,31 @@ defmodule EbbServer.Storage.Authorizer do
       available.
     - `relationship` put (always a domain edge; membership is
       `entityGroup`) → the source entity's `<type>.update` in the
-      source's group set, where `<type>` is the Relationship's `type`
-      field (the source entity name by default; per-edge overrides are
-      #155). `relationship` patch/delete → `relationship.update` /
-      `relationship.delete` in the edge's source group set.
+      source's group set, where `<type>` is the wire `data.type` field,
+      not a resolved source-entity type. That field defaults to the
+      source entity name (matching #121) but apps may override it;
+      resolving the source entity's true type is #155. `relationship`
+      patch/delete → `relationship.update` / `relationship.delete` in the
+      edge's source group set.
 
   ## User entities
 
   User-entity writes require `<type>.<verb>` in at least one group of
   the entity's group set (union/any-match).
+
+  ## Residuals (known limitations)
+
+  `AuthorizationContext` carries no group/entity **existence** signal,
+  so two gaps remain. Both are pre-existing and closing them needs an
+  existence source plumbed into the authorization context:
+
+    - A bootstrap Action may re-`put` an **existing** group id and
+      self-grant permissions:
+      `PermissionHelper.bootstrap_group_permissions/2` checks only that
+      the Action puts that group id, not that the group is new.
+    - A same-Action `entityGroup` put may file an **existing** entity:
+      `PermissionHelper.created_subject_ids/1` counts every user-entity
+      `put` id as created without checking existence.
   """
 
   alias EbbServer.Storage.AuthorizationContext
@@ -167,9 +184,10 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   # Adding an entity to a group is gated by the entity's own
-  # `<type>.create`, mirroring the write that creates it. The type comes
-  # from a same-Action entity put; when the entity is not in the Action
-  # the system-entity permission stands in.
+  # `<type>.create` in the target group (#121 "Add Entity to Group"), not
+  # by the entity's whole group set. The type comes from a same-Action
+  # entity put; when the entity is not in the Action the system-entity
+  # permission stands in.
   defp authorize_entity_group_update(%{method: :put} = update, actor_id, authz) do
     entity_id = Fields.get(update.data, "entity_id")
 
@@ -184,13 +202,7 @@ defmodule EbbServer.Storage.Authorizer do
         )
 
       type ->
-        check_group_permission(
-          entity_group_ids(type, entity_id, authz),
-          actor_id,
-          type,
-          "create",
-          authz
-        )
+        check_group_permission(wire_group_ids(update), actor_id, type, "create", authz)
     end
   end
 
@@ -294,11 +306,6 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   defp wire_group_ids(update), do: [Fields.get(update.data, "group_id")]
-
-  defp entity_group_ids(type, entity_id, authz) do
-    opts = Keyword.put(ctx_to_opts(authz.ctx), :intra_action, authz.intra)
-    EntityIndex.resolve_groups(type, entity_id, opts)
-  end
 
   defp relationship_group_ids(update, authz) do
     opts = Keyword.put(ctx_to_opts(authz.ctx), :intra_action, authz.intra)
