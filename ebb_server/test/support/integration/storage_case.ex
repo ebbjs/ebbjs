@@ -28,22 +28,30 @@ defmodule EbbServer.Integration.StorageCase do
 
   defmacro __using__(opts \\ []) do
     with_auth_mode = Keyword.get(opts, :with_auth_mode, false)
+    writer_opts = Keyword.get(opts, :writer_opts, [])
 
     quote do
+      # Overridable per test module so a test can inject a `:commit_fn` or
+      # a bad cache table into the Writer that `Storage.Supervisor` owns.
+      def storage_writer_opts, do: unquote(writer_opts)
+      defoverridable storage_writer_opts: 0
+
       setup do
+        writer_opts = storage_writer_opts()
+
         if unquote(with_auth_mode) do
-          unquote(__MODULE__).setup_with_auth()
+          unquote(__MODULE__).setup_with_auth(writer_opts)
         else
-          unquote(__MODULE__).setup_without_auth()
+          unquote(__MODULE__).setup_without_auth(writer_opts)
         end
       end
     end
   end
 
-  def setup_with_auth do
+  def setup_with_auth(writer_opts \\ []) do
     original_auth_mode = Application.get_env(:ebb_server, :auth_mode)
     Application.put_env(:ebb_server, :auth_mode, :bypass)
-    storage_result = setup_storage()
+    storage_result = setup_storage(writer_opts)
 
     on_exit(fn ->
       cleanup_storage()
@@ -53,8 +61,8 @@ defmodule EbbServer.Integration.StorageCase do
     storage_result
   end
 
-  def setup_without_auth do
-    storage_result = setup_storage()
+  def setup_without_auth(writer_opts \\ []) do
+    storage_result = setup_storage(writer_opts)
 
     on_exit(fn ->
       cleanup_storage()
@@ -63,7 +71,7 @@ defmodule EbbServer.Integration.StorageCase do
     storage_result
   end
 
-  def setup_storage do
+  def setup_storage(writer_opts \\ []) do
     # Detach the application-managed Storage.Supervisor so we can replace
     # it with a per-test instance pointed at an isolated `tmp_dir`. We
     # `terminate_child/2` first (not `GenServer.stop/3`) so the parent
@@ -103,27 +111,15 @@ defmodule EbbServer.Integration.StorageCase do
     # the application tree — the parent `EbbServer.Supervisor` no longer
     # holds a child spec for it. This per-test supervisor will be torn
     # down by `cleanup_storage/0`.
-    {:ok, _pid} = EbbServer.Storage.Supervisor.start_link(data_dir: tmp_dir)
+    # Storage.Supervisor now owns the Writer as its last child, so a
+    # Writer crash restarts Writer alone and a cache crash rebuilds the
+    # storage tree through `rest_for_one`. Per-test Writer behavior is
+    # injected via `writer_opts`.
+    {:ok, _pid} =
+      EbbServer.Storage.Supervisor.start_link(data_dir: tmp_dir, writer_opts: writer_opts)
 
     ensure_started(EbbServer.Sync.Supervisor, [])
     ensure_started(EbbServer.Sync.GroupDynamicSupervisor, [])
-
-    ensure_started(EbbServer.Storage.Writer,
-      name: EbbServer.Storage.Writer,
-      group_members: EbbServer.Storage.CacheTables.group_members(),
-      group_members_by_id: EbbServer.Storage.CacheTables.group_members_by_id(),
-      entity_groups: EbbServer.Storage.CacheTables.entity_groups(),
-      entity_groups_by_id: EbbServer.Storage.CacheTables.entity_groups_by_id(),
-      entity_groups_by_group: EbbServer.Storage.CacheTables.entity_groups_by_group(),
-      relationships: EbbServer.Storage.CacheTables.relationships(),
-      relationships_by_id: EbbServer.Storage.CacheTables.relationships_by_id(),
-      # Mirror the production Writer boot wiring so writes advance the
-      # watermark and notify the FanOutRouter. Tests that don't drive
-      # fan-out don't notice the difference; tests that do (e.g., #197)
-      # rely on these to release the dispatch gate.
-      watermark_tracker: EbbServer.Storage.WatermarkTracker,
-      fan_out_router: EbbServer.Sync.FanOutRouter
-    )
 
     %{tmp_dir: tmp_dir}
   end
@@ -136,7 +132,10 @@ defmodule EbbServer.Integration.StorageCase do
   end
 
   def cleanup_storage do
-    stop_if_running(EbbServer.Storage.Writer)
+    # Stop the Sync tree before Storage so the Writer's `Process.whereis`
+    # guard sees the FanOutRouter gone rather than mid-shutdown. Storage
+    # owns the Writer; stopping it must not first stop the Writer, or
+    # `rest_for_one` would restart the whole tree mid-cleanup.
     stop_if_running(EbbServer.Sync.Supervisor)
     stop_if_running(EbbServer.Sync.GroupRegistry)
     stop_if_running(EbbServer.Storage.Supervisor)

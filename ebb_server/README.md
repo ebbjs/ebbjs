@@ -86,24 +86,25 @@ and ordered-fanout coordination work that is not yet built.
 
 ### Module map
 
-| Module                                                                     | Purpose                                                            |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `EbbServer.Storage.RocksDB`                                                | DB lifecycle, column families, key encoding, low-level I/O         |
-| `EbbServer.Storage.SQLite`                                                 | Entity cache: schema DDL, UPSERT, filtered query with permissions  |
-| `EbbServer.Storage.SystemCache` (sup.)                                     | ETS + `:atomics` for GSN, watermark, dirty set, group/relationship |
-| `EbbServer.Storage.Writer`                                                 | Single serialization point: GSN assignment, perm check, WriteBatch |
-| `EbbServer.Storage.EntityStore`                                            | Read API with on-demand materialization                            |
-| `EbbServer.Storage.PermissionChecker`                                      | Action validation + per-Update ETS-based permission decision       |
-| `EbbServer.Storage.WatermarkTracker`                                       | Committed-watermark ETS + `:atomics` (SSE fan-out gating)          |
-| `EbbServer.Storage.{DirtyTracker,GroupCache,RelationshipCache,GSNCounter}` | In-memory state children of `SystemCache`                          |
-| `EbbServer.Sync.AuthPlug`                                                  | Actor identity extraction (bypass + external modes)                |
-| `EbbServer.Sync.Router`                                                    | HTTP plug router                                                   |
-| `EbbServer.Sync.CatchUp`                                                   | Paginated catch-up                                                 |
-| `EbbServer.Sync.SSEHandler`                                                | The SSE wire format                                                |
-| `EbbServer.Sync.FanOutRouter`                                              | Watermark-gated routing to per-group `GroupServer`                 |
-| `EbbServer.Sync.GroupServer`                                               | Per-group fan-out; holds subscribers' senders                      |
-| `EbbServer.Sync.SSEConnection`                                             | Per-live-subscription pid; receives pushes via its `GroupServer`   |
-| `EbbServer.Storage.BackgroundWarmer` (optional)                            | Pre-materializes dirty entities during idle periods                |
+| Module                                                                           | Purpose                                                            |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `EbbServer.Storage.RocksDB`                                                      | DB lifecycle, column families, key encoding, low-level I/O         |
+| `EbbServer.Storage.SQLite`                                                       | Entity cache: schema DDL, UPSERT, filtered query with permissions  |
+| `EbbServer.Storage.SystemCache` (sup.)                                           | ETS + `:atomics` for GSN, watermark, dirty set, group/relationship |
+| `EbbServer.Storage.Writer`                                                       | Single serialization point: GSN assignment, perm check, WriteBatch |
+| `EbbServer.Storage.EntityStore`                                                  | Read API with on-demand materialization                            |
+| `EbbServer.Storage.PermissionChecker`                                            | Action validation + per-Update ETS-based permission decision       |
+| `EbbServer.Storage.WatermarkTracker`                                             | Resolution-frontier ETS + `:atomics` (SSE fan-out gating)          |
+| `EbbServer.Storage.{DirtyTracker,GroupCache,EntityGroupCache,RelationshipCache}` | In-memory state children of `SystemCache`                          |
+| `EbbServer.Storage.GSNCounter`                                                   | Lock-free GSN claiming + restart reconcile (`:atomics`)            |
+| `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass + external modes)                |
+| `EbbServer.Sync.Router`                                                          | HTTP plug router                                                   |
+| `EbbServer.Sync.CatchUp`                                                         | Paginated catch-up                                                 |
+| `EbbServer.Sync.SSEHandler`                                                      | The SSE wire format                                                |
+| `EbbServer.Sync.FanOutRouter`                                                    | Watermark-gated routing to per-group `GroupServer`                 |
+| `EbbServer.Sync.GroupServer`                                                     | Per-group fan-out; holds subscribers' senders                      |
+| `EbbServer.Sync.SSEConnection`                                                   | Per-live-subscription pid; receives pushes via its `GroupServer`   |
+| `EbbServer.Storage.BackgroundWarmer` (optional)                                  | Pre-materializes dirty entities during idle periods                |
 
 Each module's `@moduledoc` documents the load-bearing decisions and the
 hot-path behavior. Read those before making non-trivial changes.
@@ -133,12 +134,10 @@ EbbServer.Supervisor (one_for_one)
 │   ├── Storage.SystemCache                — creates ETS tables, populates from RocksDB
 │   │   ├── Storage.DirtyTracker
 │   │   ├── Storage.GroupCache
-│   │   ├── Storage.RelationshipCache
-│   │   ├── Storage.WatermarkTracker
-│   │   └── Storage.GSNCounter
-│   ├── Storage.Writer                     — serialization point
-│   ├── Storage.EntityStore                — read API
-│   └── Storage.BackgroundWarmer (optional)
+│   │   ├── Storage.EntityGroupCache
+│   │   └── Storage.RelationshipCache
+│   ├── Storage.WatermarkTracker           — resolution-frontier ETS + :atomics
+│   └── Storage.Writer                     — serialization point (last child)
 ├── Sync Supervisor (one_for_one)
 │   ├── Sync.FanOutRouter
 │   ├── Sync.GroupDynamicSupervisor (per-group GroupServers)
@@ -146,10 +145,13 @@ EbbServer.Supervisor (one_for_one)
 └── Bandit HTTP listener, plug: Sync.Router
 ```
 
-`rest_for_one` on the Storage supervisor means any RocksDB crash
-restarts the entire storage tree in order. This is intentional —
-System Cache populates from RocksDB on init, and Writers coordinate
-through cache state.
+`Storage.Writer` is deliberately the **last** child of the `rest_for_one`
+Storage supervisor. A `SystemCache` (or `WatermarkTracker`) failure therefore
+rebuilds the caches and the watermark and restarts the Writer, which
+reconciles against the fresh frontier on `init/1`; a Writer-only crash
+restarts the Writer alone. Any RocksDB crash still restarts the whole
+storage tree in order, because SystemCache populates from RocksDB on init
+and the Writer coordinates through cache state.
 
 ## Cross-cutting concerns
 
@@ -223,17 +225,33 @@ full generation algorithm.
 
 ### Error handling
 
-- **Writer GenServers**: If a WriteBatch commit fails, the batch is
-  retried once. If it fails again, the GenServer crashes and the
-  `rest_for_one` supervisor restarts the storage tree. Callers receive
-  `{:error, :storage_unavailable}`.
+- **Writer**: a `POST /sync/actions` batch is committed with a single
+  `RocksDB.write_batch/2` attempt — there is no server retry. On failure
+  the Writer **abandons** the claimed GSN range: it marks the range
+  resolved (the watermark, a _resolution frontier_ of committed ∪
+  deliberately abandoned GSNs, advances over the hole), nudges
+  `FanOutRouter` with `{:range_resolved, from, to}` so gated batches can
+  drain, and replies `{:error, {:rocksdb_write_failed, reason}}`; the
+  HTTP layer maps that to `503 {"error":"write_failed"}`. The client
+  outbox is the only retry, undurable data is never acked, and GSNs are
+  never rewound or reused. Permanent GSN holes are acceptable.
+- **Writer startup reconcile**: `Writer.init/1` raises the GSN counter to
+  `max(counter, RocksDB.get_max_gsn/1)` and resolves the remaining tail,
+  healing a Writer-only restart that crashed between claim and resolve.
+- **Post-commit cache failure**: once `write_batch` returns `:ok` the
+  range is durable — the Writer marks it committed and advances the
+  frontier before dirty/cache bookkeeping. If a cache or dirty-set update
+  then raises, the Writer replies success (the data is durable) and
+  abnormally terminates `SystemCache`; the `rest_for_one` supervisor
+  rebuilds the caches, the watermark, and the Writer, which reconciles
+  against the log. Committed Actions are never reported as lost.
 - **Entity Store**: Materialization failures (corrupt RocksDB data,
   merge errors) return `{:error, reason}` to the HTTP handler, which
   responds with `500`. The dirty bit is **not** cleared on failure.
 - **HTTP API**: All endpoints return structured error responses —
   `{:error, :unauthorized}` → `401`, `{:error, :not_found}` → `404`,
   `{:error, :validation_failed, details}` → `422`,
-  `{:error, :storage_unavailable}` → `503`.
+  `{:error, {:rocksdb_write_failed, reason}}` → `503`.
 - **Fan-Out**: If a `GroupServer` crashes, it restarts (transient) and
   clients reconnect via SSE retry. No data loss — clients catch up from
   their last cursor.

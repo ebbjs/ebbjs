@@ -22,6 +22,14 @@ defmodule EbbServer.Sync.FanOutRouter do
   delete there returns `[]` (its by-id entry is gone and the wire form
   carries no `source_id`).
 
+  ## Resolved holes
+
+  The Writer abandons a claimed range when its commit fails: the range is
+  marked resolved (the watermark advances over the hole) and the Writer
+  sends `{:range_resolved, from, to}`. That nudge re-reads the watermark
+  and re-drains the already-buffered notifications. It never adds, reads,
+  or pushes the hole itself — the abandoned GSNs have no durable Actions.
+
   When multi-Writer pipelining ships (#130 references this path), the
   Router needs ordered-fanout coordination so groups don't see one
   writer's GSN 5 before another's GSN 3. Today, with one Writer, the
@@ -100,29 +108,23 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   @impl true
   def handle_info({:batch_committed, from_gsn, to_gsn, groups_by_gsn}, state) do
-    watermark = WatermarkTracker.committed_watermark()
-
     # Keep the Writer-provided group sets alongside the buffered ranges,
     # so a range that waits for the watermark still dispatches from the
     # commit snapshot instead of the by-then-mutated caches.
-    pending_groups = Map.merge(state.pending_groups, groups_by_gsn)
-    state = %{state | pending_groups: pending_groups}
+    state = %{state | pending_groups: Map.merge(state.pending_groups, groups_by_gsn)}
 
-    {to_push, remaining, new_last} = process_batch(state, from_gsn, to_gsn, watermark)
+    {to_push, remaining, new_last} =
+      process_batch(state, from_gsn, to_gsn, WatermarkTracker.committed_watermark())
 
-    pushed_gsns = Enum.flat_map(to_push, fn {from, to} -> Enum.to_list(from..to) end)
+    {:noreply, push_and_update(state, to_push, remaining, new_last)}
+  end
 
-    for {from, to} <- to_push do
-      push_gsn_range(from, to, pending_groups)
-    end
+  # A resolved hole is not a batch: do not buffer it, read it, or push it.
+  # It only means the frontier may have moved past ranges already waiting.
+  def handle_info({:range_resolved, _from_gsn, _to_gsn}, state) do
+    {to_push, remaining, new_last} = drain_pending(state, WatermarkTracker.committed_watermark())
 
-    {:noreply,
-     %{
-       state
-       | pending_notifications: remaining,
-         pending_groups: Map.drop(pending_groups, pushed_gsns),
-         last_pushed_gsn: new_last
-     }}
+    {:noreply, push_and_update(state, to_push, remaining, new_last)}
   end
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
@@ -262,15 +264,41 @@ defmodule EbbServer.Sync.FanOutRouter do
       [{from_gsn, to_gsn} | state.pending_notifications]
       |> Enum.sort_by(&elem(&1, 0))
 
-    {to_push, remaining} = split_pushable(pending, state.last_pushed_gsn, watermark)
+    split_and_advance(pending, state.last_pushed_gsn, watermark)
+  end
+
+  # Re-run the drain over already-buffered notifications only; used by the
+  # `{:range_resolved, ...}` nudge, which must not add a range of its own.
+  defp drain_pending(state, watermark) do
+    pending = Enum.sort_by(state.pending_notifications, &elem(&1, 0))
+    split_and_advance(pending, state.last_pushed_gsn, watermark)
+  end
+
+  defp split_and_advance(pending, last_pushed_gsn, watermark) do
+    {to_push, remaining} = split_pushable(pending, last_pushed_gsn, watermark)
 
     new_last =
       case List.last(to_push) do
-        nil -> state.last_pushed_gsn
+        nil -> last_pushed_gsn
         {_, last} -> last
       end
 
     {to_push, remaining, new_last}
+  end
+
+  defp push_and_update(state, to_push, remaining, new_last) do
+    pushed_gsns = Enum.flat_map(to_push, fn {from, to} -> Enum.to_list(from..to) end)
+
+    for {from, to} <- to_push do
+      push_gsn_range(from, to, state.pending_groups)
+    end
+
+    %{
+      state
+      | pending_notifications: remaining,
+        pending_groups: Map.drop(state.pending_groups, pushed_gsns),
+        last_pushed_gsn: new_last
+    }
   end
 
   @doc """

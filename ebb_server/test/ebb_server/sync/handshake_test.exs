@@ -4,7 +4,6 @@ defmodule EbbServer.Sync.HandshakeTest do
   import Plug.Test
   import Plug.Conn
   import EbbServer.TestHelpers
-  alias EbbServer.Storage.Writer
   alias EbbServer.Sync.Router
 
   setup do
@@ -34,29 +33,7 @@ defmodule EbbServer.Sync.HandshakeTest do
       {:error, {:already_started, _pid}} -> :ok
     end
 
-    case Writer.start_link(
-           name: Writer,
-           group_members: EbbServer.Storage.CacheTables.group_members(),
-           group_members_by_id: EbbServer.Storage.CacheTables.group_members_by_id(),
-           entity_groups: EbbServer.Storage.CacheTables.entity_groups(),
-           entity_groups_by_id: EbbServer.Storage.CacheTables.entity_groups_by_id(),
-           entity_groups_by_group: EbbServer.Storage.CacheTables.entity_groups_by_group(),
-           relationships: EbbServer.Storage.CacheTables.relationships(),
-           relationships_by_id: EbbServer.Storage.CacheTables.relationships_by_id()
-         ) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
     on_exit(fn ->
-      try do
-        if pid = Process.whereis(Writer) do
-          GenServer.stop(pid, :normal, 5000)
-        end
-      catch
-        _, _ -> :ok
-      end
-
       try do
         if pid = Process.whereis(EbbServer.Sync.Supervisor) do
           GenServer.stop(pid, :normal, 5000)

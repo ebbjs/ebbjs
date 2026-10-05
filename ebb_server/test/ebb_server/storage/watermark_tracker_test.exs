@@ -84,6 +84,47 @@ defmodule EbbServer.Storage.WatermarkTrackerTest do
     end
   end
 
+  describe "mark_range_resolved/3" do
+    test "resolves a range through the same representation as committed" do
+      %{table: table, name: name} = with_isolated_tracker()
+
+      WatermarkTracker.mark_range_resolved(2, 4, name)
+
+      gsns =
+        table
+        |> :ets.tab2list()
+        |> Enum.map(fn {{gsn, _pid}, _} -> gsn end)
+        |> Enum.sort()
+
+      assert gsns == [2, 3, 4]
+    end
+
+    test "advances the frontier across a resolved hole" do
+      %{name: name} = with_isolated_tracker()
+
+      WatermarkTracker.mark_range_committed(1, 1, name)
+      assert WatermarkTracker.advance_watermark(name) == 1
+
+      # gsn 2 was claimed but abandoned: resolving it lets the frontier
+      # cross the hole.
+      WatermarkTracker.mark_range_resolved(2, 2, name)
+      assert WatermarkTracker.advance_watermark(name) == 2
+
+      WatermarkTracker.mark_range_committed(3, 3, name)
+      assert WatermarkTracker.advance_watermark(name) == 3
+    end
+
+    test "is idempotent" do
+      %{table: table, name: name} = with_isolated_tracker()
+
+      WatermarkTracker.mark_range_resolved(1, 3, name)
+      WatermarkTracker.mark_range_resolved(1, 3, name)
+
+      assert WatermarkTracker.advance_watermark(name) == 3
+      assert :ets.tab2list(table) == []
+    end
+  end
+
   describe "advance_watermark/0" do
     test "returns current watermark when ETS is empty" do
       %{name: name} = with_isolated_tracker()

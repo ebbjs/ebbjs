@@ -1,8 +1,9 @@
 defmodule EbbServer.Storage.SystemCache do
   @moduledoc """
   Supervisor that owns the in-memory state used on the hot paths:
-  permission checks, dirty entity tracking, fan-out routing, and
-  GSN/watermark coordination.
+  permission checks, dirty entity tracking, entity/relationship
+  membership, and the GSN counter. The watermark's resolution frontier
+  lives in the sibling `WatermarkTracker`.
 
   ## Why this exists
 
@@ -20,24 +21,36 @@ defmodule EbbServer.Storage.SystemCache do
     - `GroupCache`        — per-group member sets; permission checks read this on every write.
     - `EntityGroupCache`  — entity → group membership; reaches in for fan-out and entity reads.
     - `RelationshipCache` — domain relationship edges; reaches in for relationship resolution.
-    - `WatermarkTracker`  — committed-watermark ETS table + `:atomics` references.
-    - `GSNCounter`        — the next free GSN, exposed via `:atomics` for race-free claiming.
+
+  `SystemCache` itself is a `GenServer` that owns these children under an
+  inner `one_for_all` supervisor. It also creates the GSN counter — an
+  `:atomics` reference stored in `:persistent_term`, not a process child —
+  and repopulates the caches from RocksDB on `init/1`.
+
+  `WatermarkTracker` is *not* a child here. It is a sibling under
+  `Storage.Supervisor`, started after `SystemCache` and before the Writer.
 
   ## Lifecycle
 
   On init, the supervisor populates `GroupCache`, `EntityGroupCache` and
-  `RelationshipCache` from the system entities in RocksDB before returning. The supervision
-  tree uses `rest_for_one` so RocksDB is up before any cache child starts;
-  the supervision tree blocks accepting connections until this returns.
+  `RelationshipCache` from the system entities in RocksDB before returning. The
+  outer `Storage.Supervisor` uses `rest_for_one` so RocksDB is up before
+  any cache child starts; the supervision tree blocks accepting
+  connections until this returns.
 
   ## Load-bearing decisions
 
-  - **`rest_for_one` would be wrong.** All cache children share the same
-    lifecycle and must come up together after RocksDB is up.
+  - **Inner `one_for_all`, outer `rest_for_one`.** The cache children
+    above share the same lifecycle: if one dies the `Children` supervisor
+    restarts them all together against the live RocksDB. The *outer*
+    `Storage.Supervisor` deliberately uses `rest_for_one` instead — a
+    `SystemCache` failure must rebuild the caches, the watermark, and the
+    Writer (which reconciles from the log), because a cache that diverged
+    from RocksDB cannot be trusted to serve the write path.
   - **No message-passing API.** All read paths are pure ETS reads from
-    `GenServer`-less modules; writes that need to go through a process
-    (WatermarkTracker, GSN claiming) keep coordination off the hot path
-    by using ETS + `:atomics` only, never mailbox messages.
+    `GenServer`-less modules; the GSN counter is an `:atomics` reference
+    and `WatermarkTracker` coordinates through its own ETS + `:atomics`,
+    so neither adds mailbox traffic to the write path.
   - **Populate-on-startup only.** The caches are loaded once from RocksDB
     on `init/1` and then mutated in-memory by the Writer; they do not
     re-read from RocksDB on each access.

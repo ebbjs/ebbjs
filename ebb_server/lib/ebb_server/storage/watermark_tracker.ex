@@ -1,28 +1,39 @@
 defmodule EbbServer.Storage.WatermarkTracker do
   @moduledoc """
-  Owns the committed-watermark state that gates SSE fan-out.
+  Owns the resolution-frontier state that gates SSE fan-out.
 
   ## What the watermark is
 
-  After the Writer commits a batch of Actions to RocksDB, it calls
-  `mark_range_committed/2` with the GSN range it just landed. The
-  watermark is the GSN up to which all prior GSNs are durable.
+  The watermark is a **resolution frontier**: the highest GSN up to which
+  every prior GSN is either committed to RocksDB or deliberately
+  abandoned. After the Writer commits a batch it calls
+  `mark_range_committed/3`; after it gives up on a claimed range it calls
+  `mark_range_resolved/3`. Both insert the GSNs into the same ETS table,
+  so the frontier advances across either.
+
+  A watermark step therefore does not imply a durable Action at every
+  GSN. Deliberately abandoned ranges leave permanent **holes** in the
+  Action log. That is acceptable: the client outbox owns eventual
+  durability, the server never acks undurable data, and GSNs are never
+  rewound or reused. Density (no holes) is a convenience, not an
+  invariant — liveness is.
 
   SSE subscribers send `cursor=N` with `GET /sync/live`; the Fan-Out
-  Router only forwards a batch to a subscriber once the committed
-  watermark has passed that batch's end. This makes per-subscriber
+  Router only forwards a batch to a subscriber once the resolution
+  frontier has passed that batch's end. This makes per-subscriber
   ordering independent of how many writes happened in the meantime
   — a subscriber that disconnects for an hour and reconnects sees
-  GSNs strictly in committed order, never skips a range, never receives
-  a future GSN ahead of its own state.
+  GSNs strictly in committed order, never skips a committed range,
+  never receives a future GSN ahead of its own state.
 
   ## Data structures
 
   - `:persistent_term {WatermarkTracker, :gsn_ref}` — the `:atomics.atomics/0`
     reference holding the current committed watermark (one integer).
   - `:persistent_term {WatermarkTracker, :committed_ranges}` — the ETS
-    table name holding `{gsn, pid}` pairs for in-flight writers (used
-    to skip the work of the same Writer catching up its own batches).
+    table name holding `{gsn, pid}` pairs for resolved GSNs (committed or
+    abandoned), used to advance the frontier and to skip the work of the
+    same Writer catching up its own batches.
 
   ## Lifecycle
 
@@ -60,12 +71,32 @@ defmodule EbbServer.Storage.WatermarkTracker do
   end
 
   @doc """
-  Returns the current committed watermark (0 if never advanced).
+  Returns the current resolution frontier (0 if never advanced).
+
+  The name is kept for compatibility; see the moduledoc for why the
+  value is a resolution frontier rather than a pure committed watermark.
   """
   @spec committed_watermark(GenServer.name()) :: gsn()
   def committed_watermark(name \\ __MODULE__) do
     gsn_ref = :persistent_term.get({name, :gsn_ref})
     :atomics.get(gsn_ref, 1)
+  end
+
+  @doc """
+  Marks a range of GSNs as resolved (inserts into ETS, does not advance watermark).
+
+  Resolved means committed *or* deliberately abandoned; the frontier
+  advance cannot tell them apart by design. Use this for a range whose
+  commit failed and will never be written.
+
+  ## Examples
+
+      iex> WatermarkTracker.mark_range_resolved(1, 5)
+      :ok
+  """
+  @spec mark_range_resolved(gsn(), gsn(), GenServer.name()) :: :ok
+  def mark_range_resolved(first, last, name \\ __MODULE__) do
+    mark_range_committed(first, last, name)
   end
 
   @doc """
@@ -88,7 +119,8 @@ defmodule EbbServer.Storage.WatermarkTracker do
   end
 
   @doc """
-  Advances the watermark to the highest contiguous GSN in the committed ranges table.
+  Advances the watermark to the highest contiguous resolved GSN in the
+  committed ranges table (committed or abandoned — see the moduledoc).
 
   Returns the new watermark value. If no advancement is possible (gap in sequence),
   returns the current watermark.
