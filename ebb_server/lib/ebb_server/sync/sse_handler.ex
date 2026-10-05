@@ -60,7 +60,7 @@ defmodule EbbServer.Sync.SSEHandler do
 
   @stale_cursor_event ~S(event: control
 data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
-  @stale_cursor_suffix "\"\n\n}"
+  @stale_cursor_suffix "}\n\n"
   @keepalive_interval_ms 15_000
 
   @spec open_sse(Plug.Conn.t(), [String.t()], non_neg_integer(), String.t()) ::

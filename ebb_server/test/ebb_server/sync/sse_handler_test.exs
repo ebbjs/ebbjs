@@ -25,6 +25,30 @@ defmodule EbbServer.Sync.SSEHandlerTest do
     end
   end
 
+  describe "write_stale_cursor_response/2" do
+    test "emits a control event whose data is valid JSON carrying catchUpFrom" do
+      catch_up_from = 5
+
+      conn =
+        conn(:get, "/")
+        |> SSEHandler.write_stale_cursor_response(catch_up_from)
+
+      [data] =
+        Regex.run(~r/^data: (.*)$/m, conn.resp_body, capture: :all_but_first)
+
+      assert Jason.decode!(data) == %{
+               "reconnect" => true,
+               "reason" => "behind_watermark",
+               "catchUpFrom" => catch_up_from
+             }
+
+      assert conn.resp_body ==
+               "event: control\ndata: " <>
+                 ~s({"reconnect":true,"reason":"behind_watermark","catchUpFrom":5}) <>
+                 "\n\n"
+    end
+  end
+
   describe "GET /sync/live" do
     test "returns 403 when actor is not a member of requested group", %{tmp_dir: _tmp_dir} do
       conn =
