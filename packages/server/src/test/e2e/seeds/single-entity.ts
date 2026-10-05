@@ -8,7 +8,14 @@ export function buildSingleEntitySeed(): SeedData {
         id: "gm_001",
         actorId: "actor_test",
         groupId: "grp_001",
-        permissions: ["read", "write"],
+        permissions: ["text_document.*", "read", "write"],
+      },
+    ],
+    entities: [
+      {
+        id: "ent_001",
+        type: "text_document",
+        patches: [{ fields: {} }],
       },
     ],
     relationships: [],
