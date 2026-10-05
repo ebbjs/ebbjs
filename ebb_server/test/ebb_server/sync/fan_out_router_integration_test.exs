@@ -66,11 +66,52 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
 
       :ok = FanOutRouter.subscribe([group_id], sse_pid, actor_id)
 
-      ActionHelpers.bootstrap_group(actor_id, group_id, [
-        "todo.read",
-        "todo.write",
-        "todo.create"
-      ])
+      # One legitimate self-bootstrap Action that also adds a third party
+      # and an entity membership edge, so the chunk carries `group`,
+      # `groupMember` and `entityGroup` updates.
+      hlc = EbbServer.TestHelpers.generate_hlc()
+      todo_id = "todo_197_#{:erlang.unique_integer([:positive])}"
+
+      seed = %{
+        "id" => "act_197_#{:erlang.unique_integer([:positive])}",
+        "actor_id" => actor_id,
+        "hlc" => hlc,
+        "updates" => [
+          system_update("group", group_id, "put", %{
+            "name" => %{"type" => "lww", "value" => "Seed", "hlc" => hlc}
+          }),
+          system_update("groupMember", "gm_197_owner", "put", %{
+            "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
+            "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
+            "permissions" => %{
+              "type" => "lww",
+              "value" => ["todo.*", "groupMember.*"],
+              "hlc" => hlc
+            }
+          }),
+          system_update("todo", todo_id, "put", %{
+            "title" => %{"type" => "lww", "value" => "Seed", "hlc" => hlc}
+          }),
+          system_update("entityGroup", "eg_197", "put", %{
+            "entity_id" => %{"type" => "lww", "value" => todo_id, "hlc" => hlc},
+            "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
+          }),
+          system_update("groupMember", "gm_197_third", "put", %{
+            "actor_id" => %{"type" => "lww", "value" => "a_197_third", "hlc" => hlc},
+            "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
+            "permissions" => %{"type" => "lww", "value" => ["todo.read"], "hlc" => hlc}
+          })
+        ]
+      }
+
+      conn =
+        ActionHelpers.post_actions(
+          ActionHelpers.msgpack_encode!(%{"actions" => [seed]}),
+          actor_id
+        )
+
+      assert conn.status == 200
+      assert conn.resp_body == ~s({"rejected":[]})
 
       assert_receive {:sse_chunk, "data", json}, 5_000
       payload = Jason.decode!(json)
@@ -87,6 +128,16 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
 
       :ok = FanOutRouter.unsubscribe(sse_pid)
     end
+  end
+
+  defp system_update(subject_type, subject_id, method, fields) do
+    %{
+      "id" => "upd_197_#{:erlang.unique_integer([:positive])}",
+      "subject_id" => subject_id,
+      "subject_type" => subject_type,
+      "method" => method,
+      "data" => %{"fields" => fields}
+    }
   end
 
   describe "subscriber lifecycle (#278)" do

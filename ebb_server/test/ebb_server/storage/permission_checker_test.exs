@@ -55,9 +55,16 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
               "fields" => %{
                 "actor_id" => %{"value" => "a_1"},
                 "group_id" => %{"value" => "g_1"},
-                "permissions" => %{"value" => ["group.read"]}
+                "permissions" => %{"value" => ["todo.*"]}
               }
             }
+          },
+          %{
+            "id" => "todo_1",
+            "subject_id" => "todo_1",
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
           },
           %{
             "id" => "eg_1",
@@ -156,11 +163,11 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       assert PermissionChecker.authorize_updates(action, "a_1", opts) == :ok
     end
 
-    test "system entity update authorized when actor is group member" do
+    test "system entity update authorized when actor holds groupMember.update" do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
 
-      put_group_member(tables, "g_1", ["group.read"])
+      put_group_member(tables, "g_1", ["groupMember.update"])
 
       action = %{
         "id" => "act_1",

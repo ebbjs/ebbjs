@@ -66,7 +66,6 @@ defmodule EbbServer.Integration.ActionHelpers do
   def bootstrap_group(actor_id, group_id, permissions) do
     hlc = TestHelpers.generate_hlc()
     gm_id = "gm_" <> Nanoid.generate()
-    eg_id = "eg_" <> Nanoid.generate()
 
     action = %{
       "id" => "act_bootstrap_" <> Nanoid.generate(),
@@ -92,18 +91,6 @@ defmodule EbbServer.Integration.ActionHelpers do
               "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
               "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
               "permissions" => %{"type" => "lww", "value" => permissions, "hlc" => hlc}
-            }
-          }
-        },
-        %{
-          "id" => eg_id,
-          "subject_id" => eg_id,
-          "subject_type" => "entityGroup",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "entity_id" => %{"type" => "lww", "value" => "todo_bootstrap", "hlc" => hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
             }
           }
         }
