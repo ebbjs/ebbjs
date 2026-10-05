@@ -12,7 +12,12 @@ import type { Entity } from "@ebbjs/core";
 
 import { defineEntity, e } from "../../schema/entity";
 import { EntityValidationError } from "../../schema/entity-registry";
-import { buildQueryBuilder, projectEntity, projectRows } from "../query-builder";
+import {
+  buildQueryBuilder,
+  buildLazyQueryBuilder,
+  projectEntity,
+  projectRows,
+} from "../query-builder";
 
 const todo = defineEntity("todo", {
   title: e.string(),
@@ -155,6 +160,16 @@ describe("buildQueryBuilder — thenable projection", () => {
     const builder = buildQueryBuilder(rows, todo.shape);
     const out = await builder.then((rows) => rows.map((r) => r.title));
     expect(out).toEqual(["a"]);
+  });
+
+  it("awaited thenable rejects when the candidate loader rejects", async () => {
+    // Regression: a rejecting loader must settle the awaited builder
+    // rather than leaving it pending with an unhandled inner rejection.
+    const builder = buildLazyQueryBuilder(
+      () => Promise.reject(new Error("loader down")),
+      todo.shape,
+    );
+    await expect(builder).rejects.toThrow("loader down");
   });
 });
 
