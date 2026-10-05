@@ -44,177 +44,202 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     end
   end
 
-  describe "group_bootstrap?/2" do
-    test "valid bootstrap returns true" do
+  describe "bootstrap_group_permissions/2" do
+    test "maps the groups the actor creates and joins to their declared permissions" do
       updates = [
-        %{
-          "id" => "g_1",
-          "subject_id" => "g_1",
-          "subject_type" => "group",
-          "method" => "put",
-          "data" => %{"fields" => %{"name" => %{"value" => "Test"}}}
-        },
-        %{
-          "id" => "gm_1",
-          "subject_id" => "gm_1",
-          "subject_type" => "groupMember",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "actor_id" => %{"value" => "a_1"},
-              "group_id" => %{"value" => "g_1"},
-              "permissions" => %{"value" => ["group.read"]}
-            }
-          }
-        },
-        %{
-          "id" => "eg_1",
-          "subject_id" => "eg_1",
-          "subject_type" => "entityGroup",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "entity_id" => %{"value" => "todo_1"},
-              "group_id" => %{"value" => "g_1"}
-            }
-          }
-        }
+        group_put("g_1"),
+        group_member_put("gm_1", "a_1", "g_1", ["group.read", "todo.*"]),
+        entity_group_put("eg_1", "todo_1", "g_1")
       ]
 
-      assert PermissionHelper.group_bootstrap?(updates, "a_1") == true
+      assert PermissionHelper.bootstrap_group_permissions(updates, "a_1") == %{
+               "g_1" => ["group.read", "todo.*"]
+             }
     end
 
-    test "missing groupMember returns false" do
+    test "ignores a groupMember for a different actor" do
+      updates = [
+        group_put("g_1"),
+        group_member_put("gm_1", "a_2", "g_1", ["*"])
+      ]
+
+      assert PermissionHelper.bootstrap_group_permissions(updates, "a_1") == %{}
+    end
+
+    test "ignores a groupMember in a group the action does not create" do
+      updates = [group_member_put("gm_1", "a_1", "g_1", ["*"])]
+
+      assert PermissionHelper.bootstrap_group_permissions(updates, "a_1") == %{}
+    end
+
+    test "empty updates returns an empty map" do
+      assert PermissionHelper.bootstrap_group_permissions([], "a_1") == %{}
+    end
+  end
+
+  describe "created_subject_ids/1" do
+    test "collects user entity puts only" do
+      updates = [
+        entity_put("todo_1", "todo"),
+        entity_put("post_1", "post"),
+        group_put("g_1"),
+        group_member_put("gm_1", "a_1", "g_1", ["*"]),
+        entity_group_put("eg_1", "todo_1", "g_1")
+      ]
+
+      assert PermissionHelper.created_subject_ids(updates) == MapSet.new(["todo_1", "post_1"])
+    end
+
+    test "ignores patches and deletes" do
       updates = [
         %{
-          "id" => "g_1",
-          "subject_id" => "g_1",
-          "subject_type" => "group",
-          "method" => "put",
+          "id" => "todo_1",
+          "subject_id" => "todo_1",
+          "subject_type" => "todo",
+          "method" => "patch",
           "data" => %{}
-        },
-        %{
-          "id" => "eg_1",
-          "subject_id" => "eg_1",
-          "subject_type" => "entityGroup",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "entity_id" => %{"value" => "todo_1"},
-              "group_id" => %{"value" => "g_1"}
-            }
-          }
         }
       ]
 
-      assert PermissionHelper.group_bootstrap?(updates, "a_1") == false
+      assert PermissionHelper.created_subject_ids(updates) == MapSet.new()
     end
+  end
 
-    test "missing entityGroup returns false" do
+  describe "created_entity_types/1" do
+    test "maps created user entity ids to their type" do
       updates = [
-        %{
-          "id" => "g_1",
-          "subject_id" => "g_1",
-          "subject_type" => "group",
-          "method" => "put",
-          "data" => %{}
-        },
-        %{
-          "id" => "gm_1",
-          "subject_id" => "gm_1",
-          "subject_type" => "groupMember",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{"actor_id" => %{"value" => "a_1"}, "group_id" => %{"value" => "g_1"}}
-          }
-        }
+        entity_put("todo_1", "todo"),
+        entity_put("post_1", "post"),
+        group_put("g_1")
       ]
 
-      assert PermissionHelper.group_bootstrap?(updates, "a_1") == false
+      assert PermissionHelper.created_entity_types(updates) == %{
+               "todo_1" => "todo",
+               "post_1" => "post"
+             }
+    end
+  end
+
+  describe "bootstrap_update?/4" do
+    setup do
+      bootstrap = %{"g_1" => ["group.read", "todo.*"]}
+      created = MapSet.new(["todo_1"])
+      %{bootstrap: bootstrap, created: created}
     end
 
-    test "empty updates returns false" do
-      assert PermissionHelper.group_bootstrap?([], "a_1") == false
+    test "exempts the group put", %{bootstrap: bootstrap, created: created} do
+      update = group_put("g_1")
+      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == true
     end
 
-    test "no group puts returns false" do
-      updates = [
-        %{
-          "id" => "gm_1",
-          "subject_id" => "gm_1",
-          "subject_type" => "groupMember",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{"actor_id" => %{"value" => "a_1"}, "group_id" => %{"value" => "g_1"}}
-          }
+    test "exempts the acting actor's own groupMember put", %{
+      bootstrap: bootstrap,
+      created: created
+    } do
+      update = group_member_put("gm_1", "a_1", "g_1", ["group.read"])
+      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == true
+    end
+
+    test "does not exempt a third party's groupMember put", %{
+      bootstrap: bootstrap,
+      created: created
+    } do
+      update = group_member_put("gm_2", "a_2", "g_1", ["*"])
+      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == false
+    end
+
+    test "exempts an entityGroup put for an entity the action creates", %{
+      bootstrap: bootstrap,
+      created: created
+    } do
+      update = entity_group_put("eg_1", "todo_1", "g_1")
+      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == true
+    end
+
+    test "does not exempt an entityGroup put for an entity the action does not create", %{
+      bootstrap: bootstrap,
+      created: created
+    } do
+      update = entity_group_put("eg_1", "todo_other", "g_1")
+      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == false
+    end
+
+    test "does not exempt an entityGroup put in a different group", %{
+      bootstrap: bootstrap,
+      created: created
+    } do
+      update = entity_group_put("eg_1", "todo_1", "g_other")
+      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == false
+    end
+
+    test "does not exempt a relationship put", %{bootstrap: bootstrap, created: created} do
+      update = %{
+        "id" => "rel_1",
+        "subject_id" => "rel_1",
+        "subject_type" => "relationship",
+        "method" => "put",
+        "data" => %{"fields" => %{"source_id" => %{"value" => "todo_1"}}}
+      }
+
+      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == false
+    end
+
+    test "does not exempt a group patch", %{bootstrap: bootstrap, created: created} do
+      update = %{
+        "id" => "g_1",
+        "subject_id" => "g_1",
+        "subject_type" => "group",
+        "method" => "patch",
+        "data" => %{"fields" => %{"name" => %{"value" => "Renamed"}}}
+      }
+
+      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == false
+    end
+  end
+
+  defp group_put(id) do
+    %{
+      "id" => id,
+      "subject_id" => id,
+      "subject_type" => "group",
+      "method" => "put",
+      "data" => %{"fields" => %{"name" => %{"value" => "Test"}}}
+    }
+  end
+
+  defp group_member_put(id, actor_id, group_id, permissions) do
+    %{
+      "id" => id,
+      "subject_id" => id,
+      "subject_type" => "groupMember",
+      "method" => "put",
+      "data" => %{
+        "fields" => %{
+          "actor_id" => %{"value" => actor_id},
+          "group_id" => %{"value" => group_id},
+          "permissions" => %{"value" => permissions}
         }
-      ]
+      }
+    }
+  end
 
-      assert PermissionHelper.group_bootstrap?(updates, "a_1") == false
-    end
+  defp entity_put(id, type) do
+    %{id: id, subject_id: id, subject_type: type, method: "put", data: %{"fields" => %{}}}
+  end
 
-    test "actor_id in groupMember must match actor" do
-      updates = [
-        %{
-          "id" => "g_1",
-          "subject_id" => "g_1",
-          "subject_type" => "group",
-          "method" => "put",
-          "data" => %{}
-        },
-        %{
-          "id" => "gm_1",
-          "subject_id" => "gm_1",
-          "subject_type" => "groupMember",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "actor_id" => %{"value" => "a_different_actor"},
-              "group_id" => %{"value" => "g_1"}
-            }
-          }
-        },
-        %{
-          "id" => "eg_1",
-          "subject_id" => "eg_1",
-          "subject_type" => "entityGroup",
-          "method" => "put",
-          "data" => %{"fields" => %{"group_id" => %{"value" => "g_1"}}}
+  defp entity_group_put(id, entity_id, group_id) do
+    %{
+      "id" => id,
+      "subject_id" => id,
+      "subject_type" => "entityGroup",
+      "method" => "put",
+      "data" => %{
+        "fields" => %{
+          "entity_id" => %{"value" => entity_id},
+          "group_id" => %{"value" => group_id}
         }
-      ]
-
-      assert PermissionHelper.group_bootstrap?(updates, "a_1") == false
-    end
-
-    test "entityGroup group_id must match a group put" do
-      updates = [
-        %{
-          "id" => "g_1",
-          "subject_id" => "g_1",
-          "subject_type" => "group",
-          "method" => "put",
-          "data" => %{}
-        },
-        %{
-          "id" => "gm_1",
-          "subject_id" => "gm_1",
-          "subject_type" => "groupMember",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{"actor_id" => %{"value" => "a_1"}, "group_id" => %{"value" => "g_1"}}
-          }
-        },
-        %{
-          "id" => "eg_1",
-          "subject_id" => "eg_1",
-          "subject_type" => "entityGroup",
-          "method" => "put",
-          "data" => %{"fields" => %{"group_id" => %{"value" => "different_group"}}}
-        }
-      ]
-
-      assert PermissionHelper.group_bootstrap?(updates, "a_1") == false
-    end
+      }
+    }
   end
 
   describe "build_intra_action_context/1" do

@@ -137,7 +137,13 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
     todo_id = "todo_251_#{:erlang.unique_integer([:positive])}"
     eg_id = "eg_251_#{:erlang.unique_integer([:positive])}"
 
-    ActionHelpers.bootstrap_group(actor_id, group_id, ["todo.read", "todo.write", "todo.*"])
+    ActionHelpers.bootstrap_group(actor_id, group_id, [
+      "todo.read",
+      "todo.write",
+      "todo.*",
+      "groupMember.*",
+      "entityGroup.*"
+    ])
 
     hlc = TestHelpers.generate_hlc()
 

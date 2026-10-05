@@ -10,11 +10,12 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
   alias EbbServer.Sync.Router
 
   describe "multi-group membership" do
-    test "authorizes by union and indexes the action into every group" do
-      # The actor holds `todo.create` only in group_2; the write must be
-      # authorized by the union across group_1 and group_2, and must reach
-      # both groups' action streams.
-      bootstrap_group("actor_1", "group_1", ["todo.read"])
+    test "indexes a same-action multi-group create into every target group" do
+      # Each target group is checked for the entity's own `todo.create`
+      # (#121 "Add Entity to Group"), so the actor holds it in both. The
+      # write must reach both groups' action streams. The union across an
+      # entity's groups is covered by the user-entity authorizer tests.
+      bootstrap_group("actor_1", "group_1", ["todo.create", "todo.read"])
       bootstrap_group("actor_1", "group_2", ["todo.create", "todo.read"])
 
       hlc = generate_hlc()
