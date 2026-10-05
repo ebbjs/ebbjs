@@ -16,3 +16,7 @@ export function isBefore(a: string, b: string): boolean {
 export function isAfter(a: string, b: string): boolean {
   return compare(a, b) === 1;
 }
+
+export function latestHlc(a: string, b: string): string {
+  return compare(a, b) > 0 ? a : b;
+}

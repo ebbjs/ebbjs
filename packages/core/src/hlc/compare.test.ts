@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compare, isBefore, isAfter } from "./compare";
+import { compare, isBefore, isAfter, latestHlc } from "./compare";
 import { format, pack } from "./pack";
 
 describe("compare", () => {
@@ -59,5 +59,25 @@ describe("isAfter", () => {
     const a = format(pack(1000n, 0n));
     const b = format(pack(2000n, 0n));
     expect(isAfter(a, b)).toBe(false);
+  });
+});
+
+describe("latestHlc", () => {
+  it("returns b when b is later", () => {
+    const a = format(pack(1000n, 0n));
+    const b = format(pack(2000n, 0n));
+    expect(latestHlc(a, b)).toBe(b);
+  });
+
+  it("returns a when a is later", () => {
+    const a = format(pack(2000n, 0n));
+    const b = format(pack(1000n, 0n));
+    expect(latestHlc(a, b)).toBe(a);
+  });
+
+  it("returns the argument itself when equal", () => {
+    const a = format(pack(1000n, 5n));
+    const b = format(pack(1000n, 5n));
+    expect(latestHlc(a, b)).toBe(b);
   });
 });

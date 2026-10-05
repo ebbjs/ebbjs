@@ -7,6 +7,6 @@ export { createClock, localEvent, receiveRemoteHLC } from "./clock";
 export { pack, unpack, parse, format } from "./pack";
 export { makeHlc } from "./make";
 
-export { compare, isBefore, isAfter } from "./compare";
+export { compare, isBefore, isAfter, latestHlc } from "./compare";
 
 export { isValidHLC } from "./validate";

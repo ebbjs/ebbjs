@@ -186,6 +186,43 @@ describe("client.outbox", () => {
     expect(afterDuplicate).toEqual(afterEcho);
   });
 
+  it("advances updated_hlc on a locally-authored patch to the action's HLC", async () => {
+    const { fn } = mkStubFetch();
+    const client = mkClient(fn);
+    // Seed the base row with an older HLC through the inbound path.
+    await callApplyAction(client, { ...mkAction(), gsn: 1 });
+    const base = await client.readLocalEntity("todo_1");
+    const patchHlc = makeHlc(1_711_036_800_000, 1);
+    const patch: Action = {
+      id: "act_patch",
+      actor_id: ACTOR_ID,
+      hlc: patchHlc,
+      gsn: 0,
+      updates: [
+        {
+          id: "u_patch",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "patch",
+          data: {
+            fields: {
+              title: { value: "Patched", update_id: "u_patch", hlc: patchHlc },
+            },
+          },
+        },
+      ],
+    };
+
+    await client.write([patch]);
+
+    const optimistic = await client.readLocalEntity("todo_1");
+    expect(optimistic?.updated_hlc).toBe(patchHlc);
+    expect(optimistic?.updated_hlc).not.toBe(base?.updated_hlc);
+    // The post-echo replay must land on the same updated_hlc.
+    await callApplyAction(client, { ...patch, gsn: 2 });
+    expect((await client.readLocalEntity("todo_1"))?.updated_hlc).toBe(patchHlc);
+  });
+
   it("updates a server-originated row without breaking materialization", async () => {
     const { fn } = mkStubFetch();
     const client = mkClient(fn);
