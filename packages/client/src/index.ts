@@ -37,6 +37,8 @@ export {
 
 export {
   type QueryBuilder,
+  type QueryContext,
+  type PointerValue,
   projectEntity,
   projectRows,
   buildQueryBuilder,

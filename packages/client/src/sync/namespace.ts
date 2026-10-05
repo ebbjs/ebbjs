@@ -29,8 +29,10 @@ import type { GroupFields } from "../schema/system-entities";
 import { GROUPS_ACCESSOR } from "../schema/system-entities";
 import {
   buildLazyQueryBuilder,
+  normalizePointer,
   projectEntity,
   type LoadEntities,
+  type PointerValue,
   type QueryBuilder,
 } from "./query-builder";
 import {
@@ -39,8 +41,6 @@ import {
   forwardOne,
   membershipGroups,
   type ManyPointerValue,
-  normalizePointer,
-  type PointerValue,
   reverse as reverseTraversal,
 } from "./relationship";
 
@@ -541,7 +541,7 @@ export function createEntityNamespace<
   const loader: LoadEntities = async () => storage.entities.query(entityName);
   return {
     query(): QueryBuilder<TFields> {
-      return buildLazyQueryBuilder(loader, shape);
+      return buildLazyQueryBuilder(loader, shape, { entityName, registry, storage });
     },
     async get(id: string): Promise<EntityRow<TFields, TAccessors> | null> {
       const entity = await storage.entities.get(id);
