@@ -658,7 +658,7 @@ defmodule EbbServer.Storage.Writer do
 
     index_ops =
       Enum.map(group_ids, fn group_id ->
-        key = <<group_id::binary, gsn::unsigned-big-integer-size(64)>>
+        key = RocksDB.encode_group_action_key(group_id, gsn)
         {:put, RocksDB.cf_group_actions(rocks_name), key, action_id}
       end)
 

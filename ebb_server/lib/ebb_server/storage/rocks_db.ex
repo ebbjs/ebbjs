@@ -144,6 +144,25 @@ defmodule EbbServer.Storage.RocksDB do
   end
 
   @doc """
+  Composite key for group -> actions index.
+  Group ID is variable-length prefix, GSN is fixed 8 bytes at the end.
+  Prefix scans on group_id return that group's actions in GSN order.
+  """
+  @spec encode_group_action_key(binary(), gsn()) :: binary()
+  def encode_group_action_key(group_id, gsn) do
+    <<group_id::binary, gsn::unsigned-big-integer-size(64)>>
+  end
+
+  @spec decode_group_action_key(binary()) :: {binary(), gsn()} | :error
+  def decode_group_action_key(key) when byte_size(key) >= 8 do
+    group_size = byte_size(key) - 8
+    <<group_id::binary-size(group_size), gsn::unsigned-big-integer-size(64)>> = key
+    {group_id, gsn}
+  end
+
+  def decode_group_action_key(_key), do: :error
+
+  @doc """
   Encodes a composite key for the updates column family.
 
   Uses a `0x00` null byte as the separator between `action_id` and `update_id`.

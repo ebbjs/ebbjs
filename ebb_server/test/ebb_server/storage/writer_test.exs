@@ -963,7 +963,7 @@ defmodule EbbServer.Storage.WriterTest do
   end
 
   defp group_gsn_key(group_id, gsn) do
-    <<group_id::binary, gsn::unsigned-big-integer-size(64)>>
+    RocksDB.encode_group_action_key(group_id, gsn)
   end
 
   defp to_storage_format(action, gsn) do

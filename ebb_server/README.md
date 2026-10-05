@@ -102,6 +102,7 @@ and ordered-fanout coordination work that is not yet built.
 | `EbbServer.Sync.CatchUp`                                                         | Paginated catch-up                                                 |
 | `EbbServer.Sync.SSEHandler`                                                      | The SSE wire format                                                |
 | `EbbServer.Sync.FanOutRouter`                                                    | Watermark-gated routing to per-group `GroupServer`                 |
+| `EbbServer.Sync.FanOutFrontier`                                                  | Last-pushed GSN persisted across a Router restart                  |
 | `EbbServer.Sync.GroupServer`                                                     | Per-group fan-out; holds subscribers' senders                      |
 | `EbbServer.Sync.SSEConnection`                                                   | Per-live-subscription pid; receives pushes via its `GroupServer`   |
 | `EbbServer.Storage.BackgroundWarmer` (optional)                                  | Pre-materializes dirty entities during idle periods                |
@@ -139,6 +140,7 @@ EbbServer.Supervisor (one_for_one)
 │   ├── Storage.WatermarkTracker           — resolution-frontier ETS + :atomics
 │   └── Storage.Writer                     — serialization point (last child)
 ├── Sync Supervisor (one_for_one)
+│   ├── Sync.FanOutFrontier                — persisted last-pushed frontier
 │   ├── Sync.FanOutRouter
 │   ├── Sync.GroupDynamicSupervisor (per-group GroupServers)
 │   └── Sync.SSEConnectionSupervisor (per-live-connection pids)
@@ -255,6 +257,16 @@ full generation algorithm.
 - **Fan-Out**: If a `GroupServer` crashes, it restarts (transient) and
   clients reconnect via SSE retry. No data loss — clients catch up from
   their last cursor.
+- **Router restart**: `Sync.FanOutFrontier` persists the highest GSN the
+  `FanOutRouter` has pushed across the Router's lifetime — it is a sibling
+  process under `Sync.Supervisor`, so it survives a Router restart, not a
+  node restart. A Router-only restart (or a commit that
+  landed while the Router was down, whose notification the Writer's
+  `Process.whereis/1` guard dropped) resumes from that frontier,
+  re-deriving the un-pushed committed ranges from
+  `cf_actions`/`cf_group_actions` and re-pushing once the watermark
+  allows. Cold boot does not replay history: it seeds the frontier from
+  the current watermark, and connecting clients catch up from the log.
 - **SSE connections**: Temporary restart — if a connection process
   dies, the client reconnects automatically (SSE built-in retry).
 
