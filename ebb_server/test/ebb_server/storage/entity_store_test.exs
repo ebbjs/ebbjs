@@ -642,5 +642,109 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert entity.data["fields"]["title"]["value"] == "Buy milk"
       assert entity.data["fields"]["description"]["value"] == "Updated"
     end
+
+    test "a mark landing during materialization survives the clear", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_race"
+
+      action1 =
+        validated_action(%{
+          "id" => "act_1",
+          "hlc" => hlc_from(1_000),
+          "updates" => [
+            validated_update(%{
+              "id" => "upd_1",
+              "subject_id" => entity_id,
+              "data" => %{
+                "fields" => %{
+                  "title" => %{"type" => "lww", "value" => "First", "hlc" => hlc_from(1_000)}
+                }
+              }
+            })
+          ]
+        })
+
+      action2 =
+        validated_action(%{
+          "id" => "act_2",
+          "hlc" => hlc_from(2_000),
+          "updates" => [
+            validated_update(%{
+              "id" => "upd_2",
+              "subject_id" => entity_id,
+              "method" => "patch",
+              "data" => %{
+                "fields" => %{
+                  "description" => %{
+                    "type" => "lww",
+                    "value" => "Second",
+                    "hlc" => hlc_from(2_000)
+                  }
+                }
+              }
+            })
+          ]
+        })
+
+      action3 =
+        validated_action(%{
+          "id" => "act_3",
+          "hlc" => hlc_from(3_000),
+          "updates" => [
+            validated_update(%{
+              "id" => "upd_3",
+              "subject_id" => entity_id,
+              "method" => "patch",
+              "data" => %{
+                "fields" => %{
+                  "title" => %{"type" => "lww", "value" => "Third", "hlc" => hlc_from(3_000)}
+                }
+              }
+            })
+          ]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action1], writer_name)
+
+      assert {:ok, entity1} =
+               EntityStore.get(entity_id, "a_test",
+                 rocks_name: rocks_name,
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
+               )
+
+      assert entity1.last_gsn == 1
+      refute DirtyTracker.dirty?(entity_id, dirty_set)
+
+      assert {:ok, {2, 2}, []} = Writer.write_actions([action2], writer_name)
+      assert DirtyTracker.dirty?(entity_id, dirty_set)
+
+      # action3 commits after the materializer scanned but before it clears.
+      assert {:ok, mid_materialization} =
+               EntityStore.materialize(entity_id,
+                 rocks_name: rocks_name,
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set,
+                 after_scan: fn -> Writer.write_actions([action3], writer_name) end
+               )
+
+      assert mid_materialization.last_gsn == 2
+      assert DirtyTracker.dirty?(entity_id, dirty_set)
+
+      assert {:ok, entity2} =
+               EntityStore.get(entity_id, "a_test",
+                 rocks_name: rocks_name,
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
+               )
+
+      assert entity2.data["fields"]["title"]["value"] == "Third"
+      assert entity2.last_gsn == 3
+      refute DirtyTracker.dirty?(entity_id, dirty_set)
+    end
   end
 end

@@ -11,8 +11,19 @@ defmodule EbbServer.Storage.EntityStore do
   most recent committed Action. Closing that window is the job of this
   module: a request checks `DirtyTracker`, and if the entity is dirty,
   replays only the delta since the entity's `last_gsn` from RocksDB,
-  applies per-field typed merges, UPSERTs into SQLite, and clears the
-  dirty bit — all before returning. We never replay full history.
+  applies per-field typed merges, UPSERTs into SQLite, and clears only
+  the dirty mark it observed — all before returning. We never replay
+  full history.
+
+  Clearing only the observed mark is what keeps this correct under
+  concurrency. A writer can commit an Action and mark the entity dirty
+  between this module's scan and its clear. An unconditional clear
+  would erase that newer mark, leaving the entity clean at an old
+  `last_gsn` with a committed Action unmaterialized; every later read
+  would see a clean entity and serve stale data permanently. Reading the
+  mark's generation before the scan and compare-and-clearing it leaves
+  the newer mark in place, so the next read materializes the missing
+  Action.
 
   This module is **not** a GenServer. It composes the `EbbServer.Storage.SQLite`
   GenServer (for cached reads) and the `EbbServer.Storage.RocksDB` GenServer
@@ -100,29 +111,45 @@ defmodule EbbServer.Storage.EntityStore do
   in normal operation — use `get/2` instead.
 
   Process:
-  1. Read current state from SQLite (or empty for new entities)
-  2. Scan RocksDB cf_entity_actions for actions after last_gsn
-  3. Replay each action's updates in GSN order
-  4. Upsert materialized entity to SQLite
-  5. Clear dirty flag in DirtyTracker
+  1. Read the dirty mark's generation
+  2. Read current state from SQLite (or empty for new entities)
+  3. Scan RocksDB cf_entity_actions for actions after last_gsn
+  4. Replay each action's updates in GSN order
+  5. Upsert materialized entity to SQLite
+  6. Compare-and-clear the dirty mark with the observed generation
+
+  ## Options
+
+  - `:rocks_name` - RocksDB server name (default: `EbbServer.Storage.RocksDB`)
+  - `:sqlite_name` - SQLite server name (default: `EbbServer.Storage.SQLite`)
+  - `:dirty_set` - ETS table name for dirty tracking (default: `:ebb_dirty_set`)
+  - `:after_scan` - test seam: a 0-arity fun invoked once after the RocksDB
+    scan and before the result is handled. Tests use it to interleave a
+    concurrent write with an in-flight materialization deterministically,
+    with no sleeps.
   """
   @spec materialize(String.t(), keyword()) :: {:ok, map()} | :not_found | {:error, term()}
   def materialize(entity_id, opts \\ []) do
     rocks_name = Keyword.get(opts, :rocks_name, @default_rocks_name)
     sqlite_name = Keyword.get(opts, :sqlite_name, @default_sqlite_name)
     dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
+    after_scan = Keyword.get(opts, :after_scan)
 
+    observed_generation = DirtyTracker.dirty_generation(entity_id, dirty_set)
     {current_data, last_gsn, existing_row} = fetch_current_state(entity_id, sqlite_name)
     entries = fetch_relevant_entries(entity_id, rocks_name, last_gsn)
 
+    if after_scan, do: after_scan.()
+
     if entries == [] do
-      handle_empty_entries(entity_id, existing_row, dirty_set, sqlite_name)
+      handle_empty_entries(entity_id, existing_row, observed_generation, dirty_set, sqlite_name)
     else
       apply_entries_and_persist(
         entity_id,
         current_data,
         entries,
         rocks_name,
+        observed_generation,
         dirty_set,
         sqlite_name
       )
@@ -150,13 +177,19 @@ defmodule EbbServer.Storage.EntityStore do
     |> Enum.sort_by(fn {gsn, _} -> gsn end)
   end
 
-  defp handle_empty_entries(entity_id, nil, dirty_set, _sqlite_name) do
-    DirtyTracker.clear_dirty(entity_id, dirty_set)
+  defp handle_empty_entries(entity_id, nil, observed_generation, dirty_set, _sqlite_name) do
+    DirtyTracker.clear_dirty(entity_id, observed_generation, dirty_set)
     :not_found
   end
 
-  defp handle_empty_entries(entity_id, _existing_row, dirty_set, sqlite_name) do
-    DirtyTracker.clear_dirty(entity_id, dirty_set)
+  defp handle_empty_entries(
+         entity_id,
+         _existing_row,
+         observed_generation,
+         dirty_set,
+         sqlite_name
+       ) do
+    DirtyTracker.clear_dirty(entity_id, observed_generation, dirty_set)
 
     case SQLite.get_entity(entity_id, sqlite_name) do
       {:ok, row} -> {:ok, format_entity(row)}
@@ -169,6 +202,7 @@ defmodule EbbServer.Storage.EntityStore do
          current_data,
          entries,
          rocks_name,
+         observed_generation,
          dirty_set,
          sqlite_name
        ) do
@@ -182,14 +216,26 @@ defmodule EbbServer.Storage.EntityStore do
 
     case materialized do
       {:ok, result} ->
-        handle_materialized_result(entity_id, result, dirty_set, sqlite_name)
+        handle_materialized_result(
+          entity_id,
+          result,
+          observed_generation,
+          dirty_set,
+          sqlite_name
+        )
 
       {:error, _reason} ->
         {:error, :materialization_failed}
     end
   end
 
-  defp handle_materialized_result(entity_id, result, dirty_set, sqlite_name) do
+  defp handle_materialized_result(
+         entity_id,
+         result,
+         observed_generation,
+         dirty_set,
+         sqlite_name
+       ) do
     %{
       data: merged_data,
       type: type,
@@ -201,7 +247,7 @@ defmodule EbbServer.Storage.EntityStore do
     } = result
 
     if deleted_hlc != nil do
-      DirtyTracker.clear_dirty(entity_id, dirty_set)
+      DirtyTracker.clear_dirty(entity_id, observed_generation, dirty_set)
       :not_found
     else
       entity_row = %{
@@ -216,7 +262,7 @@ defmodule EbbServer.Storage.EntityStore do
       }
 
       SQLite.upsert_entity(entity_row, sqlite_name)
-      DirtyTracker.clear_dirty(entity_id, dirty_set)
+      DirtyTracker.clear_dirty(entity_id, observed_generation, dirty_set)
       {:ok, format_entity(entity_row)}
     end
   end

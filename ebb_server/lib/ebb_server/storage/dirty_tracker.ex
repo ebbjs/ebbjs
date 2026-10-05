@@ -2,8 +2,19 @@ defmodule EbbServer.Storage.DirtyTracker do
   @moduledoc """
   GenServer that owns the dirty set ETS table.
 
-  Tracks which entity IDs need re-materialization. The GenServer exists
-  solely to own the ETS table lifetime and manage startup/shutdown.
+  Tracks which entity IDs need re-materialization. Each mark stores the
+  entity ID together with a monotonic generation stamped when the mark
+  is written: `{entity_id, generation}`.
+
+  A materializer reads the generation before it scans, then clears with
+  a compare-and-clear (`clear_dirty/3`): the mark is removed only if the
+  stored generation still equals the one observed. A newer mark that
+  lands while materialization is in flight has a different generation
+  and survives, so the next read re-materializes instead of serving
+  stale data forever.
+
+  The GenServer exists solely to own the ETS table lifetime and manage
+  startup/shutdown.
 
   All public functions are lock-free (ETS reads/writes) and do not
   route through `GenServer.call`.
@@ -26,6 +37,8 @@ defmodule EbbServer.Storage.DirtyTracker do
   @doc """
   Marks a batch of entity IDs as dirty (needs re-materialization).
 
+  Every ID in the batch shares one fresh generation.
+
   ## Examples
 
       iex> DirtyTracker.mark_dirty_batch(["todo_1", "todo_2"])
@@ -34,8 +47,10 @@ defmodule EbbServer.Storage.DirtyTracker do
   @spec mark_dirty_batch([String.t()], atom()) :: :ok
   def mark_dirty_batch(entity_ids, dirty_set \\ @default_dirty_set_name)
       when is_list(entity_ids) do
+    generation = :erlang.unique_integer([:monotonic, :positive])
+
     Enum.each(entity_ids, fn id ->
-      :ets.insert(dirty_set, {id, true})
+      :ets.insert(dirty_set, {id, generation})
     end)
 
     :ok
@@ -51,20 +66,44 @@ defmodule EbbServer.Storage.DirtyTracker do
   """
   @spec dirty?(String.t(), atom()) :: boolean()
   def dirty?(entity_id, dirty_set \\ @default_dirty_set_name) do
-    :ets.lookup(dirty_set, entity_id) != []
+    dirty_generation(entity_id, dirty_set) != nil
   end
 
   @doc """
-  Clears the dirty flag for an entity ID.
+  Returns the generation stamped on an entity's dirty mark, or `nil` when
+  the entity is clean.
 
   ## Examples
 
-      iex> DirtyTracker.clear_dirty("todo_1")
+      iex> DirtyTracker.dirty_generation("todo_1")
+      nil
+  """
+  @spec dirty_generation(String.t(), atom()) :: term()
+  def dirty_generation(entity_id, dirty_set \\ @default_dirty_set_name) do
+    case :ets.lookup(dirty_set, entity_id) do
+      [{^entity_id, generation}] -> generation
+      [] -> nil
+    end
+  end
+
+  @doc """
+  Compare-and-clears the dirty mark for an entity ID.
+
+  Removes the mark only when the currently stored generation equals
+  `observed_generation`. A mark written after the observation carries a
+  different generation and is left in place.
+
+  ## Examples
+
+      iex> generation = DirtyTracker.dirty_generation("todo_1")
+      iex> DirtyTracker.clear_dirty("todo_1", generation, :ebb_dirty_set)
       true
   """
-  @spec clear_dirty(String.t(), atom()) :: true
-  def clear_dirty(entity_id, dirty_set \\ @default_dirty_set_name) do
-    :ets.delete(dirty_set, entity_id)
+  @spec clear_dirty(String.t(), term(), atom()) :: true
+  # No default for `dirty_set`: a two-arity call must not silently pass a
+  # table where a generation is expected.
+  def clear_dirty(entity_id, observed_generation, dirty_set) do
+    :ets.delete_object(dirty_set, {entity_id, observed_generation})
   end
 
   @doc """

@@ -31,6 +31,39 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
       assert DirtyTracker.dirty?("todo_abc", dirty_set)
       assert DirtyTracker.dirty?("todo_xyz", dirty_set)
     end
+
+    test "consecutive batches yield different generations" do
+      %{dirty_set: dirty_set} = with_isolated_tracker()
+
+      :ok = DirtyTracker.mark_dirty_batch(["todo_abc"], dirty_set)
+      first = DirtyTracker.dirty_generation("todo_abc", dirty_set)
+
+      :ok = DirtyTracker.mark_dirty_batch(["todo_abc"], dirty_set)
+      second = DirtyTracker.dirty_generation("todo_abc", dirty_set)
+
+      refute first == second
+    end
+
+    test "ids in one batch share the batch generation" do
+      %{dirty_set: dirty_set} = with_isolated_tracker()
+
+      :ok = DirtyTracker.mark_dirty_batch(["todo_abc", "todo_xyz"], dirty_set)
+
+      assert DirtyTracker.dirty_generation("todo_abc", dirty_set) ==
+               DirtyTracker.dirty_generation("todo_xyz", dirty_set)
+    end
+  end
+
+  describe "dirty_generation/2" do
+    test "is nil before a mark and a value after" do
+      %{dirty_set: dirty_set} = with_isolated_tracker()
+
+      assert DirtyTracker.dirty_generation("todo_abc", dirty_set) == nil
+
+      :ok = DirtyTracker.mark_dirty_batch(["todo_abc"], dirty_set)
+
+      refute DirtyTracker.dirty_generation("todo_abc", dirty_set) == nil
+    end
   end
 
   describe "dirty?/2" do
@@ -49,18 +82,47 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
     end
   end
 
-  describe "clear_dirty/2" do
-    test "clears dirty flag for entity" do
+  describe "clear_dirty/3" do
+    test "clears when the observed generation matches" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
       :ok = DirtyTracker.mark_dirty_batch(["todo_abc", "todo_xyz"], dirty_set)
-      assert DirtyTracker.dirty?("todo_abc", dirty_set)
-      assert DirtyTracker.dirty?("todo_xyz", dirty_set)
+      observed = DirtyTracker.dirty_generation("todo_abc", dirty_set)
 
-      DirtyTracker.clear_dirty("todo_abc", dirty_set)
+      DirtyTracker.clear_dirty("todo_abc", observed, dirty_set)
 
       refute DirtyTracker.dirty?("todo_abc", dirty_set)
       assert DirtyTracker.dirty?("todo_xyz", dirty_set)
+    end
+
+    test "does not clear when a newer mark landed after the observation" do
+      %{dirty_set: dirty_set} = with_isolated_tracker()
+
+      :ok = DirtyTracker.mark_dirty_batch(["todo_abc"], dirty_set)
+      observed = DirtyTracker.dirty_generation("todo_abc", dirty_set)
+
+      # A writer commits and re-marks while materialization is in flight.
+      :ok = DirtyTracker.mark_dirty_batch(["todo_abc"], dirty_set)
+      newer = DirtyTracker.dirty_generation("todo_abc", dirty_set)
+      refute observed == newer
+
+      DirtyTracker.clear_dirty("todo_abc", observed, dirty_set)
+
+      assert DirtyTracker.dirty?("todo_abc", dirty_set)
+      assert DirtyTracker.dirty_generation("todo_abc", dirty_set) == newer
+    end
+
+    test "does not delete a live mark with a stale or nil observation" do
+      %{dirty_set: dirty_set} = with_isolated_tracker()
+
+      :ok = DirtyTracker.mark_dirty_batch(["todo_abc"], dirty_set)
+      live = DirtyTracker.dirty_generation("todo_abc", dirty_set)
+
+      DirtyTracker.clear_dirty("todo_abc", live + 1, dirty_set)
+      assert DirtyTracker.dirty?("todo_abc", dirty_set)
+
+      DirtyTracker.clear_dirty("todo_abc", nil, dirty_set)
+      assert DirtyTracker.dirty?("todo_abc", dirty_set)
     end
   end
 
