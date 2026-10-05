@@ -21,15 +21,13 @@ interface QueryStore<TFields extends Record<string, TSchema>> {
 }
 
 /**
- * Build the per-hook store. Pure closure — no class, no external
- * state — so each `(builder)` pair owns one independent cell and
- * StrictMode's double-subscribe is ref-counted rather than leaking a
- * second builder listener.
+ * One reactive cell per built query. StrictMode's double-subscribe is
+ * ref-counted onto a single builder listener rather than leaking a
+ * second one.
  *
- * Snapshot stability is the point: `getSnapshot` returns the same
- * object until a materialization actually changes `{data, loading,
- * error}`, so `useSyncExternalStore` sees no change on a source-type
- * emit that did not affect this chain's result.
+ * The snapshot reference stays stable until a materialization
+ * actually changes `{data, loading, error}`: a source-type emit that
+ * did not affect this chain's result must not re-render its consumer.
  */
 function createQueryStore<TFields extends Record<string, TSchema>>(
   builder: QueryBuilder<TFields>,
