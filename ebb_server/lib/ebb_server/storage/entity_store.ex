@@ -102,11 +102,8 @@ defmodule EbbServer.Storage.EntityStore do
       )
     else
       case SQLite.get_entity(entity_id, sqlite_name) do
-        {:ok, row} ->
-          {:ok, format_entity(row)}
-
-        :not_found ->
-          :not_found
+        {:ok, row} -> format_live_entity(row)
+        :not_found -> :not_found
       end
     end
   end
@@ -199,7 +196,7 @@ defmodule EbbServer.Storage.EntityStore do
     DirtyTracker.clear_dirty(entity_id, observed_generation, dirty_set)
 
     case SQLite.get_entity(entity_id, sqlite_name) do
-      {:ok, row} -> {:ok, format_entity(row)}
+      {:ok, row} -> format_live_entity(row)
       :not_found -> :not_found
     end
   end
@@ -253,25 +250,23 @@ defmodule EbbServer.Storage.EntityStore do
       max_gsn: max_gsn
     } = result
 
-    if deleted_hlc != nil do
-      DirtyTracker.clear_dirty(entity_id, observed_generation, dirty_set)
-      :not_found
-    else
-      entity_row = %{
-        id: entity_id,
-        type: type || "unknown",
-        data: Jason.encode!(merged_data),
-        created_hlc: created_hlc || updated_hlc,
-        updated_hlc: updated_hlc,
-        deleted_hlc: deleted_hlc,
-        deleted_by: deleted_by,
-        last_gsn: max_gsn
-      }
+    # Persisting the tombstone is what stops a later clean read from reading
+    # the old live row back out of the cache and resurrecting the entity.
+    entity_row = %{
+      id: entity_id,
+      type: type || "unknown",
+      data: Jason.encode!(merged_data),
+      created_hlc: created_hlc || updated_hlc,
+      updated_hlc: updated_hlc,
+      deleted_hlc: deleted_hlc,
+      deleted_by: deleted_by,
+      last_gsn: max_gsn
+    }
 
-      SQLite.upsert_entity(entity_row, sqlite_name)
-      DirtyTracker.clear_dirty(entity_id, observed_generation, dirty_set)
-      {:ok, format_entity(entity_row)}
-    end
+    SQLite.upsert_entity(entity_row, sqlite_name)
+    DirtyTracker.clear_dirty(entity_id, observed_generation, dirty_set)
+
+    format_live_entity(entity_row)
   end
 
   defp apply_actions(entity_id, data, entries, rocks_name) do
@@ -403,6 +398,9 @@ defmodule EbbServer.Storage.EntityStore do
       existing
     end
   end
+
+  defp format_live_entity(%{deleted_hlc: nil} = row), do: {:ok, format_entity(row)}
+  defp format_live_entity(_row), do: :not_found
 
   defp format_entity(%{data: nil} = row) do
     raise "Unexpected nil data for entity #{inspect(row.id)}"
