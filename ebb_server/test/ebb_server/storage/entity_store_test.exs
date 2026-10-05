@@ -33,41 +33,17 @@ defmodule EbbServer.Storage.EntityStoreTest do
   import EbbServer.TestHelpers
 
   setup do
-    %{
-      dirty_set: dirty_set,
-      gsn_counter: gsn_counter,
-      group_members: group_members,
-      group_members_by_id: group_members_by_id,
-      entity_groups: entity_groups,
-      entity_groups_by_id: entity_groups_by_id,
-      entity_groups_by_group: entity_groups_by_group,
-      relationships: relationships,
-      relationships_by_id: relationships_by_id
-    } = start_isolated_cache()
-
+    cache = start_isolated_cache()
     %{name: rocks_name, dir: rocks_dir} = start_rocks()
     %{name: sqlite_name} = start_sqlite(rocks_dir)
 
-    %{name: writer_name} =
-      start_writer(%{
-        rocks_name: rocks_name,
-        dirty_set: dirty_set,
-        gsn_counter: gsn_counter,
-        group_members: group_members,
-        group_members_by_id: group_members_by_id,
-        entity_groups: entity_groups,
-        entity_groups_by_id: entity_groups_by_id,
-        entity_groups_by_group: entity_groups_by_group,
-        relationships: relationships,
-        relationships_by_id: relationships_by_id
-      })
+    %{name: writer_name} = start_writer(Map.put(cache, :rocks_name, rocks_name))
 
-    %{
+    Map.merge(cache, %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
-      writer_name: writer_name,
-      dirty_set: dirty_set
-    }
+      writer_name: writer_name
+    })
   end
 
   describe "get/2" do
@@ -140,6 +116,54 @@ defmodule EbbServer.Storage.EntityStoreTest do
       )
 
       refute DirtyTracker.dirty?(entity_id, dirty_set)
+    end
+
+    test "materialize leaves a provisional mark in place", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_provisional"
+      update = validated_update(%{subject_id: entity_id})
+
+      Writer.write_actions([validated_action(%{updates: [update]})], writer_name)
+
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+
+      assert {:ok, _entity} = EntityStore.get(entity_id, "a_test", opts)
+      refute DirtyTracker.dirty?(entity_id, dirty_set)
+
+      # A Writer writes this before its commit attempt and settles it once
+      # the commit returns. Until then the read may materialize, but it must
+      # not clear the mark and reopen the window it exists to close.
+      DirtyTracker.mark_pending_batch([entity_id], dirty_set)
+
+      assert {:ok, entity} = EntityStore.materialize(entity_id, opts)
+      assert entity.last_gsn == 1
+      assert DirtyTracker.pending?(DirtyTracker.dirty_generation(entity_id, dirty_set))
+
+      :ok = DirtyTracker.mark_dirty_batch([entity_id], dirty_set)
+      assert {:ok, _entity} = EntityStore.materialize(entity_id, opts)
+      refute DirtyTracker.dirty?(entity_id, dirty_set)
+    end
+
+    test "materialize leaves a provisional mark in place for an unknown entity", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_unknown_provisional"
+      DirtyTracker.mark_pending_batch([entity_id], dirty_set)
+
+      assert :not_found =
+               EntityStore.get(entity_id, "a_test",
+                 rocks_name: rocks_name,
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
+               )
+
+      assert DirtyTracker.pending?(DirtyTracker.dirty_generation(entity_id, dirty_set))
     end
 
     test "second read is clean (no re-materialization)", %{
@@ -1010,6 +1034,41 @@ defmodule EbbServer.Storage.EntityStoreTest do
       # Root cause: M1's stale upsert regressed last_gsn from 3 back to 2.
       assert {:ok, row_after} = SQLite.get_entity(entity_id, sqlite_name)
       assert row_after.last_gsn == 3
+    end
+  end
+
+  describe "durable commit and read ordering" do
+    test "a read after the durable commit does not see stale SQLite", ctx do
+      entity_id = "todo_after_commit"
+
+      action =
+        validated_action(%{
+          id: "act_after_commit",
+          updates: [validated_update(%{subject_id: entity_id, subject_type: "todo"})]
+        })
+
+      opts = [
+        rocks_name: ctx.rocks_name,
+        sqlite_name: ctx.sqlite_name,
+        dirty_set: ctx.dirty_set
+      ]
+
+      test_pid = self()
+
+      # Runs inside the Writer immediately after `commit_fn` returns durably
+      # and before the mark is settled: the exact window #295 is about.
+      after_commit = fn ->
+        send(test_pid, {:read_after_commit, EntityStore.get(entity_id, "a_test", opts)})
+      end
+
+      %{name: writer_name} = start_writer(Map.put(ctx, :after_commit, after_commit))
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      assert_receive {:read_after_commit, result}
+      assert {:ok, entity} = result
+      assert entity.last_gsn == 1
+      assert entity.data["fields"]["title"]["value"] == "Buy milk"
     end
   end
 end

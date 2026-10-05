@@ -31,12 +31,22 @@ defmodule EbbServer.Storage.Writer do
 
   `write_actions/2` claims a GSN range, runs permission validation,
   resolves FieldValue-wrapped data, builds the `cf_group_actions` index
-  via intra-action context (see below), assembles the WriteBatch, commits
-  with `sync: true`, advances the watermark, marks entities dirty, and
-  notifies `FanOutRouter`. The notification carries the per-Action
+  via intra-action context (see below), assembles the WriteBatch, marks
+  the affected entities provisionally dirty, commits with `sync: true`,
+  settles the marks, advances the watermark, and notifies `FanOutRouter`.
+  The notification carries the per-Action
   group set this pass resolved, so live fan-out indexes the same
   snapshot `cf_group_actions` was built from rather than re-deriving
   groups after the system caches have moved.
+
+  Provisionally dirty marks close the gap between the durable commit
+  returning and the entity being marked dirty: a read that starts after
+  the commit cannot observe a clean entity whose SQLite row predates the
+  Action. `DirtyTracker.mark_pending_batch/2` stamps the marks before the
+  commit attempt, `mark_dirty_batch/2` settles them once it returns, and
+  `clear_pending_batch/3` removes them on the abandon paths. Materializers
+  treat a provisional mark as dirty but never clear it (see
+  `EbbServer.Storage.EntityStore`).
 
   ## Failure and recovery policy
 
@@ -66,14 +76,21 @@ defmodule EbbServer.Storage.Writer do
     `EbbServer.Storage.SystemCache`, and relies on
     `Storage.Supervisor`'s `rest_for_one` to rebuild the caches, the
     watermark, and this Writer. The success reply is sent before that
-    escalation so a durable batch is never reported as lost.
+    escalation so a durable batch is never reported as lost. A failed or
+    raised commit instead has its provisional marks compare-and-cleared
+    before the range is resolved.
   - **Startup reconcile.** `init/1` raises the counter to the durable log
     max and resolves any remaining tail, healing a Writer-only restart
-    that crashed between claim and resolve.
+    that crashed between claim and resolve. It also settles any
+    provisional mark a crashed Writer left behind: no commit is in flight
+    at startup, so settling is conservative — the entity re-materializes
+    and, if nothing was committed, finds no new Action and clears.
 
   The test seam is the optional `:commit_fn` (default
   `&RocksDB.write_batch/2`), used for both error injection and crash
-  simulation.
+  simulation, plus the optional `:after_commit` fun, invoked inside the
+  Writer once `commit_fn` returns and before the marks settle, so tests
+  can observe the durable-commit window deterministically.
 
   ## cf_group_actions index and intra-action context
 
@@ -136,6 +153,7 @@ defmodule EbbServer.Storage.Writer do
           relationships: atom(),
           relationships_by_id: atom(),
           commit_fn: (list(), keyword() -> :ok | {:error, term()}),
+          after_commit: (-> any()) | nil,
           fan_out_router: GenServer.name() | nil,
           watermark_tracker: GenServer.name() | nil
         }
@@ -151,6 +169,7 @@ defmodule EbbServer.Storage.Writer do
     :relationships,
     :relationships_by_id,
     :commit_fn,
+    :after_commit,
     :fan_out_router,
     :watermark_tracker
   ]
@@ -233,6 +252,7 @@ defmodule EbbServer.Storage.Writer do
       )
 
     commit_fn = Keyword.get(opts, :commit_fn) || (&RocksDB.write_batch/2)
+    after_commit = Keyword.get(opts, :after_commit)
     fan_out_router = Keyword.get(opts, :fan_out_router, nil)
     watermark_tracker = Keyword.get(opts, :watermark_tracker, nil)
 
@@ -248,10 +268,12 @@ defmodule EbbServer.Storage.Writer do
       relationships: relationships,
       relationships_by_id: relationships_by_id,
       commit_fn: commit_fn,
+      after_commit: after_commit,
       fan_out_router: fan_out_router,
       watermark_tracker: watermark_tracker
     }
 
+    DirtyTracker.settle_all_pending(state.dirty_set)
     reconcile_resolution_frontier(state)
 
     {:ok, state}
@@ -333,21 +355,31 @@ defmodule EbbServer.Storage.Writer do
   # The `after` is the structural guarantee: however the body exits — a
   # build-time raise, a failed commit, or a cache update that blows up
   # after the commit landed — the claimed range ends up resolved. The
-  # rescue/catch abandon (resolve, log, nudge) before re-raising, so the
-  # exception path also tells `FanOutRouter` about the hole; the `after`
-  # repeats the resolve, which is idempotent.
+  # rescue/catch abandon (clear the provisional marks, resolve, log,
+  # nudge) before re-raising, so the exception path also tells
+  # `FanOutRouter` about the hole; the `after` repeats the resolve, which
+  # is idempotent.
+  #
+  # The provisional marks are written before `build_ops` so that no read
+  # can observe the entity clean between the commit landing and the
+  # settled mark; `abandon` clears them on every failure path. Settling
+  # (in `apply_post_commit`) overwrites them, so the success path needs no
+  # clear.
   defp write_batch(filtered, gsn_start, gsn_end, state) do
+    entity_ids = affected_entity_ids(filtered)
+    pending = {entity_ids, DirtyTracker.mark_pending_batch(entity_ids, state.dirty_set)}
+
     # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
     try do
       {ops, groups_by_gsn} = build_ops(filtered, gsn_start, state)
-      commit(filtered, ops, groups_by_gsn, gsn_start, gsn_end, state)
+      commit(filtered, pending, ops, groups_by_gsn, gsn_start, gsn_end, state)
     rescue
       error ->
-        abandon(state, gsn_start, gsn_end, error)
+        abandon(state, pending, gsn_start, gsn_end, error)
         reraise error, __STACKTRACE__
     catch
       kind, value ->
-        abandon(state, gsn_start, gsn_end, {kind, value})
+        abandon(state, pending, gsn_start, gsn_end, {kind, value})
         :erlang.raise(kind, value, __STACKTRACE__)
     after
       resolve_range(state, gsn_start, gsn_end)
@@ -370,9 +402,11 @@ defmodule EbbServer.Storage.Writer do
     {List.flatten(ops), groups_by_gsn}
   end
 
-  defp commit(filtered, ops, groups_by_gsn, gsn_start, gsn_end, state) do
+  defp commit(filtered, pending, ops, groups_by_gsn, gsn_start, gsn_end, state) do
     case state.commit_fn.(ops, name: state.rocks_name) do
       :ok ->
+        if state.after_commit, do: state.after_commit.()
+
         # Point of no return: make the range durable-resolved before any
         # raise-capable cache bookkeeping runs.
         mark_committed(state, gsn_start, gsn_end)
@@ -387,23 +421,24 @@ defmodule EbbServer.Storage.Writer do
         end
 
       {:error, reason} ->
-        abandon(state, gsn_start, gsn_end, reason)
+        abandon(state, pending, gsn_start, gsn_end, reason)
         {:ok, {:error, {:rocksdb_write_failed, reason}}}
     end
   end
 
   defp apply_post_commit(filtered, state) do
-    entity_ids =
-      filtered
-      |> Enum.flat_map(fn action -> action.updates end)
-      |> Enum.map(fn update -> update.subject_id end)
-      |> Enum.uniq()
-
-    :ok = DirtyTracker.mark_dirty_batch(entity_ids, state.dirty_set)
+    :ok = DirtyTracker.mark_dirty_batch(affected_entity_ids(filtered), state.dirty_set)
     update_system_caches(filtered, state)
     :ok
   rescue
     error -> {:error, error}
+  end
+
+  defp affected_entity_ids(filtered) do
+    filtered
+    |> Enum.flat_map(fn action -> action.updates end)
+    |> Enum.map(fn update -> update.subject_id end)
+    |> Enum.uniq()
   end
 
   # The batch is durable, so the reply contract is success; the caches are
@@ -422,7 +457,9 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
-  defp abandon(state, gsn_start, gsn_end, reason) do
+  defp abandon(state, pending, gsn_start, gsn_end, reason) do
+    clear_pending(state, pending)
+
     # Resolve before nudging so the router can only observe the advanced
     # frontier. The `after` repeats this, harmlessly.
     resolve_range(state, gsn_start, gsn_end)
@@ -433,6 +470,13 @@ defmodule EbbServer.Storage.Writer do
     )
 
     notify_range_resolved(state, gsn_start, gsn_end)
+  end
+
+  # A failed or raised commit wrote nothing, so the provisional marks it
+  # placed must go. Compare-and-clear by generation keeps a settled mark, or
+  # a newer batch's provisional mark, in place.
+  defp clear_pending(state, {entity_ids, generation}) do
+    DirtyTracker.clear_pending_batch(entity_ids, generation, state.dirty_set)
   end
 
   defp mark_committed(%{watermark_tracker: nil}, _gsn_start, _gsn_end), do: :ok

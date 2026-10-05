@@ -82,6 +82,69 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
     end
   end
 
+  describe "provisional marks" do
+    test "mark_pending_batch/2 makes entities dirty before a commit lands" do
+      %{dirty_set: dirty_set} = with_isolated_tracker()
+
+      refute DirtyTracker.dirty?("todo_abc", dirty_set)
+
+      generation = DirtyTracker.mark_pending_batch(["todo_abc", "todo_xyz"], dirty_set)
+
+      assert is_integer(generation)
+      assert DirtyTracker.dirty?("todo_abc", dirty_set)
+      assert DirtyTracker.dirty?("todo_xyz", dirty_set)
+      assert DirtyTracker.pending?(DirtyTracker.dirty_generation("todo_abc", dirty_set))
+    end
+
+    test "settling a provisional mark replaces it with a settled one" do
+      %{dirty_set: dirty_set} = with_isolated_tracker()
+
+      DirtyTracker.mark_pending_batch(["todo_abc"], dirty_set)
+      :ok = DirtyTracker.mark_dirty_batch(["todo_abc"], dirty_set)
+
+      assert DirtyTracker.dirty?("todo_abc", dirty_set)
+      refute DirtyTracker.pending?(DirtyTracker.dirty_generation("todo_abc", dirty_set))
+    end
+
+    test "clear_pending_batch/3 clears only the exact provisional generation" do
+      %{dirty_set: dirty_set} = with_isolated_tracker()
+
+      generation = DirtyTracker.mark_pending_batch(["todo_abc"], dirty_set)
+
+      :ok = DirtyTracker.clear_pending_batch(["todo_abc"], generation + 1, dirty_set)
+      assert DirtyTracker.dirty?("todo_abc", dirty_set)
+
+      :ok = DirtyTracker.clear_pending_batch(["todo_abc"], generation, dirty_set)
+      refute DirtyTracker.dirty?("todo_abc", dirty_set)
+    end
+
+    test "clear_pending_batch/3 leaves a settled mark in place" do
+      %{dirty_set: dirty_set} = with_isolated_tracker()
+
+      generation = DirtyTracker.mark_pending_batch(["todo_abc"], dirty_set)
+      :ok = DirtyTracker.mark_dirty_batch(["todo_abc"], dirty_set)
+
+      :ok = DirtyTracker.clear_pending_batch(["todo_abc"], generation, dirty_set)
+
+      assert DirtyTracker.dirty?("todo_abc", dirty_set)
+      refute DirtyTracker.pending?(DirtyTracker.dirty_generation("todo_abc", dirty_set))
+    end
+
+    test "settle_all_pending/1 converts surviving provisional marks without touching settled ones" do
+      %{dirty_set: dirty_set} = with_isolated_tracker()
+
+      DirtyTracker.mark_pending_batch(["todo_abc"], dirty_set)
+      :ok = DirtyTracker.mark_dirty_batch(["todo_xyz"], dirty_set)
+      settled_xyz = DirtyTracker.dirty_generation("todo_xyz", dirty_set)
+
+      :ok = DirtyTracker.settle_all_pending(dirty_set)
+
+      assert DirtyTracker.dirty?("todo_abc", dirty_set)
+      refute DirtyTracker.pending?(DirtyTracker.dirty_generation("todo_abc", dirty_set))
+      assert DirtyTracker.dirty_generation("todo_xyz", dirty_set) == settled_xyz
+    end
+  end
+
   describe "clear_dirty/3" do
     test "clears when the observed generation matches" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
