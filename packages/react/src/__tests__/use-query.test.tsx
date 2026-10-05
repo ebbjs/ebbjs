@@ -132,6 +132,26 @@ describe("useQuery", () => {
     expect(screen.getByTestId("titles").textContent).toBe("Renamed");
   });
 
+  it("re-renders when a matching row is deleted", async () => {
+    await seed(client, "todo_1", "Ship it", false);
+    const onRender = vi.fn();
+
+    renderWithClient(client, <TodoList completed={false} onRender={onRender} />);
+    await flush();
+    expect(screen.getByTestId("titles").textContent).toBe("Ship it");
+    const rendersBefore = onRender.mock.calls.length;
+
+    await act(async () => {
+      await client.storage.entities.set({
+        ...mkTodo("todo_1", "Ship it", false),
+        deleted_hlc: "2",
+      });
+    });
+
+    expect(screen.getByTestId("titles").textContent).toBe("");
+    expect(onRender.mock.calls.length).toBeGreaterThan(rendersBefore);
+  });
+
   it("does not re-render on a change that leaves the result set unchanged", async () => {
     await seed(client, "todo_1", "Match", false);
     const onRender = vi.fn();
