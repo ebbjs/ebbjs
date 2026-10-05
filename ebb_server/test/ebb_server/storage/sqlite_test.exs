@@ -125,6 +125,67 @@ defmodule EbbServer.Storage.SQLiteTest do
       assert result.last_gsn == 2
       assert result.updated_hlc == 2000
     end
+
+    test "an older last_gsn does not overwrite a newer row", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      newer = %{
+        id: "todo_abc",
+        type: "todo",
+        data: ~s({"fields":{"title":{"value":"newer"}}}),
+        created_hlc: 1000,
+        updated_hlc: 3000,
+        deleted_hlc: nil,
+        deleted_by: nil,
+        last_gsn: 3
+      }
+
+      older = %{
+        newer
+        | data: ~s({"fields":{"title":{"value":"older"}}}),
+          updated_hlc: 2000,
+          last_gsn: 2
+      }
+
+      :ok = SQLite.upsert_entity(newer, name)
+      :ok = SQLite.upsert_entity(older, name)
+
+      assert {:ok, result} = SQLite.get_entity("todo_abc", name)
+      assert result.last_gsn == 3
+      assert result.data == newer.data
+      assert result.updated_hlc == 3000
+    end
+
+    test "an equal last_gsn still overwrites", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      first = %{
+        id: "todo_abc",
+        type: "todo",
+        data: ~s({"fields":{"title":{"value":"first"}}}),
+        created_hlc: 1000,
+        updated_hlc: 3000,
+        deleted_hlc: nil,
+        deleted_by: nil,
+        last_gsn: 3
+      }
+
+      second = %{
+        first
+        | data: ~s({"fields":{"title":{"value":"second"}}}),
+          updated_hlc: 3001
+      }
+
+      :ok = SQLite.upsert_entity(first, name)
+      :ok = SQLite.upsert_entity(second, name)
+
+      assert {:ok, result} = SQLite.get_entity("todo_abc", name)
+      assert result.last_gsn == 3
+      assert result.data == second.data
+      assert result.updated_hlc == 3001
+    end
   end
 
   describe "generated columns" do
