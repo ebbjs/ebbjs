@@ -5,7 +5,11 @@
 const files = [
   {
     name: "model.ts",
-    html: `<span class="text-stone-400">import</span> { <span class="text-stone-200">e</span>, <span class="text-stone-200">defineEntity</span>, <span class="text-stone-200">defineSchema</span> } <span class="text-stone-400">from</span> <span class="text-stone-400">"@ebbjs/client"</span>;
+    html: `<span class="text-stone-400">import</span> {
+  <span class="text-stone-200">e</span>,
+  <span class="text-stone-200">defineEntity</span>,
+  <span class="text-stone-200">defineSchema</span>,
+} <span class="text-stone-400">from</span> <span class="text-stone-400">"@ebbjs/client"</span>;
 
 <span class="text-stone-400">const</span> <span class="text-stone-200">todo</span> = <span class="text-stone-300">defineEntity</span>(<span class="text-stone-400">"todo"</span>, {
   <span class="text-stone-300">title</span>: e.<span class="text-stone-300">string</span>(),
@@ -39,7 +43,9 @@ const files = [
 });
 
 <span class="text-stone-600">// Update</span>
-<span class="text-stone-400">await</span> client.todo.<span class="text-stone-300">update</span>(todo.id, { <span class="text-stone-300">completed</span>: <span class="text-stone-200">true</span> });
+<span class="text-stone-400">await</span> client.todo.<span class="text-stone-300">update</span>(todo.id, {
+  <span class="text-stone-300">completed</span>: <span class="text-stone-200">true</span>,
+});
 
 <span class="text-stone-600">// Query &mdash; works offline</span>
 <span class="text-stone-400">const</span> <span class="text-stone-200">openTodos</span> = <span class="text-stone-400">await</span> client.todo
@@ -114,16 +120,16 @@ const files = [
             </div>
 
             <!-- Code pane -->
-            <div class="flex-1 min-w-0 relative min-h-[380px] sm:min-h-[440px]">
+            <div class="flex-1 min-w-0 grid min-h-[380px] sm:min-h-[440px]">
               {files.map((file, i) => (
                 <div
                   data-dx-panel={i}
                   class:list={[
-                    "absolute inset-0 p-4 sm:p-6 transition-opacity duration-200",
+                    "col-start-1 row-start-1 min-w-0 p-4 sm:p-6 transition-opacity duration-200",
                     i === 0 ? "opacity-100" : "opacity-0 pointer-events-none",
                   ]}
                 >
-                  <pre class="font-mono text-xs sm:text-sm leading-relaxed text-stone-500 select-none overflow-x-hidden" set:html={file.html} />
+                  <pre class="font-mono text-xs sm:text-sm leading-relaxed text-stone-500 select-none overflow-x-auto" set:html={file.html} />
                 </div>
               ))}
             </div>
