@@ -53,8 +53,8 @@ defmodule EbbServer.Sync.CatchUp do
     watermark = WatermarkTracker.committed_watermark()
 
     to_key_gsn = if watermark == 0, do: 1_000_000, else: watermark + 1
-    from_key = <<group_id::binary, offset + 1::unsigned-big-integer-size(64)>>
-    to_key = <<group_id::binary, to_key_gsn::unsigned-big-integer-size(64)>>
+    from_key = RocksDB.encode_group_action_key(group_id, offset + 1)
+    to_key = RocksDB.encode_group_action_key(group_id, to_key_gsn)
 
     entries =
       cf_group
@@ -88,10 +88,7 @@ defmodule EbbServer.Sync.CatchUp do
   defp parse_entries(entries) do
     gsns =
       Enum.map(entries, fn {key, _action_id} ->
-        key_size = byte_size(key)
-        gsn_bytes = 8
-        group_id_size = key_size - gsn_bytes
-        <<_group_id::binary-size(group_id_size), gsn::unsigned-big-integer-size(64)>> = key
+        {_group_id, gsn} = RocksDB.decode_group_action_key(key)
         gsn
       end)
 

@@ -35,6 +35,19 @@ defmodule EbbServer.Sync.FanOutRouter do
   writer's GSN 5 before another's GSN 3. Today, with one Writer, the
   watermark gating is trivially satisfied.
 
+  ## Restart resume
+
+  The in-memory pending buffer is lost if the Router restarts. The
+  highest pushed GSN is not: `EbbServer.Sync.FanOutFrontier` persists it
+  so `init/1` can resume. On a restart the Router re-derives the
+  un-pushed committed ranges from `cf_actions` (and their group sets from
+  `cf_group_actions`) between the persisted frontier and the log max, then
+  drains them against the watermark. This also recovers commits that
+  landed while the Router was down, whose `{:batch_committed, ...}` the
+  Writer dropped via its `Process.whereis/1` guard. A cold boot starts
+  from the current watermark instead, so it never replays history to
+  live subscribers; connecting clients catch up from the log.
+
   ## SSE out-of-order dispatch is safe
 
   Even when `process_batch/4` returns disjoint GSN ranges (possible when
@@ -48,6 +61,8 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   - `EbbServer.Sync.GroupServer` — one pid per active group; holds its
     SSE subscribers' senders.
+  - `EbbServer.Sync.FanOutFrontier` — persisted last-pushed GSN across a
+    Router restart.
   - `EbbServer.Sync.SSEConnection` — one pid per live `GET /sync/live`
     subscription; receives pushes via its GroupServer.
 
@@ -65,7 +80,7 @@ defmodule EbbServer.Sync.FanOutRouter do
     WatermarkTracker
   }
 
-  alias EbbServer.Sync.{GroupDynamicSupervisor, GroupServer}
+  alias EbbServer.Sync.{FanOutFrontier, GroupDynamicSupervisor, GroupServer}
 
   @type t :: %__MODULE__{
           pending_notifications: [{non_neg_integer(), non_neg_integer()}],
@@ -103,7 +118,64 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   @impl true
   def init(_opts) do
-    {:ok, %__MODULE__{}}
+    case FanOutFrontier.get() do
+      :empty -> {:ok, cold_start()}
+      {:ok, last_pushed_gsn} -> {:ok, resume(last_pushed_gsn)}
+    end
+  end
+
+  # A cold boot must not replay the entire log to live subscribers:
+  # connecting clients catch up on connect. Seeding the frontier with the
+  # current watermark makes that explicit.
+  defp cold_start do
+    last_pushed_gsn = committed_watermark()
+    FanOutFrontier.put(last_pushed_gsn)
+    %__MODULE__{last_pushed_gsn: last_pushed_gsn}
+  end
+
+  # Resume after a Router-only restart, or after a commit that landed while
+  # the Router was down (the Writer's `Process.whereis/1` guard dropped its
+  # `{:batch_committed, ...}`). The in-memory buffer is re-derived from the
+  # durable log rather than persisted.
+  defp resume(last_pushed_gsn) do
+    max_gsn = RocksDB.get_max_gsn()
+
+    {pending_notifications, pending_groups} =
+      if max_gsn > last_pushed_gsn do
+        {ranges, groups_by_gsn} = recover_committed(last_pushed_gsn + 1, max_gsn)
+        {ranges, fill_missing_groups(ranges, groups_by_gsn)}
+      else
+        {[], %{}}
+      end
+
+    state = %__MODULE__{
+      pending_notifications: pending_notifications,
+      pending_groups: pending_groups,
+      last_pushed_gsn: last_pushed_gsn
+    }
+
+    {to_push, remaining, new_last} = drain_pending(state, committed_watermark())
+    push_and_update(state, to_push, remaining, new_last)
+  end
+
+  # `dispatch_to_groups/3` falls back to cache-based `resolve_group_ids/2`
+  # for GSNs the notifier did not annotate. Recovered Actions have no
+  # notifier and the caches may have moved since the commit, so seed an
+  # entry for every recovered GSN (`[]` when the Action had no group).
+  defp fill_missing_groups(ranges, groups_by_gsn) do
+    Enum.reduce(ranges, groups_by_gsn, fn {from, to}, acc ->
+      Enum.reduce(from..to, acc, &Map.put_new(&2, &1, []))
+    end)
+  end
+
+  # The tracker is a sibling under the Storage supervisor and is up before
+  # the Sync tree in production, but the Router must still boot if it is not.
+  defp committed_watermark do
+    if Process.whereis(WatermarkTracker) do
+      WatermarkTracker.committed_watermark()
+    else
+      0
+    end
   end
 
   @impl true
@@ -286,12 +358,76 @@ defmodule EbbServer.Sync.FanOutRouter do
     {to_push, remaining, new_last}
   end
 
+  @doc """
+  Re-derives the un-pushed committed GSN ranges in `[from, to]` and the
+  group set each recovered Action belongs to, straight from the durable
+  log.
+
+  Called only by `init/1` when the persisted pushed frontier is behind the
+  log (a Router restart or a commit that landed while the Router was
+  down). Keys alone drive the range folding; `push_gsn_range/3` re-reads
+  the Actions when it drains. The group scan is a full
+  `cf_group_actions` pass so a group that gains a subscriber after the
+  restart still receives the pending Action live.
+
+  Public for unit testing; not part of the GenServer contract.
+  """
+  @spec recover_committed(non_neg_integer(), non_neg_integer()) ::
+          {[{non_neg_integer(), non_neg_integer()}], %{non_neg_integer() => [String.t()]}}
+  def recover_committed(from, to) when from <= to do
+    {committed_ranges(from, to), groups_by_gsn(from, to)}
+  end
+
+  defp committed_ranges(from, to) do
+    cf = RocksDB.cf_actions()
+    from_key = RocksDB.encode_gsn_key(from)
+    to_key = RocksDB.encode_gsn_key(to + 1)
+
+    RocksDB.range_iterator(cf, from_key, to_key)
+    |> Stream.map(fn {key, _value} -> RocksDB.decode_gsn_key(key) end)
+    |> Enum.reduce([], &fold_gsn_into_range/2)
+    |> Enum.reverse()
+  end
+
+  # Present GSNs arrive in ascending order, so the range being built is
+  # always at the head: extend it when the next GSN is contiguous, start
+  # a new one across a hole.
+  defp fold_gsn_into_range(gsn, [{range_from, range_to} | rest]) when gsn == range_to + 1 do
+    [{range_from, gsn} | rest]
+  end
+
+  defp fold_gsn_into_range(gsn, acc), do: [{gsn, gsn} | acc]
+
+  defp groups_by_gsn(from, to) do
+    RocksDB.full_iterator(RocksDB.cf_group_actions())
+    |> Stream.flat_map(fn {key, _value} ->
+      case RocksDB.decode_group_action_key(key) do
+        {group_id, gsn} when gsn >= from and gsn <= to -> [{group_id, gsn}]
+        _ -> []
+      end
+    end)
+    |> Enum.reduce(%{}, fn {group_id, gsn}, acc ->
+      Map.update(acc, gsn, [group_id], &[group_id | &1])
+    end)
+    |> Map.new(fn {gsn, group_ids} ->
+      {gsn, group_ids |> Enum.uniq() |> Enum.sort()}
+    end)
+  end
+
   defp push_and_update(state, to_push, remaining, new_last) do
+    # A duplicate or overlapping sub-frontier range can return a `new_last`
+    # below the current frontier; the GSN invariant is never rewind, so
+    # clamp before it reaches memory or the persisted frontier.
+    new_last = max(new_last, state.last_pushed_gsn)
     pushed_gsns = Enum.flat_map(to_push, fn {from, to} -> Enum.to_list(from..to) end)
 
     for {from, to} <- to_push do
       push_gsn_range(from, to, state.pending_groups)
     end
+
+    # Persist after pushing: at-least-once. A crash between the push and
+    # the persist re-pushes the range on resume, which SSE tolerates.
+    FanOutFrontier.put(new_last)
 
     %{
       state

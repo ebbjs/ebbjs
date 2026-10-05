@@ -109,7 +109,7 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
   end
 
   defp assert_same_action(action, group_id) do
-    key = <<group_id::binary, action["gsn"]::unsigned-big-integer-size(64)>>
+    key = RocksDB.encode_group_action_key(group_id, action["gsn"])
 
     assert {:ok, action_id} = RocksDB.get(RocksDB.cf_group_actions(), key)
     assert action_id == action["id"]
