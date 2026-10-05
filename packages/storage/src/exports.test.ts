@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
  *
  *   @ebbjs/storage/memory     — createMemoryAdapter
  *   @ebbjs/storage/indexeddb  — createIndexedDBAdapter, IndexedDBAdapterOptions
- *   @ebbjs/storage/types      — ActionLog, DirtyTracker, EntityStore, CursorStore, StorageAdapter
+ *   @ebbjs/storage/types      — ActionLog, DirtyTracker, EntityStore, CursorStore, StorageAdapter, OutboxStore
  */
 
 describe("@ebbjs/storage subpaths", () => {

@@ -7,6 +7,7 @@ import { createIndexedDBActionLog } from "./action-log.indexeddb";
 import { createIndexedDBCursorStore } from "./cursor-store.indexeddb";
 import { createIndexedDBDirtyTracker } from "./dirty-tracker.indexeddb";
 import { createIndexedDBEntityStore } from "./entity-store.indexeddb";
+import { createIndexedDBOutboxStore } from "./outbox-store.indexeddb";
 
 export interface IndexedDBAdapterOptions {
   dbName?: string;
@@ -51,6 +52,7 @@ export const createIndexedDBAdapter = async (
     materializeKeepDirty,
   } = createIndexedDBEntityStore(db, actionLog, dirtyTracker);
   const cursorStore = createIndexedDBCursorStore(db);
+  const outboxStore = createIndexedDBOutboxStore(db);
 
   return {
     actions: {
@@ -101,6 +103,8 @@ export const createIndexedDBAdapter = async (
     },
 
     cursors: cursorStore,
+
+    outbox: outboxStore,
 
     changeEmitter,
 

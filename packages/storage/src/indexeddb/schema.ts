@@ -1,5 +1,6 @@
 import type { IDBPDatabase, DBSchema } from "idb";
 import type { Action, Entity } from "@ebbjs/core";
+import type { OutboxStatus } from "../types/outbox-store";
 import type { RelationshipRows } from "../internal/relationship-index";
 
 /**
@@ -9,15 +10,18 @@ import type { RelationshipRows } from "../internal/relationship-index";
  *
  * Pre-release reset: this was lowered from a shipped v2 to 1 with no
  * migration. `IndexedDB` refuses to open a database at a version below
- * the one it already holds (`VersionError`), so a browser carrying an
- * `ebb-storage` database at v2 must clear it (or the caller must pass a
- * new `dbName`) before this adapter can open. Bump this when adding or
+ * the one it already holds (`VersionError`), so a browser carrying the
+ * legacy `ebb-storage` database at v2 must clear it (or the caller must
+ * pass a new `dbName`) before this adapter can open. Version 3 added the
+ * `outbox` store for issue #228; 2 is skipped so that any database below
+ * 3 (v1, or the legacy v2) triggers the upgrade callback and gets the new
+ * store rather than silently missing it. Bump this when adding or
  * changing object stores.
  */
-export const EBB_SCHEMA_VERSION = 1;
+export const EBB_SCHEMA_VERSION = 3;
 
 /**
- * Structural schema for the five object stores the IndexedDB adapter
+ * Structural schema for the six object stores the IndexedDB adapter
  * uses. Component factories (`action-log.indexeddb`, etc.) are typed
  * against this interface so the production schema and any test schema
  * satisfying the same shape can both be passed in without a cast.
@@ -64,10 +68,20 @@ export interface EbbDBSchema extends DBSchema {
     key: string;
     value: { groupId: string; cursor: number };
   };
+  /**
+   * Durable buffer of pending local Actions, keyed by `action.id`.
+   * `createEbbStores` creates the store for databases that upgrade
+   * from an earlier version; its absence at a version below 3 is
+   * expected.
+   */
+  outbox: {
+    key: string;
+    value: { action: Action; status: OutboxStatus; enqueuedAtHlc: string };
+  };
 }
 
 /**
- * Idempotently creates the five Ebb object stores on a database. Used
+ * Idempotently creates the six Ebb object stores on a database. Used
  * by both the production adapter (during the `openDB` upgrade) and the
  * test helper (to spin up a fresh DB per test). Safe to call against a
  * database that already has the stores — existing stores are left
@@ -103,5 +117,11 @@ export const createEbbStores = (
   }
   if (!database.objectStoreNames.contains("cursors")) {
     database.createObjectStore("cursors", { keyPath: "groupId" });
+  }
+  if (!database.objectStoreNames.contains("outbox")) {
+    // Key path reaches into the entry so the stored row keeps the
+    // `{ action, status, enqueuedAtHlc }` shape without a denormalized
+    // copy of the id.
+    database.createObjectStore("outbox", { keyPath: "action.id" });
   }
 };
