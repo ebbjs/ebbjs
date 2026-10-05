@@ -570,6 +570,10 @@ export function createEntityNamespace<
       }
       const matching = new Map<string, Entity>();
       const matches = (entity: Entity): boolean => {
+        // A soft-deleted row is not a member of the live collection,
+        // so it drops out of the set and fires like any other removal.
+        // `get(id)` still returns the tombstone for per-row inspection.
+        if (entity.deleted_hlc !== null) return false;
         for (const [field, value] of Object.entries(filter)) {
           const fieldEntry = entity.data?.fields?.[field];
           const current = fieldEntry === undefined ? undefined : fieldEntry.value;

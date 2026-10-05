@@ -18,6 +18,9 @@ import { createClient } from "../client";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { callApplyAction } from "../test-utils";
 
+/** Let the async subscribe hydration settle before mutating storage. */
+const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
 const todo = defineEntity("todo", {
   title: e.string(),
   completed: e.boolean(),
@@ -102,6 +105,58 @@ describe("client.<entity>.subscribe(filter, cb)", () => {
 
     // A new entity that's `completed: true` doesn't match the filter.
     await callApplyAction(client, mkAction(2, "todo_done_2", true), "grp_1");
+    globalExpect(seen).toHaveLength(0);
+
+    unsub();
+  });
+
+  it("fires with the smaller snapshot when a matching row is soft-deleted", async () => {
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      storage,
+      schema,
+    });
+
+    await callApplyAction(client, mkAction(1, "todo_a", false), "grp_1");
+
+    const seen: { count: number; titles: string[] }[] = [];
+    const unsub = client.todo.subscribe({ completed: false }, (snapshot) => {
+      seen.push({ count: snapshot.count, titles: snapshot.entities.map((e) => e.title).sort() });
+    });
+    await flush();
+
+    const live = await client.storage.entities.get("todo_a");
+    if (live === null) throw new Error("todo_a must be materialized");
+    await client.storage.entities.set({ ...live, deleted_hlc: "2" });
+
+    globalExpect(seen).toEqual([{ count: 0, titles: [] }]);
+
+    unsub();
+  });
+
+  it("does not fire when a non-matching row is soft-deleted", async () => {
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      storage,
+      schema,
+    });
+
+    await callApplyAction(client, mkAction(1, "todo_done", true), "grp_1");
+
+    const seen: { count: number }[] = [];
+    const unsub = client.todo.subscribe({ completed: false }, (snapshot) => {
+      seen.push({ count: snapshot.count });
+    });
+    await flush();
+
+    const done = await client.storage.entities.get("todo_done");
+    if (done === null) throw new Error("todo_done must be materialized");
+    await client.storage.entities.set({ ...done, deleted_hlc: "2" });
+
     globalExpect(seen).toHaveLength(0);
 
     unsub();

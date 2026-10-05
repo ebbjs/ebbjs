@@ -1,18 +1,20 @@
 /**
  * @ebbjs/react — React bindings for the `@ebbjs/client` namespace.
  *
- * This first slice ships the client plumbing every later hook builds on:
+ * Ships the client plumbing plus the first data hook:
  *
- * - `EbbProvider` — context carrying the `SyncClient`
- * - `useClient` — read the client, throwing outside a provider
+ * - `EbbProvider` — context carrying a `NamespacedClient<S, TActions>`
+ * - `useClient<S>()` — read the client typed by the caller's schema
  * - `useConnection` — `useSyncExternalStore` over connection state
+ * - `useQuery` — `useSyncExternalStore` over a materialized collection query
  *
- * Data hooks (`useQuery`, `useEntity`, `useEntityMutations`) land in
- * follow-up slices; the package deliberately stops at connection state.
+ * `useEntity` and `useEntityMutations` land in follow-up slices.
  */
 
 export { EbbProvider, useClient, type EbbProviderProps } from "./context";
 
 export { useConnection } from "./use-connection";
+
+export { useQuery, type QueryRows, type UseQueryResult } from "./use-query";
 
 export type { ConnectionState } from "@ebbjs/client";

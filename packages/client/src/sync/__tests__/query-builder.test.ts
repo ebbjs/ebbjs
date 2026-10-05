@@ -12,7 +12,12 @@ import type { Entity } from "@ebbjs/core";
 
 import { defineEntity, e } from "../../schema/entity";
 import { EntityValidationError } from "../../schema/entity-registry";
-import { buildQueryBuilder, projectEntity, projectRows } from "../query-builder";
+import {
+  buildQueryBuilder,
+  buildLazyQueryBuilder,
+  projectEntity,
+  projectRows,
+} from "../query-builder";
 
 const todo = defineEntity("todo", {
   title: e.string(),
@@ -156,6 +161,16 @@ describe("buildQueryBuilder — thenable projection", () => {
     const out = await builder.then((rows) => rows.map((r) => r.title));
     expect(out).toEqual(["a"]);
   });
+
+  it("awaited thenable rejects when the candidate loader rejects", async () => {
+    // Regression: a rejecting loader must settle the awaited builder
+    // rather than leaving it pending with an unhandled inner rejection.
+    const builder = buildLazyQueryBuilder(
+      () => Promise.reject(new Error("loader down")),
+      todo.shape,
+    );
+    await expect(builder).rejects.toThrow("loader down");
+  });
 });
 
 describe("buildQueryBuilder — .toRaw() escape hatch", () => {
@@ -182,6 +197,28 @@ describe("buildQueryBuilder — .toRaw() escape hatch", () => {
     // Wire envelope is intact: `data.fields.title.value` is "a", not the projected string.
     expect(out[0]?.data?.fields?.title).toEqual({ value: "a", update_id: "u" });
     expect(out[0]?.data?.fields?.body).toEqual({ value: null, update_id: "u" });
+  });
+});
+
+describe("buildQueryBuilder — tombstone exclusion", () => {
+  const tombstone = (entity: Entity): Entity => ({ ...entity, deleted_hlc: "9" });
+
+  it("excludes a tombstoned candidate from every terminal", async () => {
+    const dead = tombstone(mkEntity("1", { title: "gone", completed: false }));
+    const live = mkEntity("2", { title: "here", completed: false });
+    const builder = buildQueryBuilder([dead, live], todo.shape);
+
+    expect((await builder).map((r) => r.title)).toEqual(["here"]);
+    expect(await builder.count()).toBe(1);
+    expect((await builder.first())?.title).toBe("here");
+    expect((await builder.toRaw()).map((e) => e.id)).toEqual(["2"]);
+  });
+
+  it("keeps a live row that carries the same fields as a tombstone", async () => {
+    const fields = { title: "same", completed: false };
+    const rows = [tombstone(mkEntity("1", fields)), mkEntity("2", fields)];
+    const out = await buildQueryBuilder(rows, todo.shape);
+    expect(out.map((r) => r.title)).toEqual(["same"]);
   });
 });
 

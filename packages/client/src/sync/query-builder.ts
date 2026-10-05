@@ -21,6 +21,10 @@
  * - `[Symbol.asyncIterator]()` — streaming iterator of projected rows.
  * - `.toRaw()` — untyped escape hatch returning `readonly Entity[]`.
  *
+ * Every terminal reads the live collection: a tombstoned candidate
+ * (`deleted_hlc` set) is never a survivor, whatever the filters.
+ * Deleted-row inspection stays on `get(id)` / the storage adapter.
+ *
  * The builder is thenable (has a `.then` method), not a Promise, so
  * `await qb` and `qb.then(...)` work via the standard thenable
  * protocol. Each chain method returns a new builder; the original
@@ -192,6 +196,23 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
   [Symbol.asyncIterator](): AsyncIterableIterator<Static<TObject<ShapeFields<TFields>>>>;
   /** Materialize the untyped entities, skipping the projection. */
   toRaw(): Promise<readonly Entity[]>;
+  /**
+   * Reactive trigger scoped to the chain's source entity type: fires
+   * whenever any entity of that type materializes. Terminal methods
+   * read the latest snapshot, so a listener re-materializes to observe
+   * the new result. No-op when the builder carries no query context or
+   * the adapter ships no change emitter.
+   *
+   * Deliberately coarser than `EntityNamespace.subscribe`: a source
+   * entity field change fires even when the chain's filters would
+   * exclude it, leaving the consumer to suppress spurious work by
+   * comparing snapshots. That is what lets a matching row whose
+   * non-filtered field changed wake the chain — the membership-only
+   * listener would stay silent. Relationship and membership filters
+   * are a known limitation: a change to a bare `relationship` row (or
+   * an `entityGroup` row) does not fire this source-type trigger.
+   */
+  subscribe(listener: () => void): () => void;
   /** Thenable — `await qb` resolves to the projected rows. */
   then<TResult1 = readonly Static<TObject<ShapeFields<TFields>>>[], TResult2 = never>(
     onfulfilled?:
@@ -285,12 +306,19 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
         const candidates = await loadCandidates();
         return apply(candidates);
       },
+      subscribe(listener) {
+        const emitter = context?.storage.changeEmitter;
+        if (emitter === undefined || context === undefined) return () => {};
+        return emitter.onTypeChange(context.entityName, listener);
+      },
       // oxlint-disable-next-line no-thenable -- the QueryBuilder is intentionally a thenable; awaiting it projects the chain.
       then(onfulfilled, onrejected) {
-        return loadCandidates().then(async (candidates) => {
-          const projected = projectRows(await apply(candidates), shape);
-          return Promise.resolve(projected).then(onfulfilled, onrejected);
-        });
+        // Forward `onrejected` onto the whole lazy chain, not just the
+        // projection step: a rejecting candidate loader must settle the
+        // awaited builder as a rejection rather than leaving it pending.
+        return loadCandidates()
+          .then(async (candidates) => projectRows(await apply(candidates), shape))
+          .then(onfulfilled, onrejected);
       },
     };
     return builder;
@@ -388,7 +416,9 @@ async function applyFilters(
   rows: readonly Entity[],
   filters: readonly Filter[],
 ): Promise<Entity[]> {
-  let out = rows.slice();
+  // A query reads the live collection, so tombstones are excluded
+  // uniformly; deleted-row inspection stays on `get(id)` / the storage adapter.
+  let out = rows.filter((row) => row.deleted_hlc === null);
   for (const filter of filters) {
     if (filter.kind === "field") {
       out = out.filter((row) => eqField(row, filter.key, filter.value));
