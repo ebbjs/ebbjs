@@ -3,8 +3,6 @@ defmodule EbbServer.Application do
 
   use Application
 
-  alias EbbServer.Storage.CacheTables
-
   @impl true
   def start(_type, _args) do
     data_dir = runtime_data_dir()
@@ -14,27 +12,6 @@ defmodule EbbServer.Application do
       {EbbServer.Storage.Supervisor, [data_dir: data_dir]},
       {Registry, keys: :unique, name: EbbServer.Sync.GroupRegistry},
       EbbServer.Sync.Supervisor,
-      # Writer needs the WatermarkTracker's registered name so that
-      # post-write WatermarkTracker.advance_watermark/1 actually fires.
-      # Without it, watermark stays at 0 and SSE subscribers with cursor
-      # > 0 get the stale-cursor response (and crash because the response
-      # wasn't switched to chunked mode first). The Writer also needs the
-      # FanOutRouter's registered name so it can notify it of each
-      # committed batch; without that, SSE subscribers never see writes.
-      # The cache table names are resolved through CacheTables, which
-      # reads the :persistent_term entries populated by Storage.Supervisor
-      # during boot. Per-call publication keeps a stale :persistent_term
-      # from reaching a later writer.
-      {EbbServer.Storage.Writer,
-       group_members: CacheTables.group_members(),
-       group_members_by_id: CacheTables.group_members_by_id(),
-       entity_groups: CacheTables.entity_groups(),
-       entity_groups_by_id: CacheTables.entity_groups_by_id(),
-       entity_groups_by_group: CacheTables.entity_groups_by_group(),
-       relationships: CacheTables.relationships(),
-       relationships_by_id: CacheTables.relationships_by_id(),
-       watermark_tracker: EbbServer.Storage.WatermarkTracker,
-       fan_out_router: EbbServer.Sync.FanOutRouter},
       {Bandit, plug: EbbServer.Sync.Router, port: port}
     ]
 

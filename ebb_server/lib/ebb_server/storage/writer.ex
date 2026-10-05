@@ -6,17 +6,26 @@ defmodule EbbServer.Storage.Writer do
 
   ## Why a single Writer
 
-  Two invariants must hold for the on-disk Action log:
+  The Writer serializes claims and keeps each Writer's GSNs monotonic.
+  GSN ranges are claimed atomically from `GSNCounter` via `:atomics`,
+  but the final commit only happens here, so the order the log is
+  written and the order `FanOutRouter` is notified are the same.
 
-  1. **GSNs are unique and gap-free.** The catch-up endpoint answers
-     "give me Actions from GSN > cursor", and an unbounded GSN gap would
-     require O(n) latency. A single Writer is the simplest way to enforce
-     this — GSN ranges are claimed atomically from `GSNCounter` via
-     `:atomics`, but the final commit only happens here.
+  1. **Serialized claims.** Every committed batch is assigned its GSN
+     range in one process, so concurrent writers cannot interleave
+     claims and their fan-out in different orders.
   2. **Per-Writer GSN-monotonicity.** Multi-Writer pipelining is possible
      (the benchmark hit ~108k/s — see #130) but requires committed-watermark
      and ordered fan-out coordination not yet built. We keep one Writer in
      production; the architecture supports more.
+
+  The on-disk Action log is **not** gap-free. The watermark is a
+  *resolution frontier* — committed ∪ deliberately abandoned — so a
+  failed commit leaves a permanent hole in the log. Catch-up and fan-out
+  gate on that frontier, not on gap-free density: `FanOutRouter` pushes a
+  buffered range once the frontier has passed its end, and an abandoned
+  GSN simply has no durable Action to read. Permanent holes are fine;
+  liveness is the hard invariant.
 
   ## Hot path
 
@@ -27,8 +36,44 @@ defmodule EbbServer.Storage.Writer do
   notifies `FanOutRouter`. The notification carries the per-Action
   group set this pass resolved, so live fan-out indexes the same
   snapshot `cf_group_actions` was built from rather than re-deriving
-  groups after the system caches have moved. If anything fails, no GSNs
-  are returned to the caller.
+  groups after the system caches have moved.
+
+  ## Failure and recovery policy
+
+  A GSN range is claimed before the commit attempt, and a claim that is
+  never resolved stalls the watermark permanently. The Writer therefore
+  guarantees the claim is always resolved:
+
+  - **One commit attempt, no retry.** A commit failure abandons the
+    range: it is marked resolved (the watermark advances over the hole),
+    `FanOutRouter` is nudged with `{:range_resolved, from, to}` so it can
+    drain anything the hole was gating, and the caller gets
+    `{:error, {:rocksdb_write_failed, reason}}` (`503 write_failed`).
+    The client outbox is the only retry; the server never acks undurable
+    data and never rewinds or reuses the GSNs.
+  - **Structural resolution.** Claim → build → commit runs inside
+    `try/after`, and the `after` marks the range resolved. A raise while
+    building ops or an exception out of `commit_fn` abandons the range
+    (resolve, log, nudge `FanOutRouter`) and then re-raises, so the
+    exception path behaves like the failed-commit path and only a hard
+    kill can leave a claim unresolved. A failed commit and a raise
+    therefore both leave the frontier advanced before the nudge is sent.
+  - **Commit is the point of no return.** Once `commit_fn` returns `:ok`
+    the range is marked committed and the frontier advanced before any
+    other raise-capable step runs. The caller then gets the success
+    tuple. Dirty tracking and cache updates follow; if they raise, the
+    data is already durable, so the Writer logs, abnormally terminates
+    `EbbServer.Storage.SystemCache`, and relies on
+    `Storage.Supervisor`'s `rest_for_one` to rebuild the caches, the
+    watermark, and this Writer. The success reply is sent before that
+    escalation so a durable batch is never reported as lost.
+  - **Startup reconcile.** `init/1` raises the counter to the durable log
+    max and resolves any remaining tail, healing a Writer-only restart
+    that crashed between claim and resolve.
+
+  The test seam is the optional `:commit_fn` (default
+  `&RocksDB.write_batch/2`), used for both error injection and crash
+  simulation.
 
   ## cf_group_actions index and intra-action context
 
@@ -57,6 +102,8 @@ defmodule EbbServer.Storage.Writer do
   """
 
   use GenServer
+
+  require Logger
 
   alias EbbServer.Storage.PermissionChecker
   alias EbbServer.Storage.PermissionHelper
@@ -88,8 +135,9 @@ defmodule EbbServer.Storage.Writer do
           entity_groups_by_group: atom(),
           relationships: atom(),
           relationships_by_id: atom(),
-          fan_out_router: GenServer.name(),
-          watermark_tracker: GenServer.name()
+          commit_fn: (list(), keyword() -> :ok | {:error, term()}),
+          fan_out_router: GenServer.name() | nil,
+          watermark_tracker: GenServer.name() | nil
         }
   defstruct [
     :rocks_name,
@@ -102,6 +150,7 @@ defmodule EbbServer.Storage.Writer do
     :entity_groups_by_group,
     :relationships,
     :relationships_by_id,
+    :commit_fn,
     :fan_out_router,
     :watermark_tracker
   ]
@@ -142,9 +191,11 @@ defmodule EbbServer.Storage.Writer do
       )
 
     group_members_by_id =
-      Keyword.get(opts, :group_members_by_id) ||
-        raise ArgumentError,
-              "#{__MODULE__}.init/1 requires :group_members_by_id (pass it from the supervisor that owns the cache — see Sync.Supervisor for the boot wiring)"
+      Keyword.get(
+        opts,
+        :group_members_by_id,
+        CacheTables.group_members_by_id()
+      )
 
     entity_groups =
       Keyword.get(
@@ -154,9 +205,11 @@ defmodule EbbServer.Storage.Writer do
       )
 
     entity_groups_by_id =
-      Keyword.get(opts, :entity_groups_by_id) ||
-        raise ArgumentError,
-              "#{__MODULE__}.init/1 requires :entity_groups_by_id (pass it from the supervisor that owns the cache — see Sync.Supervisor for the boot wiring)"
+      Keyword.get(
+        opts,
+        :entity_groups_by_id,
+        CacheTables.entity_groups_by_id()
+      )
 
     entity_groups_by_group =
       Keyword.get(
@@ -173,28 +226,59 @@ defmodule EbbServer.Storage.Writer do
       )
 
     relationships_by_id =
-      Keyword.get(opts, :relationships_by_id) ||
-        raise ArgumentError,
-              "#{__MODULE__}.init/1 requires :relationships_by_id (pass it from the supervisor that owns the cache — see Sync.Supervisor for the boot wiring)"
+      Keyword.get(
+        opts,
+        :relationships_by_id,
+        CacheTables.relationships_by_id()
+      )
 
+    commit_fn = Keyword.get(opts, :commit_fn) || (&RocksDB.write_batch/2)
     fan_out_router = Keyword.get(opts, :fan_out_router, nil)
     watermark_tracker = Keyword.get(opts, :watermark_tracker, nil)
 
-    {:ok,
-     %__MODULE__{
-       rocks_name: rocks_name,
-       dirty_set: dirty_set,
-       gsn_counter: gsn_counter,
-       group_members: group_members,
-       group_members_by_id: group_members_by_id,
-       entity_groups: entity_groups,
-       entity_groups_by_id: entity_groups_by_id,
-       entity_groups_by_group: entity_groups_by_group,
-       relationships: relationships,
-       relationships_by_id: relationships_by_id,
-       fan_out_router: fan_out_router,
-       watermark_tracker: watermark_tracker
-     }}
+    state = %__MODULE__{
+      rocks_name: rocks_name,
+      dirty_set: dirty_set,
+      gsn_counter: gsn_counter,
+      group_members: group_members,
+      group_members_by_id: group_members_by_id,
+      entity_groups: entity_groups,
+      entity_groups_by_id: entity_groups_by_id,
+      entity_groups_by_group: entity_groups_by_group,
+      relationships: relationships,
+      relationships_by_id: relationships_by_id,
+      commit_fn: commit_fn,
+      fan_out_router: fan_out_router,
+      watermark_tracker: watermark_tracker
+    }
+
+    reconcile_resolution_frontier(state)
+
+    {:ok, state}
+  end
+
+  # A Writer-only restart can leave the counter ahead of the durable log:
+  # the crashed writer claimed a range it never committed, and the claim
+  # is still counted. Reuse of those GSNs is exactly what the resolution
+  # frontier prevents, so raise the counter to the durable max and resolve
+  # the abandoned tail. Idempotent on a clean boot, where the counter and
+  # the frontier already agree.
+  defp reconcile_resolution_frontier(%{watermark_tracker: nil}), do: :ok
+
+  defp reconcile_resolution_frontier(state) do
+    counter = GsnCounter.reconcile(state.gsn_counter, RocksDB.get_max_gsn(state.rocks_name))
+    watermark = WatermarkTracker.committed_watermark(state.watermark_tracker)
+
+    if counter > watermark do
+      Logger.warning(
+        "Writer reconciling abandoned GSN range #{watermark + 1}..#{counter} on startup"
+      )
+
+      WatermarkTracker.mark_range_resolved(watermark + 1, counter, state.watermark_tracker)
+      WatermarkTracker.advance_watermark(state.watermark_tracker)
+    end
+
+    :ok
   end
 
   @doc """
@@ -211,73 +295,179 @@ defmodule EbbServer.Storage.Writer do
      - cf_entity_actions: (subject_id, GSN) → action_id (materialization index)
      - cf_type_entities: (subject_type, subject_id) → <<>> (type index)
      - cf_group_actions: (group_id, GSN) → action_id (group catch-up index)
-  4. Write batch synchronously to RocksDB
+  4. Write batch synchronously to RocksDB (single attempt, no retry)
   5. Mark affected entities dirty in DirtyTracker
 
   Returns `{:ok, {gsn_start, gsn_end}, rejected_actions}` on success.
+
+  On a commit failure the claimed range is abandoned (resolved) and the
+  caller gets `{:error, {:rocksdb_write_failed, reason}}`. See the
+  moduledoc for the full failure/recovery policy.
   """
   @impl true
-  def handle_call({:write_actions, actions}, _from, state) when is_list(actions) do
+  def handle_call({:write_actions, actions}, from, state) when is_list(actions) do
     filtered = Enum.reject(actions, &(&1.updates == []))
 
-    if filtered == [] do
-      {:reply, {:ok, {0, 0}, []}, state}
-    else
-      batch_size = length(filtered)
+    case filtered do
+      [] ->
+        {:reply, {:ok, {0, 0}, []}, state}
 
-      {gsn_start, gsn_end} = GsnCounter.claim_gsn_range(batch_size, state.gsn_counter)
+      _ ->
+        {gsn_start, gsn_end} = GsnCounter.claim_gsn_range(length(filtered), state.gsn_counter)
 
-      rocks_name = state.rocks_name
-      resolve_opts = resolve_cache_opts(state)
+        case write_batch(filtered, gsn_start, gsn_end, state) do
+          {:ok, reply} ->
+            {:reply, reply, state}
 
-      {ops, groups_by_gsn} =
-        filtered
-        |> Enum.with_index(gsn_start)
-        |> Enum.map_reduce(%{}, fn {action, gsn}, acc ->
-          {action_ops, group_ids} =
-            build_action_ops(action, gsn, rocks_name, resolve_opts)
-
-          {action_ops, Map.put(acc, gsn, group_ids)}
-        end)
-
-      write_and_respond(
-        List.flatten(ops),
-        filtered,
-        gsn_start,
-        gsn_end,
-        groups_by_gsn,
-        state,
-        rocks_name
-      )
+          {:escalate, reply, reason} ->
+            # The batch is durable: reply first, then escalate, so the
+            # caller never sees a lost success when the rebuild tears this
+            # process down.
+            GenServer.reply(from, reply)
+            escalate_cache_failure(gsn_start, gsn_end, reason)
+            {:noreply, state}
+        end
     end
   end
 
-  defp write_and_respond(ops, filtered, gsn_start, gsn_end, groups_by_gsn, state, rocks_name) do
-    case RocksDB.write_batch(ops, name: rocks_name) do
+  # The `after` is the structural guarantee: however the body exits — a
+  # build-time raise, a failed commit, or a cache update that blows up
+  # after the commit landed — the claimed range ends up resolved. The
+  # rescue/catch abandon (resolve, log, nudge) before re-raising, so the
+  # exception path also tells `FanOutRouter` about the hole; the `after`
+  # repeats the resolve, which is idempotent.
+  defp write_batch(filtered, gsn_start, gsn_end, state) do
+    # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
+    try do
+      {ops, groups_by_gsn} = build_ops(filtered, gsn_start, state)
+      commit(filtered, ops, groups_by_gsn, gsn_start, gsn_end, state)
+    rescue
+      error ->
+        abandon(state, gsn_start, gsn_end, error)
+        reraise error, __STACKTRACE__
+    catch
+      kind, value ->
+        abandon(state, gsn_start, gsn_end, {kind, value})
+        :erlang.raise(kind, value, __STACKTRACE__)
+    after
+      resolve_range(state, gsn_start, gsn_end)
+    end
+  end
+
+  defp build_ops(filtered, gsn_start, state) do
+    resolve_opts = resolve_cache_opts(state)
+
+    {ops, groups_by_gsn} =
+      filtered
+      |> Enum.with_index(gsn_start)
+      |> Enum.map_reduce(%{}, fn {action, gsn}, acc ->
+        {action_ops, group_ids} =
+          build_action_ops(action, gsn, state.rocks_name, resolve_opts)
+
+        {action_ops, Map.put(acc, gsn, group_ids)}
+      end)
+
+    {List.flatten(ops), groups_by_gsn}
+  end
+
+  defp commit(filtered, ops, groups_by_gsn, gsn_start, gsn_end, state) do
+    case state.commit_fn.(ops, name: state.rocks_name) do
       :ok ->
-        entity_ids =
-          filtered
-          |> Enum.flat_map(fn action -> action.updates end)
-          |> Enum.map(fn update -> update.subject_id end)
-          |> Enum.uniq()
+        # Point of no return: make the range durable-resolved before any
+        # raise-capable cache bookkeeping runs.
+        mark_committed(state, gsn_start, gsn_end)
 
-        :ok = DirtyTracker.mark_dirty_batch(entity_ids, state.dirty_set)
-        update_system_caches(filtered, state)
+        case apply_post_commit(filtered, state) do
+          :ok ->
+            notify_batch_committed(state, gsn_start, gsn_end, groups_by_gsn)
+            {:ok, {:ok, {gsn_start, gsn_end}, []}}
 
-        if state.watermark_tracker do
-          :ok = WatermarkTracker.mark_range_committed(gsn_start, gsn_end, state.watermark_tracker)
-          WatermarkTracker.advance_watermark(state.watermark_tracker)
+          {:error, reason} ->
+            {:escalate, {:ok, {gsn_start, gsn_end}, []}, reason}
         end
-
-        if state.fan_out_router && Process.whereis(state.fan_out_router) do
-          send(state.fan_out_router, {:batch_committed, gsn_start, gsn_end, groups_by_gsn})
-        end
-
-        {:reply, {:ok, {gsn_start, gsn_end}, []}, state}
 
       {:error, reason} ->
-        {:reply, {:error, {:rocksdb_write_failed, reason}}, state}
+        abandon(state, gsn_start, gsn_end, reason)
+        {:ok, {:error, {:rocksdb_write_failed, reason}}}
     end
+  end
+
+  defp apply_post_commit(filtered, state) do
+    entity_ids =
+      filtered
+      |> Enum.flat_map(fn action -> action.updates end)
+      |> Enum.map(fn update -> update.subject_id end)
+      |> Enum.uniq()
+
+    :ok = DirtyTracker.mark_dirty_batch(entity_ids, state.dirty_set)
+    update_system_caches(filtered, state)
+    :ok
+  rescue
+    error -> {:error, error}
+  end
+
+  # The batch is durable, so the reply contract is success; the caches are
+  # now suspect, so the only safe move is to rebuild the storage tree from
+  # the log. `rest_for_one` tears down the caches, the watermark, and this
+  # Writer, and the new Writer reconciles on init.
+  defp escalate_cache_failure(gsn_start, gsn_end, reason) do
+    Logger.error(
+      "Writer committed GSN range #{gsn_start}..#{gsn_end} but a cache update failed " <>
+        "(#{inspect(reason)}); terminating SystemCache to rebuild the storage tree"
+    )
+
+    case Process.whereis(EbbServer.Storage.SystemCache) do
+      nil -> :ok
+      pid -> Process.exit(pid, :cache_update_failed)
+    end
+  end
+
+  defp abandon(state, gsn_start, gsn_end, reason) do
+    # Resolve before nudging so the router can only observe the advanced
+    # frontier. The `after` repeats this, harmlessly.
+    resolve_range(state, gsn_start, gsn_end)
+
+    Logger.error(
+      "Writer abandoned GSN range #{gsn_start}..#{gsn_end} without committing it: " <>
+        inspect(reason)
+    )
+
+    notify_range_resolved(state, gsn_start, gsn_end)
+  end
+
+  defp mark_committed(%{watermark_tracker: nil}, _gsn_start, _gsn_end), do: :ok
+
+  defp mark_committed(state, gsn_start, gsn_end) do
+    :ok = WatermarkTracker.mark_range_committed(gsn_start, gsn_end, state.watermark_tracker)
+    WatermarkTracker.advance_watermark(state.watermark_tracker)
+    :ok
+  end
+
+  defp resolve_range(%{watermark_tracker: nil}, _gsn_start, _gsn_end), do: :ok
+
+  defp resolve_range(state, gsn_start, gsn_end) do
+    WatermarkTracker.mark_range_resolved(gsn_start, gsn_end, state.watermark_tracker)
+    WatermarkTracker.advance_watermark(state.watermark_tracker)
+    :ok
+  end
+
+  defp notify_batch_committed(state, gsn_start, gsn_end, groups_by_gsn) do
+    notify_router(state, {:batch_committed, gsn_start, gsn_end, groups_by_gsn})
+  end
+
+  defp notify_range_resolved(state, gsn_start, gsn_end) do
+    notify_router(state, {:range_resolved, gsn_start, gsn_end})
+  end
+
+  # The Router is a sibling under the Sync supervisor, so it can be down
+  # during a rebuild; a `nil` `fan_out_router` (Writer unit tests) or a
+  # dead process is not an error.
+  defp notify_router(state, message) do
+    if state.fan_out_router && Process.whereis(state.fan_out_router) do
+      send(state.fan_out_router, message)
+    end
+
+    :ok
   end
 
   defp update_system_caches(actions, state) do
