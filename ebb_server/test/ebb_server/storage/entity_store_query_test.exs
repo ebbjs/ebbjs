@@ -326,6 +326,58 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
           dirty_set: dirty_set
         )
     end
+
+    test "query excludes an entity once its delete is materialized", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      group_id = "g_deleted_#{System.unique_integer([:positive])}"
+      actor_id = "a_deleted_#{System.unique_integer([:positive])}"
+      todo_id = "todo_deleted_#{System.unique_integer([:positive])}"
+
+      opts = [
+        rocks_name: rocks_name,
+        sqlite_name: sqlite_name,
+        dirty_set: dirty_set
+      ]
+
+      bootstrap_group(group_id, actor_id, writer_name)
+      write_todo(todo_id, group_id, actor_id, writer_name)
+
+      # Materialize the entity while it is still alive.
+      assert {:ok, _alive} = EntityStore.get(todo_id, actor_id, opts)
+
+      delete_action = %{
+        id: "act_" <> Nanoid.generate(),
+        actor_id: actor_id,
+        hlc: generate_hlc(),
+        updates: [
+          %{
+            id: "upd_" <> Nanoid.generate(),
+            subject_id: todo_id,
+            subject_type: "todo",
+            method: :delete,
+            data: %{"fields" => %{}}
+          }
+        ]
+      }
+
+      {:ok, _gsns, []} = Writer.write_actions([delete_action], writer_name)
+
+      # Materialize the delete so the cache holds a tombstone, then query.
+      assert :not_found = EntityStore.get(todo_id, actor_id, opts)
+
+      {:ok, todos} =
+        EntityStore.query("todo", nil, actor_id,
+          rocks_name: rocks_name,
+          sqlite_name: sqlite_name,
+          dirty_set: dirty_set
+        )
+
+      refute Enum.any?(todos, fn todo -> todo.id == todo_id end)
+    end
   end
 
   defp write_post(post_id, group_id, actor_id, writer_name, opts \\ []) do

@@ -563,6 +563,158 @@ defmodule EbbServer.Storage.EntityStoreTest do
                  sqlite_name: sqlite_name,
                  dirty_set: dirty_set
                )
+
+      assert :not_found =
+               EntityStore.get(entity_id, "a_test",
+                 rocks_name: rocks_name,
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
+               )
+    end
+
+    test "a second read after a delete returns :not_found", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_delete_repro"
+
+      opts = [
+        rocks_name: rocks_name,
+        sqlite_name: sqlite_name,
+        dirty_set: dirty_set
+      ]
+
+      put_action =
+        validated_action(%{
+          "id" => "act_put",
+          "hlc" => hlc_from(1_000),
+          "updates" => [
+            validated_update(%{
+              "id" => "upd_put",
+              "subject_id" => entity_id,
+              "data" => %{
+                "fields" => %{
+                  "title" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc_from(1_000)}
+                }
+              }
+            })
+          ]
+        })
+
+      delete_action =
+        validated_action(%{
+          "id" => "act_delete",
+          "hlc" => hlc_from(2_000),
+          "updates" => [
+            validated_update(%{
+              "id" => "upd_delete",
+              "subject_id" => entity_id,
+              "method" => "delete"
+            })
+          ]
+        })
+
+      Writer.write_actions([put_action], writer_name)
+
+      assert {:ok, alive} = EntityStore.get(entity_id, "a_test", opts)
+      assert alive.data["fields"]["title"]["value"] == "Buy milk"
+
+      Writer.write_actions([delete_action], writer_name)
+
+      # The delete materializes, then a second read must not resurrect it
+      # by reading the old, un-tombstoned row back out of the cache.
+      assert :not_found = EntityStore.get(entity_id, "a_test", opts)
+
+      assert {:ok, tombstone} = SQLite.get_entity(entity_id, sqlite_name)
+      assert tombstone.deleted_hlc != nil
+
+      assert :not_found = EntityStore.get(entity_id, "a_test", opts)
+    end
+
+    test "a resurrect after the delete was materialized preserves prior fields", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_delete_then_resurrect"
+
+      opts = [
+        rocks_name: rocks_name,
+        sqlite_name: sqlite_name,
+        dirty_set: dirty_set
+      ]
+
+      put_action =
+        validated_action(%{
+          "id" => "act_put",
+          "hlc" => hlc_from(1_000),
+          "updates" => [
+            validated_update(%{
+              "id" => "upd_put",
+              "subject_id" => entity_id,
+              "data" => %{
+                "fields" => %{
+                  "title" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc_from(1_000)}
+                }
+              }
+            })
+          ]
+        })
+
+      delete_action =
+        validated_action(%{
+          "id" => "act_delete",
+          "hlc" => hlc_from(2_000),
+          "updates" => [
+            validated_update(%{
+              "id" => "upd_delete",
+              "subject_id" => entity_id,
+              "method" => "delete"
+            })
+          ]
+        })
+
+      patch_action =
+        validated_action(%{
+          "id" => "act_patch",
+          "hlc" => hlc_from(3_000),
+          "updates" => [
+            validated_update(%{
+              "id" => "upd_patch",
+              "subject_id" => entity_id,
+              "method" => "patch",
+              "data" => %{
+                "fields" => %{
+                  "description" => %{
+                    "type" => "lww",
+                    "value" => "Updated",
+                    "hlc" => hlc_from(3_000)
+                  }
+                }
+              }
+            })
+          ]
+        })
+
+      Writer.write_actions([put_action], writer_name)
+      assert {:ok, _materialized} = EntityStore.get(entity_id, "a_test", opts)
+
+      Writer.write_actions([delete_action], writer_name)
+      assert :not_found = EntityStore.get(entity_id, "a_test", opts)
+      assert :not_found = EntityStore.get(entity_id, "a_test", opts)
+
+      # The patch resurrects over the tombstone row, so the title that only
+      # lived in the tombstone's stored data must still be present.
+      Writer.write_actions([patch_action], writer_name)
+      assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
+
+      assert entity.deleted_hlc == nil
+      assert entity.deleted_by == nil
+      assert entity.data["fields"]["title"]["value"] == "Buy milk"
+      assert entity.data["fields"]["description"]["value"] == "Updated"
     end
 
     test "PATCH resurrects deleted entity and clears deleted_hlc", %{
