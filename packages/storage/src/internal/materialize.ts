@@ -1,5 +1,5 @@
 import type { Entity, FieldValue, HLCTimestamp, Update } from "@ebbjs/core";
-import { compare } from "@ebbjs/core";
+import { compare, latestHlc } from "@ebbjs/core";
 
 /**
  * Shared materialization helpers used by every EntityStore implementation.
@@ -44,8 +44,6 @@ export const mergeFields = (existing: Entity["data"], update: Update): Entity["d
   return { fields: merged };
 };
 
-const laterHlc = (a: HLCTimestamp, b: HLCTimestamp): boolean => compare(a, b) > 0;
-
 /**
  * Applies a single update to an entity during materialization.
  *
@@ -78,7 +76,7 @@ export const applyUpdate = (
       return {
         ...entity,
         data: mergeFields(entity.data, update),
-        updated_hlc: laterHlc(entity.updated_hlc, hlc) ? hlc : entity.updated_hlc,
+        updated_hlc: latestHlc(entity.updated_hlc, hlc),
         last_gsn: Math.max(entity.last_gsn, gsn),
       };
 

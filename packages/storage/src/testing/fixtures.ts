@@ -9,45 +9,61 @@ import { makeHlc, type Action } from "@ebbjs/core";
 
 const HLC_BASE = 1_711_036_800_000;
 
-export const buildPutAction = (): Action => ({
-  id: "a_1",
-  actor_id: "a_user1",
-  hlc: makeHlc(HLC_BASE),
-  gsn: 1,
-  updates: [
-    {
-      id: "u_1",
-      subject_id: "todo_1",
-      subject_type: "todo",
-      method: "put",
-      data: {
-        fields: {
-          title: { value: "Hello", update_id: "u_1", hlc: makeHlc(HLC_BASE) },
-        },
-      },
-    },
-  ],
-});
+/**
+ * A `put` for `todo_1`. `counter` offsets the HLC within `HLC_BASE` so
+ * tests can order write time independently of GSN.
+ */
+export const buildPutAction = (counter = 0): Action => {
+  const hlc = makeHlc(HLC_BASE, counter);
 
-export const buildPatchAction = (): Action => ({
-  id: "a_2",
-  actor_id: "a_user1",
-  hlc: makeHlc(HLC_BASE, 1),
-  gsn: 2,
-  updates: [
-    {
-      id: "u_2",
-      subject_id: "todo_1",
-      subject_type: "todo",
-      method: "patch",
-      data: {
-        fields: {
-          title: { value: "Updated", update_id: "u_2", hlc: makeHlc(HLC_BASE, 1) },
+  return {
+    id: "a_1",
+    actor_id: "a_user1",
+    hlc,
+    gsn: 1,
+    updates: [
+      {
+        id: "u_1",
+        subject_id: "todo_1",
+        subject_type: "todo",
+        method: "put",
+        data: {
+          fields: {
+            title: { value: "Hello", update_id: "u_1", hlc },
+          },
         },
       },
-    },
-  ],
-});
+    ],
+  };
+};
+
+/**
+ * A `patch` for `todo_1`, applied after {@link buildPutAction}. See that
+ * builder for how `counter` orders the HLC independently of GSN.
+ */
+export const buildPatchAction = (counter = 1): Action => {
+  const hlc = makeHlc(HLC_BASE, counter);
+
+  return {
+    id: "a_2",
+    actor_id: "a_user1",
+    hlc,
+    gsn: 2,
+    updates: [
+      {
+        id: "u_2",
+        subject_id: "todo_1",
+        subject_type: "todo",
+        method: "patch",
+        data: {
+          fields: {
+            title: { value: "Updated", update_id: "u_2", hlc },
+          },
+        },
+      },
+    ],
+  };
+};
 
 export interface RelationshipRowFixture {
   id: string;

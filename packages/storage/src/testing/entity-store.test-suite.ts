@@ -128,6 +128,34 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
       });
     });
 
+    describe("updated_hlc", () => {
+      it("advances to the patch HLC when the patch is later", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        const put = buildPutAction();
+        const patch = buildPatchAction();
+        await actionLog.append(put);
+        await actionLog.append(patch);
+        await dirtyTracker.mark("todo_1", "todo");
+
+        const entity = await entityStore.get("todo_1");
+
+        expect(entity!.updated_hlc).toBe(patch.hlc);
+      });
+
+      it("keeps the later HLC when a patch arrives out of order", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        const put = buildPutAction(5);
+        const olderPatch = buildPatchAction(2);
+        await actionLog.append(put);
+        await actionLog.append(olderPatch);
+        await dirtyTracker.mark("todo_1", "todo");
+
+        const entity = await entityStore.get("todo_1");
+
+        expect(entity!.updated_hlc).toBe(put.hlc);
+      });
+    });
+
     describe("set", () => {
       it("stores entity directly", async () => {
         const { entityStore } = await factory();

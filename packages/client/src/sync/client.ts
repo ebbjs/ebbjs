@@ -31,6 +31,7 @@ import {
   type HLCState,
   localEvent,
   receiveRemoteHLC,
+  latestHlc,
   type Update,
 } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
@@ -1147,9 +1148,10 @@ const applyLocalUpdate = (current: Entity | null, update: Update, hlc: string): 
       return {
         ...current,
         data: { fields: { ...current.data.fields, ...fields } },
-        // `applyUpdate` keeps the existing `updated_hlc` on a patch, so
-        // the optimistic entity carries it too and the post-echo replay
-        // lands on an identical entity.
+        // A patch's HLC wins when it is later than the cached row's,
+        // mirroring the storage materializer so the optimistic entity
+        // and the post-echo replay converge on the same updated_hlc.
+        updated_hlc: latestHlc(current.updated_hlc, hlc),
       };
     case "delete":
       if (current === null) return null;
