@@ -3,7 +3,7 @@ title: "Current State"
 description: "What is actually in the Ebb repo today — components, endpoints, and tests."
 ---
 
-> **Ebb is pre-alpha.** This page documents what's actually in the repo today. Forward-looking API surface (`defineModel`, `useQuery`, `defineFunction`, etc.) is tracked as Epics on GitHub; see the [v1 API surface Epic](https://github.com/ebbjs/ebbjs/issues/115) and the [GitHub issues list](https://github.com/ebbjs/ebbjs/issues) for what is being designed and built.
+> **Ebb is pre-alpha.** This page documents what's actually in the repo today. Forward-looking API surface (`defineFunction`, the server-side SDK, the CLI, and the remaining React hooks) is tracked as Epics on GitHub; see the [v1 API surface Epic](https://github.com/ebbjs/ebbjs/issues/115) and the [GitHub issues list](https://github.com/ebbjs/ebbjs/issues) for what is being designed and built.
 
 ## Current state
 
@@ -17,6 +17,7 @@ An Elixir/OTP application. Single-node sync server with a complete HTTP API. See
 | Entity materialization (lazy, on-demand)                                          | `lib/ebb_server/storage/entity_store.ex`, `sqlite.ex`                                                                 | `entity_store_test.exs` (~18kb), `sqlite_test.exs`                                   |
 | Permissions, Groups, GroupMembers, Relationships                                  | `lib/ebb_server/storage/permission_checker.ex`, `group_cache.ex`, `relationship_cache.ex`, `authorization_context.ex` | `permission_checker_test.exs`, `group_cache_test.exs`, `relationship_cache_test.exs` |
 | GSN watermark, dirty tracking                                                     | `lib/ebb_server/storage/watermark_tracker.ex`, `dirty_tracker.ex`                                                     | `watermark_tracker_test.exs`, `dirty_tracker_test.exs`                               |
+| Writer failure policy (abandon + resolve a failed commit)                         | `lib/ebb_server/storage/writer.ex`, `watermark_tracker.ex`                                                            | `writer_failure_policy_test.exs`, `writer_failure_integration_test.exs`              |
 | Auth plug (bypass + external modes)                                               | `lib/ebb_server/sync/auth_plug.ex`                                                                                    | `auth_plug_test.exs`                                                                 |
 | HTTP API (handshake, catch-up, SSE, presence, writes, reads)                      | `lib/ebb_server/sync/router.ex`                                                                                       | `integration/*_test.exs` (9 files), `sync/*_test.exs` (~12 files)                    |
 | Fan-out (watermark-gated SSE delivery)                                            | `lib/ebb_server/sync/fan_out_router.ex`, `group_server.ex`, `sse_connection.ex`                                       | `fan_out_router_test.exs`, `group_server_test.exs`, `sse_connection_test.exs`        |
@@ -38,7 +39,7 @@ See [`ebb_server/openapi.yaml`](https://github.com/ebbjs/ebbjs/blob/main/ebb_ser
 
 ### `@ebbjs/core`
 
-TypeScript foundation — schemas, HLC, MessagePack, action creation, ID generation. 105 tests pass.
+TypeScript foundation — schemas, HLC, MessagePack, action creation, ID generation. 108 tests pass.
 
 ```ts
 import { createAction, createClock, localEvent } from "@ebbjs/core";
@@ -68,7 +69,7 @@ See [`packages/core/src/`](https://github.com/ebbjs/ebbjs/tree/main/packages/cor
 
 ### `@ebbjs/storage`
 
-Storage adapters for the client — in-memory and IndexedDB. 147 tests pass.
+Storage adapters for the client — in-memory and IndexedDB, plus a durable outbox store. 214 tests pass (1 skipped).
 
 ```ts
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
@@ -87,12 +88,13 @@ Composed of:
 - `DirtyTracker` — track entities needing rematerialization, indexed by type
 - `EntityStore` — materialize entities on `get`/`query` (HLC + lexicographic `update_id` tiebreak)
 - `CursorStore` — per-group GSN cursors
+- `OutboxStore` — durable buffer of locally-authored Actions awaiting acknowledgement
 
-The root `@ebbjs/storage` entry is types-only; adapter constructors live on per-adapter subpaths (`@ebbjs/storage/memory`, `@ebbjs/storage/indexeddb`) so a memory-only consumer does not pull `idb` into their bundle. The adapter stores the read path only — locally-produced Actions are submitted by `@ebbjs/client`. See [`packages/storage/README.md`](https://github.com/ebbjs/ebbjs/blob/main/packages/storage/README.md).
+The root `@ebbjs/storage` entry is types-only; adapter constructors live on per-adapter subpaths (`@ebbjs/storage/memory`, `@ebbjs/storage/indexeddb`) so a memory-only consumer does not pull `idb` into their bundle. The adapter covers the read path and the durable outbox; locally-produced Actions are still submitted by `@ebbjs/client`. See [`packages/storage/README.md`](https://github.com/ebbjs/ebbjs/blob/main/packages/storage/README.md).
 
 ### `@ebbjs/client`
 
-Local-first sync SDK — handshake, catch-up, live SSE, and a typed ORM namespace over materialized entities. 440 unit tests pass, plus integration tests that round-trip against a live `ebb_server`.
+Local-first sync SDK — handshake, catch-up, live SSE, and a typed ORM namespace over materialized entities. 575 unit tests pass, plus integration tests that round-trip against a live `ebb_server`.
 
 ```ts
 import { createClient, defineEntity, defineSchema, e } from "@ebbjs/client";
@@ -121,8 +123,8 @@ client.todo.subscribe({ completed: false }, (snapshot) => {
   console.log(snapshot.count, snapshot.entities);
 });
 
-// Writes POST /sync/actions directly. `groups` must be passed
-// explicitly; the SDK injects the membership rows.
+// Writes go through the client's outbox seam and POST /sync/actions.
+// `groups` must be passed explicitly; the SDK injects the membership rows.
 const { rejected } = await client.todo.create(
   { title: "Buy milk", completed: false },
   { groups: groups.map((group) => group.id) },
@@ -158,11 +160,37 @@ await server.kill();
 
 `packages/server/src/test/e2e/sync.test.ts` is the one e2e test (handshake after seed). The `@ebbjs/client` integration tests under `packages/client/src/__tests__/integration/` exercise the fuller round-trip — handshake, catch-up, write, presence, and collaborative-text edits — against a real server.
 
+### `@ebbjs/react`
+
+React bindings for `@ebbjs/client` — a provider, a connection hook, and the first data hook. Ships `EbbProvider`, `useClient`, `useConnection`, and `useQuery`; `useEntity` and `useEntityMutations` are tracked in [#236](https://github.com/ebbjs/ebbjs/issues/236).
+
+```tsx
+import { EbbProvider, useClient, useQuery } from "@ebbjs/react";
+
+function OpenTodos() {
+  const client = useClient<Schema>();
+  const { data, loading, error } = useQuery(() =>
+    client.todo.query().where("completed", false).limit(50),
+  );
+
+  if (loading) return <span>loading…</span>;
+  if (error) return <span>{error.message}</span>;
+  return (
+    <ul>
+      {data.map((todo) => (
+        <li key={todo.id}>{todo.title}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+See [`packages/react/README.md`](https://github.com/ebbjs/ebbjs/blob/main/packages/react/README.md).
+
 ## What's NOT in the repo
 
 | Area                                       | State       | Where it's tracked                                                                |
 | ------------------------------------------ | ----------- | --------------------------------------------------------------------------------- |
-| `@ebbjs/react`                             | Not started | [v1 API surface Epic](https://github.com/ebbjs/ebbjs/issues/115)                  |
 | Server functions (`defineFunction`)        | Not started | [Epic #112](https://github.com/ebbjs/ebbjs/issues/112)                            |
 | Peer replication                           | Not started | [Epic #113](https://github.com/ebbjs/ebbjs/issues/113)                            |
 | Server-side SDK (SSR / external processes) | Not started | [Epic #114](https://github.com/ebbjs/ebbjs/issues/114)                            |
