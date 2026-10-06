@@ -27,38 +27,41 @@ Ebb is an open-source, local-first backend framework. Every client gets a local 
 
 ## Current State
 
-What's actually in the repo today (last meaningful server work: Sep 2026; last commit: Oct 2026).
+What's actually in the repo today (last meaningful server work: Oct 2026).
 
-| Area                               | State            | Notes                                                                                                                                                                                                                                                                                   |
-| ---------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Elixir sync server (`ebb_server/`) | **Working**      | RocksDB action log, single Writer GenServer, on-demand SQLite materialization, permissions, handshake, SSE live sync, paginated catch-up, presence broadcast. See [`ebb_server/README.md`](ebb_server/README.md) for the architecture.                                                  |
-| `@ebbjs/core`                      | **Working**      | TypeBox schemas, HLC implementation, MessagePack codec, `createAction`, ID generation. 105 tests pass.                                                                                                                                                                                  |
-| `@ebbjs/storage`                   | **Working**      | In-memory `StorageAdapter`: ActionLog, DirtyTracker, EntityStore (lazy materialization, HLC + lexicographic tiebreak), CursorStore. 147 tests pass.                                                                                                                                     |
-| `@ebbjs/server` (TS)               | **Harness only** | Spawns the Elixir release as a child process and exposes a `seed()` helper for E2E tests. One e2e test (handshake).                                                                                                                                                                     |
-| `@ebbjs/client`                    | **Working**      | Local-first sync SDK: handshake, live SSE, paginated catch-up, typed ORM query layer (`query`/`get`/`create`/`update`/`delete`), per-collection `subscribe`, presence, and causal-tree collaborative text. No durable outbox yet (direct-POST writes; tracked in #225). 440 tests pass. |
-| Auth & permissions                 | **Working**      | `AuthPlug` (bypass + external modes), Group/GroupMember/Relationship system entities, in-memory permission checks.                                                                                                                                                                      |
-| Self-hosting (Docker)              | **Working**      | `Dockerfile` in `ebb_server/`; build from repo root with `docker build -f ebb_server/Dockerfile .`. Server boots via `mix release`.                                                                                                                                                     |
-| Real-time presence                 | **Working**      | `POST /sync/presence` endpoint and fan-out path are wired and tested.                                                                                                                                                                                                                   |
-| React bindings                     | **Not started**  | No `@ebbjs/react` package. The docs in `packages/www/src/content/docs/` describe the target API.                                                                                                                                                                                        |
-| Server functions                   | **Not started**  | Slice 5 spec exists; would run on a separate Bun runtime.                                                                                                                                                                                                                               |
-| Collaborative text                 | **Working**      | Causal-tree text over Action/Update primitives with HLC ordering (**not** Yjs — [devlog](packages/www/src/content/devlog/how-collaborative-editing-works.mdx)). `TextDocument` in `@ebbjs/client`, `@ebbjs/codemirror` bridge, two-tab demo.                                            |
-| CLI tooling                        | **Not started**  |                                                                                                                                                                                                                                                                                         |
-| Observability hooks                | **Partial**      | Telemetry events are wired through server components; no developer-facing `onAction` hook.                                                                                                                                                                                              |
-| Peer replication                   | **Not started**  | Slice 6 design exists; no implementation.                                                                                                                                                                                                                                               |
+| Area                               | State            | Notes                                                                                                                                                                                                                                                                                                                                |
+| ---------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Elixir sync server (`ebb_server/`) | **Working**      | RocksDB action log, single Writer GenServer, on-demand SQLite materialization, permissions, handshake, SSE live sync, paginated catch-up, presence broadcast, and a writer failure policy that abandons + resolves a failed commit so fan-out never stalls. See [`ebb_server/README.md`](ebb_server/README.md) for the architecture. |
+| `@ebbjs/core`                      | **Working**      | TypeBox schemas, HLC implementation, MessagePack codec, `createAction`, ID generation. 108 tests pass.                                                                                                                                                                                                                               |
+| `@ebbjs/storage`                   | **Working**      | `StorageAdapter` with in-memory and IndexedDB implementations: ActionLog, DirtyTracker, EntityStore (lazy materialization, HLC + lexicographic tiebreak), CursorStore, durable OutboxStore. 214 tests pass (1 skipped).                                                                                                              |
+| `@ebbjs/server` (TS)               | **Harness only** | Spawns the Elixir release as a child process and exposes a `seed()` helper for E2E tests. One e2e test (handshake after seed).                                                                                                                                                                                                       |
+| `@ebbjs/client`                    | **Working**      | Local-first sync SDK: handshake, live SSE, paginated catch-up, typed ORM query layer (`query`/`get`/`create`/`update`/`delete`), per-collection and query `subscribe`, presence, and causal-tree collaborative text. Writes funnel through an in-memory Outbox seam; the durable/offline queue is tracked in #225. 575 tests pass.   |
+| Auth & permissions                 | **Working**      | `AuthPlug` (bypass + external modes), Group/GroupMember/Relationship system entities, in-memory permission checks.                                                                                                                                                                                                                   |
+| Self-hosting (Docker)              | **Working**      | `Dockerfile` in `ebb_server/`; build from repo root with `docker build -f ebb_server/Dockerfile .`. Server boots via `mix release`.                                                                                                                                                                                                  |
+| Real-time presence                 | **Working**      | `POST /sync/presence` endpoint and fan-out path are wired and tested.                                                                                                                                                                                                                                                                |
+| React bindings                     | **Partial**      | `@ebbjs/react` ships `EbbProvider`, `useClient`, `useConnection`, and `useQuery`; `useEntity`/`useEntityMutations` are tracked in #236.                                                                                                                                                                                              |
+| Server functions                   | **Not started**  | Slice 5 spec exists; would run on a separate Bun runtime.                                                                                                                                                                                                                                                                            |
+| Collaborative text                 | **Working**      | Causal-tree text over Action/Update primitives with HLC ordering (**not** Yjs — [devlog](packages/www/src/content/devlog/how-collaborative-editing-works.mdx)). `TextDocument` in `@ebbjs/client`, `@ebbjs/codemirror` bridge, two-tab demo.                                                                                         |
+| CLI tooling                        | **Not started**  |                                                                                                                                                                                                                                                                                                                                      |
+| Observability hooks                | **Not started**  | No `:telemetry` events and no developer-facing `onAction` hook; the server logs commit failures and recovery. Tracked in #125.                                                                                                                                                                                                       |
+| Peer replication                   | **Not started**  | Slice 6 design exists; no implementation.                                                                                                                                                                                                                                                                                            |
 
 For a more detailed breakdown, see [`ebb_server/README.md`](ebb_server/README.md) (server architecture) and the per-package READMEs under `packages/*/`.
 
 ## Packages
 
-| Package              | Description                                                                                                       | State   |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------- | ------- |
-| `@ebbjs/core`        | TypeBox schemas, HLC, MessagePack codec, `createAction` helper.                                                   | Working |
-| `@ebbjs/storage`     | `StorageAdapter` interface + in-memory implementation (ActionLog, DirtyTracker, EntityStore, CursorStore).        | Working |
-| `@ebbjs/server` (TS) | E2E test harness — spawns the Elixir release, `seed()` helper for fixtures.                                       | Working |
-| `ebb_server/`        | Elixir/OTP sync server: RocksDB action log, SQLite materialization, HTTP API, SSE fan-out, permissions, presence. | Working |
-| `@ebbjs/client`      | Local-first sync client (handshake, SSE, catch-up, queries).                                                      | Working |
+| Package              | Description                                                                                                                            | State   |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `@ebbjs/core`        | TypeBox schemas, HLC, MessagePack codec, `createAction` helper.                                                                        | Working |
+| `@ebbjs/storage`     | `StorageAdapter` interface + in-memory and IndexedDB implementations (ActionLog, DirtyTracker, EntityStore, CursorStore, OutboxStore). | Working |
+| `@ebbjs/server` (TS) | E2E test harness — spawns the Elixir release, `seed()` helper for fixtures.                                                            | Working |
+| `ebb_server/`        | Elixir/OTP sync server: RocksDB action log, SQLite materialization, HTTP API, SSE fan-out, permissions, presence.                      | Working |
+| `@ebbjs/client`      | Local-first sync client (handshake, SSE, catch-up, queries, in-memory outbox).                                                         | Working |
+| `@ebbjs/react`       | React bindings — `EbbProvider`, `useClient`, `useConnection`, `useQuery`.                                                              | Partial |
+| `@ebbjs/codemirror`  | CodeMirror 6 bridge for causal-tree collaborative text.                                                                                | Working |
+| `@ebbjs/www`         | Astro docs site.                                                                                                                       | Working |
 
-React bindings (`@ebbjs/react`), a Bun-based server-function runtime, and a CLI are not in the repo yet but are described in the public docs as the planned v1 surface.
+A Bun-based server-function runtime and a CLI are not in the repo yet but are described in the public docs as the planned v1 surface.
 
 ## Roadmap
 
@@ -70,15 +73,18 @@ React bindings (`@ebbjs/react`), a Bun-based server-function runtime, and a CLI 
 - Real-time presence — ephemeral broadcasts via `POST /sync/presence`, fanned out over SSE
 - Self-hosting — single `Dockerfile`, `mix release` boot
 - Client SDK (`@ebbjs/client`) — handshake, live SSE, paginated catch-up, typed ORM (`query`/`get`/`create`/`update`/`delete`), per-collection `subscribe`, presence
-- Durable client outbox for offline/optimistic writes ([#225](https://github.com/ebbjs/ebbjs/issues/225))
+- Durable pending-action store on `@ebbjs/storage` (in-memory + IndexedDB)
+- React bindings (`@ebbjs/react`) — provider, `useConnection`, `useQuery`
+- Writer failure policy — a failed commit abandons + resolves its GSN range so live fan-out never stalls ([#282](https://github.com/ebbjs/ebbjs/issues/282))
 
 ### In Progress
 
-- Observability hooks — telemetry is wired; developer-facing `onAction` hook is the next step.
+- Durable client outbox — the storage-side `OutboxStore` has landed; the client-side queue, retry, and ack are tracked in [#225](https://github.com/ebbjs/ebbjs/issues/225).
 
 ### Planned
 
-- React bindings (`@ebbjs/react`) — `useQuery`, `useClient`, `EbbProvider`
+- React hooks — `useEntity` and `useEntityMutations` ([#236](https://github.com/ebbjs/ebbjs/issues/236))
+- Observability hooks — `:telemetry` events and a developer-facing `onAction` hook ([#125](https://github.com/ebbjs/ebbjs/issues/125))
 - Server functions (`defineFunction`) — requires a Bun runtime alongside the Elixir server
 - Server-side SDK for SSR frameworks and external processes
 - CLI tooling — `ebb deploy`, function management, schema migrations, scaffolding
@@ -101,16 +107,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full local-setup notes.
 
 ```
 packages/
-  core/      # @ebbjs/core — schemas, HLC, msgpack
-  storage/   # @ebbjs/storage — adapter interface + memory implementation
-  server/    # @ebbjs/server (TS) — e2e test harness
-  client/    # @ebbjs/client — local-first sync client SDK
-  www/       # Astro docs site
-ebb_server/  # Elixir sync server (RocksDB + SQLite + OTP)
-experiment/  # Proof-of-concept code (e.g., collaborative-text)
-docs/        # Architecture specs, package docs, scratch notes
-  ebb_server/  # Server design: components, slices 1-6, tasks
-  packages/    # TS package docs
-  scratch/     # Working drafts — not authoritative
-  devlog/      # Draft devlog posts (unpublished)
+  core/        # @ebbjs/core — schemas, HLC, msgpack
+  storage/     # @ebbjs/storage — adapter interface + memory/IndexedDB implementations
+  server/      # @ebbjs/server (TS) — e2e test harness
+  client/      # @ebbjs/client — local-first sync client SDK
+  react/       # @ebbjs/react — React bindings
+  codemirror/  # @ebbjs/codemirror — collaborative-text editor bridge
+  www/         # Astro docs site (docs + devlog content under src/content/)
+ebb_server/    # Elixir sync server (RocksDB + SQLite + OTP)
+examples/      # Runnable demos (collaborative-text demo, client smoke test)
+experiment/    # Proof-of-concept code (e.g., collaborative-text)
 ```

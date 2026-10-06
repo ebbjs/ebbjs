@@ -5,17 +5,20 @@
 const files = [
   {
     name: "model.ts",
-    html: `<span class="text-stone-400">import</span> { <span class="text-stone-200">e</span>, <span class="text-stone-200">defineModel</span>, <span class="text-stone-200">defineSchema</span> } <span class="text-stone-400">from</span> <span class="text-stone-400">"@ebbjs/core"</span>;
+    html: `<span class="text-stone-400">import</span> {
+  <span class="text-stone-200">e</span>,
+  <span class="text-stone-200">defineEntity</span>,
+  <span class="text-stone-200">defineSchema</span>,
+} <span class="text-stone-400">from</span> <span class="text-stone-400">"@ebbjs/client"</span>;
 
-<span class="text-stone-400">const</span> <span class="text-stone-200">todo</span> = <span class="text-stone-300">defineModel</span>(<span class="text-stone-400">"todo"</span>, {
-  <span class="text-stone-300">schema</span>: e.<span class="text-stone-300">object</span>({
-    <span class="text-stone-300">title</span>: e.<span class="text-stone-300">string</span>(),
-    <span class="text-stone-300">completed</span>: e.<span class="text-stone-300">boolean</span>(),
-  }),
+<span class="text-stone-400">const</span> <span class="text-stone-200">todo</span> = <span class="text-stone-300">defineEntity</span>(<span class="text-stone-400">"todo"</span>, {
+  <span class="text-stone-300">title</span>: e.<span class="text-stone-300">string</span>(),
+  <span class="text-stone-300">completed</span>: e.<span class="text-stone-300">boolean</span>(),
 });
 
 <span class="text-stone-400">export const</span> <span class="text-stone-200">schema</span> = <span class="text-stone-300">defineSchema</span>({
-  <span class="text-stone-300">todo</span>,
+  <span class="text-stone-300">entities</span>: { <span class="text-stone-200">todo</span> },
+  <span class="text-stone-300">version</span>: <span class="text-stone-200">1</span>,
 });`,
   },
   {
@@ -24,13 +27,9 @@ const files = [
 <span class="text-stone-400">import</span> { <span class="text-stone-200">schema</span> } <span class="text-stone-400">from</span> <span class="text-stone-400">"./model"</span>;
 
 <span class="text-stone-400">export const</span> <span class="text-stone-200">client</span> = <span class="text-stone-300">createClient</span>({
-  <span class="text-stone-300">serverUrl</span>: <span class="text-stone-400">"http://localhost:3000"</span>,
+  <span class="text-stone-300">serverUrl</span>: <span class="text-stone-400">"http://localhost:4000"</span>,
+  <span class="text-stone-300">actorId</span>: <span class="text-stone-400">"user_123"</span>,
   <span class="text-stone-300">schema</span>,
-  <span class="text-stone-300">fetch</span>: {
-    <span class="text-stone-300">headers</span>: {
-      <span class="text-stone-300">Authorization</span>: <span class="text-stone-400">\`Bearer \${<span class="text-stone-300">getToken</span>()}\`</span>,
-    },
-  },
 });`,
   },
   {
@@ -38,9 +37,10 @@ const files = [
     html: `<span class="text-stone-400">import</span> { <span class="text-stone-200">client</span> } <span class="text-stone-400">from</span> <span class="text-stone-400">"./client"</span>;
 
 <span class="text-stone-600">// Create</span>
-<span class="text-stone-400">const</span> <span class="text-stone-200">todo</span> = <span class="text-stone-400">await</span> client.todo.<span class="text-stone-300">create</span>(
-  { <span class="text-stone-300">title</span>: <span class="text-stone-400">"Ship it"</span>, <span class="text-stone-300">completed</span>: <span class="text-stone-200">false</span> },
-);
+<span class="text-stone-400">const</span> <span class="text-stone-200">todo</span> = <span class="text-stone-400">await</span> client.todo.<span class="text-stone-300">create</span>({
+  <span class="text-stone-300">title</span>: <span class="text-stone-400">"Ship it"</span>,
+  <span class="text-stone-300">completed</span>: <span class="text-stone-200">false</span>,
+});
 
 <span class="text-stone-600">// Update</span>
 <span class="text-stone-400">await</span> client.todo.<span class="text-stone-300">update</span>(todo.id, {
@@ -48,9 +48,9 @@ const files = [
 });
 
 <span class="text-stone-600">// Query &mdash; works offline</span>
-<span class="text-stone-400">const</span> <span class="text-stone-200">todos</span> = <span class="text-stone-400">await</span> client.todo
-  .<span class="text-stone-300">find</span>()
-  .<span class="text-stone-300">eq</span>(<span class="text-stone-400">"completed"</span>, <span class="text-stone-200">false</span>)
+<span class="text-stone-400">const</span> <span class="text-stone-200">openTodos</span> = <span class="text-stone-400">await</span> client.todo
+  .<span class="text-stone-300">query</span>()
+  .<span class="text-stone-300">where</span>(<span class="text-stone-400">"completed"</span>, <span class="text-stone-200">false</span>)
   .<span class="text-stone-300">orderBy</span>(<span class="text-stone-400">"createdAt"</span>, <span class="text-stone-400">"desc"</span>);`,
   },
 ];
@@ -120,16 +120,16 @@ const files = [
             </div>
 
             <!-- Code pane -->
-            <div class="flex-1 min-w-0 relative min-h-[380px] sm:min-h-[440px]">
+            <div class="flex-1 min-w-0 grid min-h-[380px] sm:min-h-[440px]">
               {files.map((file, i) => (
                 <div
                   data-dx-panel={i}
                   class:list={[
-                    "absolute inset-0 p-4 sm:p-6 transition-opacity duration-200",
+                    "col-start-1 row-start-1 min-w-0 p-4 sm:p-6 transition-opacity duration-200",
                     i === 0 ? "opacity-100" : "opacity-0 pointer-events-none",
                   ]}
                 >
-                  <pre class="font-mono text-xs sm:text-sm leading-relaxed text-stone-500 select-none overflow-x-hidden" set:html={file.html} />
+                  <pre class="font-mono text-xs sm:text-sm leading-relaxed text-stone-500 select-none overflow-x-auto" set:html={file.html} />
                 </div>
               ))}
             </div>

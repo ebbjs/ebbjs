@@ -2,7 +2,7 @@
 const items = [
   {
     title: 'Core storage engine',
-    description: 'RocksDB-backed Action log with dual-writer pipelining and on-demand entity materialization via SQLite.',
+    description: 'RocksDB-backed Action log with a single Writer in production (pipelined writes enabled) and on-demand entity materialization via SQLite.',
     status: 'shipped' as const,
   },
   {
@@ -27,23 +27,23 @@ const items = [
   },
   {
     title: 'Client SDK',
-    description: 'Local-first reactive client with offline writes, outbox, and automatic conflict resolution via typed field merges.',
+    description: 'Local-first reactive client with a typed ORM, live subscriptions, and optimistic local writes. The durable offline outbox is in progress.',
     status: 'in-progress' as const,
   },
   {
     title: 'Observability hooks',
-    description: 'Telemetry is wired through server components. Developer-facing onAction hook for piping the Action stream to analytics, audit logs, webhooks, or data warehouses.',
-    status: 'in-progress' as const,
+    description: 'Server-side telemetry events and a developer-facing onAction hook for piping the Action stream to analytics, audit logs, webhooks, or data warehouses.',
+    status: 'planned' as const,
   },
   {
     title: 'Causal-tree collaborative text',
     description: 'Character-level concurrent editing built on existing Action/Update primitives with HLC-based causal ordering — not Yjs. Conflict surfacing for human resolution.',
-    status: 'planned' as const,
+    status: 'shipped' as const,
   },
   {
     title: 'React bindings',
-    description: 'useQuery, useClient, and EbbProvider hooks for reactive, type-safe data access in React apps.',
-    status: 'planned' as const,
+    description: 'EbbProvider, useClient, useConnection, and useQuery ship today; useEntity and useEntityMutations are in progress.',
+    status: 'in-progress' as const,
   },
   {
     title: 'Server functions',
