@@ -47,6 +47,7 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
       assert_receive {:sse_chunk, "data", json}, 5_000
       assert Jason.decode!(json)["actor_id"] == actor_id
 
+      sync_router()
       assert FanOutFrontier.get() == {:ok, 2}
       :ok = FanOutRouter.unsubscribe(sse_pid)
     end
@@ -82,6 +83,7 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
       assert_receive {:sse_chunk, "data", json}, 5_000
       assert Jason.decode!(json)["actor_id"] == actor_id
 
+      sync_router()
       assert FanOutFrontier.get() == {:ok, 2}
       :ok = FanOutRouter.unsubscribe(sse_pid)
     end
@@ -173,6 +175,7 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
 
       assert_receive {:sse_chunk, "data", json}, 5_000
       assert Jason.decode!(json)["actor_id"] == actor_id
+      sync_router()
       assert FanOutFrontier.get() == {:ok, 1}
 
       :ok = FanOutRouter.unsubscribe(sse_pid)
@@ -268,6 +271,10 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
         wait_for_new_router(old_pid, attempts - 1)
     end
   end
+
+  # Blocks until the Router has finished handling the message that pushed the
+  # range, so the persisted frontier reflects that push.
+  defp sync_router, do: :sys.get_state(FanOutRouter)
 
   defp assert_no_chunk(timeout) do
     refute_receive {:sse_chunk, "data", _}, timeout
