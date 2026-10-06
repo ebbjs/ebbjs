@@ -25,6 +25,15 @@ defmodule EbbServer.Storage.EntityStore do
   the newer mark in place, so the next read materializes the missing
   Action.
 
+  Provisional marks extend that conservatism to the write path. The
+  Writer stamps a batch `{:pending, generation}` before it attempts the
+  commit and settles it to an ordinary dirty mark only once the commit
+  returns. A materialization that observes a provisional mark replays the
+  delta and returns, but leaves the mark for the Writer to resolve. A read
+  that starts after the durable commit therefore sees a provisional or
+  settled mark, never a clean entity with an unmaterialized commit behind
+  it.
+
   Two materializations of the same dirty entity can also race each
   other, with the older scan finishing last and trying to write an older
   `last_gsn`. `SQLite.upsert_entity/2` is monotonic in `last_gsn`, so
@@ -182,7 +191,7 @@ defmodule EbbServer.Storage.EntityStore do
   end
 
   defp handle_empty_entries(entity_id, nil, observed_generation, dirty_set, _sqlite_name) do
-    DirtyTracker.clear_dirty(entity_id, observed_generation, dirty_set)
+    clear_settled(entity_id, observed_generation, dirty_set)
     :not_found
   end
 
@@ -193,11 +202,23 @@ defmodule EbbServer.Storage.EntityStore do
          dirty_set,
          sqlite_name
        ) do
-    DirtyTracker.clear_dirty(entity_id, observed_generation, dirty_set)
+    clear_settled(entity_id, observed_generation, dirty_set)
 
     case SQLite.get_entity(entity_id, sqlite_name) do
       {:ok, row} -> format_live_entity(row)
       :not_found -> :not_found
+    end
+  end
+
+  # A provisional mark means the Writer has a commit in flight: the entity is
+  # not clean, but the mark belongs to the Writer, which settles it once the
+  # commit returns. Clearing it here would reopen the clean-but-stale window
+  # the mark exists to close.
+  defp clear_settled(entity_id, observed, dirty_set) do
+    if DirtyTracker.pending?(observed) do
+      :ok
+    else
+      DirtyTracker.clear_dirty(entity_id, observed, dirty_set)
     end
   end
 
@@ -264,7 +285,7 @@ defmodule EbbServer.Storage.EntityStore do
     }
 
     SQLite.upsert_entity(entity_row, sqlite_name)
-    DirtyTracker.clear_dirty(entity_id, observed_generation, dirty_set)
+    clear_settled(entity_id, observed_generation, dirty_set)
 
     format_live_entity(entity_row)
   end

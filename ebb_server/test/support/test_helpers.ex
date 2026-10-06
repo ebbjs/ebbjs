@@ -281,7 +281,8 @@ defmodule EbbServer.TestHelpers do
         relationships_by_id: opts.relationships_by_id,
         watermark_tracker: opts[:watermark_tracker],
         fan_out_router: opts[:fan_out_router],
-        commit_fn: opts[:commit_fn]
+        commit_fn: opts[:commit_fn],
+        after_commit: opts[:after_commit]
       )
 
     on_exit(fn ->

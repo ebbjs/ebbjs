@@ -13,6 +13,16 @@ defmodule EbbServer.Storage.DirtyTracker do
   and survives, so the next read re-materializes instead of serving
   stale data forever.
 
+  ## Provisional marks
+
+  The Writer commits before it can mark a batch, so a plain post-commit
+  mark would leave a window in which an entity is clean while SQLite is
+  already behind RocksDB. To close it, the Writer writes a *provisional*
+  mark (`{:pending, generation}`) before the commit attempt and settles
+  it to an ordinary dirty mark once the commit returns. Materializers
+  treat a provisional mark as dirty but never clear it; only the Writer
+  resolves it. See `mark_pending_batch/2` and `clear_pending_batch/3`.
+
   The GenServer exists solely to own the ETS table lifetime and manage
   startup/shutdown.
 
@@ -57,6 +67,105 @@ defmodule EbbServer.Storage.DirtyTracker do
   end
 
   @doc """
+  Marks a batch of entity IDs as provisionally dirty while a commit is in
+  flight.
+
+  The Writer writes a provisional mark *before* it attempts the durable
+  commit, so an entity is never observed clean between the commit landing
+  and the batch being marked dirty. Readers treat a provisional mark as
+  dirty but leave it in place; only the Writer settles it (by overwriting
+  it with `mark_dirty_batch/2`) or clears it (`clear_pending_batch/3`).
+
+  Returns the generation stamped on the batch, which `clear_pending_batch/3`
+  needs to clear the same marks.
+
+  ## Examples
+
+      iex> generation = DirtyTracker.mark_pending_batch(["todo_1"])
+      iex> DirtyTracker.pending?(DirtyTracker.dirty_generation("todo_1"))
+      true
+  """
+  @spec mark_pending_batch([String.t()], atom()) :: non_neg_integer()
+  def mark_pending_batch(entity_ids, dirty_set \\ @default_dirty_set_name)
+      when is_list(entity_ids) do
+    generation = :erlang.unique_integer([:monotonic, :positive])
+    mark = {:pending, generation}
+
+    Enum.each(entity_ids, fn id ->
+      :ets.insert(dirty_set, {id, mark})
+    end)
+
+    generation
+  end
+
+  @doc """
+  Clears the provisional marks of a batch, but only those still stamped
+  with `generation`.
+
+  The Writer uses this on the abandon paths: a commit that failed or
+  raised must not leave entities provisionally dirty. A settled mark, or
+  a provisional mark from a newer batch, has a different value and is
+  left in place.
+
+  ## Examples
+
+      iex> generation = DirtyTracker.mark_pending_batch(["todo_1"])
+      iex> DirtyTracker.clear_pending_batch(["todo_1"], generation, :ebb_dirty_set)
+      :ok
+  """
+  @spec clear_pending_batch([String.t()], non_neg_integer(), atom()) :: :ok
+  # No default for `dirty_set`: a two-arity call must not silently pass a
+  # table where a generation is expected.
+  def clear_pending_batch(entity_ids, generation, dirty_set) when is_list(entity_ids) do
+    Enum.each(entity_ids, fn id ->
+      :ets.delete_object(dirty_set, {id, {:pending, generation}})
+    end)
+
+    :ok
+  end
+
+  @doc """
+  Converts every provisional mark into a settled dirty mark.
+
+  Called on Writer startup: no commit can be in flight at that point, so
+  any surviving provisional mark belongs to a batch whose outcome is
+  unknown (the Writer may have crashed before settling it). Settling is
+  the conservative choice — the entity re-materializes, and if nothing
+  was committed the materializer finds no new actions and clears it.
+
+  ## Examples
+
+      iex> DirtyTracker.settle_all_pending()
+      :ok
+  """
+  @spec settle_all_pending(atom()) :: :ok
+  def settle_all_pending(dirty_set \\ @default_dirty_set_name) do
+    generation = :erlang.unique_integer([:monotonic, :positive])
+
+    dirty_set
+    |> :ets.tab2list()
+    |> Enum.each(fn
+      {entity_id, {:pending, _}} -> :ets.insert(dirty_set, {entity_id, generation})
+      _settled -> :ok
+    end)
+
+    :ok
+  end
+
+  @doc """
+  True when a mark returned by `dirty_generation/2` is provisional, i.e. a
+  commit for the entity is still in flight.
+
+  ## Examples
+
+      iex> DirtyTracker.pending?(nil)
+      false
+  """
+  @spec pending?(term()) :: boolean()
+  def pending?({:pending, _generation}), do: true
+  def pending?(_mark), do: false
+
+  @doc """
   Checks if an entity ID is marked as dirty.
 
   ## Examples
@@ -70,8 +179,11 @@ defmodule EbbServer.Storage.DirtyTracker do
   end
 
   @doc """
-  Returns the generation stamped on an entity's dirty mark, or `nil` when
-  the entity is clean.
+  Returns the mark stored for an entity, or `nil` when the entity is
+  clean.
+
+  A settled mark is a generation integer. A provisional mark (a commit is
+  in flight) is `{:pending, generation}` — see `pending?/1`.
 
   ## Examples
 

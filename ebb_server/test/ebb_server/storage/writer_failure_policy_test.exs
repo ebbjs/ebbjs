@@ -12,7 +12,7 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{RocksDB, WatermarkTracker, Writer}
+  alias EbbServer.Storage.{DirtyTracker, RocksDB, WatermarkTracker, Writer}
 
   import EbbServer.TestHelpers
 
@@ -80,6 +80,36 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
       assert {:ok, {2, 2}, []} = Writer.write_actions([second], writer_name)
       assert_receive {:batch_committed, 2, 2, _groups}
       assert WatermarkTracker.committed_watermark(ctx.watermark_tracker) == 2
+    end
+  end
+
+  describe "failed commit leaves no provisional marks" do
+    test "a fail-once commit clears the provisional mark it wrote", ctx do
+      commit_fn = fn _ops, _opts -> {:error, :injected_rocksdb_failure} end
+
+      %{name: writer_name} = start_writer(Map.merge(ctx, %{commit_fn: commit_fn}))
+
+      action = validated_action(%{updates: [validated_update(%{subject_id: "todo_failed"})]})
+
+      assert {:error, {:rocksdb_write_failed, :injected_rocksdb_failure}} =
+               Writer.write_actions([action], writer_name)
+
+      refute DirtyTracker.dirty?("todo_failed", ctx.dirty_set)
+    end
+
+    test "a commit_fn that raises clears the provisional mark it wrote", ctx do
+      commit_fn = fn _ops, _opts -> raise "boom" end
+
+      %{name: writer_name, pid: writer_pid} =
+        start_writer(Map.merge(ctx, %{commit_fn: commit_fn}))
+
+      Process.unlink(writer_pid)
+
+      action = validated_action(%{updates: [validated_update(%{subject_id: "todo_failed"})]})
+
+      catch_exit(Writer.write_actions([action], writer_name))
+
+      refute DirtyTracker.dirty?("todo_failed", ctx.dirty_set)
     end
   end
 

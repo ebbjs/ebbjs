@@ -204,6 +204,40 @@ defmodule EbbServer.Storage.WriterTest do
     end
   end
 
+  describe "provisional dirty marks" do
+    test "marks entities provisionally before the commit attempt", ctx do
+      test_pid = self()
+
+      commit_fn = fn ops, opts ->
+        mark = DirtyTracker.dirty_generation("todo_pending", ctx.dirty_set)
+        send(test_pid, {:mark_at_commit, mark})
+        RocksDB.write_batch(ops, opts)
+      end
+
+      %{name: writer_name} = start_writer(Map.put(ctx, :commit_fn, commit_fn))
+
+      action = validated_action(%{updates: [validated_update(%{subject_id: "todo_pending"})]})
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      assert_receive {:mark_at_commit, mark}
+      assert DirtyTracker.pending?(mark)
+
+      # The commit has returned, so the mark is settled by the time the call
+      # replies.
+      refute DirtyTracker.pending?(DirtyTracker.dirty_generation("todo_pending", ctx.dirty_set))
+    end
+
+    test "startup settles provisional marks left by a crashed writer", ctx do
+      DirtyTracker.mark_pending_batch(["todo_orphan"], ctx.dirty_set)
+
+      %{name: _writer_name} = start_writer(ctx)
+
+      assert DirtyTracker.dirty?("todo_orphan", ctx.dirty_set)
+      refute DirtyTracker.pending?(DirtyTracker.dirty_generation("todo_orphan", ctx.dirty_set))
+    end
+  end
+
   describe "durability" do
     test "data survives Writer and RocksDB restart", %{
       dirty_set: dirty_set,
