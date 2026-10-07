@@ -30,7 +30,8 @@ defmodule EbbServer.BackwardCompatibilityIntegrationTest do
                 "title" => %{"type" => "lww", "value" => "Compatibility Test", "hlc" => hlc}
               }
             }
-          }
+          },
+          entity_group_update(entity_id, "g_test", hlc)
         ]
       }
 
