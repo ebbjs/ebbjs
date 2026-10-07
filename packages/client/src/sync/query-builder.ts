@@ -38,7 +38,7 @@ import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { ShapeFields } from "../schema/entity";
 import { EntityValidationError, type EntityRegistry } from "../schema/entity-registry";
 import { GROUPS_ACCESSOR } from "../schema/system-entities";
-import { liveMembership } from "./entity-group";
+import { liveMemberships } from "./entity-group";
 
 /**
  * Map a single materialized entity onto the schema's TypeBox shape.
@@ -470,9 +470,7 @@ async function membershipIdSet(filter: MembershipFilter): Promise<ReadonlySet<st
   if (filter.targetIds === null) return ids;
   const groupIds = new Set(filter.targetIds);
   const rows = await filter.context.storage.entities.query("entityGroup");
-  for (const row of rows) {
-    const membership = liveMembership(row);
-    if (membership === null) continue;
+  for (const membership of liveMemberships(rows)) {
     if (!groupIds.has(membership.groupId)) continue;
     ids.add(membership.entityId);
   }

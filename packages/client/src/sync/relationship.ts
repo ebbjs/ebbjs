@@ -12,7 +12,7 @@ import { generateId, type Entity } from "@ebbjs/core";
 import type { TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { EntityRegistry } from "../schema/entity-registry";
-import { type LiveMembership, liveMembership } from "./entity-group";
+import { liveMemberships } from "./entity-group";
 import {
   type LoadEntities,
   type PointerValue,
@@ -243,12 +243,8 @@ export function membershipGroups<TFields extends Record<string, TSchema>>(
   targetShape: TObject<TFields>,
 ): QueryBuilder<TFields> {
   const loader: LoadEntities = async () => {
-    const memberships = await queryEntitiesByType("entityGroup");
-    const ids = memberships
-      .map(liveMembership)
-      .filter((m): m is LiveMembership => m !== null)
-      .filter((m) => m.entityId === sourceId)
-      .map((m) => m.groupId);
+    const memberships = liveMemberships(await queryEntitiesByType("entityGroup"));
+    const ids = memberships.filter((m) => m.entityId === sourceId).map((m) => m.groupId);
     const idSet = new Set(ids);
     const allTargets = await queryEntitiesByType(targetName);
     return allTargets.filter((t) => idSet.has(t.id));
@@ -369,6 +365,25 @@ export function buildEntityGroupUpdate(args: {
         group_id: { value: args.groupId, update_id: args.updateId },
       },
     },
+  };
+}
+
+/**
+ * Build a `delete` Update for an existing `entityGroup` membership
+ * row. The wire delete carries only the membership id; the server
+ * recovers the entity/group from its by-id cache, so no `data` is
+ * sent.
+ */
+export function buildEntityGroupDelete(args: {
+  membershipId: string;
+  updateId: string;
+}): import("@ebbjs/core").Update {
+  return {
+    id: args.updateId,
+    subject_id: args.membershipId,
+    subject_type: "entityGroup",
+    method: "delete",
+    data: null,
   };
 }
 

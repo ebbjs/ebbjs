@@ -14,6 +14,8 @@ import { describe, it, expect } from "vitest";
 import type { Entity } from "@ebbjs/core";
 
 import { forwardMany, forwardOne, reverse } from "../relationship";
+import { buildEntityGroupDelete } from "../relationship";
+import { liveMembership } from "../entity-group";
 
 const mkEntity = (
   id: string,
@@ -192,6 +194,36 @@ describe("forwardMany", () => {
       "tag",
     );
     expect(await qb).toEqual([]);
+  });
+});
+
+describe("buildEntityGroupDelete", () => {
+  it("builds a delete Update naming only the membership row id", () => {
+    const update = buildEntityGroupDelete({ membershipId: "eg_1", updateId: "u_1" });
+    expect(update).toEqual({
+      id: "u_1",
+      subject_id: "eg_1",
+      subject_type: "entityGroup",
+      method: "delete",
+      data: null,
+    });
+  });
+});
+
+describe("liveMembership", () => {
+  it("carries the row id alongside the entity and group ids", () => {
+    const row = mkEntity("eg_1", "entityGroup", { entity_id: "t1", group_id: "g1" });
+    expect(liveMembership(row)).toEqual({ membershipId: "eg_1", entityId: "t1", groupId: "g1" });
+  });
+
+  it("returns null for a tombstoned membership row", () => {
+    const row = mkEntity("eg_1", "entityGroup", { entity_id: "t1", group_id: "g1" }, "9");
+    expect(liveMembership(row)).toBeNull();
+  });
+
+  it("returns null when a required id is missing", () => {
+    const row = mkEntity("eg_1", "entityGroup", { entity_id: "t1" });
+    expect(liveMembership(row)).toBeNull();
   });
 });
 
