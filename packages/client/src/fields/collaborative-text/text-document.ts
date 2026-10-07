@@ -33,7 +33,13 @@
  * ```
  */
 
-import type { Action, HLCTimestamp, Update } from "@ebbjs/core";
+import {
+  generateId,
+  ID_PREFIX_ACTION,
+  type Action,
+  type HLCTimestamp,
+  type Update,
+} from "@ebbjs/core";
 import {
   createDocState,
   docReducer,
@@ -330,7 +336,10 @@ export class TextDocument {
     if (!update) return null;
 
     const action: Action = {
-      id: `a_${runId}`,
+      // Globally unique, not derived from the run or a per-instance
+      // counter. `action_id` is the server's dedup key, so a reload must
+      // not regenerate an id a different edit already committed.
+      id: generateId(ID_PREFIX_ACTION),
       actor_id: this.actorId,
       hlc: finalHlc,
       gsn: 0,
@@ -400,7 +409,7 @@ export class TextDocument {
     if (!update) return null;
 
     const action: Action = {
-      id: `a_del_${this.actorId}_${this.updateCounter++}`,
+      id: generateId(ID_PREFIX_ACTION),
       actor_id: this.actorId,
       hlc: finalHlc,
       gsn: 0,
@@ -475,10 +484,7 @@ export class TextDocument {
     if (!update) return null;
 
     const action: Action = {
-      // Actor-scoped counter so concurrent edits on two tabs don't
-      // produce colliding ids — the conflict detector treats
-      // matching ids as a redelivered action and skips the check.
-      id: `a_ext_${this.actorId}_${this.updateCounter++}`,
+      id: generateId(ID_PREFIX_ACTION),
       actor_id: this.actorId,
       hlc: finalHlc,
       gsn: 0,

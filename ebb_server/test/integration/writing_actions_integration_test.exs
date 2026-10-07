@@ -40,6 +40,7 @@ defmodule EbbServer.WritingActionsIntegrationTest do
   import EbbServer.Integration.ActionHelpers
 
   alias EbbServer.Storage.DirtyTracker
+  alias EbbServer.Storage.RocksDB
   alias EbbServer.Sync.Router
 
   describe "Actions are validated before persisting" do
@@ -176,6 +177,55 @@ defmodule EbbServer.WritingActionsIntegrationTest do
 
       assert e1["last_gsn"] == 2
       assert e2["last_gsn"] == 3
+    end
+  end
+
+  describe "Re-submitting a committed Action is idempotent (#285)" do
+    setup do
+      bootstrap_group("a_test", "g_test", ["todo.create", "todo.read"])
+      :ok
+    end
+
+    test "the same Action body is a silent no-op with single application" do
+      entity_id = "todo_dedup_#{:erlang.unique_integer([:positive])}"
+      hlc = generate_hlc()
+
+      action_body = %{
+        "id" => "act_dedup_#{:erlang.unique_integer([:positive])}",
+        "actor_id" => "a_test",
+        "hlc" => hlc,
+        "updates" => [
+          %{
+            "id" => "upd_dedup_#{:erlang.unique_integer([:positive])}",
+            "subject_id" => entity_id,
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{
+                "title" => %{"type" => "lww", "value" => "Dedup", "hlc" => hlc}
+              }
+            }
+          },
+          entity_group_update(entity_id, "g_test", hlc)
+        ]
+      }
+
+      body = msgpack_encode!(%{"actions" => [action_body]})
+
+      conn = post_actions(body)
+      assert conn.status == 200
+      assert Jason.decode!(conn.resp_body) == %{"rejected" => []}
+
+      max_gsn = RocksDB.get_max_gsn()
+      first_entity = Jason.decode!(get_entity(entity_id).resp_body)
+
+      resubmit = post_actions(body)
+      assert resubmit.status == 200
+      assert Jason.decode!(resubmit.resp_body) == %{"rejected" => []}
+
+      assert RocksDB.get_max_gsn() == max_gsn
+      second_entity = Jason.decode!(get_entity(entity_id).resp_body)
+      assert second_entity["last_gsn"] == first_entity["last_gsn"]
     end
   end
 

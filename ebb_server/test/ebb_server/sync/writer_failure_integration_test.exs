@@ -278,3 +278,121 @@ defmodule EbbServer.Sync.WriterFailureEndToEndTest do
     }
   end
 end
+
+defmodule EbbServer.Sync.ActionDedupLostAckHttpTest do
+  @moduledoc """
+  A durable commit whose HTTP ack is lost is idempotent on retry
+  (ebbjs/ebbjs#285).
+
+  The lost-ack Action is written to RocksDB, then the Writer raises
+  before it can reply, so the caller never learns the commit landed. The
+  retry carries the same `action_id`, so the Writer's `cf_action_dedup`
+  lookup skips it and reports silent success without a second GSN.
+  """
+
+  use ExUnit.Case, async: false
+  use EbbServer.Integration.StorageCase, with_auth_mode: true
+
+  alias EbbServer.Integration.ActionHelpers
+  alias EbbServer.Storage.{RocksDB, Writer}
+  alias EbbServer.TestHelpers
+
+  @lost_ack_action_id "act_285_lost_ack"
+
+  # Commit durably, then raise only for the Action under test: the retry
+  # is deduped before it reaches this function, so it never raises twice.
+  def storage_writer_opts do
+    [
+      commit_fn: fn ops, opts ->
+        :ok = RocksDB.write_batch(ops, opts)
+
+        if lost_ack_write?(ops) do
+          raise "ack lost"
+        end
+
+        :ok
+      end
+    ]
+  end
+
+  test "the retry after a lost ack applies the Action once" do
+    actor_id = "a_285_#{:erlang.unique_integer([:positive])}"
+    group_id = "g_285_#{:erlang.unique_integer([:positive])}"
+
+    assert ActionHelpers.bootstrap_group(actor_id, group_id, ["todo.create", "todo.read"]).status ==
+             200
+
+    entity_id = "todo_285_#{:erlang.unique_integer([:positive])}"
+
+    body =
+      ActionHelpers.msgpack_encode!(%{
+        "actions" => [lost_ack_action(actor_id, entity_id, group_id)]
+      })
+
+    # The commit lands, then the Writer crashes before replying: the ack
+    # is lost but the Action is durable.
+    catch_exit(ActionHelpers.post_actions(body, actor_id))
+    committed_gsn = RocksDB.get_max_gsn()
+
+    assert eventually(fn -> writer_ready?() end)
+
+    retry = ActionHelpers.post_actions(body, actor_id)
+    assert retry.status == 200
+    assert retry.resp_body == ~s({"rejected":[]})
+
+    # No second GSN: the retry was deduped, not re-applied.
+    assert RocksDB.get_max_gsn() == committed_gsn
+
+    assert {:ok, _} =
+             RocksDB.get(RocksDB.cf_actions(), RocksDB.encode_gsn_key(committed_gsn))
+  end
+
+  defp lost_ack_action(actor_id, entity_id, group_id) do
+    hlc = TestHelpers.generate_hlc()
+
+    %{
+      "id" => @lost_ack_action_id,
+      "actor_id" => actor_id,
+      "hlc" => hlc,
+      "updates" => [
+        %{
+          "id" => "upd_285_lost_ack",
+          "subject_id" => entity_id,
+          "subject_type" => "todo",
+          "method" => "put",
+          "data" => %{
+            "fields" => %{"title" => %{"type" => "lww", "value" => "Lost ack", "hlc" => hlc}}
+          }
+        },
+        ActionHelpers.entity_group_update(entity_id, group_id, hlc)
+      ]
+    }
+  end
+
+  defp lost_ack_write?(ops) do
+    Enum.any?(ops, fn
+      {:put, cf, @lost_ack_action_id, _gsn} -> cf == RocksDB.cf_action_dedup()
+      _op -> false
+    end)
+  end
+
+  # A no-op write is a safe readiness probe: it reads no keys and returns
+  # the `{0, 0}` sentinel once the restarted Writer is serving calls.
+  defp writer_ready? do
+    match?({:ok, {0, 0}, []}, Writer.write_actions([]))
+  catch
+    :exit, _ -> false
+  end
+
+  defp eventually(fun, attempts \\ 200)
+  defp eventually(fun, 0), do: fun.()
+
+  defp eventually(fun, attempts) do
+    if fun.() do
+      true
+    else
+      Process.sleep(10)
+      eventually(fun, attempts - 1)
+    end
+  end
+end

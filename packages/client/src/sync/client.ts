@@ -384,8 +384,10 @@ export class SyncClient {
    * Validates each action against the local `EntityRegistry`, then
    * enqueues it (optimistically applying its Updates to the local
    * cache) and flushes the buffer. Returns the server's response; the
-   * server may reject some actions (permissions, HLC drift, dedup) and
-   * the caller decides how to handle them.
+   * server may reject some actions (permissions, HLC drift) and the
+   * caller decides how to handle them. Re-submitting an Action the
+   * server has already committed (same `action_id`) is an idempotent
+   * no-op: it returns success with no `rejected[]` entry.
    *
    * Schema violations throw `EntityValidationError` aggregating every
    * violation across the batch before anything is enqueued — matches
