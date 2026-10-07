@@ -184,9 +184,9 @@ describe("createOutbox", () => {
     const deps = mkDeps();
     const outbox = createOutbox(deps);
 
-    const response = await outbox.flush();
+    const outcome = await outbox.flush();
 
-    expect(response).toEqual({ rejected: [] });
+    expect(outcome).toEqual({ kind: "empty" });
     expect(deps.submitted).toEqual([]);
   });
 
@@ -202,7 +202,7 @@ describe("createOutbox", () => {
     expect(deps.submitted[0]?.map((action) => action.id)).toEqual(["a_1", "a_2"]);
   });
 
-  it("flush() returns the submit response and clears the submitted entries", async () => {
+  it("flush() marks rejected entries error, persists them, and retains them", async () => {
     const rejection = { id: "a_1", reason: "permission_denied" };
     const deps = mkDeps({
       submit: vi.fn(async () => ({ rejected: [rejection] })),
@@ -210,34 +210,41 @@ describe("createOutbox", () => {
     const outbox = createOutbox(deps);
     await outbox.enqueue(mkAction("a_1"));
 
-    const response = await outbox.flush();
+    const outcome = await outbox.flush();
 
-    expect(response.rejected).toEqual([rejection]);
-    expect(outbox.size()).toBe(0);
+    expect(outcome).toEqual({ kind: "partial", accepted: [], rejected: [rejection] });
+    expect(outbox.size("pending")).toBe(0);
+    expect(outbox.size("error")).toBe(1);
+    expect(outbox.errors().map((entry) => entry.action.id)).toEqual(["a_1"]);
+    expect((await deps.store.get("a_1"))?.status).toBe("error");
   });
 
-  it("flush() leaves the entries pending when submission throws", async () => {
+  it("flush() reports unreachable and leaves the entries pending when submission throws", async () => {
+    const boom = new Error("network down");
     const deps = mkDeps({
       submit: vi.fn(async () => {
-        throw new Error("network down");
+        throw boom;
       }),
     });
     const outbox = createOutbox(deps);
     await outbox.enqueue(mkAction("a_1"));
 
-    await expect(outbox.flush()).rejects.toThrow("network down");
+    const outcome = await outbox.flush();
+
+    expect(outcome).toEqual({ kind: "unreachable", error: boom });
     expect(outbox.size()).toBe(1);
     expect(outbox.pending()[0]?.action.id).toBe("a_1");
+    expect((await deps.store.get("a_1"))?.status).toBe("pending");
   });
 
   it("keeps entries enqueued during an in-flight flush pending", async () => {
     let releaseSubmit: (() => void) | null = null;
     const deps = mkDeps({
-      submit: vi.fn(async (actions: readonly Action[]) => {
+      submit: vi.fn(async () => {
         await new Promise<void>((resolve) => {
           releaseSubmit = resolve;
         });
-        return { rejected: actions.map((action) => ({ id: action.id, reason: "x" })) };
+        return { rejected: [] };
       }),
     });
     const outbox = createOutbox(deps);
@@ -246,10 +253,405 @@ describe("createOutbox", () => {
     const inFlight = outbox.flush();
     await outbox.enqueue(mkAction("a_2"));
     releaseSubmit!();
+    const outcome = await inFlight;
+
+    // a_1 was submitted and acknowledged; a_2 was enqueued after the
+    // snapshot, so it is not part of this flush and stays pending.
+    expect(outcome).toEqual({ kind: "accepted", actionIds: ["a_1"] });
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_2"]);
+    expect(outbox.size("acknowledged")).toBe(1);
+  });
+});
+
+describe("createOutbox lifecycle", () => {
+  it("accepted entries become acknowledged, persisted, and are never re-flushed", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(mkAction("a_1"));
+    await outbox.enqueue(mkAction("a_2"));
+
+    const outcome = await outbox.flush();
+
+    expect(outcome).toEqual({ kind: "accepted", actionIds: ["a_1", "a_2"] });
+    expect(outbox.size("pending")).toBe(0);
+    expect(outbox.size("acknowledged")).toBe(2);
+    expect((await deps.store.get("a_1"))?.status).toBe("acknowledged");
+
+    // A second flush finds nothing pending and does not re-submit.
+    await expect(outbox.flush()).resolves.toEqual({ kind: "empty" });
+    expect(deps.submitted).toHaveLength(1);
+  });
+
+  it("partial: accepted entries acknowledged, rejected entries error and retained", async () => {
+    const rejection = { id: "a_2", reason: "permission_denied" };
+    const deps = mkDeps({ submit: vi.fn(async () => ({ rejected: [rejection] })) });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(mkAction("a_1"));
+    await outbox.enqueue(mkAction("a_2"));
+
+    const outcome = await outbox.flush();
+
+    expect(outcome).toEqual({ kind: "partial", accepted: ["a_1"], rejected: [rejection] });
+    expect(outbox.size("pending")).toBe(0);
+    expect(outbox.size("acknowledged")).toBe(1);
+    expect(outbox.errors().map((entry) => entry.action.id)).toEqual(["a_2"]);
+    expect((await deps.store.get("a_1"))?.status).toBe("acknowledged");
+    expect((await deps.store.get("a_2"))?.status).toBe("error");
+  });
+
+  it("size() defaults to the pending backlog and filters by status", async () => {
+    const rejection = { id: "a_2", reason: "permission_denied" };
+    const deps = mkDeps({ submit: vi.fn(async () => ({ rejected: [rejection] })) });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(mkAction("a_1"));
+    await outbox.enqueue(mkAction("a_2"));
+    await outbox.flush();
+    await outbox.enqueue(mkAction("a_3"));
+
+    expect(outbox.size()).toBe(1);
+    expect(outbox.size("pending")).toBe(1);
+    expect(outbox.size("acknowledged")).toBe(1);
+    expect(outbox.size("error")).toBe(1);
+  });
+
+  it("does not resurrect an entry whose echo arrives while the flush is in flight", async () => {
+    let releaseSubmit: (() => void) | null = null;
+    const deps = mkDeps({
+      submit: vi.fn(async () => {
+        await new Promise<void>((resolve) => {
+          releaseSubmit = resolve;
+        });
+        return { rejected: [] };
+      }),
+    });
+    const outbox = createOutbox(deps);
+    const action = mkAction("a_1");
+    await outbox.enqueue(action);
+
+    const inFlight = outbox.flush();
+    await outbox.noteInbound({ ...action, gsn: 5 });
+    releaseSubmit!();
     await inFlight;
 
-    // a_1 was submitted and removed; a_2 was enqueued after the snapshot.
-    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_2"]);
+    expect(outbox.size()).toBe(0);
+    expect(outbox.size("acknowledged")).toBe(0);
+    expect(await deps.store.get("a_1")).toBeNull();
+  });
+
+  it("re-deletes when an echo's delete interleaves with the flush put", async () => {
+    let releasePut: (() => void) | null = null;
+    const base = mkStore();
+    const store: OutboxStore = {
+      ...base,
+      put: vi.fn(async (entry: StoredOutboxEntry) => {
+        // Delay only the flush transition, not the enqueue write.
+        if (entry.status !== "pending") {
+          await new Promise<void>((resolve) => {
+            releasePut = resolve;
+          });
+        }
+        await base.put(entry);
+      }),
+    };
+    const deps = mkDeps({ store });
+    const outbox = createOutbox(deps);
+    const action = mkAction("a_1");
+    await outbox.enqueue(action);
+
+    const inFlight = outbox.flush();
+    await vi.waitFor(() => {
+      expect(releasePut).not.toBeNull();
+    });
+    await outbox.noteInbound({ ...action, gsn: 9 });
+    releasePut!();
+    await inFlight;
+
+    expect(outbox.size("acknowledged")).toBe(0);
+    expect(await store.get("a_1")).toBeNull();
+  });
+
+  it("a store failure while persisting a transition leaves the batch pending", async () => {
+    const base = mkStore();
+    let puts = 0;
+    const store: OutboxStore = {
+      ...base,
+      put: vi.fn(async (entry: StoredOutboxEntry) => {
+        puts += 1;
+        if (puts > 1) throw new Error("disk full");
+        await base.put(entry);
+      }),
+    };
+    const deps = mkDeps({ store });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(mkAction("a_1"));
+
+    await expect(outbox.flush()).rejects.toThrow("disk full");
+
+    // No acknowledged transition was durable, so the entry stays
+    // flushable rather than stuck awaiting an echo that already
+    // happened.
+    expect(outbox.size("pending")).toBe(1);
+    expect(outbox.size("acknowledged")).toBe(0);
+  });
+
+  it("commits per entry so a mid-batch failure keeps memory and store aligned", async () => {
+    const base = mkStore();
+    let puts = 0;
+    const store: OutboxStore = {
+      ...base,
+      put: vi.fn(async (entry: StoredOutboxEntry) => {
+        puts += 1;
+        // Two enqueues, then fail the second flush transition.
+        if (puts > 3) throw new Error("disk full");
+        await base.put(entry);
+      }),
+    };
+    const deps = mkDeps({ store });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(mkAction("a_1"));
+    await outbox.enqueue(mkAction("a_2"));
+
+    await expect(outbox.flush()).rejects.toThrow("disk full");
+
+    // a_1's transition was durable and committed to memory; a_2's was not,
+    // and both states agree with the store.
+    expect(outbox.size("acknowledged")).toBe(1);
+    expect(outbox.size("pending")).toBe(1);
+    expect((await store.get("a_1"))?.status).toBe("acknowledged");
+    expect((await store.get("a_2"))?.status).toBe("pending");
+  });
+
+  it("coalesces concurrent flushes into one submit", async () => {
+    let release: (() => void) | null = null;
+    const calls: (readonly Action[])[] = [];
+    const deps = mkDeps({
+      submit: vi.fn(async (actions: readonly Action[]) => {
+        calls.push(actions);
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return { rejected: [] };
+      }),
+    });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(mkAction("a_1"));
+
+    const first = outbox.flush();
+    const second = outbox.flush();
+    await vi.waitFor(() => {
+      expect(release).not.toBeNull();
+    });
+    release!();
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(calls).toHaveLength(1);
+    expect(a).toEqual({ kind: "accepted", actionIds: ["a_1"] });
+    expect(b).toEqual(a);
+  });
+
+  it("does not re-flush an errored entry until retry()", async () => {
+    const rejection = { id: "a_1", reason: "permission_denied" };
+    let submits = 0;
+    const deps = mkDeps({
+      submit: vi.fn(async () => {
+        submits += 1;
+        return { rejected: [rejection] };
+      }),
+    });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(mkAction("a_1"));
+    await outbox.flush();
+
+    await expect(outbox.flush()).resolves.toEqual({ kind: "empty" });
+    expect(submits).toBe(1);
+  });
+
+  it("rehydrate seeds acknowledged entries without re-applying them", async () => {
+    const action = mkAction("a_1");
+    const store = mkStore([stored(action, "1", "acknowledged")]);
+    const deps = mkDeps({ store });
+    const outbox = createOutbox(deps);
+
+    await outbox.rehydrate();
+
+    expect(deps.applied).toEqual([]);
+    expect(outbox.size("acknowledged")).toBe(1);
+  });
+});
+
+describe("createOutbox noteInbound", () => {
+  it("removes an acknowledged entry on its own echo and reports it", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    const action = mkAction("a_1");
+    await outbox.enqueue(action);
+    await outbox.flush();
+
+    const outcome = await outbox.noteInbound({ ...action, gsn: 7 });
+
+    expect(outcome).toEqual({ kind: "echo", actionId: "a_1" });
+    expect(outbox.size("acknowledged")).toBe(0);
+    expect(await deps.store.get("a_1")).toBeNull();
+  });
+
+  it("removes a still-pending entry when its echo arrives first", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    const action = mkAction("a_1");
+    await outbox.enqueue(action);
+
+    const outcome = await outbox.noteInbound({ ...action, gsn: 3 });
+
+    expect(outcome).toEqual({ kind: "echo", actionId: "a_1" });
+    expect(outbox.size("pending")).toBe(0);
+    expect(await deps.store.get("a_1")).toBeNull();
+  });
+
+  it("ignores an inbound Action with gsn 0", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    const action = mkAction("a_1");
+    await outbox.enqueue(action);
+
+    const outcome = await outbox.noteInbound({ ...action, gsn: 0 });
+
+    expect(outcome).toEqual({ kind: "none" });
+    expect(outbox.size("pending")).toBe(1);
+  });
+
+  it("ignores an inbound Action that matches no buffered entry", async () => {
+    const outbox = createOutbox(mkDeps());
+
+    const outcome = await outbox.noteInbound({ ...mkAction("a_other"), gsn: 9 });
+
+    expect(outcome).toEqual({ kind: "none" });
+  });
+
+  it("does not remove an errored entry on a matching echo", async () => {
+    const rejection = { id: "a_1", reason: "permission_denied" };
+    const deps = mkDeps({ submit: vi.fn(async () => ({ rejected: [rejection] })) });
+    const outbox = createOutbox(deps);
+    const action = mkAction("a_1");
+    await outbox.enqueue(action);
+    await outbox.flush();
+
+    const outcome = await outbox.noteInbound({ ...action, gsn: 4 });
+
+    expect(outcome).toEqual({ kind: "none" });
+    expect(outbox.size("error")).toBe(1);
+  });
+
+  it("matches a rehydrated acknowledged entry", async () => {
+    const action = mkAction("a_1");
+    const store = mkStore([stored(action, "1", "acknowledged")]);
+    const deps = mkDeps({ store });
+    const outbox = createOutbox(deps);
+    await outbox.rehydrate();
+
+    const outcome = await outbox.noteInbound({ ...action, gsn: 12 });
+
+    expect(outcome).toEqual({ kind: "echo", actionId: "a_1" });
+    expect(outbox.size("acknowledged")).toBe(0);
+    expect(await deps.store.get("a_1")).toBeNull();
+  });
+
+  it("returns none instead of throwing when the store read fails", async () => {
+    const store: OutboxStore = {
+      ...mkStore(),
+      list: vi.fn(async () => {
+        throw new Error("store unavailable");
+      }),
+    };
+    const outbox = createOutbox(mkDeps({ store }));
+
+    await expect(outbox.noteInbound({ ...mkAction("a_1"), gsn: 3 })).resolves.toEqual({
+      kind: "none",
+    });
+  });
+
+  it("keeps the entry when the store delete fails", async () => {
+    const action = mkAction("a_1");
+    const store: OutboxStore = {
+      ...mkStore(),
+      delete: vi.fn(async () => {
+        throw new Error("store unavailable");
+      }),
+    };
+    const deps = mkDeps({ store });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(action);
+
+    await expect(outbox.noteInbound({ ...action, gsn: 3 })).resolves.toEqual({ kind: "none" });
+    expect(outbox.size("pending")).toBe(1);
+    expect(await deps.store.get("a_1")).not.toBeNull();
+  });
+});
+
+describe("createOutbox error handling", () => {
+  const mkErrored = async () => {
+    const rejection = { id: "a_1", reason: "permission_denied" };
+    const deps = mkDeps({ submit: vi.fn(async () => ({ rejected: [rejection] })) });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(mkAction("a_1"));
+    await outbox.flush();
+    return { deps, outbox };
+  };
+
+  it("errors() exposes errored entries with their action", async () => {
+    const { outbox } = await mkErrored();
+
+    const errors = outbox.errors();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.action.id).toBe("a_1");
+    expect(errors[0]?.status).toBe("error");
+  });
+
+  it("retry() returns an errored entry to pending and re-flushes it", async () => {
+    const { deps, outbox } = await mkErrored();
+
+    await outbox.retry("a_1");
+
+    expect(outbox.errors()).toEqual([]);
+    expect(outbox.size("pending")).toBe(1);
+    expect((await deps.store.get("a_1"))?.status).toBe("pending");
+
+    (deps.submit as Mock).mockResolvedValueOnce({ rejected: [] });
+    await expect(outbox.flush()).resolves.toEqual({ kind: "accepted", actionIds: ["a_1"] });
+    expect(outbox.size("acknowledged")).toBe(1);
+  });
+
+  it("retry() ignores an unknown or non-errored id", async () => {
+    const { deps, outbox } = await mkErrored();
+
+    await outbox.retry("a_missing");
+    await outbox.retry("a_1");
+    await outbox.retry("a_1");
+
+    expect(outbox.size("pending")).toBe(1);
+    // enqueue, the error transition, and one retry.
+    expect(deps.store.put).toHaveBeenCalledTimes(3);
+  });
+
+  it("clearError() deletes an errored entry from memory and the store", async () => {
+    const { deps, outbox } = await mkErrored();
+
+    await outbox.clearError("a_1");
+
+    expect(outbox.errors()).toEqual([]);
+    expect(outbox.size()).toBe(0);
+    expect(await deps.store.get("a_1")).toBeNull();
+  });
+
+  it("clearError() ignores a pending entry", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(mkAction("a_1"));
+
+    await outbox.clearError("a_1");
+
+    expect(outbox.size("pending")).toBe(1);
+    expect(await deps.store.get("a_1")).not.toBeNull();
   });
 });
 
@@ -270,7 +672,7 @@ describe("createOutbox rehydration", () => {
     ]);
   });
 
-  it("rehydrate ignores acknowledged and errored entries", async () => {
+  it("rehydrate loads acknowledged and errored entries alongside pending", async () => {
     const store = mkStore([
       stored(mkAction("a_ack"), "1", "acknowledged"),
       stored(mkAction("a_pending"), "2"),
@@ -281,6 +683,8 @@ describe("createOutbox rehydration", () => {
     await outbox.rehydrate();
 
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_pending"]);
+    expect(outbox.size("acknowledged")).toBe(1);
+    expect(outbox.errors().map((entry) => entry.action.id)).toEqual(["a_error"]);
   });
 
   it("rehydrate does not re-apply optimistically", async () => {

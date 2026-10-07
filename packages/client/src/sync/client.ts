@@ -106,8 +106,10 @@ export class SyncClient {
   /**
    * Local write buffer. Every locally-authored Action passes through
    * here — `write()` enqueues (optimistically applying it) and flushes
-   * — so the pending list is observable and later stages can add
-   * durability and retry without touching write callers.
+   * — so entry lifecycle (pending / acknowledged / error) and depth
+   * counters are observable, and the sync-echo receipt hook
+   * (`_applyAction`) can retire an entry once it returns over the
+   * stream.
    */
   readonly outbox: Outbox;
   private readonly fetchImpl: typeof fetch;
@@ -387,7 +389,9 @@ export class SyncClient {
    * server may reject some actions (permissions, HLC drift) and the
    * caller decides how to handle them. Re-submitting an Action the
    * server has already committed (same `action_id`) is an idempotent
-   * no-op: it returns success with no `rejected[]` entry.
+   * no-op: it returns success with no `rejected[]` entry. Accepted
+   * actions stay in the outbox as `acknowledged` until their sync echo
+   * arrives.
    *
    * Schema violations throw `EntityValidationError` aggregating every
    * violation across the batch before anything is enqueued — matches
@@ -406,7 +410,14 @@ export class SyncClient {
     for (const action of actions) {
       await this.outbox.enqueue(action);
     }
-    return this.outbox.flush();
+    // The outbox owns entry state; this legacy return shape reports only
+    // the server's per-Action rejections. `write()` itself does not
+    // classify outcomes — callers that need retryable-vs-terminal go
+    // through `outbox.flush()` / the flush scheduler (#229).
+    const outcome = await this.outbox.flush();
+    if (outcome.kind === "unreachable") throw outcome.error;
+    if (outcome.kind === "partial") return { rejected: outcome.rejected };
+    return { rejected: [] };
   }
 
   /**
@@ -467,7 +478,8 @@ export class SyncClient {
     const response = await this.write([action]);
     // `flush()` submits every buffered Action, so the server's `rejected[]`
     // can name Actions other than the one minted here. Report only this
-    // Action's refusal — rejections are a per-call return, not outbox state.
+    // Action's refusal to the caller — the outbox records every rejection
+    // as an errored entry, so the rest are not lost.
     return { rejected: response.rejected.filter((rejection) => rejection.id === action.id) };
   }
 
@@ -983,6 +995,11 @@ export class SyncClient {
       this.mergeRemoteHLC(action.hlc);
     }
     await this.storage.actions.append(action);
+    // The single inbound receipt hook: an Action that matches a buffered
+    // Outbox entry (with a server GSN) is this client's own echo, so the
+    // entry is now proven canonical and can be removed. Runs after the
+    // append so an outbox removal never outruns the action log.
+    await this.outbox.noteInbound(action);
     const affected = action.updates.map((u) => ({
       entityId: u.subject_id,
       entityType: u.subject_type,

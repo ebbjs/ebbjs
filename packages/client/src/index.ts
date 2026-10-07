@@ -69,7 +69,13 @@ export {
   type StateChangeListener,
 } from "./sync/connection-state";
 
-export { type Outbox, type OutboxEntry, type OutboxStatus } from "./sync/outbox";
+export {
+  type Outbox,
+  type OutboxEntry,
+  type OutboxStatus,
+  type FlushOutcome,
+  type InboundOutcome,
+} from "./sync/outbox";
 
 export {
   openSSEStream,

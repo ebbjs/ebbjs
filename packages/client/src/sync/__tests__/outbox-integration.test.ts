@@ -6,6 +6,11 @@
  *
  * - every write funnels through `client.outbox` (enqueue + flush);
  * - the local cache reflects the write before the server echo;
+ * - an accepted write stays `acknowledged` until its own sync echo
+ *   retires it, and a reload between ack and echo neither drops nor
+ *   double-applies it;
+ * - a server rejection is queryable through `outbox.errors()` and is
+ *   retained until the application retries or clears it;
  * - the echo arriving over the sync path re-applies without changing
  *   the converged state (the materializer is HLC-ordered);
  * - a failed flush leaves the entries observable as pending.
@@ -95,6 +100,67 @@ describe("client.outbox", () => {
 
     expect(client.outbox.size()).toBe(0);
     expect(client.outbox.pending()).toEqual([]);
+  });
+
+  it("leaves an accepted entry acknowledged until its echo removes it", async () => {
+    const { fn } = mkStubFetch();
+    const storage = createMemoryAdapter();
+    const client = mkClient(fn, storage);
+
+    await client.write([mkAction()]);
+
+    expect(client.outbox.size("acknowledged")).toBe(1);
+    expect(await storage.outbox.get("act_1")).not.toBeNull();
+
+    await callApplyAction(client, { ...mkAction(), gsn: 11 });
+
+    expect(client.outbox.size()).toBe(0);
+    expect(client.outbox.size("acknowledged")).toBe(0);
+    expect(await storage.outbox.get("act_1")).toBeNull();
+  });
+
+  it("a reload between ack and echo keeps the entry for echo-matching without re-flushing", async () => {
+    const storage = createMemoryAdapter();
+    const writer = mkStubFetch();
+    const clientA = mkClient(writer.fn, storage);
+    await clientA.write([mkAction()]);
+
+    // "Reload": a fresh client over the same durable storage.
+    const reloaded = mkStubFetch();
+    const clientB = mkClient(reloaded.fn, storage);
+    await clientB.outbox.rehydrate();
+
+    expect(clientB.outbox.size("pending")).toBe(0);
+    expect(clientB.outbox.size("acknowledged")).toBe(1);
+    // An acknowledged entry awaits its echo; it is never re-flushed.
+    expect(actionCalls(reloaded.calls)).toBe(0);
+
+    // The echo (as catch-up would replay it) retires the entry.
+    await callApplyAction(clientB, { ...mkAction(), gsn: 4 });
+
+    expect(clientB.outbox.size("acknowledged")).toBe(0);
+    expect(await storage.outbox.get("act_1")).toBeNull();
+    // The row was already applied before the reload; it is not re-applied.
+    expect((await clientB.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("Hello");
+  });
+
+  it("surfaces a server-rejected entry through errors() without removing it", async () => {
+    const storage = createMemoryAdapter();
+    const { fn } = mkStubFetch([
+      { body: JSON.stringify({ rejected: [{ id: "act_1", reason: "permission_denied" }] }) },
+    ]);
+    const client = mkClient(fn, storage);
+
+    const response = await client.write([mkAction()]);
+
+    expect(response.rejected).toEqual([{ id: "act_1", reason: "permission_denied" }]);
+    expect(client.outbox.errors().map((entry) => entry.action.id)).toEqual(["act_1"]);
+    expect(await storage.outbox.get("act_1")).toMatchObject({ status: "error" });
+
+    await client.outbox.retry("act_1");
+
+    expect(client.outbox.errors()).toEqual([]);
+    expect(client.outbox.size("pending")).toBe(1);
   });
 
   it("client.write() enqueues + flushes and leaves nothing pending on success", async () => {
