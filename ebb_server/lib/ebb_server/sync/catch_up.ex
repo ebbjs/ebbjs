@@ -100,8 +100,7 @@ defmodule EbbServer.Sync.CatchUp do
     cf_actions = RocksDB.cf_actions()
     keys = Enum.map(gsns, &RocksDB.encode_gsn_key/1)
 
-    keys
-    |> RocksDB.multi_get(cf_actions)
+    RocksDB.multi_get(cf_actions, keys)
     |> Enum.map(fn
       {:ok, binary} -> :erlang.binary_to_term(binary, [:safe])
       :not_found -> nil

@@ -302,7 +302,7 @@ defmodule EbbServer.Storage.RocksDB do
   @spec multi_get(cf_ref(), [binary()], keyword()) :: [{:ok, binary()} | :not_found]
   def multi_get(cf_ref, keys, opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
-    results = :rocksdb.multi_get(db_ref(name), keys, cf_ref, [])
+    results = :rocksdb.multi_get(db_ref(name), cf_ref, keys, [])
     Enum.map(results, &format_multi_get_result/1)
   end
 
