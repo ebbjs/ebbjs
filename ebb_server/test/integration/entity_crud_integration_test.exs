@@ -35,7 +35,8 @@ defmodule EbbServer.EntityCrudIntegrationTest do
                 "completed" => %{"type" => "lww", "value" => false, "hlc" => hlc}
               }
             }
-          }
+          },
+          entity_group_update(entity_id, "g_test", hlc)
         ]
       }
 
@@ -74,7 +75,8 @@ defmodule EbbServer.EntityCrudIntegrationTest do
                 "title" => %{"type" => "lww", "value" => "Cached item", "hlc" => hlc}
               }
             }
-          }
+          },
+          entity_group_update(entity_id, "g_test", hlc)
         ]
       }
 
@@ -117,7 +119,8 @@ defmodule EbbServer.EntityCrudIntegrationTest do
                 "title" => %{"type" => "lww", "value" => "GSN test", "hlc" => hlc}
               }
             }
-          }
+          },
+          entity_group_update(entity_id, "g_test", hlc)
         ]
       }
 
@@ -153,7 +156,8 @@ defmodule EbbServer.EntityCrudIntegrationTest do
                 "title" => %{"type" => "lww", "value" => "Dirty test", "hlc" => hlc}
               }
             }
-          }
+          },
+          entity_group_update(entity_id, "g_test", hlc)
         ]
       }
 
@@ -191,7 +195,8 @@ defmodule EbbServer.EntityCrudIntegrationTest do
                 "title" => %{"type" => "lww", "value" => "First entity", "hlc" => hlc1}
               }
             }
-          }
+          },
+          entity_group_update(entity1, "g_test", hlc1)
         ]
       }
 
@@ -210,7 +215,8 @@ defmodule EbbServer.EntityCrudIntegrationTest do
                 "title" => %{"type" => "lww", "value" => "Second entity", "hlc" => hlc2}
               }
             }
-          }
+          },
+          entity_group_update(entity2, "g_test", hlc2)
         ]
       }
 
@@ -265,12 +271,15 @@ defmodule EbbServer.EntityCrudIntegrationTest do
                 "title" => %{"type" => "lww", "value" => "Integer HLC", "hlc" => generate_hlc()}
               }
             }
-          }
+          },
+          entity_group_update(entity_id, "g_test", generate_hlc())
         ]
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
       assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert response == %{"rejected" => []}
     end
 
     test "HLC as positive integer string is accepted" do
@@ -291,12 +300,15 @@ defmodule EbbServer.EntityCrudIntegrationTest do
                 "title" => %{"type" => "lww", "value" => "String HLC", "hlc" => generate_hlc()}
               }
             }
-          }
+          },
+          entity_group_update(entity_id, "g_test", generate_hlc())
         ]
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
       assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert response == %{"rejected" => []}
     end
 
     test "HLC as zero is rejected" do

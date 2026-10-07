@@ -7,6 +7,7 @@ defmodule EbbServer.Integration.ActionHelpers do
   - `get_entity/2` - GET an entity by ID
   - `bootstrap_group/3` - Create a test group with permissions
   - `write_entity_in_group/5` - Write an entity to a group
+  - `entity_group_update/3` - Build a same-Action `entityGroup` put
   - `msgpack_encode!/1` - Encode data as MessagePack binary
   """
 
@@ -102,7 +103,6 @@ defmodule EbbServer.Integration.ActionHelpers do
 
   def write_entity_in_group(actor_id, entity_id, entity_type, group_id, fields) do
     hlc = TestHelpers.generate_hlc()
-    eg_id = "eg_" <> Nanoid.generate()
 
     action = %{
       "id" => "act_write_" <> Nanoid.generate(),
@@ -116,21 +116,27 @@ defmodule EbbServer.Integration.ActionHelpers do
           "method" => "put",
           "data" => %{"fields" => fields}
         },
-        %{
-          "id" => eg_id,
-          "subject_id" => eg_id,
-          "subject_type" => "entityGroup",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
-            }
-          }
-        }
+        entity_group_update(entity_id, group_id, hlc)
       ]
     }
 
     post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
+  end
+
+  def entity_group_update(entity_id, group_id, hlc) do
+    eg_id = "eg_" <> Nanoid.generate()
+
+    %{
+      "id" => eg_id,
+      "subject_id" => eg_id,
+      "subject_type" => "entityGroup",
+      "method" => "put",
+      "data" => %{
+        "fields" => %{
+          "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
+          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
+        }
+      }
+    }
   end
 end

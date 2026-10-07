@@ -276,6 +276,34 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       assert rejection.reason == "actor_mismatch"
     end
 
+    test "unowned create rejects with missing_ownership and is not accepted" do
+      tables = create_isolated_tables()
+      opts = auth_opts(tables)
+
+      put_group_member(tables, "g_1", ["todo.create"])
+
+      action =
+        sample_action(%{
+          "actor_id" => "a_1",
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "todo_unowned",
+              "subject_type" => "todo",
+              "method" => "put",
+              "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
+            }
+          ]
+        })
+
+      {accepted, rejected} = PermissionChecker.validate_and_authorize([action], "a_1", opts)
+
+      assert accepted == []
+      assert [rejection] = rejected
+      assert rejection.reason == "missing_ownership"
+      assert is_binary(rejection.details)
+    end
+
     test "empty action list returns empty tuples" do
       tables = create_isolated_tables()
       opts = auth_opts(tables)

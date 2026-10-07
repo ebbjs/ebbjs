@@ -76,7 +76,8 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
                 "title" => %{"type" => "lww", "value" => "Authorized Todo", "hlc" => hlc}
               }
             }
-          }
+          },
+          entity_group_update(entity_id, "group_1", hlc)
         ]
       }
 
@@ -98,7 +99,6 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
 
       entity_id = "todo_intra_1"
       hlc = generate_hlc()
-      eg_id = "eg_intra_" <> Nanoid.generate()
 
       action = %{
         "id" => "act_intra_" <> Nanoid.generate(),
@@ -116,18 +116,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
               }
             }
           },
-          %{
-            "id" => eg_id,
-            "subject_id" => eg_id,
-            "subject_type" => "entityGroup",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
-                "group_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc}
-              }
-            }
-          }
+          entity_group_update(entity_id, "group_1", hlc)
         ]
       }
 
@@ -169,6 +158,41 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       assert rejection["reason"] == "not_authorized"
     end
 
+    test "create with no group membership is rejected as missing_ownership" do
+      entity_id = "todo_unowned_1"
+      hlc = generate_hlc()
+
+      action = %{
+        "id" => "act_unowned_" <> Nanoid.generate(),
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          %{
+            "id" => "upd_unowned_" <> Nanoid.generate(),
+            "subject_id" => entity_id,
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{
+                "title" => %{"type" => "lww", "value" => "Unowned Todo", "hlc" => hlc}
+              }
+            }
+          }
+        ]
+      }
+
+      conn = post_actions(msgpack_encode!(%{"actions" => [action]}), "actor_1")
+      assert conn.status == 200
+
+      {:ok, response} = Jason.decode(conn.resp_body)
+      rejection = hd(response["rejected"])
+      assert rejection["reason"] == "missing_ownership"
+      assert is_binary(rejection["details"])
+
+      # The structural rejection must keep the unowned entity out of storage.
+      assert get_entity(entity_id, "actor_1").status == 404
+    end
+
     test "actor identity mismatch is rejected" do
       entity_id = "todo_mismatch_1"
       hlc = generate_hlc()
@@ -201,23 +225,6 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       rejection = hd(response["rejected"])
       assert rejection["reason"] == "actor_mismatch"
     end
-  end
-
-  defp entity_group_update(entity_id, group_id, hlc) do
-    eg_id = "eg_#{Nanoid.generate()}"
-
-    %{
-      "id" => eg_id,
-      "subject_id" => eg_id,
-      "subject_type" => "entityGroup",
-      "method" => "put",
-      "data" => %{
-        "fields" => %{
-          "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
-          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
-        }
-      }
-    }
   end
 
   defp action_ids(group_id, actor_id) do

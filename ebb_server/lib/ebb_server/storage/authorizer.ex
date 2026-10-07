@@ -57,7 +57,10 @@ defmodule EbbServer.Storage.Authorizer do
   ## User entities
 
   User-entity writes require `<type>.<verb>` in at least one group of
-  the entity's group set (union/any-match).
+  the entity's group set (union/any-match). A `put` whose resolved set
+  is empty is a structural rejection (`missing_ownership`), not a
+  permission failure; `patch`/`delete` fall back to the actor-wide
+  check so legacy orphans stay mutable.
 
   ## Residuals (known limitations)
 
@@ -251,11 +254,23 @@ defmodule EbbServer.Storage.Authorizer do
 
     case EntityIndex.resolve_groups(type, update.subject_id, opts) do
       [] ->
-        check_actor_can_create_entity(actor_id, type, update.method, authz.ctx)
+        authorize_unowned_update(update, type, actor_id, authz)
 
       group_ids ->
         check_group_permission(group_ids, actor_id, type, permission_for(update.method), authz)
     end
+  end
+
+  # Only a create is structurally rejected; patch/delete keep the
+  # actor-wide check so a legacy unowned row stays manageable.
+  defp authorize_unowned_update(%{method: :put}, _type, _actor_id, _authz) do
+    {:error, "missing_ownership",
+     "entity has no group membership; an entityGroup row for at least one group " <>
+       "must be part of the same action"}
+  end
+
+  defp authorize_unowned_update(update, type, actor_id, authz) do
+    check_actor_can_create_entity(actor_id, type, update.method, authz.ctx)
   end
 
   # Union semantics: the actor may hold the permission in any group of

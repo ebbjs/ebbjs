@@ -67,7 +67,8 @@ defmodule EbbServer.WritingActionsIntegrationTest do
                 "title" => %{"type" => "lww", "value" => "Valid Action", "hlc" => hlc}
               }
             }
-          }
+          },
+          entity_group_update(entity_id, "g_test", hlc)
         ]
       }
 
@@ -134,7 +135,8 @@ defmodule EbbServer.WritingActionsIntegrationTest do
             "data" => %{
               "fields" => %{"title" => %{"type" => "lww", "value" => "First", "hlc" => hlc1}}
             }
-          }
+          },
+          entity_group_update(entity1, "g_test", hlc1)
         ]
       }
 
@@ -151,7 +153,8 @@ defmodule EbbServer.WritingActionsIntegrationTest do
             "data" => %{
               "fields" => %{"title" => %{"type" => "lww", "value" => "Second", "hlc" => hlc2}}
             }
-          }
+          },
+          entity_group_update(entity2, "g_test", hlc2)
         ]
       }
 
@@ -199,7 +202,8 @@ defmodule EbbServer.WritingActionsIntegrationTest do
             "data" => %{
               "fields" => %{"title" => %{"type" => "lww", "value" => "Dirty Test", "hlc" => hlc}}
             }
-          }
+          },
+          entity_group_update(entity_id, "g_test", hlc)
         ]
       }
 

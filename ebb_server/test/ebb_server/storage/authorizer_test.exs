@@ -584,6 +584,99 @@ defmodule EbbServer.Storage.AuthorizerTest do
     end
   end
 
+  # #245: a create that resolves to no group set is a structural
+  # rejection, not a permission failure. The actor-wide fallthrough is
+  # kept for patch/delete so legacy orphans stay mutable.
+  describe "authorize/3 - create requires ownership" do
+    test "rejects an unowned put even when the actor could create the type elsewhere" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.create"])
+
+      action = build_action([entity_put("todo_orphan", "todo")])
+
+      assert {:error, "missing_ownership", _} = Authorizer.authorize([action], "a_1", ctx)
+    end
+
+    test "rejects an unowned put regardless of the actor's permissions" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      action = build_action([entity_put("todo_orphan", "todo")])
+
+      assert {:error, "missing_ownership", _} = Authorizer.authorize([action], "a_1", ctx)
+    end
+
+    test "a bootstrap self-create with its membership edge still succeeds" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      action =
+        build_action([
+          group_put("g_1"),
+          group_member_put("gm_1", "a_1", "g_1", ["todo.*"]),
+          entity_put("todo_1", "todo"),
+          entity_group_put("eg_1", "todo_1", "g_1")
+        ])
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+
+    test "a same-Action membership edge satisfies ownership" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.create"])
+
+      action =
+        build_action([
+          entity_put("todo_new", "todo"),
+          entity_group_put("eg_new", "todo_new", "g_1")
+        ])
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+
+    test "cached membership satisfies ownership" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.create"])
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+
+      action = build_action([entity_put("todo_1", "todo")])
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+
+    test "an unowned patch or delete keeps the actor-wide fallthrough" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.update", "todo.delete"])
+
+      patch = %{
+        id: "upd_patch",
+        subject_id: "todo_orphan",
+        subject_type: "todo",
+        method: :patch,
+        data: %{"fields" => %{}}
+      }
+
+      delete = %{
+        id: "upd_delete",
+        subject_id: "todo_orphan_2",
+        subject_type: "todo",
+        method: :delete,
+        data: nil
+      }
+
+      assert Authorizer.authorize([build_action([patch])], "a_1", ctx) == :ok
+      assert Authorizer.authorize([build_action([delete])], "a_1", ctx) == :ok
+    end
+  end
+
   # #121 "Add Entity to Group": a same-Action entity create filed into
   # several groups is authorized per target group, not by the union of
   # the entity's group set.
