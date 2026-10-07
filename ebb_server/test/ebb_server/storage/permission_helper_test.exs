@@ -44,7 +44,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     end
   end
 
-  describe "bootstrap_group_permissions/2" do
+  describe "bootstrap_group_permissions/3" do
     test "maps the groups the actor creates and joins to their declared permissions" do
       updates = [
         group_put("g_1"),
@@ -52,7 +52,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
         entity_group_put("eg_1", "todo_1", "g_1")
       ]
 
-      assert PermissionHelper.bootstrap_group_permissions(updates, "a_1") == %{
+      assert PermissionHelper.bootstrap_group_permissions(updates, "a_1", fn _ -> false end) == %{
                "g_1" => ["group.read", "todo.*"]
              }
     end
@@ -63,21 +63,46 @@ defmodule EbbServer.Storage.PermissionHelperTest do
         group_member_put("gm_1", "a_2", "g_1", ["*"])
       ]
 
-      assert PermissionHelper.bootstrap_group_permissions(updates, "a_1") == %{}
+      assert PermissionHelper.bootstrap_group_permissions(updates, "a_1", fn _ -> false end) ==
+               %{}
     end
 
     test "ignores a groupMember in a group the action does not create" do
       updates = [group_member_put("gm_1", "a_1", "g_1", ["*"])]
 
-      assert PermissionHelper.bootstrap_group_permissions(updates, "a_1") == %{}
+      assert PermissionHelper.bootstrap_group_permissions(updates, "a_1", fn _ -> false end) ==
+               %{}
     end
 
     test "empty updates returns an empty map" do
-      assert PermissionHelper.bootstrap_group_permissions([], "a_1") == %{}
+      assert PermissionHelper.bootstrap_group_permissions([], "a_1", fn _ -> false end) == %{}
+    end
+
+    test "drops a group the existence predicate reports as existing" do
+      updates = [
+        group_put("g_1"),
+        group_member_put("gm_1", "a_1", "g_1", ["group.read", "todo.*"])
+      ]
+
+      assert PermissionHelper.bootstrap_group_permissions(updates, "a_1", &(&1 == "g_1")) ==
+               %{}
+    end
+
+    test "keeps a new group while dropping an existing one" do
+      updates = [
+        group_put("g_old"),
+        group_put("g_new"),
+        group_member_put("gm_old", "a_1", "g_old", ["group.read"]),
+        group_member_put("gm_new", "a_1", "g_new", ["todo.*"])
+      ]
+
+      result = PermissionHelper.bootstrap_group_permissions(updates, "a_1", &(&1 == "g_old"))
+
+      assert result == %{"g_new" => ["todo.*"]}
     end
   end
 
-  describe "created_subject_ids/1" do
+  describe "created_subject_ids/2" do
     test "collects user entity puts only" do
       updates = [
         entity_put("todo_1", "todo"),
@@ -87,7 +112,8 @@ defmodule EbbServer.Storage.PermissionHelperTest do
         entity_group_put("eg_1", "todo_1", "g_1")
       ]
 
-      assert PermissionHelper.created_subject_ids(updates) == MapSet.new(["todo_1", "post_1"])
+      assert PermissionHelper.created_subject_ids(updates, fn _ -> false end) ==
+               MapSet.new(["todo_1", "post_1"])
     end
 
     test "ignores patches and deletes" do
@@ -101,7 +127,18 @@ defmodule EbbServer.Storage.PermissionHelperTest do
         }
       ]
 
-      assert PermissionHelper.created_subject_ids(updates) == MapSet.new()
+      assert PermissionHelper.created_subject_ids(updates, fn _ -> false end) ==
+               MapSet.new()
+    end
+
+    test "drops an id the existence predicate reports as existing" do
+      updates = [
+        entity_put("todo_new", "todo"),
+        entity_put("todo_old", "todo")
+      ]
+
+      assert PermissionHelper.created_subject_ids(updates, &(&1 == "todo_old")) ==
+               MapSet.new(["todo_new"])
     end
   end
 
