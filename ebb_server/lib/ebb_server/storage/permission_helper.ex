@@ -20,13 +20,13 @@ defmodule EbbServer.Storage.PermissionHelper do
   own `groupMember` put (the membership row is not in the cache yet
   while the Action is being authorized).
 
-  The exemption is structural: it trusts the Action's own `put`s, and
-  the authorization context carries no group/entity **existence**
-  signal. Two residuals follow — a bootstrap may re-`put` an existing
-  group id and self-grant permissions, and a same-Action `entityGroup`
-  put may file an existing entity. See
-  `EbbServer.Storage.Authorizer` "Residuals" for details; both need an
-  existence source in the authz context.
+  The exemption applies only to entities the Action is **creating**.
+  A group qualifies only when the existence index does not already know
+  its id, and the `entityGroup` exemption covers only entities the
+  Action is actually creating. Re-`put`ting a committed group or
+  re-filing a committed entity therefore falls through to the
+  permission table, and the actor's declared permissions are never
+  unioned into the membership checks for existing entities.
   """
 
   alias EbbServer.Storage.Fields
@@ -73,16 +73,24 @@ defmodule EbbServer.Storage.PermissionHelper do
   permissions the actor grants themselves in each.
 
   A group qualifies only when the Action both `put`s the group and
-  `put`s the acting actor's own `groupMember` in it. Creating a group
-  for somebody else is not a bootstrap.
+  `put`s the acting actor's own `groupMember` in it **and** the group
+  does not already exist (`exists?` is the authorizer's existence
+  predicate, backed by the entity-type index). Re-`put`ting a committed
+  group is not a bootstrap: it falls through to the permission table.
+  Creating a group for somebody else is not a bootstrap.
 
   The returned permissions stand in for the actor's membership until
   the Action is written, so the actor can create the initial entities
   in the group they just created without holding a prior membership.
   """
-  @spec bootstrap_group_permissions([map()], String.t()) :: %{String.t() => [String.t()]}
-  def bootstrap_group_permissions(updates, actor_id) do
-    group_ids = group_put_ids(updates)
+  @spec bootstrap_group_permissions([map()], String.t(), (String.t() -> boolean())) ::
+          %{String.t() => [String.t()]}
+  def bootstrap_group_permissions(updates, actor_id, exists?) do
+    group_ids =
+      updates
+      |> group_put_ids()
+      |> Enum.reject(exists?)
+      |> MapSet.new()
 
     updates
     |> Enum.filter(&own_group_member_put?(&1, actor_id, group_ids))
@@ -105,17 +113,21 @@ defmodule EbbServer.Storage.PermissionHelper do
   end
 
   @doc """
-  Returns the ids of the user entities this Action creates (`put`).
+  Returns the ids of the user entities this Action **actually creates**
+  (`put` for an id the existence index does not already know).
 
   Anchors a bootstrap `entityGroup` exemption to entities the Action is
-  creating, so the exemption cannot graft an unrelated existing entity
-  into a group the actor is bootstrapping.
+  creating, so the exemption cannot graft an already-existing entity
+  into a group the actor is bootstrapping. Re-`put`ting an existing
+  entity excludes it here; the membership put is then authorized
+  against the permission table.
   """
-  @spec created_subject_ids([map()]) :: MapSet.t(String.t())
-  def created_subject_ids(updates) do
+  @spec created_subject_ids([map()], (String.t() -> boolean())) :: MapSet.t(String.t())
+  def created_subject_ids(updates, exists?) do
     updates
     |> created_entity_types()
     |> Map.keys()
+    |> Enum.reject(exists?)
     |> MapSet.new()
   end
 

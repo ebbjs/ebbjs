@@ -12,6 +12,11 @@ defmodule EbbServer.Storage.EntityTypeCache do
   A plain `:set` keyed by entity id. The GenServer exists solely to own
   the table lifetime and publish its name; every read is a lock-free
   ETS lookup.
+
+  Entries are monotonic: there is no delete, so a tombstoned entity
+  keeps its entry. The table is therefore an **existence** signal (a
+  deleted id still reads as existing, fail-closed) and the recorded
+  type may be stale — callers must not read a type as "current".
   """
 
   use GenServer

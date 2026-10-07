@@ -35,9 +35,11 @@ defmodule EbbServer.Storage.EntityIndex do
 
   Two auxiliary lookups live here as well: `subject_type/2` resolves an
   existing entity's type from the entity-type index (used by the
-  authorizer to gate membership mutations, #264), and `membership/2`
-  resolves an `entityGroup` row id to its `{entity_id, group_id}` (the
-  delete wire form drops the entity reference).
+  authorizer to gate membership mutations, #264), `exists?/2` exposes
+  the same index as an existence signal (used by the authorizer to gate
+  the bootstrap self-grant, #289), and `membership/2` resolves an
+  `entityGroup` row id to its `{entity_id, group_id}` (the delete wire
+  form drops the entity reference).
   """
 
   alias EbbServer.Storage.{EntityGroupCache, EntityTypeCache, GroupCache, RelationshipCache}
@@ -120,6 +122,16 @@ defmodule EbbServer.Storage.EntityIndex do
     table = Keyword.fetch!(opts, :entity_types)
     EntityTypeCache.get_type(entity_id, table)
   end
+
+  @doc """
+  Returns true when the entity-type index knows `entity_id`.
+
+  Existence only: the recorded type may be stale — a tombstoned entity
+  keeps its entry — so callers treat this as a fail-closed existence
+  signal, never as a current-type assertion.
+  """
+  @spec exists?(subject_id(), keyword()) :: boolean()
+  def exists?(entity_id, opts), do: subject_type(entity_id, opts) != nil
 
   @doc """
   Resolves an `entityGroup` membership row to its `{entity_id, group_id}`.

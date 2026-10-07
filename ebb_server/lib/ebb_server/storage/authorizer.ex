@@ -17,6 +17,14 @@ defmodule EbbServer.Storage.Authorizer do
   authorized the actor's new membership is not in the cache yet, so the
   declared permissions stand in for it.
 
+  The exemption applies only to entities the Action is **creating**: a
+  `group` put qualifies only when the entity-type index does not know
+  the id, and the `entityGroup` exemption covers only user entities the
+  Action actually creates. Re-`put`ting a committed group or filing a
+  committed entity falls through to the permission table like any other
+  write (#289), and the declared permissions are never unioned into the
+  membership checks for entities that already exist.
+
   This is deliberately per-Update rather than a whole-Action
   short-circuit (#246): a third-party `groupMember`, a link edge for an
   unrelated entity, or a patch to an existing entity all fall through
@@ -38,11 +46,14 @@ defmodule EbbServer.Storage.Authorizer do
     - `entityGroup` put → the added entity's `<type>.create` in the
       target group: the group(s) the put files the entity into (#121's
       "Add Entity to Group" row), not the entity's whole group set. The
-      type is recovered from an entity put in the same Action, an entity
-      created by an earlier Action of the same request, or finally the
-      entity-type index. An unresolvable type is refused
-      (`not_authorized`) rather than falling back to the
-      `entityGroup.create` system permission.
+      type is the committed entity-type index's when the entity already
+      exists, otherwise a type created by the same Action or by an
+      earlier Action of the same request. An unresolvable type is
+      refused (`not_authorized`) rather than falling back to the
+      `entityGroup.create` system permission. Membership mutations of
+      an existing entity are checked against cached memberships only —
+      the bootstrap's declared permissions stand in only for the
+      membership the same Action creates.
     - `entityGroup` delete → the entity's `<type>.update` in any group of
       the entity's current set (union/any-match). The delete wire form
       drops the entity reference, so the row is resolved from the
@@ -82,23 +93,15 @@ defmodule EbbServer.Storage.Authorizer do
   membership add in a later Action resolves the type the same request
   introduced.
 
-  ## Residuals (known limitations)
+  ## Bootstrap existence
 
-  `AuthorizationContext` carries no group/entity **existence** signal,
-  so one gap remains. It is pre-existing and closing it needs an
-  existence source plumbed into the authorization context:
-
-    - A bootstrap Action may re-`put` an **existing** group id and
-      self-grant permissions:
-      `PermissionHelper.bootstrap_group_permissions/2` checks only that
-      the Action puts that group id, not that the group is new.
-
-  The bootstrap exemption also trusts the Action's own user-entity
-  `put`s: `PermissionHelper.created_subject_ids/1` counts every put id
-  as created, so a bootstrap can file an **existing** entity into its
-  new group by re-putting it. Non-bootstrap membership adds are no
-  longer affected — they resolve the entity's true type from the
-  entity-type index.
+  Existence is read from the entity-type index (`EntityIndex.exists?/2`),
+  which the Writer maintains for every committed Update and retains for
+  tombstones — so a deleted id still reads as existing and cannot be
+  re-bootstrapped. The index only advances when the Writer commits, so a
+  group created earlier in the same request still reads as new; that is
+  acceptable because a request carries a single actor and that actor
+  minted the group.
   """
 
   alias EbbServer.Storage.AuthorizationContext
@@ -162,12 +165,13 @@ defmodule EbbServer.Storage.Authorizer do
     updates = action.updates
     intra = PermissionHelper.build_intra_action_context(updates)
     opts = ctx_to_opts(ctx)
+    exists? = fn entity_id -> EntityIndex.exists?(entity_id, opts) end
 
     authz = %{
       intra: intra,
       intra_opts: Keyword.put(opts, :intra_action, intra),
-      bootstrap: PermissionHelper.bootstrap_group_permissions(updates, actor_id),
-      created_ids: PermissionHelper.created_subject_ids(updates),
+      bootstrap: PermissionHelper.bootstrap_group_permissions(updates, actor_id, exists?),
+      created_ids: PermissionHelper.created_subject_ids(updates, exists?),
       created_types: Map.merge(sim.types, PermissionHelper.created_entity_types(updates)),
       deleted_memberships: resolve_deleted_memberships(updates, opts),
       opts: opts,
@@ -297,11 +301,14 @@ defmodule EbbServer.Storage.Authorizer do
 
   # Adding an entity to a group is gated by the entity's own
   # `<type>.create` in the target group (#121 "Add Entity to Group"), not
-  # by the entity's whole group set. The type comes from an entity put in
-  # the same Action, an entity created by an earlier Action of this
-  # request, or the entity-type index; an unresolvable type is a refusal
-  # (`entityGroup.create` would let any group member graft an entity whose
-  # type they may not create).
+  # by the entity's whole group set. The type is the committed
+  # entity-type index's when the entity already exists, otherwise a type
+  # created by this Action or an earlier Action of the request; an
+  # unresolvable type is a refusal (`entityGroup.create` would let any
+  # group member graft an entity whose type they may not create). The
+  # check is cache-only: the bootstrap's declared permissions stand in
+  # only for the membership the same Action creates, and this update is
+  # exempt only when the entity is created by that same Action (#289).
   defp authorize_entity_group_update(%{method: :put} = update, actor_id, authz) do
     entity_id = Fields.get(update.data, "entity_id")
 
@@ -310,7 +317,14 @@ defmodule EbbServer.Storage.Authorizer do
         {:error, "not_authorized", "cannot resolve the type of the entity being added to a group"}
 
       type ->
-        check_group_permission(wire_group_ids(update), actor_id, type, "create", authz)
+        check_group_permission(
+          wire_group_ids(update),
+          actor_id,
+          type,
+          "create",
+          authz,
+          &cached_permissions/3
+        )
     end
   end
 
@@ -334,7 +348,8 @@ defmodule EbbServer.Storage.Authorizer do
       actor_id,
       "entityGroup",
       permission_for(update.method),
-      authz
+      authz,
+      &cached_permissions/3
     )
   end
 
@@ -349,15 +364,18 @@ defmodule EbbServer.Storage.Authorizer do
           actor_id,
           type,
           "update",
-          authz
+          authz,
+          &cached_permissions/3
         )
     end
   end
 
-  # A type put by the current Action wins, then a type an earlier Action
-  # of this request created, then the committed entity-type index.
+  # The resolved type of an entity. A committed type wins: an id the
+  # entity-type index knows exists, so its recorded type is
+  # authoritative and a re-`put` cannot spoof it. Types created earlier
+  # in the request resolve only ids the index does not know yet.
   defp entity_type(entity_id, authz) do
-    Map.get(authz.created_types, entity_id) || EntityIndex.subject_type(entity_id, authz.opts)
+    EntityIndex.subject_type(entity_id, authz.opts) || Map.get(authz.created_types, entity_id)
   end
 
   # A relationship is always a domain edge, and is authorized against its
@@ -403,12 +421,22 @@ defmodule EbbServer.Storage.Authorizer do
 
   # Union semantics: the actor may hold the permission in any group of
   # the entity's set; the write is indexed into every group separately.
-  defp check_group_permission(group_ids, actor_id, type, permission, authz) do
+  # `permissions_fun` selects the source: the cache unioned with the
+  # Action's declared bootstrap permissions by default, or the cache
+  # alone for membership mutations of an existing entity.
+  defp check_group_permission(
+         group_ids,
+         actor_id,
+         type,
+         permission,
+         authz,
+         permissions_fun \\ &permissions_for/3
+       ) do
     has_permission =
       group_ids
       |> Enum.reject(&is_nil/1)
       |> Enum.any?(fn group_id ->
-        case permissions_for(actor_id, group_id, authz) do
+        case permissions_fun.(actor_id, group_id, authz) do
           nil ->
             false
 
@@ -422,6 +450,18 @@ defmodule EbbServer.Storage.Authorizer do
     else
       {:error, "not_authorized", "missing required permission"}
     end
+  end
+
+  # Membership mutations of an **existing** entity require a real
+  # membership holding `<type>.create` / `<type>.update` in the target
+  # group. The bootstrap's declared permissions stand in only for the
+  # membership the same Action creates and cover only the entities that
+  # bootstrap creates (`bootstrap_update?/4`), so they must not be
+  # unioned here — unioning them would let an actor file an existing
+  # entity into their new group and write to it under the self-grant
+  # (#289). Cache-only and deliberately blind to `authz.bootstrap`.
+  defp cached_permissions(actor_id, group_id, authz) do
+    GroupCache.get_permissions(actor_id, group_id, authz.ctx.group_members_table)
   end
 
   # The actor's declared bootstrap permissions are unioned with the

@@ -534,11 +534,12 @@ defmodule EbbServer.Storage.AuthorizerTest do
       ctx = auth_context(tables)
 
       put_membership(tables, "todo_other", "g_other", "eg_other")
+      put_entity_type(tables, "todo_other", "todo")
 
       action =
         build_action([
           group_put("g_1"),
-          group_member_put("gm_1", "a_1", "g_1", ["group.read"]),
+          group_member_put("gm_1", "a_1", "g_1", ["group.read", "todo.create"]),
           entity_group_put("eg_graft", "todo_other", "g_1")
         ])
 
@@ -957,17 +958,18 @@ defmodule EbbServer.Storage.AuthorizerTest do
     end
   end
 
-  # #246 known limitations: `AuthorizationContext` carries no group/entity
-  # existence signal, so these stay open until one is plumbed in. The tests
-  # below characterize the current, unfixed behaviour — they are not an
-  # endorsement. See the `Authorizer` moduledoc "Residuals".
-  describe "authorize/3 - known limitations" do
-    # Known limitation: `bootstrap_group_permissions/2` checks only that the
-    # Action `put`s the group id, so an id that already names a group can be
-    # re-bootstrapped and self-granted.
-    test "characterization: a bootstrap can re-put an existing group id and self-grant" do
+  # #289: the bootstrap self-grant is gated on the entity actually being
+  # created — a group id the entity-type index already knows, or an entity
+  # the Action does not create, falls through to the permission table.
+  # Existing-id puts are authorized against the table, not rejected with a
+  # new reason.
+  describe "authorize/3 - bootstrap existence" do
+    test "a bootstrap may not re-put an existing group id and self-grant" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
+
+      # The group was committed earlier, so the type index knows it.
+      put_entity_type(tables, "g_existing", "group")
 
       action =
         build_action([
@@ -975,27 +977,63 @@ defmodule EbbServer.Storage.AuthorizerTest do
           group_member_put("gm_1", "a_1", "g_existing", ["*"])
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
     end
 
-    # Known limitation: `created_subject_ids/1` counts every user-entity
-    # `put` id as created without checking existence, so a bootstrap
-    # `entityGroup` put can ride the exemption for an entity that already
-    # exists.
-    test "characterization: a same-Action put files an existing entity via the bootstrap" do
+    test "a bootstrap may not file an existing entity even when it self-grants the type" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
+      put_entity_type(tables, "todo_existing", "todo")
       put_membership(tables, "todo_existing", "g_other", "eg_other")
-      put_group_member(tables, "g_other", ["todo.create"])
 
+      # The declared `todo.create` is the self-grant: the existing entity
+      # may not borrow it for the `entityGroup` put.
       action =
         build_action([
           group_put("g_1"),
-          group_member_put("gm_1", "a_1", "g_1", ["group.read"]),
+          group_member_put("gm_1", "a_1", "g_1", ["todo.create", "group.read"]),
           entity_put("todo_existing", "todo"),
           entity_group_put("eg_graft", "todo_existing", "g_1")
         ])
+
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+    end
+
+    test "a genuine new-group self-bootstrap still succeeds" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      action =
+        build_action([
+          group_put("g_new"),
+          group_member_put("gm_1", "a_1", "g_new", ["group.read", "todo.*"]),
+          entity_put("todo_new", "todo"),
+          entity_group_put("eg_new", "todo_new", "g_new")
+        ])
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+
+    test "an existing group re-put by a member with group.create still succeeds" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_entity_type(tables, "g_1", "group")
+      put_group_member(tables, "g_1", ["group.create"])
+
+      assert Authorizer.authorize([build_action([group_put("g_1")])], "a_1", ctx) == :ok
+    end
+
+    test "filing an existing entity into a group the actor really belongs to still works" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_entity_type(tables, "todo_1", "todo")
+      put_group_member(tables, "g_2", ["todo.create"])
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+
+      action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
 
       assert Authorizer.authorize([action], "a_1", ctx) == :ok
     end
