@@ -357,3 +357,53 @@ describe("client.<entity> writes through the outbox", () => {
     expect(row?.deleted_hlc).not.toBeNull();
   });
 });
+
+describe("outbox rehydration across a simulated reload", () => {
+  it("re-enqueues a write that failed to flush and submits it from a new client", async () => {
+    const storage = createMemoryAdapter();
+    const failing = mkStubFetch([{ status: 500, body: "boom" }]);
+    const clientA = mkClient(failing.fn, storage);
+
+    await expect(clientA.write([mkAction()])).rejects.toThrow(/write failed: 500/);
+    expect(await storage.outbox.get("act_1")).not.toBeNull();
+
+    // "Reload": a fresh client over the same durable storage.
+    const reloaded = mkStubFetch();
+    const clientB = mkClient(reloaded.fn, storage);
+    await clientB.outbox.rehydrate();
+
+    expect(clientB.outbox.pending().map((entry) => entry.action.id)).toEqual(["act_1"]);
+
+    // No caller involvement beyond the flush: the persisted entry is
+    // re-enqueued and submitted from the reloaded client.
+    await clientB.outbox.flush();
+
+    expect(actionCalls(reloaded.calls)).toBe(1);
+    expect(clientB.outbox.size()).toBe(0);
+  });
+
+  it("does not re-apply rehydrated entries to the local cache", async () => {
+    const storage = createMemoryAdapter();
+    const failing = mkStubFetch([{ status: 500, body: "boom" }]);
+    const clientA = mkClient(failing.fn, storage);
+    await expect(clientA.write([mkAction()])).rejects.toThrow(/write failed: 500/);
+
+    if (storage.changeEmitter === undefined) {
+      throw new Error("memory adapter must ship a change emitter");
+    }
+    // Count every local apply after the failed writer is done. The
+    // rehydrating client must not touch the cache: re-applying an
+    // already-optimistically-applied Action is the double-apply bug.
+    const applies: string[] = [];
+    storage.changeEmitter.onEntityChange("todo_1", () => applies.push("change"));
+
+    const reloaded = mkStubFetch();
+    const clientB = mkClient(reloaded.fn, storage);
+    await clientB.outbox.rehydrate();
+
+    expect(clientB.outbox.size()).toBe(1);
+    expect(applies).toEqual([]);
+    expect((await clientB.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("Hello");
+    expect(applies).toEqual([]);
+  });
+});

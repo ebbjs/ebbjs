@@ -177,6 +177,8 @@ export class SyncClient {
     this.outbox = createOutbox({
       applyOptimistic: (action) => this.applyLocalAction(action),
       submit: (actions) => this.submitActions(actions),
+      store: this.storage.outbox,
+      hlc: () => this.freshHlc(),
     });
   }
 
