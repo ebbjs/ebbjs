@@ -303,6 +303,42 @@ describe("TextDocument.localExtend", () => {
 });
 
 // ---------------------------------------------------------------------------
+// action ids (#285)
+// ---------------------------------------------------------------------------
+
+describe("TextDocument action ids (#285)", () => {
+  it("does not reuse an extend action id across instances of the same actor", () => {
+    const first = new TextDocument({ docId: "doc_1", actorId: "drew" });
+    const firstRun = first.localInsert("hello")!;
+    first.localExtend({ runId: firstRun, appendText: "!" });
+
+    const second = new TextDocument({ docId: "doc_1", actorId: "drew" });
+    const secondRun = second.localInsert("hello")!;
+    second.localExtend({ runId: secondRun, appendText: "!" });
+
+    const firstExtendId = first.pendingActions()[1]!.id;
+    const secondExtendId = second.pendingActions()[1]!.id;
+
+    expect(firstExtendId).not.toBe(secondExtendId);
+  });
+
+  it("does not reuse a delete action id across instances of the same actor", () => {
+    const first = new TextDocument({ docId: "doc_1", actorId: "drew" });
+    const firstRun = first.localInsert("hello")!;
+    first.localDelete({ runId: firstRun, offset: 0, count: 1 });
+
+    const second = new TextDocument({ docId: "doc_1", actorId: "drew" });
+    const secondRun = second.localInsert("hello")!;
+    second.localDelete({ runId: secondRun, offset: 0, count: 1 });
+
+    const firstDeleteId = first.pendingActions()[1]!.id;
+    const secondDeleteId = second.pendingActions()[1]!.id;
+
+    expect(firstDeleteId).not.toBe(secondDeleteId);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // applyActions
 // ---------------------------------------------------------------------------
 
