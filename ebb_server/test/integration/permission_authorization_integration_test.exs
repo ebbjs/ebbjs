@@ -193,6 +193,40 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       assert get_entity(entity_id, "actor_1").status == 404
     end
 
+    test "patch of an unowned fabricated id is rejected as missing_ownership" do
+      entity_id = "todo_patch_orphan_1"
+      hlc = generate_hlc()
+
+      action = %{
+        "id" => "act_patch_orphan_" <> Nanoid.generate(),
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          %{
+            "id" => "upd_patch_orphan_" <> Nanoid.generate(),
+            "subject_id" => entity_id,
+            "subject_type" => "todo",
+            "method" => "patch",
+            "data" => %{
+              "fields" => %{
+                "title" => %{"type" => "lww", "value" => "Patched Orphan", "hlc" => hlc}
+              }
+            }
+          }
+        ]
+      }
+
+      conn = post_actions(msgpack_encode!(%{"actions" => [action]}), "actor_1")
+      assert conn.status == 200
+
+      {:ok, response} = Jason.decode(conn.resp_body)
+      rejection = hd(response["rejected"])
+      assert rejection["reason"] == "missing_ownership"
+
+      # A patch must not materialize a row for an id with no membership.
+      assert get_entity(entity_id, "actor_1").status == 404
+    end
+
     test "actor identity mismatch is rejected" do
       entity_id = "todo_mismatch_1"
       hlc = generate_hlc()

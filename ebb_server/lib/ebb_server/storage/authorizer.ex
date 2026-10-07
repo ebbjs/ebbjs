@@ -57,10 +57,9 @@ defmodule EbbServer.Storage.Authorizer do
   ## User entities
 
   User-entity writes require `<type>.<verb>` in at least one group of
-  the entity's group set (union/any-match). A `put` whose resolved set
-  is empty is a structural rejection (`missing_ownership`), not a
-  permission failure; `patch`/`delete` fall back to the actor-wide
-  check so legacy orphans stay mutable.
+  the entity's group set (union/any-match). A write whose resolved set
+  is empty — an unowned entity, or an id that does not exist — is a
+  structural rejection (`missing_ownership`), not a permission failure.
 
   ## Residuals (known limitations)
 
@@ -254,23 +253,12 @@ defmodule EbbServer.Storage.Authorizer do
 
     case EntityIndex.resolve_groups(type, update.subject_id, opts) do
       [] ->
-        authorize_unowned_update(update, type, actor_id, authz)
+        {:error, "missing_ownership",
+         "entity has no group membership; every write must resolve at least one owning group"}
 
       group_ids ->
         check_group_permission(group_ids, actor_id, type, permission_for(update.method), authz)
     end
-  end
-
-  # Only a create is structurally rejected; patch/delete keep the
-  # actor-wide check so a legacy unowned row stays manageable.
-  defp authorize_unowned_update(%{method: :put}, _type, _actor_id, _authz) do
-    {:error, "missing_ownership",
-     "entity has no group membership; an entityGroup row for at least one group " <>
-       "must be part of the same action"}
-  end
-
-  defp authorize_unowned_update(update, type, actor_id, authz) do
-    check_actor_can_create_entity(actor_id, type, update.method, authz.ctx)
   end
 
   # Union semantics: the actor may hold the permission in any group of
@@ -325,26 +313,6 @@ defmodule EbbServer.Storage.Authorizer do
   defp relationship_group_ids(update, authz) do
     opts = Keyword.put(ctx_to_opts(authz.ctx), :intra_action, authz.intra)
     EntityIndex.relationship_groups(Fields.get(update.data, "source_id"), update.subject_id, opts)
-  end
-
-  defp check_actor_can_create_entity(actor_id, subject_type, method, ctx) do
-    required_permission = permission_for(method)
-
-    actor_groups = GroupCache.get_actor_groups(actor_id, ctx.group_members_table)
-
-    has_permission =
-      Enum.any?(actor_groups, fn group_entry ->
-        %{group_id: group_id, permissions: permissions} = group_entry
-
-        group_id != nil and
-          PermissionHelper.check_permission(permissions, subject_type, required_permission)
-      end)
-
-    if has_permission do
-      :ok
-    else
-      {:error, "not_authorized", "actor has no group with required permission"}
-    end
   end
 
   defp permission_for(method), do: PermissionHelper.method_to_permission(Atom.to_string(method))

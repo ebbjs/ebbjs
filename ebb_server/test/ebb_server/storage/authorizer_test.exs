@@ -584,10 +584,9 @@ defmodule EbbServer.Storage.AuthorizerTest do
     end
   end
 
-  # #245: a create that resolves to no group set is a structural
-  # rejection, not a permission failure. The actor-wide fallthrough is
-  # kept for patch/delete so legacy orphans stay mutable.
-  describe "authorize/3 - create requires ownership" do
+  # #245: a user-entity write that resolves to no group set is a
+  # structural rejection, not a permission failure.
+  describe "authorize/3 - writes require ownership" do
     test "rejects an unowned put even when the actor could create the type elsewhere" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
@@ -650,7 +649,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert Authorizer.authorize([action], "a_1", ctx) == :ok
     end
 
-    test "an unowned patch or delete keeps the actor-wide fallthrough" do
+    test "rejects an unowned patch and delete" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
@@ -672,8 +671,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
         data: nil
       }
 
-      assert Authorizer.authorize([build_action([patch])], "a_1", ctx) == :ok
-      assert Authorizer.authorize([build_action([delete])], "a_1", ctx) == :ok
+      assert {:error, "missing_ownership", _} =
+               Authorizer.authorize([build_action([patch])], "a_1", ctx)
+
+      assert {:error, "missing_ownership", _} =
+               Authorizer.authorize([build_action([delete])], "a_1", ctx)
     end
   end
 
