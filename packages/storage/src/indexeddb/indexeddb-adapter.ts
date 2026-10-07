@@ -4,6 +4,7 @@ import type { StorageAdapter } from "../types/storage-adapter";
 import { createEbbStores, EBB_SCHEMA_VERSION, type EbbDBSchema } from "./schema";
 
 import { createIndexedDBActionLog } from "./action-log.indexeddb";
+import { createIndexedDBConflictStore } from "./conflict-store.indexeddb";
 import { createIndexedDBCursorStore } from "./cursor-store.indexeddb";
 import { createIndexedDBDirtyTracker } from "./dirty-tracker.indexeddb";
 import { createIndexedDBEntityStore } from "./entity-store.indexeddb";
@@ -53,6 +54,7 @@ export const createIndexedDBAdapter = async (
   } = createIndexedDBEntityStore(db, actionLog, dirtyTracker);
   const cursorStore = createIndexedDBCursorStore(db);
   const outboxStore = createIndexedDBOutboxStore(db);
+  const conflictStore = createIndexedDBConflictStore(db);
 
   return {
     actions: {
@@ -105,6 +107,8 @@ export const createIndexedDBAdapter = async (
     cursors: cursorStore,
 
     outbox: outboxStore,
+
+    conflicts: conflictStore,
 
     changeEmitter,
 

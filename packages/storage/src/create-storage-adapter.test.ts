@@ -8,6 +8,7 @@ describe("createStorageAdapter", () => {
     expect(typeof adapter.actions.append).toBe("function");
     expect(typeof adapter.entities.get).toBe("function");
     expect(typeof adapter.outbox.put).toBe("function");
+    expect(typeof adapter.conflicts.put).toBe("function");
   });
 
   it("returns a memory-shaped adapter under happy-dom+fake-indexeddb when prefer is 'memory'", async () => {
@@ -23,6 +24,7 @@ describe("createStorageAdapter", () => {
     expect(typeof adapter.cursors.set).toBe("function");
     expect(typeof adapter.dirtyTracker.mark).toBe("function");
     expect(typeof adapter.outbox.put).toBe("function");
+    expect(typeof adapter.conflicts.put).toBe("function");
   });
 
   it("returns the IndexedDB adapter by default when indexedDB is present", async () => {

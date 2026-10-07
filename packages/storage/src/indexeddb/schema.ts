@@ -1,6 +1,7 @@
 import type { IDBPDatabase, DBSchema } from "idb";
 import type { Action, Entity } from "@ebbjs/core";
 import type { OutboxStatus } from "../types/outbox-store";
+import type { ConflictEntry } from "../types/conflict-store";
 import type { RelationshipRows } from "../internal/relationship-index";
 
 /**
@@ -15,13 +16,14 @@ import type { RelationshipRows } from "../internal/relationship-index";
  * pass a new `dbName`) before this adapter can open. Version 3 added the
  * `outbox` store for issue #228; 2 is skipped so that any database below
  * 3 (v1, or the legacy v2) triggers the upgrade callback and gets the new
- * store rather than silently missing it. Bump this when adding or
- * changing object stores.
+ * store rather than silently missing it. Version 4 adds the `conflicts`
+ * store for issue #307; databases below 4 trigger the upgrade callback.
+ * Bump this when adding or changing object stores.
  */
-export const EBB_SCHEMA_VERSION = 3;
+export const EBB_SCHEMA_VERSION = 4;
 
 /**
- * Structural schema for the six object stores the IndexedDB adapter
+ * Structural schema for the seven object stores the IndexedDB adapter
  * uses. Component factories (`action-log.indexeddb`, etc.) are typed
  * against this interface so the production schema and any test schema
  * satisfying the same shape can both be passed in without a cast.
@@ -78,10 +80,20 @@ export interface EbbDBSchema extends DBSchema {
     key: string;
     value: { action: Action; status: OutboxStatus; enqueuedAtHlc: string };
   };
+  /**
+   * Durable table of LWW conflicts awaiting application resolution,
+   * keyed by the losing `action.id`. `createEbbStores` creates the
+   * store for databases that upgrade from an earlier version; its
+   * absence at a version below 4 is expected.
+   */
+  conflicts: {
+    key: string;
+    value: ConflictEntry;
+  };
 }
 
 /**
- * Idempotently creates the six Ebb object stores on a database. Used
+ * Idempotently creates the seven Ebb object stores on a database. Used
  * by both the production adapter (during the `openDB` upgrade) and the
  * test helper (to spin up a fresh DB per test). Safe to call against a
  * database that already has the stores — existing stores are left
@@ -123,5 +135,11 @@ export const createEbbStores = (
     // `{ action, status, enqueuedAtHlc }` shape without a denormalized
     // copy of the id.
     database.createObjectStore("outbox", { keyPath: "action.id" });
+  }
+  if (!database.objectStoreNames.contains("conflicts")) {
+    // Key path reaches into the entry so the stored row keeps the
+    // `{ action, winners, fields, detectedAtHlc }` shape without a
+    // denormalized copy of the losing Action's id.
+    database.createObjectStore("conflicts", { keyPath: "action.id" });
   }
 };

@@ -1,5 +1,7 @@
 import { makeHlc, type Action } from "@ebbjs/core";
 
+import type { ConflictEntry } from "../types/conflict-store";
+
 /**
  * Reusable Action fixtures for the shared test suites. Each suite
  * builds a small set of Actions to drive the adapter under test
@@ -177,3 +179,17 @@ export const buildRelationshipDeleteAction = (args: { id: string }, gsn: number)
     ],
   };
 };
+
+/**
+ * A conflict for {@link buildPutAction}'s `todo_1`: the losing `put`
+ * Action and the winning `title` value, detected at `detectedAtMs`.
+ * `actionId` lets a caller key more than one conflict in a store.
+ */
+export const buildConflictEntry = (actionId = "a_1", detectedAtMs = 1): ConflictEntry => ({
+  action: { ...buildPutAction(), id: actionId },
+  winners: {
+    title: { update_id: "u_2", hlc: makeHlc(HLC_BASE, detectedAtMs), value: "Updated" },
+  },
+  fields: ["title"],
+  detectedAtHlc: makeHlc(HLC_BASE, detectedAtMs),
+});
