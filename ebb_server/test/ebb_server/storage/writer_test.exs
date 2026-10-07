@@ -28,6 +28,7 @@ defmodule EbbServer.Storage.WriterTest do
   alias EbbServer.Storage.{
     DirtyTracker,
     EntityGroupCache,
+    EntityTypeCache,
     GroupCache,
     RelationshipCache,
     RocksDB,
@@ -45,6 +46,7 @@ defmodule EbbServer.Storage.WriterTest do
       entity_groups: entity_groups,
       entity_groups_by_id: entity_groups_by_id,
       entity_groups_by_group: entity_groups_by_group,
+      entity_types: entity_types,
       relationships: relationships,
       relationships_by_id: relationships_by_id
     } = start_isolated_cache()
@@ -76,6 +78,7 @@ defmodule EbbServer.Storage.WriterTest do
       entity_groups: entity_groups,
       entity_groups_by_id: entity_groups_by_id,
       entity_groups_by_group: entity_groups_by_group,
+      entity_types: entity_types,
       relationships: relationships,
       relationships_by_id: relationships_by_id
     }
@@ -778,6 +781,32 @@ defmodule EbbServer.Storage.WriterTest do
       assert [%{group_id: "group_1"}] = GroupCache.get_actor_groups("actor_1", gm_table)
       assert EntityGroupCache.entity_groups("todo_1", eg_table) == []
     end
+
+    # #264 Option A: the authorizer resolves an existing entity's type
+    # from here, so every user-entity Update must populate the index.
+    test "indexes the type of a user-entity update", %{
+      writer_name: writer_name,
+      entity_types: entity_types
+    } do
+      action = %{
+        id: "act_" <> Nanoid.generate(),
+        actor_id: "actor_1",
+        hlc: generate_hlc(),
+        updates: [
+          %{
+            id: "upd_" <> Nanoid.generate(),
+            subject_id: "todo_typed",
+            subject_type: "todo",
+            method: :put,
+            data: %{"fields" => %{}}
+          }
+        ]
+      }
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      assert EntityTypeCache.get_type("todo_typed", entity_types) == "todo"
+    end
   end
 
   describe "cf_group_actions index" do
@@ -945,6 +974,86 @@ defmodule EbbServer.Storage.WriterTest do
       # cf_group_actions — not from a later re-resolution.
       assert EntityGroupCache.entity_groups("todo_snapshot", entity_groups) == []
       assert_receive {:batch_committed, 2, 2, %{2 => ["g_snapshot"]}}
+    end
+
+    test "a put+delete setGroups Action unions the old and new groups", %{
+      rocks_name: rocks_name,
+      dirty_set: dirty_set,
+      gsn_counter: gsn_counter,
+      group_members: group_members,
+      group_members_by_id: group_members_by_id,
+      entity_groups: entity_groups,
+      entity_groups_by_id: entity_groups_by_id,
+      entity_groups_by_group: entity_groups_by_group,
+      entity_types: entity_types,
+      relationships: relationships,
+      relationships_by_id: relationships_by_id
+    } do
+      router_name = :"fan_out_router_test_#{System.unique_integer([:positive])}"
+      true = Process.register(self(), router_name)
+
+      %{name: writer_name} =
+        start_writer(%{
+          rocks_name: rocks_name,
+          dirty_set: dirty_set,
+          gsn_counter: gsn_counter,
+          group_members: group_members,
+          group_members_by_id: group_members_by_id,
+          entity_groups: entity_groups,
+          entity_groups_by_id: entity_groups_by_id,
+          entity_groups_by_group: entity_groups_by_group,
+          entity_types: entity_types,
+          relationships: relationships,
+          relationships_by_id: relationships_by_id,
+          fan_out_router: router_name
+        })
+
+      hlc = generate_hlc()
+
+      seed = %{
+        id: "act_setgroups_seed",
+        actor_id: "actor_1",
+        hlc: hlc,
+        updates: [entity_group_update("eg_old", "todo_set", "g_old", hlc)]
+      }
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([seed], writer_name)
+      assert_receive {:batch_committed, 1, 1, %{1 => ["g_old"]}}
+
+      swap = %{
+        id: "act_setgroups_swap",
+        actor_id: "actor_1",
+        hlc: generate_hlc(),
+        updates: [
+          entity_group_update("eg_new", "todo_set", "g_new", hlc),
+          %{
+            id: "upd_setgroups_delete",
+            subject_id: "eg_old",
+            subject_type: "entityGroup",
+            method: :delete,
+            data: nil
+          }
+        ]
+      }
+
+      assert {:ok, {2, 2}, []} = Writer.write_actions([swap], writer_name)
+
+      # The cache ends at the new set; the delete row is gone.
+      assert EntityGroupCache.entity_groups("todo_set", entity_groups) == ["g_new"]
+      assert EntityGroupCache.get_entity_group("eg_old", entity_groups_by_id) == nil
+
+      # The delete is indexed under the group it left, the put under the
+      # group it joined.
+      cf = RocksDB.cf_group_actions(rocks_name)
+
+      assert {:ok, "act_setgroups_swap"} =
+               RocksDB.get(cf, group_gsn_key("g_old", 2), name: rocks_name)
+
+      assert {:ok, "act_setgroups_swap"} =
+               RocksDB.get(cf, group_gsn_key("g_new", 2), name: rocks_name)
+
+      assert_receive {:batch_committed, 2, 2, %{2 => groups}}
+      assert Enum.sort(groups) == ["g_new", "g_old"]
     end
   end
 

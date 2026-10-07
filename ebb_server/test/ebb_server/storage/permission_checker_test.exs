@@ -18,6 +18,17 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
     )
   end
 
+  defp put_entity_group_by_id(tables, id, entity_id, group_id) do
+    :ets.insert(
+      tables.entity_groups_by_id,
+      {id, %{id: id, entity_id: entity_id, group_id: group_id}}
+    )
+  end
+
+  defp put_entity_type(tables, entity_id, type) do
+    :ets.insert(tables.entity_types, {entity_id, type})
+  end
+
   defp user_action(subject_id, method \\ "put") do
     sample_action(%{
       "updates" => [
@@ -301,6 +312,37 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       assert accepted == []
       assert [rejection] = rejected
       assert rejection.reason == "missing_ownership"
+      assert is_binary(rejection.details)
+    end
+
+    test "removing the last membership rejects with last_membership and is not accepted" do
+      tables = create_isolated_tables()
+      opts = auth_opts(tables)
+
+      put_group_member(tables, "g_1", ["todo.update"])
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_group_by_id(tables, "eg_1", "todo_1", "g_1")
+      put_entity_type(tables, "todo_1", "todo")
+
+      action =
+        sample_action(%{
+          "actor_id" => "a_1",
+          "updates" => [
+            %{
+              "id" => "upd_del",
+              "subject_id" => "eg_1",
+              "subject_type" => "entityGroup",
+              "method" => "delete",
+              "data" => nil
+            }
+          ]
+        })
+
+      {accepted, rejected} = PermissionChecker.validate_and_authorize([action], "a_1", opts)
+
+      assert accepted == []
+      assert [rejection] = rejected
+      assert rejection.reason == "last_membership"
       assert is_binary(rejection.details)
     end
 

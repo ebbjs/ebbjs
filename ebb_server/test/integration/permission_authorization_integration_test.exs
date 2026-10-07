@@ -261,6 +261,276 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     end
   end
 
+  # #264: membership mutation over the wire — add / remove / setGroups
+  # delta, the last-membership refusal, and the cross-Action bypass.
+  describe "membership mutation" do
+    test "adds an existing entity to a second group" do
+      bootstrap_group("actor_1", "group_1", ["todo.create", "todo.read"])
+      bootstrap_group("actor_1", "group_2", ["todo.create"])
+
+      hlc = generate_hlc()
+      entity_id = "todo_add_#{Nanoid.generate()}"
+      eg_1 = "eg_#{Nanoid.generate()}"
+
+      create = %{
+        "id" => "act_add_create_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [todo_put(entity_id, hlc), entity_group_put(eg_1, entity_id, "group_1", hlc)]
+      }
+
+      assert %{"rejected" => []} = post_membership_action(create)
+
+      eg_2 = "eg_#{Nanoid.generate()}"
+
+      add = %{
+        "id" => "act_add_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [entity_group_put(eg_2, entity_id, "group_2", hlc)]
+      }
+
+      assert %{"rejected" => []} = post_membership_action(add)
+      assert eg_2 in action_ids("group_2", "actor_1")
+    end
+
+    test "a batch resolves a type created by an earlier Action of the request" do
+      bootstrap_group("actor_1", "group_1", ["todo.create", "todo.read"])
+      bootstrap_group("actor_1", "group_2", ["todo.create", "todo.read"])
+
+      hlc = generate_hlc()
+      entity_id = "todo_batchtype_#{Nanoid.generate()}"
+      eg_1 = "eg_#{Nanoid.generate()}"
+      eg_2 = "eg_#{Nanoid.generate()}"
+
+      # Neither the entity nor its type is committed when the request is
+      # authorized, so the second Action has to resolve the type the
+      # first Action introduced. This is the Outbox batch shape: separate
+      # calls flushed together.
+      create = %{
+        "id" => "act_batchtype_create_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(entity_id, hlc),
+          entity_group_put(eg_1, entity_id, "group_1", hlc)
+        ]
+      }
+
+      add = %{
+        "id" => "act_batchtype_add_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [entity_group_put(eg_2, entity_id, "group_2", hlc)]
+      }
+
+      conn = post_actions(msgpack_encode!(%{"actions" => [create, add]}), "actor_1")
+      assert conn.status == 200
+      assert Jason.decode!(conn.resp_body) == %{"rejected" => []}
+
+      Process.sleep(50)
+
+      assert eg_2 in action_ids("group_2", "actor_1")
+      assert get_entity(entity_id, "actor_1").status == 200
+    end
+
+    test "removes a non-last membership" do
+      bootstrap_group("actor_1", "group_1", ["todo.create", "todo.update", "todo.read"])
+      bootstrap_group("actor_1", "group_2", ["todo.create", "todo.update", "todo.read"])
+
+      hlc = generate_hlc()
+      entity_id = "todo_remove_#{Nanoid.generate()}"
+      eg_1 = "eg_#{Nanoid.generate()}"
+      eg_2 = "eg_#{Nanoid.generate()}"
+
+      create = %{
+        "id" => "act_remove_create_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(entity_id, hlc),
+          entity_group_put(eg_1, entity_id, "group_1", hlc),
+          entity_group_put(eg_2, entity_id, "group_2", hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = post_membership_action(create)
+
+      remove = %{
+        "id" => "act_remove_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [entity_group_delete(eg_2)]
+      }
+
+      assert %{"rejected" => []} = post_membership_action(remove)
+      assert get_entity(entity_id, "actor_1").status == 200
+    end
+
+    test "refuses removing the last membership and does not orphan the entity" do
+      bootstrap_group("actor_1", "group_1", ["todo.create", "todo.update", "todo.read"])
+
+      hlc = generate_hlc()
+      entity_id = "todo_last_#{Nanoid.generate()}"
+      eg_1 = "eg_#{Nanoid.generate()}"
+
+      create = %{
+        "id" => "act_last_create_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [todo_put(entity_id, hlc), entity_group_put(eg_1, entity_id, "group_1", hlc)]
+      }
+
+      assert %{"rejected" => []} = post_membership_action(create)
+
+      remove = %{
+        "id" => "act_last_remove_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [entity_group_delete(eg_1)]
+      }
+
+      response = post_membership_action(remove)
+      assert [rejection] = response["rejected"]
+      assert rejection["reason"] == "last_membership"
+      assert is_binary(rejection["details"])
+
+      assert get_entity(entity_id, "actor_1").status == 200
+    end
+
+    test "swaps the last membership for a new group in one Action" do
+      bootstrap_group("actor_1", "group_1", ["todo.create", "todo.update", "todo.read"])
+      bootstrap_group("actor_1", "group_2", ["todo.create", "todo.read"])
+
+      hlc = generate_hlc()
+      entity_id = "todo_swap_#{Nanoid.generate()}"
+      eg_old = "eg_#{Nanoid.generate()}"
+      eg_new = "eg_#{Nanoid.generate()}"
+
+      create = %{
+        "id" => "act_swap_create_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(entity_id, hlc),
+          entity_group_put(eg_old, entity_id, "group_1", hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = post_membership_action(create)
+
+      swap_id = "act_swap_#{Nanoid.generate()}"
+
+      swap = %{
+        "id" => swap_id,
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          entity_group_put(eg_new, entity_id, "group_2", hlc),
+          entity_group_delete(eg_old)
+        ]
+      }
+
+      assert %{"rejected" => []} = post_membership_action(swap)
+
+      # The delta indexes the Action into both the group it left and the
+      # group it joined.
+      assert swap_id in action_id_list("group_1", "actor_1")
+      assert swap_id in action_id_list("group_2", "actor_1")
+      assert get_entity(entity_id, "actor_1").status == 200
+    end
+
+    test "a batch of two Actions cannot each remove one of two memberships" do
+      bootstrap_group("actor_1", "group_1", ["todo.create", "todo.update", "todo.read"])
+      bootstrap_group("actor_1", "group_2", ["todo.create", "todo.update", "todo.read"])
+
+      hlc = generate_hlc()
+      entity_id = "todo_bypass_#{Nanoid.generate()}"
+      eg_1 = "eg_#{Nanoid.generate()}"
+      eg_2 = "eg_#{Nanoid.generate()}"
+
+      create = %{
+        "id" => "act_bypass_create_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(entity_id, hlc),
+          entity_group_put(eg_1, entity_id, "group_1", hlc),
+          entity_group_put(eg_2, entity_id, "group_2", hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = post_membership_action(create)
+
+      remove_1 = %{
+        "id" => "act_bypass_a_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [entity_group_delete(eg_1)]
+      }
+
+      remove_2 = %{
+        "id" => "act_bypass_b_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [entity_group_delete(eg_2)]
+      }
+
+      response =
+        post_actions(msgpack_encode!(%{"actions" => [remove_1, remove_2]}), "actor_1")
+        |> Map.get(:resp_body)
+        |> Jason.decode!()
+
+      assert length(response["rejected"]) == 2
+      assert Enum.all?(response["rejected"], &(&1["reason"] == "last_membership"))
+
+      # The whole batch was refused, so the entity keeps a membership.
+      assert get_entity(entity_id, "actor_1").status == 200
+    end
+  end
+
+  defp post_membership_action(action) do
+    conn = post_actions(msgpack_encode!(%{"actions" => [action]}), "actor_1")
+    assert conn.status == 200
+    Jason.decode!(conn.resp_body)
+  end
+
+  defp todo_put(entity_id, hlc) do
+    %{
+      "id" => "upd_todo_#{Nanoid.generate()}",
+      "subject_id" => entity_id,
+      "subject_type" => "todo",
+      "method" => "put",
+      "data" => %{
+        "fields" => %{"title" => %{"type" => "lww", "value" => "Member", "hlc" => hlc}}
+      }
+    }
+  end
+
+  defp entity_group_put(eg_id, entity_id, group_id, hlc) do
+    %{
+      "id" => eg_id,
+      "subject_id" => eg_id,
+      "subject_type" => "entityGroup",
+      "method" => "put",
+      "data" => %{
+        "fields" => %{
+          "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
+          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
+        }
+      }
+    }
+  end
+
+  defp action_id_list(group_id, actor_id) do
+    conn =
+      conn(:get, "/sync/groups/#{group_id}")
+      |> put_req_header("x-ebb-actor-id", actor_id)
+      |> Router.call([])
+
+    conn.resp_body |> Jason.decode!() |> Enum.map(& &1["id"])
+  end
+
   defp action_ids(group_id, actor_id) do
     conn =
       conn(:get, "/sync/groups/#{group_id}")

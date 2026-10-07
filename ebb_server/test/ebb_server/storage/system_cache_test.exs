@@ -11,6 +11,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
   alias EbbServer.Storage.{
     EntityGroupCache,
+    EntityTypeCache,
     RelationshipCache,
     RocksDB,
     SystemCache,
@@ -29,6 +30,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       entity_groups: eg_table,
       entity_groups_by_id: eg_by_id_table,
       entity_groups_by_group: eg_by_group_table,
+      entity_types: entity_types_table,
       relationships: rel_table,
       relationships_by_id: rbi_table
     } = TestHelpers.start_isolated_cache()
@@ -61,6 +63,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       eg_table: eg_table,
       eg_by_id_table: eg_by_id_table,
       eg_by_group_table: eg_by_group_table,
+      entity_types_table: entity_types_table,
       rel_table: rel_table,
       rbi_table: rbi_table
     }
@@ -75,6 +78,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       entity_groups: ctx.eg_table,
       entity_groups_by_id: ctx.eg_by_id_table,
       entity_groups_by_group: ctx.eg_by_group_table,
+      entity_types: ctx[:entity_types_table],
       relationships: ctx.rel_table,
       relationships_by_id: ctx.rbi_table
     ]
@@ -316,6 +320,75 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
       assert EntityGroupCache.entity_groups("doc_demo", eg_table) == ["grp_demo"]
       assert RelationshipCache.get_relationship("rel_demo", rbi_table) != nil
+    end
+
+    # #264 Option A: every existing entity's type must be resolvable after
+    # a restart, otherwise the authorizer fails closed on membership adds.
+    test "repopulates the entity-type index from cf_type_entities", %{
+      dirty_set: dirty_set,
+      writer_name: writer_name,
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      entity_types_table: entity_types_table,
+      gm_table: gm_table,
+      eg_table: eg_table,
+      eg_by_id_table: eg_by_id_table,
+      eg_by_group_table: eg_by_group_table,
+      rel_table: rel_table,
+      rbi_table: rbi_table
+    } do
+      hlc = TestHelpers.generate_hlc()
+
+      action = %{
+        id: "act_" <> Nanoid.generate(),
+        actor_id: "demo-seeder",
+        hlc: hlc,
+        updates: [
+          %{
+            id: "upd_typed",
+            subject_id: "todo_typed",
+            subject_type: "todo",
+            method: :put,
+            data: %{"fields" => %{"title" => %{"value" => "Typed", "hlc" => hlc}}}
+          },
+          %{
+            id: "eg_typed",
+            subject_id: "eg_typed",
+            subject_type: "entityGroup",
+            method: :put,
+            data: %{
+              "fields" => %{
+                "entity_id" => %{"value" => "todo_typed", "update_id" => "u1"},
+                "group_id" => %{"value" => "grp_typed", "update_id" => "u1"}
+              }
+            }
+          }
+        ]
+      }
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      EntityTypeCache.reset(entity_types: entity_types_table)
+      assert EntityTypeCache.get_type("todo_typed", entity_types_table) == nil
+
+      :ok =
+        SystemCache.populate_system_caches(
+          populate_opts(%{
+            rocks_name: rocks_name,
+            sqlite_name: sqlite_name,
+            dirty_set: dirty_set,
+            gm_table: gm_table,
+            eg_table: eg_table,
+            eg_by_id_table: eg_by_id_table,
+            eg_by_group_table: eg_by_group_table,
+            entity_types_table: entity_types_table,
+            rel_table: rel_table,
+            rbi_table: rbi_table
+          })
+        )
+
+      assert EntityTypeCache.get_type("todo_typed", entity_types_table) == "todo"
+      assert EntityTypeCache.get_type("eg_typed", entity_types_table) == "entityGroup"
     end
   end
 end

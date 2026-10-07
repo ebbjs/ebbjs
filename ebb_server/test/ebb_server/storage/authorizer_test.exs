@@ -10,8 +10,13 @@ defmodule EbbServer.Storage.AuthorizerTest do
       group_members_by_id: tables.group_members_by_id,
       entity_groups: tables.entity_groups,
       entity_groups_by_id: tables.entity_groups_by_id,
+      entity_types: tables.entity_types,
       relationships_by_id: tables.relationships_by_id
     )
+  end
+
+  defp put_entity_type(tables, entity_id, type) do
+    :ets.insert(tables.entity_types, {entity_id, type})
   end
 
   defp put_membership(tables, entity_id, group_id, id) do
@@ -96,6 +101,10 @@ defmodule EbbServer.Storage.AuthorizerTest do
         }
       }
     }
+  end
+
+  defp entity_group_delete(id) do
+    %{id: id, subject_id: id, subject_type: "entityGroup", method: :delete, data: nil}
   end
 
   defp relationship_put(id, source_id, target_id, source_type) do
@@ -315,23 +324,17 @@ defmodule EbbServer.Storage.AuthorizerTest do
   # fields are dropped); the authorizer must recover the owning group
   # from the by-id index tables rather than from the wire envelope.
   describe "authorize/3 - system-entity delete with data:nil" do
-    test "entityGroup delete resolves the target group from the by-id index" do
+    test "entityGroup delete resolves the entity, type, and group from the indexes" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_1", ["entityGroup.delete"])
+      put_group_member(tables, "g_1", ["todo.update"])
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_membership(tables, "todo_1", "g_2", "eg_2")
       put_entity_group_by_id(tables, "eg_1", "todo_1", "g_1")
+      put_entity_type(tables, "todo_1", "todo")
 
-      action =
-        build_action([
-          %{
-            id: "upd_del",
-            subject_id: "eg_1",
-            subject_type: "entityGroup",
-            method: :delete,
-            data: nil
-          }
-        ])
+      action = build_action([entity_group_delete("eg_1")])
 
       assert Authorizer.authorize([action], "a_1", ctx) == :ok
     end
@@ -341,17 +344,10 @@ defmodule EbbServer.Storage.AuthorizerTest do
       ctx = auth_context(tables)
 
       put_entity_group_by_id(tables, "eg_1", "todo_1", "g_1")
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
 
-      action =
-        build_action([
-          %{
-            id: "upd_del",
-            subject_id: "eg_1",
-            subject_type: "entityGroup",
-            method: :delete,
-            data: nil
-          }
-        ])
+      action = build_action([entity_group_delete("eg_1")])
 
       assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
     end
@@ -714,6 +710,250 @@ defmodule EbbServer.Storage.AuthorizerTest do
         ])
 
       assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+  end
+
+  # #264 Option A: membership mutations are gated by the entity's own
+  # `<type>.create` / `<type>.update`, resolved from the entity-type
+  # index when the entity is not created in the same Action.
+  describe "authorize/3 - membership permissions" do
+    test "adding an existing entity requires <type>.create in the target group" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_2", ["entityGroup.create"])
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
+
+      action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
+
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+    end
+
+    test "adding an existing entity is allowed with <type>.create in the target group" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_2", ["todo.create"])
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
+
+      action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+
+    test "a type an earlier Action of the request created resolves a later membership add" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.create"])
+      put_group_member(tables, "g_2", ["todo.create"], "gm_2")
+
+      # Neither `todo_new` nor its type is committed yet: the second
+      # Action must resolve the type the first Action introduced.
+      actions = [
+        build_action([
+          entity_put("todo_new", "todo"),
+          entity_group_put("eg_1", "todo_new", "g_1")
+        ]),
+        build_action([entity_group_put("eg_2", "todo_new", "g_2")])
+      ]
+
+      assert Authorizer.authorize(actions, "a_1", ctx) == :ok
+    end
+
+    test "fails closed when an existing entity's type cannot be resolved" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      # The actor holds the system-entity permission, which used to stand
+      # in for the entity's type. It must not.
+      put_group_member(tables, "g_2", ["entityGroup.create", "entityGroup.*", "*"])
+      put_membership(tables, "todo_unknown", "g_1", "eg_1")
+
+      action = build_action([entity_group_put("eg_new", "todo_unknown", "g_2")])
+
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+    end
+
+    test "a same-Action create is authorized by <type>.create, not entityGroup.create" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["entityGroup.create"])
+
+      action =
+        build_action([
+          entity_put("todo_new", "todo"),
+          entity_group_put("eg_new", "todo_new", "g_1")
+        ])
+
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+    end
+
+    test "removing a membership requires <type>.update, not entityGroup.delete" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["entityGroup.delete"])
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_membership(tables, "todo_1", "g_2", "eg_2")
+      put_entity_group_by_id(tables, "eg_1", "todo_1", "g_1")
+      put_entity_type(tables, "todo_1", "todo")
+
+      action = build_action([entity_group_delete("eg_1")])
+
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+    end
+
+    test "removing a membership is allowed with <type>.update in any current group" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      # The permission is held in g_2; the removed row is in g_1. Union
+      # semantics: the actor may update the entity in any of its groups.
+      put_group_member(tables, "g_2", ["todo.update"])
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_membership(tables, "todo_1", "g_2", "eg_2")
+      put_entity_group_by_id(tables, "eg_1", "todo_1", "g_1")
+      put_entity_type(tables, "todo_1", "todo")
+
+      action = build_action([entity_group_delete("eg_1")])
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+
+    test "a bootstrap does not exempt adding an existing entity" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_membership(tables, "todo_existing", "g_other", "eg_other")
+      put_entity_type(tables, "todo_existing", "todo")
+
+      action =
+        build_action([
+          group_put("g_new"),
+          group_member_put("gm_1", "a_1", "g_new", ["group.read"]),
+          entity_group_put("eg_graft", "todo_existing", "g_new")
+        ])
+
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+    end
+  end
+
+  # #264: an entity must keep at least one owning group. The check is a
+  # net delta over the whole request, not per-Action (see the batch case).
+  describe "authorize/3 - last membership" do
+    setup do
+      tables = create_isolated_tables()
+
+      put_group_member(tables, "g_1", ["todo.create", "todo.update"])
+      put_group_member(tables, "g_2", ["todo.create", "todo.update"], "gm_2")
+
+      %{tables: tables, ctx: auth_context(tables)}
+    end
+
+    test "deleting the only membership is refused", %{tables: tables, ctx: ctx} do
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_group_by_id(tables, "eg_1", "todo_1", "g_1")
+      put_entity_type(tables, "todo_1", "todo")
+
+      action = build_action([entity_group_delete("eg_1")])
+
+      assert {:error, "last_membership", details} =
+               Authorizer.authorize([action], "a_1", ctx)
+
+      assert is_binary(details)
+    end
+
+    test "deleting one of two memberships is allowed", %{tables: tables, ctx: ctx} do
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_membership(tables, "todo_1", "g_2", "eg_2")
+      put_entity_group_by_id(tables, "eg_1", "todo_1", "g_1")
+      put_entity_type(tables, "todo_1", "todo")
+
+      action = build_action([entity_group_delete("eg_1")])
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+
+    test "swapping the last membership for a new group in one Action is allowed", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_group_by_id(tables, "eg_1", "todo_1", "g_1")
+      put_entity_type(tables, "todo_1", "todo")
+
+      action =
+        build_action([
+          entity_group_put("eg_new", "todo_1", "g_2"),
+          entity_group_delete("eg_1")
+        ])
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+
+    test "a batch of two Actions that each remove one membership is refused", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_membership(tables, "todo_1", "g_2", "eg_2")
+      put_entity_group_by_id(tables, "eg_1", "todo_1", "g_1")
+      put_entity_group_by_id(tables, "eg_2", "todo_1", "g_2")
+      put_entity_type(tables, "todo_1", "todo")
+
+      # Each Action is valid against the cache snapshot, but together
+      # they net to zero. The running delta must catch the second.
+      actions = [
+        build_action([entity_group_delete("eg_1")]),
+        build_action([entity_group_delete("eg_2")])
+      ]
+
+      assert {:error, "last_membership", _} = Authorizer.authorize(actions, "a_1", ctx)
+    end
+
+    test "re-putting the same group as a new row while deleting the old row is allowed", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_group_by_id(tables, "eg_1", "todo_1", "g_1")
+      put_entity_type(tables, "todo_1", "todo")
+
+      # Membership is per row: the stale row is replaced by a fresh row
+      # for the same group, so the entity still owns `g_1`.
+      action =
+        build_action([
+          entity_group_put("eg_new", "todo_1", "g_1"),
+          entity_group_delete("eg_1")
+        ])
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+    end
+
+    test "re-putting the same group then deleting the old row across two Actions is allowed", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_group_by_id(tables, "eg_1", "todo_1", "g_1")
+      put_entity_type(tables, "todo_1", "todo")
+
+      actions = [
+        build_action([entity_group_put("eg_new", "todo_1", "g_1")]),
+        build_action([entity_group_delete("eg_1")])
+      ]
+
+      assert Authorizer.authorize(actions, "a_1", ctx) == :ok
+    end
+
+    test "an unresolvable membership delete is not_authorized", %{ctx: ctx} do
+      action = build_action([entity_group_delete("eg_unknown")])
+
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
     end
   end
 

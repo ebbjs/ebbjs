@@ -139,4 +139,20 @@ defmodule EbbServer.Integration.ActionHelpers do
       }
     }
   end
+
+  @doc """
+  Builds a data-less `entityGroup` delete for an existing membership row.
+
+  The wire form carries only the membership row id; the server recovers
+  the entity and group from its by-id cache.
+  """
+  def entity_group_delete(membership_id) do
+    %{
+      "id" => "upd_eg_delete_" <> Nanoid.generate(),
+      "subject_id" => membership_id,
+      "subject_type" => "entityGroup",
+      "method" => "delete",
+      "data" => nil
+    }
+  end
 end

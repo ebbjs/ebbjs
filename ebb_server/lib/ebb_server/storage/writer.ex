@@ -131,6 +131,7 @@ defmodule EbbServer.Storage.Writer do
     DirtyTracker,
     EntityGroupCache,
     EntityIndex,
+    EntityTypeCache,
     Fields,
     GroupCache,
     GsnCounter,
@@ -150,6 +151,7 @@ defmodule EbbServer.Storage.Writer do
           entity_groups: atom(),
           entity_groups_by_id: atom(),
           entity_groups_by_group: atom(),
+          entity_types: atom(),
           relationships: atom(),
           relationships_by_id: atom(),
           commit_fn: (list(), keyword() -> :ok | {:error, term()}),
@@ -166,6 +168,7 @@ defmodule EbbServer.Storage.Writer do
     :entity_groups,
     :entity_groups_by_id,
     :entity_groups_by_group,
+    :entity_types,
     :relationships,
     :relationships_by_id,
     :commit_fn,
@@ -237,6 +240,13 @@ defmodule EbbServer.Storage.Writer do
         CacheTables.entity_groups_by_group()
       )
 
+    entity_types =
+      Keyword.get(
+        opts,
+        :entity_types,
+        CacheTables.entity_types()
+      )
+
     relationships =
       Keyword.get(
         opts,
@@ -265,6 +275,7 @@ defmodule EbbServer.Storage.Writer do
       entity_groups: entity_groups,
       entity_groups_by_id: entity_groups_by_id,
       entity_groups_by_group: entity_groups_by_group,
+      entity_types: entity_types,
       relationships: relationships,
       relationships_by_id: relationships_by_id,
       commit_fn: commit_fn,
@@ -515,13 +526,18 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp update_system_caches(actions, state) do
-    for action <- actions,
-        update <- action.updates,
-        update.subject_type in ["groupMember", "entityGroup", "relationship"] do
+    for action <- actions, update <- action.updates do
+      # The entity-type index mirrors `cf_type_entities`, which the Writer
+      # writes for every Update (including deletes, whose entry stays).
+      EntityTypeCache.put_type(update.subject_id, update.subject_type,
+        entity_types: state.entity_types
+      )
+
       case update.subject_type do
         "groupMember" -> handle_group_member_update(update, state)
         "entityGroup" -> handle_entity_group_update(update, state)
         "relationship" -> handle_relationship_update(update, state)
+        _ -> :ok
       end
     end
   end
@@ -664,6 +680,7 @@ defmodule EbbServer.Storage.Writer do
     [
       entity_groups: state.entity_groups,
       entity_groups_by_id: state.entity_groups_by_id,
+      entity_types: state.entity_types,
       relationships_by_id: state.relationships_by_id,
       group_members_by_id: state.group_members_by_id
     ]

@@ -11,7 +11,7 @@ defmodule EbbServer.TestHelpers do
   - `tmp_dir/1` - Create isolated temporary directory with cleanup
 
   **Storage Setup** (for unit tests)
-  - `start_isolated_cache/0` - Create isolated ETS caches (DirtyTracker, GroupCache, RelationshipCache)
+  - `start_isolated_cache/0` - Create isolated ETS caches (DirtyTracker, GroupCache, EntityGroupCache, EntityTypeCache, RelationshipCache)
   - `start_rocks/1` - Start isolated RocksDB instance
   - `start_sqlite/1` - Start isolated SQLite instance
   - `start_writer/1` - Start isolated Writer instance
@@ -35,8 +35,10 @@ defmodule EbbServer.TestHelpers do
   import ExUnit.Callbacks
 
   alias EbbServer.Storage.{
+    CacheTables,
     DirtyTracker,
     EntityGroupCache,
+    EntityTypeCache,
     GroupCache,
     RelationshipCache,
     RocksDB,
@@ -98,6 +100,7 @@ defmodule EbbServer.TestHelpers do
     - entity_groups: ETS table name
     - entity_groups_by_id: ETS table name
     - entity_groups_by_group: ETS table name
+    - entity_types: ETS table name
     - relationships: ETS table name
     - relationships_by_id: ETS table name
   """
@@ -110,11 +113,13 @@ defmodule EbbServer.TestHelpers do
     eg_table = :"ebb_eg_#{unique_id}"
     eg_by_id_table = :"ebb_eg_by_id_#{unique_id}"
     eg_by_group_table = :"ebb_eg_by_group_#{unique_id}"
+    entity_types_table = :"ebb_entity_types_#{unique_id}"
     rel_table = :"ebb_rel_#{unique_id}"
     rbi_table = :"ebb_rbi_#{unique_id}"
     dt_name = :"dt_#{unique_id}"
     gc_name = :"gc_#{unique_id}"
     egc_name = :"egc_#{unique_id}"
+    etc_name = :"etc_#{unique_id}"
     rc_name = :"rc_#{unique_id}"
     wt_name = :"wt_#{unique_id}"
     wt_table = :"wt_ranges_#{unique_id}"
@@ -127,6 +132,7 @@ defmodule EbbServer.TestHelpers do
     :persistent_term.put({EntityGroupCache, :entity_groups}, eg_table)
     :persistent_term.put({EntityGroupCache, :entity_groups_by_id}, eg_by_id_table)
     :persistent_term.put({EntityGroupCache, :entity_groups_by_group}, eg_by_group_table)
+    :persistent_term.put({EntityTypeCache, :entity_types}, entity_types_table)
     :persistent_term.put({RelationshipCache, :relationships}, rel_table)
     :persistent_term.put({RelationshipCache, :relationships_by_id}, rbi_table)
 
@@ -143,6 +149,8 @@ defmodule EbbServer.TestHelpers do
         entity_groups_by_group: eg_by_group_table
       )
 
+    {:ok, _pid_etc} = EntityTypeCache.start_link(name: etc_name, entity_types: entity_types_table)
+
     {:ok, _pid_rc} =
       RelationshipCache.start_link(
         name: rc_name,
@@ -153,7 +161,7 @@ defmodule EbbServer.TestHelpers do
     {:ok, _pid_wt} = WatermarkTracker.start_link(name: wt_name, table: wt_table, initial_gsn: 0)
 
     on_exit(fn ->
-      for name <- [dt_name, gc_name, egc_name, rc_name, wt_name],
+      for name <- [dt_name, gc_name, egc_name, etc_name, rc_name, wt_name],
           pid = Process.whereis(name),
           do: safe_stop(pid)
 
@@ -164,6 +172,7 @@ defmodule EbbServer.TestHelpers do
       :persistent_term.erase({EntityGroupCache, :entity_groups})
       :persistent_term.erase({EntityGroupCache, :entity_groups_by_id})
       :persistent_term.erase({EntityGroupCache, :entity_groups_by_group})
+      :persistent_term.erase({EntityTypeCache, :entity_types})
       :persistent_term.erase({RelationshipCache, :relationships})
     end)
 
@@ -175,6 +184,7 @@ defmodule EbbServer.TestHelpers do
       entity_groups: eg_table,
       entity_groups_by_id: eg_by_id_table,
       entity_groups_by_group: eg_by_group_table,
+      entity_types: entity_types_table,
       relationships: rel_table,
       relationships_by_id: rbi_table,
       watermark_tracker: wt_name
@@ -277,6 +287,7 @@ defmodule EbbServer.TestHelpers do
         entity_groups: opts.entity_groups,
         entity_groups_by_id: opts.entity_groups_by_id,
         entity_groups_by_group: opts.entity_groups_by_group,
+        entity_types: Map.get(opts, :entity_types) || CacheTables.entity_types(),
         relationships: opts.relationships,
         relationships_by_id: opts.relationships_by_id,
         watermark_tracker: opts[:watermark_tracker],
@@ -316,6 +327,7 @@ defmodule EbbServer.TestHelpers do
     eg = :"test_eg_#{uid}"
     eg_by_id = :"test_eg_by_id_#{uid}"
     eg_by_group = :"test_eg_by_group_#{uid}"
+    entity_types = :"test_entity_types_#{uid}"
     rel = :"test_rel_#{uid}"
     rbi = :"test_rbi_#{uid}"
 
@@ -324,11 +336,12 @@ defmodule EbbServer.TestHelpers do
     :ets.new(eg, [:bag, :public, :named_table])
     :ets.new(eg_by_id, [:set, :public, :named_table])
     :ets.new(eg_by_group, [:bag, :public, :named_table])
+    :ets.new(entity_types, [:set, :public, :named_table])
     :ets.new(rel, [:bag, :public, :named_table])
     :ets.new(rbi, [:set, :public, :named_table])
 
     on_exit(fn ->
-      for t <- [gm, gm_by_id, eg, eg_by_id, eg_by_group, rel, rbi] do
+      for t <- [gm, gm_by_id, eg, eg_by_id, eg_by_group, entity_types, rel, rbi] do
         try do
           :ets.delete(t)
         rescue
@@ -343,6 +356,7 @@ defmodule EbbServer.TestHelpers do
       entity_groups: eg,
       entity_groups_by_id: eg_by_id,
       entity_groups_by_group: eg_by_group,
+      entity_types: entity_types,
       relationships: rel,
       relationships_by_id: rbi
     }
@@ -359,6 +373,7 @@ defmodule EbbServer.TestHelpers do
       group_members_by_id: tables.group_members_by_id,
       entity_groups: tables.entity_groups,
       entity_groups_by_id: tables.entity_groups_by_id,
+      entity_types: tables.entity_types,
       relationships_by_id: tables.relationships_by_id
     ]
   end
