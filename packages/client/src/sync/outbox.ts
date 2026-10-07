@@ -101,16 +101,24 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
   let rehydration: Promise<void> | null = null;
 
   const rehydrate = (): Promise<void> => {
-    rehydration ??= deps.store.list().then((persisted) => {
-      entries = persisted
-        .filter((entry) => entry.status === "pending")
-        .sort((a, b) => compare(a.enqueuedAtHlc, b.enqueuedAtHlc))
-        .map((entry) => ({
-          action: entry.action,
-          status: "pending" as const,
-          enqueuedAtHlc: entry.enqueuedAtHlc,
-        }));
-    });
+    rehydration ??= deps.store
+      .list()
+      .then((persisted) => {
+        entries = persisted
+          .filter((entry) => entry.status === "pending")
+          .sort((a, b) => compare(a.enqueuedAtHlc, b.enqueuedAtHlc))
+          .map((entry) => ({
+            action: entry.action,
+            status: "pending" as const,
+            enqueuedAtHlc: entry.enqueuedAtHlc,
+          }));
+      })
+      .catch((err: unknown) => {
+        // Clear the memo so a transient `list()` failure cannot brick
+        // every later write: the next enqueue/flush retries the load.
+        rehydration = null;
+        throw err;
+      });
     return rehydration;
   };
 

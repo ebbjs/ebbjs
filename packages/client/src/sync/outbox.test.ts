@@ -126,7 +126,7 @@ describe("createOutbox", () => {
     });
   });
 
-  it("persists before applying optimistically and before buffering in memory", async () => {
+  it("persists before applying optimistically", async () => {
     const deps = mkDeps();
     const outbox = createOutbox(deps);
 
@@ -351,5 +351,55 @@ describe("createOutbox rehydration", () => {
     await enqueueing;
 
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_persisted", "a_new"]);
+  });
+
+  it("retries after a failed list() instead of bricking later writes", async () => {
+    const persisted = mkAction("a_persisted");
+    const base = mkStore([stored(persisted, "1")]);
+    let calls = 0;
+    const store: OutboxStore = {
+      ...base,
+      list: vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("store unavailable");
+        return base.list();
+      }),
+    };
+    const deps = mkDeps({ store });
+    const outbox = createOutbox(deps);
+
+    await expect(outbox.enqueue(mkAction("a_first"))).rejects.toThrow("store unavailable");
+
+    await outbox.enqueue(mkAction("a_second"));
+
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_persisted", "a_second"]);
+    expect(deps.store.put).toHaveBeenCalledWith({
+      action: mkAction("a_second"),
+      status: "pending",
+      enqueuedAtHlc: "1",
+    });
+    expect(deps.applied).toEqual([mkAction("a_second")]);
+  });
+
+  it("a later rehydrate() retries and seeds after one that failed", async () => {
+    const persisted = mkAction("a_persisted");
+    const base = mkStore([stored(persisted, "1")]);
+    let failing = true;
+    const store: OutboxStore = {
+      ...base,
+      list: vi.fn(async () => {
+        if (failing) {
+          failing = false;
+          throw new Error("store unavailable");
+        }
+        return base.list();
+      }),
+    };
+    const outbox = createOutbox(mkDeps({ store }));
+
+    await expect(outbox.rehydrate()).rejects.toThrow("store unavailable");
+    await outbox.rehydrate();
+
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_persisted"]);
   });
 });
