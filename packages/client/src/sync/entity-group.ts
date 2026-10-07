@@ -6,9 +6,12 @@
  */
 
 import type { Entity } from "@ebbjs/core";
+import type { StorageAdapter } from "@ebbjs/storage/types";
 
-/** A live `entityGroup` row, reduced to the two ids it carries. */
+/** A live `entityGroup` row, reduced to the ids it carries. */
 export interface LiveMembership {
+  /** The `entityGroup` row's own id — the `subject_id` a delete names. */
+  readonly membershipId: string;
   readonly entityId: string;
   readonly groupId: string;
 }
@@ -22,5 +25,30 @@ export function liveMembership(row: Entity): LiveMembership | null {
   const groupId = row.data?.fields?.["group_id"]?.value;
   const entityId = row.data?.fields?.["entity_id"]?.value;
   if (typeof groupId !== "string" || typeof entityId !== "string") return null;
-  return { entityId, groupId };
+  return { membershipId: row.id, entityId, groupId };
+}
+
+/**
+ * Read the live membership rows out of a batch of `entityGroup` rows,
+ * dropping tombstoned and malformed rows.
+ */
+export function liveMemberships(rows: readonly Entity[]): readonly LiveMembership[] {
+  return rows.map(liveMembership).filter((m): m is LiveMembership => m !== null);
+}
+
+/**
+ * The live membership rows owned by `entityId`. A membership mutation
+ * needs the row id a delete addresses, which the `groups` accessor's
+ * projected group entities do not carry.
+ *
+ * Storage has no membership index yet (#267), so this scans every
+ * `entityGroup` row. Keeping the scan here means #267 can swap in an
+ * index without touching the namespace.
+ */
+export async function readEntityMemberships(
+  storage: StorageAdapter,
+  entityId: string,
+): Promise<readonly LiveMembership[]> {
+  const rows = await storage.entities.query("entityGroup");
+  return liveMemberships(rows).filter((m) => m.entityId === entityId);
 }

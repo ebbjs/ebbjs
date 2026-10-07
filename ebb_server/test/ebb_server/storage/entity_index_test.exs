@@ -3,6 +3,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
 
   alias EbbServer.Storage.EntityGroupCache
   alias EbbServer.Storage.EntityIndex
+  alias EbbServer.Storage.EntityTypeCache
   alias EbbServer.Storage.GroupCache
   alias EbbServer.Storage.RelationshipCache
 
@@ -14,6 +15,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
     eg = :"ei_eg_#{System.unique_integer([:positive])}"
     eg_by_id = :"ei_egbi_#{System.unique_integer([:positive])}"
     eg_by_group = :"ei_egbg_#{System.unique_integer([:positive])}"
+    entity_types = :"ei_et_#{System.unique_integer([:positive])}"
 
     {:ok, _} =
       RelationshipCache.start_link(
@@ -37,6 +39,12 @@ defmodule EbbServer.Storage.EntityIndexTest do
         entity_groups_by_group: eg_by_group
       )
 
+    {:ok, _} =
+      EntityTypeCache.start_link(
+        name: :"ei_etc_#{System.unique_integer([:positive])}",
+        entity_types: entity_types
+      )
+
     on_exit(fn ->
       RelationshipCache.reset(
         relationships: rel,
@@ -51,7 +59,9 @@ defmodule EbbServer.Storage.EntityIndexTest do
         entity_groups_by_group: eg_by_group
       )
 
-      for t <- [rel, rbi, gm, gm_by_id, eg, eg_by_id, eg_by_group] do
+      EntityTypeCache.reset(entity_types: entity_types)
+
+      for t <- [rel, rbi, gm, gm_by_id, eg, eg_by_id, eg_by_group, entity_types] do
         try do
           :ets.delete(t)
         rescue
@@ -67,7 +77,8 @@ defmodule EbbServer.Storage.EntityIndexTest do
       group_members_by_id: gm_by_id,
       entity_groups: eg,
       entity_groups_by_id: eg_by_id,
-      entity_groups_by_group: eg_by_group
+      entity_groups_by_group: eg_by_group,
+      entity_types: entity_types
     }
   end
 
@@ -75,6 +86,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
     [
       entity_groups: t.entity_groups,
       entity_groups_by_id: t.entity_groups_by_id,
+      entity_types: t.entity_types,
       relationships_by_id: t.relationships_by_id,
       group_members_by_id: t.group_members_by_id
     ]
@@ -212,6 +224,44 @@ defmodule EbbServer.Storage.EntityIndexTest do
                opts(t) ++ [intra_action: %{"todo_1" => ["g_2"]}]
              )
              |> Enum.sort() == ["g_1", "g_2"]
+    end
+  end
+
+  describe "subject_type/2" do
+    test "returns the indexed type for an entity" do
+      t = tables()
+
+      :ok = EntityTypeCache.put_type("todo_1", "todo", entity_types: t.entity_types)
+
+      assert EntityIndex.subject_type("todo_1", opts(t)) == "todo"
+    end
+
+    test "returns nil for an unknown entity" do
+      t = tables()
+
+      assert EntityIndex.subject_type("todo_unknown", opts(t)) == nil
+    end
+
+    test "raises when the entity_types table is missing from opts" do
+      _t = tables()
+
+      assert_raise KeyError, fn -> EntityIndex.subject_type("todo_1", []) end
+    end
+  end
+
+  describe "membership/2" do
+    test "resolves a membership row to its entity and group" do
+      t = tables()
+
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+
+      assert EntityIndex.membership("eg_1", opts(t)) == {"todo_1", "g_1"}
+    end
+
+    test "returns nil for an unknown membership id" do
+      t = tables()
+
+      assert EntityIndex.membership("eg_unknown", opts(t)) == nil
     end
   end
 

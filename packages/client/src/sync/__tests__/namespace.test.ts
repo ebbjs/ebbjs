@@ -1196,9 +1196,8 @@ describe("client.<entity>.link / unlink / setLinks", () => {
         caught = err;
       }
       expect(caught).toBeInstanceOf(EntityValidationError);
-      expect((caught as EntityValidationError).violations[0]?.message).toMatch(/deferred/);
       expect((caught as EntityValidationError).violations[0]?.message).toMatch(
-        /create\(input, \{ groups \}\)/,
+        /addToGroup\/removeFromGroup\/setGroups/,
       );
       expect(seen.length).toBe(seenBefore);
     };
@@ -1220,8 +1219,160 @@ describe("client.<entity>.link / unlink / setLinks", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Issue #172: runtime validation on writes (Value.Check before network)
+// Issue #264: membership mutation (addToGroup / removeFromGroup / setGroups)
 // ---------------------------------------------------------------------------
+
+/**
+ * Membership mutation goes straight through the outbox: a put is one
+ * `entityGroup` row, a remove is one delete naming the local row id, and
+ * `setGroups` is the target-minus-current delta in one Action. The stub
+ * fetch records decoded Actions so each test asserts the wire shape.
+ */
+describe("client.<entity>.addToGroup / removeFromGroup / setGroups", () => {
+  const memberTodo = defineEntity("todo", { title: e.string() });
+  const memberSchema = defineSchema({ entities: { todo: memberTodo }, version: 1 });
+
+  const jsonResponse = (body: unknown): Response =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+
+  const mkMembershipClient = async () => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    const actions: Action[][] = [];
+    const fetchImpl = (async (url: string, init: RequestInit): Promise<Response> => {
+      if (url.endsWith("/sync/handshake")) {
+        return jsonResponse({
+          actor_id: "actor_1",
+          groups: [
+            {
+              id: "g_1",
+              permissions: ["todo.*"],
+              cursor_valid: true,
+              reason: null,
+              cursor: 0,
+            },
+          ],
+        });
+      }
+      if (url.endsWith("/sync/actions")) {
+        actions.push(decodeSync<{ actions: Action[] }>(init.body as unknown as Uint8Array).actions);
+        return jsonResponse({ rejected: [] });
+      }
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      storage,
+      schema: memberSchema,
+      fetchImpl,
+    });
+    await client.handshake();
+    return { client, storage, actions };
+  };
+
+  const groupIdOf = (update: Action["updates"][number]): unknown =>
+    update.data?.fields?.["group_id"]?.value;
+
+  const membershipUpdates = (actions: readonly Action[][]): Action["updates"] =>
+    actions.flatMap((batch) => batch.flatMap((action) => action.updates));
+
+  it("addToGroup() emits one entityGroup put", async () => {
+    const { client, actions } = await mkMembershipClient();
+    const response = await client.todo.addToGroup("todo_1", "g_1");
+    expect(response.rejected).toEqual([]);
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toHaveLength(1);
+    const updates = actions[0]![0]!.updates;
+    expect(updates).toHaveLength(1);
+    const update = updates[0]!;
+    expect(update.subject_type).toBe("entityGroup");
+    expect(update.method).toBe("put");
+    expect(update.subject_id).toMatch(/^eg_/);
+    expect(update.data?.fields?.["entity_id"]?.value).toBe("todo_1");
+    expect(groupIdOf(update)).toBe("g_1");
+  });
+
+  it("addToGroup() accepts an entity-shape group ref", async () => {
+    const { client, actions } = await mkMembershipClient();
+    await client.todo.addToGroup("todo_1", { id: "g_9" });
+    expect(groupIdOf(membershipUpdates(actions)[0]!)).toBe("g_9");
+  });
+
+  it("addToGroup() on an existing local membership is a no-op with no network", async () => {
+    const { client, storage, actions } = await mkMembershipClient();
+    await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
+    const response = await client.todo.addToGroup("todo_1", "g_1");
+    expect(response).toEqual({ rejected: [] });
+    expect(actions).toHaveLength(0);
+  });
+
+  it("removeFromGroup() emits one delete naming the existing row id", async () => {
+    const { client, storage, actions } = await mkMembershipClient();
+    await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
+    await storage.entities.set(mkEntityGroup("eg_2", "todo_1", "g_2"));
+    const response = await client.todo.removeFromGroup("todo_1", "g_1");
+    expect(response.rejected).toEqual([]);
+    const updates = membershipUpdates(actions);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.subject_id).toBe("eg_1");
+    expect(updates[0]!.subject_type).toBe("entityGroup");
+    expect(updates[0]!.method).toBe("delete");
+    expect(updates[0]!.data).toBeNull();
+  });
+
+  it("removeFromGroup() with no local row throws before any network call", async () => {
+    const { client, actions } = await mkMembershipClient();
+    await expect(client.todo.removeFromGroup("todo_1", "g_1")).rejects.toBeInstanceOf(
+      EntityValidationError,
+    );
+    expect(actions).toHaveLength(0);
+  });
+
+  it("setGroups() emits target-minus-current puts then current-minus-target deletes in one Action", async () => {
+    const { client, storage, actions } = await mkMembershipClient();
+    await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
+    const response = await client.todo.setGroups("todo_1", ["g_2", "g_3"]);
+    expect(response.rejected).toEqual([]);
+    expect(actions).toHaveLength(1);
+    const updates = actions[0]![0]!.updates;
+    expect(updates.map((u) => u.method)).toEqual(["put", "put", "delete"]);
+    expect(updates.slice(0, 2).map(groupIdOf).sort()).toEqual(["g_2", "g_3"]);
+    expect(updates[2]!.subject_id).toBe("eg_1");
+    expect(updates[2]!.data).toBeNull();
+  });
+
+  it("setGroups() swap emits exactly one put and one delete", async () => {
+    const { client, storage, actions } = await mkMembershipClient();
+    await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
+    await client.todo.setGroups("todo_1", ["g_2"]);
+    const updates = membershipUpdates(actions);
+    expect(updates).toHaveLength(2);
+    expect(updates.filter((u) => u.method === "put")).toHaveLength(1);
+    expect(updates.filter((u) => u.method === "delete")).toHaveLength(1);
+    expect(updates[1]!.subject_id).toBe("eg_1");
+  });
+
+  it("setGroups([]) throws EntityValidationError before any network call", async () => {
+    const { client, actions } = await mkMembershipClient();
+    await expect(client.todo.setGroups("todo_1", [])).rejects.toBeInstanceOf(EntityValidationError);
+    expect(actions).toHaveLength(0);
+  });
+
+  it("a malformed group ref throws EntityValidationError before any network call", async () => {
+    const { client, actions } = await mkMembershipClient();
+    await expect(client.todo.addToGroup("todo_1", 42 as never)).rejects.toBeInstanceOf(
+      EntityValidationError,
+    );
+    await expect(client.todo.setGroups("todo_1", [42 as never])).rejects.toBeInstanceOf(
+      EntityValidationError,
+    );
+    expect(actions).toHaveLength(0);
+  });
+});
 
 describe("client.<entity>.create / update — runtime validation", () => {
   /**

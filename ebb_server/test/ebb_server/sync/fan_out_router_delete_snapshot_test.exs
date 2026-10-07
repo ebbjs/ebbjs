@@ -127,15 +127,18 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
     :ok
   end
 
-  # Creates the group, the actor's membership, and a single entity whose
-  # *only* membership row is `eg_id`. Deleting `eg_id` therefore empties
-  # the entity's post-update group set, which is what used to break
-  # resolution.
+  # Creates the group, the actor's membership, and an entity with two
+  # membership rows: `eg_id` (deleted under test) and a second row in
+  # another group. The second row keeps the entity owned after the delete
+  # so the #264 last-membership invariant does not refuse it; the delete
+  # is still indexed into `group_id` from the pre-update snapshot.
   defp setup_membership do
     actor_id = "a_251_#{:erlang.unique_integer([:positive])}"
     group_id = "g_251_#{:erlang.unique_integer([:positive])}"
+    other_group_id = "g_251_other_#{:erlang.unique_integer([:positive])}"
     todo_id = "todo_251_#{:erlang.unique_integer([:positive])}"
     eg_id = "eg_251_#{:erlang.unique_integer([:positive])}"
+    eg_other_id = "eg_251_other_#{:erlang.unique_integer([:positive])}"
 
     ActionHelpers.bootstrap_group(actor_id, group_id, [
       "todo.read",
@@ -144,6 +147,8 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
       "groupMember.*",
       "entityGroup.*"
     ])
+
+    ActionHelpers.bootstrap_group(actor_id, other_group_id, ["todo.create"])
 
     hlc = TestHelpers.generate_hlc()
 
@@ -163,7 +168,8 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
             }
           }
         },
-        entity_group_update(eg_id, todo_id, group_id, "put", hlc)
+        entity_group_update(eg_id, todo_id, group_id, "put", hlc),
+        entity_group_update(eg_other_id, todo_id, other_group_id, "put", hlc)
       ]
     }
 

@@ -27,6 +27,12 @@
  * `rejected[]` becomes the same typed failure. A write's group set comes
  * from the required per-create `groups` option (#244), which emits the
  * `entityGroup` rows the check reads.
+ *
+ * Membership-mutation Actions (`addToGroup` / `removeFromGroup` /
+ * `setGroups` on the entity namespace) are exempt: a membership delta
+ * spans the union of the pre- and post-Action group sets by
+ * construction, which is the correct visibility scope. Those methods
+ * do not route through `client.atomic`, so this check never sees them.
  */
 
 import { generateId, type Update } from "@ebbjs/core";

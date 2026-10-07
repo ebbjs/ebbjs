@@ -32,9 +32,15 @@ defmodule EbbServer.Storage.EntityIndex do
   Each caller supplies its own table names; the module never falls
   back to globals, so a stale `:persistent_term` cannot reach a later
   caller's resolution path.
+
+  Two auxiliary lookups live here as well: `subject_type/2` resolves an
+  existing entity's type from the entity-type index (used by the
+  authorizer to gate membership mutations, #264), and `membership/2`
+  resolves an `entityGroup` row id to its `{entity_id, group_id}` (the
+  delete wire form drops the entity reference).
   """
 
-  alias EbbServer.Storage.{EntityGroupCache, GroupCache, RelationshipCache}
+  alias EbbServer.Storage.{EntityGroupCache, EntityTypeCache, GroupCache, RelationshipCache}
 
   @typep subject_type :: String.t()
   @typep subject_id :: String.t()
@@ -104,6 +110,35 @@ defmodule EbbServer.Storage.EntityIndex do
   end
 
   @doc """
+  Resolves the type of an existing entity id from the entity-type index.
+
+  Returns `nil` when the id is unknown. Callers that gate a write on the
+  resolved type must treat `nil` as a refusal rather than a fallback.
+  """
+  @spec subject_type(subject_id(), keyword()) :: subject_type() | nil
+  def subject_type(entity_id, opts) do
+    table = Keyword.fetch!(opts, :entity_types)
+    EntityTypeCache.get_type(entity_id, table)
+  end
+
+  @doc """
+  Resolves an `entityGroup` membership row to its `{entity_id, group_id}`.
+
+  The `entityGroup` delete wire form carries only the membership row id,
+  so the authorizer needs the row's entity and group to resolve the type
+  and current membership set. Returns `nil` when the row is not cached.
+  """
+  @spec membership(subject_id(), keyword()) :: {String.t(), String.t()} | nil
+  def membership(membership_id, opts) do
+    table = Keyword.fetch!(opts, :entity_groups_by_id)
+
+    case EntityGroupCache.get_entity_group(membership_id, table) do
+      nil -> nil
+      entry -> {entry_entity_id(entry), entry_group_id(entry)}
+    end
+  end
+
+  @doc """
   Returns the group set for a `relationship` update: the wire
   `source_id`'s membership set when the Update carries it, otherwise
   the by-id edge's source (the delete wire form drops the data
@@ -115,4 +150,5 @@ defmodule EbbServer.Storage.EntityIndex do
 
   defp entry_source_id(entry), do: entry[:source_id] || entry["source_id"]
   defp entry_group_id(entry), do: entry[:group_id] || entry["group_id"]
+  defp entry_entity_id(entry), do: entry[:entity_id] || entry["entity_id"]
 end

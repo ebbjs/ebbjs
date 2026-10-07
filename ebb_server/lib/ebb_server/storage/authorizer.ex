@@ -38,13 +38,16 @@ defmodule EbbServer.Storage.Authorizer do
     - `entityGroup` put → the added entity's `<type>.create` in the
       target group: the group(s) the put files the entity into (#121's
       "Add Entity to Group" row), not the entity's whole group set. The
-      type is recovered from a same-Action entity put; when the entity is
-      not in the Action the system-entity permission
-      `entityGroup.create` in the target group applies instead.
-      `entityGroup` patch/delete → `entityGroup.update` /
-      `entityGroup.delete` in the membership's group: the delete wire
-      form drops the entity reference, so the entity's type is not
-      available.
+      type is recovered from an entity put in the same Action, an entity
+      created by an earlier Action of the same request, or finally the
+      entity-type index. An unresolvable type is refused
+      (`not_authorized`) rather than falling back to the
+      `entityGroup.create` system permission.
+    - `entityGroup` delete → the entity's `<type>.update` in any group of
+      the entity's current set (union/any-match). The delete wire form
+      drops the entity reference, so the row is resolved from the
+      membership index. `entityGroup` patch → `entityGroup.update` in the
+      membership's group.
     - `relationship` put (always a domain edge; membership is
       `entityGroup`) → the source entity's `<type>.update` in the
       source's group set, where `<type>` is the wire `data.type` field,
@@ -61,19 +64,41 @@ defmodule EbbServer.Storage.Authorizer do
   is empty — an unowned entity, or an id that does not exist — is a
   structural rejection (`missing_ownership`), not a permission failure.
 
+  ## Last membership
+
+  An entity must keep at least one owning group. Anything that would
+  leave it with none is a structural rejection (`last_membership`),
+  beside `missing_ownership` (#264). The check is a per-entity net
+  delta: the entity's cached membership set, plus the `entityGroup`
+  puts seen in the request, minus its `entityGroup` deletes, with a
+  removed group cancelled when a put re-adds it. Membership is per
+  **row**, so putting a second row for a group the entity already
+  belongs to keeps that group even when the same Action (or a later
+  Action of the request) deletes the old row. The delta is carried
+  across the Actions of one request, so two Actions that each remove
+  one of an entity's two memberships cannot both pass against the same
+  cache snapshot — caches only advance once the Writer commits. The
+  entity types the earlier Actions create are carried too, so a
+  membership add in a later Action resolves the type the same request
+  introduced.
+
   ## Residuals (known limitations)
 
   `AuthorizationContext` carries no group/entity **existence** signal,
-  so two gaps remain. Both are pre-existing and closing them needs an
+  so one gap remains. It is pre-existing and closing it needs an
   existence source plumbed into the authorization context:
 
     - A bootstrap Action may re-`put` an **existing** group id and
       self-grant permissions:
       `PermissionHelper.bootstrap_group_permissions/2` checks only that
       the Action puts that group id, not that the group is new.
-    - A same-Action `entityGroup` put may file an **existing** entity:
-      `PermissionHelper.created_subject_ids/1` counts every user-entity
-      `put` id as created without checking existence.
+
+  The bootstrap exemption also trusts the Action's own user-entity
+  `put`s: `PermissionHelper.created_subject_ids/1` counts every put id
+  as created, so a bootstrap can file an **existing** entity into its
+  new group by re-putting it. Non-bootstrap membership adds are no
+  longer affected — they resolve the entity's true type from the
+  entity-type index.
   """
 
   alias EbbServer.Storage.AuthorizationContext
@@ -97,6 +122,15 @@ defmodule EbbServer.Storage.Authorizer do
            data: map() | nil
          }
 
+  # What the request knows so far on top of the cache snapshot. Caches
+  # only advance once the Writer commits, so the last-membership delta
+  # and the entity types the earlier Actions resolve travel here.
+  @typep request_sim :: %{
+           additions: %{String.t() => [String.t()]},
+           removals: %{String.t() => [String.t()]},
+           types: %{String.t() => String.t()}
+         }
+
   @doc """
   Authorizes a list of validated actions.
 
@@ -105,27 +139,45 @@ defmodule EbbServer.Storage.Authorizer do
   """
   @spec authorize([validated_action()], String.t(), AuthorizationContext.t()) ::
           :ok | {:error, String.t(), String.t()}
-  def authorize([], _actor_id, _ctx), do: :ok
+  def authorize(actions, actor_id, ctx),
+    do: authorize(actions, actor_id, ctx, new_sim())
 
-  def authorize([action | rest], actor_id, ctx) do
-    case authorize_action(action, actor_id, ctx) do
-      :ok -> authorize(rest, actor_id, ctx)
+  # The fourth argument is the running simulation of what the request's
+  # earlier Actions added, removed and created. Caches only advance once
+  # the Writer commits, so the last-membership delta and the entity
+  # types must travel here (see `check_last_membership/2`).
+  defp authorize([], _actor_id, _ctx, _sim), do: :ok
+
+  defp authorize([action | rest], actor_id, ctx, sim) do
+    case authorize_action(action, actor_id, ctx, sim) do
+      {:ok, sim} -> authorize(rest, actor_id, ctx, sim)
       error -> error
     end
   end
 
-  defp authorize_action(action, actor_id, ctx) do
+  @spec new_sim() :: request_sim()
+  defp new_sim, do: %{additions: %{}, removals: %{}, types: %{}}
+
+  defp authorize_action(action, actor_id, ctx, sim) do
     updates = action.updates
+    intra = PermissionHelper.build_intra_action_context(updates)
+    opts = ctx_to_opts(ctx)
 
     authz = %{
-      intra: PermissionHelper.build_intra_action_context(updates),
+      intra: intra,
+      intra_opts: Keyword.put(opts, :intra_action, intra),
       bootstrap: PermissionHelper.bootstrap_group_permissions(updates, actor_id),
       created_ids: PermissionHelper.created_subject_ids(updates),
-      created_types: PermissionHelper.created_entity_types(updates),
+      created_types: Map.merge(sim.types, PermissionHelper.created_entity_types(updates)),
+      deleted_memberships: resolve_deleted_memberships(updates, opts),
+      opts: opts,
       ctx: ctx
     }
 
-    check_all_updates(updates, actor_id, authz)
+    with :ok <- check_all_updates(updates, actor_id, authz),
+         {:ok, sim} <- check_last_membership(authz, sim) do
+      {:ok, %{sim | types: authz.created_types}}
+    end
   end
 
   defp check_all_updates(updates, actor_id, authz) do
@@ -185,26 +237,94 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
+  # #264: an entity must never resolve to zero owning groups. The check
+  # is a net delta per entity — its cached membership, plus the request's
+  # `entityGroup` puts, minus its deletes, with re-added groups cancelled.
+  # `build_intra_action_context/1` stays puts-only because other callers
+  # rely on it being cache-free; the delete half is resolved here from the
+  # membership index.
+  defp check_last_membership(authz, sim) do
+    additions = merge_additions(sim.additions, authz.intra)
+    removals = merge_removals(sim.removals, deleted_group_ids(authz.deleted_memberships))
+    touched = Enum.uniq(Map.keys(additions) ++ Map.keys(removals))
+
+    if Enum.any?(touched, &(resulting_groups(&1, additions, removals, authz.opts) == [])) do
+      {:error, "last_membership",
+       "removing this membership would leave the entity with no owning group"}
+    else
+      {:ok, %{sim | additions: additions, removals: removals}}
+    end
+  end
+
+  # A removed group is only subtracted when no put in the request re-adds
+  # it: membership is per row, so a new row for a group the entity still
+  # holds cancels the removal of the stale row.
+  defp resulting_groups(entity_id, additions, removals, opts) do
+    cached = EntityIndex.source_groups(entity_id, opts)
+    added = Map.get(additions, entity_id, [])
+    removed = Map.get(removals, entity_id, [])
+    Enum.uniq(cached ++ added) -- removed -- added
+  end
+
+  defp merge_additions(prior, added) do
+    Map.merge(prior, added, fn _entity_id, a, b -> Enum.uniq(a ++ b) end)
+  end
+
+  # Removals stay a multiset: each deleted row contributes one entry, so
+  # a group removed twice within the request still nets to a removal.
+  defp merge_removals(prior, removed) do
+    Map.merge(prior, removed, fn _entity_id, a, b -> a ++ b end)
+  end
+
+  defp deleted_group_ids(deleted_memberships) do
+    deleted_memberships
+    |> Map.values()
+    |> Enum.reject(&is_nil/1)
+    |> Enum.reduce(%{}, fn {entity_id, group_id}, acc ->
+      Map.update(acc, entity_id, [group_id], &[group_id | &1])
+    end)
+  end
+
+  # Resolve every `entityGroup` delete once; the delete authorization and
+  # the last-membership delta both read the resolved pair from `authz`.
+  defp resolve_deleted_memberships(updates, opts) do
+    updates
+    |> Enum.filter(&(&1.subject_type == "entityGroup" and &1.method == :delete))
+    |> Map.new(fn update ->
+      {update.id, EntityIndex.membership(update.subject_id, opts)}
+    end)
+  end
+
   # Adding an entity to a group is gated by the entity's own
   # `<type>.create` in the target group (#121 "Add Entity to Group"), not
-  # by the entity's whole group set. The type comes from a same-Action
-  # entity put; when the entity is not in the Action the system-entity
-  # permission stands in.
+  # by the entity's whole group set. The type comes from an entity put in
+  # the same Action, an entity created by an earlier Action of this
+  # request, or the entity-type index; an unresolvable type is a refusal
+  # (`entityGroup.create` would let any group member graft an entity whose
+  # type they may not create).
   defp authorize_entity_group_update(%{method: :put} = update, actor_id, authz) do
     entity_id = Fields.get(update.data, "entity_id")
 
-    case Map.get(authz.created_types, entity_id) do
+    case entity_type(entity_id, authz) do
       nil ->
-        check_group_permission(
-          wire_group_ids(update),
-          actor_id,
-          "entityGroup",
-          "create",
-          authz
-        )
+        {:error, "not_authorized", "cannot resolve the type of the entity being added to a group"}
 
       type ->
         check_group_permission(wire_group_ids(update), actor_id, type, "create", authz)
+    end
+  end
+
+  # Removing membership is gated by the entity's `<type>.update` in any
+  # group of its current set (union semantics), not by `entityGroup.delete`
+  # in the removed group — the delete wire form drops the entity reference,
+  # so the row is resolved from the membership index.
+  defp authorize_entity_group_update(%{method: :delete} = update, actor_id, authz) do
+    case Map.get(authz.deleted_memberships, update.id) do
+      nil ->
+        {:error, "not_authorized", "cannot resolve the entity for this membership"}
+
+      {entity_id, _group_id} ->
+        authorize_membership_delete(entity_id, actor_id, authz)
     end
   end
 
@@ -216,6 +336,28 @@ defmodule EbbServer.Storage.Authorizer do
       permission_for(update.method),
       authz
     )
+  end
+
+  defp authorize_membership_delete(entity_id, actor_id, authz) do
+    case entity_type(entity_id, authz) do
+      nil ->
+        {:error, "not_authorized", "cannot resolve the type of the entity owning this membership"}
+
+      type ->
+        check_group_permission(
+          EntityIndex.source_groups(entity_id, authz.opts),
+          actor_id,
+          type,
+          "update",
+          authz
+        )
+    end
+  end
+
+  # A type put by the current Action wins, then a type an earlier Action
+  # of this request created, then the committed entity-type index.
+  defp entity_type(entity_id, authz) do
+    Map.get(authz.created_types, entity_id) || EntityIndex.subject_type(entity_id, authz.opts)
   end
 
   # A relationship is always a domain edge, and is authorized against its
@@ -249,9 +391,7 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   defp authorize_user_entity_update(type, update, actor_id, authz) do
-    opts = Keyword.put(ctx_to_opts(authz.ctx), :intra_action, authz.intra)
-
-    case EntityIndex.resolve_groups(type, update.subject_id, opts) do
+    case EntityIndex.resolve_groups(type, update.subject_id, authz.intra_opts) do
       [] ->
         {:error, "missing_ownership",
          "entity has no group membership; every write must resolve at least one owning group"}
@@ -303,7 +443,7 @@ defmodule EbbServer.Storage.Authorizer do
   # deletes, whose wire form drops the data fields.
   defp system_entity_group_ids(%{data: data, subject_id: id}, type, authz) do
     case Fields.get(data, "group_id") do
-      nil -> EntityIndex.resolve_groups(type, id, ctx_to_opts(authz.ctx))
+      nil -> EntityIndex.resolve_groups(type, id, authz.opts)
       group_id -> [group_id]
     end
   end
@@ -311,8 +451,11 @@ defmodule EbbServer.Storage.Authorizer do
   defp wire_group_ids(update), do: [Fields.get(update.data, "group_id")]
 
   defp relationship_group_ids(update, authz) do
-    opts = Keyword.put(ctx_to_opts(authz.ctx), :intra_action, authz.intra)
-    EntityIndex.relationship_groups(Fields.get(update.data, "source_id"), update.subject_id, opts)
+    EntityIndex.relationship_groups(
+      Fields.get(update.data, "source_id"),
+      update.subject_id,
+      authz.intra_opts
+    )
   end
 
   defp permission_for(method), do: PermissionHelper.method_to_permission(Atom.to_string(method))
@@ -321,6 +464,7 @@ defmodule EbbServer.Storage.Authorizer do
     [
       entity_groups: ctx.entity_groups_table,
       entity_groups_by_id: ctx.entity_groups_by_id_table,
+      entity_types: ctx.entity_types_table,
       relationships_by_id: ctx.relationships_by_id_table,
       group_members_by_id: ctx.group_members_by_id_table
     ]

@@ -17,7 +17,13 @@ defmodule EbbServer.Storage.CacheTablesTest do
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{CacheTables, EntityGroupCache, GroupCache, RelationshipCache}
+  alias EbbServer.Storage.{
+    CacheTables,
+    EntityGroupCache,
+    EntityTypeCache,
+    GroupCache,
+    RelationshipCache
+  }
 
   # Erase the published keys before any test in this module runs so a
   # prior test's leftover `:persistent_term` (e.g., from
@@ -33,7 +39,8 @@ defmodule EbbServer.Storage.CacheTablesTest do
           {GroupCache, :group_members_by_id},
           {EntityGroupCache, :entity_groups},
           {EntityGroupCache, :entity_groups_by_id},
-          {EntityGroupCache, :entity_groups_by_group}
+          {EntityGroupCache, :entity_groups_by_group},
+          {EntityTypeCache, :entity_types}
         ] do
       try do
         :persistent_term.erase({module, key})
@@ -124,6 +131,19 @@ defmodule EbbServer.Storage.CacheTablesTest do
       publish_and_cleanup(EntityGroupCache, :entity_groups_by_group, name)
 
       assert CacheTables.entity_groups_by_group() == name
+    end
+  end
+
+  describe "entity_types/0" do
+    test "returns the canonical default when EntityTypeCache has not published" do
+      assert CacheTables.entity_types() == :ebb_entity_types
+    end
+
+    test "returns whatever EntityTypeCache published" do
+      name = :"et_published_#{System.unique_integer([:positive])}"
+      publish_and_cleanup(EntityTypeCache, :entity_types, name)
+
+      assert CacheTables.entity_types() == name
     end
   end
 

@@ -20,6 +20,8 @@ defmodule EbbServer.Storage.SystemCache do
     - `DirtyTracker`      — the set of `entity_id`s whose materialized form is stale.
     - `GroupCache`        — per-group member sets; permission checks read this on every write.
     - `EntityGroupCache`  — entity → group membership; reaches in for fan-out and entity reads.
+    - `EntityTypeCache`   — entity id → `subject_type`; the authorizer resolves an existing
+                            entity's type from here for membership permissions (#264).
     - `RelationshipCache` — domain relationship edges; reaches in for relationship resolution.
 
   `SystemCache` itself is a `GenServer` that owns these children under an
@@ -63,6 +65,7 @@ defmodule EbbServer.Storage.SystemCache do
   - `:entity_groups` - defaults to `:ebb_entity_groups`
   - `:entity_groups_by_id` - defaults to `:ebb_entity_groups_by_id`
   - `:entity_groups_by_group` - defaults to `:ebb_entity_groups_by_group`
+  - `:entity_types` - defaults to `:ebb_entity_types`
   - `:relationships` - defaults to `:ebb_relationships`
   - `:relationships_by_id` - defaults to `:ebb_relationships_by_id`
 
@@ -80,6 +83,7 @@ defmodule EbbServer.Storage.SystemCache do
     DirtyTracker,
     EntityGroupCache,
     EntityStore,
+    EntityTypeCache,
     Fields,
     GroupCache,
     RelationshipCache,
@@ -127,6 +131,9 @@ defmodule EbbServer.Storage.SystemCache do
     egbg_table =
       Keyword.get(opts, :entity_groups_by_group) || CacheTables.entity_groups_by_group()
 
+    entity_types_table =
+      Keyword.get(opts, :entity_types) || CacheTables.entity_types()
+
     dirty_set =
       Keyword.get(opts, :dirty_set) ||
         :persistent_term.get({DirtyTracker, :dirty_set}, @default_dirty_set_name)
@@ -139,7 +146,8 @@ defmodule EbbServer.Storage.SystemCache do
       relationships_by_id: rbi_table,
       entity_groups: eg_table,
       entity_groups_by_id: egbid_table,
-      entity_groups_by_group: egbg_table
+      entity_groups_by_group: egbg_table,
+      entity_types: entity_types_table
     }
 
     populate_caches_from_indexes(rocks_name, tables, dirty_set, opts)
@@ -157,10 +165,13 @@ defmodule EbbServer.Storage.SystemCache do
     entity_group_cache_opts =
       Keyword.take(opts, [:entity_groups, :entity_groups_by_id, :entity_groups_by_group])
 
+    entity_type_cache_opts = Keyword.take(opts, [:entity_types])
+
     children = [
       {DirtyTracker, dirty_set_opts},
       {GroupCache, group_cache_opts},
       {EntityGroupCache, entity_group_cache_opts},
+      {EntityTypeCache, entity_type_cache_opts},
       {RelationshipCache, rel_cache_opts}
     ]
 
@@ -177,7 +188,8 @@ defmodule EbbServer.Storage.SystemCache do
               :relationships_by_id,
               :entity_groups,
               :entity_groups_by_id,
-              :entity_groups_by_group
+              :entity_groups_by_group,
+              :entity_types
             ])
           )
         rescue
@@ -225,6 +237,8 @@ defmodule EbbServer.Storage.SystemCache do
 
   defp populate_caches_from_indexes(rocks_name, tables, dirty_set, opts) do
     sqlite_opts = Keyword.take(opts, [:sqlite_name])
+
+    populate_entity_types(rocks_name, tables.entity_types)
 
     populate_type(
       "groupMember",
@@ -307,6 +321,24 @@ defmodule EbbServer.Storage.SystemCache do
            ) do
         {:ok, entity} -> insert_fn.(entity)
         error -> Logger.warning("Failed to materialize entity #{entity_id}: #{inspect(error)}")
+      end
+    end)
+    |> Stream.run()
+  end
+
+  # The authorizer resolves an existing entity's type for membership
+  # permissions, so every `cf_type_entities` pair must be in ETS before
+  # the first write is authorized. The index is append-only and mirrors
+  # the Writer's per-Update maintenance exactly, so a full walk keeps the
+  # two in sync. Decoding the key never materializes the entity.
+  defp populate_entity_types(rocks_name, table) do
+    rocks_name
+    |> RocksDB.cf_type_entities()
+    |> RocksDB.full_iterator(name: rocks_name)
+    |> Stream.each(fn {key, _value} ->
+      case :binary.split(key, <<0>>) do
+        [type, entity_id] -> EntityTypeCache.put_type(entity_id, type, entity_types: table)
+        _ -> :ok
       end
     end)
     |> Stream.run()
