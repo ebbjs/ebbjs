@@ -336,6 +336,69 @@ defmodule EbbServer.Storage.WriterTest do
     end
   end
 
+  describe "action dedup (#285)" do
+    test "re-submitting a committed action_id is a silent no-op", %{
+      writer_name: writer_name,
+      rocks_name: rocks_name
+    } do
+      action = validated_action()
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      assert {:ok, _} =
+               RocksDB.get(RocksDB.cf_action_dedup(rocks_name), action.id, name: rocks_name)
+
+      assert {:ok, {0, 0}, []} = Writer.write_actions([action], writer_name)
+
+      assert RocksDB.get_max_gsn(rocks_name) == 1
+
+      assert :not_found =
+               RocksDB.get(RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(2),
+                 name: rocks_name
+               )
+
+      assert {:ok, gsn_binary} =
+               RocksDB.get(RocksDB.cf_action_dedup(rocks_name), action.id, name: rocks_name)
+
+      assert gsn_binary == RocksDB.encode_gsn_key(1)
+    end
+
+    test "mixed batch writes only the uncommitted action", %{
+      writer_name: writer_name,
+      rocks_name: rocks_name
+    } do
+      action_a = validated_action()
+      action_b = validated_action()
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action_a], writer_name)
+      assert {:ok, {2, 2}, []} = Writer.write_actions([action_a, action_b], writer_name)
+
+      assert RocksDB.get_max_gsn(rocks_name) == 2
+
+      assert {:ok, binary} =
+               RocksDB.get(RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(2),
+                 name: rocks_name
+               )
+
+      assert :erlang.binary_to_term(binary, [:safe])["id"] == action_b.id
+
+      assert {:ok, gsn_binary} =
+               RocksDB.get(RocksDB.cf_action_dedup(rocks_name), action_a.id, name: rocks_name)
+
+      assert gsn_binary == RocksDB.encode_gsn_key(1)
+    end
+
+    test "the same action_id twice in one batch is written once", %{
+      writer_name: writer_name,
+      rocks_name: rocks_name
+    } do
+      action = validated_action()
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action, action], writer_name)
+      assert RocksDB.get_max_gsn(rocks_name) == 1
+    end
+  end
+
   describe "system cache updates" do
     test "groupMember PUT updates ETS",
          %{

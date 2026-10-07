@@ -186,6 +186,46 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
     end
   end
 
+  describe "lost ack (#285)" do
+    test "a durable commit whose ack was lost makes the retry a no-op", ctx do
+      commit_fn = fn ops, opts ->
+        :ok = RocksDB.write_batch(ops, opts)
+        raise "ack lost"
+      end
+
+      %{name: writer_name, pid: writer_pid} =
+        start_writer(Map.put(ctx, :commit_fn, commit_fn))
+
+      Process.unlink(writer_pid)
+
+      action = validated_action(%{updates: [validated_update(%{subject_id: "todo_lost_ack"})]})
+
+      catch_exit(Writer.write_actions([action], writer_name))
+
+      # The commit landed before the raise, so GSN 1 is durable even
+      # though the caller saw the Writer crash.
+      assert RocksDB.get_max_gsn(ctx.rocks_name) == 1
+
+      %{name: restarted_name} = start_writer(ctx)
+
+      assert {:ok, {0, 0}, []} = Writer.write_actions([action], restarted_name)
+
+      assert RocksDB.get_max_gsn(ctx.rocks_name) == 1
+
+      assert :not_found =
+               RocksDB.get(RocksDB.cf_actions(ctx.rocks_name), RocksDB.encode_gsn_key(2),
+                 name: ctx.rocks_name
+               )
+
+      assert {:ok, binary} =
+               RocksDB.get(RocksDB.cf_actions(ctx.rocks_name), RocksDB.encode_gsn_key(1),
+                 name: ctx.rocks_name
+               )
+
+      assert :erlang.binary_to_term(binary, [:safe])["id"] == action.id
+    end
+  end
+
   describe "init/1 reconcile" do
     test "resolves a counter that is ahead of the durable log", ctx do
       :atomics.put(ctx.gsn_counter, 1, 5)

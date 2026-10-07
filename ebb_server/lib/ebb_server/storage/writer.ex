@@ -48,6 +48,16 @@ defmodule EbbServer.Storage.Writer do
   treat a provisional mark as dirty but never clear it (see
   `EbbServer.Storage.EntityStore`).
 
+  ## Idempotent retries
+
+  A client outbox that loses the ack for a committed batch re-flushes
+  the same Actions. The dedup index makes that replay a no-op: an
+  incoming `action_id` already present in `cf_action_dedup` is skipped
+  before any GSN is claimed, so a retry never consumes a GSN, appends a
+  second Action, or shows up in `rejected[]`. A batch whose Actions are
+  all already committed replies `{:ok, {0, 0}, []}` — silent idempotent
+  success.
+
   ## Failure and recovery policy
 
   A GSN range is claimed before the commit attempt, and a claim that is
@@ -184,7 +194,7 @@ defmodule EbbServer.Storage.Writer do
   end
 
   @type rejected_action :: %{action: validated_action(), reason: String.t()}
-  @type write_result :: {:ok, {pos_integer(), pos_integer()}, [rejected_action()]}
+  @type write_result :: {:ok, {non_neg_integer(), non_neg_integer()}, [rejected_action()]}
 
   @spec write_actions([validated_action()], GenServer.name()) :: write_result() | {:error, term()}
   def write_actions(actions, name \\ __MODULE__) do
@@ -320,18 +330,23 @@ defmodule EbbServer.Storage.Writer do
   Actions are already validated by PermissionChecker before reaching the Writer.
   Pipeline:
   1. Filter out actions with empty updates (safety check)
-  2. Claim a GSN range from GsnCounter for the batch
-  3. Build a batch of puts across all 6 column families:
+  2. Drop duplicate action ids within the batch and ids already in
+     `cf_action_dedup`. An already-committed id is silently skipped —
+     idempotent, never a `rejected[]` entry.
+  3. Claim a GSN range from GsnCounter for the remaining fresh actions
+  4. Build a batch of puts across all 6 column families:
      - cf_actions: GSN → full action (ETF encoded)
      - cf_action_dedup: action_id → GSN (duplicate detection)
      - cf_updates: (action_id, update_id) → update (ETF encoded)
      - cf_entity_actions: (subject_id, GSN) → action_id (materialization index)
      - cf_type_entities: (subject_type, subject_id) → <<>> (type index)
      - cf_group_actions: (group_id, GSN) → action_id (group catch-up index)
-  4. Write batch synchronously to RocksDB (single attempt, no retry)
-  5. Mark affected entities dirty in DirtyTracker
+  5. Write batch synchronously to RocksDB (single attempt, no retry)
+  6. Mark affected entities dirty in DirtyTracker
 
-  Returns `{:ok, {gsn_start, gsn_end}, rejected_actions}` on success.
+  Returns `{:ok, {gsn_start, gsn_end}, rejected_actions}` on success. A
+  batch with no fresh actions — every Action filtered as empty or
+  already committed — returns `{:ok, {0, 0}, []}`.
 
   On a commit failure the claimed range is abandoned (resolved) and the
   caller gets `{:error, {:rocksdb_write_failed, reason}}`. See the
@@ -339,16 +354,20 @@ defmodule EbbServer.Storage.Writer do
   """
   @impl true
   def handle_call({:write_actions, actions}, from, state) when is_list(actions) do
-    filtered = Enum.reject(actions, &(&1.updates == []))
+    fresh =
+      actions
+      |> Enum.reject(&(&1.updates == []))
+      |> Enum.uniq_by(& &1.id)
+      |> drop_committed(state.rocks_name)
 
-    case filtered do
+    case fresh do
       [] ->
         {:reply, {:ok, {0, 0}, []}, state}
 
       _ ->
-        {gsn_start, gsn_end} = GsnCounter.claim_gsn_range(length(filtered), state.gsn_counter)
+        {gsn_start, gsn_end} = GsnCounter.claim_gsn_range(length(fresh), state.gsn_counter)
 
-        case write_batch(filtered, gsn_start, gsn_end, state) do
+        case write_batch(fresh, gsn_start, gsn_end, state) do
           {:ok, reply} ->
             {:reply, reply, state}
 
@@ -361,6 +380,29 @@ defmodule EbbServer.Storage.Writer do
             {:noreply, state}
         end
     end
+  end
+
+  # `cf_action_dedup` doubles as the commit marker: the index entry and
+  # the `cf_actions` record land in the same atomic `write_batch`, so an
+  # entry can only exist for a durable Action. A retried Action that
+  # already has one must not claim a GSN or append a second log record.
+  # Pairing results with ids (not actions) means a short `multi_get`
+  # reply keeps the unmatched Actions rather than dropping them.
+  defp drop_committed([], _rocks_name), do: []
+
+  defp drop_committed(actions, rocks_name) do
+    ids = Enum.map(actions, & &1.id)
+
+    committed =
+      RocksDB.multi_get(RocksDB.cf_action_dedup(rocks_name), ids, name: rocks_name)
+      |> Enum.zip(ids)
+      |> Enum.flat_map(fn
+        {{:ok, _gsn}, id} -> [id]
+        {:not_found, _id} -> []
+      end)
+      |> MapSet.new()
+
+    Enum.reject(actions, &MapSet.member?(committed, &1.id))
   end
 
   # The `after` is the structural guarantee: however the body exits — a
@@ -376,14 +418,14 @@ defmodule EbbServer.Storage.Writer do
   # settled mark; `abandon` clears them on every failure path. Settling
   # (in `apply_post_commit`) overwrites them, so the success path needs no
   # clear.
-  defp write_batch(filtered, gsn_start, gsn_end, state) do
-    entity_ids = affected_entity_ids(filtered)
+  defp write_batch(fresh, gsn_start, gsn_end, state) do
+    entity_ids = affected_entity_ids(fresh)
     pending = {entity_ids, DirtyTracker.mark_pending_batch(entity_ids, state.dirty_set)}
 
     # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
     try do
-      {ops, groups_by_gsn} = build_ops(filtered, gsn_start, state)
-      commit(filtered, pending, ops, groups_by_gsn, gsn_start, gsn_end, state)
+      {ops, groups_by_gsn} = build_ops(fresh, gsn_start, state)
+      commit(fresh, pending, ops, groups_by_gsn, gsn_start, gsn_end, state)
     rescue
       error ->
         abandon(state, pending, gsn_start, gsn_end, error)
@@ -397,11 +439,11 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
-  defp build_ops(filtered, gsn_start, state) do
+  defp build_ops(fresh, gsn_start, state) do
     resolve_opts = resolve_cache_opts(state)
 
     {ops, groups_by_gsn} =
-      filtered
+      fresh
       |> Enum.with_index(gsn_start)
       |> Enum.map_reduce(%{}, fn {action, gsn}, acc ->
         {action_ops, group_ids} =
@@ -413,7 +455,7 @@ defmodule EbbServer.Storage.Writer do
     {List.flatten(ops), groups_by_gsn}
   end
 
-  defp commit(filtered, pending, ops, groups_by_gsn, gsn_start, gsn_end, state) do
+  defp commit(fresh, pending, ops, groups_by_gsn, gsn_start, gsn_end, state) do
     case state.commit_fn.(ops, name: state.rocks_name) do
       :ok ->
         if state.after_commit, do: state.after_commit.()
@@ -422,7 +464,7 @@ defmodule EbbServer.Storage.Writer do
         # raise-capable cache bookkeeping runs.
         mark_committed(state, gsn_start, gsn_end)
 
-        case apply_post_commit(filtered, state) do
+        case apply_post_commit(fresh, state) do
           :ok ->
             notify_batch_committed(state, gsn_start, gsn_end, groups_by_gsn)
             {:ok, {:ok, {gsn_start, gsn_end}, []}}
@@ -437,16 +479,16 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
-  defp apply_post_commit(filtered, state) do
-    :ok = DirtyTracker.mark_dirty_batch(affected_entity_ids(filtered), state.dirty_set)
-    update_system_caches(filtered, state)
+  defp apply_post_commit(fresh, state) do
+    :ok = DirtyTracker.mark_dirty_batch(affected_entity_ids(fresh), state.dirty_set)
+    update_system_caches(fresh, state)
     :ok
   rescue
     error -> {:error, error}
   end
 
-  defp affected_entity_ids(filtered) do
-    filtered
+  defp affected_entity_ids(fresh) do
+    fresh
     |> Enum.flat_map(fn action -> action.updates end)
     |> Enum.map(fn update -> update.subject_id end)
     |> Enum.uniq()
