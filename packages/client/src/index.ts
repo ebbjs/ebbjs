@@ -80,6 +80,14 @@ export {
 export { type FlushScheduler } from "./sync/flush-scheduler";
 
 export {
+  type Conflicts,
+  type ConflictResolution,
+  type ConflictChangeListener,
+} from "./sync/conflicts";
+
+export type { ConflictEntry, ConflictWinner } from "@ebbjs/storage/types";
+
+export {
   openSSEStream,
   parseSSEBlock,
   type SSESubscription,

@@ -26,6 +26,7 @@
 import {
   encodeSync,
   type Action,
+  createAction,
   createClock,
   type Entity,
   type HLCState,
@@ -41,6 +42,7 @@ import { ConnectionStateMachine, type ConnectionState } from "./connection-state
 import { PresenceManager } from "../presence/presence";
 import { openSSEStream, type SSESubscription } from "./sse";
 import { createOutbox, type Outbox } from "./outbox";
+import { createConflicts, type Conflicts } from "./conflicts";
 import { createFlushScheduler, type FlushScheduler } from "./flush-scheduler";
 import { backoffDelayMs } from "./backoff";
 import { TextDocument, TextDocumentRegistry } from "../fields/collaborative-text/text-document";
@@ -122,6 +124,12 @@ export class SyncClient {
    * `close()`'s teardown all live here.
    */
   readonly flushScheduler: FlushScheduler;
+  /**
+   * Application-facing conflict surface: the losing Actions LWW detection
+   * moved off the pending write path, plus their resolution. `count()` is
+   * #125's conflict-count source.
+   */
+  readonly conflicts: Conflicts;
   private readonly fetchImpl: typeof fetch;
   private readonly reconnectInitialMs: number;
   private readonly reconnectMaxMs: number;
@@ -186,11 +194,23 @@ export class SyncClient {
     // `client.close()` (already wired in the existing close path)
     // when tearing down.
     this.presence = new PresenceManager(this);
+    // The manager is also the ConflictStore the Outbox writes through, so
+    // a detection lands in its cache and fires `onChange` without a poll.
+    const { conflicts, store: conflictStore } = createConflicts({
+      store: this.storage.conflicts,
+      requeue: (action) => this.requeueRebased(action),
+      reMaterialize: (action) => this.reMaterializeFromLog(action),
+      stampAction: (updates) =>
+        createAction({ actorId: this.actorId, updates: [...updates], clock: this.clock }).action,
+      hlc: () => this.freshHlc(),
+      generateUpdateId: () => this.generateUpdateId(),
+    });
+    this.conflicts = conflicts;
     this.outbox = createOutbox({
       applyOptimistic: (action) => this.applyLocalAction(action),
       submit: (actions) => this.submitActions(actions),
       store: this.storage.outbox,
-      conflicts: this.storage.conflicts,
+      conflicts: conflictStore,
       // Field markers are the schema's word on merge semantics. A client
       // without a schema has no markers, so every non-structural field is
       // treated as LWW (the conservative default for conflict detection).
@@ -1073,6 +1093,34 @@ export class SyncClient {
       const next = applyLocalUpdate(current, update, action.hlc);
       if (next === null) continue;
       await this.storage.entities.set(next);
+    }
+  }
+
+  /**
+   * Re-enqueue a rebased losing Action on the pending write path: durably
+   * buffered, optimistically applied, and scheduled to flush. Validation
+   * is skipped — the Action was already accepted into the Outbox before
+   * detection, so a schema drift since then is not a reason to refuse the
+   * application's explicit retry. An `unreachable` first attempt is not
+   * surfaced: the entry is durable, and the scheduler owns the retry.
+   */
+  private async requeueRebased(action: Action): Promise<void> {
+    await this.outbox.enqueue(action);
+    await this.flushScheduler.schedule();
+  }
+
+  /**
+   * Drop a losing Action's optimistic writes and replay the action log
+   * for every entity it touched, converging the cache on the server's
+   * view. Marking dirty first is what forces the replay: the optimistic
+   * apply wrote the cache directly and left the entity clean. An entity
+   * the server never echoed has no log rows, so replay leaves the cached
+   * row as-is — the store has no way to represent absence.
+   */
+  private async reMaterializeFromLog(action: Action): Promise<void> {
+    for (const update of action.updates) {
+      await this.storage.dirtyTracker.mark(update.subject_id, update.subject_type);
+      await this.storage.entities.get(update.subject_id);
     }
   }
 
