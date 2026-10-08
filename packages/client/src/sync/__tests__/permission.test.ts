@@ -1,0 +1,441 @@
+/**
+ * The local permission pre-check (#319). A client that has completed
+ * `handshake()` — so it knows its own group permissions — refuses a
+ * locally-authored Update it lacks `<type>.<verb>` for, before the
+ * Action reaches the Outbox. The server stays the authority; the pass
+ * is best-effort and skips when the actor's groups are unknown.
+ *
+ * The rules mirror `EbbServer.Storage.Authorizer` /
+ * `PermissionHelper`: per-Update, union semantics over an entity's
+ * group set, and the group bootstrap exemption.
+ */
+
+import { describe, expect, it } from "vitest";
+import { makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
+
+import { createClient } from "../client";
+import { PermissionError } from "../permission";
+import { makeFetchMock, type FetchCall } from "../test-utils";
+
+const SERVER_URL = "http://localhost:4000";
+const ACTOR_ID = "actor_1";
+
+const mkEntity = (
+  id: string,
+  type: string,
+  fields: Record<string, unknown>,
+  deletedHlc: string | null = null,
+): Entity => ({
+  id,
+  type,
+  data: {
+    fields: Object.fromEntries(
+      Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u_1" }]),
+    ),
+  },
+  created_hlc: "1",
+  updated_hlc: "1",
+  deleted_hlc: deletedHlc,
+  last_gsn: 0,
+});
+
+const field = (value: unknown): { value: unknown; update_id: string } => ({
+  value,
+  update_id: "u_1",
+});
+
+const fields = (values: Record<string, unknown>): Record<string, { value: unknown }> =>
+  Object.fromEntries(Object.entries(values).map(([k, v]) => [k, field(v)]));
+
+const update = (
+  subjectType: string,
+  subjectId: string,
+  method: "put" | "patch" | "delete",
+  values: Record<string, unknown> = {},
+): Update => ({
+  id: `u_${subjectId}_${method}`,
+  subject_id: subjectId,
+  subject_type: subjectType,
+  method,
+  data: method === "delete" ? null : { fields: fields(values) },
+});
+
+const action = (updates: readonly Update[]): Action => ({
+  id: "a_1",
+  actor_id: ACTOR_ID,
+  hlc: makeHlc(1_711_036_800_000),
+  gsn: 0,
+  updates: [...updates],
+});
+
+const handshakeBody = (groups: readonly (readonly [string, string[]])[]): unknown => ({
+  actor_id: ACTOR_ID,
+  groups: groups.map(([id, permissions]) => ({
+    id,
+    permissions,
+    cursor_valid: true,
+    reason: null,
+    cursor: 0,
+  })),
+});
+
+const actionRequests = (calls: readonly FetchCall[]): FetchCall[] =>
+  calls.filter((call) => call.url.endsWith("/sync/actions"));
+
+/** A client whose `handshake()` reports `groups`. */
+const mkClient = async (groups: readonly (readonly [string, string[]])[]) => {
+  const { fn, calls } = makeFetchMock([
+    {
+      body: JSON.stringify(handshakeBody(groups)),
+      headers: { "content-type": "application/json" },
+    },
+    { body: JSON.stringify({ rejected: [] }), headers: { "content-type": "application/json" } },
+  ]);
+  const client = createClient({ serverUrl: SERVER_URL, actorId: ACTOR_ID, fetchImpl: fn });
+  await client.handshake();
+  return { client, calls };
+};
+
+describe("collectPermissionViolations — user entities", () => {
+  it("throws locally and never enqueues or POSTs when the permission is missing", async () => {
+    const { client, calls } = await mkClient([["g_1", ["list.*"]]]);
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+
+    await expect(
+      client.write([action([update("todo", "todo_1", "put", { title: "Ship" })])]),
+    ).rejects.toBeInstanceOf(PermissionError);
+
+    expect(client.outbox.size()).toBe(0);
+    expect(actionRequests(calls)).toHaveLength(0);
+  });
+
+  it("reports the subject, the missing permission and the checked groups", async () => {
+    const { client } = await mkClient([["g_1", ["list.*"]]]);
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+
+    const error = await client
+      .write([action([update("todo", "todo_1", "put", { title: "Ship" })])])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(PermissionError);
+    expect((error as PermissionError).violations).toEqual([
+      {
+        subjectType: "todo",
+        subjectId: "todo_1",
+        required: "todo.create",
+        groupIds: ["g_1"],
+      },
+    ]);
+  });
+
+  it("passes an update held in any one of the entity's groups", async () => {
+    const { client } = await mkClient([
+      ["g_1", []],
+      ["g_2", ["todo.update"]],
+    ]);
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_2", "entityGroup", { entity_id: "todo_1", group_id: "g_2" }),
+    );
+
+    await expect(
+      client.write([action([update("todo", "todo_1", "patch", { title: "Renamed" })])]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("passes a delete held in any one of the entity's groups", async () => {
+    const { client } = await mkClient([
+      ["g_1", []],
+      ["g_2", ["todo.delete"]],
+    ]);
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_2", "entityGroup", { entity_id: "todo_1", group_id: "g_2" }),
+    );
+
+    await expect(client.write([action([update("todo", "todo_1", "delete")])])).resolves.toEqual({
+      rejected: [],
+    });
+  });
+
+  it("accepts the wildcard permission <type>.*", async () => {
+    const { client } = await mkClient([["g_1", ["todo.*"]]]);
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+
+    await expect(
+      client.write([action([update("todo", "todo_1", "patch", { title: "Renamed" })])]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("skips a write whose entity resolves to no group", async () => {
+    const { client, calls } = await mkClient([["g_1", []]]);
+
+    await expect(
+      client.write([action([update("todo", "unowned", "put", { title: "Ship" })])]),
+    ).resolves.toEqual({ rejected: [] });
+    expect(actionRequests(calls)).toHaveLength(1);
+  });
+});
+
+describe("collectPermissionViolations — relationship edges", () => {
+  const relUpdate = (sourceId: string, targetId: string, type: string): Update =>
+    update("relationship", "rel_1", "put", {
+      source_id: sourceId,
+      target_id: targetId,
+      field: "list",
+      type,
+    });
+
+  it("checks the source entity's group set, not the target's", async () => {
+    const { client, calls } = await mkClient([
+      ["g_source", ["list.*"]],
+      ["g_target", ["todo.update"]],
+    ]);
+    await client.storage.entities.set(
+      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_source" }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_tgt", "entityGroup", { entity_id: "list_1", group_id: "g_target" }),
+    );
+
+    await expect(
+      client.write([action([relUpdate("todo_1", "list_1", "todo")])]),
+    ).rejects.toBeInstanceOf(PermissionError);
+    expect(client.outbox.size()).toBe(0);
+    expect(actionRequests(calls)).toHaveLength(0);
+  });
+
+  it("passes when the source's group set holds <type>.update", async () => {
+    const { client } = await mkClient([
+      ["g_source", ["todo.update"]],
+      ["g_target", ["list.*"]],
+    ]);
+    await client.storage.entities.set(
+      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_source" }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_tgt", "entityGroup", { entity_id: "list_1", group_id: "g_target" }),
+    );
+
+    await expect(client.write([action([relUpdate("todo_1", "list_1", "todo")])])).resolves.toEqual({
+      rejected: [],
+    });
+  });
+
+  it("skips a put that does not carry its source type and id", async () => {
+    const { client } = await mkClient([["g_1", []]]);
+
+    await expect(
+      client.write([action([update("relationship", "rel_1", "put", { target_id: "list_1" })])]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("resolves a delete's source from the local relationship row", async () => {
+    const { client } = await mkClient([
+      ["g_1", ["relationship.delete"]],
+      ["g_2", []],
+    ]);
+    await client.storage.entities.set(
+      mkEntity("rel_1", "relationship", {
+        source_id: "todo_1",
+        target_id: "list_1",
+        field: "list",
+        type: "todo",
+      }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+
+    await expect(
+      client.write([action([update("relationship", "rel_1", "delete")])]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+});
+
+describe("collectPermissionViolations — entityGroup membership", () => {
+  it("requires <type>.create in the target group for a put", async () => {
+    const { client, calls } = await mkClient([["g_1", ["todo.update"]]]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+
+    await expect(
+      client.write([
+        action([update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })]),
+      ]),
+    ).rejects.toBeInstanceOf(PermissionError);
+    expect(actionRequests(calls)).toHaveLength(0);
+  });
+
+  it("passes a put when the target group holds <type>.create", async () => {
+    const { client } = await mkClient([["g_1", ["todo.create"]]]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+
+    await expect(
+      client.write([
+        action([update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })]),
+      ]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("skips a put whose entity type cannot be resolved", async () => {
+    const { client } = await mkClient([["g_1", []]]);
+
+    await expect(
+      client.write([
+        action([update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })]),
+      ]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("requires <type>.update in the entity's current set for a delete", async () => {
+    const { client, calls } = await mkClient([["g_1", []]]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_2", "entityGroup", { entity_id: "todo_1", group_id: "g_2" }),
+    );
+
+    await expect(
+      client.write([action([update("entityGroup", "eg_1", "delete")])]),
+    ).rejects.toBeInstanceOf(PermissionError);
+    expect(actionRequests(calls)).toHaveLength(0);
+  });
+
+  it("passes a delete when another of the entity's groups holds <type>.update", async () => {
+    const { client } = await mkClient([
+      ["g_1", []],
+      ["g_2", ["todo.update"]],
+    ]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_2", "entityGroup", { entity_id: "todo_1", group_id: "g_2" }),
+    );
+
+    await expect(
+      client.write([action([update("entityGroup", "eg_1", "delete")])]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("skips a delete whose membership row cannot be resolved", async () => {
+    const { client } = await mkClient([["g_1", []]]);
+
+    await expect(
+      client.write([action([update("entityGroup", "eg_missing", "delete")])]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+});
+
+describe("collectPermissionViolations — group bootstrap", () => {
+  it("exempts a group bootstrap and honors its declared permissions", async () => {
+    const { client, calls } = await mkClient([["g_old", []]]);
+
+    const created = action([
+      update("group", "g_new", "put", { id: "g_new" }),
+      update("groupMember", "gm_1", "put", {
+        actor_id: ACTOR_ID,
+        group_id: "g_new",
+        permissions: ["todo.*", "group.*", "groupMember.*"],
+      }),
+      update("todo", "todo_1", "put", { title: "Ship" }),
+      update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_new" }),
+    ]);
+
+    await expect(client.write([created])).resolves.toEqual({ rejected: [] });
+    expect(actionRequests(calls)).toHaveLength(1);
+  });
+
+  it("does not exempt an entityGroup put for an entity that already exists", async () => {
+    const { client } = await mkClient([["g_old", []]]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+
+    const created = action([
+      update("group", "g_new", "put", { id: "g_new" }),
+      update("groupMember", "gm_1", "put", {
+        actor_id: ACTOR_ID,
+        group_id: "g_new",
+        permissions: ["todo.*"],
+      }),
+      update("todo", "todo_1", "put", { title: "Ship" }),
+      update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_new" }),
+    ]);
+
+    await expect(client.write([created])).rejects.toBeInstanceOf(PermissionError);
+  });
+});
+
+describe("collectPermissionViolations — best-effort", () => {
+  it("skips the pass when the actor's groups are not yet known", async () => {
+    const { fn, calls } = makeFetchMock([
+      { body: JSON.stringify({ rejected: [] }), headers: { "content-type": "application/json" } },
+    ]);
+    const client = createClient({ serverUrl: SERVER_URL, actorId: ACTOR_ID, fetchImpl: fn });
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+
+    await expect(
+      client.write([action([update("todo", "todo_1", "put", { title: "Ship" })])]),
+    ).resolves.toEqual({ rejected: [] });
+    expect(actionRequests(calls)).toHaveLength(1);
+    expect(client.outbox.size("acknowledged")).toBe(1);
+  });
+
+  it("aggregates violations across every Action in the batch", async () => {
+    const { client } = await mkClient([["g_1", []]]);
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_2", "entityGroup", { entity_id: "todo_2", group_id: "g_1" }),
+    );
+
+    const error = await client
+      .write([
+        action([update("todo", "todo_1", "put", { title: "One" })]),
+        { ...action([update("todo", "todo_2", "put", { title: "Two" })]), id: "a_2" },
+      ])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect((error as PermissionError).violations.map((v) => v.subjectId)).toEqual([
+      "todo_1",
+      "todo_2",
+    ]);
+  });
+});
+
+describe("PermissionError", () => {
+  it("formats its message from the violations", () => {
+    const error = new PermissionError([
+      {
+        subjectType: "todo",
+        subjectId: "todo_1",
+        required: "todo.create",
+        groupIds: ["g_1"],
+      },
+    ]);
+
+    expect(error.name).toBe("PermissionError");
+    expect(error.violations).toHaveLength(1);
+    expect(error.message).toContain("PermissionError: 1 permission violation(s)");
+    expect(error.message).toContain("todo todo_1");
+    expect(error.message).toContain("todo.create");
+    expect(error.message).toContain("g_1");
+  });
+});

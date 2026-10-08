@@ -35,6 +35,8 @@ export {
   type CreatedEntity,
 } from "./sync/atomic";
 
+export { PermissionError, type PermissionViolation } from "./sync/permission";
+
 export {
   type QueryBuilder,
   type QueryContext,

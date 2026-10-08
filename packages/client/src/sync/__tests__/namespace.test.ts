@@ -1783,6 +1783,13 @@ describe("client.<entity>.create — entityGroup rows", () => {
                 reason: null,
                 cursor: 0,
               },
+              {
+                id: "g_2",
+                permissions: ["todo.*"],
+                cursor_valid: true,
+                reason: null,
+                cursor: 0,
+              },
             ],
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },

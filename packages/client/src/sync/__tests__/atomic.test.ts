@@ -55,13 +55,21 @@ const mkRecordingFetch = (seen: RecordedRequest[], opts: StubWriteOptions = {}):
           : undefined;
     seen.push({ url, body });
     if (url.endsWith("/sync/handshake")) {
+      const permissions = ["todo.*", "list.*", "label.*", "a.*", "b.*", "c.*"];
       return new Response(
         JSON.stringify({
           actor_id: "actor_1",
           groups: [
             {
               id: "g_1",
-              permissions: ["todo.*", "list.*"],
+              permissions,
+              cursor_valid: true,
+              reason: null,
+              cursor: 0,
+            },
+            {
+              id: "g_2",
+              permissions,
               cursor_valid: true,
               reason: null,
               cursor: 0,
