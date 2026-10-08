@@ -33,7 +33,11 @@ export function liveMembership(row: Entity): LiveMembership | null {
  * dropping tombstoned and malformed rows.
  */
 export function liveMemberships(rows: readonly Entity[]): readonly LiveMembership[] {
-  return rows.map(liveMembership).filter((m): m is LiveMembership => m !== null);
+  return rows.flatMap((row) => {
+    const membership = liveMembership(row);
+
+    return membership === null ? [] : [membership];
+  });
 }
 
 /**

@@ -272,7 +272,7 @@ export const docActionToUpdate = (
     method: "patch",
     // Wire format: user-entity fields are nested under `data.fields`
     // so the server's per-field LWW merge handles each run independently.
-    data: { fields: fieldUpdates } as unknown as never,
+    data: { fields: fieldUpdates },
   };
 };
 

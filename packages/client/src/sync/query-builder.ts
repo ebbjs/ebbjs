@@ -31,7 +31,7 @@
  * is untouched.
  */
 
-import type { Entity } from "@ebbjs/core";
+import type { Entity, FieldValue } from "@ebbjs/core";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
@@ -478,7 +478,7 @@ async function membershipIdSet(filter: MembershipFilter): Promise<ReadonlySet<st
 }
 
 /** Pull `data.fields[field].value` off an Entity, returning `undefined` when absent. */
-function fieldValue(entity: Entity, field: string): unknown {
+function fieldValue(entity: Entity, field: string): FieldValue["value"] {
   const fv = entity.data?.fields?.[field];
   if (fv === undefined) return undefined;
   return fv.value;

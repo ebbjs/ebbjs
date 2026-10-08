@@ -169,7 +169,8 @@ export const createMemoryEntityStore = (
       }
 
       const entityIds = state.typeIndex[type] ?? new Set();
-      return [...entityIds].map((id) => copyEntity(state.entities[id])).filter(Boolean);
+
+      return [...entityIds].map((id) => copyEntity(state.entities[id]));
     },
 
     async queryByRelationship({

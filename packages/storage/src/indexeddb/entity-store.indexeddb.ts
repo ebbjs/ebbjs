@@ -116,7 +116,7 @@ export const createIndexedDBEntityStore = (
 
     if (entity === null) return;
 
-    const previous = (await db.get("entities", entityId)) as unknown as Entity | undefined;
+    const previous = await db.get("entities", entityId);
     await db.put("entities", copyEntity(entity) as EbbDBSchema["entities"]["value"]);
     await updateRelationshipIndex(previous, entity);
 
@@ -130,12 +130,13 @@ export const createIndexedDBEntityStore = (
   const store: EntityStore = {
     async get(id: string): Promise<Entity | null> {
       await replay(id, true);
-      const entity = (await db.get("entities", id)) as unknown as Entity | undefined;
+      const entity = await db.get("entities", id);
+
       return entity ? copyEntity(entity) : null;
     },
 
     async set(entity: Entity): Promise<void> {
-      const previous = (await db.get("entities", entity.id)) as unknown as Entity | undefined;
+      const previous = await db.get("entities", entity.id);
       await db.put("entities", copyEntity(entity) as EbbDBSchema["entities"]["value"]);
       await updateRelationshipIndex(previous, entity);
       emit(entity.id, entity);
@@ -148,7 +149,8 @@ export const createIndexedDBEntityStore = (
         await replay(id, true);
       }
 
-      const entities = (await db.getAllFromIndex("entities", "type", type)) as unknown as Entity[];
+      const entities = await db.getAllFromIndex("entities", "type", type);
+
       return entities.map(copyEntity);
     },
 
