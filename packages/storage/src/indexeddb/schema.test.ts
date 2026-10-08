@@ -29,4 +29,20 @@ describe("EbbDBSchema", () => {
       expect(await db.get("outbox", "a_1")).toBeDefined();
     });
   });
+
+  describe("conflicts store", () => {
+    it("is created at the current schema version and keyed by action id", async () => {
+      const db = await openTestDb("schema");
+      expect(Array.from(db.objectStoreNames)).toContain("conflicts");
+
+      const action = buildPutAction();
+      await db.put("conflicts", {
+        action,
+        winners: { title: { update_id: "u_2", hlc: action.hlc, value: "Updated" } },
+        fields: ["title"],
+        detectedAtHlc: action.hlc,
+      });
+      expect(await db.get("conflicts", "a_1")).toBeDefined();
+    });
+  });
 });

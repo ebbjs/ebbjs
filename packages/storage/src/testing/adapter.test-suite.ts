@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
 import type { StorageAdapter } from "../types/storage-adapter";
-import { buildPatchAction, buildPutAction } from "./fixtures";
+import { buildConflictEntry, buildPatchAction, buildPutAction } from "./fixtures";
 
 export interface AdapterTestSuiteOptions {
   name: string;
@@ -235,6 +235,26 @@ export const defineAdapterTests = ({ name, factory }: AdapterTestSuiteOptions): 
         await adapter.reset();
         const entity = await adapter.entities.get("todo_1");
         expect(entity).toBe(null);
+      });
+    });
+
+    describe("conflicts", () => {
+      it("stores and reads back a conflict", async () => {
+        const adapter = await factory();
+        const entry = buildConflictEntry();
+        await adapter.conflicts.put(entry);
+
+        expect(await adapter.conflicts.get("a_1")).toEqual(entry);
+      });
+
+      it("keeps conflicts across a reset", async () => {
+        const adapter = await factory();
+        const entry = buildConflictEntry();
+        await adapter.conflicts.put(entry);
+
+        await adapter.reset();
+
+        expect(await adapter.conflicts.get("a_1")).toEqual(entry);
       });
     });
   });

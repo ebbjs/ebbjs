@@ -4,6 +4,7 @@ import type { EntityStore } from "./entity-store";
 import type { CursorStore } from "./cursor-store";
 import type { EntityChangeEmitter } from "./entity-change-emitter";
 import type { OutboxStore } from "./outbox-store";
+import type { ConflictStore } from "./conflict-store";
 
 /**
  * StorageAdapter — unified interface composing all storage components.
@@ -17,11 +18,13 @@ import type { OutboxStore } from "./outbox-store";
  * - `dirtyTracker` — DirtyTracker for tracking entities needing materialization
  * - `cursors` — CursorStore for per-group GSN tracking
  * - `outbox` — OutboxStore for durable pending local Actions
+ * - `conflicts` — ConflictStore for durably buffered LWW conflicts
  *
  * ## Cross-cutting Methods
  * - `isDirty(entityId)` — delegates to dirtyTracker
  * - `reset()` — clears the action log, dirty flags, and entity cache;
- *   pending outbox entries are durable user data and survive a reset
+ *   outbox entries and conflicts are durable user data and survive a
+ *   reset
  */
 export interface StorageAdapter {
   readonly actions: ActionLog;
@@ -29,6 +32,7 @@ export interface StorageAdapter {
   readonly dirtyTracker: DirtyTracker;
   readonly cursors: CursorStore;
   readonly outbox: OutboxStore;
+  readonly conflicts: ConflictStore;
   /**
    * Observer surface for entity-change notifications. Optional —
    * adapters that don't ship an emitter can omit the field, and
@@ -51,3 +55,4 @@ export interface StorageAdapter {
 
 export type { ActionLog, DirtyTracker, EntityStore, CursorStore, EntityChangeEmitter };
 export type { OutboxStore, OutboxEntry, OutboxStatus } from "./outbox-store";
+export type { ConflictEntry, ConflictStore, ConflictWinner } from "./conflict-store";
