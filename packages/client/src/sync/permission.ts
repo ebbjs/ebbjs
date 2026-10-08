@@ -265,9 +265,12 @@ const collectActionViolations = async (
 
       case "relationship": {
         if (update.method === "put") {
-          const type = asString(fieldValue(update, "type"));
           const sourceId = asString(fieldValue(update, "source_id"));
-          if (type === null || sourceId === null) return null;
+          if (sourceId === null) return null;
+          // The permission type follows the source entity's true type,
+          // never the wire `type` label, which is forgeable (#323).
+          const type = await resolveType(sourceId);
+          if (type === null) return null;
           const groupIds = await groupSetFor(sourceId);
           // The source has no locally-known ownership; the server decides.
           if (groupIds.length === 0) return null;
