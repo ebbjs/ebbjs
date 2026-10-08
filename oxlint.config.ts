@@ -1,53 +1,62 @@
 import { defineConfig, type AllowWarnDeny } from "oxlint";
 
 /**
- * Anti-slop rules from the vendored plugin in `tools/oxlint/anti-slop`.
+ * Anti-slop rules whose findings are migrated. These are enforced in CI.
  *
- * They start at `warn` while the existing findings are migrated; each rule is
- * promoted to `error` once its count reaches zero. The final state is `error`
- * for every rule.
+ * Add a rule here once `pnpm lint:anti-slop` reports zero findings for it.
  */
-const antiSlopRuleNames = [
+const enforcedAntiSlopRuleNames = [
   "no-array-filter-map",
-  "no-reduce-accumulator-copy",
-  "no-chained-type-assertions",
   "no-conditional-empty-object-spread",
-  "no-known-value-widening",
   "no-module-mocking",
   "no-object-parameters",
+  "no-reduce-accumulator-copy",
   "no-reflect-apply",
+  "no-unknown-type-aliases",
+  "no-widen-then-assert",
+] as const;
+
+/**
+ * Anti-slop rules still to migrate. They are off rather than warn so that
+ * `pnpm lint` stays clean, CI enforces only the adopted set, and lefthook's
+ * pre-commit `oxlint --fix` cannot silently apply their autofixes. The
+ * inventory and migration plan are in `docs/tooling/anti-slop.md`; re-enable a
+ * rule temporarily to re-measure it.
+ */
+const pendingAntiSlopRuleNames = [
+  "no-chained-type-assertions",
+  "no-known-value-widening",
   "no-reflect-get",
   "no-runtime-typeof",
   "no-shape-in-symbol-names",
   "no-unknown-parameters",
   "no-unknown-returns",
-  "no-unknown-type-aliases",
   "no-unsafe-dictionary-type",
-  "no-widen-then-assert",
   "require-readable-spacing",
   "require-safety-comment-for-type-assertion",
 ] as const;
 
-const antiSlopRules = Object.fromEntries(
-  antiSlopRuleNames.map((rule) => [`anti-slop/${rule}`, "warn" satisfies AllowWarnDeny]),
-) as Record<`anti-slop/${(typeof antiSlopRuleNames)[number]}`, AllowWarnDeny>;
+const allAntiSlopRuleNames = [...enforcedAntiSlopRuleNames, ...pendingAntiSlopRuleNames];
 
-const disableAntiSlopRules = Object.fromEntries(
-  antiSlopRuleNames.map((rule) => [`anti-slop/${rule}`, "off" satisfies AllowWarnDeny]),
-) as typeof antiSlopRules;
+const antiSlopRulesAt = (ruleNames: readonly string[], level: AllowWarnDeny) =>
+  Object.fromEntries(ruleNames.map((rule) => [`anti-slop/${rule}`, level]));
 
 /**
  * Trees where anti-slop does not apply: tests deliberately traffic in
- * malformed and `unknown` data, and `experiment/` and `examples/` are
- * throwaway or illustrative code. Default Oxlint rules still run there.
+ * malformed and `unknown` data, test utilities and benchmarks are not shipped
+ * contracts, and `experiment/` and `examples/` are throwaway or illustrative
+ * code. Default Oxlint rules still run there.
  */
 const antiSlopExcludedFiles = [
   "**/__tests__/**",
+  "**/test/**",
   "**/*.test.ts",
   "**/*.test.tsx",
   "**/*.spec.ts",
   "**/*.spec.tsx",
+  "**/test-utils.ts",
   "**/e2e/**",
+  "**/benchmark/**",
   "experiment/**",
   "examples/**",
 ];
@@ -67,17 +76,16 @@ export default defineConfig({
     ".windsurf/**",
     "tools/oxlint/anti-slop/**",
   ],
-  jsPlugins: [
-    { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },
-  ],
+  jsPlugins: [{ name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" }],
   rules: {
     "oxc/no-accumulating-spread": "error",
-    ...antiSlopRules,
+    ...antiSlopRulesAt(enforcedAntiSlopRuleNames, "error"),
+    ...antiSlopRulesAt(pendingAntiSlopRuleNames, "off"),
   },
   overrides: [
     {
       files: antiSlopExcludedFiles,
-      rules: disableAntiSlopRules,
+      rules: antiSlopRulesAt(allAntiSlopRuleNames, "off"),
     },
   ],
 });

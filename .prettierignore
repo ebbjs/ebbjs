@@ -1,0 +1,3 @@
+# Vendored anti-slop plugin. Keep byte-identical to upstream so updates stay
+# reviewable; format its source in the upstream repository, not here.
+tools/oxlint/anti-slop/
