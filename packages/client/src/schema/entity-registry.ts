@@ -103,6 +103,20 @@ export class EntityRegistry {
   }
 
   /**
+   * Field-kind query for conflict policy: `true` when `field` on
+   * `subjectType` merges last-writer-wins, so a concurrent inbound
+   * write can silently overwrite a local one. Unknown entities and
+   * undeclared fields default to LWW — a client without a schema has
+   * no markers, and a forward-compat field is safer flagged than not.
+   */
+  isLwwField(subjectType: string, field: string): boolean {
+    const entity = this.entities.get(subjectType);
+    if (entity === undefined) return true;
+    const marker = entity.fields[field] as FieldMarker | undefined;
+    return marker === undefined || marker.type === "lww";
+  }
+
+  /**
    * Register a relationship keyed by `(source, as)`. Re-registering
    * the same pair overwrites; the returned marker lets callers
    * detect the overwrite.
