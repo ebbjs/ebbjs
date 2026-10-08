@@ -205,6 +205,7 @@ describe("collectPermissionViolations — relationship edges", () => {
       ["g_source", ["list.*"]],
       ["g_target", ["todo.update"]],
     ]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
       mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_source" }),
     );
@@ -224,6 +225,7 @@ describe("collectPermissionViolations — relationship edges", () => {
       ["g_source", ["todo.update"]],
       ["g_target", ["list.*"]],
     ]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
       mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_source" }),
     );
@@ -236,7 +238,35 @@ describe("collectPermissionViolations — relationship edges", () => {
     });
   });
 
-  it("skips a put that does not carry its source type and id", async () => {
+  it("ignores a forged wire type and checks the source's true type", async () => {
+    const { client, calls } = await mkClient([["g_source", ["comment.update"]]]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(
+      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_source" }),
+    );
+
+    // The wire claims `comment`, which the actor holds; the source is
+    // really a `todo`, which the actor may not update (#323).
+    await expect(
+      client.write([action([relUpdate("todo_1", "list_1", "comment")])]),
+    ).rejects.toBeInstanceOf(PermissionError);
+    expect(client.outbox.size()).toBe(0);
+    expect(actionRequests(calls)).toHaveLength(0);
+  });
+
+  it("accepts a custom wire type when the source's true type is permitted", async () => {
+    const { client } = await mkClient([["g_source", ["todo.update"]]]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(
+      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_source" }),
+    );
+
+    await expect(
+      client.write([action([relUpdate("todo_1", "list_1", "todo.belongsTo.list")])]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("skips a put that does not carry its source id", async () => {
     const { client } = await mkClient([["g_1", []]]);
 
     await expect(

@@ -440,6 +440,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       put_group_member(tables, "g_source", ["todo.update"])
       put_membership(tables, "todo_1", "g_source", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
 
       action = build_action([relationship_put("rel_1", "todo_1", "col_other", "todo")])
 
@@ -451,10 +452,43 @@ defmodule EbbServer.Storage.AuthorizerTest do
       ctx = auth_context(tables)
 
       put_group_member(tables, "g_target", ["todo.update"])
+      put_entity_type(tables, "todo_1", "todo")
 
       action = build_action([relationship_put("rel_1", "todo_1", "g_target", "todo")])
 
       assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+    end
+
+    test "relationship put ignores a forged wire type and checks the source's true type" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      # The actor holds `comment.update` in the group but the source is
+      # really a `todo`; the wire `type` claims otherwise (#323).
+      put_group_member(tables, "g_source", ["comment.update"])
+      put_membership(tables, "todo_1", "g_source", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
+
+      action = build_action([relationship_put("rel_1", "todo_1", "other_1", "comment")])
+
+      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+    end
+
+    test "relationship put authorizes a source type the same request created" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      action =
+        build_action([
+          group_put("g_1"),
+          group_member_put("gm_1", "a_1", "g_1", ["todo.*"]),
+          entity_put("todo_1", "todo"),
+          entity_group_put("eg_1", "todo_1", "g_1"),
+          # The forged label disagrees with the created entity's type.
+          relationship_put("rel_1", "todo_1", "other_1", "comment")
+        ])
+
+      assert Authorizer.authorize([action], "a_1", ctx) == :ok
     end
   end
 
