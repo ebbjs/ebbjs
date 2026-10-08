@@ -507,9 +507,11 @@ describe("buildRelationshipWrite (SyncClient)", () => {
     ).not.toThrow();
   });
 
-  it("throws EntityValidationError when the actor's known groups lack <source_type>.update", async () => {
-    // Stub fetch to return a handshake response with groups that
-    // grant only `todo.read` — the early check should reject.
+  it("defers the permission check to write() rather than throwing in the builder", async () => {
+    // The early check moved to the shared write-path pass (#319). The
+    // builder only shapes the wire Update, so an actor without
+    // `<source_type>.update` gets a `PermissionError` from `write()`,
+    // not from here.
     const fetchImpl = (async (): Promise<Response> => {
       return new Response(
         JSON.stringify({
@@ -550,7 +552,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
         sourceId: "todo_1",
         targetId: "list_1",
       }),
-    ).toThrow(EntityValidationError);
+    ).not.toThrow();
   });
 
   it("accepts the wildcard permission <source_type>.*", async () => {

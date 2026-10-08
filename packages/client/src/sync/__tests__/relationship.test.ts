@@ -15,7 +15,8 @@ import type { Entity } from "@ebbjs/core";
 
 import { forwardMany, forwardOne, reverse } from "../relationship";
 import { buildEntityGroupDelete } from "../relationship";
-import { liveMembership } from "../entity-group";
+import { liveMembership, readMembership } from "../entity-group";
+import type { StorageAdapter } from "@ebbjs/storage/types";
 
 const mkEntity = (
   id: string,
@@ -224,6 +225,33 @@ describe("liveMembership", () => {
   it("returns null when a required id is missing", () => {
     const row = mkEntity("eg_1", "entityGroup", { entity_id: "t1" });
     expect(liveMembership(row)).toBeNull();
+  });
+});
+
+describe("readMembership", () => {
+  const storageWith = (rows: readonly Entity[]): StorageAdapter =>
+    ({
+      entities: {
+        get: async (id: string) => rows.find((row) => row.id === id) ?? null,
+      },
+    }) as unknown as StorageAdapter;
+
+  it("resolves a live entityGroup row by its id", async () => {
+    const row = mkEntity("eg_1", "entityGroup", { entity_id: "t1", group_id: "g1" });
+    await expect(readMembership(storageWith([row]), "eg_1")).resolves.toEqual({
+      membershipId: "eg_1",
+      entityId: "t1",
+      groupId: "g1",
+    });
+  });
+
+  it("returns null for a row that is not an entityGroup", async () => {
+    const row = mkEntity("t1", "todo", {});
+    await expect(readMembership(storageWith([row]), "t1")).resolves.toBeNull();
+  });
+
+  it("returns null for a missing row", async () => {
+    await expect(readMembership(storageWith([]), "eg_1")).resolves.toBeNull();
   });
 });
 

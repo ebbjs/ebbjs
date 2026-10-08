@@ -62,6 +62,7 @@ import {
 } from "./relationship";
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { createAtomicRuntime, type AtomicClient } from "./atomic";
+import { PermissionError, collectPermissionViolations } from "./permission";
 import {
   ActionDefinitionError,
   RUN,
@@ -152,9 +153,11 @@ export class SyncClient {
   private readonly schemaHash: string | undefined;
   /**
    * Latest actor's group memberships with permissions, populated by
-   * `handshake()`. The relationship write path uses this for the
-   * client-side early permission check (the `<source_type>.update`
-   * rule the server also enforces — see `permission_checker.ex`).
+   * `handshake()`. The write path's local permission pass
+   * ({@link collectPermissionViolations}) reads this to fast-fail an
+   * Update the actor lacks `<type>.<verb>` for, before it is enqueued.
+   * Empty until the first `handshake()`; the pass is skipped then and
+   * the server stays the authority.
    */
   private actorGroups: { id: string; permissions: readonly string[] }[] = [];
   /**
@@ -450,7 +453,9 @@ export class SyncClient {
    * Schema violations throw `EntityValidationError` aggregating every
    * violation across the batch before anything is enqueued — matches
    * the server's `rejected[]` mental model so callers handle
-   * client-side and server-side rejections uniformly.
+   * client-side and server-side rejections uniformly. A locally-known
+   * permission refusal throws `PermissionError` (also before any
+   * enqueue) once `handshake()` has populated the actor's groups.
    */
   async write(actions: readonly Action[]): Promise<WriteResponse> {
     if (actions.length === 0) {
@@ -460,6 +465,14 @@ export class SyncClient {
     if (violations.length > 0) {
       this.emitRegistryViolations(violations, { direction: "outbound" });
       throw new EntityValidationError(violations);
+    }
+    const permissionViolations = await collectPermissionViolations(actions, {
+      actorId: this.actorId,
+      actorGroups: this.actorGroups,
+      storage: this.storage,
+    });
+    if (permissionViolations.length > 0) {
+      throw new PermissionError(permissionViolations);
     }
     for (const action of actions) {
       await this.outbox.enqueue(action);
@@ -683,14 +696,10 @@ export class SyncClient {
    * (anything with a string `.id`); both are normalized to the id at
    * write time. Anything else is rejected with `EntityValidationError`.
    *
-   * The early client-side permission check runs by default: if the
-   * actor's known groups do not include `<source_type>.update` (or
-   * `<source_type>.*`), the write is rejected with
-   * `EntityValidationError` before it reaches the outbox. The server
-   * remains the trust boundary; this is fast-feedback UX. The check
-   * is best-effort — when `handshake()` hasn't been called yet, the
-   * actor has no cached groups, the check is skipped, and the server
-   * remains the final authority.
+   * Permission enforcement does not happen here: `write()` runs the
+   * shared local permission pass ({@link collectPermissionViolations})
+   * over every Update before enqueuing, and the server remains the
+   * trust boundary.
    */
   buildRelationshipWrite(opts: BuildRelationshipWriteOptions): BuildRelationshipWriteResult {
     const { source, as } = opts;
@@ -704,8 +713,6 @@ export class SyncClient {
     this.checkEntityRegistered(sourceName, "source");
 
     const cardinality = resolveCardinality(this.registry, sourceName, as, opts.sourceCardinality);
-
-    this.checkRelationshipPermission(sourceName);
 
     if (cardinality === "one") {
       const sourceId = requireSourceId(opts, as);
@@ -779,30 +786,6 @@ export class SyncClient {
   private wireTypeFor(sourceName: string, as: string): string {
     const rel = this.registry.getRelationship(sourceName, as);
     return rel?.type ?? sourceName;
-  }
-
-  /**
-   * Early client-side permission check. The default rule mirrors the
-   * server's intra-action rule: the actor must have
-   * `<source_type>.update` (or `<source_type>.*`) in some group they
-   * belong to. Best-effort: when `handshake()` hasn't populated the
-   * group cache, the check is skipped.
-   */
-  private checkRelationshipPermission(sourceType: string): void {
-    if (this.actorGroups.length === 0) return;
-    const required = `${sourceType}.update`;
-    const wildcard = `${sourceType}.*`;
-    const allowed = this.actorGroups.some(
-      (g) => g.permissions.includes(required) || g.permissions.includes(wildcard),
-    );
-    if (!allowed) {
-      throw new EntityValidationError([
-        {
-          entityName: sourceType,
-          message: `buildRelationshipWrite: actor lacks "${required}" permission in any known group`,
-        },
-      ]);
-    }
   }
 
   /**

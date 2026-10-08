@@ -56,3 +56,17 @@ export async function readEntityMemberships(
   const rows = await storage.entities.query("entityGroup");
   return liveMemberships(rows).filter((m) => m.entityId === entityId);
 }
+
+/**
+ * Read a single membership row by the `subject_id` an `entityGroup`
+ * delete names. Returns `null` when the id is missing, names another
+ * type, or the row is tombstoned / malformed.
+ */
+export async function readMembership(
+  storage: StorageAdapter,
+  membershipId: string,
+): Promise<LiveMembership | null> {
+  const row = await storage.entities.get(membershipId);
+  if (row === null || row.type !== "entityGroup") return null;
+  return liveMembership(row);
+}
