@@ -79,6 +79,24 @@ describe("EntityRegistry register / get / has", () => {
   });
 });
 
+describe("EntityRegistry.isLwwField", () => {
+  it("reports a declared field on a registered entity as LWW", () => {
+    expect(buildRegistry().isLwwField("todo", "title")).toBe(true);
+  });
+
+  it("defaults an unknown entity to LWW", () => {
+    expect(buildRegistry().isLwwField("missing", "title")).toBe(true);
+  });
+
+  it("defaults an undeclared field to LWW", () => {
+    expect(buildRegistry().isLwwField("todo", "missing")).toBe(true);
+  });
+
+  it("defaults a client without a schema to LWW", () => {
+    expect(new EntityRegistry().isLwwField("todo", "title")).toBe(true);
+  });
+});
+
 describe("EntityRegistry.validateAction", () => {
   it("returns empty for a valid registered action", () => {
     const r = buildRegistry();

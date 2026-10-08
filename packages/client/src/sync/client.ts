@@ -42,6 +42,7 @@ import { PresenceManager } from "../presence/presence";
 import { openSSEStream, type SSESubscription } from "./sse";
 import { createOutbox, type Outbox } from "./outbox";
 import { TextDocument, TextDocumentRegistry } from "../fields/collaborative-text/text-document";
+import { RUN_FIELD_PREFIX } from "../fields/collaborative-text/wire";
 import {
   EntityRegistry,
   EntityValidationError,
@@ -180,6 +181,14 @@ export class SyncClient {
       applyOptimistic: (action) => this.applyLocalAction(action),
       submit: (actions) => this.submitActions(actions),
       store: this.storage.outbox,
+      conflicts: this.storage.conflicts,
+      // Field markers are the schema's word on merge semantics. A client
+      // without a schema has no markers, so every non-structural field is
+      // treated as LWW (the conservative default for conflict detection).
+      // Collaborative-text run fields are causal-tree data, excluded here
+      // so the outbox never races their own ConflictDetector.
+      isLwwField: (subjectType, field) =>
+        !field.startsWith(RUN_FIELD_PREFIX) && this.registry.isLwwField(subjectType, field),
       hlc: () => this.freshHlc(),
     });
   }

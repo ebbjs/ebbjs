@@ -473,3 +473,175 @@ describe("outbox rehydration across a simulated reload", () => {
     expect(applies).toEqual([]);
   });
 });
+
+describe("client.outbox LWW conflict detection (#308)", () => {
+  const mkSchemaClient = () => {
+    const storage = createMemoryAdapter();
+    const stub = mkStubFetch();
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: ACTOR_ID,
+      storage,
+      schema,
+      fetchImpl: stub.fn,
+    });
+    return { client, storage, ...stub };
+  };
+
+  /** A `put` for `todo_1` writing one LWW field at the given HLC. */
+  const mkTodoWrite = (args: {
+    id: string;
+    value: string;
+    updateId: string;
+    hlc: string;
+    gsn: number;
+  }): Action => ({
+    id: args.id,
+    actor_id: ACTOR_ID,
+    hlc: args.hlc,
+    gsn: args.gsn,
+    updates: [
+      {
+        id: args.updateId,
+        subject_id: "todo_1",
+        subject_type: "todo",
+        method: "put",
+        data: { fields: { title: { value: args.value, update_id: args.updateId, hlc: args.hlc } } },
+      },
+    ],
+  });
+
+  it("moves a pending local write to the Conflicts table when a peer out-dates it", async () => {
+    const { client, storage, calls } = mkSchemaClient();
+    const localHlc = makeHlc(1_711_036_800_000);
+    await client.outbox.enqueue(
+      mkTodoWrite({ id: "act_local", value: "mine", updateId: "u_local", hlc: localHlc, gsn: 0 }),
+    );
+
+    const peerHlc = makeHlc(1_711_036_800_001);
+    await callApplyAction(
+      client,
+      mkTodoWrite({ id: "act_peer", value: "theirs", updateId: "u_peer", hlc: peerHlc, gsn: 9 }),
+      "g_1",
+    );
+
+    expect(client.outbox.pending()).toEqual([]);
+    expect(await storage.outbox.get("act_local")).toBeNull();
+    const conflicts = await storage.conflicts.list();
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]?.action.id).toBe("act_local");
+    expect(conflicts[0]?.fields).toEqual(["title"]);
+    expect(conflicts[0]?.winners.title).toEqual({
+      update_id: "u_peer",
+      hlc: peerHlc,
+      value: "theirs",
+    });
+
+    // The losing Action was never posted.
+    await expect(client.outbox.flush()).resolves.toEqual({ kind: "empty" });
+    expect(actionCalls(calls)).toBe(0);
+  });
+
+  it("leaves the pending write flushable when the peer's edit is older", async () => {
+    const { client, storage } = mkSchemaClient();
+    await client.outbox.enqueue(
+      mkTodoWrite({
+        id: "act_local",
+        value: "mine",
+        updateId: "u_local",
+        hlc: makeHlc(1_711_036_800_100),
+        gsn: 0,
+      }),
+    );
+
+    await callApplyAction(
+      client,
+      mkTodoWrite({
+        id: "act_peer",
+        value: "theirs",
+        updateId: "u_peer",
+        hlc: makeHlc(1_711_036_800_000),
+        gsn: 9,
+      }),
+      "g_1",
+    );
+
+    expect(client.outbox.pending().map((entry) => entry.action.id)).toEqual(["act_local"]);
+    expect(await storage.conflicts.list()).toEqual([]);
+  });
+
+  it("never flags a relationship edge as an LWW conflict", async () => {
+    const { client, storage } = mkSchemaClient();
+    const mkRelationship = (id: string, gsn: number, target: string): Action => ({
+      id,
+      actor_id: ACTOR_ID,
+      hlc: makeHlc(1_711_036_800_000),
+      gsn,
+      updates: [
+        {
+          id: `u_${id}`,
+          subject_id: "rel_1",
+          subject_type: "relationship",
+          method: "put",
+          data: {
+            fields: {
+              source_id: { value: "todo_1", update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
+              target_id: { value: target, update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
+              type: { value: "link", update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
+              field: { value: "target", update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
+            },
+          },
+        },
+      ],
+    });
+    await client.outbox.enqueue(mkRelationship("act_local", 0, "todo_a"));
+
+    await callApplyAction(client, mkRelationship("act_peer", 9, "todo_b"), "g_1");
+
+    expect(client.outbox.pending().map((entry) => entry.action.id)).toEqual(["act_local"]);
+    expect(await storage.conflicts.list()).toEqual([]);
+  });
+
+  it("never flags a collaborative-text run field", async () => {
+    const storage = createMemoryAdapter();
+    const client = mkClient(mkStubFetch().fn, storage);
+    const mkDocWrite = (id: string, gsn: number, value: string, hlc: string): Action => ({
+      id,
+      actor_id: ACTOR_ID,
+      hlc,
+      gsn,
+      updates: [
+        {
+          id: `u_${id}`,
+          subject_id: "doc_1",
+          subject_type: "text_document",
+          method: "put",
+          data: { fields: { "run:r1": { value, update_id: `u_${id}`, hlc } } },
+        },
+      ],
+    });
+    await client.outbox.enqueue(mkDocWrite("act_local", 0, "mine", makeHlc(1_711_036_800_000)));
+
+    await callApplyAction(
+      client,
+      mkDocWrite("act_peer", 9, "theirs", makeHlc(1_711_036_800_001)),
+      "g_1",
+    );
+
+    expect(client.outbox.pending().map((entry) => entry.action.id)).toEqual(["act_local"]);
+    expect(await storage.conflicts.list()).toEqual([]);
+  });
+
+  it("treats a server rejection as an Outbox error, not a conflict", async () => {
+    const storage = createMemoryAdapter();
+    const { fn } = mkStubFetch([
+      { body: JSON.stringify({ rejected: [{ id: "act_1", reason: "not_authorized" }] }) },
+    ]);
+    const client = mkClient(fn, storage);
+
+    await client.write([mkAction()]);
+
+    expect(client.outbox.errors().map((entry) => entry.action.id)).toEqual(["act_1"]);
+    expect(await storage.conflicts.list()).toEqual([]);
+  });
+});

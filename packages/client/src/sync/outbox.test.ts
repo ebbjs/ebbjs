@@ -8,7 +8,12 @@
 
 import { describe, it, expect, vi, type Mock } from "vitest";
 import type { Action } from "@ebbjs/core";
-import type { OutboxEntry as StoredOutboxEntry, OutboxStore } from "@ebbjs/storage/types";
+import type {
+  ConflictEntry,
+  ConflictStore,
+  OutboxEntry as StoredOutboxEntry,
+  OutboxStore,
+} from "@ebbjs/storage/types";
 
 import { createOutbox, type OutboxDependencies, type OutboxEntry } from "./outbox";
 
@@ -25,6 +30,33 @@ const mkAction = (id: string): Action => ({
       subject_type: "todo",
       method: "put",
       data: { fields: {} },
+    },
+  ],
+});
+
+/**
+ * Action carrying explicit field values so a conflict fixture can pin
+ * the HLCs and update ids the LWW comparison reads.
+ */
+const mkFieldAction = (args: {
+  id: string;
+  subjectId: string;
+  fields: Record<string, { value: unknown; update_id: string; hlc: string }>;
+  subjectType?: string;
+  method?: "put" | "patch";
+  gsn?: number;
+}): Action => ({
+  id: args.id,
+  actor_id: "actor_1",
+  hlc: Object.values(args.fields)[0]?.hlc ?? "1",
+  gsn: args.gsn ?? 0,
+  updates: [
+    {
+      id: `u_${args.id}`,
+      subject_id: args.subjectId,
+      subject_type: args.subjectType ?? "todo",
+      method: args.method ?? "patch",
+      data: { fields: args.fields },
     },
   ],
 });
@@ -63,6 +95,30 @@ const mkStore = (
   };
 };
 
+/** In-test ConflictStore with a visible row map, mirroring `mkStore`. */
+const mkConflicts = (
+  initial: readonly ConflictEntry[] = [],
+): ConflictStore & { rows: Map<string, ConflictEntry> } => {
+  const rows = new Map(initial.map((entry) => [entry.action.id, entry]));
+  return {
+    rows,
+    put: vi.fn(async (entry: ConflictEntry) => {
+      rows.set(entry.action.id, structuredClone(entry));
+    }),
+    list: vi.fn(async () => [...rows.values()].map((entry) => structuredClone(entry))),
+    get: vi.fn(async (id: string) => {
+      const entry = rows.get(id);
+      return entry === undefined ? null : structuredClone(entry);
+    }),
+    delete: vi.fn(async (id: string) => {
+      rows.delete(id);
+    }),
+    clear: vi.fn(async () => {
+      rows.clear();
+    }),
+  };
+};
+
 /** Deps with recording fakes; overrides let a test swap one behavior. */
 const mkDeps = (
   overrides: Partial<OutboxDependencies> = {},
@@ -84,6 +140,7 @@ const mkDeps = (
       return { rejected: [] };
     }),
     store: mkStore(),
+    conflicts: mkConflicts(),
     hlc: vi.fn(() => String(++clock)),
     ...overrides,
   };
@@ -584,6 +641,334 @@ describe("createOutbox noteInbound", () => {
     await expect(outbox.noteInbound({ ...action, gsn: 3 })).resolves.toEqual({ kind: "none" });
     expect(outbox.size("pending")).toBe(1);
     expect(await deps.store.get("a_1")).not.toBeNull();
+  });
+});
+
+describe("createOutbox conflict detection", () => {
+  /** Enqueue one pending entry and return its inbound higher-HLC peer. */
+  const seed = async (
+    deps: ReturnType<typeof mkDeps>,
+    localHlc = "10",
+    localUpdateId = "u_local",
+  ): Promise<{ outbox: ReturnType<typeof createOutbox>; local: Action }> => {
+    const outbox = createOutbox(deps);
+    const local = mkFieldAction({
+      id: "a_local",
+      subjectId: "todo_1",
+      fields: { title: { value: "mine", update_id: localUpdateId, hlc: localHlc } },
+    });
+    await outbox.enqueue(local);
+    return { outbox, local };
+  };
+
+  it("moves a pending entry whose LWW field loses, whole, into the Conflicts store", async () => {
+    const deps = mkDeps();
+    const { outbox } = await seed(deps);
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: "conflict", actionId: "a_local", fields: ["title"] });
+    expect(outbox.pending()).toEqual([]);
+    expect(await deps.store.get("a_local")).toBeNull();
+    const conflicts = await deps.conflicts.list();
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]?.action.id).toBe("a_local");
+    expect(conflicts[0]?.fields).toEqual(["title"]);
+    expect(conflicts[0]?.winners).toEqual({
+      title: { update_id: "u_peer", hlc: "20", value: "theirs" },
+    });
+    expect(conflicts[0]?.detectedAtHlc).toBe("2");
+  });
+
+  it("never posts a moved entry on a later flush", async () => {
+    const deps = mkDeps();
+    const { outbox } = await seed(deps);
+    await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+        gsn: 5,
+      }),
+    );
+
+    await expect(outbox.flush()).resolves.toEqual({ kind: "empty" });
+    expect(deps.submitted).toEqual([]);
+  });
+
+  it("keeps a pending entry that out-dates the inbound write", async () => {
+    const deps = mkDeps();
+    const { outbox } = await seed(deps, "30");
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: "none" });
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
+    expect(await deps.conflicts.list()).toEqual([]);
+  });
+
+  it("breaks an equal-HLC tie toward the greater update_id", async () => {
+    const deps = mkDeps();
+    const { outbox } = await seed(deps, "10", "u_b");
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { title: { value: "theirs", update_id: "u_c", hlc: "10" } },
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: "conflict", actionId: "a_local", fields: ["title"] });
+  });
+
+  it("lets an equal-HLC, equal-update_id inbound write win", async () => {
+    const deps = mkDeps();
+    const { outbox } = await seed(deps, "10", "u_same");
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { title: { value: "theirs", update_id: "u_same", hlc: "10" } },
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: "conflict", actionId: "a_local", fields: ["title"] });
+  });
+
+  it("never flags a field the schema reports as non-LWW", async () => {
+    const deps = mkDeps({ isLwwField: (_type, field) => field !== "count" });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(
+      mkFieldAction({
+        id: "a_local",
+        subjectId: "todo_1",
+        fields: {
+          title: { value: "mine", update_id: "u_local", hlc: "10" },
+          count: { value: 1, update_id: "u_local", hlc: "10" },
+        },
+      }),
+    );
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: {
+          title: { value: "theirs", update_id: "u_peer", hlc: "20" },
+          count: { value: 2, update_id: "u_peer", hlc: "20" },
+        },
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: "conflict", actionId: "a_local", fields: ["title"] });
+    expect((await deps.conflicts.list())[0]?.fields).toEqual(["title"]);
+  });
+
+  it("never flags structural relationship or membership edges", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    for (const subjectType of ["relationship", "entityGroup", "groupMember"]) {
+      await outbox.enqueue(
+        mkFieldAction({
+          id: `a_${subjectType}`,
+          subjectId: `row_${subjectType}`,
+          subjectType,
+          fields: { value: { value: "mine", update_id: "u_local", hlc: "10" } },
+        }),
+      );
+      const outcome = await outbox.noteInbound(
+        mkFieldAction({
+          id: `a_peer_${subjectType}`,
+          subjectId: `row_${subjectType}`,
+          subjectType,
+          fields: { value: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+          gsn: 5,
+        }),
+      );
+      expect(outcome).toEqual({ kind: "none" });
+    }
+
+    expect(outbox.pending()).toHaveLength(3);
+    expect(await deps.conflicts.list()).toEqual([]);
+  });
+
+  it("never flags a delete, which carries no fields", async () => {
+    const deps = mkDeps();
+    const { outbox } = await seed(deps);
+    const deletion: Action = {
+      id: "a_delete",
+      actor_id: "actor_1",
+      hlc: "20",
+      gsn: 5,
+      updates: [
+        {
+          id: "u_delete",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "delete",
+          data: null,
+        },
+      ],
+    };
+
+    await expect(outbox.noteInbound(deletion)).resolves.toEqual({ kind: "none" });
+    expect(outbox.pending()).toHaveLength(1);
+  });
+
+  it("moves every losing pending entry and reports the first in buffer order", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(
+      mkFieldAction({
+        id: "a_first",
+        subjectId: "todo_1",
+        fields: { title: { value: "one", update_id: "u_a", hlc: "10" } },
+      }),
+    );
+    await outbox.enqueue(
+      mkFieldAction({
+        id: "a_second",
+        subjectId: "todo_1",
+        fields: { title: { value: "two", update_id: "u_b", hlc: "11" } },
+      }),
+    );
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: "conflict", actionId: "a_first", fields: ["title"] });
+    expect((await deps.conflicts.list()).map((entry) => entry.action.id).sort()).toEqual([
+      "a_first",
+      "a_second",
+    ]);
+    expect(outbox.pending()).toEqual([]);
+  });
+
+  it("leaves a non-targeted field's entry pending", async () => {
+    const deps = mkDeps();
+    const { outbox } = await seed(deps);
+    await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_2",
+        fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+        gsn: 5,
+      }),
+    );
+
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
+  });
+
+  it("leaves acknowledged entries alone", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(
+      mkFieldAction({
+        id: "a_local",
+        subjectId: "todo_1",
+        fields: { title: { value: "mine", update_id: "u_local", hlc: "10" } },
+      }),
+    );
+    await outbox.flush();
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: "none" });
+    expect(outbox.size("acknowledged")).toBe(1);
+    expect(await deps.conflicts.list()).toEqual([]);
+  });
+
+  it("echo takes precedence over a conflicting write", async () => {
+    const deps = mkDeps();
+    const { outbox, local } = await seed(deps);
+
+    const outcome = await outbox.noteInbound({ ...local, gsn: 5 });
+
+    expect(outcome).toEqual({ kind: "echo", actionId: "a_local" });
+    expect(outbox.pending()).toEqual([]);
+    expect(await deps.conflicts.list()).toEqual([]);
+  });
+
+  it("keeps the entry pending when the conflicts store write fails", async () => {
+    const conflicts: ConflictStore = {
+      ...mkConflicts(),
+      put: vi.fn(async () => {
+        throw new Error("conflicts unavailable");
+      }),
+    };
+    const deps = mkDeps({ conflicts });
+    const { outbox } = await seed(deps);
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: "none" });
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
+    expect(await deps.store.get("a_local")).not.toBeNull();
+  });
+
+  it("rolls the conflict back and keeps the entry pending when the outbox delete fails", async () => {
+    const deps = mkDeps();
+    const store: OutboxStore = {
+      ...deps.store,
+      delete: vi.fn(async () => {
+        throw new Error("store unavailable");
+      }),
+    };
+    const conflictStore = mkConflicts();
+    const scoped = mkDeps({ store, conflicts: conflictStore });
+    const { outbox } = await seed(scoped);
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: "none" });
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
+    expect(await conflictStore.list()).toEqual([]);
   });
 });
 
