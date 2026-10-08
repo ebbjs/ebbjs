@@ -140,7 +140,8 @@ export function buildEntityDef<TFields extends Record<string, TSchema>, TName ex
   name: TName,
   fields: TFields,
 ): EntityDef<TFields, TName> {
-  const shapeFields = withImplicitOptional(fields) as unknown as ShapeFields<TFields>;
+  const shapeFields = withImplicitOptional(fields);
+
   const derivedFields = Object.fromEntries(
     Object.keys(fields).map((k) => [k, deriveMarker(fields[k] as TSchema)]),
   ) as { [K in keyof TFields]: FieldMarker };
@@ -172,10 +173,9 @@ const withImplicitOptional = <TFields extends Record<string, TSchema>>(
 
 /** True for fields that came through `.nullable()` — either the chain method or the marker. */
 const isNullableSchema = (schema: TSchema): boolean => {
-  const candidate = schema as unknown as { nullable?: unknown };
-  if (typeof candidate.nullable === "function") return true;
-  const marked = schema as unknown as Record<symbol, unknown>;
-  return marked[NULLABLE_MARKER] === true;
+  if ("nullable" in schema && typeof schema.nullable === "function") return true;
+
+  return Object.getOwnPropertyDescriptor(schema, NULLABLE_MARKER)?.value === true;
 };
 
 export type { TSchema };

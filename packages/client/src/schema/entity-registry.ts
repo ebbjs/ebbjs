@@ -85,7 +85,7 @@ export class EntityRegistry {
 
   /** Register an entity. Re-registering the same name overwrites. */
   register<TFields extends Record<string, TSchema>>(entity: EntityDef<TFields>): void {
-    this.entities.set(entity.name, entity as unknown as AnyEntityDef);
+    this.entities.set(entity.name, entity as AnyEntityDef);
   }
 
   /** Look up an entity by name. */

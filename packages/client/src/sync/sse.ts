@@ -93,8 +93,8 @@ export function openSSEStream(opts: SSEOpenOptions): SSESubscription {
   const source = createEventSource({
     url,
     // The library's `FetchLike` type is a strict subset of DOM `fetch`
-    // — cast through unknown because TS can't bridge the variance.
-    fetch: fetchImpl as unknown as EventSourceOptions["fetch"],
+    // — single assertion because TS can't bridge the variance.
+    fetch: fetchImpl as EventSourceOptions["fetch"],
     headers: {
       Accept: "text/event-stream",
       "x-ebb-actor-id": opts.actorId,

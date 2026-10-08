@@ -35,7 +35,7 @@
  * do not route through `client.atomic`, so this check never sees them.
  */
 
-import { generateId, type Update } from "@ebbjs/core";
+import { generateId, type FieldValue, type Update } from "@ebbjs/core";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { EntityDef, ShapeFields } from "../schema/entity";
@@ -198,7 +198,10 @@ const markHandle = (handle: Record<string, unknown>): AtomicHandle => {
  * itself is rejected instead of recursing forever. A shared (DAG)
  * reference is fine — only a back-edge is a cycle.
  */
-export function resolveReferences(value: unknown, seen: Set<object> = new Set()): unknown {
+export function resolveReferences(
+  value: unknown,
+  seen: Set<object> = new Set(),
+): FieldValue["value"] {
   if (isAtomicHandle(value)) return value.id;
   if (value === null || typeof value !== "object") return value;
   if (seen.has(value)) {

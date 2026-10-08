@@ -32,7 +32,8 @@ const collectSubjectIds = (action: Action): readonly string[] => {
  */
 const toPublicAction = (stored: EbbDBSchema["actions"]["value"]): Action => {
   const { subject_ids: _subjectIds, ...rest } = stored;
-  return rest as unknown as Action;
+
+  return rest;
 };
 
 export const createIndexedDBActionLog = (db: IDBPDatabase<EbbDBSchema>): ActionLog => {
