@@ -53,11 +53,20 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
+    // The bootstrap effect owns the client so its cleanup closes the
+    // client this effect created. Closing it from a child's effect would
+    // tear down the live client on React StrictMode's mount/unmount probe
+    // (the child remounts with the same client value).
+    let createdClient: BootstrapResult["client"] | null = null;
     void (async () => {
       try {
         setState({ status: "loading", message: `Connecting as ${actorId}\u2026` });
         const result = await bootstrap({ serverUrl: SERVER_URL, actorId });
-        if (cancelled) return;
+        createdClient = result.client;
+        if (cancelled) {
+          result.client.close();
+          return;
+        }
         setState({ status: "ready", bootstrap: result });
       } catch (err) {
         if (cancelled) return;
@@ -69,6 +78,7 @@ export function App() {
     })();
     return () => {
       cancelled = true;
+      createdClient?.close();
     };
   }, [actorId]);
 
@@ -121,17 +131,6 @@ function Ready({
   const { client, groupIds, docId, docGroupId } = bootstrap;
   const [conflictsOpen, setConflictsOpen] = useState(false);
   const conflictsButtonRef = useRef<HTMLButtonElement>(null);
-
-  // Tear down the previous client's SSE subscription and any presence
-  // state before re-bootstrapping. The `useEffect([actorId])` in `App`
-  // is responsible for triggering a new bootstrap; we just need to
-  // dispose of the stale client so its timers and fetch streams don't
-  // outlive the React tree.
-  useEffect(() => {
-    return () => {
-      client.close();
-    };
-  }, [client]);
 
   return (
     <div className="flex h-screen flex-col">
