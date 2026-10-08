@@ -39,7 +39,7 @@ What's actually in the repo today (last meaningful server work: Oct 2026).
 | Auth & permissions                 | **Working**      | `AuthPlug` (bypass + external modes), Group/GroupMember/Relationship system entities, in-memory permission checks.                                                                                                                                                                                                                   |
 | Self-hosting (Docker)              | **Working**      | `Dockerfile` in `ebb_server/`; build from repo root with `docker build -f ebb_server/Dockerfile .`. Server boots via `mix release`.                                                                                                                                                                                                  |
 | Real-time presence                 | **Working**      | `POST /sync/presence` endpoint and fan-out path are wired and tested.                                                                                                                                                                                                                                                                |
-| React bindings                     | **Partial**      | `@ebbjs/react` ships `EbbProvider`, `useClient`, `useConnection`, and `useQuery`; `useEntity`/`useEntityMutations` are tracked in #236.                                                                                                                                                                                              |
+| React bindings                     | **Partial**      | `@ebbjs/react` ships `EbbProvider`, `useClient`, `useConnection`, `useQuery`, `useEntity`, and `useEntityMutations`; SSR / Suspense are out of scope.                                                                                                                                                                                |
 | Server functions                   | **Not started**  | Slice 5 spec exists; would run on a separate Bun runtime.                                                                                                                                                                                                                                                                            |
 | Collaborative text                 | **Working**      | Causal-tree text over Action/Update primitives with HLC ordering (**not** Yjs — [devlog](packages/www/src/content/devlog/how-collaborative-editing-works.mdx)). `TextDocument` in `@ebbjs/client`, `@ebbjs/codemirror` bridge, two-tab demo.                                                                                         |
 | CLI tooling                        | **Not started**  |                                                                                                                                                                                                                                                                                                                                      |
@@ -57,7 +57,7 @@ For a more detailed breakdown, see [`ebb_server/README.md`](ebb_server/README.md
 | `@ebbjs/server` (TS) | E2E test harness — spawns the Elixir release, `seed()` helper for fixtures.                                                            | Working |
 | `ebb_server/`        | Elixir/OTP sync server: RocksDB action log, SQLite materialization, HTTP API, SSE fan-out, permissions, presence.                      | Working |
 | `@ebbjs/client`      | Local-first sync client (handshake, SSE, catch-up, queries, in-memory outbox).                                                         | Working |
-| `@ebbjs/react`       | React bindings — `EbbProvider`, `useClient`, `useConnection`, `useQuery`.                                                              | Partial |
+| `@ebbjs/react`       | React bindings — `EbbProvider`, `useClient`, `useConnection`, `useQuery`, `useEntity`, `useEntityMutations`.                           | Partial |
 | `@ebbjs/codemirror`  | CodeMirror 6 bridge for causal-tree collaborative text.                                                                                | Working |
 | `@ebbjs/www`         | Astro docs site.                                                                                                                       | Working |
 
@@ -74,7 +74,7 @@ A Bun-based server-function runtime and a CLI are not in the repo yet but are de
 - Self-hosting — single `Dockerfile`, `mix release` boot
 - Client SDK (`@ebbjs/client`) — handshake, live SSE, paginated catch-up, typed ORM (`query`/`get`/`create`/`update`/`delete`), per-collection `subscribe`, presence
 - Durable pending-action store on `@ebbjs/storage` (in-memory + IndexedDB)
-- React bindings (`@ebbjs/react`) — provider, `useConnection`, `useQuery`
+- React bindings (`@ebbjs/react`) — provider, `useConnection`, `useQuery`, `useEntity`, `useEntityMutations`
 - Writer failure policy — a failed commit abandons + resolves its GSN range so live fan-out never stalls ([#282](https://github.com/ebbjs/ebbjs/issues/282))
 
 ### In Progress
@@ -83,7 +83,6 @@ A Bun-based server-function runtime and a CLI are not in the repo yet but are de
 
 ### Planned
 
-- React hooks — `useEntity` and `useEntityMutations` ([#236](https://github.com/ebbjs/ebbjs/issues/236))
 - Observability hooks — `:telemetry` events and a developer-facing `onAction` hook ([#125](https://github.com/ebbjs/ebbjs/issues/125))
 - Server functions (`defineFunction`) — requires a Bun runtime alongside the Elixir server
 - Server-side SDK for SSR frameworks and external processes

@@ -2,20 +2,29 @@
 
 React bindings for [`@ebbjs/client`](https://github.com/ebbjs/ebbjs/tree/main/packages/client). A thin adapter over the client's namespace and reactivity primitives — no state-management library, no `define*` symbols.
 
-This slice ships the client plumbing plus the first data hook:
+This package ships the client plumbing plus the data hooks:
 
 - `EbbProvider` — context carrying a `NamespacedClient<S, TActions>`.
 - `useClient<S>()` — read the client, typed by the caller's schema.
 - `useConnection()` — `useSyncExternalStore` over `client.onStateChange`, returning the `ConnectionState`.
 - `useQuery()` — subscribe a component to a materialized collection query.
+- `useEntity()` — subscribe a component to a single entity row.
+- `useEntityMutations()` — stable `create` / `update` / `delete` pass-throughs for one namespace.
 
-`useEntity` and `useEntityMutations` land in follow-up slices. SSR / Suspense are out of scope for now.
+SSR / Suspense are out of scope for now.
 
 ## Usage
 
 ```tsx
 import { createClient, defineEntity, defineSchema, e } from "@ebbjs/client";
-import { EbbProvider, useClient, useConnection, useQuery } from "@ebbjs/react";
+import {
+  EbbProvider,
+  useClient,
+  useConnection,
+  useEntity,
+  useEntityMutations,
+  useQuery,
+} from "@ebbjs/react";
 
 const todo = defineEntity("todo", { title: e.string(), completed: e.boolean() });
 const schema = defineSchema({ entities: { todo }, version: 1 });
@@ -53,6 +62,20 @@ function ConnectionBadge() {
   return <span>{`${actorId}: ${state}`}</span>;
 }
 
+function TodoRow({ id }: { id: string }) {
+  const client = useClient<Schema>();
+  const todo = useEntity(() => client.todo.get(id), [id]);
+  const { update, delete: remove } = useEntityMutations(client.todo);
+
+  if (todo === null) return <span>missing</span>;
+  return (
+    <div>
+      <button onClick={() => void update(id, { completed: !todo.completed })}>{todo.title}</button>
+      <button onClick={() => void remove(id)}>delete</button>
+    </div>
+  );
+}
+
 export function App() {
   return (
     <EbbProvider client={client}>
@@ -70,18 +93,39 @@ stream, so a matching row whose non-filtered field changed still
 re-renders; a change that leaves the materialized rows identical is
 suppressed by a structural snapshot compare.
 
+`useEntity(load, deps?)` takes the same shape — `load` is
+`() => client.<entity>.get(id)`. It runs on mount, on each `deps` change,
+and again on every live change. It returns the row's projected fields
+plus relationship accessors, or `null` when `get` finds no row — and
+`null` after a soft delete observed while mounted. On a live change it
+re-runs `get` rather than merging the snapshot, so an accessor that
+shares a name with a field keeps the accessor-wins precedence.
+
+Two limits come from the client's row surface: a row deleted **before**
+mount reads as its tombstone (`get` returns tombstones for inspection),
+and a row created after an absent read is not observed, because
+`EntityRow.subscribe` only exists once a row does.
+
+`useEntityMutations(client.todo)` returns referentially stable
+`create` / `update` / `delete` functions that forward to the namespace
+unchanged.
+
 ## API
 
-| Export             | What                                                                           |
-| ------------------ | ------------------------------------------------------------------------------ |
-| `EbbProvider`      | Makes a `NamespacedClient<S, TActions>` available to hooks below it.           |
-| `useClient<S>()`   | Returns the nearest provider's client typed by `S`; throws outside a provider. |
-| `useConnection()`  | Subscribes to connection state and re-renders on transitions.                  |
-| `useQuery(build)`  | Subscribes to a materialized collection query; `{ data, loading, error }`.     |
-| `EbbProviderProps` | The provider's prop type.                                                      |
-| `UseQueryResult`   | The `useQuery` result type.                                                    |
-| `QueryRows`        | The projected row-list type a `QueryBuilder` resolves to.                      |
-| `ConnectionState`  | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.     |
+| Export                          | What                                                                           |
+| ------------------------------- | ------------------------------------------------------------------------------ |
+| `EbbProvider`                   | Makes a `NamespacedClient<S, TActions>` available to hooks below it.           |
+| `useClient<S>()`                | Returns the nearest provider's client typed by `S`; throws outside a provider. |
+| `useConnection()`               | Subscribes to connection state and re-renders on transitions.                  |
+| `useQuery(build)`               | Subscribes to a materialized collection query; `{ data, loading, error }`.     |
+| `useEntity(load, deps?)`        | Subscribes to a single row; the projected fields + accessors, or `null`.       |
+| `useEntityMutations(namespace)` | Stable `{ create, update, delete }` pass-throughs.                             |
+| `EbbProviderProps`              | The provider's prop type.                                                      |
+| `UseQueryResult`                | The `useQuery` result type.                                                    |
+| `UseEntityResult`               | The `useEntity` row type.                                                      |
+| `UseEntityMutationsResult`      | The `useEntityMutations` result type.                                          |
+| `QueryRows`                     | The projected row-list type a `QueryBuilder` resolves to.                      |
+| `ConnectionState`               | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.     |
 
 ## Peer dependencies
 

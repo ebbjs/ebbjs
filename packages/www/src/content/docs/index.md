@@ -162,10 +162,10 @@ await server.kill();
 
 ### `@ebbjs/react`
 
-React bindings for `@ebbjs/client` — a provider, a connection hook, and the first data hook. Ships `EbbProvider`, `useClient`, `useConnection`, and `useQuery`; `useEntity` and `useEntityMutations` are tracked in [#236](https://github.com/ebbjs/ebbjs/issues/236).
+React bindings for `@ebbjs/client` — a provider, a connection hook, and the data + mutation hooks. Ships `EbbProvider`, `useClient`, `useConnection`, `useQuery`, `useEntity`, and `useEntityMutations`.
 
 ```tsx
-import { EbbProvider, useClient, useQuery } from "@ebbjs/react";
+import { EbbProvider, useClient, useEntity, useEntityMutations, useQuery } from "@ebbjs/react";
 
 function OpenTodos() {
   const client = useClient<Schema>();
@@ -181,6 +181,20 @@ function OpenTodos() {
         <li key={todo.id}>{todo.title}</li>
       ))}
     </ul>
+  );
+}
+
+function TodoRow({ id }: { id: string }) {
+  const client = useClient<Schema>();
+  const todo = useEntity(() => client.todo.get(id), [id]);
+  const { update, delete: remove } = useEntityMutations(client.todo);
+
+  if (todo === null) return <span>missing</span>;
+  return (
+    <div>
+      <button onClick={() => void update(id, { completed: !todo.completed })}>{todo.title}</button>
+      <button onClick={() => void remove(id)}>delete</button>
+    </div>
   );
 }
 ```
