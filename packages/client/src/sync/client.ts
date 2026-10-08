@@ -42,6 +42,7 @@ import { PresenceManager } from "../presence/presence";
 import { openSSEStream, type SSESubscription } from "./sse";
 import { createOutbox, type Outbox } from "./outbox";
 import { createFlushScheduler, type FlushScheduler } from "./flush-scheduler";
+import { backoffDelayMs } from "./backoff";
 import { TextDocument, TextDocumentRegistry } from "../fields/collaborative-text/text-document";
 import { RUN_FIELD_PREFIX } from "../fields/collaborative-text/wire";
 import {
@@ -958,9 +959,10 @@ export class SyncClient {
       this.stateMachine.transition("offline");
       return "giveup";
     }
-    const delay = Math.min(
+    const delay = backoffDelayMs(
+      this.reconnectAttempt,
+      this.reconnectInitialMs,
       this.reconnectMaxMs,
-      this.reconnectInitialMs * 2 ** this.reconnectAttempt,
     );
     this.reconnectAttempt += 1;
     this.stateMachine.transition("reconnecting");

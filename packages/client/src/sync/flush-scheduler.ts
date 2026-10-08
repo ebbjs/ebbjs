@@ -29,6 +29,7 @@
  */
 
 import type { FlushOutcome, Outbox } from "./outbox";
+import { backoffDelayMs } from "./backoff";
 
 /** Handle returned by {@link FlushTimers.setTimeout}. Opaque to callers. */
 export type FlushTimerHandle = ReturnType<typeof setTimeout>;
@@ -114,11 +115,11 @@ interface FlushWaiter {
 /**
  * Build a scheduler over `deps.outbox.flush()`.
  *
- * The implementation is a small state machine over three fields: the
- * pending waiters, the one armed timer (debounce or retry), and the
- * in-flight flush. A flush captures the waiters present when it starts,
- * so a write that arrives mid-flight is settled by the *next* flush,
- * which is the one that actually carries its entry.
+ * The implementation is a small state machine: the pending waiters, the
+ * one armed timer (debounce or retry), the in-flight flush, and the
+ * consecutive-failure counter. A flush captures the waiters present when
+ * it starts, so a write that arrives mid-flight is settled by the *next*
+ * flush, which is the one that actually carries its entry.
  */
 export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushScheduler {
   const outbox = deps.outbox;
@@ -148,7 +149,13 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
     }
   };
 
-  const retryDelayMs = (): number => Math.min(maxMs, initialMs * 2 ** attempt);
+  const retryDelayMs = (): number => backoffDelayMs(attempt, initialMs, maxMs);
+
+  /** Register a caller to be settled by the next flush that starts. */
+  const enqueueWaiter = (): Promise<FlushOutcome> =>
+    new Promise<FlushOutcome>((resolve, reject) => {
+      waiters.push({ resolve, reject });
+    });
 
   /**
    * Classify a settled flush: reset the backoff on any terminal outcome,
@@ -208,9 +215,7 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
     if (inFlight === null && timer !== null && lastUnreachable !== null) {
       return Promise.resolve(lastUnreachable);
     }
-    const promise = new Promise<FlushOutcome>((resolve, reject) => {
-      waiters.push({ resolve, reject });
-    });
+    const promise = enqueueWaiter();
     if (inFlight === null && timer === null) {
       timer = timers.setTimeout(runFlush, debounceMs);
     }
@@ -221,9 +226,7 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
     if (stopped) return Promise.resolve({ kind: "empty" });
     if (inFlight !== null) return inFlight;
     clearTimer();
-    const promise = new Promise<FlushOutcome>((resolve, reject) => {
-      waiters.push({ resolve, reject });
-    });
+    const promise = enqueueWaiter();
     runFlush();
     return promise;
   };

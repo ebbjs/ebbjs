@@ -77,13 +77,7 @@ export {
   type InboundOutcome,
 } from "./sync/outbox";
 
-export {
-  createFlushScheduler,
-  type FlushScheduler,
-  type FlushSchedulerDependencies,
-  type FlushTimerHandle,
-  type FlushTimers,
-} from "./sync/flush-scheduler";
+export { type FlushScheduler } from "./sync/flush-scheduler";
 
 export {
   openSSEStream,
