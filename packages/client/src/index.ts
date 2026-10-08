@@ -77,6 +77,8 @@ export {
   type InboundOutcome,
 } from "./sync/outbox";
 
+export { type FlushScheduler } from "./sync/flush-scheduler";
+
 export {
   openSSEStream,
   parseSSEBlock,

@@ -570,6 +570,8 @@ describe("SyncClient.write", () => {
         },
       ]),
     ).rejects.toThrow(/write failed: 422/);
+    // Stop the scheduler's background retry from firing into a later test.
+    client.close();
   });
 });
 
