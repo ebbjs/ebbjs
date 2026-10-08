@@ -274,9 +274,13 @@ const collectActionViolations = async (
           const required = `${type}.update`;
           return hasAny(groupIds, type, "update", false) ? null : violation(required, groupIds);
         }
-        const row = await exists(update.subject_id);
+        // The wire `source_id` is authoritative when present (a patch
+        // can re-point the edge); only fall back to the local row.
+        const wireSourceId = asString(fieldValue(update, "source_id"));
+        const row = wireSourceId === null ? await exists(update.subject_id) : null;
         const sourceId =
-          row?.type === "relationship" ? asString(row.data?.fields?.["source_id"]?.value) : null;
+          wireSourceId ??
+          (row?.type === "relationship" ? asString(row.data?.fields?.["source_id"]?.value) : null);
         if (sourceId === null) return null;
         const groupIds = await groupSetFor(sourceId);
         if (groupIds.length === 0) return null;

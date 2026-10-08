@@ -244,6 +244,33 @@ describe("collectPermissionViolations — relationship edges", () => {
     ).resolves.toEqual({ rejected: [] });
   });
 
+  it("prefers a patch's wire source_id over the local row", async () => {
+    // A patch may re-point the edge; the server authorizes against the
+    // wire source, so the local pass must too.
+    const { client } = await mkClient([
+      ["g_grant", ["relationship.update"]],
+      ["g_plain", []],
+    ]);
+    await client.storage.entities.set(
+      mkEntity("rel_1", "relationship", {
+        source_id: "todo_old",
+        target_id: "list_1",
+        field: "list",
+        type: "todo",
+      }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_old", "entityGroup", { entity_id: "todo_old", group_id: "g_plain" }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_new", "entityGroup", { entity_id: "todo_new", group_id: "g_grant" }),
+    );
+
+    await expect(
+      client.write([action([update("relationship", "rel_1", "patch", { source_id: "todo_new" })])]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
   it("resolves a delete's source from the local relationship row", async () => {
     const { client } = await mkClient([
       ["g_1", ["relationship.delete"]],
