@@ -188,6 +188,12 @@ export interface SyncClientOptions {
   /** Maximum reconnect backoff in ms. Defaults to 60000. */
   reconnectMaxMs?: number;
   /**
+   * Window in ms over which rapid `write()` calls coalesce into one
+   * `/sync/actions` POST. Defaults to 10ms. The backoff bounds for a retry
+   * after an unreachable flush reuse `reconnectInitialMs` / `reconnectMaxMs`.
+   */
+  flushDebounceMs?: number;
+  /**
    * Schema-layer entity registry. When provided, `client.write()` and
    * `client.queryEntities()` validate against it before any network
    * call, and incoming actions via SSE / catchUp warn-and-log

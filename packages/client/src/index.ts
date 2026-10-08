@@ -78,6 +78,14 @@ export {
 } from "./sync/outbox";
 
 export {
+  createFlushScheduler,
+  type FlushScheduler,
+  type FlushSchedulerDependencies,
+  type FlushTimerHandle,
+  type FlushTimers,
+} from "./sync/flush-scheduler";
+
+export {
   openSSEStream,
   parseSSEBlock,
   type SSESubscription,

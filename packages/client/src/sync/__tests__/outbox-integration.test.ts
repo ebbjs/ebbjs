@@ -233,6 +233,8 @@ describe("client.outbox", () => {
 
     expect(client.outbox.size()).toBe(1);
     expect(client.outbox.pending()[0]?.action.id).toBe("act_1");
+    // Stop the scheduler's background retry so it cannot fire into a later test.
+    client.close();
   });
 
   it("re-applying the server echo converges on the optimistically-applied state", async () => {
@@ -432,6 +434,8 @@ describe("outbox rehydration across a simulated reload", () => {
 
     await expect(clientA.write([mkAction()])).rejects.toThrow(/write failed: 500/);
     expect(await storage.outbox.get("act_1")).not.toBeNull();
+    // Stop clientA's background retry; the shared store is clientB's now.
+    clientA.close();
 
     // "Reload": a fresh client over the same durable storage.
     const reloaded = mkStubFetch();
@@ -453,6 +457,8 @@ describe("outbox rehydration across a simulated reload", () => {
     const failing = mkStubFetch([{ status: 500, body: "boom" }]);
     const clientA = mkClient(failing.fn, storage);
     await expect(clientA.write([mkAction()])).rejects.toThrow(/write failed: 500/);
+    // Stop clientA's background retry; the shared store is clientB's now.
+    clientA.close();
 
     if (storage.changeEmitter === undefined) {
       throw new Error("memory adapter must ship a change emitter");

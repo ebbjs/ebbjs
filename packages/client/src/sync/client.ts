@@ -41,6 +41,7 @@ import { ConnectionStateMachine, type ConnectionState } from "./connection-state
 import { PresenceManager } from "../presence/presence";
 import { openSSEStream, type SSESubscription } from "./sse";
 import { createOutbox, type Outbox } from "./outbox";
+import { createFlushScheduler, type FlushScheduler } from "./flush-scheduler";
 import { TextDocument, TextDocumentRegistry } from "../fields/collaborative-text/text-document";
 import { RUN_FIELD_PREFIX } from "../fields/collaborative-text/wire";
 import {
@@ -113,6 +114,13 @@ export class SyncClient {
    * stream.
    */
   readonly outbox: Outbox;
+  /**
+   * Owns *when* the outbox flushes: debounces a burst of `write()` calls
+   * into one batched POST and retries an `unreachable` flush with bounded
+   * backoff on its own attempt counter. Reach it for `flushNow()` or the
+   * `flushLatency` metric (#125); `close()` stops it.
+   */
+  readonly flushScheduler: FlushScheduler;
   private readonly fetchImpl: typeof fetch;
   private readonly reconnectInitialMs: number;
   private readonly reconnectMaxMs: number;
@@ -191,6 +199,15 @@ export class SyncClient {
         !field.startsWith(RUN_FIELD_PREFIX) && this.registry.isLwwField(subjectType, field),
       hlc: () => this.freshHlc(),
     });
+    // The retry loop reuses the SSE reconnect bounds but keeps its own
+    // attempt counter inside the scheduler, so an unreachable write can
+    // neither reset nor be reset by the SSE backoff.
+    this.flushScheduler = createFlushScheduler({
+      outbox: this.outbox,
+      initialMs: this.reconnectInitialMs,
+      maxMs: this.reconnectMaxMs,
+      debounceMs: opts.flushDebounceMs,
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -200,6 +217,14 @@ export class SyncClient {
   /** Current connection state. Subscribe to changes via {@link onStateChange}. */
   get state(): ConnectionState {
     return this.stateMachine.state;
+  }
+
+  /**
+   * Wall time of the most recent resolved outbox flush in ms, or `null`
+   * before one. The flush-latency source for #125.
+   */
+  get flushLatency(): number | null {
+    return this.flushScheduler.flushLatency;
   }
 
   /** Subscribe to connection state transitions. Returns an unsubscribe fn. */
@@ -420,10 +445,10 @@ export class SyncClient {
       await this.outbox.enqueue(action);
     }
     // The outbox owns entry state; this legacy return shape reports only
-    // the server's per-Action rejections. `write()` itself does not
-    // classify outcomes — callers that need retryable-vs-terminal go
-    // through `outbox.flush()` / the flush scheduler (#229).
-    const outcome = await this.outbox.flush();
+    // the server's per-Action rejections. The scheduler owns *when* the
+    // flush happens and retries an unreachable submit in the background,
+    // so a throw here is the first attempt's failure, not a give-up.
+    const outcome = await this.flushScheduler.schedule();
     if (outcome.kind === "unreachable") throw outcome.error;
     if (outcome.kind === "partial") return { rejected: outcome.rejected };
     return { rejected: [] };
@@ -580,6 +605,9 @@ export class SyncClient {
    * unusable; create a new one with `createClient`.
    */
   close(): void {
+    // Stop timers and in-flight retries first: no flush should start while
+    // the rest of the client is tearing down.
+    this.flushScheduler.stop();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
