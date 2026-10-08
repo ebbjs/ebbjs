@@ -112,6 +112,7 @@ const collectActionViolations = async (
 ): Promise<readonly PermissionViolation[]> => {
   const updates = action.updates;
   const cached = new Map(ctx.actorGroups.map((g) => [g.id, g.permissions]));
+  await mergeLocalMemberships(cached, ctx);
 
   const exists = async (id: string): Promise<Entity | null> => ctx.storage.entities.get(id);
 
@@ -189,25 +190,22 @@ const collectActionViolations = async (
     });
 
   const isBootstrapExempt = (update: Update): boolean => {
+    // `bootstrap` only holds groups the Action also puts the actor's
+    // own membership into, matching the server's exemption exactly.
     if (update.subject_type === "group" && update.method === "put") {
-      return newGroupIds.has(update.subject_id);
+      return bootstrap.has(update.subject_id);
     }
     if (update.subject_type === "groupMember" && update.method === "put") {
       const groupId = asString(fieldValue(update, "group_id"));
       return (
-        fieldValue(update, "actor_id") === ctx.actorId &&
-        groupId !== null &&
-        newGroupIds.has(groupId)
+        fieldValue(update, "actor_id") === ctx.actorId && groupId !== null && bootstrap.has(groupId)
       );
     }
     if (update.subject_type === "entityGroup" && update.method === "put") {
       const groupId = asString(fieldValue(update, "group_id"));
       const entityId = asString(fieldValue(update, "entity_id"));
       return (
-        groupId !== null &&
-        newGroupIds.has(groupId) &&
-        entityId !== null &&
-        createdIds.has(entityId)
+        groupId !== null && bootstrap.has(groupId) && entityId !== null && createdIds.has(entityId)
       );
     }
     return false;
@@ -305,6 +303,29 @@ const collectActionViolations = async (
     if (violation !== null) violations.push(violation);
   }
   return violations;
+};
+
+/**
+ * Merge the actor's own locally-materialized `groupMember` rows into
+ * the handshake's permission map. The handshake is a snapshot: after a
+ * bootstrap the client's membership row is applied locally before the
+ * next handshake, so without this the pass would falsely refuse a
+ * write into the group it just created. Best-effort — the server stays
+ * the authority.
+ */
+const mergeLocalMemberships = async (
+  cached: Map<string, readonly string[]>,
+  ctx: PermissionContext,
+): Promise<void> => {
+  const rows = await ctx.storage.entities.query("groupMember");
+  for (const row of rows) {
+    if (row.deleted_hlc !== null) continue;
+    if (row.data?.fields?.["actor_id"]?.value !== ctx.actorId) continue;
+    const groupId = asString(row.data?.fields?.["group_id"]?.value);
+    if (groupId === null) continue;
+    const permissions = asStringArray(row.data?.fields?.["permissions"]?.value);
+    cached.set(groupId, [...new Set([...(cached.get(groupId) ?? []), ...permissions])]);
+  }
 };
 
 /**

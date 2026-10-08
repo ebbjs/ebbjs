@@ -44,7 +44,9 @@ const field = (value: unknown): { value: unknown; update_id: string } => ({
   update_id: "u_1",
 });
 
-const fields = (values: Record<string, unknown>): Record<string, { value: unknown }> =>
+const fields = (
+  values: Record<string, unknown>,
+): Record<string, { value: unknown; update_id: string }> =>
   Object.fromEntries(Object.entries(values).map(([k, v]) => [k, field(v)]));
 
 const update = (
@@ -89,6 +91,7 @@ const mkClient = async (groups: readonly (readonly [string, string[]])[]) => {
       body: JSON.stringify(handshakeBody(groups)),
       headers: { "content-type": "application/json" },
     },
+    { body: JSON.stringify({ rejected: [] }), headers: { "content-type": "application/json" } },
     { body: JSON.stringify({ rejected: [] }), headers: { "content-type": "application/json" } },
   ]);
   const client = createClient({ serverUrl: SERVER_URL, actorId: ACTOR_ID, fetchImpl: fn });
@@ -360,6 +363,35 @@ describe("collectPermissionViolations — group bootstrap", () => {
     expect(actionRequests(calls)).toHaveLength(1);
   });
 
+  it("checks a lone group put rather than treating it as a bootstrap", async () => {
+    const { client } = await mkClient([["g_old", []]]);
+
+    await expect(
+      client.write([action([update("group", "g_new", "put", { name: "New" })])]),
+    ).rejects.toBeInstanceOf(PermissionError);
+  });
+
+  it("allows a subsequent write to a group the actor bootstrapped", async () => {
+    const { client } = await mkClient([["g_old", []]]);
+    const created = action([
+      update("group", "g_new", "put", { name: "New" }),
+      update("groupMember", "gm_1", "put", {
+        actor_id: ACTOR_ID,
+        group_id: "g_new",
+        permissions: ["todo.*"],
+      }),
+      update("todo", "todo_1", "put", { title: "Ship" }),
+      update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_new" }),
+    ]);
+    await client.write([created]);
+
+    const followUp = action([
+      update("todo", "todo_2", "put", { title: "Ship again" }),
+      update("entityGroup", "eg_2", "put", { entity_id: "todo_2", group_id: "g_new" }),
+    ]);
+    await expect(client.write([followUp])).resolves.toEqual({ rejected: [] });
+  });
+
   it("does not exempt an entityGroup put for an entity that already exists", async () => {
     const { client } = await mkClient([["g_old", []]]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
@@ -417,6 +449,81 @@ describe("collectPermissionViolations — best-effort", () => {
       "todo_1",
       "todo_2",
     ]);
+  });
+});
+
+describe("collectPermissionViolations — system entities", () => {
+  it("requires group.create in the group for a put", async () => {
+    const { client } = await mkClient([["g_1", ["group.update"]]]);
+
+    await expect(
+      client.write([action([update("group", "g_1", "put", { name: "G" })])]),
+    ).rejects.toBeInstanceOf(PermissionError);
+  });
+
+  it("passes a group put when the target group grants group.create", async () => {
+    const { client } = await mkClient([["g_1", ["group.*"]]]);
+
+    await expect(
+      client.write([action([update("group", "g_1", "put", { name: "G" })])]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("requires groupMember.create in the target group for a put", async () => {
+    const { client } = await mkClient([["g_1", ["groupMember.update"]]]);
+
+    await expect(
+      client.write([
+        action([
+          update("groupMember", "gm_1", "put", {
+            actor_id: "actor_2",
+            group_id: "g_1",
+            permissions: [],
+          }),
+        ]),
+      ]),
+    ).rejects.toBeInstanceOf(PermissionError);
+  });
+
+  it("resolves a groupMember delete's group from the local row", async () => {
+    const { client } = await mkClient([["g_1", []]]);
+    await client.storage.entities.set(
+      mkEntity("gm_1", "groupMember", { actor_id: "actor_2", group_id: "g_1", permissions: [] }),
+    );
+
+    await expect(
+      client.write([action([update("groupMember", "gm_1", "delete")])]),
+    ).rejects.toBeInstanceOf(PermissionError);
+  });
+
+  it("requires entityGroup.update in the membership's group for a patch", async () => {
+    const { client } = await mkClient([["g_1", []]]);
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+
+    await expect(
+      client.write([action([update("entityGroup", "eg_1", "patch", { group_id: "g_1" })])]),
+    ).rejects.toBeInstanceOf(PermissionError);
+  });
+
+  it("requires relationship.update in the edge's source group set for a patch", async () => {
+    const { client } = await mkClient([["g_1", []]]);
+    await client.storage.entities.set(
+      mkEntity("rel_1", "relationship", {
+        source_id: "todo_1",
+        target_id: "list_1",
+        field: "list",
+        type: "todo",
+      }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+
+    await expect(
+      client.write([action([update("relationship", "rel_1", "patch", { target_id: "list_2" })])]),
+    ).rejects.toBeInstanceOf(PermissionError);
   });
 });
 
