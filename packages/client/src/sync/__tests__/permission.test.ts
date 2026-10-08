@@ -450,6 +450,33 @@ describe("collectPermissionViolations — best-effort", () => {
       "todo_2",
     ]);
   });
+
+  it("lets a locally-allowed write reach a server rejection that lands in outbox.errors()", async () => {
+    // A permission revoked server-side while offline: the cached
+    // handshake still allows it, the server refuses, and the outbox
+    // records the error rather than the client blocking it locally.
+    const { fn } = makeFetchMock([
+      {
+        body: JSON.stringify(handshakeBody([["g_1", ["todo.create"]]])),
+        headers: { "content-type": "application/json" },
+      },
+      {
+        body: JSON.stringify({ rejected: [{ id: "a_1", reason: "not_authorized" }] }),
+        headers: { "content-type": "application/json" },
+      },
+    ]);
+    const client = createClient({ serverUrl: SERVER_URL, actorId: ACTOR_ID, fetchImpl: fn });
+    await client.handshake();
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+
+    const response = await client.write([
+      action([update("todo", "todo_1", "put", { title: "Ship" })]),
+    ]);
+    expect(response.rejected.map((rejection) => rejection.id)).toEqual(["a_1"]);
+    expect(client.outbox.errors().map((entry) => entry.action.id)).toEqual(["a_1"]);
+  });
 });
 
 describe("collectPermissionViolations — system entities", () => {
