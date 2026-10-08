@@ -61,12 +61,12 @@ defmodule EbbServer.Storage.Authorizer do
       membership's group.
     - `relationship` put (always a domain edge; membership is
       `entityGroup`) → the source entity's `<type>.update` in the
-      source's group set, where `<type>` is the wire `data.type` field,
-      not a resolved source-entity type. That field defaults to the
-      source entity name (matching #121) but apps may override it;
-      resolving the source entity's true type is #155. `relationship`
-      patch/delete → `relationship.update` / `relationship.delete` in the
-      edge's source group set.
+      source's group set, where `<type>` is the source entity's true
+      type resolved from the entity index (#323). The wire `data.type`
+      field is a descriptive label and is never consulted for
+      authorization, so a forged value cannot borrow another type's
+      permission. `relationship` patch/delete → `relationship.update` /
+      `relationship.delete` in the edge's source group set.
 
   ## User entities
 
@@ -382,19 +382,22 @@ defmodule EbbServer.Storage.Authorizer do
   # source's membership set, never its own `target_id`: an app may hold a
   # domain link to a group entity. Puts carry the source on the wire;
   # patch/delete drop the data, so the by-id index supplies the source.
+  # The permission type follows the source's **true** type, resolved from
+  # the entity index — never the wire `data.type` label, which a client
+  # can forge to borrow another type's permission (#323).
   defp authorize_relationship_update(%{method: :put} = update, actor_id, authz) do
-    source_type = Fields.get(update.data, "type")
+    case source_entity_type(update, authz) do
+      nil ->
+        {:error, "not_authorized", "relationship source type is unresolvable"}
 
-    if is_nil(source_type) do
-      {:error, "not_authorized", "relationship is missing its source type"}
-    else
-      check_group_permission(
-        relationship_group_ids(update, authz),
-        actor_id,
-        source_type,
-        "update",
-        authz
-      )
+      source_type ->
+        check_group_permission(
+          relationship_group_ids(update, authz),
+          actor_id,
+          source_type,
+          "update",
+          authz
+        )
     end
   end
 
@@ -406,6 +409,16 @@ defmodule EbbServer.Storage.Authorizer do
       permission_for(update.method),
       authz
     )
+  end
+
+  # The source entity's committed type, or the type the same request
+  # created when the index does not know the id yet. A put with no
+  # `source_id`, or one the request cannot type, is unresolvable.
+  defp source_entity_type(update, authz) do
+    case Fields.get(update.data, "source_id") do
+      nil -> nil
+      source_id -> entity_type(source_id, authz)
+    end
   end
 
   defp authorize_user_entity_update(type, update, actor_id, authz) do
