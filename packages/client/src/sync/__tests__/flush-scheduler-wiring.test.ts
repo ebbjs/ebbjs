@@ -15,10 +15,11 @@ import { makeHlc, type Action } from "@ebbjs/core";
 
 import { createClient } from "../client";
 import { makeFetchMock, type FetchCall } from "../test-utils";
+import { DEFAULT_FLUSH_DEBOUNCE_MS } from "../flush-scheduler";
 
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "actor_1";
-const DEBOUNCE_MS = 10;
+const DEBOUNCE_MS = DEFAULT_FLUSH_DEBOUNCE_MS;
 
 /** A well-formed Action for a distinct entity, so batches stay independent. */
 const mkAction = (id: string): Action => ({
@@ -52,7 +53,6 @@ const mkClient = (
     serverUrl: SERVER_URL,
     actorId: ACTOR_ID,
     fetchImpl,
-    flushDebounceMs: DEBOUNCE_MS,
     reconnectInitialMs: opts.reconnectInitialMs ?? 100,
     reconnectMaxMs: opts.reconnectMaxMs ?? 400,
   });
@@ -171,12 +171,12 @@ describe("client.write flush scheduling (#229)", () => {
     const { fn } = makeFetchMock([{ body: JSON.stringify({ rejected: [] }) }]);
     const client = mkClient(fn);
 
-    expect(client.flushLatency).toBeNull();
+    expect(client.flushScheduler.flushLatency).toBeNull();
     const write = client.write([mkAction("a")]);
     await vi.advanceTimersByTimeAsync(DEBOUNCE_MS + 1);
     await write;
-    expect(client.flushLatency).not.toBeNull();
-    expect(client.flushLatency).toBeGreaterThanOrEqual(0);
+    expect(client.flushScheduler.flushLatency).not.toBeNull();
+    expect(client.flushScheduler.flushLatency).toBeGreaterThanOrEqual(0);
     client.close();
   });
 });

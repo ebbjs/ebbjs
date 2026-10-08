@@ -19,8 +19,8 @@
  *   `flush()` call, the source #125's metric reads.
  *
  * The outbox, the timer functions, and the clock are all injected, so
- * the policy is pure and tests drive it without real time. No I/O
- * happens here.
+ * the policy itself performs no I/O — it only decides when to call the
+ * injected `flush()` — and tests drive it without real time.
  *
  * The trigger set is intentionally just "a caller asked". Reconnect- and
  * catch-up-triggered flushes belong to the post-catch-up checkpoint
@@ -42,8 +42,8 @@ export interface FlushTimers {
 
 /** Collaborators and policy knobs for {@link createFlushScheduler}. */
 export interface FlushSchedulerDependencies {
-  /** The flush this scheduler gates. Only `flush()` is needed. */
-  outbox: Pick<Outbox, "flush">;
+  /** The flush this scheduler gates. `size` reports pending depth. */
+  outbox: Pick<Outbox, "flush" | "size">;
   /** Timer seam. Defaults to the host `setTimeout` / `clearTimeout`. */
   timers?: FlushTimers;
   /** Monotonic-ish millisecond clock. Defaults to `Date.now`. */
@@ -70,8 +70,9 @@ export interface FlushScheduler {
    * durable-store fault, which is not retried blindly).
    *
    * While a retry is backed off, a trigger cannot start a competing
-   * flush; it resolves with the known `unreachable` outcome and lets the
-   * scheduled retry carry the entries.
+   * flush; it resolves `unreachable` with an error naming the wait (and
+   * the failed attempt as its cause) and lets the scheduled retry carry
+   * the entries.
    */
   schedule(): Promise<FlushOutcome>;
   /**
@@ -80,16 +81,18 @@ export interface FlushScheduler {
    */
   flushNow(): Promise<FlushOutcome>;
   /**
-   * Cancel pending debounce and retry timers. Terminal: later `schedule()`
-   * calls resolve immediately with `empty` (no entry state changes), and
-   * an in-flight `flush()` finishes without scheduling another attempt.
+   * Cancel pending debounce and retry timers. Terminal: it reports
+   * `unreachable` for any call still waiting (so a `write()` cannot
+   * mistake an unsubmitted Action for success), and an in-flight
+   * `flush()` finishes without scheduling another attempt.
    */
   stop(): void;
   /** Wall time of the most recent resolved `flush()`, or `null` before one. */
   readonly flushLatency: number | null;
 }
 
-const DEFAULT_DEBOUNCE_MS = 10;
+/** Default coalescing window, in ms, for {@link createFlushScheduler}. */
+export const DEFAULT_FLUSH_DEBOUNCE_MS = 10;
 const DEFAULT_INITIAL_MS = 1_000;
 const DEFAULT_MAX_MS = 60_000;
 
@@ -125,7 +128,7 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
   const outbox = deps.outbox;
   const timers = deps.timers ?? defaultTimers;
   const now = deps.now ?? Date.now;
-  const debounceMs = deps.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+  const debounceMs = deps.debounceMs ?? DEFAULT_FLUSH_DEBOUNCE_MS;
   const initialMs = deps.initialMs ?? DEFAULT_INITIAL_MS;
   const maxMs = deps.maxMs ?? DEFAULT_MAX_MS;
 
@@ -157,6 +160,23 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
       waiters.push({ resolve, reject });
     });
 
+  /** The outcome for a trigger that will never reach the wire. */
+  const stoppedOutcome = (): FlushOutcome => ({
+    kind: "unreachable",
+    error: new Error("flush scheduler stopped"),
+  });
+
+  /**
+   * The outcome for a trigger that arrives while a retry is backed off: a
+   * fresh error naming the wait, with the failed attempt as its cause.
+   */
+  const deferredOutcome = (
+    failed: Extract<FlushOutcome, { kind: "unreachable" }>,
+  ): FlushOutcome => ({
+    kind: "unreachable",
+    error: new Error("flush retry already scheduled", { cause: failed.error }),
+  });
+
   /**
    * Classify a settled flush: reset the backoff on any terminal outcome,
    * arm a retry after `unreachable`, and serve any waiters that arrived
@@ -166,10 +186,14 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
     if (stopped) return;
     if (outcome.kind === "unreachable") {
       lastUnreachable = outcome;
-      const delay = retryDelayMs();
-      attempt += 1;
-      timer = timers.setTimeout(runFlush, delay);
-      return;
+      // A conflict sweep can retire every pending entry while the submit
+      // is in flight; nothing is left to retry, so fall through to idle.
+      if (outbox.size("pending") > 0) {
+        const delay = retryDelayMs();
+        attempt += 1;
+        timer = timers.setTimeout(runFlush, delay);
+        return;
+      }
     }
     attempt = 0;
     lastUnreachable = null;
@@ -208,12 +232,12 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
   };
 
   const schedule = (): Promise<FlushOutcome> => {
-    if (stopped) return Promise.resolve({ kind: "empty" });
+    if (stopped) return Promise.resolve(stoppedOutcome());
     // Mid-backoff there is already an attempt on the calendar; starting a
-    // competing flush would defeat the backoff. Report the known failure
-    // and let the retry carry this caller's entries.
+    // competing flush would defeat the backoff. Report the deferral and
+    // let the retry carry this caller's entries.
     if (inFlight === null && timer !== null && lastUnreachable !== null) {
-      return Promise.resolve(lastUnreachable);
+      return Promise.resolve(deferredOutcome(lastUnreachable));
     }
     const promise = enqueueWaiter();
     if (inFlight === null && timer === null) {
@@ -223,7 +247,7 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
   };
 
   const flushNow = (): Promise<FlushOutcome> => {
-    if (stopped) return Promise.resolve({ kind: "empty" });
+    if (stopped) return Promise.resolve(stoppedOutcome());
     if (inFlight !== null) return inFlight;
     clearTimer();
     const promise = enqueueWaiter();
@@ -235,11 +259,11 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
     if (stopped) return;
     stopped = true;
     clearTimer();
-    // Nobody is going to flush for these callers; settle them rather than
-    // leaving a write() hanging on a closed client.
+    // Nobody is going to flush for these callers; settle them as failures
+    // rather than leaving a write() to read "empty" as success.
     const pending = waiters;
     waiters = [];
-    for (const waiter of pending) waiter.resolve({ kind: "empty" });
+    for (const waiter of pending) waiter.resolve(stoppedOutcome());
   };
 
   return {

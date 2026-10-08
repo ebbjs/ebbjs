@@ -26,10 +26,12 @@ const unreachable = (message = "offline"): FlushOutcome => ({
 /** A `flush()` whose outcomes the test queues up by hand. */
 const mkOutbox = () => {
   const steps: Array<() => Promise<FlushOutcome>> = [];
+  let pending = 1;
   const flush = vi.fn((): Promise<FlushOutcome> => {
     const step = steps.shift();
     return step ? step() : Promise.resolve(accepted());
   });
+  const size = vi.fn((): number => pending);
   const pushOutcome = (outcome: FlushOutcome): void => {
     steps.push(() => Promise.resolve(outcome));
   };
@@ -43,7 +45,15 @@ const mkOutbox = () => {
     steps.push(() => promise);
     return { resolve, reject };
   };
-  return { flush, pushOutcome, pushDeferred };
+  return {
+    flush,
+    size,
+    pushOutcome,
+    pushDeferred,
+    setPending: (count: number): void => {
+      pending = count;
+    },
+  };
 };
 
 /**
@@ -194,7 +204,7 @@ describe("createFlushScheduler", () => {
     expect(outbox.flush).toHaveBeenCalledTimes(5);
   });
 
-  it("reports the known unreachable while a retry is backed off", async () => {
+  it("reports a deferred failure while a retry is backed off", async () => {
     const { scheduler, outbox, advance } = mkHarness();
     outbox.pushOutcome(unreachable("down"));
 
@@ -204,7 +214,13 @@ describe("createFlushScheduler", () => {
     expect(outcome).toMatchObject({ kind: "unreachable" });
 
     const duringBackoff = scheduler.schedule();
-    expect(await duringBackoff).toEqual(outcome);
+    const deferred = await duringBackoff;
+    expect(deferred).toMatchObject({ kind: "unreachable" });
+    // It is a fresh deferral naming the wait, not the old batch's error.
+    if (deferred.kind !== "unreachable" || outcome.kind !== "unreachable") {
+      throw new Error("expected unreachable outcomes");
+    }
+    expect(deferred.error).not.toBe(outcome.error);
     // No competing flush: the retry timer still owns the next attempt.
     expect(outbox.flush).toHaveBeenCalledTimes(1);
 
@@ -272,8 +288,40 @@ describe("createFlushScheduler", () => {
     await advance(MAX * 10);
     expect(outbox.flush).toHaveBeenCalledTimes(1);
 
-    // Terminal: a later trigger neither flushes nor hangs.
-    expect(await scheduler.schedule()).toEqual({ kind: "empty" });
+    // Terminal: a later trigger neither flushes nor reports success.
+    expect(await scheduler.schedule()).toMatchObject({ kind: "unreachable" });
+    expect(outbox.flush).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not arm a retry once the sweep emptied the outbox", async () => {
+    const { scheduler, outbox, advance, pendingTimers } = mkHarness();
+    outbox.pushOutcome(unreachable());
+    outbox.setPending(0);
+
+    const outcome = scheduler.schedule();
+    await advance(DEBOUNCE);
+    expect(await outcome).toMatchObject({ kind: "unreachable" });
+
+    expect(pendingTimers()).toBe(0);
+    await advance(MAX * 10);
+    expect(outbox.flush).toHaveBeenCalledTimes(1);
+  });
+
+  it("stop during an in-flight flush does not arm a retry", async () => {
+    const { scheduler, outbox, advance, pendingTimers } = mkHarness();
+    const deferred = outbox.pushDeferred();
+
+    const outcome = scheduler.schedule();
+    await advance(DEBOUNCE);
+    expect(outbox.flush).toHaveBeenCalledTimes(1);
+
+    scheduler.stop();
+    deferred.resolve(unreachable());
+    await advance(0);
+
+    expect(await outcome).toMatchObject({ kind: "unreachable" });
+    expect(pendingTimers()).toBe(0);
+    await advance(MAX * 10);
     expect(outbox.flush).toHaveBeenCalledTimes(1);
   });
 

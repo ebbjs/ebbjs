@@ -118,8 +118,8 @@ export class SyncClient {
   /**
    * Owns *when* the outbox flushes: debounces a burst of `write()` calls
    * into one batched POST and retries an `unreachable` flush with bounded
-   * backoff on its own attempt counter. Reach it for `flushNow()` or the
-   * `flushLatency` metric (#125); `close()` stops it.
+   * backoff on its own attempt counter. `flushNow()`, `flushLatency`, and
+   * `close()`'s teardown all live here.
    */
   readonly flushScheduler: FlushScheduler;
   private readonly fetchImpl: typeof fetch;
@@ -207,7 +207,6 @@ export class SyncClient {
       outbox: this.outbox,
       initialMs: this.reconnectInitialMs,
       maxMs: this.reconnectMaxMs,
-      debounceMs: opts.flushDebounceMs,
     });
   }
 
@@ -218,14 +217,6 @@ export class SyncClient {
   /** Current connection state. Subscribe to changes via {@link onStateChange}. */
   get state(): ConnectionState {
     return this.stateMachine.state;
-  }
-
-  /**
-   * Wall time of the most recent resolved outbox flush in ms, or `null`
-   * before one. The flush-latency source for #125.
-   */
-  get flushLatency(): number | null {
-    return this.flushScheduler.flushLatency;
   }
 
   /** Subscribe to connection state transitions. Returns an unsubscribe fn. */
