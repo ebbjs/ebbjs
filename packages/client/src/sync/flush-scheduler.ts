@@ -22,10 +22,13 @@
  * the policy itself performs no I/O — it only decides when to call the
  * injected `flush()` — and tests drive it without real time.
  *
- * The trigger set is intentionally just "a caller asked". Reconnect- and
- * catch-up-triggered flushes belong to the post-catch-up checkpoint
- * (#309), which will call into this scheduler rather than key off
- * `ConnectionState`.
+ * The trigger set is "a caller asked" plus the catch-up checkpoint. The
+ * sync client {@link FlushScheduler.hold}s the gate while it pulls missed
+ * Actions and runs the conflict sweep (#309), then {@link
+ * FlushScheduler.release}s it: that first flush after a reconnect is the
+ * only place a pre-catch-up pending Action could have gone onto the wire,
+ * so gating here is what keeps a write from racing its own rebase. Nothing
+ * keys off raw `ConnectionState`.
  */
 
 import type { FlushOutcome, Outbox } from "./outbox";
@@ -87,8 +90,23 @@ export interface FlushScheduler {
    * `flush()` finishes without scheduling another attempt.
    */
   stop(): void;
+  /**
+   * Close the gate. While held, `schedule()` and `flushNow()` settle
+   * `unreachable` immediately — naming the checkpoint — instead of
+   * parking, so a `write()` cannot read an unsubmitted Action as success.
+   * No timer is armed; the Outbox keeps the entry pending.
+   */
+  hold(): void;
+  /**
+   * Open the gate and flush everything that accumulated while held. This
+   * is the catch-up checkpoint (#309): the first flush after a reconnect
+   * carries only entries already swept against the missed window.
+   */
+  release(): void;
   /** Wall time of the most recent resolved `flush()`, or `null` before one. */
   readonly flushLatency: number | null;
+  /** Whether the gate is open — i.e. whether a trigger may arm a flush. */
+  readonly ready: boolean;
 }
 
 /** Default coalescing window, in ms, for {@link createFlushScheduler}. */
@@ -133,6 +151,8 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
   const maxMs = deps.maxMs ?? DEFAULT_MAX_MS;
 
   let stopped = false;
+  /** Gate state. Closed by `hold`, reopened by `release`. */
+  let ready = true;
   /** Armed debounce or retry timer, or null when idle. */
   let timer: FlushTimerHandle | null = null;
   /** The one in-flight outbox flush, or null. */
@@ -184,6 +204,8 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
    */
   const afterSettled = (outcome: FlushOutcome): void => {
     if (stopped) return;
+    // Held: the checkpoint arms the next flush for whatever accumulated.
+    if (!ready) return;
     if (outcome.kind === "unreachable") {
       lastUnreachable = outcome;
       // A conflict sweep can retire every pending entry while the submit
@@ -223,16 +245,27 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
         inFlight = null;
         for (const waiter of batch) waiter.reject(error);
         // A durable-store fault is not retried blindly; a later trigger
-        // retries it. Anything already waiting gets another debounce.
-        if (!stopped && waiters.length > 0) {
+        // retries it. Anything already waiting gets another debounce —
+        // unless the gate is held, in which case `release` re-arms.
+        if (!stopped && ready && waiters.length > 0) {
           timer = timers.setTimeout(runFlush, debounceMs);
         }
       },
     );
   };
 
+  /** The outcome for a trigger that arrives while the gate is held. */
+  const gatedOutcome = (): FlushOutcome => ({
+    kind: "unreachable",
+    error: new Error("flush held until the catch-up checkpoint"),
+  });
+
   const schedule = (): Promise<FlushOutcome> => {
     if (stopped) return Promise.resolve(stoppedOutcome());
+    // Held through the rebase phase: report the deferral so `write()`
+    // cannot read an unsubmitted Action as success. The entry stays
+    // pending; the checkpoint flush carries it.
+    if (!ready) return Promise.resolve(gatedOutcome());
     // Mid-backoff there is already an attempt on the calendar; starting a
     // competing flush would defeat the backoff. Report the deferral and
     // let the retry carry this caller's entries.
@@ -248,11 +281,35 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
 
   const flushNow = (): Promise<FlushOutcome> => {
     if (stopped) return Promise.resolve(stoppedOutcome());
+    if (!ready) return Promise.resolve(gatedOutcome());
     if (inFlight !== null) return inFlight;
     clearTimer();
     const promise = enqueueWaiter();
     runFlush();
     return promise;
+  };
+
+  const hold = (): void => {
+    if (stopped || !ready) return;
+    ready = false;
+    // A trigger armed before the gate closed must not fire mid-catch-up;
+    // its parked callers (if any) are carried by the checkpoint flush.
+    clearTimer();
+  };
+
+  const release = (): void => {
+    if (stopped || ready) return;
+    ready = true;
+    // Register a marker waiter even when no caller is waiting, so the
+    // checkpoint always flushes what accumulated while held — including
+    // entries a deferred `write()` left pending. When a flush is already
+    // in flight, the marker makes `afterSettled` arm the next one.
+    const promise = enqueueWaiter();
+    void promise.catch(() => {});
+    if (inFlight === null) {
+      clearTimer();
+      runFlush();
+    }
   };
 
   const stop = (): void => {
@@ -269,9 +326,14 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
   return {
     schedule,
     flushNow,
+    hold,
+    release,
     stop,
     get flushLatency(): number | null {
       return latency;
+    },
+    get ready(): boolean {
+      return ready;
     },
   };
 }

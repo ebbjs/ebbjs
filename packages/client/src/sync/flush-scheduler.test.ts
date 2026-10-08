@@ -352,4 +352,100 @@ describe("createFlushScheduler", () => {
     await advance(MAX * 10);
     expect(outbox.flush).toHaveBeenCalledTimes(1);
   });
+
+  it("reports a deferred outcome while held, then flushes on release", async () => {
+    const { scheduler, outbox, advance } = mkHarness();
+    outbox.pushOutcome(accepted(["a"]));
+
+    scheduler.hold();
+    const first = await scheduler.schedule();
+    const second = await scheduler.schedule();
+    await advance(MAX * 10);
+
+    expect(scheduler.ready).toBe(false);
+    expect(first).toMatchObject({ kind: "unreachable" });
+    expect(second).toMatchObject({ kind: "unreachable" });
+    expect(outbox.flush).not.toHaveBeenCalled();
+
+    scheduler.release();
+    await advance(0);
+
+    expect(scheduler.ready).toBe(true);
+    expect(outbox.flush).toHaveBeenCalledTimes(1);
+  });
+
+  it("release flushes pending entries even with no caller waiting", async () => {
+    const { scheduler, outbox, advance } = mkHarness();
+    outbox.pushOutcome(accepted(["direct"]));
+
+    scheduler.hold();
+    scheduler.release();
+    await advance(0);
+
+    expect(outbox.flush).toHaveBeenCalledTimes(1);
+  });
+
+  it("hold cancels an armed debounce; release reschedules it", async () => {
+    const { scheduler, outbox, advance, pendingTimers } = mkHarness();
+    outbox.pushOutcome(accepted(["a"]));
+
+    const outcome = scheduler.schedule();
+    scheduler.hold();
+    expect(pendingTimers()).toBe(0);
+
+    await advance(DEBOUNCE * 4);
+    expect(outbox.flush).not.toHaveBeenCalled();
+
+    scheduler.release();
+    await advance(0);
+    expect(outbox.flush).toHaveBeenCalledTimes(1);
+    expect(await outcome).toEqual(accepted(["a"]));
+  });
+
+  it("defers the follow-up flush until release when held mid-flight", async () => {
+    const { scheduler, outbox, advance } = mkHarness();
+    const deferred = outbox.pushDeferred();
+
+    const outcome = scheduler.schedule();
+    await advance(DEBOUNCE);
+    expect(outbox.flush).toHaveBeenCalledTimes(1);
+
+    scheduler.hold();
+    deferred.resolve(accepted(["a"]));
+    await advance(0);
+    expect(await outcome).toEqual(accepted(["a"]));
+
+    // No retry or follow-up may fire while the gate is closed.
+    await advance(MAX * 10);
+    expect(outbox.flush).toHaveBeenCalledTimes(1);
+
+    scheduler.release();
+    await advance(0);
+    expect(outbox.flush).toHaveBeenCalledTimes(2);
+  });
+
+  it("flushNow reports a deferred outcome while held", async () => {
+    const { scheduler, outbox, advance } = mkHarness();
+    outbox.pushOutcome(accepted(["now"]));
+
+    scheduler.hold();
+    const outcome = await scheduler.flushNow();
+    await advance(DEBOUNCE * 4);
+    expect(outcome).toMatchObject({ kind: "unreachable" });
+    expect(outbox.flush).not.toHaveBeenCalled();
+
+    scheduler.release();
+    await advance(0);
+    expect(outbox.flush).toHaveBeenCalledTimes(1);
+  });
+
+  it("stop reports the stopped outcome while held", async () => {
+    const { scheduler, outbox } = mkHarness();
+
+    scheduler.hold();
+    scheduler.stop();
+
+    expect(await scheduler.schedule()).toMatchObject({ kind: "unreachable" });
+    expect(outbox.flush).not.toHaveBeenCalled();
+  });
 });

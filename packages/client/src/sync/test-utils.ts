@@ -53,6 +53,38 @@ export const callApplyAction = (
     }
   )._applyAction.call(client, action, groupId);
 
+/** A JSON `Response` carrying `body` and optional extra headers. */
+export const jsonResponse = (body: unknown, headers: Record<string, string> = {}): Response =>
+  new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json", ...headers },
+  });
+
+/** Catch-up `GET /sync/groups/:id` response reporting nothing missed. */
+export const emptyCatchUpResponse = (): Response =>
+  jsonResponse([], { "stream-up-to-date": "true" });
+
+/** An SSE `Response` whose body never ends, keeping a subscription live. */
+export const openSseResponse = (): Response =>
+  new Response(new ReadableStream<Uint8Array>({ start() {} }), {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+
+/** An SSE `Response` that emits pre-encoded `chunks` and then closes. */
+export const closingSseResponse = (chunks: readonly string[]): Response => {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    }),
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+};
+
 /**
  * Build a `fetch` mock that records calls and returns canned responses
  * from a FIFO queue. The last entry is returned for any call after the
