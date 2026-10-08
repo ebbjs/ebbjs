@@ -14,10 +14,9 @@
  * ```ts
  * const client = createClient({ serverUrl, actorId });
  * const { groups } = await client.handshake();
- * for (const group of groups) {
- *   await client.catchUp(group.id, group.cursor);
- * }
- * const unsubscribe = client.subscribe(groups.map(g => g.id), group.cursor, (event) => {
+ * // `subscribe` pulls the missed window for each group, runs the
+ * // conflict sweep, and only then opens the live stream.
+ * const unsubscribe = client.subscribe(groups.map(g => g.id), 0, (event) => {
  *   if (event.type === "data") applyToLocalState(event.action);
  * });
  * ```
@@ -121,7 +120,8 @@ export class SyncClient {
    * Owns *when* the outbox flushes: debounces a burst of `write()` calls
    * into one batched POST and retries an `unreachable` flush with bounded
    * backoff on its own attempt counter. `flushNow()`, `flushLatency`, and
-   * `close()`'s teardown all live here.
+   * `close()`'s teardown all live here. The connection loop holds the gate
+   * through catch-up and releases it at the rebase checkpoint (#309).
    */
   readonly flushScheduler: FlushScheduler;
   /**
@@ -301,10 +301,17 @@ export class SyncClient {
    * maintains connection state and reconnects on transient failures using
    * exponential backoff (capped at `reconnectMaxMs`).
    *
+   * Before opening (or re-opening) the stream, every subscribed group is
+   * caught up from its stored cursor and the Outbox's inbound conflict
+   * sweep runs. Pending writes are held from the wire until that rebase
+   * phase completes, so a local Action can never be posted before it has
+   * been checked against the missed window (#309).
+   *
    * The `onEvent` callback fires for every data / control / presence event
-   * the server emits. Data events are also appended to `storage.actions` so
-   * the storage adapter stays in sync; callers that don't want this can
-   * pass a different `storage` or use the raw event handler.
+   * the server emits, and for each Action replayed by the catch-up phase.
+   * Data events are also appended to `storage.actions` so the storage
+   * adapter stays in sync; callers that don't want this can pass a
+   * different `storage` or use the raw event handler.
    */
   subscribe(
     groupIds: readonly string[],
@@ -382,10 +389,11 @@ export class SyncClient {
    * `GET /sync/groups/:group_id?offset=N` — paginated catch-up of missed Actions.
    *
    * If `fromGsn` is omitted, uses the last cached cursor for the group
-   * (populated by `handshake` or a prior `subscribe` receipt).
+   * (populated by `handshake`, `catchUp`, or a server-requested reconnect).
    */
   async catchUp(groupId: string, fromGsn?: number): Promise<CatchUpResponse> {
-    const offset = fromGsn ?? (await this.storage.cursors.get(groupId)) ?? 0;
+    const offset =
+      fromGsn ?? (await this.storage.cursors.get(groupId)) ?? this.groupCursors.get(groupId) ?? 0;
     const url = `${this.serverUrl}/sync/groups/${encodeURIComponent(groupId)}?offset=${offset}`;
     const response = await this.fetchImpl(url, {
       method: "GET",
@@ -829,7 +837,12 @@ export class SyncClient {
       // `closeStream`, hammering the server instead of waiting out the
       // intended backoff.
       const result = this.scheduleReconnect(sub, reason);
-      if (result === "giveup" || result === "cancelled") return;
+      if (result === "giveup" || result === "cancelled") {
+        // No later connect will run the checkpoint; let pending writes
+        // reach the wire (and fail on their own) instead of hanging held.
+        this.flushScheduler.release();
+        return;
+      }
       // Wait for the timer (resolved by the setTimeout callback, or
       // rejected by `cancelSubscription` clearing the timer).
       await this.waitForReconnectTimer();
@@ -844,6 +857,15 @@ export class SyncClient {
    */
   private async connectAndDrain(sub: ActiveSubscription): Promise<string> {
     try {
+      // The rebase phase gates the wire so a pending Action cannot post
+      // before it has been swept against the missed window (#309).
+      this.flushScheduler.hold();
+      await this.catchUpSubscribed(sub);
+      if (sub.cancelled) return "cancelled";
+      // Readiness checkpoint: catch-up is done and the inbound conflict
+      // sweep has run, so pending entries may flush.
+      this.flushScheduler.release();
+
       const cursor = await this.computeResumeCursor(sub);
       const stream = openSSEStream({
         serverUrl: this.serverUrl,
@@ -890,6 +912,57 @@ export class SyncClient {
     });
   }
 
+  /**
+   * Pull every missed Action for each subscribed group before the live
+   * stream opens, and surface each to the subscription's `onEvent` so a
+   * consumer (e.g. a causal-tree document) observes the same events it
+   * would have live. The Outbox's inbound sweep runs inside
+   * `catchUp`'s `_applyAction`, so a pending entry that loses to a missed
+   * write is moved to Conflicts here — before the checkpoint releases the
+   * flush.
+   */
+  private async catchUpSubscribed(sub: ActiveSubscription): Promise<void> {
+    const missed: Action[] = [];
+    for (const groupId of sub.groupIds) {
+      // First page: let `catchUp` pick up from the durable cursor.
+      let offset: number | undefined;
+      for (;;) {
+        const result = await this.catchUp(groupId, offset);
+        for (const action of result.actions) {
+          missed.push(action);
+          this.emitToSubscriber(sub, { type: "data", action });
+        }
+        if (result.upToDate || result.nextOffset === null) break;
+        // Never re-request the same page: a server that reports progress
+        // it did not make must not spin the reconnect loop.
+        if (offset !== undefined && result.nextOffset <= offset) break;
+        offset = result.nextOffset;
+      }
+    }
+    // A `write()` that landed while a later page was in flight was not in
+    // the buffer when the earlier pages were swept. Re-run the inbound
+    // sweep over the whole missed window so none of those entries can
+    // reach the wire unswept.
+    if (missed.length > 0 && this.outbox.size("pending") > 0) {
+      for (const action of missed) {
+        await this.outbox.noteInbound(action);
+      }
+    }
+  }
+
+  /**
+   * Invoke the subscription's `onEvent` with error isolation, so one
+   * throwing handler cannot break the read loop.
+   */
+  private emitToSubscriber(sub: ActiveSubscription, event: SSEEvent): void {
+    try {
+      sub.onEvent(event);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[SyncClient] onEvent handler threw:", err);
+    }
+  }
+
   private async handleSSEEvent(event: SSEEvent, sub: ActiveSubscription): Promise<void> {
     // All data events are appended to storage so dirty-tracker / materialization
     // works for callers (e.g., the causal tree in slice 2).
@@ -908,18 +981,13 @@ export class SyncClient {
         }
       }
     } else if (event.type === "control") {
-      this.handleControlEvent(event.control, sub);
+      await this.handleControlEvent(event.control, sub);
     }
 
-    try {
-      sub.onEvent(event);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[SyncClient] onEvent handler threw:", err);
-    }
+    this.emitToSubscriber(sub, event);
   }
 
-  private handleControlEvent(control: ControlEvent, sub: ActiveSubscription): void {
+  private async handleControlEvent(control: ControlEvent, sub: ActiveSubscription): Promise<void> {
     if (!control.reconnect) return;
     const from = control.catchUpFrom;
     if (from === undefined) return;
@@ -929,6 +997,10 @@ export class SyncClient {
     console.warn(`[SyncClient] server reports stale cursor; catching up from GSN ${from}`);
     for (const gid of sub.groupIds) {
       this.groupCursors.set(gid, from);
+      // Persist the server's resume point too: the reconnect catch-up
+      // reads the durable cursor first, and a client cursor ahead of the
+      // server's must not shadow the window the server asked us to pull.
+      await this.storage.cursors.set(gid, from);
     }
     // Force a stream restart by closing the current one; the loop will
     // pick the new cursor up on the next iteration.
@@ -1008,6 +1080,9 @@ export class SyncClient {
       this.reconnectTimerResolve = null;
       if (resolve) resolve();
     }
+    // A plain unsubscribe ends the connection lifecycle: no catch-up is
+    // coming, so pending writes may flush again.
+    this.flushScheduler.release();
     this.stateMachine.transition("offline");
   }
 

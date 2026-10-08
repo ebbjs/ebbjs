@@ -3,7 +3,7 @@ import { createClient } from "./client";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { makeHlc, type Action } from "@ebbjs/core";
 import type { SSEEvent } from "./types";
-import { callApplyAction } from "./test-utils";
+import { callApplyAction, emptyCatchUpResponse } from "./test-utils";
 
 /**
  * SSE-driven subscribe test.
@@ -47,7 +47,8 @@ describe("SyncClient.subscribe (SSE)", () => {
           headers: { "content-type": "text/event-stream" },
         });
       }
-      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+      // Catch-up runs before the live stream; nothing is missed here.
+      return emptyCatchUpResponse();
     }) as unknown as typeof fetch;
 
     const client = createClient({
@@ -76,13 +77,15 @@ describe("SyncClient.subscribe (SSE)", () => {
   });
 
   it("rejects duplicate subscribe calls", () => {
-    const fetchImpl = vi.fn(
-      async () =>
-        new Response(new ReadableStream({ start() {} }), {
-          status: 200,
-          headers: { "content-type": "text/event-stream" },
-        }),
-    ) as unknown as typeof fetch;
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/sync/groups/")) {
+        return emptyCatchUpResponse();
+      }
+      return new Response(new ReadableStream({ start() {} }), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as unknown as typeof fetch;
 
     const client = createClient({
       serverUrl: "http://localhost:4000",
@@ -122,13 +125,15 @@ describe("SyncClient.subscribe (SSE)", () => {
         controller.close();
       },
     });
-    const fetchImpl = vi.fn(
-      async () =>
-        new Response(sseBody, {
-          status: 200,
-          headers: { "content-type": "text/event-stream" },
-        }),
-    ) as unknown as typeof fetch;
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/sync/groups/")) {
+        return emptyCatchUpResponse();
+      }
+      return new Response(sseBody, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as unknown as typeof fetch;
 
     const client = createClient({
       serverUrl: "http://localhost:4000",
@@ -289,13 +294,15 @@ describe("SyncClient.subscribe (SSE)", () => {
         controller.close();
       },
     });
-    const fetchImpl = vi.fn(
-      async () =>
-        new Response(sseBody, {
-          status: 200,
-          headers: { "content-type": "text/event-stream" },
-        }),
-    ) as unknown as typeof fetch;
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && url.includes("/sync/groups/")) {
+        return emptyCatchUpResponse();
+      }
+      return new Response(sseBody, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as unknown as typeof fetch;
 
     const client = createClient({
       serverUrl: "http://localhost:4000",
