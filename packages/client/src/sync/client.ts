@@ -62,7 +62,15 @@ import {
 } from "./relationship";
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { createAtomicRuntime, type AtomicClient } from "./atomic";
-import { PermissionError, collectPermissionViolations } from "./permission";
+import {
+  PermissionError,
+  collectPermissionViolations,
+  queryActorPermission,
+  queryEntityPermission,
+  type CanResult,
+  type CanSubject,
+  type PermissionVerb,
+} from "./permission";
 import {
   ActionDefinitionError,
   RUN,
@@ -485,6 +493,33 @@ export class SyncClient {
     if (outcome.kind === "unreachable") throw outcome.error;
     if (outcome.kind === "partial") return { rejected: outcome.rejected };
     return { rejected: [] };
+  }
+
+  /**
+   * Read-only permission query (#322): ask the same `<type>.<verb>`
+   * question the write-path pre-check answers, so an app can hide or
+   * disable a control instead of catching {@link PermissionError}.
+   *
+   * The global form asks whether the actor holds the permission in any
+   * of its groups. The per-entity form resolves the entity's group set
+   * and union-matches it. The result is a discriminated union: `denied`
+   * carries the {@link PermissionViolation} the write would have thrown,
+   * and `unknown` (no handshake, an unresolvable entity, or an entity
+   * with no local owner) means the server remains the authority — it is
+   * never reported as `denied`.
+   */
+  can(permission: string): Promise<CanResult>;
+  can(subject: CanSubject, verb: PermissionVerb): Promise<CanResult>;
+  async can(first: string | CanSubject, verb?: PermissionVerb): Promise<CanResult> {
+    const ctx = {
+      actorId: this.actorId,
+      actorGroups: this.actorGroups,
+      storage: this.storage,
+    };
+    if (verb === undefined) {
+      return queryActorPermission(String(first), ctx);
+    }
+    return queryEntityPermission(first as CanSubject, verb, ctx);
   }
 
   /**
