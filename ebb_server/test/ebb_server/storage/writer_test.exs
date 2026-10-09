@@ -163,14 +163,8 @@ defmodule EbbServer.Storage.WriterTest do
     end
 
     test "dedups repeated (subject_type, subject_id) index puts across the flush", ctx do
-      test_pid = self()
-
-      commit_fn = fn ops, opts ->
-        send(test_pid, {:captured_ops, ops})
-        RocksDB.write_batch(ops, opts)
-      end
-
-      %{name: writer_name} = start_writer(Map.put(ctx, :commit_fn, commit_fn))
+      %{name: writer_name} =
+        start_writer(Map.put(ctx, :commit_fn, capturing_commit_fn(self())))
 
       action1 =
         validated_action(%{
@@ -195,7 +189,7 @@ defmodule EbbServer.Storage.WriterTest do
       assert_receive {:captured_ops, ops}
 
       cf = RocksDB.cf_type_entities(ctx.rocks_name)
-      puts = for {:put, ^cf, _key, _value} <- ops, do: :ok
+      puts = puts_to(ops, cf)
 
       # `todo_shared` repeats across both Actions; only the three unique
       # keys are written.
@@ -956,14 +950,8 @@ defmodule EbbServer.Storage.WriterTest do
 
     test "emits one put per {group_id, gsn} when two updates resolve to the same group",
          ctx do
-      test_pid = self()
-
-      commit_fn = fn ops, opts ->
-        send(test_pid, {:captured_ops, ops})
-        RocksDB.write_batch(ops, opts)
-      end
-
-      %{name: writer_name} = start_writer(Map.put(ctx, :commit_fn, commit_fn))
+      %{name: writer_name} =
+        start_writer(Map.put(ctx, :commit_fn, capturing_commit_fn(self())))
 
       hlc = generate_hlc()
 
@@ -991,7 +979,7 @@ defmodule EbbServer.Storage.WriterTest do
 
       cf = RocksDB.cf_group_actions(ctx.rocks_name)
       key = group_gsn_key("g_bench", 1)
-      puts = for {:put, ^cf, _op_key, _action_id} <- ops, do: :ok
+      puts = puts_to(ops, cf)
 
       assert length(puts) == 1
       assert {:ok, "act_same_group"} = RocksDB.get(cf, key, name: ctx.rocks_name)
@@ -1260,6 +1248,17 @@ defmodule EbbServer.Storage.WriterTest do
 
   defp group_gsn_key(group_id, gsn) do
     RocksDB.encode_group_action_key(group_id, gsn)
+  end
+
+  defp capturing_commit_fn(test_pid) do
+    fn ops, opts ->
+      send(test_pid, {:captured_ops, ops})
+      RocksDB.write_batch(ops, opts)
+    end
+  end
+
+  defp puts_to(ops, cf) do
+    for {:put, ^cf, _key, _value} <- ops, do: :ok
   end
 
   defp to_storage_format(action, gsn) do

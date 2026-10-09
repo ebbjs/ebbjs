@@ -612,7 +612,7 @@ defmodule EbbServer.Storage.Writer do
         {action_ops, group_ids, action_keys} =
           build_action_ops(action, gsn, state.rocks_name, resolve_opts)
 
-        keys = Enum.reduce(action_keys, keys, &MapSet.put(&2, &1))
+        keys = MapSet.union(keys, MapSet.new(action_keys))
 
         {action_ops, {Map.put(groups, gsn, group_ids), keys}}
       end)
@@ -620,8 +620,8 @@ defmodule EbbServer.Storage.Writer do
     {List.flatten(ops) ++ type_entity_ops(type_entity_keys, state.rocks_name), groups_by_gsn}
   end
 
-  # `cf_type_entities` is a set of keys with no per-GSN component, so a
-  # flush writes one put per unique key. Sorted for reproducible batches.
+  # No per-GSN component: one put per unique key per flush. Sorted for
+  # reproducible batches.
   defp type_entity_ops(keys, rocks_name) do
     keys
     |> Enum.sort()
@@ -878,6 +878,7 @@ defmodule EbbServer.Storage.Writer do
 
     group_ids =
       group_ids_by_update
+      |> Enum.reverse()
       |> List.flatten()
       |> Enum.uniq()
 
