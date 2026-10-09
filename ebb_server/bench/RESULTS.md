@@ -199,6 +199,64 @@ measurement. **10k subscribers were not measured** — at 1,000 subscribers
 on a 4-scheduler VM the box is already saturated and RSS is 1 GiB; a
 10k-subscriber point needs a dedicated machine and is out of scope here.
 
+## Writer batch coalescing (#332)
+
+[#332](https://github.com/ebbjs/ebbjs/issues/332) coalesces concurrent
+`Writer.write_actions/1` calls that land in the same mailbox burst into one
+`write_batch` and one GSN range, replying to each caller with its own
+contiguous sub-range. Defaults are `:writer_batch_max_size` 1000 and
+`:writer_batch_timeout_ms` 0 (burst-drain, no added uncontended latency).
+
+Same machine (`recsy-vps`, 4 schedulers), same command, before and after the
+change, with three to four runs per side because this VM's run-to-run spread
+is ±5%:
+
+```sh
+mix bench.actions --tier t2 --duration 120 --warmup 5 --concurrency 8 \
+  --batch-size 100 --updates-per-action 2 --distribution hot
+```
+
+| Side   | Steady /s                         | Median | Overall /s                        | Median |
+| ------ | --------------------------------- | -----: | --------------------------------- | -----: |
+| before | 14,673 / 15,256 / 14,746          | 14,746 | 14,966 / 15,139 / 14,824          | 14,966 |
+| after  | 15,764 / 14,466 / 14,910 / 14,690 | 14,800 | 15,948 / 14,662 / 15,017 / 14,761 | 14,889 |
+
+The headline config is **flat** (+0.4% median steady, −0.5% overall). This is
+not a coalescing failure: the Writer's watermark high-water jumps from 100 to
+~500–600 GSNs, i.e. five to six `write_actions` calls now share one commit.
+The per-commit fixed cost is simply small next to the per-Action work at
+batch 100 — `:scheduler.utilization` sits at ~19%, so the single Writer
+saturates one scheduler while three sit idle, and merging commits cannot move
+a per-Action-bound rate. Forcing a wider window confirms the direction:
+`:writer_batch_timeout_ms = 5` (batches of ~800) drops steady throughput to
+12,585/s, because the added latency is not repaid at this batch size.
+
+The win is where the per-commit fixed cost dominates the per-Action cost —
+small batches:
+
+```sh
+mix bench.actions --tier t0 --duration 30 --warmup 3 --concurrency 8 \
+  --batch-size 1 --updates-per-action 2 --distribution hot
+```
+
+| Run            | Before /s | After /s |  Change |
+| -------------- | --------: | -------: | ------: |
+| t0 batch 1     |     1,152 |    3,600 | +212.5% |
+| t0 batch 1 p50 |    6.5 ms |   2.1 ms |       — |
+
+Every run: 0 rejected Actions, 0 GSN holes, final watermark lag 0. The
+sub-range mapping is what keeps the benchmark honest — `runner.ex` counts
+`gsn_end - gsn_start + 1` per call, so a caller must never be handed the whole
+coalesced range.
+
+**Verdict.** Coalescing cuts commit count ~5–6× and roughly triples direct
+batch-1 write throughput, with no durability, ordering, or GSN semantics
+change. It does **not** raise the batch-100 headline rate: that rate is bound
+by per-Action Elixir work on a single scheduler, not by per-commit overhead.
+Raising it needs the per-Action work spread across schedulers (or
+multi-Writer, [#287](https://github.com/ebbjs/ebbjs/issues/287)) rather than
+larger batches.
+
 ## Correctness under load
 
 Clean across every measured run above: **0 rejected Actions, 0
@@ -235,9 +293,11 @@ by one batch (≤100) and 0 at the end of the run.
 1. **EntityGroup membership writes are O(group size)** — filed as
    [#331](https://github.com/ebbjs/ebbjs/issues/331). It drives both the
    `spread`↔`hot` gap and the 100k-preload collapse.
-2. **Single-Writer ceiling ≈ 15k Actions/sec** — batch coalescing filed as
-   [#332](https://github.com/ebbjs/ebbjs/issues/332); multi-Writer is
-   gated on [#287](https://github.com/ebbjs/ebbjs/issues/287).
+2. **Single-Writer ceiling ≈ 15k Actions/sec is per-Action-bound** — batch
+   coalescing shipped in [#332](https://github.com/ebbjs/ebbjs/issues/332)
+   and does not move the batch-100 rate (see the section above); the next
+   lever is spreading per-Action work across schedulers, or multi-Writer
+   ([#287](https://github.com/ebbjs/ebbjs/issues/287)).
 3. **No commit-level telemetry**
    ([#125](https://github.com/ebbjs/ebbjs/issues/125)) — fan-out delivery
    lag is a client-side upper bound until `Writer`/`FanOutRouter` emit
@@ -247,7 +307,8 @@ by one batch (≤100) and 0 at the end of the run.
 5. **Action-log compaction/retention**
    ([#123](https://github.com/ebbjs/ebbjs/issues/123)) — a longer-horizon
    lever this harness does not exercise.
-6. **README drift corrected.** `:writer_count`,
-   `:writer_batch_timeout_ms`, `:writer_batch_max_size`, `:warmer_*`, and
-   `:replication_peers` are read by nothing; the server README now states
-   the actual single-Writer behavior.
+6. **README drift corrected.** `:writer_count`, `:warmer_*`, and
+   `:replication_peers` are read by nothing; the server README states the
+   actual single-Writer behavior. `:writer_batch_timeout_ms` and
+   `:writer_batch_max_size` were read by nothing as of #328 and are now
+   reintroduced and read by [#332](https://github.com/ebbjs/ebbjs/issues/332).

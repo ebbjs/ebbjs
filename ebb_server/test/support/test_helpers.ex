@@ -276,8 +276,8 @@ defmodule EbbServer.TestHelpers do
               "Get them from start_isolated_cache/0."
     end
 
-    {:ok, pid} =
-      Writer.start_link(
+    writer_opts =
+      [
         name: name,
         rocks_name: opts.rocks_name,
         dirty_set: opts.dirty_set,
@@ -294,7 +294,11 @@ defmodule EbbServer.TestHelpers do
         fan_out_router: opts[:fan_out_router],
         commit_fn: opts[:commit_fn],
         after_commit: opts[:after_commit]
-      )
+      ]
+      |> put_if_present(:batch_max_size, opts[:batch_max_size])
+      |> put_if_present(:batch_timeout_ms, opts[:batch_timeout_ms])
+
+    {:ok, pid} = Writer.start_link(writer_opts)
 
     on_exit(fn ->
       safe_stop(pid)
@@ -302,6 +306,9 @@ defmodule EbbServer.TestHelpers do
 
     %{name: name, pid: pid}
   end
+
+  defp put_if_present(kw, _key, nil), do: kw
+  defp put_if_present(kw, key, value), do: Keyword.put(kw, key, value)
 
   @doc """
   Creates isolated ETS tables for authorization testing.
