@@ -4,6 +4,16 @@ description: "How we built a write pipeline that can handle 100K writes/sec usin
 date: 2026-03-21
 ---
 
+> **Update (write-path benchmark, #328).** Every throughput figure below
+> comes from a storage-primitive RocksDB spike, not from the `ebb_server`
+> pipeline — no HTTP, permission checks, `cf_group_actions` index, or
+> fan-out. A reproducible benchmark of the real server now measures
+> **~15,000 Actions/sec sustained** with the production configuration
+> (single Writer, `sync: true`, 2-Update Actions), with burst and
+> sustained reported separately. The 108k number further down is a
+> 2-writer primitive ceiling, not a server number. See
+> [`ebb_server/bench/RESULTS.md`](https://github.com/ebbjs/ebbjs/blob/main/ebb_server/bench/RESULTS.md).
+
 Most sync engines build on [Postgres](https://www.postgresql.org/).
 
 And honestly? That's probably the right call for most projects. Postgres is battle-tested, horizontally scalable with read replicas, has incredible tooling, and you can get a managed instance from about a dozen providers without thinking twice.

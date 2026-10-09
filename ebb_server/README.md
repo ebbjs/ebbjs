@@ -76,13 +76,15 @@ A dual-store CQRS pattern:
   `EbbServer.Storage.EntityStore` when reads request dirty entities —
   never eagerly on every write.
 
-`enable_pipelined_write: true` is set on the RocksDB instance; a
-2-writer pipelined benchmark hit ~108k Actions/sec with full durability
-(see [Epic #111](https://github.com/ebbjs/ebbjs/issues/111) and
-[#130](https://github.com/ebbjs/ebbjs/issues/130) for the architectural
-rationale and benchmark details). Production currently runs a single
-Writer; multi-Writer pipelining is gated behind a committed-watermark
-and ordered-fanout coordination work that is not yet built.
+`enable_pipelined_write: true` is set on the RocksDB instance. The
+historical ~108k Actions/sec figure is a 2-writer, raw-RocksDB primitive
+(see [#130](https://github.com/ebbjs/ebbjs/issues/130)); measured through
+the real server, the production single-Writer configuration sustains
+**~15k Actions/sec** (`sync: true`, 2-Update Actions) — see
+[`bench/RESULTS.md`](bench/RESULTS.md). Production runs a single Writer;
+multi-Writer pipelining is gated behind committed-watermark and
+ordered-fanout coordination that is not yet built
+([#287](https://github.com/ebbjs/ebbjs/issues/287)).
 
 ### Module map
 
@@ -173,18 +175,21 @@ not atoms.
 
 All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 
-| Key                        | Description                          | Default    |
-| -------------------------- | ------------------------------------ | ---------- |
-| `:port`                    | HTTP listen port                     | 4000       |
-| `:data_dir`                | Directory for RocksDB + SQLite files | `./data`   |
-| `:auth_url`                | Developer's auth endpoint URL        | (required) |
-| `:writer_count`            | Number of Writer GenServers          | 2          |
-| `:writer_batch_timeout_ms` | Batch flush timer                    | 10         |
-| `:writer_batch_max_size`   | Max Actions per batch                | 1000       |
-| `:warmer_enabled`          | Enable Background Warmer             | false      |
-| `:warmer_interval_ms`      | Warmer poll interval                 | 1000       |
-| `:warmer_batch_size`       | Entities per warmer cycle            | 100        |
-| `:replication_peers`       | List of peer server URLs             | []         |
+| Key          | Description                          | Default     |
+| ------------ | ------------------------------------ | ----------- |
+| `:port`      | HTTP listen port                     | 4000        |
+| `:data_dir`  | Directory for RocksDB + SQLite files | `./data`    |
+| `:auth_mode` | Auth mode (`:bypass` / `:external`)  | `:external` |
+| `:auth_url`  | Developer's auth endpoint URL        | (required)  |
+
+Several keys that appeared in earlier docs — `:writer_count`,
+`:writer_batch_timeout_ms`, `:writer_batch_max_size`, `:warmer_*`, and
+`:replication_peers` — are **read by nothing in `lib/` or `config/`**.
+Production runs a single `EbbServer.Storage.Writer` GenServer with no
+batch coalescing; multi-Writer is gated on
+[#287](https://github.com/ebbjs/ebbjs/issues/287). Benchmarking the real
+write path is what forced the table above to describe what actually runs
+(see [`bench/RESULTS.md`](bench/RESULTS.md)).
 
 ### Observability
 
@@ -284,12 +289,37 @@ full generation algorithm.
 
 ### Performance targets
 
-- 10,000 concurrent client connections per server instance.
-- 1,000 collaborative documents with 10 concurrent editors each.
-- 10,000–20,000 Action writes/sec sustained; 108k burst benchmarked.
-- `ctx.get(id)`: <2ms p99.
-- `ctx.query(type)`: <10ms p99 at 100k entities.
-- SSE streaming latency: <50ms p50.
+Measured on the bench host described in
+[`bench/RESULTS.md`](bench/RESULTS.md) (a 4-scheduler VM, single Writer,
+`sync: true`). Rows that are not measured state why.
+
+| Target                                                   | Status                    | Notes                                                                                                                                                            |
+| -------------------------------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 10,000 concurrent client connections per server instance | Not measured              | Separate connection/load test; out of scope for the write-path benchmark (#328).                                                                                 |
+| 1,000 collaborative documents with 10 concurrent editors | Not measured              | Workload-level target; not exercised by the write-path benchmark.                                                                                                |
+| 10,000–20,000 Action writes/sec sustained                | **Measured: ~15,100/sec** | Single Writer, `sync: true`, 2-Update Actions, 100 Actions/request, 8 concurrent clients; steady 61–120s. See [`bench/RESULTS.md`](bench/RESULTS.md).            |
+| 108k burst                                               | Superseded                | A 2-writer raw-RocksDB primitive from [#130](https://github.com/ebbjs/ebbjs/issues/130), never measured through `ebb_server`. Measured server burst ~15,600/sec. |
+| `ctx.get(id)`: <2ms p99                                  | Not measured              | Read path; the harness measures writes only.                                                                                                                     |
+| `ctx.query(type)`: <10ms p99 at 100k entities            | Not measured              | Read path.                                                                                                                                                       |
+| SSE streaming latency: <50ms p50                         | Not measured              | No commit timestamp exists without `:telemetry` ([#125](https://github.com/ebbjs/ebbjs/issues/125)); T3 delivery lag is a client-side upper bound.               |
+
+### Benchmarking
+
+`mix bench.actions` runs a reproducible Actions/sec benchmark for the
+write path (tiers T0–T3: direct `Writer`, HTTP, concurrent HTTP, and HTTP
+with live in-process SSE subscribers). It boots an isolated storage +
+sync tree in a temp directory and writes a Markdown report to
+`bench/results/`. The harness is compiled in dev only — never for
+`mix test` or prod — and is not wired into `mix test`.
+
+```sh
+cd ebb_server
+mix bench.actions --tier t2 --duration 120 --warmup 5 --concurrency 8 \
+  --batch-size 100 --updates-per-action 2 --distribution hot
+```
+
+Published numbers, sweeps, and methodology:
+[`bench/RESULTS.md`](bench/RESULTS.md).
 
 ### Assumptions
 

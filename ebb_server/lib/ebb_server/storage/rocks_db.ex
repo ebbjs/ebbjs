@@ -74,6 +74,17 @@ defmodule EbbServer.Storage.RocksDB do
     {~c"cf_group_actions", []}
   ]
 
+  # The tuning that ships in production, held fixed across benchmark runs.
+  # `EbbServer.Bench.Report` reads `tuning/0` so the published environment
+  # block cannot drift from what `open_database/2` actually opens.
+  @tuning [max_background_jobs: 4, enable_pipelined_write: true]
+
+  @doc """
+  Returns the RocksDB tuning options that ship.
+  """
+  @spec tuning() :: keyword()
+  def tuning, do: @tuning
+
   # ---------------------------------------------------------------------------
   # Public API — start / stop
   # ---------------------------------------------------------------------------
@@ -434,12 +445,11 @@ defmodule EbbServer.Storage.RocksDB do
   end
 
   defp open_database(path, name, _opts) do
-    db_opts = [
-      create_if_missing: true,
-      create_missing_column_families: true,
-      max_background_jobs: 4,
-      enable_pipelined_write: true
-    ]
+    db_opts =
+      [
+        create_if_missing: true,
+        create_missing_column_families: true
+      ] ++ @tuning
 
     case :rocksdb.open(String.to_charlist(path), db_opts, @cf_descriptors) do
       {:ok, db_ref,
