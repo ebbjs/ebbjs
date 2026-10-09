@@ -119,6 +119,123 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
     end
 
+    test "user entity with a well-formed map field passes" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "todo_1",
+              "subject_type" => "todo",
+              "method" => "patch",
+              "data" => %{
+                "fields" => %{
+                  "content" => %{
+                    "map" => %{
+                      "a" => %{"value" => "hello", "update_id" => "u_a", "hlc" => "100"},
+                      "nested" => %{
+                        "map" => %{
+                          "b" => %{"value" => 1, "update_id" => "u_b", "hlc" => "200"}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        })
+
+      assert ActionValidator.validate_structure(action) == :ok
+    end
+
+    test "map entry missing update_id rejected" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "todo_1",
+              "subject_type" => "todo",
+              "method" => "patch",
+              "data" => %{
+                "fields" => %{
+                  "content" => %{
+                    "map" => %{"a" => %{"value" => "hello", "hlc" => "100"}}
+                  }
+                }
+              }
+            }
+          ]
+        })
+
+      assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
+    end
+
+    test "nested map entry missing update_id rejected" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "todo_1",
+              "subject_type" => "todo",
+              "method" => "patch",
+              "data" => %{
+                "fields" => %{
+                  "content" => %{
+                    "map" => %{
+                      "outer" => %{
+                        "map" => %{"inner" => %{"value" => "hello", "hlc" => "100"}}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        })
+
+      assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
+    end
+
+    test "map discriminant that is not a map rejected" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "todo_1",
+              "subject_type" => "todo",
+              "method" => "patch",
+              "data" => %{"fields" => %{"content" => %{"map" => "not a map"}}}
+            }
+          ]
+        })
+
+      assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
+    end
+
+    # The server stamps `update_id` on leaves itself, so a bare leaf stays
+    # accepted without one; only map entries, which the client stamps, are
+    # required to carry it.
+    test "top-level leaf without update_id still passes" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "todo_1",
+              "subject_type" => "todo",
+              "method" => "put",
+              "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
+            }
+          ]
+        })
+
+      assert ActionValidator.validate_structure(action) == :ok
+    end
+
     # data: nil is valid for system entities (the update handler
     # ignores `data` for them) and for any delete (the data fields
     # are dropped on the wire).

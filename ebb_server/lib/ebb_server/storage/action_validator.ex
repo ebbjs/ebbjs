@@ -153,7 +153,11 @@ defmodule EbbServer.Storage.ActionValidator do
     # System entities accept any data shape (including `nil`); the
     # server's update handler ignores `data` for these. For a delete
     # the data is dropped on the wire. For a user-entity put/patch
-    # `data.fields` must be present.
+    # `data.fields` must be present. A field value that uses the `map`
+    # discriminant is validated recursively; bare leaves are left to
+    # the merge, which stamps their `update_id` on ingest.
+    fields = if is_map(update["data"]), do: update["data"]["fields"], else: nil
+
     cond do
       update["subject_type"] in @system_entity_types ->
         :ok
@@ -161,8 +165,8 @@ defmodule EbbServer.Storage.ActionValidator do
       update["method"] == "delete" ->
         :ok
 
-      update["method"] in ["put", "patch"] and is_map(update["data"]) and
-          is_map(get_in(update, ["data", "fields"])) ->
+      update["method"] in ["put", "patch"] and is_map(update["data"]) and is_map(fields) and
+          valid_map_fields?(fields) ->
         :ok
 
       true ->
@@ -170,6 +174,30 @@ defmodule EbbServer.Storage.ActionValidator do
          "update data must be a well-formed map for put/patch/delete on user entities"}
     end
   end
+
+  defp valid_map_fields?(fields) do
+    Enum.all?(fields, fn {_key, value} -> valid_map_field?(value) end)
+  end
+
+  # Only the map variant needs structural validation: its entries are
+  # leaves or nested maps, and the merge assumes each leaf carries the
+  # `update_id` the client stamped. A non-map value is a leaf the server
+  # stamps itself, so it keeps the historical shape freedom.
+  defp valid_map_field?(%{"map" => entries}) do
+    is_map(entries) and Enum.all?(entries, fn {_key, value} -> valid_map_entry?(value) end)
+  end
+
+  defp valid_map_field?(_value), do: true
+
+  defp valid_map_entry?(%{"map" => entries}) do
+    is_map(entries) and Enum.all?(entries, fn {_key, value} -> valid_map_entry?(value) end)
+  end
+
+  defp valid_map_entry?(%{"value" => _} = leaf) do
+    is_binary(leaf["update_id"]) and leaf["update_id"] != ""
+  end
+
+  defp valid_map_entry?(_value), do: false
 
   @doc """
   Validates that the action's actor_id matches the authenticated actor.
