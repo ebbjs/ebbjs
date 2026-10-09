@@ -672,6 +672,36 @@ describe("createOutbox conflict detection", () => {
     return { outbox, local };
   };
 
+  it("reports a whole-field loss when the inbound value changes kind", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(
+      mkFieldAction({
+        id: "a_local",
+        subjectId: "todo_1",
+        fields: { content: { value: "leaf", update_id: "u_local", hlc: "10" } },
+      }),
+    );
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { content: { map: { a: { value: "map", update_id: "u_peer", hlc: "20" } } } },
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({
+      kind: "conflict",
+      actionId: "a_local",
+      slots: [slot("content")],
+    });
+    const [entry] = await deps.conflicts.list();
+    // A whole-field map winner has no single leaf triple.
+    expect(entry?.losses).toEqual([{ slot: slot("content"), winner: { value: { a: "map" } } }]);
+  });
+
   it("moves a pending entry whose LWW field loses, whole, into the Conflicts store", async () => {
     const deps = mkDeps();
     const { outbox } = await seed(deps);
