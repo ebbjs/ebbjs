@@ -133,6 +133,170 @@ describe("buildQueryBuilder — chain mutators", () => {
   });
 });
 
+describe("buildQueryBuilder — .or(...) disjunction", () => {
+  it("unions two single-filter groups", async () => {
+    const rows = [
+      mkEntity("1", { title: "a", completed: true }),
+      mkEntity("2", { title: "b", completed: false }),
+      mkEntity("3", { title: "c", completed: false }),
+    ];
+    const out = await buildQueryBuilder(rows, todo.shape).where("completed", true).or("title", "b");
+    expect(out.map((r) => r.title)).toEqual(["a", "b"]);
+  });
+
+  it("(a AND b) OR (c AND d) truth table", async () => {
+    const rows = [
+      mkEntity("r1", { title: "a", completed: false }), // a=true, b → match
+      mkEntity("r2", { title: "b", completed: true }), // c=true, d → match
+      mkEntity("r3", { title: "b", completed: false }), // d but not c
+      mkEntity("r4", { title: "a", completed: true }), // b but not a
+    ];
+    const out = await buildQueryBuilder(rows, todo.shape)
+      .where("completed", false)
+      .where("title", "a")
+      .or("completed", true)
+      .where("title", "b");
+    expect(out.map((r) => r.title)).toEqual(["a", "b"]);
+  });
+
+  it("yields a row matched by two groups once", async () => {
+    const rows = [mkEntity("1", { title: "a", completed: false })];
+    const out = await buildQueryBuilder(rows, todo.shape)
+      .where("completed", false)
+      .or("title", "a");
+    expect(out.map((r) => r.title)).toEqual(["a"]);
+  });
+
+  it("leading .or starts the first group, like .where", async () => {
+    const rows = [
+      mkEntity("1", { title: "a", completed: true }),
+      mkEntity("2", { title: "b", completed: false }),
+    ];
+    const viaOr = await buildQueryBuilder(rows, todo.shape).or("completed", true);
+    const viaWhere = await buildQueryBuilder(rows, todo.shape).where("completed", true);
+    expect(viaOr.map((r) => r.title)).toEqual(["a"]);
+    expect(viaOr.map((r) => r.title)).toEqual(viaWhere.map((r) => r.title));
+  });
+
+  it("preserves candidate order across the union", async () => {
+    const rows = [
+      mkEntity("1", { title: "b", completed: true }),
+      mkEntity("2", { title: "a", completed: false }),
+      mkEntity("3", { title: "c", completed: false }),
+    ];
+    const out = await buildQueryBuilder(rows, todo.shape)
+      .where("completed", false)
+      .or("title", "b");
+    expect(out.map((r) => r.title)).toEqual(["b", "a", "c"]);
+  });
+
+  it("an empty branch contributes nothing to the union", async () => {
+    const rows = [
+      mkEntity("1", { title: "a", completed: false }),
+      mkEntity("2", { title: "b", completed: true }),
+    ];
+    // The leading group matches nothing, so only the `.or` branch survives.
+    const out = await buildQueryBuilder(rows, todo.shape)
+      .where("title", "missing")
+      .or("completed", true);
+    expect(out.map((r) => r.title)).toEqual(["b"]);
+  });
+
+  it("composes with orderBy, limit, first, count, exists and async iteration", async () => {
+    const rows = [
+      mkEntity("1", { title: "banana", completed: false }),
+      mkEntity("2", { title: "apple", completed: false }),
+      mkEntity("3", { title: "cherry", completed: true }),
+    ];
+    const qb = buildQueryBuilder(rows, todo.shape).where("completed", false).or("title", "cherry");
+    expect((await qb.orderBy("title", "asc")).map((r) => r.title)).toEqual([
+      "apple",
+      "banana",
+      "cherry",
+    ]);
+    expect((await qb.orderBy("title", "asc").limit(2)).map((r) => r.title)).toEqual([
+      "apple",
+      "banana",
+    ]);
+    expect((await qb.first())?.title).toBe("banana");
+    expect(await qb.count()).toBe(3);
+    expect(await qb.exists()).toBe(true);
+    const titles: string[] = [];
+    for await (const row of qb) titles.push(row.title);
+    expect(titles).toEqual(["banana", "apple", "cherry"]);
+    expect((await qb.toRaw()).map((e) => e.id)).toEqual(["1", "2", "3"]);
+  });
+
+  it("returns empty when every group matches nothing", async () => {
+    const rows = [mkEntity("1", { title: "a", completed: false })];
+    const out = await buildQueryBuilder(rows, todo.shape)
+      .where("title", "nope")
+      .or("completed", true);
+    expect(out).toEqual([]);
+  });
+
+  it("excludes tombstones from every union branch", async () => {
+    const dead = { ...mkEntity("1", { title: "gone", completed: false }), deleted_hlc: "9" };
+    const live = mkEntity("2", { title: "here", completed: true });
+    const out = await buildQueryBuilder([dead, live], todo.shape)
+      .where("completed", false)
+      .or("title", "here");
+    expect(out.map((r) => r.title)).toEqual(["here"]);
+  });
+
+  it("or's field value narrows to the field's TypeBox static type", () => {
+    const rows: Entity[] = [];
+    const builder = buildQueryBuilder(rows, todo.shape);
+    builder.or("title", "hello");
+    builder.or("body", null);
+    builder.or("completed", false);
+    // The relationship overload accepts a pointer string on any key.
+    builder.or("completed", "not a boolean");
+    expect(true).toBe(true);
+  });
+
+  it("rejects a value that is neither a field type nor a pointer on .or", () => {
+    const rows: Entity[] = [];
+    const builder = buildQueryBuilder(rows, todo.shape);
+    const invoke = () => {
+      // @ts-expect-error — 42 is neither `completed`'s boolean nor a PointerValue.
+      builder.or("completed", 42);
+      // @ts-expect-error — 42 is neither `title`'s string nor a PointerValue.
+      builder.or("title", 42);
+      // @ts-expect-error — an object without a string `.id` is not a PointerValue.
+      builder.or("title", { id: 42 });
+    };
+    expect(invoke).toBeTypeOf("function");
+  });
+
+  it("rejects an unknown field name on .or at compile time", () => {
+    const rows: Entity[] = [];
+    const builder = buildQueryBuilder(rows, todo.shape);
+    const invoke = () => {
+      // @ts-expect-error — `bogus` is not in the field map and `true` is not a pointer.
+      builder.or("bogus", true);
+    };
+    expect(invoke).toBeTypeOf("function");
+  });
+
+  it("throws on an unknown key passed to .or at runtime", () => {
+    const rows: Entity[] = [];
+    const builder = buildQueryBuilder(rows, todo.shape);
+    expect(() => builder.or("bogus", "x")).toThrow(/or\("bogus"\)/);
+  });
+
+  it("returns a new builder on every .or call (no shared state)", async () => {
+    const rows = [
+      mkEntity("1", { title: "a", completed: false }),
+      mkEntity("2", { title: "b", completed: true }),
+    ];
+    const base = buildQueryBuilder(rows, todo.shape).where("completed", false);
+    const withOr = base.or("completed", true);
+    expect((await base).map((r) => r.title)).toEqual(["a"]);
+    expect((await withOr).map((r) => r.title)).toEqual(["a", "b"]);
+  });
+});
+
 describe("buildQueryBuilder — thenable projection", () => {
   it("await qb resolves to readonly Static<typeof shape>[]", async () => {
     const rows = [mkEntity("1", { title: "a", completed: false, body: null })];

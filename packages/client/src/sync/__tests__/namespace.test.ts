@@ -603,6 +603,79 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     expect(out.map((r) => r.title)).toEqual(["a"]);
   });
 
+  it(".or unions a relationship branch with a field branch", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(todo("t1", "a", false));
+    await storage.entities.set(todo("t2", "b", false));
+    await storage.entities.set(todo("t3", "c", true));
+    await storage.entities.set(mkRelEntity("r1", "t1", "l1", "list", "todo"));
+    const out = await client.todo.query().where("list", "l1").or("completed", true);
+    expect(out.map((r) => r.title).sort()).toEqual(["a", "c"]);
+  });
+
+  it('.or("groups", ...) unions a membership branch with a relationship branch', async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(todo("t1", "a"));
+    await storage.entities.set(todo("t2", "b"));
+    await storage.entities.set(todo("t3", "c"));
+    await storage.entities.set(mkRelEntity("r1", "t1", "l1", "list", "todo"));
+    await storage.entities.set(mkEntityGroup("eg1", "t2", "g1"));
+    const out = await client.todo.query().where("list", "l1").or("groups", "g1");
+    expect(out.map((r) => r.title).sort()).toEqual(["a", "b"]);
+  });
+
+  it("an .or membership branch unions with a field branch and dedupes", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(mkEntity("d1", "document", { title: "one" }));
+    await storage.entities.set(mkEntity("d2", "document", { title: "two" }));
+    await storage.entities.set(mkEntity("d3", "document", { title: "three" }));
+    await storage.entities.set(mkEntityGroup("eg1", "d1", "g1"));
+    // d1 is in g1 AND matches the field branch: it must appear once.
+    const out = await client.document.query().where("title", "one").or("groups", "g1");
+    expect(out.map((r) => r.title)).toEqual(["one"]);
+  });
+
+  it("an .or relationship group with no live edge contributes nothing", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(todo("t1", "a", false));
+    await storage.entities.set(todo("t2", "b", true));
+    expect(
+      (await client.todo.query().where("completed", false).or("list", "missing")).map(
+        (r) => r.title,
+      ),
+    ).toEqual(["a"]);
+    expect(await client.todo.query().where("completed", false).or("list", null)).toHaveLength(1);
+    expect(await client.todo.query().where("completed", false).or("list", [])).toHaveLength(1);
+  });
+
+  it(".or array target stays any-of within that branch", async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(todo("t1", "a"));
+    await storage.entities.set(todo("t2", "b"));
+    await storage.entities.set(todo("t3", "c"));
+    await storage.entities.set(mkRelEntity("r1", "t1", "l1", "list", "todo"));
+    await storage.entities.set(mkRelEntity("r2", "t2", "l2", "list", "todo"));
+    await storage.entities.set(mkRelEntity("r3", "t3", "l3", "list", "todo"));
+    const out = await client.todo.query().where("completed", true).or("list", ["l1", "l3"]);
+    expect(out.map((r) => r.title).sort()).toEqual(["a", "c"]);
+  });
+
+  it('.or("groups", [...]) stays any-of within the membership branch', async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(mkEntity("d1", "document", { title: "one" }));
+    await storage.entities.set(mkEntity("d2", "document", { title: "two" }));
+    await storage.entities.set(mkEntity("d3", "document", { title: "three" }));
+    await storage.entities.set(mkEntityGroup("eg1", "d1", "g1"));
+    await storage.entities.set(mkEntityGroup("eg2", "d2", "g2"));
+    const out = await client.document.query().or("groups", ["g1", "g2"]);
+    expect(out.map((r) => r.title).sort()).toEqual(["one", "two"]);
+  });
+
+  it("throws on an .or key that is neither a field nor a declared relationship", async () => {
+    const { client } = await buildClient();
+    expect(() => client.todo.query().or("nope", "x")).toThrow(/or\("nope"\)/);
+  });
+
   it("intersects a field predicate with a relationship predicate", async () => {
     const { storage, client } = await buildClient();
     await storage.entities.set(todo("t1", "a", false));
