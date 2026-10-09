@@ -333,9 +333,15 @@ defmodule EbbServer.TestHelpers do
 
     :ets.new(gm, [:bag, :public, :named_table])
     :ets.new(gm_by_id, [:set, :public, :named_table])
-    :ets.new(eg, [:bag, :public, :named_table])
-    :ets.new(eg_by_id, [:set, :public, :named_table])
-    :ets.new(eg_by_group, [:bag, :public, :named_table])
+
+    # Let EntityGroupCache own its table shapes so this helper can't
+    # drift from the cache's init/1.
+    EntityGroupCache.reset(
+      entity_groups: eg,
+      entity_groups_by_id: eg_by_id,
+      entity_groups_by_group: eg_by_group
+    )
+
     :ets.new(entity_types, [:set, :public, :named_table])
     :ets.new(rel, [:bag, :public, :named_table])
     :ets.new(rbi, [:set, :public, :named_table])

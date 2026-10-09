@@ -8,7 +8,9 @@ defmodule EbbServer.Storage.EntityGroupCache do
   - `:ebb_entity_groups` - `:bag` of `{entity_id, entry}`, one row per
     membership
   - `:ebb_entity_groups_by_id` - maps membership id to entry
-  - `:ebb_entity_groups_by_group` - maps group to member entity ids
+  - `:ebb_entity_groups_by_group` - `:ordered_set` of `{{group_id,
+    entity_id}}`, one row per membership, so a membership write is
+    O(log N) rather than the O(group size) a `:bag` lookup costs
 
   This mirrors `RelationshipCache`'s table shape and API — keyword-list
   options and `reset/1` — rather than `GroupCache`'s single-table
@@ -75,7 +77,7 @@ defmodule EbbServer.Storage.EntityGroupCache do
 
       :ets.insert(table, {entity_id, entry})
       :ets.insert(by_id_table, {entry_id, entry})
-      :ets.insert(by_group_table, {group_id, entity_id})
+      :ets.insert(by_group_table, {{group_id, entity_id}})
       :ok
     end
   end
@@ -99,7 +101,7 @@ defmodule EbbServer.Storage.EntityGroupCache do
     case :ets.lookup(by_id_table, entry_id) do
       [{_, entry}] ->
         :ets.delete_object(table, {entry.entity_id, entry})
-        :ets.delete_object(by_group_table, {entry.group_id, entry.entity_id})
+        :ets.delete(by_group_table, {entry.group_id, entry.entity_id})
         :ets.delete(by_id_table, entry_id)
         :ok
 
@@ -147,10 +149,13 @@ defmodule EbbServer.Storage.EntityGroupCache do
   end
 
   @doc """
-  Returns the entity ids that belong to a group.
+  Returns the entity ids that belong to a group, in no particular
+  order.
 
   No production caller yet; the cache tests use it to pin the by-group
-  index's put/delete behavior.
+  index's put/delete behavior. Reads the `:ordered_set` by the
+  partially-bound composite key, so cost scales with the number of
+  members rather than the whole index.
 
   ## Examples
 
@@ -159,9 +164,7 @@ defmodule EbbServer.Storage.EntityGroupCache do
   """
   @spec group_entities(String.t(), atom()) :: [String.t()]
   def group_entities(group_id, table \\ @default_entity_groups_by_group) do
-    table
-    |> :ets.lookup(group_id)
-    |> Enum.map(fn {_group_id, entity_id} -> entity_id end)
+    :ets.select(table, [{{{group_id, :"$1"}}, [], [:"$1"]}])
   end
 
   @doc """
@@ -182,7 +185,7 @@ defmodule EbbServer.Storage.EntityGroupCache do
 
     reset_table(table, :bag)
     reset_table(by_id_table, :set)
-    reset_table(by_group_table, :bag)
+    reset_table(by_group_table, :ordered_set)
     :ok
   end
 
@@ -213,7 +216,7 @@ defmodule EbbServer.Storage.EntityGroupCache do
     :persistent_term.put({__MODULE__, :entity_groups_by_group}, by_group_table)
     :ets.new(table, [:bag, :public, :named_table])
     :ets.new(by_id_table, [:set, :public, :named_table])
-    :ets.new(by_group_table, [:bag, :public, :named_table])
+    :ets.new(by_group_table, [:ordered_set, :public, :named_table])
 
     {:ok,
      %__MODULE__{
