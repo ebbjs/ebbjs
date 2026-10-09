@@ -59,7 +59,7 @@ import { liveMemberships } from "./entity-group";
  * The rule is purely structural: no field-kind dispatch, mirroring the
  * merge rule.
  */
-const projectFieldValue = (field: FieldValue): unknown => {
+export const projectFieldValue = (field: FieldValue): unknown => {
   if (!isFieldMap(field)) return field.value;
   const out: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(field.map)) {

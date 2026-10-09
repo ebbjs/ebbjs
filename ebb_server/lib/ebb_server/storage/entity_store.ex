@@ -420,16 +420,22 @@ defmodule EbbServer.Storage.EntityStore do
     }
   end
 
-  # A put carries no update_id on the wire for its leaves; the server owns
-  # the id, so every leaf inside the field (including entries nested under a
-  # `map`) is stamped with the update's id. The map object itself is not a
-  # leaf and carries no update_id.
+  # A field's leaves are stamped with the update's id so the stored value
+  # is self-describing. Entries nested under a `map` recurse; the map
+  # object itself is not a leaf and carries no update_id. A leaf that
+  # already carries a wire `update_id` keeps it: the client's fold trusts
+  # that value, so the server must use it too for an equal-HLC tiebreak to
+  # resolve identically on both sides. Only a leaf with no usable id — the
+  # historical top-level shape — falls back to the Update's id.
   defp stamp_update_id(%{"map" => entries}, update_id) when is_map(entries) do
     stamped =
       Enum.into(entries, %{}, fn {key, value} -> {key, stamp_update_id(value, update_id)} end)
 
     %{"map" => stamped}
   end
+
+  defp stamp_update_id(%{"update_id" => id} = leaf, _update_id) when is_binary(id) and id != "",
+    do: leaf
 
   defp stamp_update_id(leaf, update_id) when is_map(leaf),
     do: Map.put(leaf, "update_id", update_id)

@@ -32,7 +32,14 @@
  * storage adapter and fetch.
  */
 
-import { compare, isFieldMap, type Action, type FieldValue, type Update } from "@ebbjs/core";
+import {
+  compare,
+  isFieldMap,
+  mergeFieldValue,
+  type Action,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 import type {
   ConflictEntry,
   ConflictLoss,
@@ -43,6 +50,7 @@ import type {
 } from "@ebbjs/storage/types";
 
 import type { Rejection, WriteResponse } from "./types";
+import { projectFieldValue } from "./query-builder";
 
 /**
  * Entry status. `pending` is flushable; `acknowledged` has been
@@ -152,30 +160,6 @@ interface LosingEntry {
 const updateFields = (update: Update): Record<string, FieldValue> | undefined =>
   update.data?.fields as Record<string, FieldValue> | undefined;
 
-/**
- * Merge two values under the same recursive LWW rule the storage
- * materializer uses: leaf over leaf by HLC then `update_id`, map over
- * map key by key, and a kind change replaces the whole value.
- *
- * `pendingFieldValue` folds an Action's own repeated writes through
- * this so detection compares the state the server would materialize.
- */
-const mergePendingValues = (existing: FieldValue, incoming: FieldValue): FieldValue => {
-  if (!isFieldMap(existing) && !isFieldMap(incoming)) {
-    const order = compare(existing.hlc ?? "", incoming.hlc ?? "");
-    if (order !== 0) return order < 0 ? incoming : existing;
-    return incoming.update_id >= existing.update_id ? incoming : existing;
-  }
-  if (!isFieldMap(existing) || !isFieldMap(incoming)) return incoming;
-
-  const merged: Record<string, FieldValue> = { ...existing.map };
-  for (const [key, value] of Object.entries(incoming.map)) {
-    const previous = merged[key];
-    merged[key] = previous === undefined ? value : mergePendingValues(previous, value);
-  }
-  return { map: merged };
-};
-
 /** The effective FieldValue a pending Action wrote to `field` on `subjectId`. */
 const pendingFieldValue = (
   action: Action,
@@ -187,7 +171,7 @@ const pendingFieldValue = (
     if (update.subject_id !== subjectId) continue;
     const value = updateFields(update)?.[field];
     if (value === undefined) continue;
-    merged = merged === undefined ? value : mergePendingValues(merged, value);
+    merged = merged === undefined ? value : mergeFieldValue(merged, value);
   }
   return merged;
 };
@@ -212,22 +196,10 @@ const isConflictableField = (
 ): boolean =>
   !STRUCTURAL_SUBJECT_TYPES.has(subjectType) && (isLwwField?.(subjectType, field) ?? true);
 
-/** A map's plain projected value, used when a whole field is replaced. */
-const projectMapValue = (value: FieldValue): unknown => {
-  if (!isFieldMap(value)) return value.value;
-  const out: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value.map)) {
-    const projected = projectMapValue(child);
-    if (projected === null) continue;
-    out[key] = projected;
-  }
-  return out;
-};
-
 /** The winner reported for one lost slot. */
 const winnerFor = (value: FieldValue): ConflictWinner =>
   isFieldMap(value)
-    ? { update_id: "", hlc: "", value: projectMapValue(value) }
+    ? { value: projectFieldValue(value) }
     : { update_id: value.update_id, hlc: value.hlc ?? "", value: value.value };
 
 /**
@@ -289,7 +261,7 @@ const findLosingEntries = (
         subjectType: update.subject_type,
         subjectId: update.subject_id,
         field,
-        value: previous === undefined ? value : mergePendingValues(previous.value, value),
+        value: previous === undefined ? value : mergeFieldValue(previous.value, value),
       });
     }
   }

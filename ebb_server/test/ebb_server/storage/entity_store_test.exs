@@ -676,6 +676,50 @@ defmodule EbbServer.Storage.EntityStoreTest do
       end
     end
 
+    test "a map leaf's wire update_id is preserved and decides an equal-HLC tie", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_map_wire_update_id"
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+      put = put_action("act_put", entity_id, %{}, hlc_from(1_000))
+      Writer.write_actions([put], writer_name)
+      hlc = hlc_from(2_000)
+
+      # The leaf ids order opposite to the Update ids: the wire value must
+      # decide, and the server must not overwrite it with the Update id.
+      patch_aaa =
+        patch_action(
+          "act_z",
+          entity_id,
+          %{
+            "content" =>
+              map_field(%{"a" => %{"value" => "a", "update_id" => "u_aaa", "hlc" => hlc}})
+          },
+          hlc
+        )
+
+      patch_zzz =
+        patch_action(
+          "act_a",
+          entity_id,
+          %{
+            "content" =>
+              map_field(%{"a" => %{"value" => "z", "update_id" => "u_zzz", "hlc" => hlc}})
+          },
+          hlc
+        )
+
+      Writer.write_actions([patch_aaa], writer_name)
+      Writer.write_actions([patch_zzz], writer_name)
+
+      assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
+      assert entity.data["fields"]["content"]["map"]["a"]["value"] == "z"
+      assert entity.data["fields"]["content"]["map"]["a"]["update_id"] == "u_zzz"
+    end
+
     test "a tombstoned map entry is retained in storage", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,

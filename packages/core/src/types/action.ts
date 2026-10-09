@@ -2,6 +2,7 @@ import { Type } from "@sinclair/typebox";
 import { Static } from "@sinclair/typebox";
 import { NanoIdSchema } from "./nanoid";
 import { HLCTimestampSchema, type HLCTimestamp } from "./hlc";
+import { compare } from "../hlc";
 
 export const SubjectTypeSchema = Type.Union([
   Type.Literal("group"),
@@ -60,6 +61,45 @@ export const isFieldMap = (field: FieldValue): field is FieldMap => "map" in fie
 
 /** Narrow a field value to its leaf variant. */
 export const isFieldLeaf = (field: FieldValue): field is FieldLeaf => !isFieldMap(field);
+
+/**
+ * Merge an incoming field value over an existing one, recursively, under
+ * the wire's only merge rule. This is the protocol's definition of the
+ * rule; the server and every client materializer mirror it so concurrent
+ * writes converge identically everywhere.
+ *
+ * - leaf over leaf: higher HLC wins; equal HLC breaks toward the
+ *   lexicographically greater `update_id`.
+ * - map over map: the key sets are unioned and each key merges by the
+ *   same rule, so a write to one key leaves its siblings untouched.
+ * - a mismatched kind (a leaf replacing a map or vice versa) replaces
+ *   the whole value; a field's kind is fixed by its schema, so this
+ *   only happens for a schema violation and the patch is the newer
+ *   intent.
+ *
+ * A leaf `value: null` is a tombstone: it participates in the merge like
+ * any other leaf so a late write can still beat it, and the projection
+ * is what hides a tombstoned map key.
+ */
+export const mergeFieldValue = (
+  existing: FieldValue | undefined,
+  incoming: FieldValue,
+): FieldValue => {
+  if (existing === undefined) return incoming;
+  if (!isFieldMap(existing) || !isFieldMap(incoming)) {
+    if (isFieldMap(existing) || isFieldMap(incoming)) return incoming;
+    const hlcCmp = compare(existing.hlc ?? "", incoming.hlc ?? "");
+    if (hlcCmp < 0) return incoming;
+    if (hlcCmp > 0) return existing;
+    return incoming.update_id >= existing.update_id ? incoming : existing;
+  }
+
+  const merged: Record<string, FieldValue> = { ...existing.map };
+  for (const [key, value] of Object.entries(incoming.map)) {
+    merged[key] = mergeFieldValue(merged[key], value);
+  }
+  return { map: merged };
+};
 
 // An Update's `data` is a `{ fields: Record<string, FieldValue> }`
 // envelope. The same shape ships on the wire for every entity type

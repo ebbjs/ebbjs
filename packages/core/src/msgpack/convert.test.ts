@@ -41,6 +41,30 @@ describe("convertHlcToInteger", () => {
     expect(convertHlcToInteger(input)).toEqual([1234567890123, 9876543210987]);
   });
 
+  it("converts HLC strings inside recursive map field values", () => {
+    const input = {
+      fields: {
+        content: {
+          map: {
+            a: { value: 1, update_id: "u_a", hlc: "1234567890123" },
+            b: { map: { c: { value: 2, update_id: "u_c", hlc: "9876543210987" } } },
+          },
+        },
+      },
+    };
+
+    expect(convertHlcToInteger(input)).toEqual({
+      fields: {
+        content: {
+          map: {
+            a: { value: 1, update_id: "u_a", hlc: 1234567890123 },
+            b: { map: { c: { value: 2, update_id: "u_c", hlc: 9876543210987 } } },
+          },
+        },
+      },
+    });
+  });
+
   it("converts HLC strings in objects within arrays", () => {
     const input = [{ hlc: "1234567890123" }, { hlc: "9876543210987" }];
     expect(convertHlcToInteger(input)).toEqual([{ hlc: 1234567890123 }, { hlc: 9876543210987 }]);

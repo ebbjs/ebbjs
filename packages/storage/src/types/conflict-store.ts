@@ -2,16 +2,16 @@ import type { Action } from "@ebbjs/core";
 
 /**
  * The server-side value that beat a losing Action for one slot. Mirrors
- * the `FieldValue` triple the LWW comparison uses, so the entry is
+ * the `FieldValue` the LWW comparison uses, so the entry is
  * self-describing across a reload. A whole-field replacement by an
- * incoming map has no triple of its own; its `update_id` / `hlc` are
- * empty and `value` is the projected map.
+ * incoming map has no single leaf triple, so `update_id` / `hlc` are
+ * absent and `value` is the projected map.
  */
 export interface ConflictWinner {
-  /** `update_id` of the FieldValue that won. */
-  readonly update_id: string;
-  /** HLC carried by the winning FieldValue. */
-  readonly hlc: string;
+  /** `update_id` of the winning FieldValue; absent for a whole-field map winner. */
+  readonly update_id?: string;
+  /** HLC carried by the winning FieldValue; absent for a whole-field map winner. */
+  readonly hlc?: string;
   readonly value: unknown;
 }
 

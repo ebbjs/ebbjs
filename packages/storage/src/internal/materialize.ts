@@ -1,5 +1,5 @@
 import type { Entity, FieldValue, HLCTimestamp, Update } from "@ebbjs/core";
-import { compare, isFieldMap, latestHlc } from "@ebbjs/core";
+import { latestHlc, mergeFieldValue } from "@ebbjs/core";
 
 /**
  * Shared materialization helpers used by every EntityStore implementation.
@@ -18,45 +18,11 @@ export const readFields = (update: Update): Record<string, FieldValue> => {
 };
 
 /**
- * Merge one incoming field value over an existing one, recursively.
- *
- * - leaf over leaf: higher HLC wins; equal HLC breaks toward the
- *   lexicographically greater `update_id`.
- * - map over map: the key sets are unioned and each key merges by the
- *   same rule, so a write to one key leaves its siblings untouched.
- * - a mismatched kind (a leaf replacing a map or vice versa) replaces
- *   the whole value; a field's kind is fixed by its schema, so this
- *   only happens for a schema violation and the patch is the newer
- *   intent.
- *
- * A leaf `value: null` is a tombstone: it participates in the merge
- * like any other leaf so a late write can still beat it, and the
- * projection is what hides a tombstoned map key.
- */
-export const mergeFieldValue = (
-  existing: FieldValue | undefined,
-  incoming: FieldValue,
-): FieldValue => {
-  if (existing === undefined) return incoming;
-  if (!isFieldMap(existing) || !isFieldMap(incoming)) {
-    if (isFieldMap(existing) || isFieldMap(incoming)) return incoming;
-    const hlcCmp = compare(existing.hlc ?? "", incoming.hlc ?? "");
-    if (hlcCmp < 0) return incoming;
-    if (hlcCmp > 0) return existing;
-    return incoming.update_id >= existing.update_id ? incoming : existing;
-  }
-
-  const merged: Record<string, FieldValue> = { ...existing.map };
-  for (const [key, value] of Object.entries(incoming.map)) {
-    merged[key] = mergeFieldValue(merged[key], value);
-  }
-  return { map: merged };
-};
-
-/**
  * Merges patch fields into existing entity data using LWW semantics.
  * Higher HLC wins; equal HLC breaks toward the lexicographically
- * greater `update_id`. A map field merges key by key.
+ * greater `update_id`. A map field merges key by key. The recursive
+ * rule itself lives in `@ebbjs/core` so the server, the outbox, and
+ * both adapters share one definition.
  */
 export const mergeFields = (existing: Entity["data"], update: Update): Entity["data"] => {
   const patch = readFields(update);
