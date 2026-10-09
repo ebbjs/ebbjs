@@ -161,6 +161,51 @@ defmodule EbbServer.Storage.WriterTest do
       assert {:ok, ^gsn_key} =
                RocksDB.get(RocksDB.cf_action_dedup(rocks_name), action.id, name: rocks_name)
     end
+
+    test "dedups repeated (subject_type, subject_id) index puts across the flush", ctx do
+      test_pid = self()
+
+      commit_fn = fn ops, opts ->
+        send(test_pid, {:captured_ops, ops})
+        RocksDB.write_batch(ops, opts)
+      end
+
+      %{name: writer_name} = start_writer(Map.put(ctx, :commit_fn, commit_fn))
+
+      action1 =
+        validated_action(%{
+          id: "act_type_1",
+          updates: [
+            validated_update(%{subject_id: "todo_shared", subject_type: "todo"}),
+            validated_update(%{subject_id: "todo_unique_1", subject_type: "todo"})
+          ]
+        })
+
+      action2 =
+        validated_action(%{
+          id: "act_type_2",
+          updates: [
+            validated_update(%{subject_id: "todo_shared", subject_type: "todo"}),
+            validated_update(%{subject_id: "todo_unique_2", subject_type: "todo"})
+          ]
+        })
+
+      assert {:ok, {1, 2}, []} = Writer.write_actions([action1, action2], writer_name)
+
+      assert_receive {:captured_ops, ops}
+
+      cf = RocksDB.cf_type_entities(ctx.rocks_name)
+      puts = for {:put, ^cf, _key, _value} <- ops, do: :ok
+
+      # `todo_shared` repeats across both Actions; only the three unique
+      # keys are written.
+      assert length(puts) == 3
+
+      for subject_id <- ["todo_shared", "todo_unique_1", "todo_unique_2"] do
+        key = RocksDB.encode_type_entity_key("todo", subject_id)
+        assert {:ok, <<>>} = RocksDB.get(cf, key, name: ctx.rocks_name)
+      end
+    end
   end
 
   describe "ETF round-trip" do
@@ -907,6 +952,49 @@ defmodule EbbServer.Storage.WriterTest do
       assert {:ok, "act_multi"} = RocksDB.get(cf, group_gsn_key("g_1", 1), name: rocks_name)
       assert {:ok, "act_multi"} = RocksDB.get(cf, group_gsn_key("g_2", 1), name: rocks_name)
       assert :not_found = RocksDB.get(cf, group_gsn_key("g_3", 1), name: rocks_name)
+    end
+
+    test "emits one put per {group_id, gsn} when two updates resolve to the same group",
+         ctx do
+      test_pid = self()
+
+      commit_fn = fn ops, opts ->
+        send(test_pid, {:captured_ops, ops})
+        RocksDB.write_batch(ops, opts)
+      end
+
+      %{name: writer_name} = start_writer(Map.put(ctx, :commit_fn, commit_fn))
+
+      hlc = generate_hlc()
+
+      action = %{
+        id: "act_same_group",
+        actor_id: "actor_1",
+        hlc: hlc,
+        updates: [
+          %{
+            id: "upd_todo",
+            subject_id: "todo_same_group",
+            subject_type: "todo",
+            method: :put,
+            data: %{
+              "fields" => %{"title" => %{"type" => "lww", "value" => "x", "hlc" => hlc}}
+            }
+          },
+          entity_group_update("eg_same_group", "todo_same_group", "g_bench", hlc)
+        ]
+      }
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      assert_receive {:captured_ops, ops}
+
+      cf = RocksDB.cf_group_actions(ctx.rocks_name)
+      key = group_gsn_key("g_bench", 1)
+      puts = for {:put, ^cf, _op_key, _action_id} <- ops, do: :ok
+
+      assert length(puts) == 1
+      assert {:ok, "act_same_group"} = RocksDB.get(cf, key, name: ctx.rocks_name)
     end
 
     test "a domain link to a non-group target adds no group index", %{
