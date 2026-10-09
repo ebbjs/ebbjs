@@ -80,7 +80,10 @@ A dual-store CQRS pattern:
 historical ~108k Actions/sec figure is a 2-writer, raw-RocksDB primitive
 (see [#130](https://github.com/ebbjs/ebbjs/issues/130)); measured through
 the real server, the production single-Writer configuration sustains
-**~15k Actions/sec** (`sync: true`, 2-Update Actions) — see
+**~15k Actions/sec** (`sync: true`, 2-Update Actions). Writer batch
+coalescing ([#332](https://github.com/ebbjs/ebbjs/issues/332)) leaves that
+batch-100 rate flat — it is per-Action-bound — and roughly triples batch-1
+direct-write throughput; see
 [`bench/RESULTS.md`](bench/RESULTS.md). Production runs a single Writer;
 multi-Writer pipelining is gated behind committed-watermark and
 ordered-fanout coordination that is not yet built
@@ -175,21 +178,22 @@ not atoms.
 
 All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 
-| Key          | Description                          | Default     |
-| ------------ | ------------------------------------ | ----------- |
-| `:port`      | HTTP listen port                     | 4000        |
-| `:data_dir`  | Directory for RocksDB + SQLite files | `./data`    |
-| `:auth_mode` | Auth mode (`:bypass` / `:external`)  | `:external` |
-| `:auth_url`  | Developer's auth endpoint URL        | (required)  |
+| Key                        | Description                                                       | Default     |
+| -------------------------- | ----------------------------------------------------------------- | ----------- |
+| `:port`                    | HTTP listen port                                                  | 4000        |
+| `:data_dir`                | Directory for RocksDB + SQLite files                              | `./data`    |
+| `:auth_mode`               | Auth mode (`:bypass` / `:external`)                               | `:external` |
+| `:auth_url`                | Developer's auth endpoint URL                                     | (required)  |
+| `:writer_batch_max_size`   | Buffered Actions before an immediate commit (`<= 0` = no trigger) | 1000        |
+| `:writer_batch_timeout_ms` | Coalescing window (`0` = burst-drain, no timer)                   | 0           |
 
-Several keys that appeared in earlier docs — `:writer_count`,
-`:writer_batch_timeout_ms`, `:writer_batch_max_size`, `:warmer_*`, and
-`:replication_peers` — are **read by nothing in `lib/` or `config/`**.
-Production runs a single `EbbServer.Storage.Writer` GenServer with no
-batch coalescing; multi-Writer is gated on
-[#287](https://github.com/ebbjs/ebbjs/issues/287). Benchmarking the real
-write path is what forced the table above to describe what actually runs
-(see [`bench/RESULTS.md`](bench/RESULTS.md)).
+Several keys that appeared in earlier docs — `:writer_count`, `:warmer_*`,
+and `:replication_peers` — are **read by nothing in `lib/` or `config/`**.
+Production runs a single `EbbServer.Storage.Writer` GenServer with batch
+coalescing controlled by the two `:writer_batch_*` knobs above; multi-Writer
+is gated on [#287](https://github.com/ebbjs/ebbjs/issues/287). Benchmarking
+the real write path is what forced the table above to describe what actually
+runs (see [`bench/RESULTS.md`](bench/RESULTS.md)).
 
 ### Observability
 

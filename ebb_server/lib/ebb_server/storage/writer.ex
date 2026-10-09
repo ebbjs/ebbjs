@@ -27,14 +27,31 @@ defmodule EbbServer.Storage.Writer do
   GSN simply has no durable Action to read. Permanent holes are fine;
   liveness is the hard invariant.
 
+  ## Batch coalescing
+
+  `write_actions/2` does not commit inline. `handle_call/3` enqueues the
+  caller and its Actions, then either flushes immediately (once the pending
+  Action count reaches `:writer_batch_max_size`) or schedules a flush. With
+  the default `:writer_batch_timeout_ms` of 0 the Writer burst-drains:
+  `handle_call/3` sends itself a `:flush` marker that lands at the tail of
+  the mailbox, after every `write_actions` call already queued, so a single
+  flush commits the whole burst and adds only a mailbox hop when nothing
+  else is waiting. A positive timeout instead sets a `send_after` timer, trading a
+  small uncontended delay for a wider coalescing window.
+
+  Each flush claims one ordered GSN range for the merged burst and replies
+  to every caller with its own contiguous sub-range in arrival order. Callers
+  whose Actions were all empty or already committed get `{:ok, {0, 0}, []}`.
+  Provisional marks, the durable commit, the watermark advance, and the
+  fan-out notification are all once-per-flush.
+
   ## Hot path
 
-  `write_actions/2` claims a GSN range, runs permission validation,
-  resolves FieldValue-wrapped data, builds the `cf_group_actions` index
-  via intra-action context (see below), assembles the WriteBatch, marks
-  the affected entities provisionally dirty, commits with `sync: true`,
-  settles the marks, advances the watermark, and notifies `FanOutRouter`.
-  The notification carries the per-Action
+  `flush/1` claims a GSN range for the coalesced burst, builds the
+  `cf_group_actions` index via intra-action context (see below), assembles
+  the WriteBatch, marks the affected entities provisionally dirty, commits
+  with `sync: true`, settles the marks, advances the watermark, and notifies
+  `FanOutRouter`. The notification carries the per-Action
   group set this pass resolved, so live fan-out indexes the same
   snapshot `cf_group_actions` was built from rather than re-deriving
   groups after the system caches have moved.
@@ -68,7 +85,8 @@ defmodule EbbServer.Storage.Writer do
     range: it is marked resolved (the watermark advances over the hole),
     `FanOutRouter` is nudged with `{:range_resolved, from, to}` so it can
     drain anything the hole was gating, and the caller gets
-    `{:error, {:rocksdb_write_failed, reason}}` (`503 write_failed`).
+    every caller in the flush gets `{:error, {:rocksdb_write_failed, reason}}`
+    (`503 write_failed`).
     The client outbox is the only retry; the server never acks undurable
     data and never rewinds or reuses the GSNs.
   - **Structural resolution.** Claim → build → commit runs inside
@@ -80,12 +98,12 @@ defmodule EbbServer.Storage.Writer do
     therefore both leave the frontier advanced before the nudge is sent.
   - **Commit is the point of no return.** Once `commit_fn` returns `:ok`
     the range is marked committed and the frontier advanced before any
-    other raise-capable step runs. The caller then gets the success
-    tuple. Dirty tracking and cache updates follow; if they raise, the
+    other raise-capable step runs. Every caller in the flush then gets its
+    success tuple. Dirty tracking and cache updates follow; if they raise, the
     data is already durable, so the Writer logs, abnormally terminates
     `EbbServer.Storage.SystemCache`, and relies on
     `Storage.Supervisor`'s `rest_for_one` to rebuild the caches, the
-    watermark, and this Writer. The success reply is sent before that
+    watermark, and this Writer. The success replies are sent before that
     escalation so a durable batch is never reported as lost. A failed or
     raised commit instead has its provisional marks compare-and-cleared
     before the range is resolved.
@@ -166,6 +184,12 @@ defmodule EbbServer.Storage.Writer do
           relationships_by_id: atom(),
           commit_fn: (list(), keyword() -> :ok | {:error, term()}),
           after_commit: (-> any()) | nil,
+          batch_max_size: integer(),
+          batch_timeout_ms: non_neg_integer(),
+          pending: [{GenServer.from(), [validated_action()]}],
+          pending_count: non_neg_integer(),
+          flush_timer: reference() | nil,
+          flush_scheduled: boolean(),
           fan_out_router: GenServer.name() | nil,
           watermark_tracker: GenServer.name() | nil
         }
@@ -183,6 +207,12 @@ defmodule EbbServer.Storage.Writer do
     :relationships_by_id,
     :commit_fn,
     :after_commit,
+    :batch_max_size,
+    :batch_timeout_ms,
+    :pending,
+    :pending_count,
+    :flush_timer,
+    :flush_scheduled,
     :fan_out_router,
     :watermark_tracker
   ]
@@ -273,6 +303,21 @@ defmodule EbbServer.Storage.Writer do
 
     commit_fn = Keyword.get(opts, :commit_fn) || (&RocksDB.write_batch/2)
     after_commit = Keyword.get(opts, :after_commit)
+
+    batch_max_size =
+      Keyword.get(
+        opts,
+        :batch_max_size,
+        Application.get_env(:ebb_server, :writer_batch_max_size, 1000)
+      )
+
+    batch_timeout_ms =
+      Keyword.get(
+        opts,
+        :batch_timeout_ms,
+        Application.get_env(:ebb_server, :writer_batch_timeout_ms, 0)
+      )
+
     fan_out_router = Keyword.get(opts, :fan_out_router, nil)
     watermark_tracker = Keyword.get(opts, :watermark_tracker, nil)
 
@@ -290,6 +335,12 @@ defmodule EbbServer.Storage.Writer do
       relationships_by_id: relationships_by_id,
       commit_fn: commit_fn,
       after_commit: after_commit,
+      batch_max_size: batch_max_size,
+      batch_timeout_ms: batch_timeout_ms,
+      pending: [],
+      pending_count: 0,
+      flush_timer: nil,
+      flush_scheduled: false,
       fan_out_router: fan_out_router,
       watermark_tracker: watermark_tracker
     }
@@ -325,61 +376,160 @@ defmodule EbbServer.Storage.Writer do
   end
 
   @doc """
-  Validates, assigns GSNs, and persists actions to RocksDB.
+  Enqueues a write call and triggers a flush.
 
-  Actions are already validated by PermissionChecker before reaching the Writer.
-  Pipeline:
-  1. Filter out actions with empty updates (safety check)
-  2. Drop duplicate action ids within the batch and ids already in
-     `cf_action_dedup`. An already-committed id is silently skipped —
-     idempotent, never a `rejected[]` entry.
-  3. Claim a GSN range from GsnCounter for the remaining fresh actions
-  4. Build a batch of puts across all 6 column families:
-     - cf_actions: GSN → full action (ETF encoded)
-     - cf_action_dedup: action_id → GSN (duplicate detection)
-     - cf_updates: (action_id, update_id) → update (ETF encoded)
-     - cf_entity_actions: (subject_id, GSN) → action_id (materialization index)
-     - cf_type_entities: (subject_type, subject_id) → <<>> (type index)
-     - cf_group_actions: (group_id, GSN) → action_id (group catch-up index)
-  5. Write batch synchronously to RocksDB (single attempt, no retry)
-  6. Mark affected entities dirty in DirtyTracker
+  Actions are already validated by PermissionChecker before reaching the
+  Writer. A flush:
+  1. Filters out actions with empty updates, drops duplicate `action_id`s
+     (first occurrence wins across the whole coalesced burst), and drops
+     ids already in `cf_action_dedup`.
+  2. Claims one GSN range for the remaining fresh actions.
+  3. Builds and synchronously commits a single WriteBatch across all 6
+     column families.
+  4. Marks affected entities dirty and replies to each caller with its
+     contiguous sub-range.
 
-  Returns `{:ok, {gsn_start, gsn_end}, rejected_actions}` on success. A
-  batch with no fresh actions — every Action filtered as empty or
-  already committed — returns `{:ok, {0, 0}, []}`.
-
-  On a commit failure the claimed range is abandoned (resolved) and the
-  caller gets `{:error, {:rocksdb_write_failed, reason}}`. See the
-  moduledoc for the full failure/recovery policy.
+  A flush with no fresh actions replies `{:ok, {0, 0}, []}` to every
+  caller. A commit failure abandons the whole claimed range and every
+  caller in the flush sees `{:error, {:rocksdb_write_failed, reason}}`.
   """
   @impl true
   def handle_call({:write_actions, actions}, from, state) when is_list(actions) do
-    fresh =
-      actions
-      |> Enum.reject(&(&1.updates == []))
-      |> Enum.uniq_by(& &1.id)
-      |> drop_committed(state.rocks_name)
+    state = enqueue(state, from, actions)
+
+    cond do
+      state.batch_max_size > 0 and state.pending_count >= state.batch_max_size ->
+        {:noreply, flush(state)}
+
+      state.flush_timer != nil ->
+        {:noreply, state}
+
+      state.batch_timeout_ms > 0 ->
+        {:noreply,
+         %{state | flush_timer: Process.send_after(self(), :flush, state.batch_timeout_ms)}}
+
+      true ->
+        # Burst-drain: the marker lands at the TAIL of the mailbox, after
+        # every write_actions call already queued, so it flushes the current
+        # burst and adds only a mailbox hop when nothing else is waiting. One
+        # marker per burst is enough; the rest of the burst enqueues behind it.
+        unless state.flush_scheduled do
+          send(self(), :flush)
+        end
+
+        {:noreply, %{state | flush_scheduled: true}}
+    end
+  end
+
+  @impl true
+  def handle_info(:flush, state), do: {:noreply, flush(state)}
+
+  defp enqueue(state, from, actions) do
+    %{
+      state
+      | pending: [{from, actions} | state.pending],
+        pending_count: state.pending_count + length(actions)
+    }
+  end
+
+  # The single place that claims a GSN range, commits, and replies. A
+  # stale marker or timer must be a no-op when nothing is pending.
+  defp flush(%{pending: []} = state) do
+    %{cancel_flush_timer(state) | flush_scheduled: false}
+  end
+
+  defp flush(state) do
+    state = cancel_flush_timer(state)
+    pending = Enum.reverse(state.pending)
+
+    {fresh, fresh_tagged} = plan(pending, state.rocks_name)
+
+    state = %{state | pending: [], pending_count: 0, flush_scheduled: false}
 
     case fresh do
       [] ->
-        {:reply, {:ok, {0, 0}, []}, state}
+        reply_all(pending, %{}, :ok)
+        state
 
       _ ->
         {gsn_start, gsn_end} = GsnCounter.claim_gsn_range(length(fresh), state.gsn_counter)
+        ranges = caller_ranges(fresh_tagged, length(pending), gsn_start)
 
         case write_batch(fresh, gsn_start, gsn_end, state) do
-          {:ok, reply} ->
-            {:reply, reply, state}
+          :ok ->
+            reply_all(pending, ranges, :ok)
+            state
 
-          {:escalate, reply, reason} ->
-            # The batch is durable: reply first, then escalate, so the
-            # caller never sees a lost success when the rebuild tears this
-            # process down.
-            GenServer.reply(from, reply)
+          {:error, reason} ->
+            reply_all(pending, ranges, {:error, reason})
+            state
+
+          {:escalate, reason} ->
+            # The batch is durable: reply success to every caller first,
+            # then escalate, so no caller sees a lost success when the
+            # rebuild tears this process down.
+            reply_all(pending, ranges, :ok)
             escalate_cache_failure(gsn_start, gsn_end, reason)
-            {:noreply, state}
+            state
         end
     end
+  end
+
+  # Arrival order is the caller's position in `pending`; a caller's
+  # surviving Actions are contiguous in the global fresh list, so one
+  # `{first, last}` per caller is exact.
+  defp plan(pending, rocks_name) do
+    tagged =
+      pending
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {{_from, actions}, caller_idx} ->
+        actions
+        |> Enum.reject(&(&1.updates == []))
+        |> Enum.map(&{caller_idx, &1})
+      end)
+      |> Enum.uniq_by(fn {_caller_idx, action} -> action.id end)
+
+    fresh_tagged = drop_committed(tagged, rocks_name)
+    fresh = Enum.map(fresh_tagged, &elem(&1, 1))
+
+    {fresh, fresh_tagged}
+  end
+
+  defp caller_ranges(fresh_tagged, caller_count, gsn_start) do
+    ranges =
+      fresh_tagged
+      |> Enum.with_index()
+      |> Enum.reduce(%{}, fn {{caller_idx, _action}, i}, acc ->
+        gsn = gsn_start + i
+
+        case Map.get(acc, caller_idx) do
+          nil -> Map.put(acc, caller_idx, {gsn, gsn})
+          {first, _last} -> Map.put(acc, caller_idx, {first, gsn})
+        end
+      end)
+
+    for idx <- 0..(caller_count - 1), into: %{} do
+      {idx, Map.get(ranges, idx, :empty)}
+    end
+  end
+
+  defp reply_all(pending, ranges, outcome) do
+    pending
+    |> Enum.with_index()
+    |> Enum.each(fn {{from, _actions}, caller_idx} ->
+      GenServer.reply(from, build_reply(outcome, Map.get(ranges, caller_idx, :empty)))
+    end)
+  end
+
+  defp build_reply(:ok, {first, last}), do: {:ok, {first, last}, []}
+  defp build_reply(:ok, :empty), do: {:ok, {0, 0}, []}
+  defp build_reply({:error, reason}, _range), do: {:error, {:rocksdb_write_failed, reason}}
+
+  defp cancel_flush_timer(%{flush_timer: nil} = state), do: state
+
+  defp cancel_flush_timer(state) do
+    Process.cancel_timer(state.flush_timer)
+    %{state | flush_timer: nil}
   end
 
   # `cf_action_dedup` doubles as the commit marker: the index entry and
@@ -390,8 +540,8 @@ defmodule EbbServer.Storage.Writer do
   # reply keeps the unmatched Actions rather than dropping them.
   defp drop_committed([], _rocks_name), do: []
 
-  defp drop_committed(actions, rocks_name) do
-    ids = Enum.map(actions, & &1.id)
+  defp drop_committed(tagged, rocks_name) do
+    ids = Enum.map(tagged, fn {_caller_idx, action} -> action.id end)
 
     committed =
       RocksDB.multi_get(RocksDB.cf_action_dedup(rocks_name), ids, name: rocks_name)
@@ -402,7 +552,7 @@ defmodule EbbServer.Storage.Writer do
       end)
       |> MapSet.new()
 
-    Enum.reject(actions, &MapSet.member?(committed, &1.id))
+    Enum.reject(tagged, fn {_caller_idx, action} -> MapSet.member?(committed, action.id) end)
   end
 
   # The `after` is the structural guarantee: however the body exits — a
@@ -467,15 +617,15 @@ defmodule EbbServer.Storage.Writer do
         case apply_post_commit(fresh, state) do
           :ok ->
             notify_batch_committed(state, gsn_start, gsn_end, groups_by_gsn)
-            {:ok, {:ok, {gsn_start, gsn_end}, []}}
+            :ok
 
           {:error, reason} ->
-            {:escalate, {:ok, {gsn_start, gsn_end}, []}, reason}
+            {:escalate, reason}
         end
 
       {:error, reason} ->
         abandon(state, pending, gsn_start, gsn_end, reason)
-        {:ok, {:error, {:rocksdb_write_failed, reason}}}
+        {:error, reason}
     end
   end
 
