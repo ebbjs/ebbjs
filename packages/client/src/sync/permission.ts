@@ -12,7 +12,11 @@
  * `can()` asks the same question as a query, so an app can decide what
  * to render *before* attempting a write. Both paths resolve a subject's
  * rule through {@link resolveRule} and decide it through
- * {@link ruleHolds}, so the pre-check and the query cannot disagree.
+ * {@link ruleHolds}, so they cannot disagree on the rule table. The
+ * write path additionally unions the Action's in-flight bootstrap grant
+ * and in-flight `entityGroup` puts, which a query over committed state
+ * cannot see; `can()` is correspondingly conservative and reports
+ * `unknown` where it cannot resolve a subject.
  *
  * A permission is held in a group when that group's permission list
  * contains `"<type>.<verb>"` or `"<type>.*"`. User entities and
@@ -100,7 +104,7 @@ const isVerb = (value: string): value is PermissionVerb => VERBS.has(value);
  * match or the `type.*` wildcard. Both the write-path pre-check and
  * `client.can()` decide through this.
  */
-export const grantsPermission = (
+const grantsPermission = (
   permissions: readonly string[],
   type: string,
   verb: PermissionVerb,
@@ -121,8 +125,15 @@ interface ResolvedRule {
   readonly cachedOnly: boolean;
 }
 
-/** Why a subject's rule could not be resolved locally. */
-export type CanUnknownReason = "actor-groups-unknown" | "entity-unknown" | "no-owner";
+/**
+ * Why `can()` could not decide. `no-handshake` when the actor's groups
+ * have never been fetched; `entity-unknown` when the subject, or an
+ * entity it references, is not in the local store; `no-owner` when the
+ * subject resolves but has no local group set — the server's
+ * `missing_ownership`, which the query deliberately defers rather than
+ * guessing.
+ */
+export type CanUnknownReason = "no-handshake" | "entity-unknown" | "no-owner";
 
 type RuleResolution =
   | { readonly kind: "rule"; readonly rule: ResolvedRule }
@@ -143,6 +154,22 @@ interface RuleInputs {
   readonly groupSetFor: (id: string) => Promise<readonly string[]>;
   readonly readMembership: (membershipId: string) => Promise<LiveMembership | null>;
 }
+
+/**
+ * The storage-backed half of {@link RuleInputs}, shared by the write path
+ * and the query path so a subject's `exists` / `readMembership` lookups
+ * have one implementation. Callers supply `fieldValue` and override
+ * `resolveType` / `groupSetFor` with their own source (the Action's
+ * in-flight context, or committed storage).
+ */
+const storageInputs = (
+  storage: StorageAdapter,
+  fieldValue: (name: string) => unknown,
+): Omit<RuleInputs, "resolveType" | "groupSetFor"> => ({
+  fieldValue,
+  exists: (id) => storage.entities.get(id),
+  readMembership: (membershipId) => readMembership(storage, membershipId),
+});
 
 /** Read a wire field value; `data` is `null` on a delete. */
 const fieldValue = (update: Update, name: string): unknown => update.data?.fields?.[name]?.value;
@@ -296,6 +323,26 @@ async function resolveRule(
   }
 }
 
+/** Shared empty bootstrap map for the query path, which has no Action in flight. */
+const NO_BOOTSTRAP: ReadonlyMap<string, readonly string[]> = new Map();
+
+/**
+ * The one place the server's `cached_permissions` rule is stated: a
+ * membership mutation (`cachedOnly`) never unions the bootstrap grant,
+ * every other subject may. `bootstrap` is empty on the query path.
+ */
+const buildPermissionsFor =
+  (
+    cached: Map<string, readonly string[]>,
+    bootstrap: ReadonlyMap<string, readonly string[]>,
+  ): ((groupId: string, cachedOnly: boolean) => readonly string[] | null) =>
+  (groupId, cachedOnly) => {
+    const cachedPermissions = cached.get(groupId) ?? null;
+    const declared = cachedOnly ? null : (bootstrap.get(groupId) ?? null);
+    if (cachedPermissions === null && declared === null) return null;
+    return [...new Set([...(cachedPermissions ?? []), ...(declared ?? [])])];
+  };
+
 /**
  * Whether a resolved rule is held by the actor. `permissionsFor` returns
  * the permissions cached for a group (plus any bootstrap grant the write
@@ -407,14 +454,7 @@ const collectActionViolations = async (
     return [...groupIds];
   };
 
-  // `cachedOnly` selects the server's `cached_permissions`: membership
-  // mutations of an existing entity never union the bootstrap grant.
-  const permissionsFor = (groupId: string, cachedOnly: boolean): readonly string[] | null => {
-    const cachedPermissions = cached.get(groupId) ?? null;
-    const declared = cachedOnly ? null : (bootstrap.get(groupId) ?? null);
-    if (cachedPermissions === null && declared === null) return null;
-    return [...new Set([...(cachedPermissions ?? []), ...(declared ?? [])])];
-  };
+  const permissionsFor = buildPermissionsFor(cached, bootstrap);
 
   const isBootstrapExempt = (update: Update): boolean => {
     // `bootstrap` only holds groups the Action also puts the actor's
@@ -440,11 +480,9 @@ const collectActionViolations = async (
 
   const check = async (update: Update): Promise<PermissionViolation | null> => {
     const resolution = await resolveRule(update.subject_type, update.subject_id, update.method, {
-      fieldValue: (name) => fieldValue(update, name),
-      exists,
+      ...storageInputs(ctx.storage, (name) => fieldValue(update, name)),
       resolveType,
       groupSetFor,
-      readMembership: (membershipId) => readMembership(ctx.storage, membershipId),
     });
     if (resolution.kind === "unresolved") return null;
     return ruleHolds(resolution.rule, permissionsFor)
@@ -509,6 +547,11 @@ export type CanResult =
   | { readonly kind: "denied"; readonly violation: PermissionViolation }
   | { readonly kind: "unknown"; readonly reason: CanUnknownReason };
 
+export interface CanContext extends PermissionContext {
+  /** True once `handshake()` has completed successfully at least once. */
+  readonly handshaken: boolean;
+}
+
 /** The `client.can(...)` surface. */
 export interface PermissionQuery {
   /** Does the actor hold `<type>.<verb>` in any of its groups? */
@@ -525,11 +568,11 @@ export interface PermissionQuery {
  */
 export async function queryActorPermission(
   permission: string,
-  ctx: PermissionContext,
+  ctx: CanContext,
 ): Promise<CanResult> {
   const { type, verb } = parsePermission(permission);
-  if (ctx.actorGroups.length === 0) {
-    return { kind: "unknown", reason: "actor-groups-unknown" };
+  if (!ctx.handshaken) {
+    return { kind: "unknown", reason: "no-handshake" };
   }
   const cached = new Map(ctx.actorGroups.map((g) => [g.id, g.permissions]));
   await mergeLocalMemberships(cached, ctx);
@@ -539,6 +582,7 @@ export async function queryActorPermission(
   }
   return {
     kind: "denied",
+    // The global form has no single subject; `"*"` marks "the actor".
     violation: { subjectType: type, subjectId: "*", required: `${type}.${verb}`, groupIds },
   };
 }
@@ -551,10 +595,10 @@ export async function queryActorPermission(
 export async function queryEntityPermission(
   subject: CanSubject,
   verb: PermissionVerb,
-  ctx: PermissionContext,
+  ctx: CanContext,
 ): Promise<CanResult> {
-  if (ctx.actorGroups.length === 0) {
-    return { kind: "unknown", reason: "actor-groups-unknown" };
+  if (!ctx.handshaken) {
+    return { kind: "unknown", reason: "no-handshake" };
   }
   const id = typeof subject === "string" ? subject : subject.id;
   const row = await ctx.storage.entities.get(id);
@@ -565,15 +609,14 @@ export async function queryEntityPermission(
   const cached = new Map(ctx.actorGroups.map((g) => [g.id, g.permissions]));
   await mergeLocalMemberships(cached, ctx);
   // No Action is in flight, so there is no bootstrap grant to union.
-  const permissionsFor = (groupId: string): readonly string[] | null => cached.get(groupId) ?? null;
+  const permissionsFor = buildPermissionsFor(cached, NO_BOOTSTRAP);
 
+  const inputs = storageInputs(ctx.storage, (name) => row.data?.fields?.[name]?.value);
   const resolution = await resolveRule(row.type, id, METHOD_BY_VERB[verb], {
-    fieldValue: (name) => row.data?.fields?.[name]?.value,
-    exists: (entityId) => ctx.storage.entities.get(entityId),
-    resolveType: async (entityId) => (await ctx.storage.entities.get(entityId))?.type ?? null,
+    ...inputs,
+    resolveType: async (entityId) => (await inputs.exists(entityId))?.type ?? null,
     groupSetFor: async (entityId) =>
       (await readEntityMemberships(ctx.storage, entityId)).map((m) => m.groupId),
-    readMembership: (membershipId) => readMembership(ctx.storage, membershipId),
   });
   if (resolution.kind === "unresolved") {
     return { kind: "unknown", reason: resolution.reason };

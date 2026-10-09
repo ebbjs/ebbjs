@@ -178,7 +178,22 @@ describe("client.can — global form", () => {
     const { client } = mkPreHandshakeClient();
     await expect(client.can("todo.update")).resolves.toEqual({
       kind: "unknown",
-      reason: "actor-groups-unknown",
+      reason: "no-handshake",
+    });
+  });
+
+  it("denies, rather than reporting unknown, for a handshake with zero groups", async () => {
+    // A successful handshake that reports no groups is a known state —
+    // the actor holds nothing — so the answer is a definite `denied`.
+    const { client } = await mkClient([]);
+    await expect(client.can("todo.update")).resolves.toEqual({
+      kind: "denied",
+      violation: {
+        subjectType: "todo",
+        subjectId: "*",
+        required: "todo.update",
+        groupIds: [],
+      },
     });
   });
 
@@ -260,7 +275,7 @@ describe("client.can — per-entity form", () => {
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await expect(client.can("todo_1", "update")).resolves.toEqual({
       kind: "unknown",
-      reason: "actor-groups-unknown",
+      reason: "no-handshake",
     });
   });
 });

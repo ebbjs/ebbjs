@@ -69,6 +69,7 @@ import {
   queryEntityPermission,
   type CanResult,
   type CanSubject,
+  type PermissionQuery,
   type PermissionVerb,
 } from "./permission";
 import {
@@ -109,7 +110,7 @@ const DEFAULT_RECONNECT_INITIAL_MS = 1_000;
 const DEFAULT_RECONNECT_MAX_MS = 60_000;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
-export class SyncClient {
+export class SyncClient implements PermissionQuery {
   readonly serverUrl: string;
   readonly actorId: string;
   readonly storage: StorageAdapter;
@@ -168,6 +169,13 @@ export class SyncClient {
    * the server stays the authority.
    */
   private actorGroups: { id: string; permissions: readonly string[] }[] = [];
+  /**
+   * Whether `handshake()` has completed at least once. Distinguishes the
+   * genuinely unknown pre-handshake state from a handshake that reported
+   * zero groups — the latter is a known "holds nothing". Read by the
+   * `client.can(...)` query.
+   */
+  private handshakeRan = false;
   /**
    * Per-client HLC clock. Advanced on every local event by
    * {@link submitRelationshipUpdates}; remote HLCs flow in via
@@ -390,6 +398,7 @@ export class SyncClient {
     // Refresh the cursor cache from the server's authoritative cursors.
     this.groupCursors.clear();
     this.actorGroups = result.groups.map((g) => ({ id: g.id, permissions: g.permissions }));
+    this.handshakeRan = true;
     for (const g of result.groups) {
       this.groupCursors.set(g.id, g.cursor);
     }
@@ -503,10 +512,13 @@ export class SyncClient {
    * The global form asks whether the actor holds the permission in any
    * of its groups. The per-entity form resolves the entity's group set
    * and union-matches it. The result is a discriminated union: `denied`
-   * carries the {@link PermissionViolation} the write would have thrown,
-   * and `unknown` (no handshake, an unresolvable entity, or an entity
-   * with no local owner) means the server remains the authority — it is
-   * never reported as `denied`.
+   * carries the permission the actor lacks and the consulted groups in
+   * the same {@link PermissionViolation} shape the write path throws, and
+   * `unknown` (no handshake, an unresolvable entity, or an entity with no
+   * local owner) means the server remains the authority — it is never
+   * reported as `denied`. The query reflects committed state, so it does
+   * not see an Action's in-flight group bootstrap; the write path is the
+   * authority on that.
    */
   can(permission: string): Promise<CanResult>;
   can(subject: CanSubject, verb: PermissionVerb): Promise<CanResult>;
@@ -515,11 +527,15 @@ export class SyncClient {
       actorId: this.actorId,
       actorGroups: this.actorGroups,
       storage: this.storage,
+      handshaken: this.handshakeRan,
     };
     if (verb === undefined) {
-      return queryActorPermission(String(first), ctx);
+      if (typeof first !== "string") {
+        throw new TypeError("can(): the global form takes a permission string");
+      }
+      return queryActorPermission(first, ctx);
     }
-    return queryEntityPermission(first as CanSubject, verb, ctx);
+    return queryEntityPermission(first, verb, ctx);
   }
 
   /**
