@@ -961,7 +961,7 @@ describe("createOutbox conflict detection", () => {
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
   });
 
-  it("leaves acknowledged entries alone", async () => {
+  it("moves an acknowledged entry to the Conflicts store when a peer out-dates it", async () => {
     const deps = mkDeps();
     const outbox = createOutbox(deps);
     await outbox.enqueue(
@@ -982,9 +982,9 @@ describe("createOutbox conflict detection", () => {
       }),
     );
 
-    expect(outcome).toEqual({ kind: "none" });
-    expect(outbox.size("acknowledged")).toBe(1);
-    expect(await deps.conflicts.list()).toEqual([]);
+    expect(outcome).toEqual({ kind: "conflict", actionId: "a_local", slots: [slot("title")] });
+    expect(outbox.size("acknowledged")).toBe(0);
+    expect((await deps.conflicts.list()).map((entry) => entry.action.id)).toEqual(["a_local"]);
   });
 
   it("echo takes precedence over a conflicting write", async () => {

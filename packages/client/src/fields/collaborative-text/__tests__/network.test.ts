@@ -3,7 +3,7 @@
  *
  * Verifies that two TextDocuments connected through a mock SSE source
  * (representing the ebb_server fan-out path) converge to the same
- * document text, and that conflicts are surfaced on both sides.
+ * document text.
  *
  * The mock source accepts Action submissions from one side and forwards
  * them to the other side as SSE data events — emulating the server's
@@ -13,7 +13,7 @@
 import { describe, expect, it } from "vitest";
 import { pack, format, type Action, type HLCTimestamp } from "@ebbjs/core";
 import { TextDocument, type AppliedUpdate } from "../text-document";
-import { DEFAULT_DOC_SUBJECT_TYPE, formatRunFieldName } from "../wire";
+import { DEFAULT_DOC_SUBJECT_TYPE } from "../wire";
 import type { RunNode } from "../tree";
 
 // ---------------------------------------------------------------------------
@@ -39,10 +39,16 @@ const makeInsertAction = (run: RunNode): Action => ({
       subject_type: DEFAULT_DOC_SUBJECT_TYPE,
       method: "patch",
       data: {
-        [formatRunFieldName(run.id)]: {
-          value: run,
-          update_id: `upd_${run.id}`,
-          hlc: run.hlc,
+        fields: {
+          content: {
+            map: {
+              [run.id]: {
+                value: run,
+                update_id: `upd_${run.id}`,
+                hlc: run.hlc,
+              },
+            },
+          },
         },
       },
     } as never,
@@ -163,185 +169,6 @@ describe("TextDocument — mock SSE convergence", () => {
 
     expect(docA.text).toBe("hello ");
     expect(docB.text).toBe("hello ");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Conflicts via mock SSE
-// ---------------------------------------------------------------------------
-
-describe("TextDocument — conflict surfacing via mock SSE", () => {
-  it("two concurrent edits to the same run surface a conflict on both sides", () => {
-    const source = new MockSSESource();
-    const docA = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
-    const docB = new TextDocument({ docId: "doc_1", actorId: "peer-B" });
-
-    source.subscribe("peer-A", (action) => docA.applyActions([action]));
-    source.subscribe("peer-B", (action) => docB.applyActions([action]));
-
-    // Seed: peer-A inserts "hello"
-    docA.localInsert("hello");
-    for (const action of docA.pendingActions()) source.broadcast(action, "peer-A");
-    docA.clearPending();
-
-    expect(docB.text).toBe("hello");
-    const runId = docB.docState.children.get("ROOT")![0]!;
-
-    // Concurrent field updates to the same run with same HLC
-    const extARun: RunNode = {
-      id: runId,
-      hlc: makeHlc(5000),
-      actorId: "peer-A",
-      text: "helloA",
-      parentId: "ROOT",
-      deleted: false,
-    };
-    const extBRun: RunNode = {
-      id: runId,
-      hlc: makeHlc(5000),
-      actorId: "peer-B",
-      text: "helloB",
-      parentId: "ROOT",
-      deleted: false,
-    };
-    const extA: Action = {
-      id: "act_extA",
-      actor_id: "peer-A",
-      hlc: makeHlc(5000),
-      gsn: 0,
-      updates: [
-        {
-          id: "upd_extA",
-          subject_id: "doc_1",
-          subject_type: DEFAULT_DOC_SUBJECT_TYPE,
-          method: "patch",
-          data: {
-            [formatRunFieldName(runId)]: {
-              value: extARun,
-              update_id: "upd_extA",
-              hlc: makeHlc(5000),
-            },
-          },
-        } as never,
-      ],
-    };
-    const extB: Action = {
-      id: "act_extB",
-      actor_id: "peer-B",
-      hlc: makeHlc(5000),
-      gsn: 0,
-      updates: [
-        {
-          id: "upd_extB",
-          subject_id: "doc_1",
-          subject_type: DEFAULT_DOC_SUBJECT_TYPE,
-          method: "patch",
-          data: {
-            [formatRunFieldName(runId)]: {
-              value: extBRun,
-              update_id: "upd_extB",
-              hlc: makeHlc(5000),
-            },
-          },
-        } as never,
-      ],
-    };
-
-    // Both peers broadcast without seeing the other's edit
-    source.broadcast(extA, undefined);
-    source.broadcast(extB, undefined);
-
-    // Both should see a conflict on the run
-    expect(docA.conflicts()).toHaveLength(1);
-    expect(docB.conflicts()).toHaveLength(1);
-    expect(docA.conflicts()[0]!.runId).toBe(runId);
-    expect(docB.conflicts()[0]!.runId).toBe(runId);
-
-    // Both should converge to the same document
-    expect(docA.text).toBe(docB.text);
-  });
-
-  it("conflict listeners fire on the receiving side", () => {
-    const source = new MockSSESource();
-    const docA = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
-    const docB = new TextDocument({ docId: "doc_1", actorId: "peer-B" });
-
-    source.subscribe("peer-A", (action) => docA.applyActions([action]));
-    source.subscribe("peer-B", (action) => docB.applyActions([action]));
-
-    // Seed run
-    docA.localInsert("hi");
-    for (const action of docA.pendingActions()) source.broadcast(action, "peer-A");
-    docA.clearPending();
-
-    const runId = docA.docState.children.get("ROOT")![0]!;
-
-    const events: number[] = [];
-    docB.onConflict(() => events.push(events.length));
-
-    const extARun2: RunNode = {
-      id: runId,
-      hlc: makeHlc(5000),
-      actorId: "peer-A",
-      text: "hi!",
-      parentId: "ROOT",
-      deleted: false,
-    };
-    const extBRun2: RunNode = {
-      id: runId,
-      hlc: makeHlc(5000),
-      actorId: "peer-B",
-      text: "hi?",
-      parentId: "ROOT",
-      deleted: false,
-    };
-    const extA: Action = {
-      id: "act_eA",
-      actor_id: "peer-A",
-      hlc: makeHlc(5000),
-      gsn: 0,
-      updates: [
-        {
-          id: "upd_eA",
-          subject_id: "doc_1",
-          subject_type: DEFAULT_DOC_SUBJECT_TYPE,
-          method: "patch",
-          data: {
-            [formatRunFieldName(runId)]: {
-              value: extARun2,
-              update_id: "upd_eA",
-              hlc: makeHlc(5000),
-            },
-          },
-        } as never,
-      ],
-    };
-    const extB: Action = {
-      id: "act_eB",
-      actor_id: "peer-B",
-      hlc: makeHlc(5000),
-      gsn: 0,
-      updates: [
-        {
-          id: "upd_eB",
-          subject_id: "doc_1",
-          subject_type: DEFAULT_DOC_SUBJECT_TYPE,
-          method: "patch",
-          data: {
-            [formatRunFieldName(runId)]: {
-              value: extBRun2,
-              update_id: "upd_eB",
-              hlc: makeHlc(5000),
-            },
-          },
-        } as never,
-      ],
-    };
-
-    source.broadcast(extA);
-    source.broadcast(extB);
-
-    expect(events.length).toBe(1);
   });
 });
 

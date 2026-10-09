@@ -60,9 +60,9 @@ Open `https://localhost:8443/?actor=drew` and `?actor=alice` in two tabs (differ
 2. On first load the demo calls `seed()` to bootstrap a `grp_demo` group + `doc_demo` document via `POST /sync/actions`.
 3. A `SyncClient` opens an SSE subscription for the demo's groups.
 4. A CodeMirror 6 view is wired to a `TextDocument` via [`@ebbjs/codemirror`](../../packages/codemirror/).
-5. Edits are flushed to the server every 250ms via `client.write(doc.pendingActions())`.
+5. Local edits self-flush through the client's write path; the editor's 250ms timer remains as a retry safety net.
 6. Incoming SSE data events are piped into `doc.applyActions()`, which fires `onUpdate` — the bridge reflects the change in CM.
-7. Concurrent edits at the same run are recorded by the conflict detector and surfaced via `doc.onConflict()`.
+7. Concurrent edits to the same run are one map-key slot, recorded by the outbox and surfaced via `client.conflicts()` / the `ConflictPanel`.
 
 ## Files
 

@@ -277,17 +277,23 @@ describe("local CM edit → doc", () => {
             subject_type: "text_document",
             method: "patch",
             data: {
-              "run:1000:peer-B": {
-                value: {
-                  id: "1000:peer-B",
-                  hlc: "1000",
-                  actorId: "peer-B",
-                  text: "hello",
-                  parentId: "ROOT",
-                  deleted: false,
+              fields: {
+                content: {
+                  map: {
+                    "1000:peer-B": {
+                      value: {
+                        id: "1000:peer-B",
+                        hlc: "1000",
+                        actorId: "peer-B",
+                        text: "hello",
+                        parentId: "ROOT",
+                        deleted: false,
+                      },
+                      update_id: "upd_seed",
+                      hlc: "1000",
+                    },
+                  },
                 },
-                update_id: "upd_seed",
-                hlc: "1000",
               },
             } as never,
           },
@@ -385,17 +391,23 @@ describe("doc.onUpdate → CM", () => {
             subject_type: "text_document",
             method: "patch",
             data: {
-              "run:2000:peer-B": {
-                value: {
-                  id: "2000:peer-B",
-                  hlc: "2000",
-                  actorId: "peer-B",
-                  text: "world",
-                  parentId: "ROOT",
-                  deleted: false,
+              fields: {
+                content: {
+                  map: {
+                    "2000:peer-B": {
+                      value: {
+                        id: "2000:peer-B",
+                        hlc: "2000",
+                        actorId: "peer-B",
+                        text: "world",
+                        parentId: "ROOT",
+                        deleted: false,
+                      },
+                      update_id: "upd_remote",
+                      hlc: "2000",
+                    },
+                  },
                 },
-                update_id: "upd_remote",
-                hlc: "2000",
               },
             } as never,
           },
@@ -428,10 +440,16 @@ describe("doc.onUpdate → CM", () => {
             subject_type: "text_document",
             method: "patch",
             data: {
-              [`run:${runId}`]: {
-                value: null,
-                update_id: "upd_del",
-                hlc: "5000",
+              fields: {
+                content: {
+                  map: {
+                    [runId]: {
+                      value: null,
+                      update_id: "upd_del",
+                      hlc: "5000",
+                    },
+                  },
+                },
               },
             } as never,
           },
@@ -470,14 +488,20 @@ describe("doc.onUpdate → CM", () => {
             subject_type: "text_document",
             method: "patch",
             data: {
-              [`run:${runId}`]: {
-                value: {
-                  ...original,
-                  text: "hello world",
-                  hlc: wireHlc,
+              fields: {
+                content: {
+                  map: {
+                    [runId]: {
+                      value: {
+                        ...original,
+                        text: "hello world",
+                        hlc: wireHlc,
+                      },
+                      update_id: "upd_ext",
+                      hlc: wireHlc,
+                    },
+                  },
                 },
-                update_id: "upd_ext",
-                hlc: wireHlc,
               },
             } as never,
           },
@@ -692,10 +716,16 @@ describe("empty-doc ROOT placeholder", () => {
             subject_type: "text_document",
             method: "patch",
             data: {
-              [`run:${runId}`]: {
-                value: null,
-                update_id: "upd_del",
-                hlc: "5000",
+              fields: {
+                content: {
+                  map: {
+                    [runId]: {
+                      value: null,
+                      update_id: "upd_del",
+                      hlc: "5000",
+                    },
+                  },
+                },
               },
             } as never,
           },

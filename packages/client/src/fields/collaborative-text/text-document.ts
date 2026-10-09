@@ -5,30 +5,32 @@
  * locally-authored edits. Incoming Actions (from SSE / catch-up) flow
  * through `applyActions`; locally-authored edits flow through
  * `localInsert` / `localDelete` which both apply locally AND queue the
- * resulting Action for `client.write()`.
+ * resulting Action for `client.write()`. When the client binds a write
+ * path, a local edit also self-flushes.
  *
  * ## Wire format
  *
  * Each Update targets the document entity (subject_id = docId,
- * subject_type = docType, method: "patch") with run changes encoded as
- * `data.fields["run:<runId>"] = { value: <RunNode | null>, update_id, hlc }`.
- * Runs are fields of the doc, not separate entities — this keeps the
- * server's `<type>.<verb>` permission model applicable to the doc as a
- * whole and avoids the cross-author rewrite problem that `run.update`
- * would have if runs were independent entities.
+ * subject_type = docType, method: "patch") with run changes encoded in
+ * the doc's `content` map field: `data.fields.content.map[<runId>] =
+ * { value: <RunNode | null>, update_id, hlc }`. Runs are map keys on the
+ * doc, not separate entities — this keeps the server's `<type>.<verb>`
+ * permission model applicable to the doc as a whole and avoids the
+ * cross-author rewrite problem that `run.update` would have if runs
+ * were independent entities. Concurrent writes to different run keys
+ * never conflict; a same-run race is one slot and surfaces through
+ * `client.conflicts`.
  *
  * ## Usage
  *
  * ```ts
- * const doc = client.textDocument.open('doc_demo');
+ * const doc = client.textDocument('doc_demo');
  *
  * doc.onUpdate((update) => { ... });
- * doc.onConflict((conflict) => { ... });
  *
  * // Local edit (optimistic — applied immediately, queued for write)
  * doc.localInsert('hello');
  *
- * const { rejected } = await client.write(doc.pendingActions());
  * doc.applyActions(remoteActions);
  * ```
  */
@@ -37,10 +39,12 @@ import {
   generateId,
   ID_PREFIX_ACTION,
   type Action,
+  type FieldValue,
   type HLCTimestamp,
   type Update,
 } from "@ebbjs/core";
 import {
+  applyRunFieldUpdates,
   createDocState,
   docReducer,
   reconstruct,
@@ -54,9 +58,9 @@ import {
   diffRunFieldsForDeleteRange,
   docActionToUpdate,
   DEFAULT_DOC_SUBJECT_TYPE,
-  RUN_FIELD_PREFIX,
+  parseContentField,
 } from "./wire";
-import { ConflictDetector, type Conflict } from "./conflict";
+import { DOC_CONTENT_FIELD } from "./schema";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -110,8 +114,14 @@ export interface LocalExtendOptions {
 /** Update listener. */
 export type UpdateListener = (update: AppliedUpdate) => void;
 
-/** Conflict listener. */
-export type ConflictListener = (conflict: Conflict) => void;
+/**
+ * Write path a document self-flushes through. Structurally the
+ * client's `write`; typed narrowly so the document need not import the
+ * client's response types.
+ */
+export type TextDocumentSubmit = (
+  action: Action,
+) => Promise<{ readonly rejected: readonly { readonly id: string }[] }>;
 
 // ---------------------------------------------------------------------------
 // Local clock helper
@@ -153,15 +163,28 @@ export class TextDocument {
   readonly docType: string;
 
   private state: DocState = createDocState();
-  private readonly detector = new ConflictDetector();
   private readonly updateListeners = new Set<UpdateListener>();
-  private readonly conflictListeners = new Set<ConflictListener>();
   /** Outbound queue: local edits waiting for `client.write()`. */
   private readonly pending: Action[] = [];
   /** Local HLC state for advancing on local edits. */
   private readonly localHlcState = { l: 0n, c: 0n };
   /** Counter for generating update IDs for local edits. */
   private updateCounter = 0;
+  /**
+   * Optional write path. When set (the client wires it), a local edit
+   * self-flushes instead of waiting for a caller to submit
+   * `pendingActions()` by hand. The pending queue is still the record,
+   * so a rejected or unreachable submit leaves the edit retryable.
+   */
+  private submit: TextDocumentSubmit | null = null;
+
+  /**
+   * Bind the document to a write path. Idempotent; the client calls
+   * this when opening a document so local edits self-flush.
+   */
+  setSubmit(submit: TextDocumentSubmit | null): void {
+    this.submit = submit;
+  }
 
   constructor(opts: { docId: string; actorId: string; docType?: string }) {
     this.docId = opts.docId;
@@ -183,9 +206,19 @@ export class TextDocument {
     return reconstruct(this.state);
   }
 
-  /** All recorded conflicts. */
-  conflicts(): readonly Conflict[] {
-    return this.detector.all();
+  /**
+   * Hydrate the document from a materialized `content` map field.
+   *
+   * The derived-body accessor resolves the document entity from the
+   * relationship index and hands its map field here instead of replaying
+   * Actions. Idempotent for the same or older state: a run whose stored
+   * HLC is older than the local one is skipped, so a re-read after a
+   * local optimistic edit cannot rewind it.
+   */
+  hydrate(content: FieldValue | undefined): void {
+    const runs = parseContentField(content);
+    if (runs.size === 0) return;
+    this.state = applyRunFieldUpdates(this.state, runs).state;
   }
 
   /** Sentinel id of the root run — convenience for "insert at start". */
@@ -210,13 +243,12 @@ export class TextDocument {
 
   /**
    * Apply a list of Actions to this document. Runs them through the
-   * wire-format adapter, applies them to the tree, fires onUpdate
-   * listeners, and feeds the detector for conflict recording.
+   * wire-format adapter, applies them to the tree, and fires onUpdate
+   * listeners.
    */
   applyActions(actions: readonly Action[]): void {
     if (actions.length === 0) return;
-    const pre = this.state;
-    const { state: post, applied, sourceActions } = applyActions(pre, actions, this.docType);
+    const { state: post, applied, sourceActions } = applyActions(this.state, actions, this.docType);
     this.state = post;
 
     // Fire update listeners — one per applied DocAction. Each event is
@@ -233,19 +265,6 @@ export class TextDocument {
         } catch (err) {
           // eslint-disable-next-line no-console
           console.error("[TextDocument] onUpdate handler threw:", err);
-        }
-      }
-    }
-
-    // Detect conflicts (only over the just-applied actions)
-    const newConflicts = this.detector.observe(pre, post, actions, this.actorId);
-    for (const conflict of newConflicts) {
-      for (const cb of this.conflictListeners) {
-        try {
-          cb(conflict);
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.error("[TextDocument] onConflict handler threw:", err);
         }
       }
     }
@@ -328,7 +347,7 @@ export class TextDocument {
     // Build the wire-format Action from the pre/post diff.
     const fields = diffRunFields(pre, next, { updateId: `u_${runId}`, hlc: finalHlc });
     if (Object.keys(fields).length === 0) return null;
-    const update = docActionToUpdate({ type: "INSERT_RUN", node }, fields, {
+    const update = docActionToUpdate(fields, {
       docId: this.docId,
       updateId: `u_${runId}`,
       docSubjectType: this.docType,
@@ -346,6 +365,7 @@ export class TextDocument {
       updates: [update],
     };
     this.pending.push(action);
+    this.selfFlush(action);
 
     const evt: AppliedUpdate = {
       action,
@@ -397,15 +417,11 @@ export class TextDocument {
       hlc: finalHlc,
     });
     if (Object.keys(fields).length === 0) return null;
-    const update = docActionToUpdate(
-      { type: "DELETE_RANGE", runId: opts.runId, offset: opts.offset, count: opts.count },
-      fields,
-      {
-        docId: this.docId,
-        updateId: fields[Object.keys(fields)[0]!]!.update_id,
-        docSubjectType: this.docType,
-      },
-    );
+    const update = docActionToUpdate(fields, {
+      docId: this.docId,
+      updateId: fields[Object.keys(fields)[0]!]!.update_id,
+      docSubjectType: this.docType,
+    });
     if (!update) return null;
 
     const action: Action = {
@@ -416,6 +432,7 @@ export class TextDocument {
       updates: [update],
     };
     this.pending.push(action);
+    this.selfFlush(action);
 
     const evt: AppliedUpdate = {
       action,
@@ -472,15 +489,11 @@ export class TextDocument {
       hlc: finalHlc,
     });
     if (Object.keys(fields).length === 0) return null;
-    const update = docActionToUpdate(
-      { type: "EXTEND_RUN", runId: opts.runId, appendText: opts.appendText, hlc: finalHlc },
-      fields,
-      {
-        docId: this.docId,
-        updateId: fields[Object.keys(fields)[0]!]!.update_id,
-        docSubjectType: this.docType,
-      },
-    );
+    const update = docActionToUpdate(fields, {
+      docId: this.docId,
+      updateId: fields[Object.keys(fields)[0]!]!.update_id,
+      docSubjectType: this.docType,
+    });
     if (!update) return null;
 
     const action: Action = {
@@ -491,6 +504,7 @@ export class TextDocument {
       updates: [update],
     };
     this.pending.push(action);
+    this.selfFlush(action);
 
     const evt: AppliedUpdate = {
       action,
@@ -516,6 +530,22 @@ export class TextDocument {
   /** Outbound queue of locally-authored actions awaiting `client.write()`. */
   pendingActions(): readonly Action[] {
     return [...this.pending];
+  }
+
+  /**
+   * Submit a locally-authored Action when a write path is bound. The
+   * Action stays in `pending` until the server accepts it; a rejection
+   * or a throw leaves it for the caller's `ackPending` / retry path.
+   */
+  private selfFlush(action: Action): void {
+    if (this.submit === null) return;
+    void this.submit(action)
+      .then((response) => {
+        if (response.rejected.length === 0) this.ackPending([action.id]);
+      })
+      .catch(() => {
+        // Leave the edit pending; the caller's retry path owns it.
+      });
   }
 
   /**
@@ -548,14 +578,6 @@ export class TextDocument {
     };
   }
 
-  /** Subscribe to conflict events. Returns an unsubscribe function. */
-  onConflict(cb: ConflictListener): () => void {
-    this.conflictListeners.add(cb);
-    return () => {
-      this.conflictListeners.delete(cb);
-    };
-  }
-
   // -------------------------------------------------------------------------
   // Reset
   // -------------------------------------------------------------------------
@@ -564,7 +586,6 @@ export class TextDocument {
   reset(): void {
     this.state = createDocState();
     this.pending.length = 0;
-    this.detector.clear();
     this.localHlcState.l = 0n;
     this.localHlcState.c = 0n;
     this.updateCounter = 0;
@@ -652,8 +673,6 @@ export {
   docActionToUpdate,
   diffRunFields,
   DEFAULT_DOC_SUBJECT_TYPE,
-  RUN_FIELD_PREFIX,
+  DOC_CONTENT_FIELD,
 };
-export { formatRunFieldName, parseRunFieldName } from "./wire";
 export type { DocState, RunNode, RunFieldValue } from "./tree";
-export type { Conflict } from "./conflict";

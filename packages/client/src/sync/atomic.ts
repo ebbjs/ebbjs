@@ -43,6 +43,7 @@ import type { EntityRegistry } from "../schema/entity-registry";
 import { EntityValidationError, validatePayload } from "../schema/entity-registry";
 import type { Schema } from "../schema/schema";
 import { buildEntityGroupUpdates, buildRelationshipUpdate, normalizePointer } from "./relationship";
+import { isCollaborativeText } from "../fields/collaborative-text/schema";
 import { resolveGroupIds, wrapFields, type EntityFields, type GroupRef } from "./namespace";
 import type { Rejection, WriteResponse } from "./types";
 
@@ -266,6 +267,15 @@ const createDraftNamespace = (
         handle[key] = resolved;
         continue;
       }
+      if (isCollaborativeText(rel)) {
+        // The body expands into a document entity plus a map-field write;
+        // `atomic`'s flat field batching cannot express the map yet. Fail
+        // loudly rather than resolving the text as a pointer id.
+        throw new AtomicResolutionError(
+          `atomic: derived field "${entityName}.${key}" is not supported; ` +
+            `use client.${entityName}.create({ ${key}: "…" }) instead`,
+        );
+      }
       const targets = resolvePointerTargets(value, entityName, key);
       if (rel.sourceCardinality === "many") {
         handle[key] = targets;
@@ -307,7 +317,9 @@ const buildDrafts = (
 ): Record<string, AtomicDraftNamespace<Record<string, TSchema>>> => {
   const out: Record<string, AtomicDraftNamespace<Record<string, TSchema>>> = {};
   for (const [name, def] of Object.entries(entityDefs)) {
-    out[name] = createDraftNamespace(name, def, cap, writes);
+    // The map key is the draft handle's property name; the entity's own
+    // name is what the wire carries.
+    out[name] = createDraftNamespace(def.name, def, cap, writes);
   }
   return out;
 };

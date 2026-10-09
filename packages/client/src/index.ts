@@ -8,8 +8,8 @@
  *
  * Slice 2 adds field-type subscribers:
  * - `client.textDocument(docId)` opens a TextDocument (causal-tree field)
- *   with local edit API, onUpdate/onConflict events, and pendingActions
- *   queue for `client.write()`.
+ *   with local edit API, onUpdate events, and pendingActions queue for
+ *   `client.write()`.
  *
  * Slice 3 adds the bridge package `@ebbjs/codemirror` (peer dep) plus
  * presence (ephemeral cursors/selections).
@@ -112,15 +112,7 @@ export {
   type LocalDeleteOptions,
   type LocalExtendOptions,
   type UpdateListener,
-  type ConflictListener,
 } from "./fields/collaborative-text/text-document";
-
-export {
-  ConflictDetector,
-  type Conflict,
-  type RunSnapshot,
-  happensBefore,
-} from "./fields/collaborative-text/conflict";
 
 export {
   applyActions,
@@ -128,11 +120,15 @@ export {
   diffRunFields,
   diffRunFieldsForDeleteRange,
   isDocSubjectUpdate,
+  parseContentField,
   DEFAULT_DOC_SUBJECT_TYPE,
-  RUN_FIELD_PREFIX,
-  formatRunFieldName,
-  parseRunFieldName,
 } from "./fields/collaborative-text/wire";
+
+export {
+  RunNodeSchema,
+  DEFAULT_DOCUMENT_ENTITY,
+  DOC_CONTENT_FIELD,
+} from "./fields/collaborative-text/schema";
 
 export {
   createDocState,
@@ -190,12 +186,20 @@ export {
   type EntityDef,
   type FieldMarker,
   type NullableSchema,
+  type MapSchema,
+  type CollaborativeTextSchema,
+  type CollaborativeTextOptions,
+  type DerivedFieldDef,
+  type DerivedAccessors,
+  type DerivedKeys,
+  type WireFields,
   type TSchema,
 } from "./schema/entity";
 
 export {
   defineRelationship,
   type RelationshipDef,
+  type RelationshipKind,
   type SourceCardinality,
   type DefineRelationshipInput,
 } from "./schema/relationship";
@@ -209,7 +213,9 @@ export {
 export {
   defineSchema,
   UnregisteredRelationshipEndpointError,
+  DerivedFieldCollisionError,
   type DefineSchemaInput,
+  type ExpandedEntities,
   type Schema,
 } from "./schema/schema";
 
