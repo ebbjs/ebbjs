@@ -7,15 +7,17 @@ import type { DirtyTracker } from "../types/dirty-tracker";
 import { applyUpdate } from "../internal/materialize";
 import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
 import {
-  addRelationshipRow,
+  addIndexRow,
   liveSourceIds,
-  relationshipIndexDelta,
-  relationshipIndexKey,
-  removeRelationshipRow,
+  membershipIndexKey,
+  MEMBERSHIP_ENTITY_TYPE,
+  removeIndexRow,
+  reverseIndexDelta,
+  reverseIndexKey,
   RELATIONSHIP_ENTITY_TYPE,
-  type RelationshipEntry,
-  type RelationshipRows,
-} from "../internal/relationship-index";
+  type IndexEntry,
+  type IndexRows,
+} from "../internal/reverse-index";
 import type { EbbDBSchema } from "./schema";
 
 /**
@@ -27,10 +29,14 @@ import type { EbbDBSchema } from "./schema";
  * the source-of-truth log. Materialization is driven by the same
  * DirtyTracker that drives the in-memory adapter.
  *
- * The `relationships` object store mirrors the in-memory adapter's
- * reverse relationship index: one record per `(field, type, target_id)`
- * composite key mapping each live relationship row id to its source id.
- * It is rewritten alongside the entity store on every materialization.
+ * The `relationships` object store is the shared reverse index: one
+ * record per composite key mapping each live row id to its source id.
+ * It serves relationship edges (keyed by `(field, type, target_id)`) and
+ * `entityGroup` membership (keyed by the synthetic `groups` accessor).
+ * The store name and schema version are unchanged; the index is derived
+ * and, following #248, is not backfilled, so a database predating
+ * membership keys must be cleared rather than reused. It is rewritten
+ * alongside the entity store on every materialization.
  *
  * ## Materialization Flow
  * 1. Caller invokes `append()` on ActionLog
@@ -63,7 +69,7 @@ export const createIndexedDBEntityStore = (
   const copyEntity = (entity: Entity): Entity => structuredClone(entity);
   const { emitter, emit } = createEntityChangeEmitter();
 
-  const writeRows = async (key: string, rows: RelationshipRows | null): Promise<void> => {
+  const writeRows = async (key: string, rows: IndexRows | null): Promise<void> => {
     if (rows === null) await db.delete("relationships", key);
     else await db.put("relationships", { key, rows });
   };
@@ -73,23 +79,23 @@ export const createIndexedDBEntityStore = (
    * keyed by its id, so a tombstone or re-key drops only that row and
    * leaves sibling rows on the same natural key intact.
    */
-  const addRelationshipEntry = async (entry: RelationshipEntry): Promise<void> => {
+  const addIndexEntry = async (entry: IndexEntry): Promise<void> => {
     const record = await db.get("relationships", entry.key);
-    await writeRows(entry.key, addRelationshipRow(record?.rows, entry));
+    await writeRows(entry.key, addIndexRow(record?.rows, entry));
   };
 
-  const removeRelationshipEntry = async (entry: RelationshipEntry): Promise<void> => {
+  const removeIndexEntry = async (entry: IndexEntry): Promise<void> => {
     const record = await db.get("relationships", entry.key);
-    await writeRows(entry.key, removeRelationshipRow(record?.rows, entry));
+    await writeRows(entry.key, removeIndexRow(record?.rows, entry));
   };
 
-  const updateRelationshipIndex = async (
+  const updateReverseIndex = async (
     previous: Entity | undefined,
     next: Entity | undefined,
   ): Promise<void> => {
-    const delta = relationshipIndexDelta(previous, next);
-    if (delta.remove !== null) await removeRelationshipEntry(delta.remove);
-    if (delta.add !== null) await addRelationshipEntry(delta.add);
+    const delta = reverseIndexDelta(previous, next);
+    if (delta.remove !== null) await removeIndexEntry(delta.remove);
+    if (delta.add !== null) await addIndexEntry(delta.add);
   };
 
   /**
@@ -118,13 +124,25 @@ export const createIndexedDBEntityStore = (
 
     const previous = await db.get("entities", entityId);
     await db.put("entities", copyEntity(entity) as EbbDBSchema["entities"]["value"]);
-    await updateRelationshipIndex(previous, entity);
+    await updateReverseIndex(previous, entity);
 
     if (clearDirty) {
       await dirtyTracker.clear(entityId);
     }
 
     emit(entityId, entity);
+  };
+
+  /** Materialize every dirty row of a type before an index read. */
+  const materializeDirtyType = async (entityType: string): Promise<void> => {
+    for (const id of await dirtyTracker.getDirtyForType(entityType)) {
+      await replay(id, true);
+    }
+  };
+
+  const readIndex = async (key: string): Promise<readonly string[]> => {
+    const record = await db.get("relationships", key);
+    return liveSourceIds(record?.rows);
   };
 
   const store: EntityStore = {
@@ -138,16 +156,12 @@ export const createIndexedDBEntityStore = (
     async set(entity: Entity): Promise<void> {
       const previous = await db.get("entities", entity.id);
       await db.put("entities", copyEntity(entity) as EbbDBSchema["entities"]["value"]);
-      await updateRelationshipIndex(previous, entity);
+      await updateReverseIndex(previous, entity);
       emit(entity.id, entity);
     },
 
     async query(type: string): Promise<readonly Entity[]> {
-      const dirtyIds = await dirtyTracker.getDirtyForType(type);
-
-      for (const id of dirtyIds) {
-        await replay(id, true);
-      }
+      await materializeDirtyType(type);
 
       const entities = await db.getAllFromIndex("entities", "type", type);
 
@@ -159,14 +173,13 @@ export const createIndexedDBEntityStore = (
       type,
       targetId,
     }: RelationshipIndexQuery): Promise<readonly string[]> {
-      const dirtyIds = await dirtyTracker.getDirtyForType(RELATIONSHIP_ENTITY_TYPE);
+      await materializeDirtyType(RELATIONSHIP_ENTITY_TYPE);
+      return readIndex(reverseIndexKey(as, type, targetId));
+    },
 
-      for (const id of dirtyIds) {
-        await replay(id, true);
-      }
-
-      const record = await db.get("relationships", relationshipIndexKey(as, type, targetId));
-      return liveSourceIds(record?.rows);
+    async queryByMembership(groupId: string): Promise<readonly string[]> {
+      await materializeDirtyType(MEMBERSHIP_ENTITY_TYPE);
+      return readIndex(membershipIndexKey(groupId));
     },
 
     async reset(): Promise<void> {

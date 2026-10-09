@@ -2,7 +2,7 @@
  * Tests for `client.<entity>.query()` namespace mount.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { type Static } from "@sinclair/typebox/type";
 import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
 import type { Entity } from "@ebbjs/core";
@@ -456,6 +456,20 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     await storage.entities.set(mkEntityGroup("eg2", "d2", "g2"));
     const out = await client.document.query().where("groups", "g1");
     expect(out.map((r) => r.title)).toEqual(["one"]);
+  });
+
+  it('where("groups", groupId) does not scan entityGroup (uses the membership index)', async () => {
+    const { storage, client } = await buildClient();
+    await storage.entities.set(mkEntity("d1", "document", { title: "one" }));
+    await storage.entities.set(mkEntityGroup("eg1", "d1", "g1"));
+    const querySpy = vi.spyOn(storage.entities, "query");
+    const membershipSpy = vi.spyOn(storage.entities, "queryByMembership");
+
+    const out = await client.document.query().where("groups", "g1");
+
+    expect(out.map((r) => r.title)).toEqual(["one"]);
+    expect(membershipSpy).toHaveBeenCalledWith("g1");
+    expect(querySpy.mock.calls.some(([type]) => type === "entityGroup")).toBe(false);
   });
 
   it('where("groups", [...]) unions the named groups (any-of)', async () => {

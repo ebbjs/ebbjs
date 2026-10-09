@@ -6,13 +6,15 @@ import type { EntityChangeEmitter } from "../types/entity-change-emitter";
 import { applyUpdate } from "../internal/materialize";
 import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
 import {
-  applyRelationshipDelta,
+  applyIndexDelta,
   liveSourceIds,
-  relationshipIndexDelta,
-  relationshipIndexKey,
+  membershipIndexKey,
+  MEMBERSHIP_ENTITY_TYPE,
+  reverseIndexDelta,
+  reverseIndexKey,
   RELATIONSHIP_ENTITY_TYPE,
-  type RelationshipIndex,
-} from "../internal/relationship-index";
+  type ReverseIndex,
+} from "../internal/reverse-index";
 
 /**
  * MemoryEntityStore — in-memory implementation of EntityStore.
@@ -20,8 +22,9 @@ import {
  * ## State
  * - `entities` — Record<entityId, Entity> — O(1) entity lookup
  * - `typeIndex` — Record<type, Set<entityId>> — O(1) query by type
- * - `relationshipIndex` — Record<indexKey, rowId → sourceId> — O(1) reverse
- *   relationship lookup; indexKey is the `(field, type, target_id)` triple
+ * - `reverseIndex` — Record<indexKey, rowId → sourceId> — O(1) reverse
+ *   lookup for relationship edges (`(field, type, target_id)`) and group
+ *   membership (synthetic `groups\0entityGroup\0<groupId>` key)
  *
  * ## Materialization Flow
  * 1. Caller invokes `append()` on ActionLog
@@ -40,7 +43,7 @@ import {
 interface EntityStoreState {
   entities: Record<string, Entity>;
   typeIndex: Record<string, Set<string>>;
-  relationshipIndex: RelationshipIndex;
+  reverseIndex: ReverseIndex;
 }
 
 const copyEntity = (entity: Entity): Entity => JSON.parse(JSON.stringify(entity));
@@ -71,16 +74,17 @@ const updateTypeIndexOnSet = (
 };
 
 /**
- * Rebuild the relationship index around a single entity write. The
- * delta comes from the previous and next versions of the row, so a
- * patch that re-points or re-keys a row, or a tombstone that hides
- * one, leaves no stale row behind.
+ * Rebuild the reverse index around a single entity write. The delta
+ * comes from the previous and next versions of the row, so a patch
+ * that re-points or re-keys a row, or a tombstone that hides one,
+ * leaves no stale row behind. Covers both relationship edges and
+ * membership rows.
  */
-const updateRelationshipIndex = (
-  index: RelationshipIndex,
+const updateReverseIndex = (
+  index: ReverseIndex,
   previous: Entity | undefined,
   next: Entity | undefined,
-): RelationshipIndex => applyRelationshipDelta(index, relationshipIndexDelta(previous, next));
+): ReverseIndex => applyIndexDelta(index, reverseIndexDelta(previous, next));
 
 export interface MemoryEntityStoreBundle {
   store: EntityStore;
@@ -99,7 +103,7 @@ export const createMemoryEntityStore = (
   actionLog: ActionLog,
   dirtyTracker: DirtyTracker,
 ): MemoryEntityStoreBundle => {
-  let state: EntityStoreState = { entities: {}, typeIndex: {}, relationshipIndex: {} };
+  let state: EntityStoreState = { entities: {}, typeIndex: {}, reverseIndex: {} };
   const { emitter, emit } = createEntityChangeEmitter();
 
   /**
@@ -134,7 +138,7 @@ export const createMemoryEntityStore = (
     state = {
       entities: { ...state.entities, [entityId]: copyEntity(entity) },
       typeIndex: updateTypeIndexOnSet(state.typeIndex, entity, oldEntity?.type),
-      relationshipIndex: updateRelationshipIndex(state.relationshipIndex, oldEntity, entity),
+      reverseIndex: updateReverseIndex(state.reverseIndex, oldEntity, entity),
     };
 
     if (clearDirty) {
@@ -143,6 +147,15 @@ export const createMemoryEntityStore = (
 
     emit(entityId, state.entities[entityId]);
   };
+
+  /** Materialize every dirty row of a type before an index read. */
+  const materializeDirtyType = async (entityType: string): Promise<void> => {
+    for (const id of await dirtyTracker.getDirtyForType(entityType)) {
+      await replay(id, true);
+    }
+  };
+
+  const readIndex = (key: string): readonly string[] => liveSourceIds(state.reverseIndex[key]);
 
   const store: EntityStore = {
     async get(id: string): Promise<Entity | null> {
@@ -156,17 +169,13 @@ export const createMemoryEntityStore = (
       state = {
         entities: { ...state.entities, [entity.id]: copyEntity(entity) },
         typeIndex: updateTypeIndexOnSet(state.typeIndex, entity, oldEntity?.type),
-        relationshipIndex: updateRelationshipIndex(state.relationshipIndex, oldEntity, entity),
+        reverseIndex: updateReverseIndex(state.reverseIndex, oldEntity, entity),
       };
       emit(entity.id, state.entities[entity.id]);
     },
 
     async query(type: string): Promise<readonly Entity[]> {
-      const dirtyIds = await dirtyTracker.getDirtyForType(type);
-
-      for (const id of dirtyIds) {
-        await replay(id, true);
-      }
+      await materializeDirtyType(type);
 
       const entityIds = state.typeIndex[type] ?? new Set();
 
@@ -178,17 +187,17 @@ export const createMemoryEntityStore = (
       type,
       targetId,
     }: RelationshipIndexQuery): Promise<readonly string[]> {
-      const dirtyIds = await dirtyTracker.getDirtyForType(RELATIONSHIP_ENTITY_TYPE);
+      await materializeDirtyType(RELATIONSHIP_ENTITY_TYPE);
+      return readIndex(reverseIndexKey(as, type, targetId));
+    },
 
-      for (const id of dirtyIds) {
-        await replay(id, true);
-      }
-
-      return liveSourceIds(state.relationshipIndex[relationshipIndexKey(as, type, targetId)]);
+    async queryByMembership(groupId: string): Promise<readonly string[]> {
+      await materializeDirtyType(MEMBERSHIP_ENTITY_TYPE);
+      return readIndex(membershipIndexKey(groupId));
     },
 
     async reset(): Promise<void> {
-      state = { entities: {}, typeIndex: {}, relationshipIndex: {} };
+      state = { entities: {}, typeIndex: {}, reverseIndex: {} };
       emitter.reset();
     },
   };

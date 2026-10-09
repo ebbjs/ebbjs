@@ -2,7 +2,7 @@ import type { IDBPDatabase, DBSchema } from "idb";
 import type { Action, Entity } from "@ebbjs/core";
 import type { OutboxStatus } from "../types/outbox-store";
 import type { ConflictEntry } from "../types/conflict-store";
-import type { RelationshipRows } from "../internal/relationship-index";
+import type { IndexRows } from "../internal/reverse-index";
 
 /**
  * Schema version for the IndexedDB adapter. The production adapter and
@@ -50,16 +50,20 @@ export interface EbbDBSchema extends DBSchema {
     indexes: { type: string };
   };
   /**
-   * Reverse relationship index: one record per
-   * `(field, type, target_id)` composite key, mapping each live
-   * relationship row id to its source id. Keying on the row (not the
-   * source) keeps a duplicate-natural-key row from erasing a source
-   * its sibling still supplies. Maintained alongside `entities` on
-   * every materialization.
+   * Shared reverse index: one record per composite key, mapping each
+   * live row id to its source id. Serves relationship edges keyed by
+   * `(field, type, target_id)` and `entityGroup` membership keyed by the
+   * synthetic `groups` accessor. Keying on the row (not the source)
+   * keeps a duplicate-natural-key row from erasing a source its sibling
+   * still supplies. The name and the schema version are unchanged: the
+   * index is derived, and following #248 it is not backfilled, so a
+   * database written before membership keys existed must be cleared (or
+   * `reset()`) rather than reused. This store is maintained alongside
+   * `entities` on every materialization.
    */
   relationships: {
     key: string;
-    value: { key: string; rows: RelationshipRows };
+    value: { key: string; rows: IndexRows };
   };
   dirty: {
     key: string;
