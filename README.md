@@ -67,7 +67,7 @@ A Bun-based server-function runtime and a CLI are not in the repo yet but are de
 
 ### Shipped
 
-- Core storage engine — RocksDB action log (single Writer GenServer, `enable_pipelined_write: true` on the DB), on-demand SQLite materialization. A 2-writer pipelined benchmark hit ~108k Actions/sec with full durability (see [devlog](packages/www/src/content/devlog/a-rocksdb-solid-start.md)); production currently runs 1 Writer.
+- Core storage engine — RocksDB action log (single Writer GenServer, `enable_pipelined_write: true` on the DB), on-demand SQLite materialization. Measured through the real server: **~15k Actions/sec sustained** (single Writer, `sync: true`, 2-Update Actions) — see [`ebb_server/bench/RESULTS.md`](ebb_server/bench/RESULTS.md). The older ~108k figure was a 2-writer raw-RocksDB primitive, never the server (see [devlog](packages/www/src/content/devlog/a-rocksdb-solid-start.md)).
 - Sync protocol — handshake, per-group paginated catch-up, live SSE streaming, watermark-gated fan-out
 - Auth & group-based permissions — `AuthPlug` (bypass + external modes), in-memory Group/GroupMember/Relationship cache
 - Real-time presence — ephemeral broadcasts via `POST /sync/presence`, fanned out over SSE
