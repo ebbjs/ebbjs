@@ -9,3 +9,6 @@ tsconfig.tsbuildinfo
 .husky/
 erl_crash.dump
 ebb_server/data/
+
+# Benchmark raw output (see ebb_server/bench/RESULTS.md)
+ebb_server/bench/results/*.md
