@@ -211,6 +211,53 @@ defmodule EbbServer.Storage.EntityIndexTest do
     end
   end
 
+  describe "resolve_groups_cached/3" do
+    test "returns the cached set and the intra-action source id" do
+      t = tables()
+
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+
+      assert EntityIndex.resolve_groups_cached("todo", "todo_1", opts(t)) == {
+               ["g_1"],
+               "todo_1"
+             }
+
+      assert EntityIndex.resolve_groups_cached("entityGroup", "eg_1", opts(t)) == {["g_1"], nil}
+      assert EntityIndex.resolve_groups_cached("group", "g_1", opts(t)) == {["g_1"], nil}
+    end
+
+    test "excludes intra-action membership from the cached set" do
+      t = tables()
+
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+
+      with_intra = opts(t) ++ [intra_action: %{"todo_1" => ["g_2"]}]
+
+      assert EntityIndex.resolve_groups_cached("todo", "todo_1", with_intra) == {
+               ["g_1"],
+               "todo_1"
+             }
+    end
+  end
+
+  describe "apply_intra_action/3" do
+    test "unions the source's intra-action membership" do
+      opts = [intra_action: %{"todo_1" => ["g_2"]}]
+
+      assert EntityIndex.apply_intra_action(["g_1"], "todo_1", opts) |> Enum.sort() == [
+               "g_1",
+               "g_2"
+             ]
+    end
+
+    test "returns the cached set unchanged when there is no intra-action membership" do
+      assert EntityIndex.apply_intra_action(["g_1"], "todo_1", []) == ["g_1"]
+
+      assert EntityIndex.apply_intra_action(["g_1"], nil, intra_action: %{"todo_1" => ["g_2"]}) ==
+               ["g_1"]
+    end
+  end
+
   describe "source_groups/2" do
     test "returns membership targets plus intra-action targets" do
       t = tables()

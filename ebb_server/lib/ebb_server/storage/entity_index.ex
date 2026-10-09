@@ -65,37 +65,81 @@ defmodule EbbServer.Storage.EntityIndex do
   @spec resolve_groups(subject_type(), subject_id(), keyword()) :: [String.t()]
   def resolve_groups(subject_type, subject_id, opts \\ [])
 
-  def resolve_groups("group", group_id, _opts), do: [group_id]
+  def resolve_groups(subject_type, subject_id, opts) do
+    {groups, source_id} = resolve_groups_cached(subject_type, subject_id, opts)
+    apply_intra_action(groups, source_id, opts)
+  end
 
-  def resolve_groups("entityGroup", membership_id, opts) do
+  @doc """
+  Cache-only resolution: `resolve_groups/3` without the Action's
+  `:intra_action` membership.
+
+  Returns the cached group set and the entity id whose intra-action
+  membership still has to be unioned on top, or `nil` for a subject type
+  that carries none (`"group"`, `"entityGroup"`, `"groupMember"`).
+
+  The Writer builds every Action of a coalesced flush against one cache
+  snapshot, so it memoizes this per resolution key and calls
+  `apply_intra_action/3` once per Action. Keying the memo on the full
+  `{subject_type, subject_id}` keeps a `"relationship"` or
+  `"entityGroup"` lookup from being answered by an unrelated entry with
+  the same id.
+  """
+  @spec resolve_groups_cached(subject_type(), subject_id(), keyword()) ::
+          {[String.t()], subject_id() | nil}
+  def resolve_groups_cached("group", group_id, _opts), do: {[group_id], nil}
+
+  def resolve_groups_cached("entityGroup", membership_id, opts) do
     table = Keyword.fetch!(opts, :entity_groups_by_id)
 
     case EntityGroupCache.get_entity_group(membership_id, table) do
-      nil -> []
-      entry -> List.wrap(entry_group_id(entry))
+      nil -> {[], nil}
+      entry -> {List.wrap(entry_group_id(entry)), nil}
     end
   end
 
-  def resolve_groups("relationship", rel_id, opts) do
+  def resolve_groups_cached("relationship", rel_id, opts) do
     table = Keyword.fetch!(opts, :relationships_by_id)
 
     case RelationshipCache.get_relationship(rel_id, table) do
-      nil -> []
-      entry -> source_groups(entry_source_id(entry), opts)
+      nil ->
+        {[], nil}
+
+      entry ->
+        source_id = entry_source_id(entry)
+        {source_groups_cached(source_id, opts), source_id}
     end
   end
 
-  def resolve_groups("groupMember", gm_id, opts) do
+  def resolve_groups_cached("groupMember", gm_id, opts) do
     table = Keyword.fetch!(opts, :group_members_by_id)
 
     case GroupCache.get_group_member(gm_id, table) do
-      nil -> []
-      entry -> List.wrap(entry_group_id(entry))
+      nil -> {[], nil}
+      entry -> {List.wrap(entry_group_id(entry)), nil}
     end
   end
 
-  def resolve_groups(_user_type, source_id, opts) do
-    source_groups(source_id, opts)
+  def resolve_groups_cached(_user_type, source_id, opts) do
+    {source_groups_cached(source_id, opts), source_id}
+  end
+
+  @doc """
+  Unions a cached group set with the Action's intra-action membership for
+  `source_id`.
+
+  `EntityGroupCache.entity_groups/2` already dedupes, so the union is the
+  only place a duplicate can appear. A `nil` source id means the subject
+  type carries no intra-action membership and the set is returned as is.
+  """
+  @spec apply_intra_action([String.t()], subject_id() | nil, keyword()) :: [String.t()]
+  def apply_intra_action(groups, nil, _opts), do: groups
+
+  def apply_intra_action(groups, source_id, opts) do
+    case Keyword.get(opts, :intra_action, %{}) |> Map.get(source_id, []) do
+      [] -> groups
+      intra_action -> Enum.uniq(groups ++ intra_action)
+    end
   end
 
   @doc """
@@ -104,11 +148,19 @@ defmodule EbbServer.Storage.EntityIndex do
   """
   @spec source_groups(subject_id(), keyword()) :: [String.t()]
   def source_groups(source_id, opts) do
-    table = Keyword.fetch!(opts, :entity_groups)
-    intra_action = Keyword.get(opts, :intra_action, %{})
+    source_id
+    |> source_groups_cached(opts)
+    |> apply_intra_action(source_id, opts)
+  end
 
-    (EntityGroupCache.entity_groups(source_id, table) ++ Map.get(intra_action, source_id, []))
-    |> Enum.uniq()
+  @doc """
+  Cache-only `source_groups/2`: an entity's cached `entityGroup` targets
+  without the Action's intra-action union.
+  """
+  @spec source_groups_cached(subject_id(), keyword()) :: [String.t()]
+  def source_groups_cached(source_id, opts) do
+    table = Keyword.fetch!(opts, :entity_groups)
+    EntityGroupCache.entity_groups(source_id, table)
   end
 
   @doc """

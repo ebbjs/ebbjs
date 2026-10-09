@@ -1204,6 +1204,90 @@ defmodule EbbServer.Storage.WriterTest do
       assert {:ok, "act_first"} = RocksDB.get(cf, group_gsn_key("g_1", 1), name: rocks_name)
       assert {:ok, "act_second"} = RocksDB.get(cf, group_gsn_key("g_2", 2), name: rocks_name)
     end
+
+    test "two Actions moving the same entity index their own intra-action membership", %{
+      writer_name: writer_name,
+      rocks_name: rocks_name
+    } do
+      hlc = generate_hlc()
+
+      first = %{
+        id: "act_memo_first",
+        actor_id: "actor_1",
+        hlc: hlc,
+        updates: [
+          todo_update("upd_memo_first", "todo_memo", hlc),
+          entity_group_update("eg_memo_a", "todo_memo", "g_a", hlc)
+        ]
+      }
+
+      second = %{
+        id: "act_memo_second",
+        actor_id: "actor_1",
+        hlc: generate_hlc(),
+        updates: [
+          todo_update("upd_memo_second", "todo_memo", hlc),
+          entity_group_update("eg_memo_b", "todo_memo", "g_b", hlc)
+        ]
+      }
+
+      # Both Actions build in one flush, against the pre-write cache. The
+      # memo must not hand the second Action the first Action's set.
+      assert {:ok, {1, 2}, []} = Writer.write_actions([first, second], writer_name)
+
+      cf = RocksDB.cf_group_actions(rocks_name)
+      assert {:ok, "act_memo_first"} = RocksDB.get(cf, group_gsn_key("g_a", 1), name: rocks_name)
+      assert {:ok, "act_memo_second"} = RocksDB.get(cf, group_gsn_key("g_b", 2), name: rocks_name)
+      assert :not_found = RocksDB.get(cf, group_gsn_key("g_b", 1), name: rocks_name)
+      assert :not_found = RocksDB.get(cf, group_gsn_key("g_a", 2), name: rocks_name)
+    end
+
+    test "a memoized resolution is keyed by subject type, not just id", %{
+      writer_name: writer_name,
+      rocks_name: rocks_name
+    } do
+      hlc = generate_hlc()
+
+      seed = %{
+        id: "act_shared_seed",
+        actor_id: "actor_1",
+        hlc: hlc,
+        updates: [
+          entity_group_update("shared", "todo_other", "g_membership", hlc),
+          entity_group_update("eg_user", "shared", "g_user", hlc)
+        ]
+      }
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([seed], writer_name)
+
+      # `shared` is both a membership row id (entityGroup) and an entity
+      # id (todo) with different group sets; one flush resolves both.
+      action = %{
+        id: "act_shared_types",
+        actor_id: "actor_1",
+        hlc: generate_hlc(),
+        updates: [
+          %{
+            id: "upd_shared_delete",
+            subject_id: "shared",
+            subject_type: "entityGroup",
+            method: :delete,
+            data: nil
+          },
+          todo_update("upd_shared_todo", "shared", hlc)
+        ]
+      }
+
+      assert {:ok, {2, 2}, []} = Writer.write_actions([action], writer_name)
+
+      cf = RocksDB.cf_group_actions(rocks_name)
+
+      assert {:ok, "act_shared_types"} =
+               RocksDB.get(cf, group_gsn_key("g_membership", 2), name: rocks_name)
+
+      assert {:ok, "act_shared_types"} =
+               RocksDB.get(cf, group_gsn_key("g_user", 2), name: rocks_name)
+    end
   end
 
   describe "batch_committed groups snapshot (#251)" do
@@ -1379,6 +1463,18 @@ defmodule EbbServer.Storage.WriterTest do
         "fields" => %{
           "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
         }
+      }
+    }
+  end
+
+  defp todo_update(id, entity_id, hlc) do
+    %{
+      id: id,
+      subject_id: entity_id,
+      subject_type: "todo",
+      method: :put,
+      data: %{
+        "fields" => %{"title" => %{"type" => "lww", "value" => "x", "hlc" => hlc}}
       }
     }
   end

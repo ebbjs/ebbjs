@@ -307,6 +307,48 @@ Both runs: 0 rejected Actions, 0 GSN holes, final watermark lag 0. Three
 short 20s A/B runs agreed on the direction and size (median overall 20,485 →
 24,335, +18.8%).
 
+## Writer op-building allocation: drop `List.flatten`, memoize group resolution (#340)
+
+`build_ops/3` carries three allocation hot spots in the coalesced b100
+profile: `List.flatten/1` over the flush's op lists (~3.6%), repeated
+`EntityIndex.resolve_groups/3` per Update (~4.6%), and the Action/Update
+ETF encode (~9.7%). [#340](https://github.com/ebbjs/ebbjs/issues/340)
+takes the first two; the duplicate Update encode was already removed with
+`cf_updates` in [#338](https://github.com/ebbjs/ebbjs/issues/338).
+
+- the flush op list is assembled with `:lists.append/1` instead of
+  `List.flatten/1` (same swap inside `build_action_ops/5`);
+- the cache-only group resolution is memoized per subject (`subject_type`
+  plus `subject_id`) across one flush, with each Action's intra-action
+  membership unioned on top through `EntityIndex.apply_intra_action/3`.
+  The system caches are not mutated during `build_ops`, so a flush sees
+  one snapshot; keying on the full subject identity (not just the id)
+  keeps a `"relationship"` or `"entityGroup"` lookup from answering a
+  user entity that happens to share the id.
+
+The flatten swap is a direct win: assembling the same 100-Action, 5-op
+list 20,000 times takes `:lists.append/1` 678,792 µs against
+`List.flatten/1` 764,419 µs (−11%).
+
+Measured on a build-path harness (isolated `Writer` with a no-op
+`commit_fn`, canonical 100-Action hot flush, 400 iterations, three runs
+per side), allocated words per Action fall **719 → 694 (−3.4%)** while
+wall time per flush is flat (~1.70 ms both sides). On the real t0
+headline config the rate is unchanged — median overall **19,933/s →
+19,893/s** over three 30s runs per side (this VM's run-to-run spread is
+±5%, and `:scheduler.utilization` sits at ~12.7% both sides), with 0
+rejected Actions and 0 GSN holes. The `spread` distribution pays ~+5%
+allocated words for the memo map, which never hits there, but that path
+is ~17× slower and is not the headline. (`:eprof`'s `:tools` application
+is not on this VM's mix code path, so the `build`-share wording in #340
+is checked against the allocation counter rather than a sampled share.)
+
+**Verdict.** Both named allocators are gone and build-path allocation
+drops ~3%, but that is small next to the per-Action ETF encode and the
+durable write, so the t0 headline does not move. The single-Writer
+ceiling is still per-Action-bound; spreading op building across
+schedulers is [#336](https://github.com/ebbjs/ebbjs/issues/336).
+
 ## Correctness under load
 
 Clean across every measured run above: **0 rejected Actions, 0
