@@ -3,15 +3,22 @@
  *
  * `await qb` resolves to `readonly Static<TObject<ShapeFields<TFields>>>[]` after
  * projecting each materialized entity to the schema's TypeBox shape.
- * The chain mutators (`where` / `orderBy` / `limit`) are typed against
- * the field map: a field key narrows to `keyof TFields` and its value
- * to the field's TypeBox static type. A key that names a registered
- * relationship on the entity filters that edge instead — see
- * {@link QueryContext}. The reserved `groups` key filters built-in
+ * The chain mutators (`where` / `or` / `orderBy` / `limit`) are typed
+ * against the field map: a field key narrows to `keyof TFields` and
+ * its value to the field's TypeBox static type. A key that names a
+ * registered relationship on the entity filters that edge instead —
+ * see {@link QueryContext}. The reserved `groups` key filters built-in
  * membership by scanning `entityGroup` rows (no storage membership
  * index yet — #267). Relationship and membership predicates read
  * storage, so the filter pass is asynchronous; every terminal already
  * is.
+ *
+ * The predicate set is a disjunction of AND-groups (DNF): `.where`
+ * adds a conjunct to the current group, `.or` closes it and starts a
+ * new one, so `.where(a).where(b).or(c).where(d)` means
+ * `(a AND b) OR (c AND d)`. A leading `.or` starts the first group
+ * rather than matching every row. Evaluation intersects each group,
+ * then unions the survivors.
  *
  * The terminal methods materialize the chain:
  * - `await qb` / `.then(...)` — projected rows.
@@ -150,6 +157,13 @@ type MembershipFilter = {
 
 type Filter = FieldFilter | RelationshipFilter | MembershipFilter;
 
+/**
+ * A disjunction of AND-groups (DNF): the inner arrays are ANDed, the
+ * outer is ORed. No groups means no predicate, so every live candidate
+ * survives.
+ */
+type FilterGroups = readonly (readonly Filter[])[];
+
 /** Ordering descriptor accumulated by `orderBy`. */
 type OrderBy = { field: string; direction: "asc" | "desc" };
 
@@ -169,7 +183,7 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
    * accessors. The reserved `groups` key filters built-in membership.
    * Any other key filters the data field. Field values narrow to the
    * field's static type; relationship targets accept an id, a handle,
-   * or an array meaning any-of. Chained calls are ANDed.
+   * or an array meaning any-of. Adds to the current AND-group.
    */
   where<K extends keyof TFields & string>(key: K, value: Static<TFields[K]>): QueryBuilder<TFields>;
   /**
@@ -179,6 +193,15 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
    * Typing the exact relationship keys is the #181 follow-up.
    */
   where(key: string, target: PointerValue | readonly PointerValue[]): QueryBuilder<TFields>;
+  /**
+   * Disjunction. Accepts the same key/value forms as {@link where} and
+   * starts a new AND-group: `.where(a).where(b).or(c).where(d)` means
+   * `(a AND b) OR (c AND d)`. A leading `.or` with no prior `.where`
+   * starts the first group — it does not match every row.
+   */
+  or<K extends keyof TFields & string>(key: K, value: Static<TFields[K]>): QueryBuilder<TFields>;
+  /** Open pointer overload for {@link or}, mirroring {@link where}'s. */
+  or(key: string, target: PointerValue | readonly PointerValue[]): QueryBuilder<TFields>;
   /** Ordering on a field of `TFields`. */
   orderBy<K extends keyof TFields & string>(
     field: K,
@@ -254,12 +277,12 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
   context?: QueryContext,
 ): QueryBuilder<TFields> {
   const make = (
-    filters: readonly Filter[],
+    groups: FilterGroups,
     order: OrderBy | null,
     limitN: number | null,
   ): QueryBuilder<TFields> => {
     const apply = async (rows: readonly Entity[]): Promise<Entity[]> => {
-      let out = await applyFilters(rows, filters);
+      let out = await applyFilters(rows, groups);
       if (order !== null) {
         const { field, direction } = order;
         out.sort((a, b) => cmpField(a, b, field, direction));
@@ -271,13 +294,20 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
     };
     const builder: QueryBuilder<TFields> = {
       where(key: string, target: unknown) {
-        return make([...filters, buildFilter(key, target, shape, context)], order, limitN);
+        const filter = buildFilter(key, target, shape, context, "where");
+        const current = groups[groups.length - 1];
+        const next: FilterGroups =
+          current === undefined ? [[filter]] : [...groups.slice(0, -1), [...current, filter]];
+        return make(next, order, limitN);
+      },
+      or(key: string, target: unknown) {
+        return make([...groups, [buildFilter(key, target, shape, context, "or")]], order, limitN);
       },
       orderBy(field, direction) {
-        return make(filters, { field, direction }, limitN);
+        return make(groups, { field, direction }, limitN);
       },
       limit(n) {
-        return make(filters, order, n);
+        return make(groups, order, n);
       },
       async first() {
         const candidates = await loadCandidates();
@@ -327,7 +357,7 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
 }
 
 /**
- * Turn one `where` argument into a filter. A registered forward
+ * Turn one `where` / `or` argument into a filter. A registered forward
  * relationship on the entity wins over a same-named field; an unknown
  * key throws rather than silently matching nothing.
  */
@@ -336,6 +366,7 @@ function buildFilter<TFields extends Record<string, TSchema>>(
   value: unknown,
   shape: TObject<TFields>,
   context: QueryContext | undefined,
+  method: "where" | "or",
 ): Filter {
   // `groups` is reserved, so it can never be a declared relationship or
   // a field. With a query context it always means built-in membership,
@@ -343,7 +374,7 @@ function buildFilter<TFields extends Record<string, TSchema>>(
   // carries no adapter, so the key falls through to the unknown-field
   // throw below.
   if (key === GROUPS_ACCESSOR && context !== undefined) {
-    const label = `where("${GROUPS_ACCESSOR}") on "${context.entityName}"`;
+    const label = `${method}("${GROUPS_ACCESSOR}") on "${context.entityName}"`;
     return {
       kind: "membership",
       targetIds: resolveTargetIds(value as PointerValue | readonly PointerValue[], label),
@@ -353,7 +384,7 @@ function buildFilter<TFields extends Record<string, TSchema>>(
   const rel =
     context === undefined ? undefined : context.registry.getRelationship(context.entityName, key);
   if (rel !== undefined && context !== undefined) {
-    const label = `where("${key}") on "${context.entityName}"`;
+    const label = `${method}("${key}") on "${context.entityName}"`;
     return {
       kind: "relationship",
       as: key,
@@ -373,7 +404,7 @@ function buildFilter<TFields extends Record<string, TSchema>>(
         {
           entityName,
           field: key,
-          message: `where("${key}"): array/object values are only valid for a relationship key or a field whose declared type accepts them`,
+          message: `${method}("${key}"): array/object values are only valid for a relationship key or a field whose declared type accepts them`,
         },
       ]);
     }
@@ -384,7 +415,7 @@ function buildFilter<TFields extends Record<string, TSchema>>(
     {
       entityName,
       field: key,
-      message: `where("${key}"): not a field on "${entityName}" and not a declared relationship`,
+      message: `${method}("${key}"): not a field on "${entityName}" and not a declared relationship`,
     },
   ]);
 }
@@ -411,14 +442,18 @@ function resolveTargetIds(
   return ids.length === 0 ? null : ids;
 }
 
-/** Apply every filter in order; the pass is async because membership and relationship filters read storage. */
-async function applyFilters(
+/**
+ * Intersect one AND-group against a list of live candidates: each
+ * filter narrows the row list in turn. Field filters need no storage
+ * read; relationship and membership filters resolve to an id set first.
+ * Callers pass a non-empty group — `where` / `or` always add a filter —
+ * so an empty conjunction cannot arise.
+ */
+async function applyGroup(
   rows: readonly Entity[],
   filters: readonly Filter[],
-): Promise<Entity[]> {
-  // A query reads the live collection, so tombstones are excluded
-  // uniformly; deleted-row inspection stays on `get(id)` / the storage adapter.
-  let out = rows.filter((row) => row.deleted_hlc === null);
+): Promise<readonly Entity[]> {
+  let out: readonly Entity[] = rows;
   for (const filter of filters) {
     if (filter.kind === "field") {
       out = out.filter((row) => eqField(row, filter.key, filter.value));
@@ -433,6 +468,22 @@ async function applyFilters(
     out = out.filter((row) => ids.has(row.id));
   }
   return out;
+}
+
+/**
+ * Apply a DNF predicate set. Tombstones are excluded uniformly, then
+ * the live candidates in their original order are kept when any group
+ * matched them; a row matching several groups appears once. No groups
+ * means no predicate, so every live candidate survives.
+ */
+async function applyFilters(rows: readonly Entity[], groups: FilterGroups): Promise<Entity[]> {
+  const live = rows.filter((row) => row.deleted_hlc === null);
+  if (groups.length === 0) return live;
+  const survivors = new Set<string>();
+  for (const group of groups) {
+    for (const row of await applyGroup(live, group)) survivors.add(row.id);
+  }
+  return live.filter((row) => survivors.has(row.id));
 }
 
 /**
