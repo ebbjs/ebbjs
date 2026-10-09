@@ -10,7 +10,6 @@ defmodule EbbServer.Storage.RocksDBTest do
 
       refute is_nil(RocksDB.db_ref(name))
       refute is_nil(RocksDB.cf_actions(name))
-      refute is_nil(RocksDB.cf_updates(name))
       refute is_nil(RocksDB.cf_entity_actions(name))
       refute is_nil(RocksDB.cf_type_entities(name))
       refute is_nil(RocksDB.cf_action_dedup(name))
@@ -23,7 +22,6 @@ defmodule EbbServer.Storage.RocksDBTest do
 
       assert_raise ArgumentError, fn -> RocksDB.db_ref(name) end
       assert_raise ArgumentError, fn -> RocksDB.cf_actions(name) end
-      assert_raise ArgumentError, fn -> RocksDB.cf_updates(name) end
       assert_raise ArgumentError, fn -> RocksDB.cf_entity_actions(name) end
       assert_raise ArgumentError, fn -> RocksDB.cf_type_entities(name) end
       assert_raise ArgumentError, fn -> RocksDB.cf_action_dedup(name) end

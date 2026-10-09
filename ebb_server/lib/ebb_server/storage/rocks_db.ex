@@ -31,16 +31,14 @@ defmodule EbbServer.Storage.RocksDB do
 
     default           - RocksDB default, unused
     cf_actions        - GSN (64-bit big-endian) -> action (ETF binary)
-    cf_updates        - (action_id, 0x00, update_id) -> update (ETF binary)
     cf_entity_actions - (entity_id, GSN) -> action_id binary
     cf_type_entities  - (type, 0x00, entity_id) -> <<>> (presence index)
     cf_action_dedup   - action_id -> GSN (duplicate detection)
     cf_group_actions  - (group_id, GSN) -> action_id binary
 
   Composite keys use a `0x00` byte as a separator. Callers must never
-  include null bytes in their `type`, `entity_id`, or `action_id`
-  components (enforced by `encode_update_key/2` and
-  `encode_type_entity_key/2`).
+  include null bytes in their `type` or `entity_id` components (enforced
+  by `encode_type_entity_key/2`).
 
   ## Isolated instances
 
@@ -67,7 +65,6 @@ defmodule EbbServer.Storage.RocksDB do
   @cf_descriptors [
     {~c"default", []},
     {~c"cf_actions", []},
-    {~c"cf_updates", []},
     {~c"cf_entity_actions", []},
     {~c"cf_type_entities", []},
     {~c"cf_action_dedup", []},
@@ -104,9 +101,6 @@ defmodule EbbServer.Storage.RocksDB do
 
   @spec cf_actions(name()) :: cf_ref()
   def cf_actions(name \\ __MODULE__), do: :persistent_term.get({:ebb_cf_actions, name})
-
-  @spec cf_updates(name()) :: cf_ref()
-  def cf_updates(name \\ __MODULE__), do: :persistent_term.get({:ebb_cf_updates, name})
 
   @spec cf_entity_actions(name()) :: cf_ref()
   def cf_entity_actions(name \\ __MODULE__),
@@ -172,25 +166,6 @@ defmodule EbbServer.Storage.RocksDB do
   end
 
   def decode_group_action_key(_key), do: :error
-
-  @doc """
-  Encodes a composite key for the updates column family.
-
-  Uses a `0x00` null byte as the separator between `action_id` and `update_id`.
-  Callers must ensure `action_id` never contains a `0x00` byte, otherwise the
-  key boundary becomes ambiguous and lookups/prefix scans will silently break.
-  """
-  @spec encode_update_key(binary(), binary()) :: binary()
-  def encode_update_key(action_id, update_id) do
-    action_id = validate_key_component(action_id, "action_id")
-    update_id = validate_key_component(update_id, "update_id")
-
-    if :binary.match(action_id, <<0>>) != :nomatch do
-      raise ArgumentError, "action_id must not contain null bytes (0x00)"
-    end
-
-    <<action_id::binary, 0, update_id::binary>>
-  end
 
   @doc """
   Iterator over an entire column family. Yields `{key, value}` tuples
@@ -456,7 +431,6 @@ defmodule EbbServer.Storage.RocksDB do
        [
          _default_cf,
          cf_actions,
-         cf_updates,
          cf_entity_actions,
          cf_type_entities,
          cf_action_dedup,
@@ -465,7 +439,6 @@ defmodule EbbServer.Storage.RocksDB do
         store_persistent_terms(
           db_ref,
           cf_actions,
-          cf_updates,
           cf_entity_actions,
           cf_type_entities,
           cf_action_dedup,
@@ -497,7 +470,6 @@ defmodule EbbServer.Storage.RocksDB do
   defp store_persistent_terms(
          db_ref,
          cf_actions,
-         cf_updates,
          cf_entity_actions,
          cf_type_entities,
          cf_action_dedup,
@@ -506,7 +478,6 @@ defmodule EbbServer.Storage.RocksDB do
        ) do
     :persistent_term.put({:ebb_rocksdb_db, name}, db_ref)
     :persistent_term.put({:ebb_cf_actions, name}, cf_actions)
-    :persistent_term.put({:ebb_cf_updates, name}, cf_updates)
     :persistent_term.put({:ebb_cf_entity_actions, name}, cf_entity_actions)
     :persistent_term.put({:ebb_cf_type_entities, name}, cf_type_entities)
     :persistent_term.put({:ebb_cf_action_dedup, name}, cf_action_dedup)
@@ -545,7 +516,6 @@ defmodule EbbServer.Storage.RocksDB do
   defp erase_persistent_terms(name) do
     :persistent_term.erase({:ebb_rocksdb_db, name})
     :persistent_term.erase({:ebb_cf_actions, name})
-    :persistent_term.erase({:ebb_cf_updates, name})
     :persistent_term.erase({:ebb_cf_entity_actions, name})
     :persistent_term.erase({:ebb_cf_type_entities, name})
     :persistent_term.erase({:ebb_cf_action_dedup, name})
