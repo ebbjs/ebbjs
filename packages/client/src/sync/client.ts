@@ -28,7 +28,9 @@ import {
   createAction,
   createClock,
   type Entity,
+  type FieldValue,
   type HLCState,
+  isFieldMap,
   localEvent,
   receiveRemoteHLC,
   latestHlc,
@@ -1332,11 +1334,23 @@ const collectViolations = (
  * optimistic apply. Returns `null` when a patch or delete has no base
  * row to apply to — the server echo (or a later catch-up) supplies it.
  *
- * Unlike the storage materializer's full LWW merge, a field-level
- * spread is enough: the Update was stamped from this client's HLC
- * clock after every HLC the cache has seen, so each patched field is
- * newer than the cached one and wins outright.
+ * A local leaf write wins outright: the Update was stamped from this
+ * client's HLC clock after every HLC the cache has seen, so the write is
+ * newer than the cached leaf. A map field unions keys instead of
+ * replacing, so a write to one key keeps its siblings; the leaf rule is
+ * what the optimistic view has always promised, and only map fields add
+ * structure the spread could not express.
  */
+const mergeLocalField = (existing: FieldValue | undefined, incoming: FieldValue): FieldValue => {
+  if (existing === undefined || !isFieldMap(existing) || !isFieldMap(incoming)) return incoming;
+  const map: Record<string, FieldValue> = { ...existing.map };
+  for (const [key, value] of Object.entries(incoming.map)) {
+    const previous = map[key];
+    map[key] = previous === undefined ? value : mergeLocalField(previous, value);
+  }
+  return { map };
+};
+
 const applyLocalUpdate = (current: Entity | null, update: Update, hlc: string): Entity | null => {
   const fields = update.data?.fields ?? {};
   switch (update.method) {
@@ -1350,17 +1364,22 @@ const applyLocalUpdate = (current: Entity | null, update: Update, hlc: string): 
         deleted_hlc: null,
         last_gsn: 0,
       };
-    case "patch":
+    case "patch": {
       if (current === null) return null;
       if (current.deleted_hlc) return current;
+      const merged: Record<string, FieldValue> = { ...current.data.fields };
+      for (const [field, value] of Object.entries(fields)) {
+        merged[field] = mergeLocalField(merged[field], value);
+      }
       return {
         ...current,
-        data: { fields: { ...current.data.fields, ...fields } },
+        data: { fields: merged },
         // A patch's HLC wins when it is later than the cached row's,
         // mirroring the storage materializer so the optimistic entity
         // and the post-echo replay converge on the same updated_hlc.
         updated_hlc: latestHlc(current.updated_hlc, hlc),
       };
+    }
     case "delete":
       if (current === null) return null;
       return { ...current, deleted_hlc: hlc, updated_hlc: hlc };

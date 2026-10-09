@@ -183,6 +183,57 @@ describe("client.outbox", () => {
     expect(row?.data.fields.title.value).toBe("Hello");
   });
 
+  it("optimistically merges map patches key by key before the echo", async () => {
+    const { fn } = mkStubFetch();
+    const client = mkClient(fn);
+    const hlcA = makeHlc(1_711_036_800_000);
+    const hlcB = makeHlc(1_711_036_800_001);
+
+    await client.outbox.enqueue({
+      id: "act_a",
+      actor_id: ACTOR_ID,
+      hlc: hlcA,
+      gsn: 0,
+      updates: [
+        {
+          id: "u_a",
+          subject_id: "doc_1",
+          subject_type: "doc",
+          method: "put",
+          data: {
+            fields: { content: { map: { a: { value: "A", update_id: "u_a", hlc: hlcA } } } },
+          },
+        },
+      ],
+    });
+    await client.outbox.enqueue({
+      id: "act_b",
+      actor_id: ACTOR_ID,
+      hlc: hlcB,
+      gsn: 0,
+      updates: [
+        {
+          id: "u_b",
+          subject_id: "doc_1",
+          subject_type: "doc",
+          method: "patch",
+          data: {
+            fields: { content: { map: { b: { value: "B", update_id: "u_b", hlc: hlcB } } } },
+          },
+        },
+      ],
+    });
+
+    const row = await client.readLocalEntity("doc_1");
+
+    expect(row?.data.fields.content).toEqual({
+      map: {
+        a: { value: "A", update_id: "u_a", hlc: hlcA },
+        b: { value: "B", update_id: "u_b", hlc: hlcB },
+      },
+    });
+  });
+
   it("client.write() fires the storage change emitter before the echo", async () => {
     const { fn } = mkStubFetch();
     const storage = createMemoryAdapter();
