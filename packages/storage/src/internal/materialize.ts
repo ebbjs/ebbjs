@@ -1,5 +1,5 @@
 import type { Entity, FieldValue, HLCTimestamp, Update } from "@ebbjs/core";
-import { compare, latestHlc } from "@ebbjs/core";
+import { latestHlc, mergeFieldValue } from "@ebbjs/core";
 
 /**
  * Shared materialization helpers used by every EntityStore implementation.
@@ -19,26 +19,17 @@ export const readFields = (update: Update): Record<string, FieldValue> => {
 
 /**
  * Merges patch fields into existing entity data using LWW semantics.
- * Higher HLC wins; equal HLC uses lexicographic update_id (newer >= older).
+ * Higher HLC wins; equal HLC breaks toward the lexicographically
+ * greater `update_id`. A map field merges key by key. The recursive
+ * rule itself lives in `@ebbjs/core` so the server, the outbox, and
+ * both adapters share one definition.
  */
 export const mergeFields = (existing: Entity["data"], update: Update): Entity["data"] => {
   const patch = readFields(update);
-  const merged = { ...existing.fields };
+  const merged: Record<string, FieldValue> = { ...existing.fields };
 
   for (const [field, patchValue] of Object.entries(patch)) {
-    const existingValue = merged[field];
-    if (!existingValue) {
-      merged[field] = patchValue;
-    } else {
-      const hlcCmp = compare(existingValue.hlc ?? "", patchValue.hlc ?? "");
-      if (hlcCmp < 0) {
-        merged[field] = patchValue;
-      } else if (hlcCmp === 0) {
-        if (patchValue.update_id >= existingValue.update_id) {
-          merged[field] = patchValue;
-        }
-      }
-    }
+    merged[field] = mergeFieldValue(merged[field], patchValue);
   }
 
   return { fields: merged };

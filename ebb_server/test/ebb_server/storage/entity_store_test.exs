@@ -32,6 +32,38 @@ defmodule EbbServer.Storage.EntityStoreTest do
 
   import EbbServer.TestHelpers
 
+  defp put_action(id, entity_id, fields, hlc) do
+    validated_action(%{
+      "id" => id,
+      "hlc" => hlc,
+      "updates" => [
+        validated_update(%{
+          "id" => id,
+          "subject_id" => entity_id,
+          "data" => %{"fields" => fields}
+        })
+      ]
+    })
+  end
+
+  defp patch_action(id, entity_id, fields, hlc) do
+    validated_action(%{
+      "id" => id,
+      "hlc" => hlc,
+      "updates" => [
+        validated_update(%{
+          "id" => id,
+          "subject_id" => entity_id,
+          "method" => "patch",
+          "data" => %{"fields" => fields}
+        })
+      ]
+    })
+  end
+
+  defp map_field(entries), do: %{"map" => entries}
+  defp leaf(value, hlc), do: %{"value" => value, "hlc" => hlc}
+
   setup do
     cache = start_isolated_cache()
     %{name: rocks_name, dir: rocks_dir} = start_rocks()
@@ -507,6 +539,445 @@ defmodule EbbServer.Storage.EntityStoreTest do
 
       assert entity.data["fields"]["title"]["value"] == "Higher ID"
       assert entity.data["fields"]["title"]["update_id"] == "upd_zzz"
+    end
+
+    test "map patches to different keys both survive in either order", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+
+      for {entity_id, order} <- [
+            {"todo_map_fwd", [:a, :b]},
+            {"todo_map_rev", [:b, :a]}
+          ] do
+        a_id = "u_a_#{entity_id}"
+        b_id = "u_b_#{entity_id}"
+        put = put_action("act_put_#{entity_id}", entity_id, %{}, hlc_from(1_000))
+        Writer.write_actions([put], writer_name)
+
+        patches = %{
+          a:
+            patch_action(
+              a_id,
+              entity_id,
+              %{"content" => map_field(%{"a" => leaf(1, hlc_from(2_000))})},
+              hlc_from(2_000)
+            ),
+          b:
+            patch_action(
+              b_id,
+              entity_id,
+              %{"content" => map_field(%{"b" => leaf(2, hlc_from(3_000))})},
+              hlc_from(3_000)
+            )
+        }
+
+        Enum.each(order, fn key -> Writer.write_actions([patches[key]], writer_name) end)
+
+        assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
+        content = entity.data["fields"]["content"]
+
+        assert content["map"]["a"]["value"] == 1
+        assert content["map"]["a"]["update_id"] == a_id
+        assert content["map"]["b"]["value"] == 2
+        assert content["map"]["b"]["update_id"] == b_id
+        refute Map.has_key?(content, "update_id")
+      end
+    end
+
+    test "same map key resolves by HLC regardless of patch order", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+
+      for {entity_id, order} <- [
+            {"todo_map_lww_fwd", [:old, :new]},
+            {"todo_map_lww_rev", [:new, :old]}
+          ] do
+        old_id = "u_old_#{entity_id}"
+        new_id = "u_new_#{entity_id}"
+        put = put_action("act_put_#{entity_id}", entity_id, %{}, hlc_from(1_000))
+        Writer.write_actions([put], writer_name)
+
+        older = hlc_from(2_000)
+        newer = hlc_from(3_000)
+
+        patches = %{
+          old:
+            patch_action(
+              old_id,
+              entity_id,
+              %{"content" => map_field(%{"a" => leaf("old", older)})},
+              older
+            ),
+          new:
+            patch_action(
+              new_id,
+              entity_id,
+              %{"content" => map_field(%{"a" => leaf("new", newer)})},
+              newer
+            )
+        }
+
+        Enum.each(order, fn key -> Writer.write_actions([patches[key]], writer_name) end)
+
+        assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
+        assert entity.data["fields"]["content"]["map"]["a"]["value"] == "new"
+        assert entity.data["fields"]["content"]["map"]["a"]["update_id"] == new_id
+      end
+    end
+
+    test "same map key with equal HLC breaks toward the higher update_id", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+
+      for {entity_id, order} <- [
+            {"todo_map_tie_fwd", [:aaa, :zzz]},
+            {"todo_map_tie_rev", [:zzz, :aaa]}
+          ] do
+        aaa_id = "u_aaa_#{entity_id}"
+        zzz_id = "u_zzz_#{entity_id}"
+        put = put_action("act_put_#{entity_id}", entity_id, %{}, hlc_from(1_000))
+        Writer.write_actions([put], writer_name)
+        hlc = hlc_from(2_000)
+
+        patches = %{
+          aaa:
+            patch_action(
+              aaa_id,
+              entity_id,
+              %{"content" => map_field(%{"a" => leaf("a", hlc)})},
+              hlc
+            ),
+          zzz:
+            patch_action(
+              zzz_id,
+              entity_id,
+              %{"content" => map_field(%{"a" => leaf("z", hlc)})},
+              hlc
+            )
+        }
+
+        Enum.each(order, fn key -> Writer.write_actions([patches[key]], writer_name) end)
+
+        assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
+        assert entity.data["fields"]["content"]["map"]["a"]["value"] == "z"
+        assert entity.data["fields"]["content"]["map"]["a"]["update_id"] == zzz_id
+      end
+    end
+
+    test "a map leaf's wire update_id is preserved and decides an equal-HLC tie", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_map_wire_update_id"
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+      put = put_action("act_put", entity_id, %{}, hlc_from(1_000))
+      Writer.write_actions([put], writer_name)
+      hlc = hlc_from(2_000)
+
+      # The leaf ids order opposite to the Update ids: the wire value must
+      # decide, and the server must not overwrite it with the Update id.
+      patch_aaa =
+        patch_action(
+          "act_z",
+          entity_id,
+          %{
+            "content" =>
+              map_field(%{"a" => %{"value" => "a", "update_id" => "u_aaa", "hlc" => hlc}})
+          },
+          hlc
+        )
+
+      patch_zzz =
+        patch_action(
+          "act_a",
+          entity_id,
+          %{
+            "content" =>
+              map_field(%{"a" => %{"value" => "z", "update_id" => "u_zzz", "hlc" => hlc}})
+          },
+          hlc
+        )
+
+      Writer.write_actions([patch_aaa], writer_name)
+      Writer.write_actions([patch_zzz], writer_name)
+
+      assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
+      assert entity.data["fields"]["content"]["map"]["a"]["value"] == "z"
+      assert entity.data["fields"]["content"]["map"]["a"]["update_id"] == "u_zzz"
+    end
+
+    test "a tombstoned map entry is retained in storage", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_map_tombstone"
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+      hlc_a = hlc_from(2_000)
+      hlc_del = hlc_from(3_000)
+
+      put = put_action("act_put", entity_id, %{}, hlc_from(1_000))
+
+      patch_a =
+        patch_action("u_a", entity_id, %{"content" => map_field(%{"a" => leaf(1, hlc_a)})}, hlc_a)
+
+      patch_del =
+        patch_action(
+          "u_del",
+          entity_id,
+          %{"content" => map_field(%{"a" => leaf(nil, hlc_del)})},
+          hlc_del
+        )
+
+      Writer.write_actions([put], writer_name)
+      Writer.write_actions([patch_a], writer_name)
+      Writer.write_actions([patch_del], writer_name)
+
+      assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
+
+      assert entity.data["fields"]["content"]["map"]["a"] == %{
+               "value" => nil,
+               "update_id" => "u_del",
+               "hlc" => hlc_del
+             }
+    end
+
+    test "put replaces a map field wholesale", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_map_put"
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+      hlc_a = hlc_from(2_000)
+      hlc_b = hlc_from(3_000)
+      hlc_c = hlc_from(4_000)
+
+      put_1 =
+        put_action(
+          "act_put_1",
+          entity_id,
+          %{"content" => map_field(%{"a" => leaf(1, hlc_a)})},
+          hlc_from(1_000)
+        )
+
+      patch_b =
+        patch_action("u_b", entity_id, %{"content" => map_field(%{"b" => leaf(2, hlc_b)})}, hlc_b)
+
+      put_2 =
+        put_action(
+          "act_put_2",
+          entity_id,
+          %{"content" => map_field(%{"c" => leaf(3, hlc_c)})},
+          hlc_c
+        )
+
+      Writer.write_actions([put_1], writer_name)
+      Writer.write_actions([patch_b], writer_name)
+      Writer.write_actions([put_2], writer_name)
+
+      assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
+
+      assert entity.data["fields"]["content"] == %{
+               "map" => %{"c" => %{"value" => 3, "update_id" => "act_put_2", "hlc" => hlc_c}}
+             }
+    end
+
+    test "nested map fields merge key by key", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_map_nested"
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+      hlc_a = hlc_from(2_000)
+      hlc_b = hlc_from(3_000)
+
+      put = put_action("act_put", entity_id, %{}, hlc_from(1_000))
+
+      patch_a =
+        patch_action(
+          "u_a",
+          entity_id,
+          %{"content" => map_field(%{"outer" => map_field(%{"inner" => leaf(1, hlc_a)})})},
+          hlc_a
+        )
+
+      patch_b =
+        patch_action(
+          "u_b",
+          entity_id,
+          %{"content" => map_field(%{"outer" => map_field(%{"other" => leaf(2, hlc_b)})})},
+          hlc_b
+        )
+
+      Writer.write_actions([put], writer_name)
+      Writer.write_actions([patch_a], writer_name)
+      Writer.write_actions([patch_b], writer_name)
+
+      assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
+
+      assert entity.data["fields"]["content"] == %{
+               "map" => %{
+                 "outer" => %{
+                   "map" => %{
+                     "inner" => %{"value" => 1, "update_id" => "u_a", "hlc" => hlc_a},
+                     "other" => %{"value" => 2, "update_id" => "u_b", "hlc" => hlc_b}
+                   }
+                 }
+               }
+             }
+    end
+
+    test "a kind mismatch replaces the whole field value", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_map_kind"
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+      hlc_leaf = hlc_from(2_000)
+      hlc_map = hlc_from(3_000)
+      hlc_leaf_2 = hlc_from(4_000)
+
+      put = put_action("act_put", entity_id, %{}, hlc_from(1_000))
+
+      patch_leaf =
+        patch_action("u_leaf", entity_id, %{"content" => leaf("scalar", hlc_leaf)}, hlc_leaf)
+
+      patch_map =
+        patch_action(
+          "u_map",
+          entity_id,
+          %{"content" => map_field(%{"a" => leaf(1, hlc_map)})},
+          hlc_map
+        )
+
+      patch_leaf_2 =
+        patch_action(
+          "u_leaf2",
+          entity_id,
+          %{"content" => leaf("scalar2", hlc_leaf_2)},
+          hlc_leaf_2
+        )
+
+      Writer.write_actions([put], writer_name)
+      Writer.write_actions([patch_leaf], writer_name)
+      Writer.write_actions([patch_map], writer_name)
+
+      assert {:ok, entity1} = EntityStore.get(entity_id, "a_test", opts)
+
+      assert entity1.data["fields"]["content"] == %{
+               "map" => %{"a" => %{"value" => 1, "update_id" => "u_map", "hlc" => hlc_map}}
+             }
+
+      Writer.write_actions([patch_leaf_2], writer_name)
+
+      assert {:ok, entity2} = EntityStore.get(entity_id, "a_test", opts)
+
+      assert entity2.data["fields"]["content"] == %{
+               "value" => "scalar2",
+               "update_id" => "u_leaf2",
+               "hlc" => hlc_leaf_2
+             }
+    end
+
+    test "decimal-string HLCs compare numerically", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_map_hlc_strings"
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+
+      put = put_action("act_put", entity_id, %{}, hlc_from(1_000))
+
+      patch_nine =
+        patch_action(
+          "u_nine",
+          entity_id,
+          %{"content" => map_field(%{"a" => leaf("nine", "9")})},
+          hlc_from(2_000)
+        )
+
+      patch_ten =
+        patch_action(
+          "u_ten",
+          entity_id,
+          %{"content" => map_field(%{"a" => leaf("ten", "10")})},
+          hlc_from(3_000)
+        )
+
+      Writer.write_actions([put], writer_name)
+      Writer.write_actions([patch_nine], writer_name)
+      Writer.write_actions([patch_ten], writer_name)
+
+      assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
+      assert entity.data["fields"]["content"]["map"]["a"]["value"] == "ten"
+      assert entity.data["fields"]["content"]["map"]["a"]["hlc"] == "10"
+    end
+
+    test "map fields round-trip through the SQLite JSON blob and replay incrementally", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_map_json"
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+      hlc_a = hlc_from(2_000)
+      hlc_b = hlc_from(3_000)
+
+      put =
+        put_action(
+          "act_put",
+          entity_id,
+          %{"content" => map_field(%{"a" => leaf(1, hlc_a)})},
+          hlc_from(1_000)
+        )
+
+      Writer.write_actions([put], writer_name)
+
+      assert {:ok, first} = EntityStore.get(entity_id, "a_test", opts)
+      assert first.data["fields"]["content"]["map"]["a"]["value"] == 1
+
+      # The cached row is JSON; the nested map must survive the encode.
+      assert {:ok, row} = SQLite.get_entity(entity_id, sqlite_name)
+
+      assert %{
+               "fields" => %{
+                 "content" => %{"map" => %{"a" => %{"value" => 1, "update_id" => "act_put"}}}
+               }
+             } = Jason.decode!(row.data)
+
+      # A later patch replays over the decoded blob rather than the original.
+      patch_b =
+        patch_action("u_b", entity_id, %{"content" => map_field(%{"b" => leaf(2, hlc_b)})}, hlc_b)
+
+      Writer.write_actions([patch_b], writer_name)
+
+      assert {:ok, second} = EntityStore.get(entity_id, "a_test", opts)
+      assert second.data["fields"]["content"]["map"]["a"]["value"] == 1
+      assert second.data["fields"]["content"]["map"]["b"]["value"] == 2
     end
 
     test "delete-only entity returns :not_found", %{

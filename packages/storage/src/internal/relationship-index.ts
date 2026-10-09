@@ -1,4 +1,5 @@
 import type { Entity } from "@ebbjs/core";
+import { isFieldLeaf } from "@ebbjs/core";
 
 /**
  * Derivation of the `(field, type, target_id) → relationship row`
@@ -36,7 +37,9 @@ export const relationshipIndexKey = (field: string, type: string, targetId: stri
   `${field}\u0000${type}\u0000${targetId}`;
 
 const readStringField = (entity: Entity, name: string): string | null => {
-  const value = entity.data?.fields?.[name]?.value;
+  const field = entity.data?.fields?.[name];
+  if (field === undefined || !isFieldLeaf(field)) return null;
+  const value = field.value;
   return typeof value === "string" ? value : null;
 };
 

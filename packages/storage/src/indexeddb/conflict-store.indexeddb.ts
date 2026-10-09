@@ -6,8 +6,7 @@ import type { EbbDBSchema } from "./schema";
 
 const toEntry = (row: EbbDBSchema["conflicts"]["value"]): ConflictEntry => ({
   action: row.action,
-  winners: row.winners,
-  fields: row.fields,
+  losses: row.losses,
   detectedAtHlc: row.detectedAtHlc,
 });
 
@@ -25,8 +24,7 @@ export const createIndexedDBConflictStore = (db: IDBPDatabase<EbbDBSchema>): Con
     async put(entry: ConflictEntry): Promise<void> {
       await db.put("conflicts", {
         action: entry.action,
-        winners: entry.winners,
-        fields: entry.fields,
+        losses: entry.losses,
         detectedAtHlc: entry.detectedAtHlc,
       });
     },

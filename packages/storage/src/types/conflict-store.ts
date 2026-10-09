@@ -1,16 +1,39 @@
 import type { Action } from "@ebbjs/core";
 
 /**
- * The server-side value that beat a losing Action for one field.
- * Mirrors the `FieldValue` triple the LWW comparison uses, so the
- * entry is self-describing across a reload.
+ * The server-side value that beat a losing Action for one slot. Mirrors
+ * the `FieldValue` the LWW comparison uses, so the entry is
+ * self-describing across a reload. A whole-field replacement by an
+ * incoming map has no single leaf triple, so `update_id` / `hlc` are
+ * absent and `value` is the projected map.
  */
 export interface ConflictWinner {
-  /** `update_id` of the FieldValue that won. */
-  readonly update_id: string;
-  /** HLC carried by the winning FieldValue. */
-  readonly hlc: string;
+  /** `update_id` of the winning FieldValue; absent for a whole-field map winner. */
+  readonly update_id?: string;
+  /** HLC carried by the winning FieldValue; absent for a whole-field map winner. */
+  readonly hlc?: string;
   readonly value: unknown;
+}
+
+/**
+ * One conflicting slot on a losing Action: a field plus the map-key path
+ * from the field root to the lost leaf. `path` is empty for a plain leaf
+ * field. Concurrent writes to different keys are different slots and so
+ * are not conflicts; concurrent writes to the same slot are.
+ */
+export interface ConflictSlot {
+  /** The `subject_id` of the Update that carried the write. */
+  readonly subjectId: string;
+  /** The field name on that subject. */
+  readonly field: string;
+  /** Ordered map keys from the field root to the leaf; empty for a leaf field. */
+  readonly path: readonly string[];
+}
+
+/** One lost slot on a losing Action, plus the server value that beat it. */
+export interface ConflictLoss {
+  readonly slot: ConflictSlot;
+  readonly winner: ConflictWinner;
 }
 
 /**
@@ -25,16 +48,11 @@ export interface ConflictEntry {
    */
   readonly action: Action;
   /**
-   * Winning value per conflicting field, keyed by field name. The keys
-   * are exactly the fields in `fields`.
-   */
-  readonly winners: Readonly<Record<string, ConflictWinner>>;
-  /**
-   * Conflicting field names in detection order. This is the entry's
-   * only cross-field ordering promise — map key order carries no
+   * Losing slots and their winners, in detection order. This is the
+   * entry's only cross-slot ordering promise — map key order carries no
    * meaning.
    */
-  readonly fields: readonly string[];
+  readonly losses: readonly ConflictLoss[];
   /** Client HLC stamped at detection. The `list()` ordering key. */
   readonly detectedAtHlc: string;
 }

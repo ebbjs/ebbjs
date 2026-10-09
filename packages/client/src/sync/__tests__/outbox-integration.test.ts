@@ -536,8 +536,10 @@ describe("client.outbox LWW conflict detection (#308)", () => {
     const conflicts = await storage.conflicts.list();
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0]?.action.id).toBe("act_local");
-    expect(conflicts[0]?.fields).toEqual(["title"]);
-    expect(conflicts[0]?.winners.title).toEqual({
+    expect(conflicts[0]?.losses.map((loss) => loss.slot)).toEqual([
+      { subjectId: "todo_1", field: "title", path: [] },
+    ]);
+    expect(conflicts[0]?.losses[0]?.winner).toEqual({
       update_id: "u_peer",
       hlc: peerHlc,
       value: "theirs",

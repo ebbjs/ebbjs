@@ -38,8 +38,12 @@ describe("EbbDBSchema", () => {
       const action = buildPutAction();
       await db.put("conflicts", {
         action,
-        winners: { title: { update_id: "u_2", hlc: action.hlc, value: "Updated" } },
-        fields: ["title"],
+        losses: [
+          {
+            slot: { subjectId: "todo_1", field: "title", path: [] },
+            winner: { update_id: "u_2", hlc: action.hlc, value: "Updated" },
+          },
+        ],
         detectedAtHlc: action.hlc,
       });
       expect(await db.get("conflicts", "a_1")).toBeDefined();

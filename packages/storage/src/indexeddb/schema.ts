@@ -138,7 +138,7 @@ export const createEbbStores = (
   }
   if (!database.objectStoreNames.contains("conflicts")) {
     // Key path reaches into the entry so the stored row keeps the
-    // `{ action, winners, fields, detectedAtHlc }` shape without a
+    // `{ action, losses, detectedAtHlc }` shape without a
     // denormalized copy of the losing Action's id.
     database.createObjectStore("conflicts", { keyPath: "action.id" });
   }

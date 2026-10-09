@@ -48,13 +48,21 @@ defmodule EbbServer.Storage.EntityStore do
 
   ## Merge rules
 
-  Per-field merge is uniform across all field types: HLC plus a
-  lexicographic `update_id` tiebreak. This deliberately keeps the
-  materialization logic simple — there is no per-type dispatch table
-  today. CRDT-style merging (e.g. G-Counter, causal-tree text) is **not**
-  a server-side concern: the per-field LWW rule on `value` blobs is
-  enough for the server's job (decide which blob wins), and the typed
-  reducer on the client is what interprets a `causal-tree` blob
+  A field value is either a **leaf** (`%{"value" => v, "update_id" =>
+  id, "hlc" => hlc}`) or a **map** (`%{"map" => %{key => value}}`).
+  The `map` key is the discriminant, so a map value is self-describing
+  and the merge needs no schema. Leaf merge is uniform across all field
+  types: higher HLC wins, ties broken by lexicographically higher
+  `update_id`. Map merge unions the key sets and applies the same rule
+  to each key recursively. A kind mismatch (leaf against map) replaces
+  the whole value, since a field's kind is fixed by its schema and the
+  incoming patch is the newer intent.
+
+  This deliberately keeps the materialization logic simple — there is
+  no per-type dispatch table today. CRDT-style merging (e.g. G-Counter,
+  causal-tree text) is **not** a server-side concern: the per-leaf LWW
+  rule is enough for the server's job (decide which blob wins), and the
+  typed reducer on the client is what interprets a `causal-tree` blob
   correctly. See Epic #110 for how `e.collaborativeText()` is defined
   and Epic #111 for the storage-architecture rationale.
 
@@ -67,19 +75,33 @@ defmodule EbbServer.Storage.EntityStore do
 
   ## Merge Semantics
 
-  When merging field values, the Last-Writer-Wins (LWW) strategy is used:
+  When merging field values, the Last-Writer-Wins (LWW) strategy is
+  applied at every leaf, and maps recurse:
 
-  1. **HLC comparison first**: Fields with higher Hybrid Logical Clock (HLC) values win.
-  2. **Tiebreaker**: When HLCs are equal, the lexicographically higher `update_id` wins.
+  1. **Map union**: When both the existing and incoming values are maps,
+     their key sets are unioned and every key present on both sides is
+     merged by these same rules. A patch that mentions only one key
+     leaves its siblings untouched.
+  2. **HLC comparison first**: Leaves with higher Hybrid Logical Clock
+     (HLC) values win. HLCs are compared numerically, so an integer and
+     the decimal string that names it (`10` and `"10"`) order
+     identically.
+  3. **Tiebreaker**: When HLCs are equal, the lexicographically higher `update_id` wins.
      - This ensures deterministic, reproducible results across all clients.
      - Lexicographic comparison uses standard string ordering (Unicode codepoints).
      - Example: `"upd_zzz" > "upd_aaa"` evaluates to `true`.
      - Note: Numeric IDs like `"id-10"` sort before `"id-9"` lexicographically
        (`"1"` < `"9"`), which is acceptable since the comparison is purely
        deterministic, not semantically meaningful.
+  4. **Kind mismatch**: When exactly one side is a map, the incoming
+     value replaces the existing value wholesale: a field's kind is
+     fixed by its schema, so this is a newer intent, not a merge.
+  5. **Tombstone**: A leaf `value: null` is merged like any other leaf,
+     so a late-arriving write can still beat it. Storage retains it;
+     projection is what hides a tombstoned map key.
 
   This approach is replicable across any client (Elixir, JavaScript, Python, etc.)
-  since all use the same lexicographic string comparison rules.
+  since all use the same numeric HLC and lexicographic string comparison rules.
   """
 
   alias EbbServer.Storage.{DirtyTracker, RocksDB, SQLite}
@@ -346,7 +368,7 @@ defmodule EbbServer.Storage.EntityStore do
 
     fields_with_update_id =
       Enum.into(update["data"]["fields"] || %{}, %{}, fn {field_name, field_value} ->
-        {field_name, Map.put(field_value, "update_id", update["id"])}
+        {field_name, stamp_update_id(field_value, update["id"])}
       end)
 
     %{
@@ -371,23 +393,9 @@ defmodule EbbServer.Storage.EntityStore do
       Enum.reduce(update["data"]["fields"] || %{}, existing_fields, fn {field_name, new_field},
                                                                        existing_fields_map ->
         existing = Map.get(existing_fields_map, field_name)
+        incoming = stamp_update_id(new_field, update["id"])
 
-        winner =
-          cond do
-            existing == nil ->
-              Map.put(new_field, "update_id", update["id"])
-
-            new_field["hlc"] > existing["hlc"] ->
-              Map.put(new_field, "update_id", update["id"])
-
-            new_field["hlc"] < existing["hlc"] ->
-              existing
-
-            true ->
-              tiebreak_winner(new_field, existing, update["id"], existing["update_id"])
-          end
-
-        Map.put(existing_fields_map, field_name, winner)
+        Map.put(existing_fields_map, field_name, merge_field(existing, incoming))
       end)
 
     %{
@@ -411,6 +419,78 @@ defmodule EbbServer.Storage.EntityStore do
         max_gsn: max(acc.max_gsn, gsn)
     }
   end
+
+  # A field's leaves are stamped with the update's id so the stored value
+  # is self-describing. Entries nested under a `map` recurse; the map
+  # object itself is not a leaf and carries no update_id. A leaf that
+  # already carries a wire `update_id` keeps it: the client's fold trusts
+  # that value, so the server must use it too for an equal-HLC tiebreak to
+  # resolve identically on both sides. Only a leaf with no usable id — the
+  # historical top-level shape — falls back to the Update's id.
+  defp stamp_update_id(%{"map" => entries}, update_id) when is_map(entries) do
+    stamped =
+      Enum.into(entries, %{}, fn {key, value} -> {key, stamp_update_id(value, update_id)} end)
+
+    %{"map" => stamped}
+  end
+
+  defp stamp_update_id(%{"update_id" => id} = leaf, _update_id) when is_binary(id) and id != "",
+    do: leaf
+
+  defp stamp_update_id(leaf, update_id) when is_map(leaf),
+    do: Map.put(leaf, "update_id", update_id)
+
+  defp merge_field(nil, incoming), do: incoming
+
+  defp merge_field(existing, incoming) do
+    cond do
+      map_field?(existing) and map_field?(incoming) ->
+        merged =
+          Map.merge(existing["map"], incoming["map"], fn _key, existing_value, incoming_value ->
+            merge_field(existing_value, incoming_value)
+          end)
+
+        %{"map" => merged}
+
+      map_field?(existing) or map_field?(incoming) ->
+        incoming
+
+      true ->
+        case compare_hlc(incoming["hlc"], existing["hlc"]) do
+          :gt -> incoming
+          :lt -> existing
+          :eq -> tiebreak_winner(incoming, existing, incoming["update_id"], existing["update_id"])
+        end
+    end
+  end
+
+  defp map_field?(field), do: is_map(field) and is_map(Map.get(field, "map"))
+
+  # Field HLCs cross the wire either as integers or as decimal strings
+  # (the msgpack codec keeps values above the JS safe-integer range as
+  # strings). Compare numerically so both forms order identically.
+  defp compare_hlc(left, right) do
+    left = hlc_value(left)
+    right = hlc_value(right)
+
+    cond do
+      left > right -> :gt
+      left < right -> :lt
+      true -> :eq
+    end
+  end
+
+  defp hlc_value(nil), do: 0
+  defp hlc_value(hlc) when is_integer(hlc), do: hlc
+
+  defp hlc_value(hlc) when is_binary(hlc) do
+    case Integer.parse(hlc) do
+      {int, ""} -> int
+      _ -> 0
+    end
+  end
+
+  defp hlc_value(_), do: 0
 
   defp tiebreak_winner(new_field, existing, new_id, existing_id) do
     if new_id >= existing_id do

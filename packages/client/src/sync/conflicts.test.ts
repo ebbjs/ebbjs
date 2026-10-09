@@ -34,8 +34,12 @@ const mkEntry = (actionId: string, detectedAtHlc: string): ConflictEntry => ({
       },
     ],
   },
-  winners: { title: { update_id: "u_peer", hlc: PEER_HLC, value: "theirs" } },
-  fields: ["title"],
+  losses: [
+    {
+      slot: { subjectId: "todo_1", field: "title", path: [] },
+      winner: { update_id: "u_peer", hlc: PEER_HLC, value: "theirs" },
+    },
+  ],
   detectedAtHlc,
 });
 
@@ -179,8 +183,12 @@ describe("createConflicts", () => {
           },
         ],
       },
-      winners: { title: { update_id: "u_peer", hlc: PEER_HLC, value: "theirs" } },
-      fields: ["title"],
+      losses: [
+        {
+          slot: { subjectId: "todo_1", field: "title", path: [] },
+          winner: { update_id: "u_peer", hlc: PEER_HLC, value: "theirs" },
+        },
+      ],
       detectedAtHlc: "5",
     };
     const store = mkStore([entry]);
@@ -195,6 +203,54 @@ describe("createConflicts", () => {
     expect(rebased.updates[0]?.method).toBe("patch");
     expect(Object.keys(rebased.updates[0]?.data?.fields ?? {})).toEqual(["title"]);
     expect(rebased.updates[0]?.data?.fields.title?.value).toBe("mine");
+  });
+
+  it("retry re-stamps only the losing map key", async () => {
+    const entry: ConflictEntry = {
+      action: {
+        id: "act_local",
+        actor_id: "actor_1",
+        hlc: LOCAL_HLC,
+        gsn: 0,
+        updates: [
+          {
+            id: "u_local",
+            subject_id: "todo_1",
+            subject_type: "todo",
+            method: "patch",
+            data: {
+              fields: {
+                content: {
+                  map: {
+                    a: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC },
+                    b: { value: "sibling", update_id: "u_local", hlc: LOCAL_HLC },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      },
+      losses: [
+        {
+          slot: { subjectId: "todo_1", field: "content", path: ["a"] },
+          winner: { update_id: "u_peer", hlc: PEER_HLC, value: "theirs" },
+        },
+      ],
+      detectedAtHlc: "5",
+    };
+    const store = mkStore([entry]);
+    const harness = mkDeps(store);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    await conflicts.resolve("act_local", "retry");
+
+    const rebased = harness.requeue.mock.calls[0]?.[0] as Action;
+    const content = rebased.updates[0]?.data?.fields.content;
+    expect(content).toEqual({
+      map: { a: { value: "mine", update_id: "u_fresh_0", hlc: "1" } },
+    });
   });
 
   it("discard re-materializes from the log and removes the conflict", async () => {
