@@ -180,6 +180,102 @@ export const buildRelationshipDeleteAction = (args: { id: string }, gsn: number)
   };
 };
 
+export interface EntityGroupRowFixture {
+  id: string;
+  entityId: string;
+  groupId: string;
+}
+
+/**
+ * Build a `put` Action for one `entityGroup` membership row, the shape
+ * the wire writes when an entity joins a group.
+ */
+export const buildEntityGroupPutAction = (row: EntityGroupRowFixture, gsn = 1): Action => {
+  const hlc = makeHlc(HLC_BASE, gsn);
+  const updateId = `u_${row.id}`;
+  const field = (value: string) => ({ value, update_id: updateId, hlc });
+
+  return {
+    id: `a_${row.id}`,
+    actor_id: "a_user1",
+    hlc,
+    gsn,
+    updates: [
+      {
+        id: updateId,
+        subject_id: row.id,
+        subject_type: "entityGroup",
+        method: "put",
+        data: {
+          fields: {
+            entity_id: field(row.entityId),
+            group_id: field(row.groupId),
+          },
+        },
+      },
+    ],
+  };
+};
+
+export interface EntityGroupPatchFixture {
+  id: string;
+  entityId?: string;
+  groupId?: string;
+}
+
+/**
+ * Build a `patch` Action that changes one or both ids of an
+ * `entityGroup` membership row.
+ */
+export const buildEntityGroupPatchAction = (
+  patch: EntityGroupPatchFixture,
+  gsn: number,
+): Action => {
+  const hlc = makeHlc(HLC_BASE, gsn);
+  const updateId = `u_${patch.id}_patch`;
+  const field = (value: string) => ({ value, update_id: updateId, hlc });
+  const fields: Record<string, { value: string; update_id: string; hlc: string }> = {};
+  if (patch.entityId !== undefined) fields.entity_id = field(patch.entityId);
+  if (patch.groupId !== undefined) fields.group_id = field(patch.groupId);
+
+  return {
+    id: `a_${patch.id}_patch`,
+    actor_id: "a_user1",
+    hlc,
+    gsn,
+    updates: [
+      {
+        id: updateId,
+        subject_id: patch.id,
+        subject_type: "entityGroup",
+        method: "patch",
+        data: { fields },
+      },
+    ],
+  };
+};
+
+/** Build a `delete` Action for an `entityGroup` membership row. */
+export const buildEntityGroupDeleteAction = (args: { id: string }, gsn: number): Action => {
+  const hlc = makeHlc(HLC_BASE, gsn);
+
+  return {
+    id: `a_${args.id}_delete`,
+    actor_id: "a_user1",
+    hlc,
+    gsn,
+    updates: [
+      {
+        id: `u_${args.id}_delete`,
+        subject_id: args.id,
+        subject_type: "entityGroup",
+        method: "delete",
+        data: null,
+      },
+    ],
+  };
+};
+
 /**
  * A conflict for {@link buildPutAction}'s `todo_1`: the losing `put`
  * Action and the winning `title` value, detected at `detectedAtMs`.

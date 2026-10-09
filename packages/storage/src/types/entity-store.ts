@@ -35,6 +35,9 @@ export interface RelationshipIndexQuery {
  * - `queryByRelationship({ as, type, targetId })` — returns the distinct
  *   source ids indexed under that triple in ascending order,
  *   materializing dirty relationship rows first
+ * - `queryByMembership(groupId)` — returns the distinct live member
+ *   entity ids whose `entityGroup` row points at the group, ascending,
+ *   materializing dirty `entityGroup` rows first
  * - `reset()` — clears all cached entities
  */
 export interface EntityStore {
@@ -42,5 +45,6 @@ export interface EntityStore {
   set(entity: Entity): Promise<void>;
   query(type: string): Promise<readonly Entity[]>;
   queryByRelationship(query: RelationshipIndexQuery): Promise<readonly string[]>;
+  queryByMembership(groupId: string): Promise<readonly string[]>;
   reset(): Promise<void>;
 }

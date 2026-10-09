@@ -4,6 +4,9 @@ import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
 import type { EntityStore } from "../types/entity-store";
 import {
+  buildEntityGroupDeleteAction,
+  buildEntityGroupPatchAction,
+  buildEntityGroupPutAction,
   buildPatchAction,
   buildPutAction,
   buildRelationshipDeleteAction,
@@ -103,6 +106,35 @@ const makeRelationshipEntity = (
         target_id: field(overrides.targetId ?? "list_1"),
         type: field(overrides.type ?? "todo_list"),
         field: field(overrides.field ?? "list"),
+      },
+    },
+    created_hlc: makeHlc(1),
+    updated_hlc: makeHlc(1),
+    deleted_hlc: overrides.deleted ?? null,
+    last_gsn: 0,
+  };
+};
+
+/** A materialized `entityGroup` membership row, for direct `set()` writes. */
+const makeEntityGroupEntity = (
+  overrides: {
+    id?: string;
+    entityId?: string;
+    groupId?: string;
+    deleted?: string | null;
+  } = {},
+): Entity => {
+  const id = overrides.id ?? "eg_2";
+  const updateId = `u_${id}`;
+  const field = (value: string) => ({ value, update_id: updateId, hlc: makeHlc(1) });
+
+  return {
+    id,
+    type: "entityGroup",
+    data: {
+      fields: {
+        entity_id: field(overrides.entityId ?? "todo_1"),
+        group_id: field(overrides.groupId ?? "group_1"),
       },
     },
     created_hlc: makeHlc(1),
@@ -769,6 +801,240 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         await entityStore.reset();
 
         expect(await listQuery(entityStore)).toEqual([]);
+      });
+    });
+
+    describe("queryByMembership", () => {
+      const seedMembership = async (
+        actionLog: ActionLog,
+        dirtyTracker: DirtyTracker,
+        row: { id: string; entityId: string; groupId: string },
+      ): Promise<void> => {
+        await actionLog.append(
+          buildEntityGroupPutAction({ id: row.id, entityId: row.entityId, groupId: row.groupId }),
+        );
+        await dirtyTracker.mark(row.id, "entityGroup");
+      };
+
+      it("returns member entity ids for a group id", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_1",
+          entityId: "todo_1",
+          groupId: "group_1",
+        });
+
+        expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_1"]);
+      });
+
+      it("materializes dirty entityGroup rows on query", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_1",
+          entityId: "todo_1",
+          groupId: "group_1",
+        });
+        expect(await dirtyTracker.isDirty("eg_1")).toBe(true);
+
+        await entityStore.queryByMembership("group_1");
+        expect(await dirtyTracker.isDirty("eg_1")).toBe(false);
+      });
+
+      it("returns every distinct member targeting the group in ascending order", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_b",
+          entityId: "todo_b",
+          groupId: "group_1",
+        });
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_a",
+          entityId: "todo_a",
+          groupId: "group_1",
+        });
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_b2",
+          entityId: "todo_b",
+          groupId: "group_1",
+        });
+
+        expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_a", "todo_b"]);
+      });
+
+      it("returns empty for an unknown group", async () => {
+        const { entityStore } = await factory();
+        expect(await entityStore.queryByMembership("group_unknown")).toEqual([]);
+      });
+
+      it("does not match a different group", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_1",
+          entityId: "todo_1",
+          groupId: "group_1",
+        });
+
+        expect(await entityStore.queryByMembership("group_2")).toEqual([]);
+      });
+
+      it("drops the member when a delete action tombstones the row", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_1",
+          entityId: "todo_1",
+          groupId: "group_1",
+        });
+        expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_1"]);
+
+        await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_1" }, 2));
+        await dirtyTracker.mark("eg_1", "entityGroup");
+
+        expect(await entityStore.queryByMembership("group_1")).toEqual([]);
+      });
+
+      it("drops the member when set() tombstones the row", async () => {
+        const { entityStore } = await factory();
+        await entityStore.set(makeEntityGroupEntity({ id: "eg_2", entityId: "todo_2" }));
+        expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_2"]);
+
+        await entityStore.set(
+          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_2", deleted: makeHlc(2) }),
+        );
+
+        expect(await entityStore.queryByMembership("group_1")).toEqual([]);
+      });
+
+      it("moves the member when a patch changes entity_id", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_1",
+          entityId: "todo_1",
+          groupId: "group_1",
+        });
+
+        await actionLog.append(buildEntityGroupPatchAction({ id: "eg_1", entityId: "todo_2" }, 2));
+        await dirtyTracker.mark("eg_1", "entityGroup");
+
+        expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_2"]);
+      });
+
+      it("moves the member when a patch changes group_id", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_1",
+          entityId: "todo_1",
+          groupId: "group_1",
+        });
+
+        await actionLog.append(buildEntityGroupPatchAction({ id: "eg_1", groupId: "group_2" }, 2));
+        await dirtyTracker.mark("eg_1", "entityGroup");
+
+        expect(await entityStore.queryByMembership("group_1")).toEqual([]);
+        expect(await entityStore.queryByMembership("group_2")).toEqual(["todo_1"]);
+      });
+
+      it("re-keys the member when a re-put changes the row's ids", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_1",
+          entityId: "todo_1",
+          groupId: "group_1",
+        });
+        expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_1"]);
+
+        await actionLog.append(
+          buildEntityGroupPutAction({ id: "eg_1", entityId: "todo_2", groupId: "group_2" }, 2),
+        );
+        await dirtyTracker.mark("eg_1", "entityGroup");
+
+        expect(await entityStore.queryByMembership("group_1")).toEqual([]);
+        expect(await entityStore.queryByMembership("group_2")).toEqual(["todo_2"]);
+      });
+
+      it("keeps a member while any duplicate row with the same ids is live", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_b",
+          entityId: "todo_b",
+          groupId: "group_1",
+        });
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_b2",
+          entityId: "todo_b",
+          groupId: "group_1",
+        });
+        expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_b"]);
+
+        await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_b" }, 2));
+        await dirtyTracker.mark("eg_b", "entityGroup");
+        expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_b"]);
+
+        await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_b2" }, 3));
+        await dirtyTracker.mark("eg_b2", "entityGroup");
+        expect(await entityStore.queryByMembership("group_1")).toEqual([]);
+      });
+
+      it("indexes rows written through set()", async () => {
+        const { entityStore } = await factory();
+        await entityStore.set(
+          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_2", groupId: "group_1" }),
+        );
+
+        expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_2"]);
+      });
+
+      it("moves the member when set() changes entity_id", async () => {
+        const { entityStore } = await factory();
+        await entityStore.set(
+          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_2", groupId: "group_1" }),
+        );
+
+        await entityStore.set(
+          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_3", groupId: "group_1" }),
+        );
+
+        expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_3"]);
+      });
+
+      it("moves the member when set() changes group_id", async () => {
+        const { entityStore } = await factory();
+        await entityStore.set(
+          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_2", groupId: "group_1" }),
+        );
+
+        await entityStore.set(
+          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_2", groupId: "group_2" }),
+        );
+
+        expect(await entityStore.queryByMembership("group_1")).toEqual([]);
+        expect(await entityStore.queryByMembership("group_2")).toEqual(["todo_2"]);
+      });
+
+      it("does not index non-entityGroup entities that carry the same field names", async () => {
+        const { entityStore } = await factory();
+        await entityStore.set({
+          ...makeEntity({ id: "todo_9", type: "todo" }),
+          data: {
+            fields: {
+              entity_id: { value: "todo_9", update_id: "u_9" },
+              group_id: { value: "group_1", update_id: "u_9" },
+            },
+          },
+        });
+
+        expect(await entityStore.queryByMembership("group_1")).toEqual([]);
+      });
+
+      it("clears the membership index on reset", async () => {
+        const { entityStore } = await factory();
+        await entityStore.set(
+          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_2", groupId: "group_1" }),
+        );
+        expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_2"]);
+
+        await entityStore.reset();
+
+        expect(await entityStore.queryByMembership("group_1")).toEqual([]);
       });
     });
 

@@ -8,10 +8,9 @@
  * its value to the field's TypeBox static type. A key that names a
  * registered relationship on the entity filters that edge instead —
  * see {@link QueryContext}. The reserved `groups` key filters built-in
- * membership by scanning `entityGroup` rows (no storage membership
- * index yet — #267). Relationship and membership predicates read
- * storage, so the filter pass is asynchronous; every terminal already
- * is.
+ * membership through the storage membership index. Relationship and
+ * membership predicates read storage, so the filter pass is
+ * asynchronous; every terminal already is.
  *
  * The predicate set is a disjunction of AND-groups (DNF): `.where`
  * adds a conjunct to the current group, `.or` closes it and starts a
@@ -46,7 +45,6 @@ import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { ShapeFields } from "../schema/entity";
 import { EntityValidationError, type EntityRegistry } from "../schema/entity-registry";
 import { GROUPS_ACCESSOR } from "../schema/system-entities";
-import { liveMemberships } from "./entity-group";
 
 /**
  * Project one wire field value to its application-facing value.
@@ -171,8 +169,8 @@ type RelationshipFilter = {
 /**
  * Filter over built-in group membership. `targetIds` is the resolved
  * any-of group-id set, or `null` when the pointer names no group —
- * that matches nothing. `context` carries the adapter the
- * `entityGroup` scan needs, captured when the filter is built.
+ * that matches nothing. `context` carries the adapter the membership
+ * index read needs, captured when the filter is built.
  */
 type MembershipFilter = {
   readonly kind: "membership";
@@ -395,9 +393,9 @@ function buildFilter<TFields extends Record<string, TSchema>>(
 ): Filter {
   // `groups` is reserved, so it can never be a declared relationship or
   // a field. With a query context it always means built-in membership,
-  // which needs a storage adapter to scan `entityGroup`; a bare builder
-  // carries no adapter, so the key falls through to the unknown-field
-  // throw below.
+  // which needs a storage adapter for the membership index; a bare
+  // builder carries no adapter, so the key falls through to the
+  // unknown-field throw below.
   if (key === GROUPS_ACCESSOR && context !== undefined) {
     const label = `${method}("${GROUPS_ACCESSOR}") on "${context.entityName}"`;
     return {
@@ -512,45 +510,40 @@ async function applyFilters(rows: readonly Entity[], groups: FilterGroups): Prom
 }
 
 /**
- * Union the index hits across a relationship filter's targets. The
- * index returns source ids for `(as, type, targetId)`, so any-of is a
+ * Union the index hits returned for each target id. A `null` target
+ * set names nothing, so it matches nothing; otherwise any-of is a
  * union and chained filters intersect by filtering the row list in
  * turn.
  */
-async function relationshipIdSet(filter: RelationshipFilter): Promise<ReadonlySet<string>> {
+async function indexHits(
+  targetIds: readonly string[] | null,
+  lookup: (targetId: string) => Promise<readonly string[]>,
+): Promise<ReadonlySet<string>> {
   const ids = new Set<string>();
-  if (filter.targetIds === null) return ids;
-  const perTarget = await Promise.all(
-    filter.targetIds.map((targetId) =>
-      filter.context.storage.entities.queryByRelationship({
-        as: filter.as,
-        type: filter.type,
-        targetId,
-      }),
-    ),
-  );
+  if (targetIds === null) return ids;
+  const perTarget = await Promise.all(targetIds.map(lookup));
   for (const sourceIds of perTarget) {
     for (const id of sourceIds) ids.add(id);
   }
   return ids;
 }
 
-/**
- * Resolve a membership filter to the set of member entity ids. Storage
- * has no membership index yet (#267), so this scans every live
- * `entityGroup` row and keeps those whose `group_id` the predicate
- * names. A tombstoned row is not a membership.
- */
-async function membershipIdSet(filter: MembershipFilter): Promise<ReadonlySet<string>> {
-  const ids = new Set<string>();
-  if (filter.targetIds === null) return ids;
-  const groupIds = new Set(filter.targetIds);
-  const rows = await filter.context.storage.entities.query("entityGroup");
-  for (const membership of liveMemberships(rows)) {
-    if (!groupIds.has(membership.groupId)) continue;
-    ids.add(membership.entityId);
-  }
-  return ids;
+/** The source ids linked to any of a relationship filter's targets. */
+function relationshipIdSet(filter: RelationshipFilter): Promise<ReadonlySet<string>> {
+  return indexHits(filter.targetIds, (targetId) =>
+    filter.context.storage.entities.queryByRelationship({
+      as: filter.as,
+      type: filter.type,
+      targetId,
+    }),
+  );
+}
+
+/** The member ids of any of a membership filter's target groups. */
+function membershipIdSet(filter: MembershipFilter): Promise<ReadonlySet<string>> {
+  return indexHits(filter.targetIds, (groupId) =>
+    filter.context.storage.entities.queryByMembership(groupId),
+  );
 }
 
 /** Pull `data.fields[field].value` off an Entity, returning `undefined` when absent. */

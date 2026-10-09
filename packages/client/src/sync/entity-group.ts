@@ -45,9 +45,9 @@ export function liveMemberships(rows: readonly Entity[]): readonly LiveMembershi
  * needs the row id a delete addresses, which the `groups` accessor's
  * projected group entities do not carry.
  *
- * Storage has no membership index yet (#267), so this scans every
- * `entityGroup` row. Keeping the scan here means #267 can swap in an
- * index without touching the namespace.
+ * Storage indexes membership by group, not by entity, so this
+ * entity→groups read still scans every `entityGroup` row. Keeping the
+ * scan here means callers depend on the shape, not the access path.
  */
 export async function readEntityMemberships(
   storage: StorageAdapter,
