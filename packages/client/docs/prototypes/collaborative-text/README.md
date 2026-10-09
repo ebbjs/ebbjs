@@ -90,12 +90,11 @@ type Conflict = {
 };
 
 // Event-based — for UI:
-doc.onConflict((conflict: Conflict) => { ... });
+client.conflicts.onChange((entries) => { ... });
 
 // Query-based — for tests and debugging:
-// doc.conflicts() returns all recorded conflicts (read-only snapshot).
-// doc.reset() clears conflicts AND the tree state — used in tests.
-doc.conflicts();
+// client.conflicts.list() returns the losing Actions and their lost slots.
+client.conflicts.list();
 ```
 
 Conflicts live **in-memory on the tree**, not in the storage adapter. Rationale: the action log is the source of truth for _what happened_; conflicts are derived metadata. The server doesn't need to know about them. Re-deriving on reload is cheap (walk the action log, apply the detection rule). If we want conflicts to survive a reload later, we can persist them in `localStorage`.
@@ -199,7 +198,7 @@ type DocAction =
   | { type: "EXTEND_RUN"; runId: string; appendText: string };
 ```
 
-**Wire format — runs as fields of the document.** Each Update targets the document entity (subject_id = docId, subject_type = docType, method = "patch"). Runs are encoded as `data.fields["run:<runId>"]` — a flat per-field patch that the server's per-field LWW merge handles without any custom code. Tombstones are `value: null`.
+**Wire format — runs as keys of one map field.** Each Update targets the document entity (subject_id = docId, subject_type = docType, method = "patch"). Runs are encoded as entries in `data.fields.content.map[<runId>]` (#326) — the map field merges key by key, so a peer's keystroke touches one run and never rewrites a sibling. Tombstones are `value: null`.
 
 ```json
 {
@@ -209,17 +208,21 @@ type DocAction =
   "method": "patch",
   "data": {
     "fields": {
-      "run:131072000:alice": {
-        "value": {
-          "id": "...",
-          "hlc": "...",
-          "actorId": "alice",
-          "text": "hello",
-          "parentId": "ROOT",
-          "deleted": false
-        },
-        "update_id": "u_xxx",
-        "hlc": "131072000"
+      "content": {
+        "map": {
+          "131072000:alice": {
+            "value": {
+              "id": "131072000:alice",
+              "hlc": "131072000",
+              "actorId": "alice",
+              "text": "hello",
+              "parentId": "ROOT",
+              "deleted": false
+            },
+            "update_id": "u_xxx",
+            "hlc": "131072000"
+          }
+        }
       }
     }
   }
@@ -228,13 +231,13 @@ type DocAction =
 
 Three run operations map to one shape:
 
-- **Insert** — new field `run:<runId>` with a `RunNode` value
-- **Extend** — same field name with an updated `RunNode` value (text replacement is atomic; the receiver just sets the text outright)
-- **Tombstone** — same field name with `value: null`
+- **Insert** — new `content.map[<runId>]` entry with a `RunNode` value
+- **Extend** — same map key with an updated `RunNode` value (text replacement is atomic; the receiver just sets the text outright)
+- **Tombstone** — same map key with `value: null`
 
-**Why runs as fields, not separate entities?** With runs as separate entities (`subject_type: "run"`), the server's `<type>.<verb>` permission model grants `run.update` to anyone in the group — so Bob could rewrite Alice's run by reusing her run id with a higher HLC, since storage's HLC tiebreak would accept his update. With runs as fields of the doc, the doc is the only entity the server ever sees, and `text_document.update` (or `text_document.*`) cleanly gates all run operations. No server-side changes required.
+**Why runs in a map field, not separate entities?** With runs as separate entities (`subject_type: "run"`), the server's `<type>.<verb>` permission model grants `run.update` to anyone in the group — so Bob could rewrite Alice's run by reusing her run id with a higher HLC, since storage's HLC tiebreak would accept his update. With runs as a map field of the doc, the doc is the only entity the server ever sees, and `text_document.update` (or `text_document.*`) cleanly gates all run operations. The map's per-key merge also gives conflict detection its unit: concurrent writes to different run keys never conflict, and a same-run race is one slot (`client.conflicts`). No server-side changes required.
 
-**SPLITs are encoded in the field updates.** When a sender does a partial DELETE_RANGE, the local tree splits into N runs and tombstones some of them. The sender's wire payload lists each affected run as its own field update: left-half with replaced text, tombstoned middle (`value: null`), and right-half as a new field. The receiver's tree reducer handles missing parents by materializing tombstoned placeholders so the structure remains valid.
+**SPLITs are encoded in the map entries.** When a sender does a partial DELETE_RANGE, the local tree splits into N runs and tombstones some of them. The sender's wire payload lists each affected run as its own map entry: left-half with replaced text, tombstoned middle (`value: null`), and right-half as a new key. The receiver's tree reducer handles missing parents by materializing tombstoned placeholders so the structure remains valid.
 
 **Wire vs DocAction.** Internally the tree reducer speaks `DocAction`s (`INSERT_RUN`, `EXTEND_RUN`, `DELETE_RANGE`, `SPLIT`). The wire adapter (`wire.ts`) translates field updates into DocActions for the reducer and back. Callers normally don't see DocActions — the public surface is field updates and `TextDocument.applyActions(actions)`.
 
@@ -260,7 +263,7 @@ After this change, a run's `parentId` references another run's `<packed-hlc-bign
 2. If yes, snapshot the pre-merge tree state
 3. Apply the merge
 4. Record a `Conflict` record with pre/post snapshots and the contributing actions
-5. Fire `doc.onConflict(conflict)` if subscribed
+5. Surface the losing Action through `client.conflicts` (the outbox's per-slot comparison owns run-field conflicts)
 
 The detection uses the rule from Decision 4. Implementation: in the reducer, before applying a non-trivial Update to a RunNode, check if the RunNode was modified by another action whose HLC is concurrent with this one. If yes, flag.
 
@@ -356,10 +359,10 @@ const unsubscribe = doc.onUpdate((update) => {
   // tree has already been applied; this is for UI re-render.
 });
 
-// Listen for conflicts (event-based)
-doc.onConflict((conflict) => {
-  // conflict: Conflict record
-  showInConflictPanel(conflict);
+// Listen for conflicts through the client's durable conflict surface
+client.conflicts.onChange((entries) => {
+  // entries: ConflictEntry[] — losing Action + lost slots
+  showInConflictPanel(entries);
 });
 
 // Local edit (optimistic)
@@ -429,7 +432,7 @@ Five vertical slices, ordered by what unblocks what. Each slice ends with a runn
 5. `doc.localInsert()` / `doc.localDelete()` → create an Action with the right Update, apply locally, mark pending for `client.write()`
 6. `doc.onUpdate()` event for incoming Updates (after local materialization)
 7. Conflict detection in the merge path (Decision 4)
-8. `doc.onConflict()` event + `doc.conflicts.all()` query
+8. `client.conflicts` surface (losing Actions + lost slots, with retry / discard)
 9. Tests: port `experiment/collaborative-text/src/__tests__/` to `packages/client/src/fields/collaborative-text/__tests__/`, add network-driven tests using a mock SSE source. **Verify the run-ID-format change preserves test expectations.**
 
 **Acceptance:** `client.applyActions([...])` on a text entity produces the same document as the BroadcastChannel POC for the same edit sequence. All POC tests pass with the new run ID format.
@@ -497,7 +500,7 @@ packages/client/src/fields/                             # new — field type imp
 packages/client/src/fields/collaborative-text/         # new — port causal-tree.ts here
 packages/client/src/fields/collaborative-text/tree.ts  # port of experiment/causal-tree.ts
 packages/client/src/fields/collaborative-text/types.ts # RunNode, Conflict, etc.
-packages/client/src/fields/collaborative-text/conflict.ts  # conflict detection
+packages/client/src/sync/conflicts.ts                 # client.conflicts — durable conflict store + resolution
 packages/client/src/fields/collaborative-text/text-document.ts  # new — client.textDocument(docId) API + Registry
 packages/client/src/presence/                          # new — port of experiment/presence.ts (slice 3 optional)
 packages/client/src/presence/presence.ts               # PresenceData, positionToRunRef, runRefToPosition, usePresence

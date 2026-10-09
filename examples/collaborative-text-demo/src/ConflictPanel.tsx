@@ -1,11 +1,17 @@
 /**
  * Conflict panel — collapsible sidebar listing conflicts recorded by
- * the TextDocument. Each conflict is shown with the pre- and post-merge
- * text snippets and a "dismiss" button that clears the entry.
+ * the client's durable conflict store. Each conflict is one losing
+ * pending Action plus the slots a peer's write out-dated; the panel
+ * lets the user retry or discard it.
+ *
+ * Conflict detection lives in the outbox (`client.conflicts`), so the
+ * panel reads the same vocabulary the rest of the app would: a
+ * collaborative-text run is one map key, and a concurrent
+ * extend-vs-delete on that run is one slot.
  */
 
 import { useEffect, useState } from "react";
-import type { Conflict } from "@ebbjs/client";
+import type { ConflictEntry } from "@ebbjs/client";
 import { createClient } from "@ebbjs/client";
 
 interface Props {
@@ -15,20 +21,26 @@ interface Props {
 }
 
 export function ConflictPanel({ client, docId, groupId }: Props) {
-  const [conflicts, setConflicts] = useState<readonly Conflict[]>([]);
+  const [conflicts, setConflicts] = useState<readonly ConflictEntry[]>([]);
 
   useEffect(() => {
-    const doc = client.textDocument(docId);
-    const unsub = doc.onConflict((c) => {
-      setConflicts((prev) => [c, ...prev].slice(0, 50));
+    let active = true;
+    // Seed from the durable store, then follow live changes. Detection
+    // writes through the manager, so `onChange` fires without a poll.
+    void client.conflicts.list().then((entries) => {
+      if (active) setConflicts(entries);
     });
-    // Hydrate from any pre-existing conflicts (e.g., from catch-up).
-    setConflicts(doc.conflicts());
-    return unsub;
+    const unsub = client.conflicts.onChange((entries) => {
+      setConflicts(entries);
+    });
+    return () => {
+      active = false;
+      unsub();
+    };
   }, [client, docId]);
 
-  const handleDismiss = (id: string) => {
-    setConflicts((prev) => prev.filter((c) => c.id !== id));
+  const resolve = (actionId: string, resolution: "retry" | "discard"): void => {
+    void client.conflicts.resolve(actionId, resolution);
   };
 
   return (
@@ -45,29 +57,48 @@ export function ConflictPanel({ client, docId, groupId }: Props) {
         <div className="text-stone-600 text-xs italic">No conflicts yet.</div>
       )}
       <ul className="flex flex-col gap-3">
-        {conflicts.map((c) => (
-          <li key={c.id} className="rounded border border-stone-800 bg-stone-900 p-3 text-xs">
+        {conflicts.map((entry) => (
+          <li
+            key={entry.action.id}
+            className="rounded border border-stone-800 bg-stone-900 p-3 text-xs"
+          >
             <div className="flex items-baseline justify-between mb-2">
-              <span className="font-mono text-amber-400">
-                {new Date(c.detectedAt).toLocaleTimeString()}
-              </span>
+              <span className="font-mono text-amber-400">{entry.action.id}</span>
               <button
-                onClick={() => handleDismiss(c.id)}
+                onClick={() => resolve(entry.action.id, "discard")}
+                className="text-stone-500 hover:text-stone-200"
+              >
+                discard
+              </button>
+            </div>
+            <ul className="flex flex-col gap-2">
+              {entry.losses.map((loss, index) => (
+                <li key={`${loss.slot.subjectId}:${loss.slot.field}:${index}`}>
+                  <div className="text-stone-500">
+                    {loss.slot.field}
+                    {loss.slot.path.length > 0 ? ` → ${loss.slot.path.join(" → ")}` : ""}
+                  </div>
+                  <pre className="bg-stone-950 p-2 rounded text-stone-300 whitespace-pre-wrap break-words">
+                    {loss.winner.value === null || loss.winner.value === undefined
+                      ? "(deleted)"
+                      : JSON.stringify(loss.winner.value)}
+                  </pre>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-2 flex gap-3">
+              <button
+                onClick={() => resolve(entry.action.id, "retry")}
+                className="text-emerald-400 hover:text-emerald-200"
+              >
+                retry
+              </button>
+              <button
+                onClick={() => resolve(entry.action.id, "discard")}
                 className="text-stone-500 hover:text-stone-200"
               >
                 dismiss
               </button>
-            </div>
-            <div className="text-stone-500 mb-1">Pre-merge:</div>
-            <pre className="bg-stone-950 p-2 rounded text-stone-300 whitespace-pre-wrap break-words">
-              {c.preMerge.text || "(empty)"}
-            </pre>
-            <div className="text-stone-500 mt-2 mb-1">Post-merge:</div>
-            <pre className="bg-stone-950 p-2 rounded text-stone-300 whitespace-pre-wrap break-words">
-              {c.postMerge.text || "(empty)"}
-            </pre>
-            <div className="text-stone-500 mt-2">
-              {c.contributingActions.length} contributing action(s)
             </div>
             {/* groupId is unused today — kept in the panel signature for
                 future filtering (e.g., one panel per group). */}

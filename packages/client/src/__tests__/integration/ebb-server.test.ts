@@ -20,8 +20,8 @@
  *
  * - Wire-format parsing in isolation: wire.test.ts.
  * - Causal-tree reducer in isolation: tree.test.ts.
- * - Conflict surfacing: conflict.test.ts + collaborative-text-editor
- *   integration tests.
+ * - Conflict surfacing: `client.conflicts` via the outbox slot comparison
+ *   (`outbox-integration.test.ts`).
  *
  * ## Skip semantics
  *

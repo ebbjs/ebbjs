@@ -20,13 +20,27 @@ import type { WriteResponse } from "./types";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
-import type { EntityDef, ShapeFields } from "../schema/entity";
+import type {
+  EntityDef,
+  DerivedAccessors,
+  DerivedFieldDef,
+  DerivedKeys,
+  ShapeFields,
+  WireFields,
+} from "../schema/entity";
 import { EntityValidationError, validatePayload } from "../schema/entity-registry";
 import type { EntityRegistry } from "../schema/entity-registry";
 import type { RelationshipDef } from "../schema/relationship";
 import type { Schema } from "../schema/schema";
 import type { GroupFields } from "../schema/system-entities";
 import { GROUPS_ACCESSOR } from "../schema/system-entities";
+import {
+  DEFAULT_DOCUMENT_ENTITY,
+  DOC_CONTENT_FIELD,
+  isCollaborativeText,
+} from "../fields/collaborative-text/schema";
+import { buildInitialContentField } from "../fields/collaborative-text/wire";
+import type { TextDocument, TextDocumentSubmit } from "../fields/collaborative-text/text-document";
 import {
   buildLazyQueryBuilder,
   normalizePointer,
@@ -38,6 +52,7 @@ import {
 import {
   buildEntityGroupDelete,
   buildEntityGroupUpdates,
+  buildRelationshipUpdate,
   forwardMany,
   forwardOne,
   membershipGroups,
@@ -60,6 +75,7 @@ import { readEntityMemberships } from "./entity-group";
  */
 export type RowAccessor =
   | Promise<Entity | null | undefined>
+  | Promise<TextDocument | null>
   | QueryBuilder<Record<string, TSchema>>;
 
 /** Empty per-`as` accessor record for entities with no relationships. */
@@ -143,6 +159,20 @@ export type RowAccessorRecord<TRels, TName extends string> = [TRels] extends [un
     : NoAccessors;
 
 /**
+ * Static value of an entity's *wire* fields. Derived bodies are not
+ * wire fields, so they never appear here; the row adds them as
+ * accessors via {@link DerivedAccessors}.
+ */
+export type WireStatic<TFields extends Record<string, TSchema>> = Static<
+  TObject<ShapeFields<WireFields<TFields>>>
+>;
+
+/** Values accepted for derived bodies on `create`: the initial text. */
+export type DerivedInputs<TFields extends Record<string, TSchema>> = {
+  readonly [K in DerivedKeys<TFields>]?: string;
+};
+
+/**
  * Row with attached relationship accessors. The projected TypeBox
  * shape (the entity's field map) is the base; the per-`as` accessor
  * record derived from the schema's relationship map is intersected
@@ -166,7 +196,19 @@ export type RowAccessorRecord<TRels, TName extends string> = [TRels] extends [un
 export type EntityWithAccessors<
   TFields extends Record<string, TSchema>,
   TAccessors extends object = NoAccessors,
-> = Omit<Static<TObject<ShapeFields<TFields>>>, keyof TAccessors> & TAccessors;
+> = Omit<WireStatic<TFields>, keyof TAccessors> & TAccessors;
+
+/**
+ * Projection snapshot over a *wire* field map. Kept separate from
+ * {@link EntitySnapshot} so the internal projection helpers can name
+ * the shape's own field map without re-applying {@link WireFields}.
+ */
+export type EntitySnapshotOf<TWire extends Record<string, TSchema>> = Static<
+  TObject<ShapeFields<TWire>>
+> & {
+  readonly id: string;
+  readonly entity: Entity;
+};
 
 /**
  * Per-entity snapshot for reactive subscribe. Path C pins this
@@ -180,12 +222,9 @@ export type EntityWithAccessors<
  * snapshot is data, not a handle: relationship accessors are async
  * and stay on the row, not in the snapshot.
  */
-export type EntitySnapshot<TFields extends Record<string, TSchema>> = Static<
-  TObject<ShapeFields<TFields>>
-> & {
-  readonly id: string;
-  readonly entity: Entity;
-};
+export type EntitySnapshot<TFields extends Record<string, TSchema>> = EntitySnapshotOf<
+  WireFields<TFields>
+>;
 
 /**
  * Row returned by `client.<entity>.get(id)`: the projected fields,
@@ -212,7 +251,7 @@ export type EntityRow<
  * the design comment on #161).
  */
 export type QueryFilter<TFields extends Record<string, TSchema>> = {
-  [K in keyof TFields]?: Static<TFields[K]>;
+  [K in keyof WireFields<TFields>]?: Static<WireFields<TFields>[K]>;
 };
 
 /**
@@ -257,7 +296,7 @@ export interface EntityNamespace<
   TFields extends Record<string, TSchema>,
   TAccessors extends object = NoAccessors,
 > {
-  query(): QueryBuilder<TFields>;
+  query(): QueryBuilder<WireFields<TFields>>;
   get(id: string): Promise<EntityRow<TFields, TAccessors> | null>;
   /**
    * Reactive subscribe on the matching set. Returns an
@@ -280,15 +319,22 @@ export interface EntityNamespace<
    * `opts.groups` is required and non-empty: one `entityGroup`
    * membership row is emitted per group in the same Action as the
    * entity, so the row is indexed into each group atomically.
+   *
+   * A derived body passed as a string is created as a separate
+   * document entity and linked in the same Action; the promise
+   * resolves to the new entity's `id` alongside the wire response.
    */
-  create(input: Static<TObject<ShapeFields<TFields>>>, opts: CreateOptions): Promise<WriteResponse>;
+  create(
+    input: WireStatic<TFields> & DerivedInputs<TFields>,
+    opts: CreateOptions,
+  ): Promise<CreateResult>;
   /**
    * Patch an existing entity row, validated the same way as
    * `create`'s input. The wire Update is a `patch`.
    */
   update(
     id: string,
-    patch: Partial<Static<TObject<ShapeFields<TFields>>>>,
+    patch: Partial<WireStatic<TFields>>,
     opts?: EntityWriteOptions,
   ): Promise<WriteResponse>;
   /**
@@ -363,6 +409,12 @@ export interface CreateOptions extends EntityWriteOptions {
 }
 
 /**
+ * Result of `client.<entity>.create(...)`: the wire response plus the
+ * minted entity id, so the created row is immediately addressable.
+ */
+export type CreateResult = WriteResponse & { readonly id: string };
+
+/**
  * Map a single entity definition to its field map. `EntityDef<TFields>`
  * carries `TFields` directly, so this is just `infer F`.
  */
@@ -386,10 +438,35 @@ export type EntityNamespaces<S> =
     ? {
         [K in keyof TEntities & string]: EntityNamespace<
           EntityFields<TEntities[K]>,
-          RowAccessorRecord<TRels, EntityNameOf<TEntities[K]>> & MembershipAccessors
+          RowAccessorRecord<TRels, EntityNameOf<TEntities[K]>> &
+            MembershipAccessors &
+            DerivedAccessors<EntityFields<TEntities[K]>>
         >;
       }
     : NoAccessors;
+
+/**
+ * Resolve a collaborative-text body: follow the generated edge to the
+ * document entity, hydrate a `TextDocument` from its `content` map, and
+ * return it. `null` when no document is linked.
+ */
+const collaborativeTextForwardOne = (
+  readLocalEntity: (id: string) => Promise<Entity | null>,
+  queryEntitiesByType: (type: string) => Promise<readonly Entity[]>,
+  sourceId: string,
+  sourceName: string,
+  field: string,
+  type: string,
+  openTextDocument: (docId: string, docType: string) => TextDocument,
+): Promise<TextDocument | null> =>
+  forwardOne(readLocalEntity, queryEntitiesByType, sourceId, sourceName, field, type).then(
+    (entity) => {
+      if (entity === null || entity === undefined) return null;
+      const doc = openTextDocument(entity.id, entity.type);
+      doc.hydrate(entity.data?.fields?.[DOC_CONTENT_FIELD]);
+      return doc;
+    },
+  );
 
 /**
  * Build the runtime accessor record for a single row. Walks the
@@ -418,6 +495,7 @@ function buildRowAccessors(
   sourceId: string,
   storage: StorageAdapter,
   registry: EntityRegistry,
+  write: WriteCapability,
 ): Record<string, RowAccessor> {
   const out: Record<string, RowAccessor> = {};
   const readLocalEntity = (id: string): Promise<Entity | null> => storage.entities.get(id);
@@ -429,6 +507,18 @@ function buildRowAccessors(
     const targetName = rel.target.name;
     const field = rel.as;
     const relType = rel.type;
+    if (isCollaborativeText(rel)) {
+      out[field] = collaborativeTextForwardOne(
+        readLocalEntity,
+        queryEntitiesByType,
+        sourceId,
+        entityName,
+        field,
+        relType,
+        write.openTextDocument,
+      );
+      continue;
+    }
     const targetShape = registry.get(targetName)?.shape;
     if (rel.sourceCardinality === "many") {
       // Defensive: `defineSchema` rejects an unregistered target, so a
@@ -493,10 +583,10 @@ function buildRowAccessors(
  * hatches. Shared by the per-collection and per-entity subscribe
  * paths so the snapshot shape has one definition.
  */
-const toEntitySnapshot = <TFields extends Record<string, TSchema>>(
+const toEntitySnapshot = <TWire extends Record<string, TSchema>>(
   entity: Entity,
-  shape: TObject<TFields>,
-): EntitySnapshot<TFields> => ({
+  shape: TObject<TWire>,
+): EntitySnapshotOf<TWire> => ({
   ...projectEntity(entity, shape),
   id: entity.id,
   entity,
@@ -511,12 +601,12 @@ const toEntitySnapshot = <TFields extends Record<string, TSchema>>(
  * the pinned `EntitySnapshot` has no null variant, and both shipped
  * adapters emit the soft-deleted entity (`deleted_hlc` set) instead.
  */
-const subscribeToEntity = <TFields extends Record<string, TSchema>>(
+const subscribeToEntity = <TWire extends Record<string, TSchema>>(
   storage: StorageAdapter,
   entityName: string,
   id: string,
-  shape: TObject<TFields>,
-  cb: (snapshot: EntitySnapshot<TFields>) => void,
+  shape: TObject<TWire>,
+  cb: (snapshot: EntitySnapshotOf<TWire>) => void,
 ): (() => void) => {
   const emitter = storage.changeEmitter;
   if (emitter === undefined) return () => {};
@@ -545,7 +635,17 @@ export interface WriteCapability {
   freshHlc(): string;
   /** Mint a fresh Update id. */
   generateUpdateId(): string;
+  /** Local actor id; collaborative-text run ids embed it. */
+  readonly actorId: string;
+  /**
+   * Open (or get) the `TextDocument` for a linked document entity. The
+   * client binds it to the write path so local edits self-flush.
+   */
+  openTextDocument(docId: string, docType: string): TextDocument;
 }
+
+/** Write path bound to a document for self-flushing locally-authored edits. */
+export type { TextDocumentSubmit };
 
 /**
  * Build a namespace for one entity. The namespace's `query()` returns
@@ -562,14 +662,15 @@ export function createEntityNamespace<
   TAccessors extends object = NoAccessors,
 >(
   entityName: string,
-  shape: TObject<TFields>,
+  shape: TObject<WireFields<TFields>>,
   storage: StorageAdapter,
   write: WriteCapability,
+  derived: Record<string, DerivedFieldDef> = {},
 ): EntityNamespace<TFields, TAccessors> {
   const registry = write.registry;
   const loader: LoadEntities = async () => storage.entities.query(entityName);
   return {
-    query(): QueryBuilder<TFields> {
+    query(): QueryBuilder<WireFields<TFields>> {
       return buildLazyQueryBuilder(loader, shape, { entityName, registry, storage });
     },
     async get(id: string): Promise<EntityRow<TFields, TAccessors> | null> {
@@ -580,7 +681,7 @@ export function createEntityNamespace<
       // row and a wrong-type row are both "no row here".
       if (entity.type !== entityName) return null;
       const projected = projectEntity(entity, shape);
-      const accessors = buildRowAccessors(entityName, id, storage, registry);
+      const accessors = buildRowAccessors(entityName, id, storage, registry, write);
       const subscribe = (cb: (snapshot: EntitySnapshot<TFields>) => void): (() => void) =>
         subscribeToEntity(storage, entityName, id, shape, cb);
       return { ...projected, ...accessors, subscribe } as unknown as EntityRow<TFields, TAccessors>;
@@ -665,26 +766,64 @@ export function createEntityNamespace<
       };
     },
     async create(
-      input: Static<TObject<ShapeFields<TFields>>>,
+      input: WireStatic<TFields> & DerivedInputs<TFields>,
       opts: CreateOptions,
-    ): Promise<WriteResponse> {
+    ): Promise<CreateResult> {
       const subjectId = generateId("e");
       const groupIds = resolveGroupIds(opts?.groups, entityName);
+      const { wire, bodies } = splitDerivedInputs(
+        entityName,
+        input as Record<string, unknown>,
+        derived,
+      );
       const entityUpdate = buildEntityWriteUpdate(write, entityName, shape, {
         subjectId,
-        payload: input,
+        payload: wire,
         partial: false,
         validate: opts?.validate,
       });
-      const updates = [
+      const updates: Update[] = [
         entityUpdate,
         ...buildEntityGroupUpdates(subjectId, groupIds, () => write.generateUpdateId()),
       ];
-      return write.submitRelationshipUpdates(updates);
+      // Derived bodies ride in the same Action as the parent, so the
+      // document, the edge, and both membership sets commit atomically
+      // (and the #233 coherence rule holds by construction).
+      for (const [field, text] of Object.entries(bodies)) {
+        const marker = derived[field];
+        if (marker === undefined || !isCollaborativeText(marker)) continue;
+        const docId = generateId("e");
+        const hlc = write.freshHlc();
+        const docUpdateId = write.generateUpdateId();
+        updates.push({
+          id: docUpdateId,
+          subject_id: docId,
+          subject_type: marker.entity ?? DEFAULT_DOCUMENT_ENTITY,
+          method: "put",
+          data: {
+            fields: {
+              [DOC_CONTENT_FIELD]: buildInitialContentField(text, hlc, write.actorId, docUpdateId),
+            },
+          },
+        });
+        updates.push(
+          buildRelationshipUpdate({
+            relationshipId: generateId("rel"),
+            sourceId: subjectId,
+            targetId: docId,
+            field,
+            type: entityName,
+            updateId: write.generateUpdateId(),
+          }),
+        );
+        updates.push(...buildEntityGroupUpdates(docId, groupIds, () => write.generateUpdateId()));
+      }
+      const response = await write.submitRelationshipUpdates(updates);
+      return { id: subjectId, ...response };
     },
     async update(
       id: string,
-      patch: Partial<Static<TObject<ShapeFields<TFields>>>>,
+      patch: Partial<WireStatic<TFields>>,
       opts?: EntityWriteOptions,
     ): Promise<WriteResponse> {
       return submitEntityWrite(write, entityName, shape, {
@@ -829,6 +968,42 @@ function buildEntityWriteUpdate<TFields extends Record<string, TSchema>>(
     method: input.partial ? "patch" : "put",
     data: { fields },
   };
+}
+
+/**
+ * Partition a create input into wire fields and derived bodies. A
+ * derived key with a non-empty string becomes a document to create; a
+ * missing / `null` / empty value leaves the body unlinked
+ * (`row.<body>` resolves to `null`). A present-but-non-string value is
+ * a programming error and is refused.
+ */
+function splitDerivedInputs(
+  entityName: string,
+  input: Record<string, unknown>,
+  derived: Record<string, DerivedFieldDef>,
+): { wire: Record<string, unknown>; bodies: Record<string, string> } {
+  const derivedKeys = new Set(Object.keys(derived));
+  if (derivedKeys.size === 0) return { wire: input, bodies: {} };
+  const wire: Record<string, unknown> = {};
+  const bodies: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (!derivedKeys.has(key)) {
+      wire[key] = value;
+      continue;
+    }
+    if (value === undefined || value === null) continue;
+    if (typeof value !== "string") {
+      throw new EntityValidationError([
+        {
+          entityName,
+          field: key,
+          message: `create: derived field "${key}" must be a string body`,
+        },
+      ]);
+    }
+    if (value.length > 0) bodies[key] = value;
+  }
+  return { wire, bodies };
 }
 
 /**
@@ -1061,7 +1236,7 @@ export function buildEntityNamespaces<
     // The static accessor record is derived by `EntityNamespaces<S>`
     // from the schema's relationship map; the registry is the runtime
     // authority for which accessors actually attach.
-    out[name] = createEntityNamespace(name, def.shape, storage, write);
+    out[name] = createEntityNamespace(def.name, def.shape, storage, write, def.derived);
   }
   return out as EntityNamespaces<S>;
 }

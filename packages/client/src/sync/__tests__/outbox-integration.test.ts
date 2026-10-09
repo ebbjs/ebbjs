@@ -661,10 +661,10 @@ describe("client.outbox LWW conflict detection (#308)", () => {
     expect(await storage.conflicts.list()).toEqual([]);
   });
 
-  it("never flags a collaborative-text run field", async () => {
+  it("flags a same-run race and ignores writes to a different run", async () => {
     const storage = createMemoryAdapter();
     const client = mkClient(mkStubFetch().fn, storage);
-    const mkDocWrite = (id: string, gsn: number, value: string, hlc: string): Action => ({
+    const mkDocWrite = (id: string, gsn: number, runId: string, hlc: string): Action => ({
       id,
       actor_id: ACTOR_ID,
       hlc,
@@ -675,20 +675,42 @@ describe("client.outbox LWW conflict detection (#308)", () => {
           subject_id: "doc_1",
           subject_type: "text_document",
           method: "put",
-          data: { fields: { "run:r1": { value, update_id: `u_${id}`, hlc } } },
+          data: {
+            fields: {
+              content: { map: { [runId]: { value: id, update_id: `u_${id}`, hlc } } },
+            },
+          },
         },
       ],
     });
-    await client.outbox.enqueue(mkDocWrite("act_local", 0, "mine", makeHlc(1_711_036_800_000)));
 
+    // Different run keys merge independently: no slot is out-dated.
+    await client.outbox.enqueue(
+      mkDocWrite("act_local_other", 0, "run:r1", makeHlc(1_711_036_800_000)),
+    );
     await callApplyAction(
       client,
-      mkDocWrite("act_peer", 9, "theirs", makeHlc(1_711_036_800_001)),
+      mkDocWrite("act_peer_other", 9, "run:r2", makeHlc(1_711_036_800_001)),
+      "g_1",
+    );
+    expect(client.outbox.pending().map((entry) => entry.action.id)).toEqual(["act_local_other"]);
+    expect(await storage.conflicts.list()).toEqual([]);
+
+    // Same run key, concurrent HLC: the inbound wins and the local
+    // Action moves to the Conflicts store.
+    await client.outbox.enqueue(
+      mkDocWrite("act_local_same", 0, "run:r3", makeHlc(1_711_036_800_000)),
+    );
+    await callApplyAction(
+      client,
+      mkDocWrite("act_peer_same", 9, "run:r3", makeHlc(1_711_036_800_001)),
       "g_1",
     );
 
-    expect(client.outbox.pending().map((entry) => entry.action.id)).toEqual(["act_local"]);
-    expect(await storage.conflicts.list()).toEqual([]);
+    expect(client.outbox.pending().map((entry) => entry.action.id)).toEqual(["act_local_other"]);
+    expect((await storage.conflicts.list()).map((entry) => entry.action.id)).toEqual([
+      "act_local_same",
+    ]);
   });
 
   it("treats a server rejection as an Outbox error, not a conflict", async () => {

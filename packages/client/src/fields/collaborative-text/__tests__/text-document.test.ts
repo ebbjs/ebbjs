@@ -4,7 +4,7 @@
  * Covers:
  * - localInsert/localDelete (optimistic local apply + pending queue)
  * - applyActions (external incoming actions, from sync / SSE)
- * - onUpdate / onConflict event hooks
+ * - onUpdate event hooks
  * - pendingActions / ackPending queue management
  * - TextDocumentRegistry singleton-per-doc semantics
  */
@@ -12,7 +12,7 @@
 import { describe, expect, it } from "vitest";
 import { pack, format, type Action, type HLCTimestamp } from "@ebbjs/core";
 import { TextDocument, TextDocumentRegistry, type AppliedUpdate } from "../text-document";
-import { DEFAULT_DOC_SUBJECT_TYPE, formatRunFieldName } from "../wire";
+import { DEFAULT_DOC_SUBJECT_TYPE } from "../wire";
 import type { RunNode } from "../tree";
 
 // ---------------------------------------------------------------------------
@@ -38,10 +38,16 @@ const makeInsertAction = (run: RunNode): Action => ({
       subject_type: DEFAULT_DOC_SUBJECT_TYPE,
       method: "patch",
       data: {
-        [formatRunFieldName(run.id)]: {
-          value: run,
-          update_id: `upd_${run.id}`,
-          hlc: run.hlc,
+        fields: {
+          content: {
+            map: {
+              [run.id]: {
+                value: run,
+                update_id: `upd_${run.id}`,
+                hlc: run.hlc,
+              },
+            },
+          },
         },
       },
     } as never,
@@ -58,7 +64,6 @@ describe("TextDocument — constructor", () => {
     expect(doc.text).toBe("");
     expect(doc.docState.nodes.size).toBe(1); // ROOT only
     expect(doc.pendingActions()).toHaveLength(0);
-    expect(doc.conflicts()).toHaveLength(0);
     expect(doc.rootRunId).toBe("ROOT");
   });
 });
@@ -235,14 +240,14 @@ describe("TextDocument.localExtend", () => {
     // Wire format wraps user-entity fields under `data.fields` so the
     // server's per-field LWW merge handles each run independently.
     const data = extendAction.updates[0]!.data as unknown as {
-      fields: Record<string, { value: RunNode }>;
+      fields: { content: { map: Record<string, { value: RunNode }> } };
     };
-    const fields = data.fields;
-    // Only the extended run's field appears in the diff.
-    const fieldNames = Object.keys(fields);
+    const runs = data.fields.content.map;
+    // Only the extended run's key appears in the diff.
+    const fieldNames = Object.keys(runs);
     expect(fieldNames).toHaveLength(1);
-    expect(fieldNames[0]).toBe(formatRunFieldName(runId));
-    expect(fields[fieldNames[0]!]!.value.text).toBe("hello world");
+    expect(fieldNames[0]).toBe(runId);
+    expect(runs[fieldNames[0]!]!.value.text).toBe("hello world");
   });
 
   it("fires onUpdate with kind 'extend'", () => {
@@ -424,75 +429,6 @@ describe("TextDocument.applyActions", () => {
 });
 
 // ---------------------------------------------------------------------------
-// onConflict
-// ---------------------------------------------------------------------------
-
-describe("TextDocument.onConflict", () => {
-  it("fires when concurrent non-trivial Updates target the same run", () => {
-    const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
-
-    // Insert a base run as peer-A
-    doc.localInsert("hello");
-    expect(doc.text).toBe("hello");
-
-    // Apply two concurrent field updates targeting the same run from peer-B
-    const runId = doc.docState.children.get("ROOT")![0]!;
-    const baseRun = doc.docState.nodes.get(runId)!;
-    const runA: RunNode = { ...baseRun, text: "helloA", hlc: makeHlc(5000), actorId: "peer-B" };
-    const runB: RunNode = { ...baseRun, text: "helloB", hlc: makeHlc(5000), actorId: "peer-C" };
-    const extA: Action = {
-      id: "act_extA",
-      actor_id: "peer-B",
-      hlc: makeHlc(5000),
-      gsn: 0,
-      updates: [
-        {
-          id: "upd_extA",
-          subject_id: "doc_1",
-          subject_type: "text_document",
-          method: "patch",
-          data: {
-            [formatRunFieldName(runId)]: {
-              value: runA,
-              update_id: "upd_extA",
-              hlc: makeHlc(5000),
-            },
-          },
-        } as never,
-      ],
-    };
-    const extB: Action = {
-      id: "act_extB",
-      actor_id: "peer-C",
-      hlc: makeHlc(5000),
-      gsn: 0,
-      updates: [
-        {
-          id: "upd_extB",
-          subject_id: "doc_1",
-          subject_type: "text_document",
-          method: "patch",
-          data: {
-            [formatRunFieldName(runId)]: {
-              value: runB,
-              update_id: "upd_extB",
-              hlc: makeHlc(5000),
-            },
-          },
-        } as never,
-      ],
-    };
-
-    const conflicts: unknown[] = [];
-    doc.onConflict((c) => conflicts.push(c));
-
-    doc.applyActions([extA, extB]);
-
-    expect(conflicts).toHaveLength(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // pendingActions + ackPending
 // ---------------------------------------------------------------------------
 
@@ -544,7 +480,6 @@ describe("TextDocument.reset", () => {
     expect(doc.text).toBe("");
     expect(doc.docState.nodes.size).toBe(1);
     expect(doc.pendingActions()).toHaveLength(0);
-    expect(doc.conflicts()).toHaveLength(0);
   });
 });
 

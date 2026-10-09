@@ -1,13 +1,13 @@
 /**
- * Wire format tests — runs-as-fields wire model.
+ * Wire format tests — runs-as-map-keys wire model.
  *
  * Verifies:
- * - applyActions parses field updates and applies them to the tree
- * - Field updates with value: null are tombstones
- * - Field updates with value: <RunNode> are inserts (new run) or updates (existing run)
- * - diffRunFields / diffRunFieldsForDeleteRange produce the wire payload for local edits
- * - docActionToUpdate wraps field updates in a doc-targeted Update
- * - isDocSubjectUpdate / parseRunFieldName / formatRunFieldName helpers work
+ * - applyActions parses the `content` map and applies it to the tree
+ * - Map entries with value: null are tombstones
+ * - Map entries with value: <RunNode> are inserts (new run) or updates (existing run)
+ * - diffRunFields / diffRunFieldsForDeleteRange produce the run map for local edits
+ * - docActionToUpdate wraps the run map in a doc-targeted Update
+ * - isDocSubjectUpdate filters by subject type
  */
 
 import { describe, expect, it } from "vitest";
@@ -18,9 +18,7 @@ import {
   diffRunFieldsForDeleteRange,
   DEFAULT_DOC_SUBJECT_TYPE,
   docActionToUpdate,
-  formatRunFieldName,
   isDocSubjectUpdate,
-  parseRunFieldName,
 } from "../wire";
 import {
   createDocState,
@@ -42,12 +40,12 @@ const makeRun = (ts: number, actorId: string, text: string, parentId: string): R
   return { id: makeRunId(hlc, actorId), hlc, actorId, text, parentId, deleted: false };
 };
 
-/** Build an Action with one Update targeting docId with the given run fields. */
+/** Build an Action with one Update targeting docId with the given run map. */
 const makeFieldAction = (
   docId: string,
   actorId: string,
   hlc: HLCTimestamp,
-  fields: Record<string, RunFieldValue>,
+  runs: Record<string, RunFieldValue>,
   actionId = "a_test",
   updateId = "u_test",
 ): Action => ({
@@ -61,13 +59,13 @@ const makeFieldAction = (
       subject_id: docId,
       subject_type: DEFAULT_DOC_SUBJECT_TYPE,
       method: "patch",
-      data: fields as unknown as never,
+      data: { fields: { content: { map: runs } } } as unknown as never,
     },
   ],
 });
 
 // ---------------------------------------------------------------------------
-// isDocSubjectUpdate + parseRunFieldName + formatRunFieldName
+// isDocSubjectUpdate
 // ---------------------------------------------------------------------------
 
 describe("isDocSubjectUpdate", () => {
@@ -117,26 +115,6 @@ describe("isDocSubjectUpdate", () => {
   });
 });
 
-describe("parseRunFieldName / formatRunFieldName", () => {
-  it("parseRunFieldName strips the run: prefix", () => {
-    expect(parseRunFieldName("run:131072000:alice")).toBe("131072000:alice");
-  });
-
-  it("parseRunFieldName returns null for non-run fields", () => {
-    expect(parseRunFieldName("title")).toBeNull();
-    expect(parseRunFieldName("description")).toBeNull();
-  });
-
-  it("formatRunFieldName adds the prefix", () => {
-    expect(formatRunFieldName("131072000:alice")).toBe(`run:131072000:alice`);
-  });
-
-  it("roundtrip", () => {
-    const runId = "131072000:alice:s:5";
-    expect(parseRunFieldName(formatRunFieldName(runId))).toBe(runId);
-  });
-});
-
 // ---------------------------------------------------------------------------
 // applyActions
 // ---------------------------------------------------------------------------
@@ -145,7 +123,7 @@ describe("applyActions", () => {
   it("applies a single field update (insert new run)", () => {
     const node = makeRun(1000, "peer-A", "hello", "ROOT");
     const fields = {
-      [formatRunFieldName(node.id)]: {
+      [node.id]: {
         value: node,
         update_id: "u_1",
         hlc: node.hlc,
@@ -166,7 +144,7 @@ describe("applyActions", () => {
     let state = docReducer(createDocState(), { type: "INSERT_RUN", node });
 
     const fields = {
-      [formatRunFieldName(node.id)]: {
+      [node.id]: {
         value: null,
         update_id: "u_2",
         hlc: makeHlc(2000),
@@ -188,7 +166,7 @@ describe("applyActions", () => {
 
     const updated = { ...node, text: "hello world", hlc: makeHlc(2000) };
     const fields = {
-      [formatRunFieldName(node.id)]: {
+      [node.id]: {
         value: updated,
         update_id: "u_2",
         hlc: makeHlc(2000),
@@ -214,7 +192,7 @@ describe("applyActions", () => {
     let state = docReducer(createDocState(), { type: "INSERT_RUN", node });
 
     const fields = {
-      [formatRunFieldName(node.id)]: {
+      [node.id]: {
         value: node,
         update_id: "u_2",
         hlc: node.hlc,
@@ -232,8 +210,8 @@ describe("applyActions", () => {
     const a = makeRun(1000, "peer-A", "a", "ROOT");
     const b = makeRun(1001, "peer-B", "b", "ROOT");
     const fields = {
-      [formatRunFieldName(a.id)]: { value: a, update_id: "u_1", hlc: a.hlc },
-      [formatRunFieldName(b.id)]: { value: b, update_id: "u_2", hlc: b.hlc },
+      [a.id]: { value: a, update_id: "u_1", hlc: a.hlc },
+      [b.id]: { value: b, update_id: "u_2", hlc: b.hlc },
     };
     const action = makeFieldAction("doc_xxx", "peer-A", a.hlc, fields);
 
@@ -260,9 +238,9 @@ describe("applyActions", () => {
       deleted: false,
     };
     const fields = {
-      [formatRunFieldName(node.id)]: { value: left, update_id: "u_del", hlc: makeHlc(2000) },
-      [formatRunFieldName(splitId)]: { value: null, update_id: "u_del", hlc: makeHlc(2000) },
-      [formatRunFieldName(right.id)]: { value: right, update_id: "u_del", hlc: makeHlc(2000) },
+      [node.id]: { value: left, update_id: "u_del", hlc: makeHlc(2000) },
+      [splitId]: { value: null, update_id: "u_del", hlc: makeHlc(2000) },
+      [right.id]: { value: right, update_id: "u_del", hlc: makeHlc(2000) },
     };
     const action = makeFieldAction("doc_xxx", "peer-A", makeHlc(2000), fields);
 
@@ -299,7 +277,7 @@ describe("applyActions", () => {
     expect(applied).toHaveLength(0);
   });
 
-  it("ignores Updates whose data has no run: fields (other doc fields pass through)", () => {
+  it("ignores a `content` map whose entries are not run leaves", () => {
     const action = makeFieldAction("doc_xxx", "peer-A", makeHlc(1000), {
       title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1000) } as unknown as RunFieldValue,
     });
@@ -313,7 +291,7 @@ describe("applyActions", () => {
   it("filters by custom docSubjectType", () => {
     const node = makeRun(1000, "peer-A", "hello", "ROOT");
     const fields = {
-      [formatRunFieldName(node.id)]: {
+      [node.id]: {
         value: node,
         update_id: "u_1",
         hlc: node.hlc,
@@ -330,7 +308,7 @@ describe("applyActions", () => {
           subject_id: "doc_xxx",
           subject_type: "rich_text", // custom type
           method: "patch",
-          data: fields as unknown as never,
+          data: { fields: { content: { map: fields } } } as unknown as never,
         },
       ],
     };
@@ -359,8 +337,8 @@ describe("diffRunFields", () => {
       hlc: node.hlc,
     });
 
-    expect(Object.keys(fields)).toEqual([formatRunFieldName(node.id)]);
-    expect(fields[formatRunFieldName(node.id)]!.value).toEqual(node);
+    expect(Object.keys(fields)).toEqual([node.id]);
+    expect(fields[node.id]!.value).toEqual(node);
   });
 
   it("emits a tombstone (value: null) for a deleted run", () => {
@@ -378,7 +356,7 @@ describe("diffRunFields", () => {
       hlc: makeHlc(2000),
     });
 
-    expect(fields[formatRunFieldName(node.id)]!.value).toBeNull();
+    expect(fields[node.id]!.value).toBeNull();
   });
 
   it("emits multiple field updates for split-half survivors", () => {
@@ -437,24 +415,20 @@ describe("diffRunFieldsForDeleteRange", () => {
 
 describe("docActionToUpdate", () => {
   it("returns null for empty field updates", () => {
-    const update = docActionToUpdate(
-      { type: "SPLIT", runId: "x", offset: 3 },
-      {},
-      { docId: "doc_xxx", updateId: "u_1" },
-    );
+    const update = docActionToUpdate({}, { docId: "doc_xxx", updateId: "u_1" });
     expect(update).toBeNull();
   });
 
   it("wraps field updates in a doc-targeted Update with method: patch", () => {
     const node = makeRun(1000, "peer-A", "hello", "ROOT");
     const fields = {
-      [formatRunFieldName(node.id)]: {
+      [node.id]: {
         value: node,
         update_id: "u_1",
         hlc: node.hlc,
       },
     };
-    const update = docActionToUpdate({ type: "INSERT_RUN", node }, fields, {
+    const update = docActionToUpdate(fields, {
       docId: "doc_xxx",
       updateId: "u_1",
     });
@@ -481,7 +455,7 @@ describe("acceptance — same edits produce the same document via field-update w
     // Peer-A inserts "hello"
     const a = makeRun(1000, "peer-A", "hello", "ROOT");
     const aAction = makeFieldAction("doc_xxx", "peer-A", a.hlc, {
-      [formatRunFieldName(a.id)]: { value: a, update_id: "u_a", hlc: a.hlc },
+      [a.id]: { value: a, update_id: "u_a", hlc: a.hlc },
     });
     const r1 = applyActions(docA.state, [aAction]);
     docA.state = r1.state;
@@ -489,7 +463,7 @@ describe("acceptance — same edits produce the same document via field-update w
     // Peer-B sees A's insert, types " world"
     const b = makeRun(2000, "peer-B", " world", a.id);
     const bAction = makeFieldAction("doc_xxx", "peer-B", b.hlc, {
-      [formatRunFieldName(b.id)]: { value: b, update_id: "u_b", hlc: b.hlc },
+      [b.id]: { value: b, update_id: "u_b", hlc: b.hlc },
     });
     const r2 = applyActions(docA.state, [bAction]);
     docA.state = r2.state;

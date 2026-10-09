@@ -43,7 +43,9 @@ const makeClient = (): Client =>
 describe("useEntityMutations", () => {
   it("forwards create, update, and delete to the namespace", async () => {
     const client = makeClient();
-    const createSpy = vi.spyOn(client.todo, "create").mockResolvedValue({ rejected: [] });
+    const createSpy = vi
+      .spyOn(client.todo, "create")
+      .mockResolvedValue({ id: "todo_1", rejected: [] });
     const updateSpy = vi.spyOn(client.todo, "update").mockResolvedValue({ rejected: [] });
     const deleteSpy = vi.spyOn(client.todo, "delete").mockResolvedValue({ rejected: [] });
 

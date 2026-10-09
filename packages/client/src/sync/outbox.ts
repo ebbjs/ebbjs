@@ -22,8 +22,10 @@
  * (`SyncClient._applyAction`) hands every received Action here. An
  * Action that matches a buffered entry with a server GSN proves the
  * entry is in the canonical log and removes it (echo); a peer Action
- * that out-dates a pending entry's LWW field moves that entry to the
- * Conflicts store so it is never posted.
+ * that out-dates a buffered entry's LWW field moves that entry to the
+ * Conflicts store (a `pending` entry so it is never posted, an
+ * `acknowledged` one so the application learns its committed write
+ * lost).
  *
  * The module depends only on injected seams: the store, an HLC source
  * for the ordering key, `applyOptimistic` (the client wires it to the
@@ -82,7 +84,7 @@ export type FlushOutcome =
 /**
  * Classified result of matching an inbound Action against the buffer.
  * `echo` is this client's own Action returning over the sync stream;
- * `conflict` names a pending Action an inbound LWW write out-dated and
+ * `conflict` names a buffered Action an inbound LWW write out-dated and
  * that was moved to the Conflicts store. When one inbound Action moves
  * several entries, `actionId` is the first moved and the store is the
  * source of truth for the rest.
@@ -119,16 +121,18 @@ export interface OutboxDependencies {
   store: OutboxStore;
   /**
    * Durable table of LWW conflicts awaiting application resolution.
-   * A pending Action the inbound stream out-dates on one of its LWW
-   * fields is moved here whole, so the write survives the sweep.
+   * A buffered Action the inbound stream out-dates on one of its LWW
+   * fields is moved here whole, so a pending write survives the sweep
+   * and an already-committed one is surfaced for resolution.
    */
   conflicts: ConflictStore;
   /**
    * Field-kind oracle: `true` when `field` on `subjectType` merges
    * last-writer-wins, so an inbound write can silently overwrite a
-   * pending local one. Counter and collaborative-text fields return
-   * `false`. Structural edge subject types are excluded regardless.
-   * Defaults to every non-structural field being LWW.
+   * buffered local one. A map field (a document's `content`) is LWW per
+   * leaf, so the slot comparison still gates on the leaf. Counter
+   * fields return `false`. Structural edge subject types are excluded
+   * regardless. Defaults to every non-structural field being LWW.
    */
   isLwwField?: (subjectType: string, field: string) => boolean;
   /** Stamp a fresh HLC for an entry's `enqueuedAtHlc` ordering key. */
@@ -147,7 +151,7 @@ const STRUCTURAL_SUBJECT_TYPES: ReadonlySet<string> = new Set([
   "groupMember",
 ]);
 
-/** A pending Action an inbound Action out-dates, with its losing slots. */
+/** A buffered Action an inbound Action out-dates, with its losing slots. */
 interface LosingEntry {
   readonly entry: OutboxEntry;
   readonly losses: readonly ConflictLoss[];
@@ -160,7 +164,7 @@ interface LosingEntry {
 const updateFields = (update: Update): Record<string, FieldValue> | undefined =>
   update.data?.fields as Record<string, FieldValue> | undefined;
 
-/** The effective FieldValue a pending Action wrote to `field` on `subjectId`. */
+/** The effective FieldValue a buffered Action wrote to `field` on `subjectId`. */
 const pendingFieldValue = (
   action: Action,
   subjectId: string,
@@ -208,6 +212,12 @@ const winnerFor = (value: FieldValue): ConflictWinner =>
  * Action never wrote is not a loss. A kind change replaces the whole
  * field, so it is attributed to the path where the kinds diverge (the
  * field root for a top-level change).
+ *
+ * For a collaborative-text document this recursion *is* the conflict
+ * policy: concurrent inserts write different run keys and never
+ * surface, while a concurrent extend-vs-delete on one run is one slot
+ * and does. No separate auto-resolve layer is needed — a race the HLC
+ * settles without losing a pending write is simply not a loss.
  */
 const compareFieldValues = (
   pending: FieldValue,
@@ -235,12 +245,19 @@ const compareFieldValues = (
 };
 
 /**
- * Find the pending entries an inbound Action out-dates, in buffer
+ * Find the buffered entries an inbound Action out-dates, in buffer
  * order. An entry loses when the Action writes a slot the entry also
  * targets with a weaker FieldValue; the whole entry moves, so one
  * losing slot is enough. A repeated inbound write per `(subject,
  * field)` is folded before comparison, so a malformed Action that
  * repeats a field is still judged on its effective state.
+ *
+ * Both `pending` and `acknowledged` entries are candidates: neither has
+ * seen its echo yet, so the local write is not yet known to be the
+ * surviving value. A `pending` loss also keeps the stale write off the
+ * wire; an `acknowledged` loss is already committed and moves to the
+ * Conflicts store so the application learns its write was out-dated.
+ * An `error` entry is a server rejection, not a race.
  */
 const findLosingEntries = (
   entries: readonly OutboxEntry[],
@@ -268,7 +285,7 @@ const findLosingEntries = (
 
   const losers: LosingEntry[] = [];
   for (const entry of entries) {
-    if (entry.status !== "pending") continue;
+    if (entry.status === "error") continue;
     const losses: ConflictLoss[] = [];
     for (const write of writes.values()) {
       if (!isConflictableField(isLwwField, write.subjectType, write.field)) continue;
@@ -342,9 +359,9 @@ export interface Outbox {
    *   that carries a server GSN (`gsn > 0`) is this client's own echo:
    *   it is removed from memory and the store, and reported as `echo`.
    * - Otherwise, a `gsn > 0` Action that out-dates an LWW field a
-   *   `pending` entry also targets moves the whole losing Action to the
-   *   Conflicts store and reports `conflict`. Counter,
-   *   collaborative-text, and structural edge fields never conflict.
+   *   `pending` / `acknowledged` entry also targets moves the whole
+   *   losing Action to the Conflicts store and reports `conflict`.
+   *   Structural edge fields never conflict.
    * - Anything else is `none`.
    */
   noteInbound(action: Action): Promise<InboundOutcome>;
@@ -511,9 +528,11 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
       return { kind: "echo", actionId: action.id };
     }
 
-    // A peer's Action out-dating a pending entry's LWW field moves the
-    // whole losing Action to the Conflicts store, never the wire. Keeping
-    // a flush already in flight off the entry is #309's gating concern.
+    // A peer's Action out-dating a buffered entry's LWW field moves the
+    // whole losing Action to the Conflicts store. For a `pending` entry
+    // that keeps it off the wire; for an `acknowledged` one it surfaces
+    // a committed write that lost. Keeping a flush already in flight off
+    // the entry is #309's gating concern.
     const losers = findLosingEntries(entries, action, deps.isLwwField);
     if (losers.length === 0) return { kind: "none" };
 

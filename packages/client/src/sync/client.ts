@@ -47,7 +47,6 @@ import { createConflicts, type Conflicts } from "./conflicts";
 import { createFlushScheduler, type FlushScheduler } from "./flush-scheduler";
 import { backoffDelayMs } from "./backoff";
 import { TextDocument, TextDocumentRegistry } from "../fields/collaborative-text/text-document";
-import { RUN_FIELD_PREFIX } from "../fields/collaborative-text/wire";
 import {
   EntityRegistry,
   EntityValidationError,
@@ -235,10 +234,10 @@ export class SyncClient implements PermissionQuery {
       // Field markers are the schema's word on merge semantics. A client
       // without a schema has no markers, so every non-structural field is
       // treated as LWW (the conservative default for conflict detection).
-      // Collaborative-text run fields are causal-tree data, excluded here
-      // so the outbox never races their own ConflictDetector.
-      isLwwField: (subjectType, field) =>
-        !field.startsWith(RUN_FIELD_PREFIX) && this.registry.isLwwField(subjectType, field),
+      // A document's `content` map merges per key, so concurrent edits to
+      // different runs never conflict and a same-run race does — see the
+      // outbox's recursive slot comparison.
+      isLwwField: (subjectType, field) => this.registry.isLwwField(subjectType, field),
       hlc: () => this.freshHlc(),
     });
     // The retry loop reuses the SSE reconnect bounds but keeps its own
@@ -732,6 +731,24 @@ export class SyncClient implements PermissionQuery {
    */
   textDocument(docId: string): TextDocument {
     return this.textDocumentRegistry.open({ docId, actorId: this.actorId });
+  }
+
+  /**
+   * Open (or get) the TextDocument for a derived body, bound to the
+   * client's write path so local edits self-flush. `docType` is the
+   * generated document entity's name; the derived-body accessor passes
+   * the type it resolved from the relationship so a custom `entity`
+   * option works.
+   *
+   * Deliberately separate from {@link textDocument}: the low-level API
+   * keeps its manual `client.write(doc.pendingActions())` contract
+   * (which also leaves the 250ms pending window the conflict sweep
+   * needs), while a derived body flushes itself.
+   */
+  openDerivedTextDocument(docId: string, docType: string): TextDocument {
+    const doc = this.textDocumentRegistry.open({ docId, actorId: this.actorId, docType });
+    doc.setSubmit((action) => this.write([action]));
+    return doc;
   }
 
   /**
@@ -1238,7 +1255,7 @@ export class SyncClient implements PermissionQuery {
   /**
    * Forward a batch of registry violations to every registered
    * listener, with the same error-isolation guarantees as
-   * `TextDocument.onUpdate` / `onConflict`. When no listener is
+   * `TextDocument.onUpdate`. When no listener is
    * registered and the direction is `inbound`, falls back to
    * `console.warn` so apps that don't opt in keep the pre-hook
    * behavior.
@@ -1390,7 +1407,7 @@ const applyLocalUpdate = (current: Entity | null, update: Update, hlc: string): 
  * Fire `onRegistryViolation` for every registered listener. Throws
  * from a listener are isolated (logged, not propagated) so one bad
  * handler can't break the others — matches the existing
- * `onUpdate` / `onConflict` error-isolation pattern on
+ * `onUpdate` error-isolation pattern on
  * `TextDocument`. When no listener is registered and the direction is
  * `inbound`, falls back to `console.warn` so apps that don't opt in
  * keep the pre-hook behavior.
@@ -1549,6 +1566,9 @@ export function createClient<
     submitRelationshipUpdates: client.submitRelationshipUpdates.bind(client),
     freshHlc: () => client.freshHlc(),
     generateUpdateId: () => client.generateUpdateId(),
+    actorId: client.actorId,
+    openTextDocument: (docId: string, docType: string) =>
+      client.openDerivedTextDocument(docId, docType),
   };
   const namespaces = buildEntityNamespaces(opts.schema, client.storage, writeCap);
   // `client.atomic` needs the same write capability the namespace
