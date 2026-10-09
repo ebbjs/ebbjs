@@ -618,22 +618,27 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
+  # A flush resolves every Action against one cache snapshot, so the
+  # cache-only part of group resolution is memoized across the whole
+  # flush (see `EntityIndex.resolve_groups_cached/3`). Each Action still
+  # unions its own intra-action membership on top, so two Actions that
+  # move the same entity cannot see each other's membership.
   defp build_ops(fresh, gsn_start, state) do
     resolve_opts = resolve_cache_opts(state)
 
-    {ops, {groups_by_gsn, type_entity_keys}} =
+    {action_ops, {groups_by_gsn, type_entity_keys, _memo}} =
       fresh
       |> Enum.with_index(gsn_start)
-      |> Enum.map_reduce({%{}, MapSet.new()}, fn {action, gsn}, {groups, keys} ->
-        {action_ops, group_ids, action_keys} =
-          build_action_ops(action, gsn, state.rocks_name, resolve_opts)
+      |> Enum.map_reduce({%{}, MapSet.new(), %{}}, fn {action, gsn}, {groups, keys, memo} ->
+        {ops, group_ids, action_keys, memo} =
+          build_action_ops(action, gsn, state.rocks_name, resolve_opts, memo)
 
         keys = MapSet.union(keys, MapSet.new(action_keys))
-
-        {action_ops, {Map.put(groups, gsn, group_ids), keys}}
+        {ops, {Map.put(groups, gsn, group_ids), keys, memo}}
       end)
 
-    {List.flatten(ops) ++ type_entity_ops(type_entity_keys, state.rocks_name), groups_by_gsn}
+    ops = :lists.append(action_ops) ++ type_entity_ops(type_entity_keys, state.rocks_name)
+    {ops, groups_by_gsn}
   end
 
   # No per-GSN component: one put per unique key per flush. Sorted for
@@ -979,24 +984,25 @@ defmodule EbbServer.Storage.Writer do
     :ok
   end
 
-  defp build_action_ops(action, gsn, rocks_name, resolve_opts) do
+  defp build_action_ops(action, gsn, rocks_name, flush_opts, memo) do
     action_with_gsn = to_storage_format(action, gsn)
     action_etf = :erlang.term_to_binary(action_with_gsn)
 
-    intra_ctx = build_intra_action_context(action.updates)
+    resolve_opts =
+      Keyword.put(flush_opts, :intra_action, build_intra_action_context(action.updates))
 
-    {update_ops, {group_ids_by_update, type_entity_keys}} =
-      Enum.map_reduce(action.updates, {[], []}, fn update, {groups, keys} ->
-        {ops, group_ids, type_entity_key} =
-          build_update_ops(action.id, update, gsn, rocks_name, resolve_opts, intra_ctx)
+    {update_ops, {group_ids_by_update, type_entity_keys, memo}} =
+      Enum.map_reduce(action.updates, {[], [], memo}, fn update, {groups, keys, memo} ->
+        {ops, group_ids, type_entity_key, memo} =
+          build_update_ops(action.id, update, gsn, rocks_name, resolve_opts, memo)
 
-        {ops, {[group_ids | groups], [type_entity_key | keys]}}
+        {ops, {[group_ids | groups], [type_entity_key | keys], memo}}
       end)
 
     group_ids =
       group_ids_by_update
       |> Enum.reverse()
-      |> List.flatten()
+      |> :lists.append()
       |> Enum.uniq()
 
     # The union of resolved groups is indexed once per Action, not once
@@ -1012,9 +1018,9 @@ defmodule EbbServer.Storage.Writer do
       [
         {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), action_etf},
         {:put, RocksDB.cf_action_dedup(rocks_name), action.id, RocksDB.encode_gsn_key(gsn)}
-      ] ++ group_ops ++ List.flatten(update_ops)
+      ] ++ group_ops ++ :lists.append(update_ops)
 
-    {ops, group_ids, type_entity_keys}
+    {ops, group_ids, type_entity_keys, memo}
   end
 
   defp resolve_cache_opts(state) do
@@ -1053,8 +1059,8 @@ defmodule EbbServer.Storage.Writer do
     }
   end
 
-  defp build_update_ops(action_id, update, gsn, rocks_name, resolve_opts, intra_ctx) do
-    group_ids = group_ids_for_update(update, resolve_opts, intra_ctx)
+  defp build_update_ops(action_id, update, gsn, rocks_name, resolve_opts, memo) do
+    {group_ids, memo} = group_ids_for_update(update, resolve_opts, memo)
 
     type_entity_key = RocksDB.encode_type_entity_key(update.subject_type, update.subject_id)
 
@@ -1066,41 +1072,77 @@ defmodule EbbServer.Storage.Writer do
        RocksDB.encode_entity_gsn_key(update.subject_id, gsn), action_id}
     ]
 
-    {ops, group_ids, type_entity_key}
+    {ops, group_ids, type_entity_key, memo}
   end
 
-  defp group_ids_for_update(update, resolve_opts, intra_ctx) do
+  defp group_ids_for_update(update, resolve_opts, memo) do
     case Keyword.get(resolve_opts, :entity_groups) do
-      nil -> []
-      _table -> resolve_update_groups(update, resolve_opts, intra_ctx)
+      nil -> {[], memo}
+      _table -> resolve_update_groups(update, resolve_opts, memo)
     end
   end
 
-  defp resolve_update_groups(update, resolve_opts, intra_ctx) do
-    opts = Keyword.put(resolve_opts, :intra_action, intra_ctx)
-
+  defp resolve_update_groups(update, resolve_opts, memo) do
     case update.subject_type do
       "relationship" ->
-        EntityIndex.relationship_groups(
-          Fields.get(update.data, "source_id"),
-          update.subject_id,
-          opts
-        )
+        resolve_relationship_groups(update, resolve_opts, memo)
 
       type when type in ["entityGroup", "groupMember"] ->
-        wire_group_or_resolve(update, type, opts)
+        wire_group_or_resolve(update, type, resolve_opts, memo)
 
       type ->
-        EntityIndex.resolve_groups(type, update.subject_id, opts)
+        resolve_memo_groups(memo, type, update.subject_id, resolve_opts)
+    end
+  end
+
+  # A relationship resolves through its source: the wire `source_id` when
+  # the Update carries it, otherwise the by-id edge's source (the delete
+  # wire form drops the data envelope).
+  defp resolve_relationship_groups(update, resolve_opts, memo) do
+    case Fields.get(update.data, "source_id") do
+      nil ->
+        resolve_memo(memo, {"relationship", update.subject_id}, resolve_opts, fn ->
+          EntityIndex.resolve_groups_cached("relationship", update.subject_id, resolve_opts)
+        end)
+
+      source_id ->
+        resolve_memo(memo, {:source, source_id}, resolve_opts, fn ->
+          {EntityIndex.source_groups_cached(source_id, resolve_opts), source_id}
+        end)
     end
   end
 
   # The by-id cache is empty at write_batch time for a brand-new
   # membership row, so prefer the group on the wire.
-  defp wire_group_or_resolve(update, type, opts) do
+  defp wire_group_or_resolve(update, type, resolve_opts, memo) do
     case Fields.get(update.data, "group_id") do
-      nil -> EntityIndex.resolve_groups(type, update.subject_id, opts)
-      group_id -> [group_id]
+      nil ->
+        resolve_memo_groups(memo, type, update.subject_id, resolve_opts)
+
+      group_id ->
+        {[group_id], memo}
+    end
+  end
+
+  defp resolve_memo_groups(memo, subject_type, subject_id, resolve_opts) do
+    resolve_memo(memo, {subject_type, subject_id}, resolve_opts, fn ->
+      EntityIndex.resolve_groups_cached(subject_type, subject_id, resolve_opts)
+    end)
+  end
+
+  defp resolve_memo(memo, key, opts, resolve) do
+    {{groups, source_id}, memo} = memo_fetch(memo, key, resolve)
+    {EntityIndex.apply_intra_action(groups, source_id, opts), memo}
+  end
+
+  defp memo_fetch(memo, key, resolve) do
+    case memo do
+      %{^key => value} ->
+        {value, memo}
+
+      _ ->
+        value = resolve.()
+        {value, Map.put(memo, key, value)}
     end
   end
 end
