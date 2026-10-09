@@ -23,6 +23,69 @@ type AnyEntityDef = EntityDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
 
 /**
+ * Raised when `defineSchema` sees a relationship whose source or
+ * target entity was never registered. Without this check the row type
+ * promises an accessor the runtime cannot build, so the omission
+ * surfaces later as an `undefined` at the call site rather than as a
+ * schema-authoring error here.
+ */
+export class UnregisteredRelationshipEndpointError extends Error {
+  /** Name of the missing entity — the one to add to `entities`. */
+  readonly entityName: string;
+  /** Which end of the relationship `entityName` occupies. */
+  readonly role: "source" | "target";
+  /** `as` accessor on the source that would have resolved the endpoint. */
+  readonly accessor: string;
+
+  constructor(info: {
+    entityName: string;
+    role: "source" | "target";
+    sourceName: string;
+    accessor: string;
+  }) {
+    const reference =
+      info.role === "source"
+        ? `relationship "${info.accessor}" references its source entity "${info.entityName}"`
+        : `relationship "${info.accessor}" on entity "${info.sourceName}" references ` +
+          `target entity "${info.entityName}"`;
+    super(
+      `Schema ${reference}, which is not registered. Add "${info.entityName}" to the ` +
+        `"entities" map passed to defineSchema.`,
+    );
+    this.name = "UnregisteredRelationshipEndpointError";
+    this.entityName = info.entityName;
+    this.role = info.role;
+    this.accessor = info.accessor;
+  }
+}
+
+/**
+ * Assert that both endpoints of `rel` are registered. Called after
+ * every entity (system and user) is registered, so `registry` mirrors
+ * the full set `defineSchema` will expose. A dangling endpoint is a
+ * schema-authoring bug: `buildRowAccessors` would otherwise type-check
+ * the accessor but drop it at runtime.
+ */
+function assertRelationshipEndpointsRegistered(
+  rel: AnyRelationshipDef,
+  registry: EntityRegistry,
+): void {
+  const endpoints = [
+    ["source", rel.source.name],
+    ["target", rel.target.name],
+  ] as const;
+  for (const [role, entityName] of endpoints) {
+    if (registry.has(entityName)) continue;
+    throw new UnregisteredRelationshipEndpointError({
+      entityName,
+      role,
+      sourceName: rel.source.name,
+      accessor: rel.as,
+    });
+  }
+}
+
+/**
  * The compiled schema handed to `createClient({ schema })`. The
  * `TEntities` / `TRelationships` generics are inferred from the
  * inputs so callers see typed entity and relationship shapes without
@@ -87,7 +150,9 @@ export interface DefineSchemaInput<
  * submit `entityGroup` Updates. Membership is a dedicated
  * `entityGroup` row, not an injected relationship. The registry owns
  * the cardinality / overwrite rules; this builder delegates without
- * adding its own.
+ * adding its own. A relationship whose source or target is neither a
+ * system entity nor a member of `entities` throws
+ * `UnregisteredRelationshipEndpointError` before the schema is frozen.
  */
 export function defineSchema<
   TEntities extends Record<string, AnyEntityDef>,
@@ -108,7 +173,8 @@ export function defineSchema<
  * Register the system entities and the user entities/relationships
  * onto `registry`. Shared by `defineSchema` and the per-client
  * registry builder so the two can't drift. Rejects app-authored
- * names that collide with the reserved system / membership names.
+ * names that collide with the reserved system / membership names,
+ * and relationships whose source or target entity is not registered.
  */
 export function seedRegistry(
   registry: EntityRegistry,
@@ -125,6 +191,7 @@ export function seedRegistry(
   }
   if (relationships !== undefined) {
     for (const rel of Object.values(relationships)) {
+      assertRelationshipEndpointsRegistered(rel, registry);
       assertAccessorNameAvailable(rel.source.name, rel.as);
       registry.registerRelationship(rel);
     }

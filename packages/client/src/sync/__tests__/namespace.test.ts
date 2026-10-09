@@ -988,6 +988,34 @@ describe("doc.groups — built-in membership accessor", () => {
     expect(resolved.map((g) => g.name)).toEqual(["Demo"]);
   });
 
+  it("attaches groups when a relationship targets the group system entity", async () => {
+    const todoOwnedBy = defineRelationship({
+      source: todoEntity,
+      target: groupSystemEntity,
+      as: "ownedBy",
+      sourceCardinality: "many",
+    });
+    const schemaWithOwnedBy = defineSchema({
+      entities: { todo: todoEntity },
+      relationships: { todo_ownedBy: todoOwnedBy },
+      version: 1,
+    });
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
+    await storage.entities.set(mkEntity("g1", "group", { name: "Demo" }));
+    await storage.entities.set(mkEntityGroup("eg-1", "t1", "g1"));
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: schemaWithOwnedBy,
+    });
+    const row = await client.todo.get("t1");
+    if (row === null) throw new Error("expected row");
+    expect((await row.groups).map((g) => g.name)).toEqual(["Demo"]);
+  });
+
   it("awaits an empty list for an entity with no membership rows", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
