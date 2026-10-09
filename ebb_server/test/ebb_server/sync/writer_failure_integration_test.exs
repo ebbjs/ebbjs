@@ -37,7 +37,7 @@ defmodule EbbServer.Sync.WriterCacheEscalationTest do
   alias EbbServer.TestHelpers
 
   # A cache table that never exists: the commit lands, then the Writer's
-  # `update_system_caches/2` raises on the insert.
+  # post-commit cache apply raises on the insert.
   def storage_writer_opts, do: [group_members: :ebb_282_missing_table]
 
   test "post-commit cache update failure escalates and reads stay consistent" do
