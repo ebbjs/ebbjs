@@ -56,6 +56,12 @@ defmodule EbbServer.Storage.Writer do
   snapshot `cf_group_actions` was built from rather than re-deriving
   groups after the system caches have moved.
 
+  Redundant index writes are dropped during op construction: the
+  `cf_type_entities` key has no GSN component, so it is collected as a
+  per-flush set and written once per unique `(subject_type, subject_id)`,
+  while `cf_group_actions` is emitted once per Action from the union of
+  resolved group ids.
+
   Provisionally dirty marks close the gap between the durable commit
   returning and the entity being marked dirty: a read that starts after
   the commit cannot observe a clean entity whose SQLite row predates the
@@ -599,17 +605,27 @@ defmodule EbbServer.Storage.Writer do
   defp build_ops(fresh, gsn_start, state) do
     resolve_opts = resolve_cache_opts(state)
 
-    {ops, groups_by_gsn} =
+    {ops, {groups_by_gsn, type_entity_keys}} =
       fresh
       |> Enum.with_index(gsn_start)
-      |> Enum.map_reduce(%{}, fn {action, gsn}, acc ->
-        {action_ops, group_ids} =
+      |> Enum.map_reduce({%{}, MapSet.new()}, fn {action, gsn}, {groups, keys} ->
+        {action_ops, group_ids, action_keys} =
           build_action_ops(action, gsn, state.rocks_name, resolve_opts)
 
-        {action_ops, Map.put(acc, gsn, group_ids)}
+        keys = MapSet.union(keys, MapSet.new(action_keys))
+
+        {action_ops, {Map.put(groups, gsn, group_ids), keys}}
       end)
 
-    {List.flatten(ops), groups_by_gsn}
+    {List.flatten(ops) ++ type_entity_ops(type_entity_keys, state.rocks_name), groups_by_gsn}
+  end
+
+  # No per-GSN component: one put per unique key per flush. Sorted for
+  # reproducible batches.
+  defp type_entity_ops(keys, rocks_name) do
+    keys
+    |> Enum.sort()
+    |> Enum.map(fn key -> {:put, RocksDB.cf_type_entities(rocks_name), key, <<>>} end)
   end
 
   defp commit(fresh, pending, ops, groups_by_gsn, gsn_start, gsn_end, state) do
@@ -852,12 +868,12 @@ defmodule EbbServer.Storage.Writer do
 
     intra_ctx = build_intra_action_context(action.updates)
 
-    {update_ops, group_ids_by_update} =
-      Enum.map_reduce(action.updates, [], fn update, acc ->
-        {ops, group_ids} =
+    {update_ops, {group_ids_by_update, type_entity_keys}} =
+      Enum.map_reduce(action.updates, {[], []}, fn update, {groups, keys} ->
+        {ops, group_ids, type_entity_key} =
           build_update_ops(action.id, update, gsn, rocks_name, resolve_opts, intra_ctx)
 
-        {ops, [group_ids | acc]}
+        {ops, {[group_ids | groups], [type_entity_key | keys]}}
       end)
 
     group_ids =
@@ -866,13 +882,22 @@ defmodule EbbServer.Storage.Writer do
       |> List.flatten()
       |> Enum.uniq()
 
+    # The union of resolved groups is indexed once per Action, not once
+    # per Update, so repeated memberships cannot write the same
+    # `{group_id, gsn}` row twice.
+    group_ops =
+      Enum.map(group_ids, fn group_id ->
+        key = RocksDB.encode_group_action_key(group_id, gsn)
+        {:put, RocksDB.cf_group_actions(rocks_name), key, action.id}
+      end)
+
     ops =
       [
         {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), action_etf},
         {:put, RocksDB.cf_action_dedup(rocks_name), action.id, RocksDB.encode_gsn_key(gsn)}
-      ] ++ List.flatten(update_ops)
+      ] ++ group_ops ++ List.flatten(update_ops)
 
-    {ops, group_ids}
+    {ops, group_ids, type_entity_keys}
   end
 
   defp resolve_cache_opts(state) do
@@ -914,26 +939,17 @@ defmodule EbbServer.Storage.Writer do
   defp build_update_ops(action_id, update, gsn, rocks_name, resolve_opts, intra_ctx) do
     group_ids = group_ids_for_update(update, resolve_opts, intra_ctx)
 
-    index_ops =
-      Enum.map(group_ids, fn group_id ->
-        key = RocksDB.encode_group_action_key(group_id, gsn)
-        {:put, RocksDB.cf_group_actions(rocks_name), key, action_id}
-      end)
+    type_entity_key = RocksDB.encode_type_entity_key(update.subject_type, update.subject_id)
 
     # The Update is stored once, inside the `cf_actions` value; there is no
-    # separate per-Update row to maintain.
-    ops =
-      [
-        {:put, RocksDB.cf_entity_actions(rocks_name),
-         RocksDB.encode_entity_gsn_key(update.subject_id, gsn), action_id},
-        {:put, RocksDB.cf_type_entities(rocks_name),
-         RocksDB.encode_type_entity_key(
-           update.subject_type,
-           update.subject_id
-         ), <<>>}
-      ] ++ index_ops
+    # separate per-Update row to maintain. The group index and the type
+    # index are emitted by the caller, which owns the dedup scope.
+    ops = [
+      {:put, RocksDB.cf_entity_actions(rocks_name),
+       RocksDB.encode_entity_gsn_key(update.subject_id, gsn), action_id}
+    ]
 
-    {ops, group_ids}
+    {ops, group_ids, type_entity_key}
   end
 
   defp group_ids_for_update(update, resolve_opts, intra_ctx) do

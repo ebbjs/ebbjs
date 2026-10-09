@@ -280,6 +280,33 @@ target different costs):
 
 All four runs: 0 rejected Actions, 0 GSN holes, final watermark lag 0.
 
+## Writer write amplification: dedup per-flush index writes (#339)
+
+Within one coalesced flush the `Writer` emitted byte-identical index puts:
+`cf_type_entities` once per Update even when the `(subject_type,
+subject_id)` key repeated across Actions, and `cf_group_actions` could write
+the same `(group_id, gsn)` row twice within one Action when a `todo` update
+and its `entityGroup` update resolved to the same group.
+[#339](https://github.com/ebbjs/ebbjs/issues/339) collects the
+`cf_type_entities` keys in a per-flush set and emits the `cf_group_actions`
+rows from the per-Action group union: **ops/Action 8 → 5.02** for the
+canonical hot 2-Update Action at batch 100 (measured with a counting
+`commit_fn`; the residual 0.02 is the two unique type-index keys amortised
+across the batch).
+
+Same machine, t0 headline config, one 120s run per side (the base already
+includes #338):
+
+| Tier | Window           | Before /s | After /s | Change |
+| ---- | ---------------- | --------: | -------: | -----: |
+| t0   | burst (0–15s)    |    21,267 |   24,413 | +14.8% |
+| t0   | steady (61–120s) |    20,553 |   22,827 | +11.1% |
+| t0   | overall          |    20,779 |   23,607 | +13.6% |
+
+Both runs: 0 rejected Actions, 0 GSN holes, final watermark lag 0. Three
+short 20s A/B runs agreed on the direction and size (median overall 20,485 →
+24,335, +18.8%).
+
 ## Correctness under load
 
 Clean across every measured run above: **0 rejected Actions, 0
@@ -316,13 +343,14 @@ by one batch (≤100) and 0 at the end of the run.
 1. **EntityGroup membership writes are O(group size)** — filed as
    [#331](https://github.com/ebbjs/ebbjs/issues/331). It drives both the
    `spread`↔`hot` gap and the 100k-preload collapse.
-2. **Single-Writer ceiling ≈ 17–19k Actions/sec is per-Action-bound** — batch
+2. **Single-Writer ceiling ≈ 21–24k Actions/sec is per-Action-bound** — batch
    coalescing shipped in [#332](https://github.com/ebbjs/ebbjs/issues/332)
-   (commit count down ~5–6×, batch-1 throughput ~3×) and write amplification
-   was cut in [#338](https://github.com/ebbjs/ebbjs/issues/338)
-   (`cf_updates` removed, ~+15% at the headline config); the batch-100 rate
-   is still bound by per-Action Elixir work, so the next lever is spreading
-   it across schedulers, or multi-Writer
+   (commit count down ~5–6×, batch-1 throughput ~3×), `cf_updates` was
+   removed in [#338](https://github.com/ebbjs/ebbjs/issues/338) (~+15% at the
+   headline config), and per-flush index writes were deduped in
+   [#339](https://github.com/ebbjs/ebbjs/issues/339) (~+14% on t0); the
+   batch-100 rate is still bound by per-Action Elixir work, so the next lever
+   is spreading it across schedulers, or multi-Writer
    ([#287](https://github.com/ebbjs/ebbjs/issues/287)).
 3. **No commit-level telemetry**
    ([#125](https://github.com/ebbjs/ebbjs/issues/125)) — fan-out delivery
