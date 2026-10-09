@@ -36,6 +36,55 @@ defmodule EbbServer.Storage.EntityGroupCacheTest do
     ]
   end
 
+  describe "by-group index shape" do
+    test "is an ordered_set" do
+      cache = with_isolated_cache()
+
+      assert :ets.info(cache.by_group, :type) == :ordered_set
+    end
+
+    test "keys rows by the composite {group_id, entity_id}" do
+      cache = with_isolated_cache()
+
+      :ok =
+        EntityGroupCache.put_entity_group(
+          %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"},
+          opts(cache)
+        )
+
+      assert :ets.member(cache.by_group, {"g_1", "todo_1"})
+      assert :ets.info(cache.by_group, :size) == 1
+
+      :ok = EntityGroupCache.delete_entity_group("eg_1", opts(cache))
+
+      refute :ets.member(cache.by_group, {"g_1", "todo_1"})
+    end
+  end
+
+  describe "group_entities/2" do
+    test "returns every member for a group holding many entities" do
+      cache = with_isolated_cache()
+      entity_ids = for n <- 1..150, do: "todo_#{n}"
+
+      for entity_id <- entity_ids do
+        :ok =
+          EntityGroupCache.put_entity_group(
+            %{id: "eg_#{entity_id}", entity_id: entity_id, group_id: "g_1"},
+            opts(cache)
+          )
+      end
+
+      assert EntityGroupCache.group_entities("g_1", cache.by_group)
+             |> Enum.sort() == Enum.sort(entity_ids)
+    end
+
+    test "returns an empty list for a group with no members" do
+      cache = with_isolated_cache()
+
+      assert EntityGroupCache.group_entities("g_empty", cache.by_group) == []
+    end
+  end
+
   describe "put_entity_group/2" do
     test "stores a membership entry addressable by entity, id, and group" do
       cache = with_isolated_cache()
