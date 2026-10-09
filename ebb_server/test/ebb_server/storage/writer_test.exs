@@ -911,6 +911,162 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert EntityTypeCache.get_type("todo_typed", entity_types) == "todo"
     end
+
+    test "planner keeps one write per unique cache key per flush", %{
+      writer_name: writer_name
+    } do
+      hlc = generate_hlc()
+      gm_id = "gm_" <> Nanoid.generate()
+      todo_id = "todo_" <> Nanoid.generate()
+
+      gm = group_member_update(gm_id, "actor_1", "group_1", ["todo.create"], hlc)
+      todo = validated_update(%{subject_id: todo_id, subject_type: "todo"})
+
+      action1 = validated_action(%{id: "act_plan_1", updates: [gm, todo]})
+      action2 = validated_action(%{id: "act_plan_2", updates: [gm, todo]})
+
+      mutations = Writer.plan_cache_mutations([action1, action2], :sys.get_state(writer_name))
+
+      assert Enum.count(mutations, &match?({:group_member_put, %{id: ^gm_id}}, &1)) == 1
+      assert Enum.count(mutations, &match?({:entity_type, ^todo_id, _}, &1)) == 1
+    end
+
+    test "a same-flush entityGroup put then patch caches the merged row", %{
+      writer_name: writer_name,
+      entity_groups: eg_table,
+      entity_groups_by_id: eg_by_id
+    } do
+      hlc = generate_hlc()
+      eg_id = "eg_" <> Nanoid.generate()
+
+      put = entity_group_update(eg_id, "todo_merge", "group_1", hlc)
+      patch = entity_group_patch(eg_id, "group_2", hlc)
+
+      action = validated_action(%{id: "act_merge", updates: [put, patch]})
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      assert EntityGroupCache.entity_groups("todo_merge", eg_table) == ["group_2"]
+
+      assert EntityGroupCache.get_entity_group(eg_id, eg_by_id) == %{
+               id: eg_id,
+               entity_id: "todo_merge",
+               group_id: "group_2"
+             }
+    end
+
+    test "a same-flush put then delete leaves the entityGroup row gone", %{
+      writer_name: writer_name,
+      entity_groups: eg_table,
+      entity_groups_by_id: eg_by_id
+    } do
+      hlc = generate_hlc()
+      eg_id = "eg_" <> Nanoid.generate()
+
+      put = entity_group_update(eg_id, "todo_pd", "group_1", hlc)
+      delete = system_delete_update(eg_id, "entityGroup")
+
+      action = validated_action(%{id: "act_pd", updates: [put, delete]})
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      assert EntityGroupCache.get_entity_group(eg_id, eg_by_id) == nil
+      assert EntityGroupCache.entity_groups("todo_pd", eg_table) == []
+    end
+
+    test "a same-flush delete then put leaves the new entityGroup row present", %{
+      writer_name: writer_name,
+      entity_groups: eg_table,
+      entity_groups_by_id: eg_by_id
+    } do
+      hlc = generate_hlc()
+      eg_id = "eg_" <> Nanoid.generate()
+
+      delete = system_delete_update(eg_id, "entityGroup")
+      put = entity_group_update(eg_id, "todo_dp", "group_2", hlc)
+
+      action = validated_action(%{id: "act_dp", updates: [delete, put]})
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      assert EntityGroupCache.get_entity_group(eg_id, eg_by_id).entity_id == "todo_dp"
+      assert EntityGroupCache.entity_groups("todo_dp", eg_table) == ["group_2"]
+    end
+
+    test "a same-flush entityGroup delete then patch does not resurrect the row", %{
+      writer_name: writer_name,
+      entity_groups: eg_table,
+      entity_groups_by_id: eg_by_id
+    } do
+      hlc = generate_hlc()
+      eg_id = "eg_" <> Nanoid.generate()
+
+      seed =
+        validated_action(%{
+          id: "act_resurrect_seed",
+          updates: [entity_group_update(eg_id, "todo_resurrect", "group_1", hlc)]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([seed], writer_name)
+      assert EntityGroupCache.get_entity_group(eg_id, eg_by_id) != nil
+
+      delete = system_delete_update(eg_id, "entityGroup")
+      patch = entity_group_patch(eg_id, "group_2", hlc)
+
+      action = validated_action(%{id: "act_resurrect", updates: [delete, patch]})
+
+      assert {:ok, {2, 2}, []} = Writer.write_actions([action], writer_name)
+
+      assert EntityGroupCache.get_entity_group(eg_id, eg_by_id) == nil
+      assert EntityGroupCache.entity_groups("todo_resurrect", eg_table) == []
+    end
+
+    test "a same-flush groupMember put then delete removes the membership", %{
+      writer_name: writer_name,
+      group_members: gm_table,
+      group_members_by_id: gm_by_id
+    } do
+      hlc = generate_hlc()
+      gm_id = "gm_" <> Nanoid.generate()
+
+      put = group_member_update(gm_id, "actor_1", "group_1", ["todo.create"], hlc)
+      delete = system_delete_update(gm_id, "groupMember")
+
+      action = validated_action(%{id: "act_gm_pd", updates: [put, delete]})
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      assert GroupCache.get_group_member(gm_id, gm_by_id) == nil
+      assert GroupCache.get_actor_groups("actor_1", gm_table) == []
+    end
+
+    # `GroupCache.put_group_member/2` deletes the primary row by the
+    # *incoming* actor, so two different rows for one membership id in a
+    # single flush must both be applied: collapsing them would strand the
+    # first actor's row.
+    test "a same-flush groupMember actor change keeps both memberships", %{
+      writer_name: writer_name,
+      group_members: gm_table,
+      group_members_by_id: gm_by_id
+    } do
+      hlc = generate_hlc()
+      gm_id = "gm_" <> Nanoid.generate()
+
+      put_a = group_member_update(gm_id, "actor_a", "group_1", ["todo.create"], hlc)
+      put_b = group_member_update(gm_id, "actor_b", "group_1", ["todo.read"], hlc)
+
+      action = validated_action(%{id: "act_gm_actor_swap", updates: [put_a, put_b]})
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      assert [%{group_id: "group_1", permissions: ["todo.create"]}] =
+               GroupCache.get_actor_groups("actor_a", gm_table)
+
+      assert [%{group_id: "group_1", permissions: ["todo.read"]}] =
+               GroupCache.get_actor_groups("actor_b", gm_table)
+
+      assert GroupCache.get_group_member(gm_id, gm_by_id).actor_id == "actor_b"
+    end
   end
 
   describe "cf_group_actions index" do
@@ -1210,6 +1366,30 @@ defmodule EbbServer.Storage.WriterTest do
           "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
         }
       }
+    }
+  end
+
+  defp entity_group_patch(id, group_id, hlc) do
+    %{
+      id: "upd_" <> Nanoid.generate(),
+      subject_id: id,
+      subject_type: "entityGroup",
+      method: :patch,
+      data: %{
+        "fields" => %{
+          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
+        }
+      }
+    }
+  end
+
+  defp system_delete_update(subject_id, subject_type) do
+    %{
+      id: "upd_" <> Nanoid.generate(),
+      subject_id: subject_id,
+      subject_type: subject_type,
+      method: :delete,
+      data: %{}
     }
   end
 
