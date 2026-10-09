@@ -431,6 +431,8 @@ function buildRowAccessors(
     const relType = rel.type;
     const targetShape = registry.get(targetName)?.shape;
     if (rel.sourceCardinality === "many") {
+      // Defensive: `defineSchema` rejects an unregistered target, so a
+      // schema-built registry always carries the shape.
       if (targetShape === undefined) continue;
       out[field] = forwardMany(
         readLocalEntity,
@@ -460,6 +462,7 @@ function buildRowAccessors(
     const field = rel.as;
     const relType = rel.type;
     const sourceShape = registry.get(sourceName)?.shape;
+    // Defensive: `defineSchema` rejects an unregistered source.
     if (sourceShape === undefined) continue;
     out[field] = reverseTraversal(
       readLocalEntity,
@@ -476,6 +479,7 @@ function buildRowAccessors(
   // rows and projects their `group` targets. Present on every row
   // regardless of declared relationships.
   const groupShape = registry.get("group")?.shape;
+  // Defensive: `group` is always a registered system entity.
   if (groupShape !== undefined) {
     out[GROUPS_ACCESSOR] = membershipGroups(queryEntitiesByType, sourceId, "group", groupShape);
   }

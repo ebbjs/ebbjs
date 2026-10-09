@@ -9,7 +9,7 @@ import { defineEntity, e } from "./entity";
 import { EntityRegistry, EntityValidationError } from "./entity-registry";
 import { defineRelationship } from "./relationship";
 import { ReservedNameError } from "./reserved";
-import { defineSchema, type Schema } from "./schema";
+import { defineSchema, UnregisteredRelationshipEndpointError, type Schema } from "./schema";
 import {
   entityGroupSystemEntity,
   groupMemberSystemEntity,
@@ -271,6 +271,103 @@ describe("defineSchema system entities + membership", () => {
     expect(() =>
       defineSchema({ entities: { todo }, relationships: { bad: colliding }, version: 1 }),
     ).toThrow(ReservedNameError);
+  });
+});
+
+describe("defineSchema relationship endpoint validation", () => {
+  const label = defineEntity("label", { name: e.string() });
+
+  it("throws when a forward-one relationship's target is not registered", () => {
+    const todo_label = defineRelationship({ source: todo, target: label, as: "label" });
+    expect(() =>
+      defineSchema({ entities: { todo }, relationships: { todo_label }, version: 1 }),
+    ).toThrow(UnregisteredRelationshipEndpointError);
+  });
+
+  it("throws when a forward-many relationship's target is not registered", () => {
+    const todo_labels = defineRelationship({
+      source: todo,
+      target: label,
+      as: "labels",
+      sourceCardinality: "many",
+    });
+    expect(() =>
+      defineSchema({ entities: { todo }, relationships: { todo_labels }, version: 1 }),
+    ).toThrow(UnregisteredRelationshipEndpointError);
+  });
+
+  it("throws when a relationship's source is not registered", () => {
+    const todo_label = defineRelationship({ source: todo, target: label, as: "label" });
+    expect(() =>
+      defineSchema({ entities: { label }, relationships: { todo_label }, version: 1 }),
+    ).toThrow(UnregisteredRelationshipEndpointError);
+  });
+
+  it("names the missing endpoint, the accessor, and the entities map in the message", () => {
+    const todo_labels = defineRelationship({
+      source: todo,
+      target: label,
+      as: "labels",
+      sourceCardinality: "many",
+    });
+    let caught: unknown;
+    try {
+      defineSchema({ entities: { todo }, relationships: { todo_labels }, version: 1 });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(UnregisteredRelationshipEndpointError);
+    const error = caught as UnregisteredRelationshipEndpointError;
+    expect(error.entityName).toBe("label");
+    expect(error.role).toBe("target");
+    expect(error.accessor).toBe("labels");
+    expect(error.message).toContain('"label"');
+    expect(error.message).toContain('"labels"');
+    expect(error.message).toContain('"entities"');
+  });
+
+  it("accepts a relationship whose target is a system entity", () => {
+    const todo_ownedBy = defineRelationship({
+      source: todo,
+      target: groupSystemEntity,
+      as: "ownedBy",
+      sourceCardinality: "many",
+    });
+    const schema = defineSchema({
+      entities: { todo },
+      relationships: { todo_ownedBy },
+      version: 1,
+    });
+    expect(schema._registry.getRelationship("todo", "ownedBy")).toBeDefined();
+  });
+
+  it("accepts a relationship whose source is a system entity", () => {
+    const group_todos = defineRelationship({
+      source: groupSystemEntity,
+      target: todo,
+      as: "todos",
+      sourceCardinality: "many",
+    });
+    const schema = defineSchema({
+      entities: { todo },
+      relationships: { group_todos },
+      version: 1,
+    });
+    expect(schema._registry.getRelationship("group", "todos")).toBeDefined();
+  });
+
+  it("reports the source when the source is the missing endpoint", () => {
+    const todo_label = defineRelationship({ source: todo, target: label, as: "label" });
+    let caught: unknown;
+    try {
+      defineSchema({ entities: { label }, relationships: { todo_label }, version: 1 });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(UnregisteredRelationshipEndpointError);
+    const error = caught as UnregisteredRelationshipEndpointError;
+    expect(error.entityName).toBe("todo");
+    expect(error.role).toBe("source");
   });
 });
 
