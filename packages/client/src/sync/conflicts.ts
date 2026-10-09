@@ -15,8 +15,13 @@
  * seeded from `rehydrate()` and refreshed on every mutation.
  */
 
-import type { Action, FieldValue, Update } from "@ebbjs/core";
-import type { ConflictEntry, ConflictStore } from "@ebbjs/storage/types";
+import { isFieldMap, type Action, type FieldValue, type Update } from "@ebbjs/core";
+import type {
+  ConflictEntry,
+  ConflictLoss,
+  ConflictSlot,
+  ConflictStore,
+} from "@ebbjs/storage/types";
 
 /** The application's decision for one conflict. */
 export type ConflictResolution = "retry" | "discard";
@@ -108,30 +113,104 @@ const readFields = (update: Update): Readonly<Record<string, FieldValue>> =>
   update.data?.fields ?? {};
 
 /**
- * Rebuild the conflicting fields into one patch per subject. Each Update
- * carries a fresh `update_id` + HLC and only the fields that lost, so a
- * field the peer did not touch is left on its current value. The original
+ * The losing Action's value at one slot. Updates apply in order, so the
+ * last write found for a slot is the one that lands — the Action was
+ * authored by this client, whose HLC advances with every update.
+ */
+const valueAtSlot = (action: Action, slot: ConflictSlot): FieldValue | undefined => {
+  let found: FieldValue | undefined;
+  for (const update of action.updates) {
+    if (update.subject_id !== slot.subjectId) continue;
+    let node: FieldValue | undefined = readFields(update)[slot.field];
+    for (const key of slot.path) {
+      if (node === undefined || !isFieldMap(node)) {
+        node = undefined;
+        break;
+      }
+      node = node.map[key];
+    }
+    if (node !== undefined) found = node;
+  }
+  return found;
+};
+
+/** Re-stamp every leaf under a value with one fresh `update_id` + HLC. */
+const reStamp = (field: FieldValue, updateId: string, hlc: string): FieldValue => {
+  if (!isFieldMap(field)) return { value: field.value, update_id: updateId, hlc };
+  const map: Record<string, FieldValue> = {};
+  for (const [key, child] of Object.entries(field.map)) {
+    map[key] = reStamp(child, updateId, hlc);
+  }
+  return { map };
+};
+
+/** Wrap a value in its map-key path, innermost key last. */
+const nestValue = (leaf: FieldValue, path: readonly string[]): FieldValue =>
+  path.reduceRight<FieldValue>((child, key) => ({ map: { [key]: child } }), leaf);
+
+/** Union two map trees so sibling keys lost together travel in one patch. */
+const mergeTrees = (a: FieldValue, b: FieldValue): FieldValue => {
+  if (!isFieldMap(a) || !isFieldMap(b)) return b;
+  const map: Record<string, FieldValue> = { ...a.map };
+  for (const [key, value] of Object.entries(b.map)) {
+    const previous = map[key];
+    map[key] = previous === undefined ? value : mergeTrees(previous, value);
+  }
+  return { map };
+};
+
+/**
+ * Rebuild one field's losing value. A loss at the field root re-stamps
+ * the whole value; otherwise each lost leaf is nested under its map
+ * path and the trees are unioned.
+ */
+const fieldValue = (
+  losses: readonly ConflictLoss[],
+  action: Action,
+  updateId: string,
+  hlc: string,
+): FieldValue | undefined => {
+  const rootLoss = losses.find((loss) => loss.slot.path.length === 0);
+  if (rootLoss !== undefined) {
+    const value = valueAtSlot(action, rootLoss.slot);
+    if (value !== undefined) return reStamp(value, updateId, hlc);
+  }
+
+  let tree: FieldValue | undefined;
+  for (const loss of losses) {
+    if (loss.slot.path.length === 0) continue;
+    const value = valueAtSlot(action, loss.slot);
+    if (value === undefined) continue;
+    const nested = nestValue(reStamp(value, updateId, hlc), loss.slot.path);
+    tree = tree === undefined ? nested : mergeTrees(tree, nested);
+  }
+  return tree;
+};
+
+/**
+ * Rebuild the conflicting slots into one patch per subject. Each Update
+ * carries a fresh `update_id` + HLC and only the slots that lost, so a
+ * key the peer did not touch is left on its current value. The original
  * method is not preserved: re-stamping the losing values on top of the
  * current state is a patch whatever method first carried them.
  *
- * `null` when the Action carried no field the conflict named.
+ * `null` when the Action carried no slot the conflict named.
  */
 const rebaseAction = (entry: ConflictEntry, deps: RebaseStamper): Action | null => {
-  const conflicting = new Set(entry.fields);
   const bySubject = new Map<
     string,
-    { subjectId: string; subjectType: string; fields: Record<string, FieldValue> }
+    { subjectId: string; subjectType: string; losses: ConflictLoss[] }
   >();
-  for (const update of entry.action.updates) {
-    const lost = Object.entries(readFields(update)).filter(([name]) => conflicting.has(name));
-    if (lost.length === 0) continue;
+  for (const loss of entry.losses) {
+    const update = entry.action.updates.find((u) => u.subject_id === loss.slot.subjectId);
+    if (update === undefined) continue;
     const key = `${update.subject_id}\u0000${update.subject_type}`;
     const subject = bySubject.get(key) ?? {
       subjectId: update.subject_id,
       subjectType: update.subject_type,
-      fields: {},
+      losses: [],
     };
-    for (const [name, field] of lost) subject.fields[name] = field;
+    subject.losses.push(loss);
     bySubject.set(key, subject);
   }
 
@@ -139,8 +218,15 @@ const rebaseAction = (entry: ConflictEntry, deps: RebaseStamper): Action | null 
     const updateId = deps.generateUpdateId();
     const hlc = deps.hlc();
     const fields: Record<string, FieldValue> = {};
-    for (const [name, field] of Object.entries(subject.fields)) {
-      fields[name] = { value: field.value, update_id: updateId, hlc };
+    const byField = new Map<string, ConflictLoss[]>();
+    for (const loss of subject.losses) {
+      const list = byField.get(loss.slot.field) ?? [];
+      list.push(loss);
+      byField.set(loss.slot.field, list);
+    }
+    for (const [field, losses] of byField) {
+      const value = fieldValue(losses, entry.action, updateId, hlc);
+      if (value !== undefined) fields[field] = value;
     }
     return {
       id: updateId,

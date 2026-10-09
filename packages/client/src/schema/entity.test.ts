@@ -33,6 +33,24 @@ describe("defineEntity", () => {
     expect(Object.isFrozen(todo)).toBe(true);
   });
 
+  it("describes a map field as a JSON Schema map rule", () => {
+    // TypeBox spells `Record(String, …)` as `patternProperties`; the
+    // `additionalProperties` option is the other, equivalent spelling.
+    expect(Type.Record(Type.String(), Type.String())).toMatchObject({
+      type: "object",
+      patternProperties: { "^(.*)$": { type: "string" } },
+    });
+
+    const doc = defineEntity("doc", {
+      content: Type.Object({}, { additionalProperties: Type.String() }),
+    });
+    expect(doc.shape.properties.content).toMatchObject({
+      type: "object",
+      additionalProperties: { type: "string" },
+    });
+    expect(doc.fields.content).toEqual({ type: "lww" });
+  });
+
   it("preserves field-name typing in EntityDef<TFields>", () => {
     const todo = defineEntity("todo", {
       title: e.string(),

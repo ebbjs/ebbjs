@@ -32,9 +32,11 @@
  * storage adapter and fetch.
  */
 
-import { compare, type Action, type FieldValue, type Update } from "@ebbjs/core";
+import { compare, isFieldMap, type Action, type FieldValue, type Update } from "@ebbjs/core";
 import type {
   ConflictEntry,
+  ConflictLoss,
+  ConflictSlot,
   ConflictStore,
   ConflictWinner,
   OutboxStore,
@@ -79,7 +81,7 @@ export type FlushOutcome =
  */
 export type InboundOutcome =
   | { kind: "echo"; actionId: string }
-  | { kind: "conflict"; actionId: string; fields: readonly string[] }
+  | { kind: "conflict"; actionId: string; slots: readonly ConflictSlot[] }
   | { kind: "none" };
 
 /**
@@ -137,11 +139,10 @@ const STRUCTURAL_SUBJECT_TYPES: ReadonlySet<string> = new Set([
   "groupMember",
 ]);
 
-/** A pending Action an inbound Action out-dates, with its winners. */
+/** A pending Action an inbound Action out-dates, with its losing slots. */
 interface LosingEntry {
   readonly entry: OutboxEntry;
-  readonly fields: readonly string[];
-  readonly winners: Readonly<Record<string, ConflictWinner>>;
+  readonly losses: readonly ConflictLoss[];
 }
 
 /**
@@ -151,22 +152,44 @@ interface LosingEntry {
 const updateFields = (update: Update): Record<string, FieldValue> | undefined =>
   update.data?.fields as Record<string, FieldValue> | undefined;
 
-/** The strongest FieldValue a pending Action wrote to `field` on `subjectId`. */
+/**
+ * Merge two values under the same recursive LWW rule the storage
+ * materializer uses: leaf over leaf by HLC then `update_id`, map over
+ * map key by key, and a kind change replaces the whole value.
+ *
+ * `pendingFieldValue` folds an Action's own repeated writes through
+ * this so detection compares the state the server would materialize.
+ */
+const mergePendingValues = (existing: FieldValue, incoming: FieldValue): FieldValue => {
+  if (!isFieldMap(existing) && !isFieldMap(incoming)) {
+    const order = compare(existing.hlc ?? "", incoming.hlc ?? "");
+    if (order !== 0) return order < 0 ? incoming : existing;
+    return incoming.update_id >= existing.update_id ? incoming : existing;
+  }
+  if (!isFieldMap(existing) || !isFieldMap(incoming)) return incoming;
+
+  const merged: Record<string, FieldValue> = { ...existing.map };
+  for (const [key, value] of Object.entries(incoming.map)) {
+    const previous = merged[key];
+    merged[key] = previous === undefined ? value : mergePendingValues(previous, value);
+  }
+  return { map: merged };
+};
+
+/** The effective FieldValue a pending Action wrote to `field` on `subjectId`. */
 const pendingFieldValue = (
   action: Action,
   subjectId: string,
   field: string,
 ): FieldValue | undefined => {
-  let strongest: FieldValue | undefined;
+  let merged: FieldValue | undefined;
   for (const update of action.updates) {
     if (update.subject_id !== subjectId) continue;
     const value = updateFields(update)?.[field];
     if (value === undefined) continue;
-    // An Action may repeat a field; what lands on the server is its
-    // strongest write, so that is the one the inbound write must beat.
-    if (strongest === undefined || inboundWins(value, strongest)) strongest = value;
+    merged = merged === undefined ? value : mergePendingValues(merged, value);
   }
-  return strongest;
+  return merged;
 };
 
 /**
@@ -189,13 +212,63 @@ const isConflictableField = (
 ): boolean =>
   !STRUCTURAL_SUBJECT_TYPES.has(subjectType) && (isLwwField?.(subjectType, field) ?? true);
 
+/** A map's plain projected value, used when a whole field is replaced. */
+const projectMapValue = (value: FieldValue): unknown => {
+  if (!isFieldMap(value)) return value.value;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value.map)) {
+    const projected = projectMapValue(child);
+    if (projected === null) continue;
+    out[key] = projected;
+  }
+  return out;
+};
+
+/** The winner reported for one lost slot. */
+const winnerFor = (value: FieldValue): ConflictWinner =>
+  isFieldMap(value)
+    ? { update_id: "", hlc: "", value: projectMapValue(value) }
+    : { update_id: value.update_id, hlc: value.hlc ?? "", value: value.value };
+
+/**
+ * The slots an inbound value out-dates in a pending one, in map-key
+ * order. Maps recurse key by key, so a write to a key the pending
+ * Action never wrote is not a loss. A kind change replaces the whole
+ * field, so it is attributed to the path where the kinds diverge (the
+ * field root for a top-level change).
+ */
+const compareFieldValues = (
+  pending: FieldValue,
+  inbound: FieldValue,
+  subjectId: string,
+  field: string,
+  path: readonly string[],
+): ConflictLoss[] => {
+  if (isFieldMap(pending) && isFieldMap(inbound)) {
+    const losses: ConflictLoss[] = [];
+    for (const [key, inboundChild] of Object.entries(inbound.map)) {
+      const pendingChild = pending.map[key];
+      if (pendingChild === undefined) continue;
+      losses.push(
+        ...compareFieldValues(pendingChild, inboundChild, subjectId, field, [...path, key]),
+      );
+    }
+    return losses;
+  }
+  if (isFieldMap(pending) !== isFieldMap(inbound)) {
+    return [{ slot: { subjectId, field, path }, winner: winnerFor(inbound) }];
+  }
+  if (!inboundWins(inbound, pending)) return [];
+  return [{ slot: { subjectId, field, path }, winner: winnerFor(inbound) }];
+};
+
 /**
  * Find the pending entries an inbound Action out-dates, in buffer
- * order. An entry loses when the Action writes a field the entry also
+ * order. An entry loses when the Action writes a slot the entry also
  * targets with a weaker FieldValue; the whole entry moves, so one
- * losing field is enough. The strongest inbound write per
- * `(subject, field)` is the one compared, collapsing a malformed
- * Action that repeats a field.
+ * losing slot is enough. A repeated inbound write per `(subject,
+ * field)` is folded before comparison, so a malformed Action that
+ * repeats a field is still judged on its effective state.
  */
 const findLosingEntries = (
   entries: readonly OutboxEntry[],
@@ -212,34 +285,26 @@ const findLosingEntries = (
     for (const [field, value] of Object.entries(fields)) {
       const key = `${update.subject_id}\u0000${field}`;
       const previous = writes.get(key);
-      if (previous === undefined || inboundWins(value, previous.value)) {
-        writes.set(key, {
-          subjectType: update.subject_type,
-          subjectId: update.subject_id,
-          field,
-          value,
-        });
-      }
+      writes.set(key, {
+        subjectType: update.subject_type,
+        subjectId: update.subject_id,
+        field,
+        value: previous === undefined ? value : mergePendingValues(previous.value, value),
+      });
     }
   }
 
   const losers: LosingEntry[] = [];
   for (const entry of entries) {
     if (entry.status !== "pending") continue;
-    const winners: Record<string, ConflictWinner> = {};
-    const fields: string[] = [];
+    const losses: ConflictLoss[] = [];
     for (const write of writes.values()) {
       if (!isConflictableField(isLwwField, write.subjectType, write.field)) continue;
       const pending = pendingFieldValue(entry.action, write.subjectId, write.field);
-      if (pending === undefined || !inboundWins(write.value, pending)) continue;
-      winners[write.field] = {
-        update_id: write.value.update_id ?? "",
-        hlc: write.value.hlc ?? "",
-        value: write.value.value,
-      };
-      fields.push(write.field);
+      if (pending === undefined) continue;
+      losses.push(...compareFieldValues(pending, write.value, write.subjectId, write.field, []));
     }
-    if (fields.length > 0) losers.push({ entry, fields, winners });
+    if (losses.length > 0) losers.push({ entry, losses });
   }
   return losers;
 };
@@ -485,8 +550,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     for (const loser of losers) {
       const conflict: ConflictEntry = {
         action: loser.entry.action,
-        winners: loser.winners,
-        fields: loser.fields,
+        losses: loser.losses,
         detectedAtHlc,
       };
       try {
@@ -509,7 +573,11 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     }
 
     if (first === undefined) return { kind: "none" };
-    return { kind: "conflict", actionId: first.entry.action.id, fields: first.fields };
+    return {
+      kind: "conflict",
+      actionId: first.entry.action.id,
+      slots: first.losses.map((loss) => loss.slot),
+    };
   };
 
   // Rehydrate without caller involvement. A rejected `list()` must not

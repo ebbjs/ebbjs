@@ -21,9 +21,9 @@ export interface ConflictStoreTestSuiteOptions {
 
 /**
  * The losing Action's identity is the only thing the store keys on;
- * its Updates are irrelevant to these tests. The winner carries one
- * `FieldValue` triple per conflicting field so the entry round-trips
- * its self-describing shape.
+ * its Updates are irrelevant to these tests. Each slot carries one
+ * `FieldValue` triple so the entry round-trips its self-describing
+ * shape.
  */
 const mkEntry = (
   id: string,
@@ -39,11 +39,16 @@ const mkEntry = (
 
   return {
     action: { ...buildPutAction(), id },
-    winners: Object.fromEntries(fields.map((field) => [field, winner])),
-    fields,
+    losses: fields.map((field) => ({
+      slot: { subjectId: "todo_1", field, path: [] },
+      winner,
+    })),
     detectedAtHlc,
   };
 };
+
+const slots = (entry: ConflictEntry | undefined): readonly string[] =>
+  entry === undefined ? [] : entry.losses.map((loss) => loss.slot.field);
 
 export const defineConflictStoreTests = ({
   name,
@@ -106,7 +111,7 @@ export const defineConflictStoreTests = ({
 
         const entries = await store.list();
         expect(entries.map((entry) => entry.action.id)).toEqual(["a_1", "a_2"]);
-        expect(entries[0]?.fields).toEqual(["title", "due"]);
+        expect(slots(entries[0])).toEqual(["title", "due"]);
       });
     });
 

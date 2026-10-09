@@ -187,9 +187,11 @@ export const buildRelationshipDeleteAction = (args: { id: string }, gsn: number)
  */
 export const buildConflictEntry = (actionId = "a_1", detectedAtMs = 1): ConflictEntry => ({
   action: { ...buildPutAction(), id: actionId },
-  winners: {
-    title: { update_id: "u_2", hlc: makeHlc(HLC_BASE, detectedAtMs), value: "Updated" },
-  },
-  fields: ["title"],
+  losses: [
+    {
+      slot: { subjectId: "todo_1", field: "title", path: [] },
+      winner: { update_id: "u_2", hlc: makeHlc(HLC_BASE, detectedAtMs), value: "Updated" },
+    },
+  ],
   detectedAtHlc: makeHlc(HLC_BASE, detectedAtMs),
 });

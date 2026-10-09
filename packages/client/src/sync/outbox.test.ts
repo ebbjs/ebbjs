@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, type Mock } from "vitest";
-import type { Action } from "@ebbjs/core";
+import type { Action, FieldValue } from "@ebbjs/core";
 import type {
   ConflictEntry,
   ConflictStore,
@@ -41,7 +41,7 @@ const mkAction = (id: string): Action => ({
 const mkFieldAction = (args: {
   id: string;
   subjectId: string;
-  fields: Record<string, { value: unknown; update_id: string; hlc: string }>;
+  fields: Record<string, FieldValue>;
   subjectType?: string;
   method?: "put" | "patch";
   gsn?: number;
@@ -60,6 +60,17 @@ const mkFieldAction = (args: {
     },
   ],
 });
+
+/** A single conflict slot on `todo_1` by default. */
+const slot = (field: string, path: readonly string[] = [], subjectId = "todo_1") => ({
+  subjectId,
+  field,
+  path,
+});
+
+/** The losing slots of a conflict entry, in detection order. */
+const slotsOf = (entry: ConflictEntry | undefined) =>
+  entry === undefined ? [] : entry.losses.map((loss) => loss.slot);
 
 /** A stored entry with a given HLC; the status defaults to `pending`. */
 const stored = (
@@ -674,17 +685,83 @@ describe("createOutbox conflict detection", () => {
       }),
     );
 
-    expect(outcome).toEqual({ kind: "conflict", actionId: "a_local", fields: ["title"] });
+    expect(outcome).toEqual({ kind: "conflict", actionId: "a_local", slots: [slot("title")] });
     expect(outbox.pending()).toEqual([]);
     expect(await deps.store.get("a_local")).toBeNull();
     const conflicts = await deps.conflicts.list();
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0]?.action.id).toBe("a_local");
-    expect(conflicts[0]?.fields).toEqual(["title"]);
-    expect(conflicts[0]?.winners).toEqual({
-      title: { update_id: "u_peer", hlc: "20", value: "theirs" },
-    });
+    expect(slotsOf(conflicts[0])).toEqual([slot("title")]);
+    expect(conflicts[0]?.losses).toEqual([
+      { slot: slot("title"), winner: { update_id: "u_peer", hlc: "20", value: "theirs" } },
+    ]);
     expect(conflicts[0]?.detectedAtHlc).toBe("2");
+  });
+
+  it("does not flag a concurrent write to a different map key", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(
+      mkFieldAction({
+        id: "a_local",
+        subjectId: "todo_1",
+        fields: { content: { map: { a: { value: "mine", update_id: "u_local", hlc: "10" } } } },
+      }),
+    );
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { content: { map: { b: { value: "theirs", update_id: "u_peer", hlc: "20" } } } },
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: "none" });
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
+    expect(await deps.conflicts.list()).toEqual([]);
+  });
+
+  it("flags only the map key the inbound write out-dates", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(
+      mkFieldAction({
+        id: "a_local",
+        subjectId: "todo_1",
+        fields: {
+          content: {
+            map: {
+              a: { value: "mine", update_id: "u_local", hlc: "10" },
+              b: { value: "kept", update_id: "u_local", hlc: "10" },
+            },
+          },
+        },
+      }),
+    );
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { content: { map: { a: { value: "theirs", update_id: "u_peer", hlc: "20" } } } },
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({
+      kind: "conflict",
+      actionId: "a_local",
+      slots: [slot("content", ["a"])],
+    });
+    const [entry] = await deps.conflicts.list();
+    expect(entry?.losses).toEqual([
+      {
+        slot: slot("content", ["a"]),
+        winner: { update_id: "u_peer", hlc: "20", value: "theirs" },
+      },
+    ]);
   });
 
   it("never posts a moved entry on a later flush", async () => {
@@ -734,7 +811,7 @@ describe("createOutbox conflict detection", () => {
       }),
     );
 
-    expect(outcome).toEqual({ kind: "conflict", actionId: "a_local", fields: ["title"] });
+    expect(outcome).toEqual({ kind: "conflict", actionId: "a_local", slots: [slot("title")] });
   });
 
   it("lets an equal-HLC, equal-update_id inbound write win", async () => {
@@ -750,7 +827,7 @@ describe("createOutbox conflict detection", () => {
       }),
     );
 
-    expect(outcome).toEqual({ kind: "conflict", actionId: "a_local", fields: ["title"] });
+    expect(outcome).toEqual({ kind: "conflict", actionId: "a_local", slots: [slot("title")] });
   });
 
   it("never flags a field the schema reports as non-LWW", async () => {
@@ -779,8 +856,8 @@ describe("createOutbox conflict detection", () => {
       }),
     );
 
-    expect(outcome).toEqual({ kind: "conflict", actionId: "a_local", fields: ["title"] });
-    expect((await deps.conflicts.list())[0]?.fields).toEqual(["title"]);
+    expect(outcome).toEqual({ kind: "conflict", actionId: "a_local", slots: [slot("title")] });
+    expect(slotsOf((await deps.conflicts.list())[0])).toEqual([slot("title")]);
   });
 
   it("never flags structural relationship or membership edges", async () => {
@@ -861,7 +938,7 @@ describe("createOutbox conflict detection", () => {
       }),
     );
 
-    expect(outcome).toEqual({ kind: "conflict", actionId: "a_first", fields: ["title"] });
+    expect(outcome).toEqual({ kind: "conflict", actionId: "a_first", slots: [slot("title")] });
     expect((await deps.conflicts.list()).map((entry) => entry.action.id).sort()).toEqual([
       "a_first",
       "a_second",

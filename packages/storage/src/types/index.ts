@@ -11,5 +11,11 @@ export type { EntityStore, RelationshipIndexQuery } from "./entity-store";
 export type { CursorStore } from "./cursor-store";
 export type { EntityChangeEmitter } from "./entity-change-emitter";
 export type { OutboxEntry, OutboxStatus, OutboxStore } from "./outbox-store";
-export type { ConflictEntry, ConflictStore, ConflictWinner } from "./conflict-store";
+export type {
+  ConflictEntry,
+  ConflictLoss,
+  ConflictSlot,
+  ConflictStore,
+  ConflictWinner,
+} from "./conflict-store";
 export type { StorageAdapter } from "./storage-adapter";

@@ -9,7 +9,8 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
+import { Type } from "@sinclair/typebox";
+import { decodeSync, isFieldMap, makeHlc, type Action } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { createClient } from "../client";
@@ -26,6 +27,10 @@ const todo = defineEntity("todo", {
 });
 
 const schema = defineSchema({ entities: { todo }, version: 1 });
+
+/** A map-valued field: the unit of per-key conflict resolution. */
+const doc = defineEntity("doc", { content: Type.Record(Type.String(), Type.String()) });
+const docSchema = defineSchema({ entities: { doc }, version: 2 });
 
 interface StubFetch {
   fn: typeof fetch;
@@ -128,8 +133,10 @@ describe("client.conflicts (#310)", () => {
 
     expect(entries).toHaveLength(1);
     expect(entries[0]?.action.id).toBe("act_local");
-    expect(entries[0]?.fields).toEqual(["title"]);
-    expect(entries[0]?.winners.title).toEqual({
+    expect(entries[0]?.losses.map((loss) => loss.slot)).toEqual([
+      { subjectId: "todo_1", field: "title", path: [] },
+    ]);
+    expect(entries[0]?.losses[0]?.winner).toEqual({
       update_id: "u_peer",
       hlc: PEER_HLC,
       value: "theirs",
@@ -192,7 +199,9 @@ describe("client.conflicts (#310)", () => {
       mkTodoWrite({ id: "act_peer", value: "theirs", updateId: "u_peer", hlc: PEER_HLC, gsn: 9 }),
       "g_1",
     );
-    expect((await client.conflicts.list())[0]?.fields).toEqual(["title"]);
+    expect((await client.conflicts.list())[0]?.losses.map((loss) => loss.slot)).toEqual([
+      { subjectId: "todo_1", field: "title", path: [] },
+    ]);
 
     await client.conflicts.resolve("act_local", "retry");
 
@@ -302,5 +311,84 @@ describe("client.conflicts (#310)", () => {
 
     expect((await client.readLocalEntity("todo_2"))?.data.fields.title.value).toBe("server");
     expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("theirs");
+  });
+
+  it("retry re-stamps only the losing map key and leaves siblings out", async () => {
+    const storage = createMemoryAdapter();
+    const stub = mkStubFetch();
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: ACTOR_ID,
+      schema: docSchema,
+      fetchImpl: stub.fn,
+      storage,
+    });
+
+    await client.outbox.enqueue({
+      id: "act_local",
+      actor_id: ACTOR_ID,
+      hlc: LOCAL_HLC,
+      gsn: 0,
+      updates: [
+        {
+          id: "u_local",
+          subject_id: "doc_1",
+          subject_type: "doc",
+          method: "put",
+          data: {
+            fields: {
+              content: {
+                map: {
+                  a: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC },
+                  b: { value: "keep", update_id: "u_local", hlc: LOCAL_HLC },
+                },
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    await callApplyAction(
+      client,
+      {
+        id: "act_peer",
+        actor_id: ACTOR_ID,
+        hlc: PEER_HLC,
+        gsn: 9,
+        updates: [
+          {
+            id: "u_peer",
+            subject_id: "doc_1",
+            subject_type: "doc",
+            method: "put",
+            data: {
+              fields: {
+                content: { map: { a: { value: "theirs", update_id: "u_peer", hlc: PEER_HLC } } },
+              },
+            },
+          },
+        ],
+      },
+      "g_1",
+    );
+
+    const [entry] = await client.conflicts.list();
+    expect(entry?.losses.map((loss) => loss.slot)).toEqual([
+      { subjectId: "doc_1", field: "content", path: ["a"] },
+    ]);
+
+    await client.conflicts.resolve("act_local", "retry");
+
+    const actions = postedActions(stub.calls);
+    expect(actions).toHaveLength(1);
+    const content = actions[0]?.updates[0]?.data?.fields.content;
+    if (content === undefined || !isFieldMap(content)) throw new Error("expected a map field");
+    expect(Object.keys(content.map)).toEqual(["a"]);
+    const a = content.map.a;
+    if (a === undefined || isFieldMap(a)) throw new Error("expected a leaf");
+    expect(a.value).toBe("mine");
+    expect(a.update_id).not.toBe("u_local");
+    expect(a.hlc).not.toBe(LOCAL_HLC);
   });
 });
