@@ -211,7 +211,6 @@ defmodule EbbServer.TestHelpers do
       safe_stop(pid)
       :persistent_term.erase({:ebb_rocksdb_db, name})
       :persistent_term.erase({:ebb_cf_actions, name})
-      :persistent_term.erase({:ebb_cf_updates, name})
       :persistent_term.erase({:ebb_cf_entity_actions, name})
       :persistent_term.erase({:ebb_cf_type_entities, name})
       :persistent_term.erase({:ebb_cf_action_dedup, name})

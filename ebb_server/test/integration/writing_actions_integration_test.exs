@@ -21,9 +21,8 @@ defmodule EbbServer.WritingActionsIntegrationTest do
     to each action, used for ordering and deduplication
   * HLC (Hybrid Logical Clock): 64-bit timestamp combining wall clock and
     logical time for causal ordering
-  * Column Families: RocksDB organizes data into 5 families:
-    - cf_actions: GSN → action mapping (primary store)
-    - cf_updates: (action_id, update_id) → update mapping
+  * Column Families: RocksDB organizes data into column families:
+    - cf_actions: GSN → action mapping (primary store, includes Updates)
     - cf_entity_actions: (entity_id, GSN) → action_id (index for materialization)
     - cf_type_entities: (type, entity_id) → presence (type index)
     - cf_action_dedup: action_id → GSN (duplicate detection)

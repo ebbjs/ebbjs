@@ -384,8 +384,15 @@ defmodule EbbServer.Storage.Writer do
      (first occurrence wins across the whole coalesced burst), and drops
      ids already in `cf_action_dedup`.
   2. Claims one GSN range for the remaining fresh actions.
-  3. Builds and synchronously commits a single WriteBatch across all 6
-     column families.
+  3. Builds and synchronously commits a single WriteBatch across the written
+     column families:
+     - cf_actions: GSN → full action, including its Updates (ETF encoded)
+     - cf_action_dedup: action_id → GSN (duplicate detection)
+     - cf_entity_actions: (subject_id, GSN) → action_id (materialization index)
+     - cf_type_entities: (subject_type, subject_id) → <<>> (type index)
+     - cf_group_actions: (group_id, GSN) → action_id (group catch-up index)
+
+     Updates are stored once, inside the `cf_actions` value.
   4. Marks affected entities dirty and replies to each caller with its
      contiguous sub-range.
 
@@ -905,8 +912,6 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp build_update_ops(action_id, update, gsn, rocks_name, resolve_opts, intra_ctx) do
-    update_etf = :erlang.term_to_binary(update)
-
     group_ids = group_ids_for_update(update, resolve_opts, intra_ctx)
 
     index_ops =
@@ -915,10 +920,10 @@ defmodule EbbServer.Storage.Writer do
         {:put, RocksDB.cf_group_actions(rocks_name), key, action_id}
       end)
 
+    # The Update is stored once, inside the `cf_actions` value; there is no
+    # separate per-Update row to maintain.
     ops =
       [
-        {:put, RocksDB.cf_updates(rocks_name), RocksDB.encode_update_key(action_id, update.id),
-         update_etf},
         {:put, RocksDB.cf_entity_actions(rocks_name),
          RocksDB.encode_entity_gsn_key(update.subject_id, gsn), action_id},
         {:put, RocksDB.cf_type_entities(rocks_name),

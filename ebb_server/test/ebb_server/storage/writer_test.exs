@@ -117,8 +117,8 @@ defmodule EbbServer.Storage.WriterTest do
     end
   end
 
-  describe "all 5 column families are populated" do
-    test "writes to all column families for one action with one update", %{
+  describe "the written column families are populated" do
+    test "writes an action across the written column families", %{
       writer_name: writer_name,
       rocks_name: rocks_name
     } do
@@ -131,14 +131,16 @@ defmodule EbbServer.Storage.WriterTest do
       stored_action = to_storage_format(action, 1)
       action_etf = :erlang.term_to_binary(stored_action)
 
-      assert {:ok, ^action_etf} =
+      assert {:ok, stored_etf} =
                RocksDB.get(RocksDB.cf_actions(rocks_name), gsn_key, name: rocks_name)
 
-      update_key = RocksDB.encode_update_key(action.id, hd(action.updates).id)
-      update_etf = :erlang.term_to_binary(update)
+      assert stored_etf == action_etf
 
-      assert {:ok, ^update_etf} =
-               RocksDB.get(RocksDB.cf_updates(rocks_name), update_key, name: rocks_name)
+      # The Update is stored once, inside the cf_actions value.
+      assert [%{"id" => stored_update_id}] =
+               :erlang.binary_to_term(stored_etf, [:safe])["updates"]
+
+      assert stored_update_id == update.id
 
       entity_gsn_key = RocksDB.encode_entity_gsn_key("todo_test_123", 1)
 
