@@ -178,7 +178,7 @@ const pendingFieldValue = (
 const inboundWins = (inbound: FieldValue, pending: FieldValue): boolean => {
   const order = compare(inbound.hlc ?? "", pending.hlc ?? "");
   if (order !== 0) return order > 0;
-  return inbound.update_id >= pending.update_id;
+  return (inbound.update_id ?? "") >= (pending.update_id ?? "");
 };
 
 /** True when an inbound write to `field` can silently overwrite a local one. */
@@ -233,7 +233,7 @@ const findLosingEntries = (
       const pending = pendingFieldValue(entry.action, write.subjectId, write.field);
       if (pending === undefined || !inboundWins(write.value, pending)) continue;
       winners[write.field] = {
-        update_id: write.value.update_id,
+        update_id: write.value.update_id ?? "",
         hlc: write.value.hlc ?? "",
         value: write.value.value,
       };

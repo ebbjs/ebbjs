@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { makeHlc, type Entity } from "@ebbjs/core";
+import { isFieldMap, makeHlc, type Action, type Entity, type FieldValue } from "@ebbjs/core";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
 import type { EntityStore } from "../types/entity-store";
@@ -32,6 +32,51 @@ const makeEntity = (overrides: Partial<Entity> = {}): Entity => ({
   deleted_hlc: null,
   last_gsn: 0,
   ...overrides,
+});
+
+/**
+ * A `patch` for `todo_1` carrying an arbitrary field map. Map-field
+ * tests build their leaf/map values with the helpers below so the
+ * nested shape stays readable.
+ */
+const buildFieldsPatch = (
+  updateId: string,
+  fields: Record<string, FieldValue>,
+  hlc: string,
+  gsn: number,
+): Action => ({
+  id: `a_${updateId}`,
+  actor_id: "a_user1",
+  hlc,
+  gsn,
+  updates: [
+    { id: updateId, subject_id: "todo_1", subject_type: "todo", method: "patch", data: { fields } },
+  ],
+});
+
+/** A leaf field value at `hlc`, carrying `updateId` as its tiebreak id. */
+const leaf = (value: unknown, updateId: string, hlc: string): FieldValue => ({
+  value,
+  update_id: updateId,
+  hlc,
+});
+
+/** A map field value wrapping the given entries. */
+const map = (entries: Record<string, FieldValue>): FieldValue => ({ map: entries });
+
+const buildMapPutAction = (
+  updateId: string,
+  fields: Record<string, FieldValue>,
+  hlc: string,
+  gsn: number,
+): Action => ({
+  id: `a_${updateId}`,
+  actor_id: "a_user1",
+  hlc,
+  gsn,
+  updates: [
+    { id: updateId, subject_id: "todo_1", subject_type: "todo", method: "put", data: { fields } },
+  ],
 });
 
 /** A materialized Relationship row, for direct `set()` writes. */
@@ -164,6 +209,152 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         const entity = await entityStore.get("todo_2");
         expect(entity).not.toBe(null);
         expect(entity!.id).toBe("todo_2");
+      });
+    });
+
+    describe("map fields", () => {
+      it("keeps writes to different keys from concurrent patches", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        const hlcA = makeHlc(100);
+        const hlcB = makeHlc(200);
+        await actionLog.append(buildPutAction());
+        await actionLog.append(
+          buildFieldsPatch("u_a", { content: map({ a: leaf(1, "u_a", hlcA) }) }, hlcA, 2),
+        );
+        await actionLog.append(
+          buildFieldsPatch("u_b", { content: map({ b: leaf(2, "u_b", hlcB) }) }, hlcB, 3),
+        );
+        await dirtyTracker.mark("todo_1", "todo");
+
+        const entity = await entityStore.get("todo_1");
+
+        expect(entity!.data.fields.content).toEqual({
+          map: { a: leaf(1, "u_a", hlcA), b: leaf(2, "u_b", hlcB) },
+        });
+      });
+
+      it("resolves the same key by HLC regardless of patch order", async () => {
+        const older = makeHlc(100);
+        const newer = makeHlc(200);
+        const first = buildFieldsPatch(
+          "u_old",
+          { content: map({ a: leaf("old", "u_old", older) }) },
+          older,
+          2,
+        );
+        const second = buildFieldsPatch(
+          "u_new",
+          { content: map({ a: leaf("new", "u_new", newer) }) },
+          newer,
+          3,
+        );
+
+        for (const order of [
+          [first, second],
+          [second, first],
+        ]) {
+          const { actionLog, dirtyTracker, entityStore } = await factory();
+          await actionLog.append(buildPutAction());
+          for (const action of order) await actionLog.append(action);
+          await dirtyTracker.mark("todo_1", "todo");
+
+          const entity = await entityStore.get("todo_1");
+
+          expect(entity!.data.fields.content).toEqual({
+            map: { a: leaf("new", "u_new", newer) },
+          });
+        }
+      });
+
+      it("breaks equal-HLC keys toward the higher update_id", async () => {
+        const hlc = makeHlc(100);
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await actionLog.append(buildPutAction());
+        await actionLog.append(
+          buildFieldsPatch("u_aaa", { content: map({ a: leaf("a", "u_aaa", hlc) }) }, hlc, 2),
+        );
+        await actionLog.append(
+          buildFieldsPatch("u_zzz", { content: map({ a: leaf("z", "u_zzz", hlc) }) }, hlc, 3),
+        );
+        await dirtyTracker.mark("todo_1", "todo");
+
+        const entity = await entityStore.get("todo_1");
+
+        expect(entity!.data.fields.content).toEqual({ map: { a: leaf("z", "u_zzz", hlc) } });
+      });
+
+      it("retains a tombstoned key in storage", async () => {
+        const hlcA = makeHlc(100);
+        const hlcB = makeHlc(200);
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await actionLog.append(buildPutAction());
+        await actionLog.append(
+          buildFieldsPatch("u_a", { content: map({ a: leaf(1, "u_a", hlcA) }) }, hlcA, 2),
+        );
+        await actionLog.append(
+          buildFieldsPatch("u_del", { content: map({ a: leaf(null, "u_del", hlcB) }) }, hlcB, 3),
+        );
+        await dirtyTracker.mark("todo_1", "todo");
+
+        const entity = await entityStore.get("todo_1");
+        const content = entity!.data.fields.content;
+        if (!isFieldMap(content)) throw new Error("expected a map field");
+
+        expect(content.map.a).toEqual(leaf(null, "u_del", hlcB));
+      });
+
+      it("merges nested maps key by key", async () => {
+        const hlcA = makeHlc(100);
+        const hlcB = makeHlc(200);
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await actionLog.append(buildPutAction());
+        await actionLog.append(
+          buildFieldsPatch(
+            "u_a",
+            { content: map({ outer: map({ inner: leaf(1, "u_a", hlcA) }) }) },
+            hlcA,
+            2,
+          ),
+        );
+        await actionLog.append(
+          buildFieldsPatch(
+            "u_b",
+            { content: map({ outer: map({ other: leaf(2, "u_b", hlcB) }) }) },
+            hlcB,
+            3,
+          ),
+        );
+        await dirtyTracker.mark("todo_1", "todo");
+
+        const entity = await entityStore.get("todo_1");
+
+        expect(entity!.data.fields.content).toEqual({
+          map: {
+            outer: map({ inner: leaf(1, "u_a", hlcA), other: leaf(2, "u_b", hlcB) }),
+          },
+        });
+      });
+
+      it("replaces a map wholesale on put", async () => {
+        const hlcA = makeHlc(100);
+        const hlcB = makeHlc(200);
+        const hlcC = makeHlc(300);
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await actionLog.append(buildPutAction());
+        await actionLog.append(
+          buildFieldsPatch("u_a", { content: map({ a: leaf(1, "u_a", hlcA) }) }, hlcA, 2),
+        );
+        await actionLog.append(
+          buildFieldsPatch("u_b", { content: map({ b: leaf(2, "u_b", hlcB) }) }, hlcB, 3),
+        );
+        await actionLog.append(
+          buildMapPutAction("u_c", { content: map({ c: leaf(3, "u_c", hlcC) }) }, hlcC, 4),
+        );
+        await dirtyTracker.mark("todo_1", "todo");
+
+        const entity = await entityStore.get("todo_1");
+
+        expect(entity!.data.fields.content).toEqual({ map: { c: leaf(3, "u_c", hlcC) } });
       });
     });
 

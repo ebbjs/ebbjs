@@ -88,6 +88,35 @@ describe("FieldValue", () => {
   it("rejects invalid update_id format", () => {
     expect(Value.Check(FieldValueSchema, { value: "test", update_id: "invalid" })).toBe(false);
   });
+
+  it("accepts a map variant with leaf entries", () => {
+    expect(
+      Value.Check(FieldValueSchema, {
+        map: {
+          a: { value: "x", update_id: "a_test", hlc: "123" },
+          b: { value: 2, update_id: "a_test2" },
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("accepts nested map variants", () => {
+    expect(
+      Value.Check(FieldValueSchema, {
+        map: { outer: { map: { inner: { value: 1, update_id: "a_test" } } } },
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects a map entry without update_id", () => {
+    expect(Value.Check(FieldValueSchema, { map: { a: { value: "x" } } })).toBe(false);
+  });
+
+  it("accepts a tombstoned map entry (value: null)", () => {
+    expect(
+      Value.Check(FieldValueSchema, { map: { a: { value: null, update_id: "a_test" } } }),
+    ).toBe(true);
+  });
 });
 
 describe("PutData", () => {
@@ -107,6 +136,14 @@ describe("PutData", () => {
           field1: { value: "a", update_id: "a_test" },
           field2: { value: 1, update_id: "a_test2" },
         },
+      }),
+    ).toBe(true);
+  });
+
+  it("accepts a map field in the envelope", () => {
+    expect(
+      Value.Check(PutDataSchema, {
+        fields: { content: { map: { a: { value: "x", update_id: "a_test" } } } },
       }),
     ).toBe(true);
   });

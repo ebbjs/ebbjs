@@ -22,6 +22,12 @@ export interface RelationshipIndexQuery {
  * - **patch** — field-level Last-Writer-Wins (LWW): higher HLC wins; tiebreak by lexicographic `update_id`
  * - **delete** — soft delete (sets `deleted_hlc`); patch-on-deleted is ignored
  *
+ * A field value is either a leaf merged by the LWW rule above, or a
+ * `{ map }` of nested field values merged key by key under the same
+ * rule. Map key sets are unioned, so a write to one key leaves its
+ * siblings untouched; a leaf `value: null` is a tombstone retained for
+ * late-apply and hidden by projection.
+ *
  * ## Methods
  * - `get(id)` — returns entity by ID, materializes if dirty
  * - `set(entity)` — directly sets an entity (bypasses materialization)

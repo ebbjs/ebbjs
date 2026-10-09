@@ -39,6 +39,7 @@
  */
 
 import type { Entity, FieldValue } from "@ebbjs/core";
+import { isFieldMap } from "@ebbjs/core";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
@@ -48,13 +49,37 @@ import { GROUPS_ACCESSOR } from "../schema/system-entities";
 import { liveMemberships } from "./entity-group";
 
 /**
+ * Project one wire field value to its application-facing value.
+ *
+ * - leaf → its `.value`
+ * - map → each entry projected, recursively, with tombstoned entries
+ *   (`value: null`) omitted so a deleted key disappears from the
+ *   projected object while its storage entry is retained.
+ *
+ * The rule is purely structural: no field-kind dispatch, mirroring the
+ * merge rule.
+ */
+const projectFieldValue = (field: FieldValue): unknown => {
+  if (!isFieldMap(field)) return field.value;
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(field.map)) {
+    const projected = projectFieldValue(entry);
+    if (projected === null) continue;
+    out[key] = projected;
+  }
+  return out;
+};
+
+/**
  * Map a single materialized entity onto the schema's TypeBox shape.
  * Pure: the entity is read-only; the projected row is a fresh object.
  *
- * Three projection states per field:
- * - `data.fields[K].value = V` (set)     → `V`
- * - `data.fields[K].value = null`        → `null`
+ * Projection states per field:
  * - `data.fields[K]` absent              → `undefined`
+ * - leaf `data.fields[K].value = V`      → `V`
+ * - leaf `data.fields[K].value = null`   → `null`
+ * - map `data.fields[K].map`             → each entry projected,
+ *   tombstoned entries omitted
  */
 export function projectEntity<TFields extends Record<string, TSchema>>(
   entity: Entity,
@@ -63,7 +88,7 @@ export function projectEntity<TFields extends Record<string, TSchema>>(
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(shape.properties) as (keyof TFields & string)[]) {
     const field = entity.data?.fields?.[key];
-    out[key] = field === undefined ? undefined : field.value;
+    out[key] = field === undefined ? undefined : projectFieldValue(field);
   }
   return out as Static<TObject<ShapeFields<TFields>>>;
 }

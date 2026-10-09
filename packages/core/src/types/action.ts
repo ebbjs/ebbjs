@@ -1,7 +1,7 @@
 import { Type } from "@sinclair/typebox";
 import { Static } from "@sinclair/typebox";
 import { NanoIdSchema } from "./nanoid";
-import { HLCTimestampSchema } from "./hlc";
+import { HLCTimestampSchema, type HLCTimestamp } from "./hlc";
 
 export const SubjectTypeSchema = Type.Union([
   Type.Literal("group"),
@@ -18,12 +18,48 @@ export const UpdateMethodSchema = Type.Union([
 ]);
 export type UpdateMethod = Static<typeof UpdateMethodSchema>;
 
-export const FieldValueSchema = Type.Object({
-  value: Type.Unknown(),
-  update_id: NanoIdSchema,
-  hlc: Type.Optional(HLCTimestampSchema),
-});
+// A field value is either a leaf carrying a scalar/opaque `value` merged
+// by last-writer-wins, or a `map` of nested field values merged key by
+// key. The `map` key is the discriminant, so a map is self-describing on
+// the wire and the server needs no schema to merge it.
+export const FieldValueSchema = Type.Recursive((Self) =>
+  Type.Union([
+    Type.Object({
+      value: Type.Unknown(),
+      update_id: NanoIdSchema,
+      hlc: Type.Optional(HLCTimestampSchema),
+    }),
+    // The leaf members are declared optional-never on the map branch so
+    // reading `value` / `update_id` / `hlc` on the union stays total: the
+    // map branch contributes `undefined`, matching what it holds at
+    // runtime. They are never emitted on a map.
+    Type.Object({
+      map: Type.Record(Type.String(), Self),
+      value: Type.Optional(Type.Never()),
+      update_id: Type.Optional(Type.Never()),
+      hlc: Type.Optional(Type.Never()),
+    }),
+  ]),
+);
 export type FieldValue = Static<typeof FieldValueSchema>;
+
+/** A leaf field value: the object carrying `value`. */
+export interface FieldLeaf {
+  readonly value: unknown;
+  readonly update_id: string;
+  readonly hlc?: HLCTimestamp;
+}
+
+/** A map field value: nested field values merged key by key. */
+export interface FieldMap {
+  readonly map: Record<string, FieldValue>;
+}
+
+/** Narrow a field value to its map variant. */
+export const isFieldMap = (field: FieldValue): field is FieldMap => "map" in field;
+
+/** Narrow a field value to its leaf variant. */
+export const isFieldLeaf = (field: FieldValue): field is FieldLeaf => !isFieldMap(field);
 
 // An Update's `data` is a `{ fields: Record<string, FieldValue> }`
 // envelope. The same shape ships on the wire for every entity type

@@ -8,7 +8,7 @@
 import { describe, it, expect } from "vitest";
 import { Type, type Static } from "@sinclair/typebox";
 
-import type { Entity } from "@ebbjs/core";
+import type { Entity, FieldValue } from "@ebbjs/core";
 
 import { defineEntity, e } from "../../schema/entity";
 import { EntityValidationError } from "../../schema/entity-registry";
@@ -58,6 +58,48 @@ describe("projectEntity", () => {
     const entity = mkEntity("1", { title: "Ship", completed: false });
     const row = projectEntity(entity, todo.shape);
     expect(row.body).toBeUndefined();
+  });
+});
+
+describe("projectEntity — map fields", () => {
+  const doc = Type.Object({ content: Type.Record(Type.String(), Type.Unknown()) });
+
+  const mkDoc = (content: FieldValue): Entity => ({
+    id: "d1",
+    type: "doc",
+    data: { fields: { content } },
+    created_hlc: "1",
+    updated_hlc: "1",
+    deleted_hlc: null,
+    last_gsn: 0,
+  });
+
+  it("projects a map field entry by entry, recursively", () => {
+    const entity = mkDoc({
+      map: {
+        a: { value: "x", update_id: "u" },
+        b: { map: { c: { value: 1, update_id: "u" } } },
+      },
+    });
+
+    expect(projectEntity(entity, doc)).toEqual({ content: { a: "x", b: { c: 1 } } });
+  });
+
+  it("omits a tombstoned key but keeps its siblings", () => {
+    const entity = mkDoc({
+      map: {
+        gone: { value: null, update_id: "u" },
+        kept: { value: "keep", update_id: "u" },
+      },
+    });
+
+    expect(projectEntity(entity, doc)).toEqual({ content: { kept: "keep" } });
+  });
+
+  it("keeps a null leaf at the top level", () => {
+    const entity = mkDoc({ value: null, update_id: "u" });
+
+    expect(projectEntity(entity, doc)).toEqual({ content: null });
   });
 });
 
