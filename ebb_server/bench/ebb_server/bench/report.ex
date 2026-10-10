@@ -40,10 +40,11 @@ defmodule EbbServer.Bench.Report do
       "",
       "## Latency",
       "",
-      latency_table(config, result.latency),
+      client_latency_table(result.latency),
       "",
       latency_note(config),
-      fanout_section(result.fanout),
+      server_latency_section(result.server),
+      fanout_section(result.fanout, result.server),
       "## Correctness and resources",
       "",
       correctness_table(result),
@@ -105,7 +106,7 @@ defmodule EbbServer.Bench.Report do
     table(["Window", "Seconds", "Accepted", "Accepted/sec", "Rejected"], rows)
   end
 
-  defp latency_table(_config, latency) do
+  defp client_latency_table(latency) do
     rows =
       Enum.map(latency, fn row ->
         [
@@ -120,20 +121,68 @@ defmodule EbbServer.Bench.Report do
     table(["Window", "Samples", "p50", "p95", "p99"], rows)
   end
 
+  defp server_latency_section(server) do
+    case server_latency_rows(server) do
+      [] ->
+        nil
+
+      rows ->
+        "## Server-side latency (`ebb.*` telemetry)\n\n" <>
+          table(["Event", "Window", "Samples", "p50", "p95", "p99"], rows) <>
+          "\n\n" <>
+          "Captured in the bench process by attaching handlers to the server's `ebb.*` events. " <>
+          "`ebb.http.request_latency_ms` is measured inside the request process, so MessagePack " <>
+          "encoding and transport are excluded; `ebb.writer.batch_latency_ms` covers one durable " <>
+          "Writer flush; `ebb.fanout.push_latency_ms` is commit → dispatch per batch per group. " <>
+          "The Writer flush timer starts after the request is dequeued, so the wait a call spends " <>
+          "in the Writer mailbox is not instrumented and stays inside the client-side number. " <>
+          "Durations are converted from native time units to microseconds and windowed like the " <>
+          "client-side samples.\n"
+    end
+  end
+
+  defp server_latency_rows(server) do
+    [
+      {"`ebb.http.request_latency_ms`", server.http_request},
+      {"`ebb.writer.batch_latency_ms`", server.writer_batch},
+      {"`ebb.fanout.push_latency_ms`", server.fanout_push}
+    ]
+    |> Enum.reject(fn {_event, windows} -> Enum.all?(windows, &(&1.count == 0)) end)
+    |> Enum.flat_map(fn {event, windows} -> Enum.map(windows, &server_latency_row(event, &1)) end)
+  end
+
+  defp server_latency_row(event, window) do
+    [
+      event,
+      window.window,
+      "#{window.count}",
+      format_value(window.p50),
+      format_value(window.p95),
+      format_value(window.p99)
+    ]
+  end
+
   defp latency_note(%{tier: :t0} = _config) do
-    "Values are per `Writer.write_actions/1` call, excluding wire serialization. " <>
-      "With `--batch-size > 1` each sample covers the whole batch.\n"
+    "Client-side values are wall time around `Writer.write_actions/1` in the bench worker; " <>
+      "server-side `ebb.writer.batch_latency_ms` measures the same flush from inside the " <>
+      "Writer. The difference is worker overhead plus the time the call spent in the Writer " <>
+      "mailbox, which is not separately instrumented.\n"
   end
 
   defp latency_note(_config) do
-    "Values are wall time around `:httpc` for one request, including MessagePack encoding and " <>
-      "`rejected` parsing; server-side `:telemetry` does not exist yet (#125), so this is an " <>
-      "outside-in number with client overhead folded in.\n"
+    "Client-side values are wall time around `:httpc` for one request, including MessagePack " <>
+      "encoding, transport, and response parsing; server-side `ebb.http.request_latency_ms` " <>
+      "measures the request inside the server, so the difference is client and transport " <>
+      "overhead. `ebb.writer.batch_latency_ms` reports the durable flush separately; the wait " <>
+      "a request spends in the Writer mailbox sits between the two and is not instrumented.\n"
   end
 
-  defp fanout_section(nil), do: nil
+  defp fanout_section(nil, _server), do: nil
+  defp fanout_section([], _server), do: nil
 
-  defp fanout_section(fanout) do
+  defp fanout_section(fanout, server) do
+    push = overall(server.fanout_push)
+
     rows = [
       {"Subscribers", "#{fanout.subscribers}"},
       {"Actions delivered (total)", "#{fanout.delivered_total}"},
@@ -141,18 +190,24 @@ defmodule EbbServer.Bench.Report do
       {"Control events (total)", "#{fanout.control_total}"},
       {"Delivery lag samples", "#{fanout.lag_count}"},
       {"Delivery lag p50 (µs)", format_value(fanout.lag_p50)},
-      {"Delivery lag p99 (µs)", format_value(fanout.lag_p99)}
+      {"Delivery lag p99 (µs)", format_value(fanout.lag_p99)},
+      {"Server commit→dispatch samples", "#{push.count}"},
+      {"Server commit→dispatch p50 (µs)", format_value(push.p50)},
+      {"Server commit→dispatch p99 (µs)", format_value(push.p99)}
     ]
 
     "## Fan-out (T3)\n\n" <>
       table(["Metric", "Value"], rows) <>
       "\n\n" <>
-      "Delivery lag is measured from a monotonic stamp embedded in each Action, so it includes " <>
-      "server queueing before the commit; a pure commit-to-delivery number needs `:telemetry` " <>
-      "(#125). Only every 50th delivery is decoded for the sample. Delivered counts cover the " <>
-      "whole run (warmup plus measured window); the throughput table above is measured-window " <>
-      "only.\n"
+      "Delivery lag is measured from a monotonic stamp embedded in each Action, so it spans " <>
+      "client send → commit → dispatch → subscriber delivery and folds in client and transport " <>
+      "overhead. `ebb.fanout.push_latency_ms` (server commit → dispatch) reports server " <>
+      "queueing separately. Only every 50th delivery is decoded for the sample. Delivered " <>
+      "counts cover the whole run (warmup plus measured window); the throughput table above is " <>
+      "measured-window only.\n"
   end
+
+  defp overall(windows), do: Enum.find(windows, &(&1.window == "overall"))
 
   defp correctness_table(result) do
     correctness = result.correctness
@@ -181,13 +236,16 @@ defmodule EbbServer.Bench.Report do
         "but its samples are discarded.",
       database_state(config, result),
       distribution_semantics(config),
-      "Latency is captured outside the server (there is no `:telemetry` yet, see #125): the call " <>
-        "or request is timed by the client process.",
+      "Client-side latency is timed in the bench worker (T0) or around `:httpc` (HTTP tiers); " <>
+        "server-side latency is recorded by the server and read from the `ebb.*` telemetry " <>
+        "events (`ebb.http.request_latency_ms`, `ebb.writer.batch_latency_ms`, " <>
+        "`ebb.fanout.push_latency_ms`) with handlers attached in the bench process, so " <>
+        "transport and server queueing are reported separately.",
       "Latency samples use reservoir sampling capped at ~200,000 across all workers " <>
         "(per-worker cap = cap / concurrency), so percentiles describe the retained sample.",
       http_client_note(config),
       "RocksDB compaction and flush backlog are not measured: the `rocksdb` package exposes no " <>
-        "property for them and there is no `:telemetry` hook yet.",
+        "property for them and emits no `:telemetry` event.",
       durability_note(config),
       steady_note(config)
     ]

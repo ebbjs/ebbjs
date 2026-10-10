@@ -6,6 +6,10 @@ defmodule EbbServer.Bench.Boot do
   task does not start its own application, which lets this module boot the
   same children `EbbServer.Application` does but with a temp data dir, a
   fixed bench port, and an injected `:commit_fn` for `--durability async`.
+
+  `EbbServer.Telemetry.HTTP` is started before Bandit so the server-side
+  `ebb.http.request_latency_ms` event is emitted for every request; the bench
+  telemetry collector attaches to it (see `EbbServer.Bench.Telemetry`).
   """
 
   alias EbbServer.Bench.Options
@@ -30,6 +34,8 @@ defmodule EbbServer.Bench.Boot do
       {Registry, keys: :unique, name: EbbServer.Sync.GroupRegistry},
       {EbbServer.Storage.Supervisor, data_dir: tmp_dir, writer_opts: writer_opts(config)},
       EbbServer.Sync.Supervisor,
+      # Attached before Bandit so every request Bandit accepts is sampled.
+      EbbServer.Telemetry.HTTP,
       {Bandit, plug: EbbServer.Sync.Router, port: config.port}
     ]
 
