@@ -13,10 +13,11 @@ defmodule EbbServer.Bench.Subscriber do
   mailbox, so a saturation run can be stopped by killing the subscribers
   instead of waiting for a stop message queued behind millions of
   `{:sse_chunk, ...}` messages. Delivery lag is measured from a monotonic
-  stamp the workbook embeds in every Action; the stamp is client-side, so
-  it includes server queueing before the commit — there is no commit
-  timestamp without `:telemetry` (see #125). Only every `@sample_every`
-  delivery is decoded, to keep decoding off the hot path.
+  stamp the workbook embeds in every Action; the stamp is client-side, so it
+  spans client send → commit → dispatch → subscriber delivery. The server's
+  own `ebb.fanout.push_latency_ms` (captured by `EbbServer.Bench.Telemetry`)
+  reports commit → dispatch separately. Only every `@sample_every` delivery
+  is decoded, to keep decoding off the hot path.
   """
 
   alias EbbServer.Sync.{FanOutRouter, SSEConnectionSupervisor}

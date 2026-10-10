@@ -58,8 +58,8 @@ defmodule EbbServer.Bench.Metrics do
   Aggregates worker stats, resource samples, and fan-out stats into the
   shape `EbbServer.Bench.Report` renders.
   """
-  @spec analyze(Options.t(), map(), [map()], [map()], [map()] | nil) :: map()
-  def analyze(%Options{} = config, ctx, worker_stats, resource_samples, fanout) do
+  @spec analyze(Options.t(), map(), [map()], [map()], [map()] | nil, map()) :: map()
+  def analyze(%Options{} = config, ctx, worker_stats, resource_samples, fanout, telemetry \\ %{}) do
     merged = merge_stats(worker_stats)
 
     %{
@@ -69,6 +69,7 @@ defmodule EbbServer.Bench.Metrics do
       correctness: correctness(merged, resource_samples),
       resources: resources(resource_samples),
       fanout: fanout_summary(fanout),
+      server: server_summary(config.duration, telemetry),
       context: %{
         preloaded_entities: length(ctx.entities),
         distribution: config.distribution,
@@ -271,4 +272,17 @@ defmodule EbbServer.Bench.Metrics do
       lag_p99: percentile(lags, 99)
     }
   end
+
+  # Server-side samples come from `EbbServer.Bench.Telemetry` as
+  # `%{tag => [{offset_us, duration_us}]}`. `latency/2` windows them and
+  # drops warmup samples (negative offset), like the client-side worker.
+  defp server_summary(duration, telemetry) do
+    %{
+      writer_batch: latency(duration, samples(telemetry, :writer_batch)),
+      http_request: latency(duration, samples(telemetry, :http_request)),
+      fanout_push: latency(duration, samples(telemetry, :fanout_push))
+    }
+  end
+
+  defp samples(telemetry, tag), do: Map.get(telemetry, tag, [])
 end
