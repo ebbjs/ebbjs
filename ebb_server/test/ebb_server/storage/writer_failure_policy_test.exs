@@ -285,11 +285,26 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
       assert {:ok, {6, 6}, []} = Writer.write_actions([validated_action()], writer_name)
     end
 
+    test "emits range_resolved for the abandoned tail it reconciles", ctx do
+      ref = attach_telemetry([[:ebb, :writer, :range_resolved]])
+      :atomics.put(ctx.gsn_counter, 1, 5)
+
+      %{name: _writer_name} = start_writer(ctx)
+
+      assert [{[:ebb, :writer, :range_resolved], %{count: 1}, metadata}] =
+               telemetry_events(ref)
+
+      assert metadata == %{gsn_start: 1, gsn_end: 5, reason: :reconciled_on_startup}
+    end
+
     test "is a no-op when the counter and the frontier already agree", ctx do
+      ref = attach_telemetry([[:ebb, :writer, :range_resolved]])
+
       %{name: writer_name} = start_writer(ctx)
 
       assert WatermarkTracker.committed_watermark(ctx.watermark_tracker) == 0
       assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer_name)
+      assert telemetry_events(ref) == []
     end
   end
 end
