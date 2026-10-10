@@ -143,6 +143,55 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
     end
   end
 
+  describe "build failure abandons and resolves the claim" do
+    test "a raise while building ops abandons, resolves, nudges, and persists nothing", ctx do
+      test_pid = self()
+      router_name = :"build_failure_router_#{System.unique_integer([:positive])}"
+      true = Process.register(test_pid, router_name)
+
+      # `entity_groups` names a table that does not exist, so group
+      # resolution raises while the batch is being built — after the GSN
+      # range is claimed but before any commit. The range must still be
+      # abandoned and resolved, exactly like a commit failure.
+      %{name: writer_name, pid: writer_pid} =
+        start_writer(
+          Map.merge(ctx, %{
+            fan_out_router: router_name,
+            entity_groups: :ebb_336_missing_table
+          })
+        )
+
+      Process.unlink(writer_pid)
+
+      actions =
+        for i <- 1..2 do
+          validated_action(%{
+            id: "act_build_failure_#{i}",
+            updates: [validated_update(%{subject_id: "todo_build_failure_#{i}"})]
+          })
+        end
+
+      catch_exit(Writer.write_actions(actions, writer_name))
+
+      # The build raise abandons like a failed commit: resolve, then nudge.
+      assert_receive {:range_resolved, 1, 2}
+      assert WatermarkTracker.committed_watermark(ctx.watermark_tracker) == 2
+
+      for i <- 1..2 do
+        refute DirtyTracker.dirty?("todo_build_failure_#{i}", ctx.dirty_set)
+      end
+
+      for gsn <- 1..2 do
+        assert :not_found =
+                 RocksDB.get(
+                   RocksDB.cf_actions(ctx.rocks_name),
+                   RocksDB.encode_gsn_key(gsn),
+                   name: ctx.rocks_name
+                 )
+      end
+    end
+  end
+
   describe "crash between claim and resolve" do
     test "init/1 reconcile heals the abandoned claim on restart", ctx do
       test_pid = self()
