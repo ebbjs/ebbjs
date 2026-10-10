@@ -386,6 +386,12 @@ defmodule EbbServer.Storage.Writer do
         "Writer reconciling abandoned GSN range #{watermark + 1}..#{counter} on startup"
       )
 
+      Telemetry.execute(
+        [:writer, :range_resolved],
+        %{count: 1},
+        %{gsn_start: watermark + 1, gsn_end: counter, reason: :reconciled_on_startup}
+      )
+
       WatermarkTracker.mark_range_resolved(watermark + 1, counter, state.watermark_tracker)
       WatermarkTracker.advance_watermark(state.watermark_tracker)
     end
