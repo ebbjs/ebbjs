@@ -9,6 +9,7 @@ defmodule EbbServer.Application do
     port = runtime_port()
 
     children = [
+      {Task.Supervisor, name: EbbServer.OnAction.Supervisor},
       {EbbServer.Storage.Supervisor, [data_dir: data_dir]},
       {Registry, keys: :unique, name: EbbServer.Sync.GroupRegistry},
       EbbServer.Sync.Supervisor,

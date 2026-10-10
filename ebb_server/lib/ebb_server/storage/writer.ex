@@ -206,6 +206,7 @@ defmodule EbbServer.Storage.Writer do
           relationships_by_id: atom(),
           commit_fn: (list(), keyword() -> :ok | {:error, term()}),
           after_commit: (-> any()) | nil,
+          on_action: EbbServer.OnAction.handler() | nil,
           batch_max_size: integer(),
           batch_timeout_ms: non_neg_integer(),
           pending: [{GenServer.from(), [validated_action()]}],
@@ -229,6 +230,7 @@ defmodule EbbServer.Storage.Writer do
     :relationships_by_id,
     :commit_fn,
     :after_commit,
+    :on_action,
     :batch_max_size,
     :batch_timeout_ms,
     :pending,
@@ -326,6 +328,9 @@ defmodule EbbServer.Storage.Writer do
     commit_fn = Keyword.get(opts, :commit_fn) || (&RocksDB.write_batch/2)
     after_commit = Keyword.get(opts, :after_commit)
 
+    on_action =
+      Keyword.get_lazy(opts, :on_action, fn -> Application.get_env(:ebb_server, :on_action) end)
+
     batch_max_size =
       Keyword.get(
         opts,
@@ -357,6 +362,7 @@ defmodule EbbServer.Storage.Writer do
       relationships_by_id: relationships_by_id,
       commit_fn: commit_fn,
       after_commit: after_commit,
+      on_action: on_action,
       batch_max_size: batch_max_size,
       batch_timeout_ms: batch_timeout_ms,
       pending: [],
@@ -657,6 +663,10 @@ defmodule EbbServer.Storage.Writer do
         # Point of no return: make the range durable-resolved before any
         # raise-capable cache bookkeeping runs.
         mark_committed(state, gsn_start, gsn_end)
+
+        # Off the critical path and never raise-capable: fired for exactly
+        # this durable commit, independent of the cache bookkeeping below.
+        dispatch_on_action(state, fresh, gsn_start, groups_by_gsn)
 
         case apply_post_commit(fresh, state) do
           :ok ->
@@ -967,6 +977,29 @@ defmodule EbbServer.Storage.Writer do
 
   defp notify_batch_committed(state, gsn_start, gsn_end, groups_by_gsn) do
     notify_router(state, {:batch_committed, gsn_start, gsn_end, groups_by_gsn})
+  end
+
+  # Only a durable commit fires the hook; `dispatch_all/2` is best-effort
+  # and cannot raise, so a failing handler cannot affect the commit path.
+  # One task per batch keeps the critical path to a single spawn.
+  defp dispatch_on_action(%{on_action: nil}, _fresh, _gsn_start, _groups_by_gsn), do: :ok
+
+  defp dispatch_on_action(state, fresh, gsn_start, groups_by_gsn) do
+    payloads =
+      fresh
+      |> Enum.with_index(gsn_start)
+      |> Enum.map(fn {action, gsn} ->
+        %{
+          id: action.id,
+          actor_id: action.actor_id,
+          hlc: action.hlc,
+          gsn: gsn,
+          updates: action.updates,
+          groups: Map.get(groups_by_gsn, gsn, [])
+        }
+      end)
+
+    EbbServer.OnAction.dispatch_all(state.on_action, payloads)
   end
 
   defp notify_range_resolved(state, gsn_start, gsn_end) do

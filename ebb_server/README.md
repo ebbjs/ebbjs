@@ -178,14 +178,15 @@ not atoms.
 
 All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 
-| Key                        | Description                                                       | Default     |
-| -------------------------- | ----------------------------------------------------------------- | ----------- |
-| `:port`                    | HTTP listen port                                                  | 4000        |
-| `:data_dir`                | Directory for RocksDB + SQLite files                              | `./data`    |
-| `:auth_mode`               | Auth mode (`:bypass` / `:external`)                               | `:external` |
-| `:auth_url`                | Developer's auth endpoint URL                                     | (required)  |
-| `:writer_batch_max_size`   | Buffered Actions before an immediate commit (`<= 0` = no trigger) | 1000        |
-| `:writer_batch_timeout_ms` | Coalescing window (`0` = burst-drain, no timer)                   | 0           |
+| Key                        | Description                                                         | Default     |
+| -------------------------- | ------------------------------------------------------------------- | ----------- |
+| `:port`                    | HTTP listen port                                                    | 4000        |
+| `:data_dir`                | Directory for RocksDB + SQLite files                                | `./data`    |
+| `:auth_mode`               | Auth mode (`:bypass` / `:external`)                                 | `:external` |
+| `:auth_url`                | Developer's auth endpoint URL                                       | (required)  |
+| `:writer_batch_max_size`   | Buffered Actions before an immediate commit (`<= 0` = no trigger)   | 1000        |
+| `:writer_batch_timeout_ms` | Coalescing window (`0` = burst-drain, no timer)                     | 0           |
+| `:on_action`               | Arity-1 handler (`{Module, :function}` or fun) per committed Action | `nil`       |
 
 Several keys that appeared in earlier docs — `:writer_count`, `:warmer_*`,
 and `:replication_peers` — are **read by nothing in `lib/` or `config/`**.
@@ -197,7 +198,7 @@ runs (see [`bench/RESULTS.md`](bench/RESULTS.md)).
 
 ### Observability
 
-Server-side `:telemetry` instrumentation is **not implemented yet** — there are no `:telemetry.execute/3` calls anywhere in `ebb_server/`. The developer-facing `onAction` hook is likewise unbuilt ([#125](https://github.com/ebbjs/ebbjs/issues/125)). The table below is the **target** metric set, not current behavior:
+Server-side `:telemetry` instrumentation is **not implemented yet** — there are no `:telemetry.execute/3` calls anywhere in `ebb_server/`. The developer-facing `onAction` hook is implemented ([#367](https://github.com/ebbjs/ebbjs/issues/367)): configure `config :ebb_server, on_action: {Module, :function}` (or a 1-arity fun) and the Writer invokes it once per locally committed Action with the Action and the group set the commit resolved. It is best-effort — at-most-once on the local node, may arrive out of GSN order, failures are logged and dropped, and it does not yet fire for replicated Actions. See `EbbServer.OnAction` for the payload. The table below is the **target** metric set, not current behavior:
 
 | Planned metric                            | Source       | Type                          |
 | ----------------------------------------- | ------------ | ----------------------------- |

@@ -294,6 +294,7 @@ defmodule EbbServer.TestHelpers do
         commit_fn: opts[:commit_fn],
         after_commit: opts[:after_commit]
       ]
+      |> put_if_present(:on_action, Map.get(opts, :on_action))
       |> put_if_present(:batch_max_size, opts[:batch_max_size])
       |> put_if_present(:batch_timeout_ms, opts[:batch_timeout_ms])
 
