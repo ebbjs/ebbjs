@@ -115,6 +115,76 @@ defmodule EbbServer.Telemetry.SamplerTest do
     end
   end
 
+  describe "fan-out gauges (#363)" do
+    test "emits active connection and group counts from the injected supervisors", %{
+      cache: cache,
+      rocks: rocks
+    } do
+      connection_supervisor = start_dynamic_supervisor()
+      group_supervisor = start_dynamic_supervisor()
+      start_child(connection_supervisor)
+      start_child(group_supervisor)
+
+      ref =
+        attach_telemetry([
+          [:ebb, :fanout, :active_connections],
+          [:ebb, :fanout, :active_groups]
+        ])
+
+      start_supervised!(
+        {Sampler,
+         [
+           enabled: true,
+           interval_ms: 30,
+           rocks_name: rocks.name,
+           watermark_tracker: cache.watermark_tracker,
+           dirty_set: cache.dirty_set,
+           connection_supervisor: connection_supervisor,
+           group_supervisor: group_supervisor
+         ]}
+      )
+
+      assert {[:ebb, :fanout, :active_connections], %{count: connections}, %{}} =
+               await_event(ref)
+
+      assert {[:ebb, :fanout, :active_groups], %{count: groups}, %{}} = await_event(ref)
+
+      assert connections == 1
+      assert groups == 1
+    end
+
+    test "a missing supervisor skips only its own gauge", %{cache: cache, rocks: rocks} do
+      group_supervisor = start_dynamic_supervisor()
+      start_child(group_supervisor)
+
+      ref =
+        attach_telemetry([
+          [:ebb, :fanout, :active_connections],
+          [:ebb, :fanout, :active_groups]
+        ])
+
+      pid =
+        start_supervised!(
+          {Sampler,
+           [
+             enabled: true,
+             interval_ms: 20,
+             rocks_name: rocks.name,
+             watermark_tracker: cache.watermark_tracker,
+             dirty_set: cache.dirty_set,
+             connection_supervisor: :fanout_missing_connection_supervisor,
+             group_supervisor: group_supervisor
+           ]}
+        )
+
+      assert {[:ebb, :fanout, :active_groups], %{count: 1}, %{}} = await_event(ref)
+      assert {[:ebb, :fanout, :active_groups], %{count: 1}, %{}} = await_event(ref)
+
+      assert Process.alive?(pid)
+      refute_received {:telemetry_event, ^ref, [:ebb, :fanout, :active_connections], _, _}
+    end
+  end
+
   defp await_event(ref, timeout \\ 1_000) do
     receive do
       {:telemetry_event, ^ref, event, measurements, metadata} ->
@@ -122,5 +192,23 @@ defmodule EbbServer.Telemetry.SamplerTest do
     after
       timeout -> flunk("expected a telemetry event within #{timeout}ms")
     end
+  end
+
+  defp start_dynamic_supervisor do
+    name = :"fanout_dyn_sup_#{System.unique_integer([:positive])}"
+    {:ok, pid} = DynamicSupervisor.start_link(name: name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: DynamicSupervisor.stop(pid)
+    end)
+
+    name
+  end
+
+  defp start_child(supervisor) do
+    {:ok, _pid} =
+      DynamicSupervisor.start_child(supervisor, {Task, fn -> Process.sleep(:infinity) end})
+
+    :ok
   end
 end

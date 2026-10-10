@@ -7,6 +7,8 @@ defmodule EbbServer.Sync.GroupServer do
 
   use GenServer, restart: :transient
 
+  alias EbbServer.Telemetry
+
   @type action :: %{
           id: String.t(),
           actor_id: String.t(),
@@ -29,9 +31,9 @@ defmodule EbbServer.Sync.GroupServer do
     GenServer.start_link(__MODULE__, group_id, name: name)
   end
 
-  @spec push_actions(pid(), [action()]) :: :ok
-  def push_actions(pid, actions) do
-    GenServer.cast(pid, {:push_actions, actions})
+  @spec push_actions(pid(), [action()], integer() | nil) :: :ok
+  def push_actions(pid, actions, committed_at \\ nil) do
+    GenServer.cast(pid, {:push_actions, actions, committed_at})
   end
 
   @spec add_subscriber(pid(), pid(), String.t()) :: :ok
@@ -71,11 +73,21 @@ defmodule EbbServer.Sync.GroupServer do
   alias EbbServer.Sync.SSEConnection
 
   @impl true
-  def handle_cast({:push_actions, actions}, state) do
+  def handle_cast({:push_actions, actions, committed_at}, state) do
     for subscriber <- state.subscribers do
       for action <- actions do
         SSEConnection.push_action(subscriber, action)
       end
+    end
+
+    # One sample per batch per group. A recovered range has no commit
+    # time, so it must not be reported as a latency sample.
+    if is_integer(committed_at) do
+      Telemetry.execute(
+        [:fanout, :push_latency_ms],
+        %{duration: System.monotonic_time() - committed_at},
+        %{group_id: state.group_id}
+      )
     end
 
     {:noreply, state}

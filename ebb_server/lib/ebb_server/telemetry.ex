@@ -33,6 +33,9 @@ defmodule EbbServer.Telemetry do
   (and `<event>.exception` on failure) with the measurements `:telemetry.span/3`
   adds (`monotonic_time`, `system_time`, `duration`).
 
+  `ebb.fanout.push_latency_ms` is measured from the Writer's durable commit to
+  the GroupServer handling the batch: one sample per dispatched batch per group.
+
   ## Conventions
 
   - **Names** are `ebb.<subsystem>.<event>`, lower snake case, past tense for

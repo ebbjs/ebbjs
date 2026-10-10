@@ -678,6 +678,10 @@ defmodule EbbServer.Storage.Writer do
   defp commit(fresh, pending, ops, groups_by_gsn, gsn_start, gsn_end, state) do
     case state.commit_fn.(ops, name: state.rocks_name) do
       :ok ->
+        # Captured immediately after the durable write: the fan-out push
+        # latency is measured from here, not from batch arrival.
+        committed_at = System.monotonic_time()
+
         if state.after_commit, do: state.after_commit.()
 
         # Point of no return: make the range durable-resolved before any
@@ -686,7 +690,7 @@ defmodule EbbServer.Storage.Writer do
 
         case apply_post_commit(fresh, state) do
           :ok ->
-            notify_batch_committed(state, gsn_start, gsn_end, groups_by_gsn)
+            notify_batch_committed(state, gsn_start, gsn_end, groups_by_gsn, committed_at)
             :ok
 
           {:error, reason} ->
@@ -1003,8 +1007,8 @@ defmodule EbbServer.Storage.Writer do
     :ok
   end
 
-  defp notify_batch_committed(state, gsn_start, gsn_end, groups_by_gsn) do
-    notify_router(state, {:batch_committed, gsn_start, gsn_end, groups_by_gsn})
+  defp notify_batch_committed(state, gsn_start, gsn_end, groups_by_gsn, committed_at) do
+    notify_router(state, {:batch_committed, gsn_start, gsn_end, groups_by_gsn, committed_at})
   end
 
   defp notify_range_resolved(state, gsn_start, gsn_end) do

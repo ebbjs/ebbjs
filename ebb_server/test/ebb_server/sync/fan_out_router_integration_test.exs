@@ -9,6 +9,8 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
   use ExUnit.Case, async: false
   use EbbServer.Integration.StorageCase
 
+  import EbbServer.TestHelpers
+
   alias EbbServer.Integration.ActionHelpers
   alias EbbServer.Sync.FanOutRouter
 
@@ -127,6 +129,42 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       assert "entityGroup" in subject_types
 
       :ok = FanOutRouter.unsubscribe(sse_pid)
+    end
+  end
+
+  describe "push latency telemetry (#363)" do
+    test "emits one event per dispatched batch carrying the subscribed group id" do
+      group_id = "g_363_#{:erlang.unique_integer([:positive])}"
+      actor_id = "a_363_#{:erlang.unique_integer([:positive])}"
+
+      {:ok, sse_pid} =
+        EbbServer.Sync.SSEConnection.start_link(self(), [group_id], %{group_id => 0})
+
+      :ok = FanOutRouter.subscribe([group_id], sse_pid, actor_id)
+
+      ref = attach_telemetry([[:ebb, :fanout, :push_latency_ms]])
+
+      conn = ActionHelpers.bootstrap_group(actor_id, group_id, ["todo.*"])
+      assert conn.status == 200
+      assert conn.resp_body == ~s({"rejected":[]})
+
+      assert_receive {:sse_chunk, "data", _json}, 5_000
+
+      assert {[:ebb, :fanout, :push_latency_ms], %{duration: duration}, %{group_id: ^group_id}} =
+               await_event(ref)
+
+      assert is_integer(duration) and duration >= 0
+
+      :ok = FanOutRouter.unsubscribe(sse_pid)
+    end
+  end
+
+  defp await_event(ref, timeout \\ 1_000) do
+    receive do
+      {:telemetry_event, ^ref, event, measurements, metadata} ->
+        {event, measurements, metadata}
+    after
+      timeout -> flunk("expected a telemetry event within #{timeout}ms")
     end
   end
 

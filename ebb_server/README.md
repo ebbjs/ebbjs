@@ -102,7 +102,7 @@ ordered-fanout coordination that is not yet built
 | `EbbServer.Storage.WatermarkTracker`                                             | Resolution-frontier ETS + `:atomics` (SSE fan-out gating)          |
 | `EbbServer.Storage.{DirtyTracker,GroupCache,EntityGroupCache,RelationshipCache}` | In-memory state children of `SystemCache`                          |
 | `EbbServer.Storage.GSNCounter`                                                   | Lock-free GSN claiming + restart reconcile (`:atomics`)            |
-| `EbbServer.Telemetry.Sampler`                                                    | Periodic `ebb.watermark.lag` / `ebb.dirty_set.size` gauges         |
+| `EbbServer.Telemetry.Sampler`                                                    | Periodic watermark / dirty-set / fan-out gauges                    |
 | `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass + external modes)                |
 | `EbbServer.Sync.Router`                                                          | HTTP plug router                                                   |
 | `EbbServer.Sync.CatchUp`                                                         | Paginated catch-up                                                 |
@@ -221,8 +221,10 @@ runs (see [`bench/RESULTS.md`](bench/RESULTS.md)).
 naming and payload conventions that per-subsystem instrumentation builds on.
 The instrumented events are still being built
 ([#125](https://github.com/ebbjs/ebbjs/issues/125)) — the
-`ebb.watermark.lag` and `ebb.dirty_set.size` gauges are live, sampled by
-`EbbServer.Telemetry.Sampler`, and `ebb.http.request_latency_ms` is live too,
+`ebb.watermark.lag`, `ebb.dirty_set.size`, `ebb.fanout.active_connections`,
+and `ebb.fanout.active_groups` gauges are live, sampled by
+`EbbServer.Telemetry.Sampler`; `ebb.fanout.push_latency_ms` is emitted once
+per dispatched batch per group, and `ebb.http.request_latency_ms` is live too,
 emitted by `EbbServer.Telemetry.HTTP` from Bandit's request span (attached at
 boot, before Bandit accepts requests). The rest of the catalogue is still
 being built.
