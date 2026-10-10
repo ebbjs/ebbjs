@@ -13,6 +13,8 @@ defmodule EbbServer.Application do
       EbbServer.Telemetry.Sampler,
       {Registry, keys: :unique, name: EbbServer.Sync.GroupRegistry},
       EbbServer.Sync.Supervisor,
+      # Attached before Bandit so every request Bandit accepts is sampled.
+      EbbServer.Telemetry.HTTP,
       {Bandit, plug: EbbServer.Sync.Router, port: port}
     ]
 

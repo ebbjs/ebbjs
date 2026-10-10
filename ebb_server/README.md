@@ -215,9 +215,18 @@ naming and payload conventions that per-subsystem instrumentation builds on.
 The instrumented events are still being built
 ([#125](https://github.com/ebbjs/ebbjs/issues/125)) — the
 `ebb.watermark.lag` and `ebb.dirty_set.size` gauges are live, sampled by
-`EbbServer.Telemetry.Sampler`; the rest of the catalogue is still being built.
+`EbbServer.Telemetry.Sampler`, and `ebb.http.request_latency_ms` is live too,
+emitted by `EbbServer.Telemetry.HTTP` from Bandit's request span (attached at
+boot, before Bandit accepts requests). The rest of the catalogue is still
+being built.
 The developer-facing `onAction` hook is likewise unbuilt. The table after the
 conventions is the **target** metric set, not current behavior.
+
+`ebb.http.request_latency_ms` is emitted once per completed request with
+`method`, `route`, and `status`. The `GET /sync/live` SSE route is excluded:
+its Bandit span lasts the whole connection (minutes to hours), so sampling it
+would dominate the histogram and double-count a connection already covered by
+the `ebb.fanout.active_connections` / `ebb.fanout.active_groups` gauges.
 
 #### Telemetry conventions
 
