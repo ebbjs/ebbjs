@@ -65,10 +65,20 @@ defmodule EbbServer.Integration.ActionHelpers do
   def msgpack_encode!(data), do: data |> Msgpax.pack!() |> IO.iodata_to_binary()
 
   def bootstrap_group(actor_id, group_id, permissions) do
+    action = bootstrap_group_action(actor_id, group_id, permissions)
+    post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
+  end
+
+  @doc """
+  Builds the same-Action group + owner `groupMember` bootstrap that
+  `bootstrap_group/3` posts, without sending it. Callers that need the wire
+  body (for example to drive the real Router over HTTP) encode it themselves.
+  """
+  def bootstrap_group_action(actor_id, group_id, permissions) do
     hlc = TestHelpers.generate_hlc()
     gm_id = "gm_" <> Nanoid.generate()
 
-    action = %{
+    %{
       "id" => "act_bootstrap_" <> Nanoid.generate(),
       "actor_id" => actor_id,
       "hlc" => hlc,
@@ -97,8 +107,6 @@ defmodule EbbServer.Integration.ActionHelpers do
         }
       ]
     }
-
-    post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
   end
 
   def write_entity_in_group(actor_id, entity_id, entity_type, group_id, fields) do

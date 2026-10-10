@@ -200,6 +200,13 @@ The periodic metric sampler is configured under its own key,
 | `:watermark_tracker` | WatermarkTracker instance to read the frontier from | `EbbServer.Storage.WatermarkTracker` |
 | `:dirty_set`         | Dirty-set ETS table name                            | resolved from `DirtyTracker`         |
 
+The HTTP request-metric translator is configured under its own key,
+`Application.get_env(:ebb_server, EbbServer.Telemetry.HTTP)`:
+
+| HTTP key   | Description                               | Default |
+| ---------- | ----------------------------------------- | ------- |
+| `:enabled` | Attach the Bandit request-span translator | `true`  |
+
 Several keys that appeared in earlier docs — `:writer_count`, `:warmer_*`,
 and `:replication_peers` — are **read by nothing in `lib/` or `config/`**.
 Production runs a single `EbbServer.Storage.Writer` GenServer with batch
@@ -215,9 +222,17 @@ naming and payload conventions that per-subsystem instrumentation builds on.
 The instrumented events are still being built
 ([#125](https://github.com/ebbjs/ebbjs/issues/125)) — the
 `ebb.watermark.lag` and `ebb.dirty_set.size` gauges are live, sampled by
-`EbbServer.Telemetry.Sampler`; the rest of the catalogue is still being built.
+`EbbServer.Telemetry.Sampler`, and `ebb.http.request_latency_ms` is live too,
+emitted by `EbbServer.Telemetry.HTTP` from Bandit's request span (attached at
+boot, before Bandit accepts requests). The rest of the catalogue is still
+being built.
 The developer-facing `onAction` hook is likewise unbuilt. The table after the
 conventions is the **target** metric set, not current behavior.
+
+`ebb.http.request_latency_ms` is emitted once per completed request with
+`method`, `route`, and `status`. The `GET /sync/live` SSE route is deliberately
+excluded because its span lasts the whole connection; see
+`EbbServer.Telemetry.HTTP` for the full rationale.
 
 #### Telemetry conventions
 
