@@ -28,17 +28,21 @@ defmodule EbbServer.Telemetry.HTTPTest do
     get "/sync/live" do
       send_resp(conn, 200, "live")
     end
+
+    get "/raise" do
+      _ = conn
+      raise "boom"
+    end
   end
 
   describe "handle_event/4" do
     test "emits latency with the matched plug route and the response status" do
       ref = attach_telemetry([@event])
-      route_fun = fn _conn, _opts -> :ok end
 
       conn = %Plug.Conn{
         method: "GET",
         status: 200,
-        private: %{plug_route: {"/entities/:id", route_fun}}
+        private: %{plug_route: {"/entities/:id", noop_route_fun()}}
       }
 
       HTTP.handle_event(
@@ -74,12 +78,11 @@ defmodule EbbServer.Telemetry.HTTPTest do
 
     test "emits nothing for the SSE route" do
       ref = attach_telemetry([@event])
-      route_fun = fn _conn, _opts -> :ok end
 
       conn = %Plug.Conn{
         method: "GET",
         status: 200,
-        private: %{plug_route: {"/sync/live", route_fun}}
+        private: %{plug_route: {"/sync/live", noop_route_fun()}}
       }
 
       HTTP.handle_event(
@@ -205,13 +208,80 @@ defmodule EbbServer.Telemetry.HTTPTest do
       assert routes == ["/entities/:id"]
     end
 
-    defp await_bandit_stop(ref, path) do
-      receive do
-        {:telemetry_event, ^ref, [:bandit, :request, :stop], _measurements, %{conn: conn}} ->
-          if conn.request_path == path, do: :ok, else: await_bandit_stop(ref, path)
-      after
-        2_000 -> flunk("Bandit never finished the request for #{path}")
-      end
+    test "records a 500 for a request that raises", %{base_url: base_url} do
+      ref = attach_telemetry([@event])
+
+      assert Req.get!(base_url <> "/raise", retry: false).status == 500
+
+      assert [{@event, %{duration: duration}, %{method: "GET", route: "/raise", status: 500}}] =
+               telemetry_events(ref, 500)
+
+      assert duration >= 0
     end
+  end
+
+  defp await_bandit_stop(ref, path) do
+    receive do
+      {:telemetry_event, ^ref, [:bandit, :request, :stop], _measurements, %{conn: conn}} ->
+        if conn.request_path == path, do: :ok, else: await_bandit_stop(ref, path)
+    after
+      2_000 -> flunk("Bandit never finished the request for #{path}")
+    end
+  end
+
+  defp noop_route_fun, do: fn _conn, _opts -> :ok end
+end
+
+defmodule EbbServer.Telemetry.HTTPRouterIntegrationTest do
+  @moduledoc """
+  The HTTP request metric records the real `EbbServer.Sync.Router`'s 503
+  write-failure response (ebbjs/ebbjs#364).
+  """
+
+  use ExUnit.Case, async: false
+  use EbbServer.Integration.StorageCase, with_auth_mode: true
+
+  import EbbServer.TestHelpers
+
+  alias EbbServer.Integration.ActionHelpers
+
+  @event [:ebb, :http, :request_latency_ms]
+
+  def storage_writer_opts do
+    [commit_fn: fn _ops, _opts -> {:error, :injected_rocksdb_failure} end]
+  end
+
+  test "a failed write is sampled as status 503 through the real router" do
+    actor_id = "a_364_fail_#{:erlang.unique_integer([:positive])}"
+    group_id = "g_364_fail_#{:erlang.unique_integer([:positive])}"
+
+    {:ok, server} = Bandit.start_link(plug: EbbServer.Sync.Router, port: 0, scheme: :http)
+    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+
+    on_exit(fn ->
+      if Process.alive?(server), do: Process.exit(server, :normal)
+    end)
+
+    ref = attach_telemetry([@event])
+
+    body =
+      %{"actions" => [ActionHelpers.bootstrap_group_action(actor_id, group_id, ["todo.*"])]}
+      |> ActionHelpers.msgpack_encode!()
+
+    response =
+      Req.post!("http://localhost:#{port}/sync/actions",
+        body: body,
+        headers: [{"x-ebb-actor-id", actor_id}]
+      )
+
+    assert response.status == 503
+
+    assert [
+             {@event, %{duration: duration},
+              %{method: "POST", route: "/sync/actions", status: 503}}
+           ] =
+             telemetry_events(ref, 1_000)
+
+    assert is_integer(duration)
   end
 end

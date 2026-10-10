@@ -16,15 +16,18 @@ defmodule EbbServer.Telemetry.HTTP do
 
   ## The SSE exemption
 
-  Requests routed to `GET /sync/live` are deliberately not sampled. That
+  Requests routed to `GET /sync/live` are deliberately not sampled, so the
+  same long-lived connection is not represented in two metric families. That
   endpoint blocks the request process for the lifetime of the SSE connection
   (see `EbbServer.Sync.SSEHandler`), so Bandit's span duration for it is
-  minutes to hours of connection time, not request service time. Emitting it
-  would dominate the latency histogram and double-count a connection already
-  tracked by the `ebb.fanout.active_connections` and
+  minutes to hours of connection time, not request service time; as a latency
+  sample it would dominate the histogram. The connection itself is already
+  observable through the `ebb.fanout.active_connections` and
   `ebb.fanout.active_groups` gauges. Every other route is sampled exactly
-  once, on its terminating event — never on `:start` — so nothing is counted
-  twice.
+  once, on its terminating event — never on `:start` — so no request is
+  counted twice.
+
+  The `/sync/live` literal mirrors the route in `EbbServer.Sync.Router`.
 
   Disable with `enabled: false` or by setting
   `config :ebb_server, EbbServer.Telemetry.HTTP, enabled: false`.
@@ -41,6 +44,8 @@ defmodule EbbServer.Telemetry.HTTP do
     [:bandit, :request, :exception]
   ]
   @sse_route "/sync/live"
+  @fallback_status 500
+  @unknown "unknown"
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -107,15 +112,15 @@ defmodule EbbServer.Telemetry.HTTP do
   # Bandit omits `conn` when an error prevents it from building one; the
   # request is still counted so unhandled failures show up in the histogram.
   defp labels(%{conn: %Plug.Conn{} = conn}) do
-    %{method: conn.method, route: route(conn), status: conn.status || 500}
+    %{method: conn.method, route: route(conn), status: conn.status || @fallback_status}
   end
 
-  defp labels(_metadata), do: %{method: "unknown", route: "unknown", status: 500}
+  defp labels(_metadata), do: %{method: @unknown, route: @unknown, status: @fallback_status}
 
   defp route(%Plug.Conn{private: private, request_path: request_path}) do
     case private[:plug_route] do
       {route, _fun} when is_binary(route) -> route
-      _ -> request_path || "unknown"
+      _ -> request_path || @unknown
     end
   end
 end

@@ -206,6 +206,8 @@ defmodule EbbServer.Sync.Router do
     end
   end
 
+  # Excluded from `ebb.http.request_latency_ms`; if this path changes,
+  # update `EbbServer.Telemetry.HTTP` (@sse_route) to match.
   get "/sync/live" do
     conn = Plug.Conn.fetch_query_params(conn)
     actor_id = conn.assigns.actor_id
