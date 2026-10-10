@@ -145,7 +145,7 @@ EbbServer.Supervisor (one_for_one)
 │   │   └── Storage.RelationshipCache
 │   ├── Storage.WatermarkTracker           — resolution-frontier ETS + :atomics
 │   └── Storage.Writer                     — serialization point (last child)
-├── Telemetry.Sampler                      — 1 Hz watermark-lag + dirty-set gauges
+├── Telemetry.Sampler                      — 1 Hz watermark / dirty-set / fan-out gauges
 ├── Sync Supervisor (one_for_one)
 │   ├── Sync.FanOutFrontier                — persisted last-pushed frontier
 │   ├── Sync.FanOutRouter
@@ -192,13 +192,15 @@ All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 The periodic metric sampler is configured under its own key,
 `Application.get_env(:ebb_server, EbbServer.Telemetry.Sampler)`:
 
-| Sampler key          | Description                                         | Default                              |
-| -------------------- | --------------------------------------------------- | ------------------------------------ |
-| `:enabled`           | Emit the periodic gauges                            | `true` (`false` in `MIX_ENV=test`)   |
-| `:interval_ms`       | Sampling interval in milliseconds                   | `1000`                               |
-| `:rocks_name`        | RocksDB instance to read `max_gsn` from             | `EbbServer.Storage.RocksDB`          |
-| `:watermark_tracker` | WatermarkTracker instance to read the frontier from | `EbbServer.Storage.WatermarkTracker` |
-| `:dirty_set`         | Dirty-set ETS table name                            | resolved from `DirtyTracker`         |
+| Sampler key              | Description                                         | Default                                  |
+| ------------------------ | --------------------------------------------------- | ---------------------------------------- |
+| `:enabled`               | Emit the periodic gauges                            | `true` (`false` in `MIX_ENV=test`)       |
+| `:interval_ms`           | Sampling interval in milliseconds                   | `1000`                                   |
+| `:rocks_name`            | RocksDB instance to read `max_gsn` from             | `EbbServer.Storage.RocksDB`              |
+| `:watermark_tracker`     | WatermarkTracker instance to read the frontier from | `EbbServer.Storage.WatermarkTracker`     |
+| `:dirty_set`             | Dirty-set ETS table name                            | resolved from `DirtyTracker`             |
+| `:connection_supervisor` | Supervisor to count active SSE connections from     | `EbbServer.Sync.SSEConnectionSupervisor` |
+| `:group_supervisor`      | Supervisor to count active groups from              | `EbbServer.Sync.GroupDynamicSupervisor`  |
 
 The HTTP request-metric translator is configured under its own key,
 `Application.get_env(:ebb_server, EbbServer.Telemetry.HTTP)`:

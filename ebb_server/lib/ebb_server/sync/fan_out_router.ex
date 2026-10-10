@@ -51,11 +51,11 @@ defmodule EbbServer.Sync.FanOutRouter do
   ## SSE out-of-order dispatch is safe
 
   Even when `process_batch/4` returns disjoint GSN ranges (possible when
-  the watermark advances past buffered notifications out of order),
-  `dispatch_to_groups/4` writes each Action independently to its group.
-  SSE tolerates out-of-order events, and clients reconstruct ordered
-  state via `catchUp` before consuming the live stream. The FanOutRouter
-  is free to push in arrival order; clients converge.
+  the watermark advances past buffered notifications out of order), the
+  Router pushes each range independently. SSE tolerates out-of-order
+  events, and clients reconstruct ordered state via `catchUp` before
+  consuming the live stream. The FanOutRouter is free to push in arrival
+  order; clients converge.
 
   ## Sibling modules
 
@@ -85,7 +85,7 @@ defmodule EbbServer.Sync.FanOutRouter do
   @type t :: %__MODULE__{
           pending_notifications: [{non_neg_integer(), non_neg_integer()}],
           pending_groups: %{non_neg_integer() => [String.t()]},
-          batch_committed_at: %{non_neg_integer() => integer()},
+          batch_committed_at: %{{non_neg_integer(), non_neg_integer()} => integer()},
           last_pushed_gsn: non_neg_integer(),
           subscriptions: %{pid() => [String.t()]},
           monitors: %{pid() => reference()}
@@ -160,10 +160,11 @@ defmodule EbbServer.Sync.FanOutRouter do
     push_and_update(state, to_push, remaining, new_last)
   end
 
-  # `dispatch_to_groups/4` falls back to cache-based `resolve_group_ids/2`
-  # for GSNs the notifier did not annotate. Recovered Actions have no
-  # notifier and the caches may have moved since the commit, so seed an
-  # entry for every recovered GSN (`[]` when the Action had no group).
+  # Per-Action group resolution falls back to cache-based
+  # `resolve_group_ids/2` for GSNs the notifier did not annotate. Recovered
+  # Actions have no notifier and the caches may have moved since the
+  # commit, so seed an entry for every recovered GSN (`[]` when the Action
+  # had no group).
   defp fill_missing_groups(ranges, groups_by_gsn) do
     Enum.reduce(ranges, groups_by_gsn, fn {from, to}, acc ->
       Enum.reduce(from..to, acc, &Map.put_new(&2, &1, []))
@@ -188,7 +189,7 @@ defmodule EbbServer.Sync.FanOutRouter do
     state = %{
       state
       | pending_groups: Map.merge(state.pending_groups, groups_by_gsn),
-        batch_committed_at: Map.put(state.batch_committed_at, from_gsn, committed_at)
+        batch_committed_at: Map.put(state.batch_committed_at, {from_gsn, to_gsn}, committed_at)
     }
 
     {to_push, remaining, new_last} =
@@ -430,7 +431,12 @@ defmodule EbbServer.Sync.FanOutRouter do
     for {from, to} <- to_push do
       # Recovered ranges have no entry and pass `nil`, which suppresses
       # the latency sample for historical pushes.
-      push_gsn_range(from, to, state.pending_groups, Map.get(state.batch_committed_at, from))
+      push_gsn_range(
+        from,
+        to,
+        state.pending_groups,
+        Map.get(state.batch_committed_at, {from, to})
+      )
     end
 
     # Persist after pushing: at-least-once. A crash between the push and
@@ -441,7 +447,7 @@ defmodule EbbServer.Sync.FanOutRouter do
       state
       | pending_notifications: remaining,
         pending_groups: Map.drop(state.pending_groups, pushed_gsns),
-        batch_committed_at: Map.drop(state.batch_committed_at, Enum.map(to_push, &elem(&1, 0))),
+        batch_committed_at: Map.drop(state.batch_committed_at, to_push),
         last_pushed_gsn: new_last
     }
   end
@@ -511,22 +517,27 @@ defmodule EbbServer.Sync.FanOutRouter do
 
     RocksDB.range_iterator(cf, from_key, to_key)
     |> Stream.map(fn {_key, value} -> :erlang.binary_to_term(value, [:safe]) end)
-    |> Stream.each(&dispatch_to_groups(&1, resolve_opts, groups_by_gsn, committed_at))
-    |> Stream.run()
+    |> Stream.flat_map(&group_memberships(&1, groups_by_gsn, resolve_opts))
+    |> Enum.group_by(fn {group_id, _action} -> group_id end, fn {_group_id, action} -> action end)
+    |> Enum.each(fn {group_id, actions} -> push_to_group(group_id, actions, committed_at) end)
   end
 
-  defp dispatch_to_groups(action, resolve_opts, groups_by_gsn, committed_at) do
+  # One push per group per committed range, so a batch that fans out to a
+  # group is dispatched — and sampled — once, not once per Action.
+  defp group_memberships(action, groups_by_gsn, resolve_opts) do
     group_ids =
       case Map.fetch(groups_by_gsn, action["gsn"]) do
         {:ok, group_ids} -> group_ids
         :error -> resolve_group_ids(action, resolve_opts)
       end
 
-    for group_id <- group_ids do
-      case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do
-        [{pid, _}] -> GroupServer.push_actions(pid, [action], committed_at)
-        [] -> :ok
-      end
+    Enum.map(group_ids, &{&1, action})
+  end
+
+  defp push_to_group(group_id, actions, committed_at) do
+    case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do
+      [{pid, _}] -> GroupServer.push_actions(pid, actions, committed_at)
+      [] -> :ok
     end
   end
 end

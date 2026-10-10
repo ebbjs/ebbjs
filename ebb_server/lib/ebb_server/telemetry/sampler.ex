@@ -60,8 +60,15 @@ defmodule EbbServer.Telemetry.Sampler do
   def handle_info(:sample, state) do
     sample([:watermark, :lag], fn -> watermark_measurements(state) end)
     sample([:dirty_set, :size], fn -> dirty_set_measurements(state) end)
-    sample([:fanout, :active_connections], fn -> connection_measurements(state) end)
-    sample([:fanout, :active_groups], fn -> group_measurements(state) end)
+
+    sample([:fanout, :active_connections], fn ->
+      active_children_measurements(state.connection_supervisor)
+    end)
+
+    sample([:fanout, :active_groups], fn ->
+      active_children_measurements(state.group_supervisor)
+    end)
+
     schedule(state.interval_ms)
 
     {:noreply, state}
@@ -93,17 +100,9 @@ defmodule EbbServer.Telemetry.Sampler do
     %{size: DirtyTracker.size(dirty_set)}
   end
 
-  defp connection_measurements(%{connection_supervisor: connection_supervisor}) do
-    %{count: active_children(connection_supervisor)}
-  end
-
-  defp group_measurements(%{group_supervisor: group_supervisor}) do
-    %{count: active_children(group_supervisor)}
-  end
-
-  defp active_children(supervisor) do
+  defp active_children_measurements(supervisor) do
     %{active: active} = DynamicSupervisor.count_children(supervisor)
-    active
+    %{count: active}
   end
 
   defp schedule(interval_ms) do

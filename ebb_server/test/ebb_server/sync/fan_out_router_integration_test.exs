@@ -150,21 +150,73 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
 
       assert_receive {:sse_chunk, "data", _json}, 5_000
 
-      assert {[:ebb, :fanout, :push_latency_ms], %{duration: duration}, %{group_id: ^group_id}} =
-               await_event(ref)
+      assert [{[:ebb, :fanout, :push_latency_ms], %{duration: duration}, %{group_id: ^group_id}}] =
+               telemetry_events(ref)
 
       assert is_integer(duration) and duration >= 0
 
       :ok = FanOutRouter.unsubscribe(sse_pid)
     end
-  end
 
-  defp await_event(ref, timeout \\ 1_000) do
-    receive do
-      {:telemetry_event, ^ref, event, measurements, metadata} ->
-        {event, measurements, metadata}
-    after
-      timeout -> flunk("expected a telemetry event within #{timeout}ms")
+    test "emits a single sample for a multi-Action batch to one group" do
+      group_id = "g_363_batch_#{:erlang.unique_integer([:positive])}"
+      actor_id = "a_363_batch_#{:erlang.unique_integer([:positive])}"
+
+      conn = ActionHelpers.bootstrap_group(actor_id, group_id, ["todo.*"])
+      assert conn.status == 200
+
+      {:ok, sse_pid} =
+        EbbServer.Sync.SSEConnection.start_link(self(), [group_id], %{group_id => 0})
+
+      :ok = FanOutRouter.subscribe([group_id], sse_pid, actor_id)
+      ref = attach_telemetry([[:ebb, :fanout, :push_latency_ms]])
+
+      hlc = generate_hlc()
+
+      actions =
+        for i <- 1..2 do
+          entity_id = "todo_363_batch_#{i}_#{:erlang.unique_integer([:positive])}"
+
+          %{
+            "id" => "act_363_batch_#{i}_#{:erlang.unique_integer([:positive])}",
+            "actor_id" => actor_id,
+            "hlc" => hlc,
+            "updates" => [
+              %{
+                "id" => "upd_363_#{i}_#{:erlang.unique_integer([:positive])}",
+                "subject_id" => entity_id,
+                "subject_type" => "todo",
+                "method" => "put",
+                "data" => %{
+                  "fields" => %{
+                    "title" => %{"type" => "lww", "value" => "Batch #{i}", "hlc" => hlc}
+                  }
+                }
+              },
+              ActionHelpers.entity_group_update(entity_id, group_id, hlc)
+            ]
+          }
+        end
+
+      conn =
+        ActionHelpers.post_actions(
+          ActionHelpers.msgpack_encode!(%{"actions" => actions}),
+          actor_id
+        )
+
+      assert conn.status == 200
+      assert conn.resp_body == ~s({"rejected":[]})
+
+      # Both Actions reach the group as one dispatched batch.
+      assert_receive {:sse_chunk, "data", _json}, 5_000
+      assert_receive {:sse_chunk, "data", _json}, 5_000
+
+      assert [{[:ebb, :fanout, :push_latency_ms], %{duration: duration}, %{group_id: ^group_id}}] =
+               telemetry_events(ref)
+
+      assert is_integer(duration) and duration >= 0
+
+      :ok = FanOutRouter.unsubscribe(sse_pid)
     end
   end
 
