@@ -6,6 +6,8 @@ defmodule EbbServer.Sync.GroupServerTest do
   use ExUnit.Case, async: false
   use EbbServer.Integration.StorageCase
 
+  import EbbServer.TestHelpers
+
   alias EbbServer.Sync.GroupServer
 
   setup do
@@ -122,6 +124,56 @@ defmodule EbbServer.Sync.GroupServerTest do
 
       Process.exit(sub1, :kill)
       Process.exit(sub2, :kill)
+    end
+  end
+
+  describe "push_actions/3 telemetry" do
+    test "emits push latency once with the group id when given a commit time", %{
+      group_server: gs,
+      group_id: group_id
+    } do
+      subscriber = spawn(fn -> receive do: (_ -> :ok) end)
+      :ok = GroupServer.add_subscriber(gs, subscriber, "actor_1")
+
+      ref = attach_telemetry([[:ebb, :fanout, :push_latency_ms]])
+      committed_at = System.monotonic_time()
+
+      action = %{
+        "id" => "act_latency",
+        "actor_id" => "actor_1",
+        "gsn" => 1,
+        "hlc" => 1,
+        "updates" => []
+      }
+
+      :ok = GroupServer.push_actions(gs, [action], committed_at)
+
+      # `get_state/1` is a call, so it is handled after the cast.
+      _state = :sys.get_state(gs)
+
+      assert [{[:ebb, :fanout, :push_latency_ms], %{duration: duration}, %{group_id: ^group_id}}] =
+               telemetry_events(ref)
+
+      assert is_integer(duration) and duration >= 0
+    end
+
+    test "emits nothing for a recovered range without a commit time", %{
+      group_server: gs
+    } do
+      ref = attach_telemetry([[:ebb, :fanout, :push_latency_ms]])
+
+      action = %{
+        "id" => "act_recovered",
+        "actor_id" => "actor_1",
+        "gsn" => 1,
+        "hlc" => 1,
+        "updates" => []
+      }
+
+      :ok = GroupServer.push_actions(gs, [action], nil)
+      _state = :sys.get_state(gs)
+
+      assert telemetry_events(ref) == []
     end
   end
 

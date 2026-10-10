@@ -102,7 +102,7 @@ ordered-fanout coordination that is not yet built
 | `EbbServer.Storage.WatermarkTracker`                                             | Resolution-frontier ETS + `:atomics` (SSE fan-out gating)          |
 | `EbbServer.Storage.{DirtyTracker,GroupCache,EntityGroupCache,RelationshipCache}` | In-memory state children of `SystemCache`                          |
 | `EbbServer.Storage.GSNCounter`                                                   | Lock-free GSN claiming + restart reconcile (`:atomics`)            |
-| `EbbServer.Telemetry.Sampler`                                                    | Periodic `ebb.watermark.lag` / `ebb.dirty_set.size` gauges         |
+| `EbbServer.Telemetry.Sampler`                                                    | Periodic watermark / dirty-set / fan-out gauges                    |
 | `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass + external modes)                |
 | `EbbServer.Sync.Router`                                                          | HTTP plug router                                                   |
 | `EbbServer.Sync.CatchUp`                                                         | Paginated catch-up                                                 |
@@ -145,7 +145,7 @@ EbbServer.Supervisor (one_for_one)
 │   │   └── Storage.RelationshipCache
 │   ├── Storage.WatermarkTracker           — resolution-frontier ETS + :atomics
 │   └── Storage.Writer                     — serialization point (last child)
-├── Telemetry.Sampler                      — 1 Hz watermark-lag + dirty-set gauges
+├── Telemetry.Sampler                      — 1 Hz watermark / dirty-set / fan-out gauges
 ├── Sync Supervisor (one_for_one)
 │   ├── Sync.FanOutFrontier                — persisted last-pushed frontier
 │   ├── Sync.FanOutRouter
@@ -192,13 +192,15 @@ All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 The periodic metric sampler is configured under its own key,
 `Application.get_env(:ebb_server, EbbServer.Telemetry.Sampler)`:
 
-| Sampler key          | Description                                         | Default                              |
-| -------------------- | --------------------------------------------------- | ------------------------------------ |
-| `:enabled`           | Emit the periodic gauges                            | `true` (`false` in `MIX_ENV=test`)   |
-| `:interval_ms`       | Sampling interval in milliseconds                   | `1000`                               |
-| `:rocks_name`        | RocksDB instance to read `max_gsn` from             | `EbbServer.Storage.RocksDB`          |
-| `:watermark_tracker` | WatermarkTracker instance to read the frontier from | `EbbServer.Storage.WatermarkTracker` |
-| `:dirty_set`         | Dirty-set ETS table name                            | resolved from `DirtyTracker`         |
+| Sampler key              | Description                                         | Default                                  |
+| ------------------------ | --------------------------------------------------- | ---------------------------------------- |
+| `:enabled`               | Emit the periodic gauges                            | `true` (`false` in `MIX_ENV=test`)       |
+| `:interval_ms`           | Sampling interval in milliseconds                   | `1000`                                   |
+| `:rocks_name`            | RocksDB instance to read `max_gsn` from             | `EbbServer.Storage.RocksDB`              |
+| `:watermark_tracker`     | WatermarkTracker instance to read the frontier from | `EbbServer.Storage.WatermarkTracker`     |
+| `:dirty_set`             | Dirty-set ETS table name                            | resolved from `DirtyTracker`             |
+| `:connection_supervisor` | Supervisor to count active SSE connections from     | `EbbServer.Sync.SSEConnectionSupervisor` |
+| `:group_supervisor`      | Supervisor to count active groups from              | `EbbServer.Sync.GroupDynamicSupervisor`  |
 
 The HTTP request-metric translator is configured under its own key,
 `Application.get_env(:ebb_server, EbbServer.Telemetry.HTTP)`:
@@ -221,8 +223,10 @@ runs (see [`bench/RESULTS.md`](bench/RESULTS.md)).
 naming and payload conventions that per-subsystem instrumentation builds on.
 The instrumented events are still being built
 ([#125](https://github.com/ebbjs/ebbjs/issues/125)) — the
-`ebb.watermark.lag` and `ebb.dirty_set.size` gauges are live, sampled by
-`EbbServer.Telemetry.Sampler`, and `ebb.http.request_latency_ms` is live too,
+`ebb.watermark.lag`, `ebb.dirty_set.size`, `ebb.fanout.active_connections`,
+and `ebb.fanout.active_groups` gauges are live, sampled by
+`EbbServer.Telemetry.Sampler`; `ebb.fanout.push_latency_ms` is emitted once
+per dispatched batch per group, and `ebb.http.request_latency_ms` is live too,
 emitted by `EbbServer.Telemetry.HTTP` from Bandit's request span (attached at
 boot, before Bandit accepts requests). The rest of the catalogue is still
 being built.

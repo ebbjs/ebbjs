@@ -42,9 +42,9 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
 
       assert Enum.sort(Enum.map(results, &elem(&1, 1))) == Enum.map(1..n, &{&1, &1})
 
-      assert_receive {:batch_committed, 1, ^n, groups}
+      assert_receive {:batch_committed, 1, ^n, groups, _committed_at}
       assert map_size(groups) == n
-      refute_receive {:batch_committed, _, _, _}, 200
+      refute_receive {:batch_committed, _, _, _, _}, 200
     end
 
     test "callers with multiple actions each get contiguous sub-ranges", ctx do
@@ -69,7 +69,7 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
       results = Enum.map(tasks, &Task.await(&1, 2_000))
       assert Enum.sort(Enum.map(results, &elem(&1, 1))) == [{1, 2}, {3, 4}, {5, 6}]
 
-      assert_receive {:batch_committed, 1, 6, groups}
+      assert_receive {:batch_committed, 1, 6, groups, _committed_at}
       assert map_size(groups) == 6
     end
 
@@ -102,7 +102,7 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
       results = Enum.map(tasks, &Task.await(&1, 2_000))
       assert Enum.sort(Enum.map(results, &elem(&1, 1))) == [{0, 0}, {0, 0}, {2, 3}]
 
-      assert_receive {:batch_committed, 2, 3, _groups}
+      assert_receive {:batch_committed, 2, 3, _groups, _committed_at}
     end
 
     test "a duplicate action_id across concurrent callers claims one GSN and both succeed", ctx do
@@ -124,8 +124,8 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
       assert Enum.sort(Enum.map(results, &elem(&1, 1))) == [{0, 0}, {1, 1}]
 
       assert RocksDB.get_max_gsn(ctx.rocks_name) == 1
-      assert_receive {:batch_committed, 1, 1, _groups}
-      refute_receive {:batch_committed, _, _, _}, 200
+      assert_receive {:batch_committed, 1, 1, _groups, _committed_at}
+      refute_receive {:batch_committed, _, _, _, _}, 200
     end
 
     test "a coalesced commit failure acks every caller with rocksdb_write_failed and leaves no marks",
@@ -162,7 +162,7 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
       end
 
       assert_receive {:range_resolved, 1, ^n}
-      refute_receive {:batch_committed, _, _, _}, 200
+      refute_receive {:batch_committed, _, _, _, _}, 200
     end
 
     test "a post-commit cache failure replies every caller before escalating", ctx do
@@ -207,9 +207,9 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
       results = Enum.map(tasks, &Task.await(&1, 2_000))
       assert Enum.sort(Enum.map(results, &elem(&1, 1))) == [{1, 1}, {2, 2}, {3, 3}]
 
-      assert_receive {:batch_committed, 1, 2, _groups}
-      assert_receive {:batch_committed, 3, 3, _groups}
-      refute_receive {:batch_committed, _, _, _}, 200
+      assert_receive {:batch_committed, 1, 2, _groups, _committed_at}
+      assert_receive {:batch_committed, 3, 3, _groups, _committed_at}
+      refute_receive {:batch_committed, _, _, _, _}, 200
     end
 
     test "batch_timeout_ms > 0 defers the flush to the send_after timer", ctx do

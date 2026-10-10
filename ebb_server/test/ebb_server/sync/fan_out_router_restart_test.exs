@@ -15,6 +15,8 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
   use ExUnit.Case, async: false
   use EbbServer.Integration.StorageCase
 
+  import EbbServer.TestHelpers
+
   alias EbbServer.Integration.ActionHelpers
   alias EbbServer.Storage.{GsnCounter, RocksDB, WatermarkTracker}
   alias EbbServer.Sync.{FanOutFrontier, FanOutRouter, SSEConnection}
@@ -100,7 +102,7 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
 
       # A stale replay below the frontier must not lower it, in memory or
       # on the persisted frontier.
-      send(FanOutRouter, {:batch_committed, 1, 1, %{}})
+      send(FanOutRouter, {:batch_committed, 1, 1, %{}, nil})
       state = :sys.get_state(FanOutRouter)
 
       assert state.last_pushed_gsn == 2
@@ -177,6 +179,27 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
       assert Jason.decode!(json)["actor_id"] == actor_id
       sync_router()
       assert FanOutFrontier.get() == {:ok, 1}
+
+      :ok = FanOutRouter.unsubscribe(sse_pid)
+    end
+
+    test "a recovered range emits no push latency sample" do
+      group_id = "g_363_recover_#{:erlang.unique_integer([:positive])}"
+      actor_id = "a_363_recover_#{:erlang.unique_integer([:positive])}"
+
+      {:ok, sse_pid} = SSEConnection.start_link(self(), [group_id], %{group_id => 0})
+      :ok = FanOutRouter.subscribe([group_id], sse_pid, actor_id)
+
+      :ok = terminate_router()
+      post_bootstrap!(actor_id, group_id)
+
+      # A recovered range has no commit time, so the resumed push must not
+      # be reported as a latency sample.
+      ref = attach_telemetry([[:ebb, :fanout, :push_latency_ms]])
+      {:ok, _pid} = restart_router()
+
+      assert_receive {:sse_chunk, "data", _json}, 5_000
+      refute_received {:telemetry_event, ^ref, [:ebb, :fanout, :push_latency_ms], _, _}
 
       :ok = FanOutRouter.unsubscribe(sse_pid)
     end
