@@ -199,6 +199,25 @@ defmodule EbbServer.Storage.DirtyTracker do
   end
 
   @doc """
+  Returns the number of entities currently marked dirty.
+
+  Returns `0` when the dirty set table does not exist, so a caller
+  sampling the backlog is not coupled to the table's lifetime.
+
+  ## Examples
+
+      iex> DirtyTracker.size()
+      0
+  """
+  @spec size(atom()) :: non_neg_integer()
+  def size(dirty_set \\ @default_dirty_set_name) do
+    case :ets.info(dirty_set, :size) do
+      :undefined -> 0
+      size -> size
+    end
+  end
+
+  @doc """
   Compare-and-clears the dirty mark for an entity ID.
 
   Removes the mark only when the currently stored generation equals

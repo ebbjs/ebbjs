@@ -187,6 +187,17 @@ All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 | `:writer_batch_max_size`   | Buffered Actions before an immediate commit (`<= 0` = no trigger) | 1000        |
 | `:writer_batch_timeout_ms` | Coalescing window (`0` = burst-drain, no timer)                   | 0           |
 
+The periodic metric sampler is configured under its own key,
+`Application.get_env(:ebb_server, EbbServer.Telemetry.Sampler)`:
+
+| Sampler key          | Description                                         | Default                              |
+| -------------------- | --------------------------------------------------- | ------------------------------------ |
+| `:enabled`           | Emit the periodic gauges                            | `true` (`false` in `MIX_ENV=test`)   |
+| `:interval_ms`       | Sampling interval in milliseconds                   | `1000`                               |
+| `:rocks_name`        | RocksDB instance to read `max_gsn` from             | `EbbServer.Storage.RocksDB`          |
+| `:watermark_tracker` | WatermarkTracker instance to read the frontier from | `EbbServer.Storage.WatermarkTracker` |
+| `:dirty_set`         | Dirty-set ETS table name                            | resolved from `DirtyTracker`         |
+
 Several keys that appeared in earlier docs — `:writer_count`, `:warmer_*`,
 and `:replication_peers` — are **read by nothing in `lib/` or `config/`**.
 Production runs a single `EbbServer.Storage.Writer` GenServer with batch
@@ -200,10 +211,12 @@ runs (see [`bench/RESULTS.md`](bench/RESULTS.md)).
 `:telemetry` is a direct dependency and `EbbServer.Telemetry` fixes the event
 naming and payload conventions that per-subsystem instrumentation builds on.
 The instrumented events are still being built
-([#125](https://github.com/ebbjs/ebbjs/issues/125)) — no subsystem emits any
-`:telemetry` events yet. The developer-facing `onAction` hook is likewise
-unbuilt. The table after the conventions is the **target** metric set, not
-current behavior.
+([#125](https://github.com/ebbjs/ebbjs/issues/125)) — the
+`ebb.watermark.lag` and `ebb.dirty_set.size` gauges are live, sampled by
+`EbbServer.Telemetry.Sampler`; the rest of the catalogue is still being built
+([#366](https://github.com/ebbjs/ebbjs/issues/366)). The developer-facing
+`onAction` hook is likewise unbuilt. The table after the conventions is the
+**target** metric set, not current behavior.
 
 #### Telemetry conventions
 
