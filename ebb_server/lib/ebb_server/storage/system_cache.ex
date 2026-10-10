@@ -109,7 +109,6 @@ defmodule EbbServer.Storage.SystemCache do
   `:sqlite_name`) so callers can drive the rebuild against isolated
   stores without relying on global `:persistent_term` state.
   """
-  @default_dirty_set_name :ebb_dirty_set
 
   @spec populate_system_caches(keyword()) :: :ok
   def populate_system_caches(opts \\ []) do
@@ -134,9 +133,7 @@ defmodule EbbServer.Storage.SystemCache do
     entity_types_table =
       Keyword.get(opts, :entity_types) || CacheTables.entity_types()
 
-    dirty_set =
-      Keyword.get(opts, :dirty_set) ||
-        :persistent_term.get({DirtyTracker, :dirty_set}, @default_dirty_set_name)
+    dirty_set = Keyword.get(opts, :dirty_set) || DirtyTracker.dirty_set_name()
 
     backfill_type_entities(rocks_name)
 

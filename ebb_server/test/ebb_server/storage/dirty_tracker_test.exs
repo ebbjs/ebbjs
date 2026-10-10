@@ -253,4 +253,22 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
       assert "relationship_xyz" in ids
     end
   end
+
+  describe "size/1" do
+    test "returns the number of marked entities" do
+      %{dirty_set: dirty_set} = with_isolated_tracker()
+
+      assert DirtyTracker.size(dirty_set) == 0
+
+      :ok = DirtyTracker.mark_dirty_batch(["todo_a", "todo_b", "todo_c"], dirty_set)
+
+      assert DirtyTracker.size(dirty_set) == 3
+    end
+
+    test "returns 0 for an undefined table" do
+      undefined = :"dirty_set_that_does_not_exist_#{System.unique_integer([:positive])}"
+
+      assert DirtyTracker.size(undefined) == 0
+    end
+  end
 end
