@@ -197,13 +197,68 @@ runs (see [`bench/RESULTS.md`](bench/RESULTS.md)).
 
 ### Observability
 
-Server-side `:telemetry` instrumentation is **not implemented yet** — there are no `:telemetry.execute/3` calls anywhere in `ebb_server/`. The developer-facing `onAction` hook is likewise unbuilt ([#125](https://github.com/ebbjs/ebbjs/issues/125)). The table below is the **target** metric set, not current behavior:
+`:telemetry` is a direct dependency and `EbbServer.Telemetry` fixes the event
+naming and payload conventions that per-subsystem instrumentation builds on.
+The instrumented events are still being built
+([#125](https://github.com/ebbjs/ebbjs/issues/125)) — no subsystem emits any
+`:telemetry` events yet. The developer-facing `onAction` hook is likewise
+unbuilt. The table after the conventions is the **target** metric set, not
+current behavior.
+
+#### Telemetry conventions
+
+Every event is `[:ebb, subsystem, event]`, written `ebb.<subsystem>.<event>` in
+reporters:
+
+- **Names** are `ebb.<subsystem>.<event>`, lower snake case: past tense for
+  things that happened (`ebb.writer.range_resolved`), a noun for gauges
+  (`ebb.watermark.lag`).
+- **Measurements carry numbers only** — counts, sizes, durations, ratios.
+  Durations are native time units (`System.monotonic_time/0` deltas, as
+  `span/3` emits them); the `_ms` in a latency event name marks it as a latency
+  metric, and reporters convert with `unit: {:native, :millisecond}`.
+- **Metadata carries identifiers and status** — `gsn`, `group_id`, `actor_id`,
+  `subject_id`, `status`, `reason`. It never carries Action payloads or entity
+  field values.
+- **Start/stop pairs** go through `EbbServer.Telemetry.span/3`, which emits
+  `<event>.start`, `<event>.stop`, and `<event>.exception` (via
+  `:telemetry.span/3`).
+
+Emit through `EbbServer.Telemetry.execute/3` and `span/3` so the `[:ebb]` root
+and the measurement/metadata split stay in one place:
+
+```elixir
+EbbServer.Telemetry.execute(
+  [:writer, :batch_size],
+  %{count: length(batch)},
+  %{gsn_start: from, gsn_end: to}
+)
+```
+
+Attach with `:telemetry.attach_many/4` as usual; the full event catalogue lives
+in `EbbServer.Telemetry`:
+
+```elixir
+:telemetry.attach_many(
+  "ebb-logger",
+  [[:ebb, :writer, :batch_size]],
+  fn event, measurements, metadata, _config ->
+    Logger.info("#{inspect(event)} #{inspect(measurements)} #{inspect(metadata)}")
+  end,
+  nil
+)
+```
+
+Tests assert on emitted events with `EbbServer.TestHelpers.attach_telemetry/1`
+and `telemetry_events/2`.
 
 | Planned metric                            | Source       | Type                          |
 | ----------------------------------------- | ------------ | ----------------------------- |
 | `ebb.writer.batch_size`                   | Writer       | Histogram                     |
 | `ebb.writer.batch_latency_ms`             | Writer       | Histogram                     |
 | `ebb.writer.actions_per_sec`              | Writer       | Counter                       |
+| `ebb.writer.range_resolved`               | Writer       | Counter (alert on abandon)    |
+| `ebb.writer.commit_failed`                | Writer       | Counter                       |
 | `ebb.watermark.lag`                       | System Cache | Gauge (`max_gsn - watermark`) |
 | `ebb.dirty_set.size`                      | System Cache | Gauge                         |
 | `ebb.entity_store.materialize_latency_ms` | Entity Store | Histogram                     |
@@ -212,6 +267,7 @@ Server-side `:telemetry` instrumentation is **not implemented yet** — there ar
 | `ebb.fanout.active_connections`           | Fan-Out      | Gauge                         |
 | `ebb.fanout.active_groups`                | Fan-Out      | Gauge                         |
 | `ebb.http.request_latency_ms`             | HTTP API     | Histogram (per endpoint)      |
+| `ebb.sync.catch_up`                       | Sync         | Counter                       |
 
 ### ID generation
 

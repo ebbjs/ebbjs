@@ -26,6 +26,10 @@ defmodule EbbServer.TestHelpers do
   - `validated_action/1` - Create sample action with atom keys (post-validation format)
   - `validated_update/1` - Create sample update with atom keys (post-validation format)
 
+  **Telemetry**
+  - `attach_telemetry/1` - Forward emitted `:telemetry` events to the test process
+  - `telemetry_events/2` - Drain events forwarded for an attachment
+
   ## HLC Encoding
 
   HLC timestamps are 64-bit integers encoded as: `(logical_time_ms << 16) | counter`
@@ -65,6 +69,62 @@ defmodule EbbServer.TestHelpers do
     end
 
     :ok
+  end
+
+  @doc """
+  Attaches a telemetry handler that forwards every event in `events` to the
+  calling test process.
+
+  Returns a reference that tags each forwarded message so concurrent
+  attachments can be told apart. Events arrive as:
+
+      {:telemetry_event, ref, event_name, measurements, metadata}
+
+  The handler is detached when the test exits. Use `telemetry_events/2` to
+  drain the forwarded events.
+
+  ## Example
+
+      ref = attach_telemetry([[:ebb, :writer, :batch_size]])
+      EbbServer.Telemetry.execute([:writer, :batch_size], %{count: 3}, %{})
+
+      assert [{[:ebb, :writer, :batch_size], %{count: 3}, %{}}] =
+               telemetry_events(ref)
+  """
+  def attach_telemetry(events) when is_list(events) do
+    handler_id = {__MODULE__, :telemetry, System.unique_integer([:positive])}
+    ref = make_ref()
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach_many(
+        handler_id,
+        events,
+        fn event, measurements, metadata, _config ->
+          send(test_pid, {:telemetry_event, ref, event, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    ref
+  end
+
+  @doc """
+  Drains telemetry events forwarded for `ref`, in emission order.
+
+  Waits up to `timeout` ms for each event and returns `[]` once a wait
+  elapses with nothing left to consume, so callers get the events emitted by
+  a synchronous block without sleeping a fixed amount.
+  """
+  def telemetry_events(ref, timeout \\ 100) do
+    receive do
+      {:telemetry_event, ^ref, event, measurements, metadata} ->
+        [{event, measurements, metadata} | telemetry_events(ref, timeout)]
+    after
+      timeout -> []
+    end
   end
 
   def tmp_dir(%{module: module, test: test}) do

@@ -39,6 +39,7 @@ defmodule EbbServer.MixProject do
       {:bandit, "~> 1.5"},
       {:jason, "~> 1.4"},
       {:nanoid, "~> 2.1"},
+      {:telemetry, "~> 1.0"},
       {:req, "~> 0.5"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:open_api_spex, "~> 3.22"}
