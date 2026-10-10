@@ -38,7 +38,7 @@ defmodule EbbServer.Telemetry.Sampler do
         interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms),
         rocks_name: Keyword.get(opts, :rocks_name, @default_rocks_name),
         watermark_tracker: Keyword.get(opts, :watermark_tracker, @default_watermark_tracker),
-        dirty_set: Keyword.get(opts, :dirty_set, default_dirty_set())
+        dirty_set: Keyword.get(opts, :dirty_set, DirtyTracker.dirty_set_name())
       }
 
       schedule(state.interval_ms)
@@ -51,34 +51,37 @@ defmodule EbbServer.Telemetry.Sampler do
 
   @impl true
   def handle_info(:sample, state) do
-    emit_watermark_lag(state)
-    emit_dirty_set_size(state)
+    sample([:watermark, :lag], fn -> watermark_measurements(state) end)
+    sample([:dirty_set, :size], fn -> dirty_set_measurements(state) end)
     schedule(state.interval_ms)
 
     {:noreply, state}
   end
 
+  # Each gauge is read and emitted independently, so one failing source
+  # skips only its own gauge for the tick and the loop keeps running.
+  defp sample(event, read) do
+    Telemetry.execute(event, read.(), %{})
+  rescue
+    error ->
+      Logger.warning("#{inspect(event)} sample failed: #{inspect(error)}")
+  catch
+    kind, reason ->
+      Logger.warning("#{inspect(event)} sample failed: #{inspect({kind, reason})}")
+  end
+
   # The lag is the raw difference: a negative value is meaningful (the tail
   # was abandoned past the durable max) and must not be clamped away.
-  defp emit_watermark_lag(%{rocks_name: rocks_name, watermark_tracker: watermark_tracker}) do
-    max_gsn = RocksDB.get_max_gsn(rocks_name)
-    watermark = WatermarkTracker.committed_watermark(watermark_tracker)
+  defp watermark_measurements(%{rocks_name: rocks_name, watermark_tracker: watermark_tracker}) do
+    lag =
+      RocksDB.get_max_gsn(rocks_name) -
+        WatermarkTracker.committed_watermark(watermark_tracker)
 
-    Telemetry.execute([:watermark, :lag], %{lag: max_gsn - watermark}, %{})
-  rescue
-    error ->
-      Logger.warning("watermark lag sample failed: #{inspect(error)}")
+    %{lag: lag}
   end
 
-  defp emit_dirty_set_size(%{dirty_set: dirty_set}) do
-    Telemetry.execute([:dirty_set, :size], %{size: DirtyTracker.size(dirty_set)}, %{})
-  rescue
-    error ->
-      Logger.warning("dirty set size sample failed: #{inspect(error)}")
-  end
-
-  defp default_dirty_set do
-    :persistent_term.get({DirtyTracker, :dirty_set}, :ebb_dirty_set)
+  defp dirty_set_measurements(%{dirty_set: dirty_set}) do
+    %{size: DirtyTracker.size(dirty_set)}
   end
 
   defp schedule(interval_ms) do

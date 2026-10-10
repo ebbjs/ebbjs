@@ -19,6 +19,17 @@ defmodule EbbServer.Telemetry.SamplerTest do
       assert :ignore = Sampler.start_link(enabled: false, name: name)
       assert Process.whereis(name) == nil
     end
+
+    test "honors the application config when no option overrides it" do
+      # config/test.exs disables the sampler under its application env, the
+      # same path the real supervision tree takes on boot.
+      assert Application.get_env(:ebb_server, Sampler)[:enabled] == false
+
+      name = :"app_disabled_sampler_#{System.unique_integer([:positive])}"
+
+      assert :ignore = Sampler.start_link(name: name)
+      assert Process.whereis(name) == nil
+    end
   end
 
   describe "sampling" do

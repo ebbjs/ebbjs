@@ -258,12 +258,7 @@ defmodule EbbServer.Storage.Writer do
   def init(opts) do
     rocks_name = Keyword.get(opts, :rocks_name, EbbServer.Storage.RocksDB)
 
-    dirty_set =
-      Keyword.get(
-        opts,
-        :dirty_set,
-        :persistent_term.get({DirtyTracker, :dirty_set}, :ebb_dirty_set)
-      )
+    dirty_set = Keyword.get(opts, :dirty_set, DirtyTracker.dirty_set_name())
 
     gsn_counter = Keyword.get(opts, :gsn_counter, GsnCounter.get_resources().gsn_counter)
 

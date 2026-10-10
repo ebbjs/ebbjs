@@ -102,6 +102,7 @@ ordered-fanout coordination that is not yet built
 | `EbbServer.Storage.WatermarkTracker`                                             | Resolution-frontier ETS + `:atomics` (SSE fan-out gating)          |
 | `EbbServer.Storage.{DirtyTracker,GroupCache,EntityGroupCache,RelationshipCache}` | In-memory state children of `SystemCache`                          |
 | `EbbServer.Storage.GSNCounter`                                                   | Lock-free GSN claiming + restart reconcile (`:atomics`)            |
+| `EbbServer.Telemetry.Sampler`                                                    | Periodic `ebb.watermark.lag` / `ebb.dirty_set.size` gauges         |
 | `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass + external modes)                |
 | `EbbServer.Sync.Router`                                                          | HTTP plug router                                                   |
 | `EbbServer.Sync.CatchUp`                                                         | Paginated catch-up                                                 |
@@ -144,6 +145,7 @@ EbbServer.Supervisor (one_for_one)
 │   │   └── Storage.RelationshipCache
 │   ├── Storage.WatermarkTracker           — resolution-frontier ETS + :atomics
 │   └── Storage.Writer                     — serialization point (last child)
+├── Telemetry.Sampler                      — 1 Hz watermark-lag + dirty-set gauges
 ├── Sync Supervisor (one_for_one)
 │   ├── Sync.FanOutFrontier                — persisted last-pushed frontier
 │   ├── Sync.FanOutRouter
@@ -213,10 +215,9 @@ naming and payload conventions that per-subsystem instrumentation builds on.
 The instrumented events are still being built
 ([#125](https://github.com/ebbjs/ebbjs/issues/125)) — the
 `ebb.watermark.lag` and `ebb.dirty_set.size` gauges are live, sampled by
-`EbbServer.Telemetry.Sampler`; the rest of the catalogue is still being built
-([#366](https://github.com/ebbjs/ebbjs/issues/366)). The developer-facing
-`onAction` hook is likewise unbuilt. The table after the conventions is the
-**target** metric set, not current behavior.
+`EbbServer.Telemetry.Sampler`; the rest of the catalogue is still being built.
+The developer-facing `onAction` hook is likewise unbuilt. The table after the
+conventions is the **target** metric set, not current behavior.
 
 #### Telemetry conventions
 
