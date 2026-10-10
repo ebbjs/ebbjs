@@ -18,7 +18,7 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
     cache = start_isolated_cache()
     %{name: rocks_name} = start_rocks()
 
-    %{cache: cache, rocks_name: rocks_name}
+    Map.put(cache, :rocks_name, rocks_name)
   end
 
   describe "batch coalescing (#332)" do
@@ -158,7 +158,7 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
              )
 
       for i <- 1..n do
-        refute DirtyTracker.dirty?("todo_fail_#{i}", ctx.cache.dirty_set)
+        refute DirtyTracker.dirty?("todo_fail_#{i}", ctx.dirty_set)
       end
 
       assert_receive {:range_resolved, 1, ^n}
@@ -233,26 +233,8 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
       writer = start_writer(writer_opts(ctx, %{}))
 
       assert {:ok, {0, 0}, []} = Writer.write_actions([], writer.name)
-      assert :atomics.get(ctx.cache.gsn_counter, 1) == 0
+      assert :atomics.get(ctx.gsn_counter, 1) == 0
     end
-  end
-
-  defp writer_opts(ctx, extra) do
-    base = %{
-      rocks_name: ctx.rocks_name,
-      dirty_set: ctx.cache.dirty_set,
-      gsn_counter: ctx.cache.gsn_counter,
-      group_members: ctx.cache.group_members,
-      group_members_by_id: ctx.cache.group_members_by_id,
-      entity_groups: ctx.cache.entity_groups,
-      entity_groups_by_id: ctx.cache.entity_groups_by_id,
-      entity_groups_by_group: ctx.cache.entity_groups_by_group,
-      relationships: ctx.cache.relationships,
-      relationships_by_id: ctx.cache.relationships_by_id,
-      watermark_tracker: ctx.cache.watermark_tracker
-    }
-
-    Map.merge(base, extra)
   end
 
   defp register_router do
@@ -284,20 +266,5 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
 
     :ok = :sys.resume(writer.name)
     tasks
-  end
-
-  defp queue_len(pid) do
-    case Process.info(pid, :message_queue_len) do
-      {:message_queue_len, n} -> n
-      _ -> 0
-    end
-  end
-
-  defp wait_until(fun, attempts \\ 500) do
-    cond do
-      fun.() -> true
-      attempts <= 0 -> false
-      true -> Process.sleep(10) && wait_until(fun, attempts - 1)
-    end
   end
 end

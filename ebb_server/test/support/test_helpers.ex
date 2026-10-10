@@ -366,6 +366,53 @@ defmodule EbbServer.TestHelpers do
     %{name: name, pid: pid}
   end
 
+  @doc """
+  Builds the Writer options map from a test context with flat cache keys.
+
+  `ctx` is a context from `start_isolated_cache/0` merged with a `:rocks_name`
+  from `start_rocks/1`; `extra` overrides individual options (for example a
+  `:commit_fn` or `:fan_out_router`).
+  """
+  def writer_opts(ctx, extra) do
+    base = %{
+      rocks_name: ctx.rocks_name,
+      dirty_set: ctx.dirty_set,
+      gsn_counter: ctx.gsn_counter,
+      group_members: ctx.group_members,
+      group_members_by_id: ctx.group_members_by_id,
+      entity_groups: ctx.entity_groups,
+      entity_groups_by_id: ctx.entity_groups_by_id,
+      entity_groups_by_group: ctx.entity_groups_by_group,
+      relationships: ctx.relationships,
+      relationships_by_id: ctx.relationships_by_id,
+      watermark_tracker: ctx.watermark_tracker
+    }
+
+    Map.merge(base, extra)
+  end
+
+  @doc """
+  Returns the number of messages queued in `pid`'s mailbox, or `0` if it is
+  gone. Used to wait for calls to reach a suspended GenServer.
+  """
+  def queue_len(pid) do
+    case Process.info(pid, :message_queue_len) do
+      {:message_queue_len, n} -> n
+      _ -> 0
+    end
+  end
+
+  @doc """
+  Polls `fun` until it returns truthy, for up to `attempts * 10ms`.
+  """
+  def wait_until(fun, attempts \\ 500) do
+    cond do
+      fun.() -> true
+      attempts <= 0 -> false
+      true -> Process.sleep(10) && wait_until(fun, attempts - 1)
+    end
+  end
+
   defp put_if_present(kw, _key, nil), do: kw
   defp put_if_present(kw, key, value), do: Keyword.put(kw, key, value)
 
