@@ -166,6 +166,7 @@ defmodule EbbServer.Storage.Writer do
   alias EbbServer.Storage.PermissionChecker
   alias EbbServer.Storage.PermissionHelper
   alias EbbServer.Storage.WatermarkTracker
+  alias EbbServer.Telemetry
 
   alias EbbServer.Storage.{
     CacheTables,
@@ -481,11 +482,21 @@ defmodule EbbServer.Storage.Writer do
         state
 
       _ ->
-        {gsn_start, gsn_end} = GsnCounter.claim_gsn_range(length(fresh), state.gsn_counter)
-        ranges = caller_ranges(fresh_tagged, length(pending), gsn_start)
+        batch_size = length(fresh)
+        caller_count = length(pending)
+
+        {gsn_start, gsn_end} = GsnCounter.claim_gsn_range(batch_size, state.gsn_counter)
+        ranges = caller_ranges(fresh_tagged, caller_count, gsn_start)
+
+        Telemetry.execute(
+          [:writer, :batch_size],
+          %{count: batch_size},
+          %{gsn_start: gsn_start, gsn_end: gsn_end, callers: caller_count}
+        )
 
         case write_batch(fresh, gsn_start, gsn_end, state) do
           :ok ->
+            emit_actions_accepted(batch_size)
             reply_all(pending, ranges, :ok)
             state
 
@@ -497,11 +508,16 @@ defmodule EbbServer.Storage.Writer do
             # The batch is durable: reply success to every caller first,
             # then escalate, so no caller sees a lost success when the
             # rebuild tears this process down.
+            emit_actions_accepted(batch_size)
             reply_all(pending, ranges, :ok)
             escalate_cache_failure(gsn_start, gsn_end, reason)
             state
         end
     end
+  end
+
+  defp emit_actions_accepted(count) do
+    Telemetry.execute([:writer, :actions_per_sec], %{count: count}, %{})
   end
 
   # Arrival order is the caller's position in `pending`; a caller's
@@ -598,6 +614,7 @@ defmodule EbbServer.Storage.Writer do
   # (in `apply_post_commit`) overwrites them, so the success path needs no
   # clear.
   defp write_batch(fresh, gsn_start, gsn_end, state) do
+    started_at = System.monotonic_time()
     entity_ids = affected_entity_ids(fresh)
     pending = {entity_ids, DirtyTracker.mark_pending_batch(entity_ids, state.dirty_set)}
 
@@ -614,6 +631,14 @@ defmodule EbbServer.Storage.Writer do
         abandon(state, pending, gsn_start, gsn_end, {kind, value})
         :erlang.raise(kind, value, __STACKTRACE__)
     after
+      # Emit before the resolve so a WatermarkTracker failure cannot
+      # swallow the latency sample for a batch that failed to commit.
+      Telemetry.execute(
+        [:writer, :batch_latency_ms],
+        %{duration: System.monotonic_time() - started_at},
+        %{gsn_start: gsn_start, gsn_end: gsn_end}
+      )
+
       resolve_range(state, gsn_start, gsn_end)
     end
   end
@@ -668,6 +693,12 @@ defmodule EbbServer.Storage.Writer do
         end
 
       {:error, reason} ->
+        Telemetry.execute(
+          [:writer, :commit_failed],
+          %{count: 1},
+          %{gsn_start: gsn_start, gsn_end: gsn_end, reason: reason}
+        )
+
         abandon(state, pending, gsn_start, gsn_end, reason)
         {:error, reason}
     end
@@ -933,6 +964,12 @@ defmodule EbbServer.Storage.Writer do
     # Resolve before nudging so the router can only observe the advanced
     # frontier. The `after` repeats this, harmlessly.
     resolve_range(state, gsn_start, gsn_end)
+
+    Telemetry.execute(
+      [:writer, :range_resolved],
+      %{count: 1},
+      %{gsn_start: gsn_start, gsn_end: gsn_end, reason: reason}
+    )
 
     Logger.error(
       "Writer abandoned GSN range #{gsn_start}..#{gsn_end} without committing it: " <>
