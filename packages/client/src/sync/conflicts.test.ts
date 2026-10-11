@@ -312,3 +312,72 @@ describe("createConflicts", () => {
     spy.mockRestore();
   });
 });
+
+describe("createConflicts observable", () => {
+  it("publishes the snapshot on the initial load, a detection, and a resolution", async () => {
+    const store = mkStore([mkEntry("act_a", "1")]);
+    const harness = mkDeps(store);
+    const { conflicts, store: view, observable } = createConflicts(harness.deps);
+    const listener = vi.fn();
+    observable.subscribe(listener);
+
+    expect(observable.get()).toEqual({ count: 0, entries: [] });
+
+    await conflicts.rehydrate();
+    expect(observable.get().count).toBe(1);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    await view.put(mkEntry("act_b", "2"));
+    expect(observable.get().count).toBe(2);
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    await conflicts.resolve("act_a", "discard");
+    expect(observable.get().count).toBe(1);
+    expect(listener).toHaveBeenCalledTimes(3);
+    expect(observable.get().entries.map((entry) => entry.action.id)).toEqual(["act_b"]);
+  });
+
+  it("keeps count in step with list().length", async () => {
+    const store = mkStore([mkEntry("act_a", "1"), mkEntry("act_b", "2")]);
+    const harness = mkDeps(store);
+    const { conflicts, store: view, observable } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    expect(observable.get().count).toBe((await conflicts.list()).length);
+
+    await view.put(mkEntry("act_c", "3"));
+    expect(observable.get().count).toBe((await conflicts.list()).length);
+  });
+
+  it("stops notifying after unsubscribe", async () => {
+    const store = mkStore([]);
+    const harness = mkDeps(store);
+    const { store: view, observable } = createConflicts(harness.deps);
+    const listener = vi.fn();
+    observable.subscribe(listener)();
+
+    await view.put(mkEntry("act_a", "1"));
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(observable.get().count).toBe(1);
+  });
+
+  it("isolates a throwing observable listener", async () => {
+    const store = mkStore([]);
+    const harness = mkDeps(store);
+    const { store: view, observable } = createConflicts(harness.deps);
+    const bad = vi.fn(() => {
+      throw new Error("bad listener");
+    });
+    const good = vi.fn();
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    observable.subscribe(bad);
+    observable.subscribe(good);
+
+    await view.put(mkEntry("act_a", "1"));
+
+    expect(good).toHaveBeenCalled();
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+});

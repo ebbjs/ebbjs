@@ -21,6 +21,7 @@ export {
   type HandshakeResult,
   type NamespacedClient,
   type QueryOptions,
+  type SyncObservables,
 } from "./sync/client";
 
 export {
@@ -93,7 +94,10 @@ export {
   type Conflicts,
   type ConflictResolution,
   type ConflictChangeListener,
+  type ConflictSnapshot,
 } from "./sync/conflicts";
+
+export { type ReadonlyObservable } from "./sync/observable";
 
 export type { ConflictEntry, ConflictWinner } from "@ebbjs/storage/types";
 

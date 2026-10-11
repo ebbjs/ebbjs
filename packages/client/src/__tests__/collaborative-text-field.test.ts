@@ -379,6 +379,8 @@ describe("conflicts through client.conflicts", () => {
     const doc = await (await client.blogPost.get(id))!.body;
     const runId = [...doc!.docState.nodes.keys()].find((key) => key !== "ROOT")!;
     const before = written.length;
+    const fired: number[] = [];
+    client.sync.conflicts.subscribe((snapshot) => fired.push(snapshot.count));
     doc!.localExtend({ runId, appendText: "!" });
     await waitForFlush(() => doc!.pendingActions());
     // The derived accessor self-flushes, so the local edit is
@@ -425,6 +427,14 @@ describe("conflicts through client.conflicts", () => {
       field: "content",
       path: [runId],
     });
+    const snapshot = client.sync.conflicts.get();
+    expect(snapshot.count).toBe(conflicts.length);
+    expect(snapshot.entries).toEqual(conflicts);
+    expect(fired[fired.length - 1]).toBe(1);
+
+    await client.conflicts.resolve(conflicts[0]!.action.id, "discard");
+    expect(client.sync.conflicts.get().count).toBe(0);
+    expect(fired[fired.length - 1]).toBe(0);
   });
 
   it("does not surface a write to a different run", async () => {

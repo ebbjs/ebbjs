@@ -43,7 +43,8 @@ import { ConnectionStateMachine, type ConnectionState } from "./connection-state
 import { PresenceManager } from "../presence/presence";
 import { openSSEStream, type SSESubscription } from "./sse";
 import { createOutbox, type Outbox } from "./outbox";
-import { createConflicts, type Conflicts } from "./conflicts";
+import { createConflicts, type ConflictSnapshot, type Conflicts } from "./conflicts";
+import type { ReadonlyObservable } from "./observable";
 import { createFlushScheduler, type FlushScheduler } from "./flush-scheduler";
 import { backoffDelayMs } from "./backoff";
 import { TextDocument, TextDocumentRegistry } from "../fields/collaborative-text/text-document";
@@ -111,6 +112,20 @@ const DEFAULT_RECONNECT_INITIAL_MS = 1_000;
 const DEFAULT_RECONNECT_MAX_MS = 60_000;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
+/**
+ * Read-only observables over the client's sync state, mounted as
+ * `client.sync`. Each is a synchronous `get()` plus a `subscribe(cb)`
+ * that fires on change, so application UI can read them without polling
+ * and without reaching into internals.
+ *
+ * Resolution / mutation stays on the owning surface (`client.conflicts`,
+ * the outbox writer): `sync` never exposes a write path.
+ */
+export interface SyncObservables {
+  /** Unresolved LWW conflicts awaiting an application decision. */
+  readonly conflicts: ReadonlyObservable<ConflictSnapshot>;
+}
+
 export class SyncClient implements PermissionQuery {
   readonly serverUrl: string;
   readonly actorId: string;
@@ -141,6 +156,12 @@ export class SyncClient implements PermissionQuery {
    * #125's conflict-count source.
    */
   readonly conflicts: Conflicts;
+  /**
+   * Read-only sync observables. `client.sync.conflicts` publishes the
+   * unresolved conflict set as a `get()` + `subscribe(cb)` value for
+   * application UI.
+   */
+  readonly sync: SyncObservables;
   private readonly fetchImpl: typeof fetch;
   private readonly reconnectInitialMs: number;
   private readonly reconnectMaxMs: number;
@@ -216,7 +237,11 @@ export class SyncClient implements PermissionQuery {
     this.presence = new PresenceManager(this);
     // The manager is also the ConflictStore the Outbox writes through, so
     // a detection lands in its cache and fires `onChange` without a poll.
-    const { conflicts, store: conflictStore } = createConflicts({
+    const {
+      conflicts,
+      store: conflictStore,
+      observable: conflictsObservable,
+    } = createConflicts({
       store: this.storage.conflicts,
       requeue: (action) => this.requeueRebased(action),
       reMaterialize: (action) => this.reMaterializeFromLog(action),
@@ -226,6 +251,7 @@ export class SyncClient implements PermissionQuery {
       generateUpdateId: () => this.generateUpdateId(),
     });
     this.conflicts = conflicts;
+    this.sync = { conflicts: conflictsObservable };
     this.outbox = createOutbox({
       applyOptimistic: (action) => this.applyLocalAction(action),
       submit: (actions) => this.submitActions(actions),
