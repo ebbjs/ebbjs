@@ -105,6 +105,7 @@ defmodule EbbServer.Storage.EntityStore do
   """
 
   alias EbbServer.Storage.{DirtyTracker, RocksDB, SQLite}
+  alias EbbServer.Telemetry
 
   @default_rocks_name EbbServer.Storage.RocksDB
   @default_sqlite_name EbbServer.Storage.SQLite
@@ -126,12 +127,16 @@ defmodule EbbServer.Storage.EntityStore do
     dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
 
     if DirtyTracker.dirty?(entity_id, dirty_set) do
+      Telemetry.execute([:entity_store, :cache_hit_rate], %{count: 1}, %{result: :miss})
+
       materialize(entity_id,
         rocks_name: rocks_name,
         sqlite_name: sqlite_name,
         dirty_set: dirty_set
       )
     else
+      Telemetry.execute([:entity_store, :cache_hit_rate], %{count: 1}, %{result: :hit})
+
       case SQLite.get_entity(entity_id, sqlite_name) do
         {:ok, row} -> format_live_entity(row)
         :not_found -> :not_found
@@ -165,6 +170,25 @@ defmodule EbbServer.Storage.EntityStore do
   """
   @spec materialize(String.t(), keyword()) :: {:ok, map()} | :not_found | {:error, term()}
   def materialize(entity_id, opts \\ []) do
+    started_at = System.monotonic_time()
+    result = do_materialize(entity_id, opts)
+
+    subject_type =
+      case result do
+        {:ok, %{type: type}} -> type
+        _ -> nil
+      end
+
+    Telemetry.execute(
+      [:entity_store, :materialize_latency_ms],
+      %{duration: System.monotonic_time() - started_at},
+      %{subject_id: entity_id, subject_type: subject_type}
+    )
+
+    result
+  end
+
+  defp do_materialize(entity_id, opts) do
     rocks_name = Keyword.get(opts, :rocks_name, @default_rocks_name)
     sqlite_name = Keyword.get(opts, :sqlite_name, @default_sqlite_name)
     dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
@@ -543,7 +567,9 @@ defmodule EbbServer.Storage.EntityStore do
       end)
     end
 
-    materialize_system_entities(rocks_name, sqlite_name, dirty_set)
+    system_materialized? = materialize_system_entities(rocks_name, sqlite_name, dirty_set)
+    result = if dirty_ids == [] and not system_materialized?, do: :hit, else: :miss
+    Telemetry.execute([:entity_store, :cache_hit_rate], %{count: 1}, %{result: result})
 
     query_params = %{type: type, filter: filter, actor_id: actor_id}
     query_params = if limit, do: Map.put(query_params, :limit, limit), else: query_params
@@ -561,14 +587,18 @@ defmodule EbbServer.Storage.EntityStore do
   defp materialize_system_entities(rocks_name, sqlite_name, dirty_set) do
     system_prefixes = ["gm_", "eg_", "rel_"]
 
-    dirty_set
-    |> :ets.tab2list()
-    |> Enum.map(fn {id, _} -> id end)
-    |> Enum.filter(fn id ->
-      Enum.any?(system_prefixes, &String.starts_with?(id, &1))
-    end)
-    |> Enum.each(fn id ->
+    dirty_ids =
+      dirty_set
+      |> :ets.tab2list()
+      |> Enum.map(fn {id, _} -> id end)
+      |> Enum.filter(fn id ->
+        Enum.any?(system_prefixes, &String.starts_with?(id, &1))
+      end)
+
+    Enum.each(dirty_ids, fn id ->
       materialize(id, rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set)
     end)
+
+    dirty_ids != []
   end
 end
