@@ -219,24 +219,54 @@ runs (see [`bench/RESULTS.md`](bench/RESULTS.md)).
 
 ### Observability
 
-`:telemetry` is a direct dependency and `EbbServer.Telemetry` fixes the event
-naming and payload conventions that per-subsystem instrumentation builds on.
-The instrumented events are still being built
-([#125](https://github.com/ebbjs/ebbjs/issues/125)) — the
-`ebb.watermark.lag`, `ebb.dirty_set.size`, `ebb.fanout.active_connections`,
-and `ebb.fanout.active_groups` gauges are live, sampled by
-`EbbServer.Telemetry.Sampler`; `ebb.fanout.push_latency_ms` is emitted once
-per dispatched batch per group, `ebb.http.request_latency_ms` is live too,
-emitted by `EbbServer.Telemetry.HTTP` from Bandit's request span (attached at
-boot, before Bandit accepts requests), and `ebb.sync.catch_up` is emitted once
-per successful catch-up. The rest of the catalogue is still being built.
-The developer-facing `onAction` hook is likewise unbuilt. The table after the
-conventions is the **target** metric set, not current behavior.
+`:telemetry` is a direct dependency and `EbbServer.Telemetry` is the single
+place that fixes event names and payload conventions. The catalogue below is
+what the emitters under `lib/` emit today; `EbbServer.Telemetry`'s moduledoc is
+the authoritative source if the two ever disagree.
+
+The developer-facing `onAction` hook is a separate, unshipped server
+capability ([#367](https://github.com/ebbjs/ebbjs/issues/367)) and is not part
+of this `:telemetry` surface.
+
+#### Event catalogue
+
+Every event is `[:ebb, subsystem, event]`, written `ebb.<subsystem>.<event>` in
+reporters. Durations are in native `:telemetry` time units
+(`System.monotonic_time/0` deltas, as `:telemetry.span/3` emits them); the `_ms`
+suffix marks a latency metric, not the raw unit. Reporters convert with
+`unit: {:native, :millisecond}`.
+
+| Event                                     | Measurements (unit) | Metadata                                            | Metric type                  | Subsystem      |
+| ----------------------------------------- | ------------------- | --------------------------------------------------- | ---------------------------- | -------------- |
+| `ebb.writer.batch_size`                   | `count`             | `gsn_start`, `gsn_end`, `callers`                   | Histogram                    | `writer`       |
+| `ebb.writer.batch_latency_ms`             | `duration` (native) | `gsn_start`, `gsn_end`                              | Histogram                    | `writer`       |
+| `ebb.writer.actions_per_sec`              | `count`             | —                                                   | Counter                      | `writer`       |
+| `ebb.writer.range_resolved`               | `count`             | `gsn_start`, `gsn_end`, `reason`                    | Counter                      | `writer`       |
+| `ebb.writer.commit_failed`                | `count`             | `gsn_start`, `gsn_end`, `reason`                    | Counter                      | `writer`       |
+| `ebb.watermark.lag`                       | `lag` (GSNs)        | —                                                   | Gauge                        | `watermark`    |
+| `ebb.dirty_set.size`                      | `size` (entries)    | —                                                   | Gauge                        | `dirty_set`    |
+| `ebb.entity_store.materialize_latency_ms` | `duration` (native) | `subject_id`, `subject_type`                        | Histogram                    | `entity_store` |
+| `ebb.entity_store.cache_hit_rate`         | `count`             | `result` (`:hit` / `:miss`)                         | Counter (tagged by `result`) | `entity_store` |
+| `ebb.fanout.push_latency_ms`              | `duration` (native) | `group_id`                                          | Histogram                    | `fanout`       |
+| `ebb.fanout.active_connections`           | `count`             | —                                                   | Gauge                        | `fanout`       |
+| `ebb.fanout.active_groups`                | `count`             | —                                                   | Gauge                        | `fanout`       |
+| `ebb.http.request_latency_ms`             | `duration` (native) | `method`, `route`, `status`                         | Histogram                    | `http`         |
+| `ebb.sync.catch_up`                       | `count`             | `group_id`, `from_offset`, `returned`, `up_to_date` | Counter                      | `sync`         |
+
+The `ebb.watermark.lag`, `ebb.dirty_set.size`, `ebb.fanout.active_connections`,
+and `ebb.fanout.active_groups` gauges have no natural event to hang off, so
+`EbbServer.Telemetry.Sampler` polls them once per second (configurable above).
+
+`ebb.fanout.push_latency_ms` is measured from the Writer's durable commit to
+the GroupServer dispatching the batch to the group's subscribers: one sample
+per dispatched batch per group. Ranges recovered after a Router restart carry
+no commit time and are not sampled.
 
 `ebb.http.request_latency_ms` is emitted once per completed request with
-`method`, `route`, and `status`. The `GET /sync/live` SSE route is deliberately
-excluded because its span lasts the whole connection; see
-`EbbServer.Telemetry.HTTP` for the full rationale.
+`method`, `route`, and `status`. It is produced by `EbbServer.Telemetry.HTTP`
+from Bandit's request span (attached at boot, before Bandit accepts requests).
+The `GET /sync/live` SSE route is deliberately excluded because its span lasts
+the whole connection; see `EbbServer.Telemetry.HTTP` for the full rationale.
 
 `ebb.sync.catch_up` is emitted once per successful catch-up with `group_id`,
 `from_offset`, `returned`, and `up_to_date`. A `from_offset` of 0 marks a full
@@ -246,8 +276,9 @@ server-to-server replication exists.
 
 #### Telemetry conventions
 
-Every event is `[:ebb, subsystem, event]`, written `ebb.<subsystem>.<event>` in
-reporters:
+The reserved subsystems are `writer`, `watermark`, `dirty_set`, `entity_store`,
+`fanout`, `http`, and `sync`; adding a family means changing
+`EbbServer.Telemetry` first.
 
 - **Names** are `ebb.<subsystem>.<event>`, lower snake case: past tense for
   things that happened (`ebb.writer.range_resolved`), a noun for gauges
@@ -261,7 +292,8 @@ reporters:
   field values.
 - **Start/stop pairs** go through `EbbServer.Telemetry.span/3`, which emits
   `<event>.start`, `<event>.stop`, and `<event>.exception` (via
-  `:telemetry.span/3`).
+  `:telemetry.span/3`). No event currently uses this; the convention is fixed
+  for the first one that needs a span.
 
 Emit through `EbbServer.Telemetry.execute/3` and `span/3` so the `[:ebb]` root
 and the measurement/metadata split stay in one place:
@@ -274,13 +306,18 @@ EbbServer.Telemetry.execute(
 )
 ```
 
-Attach with `:telemetry.attach_many/4` as usual; the full event catalogue lives
-in `EbbServer.Telemetry`:
+#### Attaching handlers
+
+`:telemetry.attach_many/4` with a `Logger` handler:
 
 ```elixir
 :telemetry.attach_many(
   "ebb-logger",
-  [[:ebb, :writer, :batch_size]],
+  [
+    [:ebb, :writer, :batch_latency_ms],
+    [:ebb, :fanout, :push_latency_ms],
+    [:ebb, :http, :request_latency_ms]
+  ],
   fn event, measurements, metadata, _config ->
     Logger.info("#{inspect(event)} #{inspect(measurements)} #{inspect(metadata)}")
   end,
@@ -288,25 +325,59 @@ in `EbbServer.Telemetry`:
 )
 ```
 
+Add `{:telemetry_metrics, "~> 1.0"}` to aggregate the same events. Ebb names
+its events and measurements independently (`duration`, `count`), so each metric
+passes `event_name:` and `measurement:` explicitly rather than relying on the
+metric name to infer them. `distribution/2` is `telemetry_metrics`' histogram:
+
+```elixir
+metrics = [
+  Telemetry.Metrics.counter("ebb.writer.actions_per_sec",
+    event_name: [:ebb, :writer, :actions_per_sec],
+    measurement: :count
+  ),
+  Telemetry.Metrics.distribution("ebb.writer.batch_latency_ms",
+    event_name: [:ebb, :writer, :batch_latency_ms],
+    measurement: :duration,
+    unit: {:native, :millisecond}
+  ),
+  Telemetry.Metrics.counter("ebb.entity_store.cache_hit_rate",
+    event_name: [:ebb, :entity_store, :cache_hit_rate],
+    measurement: :count,
+    tags: [:result]
+  ),
+  Telemetry.Metrics.last_value("ebb.fanout.active_connections",
+    event_name: [:ebb, :fanout, :active_connections],
+    measurement: :count
+  ),
+  Telemetry.Metrics.distribution("ebb.fanout.push_latency_ms",
+    event_name: [:ebb, :fanout, :push_latency_ms],
+    measurement: :duration,
+    unit: {:native, :millisecond}
+  ),
+  Telemetry.Metrics.distribution("ebb.http.request_latency_ms",
+    event_name: [:ebb, :http, :request_latency_ms],
+    measurement: :duration,
+    unit: {:native, :millisecond},
+    tags: [:method, :route, :status]
+  )
+]
+
+children = [{Telemetry.Metrics.ConsoleReporter, metrics: metrics, interval: 5_000}]
+```
+
+Swap `ConsoleReporter` for a StatsD or Prometheus reporter to ship the same
+metrics to a real backend; the metric definitions do not change.
+
 Tests assert on emitted events with `EbbServer.TestHelpers.attach_telemetry/1`
 and `telemetry_events/2`.
 
-| Planned metric                            | Source       | Type                          |
-| ----------------------------------------- | ------------ | ----------------------------- |
-| `ebb.writer.batch_size`                   | Writer       | Histogram                     |
-| `ebb.writer.batch_latency_ms`             | Writer       | Histogram                     |
-| `ebb.writer.actions_per_sec`              | Writer       | Counter                       |
-| `ebb.writer.range_resolved`               | Writer       | Counter (alert on abandon)    |
-| `ebb.writer.commit_failed`                | Writer       | Counter                       |
-| `ebb.watermark.lag`                       | System Cache | Gauge (`max_gsn - watermark`) |
-| `ebb.dirty_set.size`                      | System Cache | Gauge                         |
-| `ebb.entity_store.materialize_latency_ms` | Entity Store | Histogram                     |
-| `ebb.entity_store.cache_hit_rate`         | Entity Store | Ratio                         |
-| `ebb.fanout.push_latency_ms`              | Fan-Out      | Histogram                     |
-| `ebb.fanout.active_connections`           | Fan-Out      | Gauge                         |
-| `ebb.fanout.active_groups`                | Fan-Out      | Gauge                         |
-| `ebb.http.request_latency_ms`             | HTTP API     | Histogram (per endpoint)      |
-| `ebb.sync.catch_up`                       | Sync         | Counter                       |
+#### OpenTelemetry
+
+Exporting these events to OpenTelemetry is an explicit follow-up spike tracked
+by the [observability epic](https://github.com/ebbjs/ebbjs/issues/125), out of
+scope here: no OTel exporter, tracer provider, or span mapping ships in
+`ebb_server` today.
 
 ### ID generation
 
@@ -392,15 +463,15 @@ Measured on the bench host described in
 [`bench/RESULTS.md`](bench/RESULTS.md) (a 4-scheduler VM, single Writer,
 `sync: true`). Rows that are not measured state why.
 
-| Target                                                   | Status                    | Notes                                                                                                                                                            |
-| -------------------------------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 10,000 concurrent client connections per server instance | Not measured              | Separate connection/load test; out of scope for the write-path benchmark (#328).                                                                                 |
-| 1,000 collaborative documents with 10 concurrent editors | Not measured              | Workload-level target; not exercised by the write-path benchmark.                                                                                                |
-| 10,000–20,000 Action writes/sec sustained                | **Measured: ~15,100/sec** | Single Writer, `sync: true`, 2-Update Actions, 100 Actions/request, 8 concurrent clients; steady 61–120s. See [`bench/RESULTS.md`](bench/RESULTS.md).            |
-| 108k burst                                               | Superseded                | A 2-writer raw-RocksDB primitive from [#130](https://github.com/ebbjs/ebbjs/issues/130), never measured through `ebb_server`. Measured server burst ~15,600/sec. |
-| `ctx.get(id)`: <2ms p99                                  | Not measured              | Read path; the harness measures writes only.                                                                                                                     |
-| `ctx.query(type)`: <10ms p99 at 100k entities            | Not measured              | Read path.                                                                                                                                                       |
-| SSE streaming latency: <50ms p50                         | Not measured              | No commit timestamp exists without `:telemetry` ([#125](https://github.com/ebbjs/ebbjs/issues/125)); T3 delivery lag is a client-side upper bound.               |
+| Target                                                   | Status                    | Notes                                                                                                                                                                                                                                                              |
+| -------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 10,000 concurrent client connections per server instance | Not measured              | Separate connection/load test; out of scope for the write-path benchmark (#328).                                                                                                                                                                                   |
+| 1,000 collaborative documents with 10 concurrent editors | Not measured              | Workload-level target; not exercised by the write-path benchmark.                                                                                                                                                                                                  |
+| 10,000–20,000 Action writes/sec sustained                | **Measured: ~15,100/sec** | Single Writer, `sync: true`, 2-Update Actions, 100 Actions/request, 8 concurrent clients; steady 61–120s. See [`bench/RESULTS.md`](bench/RESULTS.md).                                                                                                              |
+| 108k burst                                               | Superseded                | A 2-writer raw-RocksDB primitive from [#130](https://github.com/ebbjs/ebbjs/issues/130), never measured through `ebb_server`. Measured server burst ~15,600/sec.                                                                                                   |
+| `ctx.get(id)`: <2ms p99                                  | Not measured              | Read path; the harness measures writes only.                                                                                                                                                                                                                       |
+| `ctx.query(type)`: <10ms p99 at 100k entities            | Not measured              | Read path.                                                                                                                                                                                                                                                         |
+| SSE streaming latency: <50ms p50                         | Not measured              | The server-side leg (Writer commit → GroupServer dispatch) is now measurable via `ebb.fanout.push_latency_ms`. The end-to-end p50 a client observes remains unmeasured: it also includes network transit and client rendering, which no server-side metric covers. |
 
 ### Benchmarking
 
