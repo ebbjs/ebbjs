@@ -174,6 +174,18 @@ describe("client.conflicts (#310)", () => {
     const stub = mkStubFetch();
     const client = mkClient(stub.fn, storage);
 
+    // Seed the entity so the patches below have something to apply to.
+    await callApplyAction(
+      client,
+      mkTodoWrite({
+        id: "act_base",
+        value: "base",
+        updateId: "u_base",
+        hlc: makeHlc(1_711_036_799_000),
+        gsn: 1,
+      }),
+      "g_1",
+    );
     await client.outbox.enqueue({
       id: "act_local",
       actor_id: ACTOR_ID,
@@ -196,7 +208,16 @@ describe("client.conflicts (#310)", () => {
     });
     await callApplyAction(
       client,
-      mkTodoWrite({ id: "act_peer", value: "theirs", updateId: "u_peer", hlc: PEER_HLC, gsn: 9 }),
+      mkTodoWrite({
+        id: "act_peer",
+        value: "theirs",
+        updateId: "u_peer",
+        hlc: PEER_HLC,
+        gsn: 9,
+        // A patch only touches `title`, so the local `completed` is not
+        // swept and the test isolates what retry re-stamps.
+        method: "patch",
+      }),
       "g_1",
     );
     expect((await client.conflicts.list())[0]?.losses.map((loss) => loss.slot)).toEqual([
@@ -210,6 +231,73 @@ describe("client.conflicts (#310)", () => {
     const fields = actions[0]?.updates[0]?.data?.fields ?? {};
     expect(Object.keys(fields)).toEqual(["title"]);
     expect(fields.title?.value).toBe("mine");
+  });
+
+  it("retry re-stamps a field an inbound put reverted", async () => {
+    const storage = createMemoryAdapter();
+    const stub = mkStubFetch();
+    const client = mkClient(stub.fn, storage);
+
+    await callApplyAction(
+      client,
+      mkTodoWrite({
+        id: "act_base",
+        value: "base",
+        updateId: "u_base",
+        hlc: makeHlc(1_711_036_799_000),
+        gsn: 1,
+      }),
+      "g_1",
+    );
+    await client.outbox.enqueue({
+      id: "act_local",
+      actor_id: ACTOR_ID,
+      hlc: LOCAL_HLC,
+      gsn: 0,
+      updates: [
+        {
+          id: "u_local",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "patch",
+          data: { fields: { title: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC } } },
+        },
+      ],
+    });
+    // The peer's put replaces the entity and omits `title`, so the local
+    // patch's field is reverted rather than out-dated.
+    await callApplyAction(
+      client,
+      {
+        id: "act_peer",
+        actor_id: ACTOR_ID,
+        hlc: PEER_HLC,
+        gsn: 9,
+        updates: [
+          {
+            id: "u_peer",
+            subject_id: "todo_1",
+            subject_type: "todo",
+            method: "put",
+            data: { fields: { completed: { value: true, update_id: "u_peer", hlc: PEER_HLC } } },
+          },
+        ],
+      },
+      "g_1",
+    );
+
+    expect((await client.conflicts.list())[0]?.losses.map((loss) => loss.slot)).toEqual([
+      { subjectId: "todo_1", field: "title", path: [] },
+    ]);
+
+    await client.conflicts.resolve("act_local", "retry");
+
+    const actions = postedActions(stub.calls);
+    expect(actions).toHaveLength(1);
+    const fields = actions[0]?.updates[0]?.data?.fields ?? {};
+    expect(Object.keys(fields)).toEqual(["title"]);
+    expect(fields.title?.value).toBe("mine");
+    expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("mine");
   });
 
   it("discard converges local state on the server view and removes the conflict", async () => {
