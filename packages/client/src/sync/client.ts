@@ -47,6 +47,7 @@ import { createConflicts, type ConflictSnapshot, type Conflicts } from "./confli
 import type { ReadonlyObservable } from "./observable";
 import { createFlushScheduler, type FlushScheduler } from "./flush-scheduler";
 import { createOutboxObserver, type OutboxObserver } from "./outbox-observer";
+import { createClientStatus, type ClientStatus, type ClientStatusController } from "./status";
 import { backoffDelayMs } from "./backoff";
 import { TextDocument, TextDocumentRegistry } from "../fields/collaborative-text/text-document";
 import {
@@ -166,6 +167,16 @@ export class SyncClient implements PermissionQuery {
    * conflict / pending depth without polling or reaching into internals.
    */
   readonly sync: SyncObservables;
+  /**
+   * Aggregate read-only status (#371): the connection phase, `lastSyncedAt`,
+   * and the `client.sync.outbox` / `client.sync.conflicts` snapshots in one
+   * place, so a framework binding subscribes once. `lastSyncedAt` is the
+   * epoch-ms wall time of the last applied remote Action or completed
+   * catch-up, or `null` before the first sync.
+   */
+  readonly status: ReadonlyObservable<ClientStatus>;
+  /** The status observable's write side (`markSynced`), private to the client. */
+  private readonly statusController: ClientStatusController;
   private readonly fetchImpl: typeof fetch;
   private readonly reconnectInitialMs: number;
   private readonly reconnectMaxMs: number;
@@ -285,6 +296,14 @@ export class SyncClient implements PermissionQuery {
         onFlushLatency: (listener) => this.flushScheduler.onLatencyChange(listener),
       }),
     };
+    // Built after `sync` so the aggregate composes the fully-wired
+    // child observables.
+    this.statusController = createClientStatus({
+      connection: this.stateMachine,
+      outbox: this.sync.outbox,
+      conflicts: this.sync.conflicts,
+    });
+    this.status = this.statusController.status;
   }
 
   // -------------------------------------------------------------------------
@@ -486,6 +505,13 @@ export class SyncClient implements PermissionQuery {
       if (stored > prev) {
         this.groupCursors.set(groupId, stored);
       }
+    }
+
+    // A catch-up that reached the head is a sync point even when it
+    // carried no Actions. A further page is still behind, so stamping
+    // now would overstate freshness.
+    if (upToDate) {
+      this.statusController.markSynced();
     }
 
     return { actions, nextOffset, upToDate };
@@ -1215,6 +1241,12 @@ export class SyncClient implements PermissionQuery {
     // entry is now proven canonical and can be removed. Runs after the
     // append so an outbox removal never outruns the action log.
     await this.outbox.noteInbound(action);
+    // A server-accepted Action (`gsn > 0`) is proof the client is in sync
+    // as of now; a local-only Action has no GSN and says nothing about the
+    // server's view.
+    if (action.gsn > 0) {
+      this.statusController.markSynced();
+    }
     const affected = action.updates.map((u) => ({
       entityId: u.subject_id,
       entityType: u.subject_type,

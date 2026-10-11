@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { createClient } from "./client";
 import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
 import { e } from "../schema/entity";
-import { makeFetchMock } from "./test-utils";
+import { makeFetchMock, callApplyAction } from "./test-utils";
 import { EntityRegistry, EntityValidationError } from "../schema/entity-registry";
 import { defineEntity } from "../schema/entity";
 import { defineSchema } from "../schema/schema";
@@ -1301,5 +1301,100 @@ describe("SyncClient.sync observables", () => {
 
     unsubscribe();
     client.close();
+  });
+});
+
+describe("SyncClient.status (#371)", () => {
+  const mkAction = (id: string, gsn: number): Action => ({
+    id,
+    actor_id: "a_test",
+    hlc: makeHlc(1711036800000),
+    gsn,
+    updates: [
+      {
+        id: `u_${id}`,
+        subject_id: "todo_1",
+        subject_type: "todo",
+        method: "put",
+        data: {
+          fields: { title: { value: "Hi", update_id: `u_${id}`, hlc: makeHlc(1711036800000) } },
+        },
+      },
+    ],
+  });
+
+  it("aggregates the children into one initial snapshot", () => {
+    const client = createClient({ serverUrl: "http://localhost:4000", actorId: "a_test" });
+
+    expect(client.status.get()).toEqual({
+      connection: "connecting",
+      lastSyncedAt: null,
+      outbox: { pending: 0, acknowledged: 0, error: 0, flushLatency: null },
+      conflicts: { count: 0, entries: [] },
+    });
+  });
+
+  it("reflects connection transitions and outbox depth", async () => {
+    const client = createClient({ serverUrl: "http://localhost:4000", actorId: "a_test" });
+    const listener = vi.fn();
+    client.status.subscribe(listener);
+
+    client.setState("live");
+    expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ connection: "live" }));
+
+    await client.outbox.enqueue(mkAction("act_1", 0));
+    expect(client.status.get().outbox.pending).toBe(1);
+    expect(listener).toHaveBeenLastCalledWith(
+      expect.objectContaining({ outbox: expect.objectContaining({ pending: 1 }) }),
+    );
+  });
+
+  it("stamps lastSyncedAt when a catch-up reaches the head", async () => {
+    const { fn } = makeFetchMock([{ body: "[]", headers: { "stream-up-to-date": "true" } }]);
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+    });
+    expect(client.status.get().lastSyncedAt).toBeNull();
+
+    await client.catchUp("grp_1", 0);
+
+    expect(typeof client.status.get().lastSyncedAt).toBe("number");
+  });
+
+  it("does not stamp lastSyncedAt on a catch-up page that is still behind", async () => {
+    const { fn } = makeFetchMock([{ body: "[]", headers: { "stream-next-offset": "10" } }]);
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+    });
+
+    const result = await client.catchUp("grp_1", 0);
+
+    expect(result.upToDate).toBe(false);
+    expect(client.status.get().lastSyncedAt).toBeNull();
+  });
+
+  it("stamps lastSyncedAt for an inbound Action with a server GSN, not a local one", async () => {
+    const client = createClient({ serverUrl: "http://localhost:4000", actorId: "a_test" });
+
+    await callApplyAction(client, mkAction("act_local", 0));
+    expect(client.status.get().lastSyncedAt).toBeNull();
+
+    await callApplyAction(client, mkAction("act_remote", 5));
+    expect(typeof client.status.get().lastSyncedAt).toBe("number");
+  });
+
+  it("stops notifying a status subscriber after unsubscribe", () => {
+    const client = createClient({ serverUrl: "http://localhost:4000", actorId: "a_test" });
+    const listener = vi.fn();
+    const unsubscribe = client.status.subscribe(listener);
+
+    unsubscribe();
+    client.setState("live");
+
+    expect(listener).not.toHaveBeenCalled();
   });
 });

@@ -107,6 +107,8 @@ export {
 
 export { type ReadonlyObservable } from "./sync/observable";
 
+export { type ClientStatus } from "./sync/status";
+
 export type { ConflictEntry, ConflictWinner } from "@ebbjs/storage/types";
 
 export {
