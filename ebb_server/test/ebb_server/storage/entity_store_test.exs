@@ -64,6 +64,18 @@ defmodule EbbServer.Storage.EntityStoreTest do
   defp map_field(entries), do: %{"map" => entries}
   defp leaf(value, hlc), do: %{"value" => value, "hlc" => hlc}
 
+  defp events_named(events, name) do
+    Enum.filter(events, fn {event, _measurements, _metadata} -> event == name end)
+  end
+
+  defp store_opts(ctx) do
+    [
+      rocks_name: ctx.rocks_name,
+      sqlite_name: ctx.sqlite_name,
+      dirty_set: ctx.dirty_set
+    ]
+  end
+
   setup do
     cache = start_isolated_cache()
     %{name: rocks_name, dir: rocks_dir} = start_rocks()
@@ -1540,6 +1552,130 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert {:ok, entity} = result
       assert entity.last_gsn == 1
       assert entity.data["fields"]["title"]["value"] == "Buy milk"
+    end
+  end
+
+  describe "telemetry" do
+    test "dirty read emits a cache miss and a materialize latency sample", ctx do
+      ref =
+        attach_telemetry([
+          [:ebb, :entity_store, :cache_hit_rate],
+          [:ebb, :entity_store, :materialize_latency_ms]
+        ])
+
+      entity_id = "todo_telemetry_dirty"
+      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
+
+      assert {:ok, {1, 1}, []} =
+               Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
+
+      assert {:ok, %{type: "todo"}} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
+
+      events = telemetry_events(ref)
+
+      assert [{[:ebb, :entity_store, :cache_hit_rate], %{count: 1}, %{result: :miss}}] =
+               events_named(events, [:ebb, :entity_store, :cache_hit_rate])
+
+      assert [
+               {[:ebb, :entity_store, :materialize_latency_ms], %{duration: duration}, metadata}
+             ] = events_named(events, [:ebb, :entity_store, :materialize_latency_ms])
+
+      assert is_integer(duration)
+      assert duration >= 0
+      assert metadata.subject_id == entity_id
+      assert metadata.subject_type == "todo"
+    end
+
+    test "clean read emits a cache hit and no materialize latency", ctx do
+      entity_id = "todo_telemetry_clean"
+      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
+
+      assert {:ok, {1, 1}, []} =
+               Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
+
+      # The first read materializes and clears the dirty mark.
+      assert {:ok, _entity} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
+
+      ref =
+        attach_telemetry([
+          [:ebb, :entity_store, :cache_hit_rate],
+          [:ebb, :entity_store, :materialize_latency_ms]
+        ])
+
+      assert {:ok, _entity} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
+
+      events = telemetry_events(ref)
+
+      assert [{[:ebb, :entity_store, :cache_hit_rate], %{count: 1}, %{result: :hit}}] =
+               events_named(events, [:ebb, :entity_store, :cache_hit_rate])
+
+      assert events_named(events, [:ebb, :entity_store, :materialize_latency_ms]) == []
+    end
+
+    test "query with no dirty state emits a cache hit", ctx do
+      ref = attach_telemetry([[:ebb, :entity_store, :cache_hit_rate]])
+
+      assert {:ok, []} = EntityStore.query("todo", nil, "a_test", store_opts(ctx))
+
+      assert [{[:ebb, :entity_store, :cache_hit_rate], %{count: 1}, %{result: :hit}}] =
+               telemetry_events(ref)
+    end
+
+    test "query with a dirty entity emits a cache miss", ctx do
+      entity_id = "todo_telemetry_query_miss"
+      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
+
+      assert {:ok, {1, 1}, []} =
+               Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
+
+      ref = attach_telemetry([[:ebb, :entity_store, :cache_hit_rate]])
+
+      assert {:ok, _} = EntityStore.query("todo", nil, "a_test", store_opts(ctx))
+
+      assert [{[:ebb, :entity_store, :cache_hit_rate], %{count: 1}, %{result: :miss}}] =
+               telemetry_events(ref)
+    end
+
+    test "query materializing several dirty entities emits one cache miss", ctx do
+      actions =
+        for n <- 1..3 do
+          entity_id = "todo_telemetry_many_#{n}"
+
+          validated_action(%{
+            updates: [validated_update(%{subject_id: entity_id, subject_type: "todo"})]
+          })
+        end
+
+      assert {:ok, {1, 3}, []} = Writer.write_actions(actions, ctx.writer_name)
+
+      ref =
+        attach_telemetry([
+          [:ebb, :entity_store, :cache_hit_rate],
+          [:ebb, :entity_store, :materialize_latency_ms]
+        ])
+
+      assert {:ok, _} = EntityStore.query("todo", nil, "a_test", store_opts(ctx))
+
+      events = telemetry_events(ref)
+
+      assert [{[:ebb, :entity_store, :cache_hit_rate], %{count: 1}, %{result: :miss}}] =
+               events_named(events, [:ebb, :entity_store, :cache_hit_rate])
+
+      assert length(events_named(events, [:ebb, :entity_store, :materialize_latency_ms])) == 3
+    end
+
+    test "query materializing a dirty system entity emits a cache miss", ctx do
+      update = validated_update(%{subject_id: "gm_telemetry", subject_type: "groupMember"})
+
+      assert {:ok, {1, 1}, []} =
+               Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
+
+      ref = attach_telemetry([[:ebb, :entity_store, :cache_hit_rate]])
+
+      assert {:ok, _} = EntityStore.query("todo", nil, "a_test", store_opts(ctx))
+
+      assert [{[:ebb, :entity_store, :cache_hit_rate], %{count: 1}, %{result: :miss}}] =
+               telemetry_events(ref)
     end
   end
 end
