@@ -8,6 +8,7 @@ defmodule EbbServer.Sync.CatchUp do
   """
 
   alias EbbServer.Storage.{GroupCache, RocksDB, WatermarkTracker}
+  alias EbbServer.Telemetry
 
   @default_limit 200
 
@@ -36,8 +37,13 @@ defmodule EbbServer.Sync.CatchUp do
     limit = Keyword.get(opts, :limit, @default_limit)
 
     case verify_membership(actor_id, group_id) do
-      :ok -> perform_catch_up(group_id, offset, limit)
-      {:error, _} = error -> error
+      :ok ->
+        result = perform_catch_up(group_id, offset, limit)
+        emit_catch_up(result, group_id, offset)
+        result
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -107,4 +113,21 @@ defmodule EbbServer.Sync.CatchUp do
     end)
     |> Enum.reject(&is_nil/1)
   end
+
+  # Only successful reads emit; a full resync is `from_offset == 0` (see the
+  # event catalogue in `EbbServer.Telemetry`).
+  defp emit_catch_up({:ok, actions, meta}, group_id, from_offset) do
+    Telemetry.execute(
+      [:sync, :catch_up],
+      %{count: 1},
+      %{
+        group_id: group_id,
+        from_offset: from_offset,
+        returned: length(actions),
+        up_to_date: meta.up_to_date
+      }
+    )
+  end
+
+  defp emit_catch_up(_result, _group_id, _from_offset), do: :ok
 end

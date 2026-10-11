@@ -226,10 +226,10 @@ The instrumented events are still being built
 `ebb.watermark.lag`, `ebb.dirty_set.size`, `ebb.fanout.active_connections`,
 and `ebb.fanout.active_groups` gauges are live, sampled by
 `EbbServer.Telemetry.Sampler`; `ebb.fanout.push_latency_ms` is emitted once
-per dispatched batch per group, and `ebb.http.request_latency_ms` is live too,
+per dispatched batch per group, `ebb.http.request_latency_ms` is live too,
 emitted by `EbbServer.Telemetry.HTTP` from Bandit's request span (attached at
-boot, before Bandit accepts requests). The rest of the catalogue is still
-being built.
+boot, before Bandit accepts requests), and `ebb.sync.catch_up` is emitted once
+per successful catch-up. The rest of the catalogue is still being built.
 The developer-facing `onAction` hook is likewise unbuilt. The table after the
 conventions is the **target** metric set, not current behavior.
 
@@ -237,6 +237,12 @@ conventions is the **target** metric set, not current behavior.
 `method`, `route`, and `status`. The `GET /sync/live` SSE route is deliberately
 excluded because its span lasts the whole connection; see
 `EbbServer.Telemetry.HTTP` for the full rationale.
+
+`ebb.sync.catch_up` is emitted once per successful catch-up with `group_id`,
+`from_offset`, `returned`, and `up_to_date`. A `from_offset` of 0 marks a full
+resync, so a reporter can compute the resync ratio against incremental
+catch-ups. Peer-replication cursor and lag metrics are out of scope until
+server-to-server replication exists.
 
 #### Telemetry conventions
 
