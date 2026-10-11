@@ -1299,3 +1299,153 @@ describe("createOutbox rehydration", () => {
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_persisted"]);
   });
 });
+
+describe("createOutbox counts + onChange", () => {
+  it("counts() reports depth by status as one snapshot", async () => {
+    const rejection = { id: "a_2", reason: "permission_denied" };
+    const deps = mkDeps({ submit: vi.fn(async () => ({ rejected: [rejection] })) });
+    const outbox = createOutbox(deps);
+
+    expect(outbox.counts()).toEqual({ pending: 0, acknowledged: 0, error: 0 });
+
+    await outbox.enqueue(mkAction("a_1"));
+    await outbox.enqueue(mkAction("a_2"));
+    expect(outbox.counts()).toEqual({ pending: 2, acknowledged: 0, error: 0 });
+
+    await outbox.flush();
+    await outbox.enqueue(mkAction("a_3"));
+    expect(outbox.counts()).toEqual({ pending: 1, acknowledged: 1, error: 1 });
+  });
+
+  it("fires with the new counts on enqueue", async () => {
+    const outbox = createOutbox(mkDeps());
+    const listener = vi.fn();
+    outbox.onChange(listener);
+
+    await outbox.enqueue(mkAction("a_1"));
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledWith({ pending: 1, acknowledged: 0, error: 0 });
+  });
+
+  it("fires on the ack and error transitions of a flush", async () => {
+    const rejection = { id: "a_2", reason: "permission_denied" };
+    const deps = mkDeps({ submit: vi.fn(async () => ({ rejected: [rejection] })) });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(mkAction("a_1"));
+    await outbox.enqueue(mkAction("a_2"));
+    const seen: unknown[] = [];
+    outbox.onChange((counts) => seen.push(counts));
+
+    await outbox.flush();
+
+    expect(seen).toEqual([{ pending: 0, acknowledged: 1, error: 1 }]);
+  });
+
+  it("fires on retry", async () => {
+    const rejection = { id: "a_1", reason: "permission_denied" };
+    const deps = mkDeps({ submit: vi.fn(async () => ({ rejected: [rejection] })) });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(mkAction("a_1"));
+    await outbox.flush();
+    const seen: unknown[] = [];
+    outbox.onChange((counts) => seen.push(counts));
+
+    await outbox.retry("a_1");
+
+    expect(seen).toEqual([{ pending: 1, acknowledged: 0, error: 0 }]);
+  });
+
+  it("fires on clearError", async () => {
+    const rejection = { id: "a_1", reason: "permission_denied" };
+    const deps = mkDeps({ submit: vi.fn(async () => ({ rejected: [rejection] })) });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(mkAction("a_1"));
+    await outbox.flush();
+    const seen: unknown[] = [];
+    outbox.onChange((counts) => seen.push(counts));
+
+    await outbox.clearError("a_1");
+
+    expect(seen).toEqual([{ pending: 0, acknowledged: 0, error: 0 }]);
+  });
+
+  it("fires when an echo removes an entry", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    const action = mkAction("a_1");
+    await outbox.enqueue(action);
+    await outbox.flush();
+    const seen: unknown[] = [];
+    outbox.onChange((counts) => seen.push(counts));
+
+    await outbox.noteInbound({ ...action, gsn: 7 });
+
+    expect(seen).toEqual([{ pending: 0, acknowledged: 0, error: 0 }]);
+  });
+
+  it("fires when a conflict moves an entry out of the buffer", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(
+      mkFieldAction({
+        id: "a_local",
+        subjectId: "todo_1",
+        fields: { title: { value: "mine", update_id: "u_local", hlc: "10" } },
+      }),
+    );
+    const seen: unknown[] = [];
+    outbox.onChange((counts) => seen.push(counts));
+
+    await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+        gsn: 5,
+      }),
+    );
+
+    expect(seen).toEqual([{ pending: 0, acknowledged: 0, error: 0 }]);
+  });
+
+  it("fires when rehydration seeds persisted entries", async () => {
+    const store = mkStore([stored(mkAction("a_1"), "1"), stored(mkAction("a_2"), "2")]);
+    const outbox = createOutbox(mkDeps({ store }));
+    const listener = vi.fn();
+    outbox.onChange(listener);
+
+    await outbox.rehydrate();
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledWith({ pending: 2, acknowledged: 0, error: 0 });
+  });
+
+  it("does not fire on subscription, and stops after unsubscribe", async () => {
+    const outbox = createOutbox(mkDeps());
+    const listener = vi.fn();
+    const unsubscribe = outbox.onChange(listener);
+    expect(listener).not.toHaveBeenCalled();
+
+    unsubscribe();
+    await outbox.enqueue(mkAction("a_1"));
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("isolates a throwing listener from the others", async () => {
+    const outbox = createOutbox(mkDeps());
+    const good = vi.fn();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    outbox.onChange(() => {
+      throw new Error("subscriber blew up");
+    });
+    outbox.onChange(good);
+
+    await outbox.enqueue(mkAction("a_1"));
+
+    expect(good).toHaveBeenCalledTimes(1);
+    expect(good).toHaveBeenCalledWith({ pending: 1, acknowledged: 0, error: 0 });
+    consoleError.mockRestore();
+  });
+});

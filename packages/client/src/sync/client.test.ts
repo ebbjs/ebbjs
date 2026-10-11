@@ -6,6 +6,7 @@ import { makeFetchMock } from "./test-utils";
 import { EntityRegistry, EntityValidationError } from "../schema/entity-registry";
 import { defineEntity } from "../schema/entity";
 import { defineSchema } from "../schema/schema";
+import type { OutboxSnapshot } from "./outbox-observer";
 
 describe("SyncClient.handshake", () => {
   it("returns group membership and caches cursors", async () => {
@@ -1225,5 +1226,80 @@ describe("SyncClient.onRegistryViolation hook", () => {
     unsub();
     await callApplyAction(client, badAction(), "grp_1");
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe("SyncClient.sync observables", () => {
+  /** A well-formed single-update Action; only the id varies per test. */
+  const writeAction = (id: string) => ({
+    id,
+    actor_id: "a_test",
+    hlc: makeHlc(1711036800000),
+    gsn: 0,
+    updates: [
+      {
+        id: `u_${id}`,
+        subject_id: "todo_1",
+        subject_type: "todo",
+        method: "put" as const,
+        data: {
+          fields: {
+            title: { value: "Hi", update_id: `u_${id}`, hlc: makeHlc(1711036800000) },
+          },
+        },
+      },
+    ],
+  });
+
+  it("reports outbox depth and flush latency from one subscribable snapshot", async () => {
+    const { fn } = makeFetchMock([{ body: JSON.stringify({ rejected: [] }) }]);
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+    });
+    const seen: OutboxSnapshot[] = [];
+    const unsubscribe = client.sync.outbox.subscribe((snapshot) => seen.push(snapshot));
+
+    expect(client.sync.outbox.get()).toEqual({
+      pending: 0,
+      acknowledged: 0,
+      error: 0,
+      flushLatency: null,
+    });
+
+    await client.write([writeAction("act_1")]);
+
+    // Enqueue fired a pending-depth change; the resolved flush recorded the
+    // acknowledged depth and a latency — all without a poll.
+    expect(seen.map((snapshot) => snapshot.pending)).toContain(1);
+    const last = client.sync.outbox.get();
+    expect(last).toMatchObject({ pending: 0, acknowledged: 1, error: 0 });
+    expect(last.flushLatency).not.toBeNull();
+
+    unsubscribe();
+    client.close();
+  });
+
+  it("reflects a rejected flush as error depth and notifies", async () => {
+    const { fn } = makeFetchMock([
+      { body: JSON.stringify({ rejected: [{ id: "act_1", reason: "permission_denied" }] }) },
+    ]);
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+    });
+    const seen: OutboxSnapshot[] = [];
+    const unsubscribe = client.sync.outbox.subscribe((snapshot) => seen.push(snapshot));
+
+    const result = await client.write([writeAction("act_1")]);
+
+    expect(result.rejected).toEqual([{ id: "act_1", reason: "permission_denied" }]);
+    expect(client.sync.outbox.get()).toMatchObject({ pending: 0, acknowledged: 0, error: 1 });
+    expect(seen.some((snapshot) => snapshot.error === 1)).toBe(true);
+
+    unsubscribe();
+    client.close();
   });
 });

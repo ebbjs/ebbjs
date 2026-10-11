@@ -84,11 +84,19 @@ export {
   type Outbox,
   type OutboxEntry,
   type OutboxStatus,
+  type OutboxCounts,
+  type OutboxChangeListener,
   type FlushOutcome,
   type InboundOutcome,
 } from "./sync/outbox";
 
-export { type FlushScheduler } from "./sync/flush-scheduler";
+export {
+  type OutboxObserver,
+  type OutboxSnapshot,
+  type OutboxSnapshotListener,
+} from "./sync/outbox-observer";
+
+export { type FlushScheduler, type FlushLatencyListener } from "./sync/flush-scheduler";
 
 export {
   type Conflicts,

@@ -33,9 +33,13 @@
 
 import type { FlushOutcome, Outbox } from "./outbox";
 import { backoffDelayMs } from "./backoff";
+import { createObservable } from "./observable";
 
 /** Handle returned by {@link FlushTimers.setTimeout}. Opaque to callers. */
 export type FlushTimerHandle = ReturnType<typeof setTimeout>;
+
+/** Fired with the wall time of a resolved `flush()`. */
+export type FlushLatencyListener = (latency: number) => void;
 
 /** Timer seam. The default uses the host's `setTimeout` / `clearTimeout`. */
 export interface FlushTimers {
@@ -105,6 +109,14 @@ export interface FlushScheduler {
   release(): void;
   /** Wall time of the most recent resolved `flush()`, or `null` before one. */
   readonly flushLatency: number | null;
+  /**
+   * Subscribe to flush-latency updates: fires after each resolved
+   * `flush()` with its wall time, including an `empty` one. Fires only on
+   * change, not on subscription; read {@link flushLatency} for the
+   * current value. Returns an unsubscribe function, and listeners are
+   * isolated from each other's throws.
+   */
+  onLatencyChange(listener: FlushLatencyListener): () => void;
   /** Whether the gate is open — i.e. whether a trigger may arm a flush. */
   readonly ready: boolean;
 }
@@ -164,6 +176,8 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
   /** The last `unreachable`, surfaced to triggers that arrive mid-backoff. */
   let lastUnreachable: Extract<FlushOutcome, { kind: "unreachable" }> | null = null;
   let latency: number | null = null;
+  /** Emits each resolved flush's wall time; safe to subscribe before the first. */
+  const latencySource = createObservable<number>(0);
 
   const clearTimer = (): void => {
     if (timer !== null) {
@@ -238,6 +252,7 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
       (outcome) => {
         inFlight = null;
         latency = now() - startedAt;
+        latencySource.set(latency);
         for (const waiter of batch) waiter.resolve(outcome);
         afterSettled(outcome);
       },
@@ -332,6 +347,7 @@ export function createFlushScheduler(deps: FlushSchedulerDependencies): FlushSch
     get flushLatency(): number | null {
       return latency;
     },
+    onLatencyChange: (listener) => latencySource.subscribe(listener),
     get ready(): boolean {
       return ready;
     },
