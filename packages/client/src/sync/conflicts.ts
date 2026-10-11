@@ -9,6 +9,11 @@
  * application's `retry` / `discard` decision into the side effect that
  * decision implies.
  *
+ * The cache is published as a read-only
+ * {@link ConflictManager.observable} (`client.sync.conflicts`) for
+ * application UI, alongside the resolve-capable `client.conflicts`
+ * surface.
+ *
  * The manager is also the `ConflictStore` the Outbox writes through, so a
  * detection lands in the cache and fires `onChange` without a poll. The
  * underlying store stays the source of truth across a reload: the cache is
@@ -22,12 +27,26 @@ import type {
   ConflictSlot,
   ConflictStore,
 } from "@ebbjs/storage/types";
+import { createObservable, type ReadonlyObservable } from "./observable";
 
 /** The application's decision for one conflict. */
 export type ConflictResolution = "retry" | "discard";
 
 /** Fired with the whole conflict set whenever it changes. */
 export type ConflictChangeListener = (entries: readonly ConflictEntry[]) => void;
+
+/**
+ * Read-only snapshot of the conflict set, the value of
+ * `client.sync.conflicts`. `count` is O(1) over the manager's in-memory
+ * cache, so a binding that only needs the depth never materializes
+ * entries from the durable store.
+ */
+export interface ConflictSnapshot {
+  /** Number of conflicts awaiting resolution. */
+  readonly count: number;
+  /** Conflicts awaiting resolution, oldest detection first. */
+  readonly entries: readonly ConflictEntry[];
+}
 
 /**
  * The application-facing conflict surface, reachable as
@@ -106,6 +125,12 @@ type RebaseStamper = Pick<ConflictsDependencies, "stampAction" | "hlc" | "genera
 export interface ConflictManager {
   readonly conflicts: Conflicts;
   readonly store: ConflictStore;
+  /**
+   * Read-only observable over the conflict set, mounted as
+   * `client.sync.conflicts`. Seeded empty until the initial durable load
+   * settles; fires on every detection, resolution, and that load.
+   */
+  readonly observable: ReadonlyObservable<ConflictSnapshot>;
 }
 
 /** The field map an Update carries, tolerating a fieldless `delete`. */
@@ -250,17 +275,10 @@ const rebaseAction = (entry: ConflictEntry, deps: RebaseStamper): Action | null 
 export function createConflicts(deps: ConflictsDependencies): ConflictManager {
   let entries: readonly ConflictEntry[] = [];
   let rehydration: Promise<void> | null = null;
-  const listeners = new Set<ConflictChangeListener>();
+  const observable = createObservable<ConflictSnapshot>({ count: 0, entries: [] });
 
   const emit = (): void => {
-    for (const listener of listeners) {
-      try {
-        listener(entries);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[Conflicts] onChange handler threw:", err);
-      }
-    }
+    observable.set({ count: entries.length, entries });
   };
 
   /** Keep the cache exact and notify subscribers after each mutation. */
@@ -340,14 +358,9 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
     list: () => store.list(),
     count: () => entries.length,
     resolve,
-    onChange: (listener) => {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
+    onChange: (listener) => observable.subscribe((snapshot) => listener(snapshot.entries)),
     rehydrate,
   };
 
-  return { conflicts, store };
+  return { conflicts, store, observable };
 }
