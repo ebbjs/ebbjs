@@ -112,6 +112,52 @@ defmodule EbbServer.Sync.WriterCacheEscalationTest do
   end
 end
 
+defmodule EbbServer.Sync.WriterCacheEscalationStaleChildrenTest do
+  @moduledoc """
+  A cache escalation must tear the old cache subtree down before
+  `SystemCache` exits (ebbjs/ebbjs#357).
+
+  `Storage.Supervisor` restarts `SystemCache` as soon as it sees it
+  exit. If the old registered cache children are still alive at that
+  point, the replacement children fail to start with `already started`,
+  exhaust the supervisor's restart intensity, and the storage tree shuts
+  down — killing any process linked to the per-test supervisor.
+  """
+
+  use ExUnit.Case, async: false
+  use EbbServer.Integration.StorageCase
+
+  alias EbbServer.Storage.{
+    DirtyTracker,
+    EntityGroupCache,
+    EntityTypeCache,
+    GroupCache,
+    RelationshipCache,
+    SystemCache
+  }
+
+  test "escalation stops the old cache children before SystemCache exits" do
+    system_cache_before = Process.whereis(SystemCache)
+    assert is_pid(system_cache_before)
+
+    children_before =
+      Enum.map(
+        [DirtyTracker, GroupCache, EntityGroupCache, EntityTypeCache, RelationshipCache],
+        &Process.whereis/1
+      )
+
+    assert Enum.all?(children_before, &is_pid/1)
+
+    ref = Process.monitor(system_cache_before)
+    Process.exit(system_cache_before, :cache_update_failed)
+
+    # `SystemCache` may only exit once its children supervisor has stopped
+    # every cache child, freeing the registered names for the replacement.
+    assert_receive {:DOWN, ^ref, :process, ^system_cache_before, :cache_update_failed}, 1_000
+    refute Enum.any?(children_before, &Process.alive?/1)
+  end
+end
+
 defmodule EbbServer.Sync.FanOutRouterRangeResolvedTest do
   @moduledoc """
   The FanOutRouter's `{:range_resolved, from, to}` nudge re-drains
