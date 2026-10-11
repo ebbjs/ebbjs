@@ -65,8 +65,10 @@ Above the saturation point (concurrency 64, same everything else):
 | steady (61–120s) |      59 |   850,600 |       14,417 |        0 |
 | overall          |     120 | 1,746,000 |       14,550 |        0 |
 
-Per-request latency (poll → response, includes msgpack encode + `:httpc`;
-there is no server-side `:telemetry` yet, see #125):
+Per-request latency (poll → response, includes msgpack encode + `:httpc`).
+These are client-side numbers; per-run reports also carry server-side
+latency sourced from `ebb.*` telemetry — see
+[Server-side telemetry](#server-side-telemetry):
 
 | Run                    |      p50 |      p95 |      p99 |
 | ---------------------- | -------: | -------: | -------: |
@@ -192,12 +194,14 @@ baseline at the same batch/concurrency (6,677 Actions/sec):
 
 Every subscriber receives a JSON-encoded event per Action, so fan-out
 cost scales with subscriber count and dominates the scheduler (49%
-utilization at 100 subscribers vs ~17% without). Delivery lag includes
-server-side queueing before the commit (there is no commit timestamp
-without `:telemetry`), so it is an upper bound, not a commit→delivery
-measurement. **10k subscribers were not measured** — at 1,000 subscribers
-on a 4-scheduler VM the box is already saturated and RSS is 1 GiB; a
-10k-subscriber point needs a dedicated machine and is out of scope here.
+utilization at 100 subscribers vs ~17% without). Delivery lag is a
+client-side stamp (send → delivery), so it folds in client and transport
+overhead; the server's own `ebb.fanout.push_latency_ms` reports commit →
+dispatch separately (see [Server-side
+telemetry](#server-side-telemetry)). **10k subscribers were not measured**
+— at 1,000 subscribers on a 4-scheduler VM the box is already saturated
+and RSS is 1 GiB; a 10k-subscriber point needs a dedicated machine and is
+out of scope here.
 
 ## Writer batch coalescing (#332)
 
@@ -355,12 +359,48 @@ Clean across every measured run above: **0 rejected Actions, 0
 write/transport errors, 0 GSN holes**, watermark lag high-water bounded
 by one batch (≤100) and 0 at the end of the run.
 
+## Server-side telemetry
+
+Server-side latency is read from the `ebb.*` `:telemetry` events added by
+[#359](https://github.com/ebbjs/ebbjs/issues/359)–[#364](https://github.com/ebbjs/ebbjs/issues/364).
+`EbbServer.Bench.Telemetry` attaches handlers in the bench process before
+the measured window and stamps every sample with its offset from the
+window start:
+
+| Event                         | Measures                               | Metadata                    |
+| ----------------------------- | -------------------------------------- | --------------------------- |
+| `ebb.http.request_latency_ms` | time inside the request process        | `method`, `route`, `status` |
+| `ebb.writer.batch_latency_ms` | one durable Writer flush               | `gsn_start`, `gsn_end`      |
+| `ebb.fanout.push_latency_ms`  | commit → dispatch, per batch per group | `group_id`                  |
+
+Every raw run report prints a **Server-side latency** table beside the
+client-side one, and the fan-out section reports commit → dispatch
+separately from the client-stamp delivery lag. The Writer flush timer
+starts after the request is dequeued, so the wait a call spends in the
+Writer mailbox is not instrumented. `--tier t0` has no HTTP request, so
+only the Writer flush is reported there.
+
+`ebb.watermark.lag` and `ebb.dirty_set.size` are read directly from
+`WatermarkTracker` and `DirtyTracker` by the harness's own 1 Hz sampler
+(the app's gauge sampler is not booted), and surface as the watermark-lag
+and dirty-set rows in the correctness table.
+
+The tables published above predate this change and are client-side;
+re-running the reproduction commands regenerates them with both
+perspectives. The change itself was regression-checked on `t0`: three 10s
+runs per side (hot, batch 100) gave medians of 26,670/s before and
+27,400/s after, inside this VM's ±5% run-to-run spread.
+
 ## Methodology and limitations
 
-- **Outside-in measurement.** Server-side `:telemetry` does not exist yet
-  (#125), so throughput and latency are measured by wrapping the call from
-  the client process. HTTP latencies include MessagePack encoding,
-  connection reuse, and `:httpc` request-manager overhead.
+- **Client- and server-side latency.** Throughput and client-side latency
+  are measured by wrapping the call or request from the client process, so
+  HTTP latencies include MessagePack encoding, connection reuse, and
+  `:httpc` request-manager overhead. The harness also attaches to the
+  server's `ebb.*` telemetry and reports server-side latency
+  (`ebb.http.request_latency_ms`, `ebb.writer.batch_latency_ms`,
+  `ebb.fanout.push_latency_ms`) alongside it; see
+  [Server-side telemetry](#server-side-telemetry).
 - **Burst vs sustained.** Windows are reported separately: `burst` is the
   first 15s, `steady` is 61–120s. Warmup traffic runs for 5s before the
   measured window and its samples are discarded.
@@ -371,10 +411,12 @@ by one batch (≤100) and 0 at the end of the run.
 - **Fresh Action ids.** Every measured Action has a unique id, so it never
   hits the idempotency dedup path (which would consume zero GSNs and
   inflate the rate).
-- **Latency sampling.** Reservoir sampling capped at ~200,000 samples
-  across all workers; percentiles describe the retained sample.
+- **Latency sampling.** Client-side latency uses reservoir sampling capped
+  at ~200,000 samples across all workers; percentiles describe the retained
+  sample. Server-side telemetry samples are kept in ETS up to a
+  2,000,000-sample cap.
 - **RocksDB compaction/flush backlog is not measured.** The `rocksdb`
-  package exposes no property for it and there is no telemetry hook.
+  package exposes no property for it and emits no `:telemetry` event.
 - **`sync: false` is a ceiling only**, never a candidate configuration.
 - **Machine class.** These are 4-scheduler VM numbers. Absolute rates will
   differ on other hardware; the relative shapes (batch, concurrency,
@@ -394,16 +436,12 @@ by one batch (≤100) and 0 at the end of the run.
    batch-100 rate is still bound by per-Action Elixir work, so the next lever
    is spreading it across schedulers, or multi-Writer
    ([#287](https://github.com/ebbjs/ebbjs/issues/287)).
-3. **No commit-level telemetry**
-   ([#125](https://github.com/ebbjs/ebbjs/issues/125)) — fan-out delivery
-   lag is a client-side upper bound until `Writer`/`FanOutRouter` emit
-   timestamps.
-4. **10k-subscriber fan-out** — needs a dedicated load-test machine and is
+3. **10k-subscriber fan-out** — needs a dedicated load-test machine and is
    out of scope here.
-5. **Action-log compaction/retention**
+4. **Action-log compaction/retention**
    ([#123](https://github.com/ebbjs/ebbjs/issues/123)) — a longer-horizon
    lever this harness does not exercise.
-6. **README drift corrected.** `:writer_count`, `:warmer_*`, and
+5. **README drift corrected.** `:writer_count`, `:warmer_*`, and
    `:replication_peers` are read by nothing; the server README states the
    actual single-Writer behavior. `:writer_batch_timeout_ms` and
    `:writer_batch_max_size` were read by nothing as of #328 and are now

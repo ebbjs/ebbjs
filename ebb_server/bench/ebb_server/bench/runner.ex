@@ -8,7 +8,18 @@ defmodule EbbServer.Bench.Runner do
   count stays near `@latency_cap` regardless of concurrency.
   """
 
-  alias EbbServer.Bench.{Boot, Http, Metrics, Options, Report, Sampler, Subscriber, Workbook}
+  alias EbbServer.Bench.{
+    Boot,
+    Http,
+    Metrics,
+    Options,
+    Report,
+    Sampler,
+    Subscriber,
+    Telemetry,
+    Workbook
+  }
+
   alias EbbServer.Storage.{ActionValidator, Writer}
 
   @latency_cap 200_000
@@ -45,18 +56,24 @@ defmodule EbbServer.Bench.Runner do
     deadline = measure_start + config.duration * 1_000_000
 
     sampler = Sampler.start()
+    telemetry = Telemetry.start(measure_start)
 
-    workers =
-      for id <- 1..config.concurrency do
-        Task.async(fn -> worker(id, config, ctx, measure_start, deadline) end)
-      end
+    try do
+      workers =
+        for id <- 1..config.concurrency do
+          Task.async(fn -> worker(id, config, ctx, measure_start, deadline) end)
+        end
 
-    timeout = (config.warmup + config.duration) * 1000 + @await_buffer_ms
-    worker_stats = Enum.map(workers, &Task.await(&1, timeout))
-    resource_samples = Sampler.stop(sampler)
-    fanout = Subscriber.stop_all(subscribers)
+      timeout = (config.warmup + config.duration) * 1000 + @await_buffer_ms
+      worker_stats = Enum.map(workers, &Task.await(&1, timeout))
+      resource_samples = Sampler.stop(sampler)
+      fanout = Subscriber.stop_all(subscribers)
+      server = Telemetry.stop(telemetry)
 
-    Metrics.analyze(config, ctx, worker_stats, resource_samples, fanout)
+      Metrics.analyze(config, ctx, worker_stats, resource_samples, fanout, server)
+    after
+      Telemetry.detach(telemetry)
+    end
   end
 
   defp worker(id, config, ctx, measure_start, deadline) do
