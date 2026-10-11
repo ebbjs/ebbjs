@@ -5,6 +5,7 @@ defmodule EbbServer.CatchUpIntegrationTest do
   import Plug.Test
   import Plug.Conn
   import EbbServer.Integration.ActionHelpers
+  import EbbServer.TestHelpers
 
   alias EbbServer.Sync.Router
 
@@ -46,6 +47,57 @@ defmodule EbbServer.CatchUpIntegrationTest do
 
       assert conn.status == 200
       assert_get_response(conn, actor_id, group_id)
+    end
+
+    test "emits ebb.sync.catch_up for handshake then reconnect catch-up", %{
+      tmp_dir: _tmp_dir
+    } do
+      actor_id = "a_tel_catchup_#{:erlang.unique_integer([:positive])}"
+      group_id = "g_tel_catchup_#{:erlang.unique_integer([:positive])}"
+
+      bootstrap_group(actor_id, group_id, [
+        "todo.read",
+        "todo.write",
+        "todo.create"
+      ])
+
+      entity_id = "todo_#{Nanoid.generate()}"
+
+      for i <- 1..3 do
+        write_entity_in_group(actor_id, entity_id, "todo", group_id, %{
+          "title" => %{
+            "type" => "lww",
+            "value" => "Task #{i}",
+            "hlc" => "2024-01-0#{i}T00:00:00.000Z"
+          }
+        })
+      end
+
+      Process.sleep(100)
+
+      ref = attach_telemetry([[:ebb, :sync, :catch_up]])
+
+      # Handshake: no cursor, so the client catches up from the start.
+      handshake =
+        conn(:get, "/sync/groups/#{group_id}")
+        |> put_req_header("x-ebb-actor-id", actor_id)
+        |> Router.call([])
+
+      assert handshake.status == 200
+
+      # Reconnect: resume from a durable cursor.
+      reconnect =
+        conn(:get, "/sync/groups/#{group_id}?offset=2")
+        |> put_req_header("x-ebb-actor-id", actor_id)
+        |> Router.call([])
+
+      assert reconnect.status == 200
+
+      assert [
+               {[:ebb, :sync, :catch_up], %{count: 1},
+                %{group_id: ^group_id, from_offset: 0, up_to_date: true}},
+               {[:ebb, :sync, :catch_up], %{count: 1}, %{group_id: ^group_id, from_offset: 2}}
+             ] = telemetry_events(ref)
     end
 
     test "offset query param filters actions by GSN", %{tmp_dir: _tmp_dir} do

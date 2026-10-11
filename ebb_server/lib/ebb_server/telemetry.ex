@@ -38,6 +38,11 @@ defmodule EbbServer.Telemetry do
   per dispatched batch per group. Ranges recovered after a Router restart
   carry no commit time and are not sampled.
 
+  `ebb.sync.catch_up` is emitted once per successful catch-up. A `from_offset`
+  of 0 marks a full resync; a non-zero offset is an incremental catch-up, so a
+  reporter can compute the resync ratio from the metadata alone. Peer
+  replication does not exist yet, so peer cursor/lag metrics are out of scope.
+
   ## Conventions
 
   - **Names** are `ebb.<subsystem>.<event>`, lower snake case, past tense for

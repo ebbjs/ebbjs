@@ -2,6 +2,8 @@ defmodule EbbServer.Sync.CatchUpTest do
   use ExUnit.Case, async: false
   use EbbServer.Integration.StorageCase
 
+  import EbbServer.TestHelpers
+
   alias EbbServer.Integration.ActionHelpers
   alias EbbServer.Sync.CatchUp
 
@@ -116,6 +118,92 @@ defmodule EbbServer.Sync.CatchUpTest do
       result = CatchUp.catch_up_group(group_id, non_member_actor, 0)
 
       assert result == {:error, :not_member}
+    end
+  end
+
+  describe "catch_up_group/4 telemetry" do
+    test "emits ebb.sync.catch_up for a full resync from offset 0" do
+      actor_id = "a_tel_full_#{:erlang.unique_integer([:positive])}"
+      group_id = "g_tel_full_#{:erlang.unique_integer([:positive])}"
+
+      ActionHelpers.bootstrap_group(actor_id, group_id, [
+        "todo.read",
+        "todo.write",
+        "todo.create"
+      ])
+
+      entity_id = "todo_#{Nanoid.generate()}"
+
+      ActionHelpers.write_entity_in_group(actor_id, entity_id, "todo", group_id, %{
+        "title" => %{
+          "type" => "lww",
+          "value" => "First Task",
+          "hlc" => "2024-01-01T00:00:00.000Z"
+        }
+      })
+
+      Process.sleep(200)
+
+      ref = attach_telemetry([[:ebb, :sync, :catch_up]])
+      {:ok, actions, meta} = CatchUp.catch_up_group(group_id, actor_id, 0)
+
+      assert [
+               {[:ebb, :sync, :catch_up], %{count: 1},
+                %{
+                  group_id: ^group_id,
+                  from_offset: 0,
+                  returned: returned,
+                  up_to_date: true
+                }}
+             ] = telemetry_events(ref)
+
+      assert returned == length(actions)
+      assert meta.up_to_date == true
+    end
+
+    test "tags an incremental catch-up with a non-zero from_offset" do
+      actor_id = "a_tel_inc_#{:erlang.unique_integer([:positive])}"
+      group_id = "g_tel_inc_#{:erlang.unique_integer([:positive])}"
+
+      ActionHelpers.bootstrap_group(actor_id, group_id, [
+        "todo.read",
+        "todo.write",
+        "todo.create"
+      ])
+
+      entity_id = "todo_#{Nanoid.generate()}"
+
+      for i <- 1..3 do
+        ActionHelpers.write_entity_in_group(actor_id, entity_id, "todo", group_id, %{
+          "title" => %{
+            "type" => "lww",
+            "value" => "Task #{i}",
+            "hlc" => "2024-01-0#{i}T00:00:00.000Z"
+          }
+        })
+      end
+
+      Process.sleep(200)
+
+      ref = attach_telemetry([[:ebb, :sync, :catch_up]])
+      {:ok, actions, _meta} = CatchUp.catch_up_group(group_id, actor_id, 2)
+
+      assert [
+               {[:ebb, :sync, :catch_up], %{count: 1},
+                %{group_id: ^group_id, from_offset: 2, returned: returned}}
+             ] = telemetry_events(ref)
+
+      assert returned == length(actions)
+    end
+
+    test "emits nothing when the actor is not a member" do
+      group_id = "g_tel_denied_#{:erlang.unique_integer([:positive])}"
+      non_member_actor = "a_tel_denied_#{:erlang.unique_integer([:positive])}"
+
+      ref = attach_telemetry([[:ebb, :sync, :catch_up]])
+
+      assert {:error, :not_member} = CatchUp.catch_up_group(group_id, non_member_actor, 0)
+      assert telemetry_events(ref) == []
     end
   end
 end
