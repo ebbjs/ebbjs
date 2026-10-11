@@ -53,6 +53,7 @@ import type {
 
 import type { Rejection, WriteResponse } from "./types";
 import { projectFieldValue } from "./query-builder";
+import { createObservable } from "./observable";
 
 /**
  * Entry status. `pending` is flushable; `acknowledged` has been
@@ -299,7 +300,23 @@ const findLosingEntries = (
 };
 
 /**
- * The write-buffer surface. `size()` and `errors()` are the
+ * Depth of the buffer by status, read as one snapshot so the three
+ * counters cannot disagree about the entry set they were taken over.
+ */
+export interface OutboxCounts {
+  /** Flushable backlog. */
+  readonly pending: number;
+  /** Accepted by the server, awaiting the sync echo. */
+  readonly acknowledged: number;
+  /** Server-rejected, awaiting application handling. */
+  readonly error: number;
+}
+
+/** Fired with the buffer's {@link OutboxCounts} whenever an entry changes. */
+export type OutboxChangeListener = (counts: OutboxCounts) => void;
+
+/**
+ * The write-buffer surface. `counts()` / `onChange()` are the
  * observability hooks the telemetry sub-issue (#125) builds on.
  */
 export interface Outbox {
@@ -317,6 +334,17 @@ export interface Outbox {
    * counters #125 consumes.
    */
   size(status?: OutboxStatus): number;
+  /** Depth by status, read as one consistent snapshot. */
+  counts(): OutboxCounts;
+  /**
+   * Subscribe to depth changes: an enqueue, a flush status transition, a
+   * retry, a clear, or an echo / conflict removal. The listener fires
+   * with the new counts; an unsubscribe function is returned. Fires only
+   * on change, not on subscription — read `counts()` for the current
+   * depth. Listeners are isolated; a throwing one does not affect the
+   * others.
+   */
+  onChange(listener: OutboxChangeListener): () => void;
   /**
    * Load persisted entries into the in-memory queue. Runs eagerly at
    * construction as a single-flight operation (idempotent); returns
@@ -376,6 +404,42 @@ export interface Outbox {
 export function createOutbox(deps: OutboxDependencies): Outbox {
   let entries: readonly OutboxEntry[] = [];
   let rehydration: Promise<void> | null = null;
+  const countsSource = createObservable<OutboxCounts>({
+    pending: 0,
+    acknowledged: 0,
+    error: 0,
+  });
+
+  const counts = (): OutboxCounts => {
+    let pending = 0;
+    let acknowledged = 0;
+    let error = 0;
+    for (const entry of entries) {
+      if (entry.status === "pending") pending += 1;
+      else if (entry.status === "acknowledged") acknowledged += 1;
+      else error += 1;
+    }
+    return { pending, acknowledged, error };
+  };
+
+  /**
+   * Notify subscribers after an entry change. Deduped against the last
+   * emitted depth, so a rehydration that seeds the same entries a
+   * subscriber already read does not fire a phantom change. Cheap when
+   * nobody is listening, so the mutation sites call it unconditionally.
+   */
+  const emit = (): void => {
+    const snapshot = counts();
+    const previous = countsSource.get();
+    if (
+      snapshot.pending === previous.pending &&
+      snapshot.acknowledged === previous.acknowledged &&
+      snapshot.error === previous.error
+    ) {
+      return;
+    }
+    countsSource.set(snapshot);
+  };
 
   const rehydrate = (): Promise<void> => {
     rehydration ??= deps.store
@@ -388,6 +452,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
             status: entry.status,
             enqueuedAtHlc: entry.enqueuedAtHlc,
           }));
+        emit();
       })
       .catch((err: unknown) => {
         // Clear the memo so a transient `list()` failure cannot brick
@@ -407,6 +472,10 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     // in-memory queue holding an entry the store never saw.
     await deps.store.put({ action, status: "pending", enqueuedAtHlc });
     entries = [...entries, { action, status: "pending", enqueuedAtHlc }];
+    // Notify before the optimistic apply resolves: the entry is already
+    // durable and buffered, so subscribers must see the depth even if the
+    // apply throws and `enqueue` rejects.
+    emit();
     await deps.applyOptimistic(action);
   };
 
@@ -434,20 +503,28 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     // an echo or conflict sweep removed while the submit was in flight —
     // re-`put`ting after that `delete` would resurrect a row no future
     // echo can clear.
-    for (const entry of batch) {
-      if (!entries.some((candidate) => candidate.action.id === entry.action.id)) continue;
-      const status = statusFor(entry);
-      await deps.store.put({ action: entry.action, status, enqueuedAtHlc: entry.enqueuedAtHlc });
-      if (!entries.some((candidate) => candidate.action.id === entry.action.id)) {
-        // The echo's or conflict's `delete` interleaved with this `put`.
-        // Re-delete so the row stays gone even if the put landed last and
-        // resurrected it.
-        await deps.store.delete(entry.action.id);
-        continue;
+    let changed = false;
+    try {
+      for (const entry of batch) {
+        if (!entries.some((candidate) => candidate.action.id === entry.action.id)) continue;
+        const status = statusFor(entry);
+        await deps.store.put({ action: entry.action, status, enqueuedAtHlc: entry.enqueuedAtHlc });
+        if (!entries.some((candidate) => candidate.action.id === entry.action.id)) {
+          // The echo's or conflict's `delete` interleaved with this `put`.
+          // Re-delete so the row stays gone even if the put landed last and
+          // resurrected it.
+          await deps.store.delete(entry.action.id);
+          continue;
+        }
+        entries = entries.map((candidate) =>
+          candidate.action.id === entry.action.id ? { ...candidate, status } : candidate,
+        );
+        changed = true;
       }
-      entries = entries.map((candidate) =>
-        candidate.action.id === entry.action.id ? { ...candidate, status } : candidate,
-      );
+    } finally {
+      // Emit even if a later entry's store write threw: the entries already
+      // transitioned in memory, so subscribers must see their new status.
+      if (changed) emit();
     }
 
     if (rejectedIds.size === 0) {
@@ -484,6 +561,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
       enqueuedAtHlc: entry.enqueuedAtHlc,
     });
     entries = entries.map((c) => (c.action.id === actionId ? { ...c, status: "pending" } : c));
+    emit();
   };
 
   const clearError = async (actionId: string): Promise<void> => {
@@ -492,6 +570,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     if (entry === undefined) return;
     await deps.store.delete(actionId);
     entries = entries.filter((c) => c.action.id !== actionId);
+    emit();
   };
 
   const noteInbound = async (action: Action): Promise<InboundOutcome> => {
@@ -525,6 +604,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
         return { kind: "none" };
       }
       entries = entries.filter((entry) => entry.action.id !== action.id);
+      emit();
       return { kind: "echo", actionId: action.id };
     }
 
@@ -564,6 +644,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     }
 
     if (first === undefined) return { kind: "none" };
+    emit();
     return {
       kind: "conflict",
       actionId: first.entry.action.id,
@@ -580,8 +661,9 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     rehydrate,
     pending: () => entries.filter((entry) => entry.status === "pending"),
     errors: () => entries.filter((entry) => entry.status === "error"),
-    size: (status: OutboxStatus = "pending") =>
-      entries.filter((entry) => entry.status === status).length,
+    size: (status: OutboxStatus = "pending") => counts()[status],
+    counts,
+    onChange: (listener) => countsSource.subscribe(listener),
     flush,
     retry,
     clearError,

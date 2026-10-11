@@ -46,6 +46,7 @@ import { createOutbox, type Outbox } from "./outbox";
 import { createConflicts, type ConflictSnapshot, type Conflicts } from "./conflicts";
 import type { ReadonlyObservable } from "./observable";
 import { createFlushScheduler, type FlushScheduler } from "./flush-scheduler";
+import { createOutboxObserver, type OutboxObserver } from "./outbox-observer";
 import { backoffDelayMs } from "./backoff";
 import { TextDocument, TextDocumentRegistry } from "../fields/collaborative-text/text-document";
 import {
@@ -124,6 +125,8 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 export interface SyncObservables {
   /** Unresolved LWW conflicts awaiting an application decision. */
   readonly conflicts: ReadonlyObservable<ConflictSnapshot>;
+  /** Write-buffer depth + last flush latency (#369). */
+  readonly outbox: OutboxObserver;
 }
 
 export class SyncClient implements PermissionQuery {
@@ -157,9 +160,10 @@ export class SyncClient implements PermissionQuery {
    */
   readonly conflicts: Conflicts;
   /**
-   * Read-only sync observables. `client.sync.conflicts` publishes the
-   * unresolved conflict set as a `get()` + `subscribe(cb)` value for
-   * application UI.
+   * Read-only sync observables. `client.sync.conflicts` and
+   * `client.sync.outbox` each publish a synchronous `get()` plus a
+   * `subscribe(cb)` that fires on change, so application UI can render
+   * conflict / pending depth without polling or reaching into internals.
    */
   readonly sync: SyncObservables;
   private readonly fetchImpl: typeof fetch;
@@ -251,7 +255,6 @@ export class SyncClient implements PermissionQuery {
       generateUpdateId: () => this.generateUpdateId(),
     });
     this.conflicts = conflicts;
-    this.sync = { conflicts: conflictsObservable };
     this.outbox = createOutbox({
       applyOptimistic: (action) => this.applyLocalAction(action),
       submit: (actions) => this.submitActions(actions),
@@ -274,6 +277,14 @@ export class SyncClient implements PermissionQuery {
       initialMs: this.reconnectInitialMs,
       maxMs: this.reconnectMaxMs,
     });
+    this.sync = {
+      conflicts: conflictsObservable,
+      outbox: createOutboxObserver({
+        outbox: this.outbox,
+        flushLatency: () => this.flushScheduler.flushLatency,
+        onFlushLatency: (listener) => this.flushScheduler.onLatencyChange(listener),
+      }),
+    };
   }
 
   // -------------------------------------------------------------------------

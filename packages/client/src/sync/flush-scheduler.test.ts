@@ -273,6 +273,61 @@ describe("createFlushScheduler", () => {
     expect(scheduler.flushLatency).toBe(25);
   });
 
+  it("notifies latency listeners as each flush resolves", async () => {
+    const { scheduler, outbox, advance } = mkHarness();
+    const listener = vi.fn();
+    scheduler.onLatencyChange(listener);
+    expect(listener).not.toHaveBeenCalled();
+
+    const deferred = outbox.pushDeferred();
+    const first = scheduler.schedule();
+    await advance(DEBOUNCE);
+    expect(listener).not.toHaveBeenCalled();
+    await advance(5);
+    expect(listener).not.toHaveBeenCalled();
+    deferred.resolve(accepted());
+    await advance(0);
+    await first;
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenLastCalledWith(5);
+
+    outbox.pushOutcome(accepted());
+    void scheduler.flushNow();
+    await advance(0);
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(listener).toHaveBeenLastCalledWith(0);
+  });
+
+  it("stops notifying latency listeners after unsubscribe", async () => {
+    const { scheduler, outbox, advance } = mkHarness();
+    const listener = vi.fn();
+    const unsubscribe = scheduler.onLatencyChange(listener);
+    unsubscribe();
+
+    outbox.pushOutcome(accepted());
+    void scheduler.schedule();
+    await advance(DEBOUNCE);
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("isolates a throwing latency listener from the others", async () => {
+    const { scheduler, outbox, advance } = mkHarness();
+    const good = vi.fn();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    scheduler.onLatencyChange(() => {
+      throw new Error("listener blew up");
+    });
+    scheduler.onLatencyChange(good);
+
+    outbox.pushOutcome(accepted());
+    void scheduler.schedule();
+    await advance(DEBOUNCE);
+
+    expect(good).toHaveBeenCalledTimes(1);
+    consoleError.mockRestore();
+  });
+
   it("stop cancels retries and settles pending triggers", async () => {
     const { scheduler, outbox, advance, pendingTimers } = mkHarness();
     outbox.pushOutcome(unreachable());
