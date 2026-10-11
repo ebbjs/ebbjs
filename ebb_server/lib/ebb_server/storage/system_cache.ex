@@ -152,6 +152,14 @@ defmodule EbbServer.Storage.SystemCache do
 
   @impl true
   def init(opts) do
+    # Trapping exits lets `terminate/2` stop the `Children` supervisor
+    # synchronously. The escalation path kills SystemCache, and
+    # `Storage.Supervisor` restarts it immediately; if the old cache
+    # children (registered GenServers) were still alive, the restart
+    # would fail with `already started` and eventually take down the
+    # whole storage tree.
+    Process.flag(:trap_exit, true)
+
     gsn_counter_name = Keyword.get(opts, :gsn_counter_name, @default_gsn_counter_name)
 
     dirty_set_opts = Keyword.take(opts, [:dirty_set])
@@ -201,8 +209,38 @@ defmodule EbbServer.Storage.SystemCache do
     end
   end
 
+  # The Writer escalates a post-commit cache failure with
+  # `Process.exit(SystemCache, :cache_update_failed)`, and a `Children`
+  # crash arrives the same way. Either way the caches are gone, so the
+  # tree must rebuild.
   @impl true
-  def terminate(_reason, _state) do
+  def handle_info({:EXIT, _pid, reason}, state) do
+    {:stop, reason, state}
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    stop_children(state.sup_pid)
+    :ok
+  end
+
+  # `Supervisor.stop/3` blocks until every cache child has terminated,
+  # freeing their registered names and ETS tables before
+  # `Storage.Supervisor` starts the replacement SystemCache.
+  defp stop_children(sup_pid) do
+    if Process.alive?(sup_pid) do
+      try do
+        Supervisor.stop(sup_pid, :shutdown, 5_000)
+      catch
+        :exit, reason ->
+          Logger.error(
+            "SystemCache stopped with cache children still running: #{inspect(reason)}"
+          )
+
+          :ok
+      end
+    end
+
     :ok
   end
 
