@@ -728,6 +728,153 @@ describe("createOutbox conflict detection", () => {
     expect(conflicts[0]?.detectedAtHlc).toBe("2");
   });
 
+  it("moves a pending patch for a field an inbound put omits", async () => {
+    const deps = mkDeps();
+    const { outbox } = await seed(deps);
+
+    // A `put` replaces the whole entity, so the field it omits is
+    // reverted on the server whether or not the local write would beat
+    // the put's own HLC.
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { completed: { value: true, update_id: "u_peer", hlc: "20" } },
+        method: "put",
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: "conflict", actionId: "a_local", slots: [slot("title")] });
+    expect(outbox.pending()).toEqual([]);
+    expect(await deps.store.get("a_local")).toBeNull();
+    const [entry] = await deps.conflicts.list();
+    expect(entry?.losses).toEqual([{ slot: slot("title"), winner: { value: undefined } }]);
+  });
+
+  it("sweeps every pending field an inbound put touches, carrying or omitting each", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(
+      mkFieldAction({
+        id: "a_local",
+        subjectId: "todo_1",
+        fields: {
+          title: { value: "mine", update_id: "u_local", hlc: "10" },
+          notes: { value: "mine", update_id: "u_local", hlc: "10" },
+        },
+      }),
+    );
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+        method: "put",
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({
+      kind: "conflict",
+      actionId: "a_local",
+      slots: [slot("title"), slot("notes")],
+    });
+    const [entry] = await deps.conflicts.list();
+    expect(entry?.losses).toEqual([
+      { slot: slot("title"), winner: { update_id: "u_peer", hlc: "20", value: "theirs" } },
+      { slot: slot("notes"), winner: { value: undefined } },
+    ]);
+  });
+
+  it("leaves a patch-scoped field an inbound put never touches alone", async () => {
+    const deps = mkDeps();
+    const { outbox } = await seed(deps);
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+        gsn: 5,
+      }),
+    );
+
+    // A `patch` only ever reverts the fields it carries.
+    expect(outcome).toEqual({ kind: "conflict", actionId: "a_local", slots: [slot("title")] });
+  });
+
+  it("does not sweep a non-LWW field an inbound put omits", async () => {
+    const deps = mkDeps({ isLwwField: (_type, field) => field !== "count" });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(
+      mkFieldAction({
+        id: "a_local",
+        subjectId: "todo_1",
+        fields: { count: { value: 1, update_id: "u_local", hlc: "10" } },
+      }),
+    );
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { completed: { value: true, update_id: "u_peer", hlc: "20" } },
+        method: "put",
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: "none" });
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
+  });
+
+  it("does not sweep a structural subject an inbound put replaces", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(
+      mkFieldAction({
+        id: "a_local",
+        subjectId: "rel_1",
+        subjectType: "relationship",
+        fields: { value: { value: "mine", update_id: "u_local", hlc: "10" } },
+      }),
+    );
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "rel_1",
+        subjectType: "relationship",
+        fields: { target_id: { value: "todo_b", update_id: "u_peer", hlc: "20" } },
+        method: "put",
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: "none" });
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
+  });
+
+  it("keeps a pending field an older inbound put still carries", async () => {
+    const deps = mkDeps();
+    const { outbox } = await seed(deps, "30");
+
+    const outcome = await outbox.noteInbound(
+      mkFieldAction({
+        id: "a_peer",
+        subjectId: "todo_1",
+        fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+        method: "put",
+        gsn: 5,
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: "none" });
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
+  });
+
   it("does not flag a concurrent write to a different map key", async () => {
     const deps = mkDeps();
     const outbox = createOutbox(deps);
@@ -918,7 +1065,7 @@ describe("createOutbox conflict detection", () => {
     expect(await deps.conflicts.list()).toEqual([]);
   });
 
-  it("never flags a delete, which carries no fields", async () => {
+  it("sweeps pending patches when an inbound delete removes the subject", async () => {
     const deps = mkDeps();
     const { outbox } = await seed(deps);
     const deletion: Action = {
@@ -937,8 +1084,14 @@ describe("createOutbox conflict detection", () => {
       ],
     };
 
-    await expect(outbox.noteInbound(deletion)).resolves.toEqual({ kind: "none" });
-    expect(outbox.pending()).toHaveLength(1);
+    await expect(outbox.noteInbound(deletion)).resolves.toEqual({
+      kind: "conflict",
+      actionId: "a_local",
+      slots: [slot("title")],
+    });
+    expect(outbox.pending()).toEqual([]);
+    const [entry] = await deps.conflicts.list();
+    expect(entry?.losses).toEqual([{ slot: slot("title"), winner: { value: undefined } }]);
   });
 
   it("moves every losing pending entry and reports the first in buffer order", async () => {

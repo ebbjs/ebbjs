@@ -17,7 +17,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { decodeSync, makeHlc, type Action, type Update } from "@ebbjs/core";
+import { decodeSync, makeHlc, type Action, type FieldValue, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { createClient } from "../client";
@@ -545,13 +545,18 @@ describe("client.outbox LWW conflict detection (#308)", () => {
     return { client, storage, ...stub };
   };
 
-  /** A `put` for `todo_1` writing one LWW field at the given HLC. */
+  /**
+   * A `todo_1` write at the given HLC, defaulting to a `put` of one
+   * `title` field. `method` and `fields` override those defaults.
+   */
   const mkTodoWrite = (args: {
     id: string;
     value: string;
     updateId: string;
     hlc: string;
     gsn: number;
+    method?: "put" | "patch";
+    fields?: Record<string, FieldValue>;
   }): Action => ({
     id: args.id,
     actor_id: ACTOR_ID,
@@ -562,8 +567,12 @@ describe("client.outbox LWW conflict detection (#308)", () => {
         id: args.updateId,
         subject_id: "todo_1",
         subject_type: "todo",
-        method: "put",
-        data: { fields: { title: { value: args.value, update_id: args.updateId, hlc: args.hlc } } },
+        method: args.method ?? "put",
+        data: {
+          fields: args.fields ?? {
+            title: { value: args.value, update_id: args.updateId, hlc: args.hlc },
+          },
+        },
       },
     ],
   });
@@ -595,6 +604,62 @@ describe("client.outbox LWW conflict detection (#308)", () => {
       hlc: peerHlc,
       value: "theirs",
     });
+
+    // The losing Action was never posted.
+    await expect(client.outbox.flush()).resolves.toEqual({ kind: "empty" });
+    expect(actionCalls(calls)).toBe(0);
+  });
+
+  it("moves a pending local patch to Conflicts when an inbound put omits its field", async () => {
+    const { client, storage, calls } = mkSchemaClient();
+    const localHlc = makeHlc(1_711_036_800_000);
+    const peerHlc = makeHlc(1_711_036_800_001);
+
+    // Seed the entity so the local patch has something to apply to.
+    await callApplyAction(
+      client,
+      mkTodoWrite({
+        id: "act_base",
+        value: "base",
+        updateId: "u_base",
+        hlc: makeHlc(1_711_036_799_000),
+        gsn: 1,
+      }),
+      "g_1",
+    );
+    await client.outbox.enqueue(
+      mkTodoWrite({
+        id: "act_local",
+        value: "mine",
+        updateId: "u_local",
+        hlc: localHlc,
+        gsn: 0,
+        method: "patch",
+      }),
+    );
+
+    // The peer's `put` replaces the whole entity and carries no `title`.
+    await callApplyAction(
+      client,
+      mkTodoWrite({
+        id: "act_peer",
+        value: "",
+        updateId: "u_peer",
+        hlc: peerHlc,
+        gsn: 9,
+        fields: { completed: { value: true, update_id: "u_peer", hlc: peerHlc } },
+      }),
+      "g_1",
+    );
+
+    expect(client.outbox.pending()).toEqual([]);
+    expect(await storage.outbox.get("act_local")).toBeNull();
+    const conflicts = await storage.conflicts.list();
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]?.action.id).toBe("act_local");
+    expect(conflicts[0]?.losses.map((loss) => loss.slot)).toEqual([
+      { subjectId: "todo_1", field: "title", path: [] },
+    ]);
 
     // The losing Action was never posted.
     await expect(client.outbox.flush()).resolves.toEqual({ kind: "empty" });

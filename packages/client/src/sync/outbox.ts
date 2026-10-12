@@ -165,20 +165,67 @@ interface LosingEntry {
 const updateFields = (update: Update): Record<string, FieldValue> | undefined =>
   update.data?.fields as Record<string, FieldValue> | undefined;
 
-/** The effective FieldValue a buffered Action wrote to `field` on `subjectId`. */
-const pendingFieldValue = (
-  action: Action,
-  subjectId: string,
-  field: string,
-): FieldValue | undefined => {
-  let merged: FieldValue | undefined;
+/** Fold one Update's fields into `fields` under the shared merge rule. */
+const mergeUpdateFields = (fields: Map<string, FieldValue>, update: Update): void => {
+  for (const [field, value] of Object.entries(updateFields(update) ?? {})) {
+    const previous = fields.get(field);
+    fields.set(field, previous === undefined ? value : mergeFieldValue(previous, value));
+  }
+};
+
+/**
+ * The effective inbound state for one subject an Action writes.
+ *
+ * `replaced` marks a `put` or `delete`, which makes the Action's fields
+ * the subject's whole field set: a buffered write to a field the Action
+ * omits is reverted, not left alone. A patch-only Action leaves it
+ * false, so only the fields it names can lose.
+ */
+interface InboundSubject {
+  readonly subjectType: string;
+  readonly replaced: boolean;
+  readonly fields: ReadonlyMap<string, FieldValue>;
+}
+
+/**
+ * Collapse an Action's Updates into one effective state per subject,
+ * applied in order. A `put` replaces the subject's whole field set (a
+ * missing `fields` map replaces it with nothing); a `delete` leaves it
+ * empty; a `patch` merges its fields into whatever stands.
+ */
+const inboundSubjects = (action: Action): Map<string, InboundSubject> => {
+  const subjects = new Map<string, InboundSubject>();
+  for (const update of action.updates) {
+    const current = subjects.get(update.subject_id) ?? {
+      subjectType: update.subject_type,
+      replaced: false,
+      fields: new Map<string, FieldValue>(),
+    };
+    if (update.method === "put") {
+      const fields = new Map<string, FieldValue>();
+      mergeUpdateFields(fields, update);
+      subjects.set(update.subject_id, { ...current, replaced: true, fields });
+      continue;
+    }
+    if (update.method === "delete") {
+      subjects.set(update.subject_id, { ...current, replaced: true, fields: new Map() });
+      continue;
+    }
+    const fields = new Map(current.fields);
+    mergeUpdateFields(fields, update);
+    subjects.set(update.subject_id, { ...current, fields });
+  }
+  return subjects;
+};
+
+/** The fields a buffered Action writes to `subjectId`, merged in update order. */
+const pendingWrites = (action: Action, subjectId: string): ReadonlyMap<string, FieldValue> => {
+  const fields = new Map<string, FieldValue>();
   for (const update of action.updates) {
     if (update.subject_id !== subjectId) continue;
-    const value = updateFields(update)?.[field];
-    if (value === undefined) continue;
-    merged = merged === undefined ? value : mergeFieldValue(merged, value);
+    mergeUpdateFields(fields, update);
   }
-  return merged;
+  return fields;
 };
 
 /**
@@ -253,6 +300,11 @@ const compareFieldValues = (
  * field)` is folded before comparison, so a malformed Action that
  * repeats a field is still judged on its effective state.
  *
+ * A `put` (and a `delete`) replaces the whole subject, so it sweeps
+ * every field a buffered entry writes there: a field the Action omits
+ * is reverted to nothing, not merely left alone. A `patch` stays
+ * field-presence based, since it only ever touches the fields it names.
+ *
  * Both `pending` and `acknowledged` entries are candidates: neither has
  * seen its echo yet, so the local write is not yet known to be the
  * surviving value. A `pending` loss also keeps the stale write off the
@@ -265,34 +317,27 @@ const findLosingEntries = (
   action: Action,
   isLwwField: OutboxDependencies["isLwwField"],
 ): LosingEntry[] => {
-  const writes = new Map<
-    string,
-    { subjectType: string; subjectId: string; field: string; value: FieldValue }
-  >();
-  for (const update of action.updates) {
-    const fields = updateFields(update);
-    if (fields === undefined) continue;
-    for (const [field, value] of Object.entries(fields)) {
-      const key = `${update.subject_id}\u0000${field}`;
-      const previous = writes.get(key);
-      writes.set(key, {
-        subjectType: update.subject_type,
-        subjectId: update.subject_id,
-        field,
-        value: previous === undefined ? value : mergeFieldValue(previous.value, value),
-      });
-    }
-  }
+  const subjects = inboundSubjects(action);
+  if (subjects.size === 0) return [];
 
   const losers: LosingEntry[] = [];
   for (const entry of entries) {
     if (entry.status === "error") continue;
     const losses: ConflictLoss[] = [];
-    for (const write of writes.values()) {
-      if (!isConflictableField(isLwwField, write.subjectType, write.field)) continue;
-      const pending = pendingFieldValue(entry.action, write.subjectId, write.field);
-      if (pending === undefined) continue;
-      losses.push(...compareFieldValues(pending, write.value, write.subjectId, write.field, []));
+    for (const [subjectId, inbound] of subjects) {
+      for (const [field, pending] of pendingWrites(entry.action, subjectId)) {
+        if (!isConflictableField(isLwwField, inbound.subjectType, field)) continue;
+        const winner = inbound.fields.get(field);
+        if (winner !== undefined) {
+          losses.push(...compareFieldValues(pending, winner, subjectId, field, []));
+          continue;
+        }
+        // A put or delete replaces the subject, so a field it omits is
+        // gone rather than left alone.
+        if (inbound.replaced) {
+          losses.push({ slot: { subjectId, field, path: [] }, winner: { value: undefined } });
+        }
+      }
     }
     if (losses.length > 0) losers.push({ entry, losses });
   }

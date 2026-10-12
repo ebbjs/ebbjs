@@ -5,12 +5,20 @@ import type { Action } from "@ebbjs/core";
  * the `FieldValue` the LWW comparison uses, so the entry is
  * self-describing across a reload. A whole-field replacement by an
  * incoming map has no single leaf triple, so `update_id` / `hlc` are
- * absent and `value` is the projected map.
+ * absent and `value` is the projected map. A field an inbound `put` or
+ * `delete` reverted likewise has no triple, and `value` is `undefined`
+ * because the server holds no value for the slot.
  */
 export interface ConflictWinner {
-  /** `update_id` of the winning FieldValue; absent for a whole-field map winner. */
+  /**
+   * `update_id` of the winning FieldValue; absent for a whole-field map
+   * winner or a field an inbound `put` / `delete` reverted.
+   */
   readonly update_id?: string;
-  /** HLC carried by the winning FieldValue; absent for a whole-field map winner. */
+  /**
+   * HLC carried by the winning FieldValue; absent for a whole-field map
+   * winner or a field an inbound `put` / `delete` reverted.
+   */
   readonly hlc?: string;
   readonly value: unknown;
 }
