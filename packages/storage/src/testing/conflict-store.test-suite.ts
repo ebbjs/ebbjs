@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { makeHlc } from "@ebbjs/core";
 
-import type { ConflictEntry, ConflictStore, ConflictWinner } from "../types/conflict-store";
+import type { ConflictEntry, ConflictSide, ConflictStore } from "../types/conflict-store";
 import { buildPutAction } from "./fixtures";
 
 export interface ConflictStoreTestSuiteHarness {
@@ -21,9 +21,9 @@ export interface ConflictStoreTestSuiteOptions {
 
 /**
  * The losing Action's identity is the only thing the store keys on;
- * its Updates are irrelevant to these tests. Each slot carries one
- * `FieldValue` triple so the entry round-trips its self-describing
- * shape.
+ * its Updates are irrelevant to these tests. Each slot carries a local
+ * / remote pair of `ConflictSide`s so the entry round-trips its
+ * self-describing shape.
  */
 const mkEntry = (
   id: string,
@@ -31,24 +31,28 @@ const mkEntry = (
   fields: readonly string[] = ["title"],
 ): ConflictEntry => {
   const detectedAtHlc = makeHlc(detectedAtMs);
-  const winner: ConflictWinner = {
-    update_id: "u_2",
-    hlc: detectedAtHlc,
-    value: "Updated",
-  };
+  const local: ConflictSide = { value: "Hello", update_id: "u_1", hlc: detectedAtHlc };
+  const remote: ConflictSide = { update_id: "u_2", hlc: detectedAtHlc, value: "Updated" };
 
   return {
     action: { ...buildPutAction(), id },
-    losses: fields.map((field) => ({
-      slot: { subjectId: "todo_1", field, path: [] },
-      winner,
+    subjects: ["todo_1"],
+    slots: fields.map((field) => ({
+      subjectId: "todo_1",
+      field,
+      path: [],
+      local,
+      remote,
     })),
+    basedOnGsn: 0,
+    catchUpId: "cu_1",
+    conflictId: `c_${id}`,
     detectedAtHlc,
   };
 };
 
 const slots = (entry: ConflictEntry | undefined): readonly string[] =>
-  entry === undefined ? [] : entry.losses.map((loss) => loss.slot.field);
+  entry === undefined ? [] : entry.slots.map((slot) => slot.field);
 
 export const defineConflictStoreTests = ({
   name,

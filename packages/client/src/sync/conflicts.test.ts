@@ -34,12 +34,19 @@ const mkEntry = (actionId: string, detectedAtHlc: string): ConflictEntry => ({
       },
     ],
   },
-  losses: [
+  subjects: ["todo_1"],
+  slots: [
     {
-      slot: { subjectId: "todo_1", field: "title", path: [] },
-      winner: { update_id: "u_peer", hlc: PEER_HLC, value: "theirs" },
+      subjectId: "todo_1",
+      field: "title",
+      path: [],
+      local: { value: "mine", update_id: `u_${actionId}`, hlc: LOCAL_HLC },
+      remote: { value: "theirs", update_id: "u_peer", hlc: PEER_HLC },
     },
   ],
+  basedOnGsn: 0,
+  catchUpId: "cu_1",
+  conflictId: `c_${actionId}`,
   detectedAtHlc,
 });
 
@@ -187,12 +194,19 @@ describe("createConflicts", () => {
           },
         ],
       },
-      losses: [
+      subjects: ["todo_1"],
+      slots: [
         {
-          slot: { subjectId: "todo_1", field: "title", path: [] },
-          winner: { update_id: "u_peer", hlc: PEER_HLC, value: "theirs" },
+          subjectId: "todo_1",
+          field: "title",
+          path: [],
+          local: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC },
+          remote: { value: "theirs", update_id: "u_peer", hlc: PEER_HLC },
         },
       ],
+      basedOnGsn: 0,
+      catchUpId: "cu_1",
+      conflictId: "c_act_local",
       detectedAtHlc: "5",
     };
     const store = mkStore([entry]);
@@ -235,12 +249,19 @@ describe("createConflicts", () => {
           },
         ],
       },
-      losses: [
+      subjects: ["todo_1"],
+      slots: [
         {
-          slot: { subjectId: "todo_1", field: "content", path: ["a"] },
-          winner: { update_id: "u_peer", hlc: PEER_HLC, value: "theirs" },
+          subjectId: "todo_1",
+          field: "content",
+          path: ["a"],
+          local: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC },
+          remote: { value: "theirs", update_id: "u_peer", hlc: PEER_HLC },
         },
       ],
+      basedOnGsn: 0,
+      catchUpId: "cu_1",
+      conflictId: "c_act_local",
       detectedAtHlc: "5",
     };
     const store = mkStore([entry]);

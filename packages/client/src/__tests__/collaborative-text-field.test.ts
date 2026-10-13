@@ -562,14 +562,18 @@ describe("conflicts through client.conflicts", () => {
       ],
     };
     await callApplyAction(client, peerAction, "g_1");
+    // Live inbound no longer detects; the catch-up pass does.
+    await client.outbox.detectConflicts([peerAction], "cu_1");
 
     const conflicts = await client.conflicts.list();
     expect(conflicts).toHaveLength(1);
-    expect(conflicts[0]!.losses[0]!.slot).toEqual({
-      subjectId: docId,
-      field: "content",
-      path: [runId],
-    });
+    expect(
+      conflicts[0]!.slots.map((slot) => ({
+        subjectId: slot.subjectId,
+        field: slot.field,
+        path: slot.path,
+      })),
+    ).toEqual([{ subjectId: docId, field: "content", path: [runId] }]);
     const snapshot = client.sync.conflicts.get();
     expect(snapshot.count).toBe(conflicts.length);
     expect(snapshot.entries).toEqual(conflicts);
@@ -633,6 +637,7 @@ describe("conflicts through client.conflicts", () => {
       ],
     };
     await callApplyAction(client, peerAction, "g_1");
+    await client.outbox.detectConflicts([peerAction], "cu_1");
 
     expect(await client.conflicts.list()).toEqual([]);
   });

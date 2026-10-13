@@ -95,11 +95,17 @@ const seedConflict = async () => {
   await client.outbox.enqueue(
     mkTodoWrite({ id: "act_local", value: "mine", updateId: "u_local", hlc: LOCAL_HLC, gsn: 0 }),
   );
-  await callApplyAction(
-    client,
-    mkTodoWrite({ id: "act_peer", value: "theirs", updateId: "u_peer", hlc: PEER_HLC, gsn: 9 }),
-    "g_1",
-  );
+  const peer = mkTodoWrite({
+    id: "act_peer",
+    value: "theirs",
+    updateId: "u_peer",
+    hlc: PEER_HLC,
+    gsn: 9,
+  });
+  await callApplyAction(client, peer, "g_1");
+  // Live inbound is echo-only now; detection is a catch-up pass over the
+  // missed window.
+  await client.outbox.detectConflicts([peer], "cu_1");
   return { client, storage, ...stub };
 };
 
@@ -123,23 +129,37 @@ describe("client.conflicts (#310)", () => {
     await client.outbox.enqueue(
       mkTodoWrite({ id: "act_local", value: "mine", updateId: "u_local", hlc: LOCAL_HLC, gsn: 0 }),
     );
-    await callApplyAction(
-      client,
-      mkTodoWrite({ id: "act_peer", value: "theirs", updateId: "u_peer", hlc: PEER_HLC, gsn: 9 }),
-      "g_1",
-    );
+    const peer = mkTodoWrite({
+      id: "act_peer",
+      value: "theirs",
+      updateId: "u_peer",
+      hlc: PEER_HLC,
+      gsn: 9,
+    });
+    await callApplyAction(client, peer, "g_1");
+    await client.outbox.detectConflicts([peer], "cu_1");
 
     const entries = await client.conflicts.list();
 
     expect(entries).toHaveLength(1);
     expect(entries[0]?.action.id).toBe("act_local");
-    expect(entries[0]?.losses.map((loss) => loss.slot)).toEqual([
-      { subjectId: "todo_1", field: "title", path: [] },
-    ]);
-    expect(entries[0]?.losses[0]?.winner).toEqual({
+    expect(entries[0]?.subjects).toEqual(["todo_1"]);
+    expect(
+      entries[0]?.slots.map((slot) => ({
+        subjectId: slot.subjectId,
+        field: slot.field,
+        path: slot.path,
+      })),
+    ).toEqual([{ subjectId: "todo_1", field: "title", path: [] }]);
+    expect(entries[0]?.slots[0]?.local).toEqual({
+      value: "mine",
+      update_id: "u_local",
+      hlc: LOCAL_HLC,
+    });
+    expect(entries[0]?.slots[0]?.remote).toEqual({
+      value: "theirs",
       update_id: "u_peer",
       hlc: PEER_HLC,
-      value: "theirs",
     });
     expect(client.conflicts.count()).toBe(1);
 
@@ -206,23 +226,25 @@ describe("client.conflicts (#310)", () => {
         },
       ],
     });
-    await callApplyAction(
-      client,
-      mkTodoWrite({
-        id: "act_peer",
-        value: "theirs",
-        updateId: "u_peer",
-        hlc: PEER_HLC,
-        gsn: 9,
-        // A patch only touches `title`, so the local `completed` is not
-        // swept and the test isolates what retry re-stamps.
-        method: "patch",
-      }),
-      "g_1",
-    );
-    expect((await client.conflicts.list())[0]?.losses.map((loss) => loss.slot)).toEqual([
-      { subjectId: "todo_1", field: "title", path: [] },
-    ]);
+    const peer = mkTodoWrite({
+      id: "act_peer",
+      value: "theirs",
+      updateId: "u_peer",
+      hlc: PEER_HLC,
+      gsn: 9,
+      // A patch only touches `title`, so the local `completed` is not
+      // swept and the test isolates what retry re-stamps.
+      method: "patch",
+    });
+    await callApplyAction(client, peer, "g_1");
+    await client.outbox.detectConflicts([peer], "cu_1");
+    expect(
+      (await client.conflicts.list())[0]?.slots.map((slot) => ({
+        subjectId: slot.subjectId,
+        field: slot.field,
+        path: slot.path,
+      })),
+    ).toEqual([{ subjectId: "todo_1", field: "title", path: [] }]);
 
     await client.conflicts.resolve("act_local", "retry");
 
@@ -266,29 +288,33 @@ describe("client.conflicts (#310)", () => {
     });
     // The peer's put replaces the entity and omits `title`, so the local
     // patch's field is reverted rather than out-dated.
-    await callApplyAction(
-      client,
-      {
-        id: "act_peer",
-        actor_id: ACTOR_ID,
-        hlc: PEER_HLC,
-        gsn: 9,
-        updates: [
-          {
-            id: "u_peer",
-            subject_id: "todo_1",
-            subject_type: "todo",
-            method: "put",
-            data: { fields: { completed: { value: true, update_id: "u_peer", hlc: PEER_HLC } } },
-          },
-        ],
-      },
-      "g_1",
-    );
+    const peer: Action = {
+      id: "act_peer",
+      actor_id: ACTOR_ID,
+      hlc: PEER_HLC,
+      gsn: 9,
+      updates: [
+        {
+          id: "u_peer",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "put",
+          data: { fields: { completed: { value: true, update_id: "u_peer", hlc: PEER_HLC } } },
+        },
+      ],
+    };
+    await callApplyAction(client, peer, "g_1");
+    await client.outbox.detectConflicts([peer], "cu_1");
 
-    expect((await client.conflicts.list())[0]?.losses.map((loss) => loss.slot)).toEqual([
-      { subjectId: "todo_1", field: "title", path: [] },
-    ]);
+    const [entry] = await client.conflicts.list();
+    expect(
+      entry?.slots.map((slot) => ({
+        subjectId: slot.subjectId,
+        field: slot.field,
+        path: slot.path,
+      })),
+    ).toEqual([{ subjectId: "todo_1", field: "title", path: [] }]);
+    expect(entry?.slots[0]?.remote).toEqual({ value: undefined });
 
     await client.conflicts.resolve("act_local", "retry");
 
@@ -381,17 +407,15 @@ describe("client.conflicts (#310)", () => {
         },
       ],
     });
-    await callApplyAction(
-      client,
-      mkTodoWrite({
-        id: "act_peer",
-        value: "theirs",
-        updateId: "u_peer",
-        hlc: PEER_HLC,
-        gsn: 9,
-      }),
-      "g_1",
-    );
+    const peer = mkTodoWrite({
+      id: "act_peer",
+      value: "theirs",
+      updateId: "u_peer",
+      hlc: PEER_HLC,
+      gsn: 9,
+    });
+    await callApplyAction(client, peer, "g_1");
+    await client.outbox.detectConflicts([peer], "cu_1");
 
     expect((await client.readLocalEntity("todo_2"))?.data.fields.title.value).toBe("mine");
 
@@ -437,34 +461,42 @@ describe("client.conflicts (#310)", () => {
       ],
     });
 
-    await callApplyAction(
-      client,
-      {
-        id: "act_peer",
-        actor_id: ACTOR_ID,
-        hlc: PEER_HLC,
-        gsn: 9,
-        updates: [
-          {
-            id: "u_peer",
-            subject_id: "doc_1",
-            subject_type: "doc",
-            method: "put",
-            data: {
-              fields: {
-                content: { map: { a: { value: "theirs", update_id: "u_peer", hlc: PEER_HLC } } },
-              },
+    const peer: Action = {
+      id: "act_peer",
+      actor_id: ACTOR_ID,
+      hlc: PEER_HLC,
+      gsn: 9,
+      updates: [
+        {
+          id: "u_peer",
+          subject_id: "doc_1",
+          subject_type: "doc",
+          method: "put",
+          data: {
+            fields: {
+              content: { map: { a: { value: "theirs", update_id: "u_peer", hlc: PEER_HLC } } },
             },
           },
-        ],
-      },
-      "g_1",
-    );
+        },
+      ],
+    };
+    await callApplyAction(client, peer, "g_1");
+    await client.outbox.detectConflicts([peer], "cu_1");
 
     const [entry] = await client.conflicts.list();
-    expect(entry?.losses.map((loss) => loss.slot)).toEqual([
-      { subjectId: "doc_1", field: "content", path: ["a"] },
-    ]);
+    expect(
+      entry?.slots.map((slot) => ({
+        subjectId: slot.subjectId,
+        field: slot.field,
+        path: slot.path,
+      })),
+    ).toEqual([{ subjectId: "doc_1", field: "content", path: ["a"] }]);
+    expect(entry?.slots[0]?.local).toEqual({ value: "mine", update_id: "u_local", hlc: LOCAL_HLC });
+    expect(entry?.slots[0]?.remote).toEqual({
+      value: "theirs",
+      update_id: "u_peer",
+      hlc: PEER_HLC,
+    });
 
     await client.conflicts.resolve("act_local", "retry");
 

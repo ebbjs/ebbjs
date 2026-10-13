@@ -21,7 +21,7 @@ import { decodeSync, makeHlc, type Action, type FieldValue, type Update } from "
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { createClient } from "../client";
-import { callApplyAction } from "../test-utils";
+import { callApplyAction, jsonResponse } from "../test-utils";
 import { defineEntity, e } from "../../schema/entity";
 import { defineSchema } from "../../schema/schema";
 
@@ -93,6 +93,18 @@ const mkClient = (fetchImpl: typeof fetch, storage?: ReturnType<typeof createMem
 
 const actionCalls = (calls: { url: string }[]): number =>
   calls.filter((c) => c.url.endsWith("/sync/actions")).length;
+
+const waitFor = async (
+  predicate: () => Promise<boolean> | boolean,
+  timeoutMs = 2_000,
+): Promise<void> => {
+  const started = Date.now();
+  for (;;) {
+    if (await predicate()) return;
+    if (Date.now() - started > timeoutMs) throw new Error("waitFor timed out");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+};
 
 describe("client.outbox", () => {
   it("is exposed on the client and starts empty", () => {
@@ -531,18 +543,78 @@ describe("outbox rehydration across a simulated reload", () => {
   });
 });
 
-describe("client.outbox LWW conflict detection (#308)", () => {
-  const mkSchemaClient = () => {
+describe("catch-up conflict detection (#308, #390)", () => {
+  /**
+   * A path-dispatching fetch that serves the catch-up window, the live
+   * SSE stream, and the write endpoint. `missedByGroup` lets a test give
+   * each subscribed group its own window; `pushLive` injects a live data
+   * event into the open stream.
+   */
+  const mkSyncFetch = (
+    opts: {
+      missed?: readonly Action[];
+      missedByGroup?: Record<string, readonly Action[]>;
+      rejected?: readonly { id: string; reason: string }[];
+      handshakeGroups?: readonly { id: string; cursor: number }[];
+    } = {},
+  ) => {
+    const calls: string[] = [];
+    const encoder = new TextEncoder();
+    let liveController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const liveResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          liveController = controller;
+        },
+      }),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+    const fn = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      calls.push(url);
+      if (url.includes("/sync/handshake")) {
+        return jsonResponse({
+          actor_id: ACTOR_ID,
+          groups: (opts.handshakeGroups ?? []).map((group) => ({
+            id: group.id,
+            permissions: [],
+            cursor_valid: true,
+            reason: null,
+            cursor: group.cursor,
+          })),
+        });
+      }
+      if (url.includes("/sync/groups/")) {
+        const groupId = decodeURIComponent(new URL(url).pathname.split("/").pop() ?? "");
+        const actions = opts.missedByGroup?.[groupId] ?? opts.missed ?? [];
+        const nextOffset = actions.reduce((max, action) => Math.max(max, action.gsn), 0);
+        return jsonResponse(actions, {
+          "stream-next-offset": String(nextOffset),
+          "stream-up-to-date": "true",
+        });
+      }
+      if (url.includes("/sync/actions")) {
+        return jsonResponse({ rejected: opts.rejected ?? [] });
+      }
+      if (url.includes("/sync/live")) return liveResponse;
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+    const pushLive = (action: Action): void => {
+      liveController?.enqueue(encoder.encode(`event: data\ndata: ${JSON.stringify(action)}\n\n`));
+    };
+    return { fn, calls, pushLive };
+  };
+
+  const mkSchemaClient = (fetchImpl: typeof fetch) => {
     const storage = createMemoryAdapter();
-    const stub = mkStubFetch();
     const client = createClient({
       serverUrl: SERVER_URL,
       actorId: ACTOR_ID,
       storage,
       schema,
-      fetchImpl: stub.fn,
+      fetchImpl,
     });
-    return { client, storage, ...stub };
+    return { client, storage };
   };
 
   /**
@@ -577,56 +649,66 @@ describe("client.outbox LWW conflict detection (#308)", () => {
     ],
   });
 
-  it("moves a pending local write to the Conflicts table when a peer out-dates it", async () => {
-    const { client, storage, calls } = mkSchemaClient();
+  it("moves a pending local write to the Conflicts store when the missed window out-dates it", async () => {
     const localHlc = makeHlc(1_711_036_800_000);
+    const peerHlc = makeHlc(1_711_036_800_001);
+    const { fn, calls } = mkSyncFetch({
+      missed: [
+        mkTodoWrite({ id: "act_peer", value: "theirs", updateId: "u_peer", hlc: peerHlc, gsn: 9 }),
+      ],
+    });
+    const { client, storage } = mkSchemaClient(fn);
+
+    // Enqueued before subscribe, so the write's base is 0.
     await client.outbox.enqueue(
       mkTodoWrite({ id: "act_local", value: "mine", updateId: "u_local", hlc: localHlc, gsn: 0 }),
     );
+    expect(client.outbox.pending()[0]?.basedOnGsn).toBe(0);
 
-    const peerHlc = makeHlc(1_711_036_800_001);
-    await callApplyAction(
-      client,
-      mkTodoWrite({ id: "act_peer", value: "theirs", updateId: "u_peer", hlc: peerHlc, gsn: 9 }),
-      "g_1",
-    );
+    const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
+    await waitFor(async () => (await storage.conflicts.list()).length > 0);
+    unsubscribe();
 
-    expect(client.outbox.pending()).toEqual([]);
-    expect(await storage.outbox.get("act_local")).toBeNull();
     const conflicts = await storage.conflicts.list();
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0]?.action.id).toBe("act_local");
-    expect(conflicts[0]?.losses.map((loss) => loss.slot)).toEqual([
-      { subjectId: "todo_1", field: "title", path: [] },
+    expect(conflicts[0]?.subjects).toEqual(["todo_1"]);
+    expect(conflicts[0]?.basedOnGsn).toBe(0);
+    expect(conflicts[0]?.catchUpId).toMatch(/^cu_/);
+    expect(conflicts[0]?.conflictId).toMatch(/^c_/);
+    expect(conflicts[0]?.slots).toEqual([
+      {
+        subjectId: "todo_1",
+        field: "title",
+        path: [],
+        local: { value: "mine", update_id: "u_local", hlc: localHlc },
+        remote: { value: "theirs", update_id: "u_peer", hlc: peerHlc },
+      },
     ]);
-    expect(conflicts[0]?.losses[0]?.winner).toEqual({
-      update_id: "u_peer",
-      hlc: peerHlc,
-      value: "theirs",
-    });
 
+    expect(await storage.outbox.get("act_local")).toBeNull();
+    expect(client.outbox.pending()).toEqual([]);
     // The losing Action was never posted.
-    await expect(client.outbox.flush()).resolves.toEqual({ kind: "empty" });
-    expect(actionCalls(calls)).toBe(0);
+    expect(calls.some((url) => url.includes("/sync/actions"))).toBe(false);
   });
 
-  it("moves a pending local patch to Conflicts when an inbound put omits its field", async () => {
-    const { client, storage, calls } = mkSchemaClient();
+  it("moves a pending local patch to Conflicts when a missed put omits its field", async () => {
     const localHlc = makeHlc(1_711_036_800_000);
     const peerHlc = makeHlc(1_711_036_800_001);
+    const { fn, calls } = mkSyncFetch({
+      missed: [
+        mkTodoWrite({
+          id: "act_peer",
+          value: "",
+          updateId: "u_peer",
+          hlc: peerHlc,
+          gsn: 9,
+          fields: { completed: { value: true, update_id: "u_peer", hlc: peerHlc } },
+        }),
+      ],
+    });
+    const { client, storage } = mkSchemaClient(fn);
 
-    // Seed the entity so the local patch has something to apply to.
-    await callApplyAction(
-      client,
-      mkTodoWrite({
-        id: "act_base",
-        value: "base",
-        updateId: "u_base",
-        hlc: makeHlc(1_711_036_799_000),
-        gsn: 1,
-      }),
-      "g_1",
-    );
     await client.outbox.enqueue(
       mkTodoWrite({
         id: "act_local",
@@ -638,64 +720,56 @@ describe("client.outbox LWW conflict detection (#308)", () => {
       }),
     );
 
-    // The peer's `put` replaces the whole entity and carries no `title`.
-    await callApplyAction(
-      client,
-      mkTodoWrite({
-        id: "act_peer",
-        value: "",
-        updateId: "u_peer",
-        hlc: peerHlc,
-        gsn: 9,
-        fields: { completed: { value: true, update_id: "u_peer", hlc: peerHlc } },
-      }),
-      "g_1",
-    );
+    const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
+    await waitFor(async () => (await storage.conflicts.list()).length > 0);
+    unsubscribe();
 
-    expect(client.outbox.pending()).toEqual([]);
-    expect(await storage.outbox.get("act_local")).toBeNull();
     const conflicts = await storage.conflicts.list();
     expect(conflicts).toHaveLength(1);
-    expect(conflicts[0]?.action.id).toBe("act_local");
-    expect(conflicts[0]?.losses.map((loss) => loss.slot)).toEqual([
-      { subjectId: "todo_1", field: "title", path: [] },
+    // A missed `put` replaces the subject, so the omitted `title` is
+    // reverted on the server: the remote side holds no value.
+    expect(conflicts[0]?.slots).toEqual([
+      {
+        subjectId: "todo_1",
+        field: "title",
+        path: [],
+        local: { value: "mine", update_id: "u_local", hlc: localHlc },
+        remote: { value: undefined },
+      },
     ]);
 
-    // The losing Action was never posted.
-    await expect(client.outbox.flush()).resolves.toEqual({ kind: "empty" });
-    expect(actionCalls(calls)).toBe(0);
+    expect(await storage.outbox.get("act_local")).toBeNull();
+    expect(calls.some((url) => url.includes("/sync/actions"))).toBe(false);
   });
 
-  it("leaves the pending write flushable when the peer's edit is older", async () => {
-    const { client, storage } = mkSchemaClient();
+  it("does not flag a write whose base is at or ahead of the missed window", async () => {
+    const localHlc = makeHlc(1_711_036_800_000);
+    const peerHlc = makeHlc(1_711_036_800_001);
+    const { fn, calls } = mkSyncFetch({
+      handshakeGroups: [{ id: "grp_1", cursor: 5 }],
+      missed: [
+        mkTodoWrite({ id: "act_peer", value: "theirs", updateId: "u_peer", hlc: peerHlc, gsn: 3 }),
+      ],
+    });
+    const { client, storage } = mkSchemaClient(fn);
+
+    // The handshake cursor is this write's base, so the missed gsn 3 is
+    // deliberately not concurrent.
+    await client.handshake();
     await client.outbox.enqueue(
-      mkTodoWrite({
-        id: "act_local",
-        value: "mine",
-        updateId: "u_local",
-        hlc: makeHlc(1_711_036_800_100),
-        gsn: 0,
-      }),
+      mkTodoWrite({ id: "act_local", value: "mine", updateId: "u_local", hlc: localHlc, gsn: 0 }),
     );
+    expect(client.outbox.pending()[0]?.basedOnGsn).toBe(5);
 
-    await callApplyAction(
-      client,
-      mkTodoWrite({
-        id: "act_peer",
-        value: "theirs",
-        updateId: "u_peer",
-        hlc: makeHlc(1_711_036_800_000),
-        gsn: 9,
-      }),
-      "g_1",
-    );
+    const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
+    await waitFor(() => client.outbox.size("acknowledged") === 1);
+    unsubscribe();
 
-    expect(client.outbox.pending().map((entry) => entry.action.id)).toEqual(["act_local"]);
     expect(await storage.conflicts.list()).toEqual([]);
+    expect(calls.filter((url) => url.includes("/sync/actions"))).toHaveLength(1);
   });
 
-  it("never flags a relationship edge as an LWW conflict", async () => {
-    const { client, storage } = mkSchemaClient();
+  it("never flags a structural relationship edge", async () => {
     const mkRelationship = (id: string, gsn: number, target: string): Action => ({
       id,
       actor_id: ACTOR_ID,
@@ -718,18 +792,27 @@ describe("client.outbox LWW conflict detection (#308)", () => {
         },
       ],
     });
+    const { fn, calls } = mkSyncFetch({ missed: [mkRelationship("act_peer", 9, "todo_b")] });
+    const { client, storage } = mkSchemaClient(fn);
     await client.outbox.enqueue(mkRelationship("act_local", 0, "todo_a"));
 
-    await callApplyAction(client, mkRelationship("act_peer", 9, "todo_b"), "g_1");
-
-    expect(client.outbox.pending().map((entry) => entry.action.id)).toEqual(["act_local"]);
+    const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
+    // Detection runs before `live`; the structural edge never flags, so
+    // the buffered write reaches the wire.
+    await waitFor(() => client.state === "live");
+    await waitFor(() => calls.some((url) => url.includes("/sync/actions")));
     expect(await storage.conflicts.list()).toEqual([]);
+    unsubscribe();
   });
 
   it("flags a same-run race and ignores writes to a different run", async () => {
-    const storage = createMemoryAdapter();
-    const client = mkClient(mkStubFetch().fn, storage);
-    const mkDocWrite = (id: string, gsn: number, runId: string, hlc: string): Action => ({
+    const mkDocPatch = (
+      id: string,
+      runId: string,
+      value: string,
+      hlc: string,
+      gsn: number,
+    ): Action => ({
       id,
       actor_id: ACTOR_ID,
       hlc,
@@ -739,43 +822,68 @@ describe("client.outbox LWW conflict detection (#308)", () => {
           id: `u_${id}`,
           subject_id: "doc_1",
           subject_type: "text_document",
+          method: "patch",
+          data: {
+            fields: { content: { map: { [runId]: { value, update_id: `u_${id}`, hlc } } } },
+          },
+        },
+      ],
+    });
+    const { fn } = mkSyncFetch({
+      missed: [
+        mkDocPatch("act_peer_other", "run:r2", "peer-other", makeHlc(1_711_036_800_001), 9),
+        mkDocPatch("act_peer_same", "run:r3", "peer-same", makeHlc(1_711_036_800_002), 10),
+      ],
+    });
+    const { client, storage } = mkSchemaClient(fn);
+
+    // Seed the document so the missed patches have a base to apply to.
+    await callApplyAction(client, {
+      id: "act_doc_base",
+      actor_id: ACTOR_ID,
+      hlc: makeHlc(1_711_036_799_000),
+      gsn: 1,
+      updates: [
+        {
+          id: "u_doc_base",
+          subject_id: "doc_1",
+          subject_type: "text_document",
           method: "put",
           data: {
             fields: {
-              content: { map: { [runId]: { value: id, update_id: `u_${id}`, hlc } } },
+              content: {
+                map: {
+                  "run:base": {
+                    value: "base",
+                    update_id: "u_doc_base",
+                    hlc: makeHlc(1_711_036_799_000),
+                  },
+                },
+              },
             },
           },
         },
       ],
     });
 
-    // Different run keys merge independently: no slot is out-dated.
+    // Different run keys merge independently: no slot is contested.
     await client.outbox.enqueue(
-      mkDocWrite("act_local_other", 0, "run:r1", makeHlc(1_711_036_800_000)),
+      mkDocPatch("act_local_other", "run:r1", "mine-other", makeHlc(1_711_036_800_000), 0),
     );
-    await callApplyAction(
-      client,
-      mkDocWrite("act_peer_other", 9, "run:r2", makeHlc(1_711_036_800_001)),
-      "g_1",
-    );
-    expect(client.outbox.pending().map((entry) => entry.action.id)).toEqual(["act_local_other"]);
-    expect(await storage.conflicts.list()).toEqual([]);
-
-    // Same run key, concurrent HLC: the inbound wins and the local
-    // Action moves to the Conflicts store.
     await client.outbox.enqueue(
-      mkDocWrite("act_local_same", 0, "run:r3", makeHlc(1_711_036_800_000)),
-    );
-    await callApplyAction(
-      client,
-      mkDocWrite("act_peer_same", 9, "run:r3", makeHlc(1_711_036_800_001)),
-      "g_1",
+      mkDocPatch("act_local_same", "run:r3", "mine-same", makeHlc(1_711_036_800_000), 0),
     );
 
-    expect(client.outbox.pending().map((entry) => entry.action.id)).toEqual(["act_local_other"]);
-    expect((await storage.conflicts.list()).map((entry) => entry.action.id)).toEqual([
-      "act_local_same",
-    ]);
+    const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
+    await waitFor(async () => (await storage.conflicts.list()).length > 0);
+    unsubscribe();
+
+    const conflicts = await storage.conflicts.list();
+    expect(conflicts.map((entry) => entry.action.id)).toEqual(["act_local_same"]);
+    expect(conflicts[0]?.subjects).toEqual(["doc_1"]);
+    expect(conflicts[0]?.slots.map((slot) => slot.path)).toEqual([["run:r3"]]);
+    expect(conflicts[0]?.slots[0]?.local).toMatchObject({ value: "mine-same" });
+    expect(conflicts[0]?.slots[0]?.remote).toMatchObject({ value: "peer-same" });
   });
 
   it("treats a server rejection as an Outbox error, not a conflict", async () => {
@@ -789,5 +897,74 @@ describe("client.outbox LWW conflict detection (#308)", () => {
 
     expect(client.outbox.errors().map((entry) => entry.action.id)).toEqual(["act_1"]);
     expect(await storage.conflicts.list()).toEqual([]);
+  });
+
+  it("does not detect a live inbound write (detection is catch-up only)", async () => {
+    const localHlc = makeHlc(1_711_036_800_000);
+    const peerHlc = makeHlc(1_711_036_800_001);
+    const { fn, pushLive } = mkSyncFetch({ missed: [] });
+    const { client, storage } = mkSchemaClient(fn);
+
+    await client.outbox.enqueue(
+      mkTodoWrite({ id: "act_local", value: "mine", updateId: "u_local", hlc: localHlc, gsn: 0 }),
+    );
+    const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
+    await waitFor(() => client.state === "live");
+    // The buffered write is accepted and its base is still 0, so the
+    // live write below would be concurrent if detection ran live.
+    await waitFor(async () => (await storage.outbox.get("act_local"))?.status === "acknowledged");
+
+    pushLive(
+      mkTodoWrite({ id: "act_peer", value: "theirs", updateId: "u_peer", hlc: peerHlc, gsn: 9 }),
+    );
+    await waitFor(
+      async () => (await client.readLocalEntity("todo_1"))?.data.fields.title.value === "theirs",
+    );
+
+    expect(await storage.conflicts.list()).toEqual([]);
+    expect(await storage.outbox.get("act_local")).not.toBeNull();
+    unsubscribe();
+  });
+
+  it("stamps basedOnGsn from the minimum applied cursor across subscribed groups", async () => {
+    const { fn } = mkSyncFetch({
+      missedByGroup: {
+        grp_1: [
+          mkTodoWrite({
+            id: "act_g1",
+            value: "g1",
+            updateId: "u_g1",
+            hlc: makeHlc(1_711_036_800_000),
+            gsn: 7,
+          }),
+        ],
+        grp_2: [
+          mkTodoWrite({
+            id: "act_g2",
+            value: "g2",
+            updateId: "u_g2",
+            hlc: makeHlc(1_711_036_800_001),
+            gsn: 3,
+          }),
+        ],
+      },
+    });
+    const { client } = mkSchemaClient(fn);
+
+    const unsubscribe = client.subscribe(["grp_1", "grp_2"], 0, () => {});
+    await waitFor(() => client.state === "live");
+
+    await client.outbox.enqueue(
+      mkTodoWrite({
+        id: "act_local",
+        value: "mine",
+        updateId: "u_local",
+        hlc: makeHlc(1_711_036_800_002),
+        gsn: 0,
+      }),
+    );
+
+    expect(client.outbox.pending()[0]?.basedOnGsn).toBe(3);
+    unsubscribe();
   });
 });

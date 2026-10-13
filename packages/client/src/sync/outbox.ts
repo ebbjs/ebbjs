@@ -18,14 +18,13 @@
  *             error ─(retry)─► pending       │
  * ```
  *
- * `noteInbound` drives the receipt leg: the single inbound funnel
- * (`SyncClient._applyAction`) hands every received Action here. An
+ * `noteInbound` drives the echo leg: the single inbound funnel
+ * (`SyncClient._applyAction`) hands every received Action here, and an
  * Action that matches a buffered entry with a server GSN proves the
- * entry is in the canonical log and removes it (echo); a peer Action
- * that out-dates a buffered entry's LWW field moves that entry to the
- * Conflicts store (a `pending` entry so it is never posted, an
- * `acknowledged` one so the application learns its committed write
- * lost).
+ * entry is in the canonical log and removes it. Detection is separate:
+ * `detectConflicts` runs once per catch-up over the accumulated missed
+ * window, before the flush gate reopens, and moves losing entries to the
+ * Conflicts store. Live sync is pure convergence — no conflict rows.
  *
  * The module depends only on injected seams: the store, an HLC source
  * for the ordering key, `applyOptimistic` (the client wires it to the
@@ -34,25 +33,19 @@
  * storage adapter and fetch.
  */
 
-import {
-  compare,
-  isFieldMap,
-  mergeFieldValue,
-  type Action,
-  type FieldValue,
-  type Update,
-} from "@ebbjs/core";
-import type {
-  ConflictEntry,
-  ConflictLoss,
-  ConflictSlot,
-  ConflictStore,
-  ConflictWinner,
-  OutboxStore,
-} from "@ebbjs/storage/types";
+import { compare, type Action } from "@ebbjs/core";
+import type { ConflictEntry, ConflictSlot, ConflictStore, OutboxStore } from "@ebbjs/storage/types";
 
 import type { Rejection, WriteResponse } from "./types";
-import { projectFieldValue } from "./query-builder";
+import {
+  actionTouchesSubject,
+  actionWrites,
+  conflictSlot,
+  foldInboundWindow,
+  inboundSubjects,
+  isConflictableField,
+  overlappingPaths,
+} from "./conflict-slots";
 import { createObservable } from "./observable";
 
 /**
@@ -68,6 +61,12 @@ export interface OutboxEntry {
   readonly status: OutboxStatus;
   /** HLC stamped when the Action was buffered; the durable ordering key. */
   readonly enqueuedAtHlc: string;
+  /**
+   * Highest server sequence the client had applied when the Action was
+   * authored. An inbound Action is concurrent with this write when its
+   * GSN is greater; `0` means "always concurrent".
+   */
+  readonly basedOnGsn: number;
 }
 
 /**
@@ -84,16 +83,24 @@ export type FlushOutcome =
 
 /**
  * Classified result of matching an inbound Action against the buffer.
- * `echo` is this client's own Action returning over the sync stream;
- * `conflict` names a buffered Action an inbound LWW write out-dated and
- * that was moved to the Conflicts store. When one inbound Action moves
- * several entries, `actionId` is the first moved and the store is the
- * source of truth for the rest.
+ * `echo` is this client's own Action returning over the sync stream and
+ * removing its buffered entry; anything else is `none`. Race detection is
+ * catch-up-scoped and reported by {@link DetectedConflict} instead.
  */
-export type InboundOutcome =
-  | { kind: "echo"; actionId: string }
-  | { kind: "conflict"; actionId: string; slots: readonly ConflictSlot[] }
-  | { kind: "none" };
+export type InboundOutcome = { kind: "echo"; actionId: string } | { kind: "none" };
+
+/** One buffered Action a catch-up pass moved to the Conflicts store. */
+export interface DetectedConflict {
+  /** The losing `action.id`. */
+  readonly actionId: string;
+  /** Subjects that actually lost. */
+  readonly subjects: readonly string[];
+  /**
+   * Overlapping contested positions, in detection order. Empty when the
+   * entity-level scope surfaced a subject with no position overlap.
+   */
+  readonly slots: readonly ConflictSlot[];
+}
 
 /**
  * Collaborators the outbox needs. Kept narrow so the outbox can't
@@ -121,12 +128,23 @@ export interface OutboxDependencies {
    */
   store: OutboxStore;
   /**
-   * Durable table of LWW conflicts awaiting application resolution.
-   * A buffered Action the inbound stream out-dates on one of its LWW
-   * fields is moved here whole, so a pending write survives the sweep
-   * and an already-committed one is surfaced for resolution.
+   * Durable table of offline conflicts awaiting application
+   * resolution. A buffered Action a catch-up pass finds concurrent with
+   * the missed window is moved here whole, so a pending write survives
+   * the pass and an already-committed one is surfaced for resolution.
    */
   conflicts: ConflictStore;
+  /**
+   * Highest server GSN the client has applied, stamped onto every
+   * enqueued Action as its write base.
+   */
+  baseGsn: () => number;
+  /**
+   * Conflict granularity declared by an entity: `"field"` surfaces a
+   * same-position race, `"entity"` any concurrent touch. Unknown types
+   * default to `"field"`.
+   */
+  conflictScope: (subjectType: string) => "field" | "entity";
   /**
    * Field-kind oracle: `true` when `field` on `subjectType` merges
    * last-writer-wins, so an inbound write can silently overwrite a
@@ -138,211 +156,9 @@ export interface OutboxDependencies {
   isLwwField?: (subjectType: string, field: string) => boolean;
   /** Stamp a fresh HLC for an entry's `enqueuedAtHlc` ordering key. */
   hlc: () => string;
+  /** Mint an id for one detected conflict entry. */
+  conflictId: () => string;
 }
-
-/**
- * Subject types whose Updates carry structural edges, not LWW field
- * writes: a `relationship` edge, an `entityGroup` membership, and a
- * `groupMember` permission row. Concurrent writes to edges are never
- * surfaced as LWW conflicts.
- */
-const STRUCTURAL_SUBJECT_TYPES: ReadonlySet<string> = new Set([
-  "relationship",
-  "entityGroup",
-  "groupMember",
-]);
-
-/** A buffered Action an inbound Action out-dates, with its losing slots. */
-interface LosingEntry {
-  readonly entry: OutboxEntry;
-  readonly losses: readonly ConflictLoss[];
-}
-
-/**
- * The field map an Update carries. Tolerates a peer's unwrapped
- * envelope: a missing `fields` map means the Update writes no field.
- */
-const updateFields = (update: Update): Record<string, FieldValue> | undefined =>
-  update.data?.fields as Record<string, FieldValue> | undefined;
-
-/** Fold one Update's fields into `fields` under the shared merge rule. */
-const mergeUpdateFields = (fields: Map<string, FieldValue>, update: Update): void => {
-  for (const [field, value] of Object.entries(updateFields(update) ?? {})) {
-    const previous = fields.get(field);
-    fields.set(field, previous === undefined ? value : mergeFieldValue(previous, value));
-  }
-};
-
-/**
- * The effective inbound state for one subject an Action writes.
- *
- * `replaced` marks a `put` or `delete`, which makes the Action's fields
- * the subject's whole field set: a buffered write to a field the Action
- * omits is reverted, not left alone. A patch-only Action leaves it
- * false, so only the fields it names can lose.
- */
-interface InboundSubject {
-  readonly subjectType: string;
-  readonly replaced: boolean;
-  readonly fields: ReadonlyMap<string, FieldValue>;
-}
-
-/**
- * Collapse an Action's Updates into one effective state per subject,
- * applied in order. A `put` replaces the subject's whole field set (a
- * missing `fields` map replaces it with nothing); a `delete` leaves it
- * empty; a `patch` merges its fields into whatever stands.
- */
-const inboundSubjects = (action: Action): Map<string, InboundSubject> => {
-  const subjects = new Map<string, InboundSubject>();
-  for (const update of action.updates) {
-    const current = subjects.get(update.subject_id) ?? {
-      subjectType: update.subject_type,
-      replaced: false,
-      fields: new Map<string, FieldValue>(),
-    };
-    if (update.method === "put") {
-      const fields = new Map<string, FieldValue>();
-      mergeUpdateFields(fields, update);
-      subjects.set(update.subject_id, { ...current, replaced: true, fields });
-      continue;
-    }
-    if (update.method === "delete") {
-      subjects.set(update.subject_id, { ...current, replaced: true, fields: new Map() });
-      continue;
-    }
-    const fields = new Map(current.fields);
-    mergeUpdateFields(fields, update);
-    subjects.set(update.subject_id, { ...current, fields });
-  }
-  return subjects;
-};
-
-/** The fields a buffered Action writes to `subjectId`, merged in update order. */
-const pendingWrites = (action: Action, subjectId: string): ReadonlyMap<string, FieldValue> => {
-  const fields = new Map<string, FieldValue>();
-  for (const update of action.updates) {
-    if (update.subject_id !== subjectId) continue;
-    mergeUpdateFields(fields, update);
-  }
-  return fields;
-};
-
-/**
- * Whether the inbound FieldValue beats the pending one under the
- * per-field LWW rule the server and the local materializer share:
- * higher HLC wins, equal HLC breaks toward the lexicographically
- * greater `update_id`.
- */
-const inboundWins = (inbound: FieldValue, pending: FieldValue): boolean => {
-  const order = compare(inbound.hlc ?? "", pending.hlc ?? "");
-  if (order !== 0) return order > 0;
-  return (inbound.update_id ?? "") >= (pending.update_id ?? "");
-};
-
-/** True when an inbound write to `field` can silently overwrite a local one. */
-const isConflictableField = (
-  isLwwField: OutboxDependencies["isLwwField"],
-  subjectType: string,
-  field: string,
-): boolean =>
-  !STRUCTURAL_SUBJECT_TYPES.has(subjectType) && (isLwwField?.(subjectType, field) ?? true);
-
-/** The winner reported for one lost slot. */
-const winnerFor = (value: FieldValue): ConflictWinner =>
-  isFieldMap(value)
-    ? { value: projectFieldValue(value) }
-    : { update_id: value.update_id, hlc: value.hlc ?? "", value: value.value };
-
-/**
- * The slots an inbound value out-dates in a pending one, in map-key
- * order. Maps recurse key by key, so a write to a key the pending
- * Action never wrote is not a loss. A kind change replaces the whole
- * field, so it is attributed to the path where the kinds diverge (the
- * field root for a top-level change).
- *
- * For a collaborative-text document this recursion *is* the conflict
- * policy: concurrent inserts write different run keys and never
- * surface, while a concurrent extend-vs-delete on one run is one slot
- * and does. No separate auto-resolve layer is needed — a race the HLC
- * settles without losing a pending write is simply not a loss.
- */
-const compareFieldValues = (
-  pending: FieldValue,
-  inbound: FieldValue,
-  subjectId: string,
-  field: string,
-  path: readonly string[],
-): ConflictLoss[] => {
-  if (isFieldMap(pending) && isFieldMap(inbound)) {
-    const losses: ConflictLoss[] = [];
-    for (const [key, inboundChild] of Object.entries(inbound.map)) {
-      const pendingChild = pending.map[key];
-      if (pendingChild === undefined) continue;
-      losses.push(
-        ...compareFieldValues(pendingChild, inboundChild, subjectId, field, [...path, key]),
-      );
-    }
-    return losses;
-  }
-  if (isFieldMap(pending) !== isFieldMap(inbound)) {
-    return [{ slot: { subjectId, field, path }, winner: winnerFor(inbound) }];
-  }
-  if (!inboundWins(inbound, pending)) return [];
-  return [{ slot: { subjectId, field, path }, winner: winnerFor(inbound) }];
-};
-
-/**
- * Find the buffered entries an inbound Action out-dates, in buffer
- * order. An entry loses when the Action writes a slot the entry also
- * targets with a weaker FieldValue; the whole entry moves, so one
- * losing slot is enough. A repeated inbound write per `(subject,
- * field)` is folded before comparison, so a malformed Action that
- * repeats a field is still judged on its effective state.
- *
- * A `put` (and a `delete`) replaces the whole subject, so it sweeps
- * every field a buffered entry writes there: a field the Action omits
- * is reverted to nothing, not merely left alone. A `patch` stays
- * field-presence based, since it only ever touches the fields it names.
- *
- * Both `pending` and `acknowledged` entries are candidates: neither has
- * seen its echo yet, so the local write is not yet known to be the
- * surviving value. A `pending` loss also keeps the stale write off the
- * wire; an `acknowledged` loss is already committed and moves to the
- * Conflicts store so the application learns its write was out-dated.
- * An `error` entry is a server rejection, not a race.
- */
-const findLosingEntries = (
-  entries: readonly OutboxEntry[],
-  action: Action,
-  isLwwField: OutboxDependencies["isLwwField"],
-): LosingEntry[] => {
-  const subjects = inboundSubjects(action);
-  if (subjects.size === 0) return [];
-
-  const losers: LosingEntry[] = [];
-  for (const entry of entries) {
-    if (entry.status === "error") continue;
-    const losses: ConflictLoss[] = [];
-    for (const [subjectId, inbound] of subjects) {
-      for (const [field, pending] of pendingWrites(entry.action, subjectId)) {
-        if (!isConflictableField(isLwwField, inbound.subjectType, field)) continue;
-        const winner = inbound.fields.get(field);
-        if (winner !== undefined) {
-          losses.push(...compareFieldValues(pending, winner, subjectId, field, []));
-          continue;
-        }
-        // A put or delete replaces the subject, so a field it omits is
-        // gone rather than left alone.
-        if (inbound.replaced) {
-          losses.push({ slot: { subjectId, field, path: [] }, winner: { value: undefined } });
-        }
-      }
-    }
-    if (losses.length > 0) losers.push({ entry, losses });
-  }
-  return losers;
-};
 
 /**
  * Depth of the buffer by status, read as one snapshot so the three
@@ -435,16 +251,32 @@ export interface Outbox {
   /**
    * Classify an inbound Action against the buffer.
    *
-   * - An Action whose id matches a `pending` / `acknowledged` entry and
-   *   that carries a server GSN (`gsn > 0`) is this client's own echo:
-   *   it is removed from memory and the store, and reported as `echo`.
-   * - Otherwise, a `gsn > 0` Action that out-dates an LWW field a
-   *   `pending` / `acknowledged` entry also targets moves the whole
-   *   losing Action to the Conflicts store and reports `conflict`.
-   *   Structural edge fields never conflict.
-   * - Anything else is `none`.
+   * An Action whose id matches a `pending` / `acknowledged` entry and
+   * that carries a server GSN (`gsn > 0`) is this client's own echo: it
+   * is removed from memory and the store, and reported as `echo`.
+   * Anything else is `none`. Race detection is catch-up-scoped; see
+   * {@link Outbox.detectConflicts}.
    */
   noteInbound(action: Action): Promise<InboundOutcome>;
+  /**
+   * Fold the accumulated missed catch-up window against the buffer and
+   * move every losing local Action to the Conflicts store. Runs once per
+   * reconnect, before the flush gate reopens.
+   *
+   * An entry loses when a missed Action with `gsn > entry.basedOnGsn`
+   * touches the same position (declared `"field"` scope) or the same
+   * entity (declared `"entity"` scope). `pending` and `acknowledged`
+   * entries are candidates; an `error` entry is a server rejection, not a
+   * race. A conflict is recorded even when the local value would win the
+   * merge — the application decides.
+   *
+   * `catchUpId` is the pass's identity, stamped on every entry it
+   * produces. Returns the entries moved, in buffer order.
+   */
+  detectConflicts(
+    actions: readonly Action[],
+    catchUpId: string,
+  ): Promise<readonly DetectedConflict[]>;
 }
 
 /**
@@ -503,6 +335,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
             action: entry.action,
             status: entry.status,
             enqueuedAtHlc: entry.enqueuedAtHlc,
+            basedOnGsn: entry.basedOnGsn,
           }));
         emit();
       })
@@ -520,10 +353,11 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     // the rehydrated queue cannot be clobbered by an out-of-order write.
     await rehydrate();
     const enqueuedAtHlc = deps.hlc();
+    const basedOnGsn = deps.baseGsn();
     // Persist before buffering: a store failure must not leave the
     // in-memory queue holding an entry the store never saw.
-    await deps.store.put({ action, status: "pending", enqueuedAtHlc });
-    entries = [...entries, { action, status: "pending", enqueuedAtHlc }];
+    await deps.store.put({ action, status: "pending", enqueuedAtHlc, basedOnGsn });
+    entries = [...entries, { action, status: "pending", enqueuedAtHlc, basedOnGsn }];
     // Notify before the optimistic apply resolves: the entry is already
     // durable and buffered, so subscribers must see the depth even if the
     // apply throws and `enqueue` rejects.
@@ -560,7 +394,12 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
       for (const entry of batch) {
         if (!entries.some((candidate) => candidate.action.id === entry.action.id)) continue;
         const status = statusFor(entry);
-        await deps.store.put({ action: entry.action, status, enqueuedAtHlc: entry.enqueuedAtHlc });
+        await deps.store.put({
+          action: entry.action,
+          status,
+          enqueuedAtHlc: entry.enqueuedAtHlc,
+          basedOnGsn: entry.basedOnGsn,
+        });
         if (!entries.some((candidate) => candidate.action.id === entry.action.id)) {
           // The echo's or conflict's `delete` interleaved with this `put`.
           // Re-delete so the row stays gone even if the put landed last and
@@ -611,6 +450,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
       action: entry.action,
       status: "pending",
       enqueuedAtHlc: entry.enqueuedAtHlc,
+      basedOnGsn: entry.basedOnGsn,
     });
     entries = entries.map((c) => (c.action.id === actionId ? { ...c, status: "pending" } : c));
     emit();
@@ -627,7 +467,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
 
   const noteInbound = async (action: Action): Promise<InboundOutcome> => {
     // gsn 0 means the server has not accepted the Action, so it cannot be
-    // this client's own echo and cannot out-date a local write.
+    // this client's own echo.
     if (action.gsn <= 0) return { kind: "none" };
     // An echo can arrive before a caller has awaited rehydration (SSE is
     // live from construction), so match against the loaded buffer rather
@@ -641,67 +481,142 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
       return { kind: "none" };
     }
 
-    // Own echo removes the entry once the server proves it canonical.
     const echo = entries.find(
       (entry) =>
         entry.action.id === action.id &&
         (entry.status === "pending" || entry.status === "acknowledged"),
     );
-    if (echo !== undefined) {
-      try {
-        await deps.store.delete(action.id);
-      } catch {
-        // Keep memory and the store agreeing: the row survives until a
-        // later attempt can delete both.
-        return { kind: "none" };
-      }
-      entries = entries.filter((entry) => entry.action.id !== action.id);
-      emit();
-      return { kind: "echo", actionId: action.id };
+    if (echo === undefined) return { kind: "none" };
+    try {
+      await deps.store.delete(action.id);
+    } catch {
+      // Keep memory and the store agreeing: the row survives until a
+      // later attempt can delete both.
+      return { kind: "none" };
     }
-
-    // A peer's Action out-dating a buffered entry's LWW field moves the
-    // whole losing Action to the Conflicts store. For a `pending` entry
-    // that keeps it off the wire; for an `acknowledged` one it surfaces
-    // a committed write that lost. Keeping a flush already in flight off
-    // the entry is #309's gating concern.
-    const losers = findLosingEntries(entries, action, deps.isLwwField);
-    if (losers.length === 0) return { kind: "none" };
-
-    const detectedAtHlc = deps.hlc();
-    let first: LosingEntry | undefined;
-    for (const loser of losers) {
-      const conflict: ConflictEntry = {
-        action: loser.entry.action,
-        losses: loser.losses,
-        detectedAtHlc,
-      };
-      try {
-        await deps.conflicts.put(conflict);
-      } catch {
-        // Durable buffer first: leave the entry pending rather than
-        // dropping the write; the next inbound Action re-runs detection.
-        continue;
-      }
-      try {
-        await deps.store.delete(loser.entry.action.id);
-      } catch {
-        // Roll the conflict row back so the two durable stores agree and
-        // the entry stays flushable for a later sweep.
-        await deps.conflicts.delete(loser.entry.action.id).catch(() => {});
-        continue;
-      }
-      entries = entries.filter((entry) => entry.action.id !== loser.entry.action.id);
-      first ??= loser;
-    }
-
-    if (first === undefined) return { kind: "none" };
+    entries = entries.filter((entry) => entry.action.id !== action.id);
     emit();
-    return {
-      kind: "conflict",
-      actionId: first.entry.action.id,
-      slots: first.losses.map((loss) => loss.slot),
-    };
+    return { kind: "echo", actionId: action.id };
+  };
+
+  /**
+   * Persist one detected conflict and remove the losing entry from the
+   * buffer, keeping the two durable stores in agreement. `false` leaves
+   * the entry flushable for the next reconnect.
+   */
+  const persistConflict = async (conflict: ConflictEntry): Promise<boolean> => {
+    const actionId = conflict.action.id;
+    try {
+      await deps.conflicts.put(conflict);
+    } catch {
+      // Durable buffer first: leave the entry pending rather than
+      // dropping the write.
+      return false;
+    }
+    try {
+      await deps.store.delete(actionId);
+    } catch {
+      // Roll the conflict row back so the two durable stores agree and
+      // the entry stays flushable for a later pass.
+      await deps.conflicts.delete(actionId).catch(() => {});
+      return false;
+    }
+    entries = entries.filter((entry) => entry.action.id !== actionId);
+    return true;
+  };
+
+  const detectConflicts = async (
+    actions: readonly Action[],
+    catchUpId: string,
+  ): Promise<readonly DetectedConflict[]> => {
+    if (actions.length === 0) return [];
+    try {
+      await rehydrate();
+    } catch {
+      // Best-effort, like the echo leg: a store read failure leaves the
+      // buffer for the next reconnect rather than breaking catch-up.
+      return [];
+    }
+    const candidates = entries.filter((entry) => entry.status !== "error");
+    if (candidates.length === 0) return [];
+    const folded = foldInboundWindow(actions);
+    if (folded.size === 0) return [];
+
+    const detected: DetectedConflict[] = [];
+    for (const entry of candidates) {
+      const concurrent = actions.filter((action) => action.gsn > entry.basedOnGsn);
+      if (concurrent.length === 0) continue;
+      const subjects: string[] = [];
+      const slots: ConflictSlot[] = [];
+      const seen = new Set<string>();
+      for (const [subjectId, pending] of actionWrites(entry.action)) {
+        const inbound = folded.get(subjectId);
+        if (inbound === undefined) continue;
+        const contenders = concurrent.filter((action) => actionTouchesSubject(action, subjectId));
+        if (contenders.length === 0) continue;
+        const overlap: ConflictSlot[] = [];
+        for (const action of contenders) {
+          const actionInbound = inboundSubjects(action).get(subjectId);
+          if (actionInbound === undefined) continue;
+          for (const [field, pendingValue] of pending.fields) {
+            if (!isConflictableField(deps.isLwwField, inbound.subjectType, field)) continue;
+            const remoteField = inbound.fields.get(field);
+            const winner = actionInbound.fields.get(field);
+            if (winner !== undefined) {
+              for (const path of overlappingPaths(pendingValue, winner)) {
+                const key = `${subjectId}\u0000${field}\u0000${path.join("\u0001")}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                overlap.push(
+                  conflictSlot({
+                    subjectId,
+                    field,
+                    path,
+                    pending: pendingValue,
+                    remote: remoteField,
+                  }),
+                );
+              }
+              continue;
+            }
+            // A concurrent put or delete replaces the subject, so a field
+            // it omits is reverted rather than left alone.
+            if (actionInbound.replaced) {
+              const key = `${subjectId}\u0000${field}\u0000`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              overlap.push(
+                conflictSlot({
+                  subjectId,
+                  field,
+                  path: [],
+                  pending: pendingValue,
+                  remote: undefined,
+                }),
+              );
+            }
+          }
+        }
+        if (deps.conflictScope(inbound.subjectType) === "entity" || overlap.length > 0) {
+          subjects.push(subjectId);
+          slots.push(...overlap);
+        }
+      }
+      if (subjects.length === 0) continue;
+      const conflict: ConflictEntry = {
+        action: entry.action,
+        subjects,
+        slots,
+        basedOnGsn: entry.basedOnGsn,
+        catchUpId,
+        conflictId: deps.conflictId(),
+        detectedAtHlc: deps.hlc(),
+      };
+      if (!(await persistConflict(conflict))) continue;
+      detected.push({ actionId: entry.action.id, subjects, slots });
+    }
+    if (detected.length > 0) emit();
+    return detected;
   };
 
   // Rehydrate without caller involvement. A rejected `list()` must not
@@ -721,5 +636,6 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     retry,
     clearError,
     noteInbound,
+    detectConflicts,
   };
 }

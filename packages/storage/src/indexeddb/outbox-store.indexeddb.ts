@@ -8,6 +8,7 @@ const toEntry = (row: EbbDBSchema["outbox"]["value"]): OutboxEntry => ({
   action: row.action,
   status: row.status,
   enqueuedAtHlc: row.enqueuedAtHlc,
+  basedOnGsn: row.basedOnGsn,
 });
 
 /**
@@ -26,6 +27,7 @@ export const createIndexedDBOutboxStore = (db: IDBPDatabase<EbbDBSchema>): Outbo
         action: entry.action,
         status: entry.status,
         enqueuedAtHlc: entry.enqueuedAtHlc,
+        basedOnGsn: entry.basedOnGsn,
       });
     },
 

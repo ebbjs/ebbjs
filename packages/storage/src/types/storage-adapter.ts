@@ -55,4 +55,4 @@ export interface StorageAdapter {
 
 export type { ActionLog, DirtyTracker, EntityStore, CursorStore, EntityChangeEmitter };
 export type { OutboxStore, OutboxEntry, OutboxStatus } from "./outbox-store";
-export type { ConflictEntry, ConflictStore, ConflictWinner } from "./conflict-store";
+export type { ConflictEntry, ConflictSide, ConflictSlot, ConflictStore } from "./conflict-store";

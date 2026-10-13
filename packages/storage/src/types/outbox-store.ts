@@ -20,6 +20,13 @@ export interface OutboxEntry {
    * independent of object-store iteration order.
    */
   readonly enqueuedAtHlc: string;
+  /**
+   * Highest server GSN the client had applied when the Action was
+   * authored. Catch-up detection treats an inbound Action as concurrent
+   * when its GSN is greater; `0` means "always concurrent", so a legacy
+   * or base-less entry is never silently dropped.
+   */
+  readonly basedOnGsn: number;
 }
 
 /**

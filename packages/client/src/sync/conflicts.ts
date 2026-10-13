@@ -2,12 +2,13 @@
  * Conflicts — the application-facing contract over the durable
  * `ConflictStore`.
  *
- * Conflict detection (#308) writes a losing Action into the store when an
- * inbound LWW write out-dates a still-pending local one. This module is
- * the read/resolve half of that seam: it caches the durable rows so the
- * conflict count is a synchronous observable for #125, and it turns the
- * application's `retry` / `discard` decision into the side effect that
- * decision implies.
+ * Conflict detection (#390) writes a losing Action into the store when a
+ * catch-up pass finds a missed write concurrent with a still-pending (or
+ * already-committed) local one. This module is the read/resolve half of
+ * that seam: it caches the durable rows so the conflict count is a
+ * synchronous observable for #125, and it turns the application's
+ * `retry` / `discard` decision into the side effect that decision
+ * implies.
  *
  * The cache is published as a read-only
  * {@link ConflictManager.observable} (`client.sync.conflicts`) for
@@ -21,12 +22,7 @@
  */
 
 import { isFieldMap, type Action, type FieldValue, type Update } from "@ebbjs/core";
-import type {
-  ConflictEntry,
-  ConflictLoss,
-  ConflictSlot,
-  ConflictStore,
-} from "@ebbjs/storage/types";
+import type { ConflictEntry, ConflictSlot, ConflictStore } from "@ebbjs/storage/types";
 import { subjectIds } from "./action-subjects";
 import { createObservable, type ReadonlyObservable } from "./observable";
 
@@ -193,28 +189,28 @@ const mergeTrees = (a: FieldValue, b: FieldValue): FieldValue => {
 };
 
 /**
- * Rebuild one field's losing value. A loss at the field root re-stamps
+ * Rebuild one field's losing value. A slot at the field root re-stamps
  * the whole value; otherwise each lost leaf is nested under its map
  * path and the trees are unioned.
  */
 const fieldValue = (
-  losses: readonly ConflictLoss[],
+  slots: readonly ConflictSlot[],
   action: Action,
   updateId: string,
   hlc: string,
 ): FieldValue | undefined => {
-  const rootLoss = losses.find((loss) => loss.slot.path.length === 0);
-  if (rootLoss !== undefined) {
-    const value = valueAtSlot(action, rootLoss.slot);
+  const rootSlot = slots.find((slot) => slot.path.length === 0);
+  if (rootSlot !== undefined) {
+    const value = valueAtSlot(action, rootSlot);
     if (value !== undefined) return reStamp(value, updateId, hlc);
   }
 
   let tree: FieldValue | undefined;
-  for (const loss of losses) {
-    if (loss.slot.path.length === 0) continue;
-    const value = valueAtSlot(action, loss.slot);
+  for (const slot of slots) {
+    if (slot.path.length === 0) continue;
+    const value = valueAtSlot(action, slot);
     if (value === undefined) continue;
-    const nested = nestValue(reStamp(value, updateId, hlc), loss.slot.path);
+    const nested = nestValue(reStamp(value, updateId, hlc), slot.path);
     tree = tree === undefined ? nested : mergeTrees(tree, nested);
   }
   return tree;
@@ -232,18 +228,18 @@ const fieldValue = (
 const rebaseAction = (entry: ConflictEntry, deps: RebaseStamper): Action | null => {
   const bySubject = new Map<
     string,
-    { subjectId: string; subjectType: string; losses: ConflictLoss[] }
+    { subjectId: string; subjectType: string; slots: ConflictSlot[] }
   >();
-  for (const loss of entry.losses) {
-    const update = entry.action.updates.find((u) => u.subject_id === loss.slot.subjectId);
+  for (const slot of entry.slots) {
+    const update = entry.action.updates.find((u) => u.subject_id === slot.subjectId);
     if (update === undefined) continue;
     const key = `${update.subject_id}\u0000${update.subject_type}`;
     const subject = bySubject.get(key) ?? {
       subjectId: update.subject_id,
       subjectType: update.subject_type,
-      losses: [],
+      slots: [],
     };
-    subject.losses.push(loss);
+    subject.slots.push(slot);
     bySubject.set(key, subject);
   }
 
@@ -251,14 +247,14 @@ const rebaseAction = (entry: ConflictEntry, deps: RebaseStamper): Action | null 
     const updateId = deps.generateUpdateId();
     const hlc = deps.hlc();
     const fields: Record<string, FieldValue> = {};
-    const byField = new Map<string, ConflictLoss[]>();
-    for (const loss of subject.losses) {
-      const list = byField.get(loss.slot.field) ?? [];
-      list.push(loss);
-      byField.set(loss.slot.field, list);
+    const byField = new Map<string, ConflictSlot[]>();
+    for (const slot of subject.slots) {
+      const list = byField.get(slot.field) ?? [];
+      list.push(slot);
+      byField.set(slot.field, list);
     }
-    for (const [field, losses] of byField) {
-      const value = fieldValue(losses, entry.action, updateId, hlc);
+    for (const [field, slots] of byField) {
+      const value = fieldValue(slots, entry.action, updateId, hlc);
       if (value !== undefined) fields[field] = value;
     }
     return {

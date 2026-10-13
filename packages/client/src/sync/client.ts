@@ -295,7 +295,12 @@ export class SyncClient implements PermissionQuery {
       // different runs never conflict and a same-run race does — see the
       // outbox's recursive slot comparison.
       isLwwField: (subjectType, field) => this.registry.isLwwField(subjectType, field),
+      // Scope is declared on the entity; an unknown entity defaults to
+      // `"field"`, matching a client without a schema.
+      conflictScope: (subjectType) => this.registry.getConflictScope(subjectType),
+      baseGsn: () => this.appliedBaseGsn(),
       hlc: () => this.freshHlc(),
+      conflictId: () => generateId("c"),
     });
     // The retry loop reuses the SSE reconnect bounds but keeps its own
     // attempt counter inside the scheduler, so an unreachable write can
@@ -1011,8 +1016,8 @@ export class SyncClient implements PermissionQuery {
       await this.capturePreSyncSnapshots();
       await this.catchUpSubscribed(sub);
       if (sub.cancelled) return "cancelled";
-      // Readiness checkpoint: catch-up is done and the inbound conflict
-      // sweep has run, so pending entries may flush.
+      // Readiness checkpoint: catch-up is done and the conflict detection
+      // pass has run, so pending entries may flush.
       this.flushScheduler.release();
 
       const cursor = await this.computeResumeCursor(sub);
@@ -1065,12 +1070,15 @@ export class SyncClient implements PermissionQuery {
    * Pull every missed Action for each subscribed group before the live
    * stream opens, and surface each to the subscription's `onEvent` so a
    * consumer (e.g. a causal-tree document) observes the same events it
-   * would have live. The Outbox's inbound sweep runs inside
-   * `catchUp`'s `_applyAction`, so a pending entry that loses to a missed
-   * write is moved to Conflicts here — before the checkpoint releases the
-   * flush.
+   * would have live. `_applyAction` removes this client's own echoes as
+   * usual; once the window has drained, one `detectConflicts` pass moves
+   * every concurrent buffered write to Conflicts — before the checkpoint
+   * releases the flush.
    */
   private async catchUpSubscribed(sub: ActiveSubscription): Promise<void> {
+    // One identity per reconnect, stamped on every conflict the pass
+    // produces so a later grouping can tell passes apart.
+    const catchUpId = generateId("cu");
     const missed: Action[] = [];
     for (const groupId of sub.groupIds) {
       // First page: let `catchUp` pick up from the durable cursor.
@@ -1088,15 +1096,32 @@ export class SyncClient implements PermissionQuery {
         offset = result.nextOffset;
       }
     }
-    // A `write()` that landed while a later page was in flight was not in
-    // the buffer when the earlier pages were swept. Re-run the inbound
-    // sweep over the whole missed window so none of those entries can
-    // reach the wire unswept.
-    if (missed.length > 0 && this.outbox.size("pending") > 0) {
-      for (const action of missed) {
-        await this.outbox.noteInbound(action);
-      }
+    // Detection runs once over the whole missed window, after every page
+    // has drained. An entry that arrived mid-pagination is still buffered
+    // (the gate holds it), so one pass covers it; a `write()` after this
+    // point is live and converges without detection.
+    await this.outbox.detectConflicts(missed, catchUpId);
+  }
+
+  /**
+   * The highest server sequence the client can claim to have applied,
+   * stamped as a buffered write's `basedOnGsn`.
+   *
+   * The minimum non-zero applied cursor across the subscribed groups:
+   * the client does not know which group carries a subject, and too low a
+   * base only surfaces extra conflicts. With no group subscribed (or no
+   * cursor yet), fall back to the global maximum so a write authored
+   * before subscribing is not spuriously concurrent.
+   */
+  private appliedBaseGsn(): number {
+    const sub = this.activeSub;
+    if (sub !== null && sub.groupIds.length > 0) {
+      const cursors = sub.groupIds
+        .map((groupId) => this.groupCursors.get(groupId) ?? 0)
+        .filter((cursor) => cursor > 0);
+      return cursors.length === 0 ? 0 : Math.min(...cursors);
     }
+    return Math.max(0, ...this.groupCursors.values());
   }
 
   /**

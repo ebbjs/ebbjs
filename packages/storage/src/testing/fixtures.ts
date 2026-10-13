@@ -278,16 +278,24 @@ export const buildEntityGroupDeleteAction = (args: { id: string }, gsn: number):
 
 /**
  * A conflict for {@link buildPutAction}'s `todo_1`: the losing `put`
- * Action and the winning `title` value, detected at `detectedAtMs`.
- * `actionId` lets a caller key more than one conflict in a store.
+ * Action and the `title` slot's local / remote sides, detected at
+ * `detectedAtMs`. `actionId` lets a caller key more than one conflict
+ * in a store.
  */
 export const buildConflictEntry = (actionId = "a_1", detectedAtMs = 1): ConflictEntry => ({
   action: { ...buildPutAction(), id: actionId },
-  losses: [
+  subjects: ["todo_1"],
+  slots: [
     {
-      slot: { subjectId: "todo_1", field: "title", path: [] },
-      winner: { update_id: "u_2", hlc: makeHlc(HLC_BASE, detectedAtMs), value: "Updated" },
+      subjectId: "todo_1",
+      field: "title",
+      path: [],
+      local: { value: "Hello", update_id: "u_1", hlc: makeHlc(HLC_BASE) },
+      remote: { update_id: "u_2", hlc: makeHlc(HLC_BASE, detectedAtMs), value: "Updated" },
     },
   ],
+  basedOnGsn: 0,
+  catchUpId: `cu_${actionId}`,
+  conflictId: `c_${actionId}`,
   detectedAtHlc: makeHlc(HLC_BASE, detectedAtMs),
 });

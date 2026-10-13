@@ -22,10 +22,14 @@ import type { IndexRows } from "../internal/reverse-index";
  * type onto per-field generated document entities (issue #398). No object
  * store shape changes; the bump gates the persisted subject-type layout so
  * a dev database carrying legacy `text_document` rows reopens and those
- * rows go unread. There is no migration. Bump this when adding or changing
- * object stores, or when a persisted subject-type layout changes.
+ * rows go unread. Version 6 adds `basedOnGsn` to the persisted outbox
+ * entry and replaces the conflict row's `losses` with the
+ * `subjects` / `slots` shape (issue #390). There are no production
+ * consumers yet, so there is no migration: the bump resets a dev database
+ * and no legacy row is read. Bump this when adding or changing object
+ * stores, or when a persisted row shape changes.
  */
-export const EBB_SCHEMA_VERSION = 5;
+export const EBB_SCHEMA_VERSION = 6;
 
 /**
  * Structural schema for the seven object stores the IndexedDB adapter
@@ -87,7 +91,12 @@ export interface EbbDBSchema extends DBSchema {
    */
   outbox: {
     key: string;
-    value: { action: Action; status: OutboxStatus; enqueuedAtHlc: string };
+    value: {
+      action: Action;
+      status: OutboxStatus;
+      enqueuedAtHlc: string;
+      basedOnGsn: number;
+    };
   };
   /**
    * Durable table of LWW conflicts awaiting application resolution,
@@ -147,8 +156,8 @@ export const createEbbStores = (
   }
   if (!database.objectStoreNames.contains("conflicts")) {
     // Key path reaches into the entry so the stored row keeps the
-    // `{ action, losses, detectedAtHlc }` shape without a
-    // denormalized copy of the losing Action's id.
+    // `ConflictEntry` shape without a denormalized copy of the losing
+    // Action's id.
     database.createObjectStore("conflicts", { keyPath: "action.id" });
   }
 };

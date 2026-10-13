@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPutAction } from "../testing/fixtures";
+import { buildConflictEntry, buildPutAction } from "../testing/fixtures";
 import { openTestDb } from "./test-db";
 
 describe("EbbDBSchema", () => {
@@ -25,7 +25,12 @@ describe("EbbDBSchema", () => {
       expect(Array.from(db.objectStoreNames)).toContain("outbox");
 
       const action = buildPutAction();
-      await db.put("outbox", { action, status: "pending", enqueuedAtHlc: action.hlc });
+      await db.put("outbox", {
+        action,
+        status: "pending",
+        enqueuedAtHlc: action.hlc,
+        basedOnGsn: 0,
+      });
       expect(await db.get("outbox", "a_1")).toBeDefined();
     });
   });
@@ -35,17 +40,7 @@ describe("EbbDBSchema", () => {
       const db = await openTestDb("schema");
       expect(Array.from(db.objectStoreNames)).toContain("conflicts");
 
-      const action = buildPutAction();
-      await db.put("conflicts", {
-        action,
-        losses: [
-          {
-            slot: { subjectId: "todo_1", field: "title", path: [] },
-            winner: { update_id: "u_2", hlc: action.hlc, value: "Updated" },
-          },
-        ],
-        detectedAtHlc: action.hlc,
-      });
+      await db.put("conflicts", buildConflictEntry());
       expect(await db.get("conflicts", "a_1")).toBeDefined();
     });
   });

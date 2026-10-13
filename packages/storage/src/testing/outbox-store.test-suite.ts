@@ -27,10 +27,12 @@ const mkEntry = (
   id: string,
   enqueuedAtMs: number,
   status: OutboxStatus = "pending",
+  basedOnGsn = 7,
 ): OutboxEntry => ({
   action: { ...buildPutAction(), id },
   status,
   enqueuedAtHlc: makeHlc(enqueuedAtMs),
+  basedOnGsn,
 });
 
 export const defineOutboxStoreTests = ({ name, factory }: OutboxStoreTestSuiteOptions): void => {
@@ -136,13 +138,13 @@ export const defineOutboxStoreTests = ({ name, factory }: OutboxStoreTestSuiteOp
         ctx.skip(reopen === undefined, "backend does not persist across a reopen");
         if (reopen === undefined) return;
 
-        await store.put(mkEntry("a_1", 1));
-        await store.put(mkEntry("a_2", 2, "acknowledged"));
+        await store.put(mkEntry("a_1", 1, "pending", 0));
+        await store.put(mkEntry("a_2", 2, "acknowledged", 12));
 
         const reopened = await reopen();
 
-        expect(await reopened.get("a_1")).toEqual(mkEntry("a_1", 1));
-        expect(await reopened.get("a_2")).toEqual(mkEntry("a_2", 2, "acknowledged"));
+        expect(await reopened.get("a_1")).toEqual(mkEntry("a_1", 1, "pending", 0));
+        expect(await reopened.get("a_2")).toEqual(mkEntry("a_2", 2, "acknowledged", 12));
         expect((await reopened.list()).map((entry) => entry.action.id)).toEqual(["a_1", "a_2"]);
       });
     });
