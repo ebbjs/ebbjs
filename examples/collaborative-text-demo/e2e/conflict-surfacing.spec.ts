@@ -1,18 +1,27 @@
+import type { Route } from "@playwright/test";
+
 import { test, expect, applyTestConfig, isolateTestGroup } from "./helpers";
 
 /**
- * Conflict surfacing — concurrent edits at the same position should
- * produce a `ConflictPanel` entry on the losing tab.
+ * Conflict surfacing — a concurrent same-run edit made while the losing
+ * tab is cut off from the live stream surfaces through `client.conflicts`
+ * once that tab reconnects.
  *
  * ## Background
  *
- * Conflict detection lives in the outbox (`client.conflicts`). A
- * collaborative-text document stores its runs as keys of one map field
- * (`content`), so the wire's per-key merge decides what conflicts:
+ * Live sync is pure convergence (#390): an inbound Action that out-dates
+ * a buffered local write is merged and materialized, and no conflict row
+ * is written. Detection is catch-up only — it runs once per reconnect,
+ * after the whole missed window is drained and before the flush gate
+ * reopens. A same-position race therefore surfaces only when the losing
+ * tab did not receive the winning write before its catch-up.
+ *
+ * A collaborative-text document stores its runs as keys of one map field
+ * (`content`), so the wire's per-key merge decides what overlaps:
  *
  *   1. Two Updates write the SAME run key (`content.map[<runId>]`).
- *   2. Neither happens-before the other by HLC, and the incoming leaf
- *      out-dates the pending one (LWW), so the pending write loses.
+ *   2. The buffered write's `basedOnGsn` trails the missed Action's GSN,
+ *      so the two are concurrent as far as this client can tell.
  *
  * Concurrent inserts at different positions write different keys and
  * never conflict; a concurrent extend-vs-delete on one run is one slot
@@ -24,36 +33,34 @@ import { test, expect, applyTestConfig, isolateTestGroup } from "./helpers";
  * types at the end of someone else's run creates a NEW child run
  * anchored at the parent — different run key, no conflict.
  *
- * To trigger a conflict reliably through the UI we'd need to force
- * two actors to both extend the same run with concurrent HLCs, which
- * depends on HLC drift timing that's hard to reproduce in CI.
- *
  * ## How this spec exercises the scenario
  *
  * Use the `__EBB_DEMO_TEST_CONFIG__.exposeState` seam (set via
- * `applyTestConfig` before navigation) to expose `forceExtend` on
- * `window.__EBB_DEMO_TEST_STATE__`. Then:
+ * `applyTestConfig` before navigation) to expose `forceExtend`/`reconnect`
+ * on `window.__EBB_DEMO_TEST_STATE__`. Then:
  *
- *   1. Open both tabs and type "Hello" in tab 1 (creates run_A).
- *   2. Wait for both tabs to have run_A in their state.
- *   3. Compute a pinned HLC (same value on both tabs) and call
- *      `forceExtend(run_A, "X", hlc)` on BOTH tabs concurrently.
- *      The pinned HLC skips the per-tab auto-advance, so the two
- *      extensions land with truly concurrent HLCs.
- *   4. Wait for both tabs to flush their pending actions to the
- *      server. Each tab receives the other's EXTEND via SSE; the outbox
- *      compares the same run key and moves the losing buffered write
- *      to `client.conflicts`. The winner's own echo retires its entry
- *      first, so only the loser records the conflict.
- *   5. Open the conflict panel on both tabs and assert an entry
- *      appears on the loser (`client.conflicts`).
+ *   1. Open both tabs and type "Hello" in drew's editor (creates run_A).
+ *   2. Cut alice's tab off from `/sync/live` and `/sync/actions` with
+ *      `page.route(...).abort()`, then force a reconnect. Her established
+ *      stream is closed and her re-subscribe is aborted, so from here on
+ *      she receives no live data and her writes stay buffered. (A plain
+ *      `context.setOffline` is not enough — an already-open SSE stream
+ *      keeps delivering.)
+ *   3. Alice extends run_A and flushes. The POST aborts, so her write is
+ *      durably buffered on a `basedOnGsn` that predates drew's.
+ *   4. Drew extends the same run (still live) and commits it.
+ *   5. Lift the aborts and force alice to reconnect. Catch-up pulls
+ *      drew's committed Action and the detection pass moves alice's
+ *      buffered write to `client.conflicts`.
+ *   6. Assert the panel shows an entry on alice and none on drew, who was
+ *      live throughout and converged silently.
  *
- * The two-tab happy-path test already locks the SSE `:already_started`
- * regression (#86). This test layers the conflict-detection + UI
- * surfacing on top of it.
+ * The pinned HLC keeps the two extends at the same logical time so the
+ * merge is a genuine same-key race; the GSN base is what decides
+ * concurrency.
  */
 test.describe("conflict surfacing", () => {
-  test("concurrent extends to the same run surface through client.conflicts", async ({
+  test("a concurrent extend surfaces through client.conflicts on reconnect", async ({
     browser,
   }) => {
     const firstCtx = await browser.newContext();
@@ -92,47 +99,19 @@ test.describe("conflict surfacing", () => {
     });
 
     // Wait for the test handle on both tabs to expose the run id.
-    await expect
-      .poll(
-        async () => {
-          const ids = await drewPage.evaluate(() => {
-            const state = (
-              window as unknown as {
-                __EBB_DEMO_TEST_STATE__?: { getRunIds: () => readonly string[] };
-              }
-            ).__EBB_DEMO_TEST_STATE__;
-            return state?.getRunIds() ?? [];
-          });
-          return ids.length > 0;
-        },
-        { timeout: 15_000 },
-      )
-      .toBe(true);
-    await expect
-      .poll(
-        async () => {
-          const ids = await alicePage.evaluate(() => {
-            const state = (
-              window as unknown as {
-                __EBB_DEMO_TEST_STATE__?: { getRunIds: () => readonly string[] };
-              }
-            ).__EBB_DEMO_TEST_STATE__;
-            return state?.getRunIds() ?? [];
-          });
-          return ids.length > 0;
-        },
-        { timeout: 15_000 },
-      )
-      .toBe(true);
+    const runIdOn = async (page: typeof drewPage): Promise<string | undefined> =>
+      page.evaluate(() => {
+        const state = (
+          window as unknown as {
+            __EBB_DEMO_TEST_STATE__?: { getRunIds: () => readonly string[] };
+          }
+        ).__EBB_DEMO_TEST_STATE__;
+        return state?.getRunIds()[0];
+      });
+    await expect.poll(() => runIdOn(drewPage), { timeout: 15_000 }).not.toBeUndefined();
+    await expect.poll(() => runIdOn(alicePage), { timeout: 15_000 }).not.toBeUndefined();
 
-    const runId = await drewPage.evaluate(() => {
-      const state = (
-        window as unknown as {
-          __EBB_DEMO_TEST_STATE__?: { getRunIds: () => readonly string[] };
-        }
-      ).__EBB_DEMO_TEST_STATE__;
-      return state?.getRunIds()[0];
-    });
+    const runId = await runIdOn(drewPage);
     if (!runId) throw new Error("expected a run id after typing Hello");
 
     // Compute a pinned HLC that's the SAME on both tabs so the two
@@ -143,11 +122,9 @@ test.describe("conflict surfacing", () => {
     const pinnedHlc = (BigInt(Date.now() + 60_000) << 16n) | 1n;
     const pinnedHlcStr = pinnedHlc.toString();
 
-    // Dispatch the concurrent extends. Promise.all so both fire as
-    // close to simultaneously as Playwright's RPC allows.
-    await Promise.all([
-      drewPage.evaluate(
-        ({ runId, hlc }) => {
+    const forceExtend = (page: typeof drewPage, text: string): Promise<unknown> =>
+      page.evaluate(
+        ({ runId, text, hlc }) => {
           const state = (
             window as unknown as {
               __EBB_DEMO_TEST_STATE__?: {
@@ -156,64 +133,72 @@ test.describe("conflict surfacing", () => {
             }
           ).__EBB_DEMO_TEST_STATE__;
           if (!state) throw new Error("missing test state");
-          return state.forceExtend(runId, "D", hlc);
+          return state.forceExtend(runId, text, hlc);
         },
-        { runId, hlc: pinnedHlcStr },
-      ),
-      alicePage.evaluate(
-        ({ runId, hlc }) => {
-          const state = (
-            window as unknown as {
-              __EBB_DEMO_TEST_STATE__?: {
-                forceExtend: (runId: string, appendText: string, hlc: string) => string | null;
-              };
-            }
-          ).__EBB_DEMO_TEST_STATE__;
-          if (!state) throw new Error("missing test state");
-          return state.forceExtend(runId, "A", hlc);
-        },
-        { runId, hlc: pinnedHlcStr },
-      ),
-    ]);
-
-    // Flush both tabs so the actions reach the server.
-    await Promise.all([
-      drewPage.evaluate(() => {
+        { runId, text, hlc: pinnedHlcStr },
+      );
+    const flush = (page: typeof drewPage): Promise<unknown> =>
+      page.evaluate(async () => {
         const state = (
           window as unknown as {
             __EBB_DEMO_TEST_STATE__?: { flushPending: () => Promise<unknown> };
           }
         ).__EBB_DEMO_TEST_STATE__;
-        return state?.flushPending();
-      }),
-      alicePage.evaluate(() => {
+        try {
+          await state?.flushPending();
+        } catch {
+          // Aborted mid-flight: the outbox holds the write for reconnect.
+        }
+      });
+    const reconnect = (page: typeof drewPage): Promise<unknown> =>
+      page.evaluate(() => {
         const state = (
           window as unknown as {
-            __EBB_DEMO_TEST_STATE__?: { flushPending: () => Promise<unknown> };
+            __EBB_DEMO_TEST_STATE__?: { reconnect: () => void };
           }
         ).__EBB_DEMO_TEST_STATE__;
-        return state?.flushPending();
-      }),
-    ]);
+        state?.reconnect();
+      });
 
-    // Open the conflict panel on both tabs. The button toggles
-    // visibility; the panel itself lives in an `<aside>`.
+    // Cut alice off the live stream and the write path, keeping the
+    // catch-up endpoint reachable. Force a reconnect so her established
+    // stream is torn down and replaced by one that aborts.
+    const abortLive = (route: Route): Promise<void> => route.abort();
+    const abortActions = (route: Route): Promise<void> => route.abort();
+    await alicePage.route(/\/sync\/live/, abortLive);
+    await alicePage.route(/\/sync\/actions/, abortActions);
+    await reconnect(alicePage);
+
+    // Alice extends the shared run; the aborted POST leaves the write
+    // durably buffered on its pre-missed-window base.
+    await forceExtend(alicePage, "A");
+    await flush(alicePage);
+
+    // Drew extends the same run (still live) and commits it. `write`
+    // resolves only after the server accepted the Action.
+    await forceExtend(drewPage, "D");
+    await flush(drewPage);
+
+    // Open the conflict panel on both tabs before reconnecting. The panel
+    // follows `client.conflicts.onChange`, so it reflects a detection that
+    // lands during the reconnect. The button toggles visibility; the panel
+    // itself lives in an `<aside>`.
     await drewPage.getByRole("button", { name: /Show conflicts/i }).click();
     await alicePage.getByRole("button", { name: /Show conflicts/i }).click();
 
-    // Exactly one side loses a same-run race: the winner's own echo
-    // retires its outbox entry before the peer's write lands, while the
-    // loser's buffered write is moved to `client.conflicts`. Which tab
-    // loses depends on commit order, so assert the race surfaces on at
-    // least one tab.
+    // Lift the aborts and reconnect: catch-up pulls drew's committed
+    // Action and the detection pass moves alice's buffered write to
+    // `client.conflicts` before the flush gate reopens.
+    await alicePage.unroute(/\/sync\/live/, abortLive);
+    await alicePage.unroute(/\/sync\/actions/, abortActions);
+    await reconnect(alicePage);
+
     await expect
-      .poll(
-        async () =>
-          (await drewPage.locator("aside li").count()) +
-          (await alicePage.locator("aside li").count()),
-        { timeout: 15_000 },
-      )
+      .poll(async () => alicePage.locator("aside li").count(), { timeout: 30_000 })
       .toBeGreaterThanOrEqual(1);
+
+    // Drew, live throughout, merged and converged with nothing to surface.
+    expect(await drewPage.locator("aside li").count()).toBe(0);
 
     await firstCtx.close();
     await secondCtx.close();
