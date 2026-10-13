@@ -15,6 +15,7 @@ import {
   emptyCatchUpResponse,
   jsonResponse,
   openSseResponse,
+  waitFor,
 } from "./test-utils";
 
 const controlReconnect = (catchUpFrom: number): string =>
@@ -47,18 +48,6 @@ const putAction = (opts: {
     },
   ],
 });
-
-const waitFor = async (
-  predicate: () => Promise<boolean> | boolean,
-  timeoutMs = 2_000,
-): Promise<void> => {
-  const started = Date.now();
-  for (;;) {
-    if (await predicate()) return;
-    if (Date.now() - started > timeoutMs) throw new Error("waitFor timed out");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-};
 
 describe("SyncClient rebase phase (#309)", () => {
   it("applies missed Actions on connect and surfaces them to onEvent", async () => {

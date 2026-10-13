@@ -8,7 +8,9 @@ const toEntry = (row: EbbDBSchema["outbox"]["value"]): OutboxEntry => ({
   action: row.action,
   status: row.status,
   enqueuedAtHlc: row.enqueuedAtHlc,
-  basedOnGsn: row.basedOnGsn,
+  // A row predating the field reads as "always concurrent", never
+  // silently dropped.
+  basedOnGsn: row.basedOnGsn ?? 0,
 });
 
 /**

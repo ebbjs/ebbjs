@@ -45,6 +45,7 @@ import {
   inboundSubjects,
   isConflictableField,
   overlappingPaths,
+  slotKey,
 } from "./conflict-slots";
 import { createObservable } from "./observable";
 
@@ -335,7 +336,8 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
             action: entry.action,
             status: entry.status,
             enqueuedAtHlc: entry.enqueuedAtHlc,
-            basedOnGsn: entry.basedOnGsn,
+            // Absent base means "always concurrent", never a silent drop.
+            basedOnGsn: entry.basedOnGsn ?? 0,
           }));
         emit();
       })
@@ -541,57 +543,43 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     if (candidates.length === 0) return [];
     const folded = foldInboundWindow(actions);
     if (folded.size === 0) return [];
+    // Fold every missed Action once; concurrency is judged per entry.
+    const window = actions.map((action) => ({ action, subjects: inboundSubjects(action) }));
 
     const detected: DetectedConflict[] = [];
     for (const entry of candidates) {
-      const concurrent = actions.filter((action) => action.gsn > entry.basedOnGsn);
-      if (concurrent.length === 0) continue;
+      if (!window.some(({ action }) => action.gsn > entry.basedOnGsn)) continue;
       const subjects: string[] = [];
       const slots: ConflictSlot[] = [];
       const seen = new Set<string>();
       for (const [subjectId, pending] of actionWrites(entry.action)) {
         const inbound = folded.get(subjectId);
         if (inbound === undefined) continue;
-        const contenders = concurrent.filter((action) => actionTouchesSubject(action, subjectId));
-        if (contenders.length === 0) continue;
         const overlap: ConflictSlot[] = [];
-        for (const action of contenders) {
-          const actionInbound = inboundSubjects(action).get(subjectId);
+        for (const { action, subjects: actionSubjects } of window) {
+          if (action.gsn <= entry.basedOnGsn) continue;
+          if (!actionTouchesSubject(action, subjectId)) continue;
+          const actionInbound = actionSubjects.get(subjectId);
           if (actionInbound === undefined) continue;
           for (const [field, pendingValue] of pending.fields) {
             if (!isConflictableField(deps.isLwwField, inbound.subjectType, field)) continue;
             const remoteField = inbound.fields.get(field);
             const winner = actionInbound.fields.get(field);
-            if (winner !== undefined) {
-              for (const path of overlappingPaths(pendingValue, winner)) {
-                const key = `${subjectId}\u0000${field}\u0000${path.join("\u0001")}`;
-                if (seen.has(key)) continue;
-                seen.add(key);
-                overlap.push(
-                  conflictSlot({
-                    subjectId,
-                    field,
-                    path,
-                    pending: pendingValue,
-                    remote: remoteField,
-                  }),
-                );
-              }
-              continue;
-            }
-            // A concurrent put or delete replaces the subject, so a field
-            // it omits is reverted rather than left alone.
-            if (actionInbound.replaced) {
-              const key = `${subjectId}\u0000${field}\u0000`;
+            const paths = winner !== undefined ? overlappingPaths(pendingValue, winner) : [];
+            // A concurrent put or delete touches every field the entry
+            // writes, even one it omits.
+            if (winner === undefined && actionInbound.replaced) paths.push([]);
+            for (const path of paths) {
+              const key = slotKey({ subjectId, field, path });
               if (seen.has(key)) continue;
               seen.add(key);
               overlap.push(
                 conflictSlot({
                   subjectId,
                   field,
-                  path: [],
+                  path,
                   pending: pendingValue,
-                  remote: undefined,
+                  remote: winner === undefined ? undefined : remoteField,
                 }),
               );
             }

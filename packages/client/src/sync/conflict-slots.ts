@@ -63,7 +63,6 @@ export interface PendingWrite {
 const updateFields = (update: Update): Record<string, FieldValue> | undefined =>
   update.data?.fields as Record<string, FieldValue> | undefined;
 
-/** Fold one Update's fields into `fields` under the shared merge rule. */
 const mergeUpdateFields = (fields: Map<string, FieldValue>, update: Update): void => {
   for (const [field, value] of Object.entries(updateFields(update) ?? {})) {
     const previous = fields.get(field);
@@ -119,7 +118,6 @@ export const foldInboundWindow = (actions: readonly Action[]): Map<string, Inbou
   return subjects;
 };
 
-/** The fields a buffered Action writes per subject, merged in update order. */
 export const actionWrites = (action: Action): Map<string, PendingWrite> => {
   const writes = new Map<string, PendingWrite>();
   for (const update of action.updates) {
@@ -131,7 +129,6 @@ export const actionWrites = (action: Action): Map<string, PendingWrite> => {
   return writes;
 };
 
-/** True when an Action carries an Update for `subjectId`. */
 export const actionTouchesSubject = (action: Action, subjectId: string): boolean =>
   action.updates.some((update) => update.subject_id === subjectId);
 
@@ -155,7 +152,6 @@ export const conflictSide = (value: FieldValue): ConflictSide => {
   return side;
 };
 
-/** The node at a map-key path, or `undefined` when the path does not exist. */
 export const nodeAtPath = (value: FieldValue, path: readonly string[]): FieldValue | undefined => {
   let node: FieldValue | undefined = value;
   for (const key of path) {
@@ -191,10 +187,13 @@ export const overlappingPaths = (
 
 /**
  * A contested slot with its local side and the `remote` value the server
- * holds after the missed window. `folded` is the window's effective state
- * for the field; a path the fold never wrote (or an inbound `put` /
- * `delete` reverted) has a `{ value: undefined }` remote side.
+ * holds after the missed window. A path the fold never wrote (or an
+ * inbound `put` / `delete` reverted) has a `{ value: undefined }` remote.
  */
+/** Stable key for one position, so detection can dedupe overlapping reports. */
+export const slotKey = (slot: Pick<ConflictSlot, "subjectId" | "field" | "path">): string =>
+  `${slot.subjectId}\u0000${slot.field}\u0000${slot.path.join("\u0001")}`;
+
 export const conflictSlot = (args: {
   subjectId: string;
   field: string;

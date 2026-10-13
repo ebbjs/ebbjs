@@ -1109,9 +1109,10 @@ export class SyncClient implements PermissionQuery {
    *
    * The minimum non-zero applied cursor across the subscribed groups:
    * the client does not know which group carries a subject, and too low a
-   * base only surfaces extra conflicts. With no group subscribed (or no
-   * cursor yet), fall back to the global maximum so a write authored
-   * before subscribing is not spuriously concurrent.
+   * base only surfaces extra conflicts. A subscribed group with no cursor
+   * yet contributes nothing, so the base is `0` until the first cursor
+   * lands. With no group subscribed, fall back to the global maximum so a
+   * write authored before subscribing is not spuriously concurrent.
    */
   private appliedBaseGsn(): number {
     const sub = this.activeSub;

@@ -21,7 +21,7 @@ import { decodeSync, makeHlc, type Action, type FieldValue, type Update } from "
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { createClient } from "../client";
-import { callApplyAction, jsonResponse } from "../test-utils";
+import { callApplyAction, jsonResponse, waitFor } from "../test-utils";
 import { defineEntity, e } from "../../schema/entity";
 import { defineSchema } from "../../schema/schema";
 
@@ -93,18 +93,6 @@ const mkClient = (fetchImpl: typeof fetch, storage?: ReturnType<typeof createMem
 
 const actionCalls = (calls: { url: string }[]): number =>
   calls.filter((c) => c.url.endsWith("/sync/actions")).length;
-
-const waitFor = async (
-  predicate: () => Promise<boolean> | boolean,
-  timeoutMs = 2_000,
-): Promise<void> => {
-  const started = Date.now();
-  for (;;) {
-    if (await predicate()) return;
-    if (Date.now() - started > timeoutMs) throw new Error("waitFor timed out");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-};
 
 describe("client.outbox", () => {
   it("is exposed on the client and starts empty", () => {

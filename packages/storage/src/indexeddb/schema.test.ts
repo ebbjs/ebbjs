@@ -25,13 +25,14 @@ describe("EbbDBSchema", () => {
       expect(Array.from(db.objectStoreNames)).toContain("outbox");
 
       const action = buildPutAction();
-      await db.put("outbox", {
+      const entry = {
         action,
-        status: "pending",
+        status: "pending" as const,
         enqueuedAtHlc: action.hlc,
         basedOnGsn: 0,
-      });
-      expect(await db.get("outbox", "a_1")).toBeDefined();
+      };
+      await db.put("outbox", entry);
+      expect(await db.get("outbox", "a_1")).toEqual(entry);
     });
   });
 
@@ -40,8 +41,9 @@ describe("EbbDBSchema", () => {
       const db = await openTestDb("schema");
       expect(Array.from(db.objectStoreNames)).toContain("conflicts");
 
-      await db.put("conflicts", buildConflictEntry());
-      expect(await db.get("conflicts", "a_1")).toBeDefined();
+      const entry = buildConflictEntry();
+      await db.put("conflicts", entry);
+      expect(await db.get("conflicts", "a_1")).toEqual(entry);
     });
   });
 });
