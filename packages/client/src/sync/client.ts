@@ -1694,6 +1694,7 @@ export function createClient<
     actorId: client.actorId,
     openTextDocument: (docId: string, docType: string) =>
       client.openDerivedTextDocument(docId, docType),
+    readSnapshot: (entityId: string) => client.snapshots.get(entityId),
   };
   const namespaces = buildEntityNamespaces(opts.schema, client.storage, writeCap);
   // `client.atomic` needs the same write capability the namespace
