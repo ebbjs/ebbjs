@@ -1322,7 +1322,7 @@ export class SyncClient implements PermissionQuery {
     // Outbox entry (with a server GSN) is this client's own echo, so the
     // entry is now proven canonical and can be removed. Runs after the
     // append so an outbox removal never outruns the action log.
-    await this.outbox.noteInbound(action);
+    await this.outbox.matchEcho(action);
     // A server-accepted Action (`gsn > 0`) is proof the client is in sync
     // as of now; a local-only Action has no GSN and says nothing about the
     // server's view.

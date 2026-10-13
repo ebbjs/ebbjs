@@ -18,7 +18,7 @@
  *             error ─(retry)─► pending       │
  * ```
  *
- * `noteInbound` drives the echo leg: the single inbound funnel
+ * `matchEcho` drives the echo leg: the single inbound funnel
  * (`SyncClient._applyAction`) hands every received Action here, and an
  * Action that matches a buffered entry with a server GSN proves the
  * entry is in the canonical log and removes it. Detection is separate:
@@ -81,14 +81,6 @@ export type FlushOutcome =
   | { kind: "accepted"; actionIds: readonly string[] }
   | { kind: "partial"; accepted: readonly string[]; rejected: readonly Rejection[] }
   | { kind: "unreachable"; error: unknown };
-
-/**
- * Classified result of matching an inbound Action against the buffer.
- * `echo` is this client's own Action returning over the sync stream and
- * removing its buffered entry; anything else is `none`. Race detection is
- * catch-up-scoped and reported by {@link DetectedConflict} instead.
- */
-export type InboundOutcome = { kind: "echo"; actionId: string } | { kind: "none" };
 
 /** One buffered Action a catch-up pass moved to the Conflicts store. */
 export interface DetectedConflict {
@@ -250,15 +242,15 @@ export interface Outbox {
    */
   clearError(actionId: string): Promise<void>;
   /**
-   * Classify an inbound Action against the buffer.
+   * Match an inbound Action against the buffer's echoes.
    *
-   * An Action whose id matches a `pending` / `acknowledged` entry and
-   * that carries a server GSN (`gsn > 0`) is this client's own echo: it
-   * is removed from memory and the store, and reported as `echo`.
-   * Anything else is `none`. Race detection is catch-up-scoped; see
-   * {@link Outbox.detectConflicts}.
+   * Returns `true` — and removes the entry from memory and the store —
+   * when the Action's id matches a `pending` / `acknowledged` entry and
+   * it carries a server GSN (`gsn > 0`): this client's own write coming
+   * back as canonical. Anything else is `false`. Race detection is
+   * catch-up-scoped; see {@link Outbox.detectConflicts}.
    */
-  noteInbound(action: Action): Promise<InboundOutcome>;
+  matchEcho(action: Action): Promise<boolean>;
   /**
    * Fold the accumulated missed catch-up window against the buffer and
    * move every losing local Action to the Conflicts store. Runs once per
@@ -467,20 +459,20 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     emit();
   };
 
-  const noteInbound = async (action: Action): Promise<InboundOutcome> => {
+  const matchEcho = async (action: Action): Promise<boolean> => {
     // gsn 0 means the server has not accepted the Action, so it cannot be
     // this client's own echo.
-    if (action.gsn <= 0) return { kind: "none" };
+    if (action.gsn <= 0) return false;
     // An echo can arrive before a caller has awaited rehydration (SSE is
     // live from construction), so match against the loaded buffer rather
     // than whatever happens to be in memory already.
     try {
       await rehydrate();
     } catch {
-      // The receipt hook is best-effort: the Action is already durable in
+      // The echo match is best-effort: the Action is already durable in
       // the log when this runs, so a store read failure must not break the
       // inbound funnel. The entry stays for a later echo or reload.
-      return { kind: "none" };
+      return false;
     }
 
     const echo = entries.find(
@@ -488,17 +480,17 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
         entry.action.id === action.id &&
         (entry.status === "pending" || entry.status === "acknowledged"),
     );
-    if (echo === undefined) return { kind: "none" };
+    if (echo === undefined) return false;
     try {
       await deps.store.delete(action.id);
     } catch {
       // Keep memory and the store agreeing: the row survives until a
       // later attempt can delete both.
-      return { kind: "none" };
+      return false;
     }
     entries = entries.filter((entry) => entry.action.id !== action.id);
     emit();
-    return { kind: "echo", actionId: action.id };
+    return true;
   };
 
   /**
@@ -623,7 +615,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     flush,
     retry,
     clearError,
-    noteInbound,
+    matchEcho,
     detectConflicts,
   };
 }

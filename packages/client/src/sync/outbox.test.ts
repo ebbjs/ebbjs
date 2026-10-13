@@ -440,7 +440,7 @@ describe("createOutbox lifecycle", () => {
     await outbox.enqueue(action);
 
     const inFlight = outbox.flush();
-    await outbox.noteInbound({ ...action, gsn: 5 });
+    await outbox.matchEcho({ ...action, gsn: 5 });
     releaseSubmit!();
     await inFlight;
 
@@ -473,7 +473,7 @@ describe("createOutbox lifecycle", () => {
     await vi.waitFor(() => {
       expect(releasePut).not.toBeNull();
     });
-    await outbox.noteInbound({ ...action, gsn: 9 });
+    await outbox.matchEcho({ ...action, gsn: 9 });
     releasePut!();
     await inFlight;
 
@@ -590,7 +590,7 @@ describe("createOutbox lifecycle", () => {
   });
 });
 
-describe("createOutbox noteInbound", () => {
+describe("createOutbox matchEcho", () => {
   it("removes an acknowledged entry on its own echo and reports it", async () => {
     const deps = mkDeps();
     const outbox = createOutbox(deps);
@@ -598,9 +598,9 @@ describe("createOutbox noteInbound", () => {
     await outbox.enqueue(action);
     await outbox.flush();
 
-    const outcome = await outbox.noteInbound({ ...action, gsn: 7 });
+    const matched = await outbox.matchEcho({ ...action, gsn: 7 });
 
-    expect(outcome).toEqual({ kind: "echo", actionId: "a_1" });
+    expect(matched).toBe(true);
     expect(outbox.size("acknowledged")).toBe(0);
     expect(await deps.store.get("a_1")).toBeNull();
   });
@@ -611,9 +611,9 @@ describe("createOutbox noteInbound", () => {
     const action = mkAction("a_1");
     await outbox.enqueue(action);
 
-    const outcome = await outbox.noteInbound({ ...action, gsn: 3 });
+    const matched = await outbox.matchEcho({ ...action, gsn: 3 });
 
-    expect(outcome).toEqual({ kind: "echo", actionId: "a_1" });
+    expect(matched).toBe(true);
     expect(outbox.size("pending")).toBe(0);
     expect(await deps.store.get("a_1")).toBeNull();
   });
@@ -624,18 +624,18 @@ describe("createOutbox noteInbound", () => {
     const action = mkAction("a_1");
     await outbox.enqueue(action);
 
-    const outcome = await outbox.noteInbound({ ...action, gsn: 0 });
+    const matched = await outbox.matchEcho({ ...action, gsn: 0 });
 
-    expect(outcome).toEqual({ kind: "none" });
+    expect(matched).toBe(false);
     expect(outbox.size("pending")).toBe(1);
   });
 
   it("ignores an inbound Action that matches no buffered entry", async () => {
     const outbox = createOutbox(mkDeps());
 
-    const outcome = await outbox.noteInbound({ ...mkAction("a_other"), gsn: 9 });
+    const matched = await outbox.matchEcho({ ...mkAction("a_other"), gsn: 9 });
 
-    expect(outcome).toEqual({ kind: "none" });
+    expect(matched).toBe(false);
   });
 
   it("never records a conflict for a live inbound write sharing a position", async () => {
@@ -649,7 +649,7 @@ describe("createOutbox noteInbound", () => {
       }),
     );
 
-    const outcome = await outbox.noteInbound(
+    const matched = await outbox.matchEcho(
       mkFieldAction({
         id: "a_peer",
         subjectId: "todo_1",
@@ -658,7 +658,7 @@ describe("createOutbox noteInbound", () => {
       }),
     );
 
-    expect(outcome).toEqual({ kind: "none" });
+    expect(matched).toBe(false);
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
     expect(await deps.conflicts.list()).toEqual([]);
   });
@@ -671,9 +671,9 @@ describe("createOutbox noteInbound", () => {
     await outbox.enqueue(action);
     await outbox.flush();
 
-    const outcome = await outbox.noteInbound({ ...action, gsn: 4 });
+    const matched = await outbox.matchEcho({ ...action, gsn: 4 });
 
-    expect(outcome).toEqual({ kind: "none" });
+    expect(matched).toBe(false);
     expect(outbox.size("error")).toBe(1);
   });
 
@@ -684,14 +684,14 @@ describe("createOutbox noteInbound", () => {
     const outbox = createOutbox(deps);
     await outbox.rehydrate();
 
-    const outcome = await outbox.noteInbound({ ...action, gsn: 12 });
+    const matched = await outbox.matchEcho({ ...action, gsn: 12 });
 
-    expect(outcome).toEqual({ kind: "echo", actionId: "a_1" });
+    expect(matched).toBe(true);
     expect(outbox.size("acknowledged")).toBe(0);
     expect(await deps.store.get("a_1")).toBeNull();
   });
 
-  it("returns none instead of throwing when the store read fails", async () => {
+  it("returns false instead of throwing when the store read fails", async () => {
     const store: OutboxStore = {
       ...mkStore(),
       list: vi.fn(async () => {
@@ -700,9 +700,7 @@ describe("createOutbox noteInbound", () => {
     };
     const outbox = createOutbox(mkDeps({ store }));
 
-    await expect(outbox.noteInbound({ ...mkAction("a_1"), gsn: 3 })).resolves.toEqual({
-      kind: "none",
-    });
+    await expect(outbox.matchEcho({ ...mkAction("a_1"), gsn: 3 })).resolves.toBe(false);
   });
 
   it("keeps the entry when the store delete fails", async () => {
@@ -717,7 +715,7 @@ describe("createOutbox noteInbound", () => {
     const outbox = createOutbox(deps);
     await outbox.enqueue(action);
 
-    await expect(outbox.noteInbound({ ...action, gsn: 3 })).resolves.toEqual({ kind: "none" });
+    await expect(outbox.matchEcho({ ...action, gsn: 3 })).resolves.toBe(false);
     expect(outbox.size("pending")).toBe(1);
     expect(await deps.store.get("a_1")).not.toBeNull();
   });
@@ -1600,7 +1598,7 @@ describe("createOutbox counts + onChange", () => {
     const seen: unknown[] = [];
     outbox.onChange((counts) => seen.push(counts));
 
-    await outbox.noteInbound({ ...action, gsn: 7 });
+    await outbox.matchEcho({ ...action, gsn: 7 });
 
     expect(seen).toEqual([{ pending: 0, acknowledged: 0, error: 0 }]);
   });

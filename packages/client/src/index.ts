@@ -87,7 +87,6 @@ export {
   type OutboxCounts,
   type OutboxChangeListener,
   type FlushOutcome,
-  type InboundOutcome,
 } from "./sync/outbox";
 
 export {
