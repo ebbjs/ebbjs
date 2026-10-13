@@ -637,7 +637,7 @@ describe("catch-up conflict detection (#308, #390)", () => {
     ],
   });
 
-  it("moves a pending local write to the Conflicts store when the missed window out-dates it", async () => {
+  it("holds a pending local write as conflicted when the missed window out-dates it", async () => {
     const localHlc = makeHlc(1_711_036_800_000);
     const peerHlc = makeHlc(1_711_036_800_001);
     const { fn, calls } = mkSyncFetch({
@@ -654,10 +654,10 @@ describe("catch-up conflict detection (#308, #390)", () => {
     expect(client.outbox.pending()[0]?.basedOnGsn).toBe(0);
 
     const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
-    await waitFor(async () => (await storage.conflicts.list()).length > 0);
+    await waitFor(async () => (await client.conflicts.list()).length > 0);
     unsubscribe();
 
-    const conflicts = await storage.conflicts.list();
+    const conflicts = await client.conflicts.list();
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0]?.action.id).toBe("act_local");
     expect(conflicts[0]?.subjects).toEqual(["todo_1"]);
@@ -674,13 +674,13 @@ describe("catch-up conflict detection (#308, #390)", () => {
       },
     ]);
 
-    expect(await storage.outbox.get("act_local")).toBeNull();
+    expect(await storage.outbox.get("act_local")).toMatchObject({ status: "conflicted" });
     expect(client.outbox.pending()).toEqual([]);
     // The losing Action was never posted.
     expect(calls.some((url) => url.includes("/sync/actions"))).toBe(false);
   });
 
-  it("moves a pending local patch to Conflicts when a missed put omits its field", async () => {
+  it("holds a pending local patch as conflicted when a missed put omits its field", async () => {
     const localHlc = makeHlc(1_711_036_800_000);
     const peerHlc = makeHlc(1_711_036_800_001);
     const { fn, calls } = mkSyncFetch({
@@ -709,10 +709,10 @@ describe("catch-up conflict detection (#308, #390)", () => {
     );
 
     const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
-    await waitFor(async () => (await storage.conflicts.list()).length > 0);
+    await waitFor(async () => (await client.conflicts.list()).length > 0);
     unsubscribe();
 
-    const conflicts = await storage.conflicts.list();
+    const conflicts = await client.conflicts.list();
     expect(conflicts).toHaveLength(1);
     // A missed `put` replaces the subject, so the omitted `title` is
     // reverted on the server: the remote side holds no value.
@@ -726,7 +726,7 @@ describe("catch-up conflict detection (#308, #390)", () => {
       },
     ]);
 
-    expect(await storage.outbox.get("act_local")).toBeNull();
+    expect(await storage.outbox.get("act_local")).toMatchObject({ status: "conflicted" });
     expect(calls.some((url) => url.includes("/sync/actions"))).toBe(false);
   });
 
@@ -739,7 +739,7 @@ describe("catch-up conflict detection (#308, #390)", () => {
         mkTodoWrite({ id: "act_peer", value: "theirs", updateId: "u_peer", hlc: peerHlc, gsn: 3 }),
       ],
     });
-    const { client, storage } = mkSchemaClient(fn);
+    const { client } = mkSchemaClient(fn);
 
     // The handshake cursor is this write's base, so the missed gsn 3 is
     // deliberately not concurrent.
@@ -753,7 +753,7 @@ describe("catch-up conflict detection (#308, #390)", () => {
     await waitFor(() => client.outbox.size("acknowledged") === 1);
     unsubscribe();
 
-    expect(await storage.conflicts.list()).toEqual([]);
+    expect(await client.conflicts.list()).toEqual([]);
     expect(calls.filter((url) => url.includes("/sync/actions"))).toHaveLength(1);
   });
 
@@ -781,7 +781,7 @@ describe("catch-up conflict detection (#308, #390)", () => {
       ],
     });
     const { fn, calls } = mkSyncFetch({ missed: [mkRelationship("act_peer", 9, "todo_b")] });
-    const { client, storage } = mkSchemaClient(fn);
+    const { client } = mkSchemaClient(fn);
     await client.outbox.enqueue(mkRelationship("act_local", 0, "todo_a"));
 
     const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
@@ -789,7 +789,7 @@ describe("catch-up conflict detection (#308, #390)", () => {
     // the buffered write reaches the wire.
     await waitFor(() => client.state === "live");
     await waitFor(() => calls.some((url) => url.includes("/sync/actions")));
-    expect(await storage.conflicts.list()).toEqual([]);
+    expect(await client.conflicts.list()).toEqual([]);
     unsubscribe();
   });
 
@@ -823,7 +823,7 @@ describe("catch-up conflict detection (#308, #390)", () => {
         mkDocPatch("act_peer_same", "run:r3", "peer-same", makeHlc(1_711_036_800_002), 10),
       ],
     });
-    const { client, storage } = mkSchemaClient(fn);
+    const { client } = mkSchemaClient(fn);
 
     // Seed the document so the missed patches have a base to apply to.
     await callApplyAction(client, {
@@ -863,10 +863,10 @@ describe("catch-up conflict detection (#308, #390)", () => {
     );
 
     const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
-    await waitFor(async () => (await storage.conflicts.list()).length > 0);
+    await waitFor(async () => (await client.conflicts.list()).length > 0);
     unsubscribe();
 
-    const conflicts = await storage.conflicts.list();
+    const conflicts = await client.conflicts.list();
     expect(conflicts.map((entry) => entry.action.id)).toEqual(["act_local_same"]);
     expect(conflicts[0]?.subjects).toEqual(["doc_1"]);
     expect(conflicts[0]?.slots.map((slot) => slot.path)).toEqual([["run:r3"]]);
@@ -884,7 +884,7 @@ describe("catch-up conflict detection (#308, #390)", () => {
     await client.write([mkAction()]);
 
     expect(client.outbox.errors().map((entry) => entry.action.id)).toEqual(["act_1"]);
-    expect(await storage.conflicts.list()).toEqual([]);
+    expect(await client.conflicts.list()).toEqual([]);
   });
 
   it("does not detect a live inbound write (detection is catch-up only)", async () => {
@@ -909,7 +909,7 @@ describe("catch-up conflict detection (#308, #390)", () => {
       async () => (await client.readLocalEntity("todo_1"))?.data.fields.title.value === "theirs",
     );
 
-    expect(await storage.conflicts.list()).toEqual([]);
+    expect(await client.conflicts.list()).toEqual([]);
     expect(await storage.outbox.get("act_local")).not.toBeNull();
     unsubscribe();
   });

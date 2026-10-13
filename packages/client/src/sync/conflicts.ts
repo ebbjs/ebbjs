@@ -1,42 +1,67 @@
 /**
- * Conflicts — the application-facing contract over the durable
- * `ConflictStore`.
+ * Conflicts — the application-facing read/resolve view over the outbox's
+ * `conflicted` rows.
  *
- * Conflict detection (#390) writes a losing Action into the store when a
- * catch-up pass finds a missed write concurrent with a still-pending (or
- * already-committed) local one. This module is the read/resolve half of
- * that seam: it caches the durable rows so the conflict count is a
- * synchronous observable for #125, and it turns the application's
- * `retry` / `discard` decision into the side effect that decision
- * implies.
+ * A detected loser is a status plus payload on its own outbox entry
+ * (#390), so there is no second durable store to cache, seed, or keep in
+ * step. This module projects those rows into the {@link ConflictEntry}
+ * shape the application reads, publishes the count as a synchronous
+ * observable for #125, and turns the application's `retry` / `discard`
+ * decision into the outbox transition that decision implies.
  *
- * The cache is published as a read-only
- * {@link ConflictManager.observable} (`client.sync.conflicts`) for
- * application UI, alongside the resolve-capable `client.conflicts`
- * surface.
- *
- * The manager is also the `ConflictStore` the Outbox writes through, so a
- * detection lands in the cache and fires `onChange` without a poll. The
- * underlying store stays the source of truth across a reload: the cache is
- * seeded from `rehydrate()` and refreshed on every mutation.
+ * The projection keeps the persisted `catchUpId` / `conflictId` and the
+ * slot sides, so #392 can layer entity-level grouping and `remoteWins()`
+ * on top without a storage change.
  */
 
-import { isFieldMap, type Action, type FieldValue, type Update } from "@ebbjs/core";
-import type { ConflictEntry, ConflictSlot, ConflictStore } from "@ebbjs/storage/types";
+import { compare, isFieldMap, type Action, type FieldValue, type Update } from "@ebbjs/core";
+import type { ConflictSlot } from "@ebbjs/storage/types";
 import { subjectIds } from "./action-subjects";
+import type { ConflictedOutboxEntry, OutboxCounts } from "./outbox";
 import { createObservable, type ReadonlyObservable } from "./observable";
 
 /** The application's decision for one conflict. */
 export type ConflictResolution = "retry" | "discard";
+
+/**
+ * One losing local Action, projected from its `conflicted` outbox row.
+ * The application reads this shape; `client.sync.conflicts` publishes it.
+ */
+export interface ConflictEntry {
+  /** The losing Action, held on the outbox row for resolution. */
+  readonly action: Action;
+  /**
+   * Subjects that actually lost. A create-plus-update write names only
+   * the entity that lost, so a freshly created entity is not dragged in.
+   */
+  readonly subjects: readonly string[];
+  /**
+   * Overlapping contested positions, in detection order. Empty when the
+   * entity-level scope surfaced a subject with no position overlap; an
+   * application reads that as "nothing of mine would be lost".
+   */
+  readonly slots: readonly ConflictSlot[];
+  /** Highest server GSN the client had applied when the Action was authored. */
+  readonly basedOnGsn: number;
+  /** The catch-up pass that produced this entry. */
+  readonly catchUpId: string;
+  /**
+   * Stamped at detection and persisted with the row, so it survives a
+   * reload and partial resolution. Grouping is the connected set of
+   * losing subjects within one `catchUpId`.
+   */
+  readonly conflictId: string;
+  /** Client HLC stamped at detection. The `list()` ordering key. */
+  readonly detectedAtHlc: string;
+}
 
 /** Fired with the whole conflict set whenever it changes. */
 export type ConflictChangeListener = (entries: readonly ConflictEntry[]) => void;
 
 /**
  * Read-only snapshot of the conflict set, the value of
- * `client.sync.conflicts`. `count` is O(1) over the manager's in-memory
- * cache, so a binding that only needs the depth never materializes
- * entries from the durable store.
+ * `client.sync.conflicts`. `count` is O(1) over the view's cache, so a
+ * binding that only needs the depth never materializes entries.
  */
 export interface ConflictSnapshot {
   /** Number of conflicts awaiting resolution. */
@@ -52,7 +77,7 @@ export interface ConflictSnapshot {
 export interface Conflicts {
   /**
    * Conflicts awaiting resolution, oldest detection first. Awaits the
-   * initial durable load, so a fresh client reports persisted rows.
+   * outbox's durable load, so a fresh client reports persisted rows.
    */
   list(): Promise<readonly ConflictEntry[]>;
   /**
@@ -65,9 +90,9 @@ export interface Conflicts {
   /**
    * Resolve one conflict by `action.id`. Unknown ids are a no-op.
    *
-   * - `retry` re-stamps the conflicting fields onto the current state —
-   *   a fresh `update_id` + HLC per update, so they win — and re-enqueues
-   *   the rebased Action as pending.
+   * - `retry` rebuilds a fresh Action from the losing `slots` — a fresh
+   *   `update_id` + HLC per update, so they win — and re-enqueues it as
+   *   pending.
    * - `discard` drops the losing Action's optimistic writes and replays
    *   the action log, converging the affected entities on the server's
    *   view.
@@ -80,20 +105,35 @@ export interface Conflicts {
    */
   onChange(listener: ConflictChangeListener): () => void;
   /**
-   * Load persisted conflicts into the in-memory cache. Runs eagerly at
-   * construction as a single-flight operation (idempotent); returns that
-   * same promise so callers can await it.
+   * Await the outbox's durable load. Runs eagerly at construction as a
+   * single-flight operation (idempotent); returns that same promise so
+   * callers can await it.
    */
   rehydrate(): Promise<void>;
 }
 
 /**
- * Collaborators the manager needs. Kept narrow so the manager performs no
- * I/O of its own beyond the injected store.
+ * The outbox seam the view reads and resolves through. Narrow so the
+ * view performs no durable I/O of its own.
+ */
+export interface ConflictOutbox {
+  /** Conflicted rows in outbox order. */
+  conflicts(): readonly ConflictedOutboxEntry[];
+  /** The buffer's change stream, so a detection or resolution refreshes the view. */
+  onChange(listener: (counts: OutboxCounts) => void): () => void;
+  /** Await the buffer's durable load. */
+  rehydrate(): Promise<void>;
+  /** Delete a conflicted row. A no-op for an unknown or non-conflicted id. */
+  clearConflict(actionId: string): Promise<void>;
+}
+
+/**
+ * Collaborators the view needs. Kept narrow so the view performs no I/O
+ * of its own beyond the outbox it reads.
  */
 export interface ConflictsDependencies {
-  /** Durable conflict table. The manager is the only client-side writer. */
-  store: ConflictStore;
+  /** The outbox whose conflicted rows this view projects. */
+  outbox: ConflictOutbox;
   /**
    * Re-enqueue a rebased losing Action on the pending write path:
    * durable, optimistically applied, and scheduled to flush.
@@ -122,13 +162,9 @@ export interface ConflictsDependencies {
   releaseSubjects(ids: readonly string[]): void;
 }
 
-/** The stamping collaborators {@link rebaseAction} needs. */
-type RebaseStamper = Pick<ConflictsDependencies, "stampAction" | "hlc" | "generateUpdateId">;
-
-/** The manager plus the store view the Outbox writes through. */
+/** The view plus the observable it publishes. */
 export interface ConflictManager {
   readonly conflicts: Conflicts;
-  readonly store: ConflictStore;
   /**
    * Read-only observable over the conflict set, mounted as
    * `client.sync.conflicts`. Seeded empty until the initial durable load
@@ -136,6 +172,20 @@ export interface ConflictManager {
    */
   readonly observable: ReadonlyObservable<ConflictSnapshot>;
 }
+
+/** The shape the view exposes, projected from a conflicted outbox row. */
+const toEntry = (entry: ConflictedOutboxEntry): ConflictEntry => ({
+  action: entry.action,
+  subjects: entry.conflict.subjects,
+  slots: entry.conflict.slots,
+  basedOnGsn: entry.basedOnGsn,
+  catchUpId: entry.conflict.catchUpId,
+  conflictId: entry.conflict.conflictId,
+  detectedAtHlc: entry.conflict.detectedAtHlc,
+});
+
+/** The stamping collaborators {@link rebaseAction} needs. */
+type RebaseStamper = Pick<ConflictsDependencies, "stampAction" | "hlc" | "generateUpdateId">;
 
 /** The field map an Update carries, tolerating a fieldless `delete`. */
 const readFields = (update: Update): Readonly<Record<string, FieldValue>> =>
@@ -270,11 +320,12 @@ const rebaseAction = (entry: ConflictEntry, deps: RebaseStamper): Action | null 
 };
 
 /**
- * Build the conflict manager over a durable store.
+ * Build the conflict view over the outbox.
  *
- * Construction kicks off the initial load without caller involvement; a
- * rejected `list()` must not surface as an unhandled rejection, and an
- * awaiting caller still sees it.
+ * Construction subscribes to the outbox change stream and kicks off the
+ * initial load without caller involvement; a rejected load must not
+ * surface as an unhandled rejection, and an awaiting caller still sees
+ * it.
  */
 export function createConflicts(deps: ConflictsDependencies): ConflictManager {
   let entries: readonly ConflictEntry[] = [];
@@ -285,19 +336,19 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
     observable.set({ count: entries.length, entries });
   };
 
-  /** Keep the cache exact and notify subscribers after each mutation. */
-  const refresh = async (): Promise<void> => {
-    entries = await deps.store.list();
+  /** Re-project the outbox's conflicted rows, oldest detection first. */
+  const refresh = (): void => {
+    entries = deps.outbox
+      .conflicts()
+      .map(toEntry)
+      .sort((a, b) => compare(a.detectedAtHlc, b.detectedAtHlc));
     emit();
   };
 
   const rehydrate = (): Promise<void> => {
-    rehydration ??= deps.store
-      .list()
-      .then((persisted) => {
-        entries = [...persisted];
-        emit();
-      })
+    rehydration ??= deps.outbox
+      .rehydrate()
+      .then(refresh)
       .catch((err: unknown) => {
         // Clear the memo so a transient failure cannot brick the cache;
         // the next call retries the load.
@@ -307,38 +358,10 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
     return rehydration;
   };
 
-  /**
-   * The Outbox's view. Detection `put`s and rollback `delete`s land here,
-   * so the cache and listeners stay current without polling.
-   */
-  const store: ConflictStore = {
-    async put(entry: ConflictEntry): Promise<void> {
-      // Settle the initial load first: a `list()` issued at construction
-      // could otherwise resolve after this refresh and overwrite the
-      // cache with a snapshot taken before the put.
-      await rehydrate();
-      await deps.store.put(entry);
-      await refresh();
-    },
-    async list(): Promise<readonly ConflictEntry[]> {
-      await rehydrate();
-      return entries;
-    },
-    async get(actionId: string): Promise<ConflictEntry | null> {
-      await rehydrate();
-      return entries.find((entry) => entry.action.id === actionId) ?? null;
-    },
-    async delete(actionId: string): Promise<void> {
-      await rehydrate();
-      await deps.store.delete(actionId);
-      await refresh();
-    },
-    async clear(): Promise<void> {
-      await rehydrate();
-      await deps.store.clear();
-      await refresh();
-    },
-  };
+  // Detection and resolution both move rows through the outbox, whose
+  // change stream fires after each transition; refresh keeps the view
+  // current without a poll.
+  deps.outbox.onChange(refresh);
 
   const resolve = async (actionId: string, resolution: ConflictResolution): Promise<void> => {
     await rehydrate();
@@ -346,16 +369,17 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
     if (entry === undefined) return;
 
     if (resolution === "retry") {
-      // Enqueue before deleting: a durable-buffer failure must leave the
+      // Enqueue before clearing: a durable-buffer failure must leave the
       // conflict resolvable rather than drop the user's write.
       const rebased = rebaseAction(entry, deps);
       if (rebased !== null) await deps.requeue(rebased);
     } else {
       await deps.reMaterialize(entry.action);
     }
-    await store.delete(actionId);
-    // `store.delete` refreshed `entries`, so this sees the post-resolution
-    // set. An entity another conflict still holds stays captured.
+    // `clearConflict` fires the outbox change stream, so `entries` here
+    // is the post-resolution set. An entity another conflict still holds
+    // stays captured.
+    await deps.outbox.clearConflict(actionId);
     const stillConflicted = new Set<string>();
     for (const remaining of entries) {
       for (const subjectId of subjectIds(remaining.action)) stillConflicted.add(subjectId);
@@ -369,12 +393,15 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
   void rehydrate().catch(() => {});
 
   const conflicts: Conflicts = {
-    list: () => store.list(),
+    list: async () => {
+      await rehydrate();
+      return entries;
+    },
     count: () => entries.length,
     resolve,
     onChange: (listener) => observable.subscribe((snapshot) => listener(snapshot.entries)),
     rehydrate,
   };
 
-  return { conflicts, store, observable };
+  return { conflicts, observable };
 }

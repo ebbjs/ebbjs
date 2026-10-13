@@ -10,18 +10,25 @@ import { describe, it, expect, vi } from "vitest";
 import type { OutboxChangeListener, OutboxCounts } from "./outbox";
 import { createOutboxObserver, type OutboxSnapshot } from "./outbox-observer";
 
-const zero: OutboxCounts = { pending: 0, acknowledged: 0, error: 0 };
+/** The count defaults; a test overrides only the depth it drives. */
+const counts = (overrides: Partial<OutboxCounts> = {}): OutboxCounts => ({
+  pending: 0,
+  acknowledged: 0,
+  error: 0,
+  conflicted: 0,
+  ...overrides,
+});
 
 /** Depth + latency sources whose changes the test drives directly. */
 const mkHarness = () => {
-  let counts: OutboxCounts = zero;
+  let current: OutboxCounts = counts();
   let latency: number | null = null;
   const countListeners = new Set<OutboxChangeListener>();
   const latencyListeners = new Set<(latency: number) => void>();
 
   const observer = createOutboxObserver({
     outbox: {
-      counts: () => counts,
+      counts: () => current,
       onChange: (listener) => {
         countListeners.add(listener);
         return () => {
@@ -41,8 +48,8 @@ const mkHarness = () => {
   return {
     observer,
     setCounts: (next: OutboxCounts): void => {
-      counts = next;
-      for (const listener of countListeners) listener(counts);
+      current = next;
+      for (const listener of countListeners) listener(current);
     },
     setLatency: (next: number): void => {
       latency = next;
@@ -55,11 +62,14 @@ describe("createOutboxObserver", () => {
   it("reads the composed snapshot from both sources", () => {
     const { observer, setCounts, setLatency } = mkHarness();
 
-    expect(observer.get()).toEqual({ ...zero, flushLatency: null });
+    expect(observer.get()).toEqual({ ...counts(), flushLatency: null });
 
-    setCounts({ pending: 2, acknowledged: 1, error: 1 });
+    setCounts(counts({ pending: 2, acknowledged: 1, error: 1, conflicted: 1 }));
     setLatency(12);
-    expect(observer.get()).toEqual({ pending: 2, acknowledged: 1, error: 1, flushLatency: 12 });
+    expect(observer.get()).toEqual({
+      ...counts({ pending: 2, acknowledged: 1, error: 1, conflicted: 1 }),
+      flushLatency: 12,
+    });
   });
 
   it("keeps the snapshot identity stable until a source changes", () => {
@@ -68,20 +78,20 @@ describe("createOutboxObserver", () => {
 
     expect(observer.get()).toBe(first);
 
-    setCounts({ pending: 1, acknowledged: 0, error: 0 });
+    setCounts(counts({ pending: 1 }));
     const second = observer.get();
     expect(second).not.toBe(first);
-    expect(second).toEqual({ pending: 1, acknowledged: 0, error: 0, flushLatency: null });
+    expect(second).toEqual({ ...counts({ pending: 1 }), flushLatency: null });
   });
 
   it("drops a source event that leaves the composed snapshot unchanged", () => {
     const { observer, setCounts } = mkHarness();
-    setCounts({ pending: 1, acknowledged: 0, error: 0 });
+    setCounts(counts({ pending: 1 }));
     const listener = vi.fn();
     observer.subscribe(listener);
     const before = observer.get();
 
-    setCounts({ pending: 1, acknowledged: 0, error: 0 });
+    setCounts(counts({ pending: 1 }));
 
     expect(listener).not.toHaveBeenCalled();
     expect(observer.get()).toBe(before);
@@ -93,13 +103,25 @@ describe("createOutboxObserver", () => {
     observer.subscribe((snapshot) => seen.push(snapshot));
     expect(seen).toEqual([]);
 
-    setCounts({ pending: 3, acknowledged: 0, error: 0 });
+    setCounts(counts({ pending: 3 }));
     setLatency(7);
 
     expect(seen).toEqual([
-      { pending: 3, acknowledged: 0, error: 0, flushLatency: null },
-      { pending: 3, acknowledged: 0, error: 0, flushLatency: 7 },
+      { ...counts({ pending: 3 }), flushLatency: null },
+      { ...counts({ pending: 3 }), flushLatency: 7 },
     ]);
+  });
+
+  it("notifies on a conflict-count change with no pending change", () => {
+    const { observer, setCounts } = mkHarness();
+    setCounts(counts({ pending: 1 }));
+    const listener = vi.fn();
+    observer.subscribe(listener);
+
+    setCounts(counts({ pending: 1, conflicted: 1 }));
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(observer.get().conflicted).toBe(1);
   });
 
   it("stops notifying after unsubscribe", () => {
@@ -108,7 +130,7 @@ describe("createOutboxObserver", () => {
     const unsubscribe = observer.subscribe(listener);
     unsubscribe();
 
-    setCounts({ pending: 1, acknowledged: 0, error: 0 });
+    setCounts(counts({ pending: 1 }));
 
     expect(listener).not.toHaveBeenCalled();
   });
@@ -122,7 +144,7 @@ describe("createOutboxObserver", () => {
     });
     observer.subscribe(good);
 
-    setCounts({ pending: 1, acknowledged: 0, error: 0 });
+    setCounts(counts({ pending: 1 }));
 
     expect(good).toHaveBeenCalledTimes(1);
     consoleError.mockRestore();

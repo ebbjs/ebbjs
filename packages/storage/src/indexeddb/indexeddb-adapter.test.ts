@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { StorageAdapter } from "../types/storage-adapter";
 import { defineAdapterTests } from "../testing/adapter.test-suite";
-import { buildConflictEntry } from "../testing/fixtures";
+import { buildOutboxConflict, buildPutAction } from "../testing/fixtures";
 import { createIndexedDBAdapter, type IndexedDBAdapterOptions } from "./indexeddb-adapter";
 
 /**
@@ -24,15 +24,21 @@ defineAdapterTests({
 });
 
 describe("IndexedDB adapter persistence", () => {
-  it("keeps conflicts across an adapter reopen", async () => {
+  it("keeps a conflicted outbox entry across an adapter reopen", async () => {
     const dbName = `ebb-adapter-reload-${Date.now()}-${++adapterCount}`;
-    const entry = buildConflictEntry();
+    const entry = {
+      action: buildPutAction(),
+      status: "conflicted" as const,
+      enqueuedAtHlc: buildPutAction().hlc,
+      basedOnGsn: 0,
+      conflict: buildOutboxConflict(),
+    };
 
     const first = await createIndexedDBAdapter({ dbName });
-    await first.conflicts.put(entry);
+    await first.outbox.put(entry);
 
     const reopened = await createIndexedDBAdapter({ dbName });
 
-    expect(await reopened.conflicts.get(entry.action.id)).toEqual(entry);
+    expect(await reopened.outbox.get(entry.action.id)).toEqual(entry);
   });
 });

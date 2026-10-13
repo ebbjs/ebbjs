@@ -50,8 +50,9 @@ import { test, expect, applyTestConfig, isolateTestGroup } from "./helpers";
  *      durably buffered on a `basedOnGsn` that predates drew's.
  *   4. Drew extends the same run (still live) and commits it.
  *   5. Lift the aborts and force alice to reconnect. Catch-up pulls
- *      drew's committed Action and the detection pass moves alice's
- *      buffered write to `client.conflicts`.
+ *      drew's committed Action; the detection pass stamps alice's
+ *      buffered outbox row `conflicted`, and the read view surfaces it
+ *      through `client.conflicts`.
  *   6. Assert the panel shows an entry on alice and none on drew, who was
  *      live throughout and converged silently.
  *
@@ -187,8 +188,9 @@ test.describe("conflict surfacing", () => {
     await alicePage.getByRole("button", { name: /Show conflicts/i }).click();
 
     // Lift the aborts and reconnect: catch-up pulls drew's committed
-    // Action and the detection pass moves alice's buffered write to
-    // `client.conflicts` before the flush gate reopens.
+    // Action; the detection pass stamps alice's buffered outbox row
+    // `conflicted`, which surfaces through `client.conflicts` before the
+    // flush gate reopens.
     await alicePage.unroute(/\/sync\/live/, abortLive);
     await alicePage.unroute(/\/sync\/actions/, abortActions);
     await reconnect(alicePage);

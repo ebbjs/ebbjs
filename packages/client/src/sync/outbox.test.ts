@@ -9,10 +9,9 @@
 import { describe, it, expect, vi, type Mock } from "vitest";
 import type { Action, FieldValue } from "@ebbjs/core";
 import type {
-  ConflictEntry,
   ConflictSide,
   ConflictSlot,
-  ConflictStore,
+  OutboxConflict,
   OutboxEntry as StoredOutboxEntry,
   OutboxStore,
 } from "@ebbjs/storage/types";
@@ -91,7 +90,14 @@ const stored = (
   enqueuedAtHlc: string,
   status: StoredOutboxEntry["status"] = "pending",
   basedOnGsn = 0,
-): StoredOutboxEntry => ({ action, status, enqueuedAtHlc, basedOnGsn });
+  conflict?: OutboxConflict,
+): StoredOutboxEntry => ({
+  action,
+  status,
+  enqueuedAtHlc,
+  basedOnGsn,
+  ...(conflict === undefined ? {} : { conflict }),
+});
 
 /**
  * In-test OutboxStore. `list()` returns rows in insertion order, so a
@@ -104,30 +110,6 @@ const mkStore = (
   return {
     rows,
     put: vi.fn(async (entry: StoredOutboxEntry) => {
-      rows.set(entry.action.id, structuredClone(entry));
-    }),
-    list: vi.fn(async () => [...rows.values()].map((entry) => structuredClone(entry))),
-    get: vi.fn(async (id: string) => {
-      const entry = rows.get(id);
-      return entry === undefined ? null : structuredClone(entry);
-    }),
-    delete: vi.fn(async (id: string) => {
-      rows.delete(id);
-    }),
-    clear: vi.fn(async () => {
-      rows.clear();
-    }),
-  };
-};
-
-/** In-test ConflictStore with a visible row map, mirroring `mkStore`. */
-const mkConflicts = (
-  initial: readonly ConflictEntry[] = [],
-): ConflictStore & { rows: Map<string, ConflictEntry> } => {
-  const rows = new Map(initial.map((entry) => [entry.action.id, entry]));
-  return {
-    rows,
-    put: vi.fn(async (entry: ConflictEntry) => {
       rows.set(entry.action.id, structuredClone(entry));
     }),
     list: vi.fn(async () => [...rows.values()].map((entry) => structuredClone(entry))),
@@ -166,7 +148,6 @@ const mkDeps = (
       return { rejected: [] };
     }),
     store: mkStore(),
-    conflicts: mkConflicts(),
     baseGsn: () => 0,
     conflictScope: () => "field" as const,
     conflictId: vi.fn(() => `c_${++conflicts}`),
@@ -660,7 +641,7 @@ describe("createOutbox matchEcho", () => {
 
     expect(matched).toBe(false);
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
-    expect(await deps.conflicts.list()).toEqual([]);
+    expect(outbox.conflicts()).toEqual([]);
   });
 
   it("does not remove an errored entry on a matching echo", async () => {
@@ -675,6 +656,37 @@ describe("createOutbox matchEcho", () => {
 
     expect(matched).toBe(false);
     expect(outbox.size("error")).toBe(1);
+  });
+
+  it("does not retire a conflicted entry on a matching echo", async () => {
+    // The server may have committed the write, but the local value lost
+    // and the user has not decided; only a resolution clears the row.
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    const action = mkFieldAction({
+      id: "a_local",
+      subjectId: "todo_1",
+      fields: { title: { value: "mine", update_id: "u_local", hlc: "10" } },
+    });
+    await outbox.enqueue(action);
+    await outbox.detectConflicts(
+      [
+        mkFieldAction({
+          id: "a_peer",
+          subjectId: "todo_1",
+          fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+          gsn: 5,
+        }),
+      ],
+      "cu_1",
+    );
+    expect(outbox.size("conflicted")).toBe(1);
+
+    const matched = await outbox.matchEcho({ ...action, gsn: 7 });
+
+    expect(matched).toBe(false);
+    expect(outbox.size("conflicted")).toBe(1);
+    expect(await deps.store.get("a_local")).not.toBeNull();
   });
 
   it("matches a rehydrated acknowledged entry", async () => {
@@ -767,12 +779,12 @@ describe("createOutbox conflict detection", () => {
       },
     ]);
     expect(outbox.pending()).toEqual([]);
-    expect(await deps.store.get("a_local")).toBeNull();
+    expect(outbox.size("conflicted")).toBe(1);
 
-    const [entry] = await deps.conflicts.list();
+    const entry = outbox.conflicts()[0];
     expect(entry?.action.id).toBe("a_local");
-    expect(entry?.subjects).toEqual(["todo_1"]);
-    expect(entry?.slots).toEqual([
+    expect(entry?.conflict.subjects).toEqual(["todo_1"]);
+    expect(entry?.conflict.slots).toEqual([
       slot({
         field: "title",
         local: side("mine", "u_local", "10"),
@@ -780,9 +792,11 @@ describe("createOutbox conflict detection", () => {
       }),
     ]);
     expect(entry?.basedOnGsn).toBe(0);
-    expect(entry?.catchUpId).toBe("cu_1");
-    expect(entry?.conflictId).toBe("c_1");
-    expect(entry?.detectedAtHlc).toBe("2");
+    expect(entry?.conflict.catchUpId).toBe("cu_1");
+    expect(entry?.conflict.conflictId).toBe("c_1");
+    expect(entry?.conflict.detectedAtHlc).toBe("2");
+    // Held and recorded in the one durable write.
+    expect(await deps.store.get("a_local")).toEqual(entry);
   });
 
   it("records a conflict even when the local value would win the merge", async () => {
@@ -794,7 +808,7 @@ describe("createOutbox conflict detection", () => {
     const detected = await outbox.detectConflicts([peerTitle("theirs", 5)], "cu_1");
 
     expect(detected.map((conflict) => conflict.actionId)).toEqual(["a_local"]);
-    expect(await deps.store.get("a_local")).toBeNull();
+    expect(outbox.size("conflicted")).toBe(1);
   });
 
   it("does not flag a concurrent write to a different map key", async () => {
@@ -822,7 +836,7 @@ describe("createOutbox conflict detection", () => {
 
     expect(detected).toEqual([]);
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
-    expect(await deps.conflicts.list()).toEqual([]);
+    expect(outbox.conflicts()).toEqual([]);
   });
 
   it("flags only the map key the inbound write shares", async () => {
@@ -894,10 +908,10 @@ describe("createOutbox conflict detection", () => {
       "cu_1",
     );
 
-    const [entry] = await deps.conflicts.list();
+    const entry = outbox.conflicts()[0];
 
     // A whole-field map winner has no single leaf triple.
-    expect(entry?.slots).toEqual([
+    expect(entry?.conflict.slots).toEqual([
       slot({
         field: "content",
         local: side("leaf", "u_local", "10"),
@@ -1080,7 +1094,7 @@ describe("createOutbox conflict detection", () => {
 
     expect(detected).toEqual([]);
     expect(outbox.pending()).toHaveLength(3);
-    expect(await deps.conflicts.list()).toEqual([]);
+    expect(outbox.conflicts()).toEqual([]);
   });
 
   it("entity scope surfaces a concurrent touch of a different field, with empty slots", async () => {
@@ -1130,7 +1144,7 @@ describe("createOutbox conflict detection", () => {
 
     expect(detected).toEqual([]);
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
-    expect(await deps.conflicts.list()).toEqual([]);
+    expect(outbox.conflicts()).toEqual([]);
   });
 
   it("surfaces when the write base trails the inbound gsn", async () => {
@@ -1152,7 +1166,7 @@ describe("createOutbox conflict detection", () => {
 
     expect(detected.map((conflict) => conflict.actionId)).toEqual(["a_local"]);
     expect(outbox.size("acknowledged")).toBe(0);
-    expect((await deps.conflicts.list()).map((entry) => entry.action.id)).toEqual(["a_local"]);
+    expect(outbox.conflicts().map((entry) => entry.action.id)).toEqual(["a_local"]);
   });
 
   it("never treats an errored entry as a conflict candidate", async () => {
@@ -1166,7 +1180,7 @@ describe("createOutbox conflict detection", () => {
 
     expect(detected).toEqual([]);
     expect(outbox.errors().map((entry) => entry.action.id)).toEqual(["a_local"]);
-    expect(await deps.conflicts.list()).toEqual([]);
+    expect(outbox.conflicts()).toEqual([]);
   });
 
   it("surfaces nothing on a reconnect with no buffered writes", async () => {
@@ -1176,7 +1190,7 @@ describe("createOutbox conflict detection", () => {
     const detected = await outbox.detectConflicts([peerTitle()], "cu_1");
 
     expect(detected).toEqual([]);
-    expect(await deps.conflicts.list()).toEqual([]);
+    expect(outbox.conflicts()).toEqual([]);
   });
 
   it("no-ops on an empty missed window", async () => {
@@ -1193,6 +1207,32 @@ describe("createOutbox conflict detection", () => {
 
     await expect(outbox.flush()).resolves.toEqual({ kind: "empty" });
     expect(deps.submitted).toEqual([]);
+  });
+
+  it("keeps a loser held when a detection races the in-flight submit", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const deps = mkDeps({
+      submit: vi.fn(async () => {
+        await gate;
+        return { rejected: [] };
+      }),
+    });
+    const { outbox } = await seed(deps);
+
+    const flushing = outbox.flush();
+    await vi.waitFor(() => expect(deps.submit).toHaveBeenCalled());
+    // The catch-up pass holds the entry while the submit is on the wire.
+    await outbox.detectConflicts([peerTitle()], "cu_1");
+    release();
+    await flushing;
+
+    // The submit outcome must not overwrite the hold.
+    expect(outbox.size("pending")).toBe(0);
+    expect(outbox.size("acknowledged")).toBe(0);
+    expect(outbox.size("conflicted")).toBe(1);
   });
 
   it("leaves an entry alone when the missed window touches another subject", async () => {
@@ -1215,40 +1255,27 @@ describe("createOutbox conflict detection", () => {
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
   });
 
-  it("keeps the entry pending when the conflicts store write fails", async () => {
-    const conflicts: ConflictStore = {
-      ...mkConflicts(),
+  it("still holds a detected loser when the durable write fails", async () => {
+    // Detection is the only durable write. A store fault must not reopen
+    // the flush path: the in-memory status transition is the hold.
+    let puts = 0;
+    const store: OutboxStore = {
+      ...mkStore(),
       put: vi.fn(async () => {
-        throw new Error("conflicts unavailable");
+        puts += 1;
+        if (puts === 2) throw new Error("store unavailable");
       }),
     };
-    const deps = mkDeps({ conflicts });
+    const deps = mkDeps({ store });
     const { outbox } = await seed(deps);
 
     const detected = await outbox.detectConflicts([peerTitle()], "cu_1");
 
-    expect(detected).toEqual([]);
-    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
-    expect(await deps.store.get("a_local")).not.toBeNull();
-  });
-
-  it("rolls the conflict back when the outbox delete fails", async () => {
-    const deps = mkDeps();
-    const store: OutboxStore = {
-      ...deps.store,
-      delete: vi.fn(async () => {
-        throw new Error("store unavailable");
-      }),
-    };
-    const conflictStore = mkConflicts();
-    const scoped = mkDeps({ store, conflicts: conflictStore });
-    const { outbox } = await seed(scoped);
-
-    const detected = await outbox.detectConflicts([peerTitle()], "cu_1");
-
-    expect(detected).toEqual([]);
-    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
-    expect(await conflictStore.list()).toEqual([]);
+    expect(detected.map((conflict) => conflict.actionId)).toEqual(["a_local"]);
+    expect(outbox.pending()).toEqual([]);
+    expect(outbox.size("conflicted")).toBe(1);
+    await expect(outbox.flush()).resolves.toEqual({ kind: "empty" });
+    expect(deps.submitted).toEqual([]);
   });
 
   it("moves every losing pending entry in buffer order", async () => {
@@ -1273,9 +1300,9 @@ describe("createOutbox conflict detection", () => {
 
     expect(detected.map((conflict) => conflict.actionId)).toEqual(["a_first", "a_second"]);
     expect(outbox.pending()).toEqual([]);
-    const entries = await deps.conflicts.list();
-    expect(entries.map((entry) => entry.conflictId)).toEqual(["c_1", "c_2"]);
-    expect(entries.every((entry) => entry.catchUpId === "cu_1")).toBe(true);
+    const entries = outbox.conflicts();
+    expect(entries.map((entry) => entry.conflict.conflictId)).toEqual(["c_1", "c_2"]);
+    expect(entries.every((entry) => entry.conflict.catchUpId === "cu_1")).toBe(true);
   });
 });
 
@@ -1525,15 +1552,15 @@ describe("createOutbox counts + onChange", () => {
     const deps = mkDeps({ submit: vi.fn(async () => ({ rejected: [rejection] })) });
     const outbox = createOutbox(deps);
 
-    expect(outbox.counts()).toEqual({ pending: 0, acknowledged: 0, error: 0 });
+    expect(outbox.counts()).toEqual({ pending: 0, acknowledged: 0, error: 0, conflicted: 0 });
 
     await outbox.enqueue(mkAction("a_1"));
     await outbox.enqueue(mkAction("a_2"));
-    expect(outbox.counts()).toEqual({ pending: 2, acknowledged: 0, error: 0 });
+    expect(outbox.counts()).toEqual({ pending: 2, acknowledged: 0, error: 0, conflicted: 0 });
 
     await outbox.flush();
     await outbox.enqueue(mkAction("a_3"));
-    expect(outbox.counts()).toEqual({ pending: 1, acknowledged: 1, error: 1 });
+    expect(outbox.counts()).toEqual({ pending: 1, acknowledged: 1, error: 1, conflicted: 0 });
   });
 
   it("fires with the new counts on enqueue", async () => {
@@ -1544,7 +1571,7 @@ describe("createOutbox counts + onChange", () => {
     await outbox.enqueue(mkAction("a_1"));
 
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener).toHaveBeenCalledWith({ pending: 1, acknowledged: 0, error: 0 });
+    expect(listener).toHaveBeenCalledWith({ pending: 1, acknowledged: 0, error: 0, conflicted: 0 });
   });
 
   it("fires on the ack and error transitions of a flush", async () => {
@@ -1558,7 +1585,7 @@ describe("createOutbox counts + onChange", () => {
 
     await outbox.flush();
 
-    expect(seen).toEqual([{ pending: 0, acknowledged: 1, error: 1 }]);
+    expect(seen).toEqual([{ pending: 0, acknowledged: 1, error: 1, conflicted: 0 }]);
   });
 
   it("fires on retry", async () => {
@@ -1572,7 +1599,7 @@ describe("createOutbox counts + onChange", () => {
 
     await outbox.retry("a_1");
 
-    expect(seen).toEqual([{ pending: 1, acknowledged: 0, error: 0 }]);
+    expect(seen).toEqual([{ pending: 1, acknowledged: 0, error: 0, conflicted: 0 }]);
   });
 
   it("fires on clearError", async () => {
@@ -1586,7 +1613,7 @@ describe("createOutbox counts + onChange", () => {
 
     await outbox.clearError("a_1");
 
-    expect(seen).toEqual([{ pending: 0, acknowledged: 0, error: 0 }]);
+    expect(seen).toEqual([{ pending: 0, acknowledged: 0, error: 0, conflicted: 0 }]);
   });
 
   it("fires when an echo removes an entry", async () => {
@@ -1600,7 +1627,7 @@ describe("createOutbox counts + onChange", () => {
 
     await outbox.matchEcho({ ...action, gsn: 7 });
 
-    expect(seen).toEqual([{ pending: 0, acknowledged: 0, error: 0 }]);
+    expect(seen).toEqual([{ pending: 0, acknowledged: 0, error: 0, conflicted: 0 }]);
   });
 
   it("fires when a conflict moves an entry out of the buffer", async () => {
@@ -1628,7 +1655,7 @@ describe("createOutbox counts + onChange", () => {
       "cu_1",
     );
 
-    expect(seen).toEqual([{ pending: 0, acknowledged: 0, error: 0 }]);
+    expect(seen).toEqual([{ pending: 0, acknowledged: 0, error: 0, conflicted: 1 }]);
   });
 
   it("fires when rehydration seeds persisted entries", async () => {
@@ -1640,7 +1667,7 @@ describe("createOutbox counts + onChange", () => {
     await outbox.rehydrate();
 
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener).toHaveBeenCalledWith({ pending: 2, acknowledged: 0, error: 0 });
+    expect(listener).toHaveBeenCalledWith({ pending: 2, acknowledged: 0, error: 0, conflicted: 0 });
   });
 
   it("does not fire on subscription, and stops after unsubscribe", async () => {
@@ -1667,7 +1694,7 @@ describe("createOutbox counts + onChange", () => {
     await outbox.enqueue(mkAction("a_1"));
 
     expect(good).toHaveBeenCalledTimes(1);
-    expect(good).toHaveBeenCalledWith({ pending: 1, acknowledged: 0, error: 0 });
+    expect(good).toHaveBeenCalledWith({ pending: 1, acknowledged: 0, error: 0, conflicted: 0 });
     consoleError.mockRestore();
   });
 });

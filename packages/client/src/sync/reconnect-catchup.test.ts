@@ -223,11 +223,11 @@ describe("SyncClient rebase phase (#309)", () => {
 
     // One end-of-window pass folds both pages and detects the write that
     // was authored mid-pagination against page two's concurrent Action.
-    await waitFor(async () => (await client.storage.conflicts.list()).length > 0);
+    await waitFor(async () => (await client.conflicts.list()).length > 0);
     expect(posted).toBe(0);
     expect(await client.outbox.size("pending")).toBe(0);
 
-    const conflicts = await client.storage.conflicts.list();
+    const conflicts = await client.conflicts.list();
     expect(conflicts.map((entry) => entry.action.id)).toEqual(["act_local"]);
     expect(conflicts[0]?.basedOnGsn).toBe(1);
     expect(conflicts[0]?.slots.map((slot) => slot.path)).toEqual([[]]);
@@ -279,10 +279,10 @@ describe("SyncClient rebase phase (#309)", () => {
 
     await waitFor(async () => (await client.readLocalEntity("todo_1")) !== null);
     // The checkpoint detects the buffered Action before any flush.
-    await waitFor(async () => (await client.storage.conflicts.list()).length > 0);
+    await waitFor(async () => (await client.conflicts.list()).length > 0);
 
     expect(actionPosts).toHaveLength(0);
-    const conflicts = await client.storage.conflicts.list();
+    const conflicts = await client.conflicts.list();
     expect(conflicts.map((entry) => entry.action.id)).toContain("act_local");
     expect(await client.outbox.size("pending")).toBe(0);
 
@@ -446,7 +446,7 @@ describe("SyncClient pre-sync snapshots (#395)", () => {
     await waitFor(async () => titleOf(await client.snapshots.get("todo_1")) === "Local edit");
     expect(client.snapshots.list()).toEqual(["todo_1"]);
 
-    await waitFor(async () => (await client.storage.conflicts.list()).length > 0);
+    await waitFor(async () => (await client.conflicts.list()).length > 0);
     expect(titleOf(await client.readLocalEntity("todo_1"))).toBe("Remote edit");
 
     // Resolving the entity's conflict releases its capture.

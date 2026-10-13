@@ -68,6 +68,7 @@ export function createOutboxObserver(deps: OutboxObserverDependencies): OutboxOb
       next.pending === current.pending &&
       next.acknowledged === current.acknowledged &&
       next.error === current.error &&
+      next.conflicted === current.conflicted &&
       next.flushLatency === current.flushLatency
     ) {
       return;

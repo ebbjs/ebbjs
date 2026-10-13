@@ -1,10 +1,10 @@
 /**
- * Conflict panel — collapsible sidebar listing conflicts recorded by
- * the client's durable conflict store. Each conflict is one losing
- * pending Action plus the slots a peer's write out-dated; the panel
- * lets the user retry or discard it.
+ * Conflict panel — collapsible sidebar listing the conflicts the client
+ * recorded on its outbox rows. Each conflict is one losing buffered
+ * Action plus the slots a peer's write out-dated; the panel lets the
+ * user retry or discard it.
  *
- * Conflict detection lives in the outbox (`client.conflicts`), so the
+ * A detected conflict is a status + payload on the outbox entry, so the
  * panel reads the same vocabulary the rest of the app would: a
  * collaborative-text run is one map key, and a concurrent
  * extend-vs-delete on that run is one slot.

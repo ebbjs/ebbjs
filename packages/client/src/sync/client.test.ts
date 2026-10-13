@@ -1301,6 +1301,7 @@ describe("SyncClient.sync observables", () => {
       pending: 0,
       acknowledged: 0,
       error: 0,
+      conflicted: 0,
       flushLatency: null,
     });
 
@@ -1365,7 +1366,7 @@ describe("SyncClient.status (#371)", () => {
     expect(client.status.get()).toEqual({
       connection: "connecting",
       lastSyncedAt: null,
-      outbox: { pending: 0, acknowledged: 0, error: 0, flushLatency: null },
+      outbox: { pending: 0, acknowledged: 0, error: 0, conflicted: 0, flushLatency: null },
       conflicts: { count: 0, entries: [] },
     });
   });

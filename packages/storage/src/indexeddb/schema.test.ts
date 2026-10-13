@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildConflictEntry, buildPutAction } from "../testing/fixtures";
+import { buildOutboxConflict, buildPutAction } from "../testing/fixtures";
 import { openTestDb } from "./test-db";
 
 describe("EbbDBSchema", () => {
@@ -34,16 +34,20 @@ describe("EbbDBSchema", () => {
       await db.put("outbox", entry);
       expect(await db.get("outbox", "a_1")).toEqual(entry);
     });
-  });
 
-  describe("conflicts store", () => {
-    it("is created at the current schema version and keyed by action id", async () => {
+    it("carries a conflict payload on the row", async () => {
       const db = await openTestDb("schema");
-      expect(Array.from(db.objectStoreNames)).toContain("conflicts");
+      const action = buildPutAction();
+      const entry = {
+        action,
+        status: "conflicted" as const,
+        enqueuedAtHlc: action.hlc,
+        basedOnGsn: 0,
+        conflict: buildOutboxConflict(),
+      };
+      await db.put("outbox", entry);
 
-      const entry = buildConflictEntry();
-      await db.put("conflicts", entry);
-      expect(await db.get("conflicts", "a_1")).toEqual(entry);
+      expect(await db.get("outbox", "a_1")).toEqual(entry);
     });
   });
 });

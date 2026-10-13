@@ -10,6 +10,12 @@ export type { DirtyTracker } from "./dirty-tracker";
 export type { EntityStore, RelationshipIndexQuery } from "./entity-store";
 export type { CursorStore } from "./cursor-store";
 export type { EntityChangeEmitter } from "./entity-change-emitter";
-export type { OutboxEntry, OutboxStatus, OutboxStore } from "./outbox-store";
-export type { ConflictEntry, ConflictSide, ConflictSlot, ConflictStore } from "./conflict-store";
+export type {
+  OutboxEntry,
+  OutboxStatus,
+  OutboxStore,
+  OutboxConflict,
+  ConflictSide,
+  ConflictSlot,
+} from "./outbox-store";
 export type { StorageAdapter } from "./storage-adapter";

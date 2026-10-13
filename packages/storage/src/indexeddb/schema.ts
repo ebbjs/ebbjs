@@ -1,7 +1,6 @@
 import type { IDBPDatabase, DBSchema } from "idb";
 import type { Action, Entity } from "@ebbjs/core";
-import type { OutboxStatus } from "../types/outbox-store";
-import type { ConflictEntry } from "../types/conflict-store";
+import type { OutboxConflict, OutboxStatus } from "../types/outbox-store";
 import type { IndexRows } from "../internal/reverse-index";
 
 /**
@@ -16,23 +15,24 @@ import type { IndexRows } from "../internal/reverse-index";
  * pass a new `dbName`) before this adapter can open. Version 3 added the
  * `outbox` store for issue #228; 2 is skipped so that any database below
  * 3 (v1, or the legacy v2) triggers the upgrade callback and gets the new
- * store rather than silently missing it. Version 4 adds the `conflicts`
- * store for issue #307; databases below 4 trigger the upgrade callback.
- * Version 5 moves collaborative-text writes off the shared `text_document`
+ * store rather than silently missing it. Version 4 added the `conflicts`
+ * store for issue #307; that store is gone as of v6 (its payload now
+ * lives on the outbox row), so a database that carries it simply leaves
+ * it unread. Version 5 moves collaborative-text writes off the shared `text_document`
  * type onto per-field generated document entities (issue #398). No object
  * store shape changes; the bump gates the persisted subject-type layout so
  * a dev database carrying legacy `text_document` rows reopens and those
  * rows go unread. Version 6 adds `basedOnGsn` to the persisted outbox
- * entry and replaces the conflict row's `losses` with the
- * `subjects` / `slots` shape (issue #390). There are no production
- * consumers yet, so there is no migration: the bump resets a dev database
- * and no legacy row is read. Bump this when adding or changing object
- * stores, or when a persisted row shape changes.
+ * entry and moves the conflict payload onto the outbox row (issue #390),
+ * so the outbox is the single durable source for a losing Action. There
+ * are no production consumers yet, so there is no migration: the bump
+ * resets a dev database and no legacy row is read. Bump this when adding
+ * or changing object stores, or when a persisted row shape changes.
  */
 export const EBB_SCHEMA_VERSION = 6;
 
 /**
- * Structural schema for the seven object stores the IndexedDB adapter
+ * Structural schema for the six object stores the IndexedDB adapter
  * uses. Component factories (`action-log.indexeddb`, etc.) are typed
  * against this interface so the production schema and any test schema
  * satisfying the same shape can both be passed in without a cast.
@@ -96,22 +96,13 @@ export interface EbbDBSchema extends DBSchema {
       status: OutboxStatus;
       enqueuedAtHlc: string;
       basedOnGsn: number;
+      conflict?: OutboxConflict;
     };
-  };
-  /**
-   * Durable table of LWW conflicts awaiting application resolution,
-   * keyed by the losing `action.id`. `createEbbStores` creates the
-   * store for databases that upgrade from an earlier version; its
-   * absence at a version below 4 is expected.
-   */
-  conflicts: {
-    key: string;
-    value: ConflictEntry;
   };
 }
 
 /**
- * Idempotently creates the seven Ebb object stores on a database. Used
+ * Idempotently creates the six Ebb object stores on a database. Used
  * by both the production adapter (during the `openDB` upgrade) and the
  * test helper (to spin up a fresh DB per test). Safe to call against a
  * database that already has the stores — existing stores are left
@@ -150,14 +141,8 @@ export const createEbbStores = (
   }
   if (!database.objectStoreNames.contains("outbox")) {
     // Key path reaches into the entry so the stored row keeps the
-    // `{ action, status, enqueuedAtHlc }` shape without a denormalized
-    // copy of the id.
+    // `{ action, status, enqueuedAtHlc, conflict? }` shape without a
+    // denormalized copy of the id.
     database.createObjectStore("outbox", { keyPath: "action.id" });
-  }
-  if (!database.objectStoreNames.contains("conflicts")) {
-    // Key path reaches into the entry so the stored row keeps the
-    // `ConflictEntry` shape without a denormalized copy of the losing
-    // Action's id.
-    database.createObjectStore("conflicts", { keyPath: "action.id" });
   }
 };

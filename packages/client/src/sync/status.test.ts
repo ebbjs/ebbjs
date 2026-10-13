@@ -18,6 +18,7 @@ const emptyOutbox = (): OutboxSnapshot => ({
   pending: 0,
   acknowledged: 0,
   error: 0,
+  conflicted: 0,
   flushLatency: null,
 });
 
@@ -52,7 +53,7 @@ describe("createClientStatus", () => {
     expect(status.get()).toEqual({
       connection: "connecting",
       lastSyncedAt: null,
-      outbox: { pending: 0, acknowledged: 0, error: 0, flushLatency: null },
+      outbox: { pending: 0, acknowledged: 0, error: 0, conflicted: 0, flushLatency: null },
       conflicts: { count: 0, entries: [] },
     });
   });
@@ -66,6 +67,7 @@ describe("createClientStatus", () => {
       pending: 1,
       acknowledged: 2,
       error: 3,
+      conflicted: 4,
       flushLatency: 25,
     };
     outbox.set(next);
@@ -131,7 +133,7 @@ describe("createClientStatus", () => {
     const unsubscribe = status.subscribe(listener);
 
     unsubscribe();
-    outbox.set({ pending: 1, acknowledged: 0, error: 0, flushLatency: null });
+    outbox.set({ pending: 1, acknowledged: 0, error: 0, conflicted: 0, flushLatency: null });
 
     expect(listener).not.toHaveBeenCalled();
   });

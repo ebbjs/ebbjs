@@ -164,7 +164,7 @@ describe("client.conflicts (#310)", () => {
     expect(client.conflicts.count()).toBe(1);
 
     // Surfaced from the durable store, not a private cache.
-    expect((await storage.conflicts.list()).map((entry) => entry.action.id)).toEqual(["act_local"]);
+    expect((await client.conflicts.list()).map((entry) => entry.action.id)).toEqual(["act_local"]);
     // The losing Action was never posted.
     expect(actionCalls(stub.calls)).toBe(0);
     // onChange reported the detection without a poll.

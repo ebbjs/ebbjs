@@ -11,6 +11,7 @@ const toEntry = (row: EbbDBSchema["outbox"]["value"]): OutboxEntry => ({
   // A row predating the field reads as "always concurrent", never
   // silently dropped.
   basedOnGsn: row.basedOnGsn ?? 0,
+  conflict: row.conflict,
 });
 
 /**
@@ -30,6 +31,7 @@ export const createIndexedDBOutboxStore = (db: IDBPDatabase<EbbDBSchema>): Outbo
         status: entry.status,
         enqueuedAtHlc: entry.enqueuedAtHlc,
         basedOnGsn: entry.basedOnGsn,
+        conflict: entry.conflict,
       });
     },
 

@@ -4,7 +4,6 @@ import type { EntityStore } from "./entity-store";
 import type { CursorStore } from "./cursor-store";
 import type { EntityChangeEmitter } from "./entity-change-emitter";
 import type { OutboxStore } from "./outbox-store";
-import type { ConflictStore } from "./conflict-store";
 
 /**
  * StorageAdapter — unified interface composing all storage components.
@@ -17,14 +16,13 @@ import type { ConflictStore } from "./conflict-store";
  * - `entities` — EntityStore for materialized entity cache
  * - `dirtyTracker` — DirtyTracker for tracking entities needing materialization
  * - `cursors` — CursorStore for per-group GSN tracking
- * - `outbox` — OutboxStore for durable pending local Actions
- * - `conflicts` — ConflictStore for durably buffered LWW conflicts
+ * - `outbox` — OutboxStore for durable pending local Actions; a detected
+ *   conflict is a status + payload on its outbox row, not a sibling store
  *
  * ## Cross-cutting Methods
  * - `isDirty(entityId)` — delegates to dirtyTracker
  * - `reset()` — clears the action log, dirty flags, and entity cache;
- *   outbox entries and conflicts are durable user data and survive a
- *   reset
+ *   outbox entries are durable user data and survive a reset
  */
 export interface StorageAdapter {
   readonly actions: ActionLog;
@@ -32,7 +30,6 @@ export interface StorageAdapter {
   readonly dirtyTracker: DirtyTracker;
   readonly cursors: CursorStore;
   readonly outbox: OutboxStore;
-  readonly conflicts: ConflictStore;
   /**
    * Observer surface for entity-change notifications. Optional —
    * adapters that don't ship an emitter can omit the field, and
@@ -54,5 +51,11 @@ export interface StorageAdapter {
 }
 
 export type { ActionLog, DirtyTracker, EntityStore, CursorStore, EntityChangeEmitter };
-export type { OutboxStore, OutboxEntry, OutboxStatus } from "./outbox-store";
-export type { ConflictEntry, ConflictSide, ConflictSlot, ConflictStore } from "./conflict-store";
+export type {
+  OutboxStore,
+  OutboxEntry,
+  OutboxStatus,
+  OutboxConflict,
+  ConflictSide,
+  ConflictSlot,
+} from "./outbox-store";

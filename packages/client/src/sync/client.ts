@@ -266,28 +266,13 @@ export class SyncClient implements PermissionQuery {
       read: (entityId) => this.storage.entities.get(entityId),
     });
     this.snapshots = this.snapshotManager.snapshots;
-    // The manager is also the ConflictStore the Outbox writes through, so
-    // a detection lands in its cache and fires `onChange` without a poll.
-    const {
-      conflicts,
-      store: conflictStore,
-      observable: conflictsObservable,
-    } = createConflicts({
-      store: this.storage.conflicts,
-      requeue: (action) => this.requeueRebased(action),
-      reMaterialize: (action) => this.reMaterializeFromLog(action),
-      releaseSubjects: (subjectIds) => this.snapshotManager.releaseMany(subjectIds),
-      stampAction: (updates) =>
-        createAction({ actorId: this.actorId, updates: [...updates], clock: this.clock }).action,
-      hlc: () => this.freshHlc(),
-      generateUpdateId: () => this.generateUpdateId(),
-    });
-    this.conflicts = conflicts;
+    // The outbox owns the whole write lifecycle, including a detected
+    // conflict: a loser is a status + payload on its own row, so detection
+    // is one durable write and the flush path holds it structurally.
     this.outbox = createOutbox({
       applyOptimistic: (action) => this.applyLocalAction(action),
       submit: (actions) => this.submitActions(actions),
       store: this.storage.outbox,
-      conflicts: conflictStore,
       // Field markers are the schema's word on merge semantics. A client
       // without a schema has no markers, so every non-structural field is
       // treated as LWW (the conservative default for conflict detection).
@@ -302,6 +287,19 @@ export class SyncClient implements PermissionQuery {
       hlc: () => this.freshHlc(),
       conflictId: () => generateId("c"),
     });
+    // The view projects the outbox's conflicted rows; resolution moves
+    // them back through the same outbox transition it reads.
+    const { conflicts, observable: conflictsObservable } = createConflicts({
+      outbox: this.outbox,
+      requeue: (action) => this.requeueRebased(action),
+      reMaterialize: (action) => this.reMaterializeFromLog(action),
+      releaseSubjects: (subjectIds) => this.snapshotManager.releaseMany(subjectIds),
+      stampAction: (updates) =>
+        createAction({ actorId: this.actorId, updates: [...updates], clock: this.clock }).action,
+      hlc: () => this.freshHlc(),
+      generateUpdateId: () => this.generateUpdateId(),
+    });
+    this.conflicts = conflicts;
     // The retry loop reuses the SSE reconnect bounds but keeps its own
     // attempt counter inside the scheduler, so an unreachable write can
     // neither reset nor be reset by the SSE backoff.

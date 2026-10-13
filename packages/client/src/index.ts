@@ -83,6 +83,7 @@ export {
 export {
   type Outbox,
   type OutboxEntry,
+  type ConflictedOutboxEntry,
   type OutboxStatus,
   type OutboxCounts,
   type OutboxChangeListener,
@@ -110,7 +111,8 @@ export { type ReadonlyObservable } from "./sync/observable";
 
 export { type ClientStatus } from "./sync/status";
 
-export type { ConflictEntry, ConflictSide, ConflictSlot } from "@ebbjs/storage/types";
+export type { ConflictEntry } from "./sync/conflicts";
+export type { ConflictSide, ConflictSlot } from "@ebbjs/storage/types";
 
 export {
   openSSEStream,
