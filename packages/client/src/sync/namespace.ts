@@ -35,8 +35,8 @@ import type { Schema } from "../schema/schema";
 import type { GroupFields } from "../schema/system-entities";
 import { GROUPS_ACCESSOR } from "../schema/system-entities";
 import {
-  DEFAULT_DOCUMENT_ENTITY,
   DOC_CONTENT_FIELD,
+  generatedDocEntityName,
   isCollaborativeText,
 } from "../fields/collaborative-text/schema";
 import { buildInitialContentField } from "../fields/collaborative-text/wire";
@@ -798,7 +798,7 @@ export function createEntityNamespace<
         updates.push({
           id: docUpdateId,
           subject_id: docId,
-          subject_type: marker.entity ?? DEFAULT_DOCUMENT_ENTITY,
+          subject_type: marker.entity ?? generatedDocEntityName(entityName, field),
           method: "put",
           data: {
             fields: {

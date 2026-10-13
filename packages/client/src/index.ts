@@ -140,8 +140,8 @@ export {
 
 export {
   RunNodeSchema,
-  DEFAULT_DOCUMENT_ENTITY,
   DOC_CONTENT_FIELD,
+  generatedDocEntityName,
 } from "./fields/collaborative-text/schema";
 
 export {
@@ -198,7 +198,9 @@ export {
   defineEntity,
   e,
   type EntityDef,
+  type EntityOptions,
   type FieldMarker,
+  type ConflictScope,
   type NullableSchema,
   type MapSchema,
   type CollaborativeTextSchema,
@@ -228,6 +230,8 @@ export {
   defineSchema,
   UnregisteredRelationshipEndpointError,
   DerivedFieldCollisionError,
+  DerivedDocNameCollisionError,
+  ConflictScopeMismatchError,
   type DefineSchemaInput,
   type ExpandedEntities,
   type Schema,
@@ -237,6 +241,7 @@ export {
   ReservedNameError,
   RESERVED_ENTITY_NAMES,
   RESERVED_MEMBERSHIP_NAMES,
+  DERIVED_DOC_ENTITY_PREFIX,
 } from "./schema/reserved";
 
 export {

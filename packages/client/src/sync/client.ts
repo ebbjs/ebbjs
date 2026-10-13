@@ -791,9 +791,14 @@ export class SyncClient implements PermissionQuery {
    *   if (ev.type === 'data') doc.applyActions([ev.action]);
    * });
    * ```
+   *
+   * `docType` is the document entity's wire `subject_type`. Omit it for a
+   * raw document (`text_document`); pass the generated name when opening a
+   * schema-derived body by hand. The derived-body accessor resolves it for
+   * you.
    */
-  textDocument(docId: string): TextDocument {
-    return this.textDocumentRegistry.open({ docId, actorId: this.actorId });
+  textDocument(docId: string, docType?: string): TextDocument {
+    return this.textDocumentRegistry.open({ docId, actorId: this.actorId, docType });
   }
 
   /**

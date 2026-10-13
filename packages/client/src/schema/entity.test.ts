@@ -79,6 +79,16 @@ describe("defineEntity", () => {
     expect(b.name).toBe("b");
     expect(a.fields).not.toBe(b.fields);
   });
+
+  it('defaults conflictScope to "field"', () => {
+    const todo = defineEntity("todo", { title: e.string() });
+    expect(todo.conflictScope).toBe("field");
+  });
+
+  it("stores an explicit conflictScope", () => {
+    const todo = defineEntity("todo", { title: e.string() }, { conflictScope: "entity" });
+    expect(todo.conflictScope).toBe("entity");
+  });
 });
 
 describe("defineEntity reserved names", () => {
@@ -95,6 +105,12 @@ describe("defineEntity reserved names", () => {
   it("still accepts app names and fields that don't collide", () => {
     const todo = defineEntity("todo", { title: e.string(), grouping: e.string() });
     expect(todo.name).toBe("todo");
+  });
+
+  it("rejects an entity name carrying the generated document prefix", () => {
+    expect(() => defineEntity("text_document__x__y", { name: e.string() })).toThrow(
+      ReservedNameError,
+    );
   });
 });
 

@@ -18,9 +18,14 @@ import type { IndexRows } from "../internal/reverse-index";
  * 3 (v1, or the legacy v2) triggers the upgrade callback and gets the new
  * store rather than silently missing it. Version 4 adds the `conflicts`
  * store for issue #307; databases below 4 trigger the upgrade callback.
- * Bump this when adding or changing object stores.
+ * Version 5 moves collaborative-text writes off the shared `text_document`
+ * type onto per-field generated document entities (issue #398). No object
+ * store shape changes; the bump gates the persisted subject-type layout so
+ * a dev database carrying legacy `text_document` rows reopens and those
+ * rows go unread. There is no migration. Bump this when adding or changing
+ * object stores, or when a persisted subject-type layout changes.
  */
-export const EBB_SCHEMA_VERSION = 4;
+export const EBB_SCHEMA_VERSION = 5;
 
 /**
  * Structural schema for the seven object stores the IndexedDB adapter
