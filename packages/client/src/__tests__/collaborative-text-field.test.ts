@@ -246,6 +246,31 @@ describe("atomic", () => {
   });
 });
 
+describe("duplicate() backs up a derived body", () => {
+  it("copies the generated document entity's content map through its namespace", async () => {
+    const { client, written } = harness(schema);
+    await client.handshake();
+    await client.blogPost.create(
+      { title: "Hello", published: false, body: "world" },
+      { groups: ["g_1"] },
+    );
+
+    const docName = generatedDocEntityName("blog_post", "body");
+    const docId = written[0]!.updates.find((u) => u.subject_type === docName)!.subject_id;
+    const docNamespace = client["text_document__blog_post__body"];
+
+    const { id: backupId } = await docNamespace.duplicate(docId);
+
+    type DocRow = { content: Record<string, unknown> };
+    const original = (await docNamespace.get(docId)) as unknown as DocRow;
+    const backup = (await docNamespace.get(backupId)) as unknown as DocRow;
+    const runId = Object.keys(original.content)[0]!;
+    expect(backupId).not.toBe(docId);
+    expect(Object.keys(backup.content)).toEqual(Object.keys(original.content));
+    expect((backup.content[runId] as { text: string }).text).toBe("world");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Read
 // ---------------------------------------------------------------------------

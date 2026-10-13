@@ -14,8 +14,8 @@
  * primitives in ./relationship.
  */
 
-import type { Entity, Update } from "@ebbjs/core";
-import { generateId } from "@ebbjs/core";
+import type { Entity, FieldValue, Update } from "@ebbjs/core";
+import { generateId, isFieldMap } from "@ebbjs/core";
 import type { WriteResponse } from "./types";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
@@ -45,6 +45,7 @@ import {
   buildLazyQueryBuilder,
   normalizePointer,
   projectEntity,
+  projectFieldValue,
   type LoadEntities,
   type PointerValue,
   type QueryBuilder,
@@ -329,6 +330,22 @@ export interface EntityNamespace<
     opts: CreateOptions,
   ): Promise<CreateResult>;
   /**
+   * Copy an existing row to a fresh id, carrying its field values
+   * verbatim — nested `update_id` / `hlc` stamps included, so a
+   * collaborative-text `content` map survives as a reference snapshot
+   * that later document edits re-mint. `opts.at` picks the live row
+   * (`"current"`, the default) or the pre-sync capture from
+   * `client.snapshots` (`"preSync"`, #395). The copy lands in
+   * `opts.groups`, or the source's live groups when omitted, and is
+   * validated against the schema like `create`. A soft-deleted source
+   * row is copied like any other; the copy is live.
+   *
+   * Only this row's own wire fields are copied. A derived
+   * collaborative-text body lives on its own generated document
+   * entity, so back one up through that entity's namespace.
+   */
+  duplicate(id: string, opts?: DuplicateOptions): Promise<CreateResult>;
+  /**
    * Patch an existing entity row, validated the same way as
    * `create`'s input. The wire Update is a `patch`.
    */
@@ -413,6 +430,19 @@ export interface CreateOptions extends EntityWriteOptions {
  * minted entity id, so the created row is immediately addressable.
  */
 export type CreateResult = WriteResponse & { readonly id: string };
+
+/** Point in time a `duplicate` copies from. */
+export type DuplicateAt = "current" | "preSync";
+
+/**
+ * Options for `client.<entity>.duplicate(id, opts)`.
+ */
+export interface DuplicateOptions extends EntityWriteOptions {
+  /** Source of the copy: the live row (`"current"`, default) or the pre-sync capture (`"preSync"`). */
+  readonly at?: DuplicateAt;
+  /** Membership set for the copy; defaults to the source's live groups. */
+  readonly groups?: readonly GroupRef[];
+}
 
 /**
  * Map a single entity definition to its field map. `EntityDef<TFields>`
@@ -617,11 +647,11 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
 };
 
 /**
- * Capability the namespace consults for write-side operations. The
- * client supplies this at construction time so the namespace stays
- * free of the cyclic `client → namespace → client` reference. The
- * namespace delegates Action submission; HLC and clock management
- * stay inside the client.
+ * Capabilities the namespace consults. The client supplies this at
+ * construction time so the namespace stays free of the cyclic
+ * `client → namespace → client` reference; the namespace delegates
+ * Action submission, HLC and clock management, document opening, and
+ * the snapshot read that backs `duplicate({ at: "preSync" })`.
  */
 export interface WriteCapability {
   readonly registry: EntityRegistry;
@@ -642,6 +672,8 @@ export interface WriteCapability {
    * client binds it to the write path so local edits self-flush.
    */
   openTextDocument(docId: string, docType: string): TextDocument;
+  /** Read a pre-sync capture for `duplicate({ at: "preSync" })`. */
+  readSnapshot(entityId: string): Promise<Entity | null>;
 }
 
 /** Write path bound to a document for self-flushing locally-authored edits. */
@@ -821,6 +853,30 @@ export function createEntityNamespace<
       const response = await write.submitRelationshipUpdates(updates);
       return { id: subjectId, ...response };
     },
+    async duplicate(id: string, opts?: DuplicateOptions): Promise<CreateResult> {
+      const at = opts?.at ?? "current";
+      const source = await readDuplicateSource(storage, write, entityName, id, at);
+      const groupIds =
+        opts?.groups !== undefined
+          ? resolveGroupIds(opts.groups, entityName, "duplicate")
+          : resolveGroupIds(
+              (await readEntityMemberships(storage, id)).map((membership) => membership.groupId),
+              entityName,
+              "duplicate",
+            );
+      const subjectId = generateId("e");
+      const entityUpdate = buildDuplicateUpdate(write, entityName, shape, {
+        subjectId,
+        source,
+        validate: opts?.validate,
+      });
+      const updates: Update[] = [
+        entityUpdate,
+        ...buildEntityGroupUpdates(subjectId, groupIds, () => write.generateUpdateId()),
+      ];
+      const response = await write.submitRelationshipUpdates(updates);
+      return { id: subjectId, ...response };
+    },
     async update(
       id: string,
       patch: Partial<WireStatic<TFields>>,
@@ -969,6 +1025,97 @@ function buildEntityWriteUpdate<TFields extends Record<string, TSchema>>(
     data: { fields },
   };
 }
+
+/**
+ * Read the row a `duplicate` copies from: the live cache row, or the
+ * pre-sync capture when `at` is `"preSync"`. A missing (or wrong-type)
+ * source throws, because there is nothing to copy.
+ */
+async function readDuplicateSource(
+  storage: StorageAdapter,
+  write: WriteCapability,
+  entityName: string,
+  id: string,
+  at: DuplicateAt,
+): Promise<Entity> {
+  const source = at === "preSync" ? await write.readSnapshot(id) : await storage.entities.get(id);
+  if (source === null || source.type !== entityName) {
+    throw new EntityValidationError([
+      {
+        entityName,
+        message:
+          at === "preSync"
+            ? `duplicate: no pre-sync snapshot captured for "${id}"`
+            : `duplicate: no ${entityName} row for id "${id}"`,
+      },
+    ]);
+  }
+  return source;
+}
+
+/** Options for {@link buildDuplicateUpdate}. */
+interface DuplicateWriteInput {
+  subjectId: string;
+  source: Entity;
+  validate: boolean | undefined;
+}
+
+/**
+ * Validate a source row's field values and build the single `put`
+ * Update that copies them. The field map is cloned verbatim — leaf and
+ * nested `update_id` / `hlc` stamps included — so the copy is a
+ * reference snapshot of the source's merge state, not a re-stamped
+ * write. The new entity id and the enclosing Action are fresh.
+ */
+function buildDuplicateUpdate<TFields extends Record<string, TSchema>>(
+  write: WriteCapability,
+  entityName: string,
+  shape: TObject<TFields>,
+  input: DuplicateWriteInput,
+): Update {
+  const fields = input.source.data?.fields ?? {};
+  if (input.validate !== false) {
+    const violations = validatePayload(shape, projectFieldValues(fields), entityName, false);
+    if (violations.length > 0) {
+      throw new EntityValidationError(violations);
+    }
+  }
+  return {
+    id: write.generateUpdateId(),
+    subject_id: input.subjectId,
+    subject_type: entityName,
+    method: "put",
+    data: { fields: cloneFields(fields) },
+  };
+}
+
+/** Project a wire field map to the plain values the schema validator checks. */
+const projectFieldValues = (fields: Record<string, FieldValue>): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const [key, field] of Object.entries(fields)) {
+    out[key] = projectFieldValue(field);
+  }
+  return out;
+};
+
+/** Deep-clone a wire field value so the copy never aliases the source's objects. */
+const cloneValue = (value: unknown): unknown => {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(cloneValue);
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) out[key] = cloneValue(entry);
+  return out;
+};
+
+const cloneFieldValue = (field: FieldValue): FieldValue =>
+  isFieldMap(field)
+    ? {
+        map: Object.fromEntries(Object.entries(field.map).map(([k, v]) => [k, cloneFieldValue(v)])),
+      }
+    : { ...field, value: cloneValue(field.value) };
+
+const cloneFields = (fields: Record<string, FieldValue>): Record<string, FieldValue> =>
+  Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, cloneFieldValue(v)]));
 
 /**
  * Partition a create input into wire fields and derived bodies. A
