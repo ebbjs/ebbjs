@@ -248,6 +248,25 @@ describe("createOutbox", () => {
     expect(outbox.size()).toBe(1);
   });
 
+  it("unrejected() returns non-error entries in authoring order", async () => {
+    const deps = mkDeps({
+      submit: vi.fn(async () => ({ rejected: [{ id: "a_3", reason: "permission_denied" }] })),
+    });
+    const outbox = createOutbox(deps);
+
+    await outbox.enqueue(mkAction("a_1"));
+    await outbox.flush();
+    await outbox.enqueue(mkAction("a_2"));
+    await outbox.enqueue(mkAction("a_3"));
+    await outbox.flush();
+
+    expect(outbox.size("error")).toBe(1);
+    expect(outbox.unrejected().map((entry) => [entry.action.id, entry.status])).toEqual([
+      ["a_1", "acknowledged"],
+      ["a_2", "acknowledged"],
+    ]);
+  });
+
   it("flush() with nothing pending resolves empty without submitting", async () => {
     const deps = mkDeps();
     const outbox = createOutbox(deps);

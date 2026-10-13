@@ -27,6 +27,7 @@ import type {
   ConflictSlot,
   ConflictStore,
 } from "@ebbjs/storage/types";
+import { subjectIds } from "./action-subjects";
 import { createObservable, type ReadonlyObservable } from "./observable";
 
 /** The application's decision for one conflict. */
@@ -116,6 +117,13 @@ export interface ConflictsDependencies {
   hlc(): string;
   /** Fresh Update / FieldValue id. */
   generateUpdateId(): string;
+  /**
+   * Drop the pre-sync captures for subjects no remaining conflict
+   * references. Called after a resolution removes its Action, so an
+   * entity's backup outlives a partial resolution but is released once
+   * the entity is fully resolved.
+   */
+  releaseSubjects(ids: readonly string[]): void;
 }
 
 /** The stamping collaborators {@link rebaseAction} needs. */
@@ -350,6 +358,16 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
       await deps.reMaterialize(entry.action);
     }
     await store.delete(actionId);
+    // `store.delete` refreshed `entries`, so this sees the post-resolution
+    // set. An entity another conflict still holds stays captured.
+    const stillConflicted = new Set<string>();
+    for (const remaining of entries) {
+      for (const subjectId of subjectIds(remaining.action)) stillConflicted.add(subjectId);
+    }
+    const released = subjectIds(entry.action).filter(
+      (subjectId) => !stillConflicted.has(subjectId),
+    );
+    if (released.length > 0) deps.releaseSubjects(released);
   };
 
   void rehydrate().catch(() => {});

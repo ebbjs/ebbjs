@@ -374,6 +374,13 @@ export interface Outbox {
   /** Server-rejected entries awaiting application handling, in authoring order. */
   errors(): readonly OutboxEntry[];
   /**
+   * Entries the server has not rejected — `pending` and `acknowledged` —
+   * in authoring order. The set at risk during catch-up: neither has seen
+   * its echo yet, so an inbound Action can still out-date the optimistic
+   * row it was built on.
+   */
+  unrejected(): readonly OutboxEntry[];
+  /**
    * Depth of the entries carrying `status`, defaulting to `pending`
    * (the flushable backlog). The pending / acknowledged / error
    * counters #125 consumes.
@@ -706,6 +713,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     rehydrate,
     pending: () => entries.filter((entry) => entry.status === "pending"),
     errors: () => entries.filter((entry) => entry.status === "error"),
+    unrejected: () => entries.filter((entry) => entry.status !== "error"),
     size: (status: OutboxStatus = "pending") => counts()[status],
     counts,
     onChange: (listener) => countsSource.subscribe(listener),

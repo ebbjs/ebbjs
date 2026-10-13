@@ -76,12 +76,14 @@ interface Harness {
   requeue: ReturnType<typeof vi.fn>;
   reMaterialize: ReturnType<typeof vi.fn>;
   stampAction: ReturnType<typeof vi.fn>;
+  releaseSubjects: ReturnType<typeof vi.fn>;
 }
 
 const mkDeps = (store: ReturnType<typeof mkStore> = mkStore()): Harness => {
   let tick = 0;
   const requeue = vi.fn(async (_action: Action): Promise<void> => {});
   const reMaterialize = vi.fn(async (_action: Action): Promise<void> => {});
+  const releaseSubjects = vi.fn((_subjectIds: readonly string[]): void => {});
   const stampAction = vi.fn(
     (updates: readonly Update[]): Action => ({
       id: "act_rebased",
@@ -96,10 +98,12 @@ const mkDeps = (store: ReturnType<typeof mkStore> = mkStore()): Harness => {
     requeue,
     reMaterialize,
     stampAction,
+    releaseSubjects,
     deps: {
       store,
       requeue,
       reMaterialize,
+      releaseSubjects,
       stampAction,
       hlc: () => String(++tick),
       generateUpdateId: () => `u_fresh_${tick}`,
@@ -266,6 +270,28 @@ describe("createConflicts", () => {
     expect(harness.requeue).not.toHaveBeenCalled();
     expect(await store.get("act_local")).toBeNull();
     expect(conflicts.count()).toBe(0);
+  });
+
+  it("releases the resolved action's subjects once no conflict references them", async () => {
+    const store = mkStore([mkEntry("act_local", "5")]);
+    const harness = mkDeps(store);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    await conflicts.resolve("act_local", "discard");
+
+    expect(harness.releaseSubjects).toHaveBeenCalledWith(["todo_1"]);
+  });
+
+  it("keeps a subject another conflict still references", async () => {
+    const store = mkStore([mkEntry("act_a", "1"), mkEntry("act_b", "2")]);
+    const harness = mkDeps(store);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    await conflicts.resolve("act_a", "retry");
+
+    expect(harness.releaseSubjects).not.toHaveBeenCalled();
   });
 
   it("ignores an unknown action id", async () => {

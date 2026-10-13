@@ -44,6 +44,8 @@ import { PresenceManager } from "../presence/presence";
 import { openSSEStream, type SSESubscription } from "./sse";
 import { createOutbox, type Outbox } from "./outbox";
 import { createConflicts, type ConflictSnapshot, type Conflicts } from "./conflicts";
+import { createSnapshots, type SnapshotManager, type Snapshots } from "./snapshots";
+import { subjectIds } from "./action-subjects";
 import type { ReadonlyObservable } from "./observable";
 import { createFlushScheduler, type FlushScheduler } from "./flush-scheduler";
 import { createOutboxObserver, type OutboxObserver } from "./outbox-observer";
@@ -161,6 +163,12 @@ export class SyncClient implements PermissionQuery {
    */
   readonly conflicts: Conflicts;
   /**
+   * Pre-sync captures: the row each at-risk buffered write was built on,
+   * retained for backup / undo. Local-only; one read per at-risk entity
+   * per sync. See {@link Snapshots}.
+   */
+  readonly snapshots: Snapshots;
+  /**
    * Read-only sync observables. `client.sync.conflicts` and
    * `client.sync.outbox` each publish a synchronous `get()` plus a
    * `subscribe(cb)` that fires on change, so application UI can render
@@ -222,6 +230,8 @@ export class SyncClient implements PermissionQuery {
   private readonly clock: HLCState = createClock();
   /** TextDocument registry (one document per docId, per actor). */
   private readonly textDocumentRegistry = new TextDocumentRegistry();
+  /** Owns the capture lifecycle behind the public {@link snapshots} surface. */
+  private readonly snapshotManager: SnapshotManager;
   /**
    * User-registered listeners for schema-registry violations. Fired
    * by `emitRegistryViolations`; replaces the default `console.warn`
@@ -250,6 +260,12 @@ export class SyncClient implements PermissionQuery {
     // `client.close()` (already wired in the existing close path)
     // when tearing down.
     this.presence = new PresenceManager(this);
+    // Captures are local-only: one read of the cached row per at-risk
+    // entity, taken before the catch-up window is applied.
+    this.snapshotManager = createSnapshots({
+      read: (entityId) => this.storage.entities.get(entityId),
+    });
+    this.snapshots = this.snapshotManager.snapshots;
     // The manager is also the ConflictStore the Outbox writes through, so
     // a detection lands in its cache and fires `onChange` without a poll.
     const {
@@ -260,6 +276,7 @@ export class SyncClient implements PermissionQuery {
       store: this.storage.conflicts,
       requeue: (action) => this.requeueRebased(action),
       reMaterialize: (action) => this.reMaterializeFromLog(action),
+      releaseSubjects: (subjectIds) => this.snapshotManager.releaseMany(subjectIds),
       stampAction: (updates) =>
         createAction({ actorId: this.actorId, updates: [...updates], clock: this.clock }).action,
       hlc: () => this.freshHlc(),
@@ -943,25 +960,33 @@ export class SyncClient implements PermissionQuery {
   // -------------------------------------------------------------------------
 
   private async runSubscriptionLoop(sub: ActiveSubscription): Promise<void> {
-    while (!sub.cancelled) {
-      const reason = await this.connectAndDrain(sub);
-      if (sub.cancelled) return;
-      // Hand off to the backoff state machine. The loop only re-enters
-      // after `scheduleReconnect`'s timer fires (or never, if we've
-      // exceeded the attempt cap). This prevents the previous bug where
-      // `while (!sub.cancelled)` re-iterated synchronously after
-      // `closeStream`, hammering the server instead of waiting out the
-      // intended backoff.
-      const result = this.scheduleReconnect(sub, reason);
-      if (result === "giveup" || result === "cancelled") {
-        // No later connect will run the checkpoint; let pending writes
-        // reach the wire (and fail on their own) instead of hanging held.
-        this.flushScheduler.release();
-        return;
+    try {
+      while (!sub.cancelled) {
+        const reason = await this.connectAndDrain(sub);
+        if (sub.cancelled) return;
+        // Hand off to the backoff state machine. The loop only re-enters
+        // after `scheduleReconnect`'s timer fires (or never, if we've
+        // exceeded the attempt cap). This prevents the previous bug where
+        // `while (!sub.cancelled)` re-iterated synchronously after
+        // `closeStream`, hammering the server instead of waiting out the
+        // intended backoff.
+        const result = this.scheduleReconnect(sub, reason);
+        if (result === "giveup" || result === "cancelled") {
+          // No later connect will run the checkpoint; let pending writes
+          // reach the wire (and fail on their own) instead of hanging held.
+          this.flushScheduler.release();
+          return;
+        }
+        // Wait for the timer (resolved by the setTimeout callback, or
+        // rejected by `cancelSubscription` clearing the timer).
+        await this.waitForReconnectTimer();
       }
-      // Wait for the timer (resolved by the setTimeout callback, or
-      // rejected by `cancelSubscription` clearing the timer).
-      await this.waitForReconnectTimer();
+    } finally {
+      // The session is over whichever way the loop exits; a capture is
+      // per session and does not outlive it. This also covers a cancel
+      // that lands after `cancelSubscription` already cleared but before
+      // an in-flight catch-up finished capturing.
+      this.snapshots.clear();
     }
   }
 
@@ -974,8 +999,11 @@ export class SyncClient implements PermissionQuery {
   private async connectAndDrain(sub: ActiveSubscription): Promise<string> {
     try {
       // The rebase phase gates the wire so a pending Action cannot post
-      // before it has been swept against the missed window (#309).
+      // before it has been swept against the missed window (#309). The
+      // pre-sync capture is taken first: once the window is applied the
+      // optimistic rows the buffered writes produced are gone.
       this.flushScheduler.hold();
+      await this.capturePreSyncSnapshots();
       await this.catchUpSubscribed(sub);
       if (sub.cancelled) return "cancelled";
       // Readiness checkpoint: catch-up is done and the inbound conflict
@@ -1064,6 +1092,27 @@ export class SyncClient implements PermissionQuery {
         await this.outbox.noteInbound(action);
       }
     }
+  }
+
+  /**
+   * Capture the row behind every buffered local write before the missed
+   * window is applied. Only `pending` / `acknowledged` entries are at
+   * risk — a rejected entry never reaches the wire. An entity captured
+   * earlier in the session is left untouched, so its pre-merge row lasts
+   * until its conflict resolves or the session ends. Best-effort: a store
+   * read failure captures nothing rather than breaking the loop.
+   */
+  private async capturePreSyncSnapshots(): Promise<void> {
+    try {
+      await this.outbox.rehydrate();
+    } catch {
+      return;
+    }
+    const atRisk = new Set<string>();
+    for (const entry of this.outbox.unrejected()) {
+      for (const entityId of subjectIds(entry.action)) atRisk.add(entityId);
+    }
+    await this.snapshotManager.capture(atRisk);
   }
 
   /**
@@ -1197,8 +1246,10 @@ export class SyncClient implements PermissionQuery {
       if (resolve) resolve();
     }
     // A plain unsubscribe ends the connection lifecycle: no catch-up is
-    // coming, so pending writes may flush again.
+    // coming, so pending writes may flush again and the session's
+    // pre-sync captures go with it.
     this.flushScheduler.release();
+    this.snapshots.clear();
     this.stateMachine.transition("offline");
   }
 
