@@ -7,15 +7,20 @@
  * call at module top level and share the value across clients.
  */
 
-import type { EntityDef } from "./entity";
+import type { ConflictScope, EntityDef } from "./entity";
 import { EntityRegistry } from "./entity-registry";
 import { defineRelationship, type RelationshipDef } from "./relationship";
 import type { CollaborativeTextSchema } from "./entity";
 import type { TSchema } from "@sinclair/typebox/type";
-import { assertAccessorNameAvailable, assertEntityNameAvailable } from "./reserved";
+import {
+  assertAccessorNameAvailable,
+  assertEntityNameAvailable,
+  DERIVED_DOC_ENTITY_PREFIX,
+  hasDerivedDocPrefix,
+} from "./reserved";
 import {
   buildTextDocumentEntity,
-  DEFAULT_DOCUMENT_ENTITY,
+  generatedDocEntityName,
   isCollaborativeText,
 } from "../fields/collaborative-text/schema";
 import {
@@ -43,18 +48,60 @@ export class DerivedFieldCollisionError extends Error {
   }
 }
 
+/**
+ * Raised when two derived fields expand to the same generated document
+ * entity name. The scheme `text_document__<parent>__<field>` is
+ * ambiguous when an entity or field name itself contains `__`.
+ */
+export class DerivedDocNameCollisionError extends Error {
+  constructor(parent: string, field: string) {
+    super(
+      `Derived field "${parent}.${field}" generates document entity ` +
+        `"${generatedDocEntityName(parent, field)}", which another derived field ` +
+        `already claims. Rename the entity or field so generated names stay distinct.`,
+    );
+    this.name = "DerivedDocNameCollisionError";
+  }
+}
+
+/**
+ * Raised when two derived fields share one explicit document entity but
+ * declare different conflict scopes. The entity carries one scope, so
+ * fields that share it must agree.
+ */
+export class ConflictScopeMismatchError extends Error {
+  /** Name of the shared document entity. */
+  readonly docName: string;
+  /** Scope already stamped on the shared entity. */
+  readonly existing: ConflictScope;
+  /** Scope the newly-expanded field declares. */
+  readonly incoming: ConflictScope;
+
+  constructor(docName: string, existing: ConflictScope, incoming: ConflictScope) {
+    super(
+      `Document entity "${docName}" carries conflictScope "${existing}" but is ` +
+        `reached by a field declaring "${incoming}"; fields that share a ` +
+        `document must declare the same scope.`,
+    );
+    this.name = "ConflictScopeMismatchError";
+    this.docName = docName;
+    this.existing = existing;
+    this.incoming = incoming;
+  }
+}
+
 /** Document entity name a derived field expands to. */
-type ExpandedDocName<F> =
-  F extends CollaborativeTextSchema<infer E>
+type ExpandedDocName<P extends string, Fld extends string, S> =
+  S extends CollaborativeTextSchema<infer E>
     ? [E] extends [string]
       ? E
-      : typeof DEFAULT_DOCUMENT_ENTITY
+      : `${typeof DERIVED_DOC_ENTITY_PREFIX}${P}__${Fld}`
     : never;
 
 /** Every document entity name contributed by `TEntities`' derived fields. */
 type DerivedDocNames<TEntities> = {
-  [K in keyof TEntities]: TEntities[K] extends EntityDef<infer F, string>
-    ? ExpandedDocName<F[keyof F]>
+  [K in keyof TEntities]: TEntities[K] extends EntityDef<infer F, infer N>
+    ? { [Fld in keyof F & string]: ExpandedDocName<N & string, Fld, F[Fld]> }[keyof F & string]
     : never;
 }[keyof TEntities];
 
@@ -240,9 +287,15 @@ export function expandDerivedFields(
   const expandedEntities: Record<string, AnyEntityDef> = { ...entities };
   let expandedRelationships: Record<string, AnyRelationshipDef> | undefined =
     relationships === undefined ? undefined : { ...relationships };
+  // Generated names are a function of `(parent, field)`, so an entity or
+  // field name containing `__` can alias another pair's name. Track the
+  // owners to fail at schema authoring rather than silently sharing.
+  const generatedOwners = new Map<string, string>();
 
   for (const entity of Object.values(entities)) {
-    const derived = entity.derived as Record<string, { kind: string; entity?: string }> | undefined;
+    const derived = entity.derived as
+      | Record<string, { kind: string; entity?: string; conflictScope?: ConflictScope }>
+      | undefined;
     if (derived === undefined) continue;
     for (const [field, marker] of Object.entries(derived)) {
       if (!isCollaborativeText(marker)) continue;
@@ -252,9 +305,28 @@ export function expandDerivedFields(
       );
       if (collision) throw new DerivedFieldCollisionError(entity.name, field);
 
-      const docName = marker.entity ?? DEFAULT_DOCUMENT_ENTITY;
-      const docEntity = expandedEntities[docName] ?? buildTextDocumentEntity(docName);
-      expandedEntities[docName] = docEntity;
+      const scope = marker.conflictScope ?? "field";
+      let docName: string;
+      if (marker.entity !== undefined) {
+        assertEntityNameAvailable(marker.entity);
+        docName = marker.entity;
+      } else {
+        docName = generatedDocEntityName(entity.name, field);
+        const owner = `${entity.name}::${field}`;
+        const previous = generatedOwners.get(docName);
+        if (previous !== undefined && previous !== owner) {
+          throw new DerivedDocNameCollisionError(entity.name, field);
+        }
+        generatedOwners.set(docName, owner);
+      }
+
+      let docEntity = expandedEntities[docName];
+      if (docEntity === undefined) {
+        docEntity = buildTextDocumentEntity(docName, scope);
+        expandedEntities[docName] = docEntity;
+      } else if (docEntity.conflictScope !== scope) {
+        throw new ConflictScopeMismatchError(docName, docEntity.conflictScope, scope);
+      }
       table[`${entity.name}::${field}`] = defineRelationship({
         source: entity,
         target: docEntity,
@@ -285,7 +357,12 @@ export function seedRegistry(
   registry.register(groupMemberSystemEntity);
   registry.register(entityGroupSystemEntity);
   for (const entity of Object.values(entities)) {
-    assertEntityNameAvailable(entity.name);
+    // Generated document entities carry the reserved prefix by
+    // construction; the prefix is exactly what `assertEntityNameAvailable`
+    // rejects, so the check is for app-authored names only.
+    if (!hasDerivedDocPrefix(entity.name)) {
+      assertEntityNameAvailable(entity.name);
+    }
     registry.register(entity);
   }
   if (relationships !== undefined) {

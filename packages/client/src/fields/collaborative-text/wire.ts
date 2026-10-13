@@ -3,14 +3,18 @@
  *
  * ## Design: the document is an entity; runs are keys of its map field
  *
- * A collaborative-text document is an ebb entity of type `text_document`
- * (configurable). Its runs live in a single declared map field,
+ * A collaborative-text document is an ebb entity whose type is its
+ * document entity name. The derived-body schema sugar generates one such
+ * entity per field (`text_document__<parent>__<field>`), or the app names
+ * it with `entity`; a raw document opened directly defaults to
+ * `text_document`. Its runs live in a single declared map field,
  * `content`, whose keys are run ids and whose values are the run nodes.
  * This keeps the doc as the only entity the server ever sees — runs never
  * appear as separate entities, so the server's permission model
- * (`<type>.<verb>` scoped per group) gates the whole document with a
- * single grant: `text_document.update` (or `text_document.*`) covers all
- * run operations.
+ * (`<type>.<verb>` scoped per group) gates the whole document: a grant on
+ * the document's own type (`<doc>.update` or `<doc>.*`) covers all run
+ * operations. Each derived body carries its own generated type, so the
+ * grant is per-body rather than one shared `text_document.*`.
  *
  * The field is a *map* field (#326), so the merge is per key: two peers
  * inserting at different positions write different keys and never
@@ -49,8 +53,8 @@
  * The alternative — runs as separate entities with `subject_type: "run"`
  * — grants `run.update` permission too broadly: any actor with that
  * permission in a group can rewrite any run, including runs authored by
- * others. Doc-as-entity fixes this: the doc's `text_document.update`
- * permission gates all runs, and authorship is preserved by the run's
+ * others. Doc-as-entity fixes this: the doc's own type grant gates all
+ * runs, and authorship is preserved by the run's
  * `actorId` field which the receiver keeps intact.
  *
  * @see packages/client/docs/prototypes/collaborative-text/README.md (Decision 1 + wire format)

@@ -20,6 +20,13 @@ const CLIENT_NAMESPACE_NAMES = ["snapshots"] as const;
 /** Every entity name the SDK reserves. */
 export const RESERVED_ENTITY_NAMES = [...SYSTEM_ENTITY_NAMES, ...CLIENT_NAMESPACE_NAMES] as const;
 
+/** Prefix reserved for SDK-generated collaborative-text document entities. */
+export const DERIVED_DOC_ENTITY_PREFIX = "text_document__";
+
+/** True for SDK-generated document entity names (`text_document__<parent>__<field>`). */
+export const hasDerivedDocPrefix = (name: string): boolean =>
+  name.startsWith(DERIVED_DOC_ENTITY_PREFIX);
+
 /**
  * The injected membership accessor. Also reserved as an entity field
  * name: the row accessor would otherwise shadow the projected field.
@@ -38,8 +45,11 @@ export class ReservedNameError extends Error {
   }
 }
 
-/** Reject a `defineEntity` name that collides with a system entity. */
+/** Reject a `defineEntity` name that collides with a system entity or a generated document name. */
 export const assertEntityNameAvailable = (name: string): void => {
+  if (hasDerivedDocPrefix(name)) {
+    throw new ReservedNameError(name, `Entity name "${name}" is reserved by the SDK`);
+  }
   if ((RESERVED_ENTITY_NAMES as readonly string[]).includes(name)) {
     throw new ReservedNameError(name, `Entity name "${name}" is reserved by the SDK`);
   }

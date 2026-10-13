@@ -280,6 +280,42 @@ describe("SyncClient schema option", () => {
     expect(bodyA.schema_hash).toBe(bodyB.schema_hash);
   });
 
+  it("produces the same schema_hash for equivalent schemas with a collaborativeText field", async () => {
+    const { fn: fnA } = makeFetchMock([
+      { body: JSON.stringify({ actor_id: "a_test", groups: [] }) },
+    ]);
+    const a = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fnA,
+      schema: defineSchema({
+        entities: {
+          blog_post: defineEntity("blog_post", { title: e.string(), body: e.collaborativeText() }),
+        },
+        version: 1,
+      }),
+    });
+    await a.handshake();
+    const { fn: fnB } = makeFetchMock([
+      { body: JSON.stringify({ actor_id: "b_test", groups: [] }) },
+    ]);
+    const b = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "b_test",
+      fetchImpl: fnB,
+      schema: defineSchema({
+        entities: {
+          blog_post: defineEntity("blog_post", { title: e.string(), body: e.collaborativeText() }),
+        },
+        version: 1,
+      }),
+    });
+    await b.handshake();
+    const bodyA = JSON.parse((fnA.mock.calls[0]?.[1] as RequestInit | undefined)?.body as string);
+    const bodyB = JSON.parse((fnB.mock.calls[0]?.[1] as RequestInit | undefined)?.body as string);
+    expect(bodyA.schema_hash).toBe(bodyB.schema_hash);
+  });
+
   it("omits schema_hash from the handshake when no schema is configured", async () => {
     const { fn, calls } = makeFetchMock([
       { body: JSON.stringify({ actor_id: "a_test", groups: [] }) },

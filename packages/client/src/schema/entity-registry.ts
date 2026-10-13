@@ -10,7 +10,7 @@ import type { Action } from "@ebbjs/core";
 import { Value, type ValueError } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox/type";
 
-import type { EntityDef, FieldMarker } from "./entity";
+import type { ConflictScope, EntityDef, FieldMarker } from "./entity";
 import type { RelationshipDef, RelationshipKind, SourceCardinality } from "./relationship";
 
 /** One validation failure against a registered entity. */
@@ -116,6 +116,14 @@ export class EntityRegistry {
     if (entity === undefined) return true;
     const marker = entity.fields[field] as FieldMarker | undefined;
     return marker === undefined || marker.type === "lww";
+  }
+
+  /**
+   * Conflict granularity declared by `subjectType`. Unknown entities
+   * default to `"field"`, matching a client without a schema.
+   */
+  getConflictScope(subjectType: string): ConflictScope {
+    return this.entities.get(subjectType)?.conflictScope ?? "field";
   }
 
   /**

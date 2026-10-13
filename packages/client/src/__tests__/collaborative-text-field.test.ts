@@ -17,6 +17,8 @@ import { e, defineEntity, type EntityDef } from "../schema/entity";
 import { EntityValidationError, validatePayload } from "../schema/entity-registry";
 import { defineRelationship, type RelationshipDef } from "../schema/relationship";
 import { defineSchema, type Schema } from "../schema/schema";
+import { ConflictScopeMismatchError, DerivedDocNameCollisionError } from "../schema/schema";
+import { generatedDocEntityName } from "../fields/collaborative-text/schema";
 import { createClient, type NamespacedClient } from "../sync/client";
 import { callApplyAction, jsonResponse } from "../sync/test-utils";
 
@@ -32,9 +34,14 @@ const HANDSHAKE = {
       permissions: [
         "blog_post.*",
         "text_document.*",
+        "text_document__blog_post__body.*",
+        "text_document__article__body.*",
+        "text_document__article__subtitle.*",
         "article.*",
         "post.*",
         "article_body.*",
+        "note.*",
+        "shared_body.*",
         "relationship.*",
         "entityGroup.*",
       ],
@@ -103,16 +110,18 @@ describe("e.collaborativeText() schema sugar", () => {
     expect(Object.keys(blogPost.shape.properties)).toEqual(["title", "published"]);
     expect(Object.keys(blogPost.fields)).toEqual(["title", "published"]);
     expect(blogPost.derived).toEqual({
-      body: { kind: "collaborative-text", entity: undefined },
+      body: { kind: "collaborative-text", entity: undefined, conflictScope: "field" },
     });
   });
 
-  it("expands into a document entity and a collaborative-text relationship", () => {
-    expect(schema.entities.text_document).toBeDefined();
+  it("expands into a generated document entity and a collaborative-text relationship", () => {
+    const docName = generatedDocEntityName("blog_post", "body");
+    expect(docName).toBe("text_document__blog_post__body");
+    expect(schema.entities["text_document__blog_post__body"]).toBeDefined();
     expect(Object.keys(schema.entities)).toContain("blogPost");
     const rel = schema._registry.getRelationship("blog_post", "body");
     expect(rel).toBeDefined();
-    expect(rel!.target.name).toBe("text_document");
+    expect(rel!.target.name).toBe(docName);
     expect(rel!.kind).toBe("collaborative-text");
     expect(rel!.sourceCardinality).toBe("one");
   });
@@ -185,13 +194,14 @@ describe("create() with a derived body", () => {
 
     const updates = written[0]!.updates;
     const byType = (type: string): typeof updates => updates.filter((u) => u.subject_type === type);
+    const docName = generatedDocEntityName("blog_post", "body");
 
     expect(byType("blog_post")).toHaveLength(1);
-    expect(byType("text_document")).toHaveLength(1);
+    expect(byType(docName)).toHaveLength(1);
     expect(byType("relationship")).toHaveLength(1);
     expect(byType("entityGroup")).toHaveLength(2);
 
-    const docUpdate = byType("text_document")[0]!;
+    const docUpdate = byType(docName)[0]!;
     const content = (
       docUpdate.data as unknown as { fields: { content: { map: Record<string, unknown> } } }
     ).fields.content;
@@ -324,6 +334,137 @@ describe("multiple bodies and custom document entities", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Generated document entities / conflictScope
+// ---------------------------------------------------------------------------
+
+describe("generated document entities", () => {
+  it("gives each derived field its own document entity and wire subject_type", async () => {
+    const withTwo = defineEntity("article", {
+      title: e.string(),
+      body: e.collaborativeText(),
+      subtitle: e.collaborativeText(),
+    });
+    const twoSchema = defineSchema({ entities: { article: withTwo }, version: 1 });
+    const bodyDoc = generatedDocEntityName("article", "body");
+    const subtitleDoc = generatedDocEntityName("article", "subtitle");
+
+    expect(bodyDoc).not.toBe(subtitleDoc);
+    expect(twoSchema.entities["text_document__article__body"]).toBeDefined();
+    expect(twoSchema.entities["text_document__article__subtitle"]).toBeDefined();
+
+    const { client, written } = harness(twoSchema);
+    await client.handshake();
+    await client.article.create({ title: "T", body: "main", subtitle: "sub" }, { groups: ["g_1"] });
+
+    const subjectTypes = written[0]!.updates.map((u) => u.subject_type);
+    expect(subjectTypes).toContain(bodyDoc);
+    expect(subjectTypes).toContain(subtitleDoc);
+    expect(subjectTypes).not.toContain("text_document");
+  });
+
+  it("threads a declared conflictScope onto the generated document entity", () => {
+    const scoped = defineEntity("page", {
+      body: e.collaborativeText({ conflictScope: "entity" }),
+    });
+    const scopedSchema = defineSchema({ entities: { page: scoped }, version: 1 });
+    const docName = generatedDocEntityName("page", "body");
+    expect(scopedSchema.entities["text_document__page__body"].conflictScope).toBe("entity");
+    expect(scopedSchema._registry.getConflictScope(docName)).toBe("entity");
+  });
+
+  it("defaults the generated document entity's scope to field", () => {
+    const docName = generatedDocEntityName("blog_post", "body");
+    expect(schema.entities["text_document__blog_post__body"].conflictScope).toBe("field");
+    expect(schema._registry.getConflictScope(docName)).toBe("field");
+  });
+
+  it("inherits the parent entity's conflictScope when the field omits it", () => {
+    const inherited = defineEntity(
+      "note",
+      { body: e.collaborativeText() },
+      {
+        conflictScope: "entity",
+      },
+    );
+    const inheritedSchema = defineSchema({ entities: { note: inherited }, version: 1 });
+    expect(inherited.conflictScope).toBe("entity");
+    expect(inheritedSchema.entities["text_document__note__body"].conflictScope).toBe("entity");
+    expect(inheritedSchema._registry.getConflictScope(generatedDocEntityName("note", "body"))).toBe(
+      "entity",
+    );
+  });
+
+  it("lets the field sugar override the parent entity's scope", () => {
+    const overridden = defineEntity(
+      "note",
+      { body: e.collaborativeText({ conflictScope: "field" }) },
+      { conflictScope: "entity" },
+    );
+    const overriddenSchema = defineSchema({ entities: { note: overridden }, version: 1 });
+    expect(overriddenSchema.entities["text_document__note__body"].conflictScope).toBe("field");
+  });
+
+  it("defaults getConflictScope to field for an unknown entity", () => {
+    expect(schema._registry.getConflictScope("never_declared")).toBe("field");
+  });
+
+  it("builds two derived fields with different scopes without error", () => {
+    const mixed = defineEntity("mixed", {
+      a: e.collaborativeText({ conflictScope: "entity" }),
+      b: e.collaborativeText(),
+    });
+    const mixedSchema = defineSchema({ entities: { mixed }, version: 1 });
+    expect(mixedSchema._registry.getConflictScope(generatedDocEntityName("mixed", "a"))).toBe(
+      "entity",
+    );
+    expect(mixedSchema._registry.getConflictScope(generatedDocEntityName("mixed", "b"))).toBe(
+      "field",
+    );
+  });
+
+  it("rejects an explicit entity name carrying the reserved prefix", () => {
+    const bad = defineEntity("bad", {
+      body: e.collaborativeText({ entity: "text_document__x__y" }),
+    });
+    expect(() => defineSchema({ entities: { bad }, version: 1 })).toThrow(/reserved/);
+  });
+
+  it("rejects two generated names that alias under the reserved scheme", () => {
+    const first = defineEntity("a__b", { c: e.collaborativeText() });
+    const second = defineEntity("a", { b__c: e.collaborativeText() });
+    expect(() => defineSchema({ entities: { first, second }, version: 1 })).toThrow(
+      DerivedDocNameCollisionError,
+    );
+  });
+
+  it("shares one explicit document entity when the scopes agree", async () => {
+    const shared = defineEntity("note", {
+      body: e.collaborativeText({ entity: "shared_body", conflictScope: "entity" }),
+      subtitle: e.collaborativeText({ entity: "shared_body", conflictScope: "entity" }),
+    });
+    const sharedSchema = defineSchema({ entities: { note: shared }, version: 1 });
+    expect(sharedSchema.entities.shared_body).toBeDefined();
+    expect(sharedSchema._registry.getConflictScope("shared_body")).toBe("entity");
+
+    const { client, written } = harness(sharedSchema);
+    await client.handshake();
+    await client.note.create({ body: "main", subtitle: "sub" }, { groups: ["g_1"] });
+    const docUpdates = written[0]!.updates.filter((u) => u.subject_type === "shared_body");
+    expect(docUpdates).toHaveLength(2);
+  });
+
+  it("rejects explicit sharing when the scopes disagree", () => {
+    const mismatch = defineEntity("note", {
+      body: e.collaborativeText({ entity: "shared_body", conflictScope: "field" }),
+      subtitle: e.collaborativeText({ entity: "shared_body", conflictScope: "entity" }),
+    });
+    expect(() => defineSchema({ entities: { note: mismatch }, version: 1 })).toThrow(
+      ConflictScopeMismatchError,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Local edits reach a peer
 // ---------------------------------------------------------------------------
 
@@ -388,7 +529,9 @@ describe("conflicts through client.conflicts", () => {
     // must still surface the loss.
     expect(written.length).toBeGreaterThan(before);
 
-    const docId = createAction.updates.find((u) => u.subject_type === "text_document")!.subject_id;
+    const docId = createAction.updates.find(
+      (u) => u.subject_type === generatedDocEntityName("blog_post", "body"),
+    )!.subject_id;
     const node = doc!.docState.nodes.get(runId)!;
     const peerHlc = String(BigInt(node.hlc) + 60_000n);
     const peerAction: Action = {
@@ -400,7 +543,7 @@ describe("conflicts through client.conflicts", () => {
         {
           id: "upd_peer",
           subject_id: docId,
-          subject_type: "text_document",
+          subject_type: generatedDocEntityName("blog_post", "body"),
           method: "put",
           data: {
             fields: {
@@ -450,7 +593,9 @@ describe("conflicts through client.conflicts", () => {
     doc!.localExtend({ runId, appendText: "!" });
     await waitForFlush(() => doc!.pendingActions());
 
-    const docId = written[0]!.updates.find((u) => u.subject_type === "text_document")!.subject_id;
+    const docId = written[0]!.updates.find(
+      (u) => u.subject_type === generatedDocEntityName("blog_post", "body"),
+    )!.subject_id;
     const node = doc!.docState.nodes.get(runId)!;
     const peerHlc = String(BigInt(node.hlc) + 60_000n);
     const peerAction: Action = {
@@ -462,7 +607,7 @@ describe("conflicts through client.conflicts", () => {
         {
           id: "upd_peer_other",
           subject_id: docId,
-          subject_type: "text_document",
+          subject_type: generatedDocEntityName("blog_post", "body"),
           method: "put",
           data: {
             fields: {

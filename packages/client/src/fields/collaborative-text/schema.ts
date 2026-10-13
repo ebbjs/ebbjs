@@ -10,10 +10,22 @@
 
 import { Type } from "@sinclair/typebox";
 
-import { buildEntityDef, e, type EntityDef, type MapSchema } from "../../schema/entity";
+import {
+  buildEntityDef,
+  e,
+  type ConflictScope,
+  type EntityDef,
+  type MapSchema,
+} from "../../schema/entity";
+import { DERIVED_DOC_ENTITY_PREFIX } from "../../schema/reserved";
 
-/** Default document entity name backing a derived collaborative-text body. */
-export const DEFAULT_DOCUMENT_ENTITY = "text_document";
+/**
+ * Generated document entity name for one derived field. Deterministic
+ * and reserved, because the name is a wire `subject_type`, part of the
+ * schema hash, and a permission string.
+ */
+export const generatedDocEntityName = (parent: string, field: string): string =>
+  `${DERIVED_DOC_ENTITY_PREFIX}${parent}__${field}`;
 
 /** Field on the document entity holding the run map. */
 export const DOC_CONTENT_FIELD = "content";
@@ -55,19 +67,20 @@ export type TextDocumentFields = {
 
 /**
  * Build the document entity for a derived body under `name`. Uses the
- * unchecked factory because the generated name is dynamic (the shared
- * default, or the `entity` option on `e.collaborativeText`).
+ * unchecked factory because the name is dynamic (a generated per-field
+ * name, or the `entity` option on `e.collaborativeText`).
  */
 export function buildTextDocumentEntity<N extends string>(
   name: N,
+  conflictScope: ConflictScope = "field",
 ): EntityDef<TextDocumentFields, N> {
-  return buildEntityDef(name, {
-    [DOC_CONTENT_FIELD]: e.map(RunFieldValueSchema),
-  }) as EntityDef<TextDocumentFields, N>;
+  return buildEntityDef(
+    name,
+    {
+      [DOC_CONTENT_FIELD]: e.map(RunFieldValueSchema),
+    },
+    { conflictScope },
+  ) as EntityDef<TextDocumentFields, N>;
 }
-
-/** The shared document entity that `e.collaborativeText()` defaults to. */
-export const textDocumentEntity: EntityDef<TextDocumentFields, typeof DEFAULT_DOCUMENT_ENTITY> =
-  buildTextDocumentEntity(DEFAULT_DOCUMENT_ENTITY);
 
 export type { MapSchema };
