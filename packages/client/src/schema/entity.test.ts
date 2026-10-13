@@ -82,7 +82,7 @@ describe("defineEntity", () => {
 });
 
 describe("defineEntity reserved names", () => {
-  it.each(RESERVED_ENTITY_NAMES)("rejects the system entity name %s", (name) => {
+  it.each(RESERVED_ENTITY_NAMES)("rejects the reserved entity name %s", (name) => {
     expect(() => defineEntity(name, { name: e.string() })).toThrow(ReservedNameError);
     expect(() => defineEntity(name, { name: e.string() })).toThrow(/reserved/);
   });

@@ -26,6 +26,8 @@ const putAction = (opts: {
   hlc: string;
   updateId: string;
   title: string;
+  subjectId?: string;
+  subjectType?: string;
 }): Action => ({
   id: opts.id,
   actor_id: "a_peer",
@@ -34,8 +36,8 @@ const putAction = (opts: {
   updates: [
     {
       id: opts.updateId,
-      subject_id: "todo_1",
-      subject_type: "todo",
+      subject_id: opts.subjectId ?? "todo_1",
+      subject_type: opts.subjectType ?? "todo",
       method: "put",
       data: {
         fields: {
@@ -384,5 +386,156 @@ describe("SyncClient rebase phase (#309)", () => {
     expect(groupOffsets.some((url) => url.includes("offset=5"))).toBe(true);
 
     unsubscribe();
+  });
+});
+
+describe("SyncClient pre-sync snapshots (#395)", () => {
+  const titleOf = (entity: { data: { fields: Record<string, unknown> } } | null): unknown =>
+    (entity?.data.fields.title as { value?: unknown } | undefined)?.value;
+
+  it("retains the row the user had before a conflicting catch-up merge", async () => {
+    const local = putAction({
+      id: "act_local",
+      gsn: 0,
+      hlc: makeHlc(1711036800000),
+      updateId: "u_local",
+      title: "Local edit",
+    });
+    const remote = putAction({
+      id: "act_remote",
+      gsn: 3,
+      hlc: makeHlc(1711036800000, 1),
+      updateId: "u_remote",
+      title: "Remote edit",
+    });
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes("/sync/actions")) return jsonResponse({ rejected: [] });
+      if (url.includes("/sync/groups/")) {
+        return jsonResponse([remote], { "stream-next-offset": "3", "stream-up-to-date": "true" });
+      }
+      if (url.includes("/sync/live")) return openSseResponse();
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_self",
+      fetchImpl,
+    });
+    await client.outbox.enqueue(local);
+
+    const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
+
+    // The capture is taken before the missed window is applied, so it
+    // holds the optimistic local row, not the merged one.
+    await waitFor(async () => titleOf(await client.snapshots.get("todo_1")) === "Local edit");
+    expect(client.snapshots.list()).toEqual(["todo_1"]);
+
+    await waitFor(async () => (await client.storage.conflicts.list()).length > 0);
+    expect(titleOf(await client.readLocalEntity("todo_1"))).toBe("Remote edit");
+
+    // Resolving the entity's conflict releases its capture.
+    await client.conflicts.resolve("act_local", "discard");
+    expect(await client.snapshots.get("todo_1")).toBeNull();
+    expect(client.snapshots.list()).toEqual([]);
+
+    unsubscribe();
+  });
+
+  it("captures only entities with a buffered outbox write", async () => {
+    const local = putAction({
+      id: "act_local",
+      gsn: 0,
+      hlc: makeHlc(1711036800000),
+      updateId: "u_local",
+      title: "Local edit",
+    });
+    const remoteContested = putAction({
+      id: "act_remote",
+      gsn: 3,
+      hlc: makeHlc(1711036800000, 1),
+      updateId: "u_remote",
+      title: "Remote edit",
+    });
+    const remoteUntouched = putAction({
+      id: "act_other",
+      gsn: 4,
+      hlc: makeHlc(1711036800000, 2),
+      updateId: "u_other",
+      title: "Peer edit",
+      subjectId: "todo_2",
+    });
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes("/sync/actions")) return jsonResponse({ rejected: [] });
+      if (url.includes("/sync/groups/")) {
+        return jsonResponse([remoteContested, remoteUntouched], {
+          "stream-next-offset": "4",
+          "stream-up-to-date": "true",
+        });
+      }
+      if (url.includes("/sync/live")) return openSseResponse();
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_self",
+      fetchImpl,
+    });
+    await client.outbox.enqueue(local);
+
+    const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
+
+    await waitFor(async () => (await client.readLocalEntity("todo_2")) !== null);
+    expect(client.snapshots.list()).toEqual(["todo_1"]);
+    expect(await client.snapshots.get("todo_2")).toBeNull();
+
+    unsubscribe();
+  });
+
+  it("keeps a capture for the session and clears it on unsubscribe", async () => {
+    const local = putAction({
+      id: "act_local",
+      gsn: 0,
+      hlc: makeHlc(1711036800000),
+      updateId: "u_local",
+      title: "Local edit",
+    });
+    // The missed window never touches `todo_1`, so the buffered write is
+    // not contested and its capture is released when the merge settles.
+    const remote = putAction({
+      id: "act_other",
+      gsn: 3,
+      hlc: makeHlc(1711036800000, 1),
+      updateId: "u_other",
+      title: "Peer edit",
+      subjectId: "todo_2",
+    });
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes("/sync/actions")) return jsonResponse({ rejected: [] });
+      if (url.includes("/sync/groups/")) {
+        return jsonResponse([remote], { "stream-next-offset": "3", "stream-up-to-date": "true" });
+      }
+      if (url.includes("/sync/live")) return openSseResponse();
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_self",
+      fetchImpl,
+    });
+    await client.outbox.enqueue(local);
+
+    const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
+
+    // The capture belongs to the session, not to one catch-up pass, so a
+    // contest-free merge does not drop it.
+    await waitFor(() => client.state === "live");
+    expect(client.snapshots.list()).toEqual(["todo_1"]);
+
+    unsubscribe();
+    expect(client.snapshots.list()).toEqual([]);
+    expect(await client.snapshots.get("todo_1")).toBeNull();
   });
 });
