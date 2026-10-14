@@ -581,6 +581,12 @@ describe("client.conflicts (#310)", () => {
       ],
     });
 
+    // Capture the optimistic row the way a catch-up pass does, before the
+    // peer's window replaces it.
+    await (
+      client as unknown as { capturePreSyncSnapshots(catchUpId: string): Promise<void> }
+    ).capturePreSyncSnapshots("cu_1");
+
     // A disjoint map key: the peer touches the entity but no position the
     // local write holds, so entity scope surfaces the loss with no slot.
     const peer: Action = {
@@ -609,6 +615,19 @@ describe("client.conflicts (#310)", () => {
     expect(conflict.subjects).toEqual(["doc_1"]);
     expect(conflict.entries[0]?.slots).toEqual([]);
     expect(conflict.remoteWins()).toBe(false);
+    expect(conflict.subjectStates).toHaveLength(1);
+    const state = conflict.subjectStates[0];
+    expect(state?.subjectId).toBe("doc_1");
+    expect(state?.before?.data.fields.content).toEqual({
+      map: { a: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC } },
+    });
+    expect(state?.after?.data.fields.content).toEqual({
+      map: { b: { value: "theirs", update_id: "u_peer", hlc: PEER_HLC } },
+    });
+    expect(state?.diff).toEqual([
+      { field: "content", path: ["a"], before: "mine", after: undefined, kind: "removed" },
+      { field: "content", path: ["b"], before: undefined, after: "theirs", kind: "added" },
+    ]);
 
     await client.conflicts.resolve(conflict.id, "retry");
 

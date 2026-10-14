@@ -15,10 +15,18 @@
  * without the view holding a private map.
  */
 
-import { compare, isFieldMap, type Action, type FieldValue, type Update } from "@ebbjs/core";
-import type { ConflictSide, ConflictSlot } from "@ebbjs/storage/types";
+import {
+  compare,
+  isFieldMap,
+  type Action,
+  type Entity,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
+import type { ConflictSide, ConflictSlot, ConflictSubjectState } from "@ebbjs/storage/types";
 import { subjectIds } from "./action-subjects";
 import type { ConflictedOutboxEntry, OutboxCounts } from "./outbox";
+import { projectFieldValue } from "./query-builder";
 import { createObservable, type ReadonlyObservable } from "./observable";
 
 /** The application's decision for one conflict. */
@@ -36,6 +44,34 @@ export interface ConflictSlotView extends ConflictSlot {
    * greater `update_id`. Mirrors `mergeFieldValue` for the position.
    */
   remoteWins(): boolean;
+}
+
+/**
+ * One position that differs between a subject's before and after rows.
+ * `path` is the map-key path from the field root, empty for a whole
+ * non-map field. The values are projected through
+ * {@link projectFieldValue}, the same rule the merge and slot sides use.
+ */
+export interface EntityDiff {
+  /** The top-level field the differing position belongs to. */
+  readonly field: string;
+  /** Ordered map keys from the field root to the position; empty at the root. */
+  readonly path: readonly string[];
+  /** The client's projected value before the sync; `undefined` when absent. */
+  readonly before: unknown;
+  /** The server's projected value after the sync; `undefined` when absent. */
+  readonly after: unknown;
+  /** Derived from the projected values: an absent before is `added`, an absent after `removed`, else `changed`. */
+  readonly kind: "changed" | "added" | "removed";
+}
+
+/**
+ * The full before/after rows for one losing subject, plus the projection
+ * of the positions that differ. An entity-scoped application reads this
+ * rather than {@link Conflict.remoteWins}.
+ */
+export interface ConflictSubjectStateView extends ConflictSubjectState {
+  readonly diff: readonly EntityDiff[];
 }
 
 /**
@@ -80,12 +116,25 @@ export interface Conflict {
   readonly id: string;
   /** Union of the entries' losing subjects, first-seen order. */
   readonly subjects: readonly string[];
+  /**
+   * One state per losing subject, in the same order as
+   * {@link subjects}: the client's row before the sync, the server's row
+   * after it, and the positions that differ. An entity-scoped
+   * application reads this — the diff answers an entity-level question,
+   * while {@link remoteWins} only reports whether the merge would lose at
+   * an overlapping position.
+   */
+  readonly subjectStates: readonly ConflictSubjectStateView[];
   /** The losing Actions, oldest detection first. */
   readonly entries: readonly ConflictEntry[];
   /**
    * `true` when any position's server value wins the merge, `false` for
    * a conflict with no slots. An application opts into "only when my
    * value would lose" by reading this.
+   *
+   * This answers a position-level question: with no overlapping position
+   * it is `false` by construction. Entity scope asks a different one —
+   * read {@link subjectStates} / the diff instead.
    */
   remoteWins(): boolean;
 }
@@ -282,6 +331,123 @@ const toEntry = (entry: ConflictedOutboxEntry): ConflictEntry => ({
   detectedAtHlc: entry.conflict.detectedAtHlc,
 });
 
+/** A null row contributes no fields, so the other side's fields all read as added. */
+const rowFields = (entity: Entity | null): Record<string, FieldValue> => entity?.data.fields ?? {};
+
+/**
+ * Canonical string for a projected value, distinguishing an absent side
+ * (`undefined`) from a tombstone (`null`). Mirrors `stableStringify` in
+ * `client.ts`: object keys sorted at every level, arrays in order.
+ */
+const stableValueString = (value: unknown): string => {
+  if (value === undefined) return "undefined";
+  if (Array.isArray(value)) return `[${value.map(stableValueString).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableValueString(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+};
+
+/** A position only emits when the two projected values differ. */
+const projectedEqual = (before: unknown, after: unknown): boolean =>
+  stableValueString(before) === stableValueString(after);
+
+/**
+ * A nested map entry that projects to `null` is a tombstone, not a
+ * present value: `projectFieldValue` omits it from a map, so the diff
+ * reads it as absent rather than as a changed position.
+ */
+const presentChild = (child: FieldValue | undefined): FieldValue | undefined =>
+  child !== undefined && projectFieldValue(child) === null ? undefined : child;
+
+/**
+ * Diff one position, recursing into a pair of maps. A pair of maps
+ * recurses over the sorted union of their keys, so the diff vocabulary
+ * matches the merge; any other pair projects each present side and emits
+ * one diff when the projected values differ.
+ */
+const diffFieldValue = (
+  field: string,
+  path: readonly string[],
+  before: FieldValue | undefined,
+  after: FieldValue | undefined,
+  out: EntityDiff[],
+): void => {
+  if (before !== undefined && after !== undefined && isFieldMap(before) && isFieldMap(after)) {
+    // Map keys are positions, so recurse over their sorted union.
+    const keys = [...new Set([...Object.keys(before.map), ...Object.keys(after.map)])].sort();
+    for (const key of keys) {
+      diffFieldValue(
+        field,
+        [...path, key],
+        presentChild(before.map[key]),
+        presentChild(after.map[key]),
+        out,
+      );
+    }
+    return;
+  }
+  const beforeValue = before === undefined ? undefined : projectFieldValue(before);
+  const afterValue = after === undefined ? undefined : projectFieldValue(after);
+  if (projectedEqual(beforeValue, afterValue)) return;
+  out.push({
+    field,
+    path,
+    before: beforeValue,
+    after: afterValue,
+    kind: beforeValue === undefined ? "added" : afterValue === undefined ? "removed" : "changed",
+  });
+};
+
+/**
+ * Project a before/after pair into the positions that differ, top-level
+ * fields sorted by name and paths sorted by key name. A null row reads
+ * as an empty field map, so a null `before` makes every after field
+ * `added`.
+ */
+const diffEntity = (before: Entity | null, after: Entity | null): readonly EntityDiff[] => {
+  const beforeFields = rowFields(before);
+  const afterFields = rowFields(after);
+  const names = [...new Set([...Object.keys(beforeFields), ...Object.keys(afterFields)])].sort();
+  const out: EntityDiff[] = [];
+  for (const field of names) {
+    diffFieldValue(field, [], beforeFields[field], afterFields[field], out);
+  }
+  return out;
+};
+
+/**
+ * Aggregate one group's subject states, in `subjects` order. Deduped by
+ * `subjectId` alone: the first state across the detection-ordered
+ * entries supplies `before`, the last `after`. Every entry in a group
+ * comes from one catch-up pass, so the rule is a no-op today.
+ */
+const aggregateSubjectStates = (
+  ordered: readonly ConflictEntry[],
+  subjects: readonly string[],
+  statesByAction: ReadonlyMap<string, readonly ConflictSubjectState[]>,
+): readonly ConflictSubjectStateView[] => {
+  const bySubject = new Map<string, ConflictSubjectState>();
+  for (const entry of ordered) {
+    for (const state of statesByAction.get(entry.action.id) ?? []) {
+      const merged = bySubject.get(state.subjectId);
+      bySubject.set(
+        state.subjectId,
+        merged === undefined ? state : { ...merged, after: state.after },
+      );
+    }
+  }
+  const views: ConflictSubjectStateView[] = [];
+  for (const subjectId of subjects) {
+    const state = bySubject.get(subjectId);
+    if (state === undefined) continue;
+    views.push({ ...state, diff: diffEntity(state.before, state.after) });
+  }
+  return views;
+};
+
 /** Earliest detection HLC in a conflict; the set's ordering key. */
 const earliestHlc = (conflict: Conflict): string => conflict.entries[0]?.detectedAtHlc ?? "";
 
@@ -290,7 +456,10 @@ const earliestHlc = (conflict: Conflict): string => conflict.entries[0]?.detecte
  * already in outbox order; within a group they are re-sorted by
  * `detectedAtHlc`, which detection stamped in authoring order.
  */
-const groupConflicts = (entries: readonly ConflictEntry[]): readonly Conflict[] => {
+const groupConflicts = (
+  entries: readonly ConflictEntry[],
+  statesByAction: ReadonlyMap<string, readonly ConflictSubjectState[]>,
+): readonly Conflict[] => {
   const groups = new Map<string, ConflictEntry[]>();
   for (const entry of entries) {
     const group = groups.get(entry.conflictId);
@@ -313,6 +482,7 @@ const groupConflicts = (entries: readonly ConflictEntry[]): readonly Conflict[] 
     conflicts.push({
       id,
       subjects,
+      subjectStates: aggregateSubjectStates(ordered, subjects, statesByAction),
       entries: ordered,
       remoteWins: () => ordered.some((e) => e.slots.some((s) => s.remoteWins())),
     });
@@ -376,8 +546,10 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
 
   /** Re-project and regroup the outbox's conflicted rows. */
   const refresh = (): void => {
-    entries = deps.outbox.conflicts().map(toEntry);
-    conflicts = groupConflicts(entries);
+    const rows = deps.outbox.conflicts();
+    entries = rows.map(toEntry);
+    const statesByAction = new Map(rows.map((row) => [row.action.id, row.conflict.subjectStates]));
+    conflicts = groupConflicts(entries, statesByAction);
     byConflictId = new Map(conflicts.map((conflict) => [conflict.id, conflict]));
     byEntryId = new Map(entries.map((entry) => [entry.action.id, entry]));
     emit();
