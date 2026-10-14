@@ -103,9 +103,13 @@ export { type FlushScheduler, type FlushLatencyListener } from "./sync/flush-sch
 
 export {
   type Conflicts,
+  type Conflict,
+  type ConflictSlotView,
   type ConflictResolution,
   type ConflictChangeListener,
   type ConflictSnapshot,
+  type ResolveResult,
+  type FailedResolution,
 } from "./sync/conflicts";
 
 export { type Snapshots } from "./sync/snapshots";

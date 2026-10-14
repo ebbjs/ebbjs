@@ -1,17 +1,17 @@
 /**
- * Conflict panel — collapsible sidebar listing the conflicts the client
- * recorded on its outbox rows. Each conflict is one losing buffered
- * Action plus the slots a peer's write out-dated; the panel lets the
- * user retry or discard it.
+ * Conflict panel — collapsible sidebar listing the entity-level
+ * conflicts the client surfaced. A conflict is the set of losing
+ * buffered Actions detected together for one connected set of subjects;
+ * each Action contributes the positions where a peer's write out-dated
+ * it. The panel lets the user retry or discard the whole conflict.
  *
- * A detected conflict is a status + payload on the outbox entry, so the
- * panel reads the same vocabulary the rest of the app would: a
- * collaborative-text run is one map key, and a concurrent
- * extend-vs-delete on that run is one slot.
+ * Grouping is durable: every losing Action in one connected set shares
+ * the `conflictId` detection stamped on its outbox row, so the panel
+ * reads the same entity-level `Conflict` the rest of the app would.
  */
 
 import { useEffect, useState } from "react";
-import type { ConflictEntry } from "@ebbjs/client";
+import type { Conflict } from "@ebbjs/client";
 import { createClient } from "@ebbjs/client";
 
 interface Props {
@@ -21,7 +21,7 @@ interface Props {
 }
 
 export function ConflictPanel({ client, docId, groupId }: Props) {
-  const [conflicts, setConflicts] = useState<readonly ConflictEntry[]>([]);
+  const [conflicts, setConflicts] = useState<readonly Conflict[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -39,8 +39,8 @@ export function ConflictPanel({ client, docId, groupId }: Props) {
     };
   }, [client, docId]);
 
-  const resolve = (actionId: string, resolution: "retry" | "discard"): void => {
-    void client.conflicts.resolve(actionId, resolution);
+  const resolve = (conflictId: string, resolution: "retry" | "discard"): void => {
+    void client.conflicts.resolve(conflictId, resolution);
   };
 
   return (
@@ -57,54 +57,57 @@ export function ConflictPanel({ client, docId, groupId }: Props) {
         <div className="text-stone-600 text-xs italic">No conflicts yet.</div>
       )}
       <ul className="flex flex-col gap-3">
-        {conflicts.map((entry) => (
-          <li
-            key={entry.action.id}
-            className="rounded border border-stone-800 bg-stone-900 p-3 text-xs"
-          >
-            <div className="flex items-baseline justify-between mb-2">
-              <span className="font-mono text-amber-400">{entry.action.id}</span>
-              <button
-                onClick={() => resolve(entry.action.id, "discard")}
-                className="text-stone-500 hover:text-stone-200"
-              >
-                discard
-              </button>
-            </div>
-            <ul className="flex flex-col gap-2">
-              {entry.slots.map((slot, index) => (
-                <li key={`${slot.subjectId}:${slot.field}:${index}`}>
-                  <div className="text-stone-500">
-                    {slot.field}
-                    {slot.path.length > 0 ? ` → ${slot.path.join(" → ")}` : ""}
+        {conflicts.map((conflict) => {
+          const slots = conflict.entries.flatMap((entry) => entry.slots);
+          return (
+            <li
+              key={conflict.id}
+              className="rounded border border-stone-800 bg-stone-900 p-3 text-xs"
+            >
+              <div className="flex items-baseline justify-between mb-2">
+                <span className="font-mono text-amber-400">{conflict.id}</span>
+                <span className="text-stone-500">
+                  {conflict.remoteWins() ? "server wins" : "your write wins"}
+                </span>
+              </div>
+              <div className="mb-2 font-mono text-stone-500 break-words">
+                {conflict.subjects.join(", ")}
+              </div>
+              <div className="flex flex-col gap-2">
+                {slots.map((slot, index) => (
+                  <div key={`${slot.subjectId}:${slot.field}:${index}`}>
+                    <div className="text-stone-500">
+                      {slot.field}
+                      {slot.path.length > 0 ? ` → ${slot.path.join(" → ")}` : ""}
+                    </div>
+                    <pre className="bg-stone-950 p-2 rounded text-stone-300 whitespace-pre-wrap break-words">
+                      {slot.remote.value === null || slot.remote.value === undefined
+                        ? "(deleted)"
+                        : JSON.stringify(slot.remote.value)}
+                    </pre>
                   </div>
-                  <pre className="bg-stone-950 p-2 rounded text-stone-300 whitespace-pre-wrap break-words">
-                    {slot.remote.value === null || slot.remote.value === undefined
-                      ? "(deleted)"
-                      : JSON.stringify(slot.remote.value)}
-                  </pre>
-                </li>
-              ))}
-            </ul>
-            <div className="mt-2 flex gap-3">
-              <button
-                onClick={() => resolve(entry.action.id, "retry")}
-                className="text-emerald-400 hover:text-emerald-200"
-              >
-                retry
-              </button>
-              <button
-                onClick={() => resolve(entry.action.id, "discard")}
-                className="text-stone-500 hover:text-stone-200"
-              >
-                dismiss
-              </button>
-            </div>
-            {/* groupId is unused today — kept in the panel signature for
-                future filtering (e.g., one panel per group). */}
-            <span className="hidden">{groupId}</span>
-          </li>
-        ))}
+                ))}
+              </div>
+              <div className="mt-2 flex gap-3">
+                <button
+                  onClick={() => resolve(conflict.id, "retry")}
+                  className="text-emerald-400 hover:text-emerald-200"
+                >
+                  retry
+                </button>
+                <button
+                  onClick={() => resolve(conflict.id, "discard")}
+                  className="text-stone-500 hover:text-stone-200"
+                >
+                  discard
+                </button>
+              </div>
+              {/* groupId is unused today — kept in the panel signature for
+                  future filtering (e.g., one panel per group). */}
+              <span className="hidden">{groupId}</span>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

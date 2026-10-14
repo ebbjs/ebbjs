@@ -1367,7 +1367,7 @@ describe("SyncClient.status (#371)", () => {
       connection: "connecting",
       lastSyncedAt: null,
       outbox: { pending: 0, acknowledged: 0, error: 0, conflicted: 0, flushLatency: null },
-      conflicts: { count: 0, entries: [] },
+      conflicts: { count: 0, conflicts: [] },
     });
   });
 

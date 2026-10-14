@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { decodeSync, type Action } from "@ebbjs/core";
+import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { TSchema } from "@sinclair/typebox/type";
 
@@ -104,6 +104,14 @@ const blogPost = defineEntity("blog_post", {
 });
 
 const schema = defineSchema({ entities: { blogPost }, version: 1 });
+
+/** The same body declared at entity scope: any concurrent touch surfaces. */
+const entityPost = defineEntity("blog_post", {
+  title: e.string(),
+  published: e.boolean(),
+  body: e.collaborativeText({ conflictScope: "entity" }),
+});
+const entitySchema = defineSchema({ entities: { entityPost }, version: 1 });
 
 describe("e.collaborativeText() schema sugar", () => {
   it("hoists the declared body out of the parent's wire shape", () => {
@@ -592,8 +600,9 @@ describe("conflicts through client.conflicts", () => {
 
     const conflicts = await client.conflicts.list();
     expect(conflicts).toHaveLength(1);
+    const [entry] = conflicts[0]!.entries;
     expect(
-      conflicts[0]!.slots.map((slot) => ({
+      entry!.slots.map((slot) => ({
         subjectId: slot.subjectId,
         field: slot.field,
         path: slot.path,
@@ -601,10 +610,10 @@ describe("conflicts through client.conflicts", () => {
     ).toEqual([{ subjectId: docId, field: "content", path: [runId] }]);
     const snapshot = client.sync.conflicts.get();
     expect(snapshot.count).toBe(conflicts.length);
-    expect(snapshot.entries).toEqual(conflicts);
+    expect(snapshot.conflicts).toEqual(conflicts);
     expect(fired[fired.length - 1]).toBe(1);
 
-    await client.conflicts.resolve(conflicts[0]!.action.id, "discard");
+    await client.conflicts.resolve(conflicts[0]!.id, "discard");
     expect(client.sync.conflicts.get().count).toBe(0);
     expect(fired[fired.length - 1]).toBe(0);
   });
@@ -665,6 +674,138 @@ describe("conflicts through client.conflicts", () => {
     await client.outbox.detectConflicts([peerAction], "cu_1");
 
     expect(await client.conflicts.list()).toEqual([]);
+  });
+
+  it.each([
+    { label: "a newer tombstone", offset: 60_000n, remoteWins: true },
+    { label: "an older tombstone", offset: -60_000n, remoteWins: false },
+  ])(
+    "surfaces the devlog Colour scenario with $label, on the GSN base rather than HLC",
+    async ({ offset, remoteWins }) => {
+      const { client, written } = harness(schema);
+      await client.handshake();
+      const { id } = await client.blogPost.create(
+        { title: "Colour", published: false, body: "Red Magic" },
+        { groups: ["g_1"] },
+      );
+      const createAction = written[0]!;
+      // Retire the create so only the offline extend is a buffered loss.
+      await callApplyAction(client, { ...createAction, gsn: 1 }, "g_1");
+
+      const doc = await (await client.blogPost.get(id))!.body;
+      const runId = [...doc!.docState.nodes.keys()].find((key) => key !== "ROOT")!;
+      doc!.localExtend({ runId, appendText: " Magic" });
+      await waitForFlush(() => doc!.pendingActions());
+
+      const docId = createAction.updates.find(
+        (u) => u.subject_type === generatedDocEntityName("blog_post", "body"),
+      )!.subject_id;
+      const bobNode = doc!.docState.nodes.get(runId)!;
+      // The tombstone's HLC is varied above and below Bob's, so the suite
+      // proves the conflict comes from the GSN base (#390), not from LWW
+      // out-dating: it surfaces either way.
+      const aliceHlc = String(BigInt(bobNode.hlc) + offset);
+      const deleteAction: Action = {
+        id: "act_alice_delete",
+        actor_id: "actor_alice",
+        hlc: aliceHlc,
+        gsn: 9,
+        updates: [
+          {
+            id: "upd_alice",
+            subject_id: docId,
+            subject_type: generatedDocEntityName("blog_post", "body"),
+            method: "put",
+            data: {
+              fields: {
+                content: {
+                  map: { [runId]: { value: null, update_id: "upd_alice", hlc: aliceHlc } },
+                },
+              },
+            } as never,
+          },
+        ],
+      };
+      await callApplyAction(client, deleteAction, "g_1");
+      await client.outbox.detectConflicts([deleteAction], "cu_1");
+
+      const conflicts = await client.conflicts.list();
+      expect(conflicts).toHaveLength(1);
+      const slot = conflicts[0]!.entries[0]!.slots[0]!;
+      expect(slot.subjectId).toBe(docId);
+      expect(slot.field).toBe("content");
+      expect(slot.path).toEqual([runId]);
+      // local = Bob's extended run, remote = Alice's tombstone.
+      expect(slot.local.value).toMatchObject({ text: expect.stringContaining("Magic") });
+      expect(slot.remote.value).toBeNull();
+      // The HLC verdict follows the tombstone; the conflict itself does not.
+      expect(slot.remoteWins()).toBe(remoteWins);
+      expect(conflicts[0]!.remoteWins()).toBe(remoteWins);
+    },
+  );
+
+  it("surfaces a different-run edit at entity scope, with no overlapping slots", async () => {
+    const { client, written } = harness(entitySchema);
+    await client.handshake();
+    const { id } = await client.entityPost.create(
+      { title: "T", published: false, body: "hello" },
+      { groups: ["g_1"] },
+    );
+    const createAction = written[0]!;
+    await callApplyAction(client, { ...createAction, gsn: 1 }, "g_1");
+
+    const doc = await (await client.entityPost.get(id))!.body;
+    const runId = [...doc!.docState.nodes.keys()].find((key) => key !== "ROOT")!;
+    doc!.localExtend({ runId, appendText: "!" });
+    await waitForFlush(() => doc!.pendingActions());
+
+    const docId = createAction.updates.find(
+      (u) => u.subject_type === generatedDocEntityName("blog_post", "body"),
+    )!.subject_id;
+    const peerHlc = makeHlc(1_711_036_800_500);
+    const peerAction: Action = {
+      id: "act_peer_entity",
+      actor_id: "actor_peer",
+      hlc: peerHlc,
+      gsn: 9,
+      updates: [
+        {
+          id: "upd_peer_entity",
+          subject_id: docId,
+          subject_type: generatedDocEntityName("blog_post", "body"),
+          method: "put",
+          data: {
+            fields: {
+              content: {
+                map: {
+                  "peer-run": {
+                    value: {
+                      id: "peer-run",
+                      hlc: peerHlc,
+                      actorId: "actor_peer",
+                      text: "other",
+                      parentId: "ROOT",
+                      deleted: false,
+                    },
+                    update_id: "upd_peer_entity",
+                    hlc: peerHlc,
+                  },
+                },
+              },
+            },
+          } as never,
+        },
+      ],
+    };
+    await callApplyAction(client, peerAction, "g_1");
+    await client.outbox.detectConflicts([peerAction], "cu_1");
+
+    const conflicts = await client.conflicts.list();
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]!.subjects).toEqual([docId]);
+    // Entity scope: surfaced even though no position overlapped.
+    expect(conflicts[0]!.entries[0]!.slots).toEqual([]);
+    expect(conflicts[0]!.remoteWins()).toBe(false);
   });
 });
 

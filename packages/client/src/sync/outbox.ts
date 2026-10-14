@@ -89,6 +89,62 @@ export interface ConflictedOutboxEntry extends OutboxEntry {
 const isConflicted = (entry: OutboxEntry): entry is ConflictedOutboxEntry =>
   entry.status === "conflicted" && entry.conflict !== undefined;
 
+/** One losing entry classified by a detection pass, before grouping. */
+interface Loser {
+  readonly id: string;
+  readonly subjects: string[];
+  readonly slots: ConflictSlot[];
+}
+
+/** A loser paired with the conflict id of its connected subject set. */
+interface GroupedLoser {
+  readonly loser: Loser;
+  readonly conflictId: string;
+}
+
+/**
+ * Assign one `conflictId` per connected set of losing subjects: two losers
+ * that share a subject, directly or transitively, are one conflict. The id
+ * is persisted on each row, so grouping survives a reload and a partial
+ * resolution; a later pass mints fresh ids and never merges into an
+ * earlier conflict.
+ */
+const groupLosers = (losers: readonly Loser[], mintId: () => string): readonly GroupedLoser[] => {
+  const parent = new Map<string, string>();
+  const find = (subject: string): string => {
+    let root = subject;
+    while (parent.get(root) !== root) root = parent.get(root) ?? root;
+    return root;
+  };
+  const union = (a: string, b: string): void => {
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA !== rootB) parent.set(rootB, rootA);
+  };
+  for (const loser of losers) {
+    const [first, ...rest] = loser.subjects;
+    if (first === undefined) continue;
+    if (!parent.has(first)) parent.set(first, first);
+    for (const subject of rest) {
+      if (!parent.has(subject)) parent.set(subject, subject);
+      union(first, subject);
+    }
+  }
+
+  const idByRoot = new Map<string, string>();
+  return losers.map((loser) => {
+    const first = loser.subjects[0];
+    if (first === undefined) return { loser, conflictId: mintId() };
+    const root = find(first);
+    let conflictId = idByRoot.get(root);
+    if (conflictId === undefined) {
+      conflictId = mintId();
+      idByRoot.set(root, conflictId);
+    }
+    return { loser, conflictId };
+  });
+};
+
 /**
  * Classified result of a `flush()`. `unreachable` is the only kind a
  * caller may retry blindly — every other kind means the server saw the
@@ -296,7 +352,9 @@ export interface Outbox {
    * merge — the application decides.
    *
    * `catchUpId` is the pass's identity, stamped on every entry it
-   * produces. Returns the entries it held, in buffer order.
+   * produces. Losing entries that share a connected set of subjects
+   * share one `conflictId`, so the application-facing grouping is
+   * durable. Returns the entries it held, in buffer order.
    */
   detectConflicts(
     actions: readonly Action[],
@@ -592,7 +650,12 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     // Fold every missed Action once; concurrency is judged per entry.
     const window = actions.map((action) => ({ action, subjects: inboundSubjects(action) }));
 
-    const detected: DetectedConflict[] = [];
+    // Classify each loser first, then group. Every losing Action in one
+    // connected set of subjects shares one `conflictId`, stamped here so
+    // grouping survives a reload and a partial resolution. A later pass
+    // that shares a subject with an already-conflicted row is a distinct
+    // conflict: a new pass mints a fresh id.
+    const losers: { id: string; subjects: string[]; slots: ConflictSlot[] }[] = [];
     for (const entry of candidates) {
       if (!window.some(({ action }) => action.gsn > entry.basedOnGsn)) continue;
       const subjects: string[] = [];
@@ -637,17 +700,24 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
         }
       }
       if (subjects.length === 0) continue;
+      losers.push({ id: entry.action.id, subjects, slots });
+    }
+    if (losers.length === 0) return [];
+
+    const grouped = groupLosers(losers, deps.conflictId);
+    const detected: DetectedConflict[] = [];
+    for (const { loser, conflictId } of grouped) {
       const conflict: OutboxConflict = {
-        subjects,
-        slots,
+        subjects: loser.subjects,
+        slots: loser.slots,
         catchUpId,
-        conflictId: deps.conflictId(),
+        conflictId,
         detectedAtHlc: deps.hlc(),
       };
-      await markConflicted(entry.action.id, conflict);
-      detected.push({ actionId: entry.action.id, subjects, slots });
+      await markConflicted(loser.id, conflict);
+      detected.push({ actionId: loser.id, subjects: loser.subjects, slots: loser.slots });
     }
-    if (detected.length > 0) emit();
+    emit();
     return detected;
   };
 
