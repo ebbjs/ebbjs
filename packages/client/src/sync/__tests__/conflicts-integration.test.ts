@@ -401,7 +401,7 @@ describe("client.conflicts (#310)", () => {
     });
   });
 
-  it("persists subjectStates with both rows across a reload", async () => {
+  it("persists subjectStates with both rows across a reload and projects the diff", async () => {
     const storage = createMemoryAdapter();
     const stub = mkStubFetch();
     const client = mkClient(stub.fn, storage);
@@ -433,6 +433,19 @@ describe("client.conflicts (#310)", () => {
     await clientB.outbox.rehydrate();
 
     expect(clientB.outbox.conflicts()[0]?.conflict.subjectStates).toEqual(states);
+
+    // A reload must reconstruct the diff from the durable rows alone:
+    // no in-memory capture survives `close()`.
+    await clientB.conflicts.rehydrate();
+    const conflict = await onlyConflict(clientB);
+    const state = conflict.subjectStates[0];
+    expect(state?.subjectId).toBe("todo_1");
+    expect(state?.subjectType).toBe("todo");
+    expect(state?.before?.data.fields.title.value).toBe("mine");
+    expect(state?.after?.data.fields.title.value).toBe("theirs");
+    expect(state?.diff).toEqual([
+      { field: "title", path: [], before: "mine", after: "theirs", kind: "changed" },
+    ]);
   });
 
   it("duplicate({ at: preSync }) copies the captured row over a real detected conflict", async () => {

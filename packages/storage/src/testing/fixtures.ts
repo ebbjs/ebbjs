@@ -9,7 +9,7 @@ import type { OutboxConflict } from "../types/outbox-store";
  * fixture data so the suites stay focused on assertions.
  */
 
-const HLC_BASE = 1_711_036_800_000;
+export const HLC_BASE = 1_711_036_800_000;
 
 /**
  * A `put` for `todo_1`. `counter` offsets the HLC within `HLC_BASE` so
@@ -276,15 +276,21 @@ export const buildEntityGroupDeleteAction = (args: { id: string }, gsn: number):
   };
 };
 
-/** A minimal `todo_1` row for the before/after payload fixture. */
-const buildTodoEntity = (title: string, hlc: string): Entity => ({
-  id: "todo_1",
+/** A `todo_<id>` row for the before/after payload fixtures: one `title` leaf at `hlc`. */
+export const buildTodoEntity = (id: string, title: string, hlc: string): Entity => ({
+  id,
   type: "todo",
-  data: { fields: { title: { value: title, update_id: "u_1", hlc } } },
+  data: { fields: { title: { value: title, update_id: `u_${id}`, hlc } } },
   created_hlc: hlc,
   updated_hlc: hlc,
   deleted_hlc: null,
   last_gsn: 1,
+});
+
+/** The same row with `deleted_hlc` set — a tombstone. */
+export const buildDeletedTodoEntity = (id: string, title: string, hlc: string): Entity => ({
+  ...buildTodoEntity(id, title, hlc),
+  deleted_hlc: hlc,
 });
 
 /**
@@ -298,8 +304,8 @@ export const buildOutboxConflict = (detectedAtMs = 1): OutboxConflict => ({
     {
       subjectId: "todo_1",
       subjectType: "todo",
-      before: buildTodoEntity("Hello", makeHlc(HLC_BASE)),
-      after: buildTodoEntity("Updated", makeHlc(HLC_BASE, detectedAtMs)),
+      before: buildTodoEntity("todo_1", "Hello", makeHlc(HLC_BASE)),
+      after: buildTodoEntity("todo_1", "Updated", makeHlc(HLC_BASE, detectedAtMs)),
     },
   ],
   slots: [
