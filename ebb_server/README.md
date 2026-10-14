@@ -100,7 +100,7 @@ ordered-fanout coordination that is not yet built
 | `EbbServer.Storage.ActionLog`                                                    | Committed-log reader: decodes an inclusive GSN range in order      |
 | `EbbServer.ActionExport` (opt-in)                                                | Polls the committed log and invokes the `:on_action` handler       |
 | `EbbServer.Storage.EntityStore`                                                  | Read API with on-demand materialization                            |
-| `EbbServer.Storage.PermissionChecker`                                            | Action validation + per-Update ETS-based permission decision       |
+| `EbbServer.Storage.PermissionChecker`                                            | Action validation, per-Update + read-side permission decisions     |
 | `EbbServer.Storage.WatermarkTracker`                                             | Resolution-frontier ETS + `:atomics` (SSE fan-out gating)          |
 | `EbbServer.Storage.{DirtyTracker,GroupCache,EntityGroupCache,RelationshipCache}` | In-memory state children of `SystemCache`                          |
 | `EbbServer.Storage.GSNCounter`                                                   | Lock-free GSN claiming + restart reconcile (`:atomics`)            |

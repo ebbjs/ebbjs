@@ -356,4 +356,79 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       assert rejected == []
     end
   end
+
+  describe "read authorization" do
+    test "can_read?/3 allows an actor who is a member of one of the entity's groups" do
+      tables = create_isolated_tables()
+      opts = auth_opts(tables)
+
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_group_member(tables, "g_1", ["todo.read"])
+
+      assert PermissionChecker.can_read?("todo_1", "a_1", opts)
+    end
+
+    test "can_read?/3 denies an actor who is a member of none of the entity's groups" do
+      tables = create_isolated_tables()
+      opts = auth_opts(tables)
+
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_group_member(tables, "g_2", ["todo.read"])
+
+      refute PermissionChecker.can_read?("todo_1", "a_1", opts)
+    end
+
+    test "can_read?/3 allows through any one of the entity's groups" do
+      tables = create_isolated_tables()
+      opts = auth_opts(tables)
+
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_membership(tables, "todo_1", "g_2", "eg_2")
+      put_group_member(tables, "g_2", ["todo.read"])
+
+      assert PermissionChecker.can_read?("todo_1", "a_1", opts)
+    end
+
+    test "can_read?/3 denies an entity that belongs to no group" do
+      tables = create_isolated_tables()
+      opts = auth_opts(tables)
+
+      put_group_member(tables, "g_1", ["todo.read"])
+
+      refute PermissionChecker.can_read?("todo_unowned", "a_1", opts)
+    end
+
+    test "can_read?/3 denies once the membership is revoked" do
+      tables = create_isolated_tables()
+      opts = auth_opts(tables)
+
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_group_member(tables, "g_1", ["todo.read"])
+
+      assert PermissionChecker.can_read?("todo_1", "a_1", opts)
+
+      :ets.delete(tables.group_members, "a_1")
+
+      refute PermissionChecker.can_read?("todo_1", "a_1", opts)
+    end
+
+    test "member_group_ids/3 returns only the groups the actor belongs to" do
+      tables = create_isolated_tables()
+      opts = auth_opts(tables)
+
+      put_group_member(tables, "g_1", ["todo.read"])
+
+      assert PermissionChecker.member_group_ids(["g_1", "g_2"], "a_1", opts) == ["g_1"]
+    end
+
+    test "member_of_all_groups?/3 requires membership in every group" do
+      tables = create_isolated_tables()
+      opts = auth_opts(tables)
+
+      put_group_member(tables, "g_1", ["todo.read"])
+
+      assert PermissionChecker.member_of_all_groups?(["g_1"], "a_1", opts)
+      refute PermissionChecker.member_of_all_groups?(["g_1", "g_2"], "a_1", opts)
+    end
+  end
 end

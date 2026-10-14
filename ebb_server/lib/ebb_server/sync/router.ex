@@ -14,7 +14,8 @@ defmodule EbbServer.Sync.Router do
     - `GET /sync/live?groups=...&cursor=N` — SSE stream of live actions.
     - `POST /sync/actions` — submit a batch of Actions for write.
     - `POST /sync/presence` — broadcast ephemeral presence data on an entity.
-    - `GET /entities/:id` — fetch a materialized entity (permission-checked).
+    - `GET /entities/:id` — fetch a materialized entity (permission-checked;
+      a non-member gets `404`, same as a missing entity).
     - `POST /entities/query` — query entities by type with `json_extract`
       filter and permission JOINs (used by `ctx.query()`).
 
@@ -95,7 +96,14 @@ defmodule EbbServer.Sync.Router do
         send_json(conn, 401, %{"error" => "unauthorized"})
 
       actor_id ->
-        case EntityStore.get(entity_id, actor_id) do
+        result =
+          if PermissionChecker.can_read?(entity_id, actor_id) do
+            EntityStore.get(entity_id, actor_id)
+          else
+            :not_found
+          end
+
+        case result do
           {:ok, entity} ->
             response = %{
               "id" => entity.id,
@@ -109,6 +117,9 @@ defmodule EbbServer.Sync.Router do
 
             send_json(conn, 200, response)
 
+          # Non-membership maps to the same 404 as a missing entity: a
+          # distinct status would turn the endpoint into an existence
+          # oracle for ids the actor cannot read.
           :not_found ->
             send_json(conn, 404, %{"error" => "not_found"})
 
@@ -219,34 +230,32 @@ defmodule EbbServer.Sync.Router do
 
     case Integer.parse(cursor_param) do
       {cursor, ""} when cursor >= 0 and group_ids != [] ->
-        case verify_all_group_membership(group_ids, actor_id) do
-          :ok ->
-            watermark = WatermarkTracker.committed_watermark()
+        if PermissionChecker.member_of_all_groups?(group_ids, actor_id) do
+          watermark = WatermarkTracker.committed_watermark()
 
-            if cursor > watermark do
-              # Cursor is ahead of the watermark. Send a single SSE
-              # control event with reconnect instructions, then halt
-              # the plug pipeline. The plug pipeline expects every
-              # match clause to return a `%Plug.Conn{}`; `{:stop,
-              # :normal}` triggers a RuntimeError that drops the
-              # connection before the response is flushed.
-              conn
-              |> SSEHandler.write_stale_cursor_response(watermark + 1)
-              |> Plug.Conn.halt()
-            else
-              case SSEHandler.open_sse(conn, group_ids, cursor, actor_id) do
-                # `open_sse` blocks the request process in a receive
-                # loop; this branch is only taken if it returns early
-                # (today: never). Halt the pipeline rather than
-                # returning `{:stop, :normal}` which Plug.Builder
-                # rejects.
-                :ok -> Plug.Conn.halt(conn)
-                {:error, :not_member} -> send_json(conn, 403, %{"error" => "not_member"})
-              end
+          if cursor > watermark do
+            # Cursor is ahead of the watermark. Send a single SSE
+            # control event with reconnect instructions, then halt
+            # the plug pipeline. The plug pipeline expects every
+            # match clause to return a `%Plug.Conn{}`; `{:stop,
+            # :normal}` triggers a RuntimeError that drops the
+            # connection before the response is flushed.
+            conn
+            |> SSEHandler.write_stale_cursor_response(watermark + 1)
+            |> Plug.Conn.halt()
+          else
+            case SSEHandler.open_sse(conn, group_ids, cursor, actor_id) do
+              # `open_sse` blocks the request process in a receive
+              # loop; this branch is only taken if it returns early
+              # (today: never). Halt the pipeline rather than
+              # returning `{:stop, :normal}` which Plug.Builder
+              # rejects.
+              :ok -> Plug.Conn.halt(conn)
+              {:error, :not_member} -> send_json(conn, 403, %{"error" => "not_member"})
             end
-
-          {:error, :not_member} ->
-            send_json(conn, 403, %{"error" => "not_member"})
+          end
+        else
+          send_json(conn, 403, %{"error" => "not_member"})
         end
 
       _ ->
@@ -287,7 +296,7 @@ defmodule EbbServer.Sync.Router do
         group_ids =
           EntityIndex.source_groups(entity_id, entity_groups: CacheTables.entity_groups())
 
-        member_group_ids = Enum.filter(group_ids, &GroupCache.get_permissions(actor_id, &1))
+        member_group_ids = PermissionChecker.member_group_ids(group_ids, actor_id)
 
         cond do
           group_ids == [] ->
@@ -353,7 +362,9 @@ defmodule EbbServer.Sync.Router do
     %{
       operationId: "getEntity",
       summary: "Read an entity by ID",
-      description: "Retrieves a single entity by its ID, materialized from the action log.",
+      description:
+        "Retrieves a single entity by its ID, materialized from the action log. " <>
+          "Requires the actor to be a member of one of the entity's groups.",
       tags: ["Entities"],
       parameters: [
         OperationSchema.path_param("id", "string", "The entity ID")
@@ -361,7 +372,10 @@ defmodule EbbServer.Sync.Router do
       responses: %{
         "200" => OperationSchema.entity_response(),
         "401" => OperationSchema.error_response("Missing or invalid x-ebb-actor-id header"),
-        "404" => OperationSchema.error_response("Entity not found"),
+        "404" =>
+          OperationSchema.error_response(
+            "Entity not found, or the actor is not a member of any of its groups"
+          ),
         "503" => OperationSchema.error_response("Materialization failed")
       }
     }
@@ -644,19 +658,6 @@ defmodule EbbServer.Sync.Router do
         |> Plug.Conn.put_resp_content_type("application/json")
         |> Plug.Conn.send_resp(500, ~s({"error": "encoding_failed"}))
         |> halt()
-    end
-  end
-
-  defp verify_all_group_membership(group_ids, actor_id) do
-    non_member_groups =
-      Enum.reject(group_ids, fn group_id ->
-        GroupCache.get_permissions(actor_id, group_id) != nil
-      end)
-
-    if non_member_groups == [] do
-      :ok
-    else
-      {:error, :not_member}
     end
   end
 end
