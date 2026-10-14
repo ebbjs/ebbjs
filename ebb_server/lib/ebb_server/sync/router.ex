@@ -386,7 +386,9 @@ defmodule EbbServer.Sync.Router do
       operationId: "queryEntities",
       summary: "Query entities by type",
       description:
-        "Returns a list of entities matching the given type, with optional field filtering and pagination.",
+        "Returns a list of entities matching the given type, with optional field filtering and " <>
+          "pagination. Results are ordered by creation HLC, then by entity ID, and each entity " <>
+          "appears once.",
       tags: ["Entities"],
       requestBody: %{
         required: true,

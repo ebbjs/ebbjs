@@ -228,6 +228,99 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       assert hd(a2_todos).id == "todo_g2"
     end
 
+    test "query paginates a fixed set without repeats or gaps", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      group_id = "g_page_#{System.unique_integer([:positive])}"
+      actor_id = "a_page_#{System.unique_integer([:positive])}"
+      ids = for i <- 1..5, do: "todo_page_#{i}"
+
+      bootstrap_group(group_id, actor_id, writer_name)
+      Enum.each(ids, fn id -> write_todo(id, group_id, actor_id, writer_name) end)
+
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+
+      pages =
+        for offset <- [0, 2, 4] do
+          {:ok, page} =
+            EntityStore.query("todo", nil, actor_id, opts ++ [limit: 2, offset: offset])
+
+          Enum.map(page, & &1.id)
+        end
+
+      page_ids = List.flatten(pages)
+
+      assert length(page_ids) == length(ids)
+      assert page_ids == Enum.uniq(page_ids)
+      assert Enum.sort(page_ids) == Enum.sort(ids)
+      assert Enum.all?(pages, &(length(&1) <= 2))
+    end
+
+    test "query returns an entity once when it belongs to several of the actor's groups", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      g1 = "g_shared_1_#{System.unique_integer([:positive])}"
+      g2 = "g_shared_2_#{System.unique_integer([:positive])}"
+      actor_id = "a_shared_#{System.unique_integer([:positive])}"
+      todo_id = "todo_shared_#{System.unique_integer([:positive])}"
+
+      bootstrap_group(g1, actor_id, writer_name)
+      bootstrap_group(g2, actor_id, writer_name)
+      write_todo(todo_id, g1, actor_id, writer_name)
+      write_todo(todo_id, g2, actor_id, writer_name)
+
+      {:ok, todos} =
+        EntityStore.query("todo", nil, actor_id,
+          rocks_name: rocks_name,
+          sqlite_name: sqlite_name,
+          dirty_set: dirty_set
+        )
+
+      assert Enum.map(todos, & &1.id) == [todo_id]
+    end
+
+    test "pagination counts an entity once when several of the actor's groups contain it", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      g1 = "g_page_shared_1_#{System.unique_integer([:positive])}"
+      g2 = "g_page_shared_2_#{System.unique_integer([:positive])}"
+      actor_id = "a_page_shared_#{System.unique_integer([:positive])}"
+      shared_id = "todo_page_shared_#{System.unique_integer([:positive])}"
+      other_ids = ["todo_page_other_1", "todo_page_other_2"]
+
+      bootstrap_group(g1, actor_id, writer_name)
+      bootstrap_group(g2, actor_id, writer_name)
+      write_todo(shared_id, g1, actor_id, writer_name)
+      write_todo(shared_id, g2, actor_id, writer_name)
+      Enum.each(other_ids, fn id -> write_todo(id, g1, actor_id, writer_name) end)
+
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+
+      pages =
+        for offset <- [0, 1, 2, 3] do
+          {:ok, page} =
+            EntityStore.query("todo", nil, actor_id, opts ++ [limit: 1, offset: offset])
+
+          Enum.map(page, & &1.id)
+        end
+
+      page_ids = List.flatten(pages)
+      expected = [shared_id | other_ids]
+
+      assert length(page_ids) == length(expected)
+      assert page_ids == Enum.uniq(page_ids)
+      assert Enum.sort(page_ids) == Enum.sort(expected)
+    end
+
     test "query with filter", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
