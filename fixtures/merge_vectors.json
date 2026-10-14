@@ -1,0 +1,123 @@
+{
+  "description": "Shared LWW field-merge vectors. Both packages/core's mergeFieldValue and ebb_server's FieldMerge.merge must reproduce every `merged` value.",
+  "vectors": [
+    {
+      "name": "incoming higher HLC wins",
+      "existing": { "value": "old", "hlc": "1", "update_id": "upd_a" },
+      "incoming": { "value": "new", "hlc": "2", "update_id": "upd_b" },
+      "merged": { "value": "new", "hlc": "2", "update_id": "upd_b" }
+    },
+    {
+      "name": "incoming lower HLC loses",
+      "existing": { "value": "old", "hlc": "2", "update_id": "upd_a" },
+      "incoming": { "value": "new", "hlc": "1", "update_id": "upd_b" },
+      "merged": { "value": "old", "hlc": "2", "update_id": "upd_a" }
+    },
+    {
+      "name": "equal HLC, greater incoming update_id wins",
+      "existing": { "value": "old", "hlc": "5", "update_id": "upd_a" },
+      "incoming": { "value": "new", "hlc": "5", "update_id": "upd_b" },
+      "merged": { "value": "new", "hlc": "5", "update_id": "upd_b" }
+    },
+    {
+      "name": "equal HLC, greater existing update_id wins",
+      "existing": { "value": "old", "hlc": "5", "update_id": "upd_b" },
+      "incoming": { "value": "new", "hlc": "5", "update_id": "upd_a" },
+      "merged": { "value": "old", "hlc": "5", "update_id": "upd_b" }
+    },
+    {
+      "name": "equal HLC and equal update_id keeps the incoming value",
+      "existing": { "value": "old", "hlc": "5", "update_id": "upd_a" },
+      "incoming": { "value": "new", "hlc": "5", "update_id": "upd_a" },
+      "merged": { "value": "new", "hlc": "5", "update_id": "upd_a" }
+    },
+    {
+      "name": "null existing returns the incoming value",
+      "existing": null,
+      "incoming": { "map": { "a": { "value": "v", "hlc": "1", "update_id": "upd_a" } } },
+      "merged": { "map": { "a": { "value": "v", "hlc": "1", "update_id": "upd_a" } } }
+    },
+    {
+      "name": "map union of disjoint keys",
+      "existing": { "map": { "a": { "value": "1", "hlc": "1", "update_id": "upd_a" } } },
+      "incoming": { "map": { "b": { "value": "2", "hlc": "2", "update_id": "upd_b" } } },
+      "merged": {
+        "map": {
+          "a": { "value": "1", "hlc": "1", "update_id": "upd_a" },
+          "b": { "value": "2", "hlc": "2", "update_id": "upd_b" }
+        }
+      }
+    },
+    {
+      "name": "map union recurses on overlapping keys and leaves siblings untouched",
+      "existing": {
+        "map": {
+          "a": { "value": "old", "hlc": "1", "update_id": "upd_a" },
+          "b": { "value": "keep", "hlc": "1", "update_id": "upd_b" }
+        }
+      },
+      "incoming": { "map": { "a": { "value": "new", "hlc": "2", "update_id": "upd_c" } } },
+      "merged": {
+        "map": {
+          "a": { "value": "new", "hlc": "2", "update_id": "upd_c" },
+          "b": { "value": "keep", "hlc": "1", "update_id": "upd_b" }
+        }
+      }
+    },
+    {
+      "name": "nested map union",
+      "existing": {
+        "map": { "outer": { "map": { "x": { "value": "1", "hlc": "1", "update_id": "upd_a" } } } }
+      },
+      "incoming": {
+        "map": { "outer": { "map": { "y": { "value": "2", "hlc": "2", "update_id": "upd_b" } } } }
+      },
+      "merged": {
+        "map": {
+          "outer": {
+            "map": {
+              "x": { "value": "1", "hlc": "1", "update_id": "upd_a" },
+              "y": { "value": "2", "hlc": "2", "update_id": "upd_b" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "kind mismatch leaf replaced by map returns the incoming map",
+      "existing": { "value": "v", "hlc": "100", "update_id": "upd_a" },
+      "incoming": { "map": { "a": { "value": "v", "hlc": "1", "update_id": "upd_b" } } },
+      "merged": { "map": { "a": { "value": "v", "hlc": "1", "update_id": "upd_b" } } }
+    },
+    {
+      "name": "kind mismatch map replaced by leaf returns the incoming leaf",
+      "existing": { "map": { "a": { "value": "v", "hlc": "100", "update_id": "upd_a" } } },
+      "incoming": { "value": "v", "hlc": "1", "update_id": "upd_b" },
+      "merged": { "value": "v", "hlc": "1", "update_id": "upd_b" }
+    },
+    {
+      "name": "incoming tombstone wins over an older live value",
+      "existing": { "value": "live", "hlc": "1", "update_id": "upd_a" },
+      "incoming": { "value": null, "hlc": "2", "update_id": "upd_b" },
+      "merged": { "value": null, "hlc": "2", "update_id": "upd_b" }
+    },
+    {
+      "name": "incoming tombstone loses to a newer live value",
+      "existing": { "value": "live", "hlc": "2", "update_id": "upd_a" },
+      "incoming": { "value": null, "hlc": "1", "update_id": "upd_b" },
+      "merged": { "value": "live", "hlc": "2", "update_id": "upd_a" }
+    },
+    {
+      "name": "a later write beats an existing tombstone",
+      "existing": { "value": null, "hlc": "1", "update_id": "upd_a" },
+      "incoming": { "value": "live", "hlc": "2", "update_id": "upd_b" },
+      "merged": { "value": "live", "hlc": "2", "update_id": "upd_b" }
+    },
+    {
+      "name": "decimal-string HLCs compare numerically not lexicographically",
+      "existing": { "value": "old", "hlc": "9", "update_id": "upd_a" },
+      "incoming": { "value": "new", "hlc": "10", "update_id": "upd_b" },
+      "merged": { "value": "new", "hlc": "10", "update_id": "upd_b" }
+    }
+  ]
+}
