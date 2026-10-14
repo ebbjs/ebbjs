@@ -187,20 +187,34 @@ test.describe("conflict surfacing", () => {
     await drewPage.getByRole("button", { name: /Show conflicts/i }).click();
     await alicePage.getByRole("button", { name: /Show conflicts/i }).click();
 
-    // Lift the aborts and reconnect: catch-up pulls drew's committed
-    // Action; the detection pass stamps alice's buffered outbox row
-    // `conflicted`, which surfaces through `client.conflicts` before the
-    // flush gate reopens.
+    // Lift the live-stream abort and reconnect: catch-up pulls drew's
+    // committed Action over `/sync/groups`, the detection pass stamps
+    // alice's buffered outbox row `conflicted`, and it surfaces through
+    // `client.conflicts`. The write path stays aborted so the buffered
+    // loser is held: un-aborting `/sync/actions` would let the demo's
+    // periodic flush re-submit the held write and clear the conflict
+    // before the panel could be asserted against.
     await alicePage.unroute(/\/sync\/live/, abortLive);
-    await alicePage.unroute(/\/sync\/actions/, abortActions);
     await reconnect(alicePage);
 
     await expect
       .poll(async () => alicePage.locator("aside li").count(), { timeout: 30_000 })
       .toBeGreaterThanOrEqual(1);
 
+    // Both rows reach the panel, not just the losing slot: the field, its
+    // kind, and the pre-sync/post-sync run text.
+    const conflictItem = alicePage.locator("aside li").first();
+    await expect(conflictItem).toContainText("content");
+    await expect(conflictItem).toContainText("changed");
+    await expect(conflictItem).toContainText("HelloA");
+    await expect(conflictItem).toContainText("HelloD");
+
     // Drew, live throughout, merged and converged with nothing to surface.
     expect(await drewPage.locator("aside li").count()).toBe(0);
+
+    // Restore the write path so the held write resumes once the flush gate
+    // reopens, as it does outside this scenario.
+    await alicePage.unroute(/\/sync\/actions/, abortActions);
 
     await firstCtx.close();
     await secondCtx.close();
