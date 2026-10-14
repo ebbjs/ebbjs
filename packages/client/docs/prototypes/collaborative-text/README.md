@@ -1,6 +1,6 @@
 # Collaborative Text Prototype — Design Doc
 
-> **Status: Forward-looking — authoritative design for the next major piece of work.** The Elixir sync server (`ebb_server/`, slices 1–4), the `@ebbjs/core` package, and the in-memory `@ebbjs/storage` adapter are **shipped and tested**. The local-first sync SDK (`@ebbjs/client`) is a stub. A CodeMirror-based causal-tree POC exists in [`experiment/collaborative-text/`](../../../experiment/collaborative-text/) using `BroadcastChannel` as a stand-in for the server. This document describes the architecture and slice plan for shipping a working browser-based collaborative text prototype against `mix dev`, replacing the BroadcastChannel relay with the real Action / SSE / catch-up stack.
+> **Status: Forward-looking — authoritative design for the next major piece of work.** The Elixir sync server (`ebb_server/`, slices 1–4), the `@ebbjs/core` package, and the in-memory `@ebbjs/storage` adapter are **shipped and tested**. The local-first sync SDK (`@ebbjs/client`), the `@ebbjs/codemirror` bridge, and `examples/collaborative-text-demo` have since shipped too; treat the slice plan below as the original design record, superseded by the code where they disagree. A CodeMirror-based causal-tree POC exists in [`experiment/collaborative-text/`](../../../experiment/collaborative-text/) using `BroadcastChannel` as a stand-in for the server. This document describes the architecture and slice plan for shipping a working browser-based collaborative text prototype against `mix dev`, replacing the BroadcastChannel relay with the real Action / SSE / catch-up stack.
 
 ## Goal
 
@@ -62,52 +62,17 @@ Same reason. No schema builder until we have a second model. The client hardcode
 
 ### Decision 4 — Conflict surfacing API
 
-**Provide both event-based and query-based APIs.** Detection rule below.
+> **Superseded and shipped.** The earlier sketch that snapshotted the tree and stored both versions was replaced by the model in epic [#389](https://github.com/ebbjs/ebbjs/issues/389): catch-up detection with a declared scope ([#390](https://github.com/ebbjs/ebbjs/issues/390)) and the entity-level `Conflict` surface with `retry` / `discard` ([#392](https://github.com/ebbjs/ebbjs/issues/392)). The authoritative source is `packages/client/src/sync/conflicts.ts`; the design write-up is [#394](https://github.com/ebbjs/ebbjs/issues/394).
 
-#### Detection rule
+What shipped differs from the old sketch in ways worth naming:
 
-A "conflict" is recorded when **all** of these are true:
-
-1. Two or more Updates target the **same RunNode** (or its split descendants).
-2. Those Updates have **concurrent HLCs** — neither strictly happens-before the other (i.e., not sequential edits on your own run).
-3. The Updates are **non-trivial** — both modify content (insert or extend), not just split or tombstone.
-
-Happens-before: HLC `a` happens-before `b` iff `a.l < b.l`, OR (`a.l == b.l` AND `a.c <= b.c`). Concurrent = neither happens-before the other.
-
-This filters out boring sequential edits (typing at the end of your own run, then someone else types after) and surfaces the real "surprising merge" cases like the Colour scenario.
-
-#### API shape
-
-```ts
-type Conflict = {
-  readonly id: string;
-  readonly entityId: string;
-  readonly field: string;
-  readonly detectedAt: number;
-  readonly preMerge: RunSnapshot;            // tree state BEFORE merging contributing actions
-  readonly postMerge: RunSnapshot;           // tree state AFTER merging
-  readonly contributingActions: readonly Action[];
-};
-
-// Event-based — for UI:
-client.conflicts.onChange((entries) => { ... });
-
-// Query-based — for tests and debugging:
-// client.conflicts.list() returns the losing Actions and their lost slots.
-client.conflicts.list();
-```
-
-Conflicts live **in-memory on the tree**, not in the storage adapter. Rationale: the action log is the source of truth for _what happened_; conflicts are derived metadata. The server doesn't need to know about them. Re-deriving on reload is cheap (walk the action log, apply the detection rule). If we want conflicts to survive a reload later, we can persist them in `localStorage`.
-
-#### UI behavior
-
-For each conflict, show:
-
-- The pre-merge text and the post-merge text (small diff)
-- Who contributed which edits (actor IDs + HLCs)
-- Buttons: "Dismiss" / "Revert to pre-merge"
-
-For the prototype: small panel listing the last N conflicts with a "dismiss" button. The framework records and exposes the info; the app decides what to do.
+- **Detection is catch-up only.** Live sync is pure convergence. A reconnect runs one detection pass over the whole missed window, before the flush gate reopens, at the catch-up call site — not `connectionState`.
+- **A detected loser is a `conflicted` status plus payload on its own outbox row.** There is no separate conflict store and no persisted before/after tree snapshots; the optimistic apply already left the local tree, and the losing Action is held for resolution.
+- **Granularity is declared per entity.** `conflictScope: "field" | "entity"` (default `"field"`), set on the entity or via `e.collaborativeText({ conflictScope })`. The position unit is the generic map-key recursion, so one `content[runId]` is one position and sibling run keys never conflict.
+- **Concurrency comes from the server sequence, not HLC.** A buffered write records `basedOnGsn`; a missed Action is concurrent when its GSN is higher. HLC stays the merge rule, so a lower-HLC concurrent write still surfaces.
+- **The application surface is entity-level.** `client.conflicts.list()` / `onChange()` deliver `Conflict[]` (grouped by the durable `conflictId`), `count()` counts conflicts, and `resolve(conflictId, "retry" | "discard")` / `resolveEntries(entryIds, ...)` resolve them, returning `{ resolved, failed }`. Each position exposes `remoteWins()` so an app can act only when its value would lose.
+- **Pre-sync capture is separate.** `client.snapshots` ([#395](https://github.com/ebbjs/ebbjs/issues/395)) captures the entity's row before the merge, so an app can preserve it.
+- **"Snapshot" now means the pre-sync entity capture**, not the rejected per-entity compaction primitive from [#141](https://github.com/ebbjs/ebbjs/issues/141).
 
 ### Decision 5 — Persistence is deferred
 
@@ -257,15 +222,7 @@ Where `formatHlc(hlc)` is `@ebbjs/core`'s `HLCTimestamp`-string formatter. The `
 
 After this change, a run's `parentId` references another run's `<packed-hlc-bignum>:<actor_id>` ID. The deterministic-split ID generator in `experiment/causal-tree.ts:342` (`makeSplitId`) needs the same format.
 
-**Conflict surfacing in the merge path.** When the reducer applies an incoming action to the tree:
-
-1. Check if the action targets a RunNode that another in-flight or recently-merged action also touched
-2. If yes, snapshot the pre-merge tree state
-3. Apply the merge
-4. Record a `Conflict` record with pre/post snapshots and the contributing actions
-5. Surface the losing Action through `client.conflicts` (the outbox's per-slot comparison owns run-field conflicts)
-
-The detection uses the rule from Decision 4. Implementation: in the reducer, before applying a non-trivial Update to a RunNode, check if the RunNode was modified by another action whose HLC is concurrent with this one. If yes, flag.
+**Conflict surfacing is outbox-owned, not merge-path.** Detection does not run while the reducer applies live Actions — live sync is pure convergence. On reconnect, the outbox runs one detection pass over the missed catch-up window and holds each concurrent loser as a `conflicted` row. The generic map-key recursion is the position unit, so a same-run race is one slot and a different-run write never conflicts. See epic [#389](https://github.com/ebbjs/ebbjs/issues/389) and `packages/client/src/sync/conflicts.ts`.
 
 ### Demo app (`examples/collaborative-text-demo/`)
 
@@ -281,7 +238,7 @@ New package. Vite + React 19 + CodeMirror 6 + Tailwind, matching the POC stack. 
 
 **Connection state indicator** (small badge in the corner): connecting → live → reconnecting → offline.
 
-**Conflict panel** (collapsible right sidebar): shows the last N conflicts with pre/post text and a dismiss button.
+**Conflict panel** (collapsible right sidebar): shows the entity-level conflicts, each with its contested positions and a retry / discard action.
 
 **Why this stack.** React 19 + Vite matches what the POC uses. CodeMirror 6 is the right editor for showing the actual document state (the POC already proved it works). Tailwind is a one-line config add.
 
@@ -360,9 +317,9 @@ const unsubscribe = doc.onUpdate((update) => {
 });
 
 // Listen for conflicts through the client's durable conflict surface
-client.conflicts.onChange((entries) => {
-  // entries: ConflictEntry[] — losing Action + lost slots
-  showInConflictPanel(entries);
+client.conflicts.onChange((conflicts) => {
+  // conflicts: Conflict[] — entity-level, grouped by conflictId
+  showInConflictPanel(conflicts);
 });
 
 // Local edit (optimistic)
@@ -431,7 +388,7 @@ Five vertical slices, ordered by what unblocks what. Each slice ends with a runn
 4. `client.textDocument(docId)` → returns the `TextDocument` instance (the TextDocument is NOT auto-wired to the SSE stream — callers pipe incoming Actions into `doc.applyActions()` themselves; see `SyncClient.subscribe` docs)
 5. `doc.localInsert()` / `doc.localDelete()` → create an Action with the right Update, apply locally, mark pending for `client.write()`
 6. `doc.onUpdate()` event for incoming Updates (after local materialization)
-7. Conflict detection in the merge path (Decision 4)
+7. Conflict detection on catch-up (Decision 4) — shipped under #389 / #390
 8. `client.conflicts` surface (losing Actions + lost slots, with retry / discard)
 9. Tests: port `experiment/collaborative-text/src/__tests__/` to `packages/client/src/fields/collaborative-text/__tests__/`, add network-driven tests using a mock SSE source. **Verify the run-ID-format change preserves test expectations.**
 
@@ -491,7 +448,7 @@ When this work starts, the likely touch points are:
 packages/core/src/fields/collaborative-text.ts        # new — type marker (~10 lines)
 packages/core/src/index.ts                              # modify — export e.collaborativeText()
 
-packages/client/                                        # currently a stub; becomes the sync SDK
+packages/client/                                        # the sync SDK (shipped)
 packages/client/src/sync/                               # new — handshake, catchUp, subscribe, write
 packages/client/src/sync/client.ts                     # new — SyncClient
 packages/client/src/sync/sse.ts                        # new — SSE parsing (uses native EventSource)
@@ -500,7 +457,7 @@ packages/client/src/fields/                             # new — field type imp
 packages/client/src/fields/collaborative-text/         # new — port causal-tree.ts here
 packages/client/src/fields/collaborative-text/tree.ts  # port of experiment/causal-tree.ts
 packages/client/src/fields/collaborative-text/types.ts # RunNode, Conflict, etc.
-packages/client/src/sync/conflicts.ts                 # client.conflicts — durable conflict store + resolution
+packages/client/src/sync/conflicts.ts                 # client.conflicts — conflicted outbox rows + resolution
 packages/client/src/fields/collaborative-text/text-document.ts  # new — client.textDocument(docId) API + Registry
 packages/client/src/presence/                          # new — port of experiment/presence.ts (slice 3 optional)
 packages/client/src/presence/presence.ts               # PresenceData, positionToRunRef, runRefToPosition, usePresence
@@ -548,7 +505,7 @@ These came up during design but don't block the prototype. Resolve during or aft
 
 5. ~~HLC for the run ID~~ **PARTIALLY RESOLVED.** Run IDs derived from HLC is correct (the POC does this). The mismatch is the _format_: POC uses string `{15-digit-ts}:{5-digit-count}:{peerId}`, production uses packed bigint `(logical_time << 16) | counter` plus a separate `actor_id`. Resolution is in slice 2 task 2 (see CausalTree component design): change run ID to `${formatHlc(hlc)}:${actor_id}` using production's HLC string formatter. Merge logic is unchanged.
 
-6. **Per-action conflict detection vs batch.** The detection rule fires on each incoming Action. But sometimes a single Action with multiple Updates is internally consistent (one Update's HLC dominates another's by construction). The detection should only fire when _concurrent_ Actions both touch the same run. Implementation: track a small "recently applied per-run" map with the HLC of the last update; an incoming Action with concurrent HLC to that triggers detection.
+6. ~~Per-action conflict detection vs batch~~ **RESOLVED.** Detection is not in the merge path at all. Live sync is pure convergence; the outbox runs one detection pass over the missed catch-up window, keyed on the server GSN base (`basedOnGsn`) rather than HLC. See epic [#389](https://github.com/ebbjs/ebbjs/issues/389) and Decision 4.
 
 ---
 
