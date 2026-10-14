@@ -1303,6 +1303,7 @@ describe("SyncClient.sync observables", () => {
       error: 0,
       conflicted: 0,
       flushLatency: null,
+      storeFaults: 0,
     });
 
     await client.write([writeAction("act_1")]);
@@ -1366,7 +1367,14 @@ describe("SyncClient.status (#371)", () => {
     expect(client.status.get()).toEqual({
       connection: "connecting",
       lastSyncedAt: null,
-      outbox: { pending: 0, acknowledged: 0, error: 0, conflicted: 0, flushLatency: null },
+      outbox: {
+        pending: 0,
+        acknowledged: 0,
+        error: 0,
+        conflicted: 0,
+        flushLatency: null,
+        storeFaults: 0,
+      },
       conflicts: { count: 0, conflicts: [] },
     });
   });

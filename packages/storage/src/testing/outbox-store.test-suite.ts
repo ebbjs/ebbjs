@@ -66,6 +66,27 @@ export const defineOutboxStoreTests = ({ name, factory }: OutboxStoreTestSuiteOp
       });
     });
 
+    describe("putAndDelete", () => {
+      it("persists the replacement and removes the deleted row in one write", async () => {
+        const { store } = await factory();
+        await store.put(mkEntry("a_old", 1, "conflicted", 7, buildOutboxConflict()));
+
+        await store.putAndDelete(mkEntry("a_new", 2, "pending"), "a_old");
+
+        expect(await store.get("a_old")).toBe(null);
+        expect(await store.get("a_new")).toEqual(mkEntry("a_new", 2, "pending"));
+        expect(await store.list()).toHaveLength(1);
+      });
+
+      it("is a no-op for an unknown delete id", async () => {
+        const { store } = await factory();
+
+        await store.putAndDelete(mkEntry("a_new", 1), "a_missing");
+
+        expect(await store.get("a_new")).toEqual(mkEntry("a_new", 1));
+      });
+    });
+
     describe("list", () => {
       it("returns an empty list when nothing was put", async () => {
         const { store } = await factory();

@@ -20,6 +20,7 @@ const emptyOutbox = (): OutboxSnapshot => ({
   error: 0,
   conflicted: 0,
   flushLatency: null,
+  storeFaults: 0,
 });
 
 const emptyConflicts = (): ConflictSnapshot => ({ count: 0, conflicts: [] });
@@ -53,7 +54,14 @@ describe("createClientStatus", () => {
     expect(status.get()).toEqual({
       connection: "connecting",
       lastSyncedAt: null,
-      outbox: { pending: 0, acknowledged: 0, error: 0, conflicted: 0, flushLatency: null },
+      outbox: {
+        pending: 0,
+        acknowledged: 0,
+        error: 0,
+        conflicted: 0,
+        flushLatency: null,
+        storeFaults: 0,
+      },
       conflicts: { count: 0, conflicts: [] },
     });
   });
@@ -69,6 +77,7 @@ describe("createClientStatus", () => {
       error: 3,
       conflicted: 4,
       flushLatency: 25,
+      storeFaults: 0,
     };
     outbox.set(next);
 
@@ -133,7 +142,14 @@ describe("createClientStatus", () => {
     const unsubscribe = status.subscribe(listener);
 
     unsubscribe();
-    outbox.set({ pending: 1, acknowledged: 0, error: 0, conflicted: 0, flushLatency: null });
+    outbox.set({
+      pending: 1,
+      acknowledged: 0,
+      error: 0,
+      conflicted: 0,
+      flushLatency: null,
+      storeFaults: 0,
+    });
 
     expect(listener).not.toHaveBeenCalled();
   });

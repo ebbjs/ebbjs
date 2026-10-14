@@ -109,7 +109,7 @@ const mkOutbox = (initial: readonly ConflictedOutboxEntry[] = []) => {
 interface Harness {
   deps: ConflictsDependencies;
   outbox: ReturnType<typeof mkOutbox>;
-  requeue: Mock;
+  retry: Mock;
   reMaterialize: Mock;
   stampAction: Mock;
   releaseSubjects: Mock;
@@ -118,7 +118,11 @@ interface Harness {
 const mkDeps = (initial: readonly ConflictedOutboxEntry[] = []): Harness => {
   const outbox = mkOutbox(initial);
   let tick = 0;
-  const requeue = vi.fn(async (_action: Action): Promise<void> => {});
+  const retry = vi.fn(async (originalId: string, _action: Action): Promise<void> => {
+    // The real outbox replaces the conflicted row with the re-assert in one
+    // write; the fake just drops it, which is the same visible transition.
+    await outbox.clearConflict(originalId);
+  });
   const reMaterialize = vi.fn(async (_action: Action): Promise<void> => {});
   const releaseSubjects = vi.fn((_subjectIds: readonly string[]): void => {});
   const stampAction = vi.fn(
@@ -132,13 +136,13 @@ const mkDeps = (initial: readonly ConflictedOutboxEntry[] = []): Harness => {
   );
   return {
     outbox,
-    requeue,
+    retry,
     reMaterialize,
     stampAction,
     releaseSubjects,
     deps: {
       outbox,
-      requeue,
+      retry,
       reMaterialize,
       releaseSubjects,
       stampAction,
@@ -213,8 +217,9 @@ describe("createConflicts", () => {
     const result = await conflicts.resolve("c_act_local", "retry");
 
     expect(result).toEqual({ resolved: ["act_local"], failed: [] });
-    expect(harness.requeue).toHaveBeenCalledTimes(1);
-    const rebased = harness.requeue.mock.calls[0]?.[0] as Action;
+    expect(harness.retry).toHaveBeenCalledTimes(1);
+    expect(harness.retry.mock.calls[0]?.[0]).toBe("act_local");
+    const rebased = harness.retry.mock.calls[0]?.[1] as Action;
     expect(rebased.id).toBe("act_rebased");
     expect(rebased.updates[0]?.method).toBe("patch");
     expect(rebased.updates[0]?.subject_id).toBe("todo_1");
@@ -255,7 +260,7 @@ describe("createConflicts", () => {
 
     await conflicts.resolve("c_act_local", "retry");
 
-    const rebased = harness.requeue.mock.calls[0]?.[0] as Action;
+    const rebased = harness.retry.mock.calls[0]?.[1] as Action;
     expect(rebased.updates).toHaveLength(1);
     const fields = rebased.updates[0]?.data?.fields ?? {};
     expect(Object.keys(fields).sort()).toEqual(["completed", "title"]);
@@ -303,7 +308,7 @@ describe("createConflicts", () => {
 
     await conflicts.resolve("c_act_local", "retry");
 
-    const rebased = harness.requeue.mock.calls[0]?.[0] as Action;
+    const rebased = harness.retry.mock.calls[0]?.[1] as Action;
     const content = rebased.updates[0]?.data?.fields.content;
     if (content === undefined || !("map" in content)) throw new Error("expected a map field");
     expect(Object.keys(content.map).sort()).toEqual(["a", "b"]);
@@ -322,7 +327,7 @@ describe("createConflicts", () => {
 
     expect(result).toEqual({ resolved: ["act_local"], failed: [] });
     expect(harness.reMaterialize).toHaveBeenCalledWith(row.action);
-    expect(harness.requeue).not.toHaveBeenCalled();
+    expect(harness.retry).not.toHaveBeenCalled();
     expect(harness.outbox.rows).toEqual([]);
     expect(conflicts.count()).toBe(0);
   });
@@ -354,14 +359,14 @@ describe("createConflicts", () => {
 
     expect(await conflicts.resolve("c_missing", "retry")).toEqual({ resolved: [], failed: [] });
 
-    expect(harness.requeue).not.toHaveBeenCalled();
+    expect(harness.retry).not.toHaveBeenCalled();
     expect(harness.reMaterialize).not.toHaveBeenCalled();
   });
 
   it("reports a failed entry and leaves it resolvable under the same conflictId", async () => {
     const harness = mkDeps([mkRow("act_local", "5")]);
     const error = new Error("outbox unavailable");
-    harness.requeue.mockRejectedValueOnce(error);
+    harness.retry.mockRejectedValueOnce(error);
     const { conflicts } = createConflicts(harness.deps);
     await conflicts.rehydrate();
 
@@ -380,7 +385,7 @@ describe("createConflicts", () => {
       mkRow("act_a", "1", { conflictId: "c_shared" }),
       mkRow("act_b", "2", { conflictId: "c_shared" }),
     ]);
-    harness.requeue.mockRejectedValueOnce(new Error("first failed"));
+    harness.retry.mockRejectedValueOnce(new Error("first failed"));
     const { conflicts } = createConflicts(harness.deps);
     await conflicts.rehydrate();
 

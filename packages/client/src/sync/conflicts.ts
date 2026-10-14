@@ -199,10 +199,11 @@ export interface ConflictsDependencies {
   /** The outbox whose conflicted rows this view projects. */
   outbox: ConflictOutbox;
   /**
-   * Re-enqueue a freshly-stamped losing Action on the pending write path:
-   * durable, optimistically applied, and scheduled to flush.
+   * Replace a conflicted outbox row with its freshly-stamped re-assert in
+   * one durable write: durable, optimistically applied, and scheduled to
+   * flush.
    */
-  requeue(action: Action): Promise<void>;
+  retry(originalId: string, action: Action): Promise<void>;
   /**
    * Drop a losing Action's optimistic writes and re-materialize every
    * entity it touched from the action log.
@@ -402,13 +403,14 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
 
   const applyOne = async (entry: ConflictEntry, resolution: ConflictResolution): Promise<void> => {
     if (resolution === "retry") {
-      // Enqueue before clearing: a durable-buffer failure must leave the
-      // conflict resolvable rather than drop the user's write.
-      await deps.requeue(restampAction(entry.action, deps));
+      // The outbox replaces the conflicted row with the fresh re-assert in
+      // one durable write, so a failure leaves the conflict resolvable
+      // rather than enqueuing a duplicate the next attempt would repeat.
+      await deps.retry(entry.action.id, restampAction(entry.action, deps));
     } else {
       await deps.reMaterialize(entry.action);
+      await deps.outbox.clearConflict(entry.action.id);
     }
-    await deps.outbox.clearConflict(entry.action.id);
   };
 
   /**

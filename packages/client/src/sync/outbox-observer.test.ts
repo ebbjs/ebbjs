@@ -7,7 +7,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 
-import type { OutboxChangeListener, OutboxCounts } from "./outbox";
+import type { OutboxChangeListener, OutboxCounts, StoreFaultListener } from "./outbox";
 import { createOutboxObserver, type OutboxSnapshot } from "./outbox-observer";
 
 /** The count defaults; a test overrides only the depth it drives. */
@@ -23,8 +23,10 @@ const counts = (overrides: Partial<OutboxCounts> = {}): OutboxCounts => ({
 const mkHarness = () => {
   let current: OutboxCounts = counts();
   let latency: number | null = null;
+  let faults = 0;
   const countListeners = new Set<OutboxChangeListener>();
   const latencyListeners = new Set<(latency: number) => void>();
+  const faultListeners = new Set<StoreFaultListener>();
 
   const observer = createOutboxObserver({
     outbox: {
@@ -33,6 +35,13 @@ const mkHarness = () => {
         countListeners.add(listener);
         return () => {
           countListeners.delete(listener);
+        };
+      },
+      storeFaults: () => faults,
+      onStoreFault: (listener) => {
+        faultListeners.add(listener);
+        return () => {
+          faultListeners.delete(listener);
         };
       },
     },
@@ -55,6 +64,10 @@ const mkHarness = () => {
       latency = next;
       for (const listener of latencyListeners) listener(next);
     },
+    raiseFault: (actionId = "a_1"): void => {
+      faults += 1;
+      for (const listener of faultListeners) listener({ actionId, error: new Error("store down") });
+    },
   };
 };
 
@@ -62,13 +75,14 @@ describe("createOutboxObserver", () => {
   it("reads the composed snapshot from both sources", () => {
     const { observer, setCounts, setLatency } = mkHarness();
 
-    expect(observer.get()).toEqual({ ...counts(), flushLatency: null });
+    expect(observer.get()).toEqual({ ...counts(), flushLatency: null, storeFaults: 0 });
 
     setCounts(counts({ pending: 2, acknowledged: 1, error: 1, conflicted: 1 }));
     setLatency(12);
     expect(observer.get()).toEqual({
       ...counts({ pending: 2, acknowledged: 1, error: 1, conflicted: 1 }),
       flushLatency: 12,
+      storeFaults: 0,
     });
   });
 
@@ -81,7 +95,7 @@ describe("createOutboxObserver", () => {
     setCounts(counts({ pending: 1 }));
     const second = observer.get();
     expect(second).not.toBe(first);
-    expect(second).toEqual({ ...counts({ pending: 1 }), flushLatency: null });
+    expect(second).toEqual({ ...counts({ pending: 1 }), flushLatency: null, storeFaults: 0 });
   });
 
   it("drops a source event that leaves the composed snapshot unchanged", () => {
@@ -107,9 +121,20 @@ describe("createOutboxObserver", () => {
     setLatency(7);
 
     expect(seen).toEqual([
-      { ...counts({ pending: 3 }), flushLatency: null },
-      { ...counts({ pending: 3 }), flushLatency: 7 },
+      { ...counts({ pending: 3 }), flushLatency: null, storeFaults: 0 },
+      { ...counts({ pending: 3 }), flushLatency: 7, storeFaults: 0 },
     ]);
+  });
+
+  it("surfaces a store fault without a depth change", () => {
+    const { observer, raiseFault } = mkHarness();
+    const listener = vi.fn();
+    observer.subscribe(listener);
+
+    raiseFault("a_1");
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(observer.get().storeFaults).toBe(1);
   });
 
   it("notifies on a conflict-count change with no pending change", () => {

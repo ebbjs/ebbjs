@@ -241,6 +241,22 @@ export interface OutboxCounts {
 export type OutboxChangeListener = (counts: OutboxCounts) => void;
 
 /**
+ * A durable store fault on a status transition the buffer could not
+ * complete. The in-memory buffer is the session's source of truth, so the
+ * entry keeps its status; the fault is surfaced (log + counter + stream)
+ * rather than swallowed, because the transition will not survive a reload.
+ */
+export interface StoreFault {
+  /** The Action whose durable transition faulted. */
+  readonly actionId: string;
+  /** The store error. */
+  readonly error: unknown;
+}
+
+/** Fired after each durable store fault. */
+export type StoreFaultListener = (fault: StoreFault) => void;
+
+/**
  * The write-buffer surface. `counts()` / `onChange()` are the
  * observability hooks the telemetry sub-issue (#125) builds on.
  */
@@ -284,6 +300,19 @@ export interface Outbox {
    */
   onChange(listener: OutboxChangeListener): () => void;
   /**
+   * Cumulative count of durable store faults the buffer has reported.
+   * Non-zero means at least one status transition did not reach the
+   * store and will not survive a reload. Exposed as
+   * `client.sync.outbox.storeFaults`.
+   */
+  storeFaults(): number;
+  /**
+   * Subscribe to durable store faults. Returns an unsubscribe function;
+   * listeners are isolated. Fires only on a fault, never on
+   * subscription — read {@link storeFaults} for the current count.
+   */
+  onStoreFault(listener: StoreFaultListener): () => void;
+  /**
    * Load persisted entries into the in-memory queue. Runs eagerly at
    * construction as a single-flight operation (idempotent); returns
    * that same promise so callers can await it. Every status is loaded:
@@ -319,6 +348,13 @@ export interface Outbox {
    * unknown or non-errored id.
    */
   clearError(actionId: string): Promise<void>;
+  /**
+   * Replace a conflicted row with a freshly-stamped re-assert in one
+   * durable write (`putAndDelete`), so a failure leaves the conflict
+   * resolvable instead of enqueuing a duplicate on the next retry. A
+   * no-op for an unknown or non-conflicted id.
+   */
+  retryConflicted(originalId: string, action: Action): Promise<void>;
   /**
    * Delete a conflicted entry from memory and the store without
    * touching the local cache. `resolve`'s discard path re-materializes
@@ -371,6 +407,8 @@ export interface Outbox {
 export function createOutbox(deps: OutboxDependencies): Outbox {
   let entries: readonly OutboxEntry[] = [];
   let rehydration: Promise<void> | null = null;
+  let storeFaultCount = 0;
+  const storeFaultListeners = new Set<StoreFaultListener>();
   const countsSource = createObservable<OutboxCounts>({
     pending: 0,
     acknowledged: 0,
@@ -412,6 +450,22 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     countsSource.set(snapshot);
   };
 
+  /**
+   * Surface a durable store fault. Silence here would hide a transition
+   * the next reload loses.
+   */
+  const reportStoreFault = (actionId: string, error: unknown): void => {
+    storeFaultCount += 1;
+    console.error(`[Outbox] durable store fault for ${actionId}:`, error);
+    for (const listener of storeFaultListeners) {
+      try {
+        listener({ actionId, error });
+      } catch (listenerError) {
+        console.error("[Outbox] store-fault listener threw:", listenerError);
+      }
+    }
+  };
+
   const rehydrate = (): Promise<void> => {
     rehydration ??= deps.store
       .list()
@@ -450,6 +504,28 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     // Notify before the optimistic apply resolves: the entry is already
     // durable and buffered, so subscribers must see the depth even if the
     // apply throws and `enqueue` rejects.
+    emit();
+    await deps.applyOptimistic(action);
+  };
+
+  /**
+   * Replace a conflicted row with a fresh pending re-assert in one durable
+   * write. Memory changes only after the store commits, so a store failure
+   * leaves the conflict exactly as it was — resolvable by a later retry,
+   * with no half-enqueued duplicate. A no-op when the id is not a
+   * conflicted row.
+   */
+  const retryConflicted = async (originalId: string, action: Action): Promise<void> => {
+    await rehydrate();
+    const original = entries.find(
+      (candidate) => candidate.action.id === originalId && candidate.status === "conflicted",
+    );
+    if (original === undefined) return;
+    const enqueuedAtHlc = deps.hlc();
+    const basedOnGsn = deps.baseGsn();
+    const next: OutboxEntry = { action, status: "pending", enqueuedAtHlc, basedOnGsn };
+    await deps.store.putAndDelete(next, originalId);
+    entries = [...entries.filter((candidate) => candidate.action.id !== originalId), next];
     emit();
     await deps.applyOptimistic(action);
   };
@@ -609,9 +685,10 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
    * Stamp one detected loser `conflicted` with its payload. Memory
    * transitions before the durable write, so a failed write cannot leave
    * the entry flushable: `pending()` and `runFlush` read the in-memory
-   * status, which is the gate. The one durable write is best-effort like
-   * the echo leg, so a store fault leaves the row at its prior status for
-   * a later transition rather than aborting the sweep.
+   * status, which is the gate. The durable write is best-effort so one
+   * store fault does not abort the rest of the sweep; the fault is
+   * surfaced through `storeFaults` (the row keeps its prior durable
+   * status, so the hold lasts only this session).
    */
   const markConflicted = async (actionId: string, conflict: OutboxConflict): Promise<void> => {
     const entry = entries.find((candidate) => candidate.action.id === actionId);
@@ -622,11 +699,14 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
         : candidate,
     );
     emit();
-    await deps.store.put({ ...entry, status: "conflicted", conflict }).catch(() => {
-      // The in-memory hold is the durable-enough guarantee for this
-      // session; a store fault is left for a later detection pass to
-      // retry rather than aborting the rest of the sweep.
-    });
+    try {
+      await deps.store.put({ ...entry, status: "conflicted", conflict });
+    } catch (error) {
+      // The in-memory hold keeps the loser off the wire for this session;
+      // the durable row keeps its prior status, so the fault is surfaced
+      // for telemetry rather than silently lost.
+      reportStoreFault(actionId, error);
+    }
   };
 
   const detectConflicts = async (
@@ -735,8 +815,14 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     size: (status: OutboxStatus = "pending") => counts()[status],
     counts,
     onChange: (listener) => countsSource.subscribe(listener),
+    storeFaults: () => storeFaultCount,
+    onStoreFault: (listener) => {
+      storeFaultListeners.add(listener);
+      return () => storeFaultListeners.delete(listener);
+    },
     flush,
     retry,
+    retryConflicted,
     clearError,
     clearConflict,
     matchEcho,

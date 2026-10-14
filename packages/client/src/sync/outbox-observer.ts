@@ -22,6 +22,8 @@ import { createObservable, type ReadonlyObservable } from "./observable";
 export interface OutboxSnapshot extends OutboxCounts {
   /** Wall time of the most recent resolved flush, or `null` before one. */
   readonly flushLatency: number | null;
+  /** Cumulative durable store faults the buffer has reported. */
+  readonly storeFaults: number;
 }
 
 /** Fired with the new snapshot whenever depth or latency changes. */
@@ -33,7 +35,7 @@ export type OutboxObserver = ReadonlyObservable<OutboxSnapshot>;
 /** Collaborators the observer composes. Both are read-only seams. */
 export interface OutboxObserverDependencies {
   /** Depth source: the write buffer's counts and change stream. */
-  outbox: Pick<Outbox, "counts" | "onChange">;
+  outbox: Pick<Outbox, "counts" | "onChange" | "storeFaults" | "onStoreFault">;
   /** Latency source: the scheduler's most recent flush time. */
   flushLatency: () => number | null;
   /** The latency source's change stream. */
@@ -52,7 +54,11 @@ export interface OutboxObserverDependencies {
 export function createOutboxObserver(deps: OutboxObserverDependencies): OutboxObserver {
   const readSnapshot = (): OutboxSnapshot => {
     const counts: OutboxCounts = deps.outbox.counts();
-    return { ...counts, flushLatency: deps.flushLatency() };
+    return {
+      ...counts,
+      flushLatency: deps.flushLatency(),
+      storeFaults: deps.outbox.storeFaults(),
+    };
   };
 
   const observable = createObservable<OutboxSnapshot>(readSnapshot());
@@ -69,7 +75,8 @@ export function createOutboxObserver(deps: OutboxObserverDependencies): OutboxOb
       next.acknowledged === current.acknowledged &&
       next.error === current.error &&
       next.conflicted === current.conflicted &&
-      next.flushLatency === current.flushLatency
+      next.flushLatency === current.flushLatency &&
+      next.storeFaults === current.storeFaults
     ) {
       return;
     }
@@ -77,6 +84,7 @@ export function createOutboxObserver(deps: OutboxObserverDependencies): OutboxOb
   };
 
   deps.outbox.onChange(refresh);
+  deps.outbox.onStoreFault(refresh);
   deps.onFlushLatency(refresh);
 
   return observable;

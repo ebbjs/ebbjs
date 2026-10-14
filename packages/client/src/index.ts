@@ -90,6 +90,8 @@ export {
   type OutboxStatus,
   type OutboxCounts,
   type OutboxChangeListener,
+  type StoreFault,
+  type StoreFaultListener,
   type FlushOutcome,
 } from "./sync/outbox";
 

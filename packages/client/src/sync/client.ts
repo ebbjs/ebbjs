@@ -291,7 +291,7 @@ export class SyncClient implements PermissionQuery {
     // them back through the same outbox transition it reads.
     const { conflicts, observable: conflictsObservable } = createConflicts({
       outbox: this.outbox,
-      requeue: (action) => this.requeueRebased(action),
+      retry: (originalId, action) => this.retryConflicted(originalId, action),
       reMaterialize: (action) => this.reMaterializeFromLog(action),
       releaseSubjects: (subjectIds) => this.snapshotManager.releaseMany(subjectIds),
       stampAction: (updates) =>
@@ -1374,15 +1374,16 @@ export class SyncClient implements PermissionQuery {
   }
 
   /**
-   * Re-enqueue a rebased losing Action on the pending write path: durably
-   * buffered, optimistically applied, and scheduled to flush. Validation
-   * is skipped — the Action was already accepted into the Outbox before
-   * detection, so a schema drift since then is not a reason to refuse the
-   * application's explicit retry. An `unreachable` first attempt is not
-   * surfaced: the entry is durable, and the scheduler owns the retry.
+   * Replace a losing Action's conflicted row with its freshly-stamped
+   * re-assert in one durable store write, then schedule the flush.
+   * Validation is skipped — the Action was already accepted into the
+   * Outbox before detection, so a schema drift since then is not a reason
+   * to refuse the application's explicit retry. An `unreachable` first
+   * attempt is not surfaced: the entry is durable, and the scheduler owns
+   * the retry.
    */
-  private async requeueRebased(action: Action): Promise<void> {
-    await this.outbox.enqueue(action);
+  private async retryConflicted(originalId: string, action: Action): Promise<void> {
+    await this.outbox.retryConflicted(originalId, action);
     await this.flushScheduler.schedule();
   }
 

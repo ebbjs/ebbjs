@@ -19,6 +19,11 @@ export const createMemoryOutboxStore = (): OutboxStore => {
       entries = { ...entries, [entry.action.id]: structuredClone(entry) };
     },
 
+    async putAndDelete(entry: OutboxEntry, deleteId: string): Promise<void> {
+      const { [deleteId]: _removed, ...rest } = entries;
+      entries = { ...rest, [entry.action.id]: structuredClone(entry) };
+    },
+
     async list(): Promise<readonly OutboxEntry[]> {
       return Object.values(entries)
         .map((entry) => structuredClone(entry))
