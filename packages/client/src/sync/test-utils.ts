@@ -157,3 +157,20 @@ export function makeStreamingFetch(
     typeof fetch;
   return { fn, calls };
 }
+
+/**
+ * Poll `predicate` until it holds, or throw after `timeoutMs`. Waiting on
+ * the durable store beats a fixed sleep, which couples a test to
+ * scheduler timing.
+ */
+export const waitFor = async (
+  predicate: () => Promise<boolean> | boolean,
+  timeoutMs = 2_000,
+): Promise<void> => {
+  const started = Date.now();
+  for (;;) {
+    if (await predicate()) return;
+    if (Date.now() - started > timeoutMs) throw new Error("waitFor timed out");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+};

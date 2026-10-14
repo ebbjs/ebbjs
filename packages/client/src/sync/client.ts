@@ -266,14 +266,31 @@ export class SyncClient implements PermissionQuery {
       read: (entityId) => this.storage.entities.get(entityId),
     });
     this.snapshots = this.snapshotManager.snapshots;
-    // The manager is also the ConflictStore the Outbox writes through, so
-    // a detection lands in its cache and fires `onChange` without a poll.
-    const {
-      conflicts,
-      store: conflictStore,
-      observable: conflictsObservable,
-    } = createConflicts({
-      store: this.storage.conflicts,
+    // The outbox owns the whole write lifecycle, including a detected
+    // conflict: a loser is a status + payload on its own row, so detection
+    // is one durable write and the flush path holds it structurally.
+    this.outbox = createOutbox({
+      applyOptimistic: (action) => this.applyLocalAction(action),
+      submit: (actions) => this.submitActions(actions),
+      store: this.storage.outbox,
+      // Field markers are the schema's word on merge semantics. A client
+      // without a schema has no markers, so every non-structural field is
+      // treated as LWW (the conservative default for conflict detection).
+      // A document's `content` map merges per key, so concurrent edits to
+      // different runs never conflict and a same-run race does — see the
+      // outbox's recursive slot comparison.
+      isLwwField: (subjectType, field) => this.registry.isLwwField(subjectType, field),
+      // Scope is declared on the entity; an unknown entity defaults to
+      // `"field"`, matching a client without a schema.
+      conflictScope: (subjectType) => this.registry.getConflictScope(subjectType),
+      baseGsn: () => this.appliedBaseGsn(),
+      hlc: () => this.freshHlc(),
+      conflictId: () => generateId("c"),
+    });
+    // The view projects the outbox's conflicted rows; resolution moves
+    // them back through the same outbox transition it reads.
+    const { conflicts, observable: conflictsObservable } = createConflicts({
+      outbox: this.outbox,
       requeue: (action) => this.requeueRebased(action),
       reMaterialize: (action) => this.reMaterializeFromLog(action),
       releaseSubjects: (subjectIds) => this.snapshotManager.releaseMany(subjectIds),
@@ -283,20 +300,6 @@ export class SyncClient implements PermissionQuery {
       generateUpdateId: () => this.generateUpdateId(),
     });
     this.conflicts = conflicts;
-    this.outbox = createOutbox({
-      applyOptimistic: (action) => this.applyLocalAction(action),
-      submit: (actions) => this.submitActions(actions),
-      store: this.storage.outbox,
-      conflicts: conflictStore,
-      // Field markers are the schema's word on merge semantics. A client
-      // without a schema has no markers, so every non-structural field is
-      // treated as LWW (the conservative default for conflict detection).
-      // A document's `content` map merges per key, so concurrent edits to
-      // different runs never conflict and a same-run race does — see the
-      // outbox's recursive slot comparison.
-      isLwwField: (subjectType, field) => this.registry.isLwwField(subjectType, field),
-      hlc: () => this.freshHlc(),
-    });
     // The retry loop reuses the SSE reconnect bounds but keeps its own
     // attempt counter inside the scheduler, so an unreachable write can
     // neither reset nor be reset by the SSE backoff.
@@ -1011,8 +1014,8 @@ export class SyncClient implements PermissionQuery {
       await this.capturePreSyncSnapshots();
       await this.catchUpSubscribed(sub);
       if (sub.cancelled) return "cancelled";
-      // Readiness checkpoint: catch-up is done and the inbound conflict
-      // sweep has run, so pending entries may flush.
+      // Readiness checkpoint: catch-up is done and the conflict detection
+      // pass has run, so pending entries may flush.
       this.flushScheduler.release();
 
       const cursor = await this.computeResumeCursor(sub);
@@ -1065,12 +1068,15 @@ export class SyncClient implements PermissionQuery {
    * Pull every missed Action for each subscribed group before the live
    * stream opens, and surface each to the subscription's `onEvent` so a
    * consumer (e.g. a causal-tree document) observes the same events it
-   * would have live. The Outbox's inbound sweep runs inside
-   * `catchUp`'s `_applyAction`, so a pending entry that loses to a missed
-   * write is moved to Conflicts here — before the checkpoint releases the
-   * flush.
+   * would have live. `_applyAction` removes this client's own echoes as
+   * usual; once the window has drained, one `detectConflicts` pass moves
+   * every concurrent buffered write to Conflicts — before the checkpoint
+   * releases the flush.
    */
   private async catchUpSubscribed(sub: ActiveSubscription): Promise<void> {
+    // One identity per reconnect, stamped on every conflict the pass
+    // produces so a later grouping can tell passes apart.
+    const catchUpId = generateId("cu");
     const missed: Action[] = [];
     for (const groupId of sub.groupIds) {
       // First page: let `catchUp` pick up from the durable cursor.
@@ -1088,15 +1094,33 @@ export class SyncClient implements PermissionQuery {
         offset = result.nextOffset;
       }
     }
-    // A `write()` that landed while a later page was in flight was not in
-    // the buffer when the earlier pages were swept. Re-run the inbound
-    // sweep over the whole missed window so none of those entries can
-    // reach the wire unswept.
-    if (missed.length > 0 && this.outbox.size("pending") > 0) {
-      for (const action of missed) {
-        await this.outbox.noteInbound(action);
-      }
+    // Detection runs once over the whole missed window, after every page
+    // has drained. An entry that arrived mid-pagination is still buffered
+    // (the gate holds it), so one pass covers it; a `write()` after this
+    // point is live and converges without detection.
+    await this.outbox.detectConflicts(missed, catchUpId);
+  }
+
+  /**
+   * The highest server sequence the client can claim to have applied,
+   * stamped as a buffered write's `basedOnGsn`.
+   *
+   * The minimum non-zero applied cursor across the subscribed groups:
+   * the client does not know which group carries a subject, and too low a
+   * base only surfaces extra conflicts. A subscribed group with no cursor
+   * yet contributes nothing, so the base is `0` until the first cursor
+   * lands. With no group subscribed, fall back to the global maximum so a
+   * write authored before subscribing is not spuriously concurrent.
+   */
+  private appliedBaseGsn(): number {
+    const sub = this.activeSub;
+    if (sub !== null && sub.groupIds.length > 0) {
+      const cursors = sub.groupIds
+        .map((groupId) => this.groupCursors.get(groupId) ?? 0)
+        .filter((cursor) => cursor > 0);
+      return cursors.length === 0 ? 0 : Math.min(...cursors);
     }
+    return Math.max(0, ...this.groupCursors.values());
   }
 
   /**
@@ -1296,7 +1320,7 @@ export class SyncClient implements PermissionQuery {
     // Outbox entry (with a server GSN) is this client's own echo, so the
     // entry is now proven canonical and can be removed. Runs after the
     // append so an outbox removal never outruns the action log.
-    await this.outbox.noteInbound(action);
+    await this.outbox.matchEcho(action);
     // A server-accepted Action (`gsn > 0`) is proof the client is in sync
     // as of now; a local-only Action has no GSN and says nothing about the
     // server's view.

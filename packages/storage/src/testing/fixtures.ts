@@ -1,6 +1,6 @@
 import { makeHlc, type Action } from "@ebbjs/core";
 
-import type { ConflictEntry } from "../types/conflict-store";
+import type { OutboxConflict } from "../types/outbox-store";
 
 /**
  * Reusable Action fixtures for the shared test suites. Each suite
@@ -277,17 +277,22 @@ export const buildEntityGroupDeleteAction = (args: { id: string }, gsn: number):
 };
 
 /**
- * A conflict for {@link buildPutAction}'s `todo_1`: the losing `put`
- * Action and the winning `title` value, detected at `detectedAtMs`.
- * `actionId` lets a caller key more than one conflict in a store.
+ * A conflict payload for a losing `put` on `todo_1`: the `title` slot's
+ * local / remote sides, detected at `detectedAtMs`. Callers attach it to
+ * an outbox entry to exercise the durable status transition.
  */
-export const buildConflictEntry = (actionId = "a_1", detectedAtMs = 1): ConflictEntry => ({
-  action: { ...buildPutAction(), id: actionId },
-  losses: [
+export const buildOutboxConflict = (detectedAtMs = 1): OutboxConflict => ({
+  subjects: ["todo_1"],
+  slots: [
     {
-      slot: { subjectId: "todo_1", field: "title", path: [] },
-      winner: { update_id: "u_2", hlc: makeHlc(HLC_BASE, detectedAtMs), value: "Updated" },
+      subjectId: "todo_1",
+      field: "title",
+      path: [],
+      local: { value: "Hello", update_id: "u_1", hlc: makeHlc(HLC_BASE) },
+      remote: { update_id: "u_2", hlc: makeHlc(HLC_BASE, detectedAtMs), value: "Updated" },
     },
   ],
+  catchUpId: "cu_1",
+  conflictId: `c_${detectedAtMs}`,
   detectedAtHlc: makeHlc(HLC_BASE, detectedAtMs),
 });

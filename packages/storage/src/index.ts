@@ -12,6 +12,12 @@ export type { ActionLog } from "./types/action-log";
 export type { DirtyTracker } from "./types/dirty-tracker";
 export type { EntityStore, RelationshipIndexQuery } from "./types/entity-store";
 export type { CursorStore } from "./types/cursor-store";
-export type { OutboxEntry, OutboxStatus, OutboxStore } from "./types/outbox-store";
-export type { ConflictEntry, ConflictStore, ConflictWinner } from "./types/conflict-store";
+export type {
+  OutboxEntry,
+  OutboxStatus,
+  OutboxStore,
+  OutboxConflict,
+  ConflictSide,
+  ConflictSlot,
+} from "./types/outbox-store";
 export type { StorageAdapter } from "./types/storage-adapter";

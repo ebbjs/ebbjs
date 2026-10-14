@@ -175,6 +175,9 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
     // The handle is opt-in (only set when the test config requests
     // it) and only exposes what the conflict scenario needs, so the
     // audit surface stays small.
+    // Populated once the live subscription exists; the test handle reads
+    // through it so a forced reconnect tears down and re-opens cleanly.
+    const reconnectRef: { current: () => void } = { current: () => {} };
     const exposeState = window.__EBB_DEMO_TEST_CONFIG__?.exposeState;
     if (exposeState) {
       const getRunIds = (): readonly string[] => {
@@ -199,6 +202,7 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
           if (pending.length === 0) return { rejected: [] };
           return client.write(pending);
         },
+        reconnect: () => reconnectRef.current(),
         // Read-only snapshot of the presence map for the document.
         // Useful for debugging tests that exercise the cursor/selection
         // surfacing path.
@@ -228,7 +232,7 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
     // Subscribe to SSE for live updates. The @ebbjs/client SSE
     // implementation sends the actor id via the x-ebb-actor-id
     // header (fetch-based, works the same in browser and Node).
-    const unsubscribe = client.subscribe(groupIds, 0, (event) => {
+    const onEvent: Parameters<typeof client.subscribe>[2] = (event) => {
       if (event.type === "data") {
         doc.applyActions([event.action]);
       } else if (event.type === "control" && (event.control as { reconnect?: boolean }).reconnect) {
@@ -237,7 +241,12 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
         // eslint-disable-next-line no-console
         console.warn("[editor] server requested reconnect:", event.control);
       }
-    });
+    };
+    let unsubscribe = client.subscribe(groupIds, 0, onEvent);
+    reconnectRef.current = () => {
+      unsubscribe();
+      unsubscribe = client.subscribe(groupIds, 0, onEvent);
+    };
 
     // Periodic flush of pending actions to the server.
     const flushTimer = window.setInterval(() => {

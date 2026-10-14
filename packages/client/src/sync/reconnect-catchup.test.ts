@@ -15,6 +15,7 @@ import {
   emptyCatchUpResponse,
   jsonResponse,
   openSseResponse,
+  waitFor,
 } from "./test-utils";
 
 const controlReconnect = (catchUpFrom: number): string =>
@@ -47,18 +48,6 @@ const putAction = (opts: {
     },
   ],
 });
-
-const waitFor = async (
-  predicate: () => Promise<boolean> | boolean,
-  timeoutMs = 2_000,
-): Promise<void> => {
-  const started = Date.now();
-  for (;;) {
-    if (await predicate()) return;
-    if (Date.now() - started > timeoutMs) throw new Error("waitFor timed out");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-};
 
 describe("SyncClient rebase phase (#309)", () => {
   it("applies missed Actions on connect and surfaces them to onEvent", async () => {
@@ -155,13 +144,20 @@ describe("SyncClient rebase phase (#309)", () => {
     unsubscribe();
   });
 
-  it("re-sweeps entries written during catch-up against earlier pages", async () => {
+  it("detects a mid-pagination write with the single end-of-window pass", async () => {
     const firstPage = putAction({
       id: "act_page_one",
       gsn: 1,
       hlc: makeHlc(1711036800000, 1),
       updateId: "u_page_one",
       title: "Page one",
+    });
+    const concurrent = putAction({
+      id: "act_page_two",
+      gsn: 2,
+      hlc: makeHlc(1711036800000, 2),
+      updateId: "u_page_two",
+      title: "Page two",
     });
     const pending = putAction({
       id: "act_local",
@@ -175,6 +171,10 @@ describe("SyncClient rebase phase (#309)", () => {
     const secondPage = new Promise<Response>((resolve) => {
       resolveSecondPage = resolve;
     });
+    let signalSecondPage!: () => void;
+    const secondPageRequested = new Promise<void>((resolve) => {
+      signalSecondPage = resolve;
+    });
     let posted = 0;
     const fetchImpl = vi.fn(async (url: string) => {
       if (url.includes("/sync/groups/")) {
@@ -184,6 +184,7 @@ describe("SyncClient rebase phase (#309)", () => {
             "stream-up-to-date": "false",
           });
         }
+        signalSecondPage();
         return secondPage;
       }
       if (url.includes("/sync/actions")) {
@@ -202,21 +203,35 @@ describe("SyncClient rebase phase (#309)", () => {
 
     const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
 
-    // Page one is applied; the loop is now awaiting page two.
+    // Page one is applied and the loop is awaiting page two.
     await waitFor(async () => (await client.readLocalEntity("todo_1")) !== null);
+    await secondPageRequested;
 
     // A write during catch-up is deferred (not posted) and stays pending.
     await expect(client.write([pending])).rejects.toThrow(/checkpoint/);
     expect(await client.outbox.size("pending")).toBe(1);
+    // Its base is page one's gsn, so page one is deliberately not
+    // concurrent; only page two can surface a conflict.
+    expect(client.outbox.pending()[0]?.basedOnGsn).toBe(1);
 
-    resolveSecondPage(emptyCatchUpResponse());
+    resolveSecondPage(
+      jsonResponse([concurrent], {
+        "stream-next-offset": "2",
+        "stream-up-to-date": "true",
+      }),
+    );
 
-    // The checkpoint re-sweeps the whole missed window, so the entry that
-    // arrived after page one is still caught by page one's LWW winner.
-    await waitFor(async () => (await client.storage.conflicts.list()).length > 0);
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    // One end-of-window pass folds both pages and detects the write that
+    // was authored mid-pagination against page two's concurrent Action.
+    await waitFor(async () => (await client.conflicts.list()).length > 0);
     expect(posted).toBe(0);
     expect(await client.outbox.size("pending")).toBe(0);
+
+    const conflicts = await client.conflicts.list();
+    expect(conflicts.map((entry) => entry.action.id)).toEqual(["act_local"]);
+    expect(conflicts[0]?.basedOnGsn).toBe(1);
+    expect(conflicts[0]?.slots.map((slot) => slot.path)).toEqual([[]]);
+    expect(conflicts[0]?.slots[0]?.remote).toMatchObject({ value: "Page two" });
 
     unsubscribe();
   });
@@ -263,11 +278,11 @@ describe("SyncClient rebase phase (#309)", () => {
     const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
 
     await waitFor(async () => (await client.readLocalEntity("todo_1")) !== null);
-    // Let the checkpoint flush run to completion.
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    // The checkpoint detects the buffered Action before any flush.
+    await waitFor(async () => (await client.conflicts.list()).length > 0);
 
     expect(actionPosts).toHaveLength(0);
-    const conflicts = await client.storage.conflicts.list();
+    const conflicts = await client.conflicts.list();
     expect(conflicts.map((entry) => entry.action.id)).toContain("act_local");
     expect(await client.outbox.size("pending")).toBe(0);
 
@@ -431,7 +446,7 @@ describe("SyncClient pre-sync snapshots (#395)", () => {
     await waitFor(async () => titleOf(await client.snapshots.get("todo_1")) === "Local edit");
     expect(client.snapshots.list()).toEqual(["todo_1"]);
 
-    await waitFor(async () => (await client.storage.conflicts.list()).length > 0);
+    await waitFor(async () => (await client.conflicts.list()).length > 0);
     expect(titleOf(await client.readLocalEntity("todo_1"))).toBe("Remote edit");
 
     // Resolving the entity's conflict releases its capture.

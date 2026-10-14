@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
 import type { StorageAdapter } from "../types/storage-adapter";
-import { buildConflictEntry, buildPatchAction, buildPutAction } from "./fixtures";
+import { buildOutboxConflict, buildPatchAction, buildPutAction } from "./fixtures";
 
 export interface AdapterTestSuiteOptions {
   name: string;
@@ -238,23 +238,21 @@ export const defineAdapterTests = ({ name, factory }: AdapterTestSuiteOptions): 
       });
     });
 
-    describe("conflicts", () => {
-      it("stores and reads back a conflict", async () => {
+    describe("outbox conflicts", () => {
+      it("stores a conflicted entry and keeps it across a reset", async () => {
         const adapter = await factory();
-        const entry = buildConflictEntry();
-        await adapter.conflicts.put(entry);
-
-        expect(await adapter.conflicts.get("a_1")).toEqual(entry);
-      });
-
-      it("keeps conflicts across a reset", async () => {
-        const adapter = await factory();
-        const entry = buildConflictEntry();
-        await adapter.conflicts.put(entry);
+        const entry = {
+          action: buildPutAction(),
+          status: "conflicted" as const,
+          enqueuedAtHlc: makeHlc(1),
+          basedOnGsn: 0,
+          conflict: buildOutboxConflict(),
+        };
+        await adapter.outbox.put(entry);
 
         await adapter.reset();
 
-        expect(await adapter.conflicts.get("a_1")).toEqual(entry);
+        expect(await adapter.outbox.get("a_1")).toEqual(entry);
       });
     });
   });

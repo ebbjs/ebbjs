@@ -6,7 +6,6 @@ import { createMemoryDirtyTracker } from "./dirty-tracker.memory";
 import { createMemoryEntityStore } from "./entity-store.memory";
 import { createMemoryCursorStore } from "./cursor-store.memory";
 import { createMemoryOutboxStore } from "./outbox-store.memory";
-import { createMemoryConflictStore } from "./conflict-store.memory";
 
 /**
  * MemoryAdapter — in-memory implementation of StorageAdapter for v1.
@@ -16,8 +15,8 @@ import { createMemoryConflictStore } from "./conflict-store.memory";
  * - DirtyTracker — tracks dirty entities, queryable by type
  * - EntityStore — materialized entity cache
  * - CursorStore — per-group GSN cursors
- * - OutboxStore — durable pending local Actions
- * - ConflictStore — durably buffered LWW conflicts
+ * - OutboxStore — durable pending local Actions; a detected conflict is
+ *   a status + payload on its outbox row
  *
  * ## Usage
  * ```typescript
@@ -54,7 +53,6 @@ export const createMemoryAdapter = (): StorageAdapter => {
   } = createMemoryEntityStore(actionLog, dirtyTracker);
   const cursorStore = createMemoryCursorStore();
   const outboxStore = createMemoryOutboxStore();
-  const conflictStore = createMemoryConflictStore();
 
   return {
     actions: {
@@ -107,8 +105,6 @@ export const createMemoryAdapter = (): StorageAdapter => {
     cursors: cursorStore,
 
     outbox: outboxStore,
-
-    conflicts: conflictStore,
 
     changeEmitter,
 

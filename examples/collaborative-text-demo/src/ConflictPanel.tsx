@@ -1,10 +1,10 @@
 /**
- * Conflict panel — collapsible sidebar listing conflicts recorded by
- * the client's durable conflict store. Each conflict is one losing
- * pending Action plus the slots a peer's write out-dated; the panel
- * lets the user retry or discard it.
+ * Conflict panel — collapsible sidebar listing the conflicts the client
+ * recorded on its outbox rows. Each conflict is one losing buffered
+ * Action plus the slots a peer's write out-dated; the panel lets the
+ * user retry or discard it.
  *
- * Conflict detection lives in the outbox (`client.conflicts`), so the
+ * A detected conflict is a status + payload on the outbox entry, so the
  * panel reads the same vocabulary the rest of the app would: a
  * collaborative-text run is one map key, and a concurrent
  * extend-vs-delete on that run is one slot.
@@ -72,16 +72,16 @@ export function ConflictPanel({ client, docId, groupId }: Props) {
               </button>
             </div>
             <ul className="flex flex-col gap-2">
-              {entry.losses.map((loss, index) => (
-                <li key={`${loss.slot.subjectId}:${loss.slot.field}:${index}`}>
+              {entry.slots.map((slot, index) => (
+                <li key={`${slot.subjectId}:${slot.field}:${index}`}>
                   <div className="text-stone-500">
-                    {loss.slot.field}
-                    {loss.slot.path.length > 0 ? ` → ${loss.slot.path.join(" → ")}` : ""}
+                    {slot.field}
+                    {slot.path.length > 0 ? ` → ${slot.path.join(" → ")}` : ""}
                   </div>
                   <pre className="bg-stone-950 p-2 rounded text-stone-300 whitespace-pre-wrap break-words">
-                    {loss.winner.value === null || loss.winner.value === undefined
+                    {slot.remote.value === null || slot.remote.value === undefined
                       ? "(deleted)"
-                      : JSON.stringify(loss.winner.value)}
+                      : JSON.stringify(slot.remote.value)}
                   </pre>
                 </li>
               ))}

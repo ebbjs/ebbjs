@@ -56,6 +56,12 @@ declare global {
       flushPending: () => Promise<{
         rejected: readonly { id: string; reason: string; details?: string | null }[];
       }>;
+      /**
+       * Drop the live subscription and re-subscribe, forcing a catch-up
+       * pass. Used by the conflict e2e to exercise reconnect detection
+       * without relying on the browser tearing the SSE stream down.
+       */
+      reconnect: () => void;
       /** Snapshot the presence map for the doc (for diagnostics). */
       getPresenceEntries: () => readonly {
         actorId: string;

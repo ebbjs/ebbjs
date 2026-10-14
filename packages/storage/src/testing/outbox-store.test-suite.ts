@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { makeHlc } from "@ebbjs/core";
 
-import type { OutboxEntry, OutboxStatus, OutboxStore } from "../types/outbox-store";
-import { buildPutAction } from "./fixtures";
+import type { OutboxConflict, OutboxEntry, OutboxStatus, OutboxStore } from "../types/outbox-store";
+import { buildOutboxConflict, buildPutAction } from "./fixtures";
 
 export interface OutboxStoreTestSuiteHarness {
   store: OutboxStore;
@@ -27,10 +27,14 @@ const mkEntry = (
   id: string,
   enqueuedAtMs: number,
   status: OutboxStatus = "pending",
+  basedOnGsn = 7,
+  conflict?: OutboxConflict,
 ): OutboxEntry => ({
   action: { ...buildPutAction(), id },
   status,
   enqueuedAtHlc: makeHlc(enqueuedAtMs),
+  basedOnGsn,
+  conflict,
 });
 
 export const defineOutboxStoreTests = ({ name, factory }: OutboxStoreTestSuiteOptions): void => {
@@ -130,19 +134,43 @@ export const defineOutboxStoreTests = ({ name, factory }: OutboxStoreTestSuiteOp
       });
     });
 
+    describe("conflicted entries", () => {
+      it("round-trips a conflict payload on the entry", async () => {
+        const { store } = await factory();
+        const entry = mkEntry("a_1", 1, "conflicted", 3, buildOutboxConflict(9));
+        await store.put(entry);
+
+        expect(await store.get("a_1")).toEqual(entry);
+        expect((await store.list())[0]?.conflict?.conflictId).toBe("c_9");
+      });
+
+      it("replaces the payload when the same id is re-detected", async () => {
+        const { store } = await factory();
+        await store.put(mkEntry("a_1", 1, "conflicted", 3, buildOutboxConflict(1)));
+
+        await store.put(mkEntry("a_1", 1, "conflicted", 3, buildOutboxConflict(2)));
+
+        const entry = await store.get("a_1");
+        expect(entry?.conflict?.conflictId).toBe("c_2");
+        expect(await store.list()).toHaveLength(1);
+      });
+    });
+
     describe("persistence", () => {
       it("keeps entries across a backing-store reopen", async (ctx) => {
         const { store, reopen } = await factory();
         ctx.skip(reopen === undefined, "backend does not persist across a reopen");
         if (reopen === undefined) return;
 
-        await store.put(mkEntry("a_1", 1));
-        await store.put(mkEntry("a_2", 2, "acknowledged"));
+        await store.put(mkEntry("a_1", 1, "pending", 0));
+        await store.put(mkEntry("a_2", 2, "conflicted", 12, buildOutboxConflict(4)));
 
         const reopened = await reopen();
 
-        expect(await reopened.get("a_1")).toEqual(mkEntry("a_1", 1));
-        expect(await reopened.get("a_2")).toEqual(mkEntry("a_2", 2, "acknowledged"));
+        expect(await reopened.get("a_1")).toEqual(mkEntry("a_1", 1, "pending", 0));
+        expect(await reopened.get("a_2")).toEqual(
+          mkEntry("a_2", 2, "conflicted", 12, buildOutboxConflict(4)),
+        );
         expect((await reopened.list()).map((entry) => entry.action.id)).toEqual(["a_1", "a_2"]);
       });
     });
