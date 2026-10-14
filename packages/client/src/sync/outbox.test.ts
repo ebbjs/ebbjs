@@ -1225,6 +1225,43 @@ describe("createOutbox conflict detection", () => {
     expect(detected).toEqual([{ actionId: "a_local", subjects: ["todo_1"], slots: [] }]);
   });
 
+  it("entity scope does not surface a subject whose only inbound touch is not concurrent", async () => {
+    const deps = mkDeps({ baseGsn: () => 10, conflictScope: () => "entity" });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(
+      mkFieldAction({
+        id: "a_local",
+        subjectId: "todo_2",
+        fields: { title: { value: "mine", update_id: "u_local", hlc: "10" } },
+      }),
+    );
+
+    const detected = await outbox.detectConflicts(
+      [
+        // Concurrent, but it touches `todo_1`, not the locally written subject.
+        mkFieldAction({
+          id: "a_peer_current",
+          subjectId: "todo_1",
+          fields: { title: { value: "theirs", update_id: "u_p1", hlc: "20" } },
+          gsn: 20,
+        }),
+        // Touches `todo_2`, but `gsn 5 <= basedOnGsn 10`: already applied, so
+        // a deliberate override rather than a conflict.
+        mkFieldAction({
+          id: "a_peer_old",
+          subjectId: "todo_2",
+          fields: { title: { value: "old", update_id: "u_p2", hlc: "5" } },
+          gsn: 5,
+        }),
+      ],
+      "cu_1",
+    );
+
+    expect(detected).toEqual([]);
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
+    expect(outbox.conflicts()).toEqual([]);
+  });
+
   it("field scope does not surface a concurrent touch of a different field", async () => {
     const deps = mkDeps();
     const { outbox } = await seed(deps);
