@@ -116,8 +116,6 @@ export {
   type FailedResolution,
 } from "./sync/conflicts";
 
-export { type Snapshots } from "./sync/snapshots";
-
 export { type ReadonlyObservable } from "./sync/observable";
 
 export { type ClientStatus } from "./sync/status";

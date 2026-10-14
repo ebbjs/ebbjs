@@ -71,8 +71,8 @@ What shipped differs from the old sketch in ways worth naming:
 - **Granularity is declared per entity.** `conflictScope: "field" | "entity"` (default `"field"`), set on the entity or via `e.collaborativeText({ conflictScope })`. The position unit is the generic map-key recursion, so one `content[runId]` is one position and sibling run keys never conflict.
 - **Concurrency comes from the server sequence, not HLC.** A buffered write records `basedOnGsn`; a missed Action is concurrent when its GSN is higher. HLC stays the merge rule, so a lower-HLC concurrent write still surfaces.
 - **The application surface is entity-level.** `client.conflicts.list()` / `onChange()` deliver `Conflict[]` (grouped by the durable `conflictId`), `count()` counts conflicts, and `resolve(conflictId, "retry" | "discard")` / `resolveEntries(entryIds, ...)` resolve them, returning `{ resolved, failed }`. Each position exposes `remoteWins()` so an app can act only when its value would lose.
-- **Pre-sync capture is separate.** `client.snapshots` ([#395](https://github.com/ebbjs/ebbjs/issues/395)) captures the entity's row before the merge, so an app can preserve it.
-- **"Snapshot" now means the pre-sync entity capture**, not the rejected per-entity compaction primitive from [#141](https://github.com/ebbjs/ebbjs/issues/141).
+- **Pre-sync capture rides the conflict.** `Conflict.subjectStates[].before` ([#395](https://github.com/ebbjs/ebbjs/issues/395), [#410](https://github.com/ebbjs/ebbjs/issues/410)) carries the entity's row from before the merge, durable on the conflict payload; the standalone `client.snapshots` capture was retired, so `duplicate({ at: "preSync" })` requires an unresolved conflict.
+- **"Snapshot" no longer names a client surface.** The rejected per-entity compaction primitive from [#141](https://github.com/ebbjs/ebbjs/issues/141) and the retired pre-sync manager are both gone.
 
 ### Decision 5 — Persistence is deferred
 

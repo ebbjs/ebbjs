@@ -14,6 +14,7 @@ import { defineEntity, e } from "../../schema/entity";
 import { defineSchema } from "../../schema/schema";
 import { EntityValidationError } from "../../schema/entity-registry";
 import { createClient } from "../client";
+import type { Conflict } from "../conflicts";
 import { jsonResponse, openSseResponse } from "../test-utils";
 
 const todo = defineEntity("todo", {
@@ -288,13 +289,30 @@ describe("client.<entity>.duplicate — memberships", () => {
   });
 });
 
+/** A conflict carrying one subject's `before` row, as detection writes it. */
+const mkConflict = (before: Entity): Conflict => ({
+  id: "c_1",
+  subjects: [before.id],
+  subjectStates: [
+    {
+      subjectId: before.id,
+      subjectType: before.type,
+      before,
+      after: mkEntity(before.id, before.type, { title: "merged", completed: false }),
+      diff: [],
+    },
+  ],
+  entries: [],
+  remoteWins: () => true,
+});
+
 describe("client.<entity>.duplicate — at: preSync", () => {
-  it("copies the captured pre-sync row instead of the live row", async () => {
+  it("copies the unresolved conflict's before row instead of the live row", async () => {
     const { client, storage, seen } = await mkClient();
     await seedTodo(storage, "t_1", { title: "merged", completed: false });
 
-    const preSync = mkEntity("t_1", "todo", { title: "mine", completed: true });
-    vi.spyOn(client.snapshots, "get").mockResolvedValue(preSync);
+    const before = mkEntity("t_1", "todo", { title: "mine", completed: true });
+    vi.spyOn(client.conflicts, "list").mockResolvedValue([mkConflict(before)]);
 
     const { id } = await client.todo.duplicate("t_1", { at: "preSync" });
 
@@ -306,11 +324,11 @@ describe("client.<entity>.duplicate — at: preSync", () => {
     expect((await storage.entities.get(id))?.data?.fields?.["title"]?.value).toBe("mine");
   });
 
-  it("throws when no pre-sync capture exists", async () => {
+  it("throws when no unresolved conflict references the id", async () => {
     const { client, storage, seen } = await mkClient();
     await seedTodo(storage, "t_1", { title: "merged", completed: false });
-    await expect(client.todo.duplicate("t_1", { at: "preSync" })).rejects.toBeInstanceOf(
-      EntityValidationError,
+    await expect(client.todo.duplicate("t_1", { at: "preSync" })).rejects.toThrow(
+      'duplicate: no unresolved conflict for "t_1"',
     );
     expect(actionRequests(seen)).toHaveLength(0);
   });
@@ -394,7 +412,7 @@ describe("duplicate({ at: preSync }) after an offline merge (#397)", () => {
     await client.outbox.enqueue(local);
     const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
 
-    await waitFor(async () => (await client.snapshots.get("todo_1")) !== null);
+    await waitFor(async () => (await client.conflicts.list()).length > 0);
     await waitFor(async () => (await client.storage.entities.get("todo_1")) !== null);
 
     const { id } = await client.todo.duplicate("todo_1", { at: "preSync", groups: ["grp_1"] });

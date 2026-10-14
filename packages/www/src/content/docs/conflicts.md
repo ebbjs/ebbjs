@@ -3,7 +3,7 @@ title: "Offline conflicts"
 description: "How ebb detects, records, and resolves writes that race while a client is offline — and the boundary between convergence and detection."
 ---
 
-> **Shipped.** This page is the one-page reference for the offline-conflict model implemented in `@ebbjs/client`: detection and the durable record ([#390](https://github.com/ebbjs/ebbjs/issues/390)), and the entity-level surface and resolution verbs ([#392](https://github.com/ebbjs/ebbjs/issues/392)).
+> **Shipped.** This page is the one-page reference for the offline-conflict model implemented in `@ebbjs/client`: detection and the durable record ([#390](https://github.com/ebbjs/ebbjs/issues/390)), the entity-level surface and resolution verbs ([#392](https://github.com/ebbjs/ebbjs/issues/392)), the before/after rows and diff on the conflict payload ([#408](https://github.com/ebbjs/ebbjs/issues/408), [#409](https://github.com/ebbjs/ebbjs/issues/409)), and the retirement of `client.snapshots` ([#410](https://github.com/ebbjs/ebbjs/issues/410)).
 
 Live sync is **pure convergence**. While a client is connected, every inbound Action is appended and materialized under the shared merge rule; nothing is held and no conflict is recorded. Conflicts are a **catch-up** concern: when a client reconnects, the writes it made offline are checked against the window it missed.
 
@@ -77,6 +77,7 @@ A detected loser is a `conflicted` status plus a payload on **its own outbox row
 interface Conflict {
   readonly id: string; // the persisted conflictId, shared by the group
   readonly subjects: readonly string[];
+  readonly subjectStates: readonly ConflictSubjectStateView[];
   readonly entries: readonly ConflictEntry[];
   remoteWins(): boolean;
 }
@@ -99,12 +100,49 @@ interface ConflictSlotView {
   readonly remote: ConflictSide;
   remoteWins(): boolean;
 }
+
+interface ConflictSubjectStateView {
+  readonly subjectId: string;
+  readonly subjectType: string;
+  readonly before: Entity | null; // what the client had before the sync
+  readonly after: Entity | null; // the server's row after it
+  readonly diff: readonly EntityDiff[];
+}
+
+interface EntityDiff {
+  readonly field: string;
+  readonly path: readonly string[]; // map-key path from the field root; [] at the root
+  readonly before: unknown; // projected via projectFieldValue
+  readonly after: unknown;
+  readonly kind: "changed" | "added" | "removed";
+}
 ```
 
 - `subjects` scopes the entity-level group. A create-plus-update write names only the entity that lost, so a freshly created entity is not dragged in.
+- `subjectStates` is one state per losing subject, in `subjects` order: the client's row before the sync, the server's row after it, and the positions that differ.
 - `slots` is the overlapping positions, in detection order. It is **empty** at entity scope when nothing position-wise overlapped — the application reads that as "nothing of mine would be lost".
 - `conflictId` is stamped at detection, one per connected set of losing subjects in a catch-up pass, so grouping survives a reload and a partial resolution.
 - The stored rows stay plain; the conflicts view rebuilds the method-carrying objects.
+
+## `before` / `after` and the diff
+
+Every losing subject carries the two entity rows the conflict compares, plus a projection of the positions that differ.
+
+- **`before`** — the entity row as the client had it immediately before the catch-up window was applied: the client's last-synced server state with its own unflushed writes optimistically applied. "Your version". `null` when no row was materialized at capture time.
+- **`after`** — the entity row once the missed window has landed: the server's advanced view. Measured at detection as the materialized row for the subject. `null` only when replay yields no row.
+
+Captures are taken per catch-up pass, keyed by the pass's `catchUpId`, so a second reconnect pairs its conflict with the row that preceded _its_ window. Detection copies the pass's rows onto the durable conflict payload, so they survive a reload; they are copies, not references into the action log, and they live in memory only for the duration of the pass.
+
+The `diff` is a **projection**, computed in the conflicts view, not stored. It uses the same recursion the merge does (top-level fields, then `FieldMap` keys), so the diff vocabulary matches the merge and slot vocabulary:
+
+- entries sort deterministically: top-level fields by name, then path segments by name;
+- each side is projected to plain JSON through `projectFieldValue`, the rule the slot sides already use;
+- `kind` is a pure function of the two projected values: an absent `before` is `added`, an absent `after` is `removed`, both present is `changed`. A `before: null` therefore reads as `added` — nothing was materialized at capture;
+- a nested map entry that projects to `null` is a tombstone, read as absent rather than as a changed position.
+
+`subjectStates` lives on `Conflict` only; `ConflictEntry` is unchanged. It dedupes by `subjectId` alone, taking the earliest `before` and the latest `after` — a no-op today, since every entry in a conflict comes from one catch-up pass.
+
+An entity-scoped application reads `subjectStates` / the diff, not `remoteWins()`.
 
 ## `remoteWins()`
 
@@ -114,6 +152,8 @@ interface ConflictSlotView {
 - both sides are leaves → the higher HLC wins, then the lexicographically greater `update_id` (ties go to the remote).
 
 `Conflict.remoteWins()` is `entries.some((e) => e.slots.some((s) => s.remoteWins()))`, and `false` when the conflict has no slots.
+
+This is a **position-level** question. With no overlapping position it is `false` by construction; entity-scoped apps read [`subjectStates`](#before--after-and-the-diff) instead.
 
 The system surfaces on **concurrency alone**, even when the local value would win. An application opts into "only when something would be lost" in its own handler:
 
@@ -151,7 +191,9 @@ There are no `accept` / `backup` / `merge` verbs.
 
 ## Backup
 
-`client.snapshots` ([#395](https://github.com/ebbjs/ebbjs/issues/395)) captures an entity's row before the catch-up window is applied, so an application can persist — or re-create — the state its `discard` would overwrite. Read a capture directly with `client.snapshots.get(id)`, or duplicate an entity at the captured point in time with `client.<entity>.duplicate(id, { at: "preSync" })` ([#397](https://github.com/ebbjs/ebbjs/issues/397)). A snapshot is released once no remaining conflict references the entity.
+The pre-sync row is reachable as `Conflict.subjectStates[].before` ([#408](https://github.com/ebbjs/ebbjs/issues/408), [#409](https://github.com/ebbjs/ebbjs/issues/409)): the state the client had before the catch-up window, durable on the conflict payload. There is no standalone `client.snapshots` surface — a pre-merge row only has value when the sync clobbered something the user wrote, so backup is conflict-scoped, and nothing captures pre-sync rows outside detection.
+
+Duplicate an entity at that point in time with `client.<entity>.duplicate(id, { at: "preSync" })` ([#397](https://github.com/ebbjs/ebbjs/issues/397)). The copy resolves the entity's earliest unresolved conflict and copies its `before` row. With no unresolved conflict referencing the entity it throws `duplicate: no unresolved conflict for "<id>"`.
 
 ## Server merge rule
 
@@ -171,9 +213,10 @@ The convergence/detection boundary is deliberate:
 - **No live detection.** Inbound Actions while connected never create a conflict.
 - **No gate holds.** The flush gate is global and catch-up-scoped. A conflict keeps its own row out of `pending`, but holding _other_ writes for a human decision is an application concern, built on `client.conflicts`.
 - **Detection is not exact concurrency between two already-committed writes.** It is "a write this client had not seen when it authored its own".
+- **The conflict's entity rows are copies, not references into the action log.** Compaction of the log cannot erase the comparison a conflict exposes.
 
 ## References
 
 - Epic [#389](https://github.com/ebbjs/ebbjs/issues/389) — offline conflict surfacing
-- [#390](https://github.com/ebbjs/ebbjs/issues/390) detection with declared scope · [#392](https://github.com/ebbjs/ebbjs/issues/392) entity-level surface and resolution · [#395](https://github.com/ebbjs/ebbjs/issues/395) pre-sync capture · [#398](https://github.com/ebbjs/ebbjs/issues/398) one document entity per derived field
+- [#390](https://github.com/ebbjs/ebbjs/issues/390) detection with declared scope · [#392](https://github.com/ebbjs/ebbjs/issues/392) entity-level surface and resolution · [#395](https://github.com/ebbjs/ebbjs/issues/395) pre-sync capture · [#397](https://github.com/ebbjs/ebbjs/issues/397) duplicate at a point · [#398](https://github.com/ebbjs/ebbjs/issues/398) one document entity per derived field · [#408](https://github.com/ebbjs/ebbjs/issues/408) before/after rows on the payload · [#409](https://github.com/ebbjs/ebbjs/issues/409) entity-level before/after and diff · [#410](https://github.com/ebbjs/ebbjs/issues/410) retirement of `client.snapshots`
 - `packages/client/src/sync/conflicts.ts`, `packages/client/src/sync/conflict-slots.ts`, `packages/client/src/sync/outbox.ts`

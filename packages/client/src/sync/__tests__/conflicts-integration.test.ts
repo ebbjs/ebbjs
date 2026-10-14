@@ -435,6 +435,54 @@ describe("client.conflicts (#310)", () => {
     expect(clientB.outbox.conflicts()[0]?.conflict.subjectStates).toEqual(states);
   });
 
+  it("duplicate({ at: preSync }) copies the captured row over a real detected conflict", async () => {
+    const storage = createMemoryAdapter();
+    const stub = mkStubFetch();
+    const client = mkClient(stub.fn, storage);
+    await client.outbox.enqueue({
+      id: "act_local",
+      actor_id: ACTOR_ID,
+      hlc: LOCAL_HLC,
+      gsn: 0,
+      updates: [
+        {
+          id: "u_local",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "put",
+          data: {
+            fields: {
+              title: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC },
+              completed: { value: false, update_id: "u_local", hlc: LOCAL_HLC },
+            },
+          },
+        },
+      ],
+    });
+    await (
+      client as unknown as { capturePreSyncSnapshots(catchUpId: string): Promise<void> }
+    ).capturePreSyncSnapshots("cu_1");
+    const peer = mkTodoWrite({
+      id: "act_peer",
+      value: "theirs",
+      updateId: "u_peer",
+      hlc: PEER_HLC,
+      gsn: 9,
+    });
+    await callApplyAction(client, peer, "g_1");
+    await client.outbox.detectConflicts([peer], "cu_1");
+
+    const { id } = await client.todo.duplicate("todo_1", { at: "preSync", groups: ["g_1"] });
+
+    const put = postedActions(stub.calls)
+      .flatMap((action) => action.updates)
+      .find((update) => update.subject_type === "todo");
+    expect(put?.data?.fields.title?.value).toBe("mine");
+    expect(put?.subject_id).toBe(id);
+    // The conflict's source row is untouched by the backup.
+    expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("theirs");
+  });
+
   it("re-materializes a losing Action's non-conflicting entity on discard", async () => {
     const storage = createMemoryAdapter();
     const stub = mkStubFetch();

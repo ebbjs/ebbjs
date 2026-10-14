@@ -24,7 +24,6 @@ import {
   type Update,
 } from "@ebbjs/core";
 import type { ConflictSide, ConflictSlot, ConflictSubjectState } from "@ebbjs/storage/types";
-import { subjectIds } from "./action-subjects";
 import type { ConflictedOutboxEntry, OutboxCounts } from "./outbox";
 import { projectFieldValue } from "./query-builder";
 import { createObservable, type ReadonlyObservable } from "./observable";
@@ -267,13 +266,6 @@ export interface ConflictsDependencies {
   hlc(): string;
   /** Fresh Update / FieldValue id. */
   generateUpdateId(): string;
-  /**
-   * Drop the pre-sync captures for subjects no remaining conflict
-   * references. Called after a resolution removes its Action, so an
-   * entity's backup outlives a partial resolution but is released once
-   * the entity is fully resolved.
-   */
-  releaseSubjects(ids: readonly string[]): void;
 }
 
 /** The view plus the observable it publishes. */
@@ -286,6 +278,24 @@ export interface ConflictManager {
    */
   readonly observable: ReadonlyObservable<ConflictSnapshot>;
 }
+
+/**
+ * The `before` row of the entity's earliest unresolved conflict, or
+ * `null` when no unresolved conflict references it. `list()` orders
+ * conflicts by earliest detection HLC, so the first match is the
+ * earliest; a conflict whose `before` is `null` yields `null`. Backs
+ * `duplicate({ at: "preSync" })`.
+ */
+export const findPreSyncRow = async (
+  conflicts: Conflicts,
+  entityId: string,
+): Promise<Entity | null> => {
+  for (const conflict of await conflicts.list()) {
+    const state = conflict.subjectStates.find((candidate) => candidate.subjectId === entityId);
+    if (state !== undefined) return state.before;
+  }
+  return null;
+};
 
 /** The stamping collaborators {@link restampAction} needs. */
 type Restamper = Pick<ConflictsDependencies, "stampAction" | "hlc" | "generateUpdateId">;
@@ -585,26 +595,6 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
     }
   };
 
-  /**
-   * Release the pre-sync captures of every resolved subject no remaining
-   * conflict still references. Reads the post-resolution entries, which
-   * `clearConflict`'s change stream has already refreshed.
-   */
-  const releaseSubjectsAfter = (resolved: readonly Action[]): void => {
-    if (resolved.length === 0) return;
-    const stillConflicted = new Set<string>();
-    for (const entry of byEntryId.values()) {
-      for (const subjectId of subjectIds(entry.action)) stillConflicted.add(subjectId);
-    }
-    const released = new Set<string>();
-    for (const action of resolved) {
-      for (const subjectId of subjectIds(action)) {
-        if (!stillConflicted.has(subjectId)) released.add(subjectId);
-      }
-    }
-    if (released.size > 0) deps.releaseSubjects([...released]);
-  };
-
   const resolveEntries = async (
     entryIds: readonly string[],
     resolution: ConflictResolution,
@@ -612,21 +602,18 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
     await rehydrate();
     const resolved: string[] = [];
     const failed: FailedResolution[] = [];
-    const resolvedActions: Action[] = [];
     for (const entryId of entryIds) {
       const entry = byEntryId.get(entryId);
       if (entry === undefined) continue;
       try {
         await applyOne(entry, resolution);
         resolved.push(entryId);
-        resolvedActions.push(entry.action);
       } catch (error) {
         // No rollback: a later entry still resolves, and the failed entry
         // keeps its row and `conflictId`.
         failed.push({ entryId, error });
       }
     }
-    releaseSubjectsAfter(resolvedActions);
     return { resolved, failed };
   };
 
