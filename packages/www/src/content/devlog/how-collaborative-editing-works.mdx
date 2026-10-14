@@ -97,7 +97,7 @@ In this model, the server is the single source of truth. Clients send operations
 
 The tradeoff is that you need a server, and the server must be available for edits to be accepted. True offline editing becomes "optimistic local edits that might be rejected when you reconnect."
 
-**Path 2: Keep the CRDT properties, but surface conflicts.** This is closer to what we're building with ebb.
+**Path 2: Keep the CRDT properties, but surface conflicts.** This is the path ebb takes.
 
 Matthew Weidner, who spent years researching text-editing CRDTs, [recently argued](https://mattweidner.com/2025/05/21/text-without-crdts.html) that you don't need a complex CRDT library to get CRDT-like properties:
 
@@ -133,7 +133,7 @@ Ebb doesn't use a CRDT library, but we _do_ use CRDT-like data structures. The d
 
 The difference is what happens next.
 
-When ebb detects that concurrent edits touched the same data, it doesn't just merge and move on. It snapshots the pre-merge state and surfaces the conflict through an API — similar to CouchDB's approach. Developers can then decide whether to show the user a diff, auto-resolve based on business rules, or let the merge stand silently.
+When a client reconnects, ebb checks the writes it made offline against the edits that landed while it was away. A write that raced a peer's edit to the same position is held as a `conflicted` row and surfaced through `client.conflicts` — similar to CouchDB's approach. The application decides whether to retry its own value or discard it and converge on the server's; the pre-sync entity row is captured separately in `client.snapshots`.
 
 The following demo shows the data structure itself. Every operation is inspectable. Every merge is traceable. This isn't a black box — it's the actual causal tree, running in your browser.
 
@@ -189,7 +189,7 @@ This demo is a proof of concept, but it demonstrates the core philosophy behind 
 
 The same causal tree structure shown here will power real-time collaboration in ebb. In production, the relay won't be a `BroadcastChannel` between two browser tabs — it'll be ebb's sync engine: Actions flowing through a durable log, fanned out to subscribers over SSE, with the same HLC-based ordering ensuring every client converges to the same state.
 
-But convergence is just the foundation. When concurrent edits produce results that might surprise users — like the "Colour" scenario — ebb [detects and surfaces those conflicts](https://github.com/ebbjs/ebbjs/issues/122) rather than silently merging them. Developers get ergonomic levers to decide how conflicts are handled: surface them to users, auto-resolve based on rules, or let the merge stand.
+But convergence is just the foundation. When concurrent edits produce results that might surprise users — like the "Colour" scenario — ebb detects and surfaces those conflicts (see epic [#389](https://github.com/ebbjs/ebbjs/issues/389)) rather than silently merging them. A reconnecting client checks its offline writes against the missed window and holds each same-position race for the app to retry or discard.
 
 The CRDT community got the hard part right: stable identities, causal ordering, deterministic merge rules. What the _ecosystem_ got wrong was treating "conflict-free" as a feature instead of a tradeoff. Humans don't work in a conflict-free way. We disagree, we make concurrent decisions, we change our minds. Software that hides this reality isn't helping — it's lying.
 

@@ -11,7 +11,6 @@ Local-first storage adapters for the ebbjs client. Provides an interface for cac
 | **EntityStore**    | Materialized entity cache. Handles `get` (by ID) and `query` (by type).                                      |
 | **CursorStore**    | Per-group GSN cursor tracking for sync resumption.                                                           |
 | **OutboxStore**    | Durable buffer of locally-authored Actions awaiting acknowledgement, keyed by `action.id`.                   |
-| **ConflictStore**  | Durable table of LWW conflicts awaiting application resolution, keyed by the losing `action.id`.             |
 | **StorageAdapter** | Unified interface composing all components. `createMemoryAdapter()` returns a full in-memory implementation. |
 
 ## Usage
@@ -54,7 +53,7 @@ Client receives action
 ## Constraints
 
 - **Write path lives in `@ebbjs/client`** — the storage layer ships the durable `OutboxStore`, while flush policy, retry, and acknowledgement semantics belong to the client outbox
-- **Conflict detection lives in `@ebbjs/client`** — storage ships the durable conflict table, while detection rules and resolution policy belong to the client
+- **Conflict detection and resolution live in `@ebbjs/client`** — a detected LWW loser is a `conflicted` status plus payload on its own outbox row; storage ships only the durable `OutboxStore`, not a conflict table
 - **Actions are append-only** — never modified or deleted; rollbacks handled by compensating actions
 - **Materialization is lazy** — entities only rematerialized when read, not eagerly on action receipt
 - **HLC + lexicographic tiebreak** — same merge semantics as server (higher HLC wins, tiebreak by `update_id`)
