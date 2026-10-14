@@ -2,8 +2,9 @@
  * Conflict panel — collapsible sidebar listing the entity-level
  * conflicts the client surfaced. A conflict is the set of losing
  * buffered Actions detected together for one connected set of subjects;
- * each Action contributes the positions where a peer's write out-dated
- * it. The panel lets the user retry or discard the whole conflict.
+ * each subject carries the row the client had before the sync, the
+ * server's row after it, and the positions that differ. The panel lets
+ * the user retry or discard the whole conflict.
  *
  * Grouping is durable: every losing Action in one connected set shares
  * the `conflictId` detection stamped on its outbox row, so the panel
@@ -20,13 +21,18 @@ interface Props {
   groupId: string;
 }
 
+/** Render one diff side; an absent side is a removed/added value, not a tombstone. */
+const showValue = (value: unknown): string =>
+  value === undefined ? "(absent)" : JSON.stringify(value);
+
 export function ConflictPanel({ client, docId, groupId }: Props) {
   const [conflicts, setConflicts] = useState<readonly Conflict[]>([]);
 
   useEffect(() => {
     let active = true;
     // Seed from the durable store, then follow live changes. Detection
-    // writes through the manager, so `onChange` fires without a poll.
+    // writes the conflict payload through the outbox, so `onChange` fires
+    // without a poll.
     void client.conflicts.list().then((entries) => {
       if (active) setConflicts(entries);
     });
@@ -58,7 +64,6 @@ export function ConflictPanel({ client, docId, groupId }: Props) {
       )}
       <ul className="flex flex-col gap-3">
         {conflicts.map((conflict) => {
-          const slots = conflict.entries.flatMap((entry) => entry.slots);
           return (
             <li
               key={conflict.id}
@@ -70,21 +75,22 @@ export function ConflictPanel({ client, docId, groupId }: Props) {
                   {conflict.remoteWins() ? "server wins" : "your write wins"}
                 </span>
               </div>
-              <div className="mb-2 font-mono text-stone-500 break-words">
-                {conflict.subjects.join(", ")}
-              </div>
               <div className="flex flex-col gap-2">
-                {slots.map((slot, index) => (
-                  <div key={`${slot.subjectId}:${slot.field}:${index}`}>
-                    <div className="text-stone-500">
-                      {slot.field}
-                      {slot.path.length > 0 ? ` → ${slot.path.join(" → ")}` : ""}
-                    </div>
-                    <pre className="bg-stone-950 p-2 rounded text-stone-300 whitespace-pre-wrap break-words">
-                      {slot.remote.value === null || slot.remote.value === undefined
-                        ? "(deleted)"
-                        : JSON.stringify(slot.remote.value)}
-                    </pre>
+                {conflict.subjectStates.map((state) => (
+                  <div key={state.subjectId} className="flex flex-col gap-1">
+                    <div className="font-mono text-stone-500 break-words">{state.subjectId}</div>
+                    {state.diff.map((diff, index) => (
+                      <div key={`${diff.field}:${diff.path.join(".")}:${index}`}>
+                        <div className="text-stone-500">
+                          {diff.field}
+                          {diff.path.length > 0 ? ` → ${diff.path.join(" → ")}` : ""}
+                          <span className="ml-1 text-stone-600">{diff.kind}</span>
+                        </div>
+                        <pre className="bg-stone-950 p-2 rounded text-stone-300 whitespace-pre-wrap break-words">
+                          {showValue(diff.before)} → {showValue(diff.after)}
+                        </pre>
+                      </div>
+                    ))}
                   </div>
                 ))}
               </div>

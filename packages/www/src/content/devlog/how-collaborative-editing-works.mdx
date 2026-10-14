@@ -133,7 +133,7 @@ Ebb doesn't use a CRDT library, but we _do_ use CRDT-like data structures. The d
 
 The difference is what happens next.
 
-When a client reconnects, ebb checks the writes it made offline against the edits that landed while it was away. A write that raced a peer's edit to the same position is held as a `conflicted` row and surfaced through `client.conflicts` — similar to CouchDB's approach. The application decides whether to retry its own value or discard it and converge on the server's; the pre-sync entity row is captured separately in `client.snapshots`.
+When a client reconnects, ebb checks the writes it made offline against the edits that landed while it was away. A write that raced a peer's edit to the same position is held as a `conflicted` row and surfaced through `client.conflicts` — similar to CouchDB's approach. The application decides whether to retry its own value or discard it and converge on the server's; the row the client had before the merge rides the conflict as `Conflict.subjectStates[].before`.
 
 The following demo shows the data structure itself. Every operation is inspectable. Every merge is traceable. This isn't a black box — it's the actual causal tree, running in your browser.
 

@@ -334,11 +334,15 @@ export interface EntityNamespace<
    * verbatim — nested `update_id` / `hlc` stamps included, so a
    * collaborative-text `content` map survives as a reference snapshot
    * that later document edits re-mint. `opts.at` picks the live row
-   * (`"current"`, the default) or the pre-sync capture from
-   * `client.snapshots` (`"preSync"`, #395). The copy lands in
+   * (`"current"`, the default) or, for `"preSync"`, the entity's
+   * earliest unresolved conflict's `before` row (#395). The copy lands in
    * `opts.groups`, or the source's live groups when omitted, and is
    * validated against the schema like `create`. A soft-deleted source
    * row is copied like any other; the copy is live.
+   *
+   * `at: "preSync"` requires an unresolved conflict referencing the
+   * entity and throws `no unresolved conflict for "<id>"` when there is
+   * none.
    *
    * Only this row's own wire fields are copied. A derived
    * collaborative-text body lives on its own generated document
@@ -438,7 +442,7 @@ export type DuplicateAt = "current" | "preSync";
  * Options for `client.<entity>.duplicate(id, opts)`.
  */
 export interface DuplicateOptions extends EntityWriteOptions {
-  /** Source of the copy: the live row (`"current"`, default) or the pre-sync capture (`"preSync"`). */
+  /** Source of the copy: the live row (`"current"`, default) or the entity's earliest unresolved conflict's `before` row (`"preSync"`). */
   readonly at?: DuplicateAt;
   /** Membership set for the copy; defaults to the source's live groups. */
   readonly groups?: readonly GroupRef[];
@@ -651,7 +655,7 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
  * construction time so the namespace stays free of the cyclic
  * `client → namespace → client` reference; the namespace delegates
  * Action submission, HLC and clock management, document opening, and
- * the snapshot read that backs `duplicate({ at: "preSync" })`.
+ * the conflict read that backs `duplicate({ at: "preSync" })`.
  */
 export interface WriteCapability {
   readonly registry: EntityRegistry;
@@ -672,8 +676,12 @@ export interface WriteCapability {
    * client binds it to the write path so local edits self-flush.
    */
   openTextDocument(docId: string, docType: string): TextDocument;
-  /** Read a pre-sync capture for `duplicate({ at: "preSync" })`. */
-  readSnapshot(entityId: string): Promise<Entity | null>;
+  /**
+   * Read the `before` row of the entity's earliest unresolved conflict,
+   * or `null` when no unresolved conflict references it. Backs
+   * `duplicate({ at: "preSync" })`.
+   */
+  readPreSyncRow(entityId: string): Promise<Entity | null>;
 }
 
 /** Write path bound to a document for self-flushing locally-authored edits. */
@@ -1028,8 +1036,9 @@ function buildEntityWriteUpdate<TFields extends Record<string, TSchema>>(
 
 /**
  * Read the row a `duplicate` copies from: the live cache row, or the
- * pre-sync capture when `at` is `"preSync"`. A missing (or wrong-type)
- * source throws, because there is nothing to copy.
+ * `before` row of the entity's earliest unresolved conflict when `at` is
+ * `"preSync"`. A missing (or wrong-type) source throws, because there
+ * is nothing to copy.
  */
 async function readDuplicateSource(
   storage: StorageAdapter,
@@ -1038,14 +1047,14 @@ async function readDuplicateSource(
   id: string,
   at: DuplicateAt,
 ): Promise<Entity> {
-  const source = at === "preSync" ? await write.readSnapshot(id) : await storage.entities.get(id);
+  const source = at === "preSync" ? await write.readPreSyncRow(id) : await storage.entities.get(id);
   if (source === null || source.type !== entityName) {
     throw new EntityValidationError([
       {
         entityName,
         message:
           at === "preSync"
-            ? `duplicate: no pre-sync snapshot captured for "${id}"`
+            ? `duplicate: no unresolved conflict for "${id}"`
             : `duplicate: no ${entityName} row for id "${id}"`,
       },
     ]);

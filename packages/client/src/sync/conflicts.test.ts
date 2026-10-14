@@ -12,7 +12,7 @@ import { makeHlc, type Action, type Entity, type FieldValue, type Update } from 
 import type { ConflictSlot, ConflictSubjectState, OutboxConflict } from "@ebbjs/storage/types";
 
 import type { ConflictedOutboxEntry, OutboxCounts } from "./outbox";
-import { createConflicts, type ConflictsDependencies } from "./conflicts";
+import { createConflicts, findPreSyncRow, type ConflictsDependencies } from "./conflicts";
 
 const LOCAL_HLC = makeHlc(1_711_036_800_000);
 const PEER_HLC = makeHlc(1_711_036_800_001);
@@ -139,7 +139,6 @@ interface Harness {
   retry: Mock;
   reMaterialize: Mock;
   stampAction: Mock;
-  releaseSubjects: Mock;
 }
 
 const mkDeps = (initial: readonly ConflictedOutboxEntry[] = []): Harness => {
@@ -151,7 +150,6 @@ const mkDeps = (initial: readonly ConflictedOutboxEntry[] = []): Harness => {
     await outbox.clearConflict(originalId);
   });
   const reMaterialize = vi.fn(async (_action: Action): Promise<void> => {});
-  const releaseSubjects = vi.fn((_subjectIds: readonly string[]): void => {});
   const stampAction = vi.fn(
     (updates: readonly Update[]): Action => ({
       id: "act_rebased",
@@ -166,12 +164,10 @@ const mkDeps = (initial: readonly ConflictedOutboxEntry[] = []): Harness => {
     retry,
     reMaterialize,
     stampAction,
-    releaseSubjects,
     deps: {
       outbox,
       retry,
       reMaterialize,
-      releaseSubjects,
       stampAction,
       hlc: () => String(++tick),
       generateUpdateId: () => `u_fresh_${tick}`,
@@ -357,26 +353,6 @@ describe("createConflicts", () => {
     expect(harness.retry).not.toHaveBeenCalled();
     expect(harness.outbox.rows).toEqual([]);
     expect(conflicts.count()).toBe(0);
-  });
-
-  it("releases the resolved action's subjects once no conflict references them", async () => {
-    const harness = mkDeps([mkRow("act_local", "5")]);
-    const { conflicts } = createConflicts(harness.deps);
-    await conflicts.rehydrate();
-
-    await conflicts.resolve("c_act_local", "discard");
-
-    expect(harness.releaseSubjects).toHaveBeenCalledWith(["todo_1"]);
-  });
-
-  it("keeps a subject another conflict still references", async () => {
-    const harness = mkDeps([mkRow("act_a", "1"), mkRow("act_b", "2")]);
-    const { conflicts } = createConflicts(harness.deps);
-    await conflicts.rehydrate();
-
-    await conflicts.resolve("c_act_a", "retry");
-
-    expect(harness.releaseSubjects).not.toHaveBeenCalled();
   });
 
   it("resolve of an unknown conflict id is an empty no-op", async () => {
@@ -631,6 +607,55 @@ describe("Conflict.subjectStates", () => {
     const result = await conflicts.resolve("c_shared", "retry");
     expect(result.resolved).toEqual(["act_a", "act_b"]);
     expect(harness.retry).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("findPreSyncRow", () => {
+  it("returns the before row of the earliest conflict referencing the entity", async () => {
+    const early = mkEntity("todo_1", { title: leaf("early") });
+    const late = mkEntity("todo_1", { title: leaf("late") });
+    const harness = mkDeps([
+      mkRow("act_late", "99", {
+        conflictId: "c_late",
+        subjects: ["todo_1"],
+        subjectStates: [mkState("todo_1", late, null)],
+      }),
+      mkRow("act_early", "1", {
+        conflictId: "c_early",
+        subjects: ["todo_1"],
+        subjectStates: [mkState("todo_1", early, null)],
+      }),
+    ]);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    expect(await findPreSyncRow(conflicts, "todo_1")).toEqual(early);
+  });
+
+  it("returns null when no conflict references the entity", async () => {
+    const harness = mkDeps([
+      mkRow("act_a", "1", {
+        subjects: ["todo_2"],
+        subjectStates: [mkState("todo_2", mkEntity("todo_2", { title: leaf("x") }), null)],
+      }),
+    ]);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    expect(await findPreSyncRow(conflicts, "todo_1")).toBeNull();
+  });
+
+  it("returns null when the earliest conflict's before row is null", async () => {
+    const harness = mkDeps([
+      mkRow("act_a", "1", {
+        subjects: ["todo_1"],
+        subjectStates: [mkState("todo_1", null, mkEntity("todo_1", { title: leaf("merged") }))],
+      }),
+    ]);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    expect(await findPreSyncRow(conflicts, "todo_1")).toBeNull();
   });
 });
 

@@ -1,24 +1,15 @@
 /**
- * Names the SDK reserves for its system entities, the injected
- * membership accessor, and the client's own sub-namespaces.
- * `defineEntity` / `defineRelationship` reject an app-authored
- * collision at schema build time so the canonical surface can't be
- * shadowed.
+ * Names the SDK reserves for its system entities and the injected
+ * membership accessor. `defineEntity` / `defineRelationship` reject an
+ * app-authored collision at schema build time so the canonical surface
+ * can't be shadowed.
  */
 
 /** Server-recognized system entity types; the client mirrors them. */
 const SYSTEM_ENTITY_NAMES = ["group", "groupMember", "entityGroup", "relationship"] as const;
 
-/**
- * Client sub-namespaces mounted on the client instance. `createClient`'s
- * proxy resolves an entity namespace before the instance field, so an
- * entity with one of these names would shadow the sub-namespace and
- * leave its surface unreachable. Reserve the name instead.
- */
-const CLIENT_NAMESPACE_NAMES = ["snapshots"] as const;
-
 /** Every entity name the SDK reserves. */
-export const RESERVED_ENTITY_NAMES = [...SYSTEM_ENTITY_NAMES, ...CLIENT_NAMESPACE_NAMES] as const;
+export const RESERVED_ENTITY_NAMES = [...SYSTEM_ENTITY_NAMES] as const;
 
 /** Prefix reserved for SDK-generated collaborative-text document entities. */
 export const DERIVED_DOC_ENTITY_PREFIX = "text_document__";
