@@ -8,8 +8,8 @@
  */
 
 import { describe, it, expect, vi, type Mock } from "vitest";
-import { makeHlc, type Action, type Update } from "@ebbjs/core";
-import type { ConflictSlot, OutboxConflict } from "@ebbjs/storage/types";
+import { makeHlc, type Action, type Entity, type FieldValue, type Update } from "@ebbjs/core";
+import type { ConflictSlot, ConflictSubjectState, OutboxConflict } from "@ebbjs/storage/types";
 
 import type { ConflictedOutboxEntry, OutboxCounts } from "./outbox";
 import { createConflicts, type ConflictsDependencies } from "./conflicts";
@@ -35,6 +35,31 @@ const mkAction = (actionId: string): Action => ({
   ],
 });
 
+/** A leaf field value at the local HLC unless overridden. */
+const leaf = (value: unknown, updateId = "u_local", hlc = LOCAL_HLC): FieldValue => ({
+  value,
+  update_id: updateId,
+  hlc,
+});
+
+/** A materialized entity row for one subject. */
+const mkEntity = (id: string, fields: Record<string, FieldValue>): Entity => ({
+  id,
+  type: "todo",
+  data: { fields },
+  created_hlc: LOCAL_HLC,
+  updated_hlc: LOCAL_HLC,
+  deleted_hlc: null,
+  last_gsn: 1,
+});
+
+/** The before/after rows for one losing subject. */
+const mkState = (
+  subjectId: string,
+  before: Entity | null,
+  after: Entity | null,
+): ConflictSubjectState => ({ subjectId, subjectType: "todo", before, after });
+
 /** The default contested `title` slot. */
 const mkSlot = (overrides: Partial<ConflictSlot> = {}): ConflictSlot => ({
   subjectId: "todo_1",
@@ -52,6 +77,7 @@ const mkRow = (
   overrides: {
     readonly conflictId?: string;
     readonly subjects?: readonly string[];
+    readonly subjectStates?: readonly ConflictSubjectState[];
     readonly slots?: readonly ConflictSlot[];
     readonly action?: Action;
   } = {},
@@ -62,7 +88,7 @@ const mkRow = (
   basedOnGsn: 0,
   conflict: {
     subjects: overrides.subjects ?? ["todo_1"],
-    subjectStates: [],
+    subjectStates: overrides.subjectStates ?? [],
     slots: overrides.slots ?? [mkSlot()],
     catchUpId: "cu_1",
     conflictId: overrides.conflictId ?? `c_${actionId}`,
@@ -431,6 +457,180 @@ describe("createConflicts", () => {
     expect(good).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalled();
     spy.mockRestore();
+  });
+});
+
+describe("Conflict.subjectStates", () => {
+  /** Project one row carrying a single subject's states into its conflict. */
+  const conflictForState = async (
+    state: ConflictSubjectState,
+    slots: readonly ConflictSlot[] = [],
+  ) => {
+    const harness = mkDeps([
+      mkRow("act_local", "1", { slots, subjectStates: [state], subjects: [state.subjectId] }),
+    ]);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+    const [conflict] = await conflicts.list();
+    if (conflict === undefined) throw new Error("expected a conflict");
+    return conflict;
+  };
+
+  it("projects changed, added, and removed positions, including nested map keys, in deterministic order", async () => {
+    const before = mkEntity("todo_1", {
+      title: leaf("mine"),
+      notes: leaf("draft"),
+      content: { map: { b: leaf("mine", "u_b"), a: leaf("keep", "u_a") } },
+    });
+    const after = mkEntity("todo_1", {
+      title: leaf("theirs", "u_title"),
+      completed: leaf(true, "u_done"),
+      content: { map: { c: leaf("new", "u_c"), b: leaf("theirs", "u_b"), a: leaf("keep", "u_a") } },
+    });
+
+    const conflict = await conflictForState(mkState("todo_1", before, after));
+
+    expect(conflict.subjectStates).toHaveLength(1);
+    expect(conflict.subjectStates[0]?.diff).toEqual([
+      { field: "completed", path: [], before: undefined, after: true, kind: "added" },
+      { field: "content", path: ["b"], before: "mine", after: "theirs", kind: "changed" },
+      { field: "content", path: ["c"], before: undefined, after: "new", kind: "added" },
+      { field: "notes", path: [], before: "draft", after: undefined, kind: "removed" },
+      { field: "title", path: [], before: "mine", after: "theirs", kind: "changed" },
+    ]);
+  });
+
+  it("reports a map-vs-leaf kind divergence as one changed diff at that path", async () => {
+    const before = mkEntity("doc_1", { content: { map: { a: leaf("mine") } } });
+    const after = mkEntity("doc_1", { content: leaf("whole") });
+
+    const conflict = await conflictForState(mkState("doc_1", before, after));
+
+    expect(conflict.subjectStates[0]?.diff).toEqual([
+      { field: "content", path: [], before: { a: "mine" }, after: "whole", kind: "changed" },
+    ]);
+  });
+
+  it("reads a nested tombstone as a removed position, not a changed one", async () => {
+    const before = mkEntity("doc_1", {
+      content: { map: { a: leaf("mine"), b: leaf("keep") } },
+    });
+    const after = mkEntity("doc_1", {
+      content: { map: { a: leaf(null, "u_peer"), b: leaf("keep") } },
+    });
+
+    const conflict = await conflictForState(mkState("doc_1", before, after));
+
+    expect(conflict.subjectStates[0]?.diff).toEqual([
+      { field: "content", path: ["a"], before: "mine", after: undefined, kind: "removed" },
+    ]);
+  });
+
+  it("treats a null before as every after field added and a null after as every before field removed", async () => {
+    const row = mkEntity("todo_1", { title: leaf("mine") });
+    const advanced = mkEntity("todo_1", { title: leaf("theirs", "u_peer") });
+
+    const created = await conflictForState(mkState("todo_1", null, advanced));
+    expect(created.subjectStates[0]?.diff).toEqual([
+      { field: "title", path: [], before: undefined, after: "theirs", kind: "added" },
+    ]);
+
+    const deleted = await conflictForState(mkState("todo_1", row, null));
+    expect(deleted.subjectStates[0]?.diff).toEqual([
+      { field: "title", path: [], before: "mine", after: undefined, kind: "removed" },
+    ]);
+  });
+
+  it("exposes a non-empty diff for an entity-scope conflict with empty slots", async () => {
+    const before = mkEntity("doc_1", { content: { map: { a: leaf("mine") } } });
+    const after = mkEntity("doc_1", { content: { map: { b: leaf("theirs", "u_peer") } } });
+
+    const conflict = await conflictForState(mkState("doc_1", before, after), []);
+
+    expect(conflict.entries[0]?.slots).toEqual([]);
+    expect(conflict.remoteWins()).toBe(false);
+    expect(conflict.subjectStates[0]?.diff).toEqual([
+      { field: "content", path: ["a"], before: "mine", after: undefined, kind: "removed" },
+      { field: "content", path: ["b"], before: undefined, after: "theirs", kind: "added" },
+    ]);
+  });
+
+  it("dedupes a subject across losing entries, keeping the earliest before and latest after", async () => {
+    const first = mkEntity("todo_1", { title: leaf("first") });
+    const middle = mkEntity("todo_1", { title: leaf("middle") });
+    const last = mkEntity("todo_1", { title: leaf("last") });
+    const harness = mkDeps([
+      mkRow("act_b", "2", {
+        conflictId: "c_shared",
+        subjectStates: [mkState("todo_1", middle, last)],
+      }),
+      mkRow("act_a", "1", {
+        conflictId: "c_shared",
+        subjectStates: [mkState("todo_1", first, middle)],
+      }),
+    ]);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    const [conflict] = await conflicts.list();
+
+    expect(conflict?.subjects).toEqual(["todo_1"]);
+    expect(conflict?.subjectStates).toHaveLength(1);
+    expect(conflict?.subjectStates[0]?.before).toEqual(first);
+    expect(conflict?.subjectStates[0]?.after).toEqual(last);
+  });
+
+  it("keeps subjectStates in the same order as subjects", async () => {
+    const harness = mkDeps([
+      mkRow("act_a", "1", {
+        subjects: ["todo_2", "todo_1"],
+        subjectStates: [
+          mkState("todo_2", mkEntity("todo_2", { title: leaf("a") }), null),
+          mkState("todo_1", mkEntity("todo_1", { title: leaf("b") }), null),
+        ],
+      }),
+    ]);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    const [conflict] = await conflicts.list();
+
+    expect(conflict?.subjects).toEqual(["todo_2", "todo_1"]);
+    expect(conflict?.subjectStates.map((state) => state.subjectId)).toEqual(["todo_2", "todo_1"]);
+  });
+
+  it("leaves subjects, entries, remoteWins, and resolution unchanged when states are present", async () => {
+    const harness = mkDeps([
+      mkRow("act_a", "1", {
+        conflictId: "c_shared",
+        subjects: ["todo_1", "todo_2"],
+        slots: [],
+        subjectStates: [
+          mkState(
+            "todo_1",
+            mkEntity("todo_1", { title: leaf("mine") }),
+            mkEntity("todo_1", { title: leaf("theirs", "u_peer") }),
+          ),
+          mkState(
+            "todo_2",
+            mkEntity("todo_2", { title: leaf("mine") }),
+            mkEntity("todo_2", { title: leaf("theirs", "u_peer") }),
+          ),
+        ],
+      }),
+      mkRow("act_b", "2", { conflictId: "c_shared", subjects: [], subjectStates: [], slots: [] }),
+    ]);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    const [conflict] = await conflicts.list();
+    expect(conflict?.subjects).toEqual(["todo_1", "todo_2"]);
+    expect(conflict?.entries.map((entry) => entry.action.id)).toEqual(["act_a", "act_b"]);
+    expect(conflict?.remoteWins()).toBe(false);
+
+    const result = await conflicts.resolve("c_shared", "retry");
+    expect(result.resolved).toEqual(["act_a", "act_b"]);
+    expect(harness.retry).toHaveBeenCalledTimes(2);
   });
 });
 

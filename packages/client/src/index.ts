@@ -107,6 +107,8 @@ export {
   type Conflicts,
   type Conflict,
   type ConflictSlotView,
+  type ConflictSubjectStateView,
+  type EntityDiff,
   type ConflictResolution,
   type ConflictChangeListener,
   type ConflictSnapshot,
