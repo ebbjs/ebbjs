@@ -97,6 +97,8 @@ ordered-fanout coordination that is not yet built
 | `EbbServer.Storage.SQLite`                                                       | Entity cache: schema DDL, UPSERT, filtered query with permissions  |
 | `EbbServer.Storage.SystemCache` (sup.)                                           | ETS + `:atomics` for GSN, watermark, dirty set, group/relationship |
 | `EbbServer.Storage.Writer`                                                       | Single serialization point: GSN assignment, perm check, WriteBatch |
+| `EbbServer.Storage.ActionLog`                                                    | Committed-log reader: decodes an inclusive GSN range in order      |
+| `EbbServer.ActionExport` (opt-in)                                                | Polls the committed log and invokes the `:on_action` handler       |
 | `EbbServer.Storage.EntityStore`                                                  | Read API with on-demand materialization                            |
 | `EbbServer.Storage.PermissionChecker`                                            | Action validation + per-Update ETS-based permission decision       |
 | `EbbServer.Storage.WatermarkTracker`                                             | Resolution-frontier ETS + `:atomics` (SSE fan-out gating)          |
@@ -151,7 +153,10 @@ EbbServer.Supervisor (one_for_one)
 │   ├── Sync.FanOutRouter
 │   ├── Sync.GroupDynamicSupervisor (per-group GroupServers)
 │   └── Sync.SSEConnectionSupervisor (per-live-connection pids)
-└── Bandit HTTP listener, plug: Sync.Router
+├── Bandit HTTP listener, plug: Sync.Router
+└── ActionExport.Supervisor (opt-in, only when `:on_action` is set)
+    ├── ActionExport.TaskSupervisor     — bounded handler invocations
+    └── ActionExport                    — durable cursor + poll loop
 ```
 
 `Storage.Writer` is deliberately the **last** child of the `rest_for_one`
@@ -180,14 +185,15 @@ not atoms.
 
 All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 
-| Key                        | Description                                                       | Default     |
-| -------------------------- | ----------------------------------------------------------------- | ----------- |
-| `:port`                    | HTTP listen port                                                  | 4000        |
-| `:data_dir`                | Directory for RocksDB + SQLite files                              | `./data`    |
-| `:auth_mode`               | Auth mode (`:bypass` / `:external`)                               | `:external` |
-| `:auth_url`                | Developer's auth endpoint URL                                     | (required)  |
-| `:writer_batch_max_size`   | Buffered Actions before an immediate commit (`<= 0` = no trigger) | 1000        |
-| `:writer_batch_timeout_ms` | Coalescing window (`0` = burst-drain, no timer)                   | 0           |
+| Key                        | Description                                                                            | Default     |
+| -------------------------- | -------------------------------------------------------------------------------------- | ----------- |
+| `:port`                    | HTTP listen port                                                                       | 4000        |
+| `:data_dir`                | Directory for RocksDB + SQLite files                                                   | `./data`    |
+| `:auth_mode`               | Auth mode (`:bypass` / `:external`)                                                    | `:external` |
+| `:auth_url`                | Developer's auth endpoint URL                                                          | (required)  |
+| `:writer_batch_max_size`   | Buffered Actions before an immediate commit (`<= 0` = no trigger)                      | 1000        |
+| `:writer_batch_timeout_ms` | Coalescing window (`0` = burst-drain, no timer)                                        | 0           |
+| `:on_action`               | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook)) | (unset)     |
 
 The periodic metric sampler is configured under its own key,
 `Application.get_env(:ebb_server, EbbServer.Telemetry.Sampler)`:
@@ -224,9 +230,10 @@ place that fixes event names and payload conventions. The catalogue below is
 what the emitters under `lib/` emit today; `EbbServer.Telemetry`'s moduledoc is
 the authoritative source if the two ever disagree.
 
-The developer-facing `onAction` hook is a separate, unshipped server
-capability ([#367](https://github.com/ebbjs/ebbjs/issues/367)) and is not part
-of this `:telemetry` surface.
+The developer-facing `onAction` hook is the opt-in Action exporter, documented
+in [Action export](#action-export-the-onaction-hook). It is a data-egress
+surface; its own events (`ebb.action_export.*`) are part of the `:telemetry`
+catalogue below.
 
 #### Event catalogue
 
@@ -236,22 +243,26 @@ reporters. Durations are in native `:telemetry` time units
 suffix marks a latency metric, not the raw unit. Reporters convert with
 `unit: {:native, :millisecond}`.
 
-| Event                                     | Measurements (unit) | Metadata                                            | Metric type                  | Subsystem      |
-| ----------------------------------------- | ------------------- | --------------------------------------------------- | ---------------------------- | -------------- |
-| `ebb.writer.batch_size`                   | `count`             | `gsn_start`, `gsn_end`, `callers`                   | Histogram                    | `writer`       |
-| `ebb.writer.batch_latency_ms`             | `duration` (native) | `gsn_start`, `gsn_end`                              | Histogram                    | `writer`       |
-| `ebb.writer.actions_per_sec`              | `count`             | —                                                   | Counter                      | `writer`       |
-| `ebb.writer.range_resolved`               | `count`             | `gsn_start`, `gsn_end`, `reason`                    | Counter                      | `writer`       |
-| `ebb.writer.commit_failed`                | `count`             | `gsn_start`, `gsn_end`, `reason`                    | Counter                      | `writer`       |
-| `ebb.watermark.lag`                       | `lag` (GSNs)        | —                                                   | Gauge                        | `watermark`    |
-| `ebb.dirty_set.size`                      | `size` (entries)    | —                                                   | Gauge                        | `dirty_set`    |
-| `ebb.entity_store.materialize_latency_ms` | `duration` (native) | `subject_id`, `subject_type`                        | Histogram                    | `entity_store` |
-| `ebb.entity_store.cache_hit_rate`         | `count`             | `result` (`:hit` / `:miss`)                         | Counter (tagged by `result`) | `entity_store` |
-| `ebb.fanout.push_latency_ms`              | `duration` (native) | `group_id`                                          | Histogram                    | `fanout`       |
-| `ebb.fanout.active_connections`           | `count`             | —                                                   | Gauge                        | `fanout`       |
-| `ebb.fanout.active_groups`                | `count`             | —                                                   | Gauge                        | `fanout`       |
-| `ebb.http.request_latency_ms`             | `duration` (native) | `method`, `route`, `status`                         | Histogram                    | `http`         |
-| `ebb.sync.catch_up`                       | `count`             | `group_id`, `from_offset`, `returned`, `up_to_date` | Counter                      | `sync`         |
+| Event                                     | Measurements (unit) | Metadata                                            | Metric type                  | Subsystem       |
+| ----------------------------------------- | ------------------- | --------------------------------------------------- | ---------------------------- | --------------- |
+| `ebb.writer.batch_size`                   | `count`             | `gsn_start`, `gsn_end`, `callers`                   | Histogram                    | `writer`        |
+| `ebb.writer.batch_latency_ms`             | `duration` (native) | `gsn_start`, `gsn_end`                              | Histogram                    | `writer`        |
+| `ebb.writer.actions_per_sec`              | `count`             | —                                                   | Counter                      | `writer`        |
+| `ebb.writer.range_resolved`               | `count`             | `gsn_start`, `gsn_end`, `reason`                    | Counter                      | `writer`        |
+| `ebb.writer.commit_failed`                | `count`             | `gsn_start`, `gsn_end`, `reason`                    | Counter                      | `writer`        |
+| `ebb.watermark.lag`                       | `lag` (GSNs)        | —                                                   | Gauge                        | `watermark`     |
+| `ebb.dirty_set.size`                      | `size` (entries)    | —                                                   | Gauge                        | `dirty_set`     |
+| `ebb.entity_store.materialize_latency_ms` | `duration` (native) | `subject_id`, `subject_type`                        | Histogram                    | `entity_store`  |
+| `ebb.entity_store.cache_hit_rate`         | `count`             | `result` (`:hit` / `:miss`)                         | Counter (tagged by `result`) | `entity_store`  |
+| `ebb.fanout.push_latency_ms`              | `duration` (native) | `group_id`                                          | Histogram                    | `fanout`        |
+| `ebb.fanout.active_connections`           | `count`             | —                                                   | Gauge                        | `fanout`        |
+| `ebb.fanout.active_groups`                | `count`             | —                                                   | Gauge                        | `fanout`        |
+| `ebb.http.request_latency_ms`             | `duration` (native) | `method`, `route`, `status`                         | Histogram                    | `http`          |
+| `ebb.sync.catch_up`                       | `count`             | `group_id`, `from_offset`, `returned`, `up_to_date` | Counter                      | `sync`          |
+| `ebb.action_export.batch`                 | `count`             | `from_gsn`, `to_gsn`                                | Counter                      | `action_export` |
+| `ebb.action_export.failed`                | `count`             | `gsn`, `reason`                                     | Counter                      | `action_export` |
+| `ebb.action_export.filtered`              | `count`             | —                                                   | Counter                      | `action_export` |
+| `ebb.action_export.lag`                   | `lag` (GSNs)        | `cursor`                                            | Gauge                        | `action_export` |
 
 The `ebb.watermark.lag`, `ebb.dirty_set.size`, `ebb.fanout.active_connections`,
 and `ebb.fanout.active_groups` gauges have no natural event to hang off, so
@@ -277,7 +288,7 @@ server-to-server replication exists.
 #### Telemetry conventions
 
 The reserved subsystems are `writer`, `watermark`, `dirty_set`, `entity_store`,
-`fanout`, `http`, and `sync`; adding a family means changing
+`fanout`, `http`, `sync`, and `action_export`; adding a family means changing
 `EbbServer.Telemetry` first.
 
 - **Names** are `ebb.<subsystem>.<event>`, lower snake case: past tense for
@@ -378,6 +389,110 @@ Exporting these events to OpenTelemetry is an explicit follow-up spike tracked
 by the [observability epic](https://github.com/ebbjs/ebbjs/issues/125), out of
 scope here: no OTel exporter, tracer provider, or span mapping ships in
 `ebb_server` today.
+
+### Action export (the `onAction` hook)
+
+`EbbServer.ActionExport` is the `onAction` developer hook: an opt-in process
+that reads the durable Action log and hands each committed Action to an
+application-supplied sink. It is how an application derives product
+analytics, an audit log, a warehouse load, or webhooks from the Action stream
+without instrumenting its own write paths — every write is already a
+structured event.
+
+`EbbServer.ActionExport`'s moduledoc is the authoritative source if this
+section and the code ever disagree.
+
+It is a **consumer of the committed log, not a Writer hook**. The exporter
+polls `cf_actions` behind a durable cursor and invokes the handler off the
+write path, so a slow, down, or hanging sink costs a commit nothing. The read
+primitive (`EbbServer.Storage.ActionLog`) is shared with the future
+peer-replication consumer ([#113](https://github.com/ebbjs/ebbjs/issues/113)).
+
+#### Configuration
+
+The exporter starts only when a handler is configured:
+
+```elixir
+# ebb_server/config/dev.exs (or your app's config)
+config :ebb_server, on_action: {MyApp.WarehouseSink, :handle}
+```
+
+`{Module, :function}` is resolved with `apply/3`; a 1-arity fun is also
+accepted (`on_action: &MyApp.WarehouseSink.handle/1`). With the key unset or
+`nil`, no exporter process starts and the node pays nothing for the feature.
+
+Only `:on_action` is read from application config today. The rest are options
+to `EbbServer.ActionExport.start_link/1`, used by tests and direct starts:
+
+| Option                    | Default                          | Purpose                                          |
+| ------------------------- | -------------------------------- | ------------------------------------------------ |
+| `:batch_size`             | `500`                            | Actions read per poll                            |
+| `:poll_interval_ms`       | `1000`                           | Delay between polls once caught up               |
+| `:handler_timeout_ms`     | `5000`                           | Per-invocation timeout before the task is killed |
+| `:excluded_subject_types` | `["groupMember", "entityGroup"]` | Update subject types stripped before export      |
+| `:cursor_name`            | `"action_export"`                | SQLite `cursors` row the exporter resumes from   |
+
+#### Handler contract
+
+The handler receives one Action map with string keys, called once per Action
+in ascending GSN order:
+
+```elixir
+%{
+  "id" => "act_...",
+  "actor_id" => "a_...",
+  "hlc" => 115_300_000_000_000_000,
+  "gsn" => 42,
+  "updates" => [
+    %{
+      "id" => "upd_...",
+      "subject_id" => "todo_...",
+      "subject_type" => "todo",
+      "method" => "put",
+      "data" => %{
+        "fields" => %{
+          "title" => %{"value" => "Buy milk", "update_id" => "upd_...", "hlc" => 115_300_000_000_000_000}
+        }
+      }
+    }
+  ]
+}
+```
+
+`"method"` is `"put"`, `"patch"`, or `"delete"`; `"data"` is the client's
+`fields` envelope, passed through unchanged (a `delete` normally carries
+`null`). An Update whose subject type is filtered out is already absent from
+`"updates"`.
+
+- Return `:ok` (or anything that is not `{:error, _}`) to acknowledge.
+- Return `{:error, reason}`, raise, throw, exit, or exceed
+  `:handler_timeout_ms` to **stall** the cursor. The exporter logs the
+  failure, emits `ebb.action_export.failed` with the failing `gsn` and
+  `reason`, and re-delivers the batch on the next poll. The exporter process
+  itself stays alive.
+
+#### Delivery semantics
+
+- **At-least-once, not exactly-once.** The cursor advances to the end of a
+  batch only if every Action in it succeeded, so a failure re-delivers the
+  successfully handled prefix too. A sink that needs exactly-once must dedup
+  on the Action's stable `"id"` (an idempotent upsert keyed on `"id"` is the
+  usual shape). `"id"` is the Action's identity across nodes; `"gsn"` is
+  node-local, so a sink aggregating replicas keys on `"id"` and orders by
+  `"hlc"`, not on `"gsn"`.
+- **Durable cursor.** The cursor lives in the SQLite `cursors` table, so the
+  exporter resumes where it left off after a restart instead of replaying
+  history.
+- **Ordering.** Actions are delivered one at a time in ascending GSN order.
+  Ordering is per exporter, not per subject.
+- **Egress.** The exporter reads the log directly and therefore bypasses
+  group authorization. `groupMember` and `entityGroup` Updates are stripped
+  by default, and an Action left with no Updates is dropped entirely.
+
+Operators watch the backlog with `ebb.action_export.lag` (committed
+watermark − cursor): a sink that keeps failing shows as a lag that never
+drains. A copy-paste sink and run instructions live in
+[`examples/action_export/`](../examples/action_export/).
 
 ### ID generation
 
