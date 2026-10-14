@@ -147,7 +147,7 @@
         {
           "post":
             {
-              "description": "Returns a list of entities matching the given type, with optional field filtering and pagination.",
+              "description": "Returns a list of entities matching the given type, with optional field filtering and pagination. Results are ordered by creation HLC, then by entity ID, and each entity appears once.",
               "operationId": "queryEntities",
               "requestBody":
                 {

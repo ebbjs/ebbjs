@@ -332,7 +332,7 @@ defmodule EbbServer.Storage.SQLite do
     {filter_sql, filter_params} = build_filter_clauses(query[:filter])
 
     base_sql = """
-    SELECT e.id, e.type, e.data, e.created_hlc, e.updated_hlc, e.deleted_hlc, e.deleted_by, e.last_gsn
+    SELECT DISTINCT e.id, e.type, e.data, e.created_hlc, e.updated_hlc, e.deleted_hlc, e.deleted_by, e.last_gsn
     FROM entities e
     INNER JOIN entities m ON m.type = 'entityGroup'
       AND m.entity_id = e.id
@@ -345,7 +345,10 @@ defmodule EbbServer.Storage.SQLite do
       AND e.deleted_hlc IS NULL
     """
 
-    sql = base_sql <> filter_sql
+    # Offset pagination needs a total order, so `id` breaks `created_hlc` ties
+    # within a millisecond. DISTINCT collapses the membership join's one row per
+    # shared group.
+    sql = base_sql <> filter_sql <> " ORDER BY e.created_hlc, e.id"
 
     {sql, pagination_params} =
       case {query[:limit], query[:offset]} do
