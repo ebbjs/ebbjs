@@ -22,7 +22,7 @@ const emptyOutbox = (): OutboxSnapshot => ({
   flushLatency: null,
 });
 
-const emptyConflicts = (): ConflictSnapshot => ({ count: 0, entries: [] });
+const emptyConflicts = (): ConflictSnapshot => ({ count: 0, conflicts: [] });
 
 const mkHarness = () => {
   const connection = new ConnectionStateMachine();
@@ -54,7 +54,7 @@ describe("createClientStatus", () => {
       connection: "connecting",
       lastSyncedAt: null,
       outbox: { pending: 0, acknowledged: 0, error: 0, conflicted: 0, flushLatency: null },
-      conflicts: { count: 0, entries: [] },
+      conflicts: { count: 0, conflicts: [] },
     });
   });
 
@@ -81,7 +81,7 @@ describe("createClientStatus", () => {
     const listener = vi.fn();
     status.subscribe(listener);
 
-    const next: ConflictSnapshot = { count: 2, entries: [] };
+    const next: ConflictSnapshot = { count: 2, conflicts: [] };
     conflicts.set(next);
 
     expect(listener).toHaveBeenCalledWith(expect.objectContaining({ conflicts: next }));

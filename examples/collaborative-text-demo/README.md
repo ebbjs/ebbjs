@@ -62,7 +62,7 @@ Open `https://localhost:8443/?actor=drew` and `?actor=alice` in two tabs (differ
 4. A CodeMirror 6 view is wired to a `TextDocument` via [`@ebbjs/codemirror`](../../packages/codemirror/).
 5. Local edits self-flush through the client's write path; the editor's 250ms timer remains as a retry safety net.
 6. Incoming SSE data events are piped into `doc.applyActions()`, which fires `onUpdate` — the bridge reflects the change in CM.
-7. Concurrent edits to the same run are one map-key slot, recorded by the outbox and surfaced via `client.conflicts()` / the `ConflictPanel`.
+7. Concurrent edits to the same run are one map-key slot, recorded by the outbox and grouped into an entity-level `Conflict` surfaced via `client.conflicts.list()` / the `ConflictPanel`.
 
 ## Files
 

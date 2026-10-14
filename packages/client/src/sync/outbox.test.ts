@@ -1301,7 +1301,10 @@ describe("createOutbox conflict detection", () => {
     expect(detected.map((conflict) => conflict.actionId)).toEqual(["a_first", "a_second"]);
     expect(outbox.pending()).toEqual([]);
     const entries = outbox.conflicts();
-    expect(entries.map((entry) => entry.conflict.conflictId)).toEqual(["c_1", "c_2"]);
+    // Two losers on one subject form one conflict: they share a
+    // `conflictId`, so the group survives a reload and a partial
+    // resolution.
+    expect(entries.map((entry) => entry.conflict.conflictId)).toEqual(["c_1", "c_1"]);
     expect(entries.every((entry) => entry.conflict.catchUpId === "cu_1")).toBe(true);
   });
 });

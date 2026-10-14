@@ -659,18 +659,19 @@ describe("catch-up conflict detection (#308, #390)", () => {
 
     const conflicts = await client.conflicts.list();
     expect(conflicts).toHaveLength(1);
-    expect(conflicts[0]?.action.id).toBe("act_local");
+    expect(conflicts[0]?.entries[0]?.action.id).toBe("act_local");
     expect(conflicts[0]?.subjects).toEqual(["todo_1"]);
-    expect(conflicts[0]?.basedOnGsn).toBe(0);
-    expect(conflicts[0]?.catchUpId).toMatch(/^cu_/);
-    expect(conflicts[0]?.conflictId).toMatch(/^c_/);
-    expect(conflicts[0]?.slots).toEqual([
+    expect(conflicts[0]?.entries[0]?.basedOnGsn).toBe(0);
+    expect(conflicts[0]?.entries[0]?.catchUpId).toMatch(/^cu_/);
+    expect(conflicts[0]?.id).toMatch(/^c_/);
+    expect(conflicts[0]?.entries[0]?.slots).toEqual([
       {
         subjectId: "todo_1",
         field: "title",
         path: [],
         local: { value: "mine", update_id: "u_local", hlc: localHlc },
         remote: { value: "theirs", update_id: "u_peer", hlc: peerHlc },
+        remoteWins: expect.any(Function),
       },
     ]);
 
@@ -716,13 +717,14 @@ describe("catch-up conflict detection (#308, #390)", () => {
     expect(conflicts).toHaveLength(1);
     // A missed `put` replaces the subject, so the omitted `title` is
     // reverted on the server: the remote side holds no value.
-    expect(conflicts[0]?.slots).toEqual([
+    expect(conflicts[0]?.entries[0]?.slots).toEqual([
       {
         subjectId: "todo_1",
         field: "title",
         path: [],
         local: { value: "mine", update_id: "u_local", hlc: localHlc },
         remote: { value: undefined },
+        remoteWins: expect.any(Function),
       },
     ]);
 
@@ -867,11 +869,13 @@ describe("catch-up conflict detection (#308, #390)", () => {
     unsubscribe();
 
     const conflicts = await client.conflicts.list();
-    expect(conflicts.map((entry) => entry.action.id)).toEqual(["act_local_same"]);
+    expect(
+      conflicts.flatMap((conflict) => conflict.entries.map((entry) => entry.action.id)),
+    ).toEqual(["act_local_same"]);
     expect(conflicts[0]?.subjects).toEqual(["doc_1"]);
-    expect(conflicts[0]?.slots.map((slot) => slot.path)).toEqual([["run:r3"]]);
-    expect(conflicts[0]?.slots[0]?.local).toMatchObject({ value: "mine-same" });
-    expect(conflicts[0]?.slots[0]?.remote).toMatchObject({ value: "peer-same" });
+    expect(conflicts[0]?.entries[0]?.slots.map((slot) => slot.path)).toEqual([["run:r3"]]);
+    expect(conflicts[0]?.entries[0]?.slots[0]?.local).toMatchObject({ value: "mine-same" });
+    expect(conflicts[0]?.entries[0]?.slots[0]?.remote).toMatchObject({ value: "peer-same" });
   });
 
   it("treats a server rejection as an Outbox error, not a conflict", async () => {

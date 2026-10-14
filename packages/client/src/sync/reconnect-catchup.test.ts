@@ -228,10 +228,12 @@ describe("SyncClient rebase phase (#309)", () => {
     expect(await client.outbox.size("pending")).toBe(0);
 
     const conflicts = await client.conflicts.list();
-    expect(conflicts.map((entry) => entry.action.id)).toEqual(["act_local"]);
-    expect(conflicts[0]?.basedOnGsn).toBe(1);
-    expect(conflicts[0]?.slots.map((slot) => slot.path)).toEqual([[]]);
-    expect(conflicts[0]?.slots[0]?.remote).toMatchObject({ value: "Page two" });
+    expect(
+      conflicts.flatMap((conflict) => conflict.entries.map((entry) => entry.action.id)),
+    ).toEqual(["act_local"]);
+    expect(conflicts[0]?.entries[0]?.basedOnGsn).toBe(1);
+    expect(conflicts[0]?.entries[0]?.slots.map((slot) => slot.path)).toEqual([[]]);
+    expect(conflicts[0]?.entries[0]?.slots[0]?.remote).toMatchObject({ value: "Page two" });
 
     unsubscribe();
   });
@@ -283,7 +285,9 @@ describe("SyncClient rebase phase (#309)", () => {
 
     expect(actionPosts).toHaveLength(0);
     const conflicts = await client.conflicts.list();
-    expect(conflicts.map((entry) => entry.action.id)).toContain("act_local");
+    expect(
+      conflicts.flatMap((conflict) => conflict.entries.map((entry) => entry.action.id)),
+    ).toContain("act_local");
     expect(await client.outbox.size("pending")).toBe(0);
 
     unsubscribe();
@@ -450,7 +454,9 @@ describe("SyncClient pre-sync snapshots (#395)", () => {
     expect(titleOf(await client.readLocalEntity("todo_1"))).toBe("Remote edit");
 
     // Resolving the entity's conflict releases its capture.
-    await client.conflicts.resolve("act_local", "discard");
+    const [conflict] = await client.conflicts.list();
+    if (conflict === undefined) throw new Error("expected a conflict");
+    await client.conflicts.resolve(conflict.id, "discard");
     expect(await client.snapshots.get("todo_1")).toBeNull();
     expect(client.snapshots.list()).toEqual([]);
 

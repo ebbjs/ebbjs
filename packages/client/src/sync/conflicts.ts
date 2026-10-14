@@ -4,18 +4,19 @@
  *
  * A detected loser is a status plus payload on its own outbox entry
  * (#390), so there is no second durable store to cache, seed, or keep in
- * step. This module projects those rows into the {@link ConflictEntry}
- * shape the application reads, publishes the count as a synchronous
- * observable for #125, and turns the application's `retry` / `discard`
- * decision into the outbox transition that decision implies.
+ * step. This module projects those rows into the entity-level
+ * {@link Conflict} the application reads, publishes the set as a
+ * synchronous observable for #125, and turns the application's `retry` /
+ * `discard` decision into the outbox transitions that decision implies.
  *
- * The projection keeps the persisted `catchUpId` / `conflictId` and the
- * slot sides, so #392 can layer entity-level grouping and `remoteWins()`
- * on top without a storage change.
+ * Grouping is durable, not recomputed: every losing Action in one
+ * connected set of subjects shares the `conflictId` detection stamped on
+ * its row, so a conflict survives a reload and a partial resolution
+ * without the view holding a private map.
  */
 
 import { compare, isFieldMap, type Action, type FieldValue, type Update } from "@ebbjs/core";
-import type { ConflictSlot } from "@ebbjs/storage/types";
+import type { ConflictSide, ConflictSlot } from "@ebbjs/storage/types";
 import { subjectIds } from "./action-subjects";
 import type { ConflictedOutboxEntry, OutboxCounts } from "./outbox";
 import { createObservable, type ReadonlyObservable } from "./observable";
@@ -24,8 +25,22 @@ import { createObservable, type ReadonlyObservable } from "./observable";
 export type ConflictResolution = "retry" | "discard";
 
 /**
+ * A contested position with the merge's verdict at that position. The
+ * stored slot stays plain; the view adds the comparison the application
+ * reads.
+ */
+export interface ConflictSlotView extends ConflictSlot {
+  /**
+   * Whether the server's value wins the merge here: an absent remote, a
+   * kind divergence, or — for two leaves — the higher HLC, then the
+   * greater `update_id`. Mirrors `mergeFieldValue` for the position.
+   */
+  remoteWins(): boolean;
+}
+
+/**
  * One losing local Action, projected from its `conflicted` outbox row.
- * The application reads this shape; `client.sync.conflicts` publishes it.
+ * A {@link Conflict} holds one or more of these, in authoring order.
  */
 export interface ConflictEntry {
   /** The losing Action, held on the outbox row for resolution. */
@@ -40,34 +55,74 @@ export interface ConflictEntry {
    * entity-level scope surfaced a subject with no position overlap; an
    * application reads that as "nothing of mine would be lost".
    */
-  readonly slots: readonly ConflictSlot[];
+  readonly slots: readonly ConflictSlotView[];
   /** Highest server GSN the client had applied when the Action was authored. */
   readonly basedOnGsn: number;
   /** The catch-up pass that produced this entry. */
   readonly catchUpId: string;
   /**
-   * Stamped at detection and persisted with the row, so it survives a
-   * reload and partial resolution. Grouping is the connected set of
-   * losing subjects within one `catchUpId`.
+   * The entity-level conflict this entry belongs to. Shared by every
+   * losing Action in one connected set of subjects from a single
+   * catch-up pass, so grouping survives a reload.
    */
   readonly conflictId: string;
   /** Client HLC stamped at detection. The `list()` ordering key. */
   readonly detectedAtHlc: string;
 }
 
+/**
+ * One application-level conflict: the set of losing Actions detected
+ * together for one connected set of subjects. Resolving the conflict
+ * fans out to every entry.
+ */
+export interface Conflict {
+  /** The persisted `conflictId` shared by every entry. */
+  readonly id: string;
+  /** Union of the entries' losing subjects, first-seen order. */
+  readonly subjects: readonly string[];
+  /** The losing Actions, oldest detection first. */
+  readonly entries: readonly ConflictEntry[];
+  /**
+   * `true` when any position's server value wins the merge, `false` for
+   * a conflict with no slots. An application opts into "only when my
+   * value would lose" by reading this.
+   */
+  remoteWins(): boolean;
+}
+
+/** One entry a resolution pass could not resolve. */
+export interface FailedResolution {
+  /** The losing Action's id. */
+  readonly entryId: string;
+  /** Why the entry stayed conflicted. */
+  readonly error: unknown;
+}
+
+/**
+ * Per-entry results of a resolution pass. A partial failure does not
+ * roll back the entries that resolved; a failed entry stays conflicted
+ * and resolvable.
+ */
+export interface ResolveResult {
+  /** Ids of the entries that resolved and left the conflict set. */
+  readonly resolved: readonly string[];
+  /** Entries that failed, with the error that stopped them. */
+  readonly failed: readonly FailedResolution[];
+}
+
 /** Fired with the whole conflict set whenever it changes. */
-export type ConflictChangeListener = (entries: readonly ConflictEntry[]) => void;
+export type ConflictChangeListener = (conflicts: readonly Conflict[]) => void;
 
 /**
  * Read-only snapshot of the conflict set, the value of
  * `client.sync.conflicts`. `count` is O(1) over the view's cache, so a
- * binding that only needs the depth never materializes entries.
+ * binding that only needs the depth never materializes conflicts.
  */
 export interface ConflictSnapshot {
   /** Number of conflicts awaiting resolution. */
   readonly count: number;
   /** Conflicts awaiting resolution, oldest detection first. */
-  readonly entries: readonly ConflictEntry[];
+  readonly conflicts: readonly Conflict[];
 }
 
 /**
@@ -79,7 +134,7 @@ export interface Conflicts {
    * Conflicts awaiting resolution, oldest detection first. Awaits the
    * outbox's durable load, so a fresh client reports persisted rows.
    */
-  list(): Promise<readonly ConflictEntry[]>;
+  list(): Promise<readonly Conflict[]>;
   /**
    * Depth of the conflict set from the in-memory cache. Synchronous so a
    * framework binding can read it through `useSyncExternalStore`; pair it
@@ -88,16 +143,25 @@ export interface Conflicts {
    */
   count(): number;
   /**
-   * Resolve one conflict by `action.id`. Unknown ids are a no-op.
+   * Resolve every entry in one conflict, in authoring order. Unknown ids
+   * are a no-op.
    *
-   * - `retry` rebuilds a fresh Action from the losing `slots` — a fresh
-   *   `update_id` + HLC per update, so they win — and re-enqueues it as
-   *   pending.
-   * - `discard` drops the losing Action's optimistic writes and replays
+   * - `retry` re-asserts each whole losing Action, freshly stamped, and
+   *   re-enqueues it as pending, so non-colliding fields travel with it.
+   * - `discard` drops each losing Action's optimistic writes and replays
    *   the action log, converging the affected entities on the server's
    *   view.
    */
-  resolve(actionId: string, resolution: ConflictResolution): Promise<void>;
+  resolve(conflictId: string, resolution: ConflictResolution): Promise<ResolveResult>;
+  /**
+   * Resolve specific entries by local Action id — the per-entry
+   * primitive `resolve` fans out to. Unknown ids are skipped. A failed
+   * entry stays conflicted under its `conflictId`.
+   */
+  resolveEntries(
+    entryIds: readonly string[],
+    resolution: ConflictResolution,
+  ): Promise<ResolveResult>;
   /**
    * Subscribe to conflict-set changes: a detection, a resolution, or the
    * initial durable load. Returns an unsubscribe function. Listeners are
@@ -135,7 +199,7 @@ export interface ConflictsDependencies {
   /** The outbox whose conflicted rows this view projects. */
   outbox: ConflictOutbox;
   /**
-   * Re-enqueue a rebased losing Action on the pending write path:
+   * Re-enqueue a freshly-stamped losing Action on the pending write path:
    * durable, optimistically applied, and scheduled to flush.
    */
   requeue(action: Action): Promise<void>;
@@ -145,11 +209,11 @@ export interface ConflictsDependencies {
    */
   reMaterialize(action: Action): Promise<void>;
   /**
-   * Wrap rebased Updates in a fresh Action (new action id, advanced
+   * Wrap re-stamped Updates in a fresh Action (new action id, advanced
    * clock). The Action's HLC is minted here.
    */
   stampAction(updates: readonly Update[]): Action;
-  /** Fresh field HLC for a rebased Update. */
+  /** Fresh field HLC for a re-stamped Update. */
   hlc(): string;
   /** Fresh Update / FieldValue id. */
   generateUpdateId(): string;
@@ -173,151 +237,121 @@ export interface ConflictManager {
   readonly observable: ReadonlyObservable<ConflictSnapshot>;
 }
 
-/** The shape the view exposes, projected from a conflicted outbox row. */
+/** The stamping collaborators {@link restampAction} needs. */
+type Restamper = Pick<ConflictsDependencies, "stampAction" | "hlc" | "generateUpdateId">;
+
+/**
+ * Whether a side is a merge leaf (it carries an `update_id`). A map side
+ * and an absent side do not; either means the position's kind diverged
+ * or the server holds nothing, so the remote side takes the merge.
+ */
+const isLeafSide = (side: ConflictSide): boolean => side.update_id !== undefined;
+
+/**
+ * Whether the server's side wins the merge at one position, mirroring
+ * `mergeFieldValue`: an absent remote or a kind divergence is a remote
+ * win; two leaves compare HLC, then `update_id`.
+ */
+const sideRemoteWins = (slot: ConflictSlot): boolean => {
+  const { local, remote } = slot;
+  if (!isLeafSide(local) || !isLeafSide(remote)) return true;
+  const hlcCmp = compare(local.hlc ?? "", remote.hlc ?? "");
+  if (hlcCmp !== 0) return hlcCmp < 0;
+  return (remote.update_id as string) >= (local.update_id as string);
+};
+
+/** Project a stored slot into its method-carrying view. */
+const toSlotView = (slot: ConflictSlot): ConflictSlotView => ({
+  subjectId: slot.subjectId,
+  field: slot.field,
+  path: slot.path,
+  local: slot.local,
+  remote: slot.remote,
+  remoteWins: () => sideRemoteWins(slot),
+});
+
+/** Project a conflicted outbox row into the entry the application reads. */
 const toEntry = (entry: ConflictedOutboxEntry): ConflictEntry => ({
   action: entry.action,
   subjects: entry.conflict.subjects,
-  slots: entry.conflict.slots,
+  slots: entry.conflict.slots.map(toSlotView),
   basedOnGsn: entry.basedOnGsn,
   catchUpId: entry.conflict.catchUpId,
   conflictId: entry.conflict.conflictId,
   detectedAtHlc: entry.conflict.detectedAtHlc,
 });
 
-/** The stamping collaborators {@link rebaseAction} needs. */
-type RebaseStamper = Pick<ConflictsDependencies, "stampAction" | "hlc" | "generateUpdateId">;
-
-/** The field map an Update carries, tolerating a fieldless `delete`. */
-const readFields = (update: Update): Readonly<Record<string, FieldValue>> =>
-  update.data?.fields ?? {};
+/** Earliest detection HLC in a conflict; the set's ordering key. */
+const earliestHlc = (conflict: Conflict): string => conflict.entries[0]?.detectedAtHlc ?? "";
 
 /**
- * The losing Action's value at one slot. Updates apply in order, so the
- * last write found for a slot is the one that lands — the Action was
- * authored by this client, whose HLC advances with every update.
+ * Group projected entries by their persisted `conflictId`. Entries are
+ * already in outbox order; within a group they are re-sorted by
+ * `detectedAtHlc`, which detection stamped in authoring order.
  */
-const valueAtSlot = (action: Action, slot: ConflictSlot): FieldValue | undefined => {
-  let found: FieldValue | undefined;
-  for (const update of action.updates) {
-    if (update.subject_id !== slot.subjectId) continue;
-    let node: FieldValue | undefined = readFields(update)[slot.field];
-    for (const key of slot.path) {
-      if (node === undefined || !isFieldMap(node)) {
-        node = undefined;
-        break;
-      }
-      node = node.map[key];
-    }
-    if (node !== undefined) found = node;
+const groupConflicts = (entries: readonly ConflictEntry[]): readonly Conflict[] => {
+  const groups = new Map<string, ConflictEntry[]>();
+  for (const entry of entries) {
+    const group = groups.get(entry.conflictId);
+    if (group === undefined) groups.set(entry.conflictId, [entry]);
+    else group.push(entry);
   }
-  return found;
+
+  const conflicts: Conflict[] = [];
+  for (const [id, group] of groups) {
+    const ordered = [...group].sort((a, b) => compare(a.detectedAtHlc, b.detectedAtHlc));
+    const subjects: string[] = [];
+    const seen = new Set<string>();
+    for (const entry of ordered) {
+      for (const subject of entry.subjects) {
+        if (seen.has(subject)) continue;
+        seen.add(subject);
+        subjects.push(subject);
+      }
+    }
+    conflicts.push({
+      id,
+      subjects,
+      entries: ordered,
+      remoteWins: () => ordered.some((e) => e.slots.some((s) => s.remoteWins())),
+    });
+  }
+  conflicts.sort((a, b) => compare(earliestHlc(a), earliestHlc(b)));
+  return conflicts;
 };
 
-/** Re-stamp every leaf under a value with one fresh `update_id` + HLC. */
-const reStamp = (field: FieldValue, updateId: string, hlc: string): FieldValue => {
+/** Re-stamp one leaf with a fresh `update_id` + HLC. */
+const restampField = (field: FieldValue, updateId: string, hlc: string): FieldValue => {
   if (!isFieldMap(field)) return { value: field.value, update_id: updateId, hlc };
   const map: Record<string, FieldValue> = {};
   for (const [key, child] of Object.entries(field.map)) {
-    map[key] = reStamp(child, updateId, hlc);
+    map[key] = restampField(child, updateId, hlc);
   }
   return { map };
 };
 
-/** Wrap a value in its map-key path, innermost key last. */
-const nestValue = (leaf: FieldValue, path: readonly string[]): FieldValue =>
-  path.reduceRight<FieldValue>((child, key) => ({ map: { [key]: child } }), leaf);
-
-/** Union two map trees so sibling keys lost together travel in one patch. */
-const mergeTrees = (a: FieldValue, b: FieldValue): FieldValue => {
-  if (!isFieldMap(a) || !isFieldMap(b)) return b;
-  const map: Record<string, FieldValue> = { ...a.map };
-  for (const [key, value] of Object.entries(b.map)) {
-    const previous = map[key];
-    map[key] = previous === undefined ? value : mergeTrees(previous, value);
+/** Re-stamp every leaf the Update carries, keeping its subject and method. */
+const restampUpdate = (update: Update, deps: Restamper): Update => {
+  const updateId = deps.generateUpdateId();
+  const hlc = deps.hlc();
+  const fields = update.data?.fields;
+  if (fields === undefined) return { ...update, id: updateId };
+  const restamped: Record<string, FieldValue> = {};
+  for (const [field, value] of Object.entries(fields)) {
+    restamped[field] = restampField(value, updateId, hlc);
   }
-  return { map };
+  return { ...update, id: updateId, data: { fields: restamped } };
 };
 
 /**
- * Rebuild one field's losing value. A slot at the field root re-stamps
- * the whole value; otherwise each lost leaf is nested under its map
- * path and the trees are unioned.
+ * Rebuild a losing Action freshly: every Update keeps its subject and
+ * method, but every leaf is re-stamped with a fresh `update_id` + HLC and
+ * the Action gets a new id + clock. Re-asserting the whole Action is what
+ * carries its non-colliding fields, and what lets an entity-scope loss
+ * (no overlapping slots) be rebuilt at all.
  */
-const fieldValue = (
-  slots: readonly ConflictSlot[],
-  action: Action,
-  updateId: string,
-  hlc: string,
-): FieldValue | undefined => {
-  const rootSlot = slots.find((slot) => slot.path.length === 0);
-  if (rootSlot !== undefined) {
-    const value = valueAtSlot(action, rootSlot);
-    if (value !== undefined) return reStamp(value, updateId, hlc);
-  }
-
-  let tree: FieldValue | undefined;
-  for (const slot of slots) {
-    if (slot.path.length === 0) continue;
-    const value = valueAtSlot(action, slot);
-    if (value === undefined) continue;
-    const nested = nestValue(reStamp(value, updateId, hlc), slot.path);
-    tree = tree === undefined ? nested : mergeTrees(tree, nested);
-  }
-  return tree;
-};
-
-/**
- * Rebuild the conflicting slots into one patch per subject. Each Update
- * carries a fresh `update_id` + HLC and only the slots that lost, so a
- * key the peer did not touch is left on its current value. The original
- * method is not preserved: re-stamping the losing values on top of the
- * current state is a patch whatever method first carried them.
- *
- * `null` when the Action carried no slot the conflict named.
- */
-const rebaseAction = (entry: ConflictEntry, deps: RebaseStamper): Action | null => {
-  const bySubject = new Map<
-    string,
-    { subjectId: string; subjectType: string; slots: ConflictSlot[] }
-  >();
-  for (const slot of entry.slots) {
-    const update = entry.action.updates.find((u) => u.subject_id === slot.subjectId);
-    if (update === undefined) continue;
-    const key = `${update.subject_id}\u0000${update.subject_type}`;
-    const subject = bySubject.get(key) ?? {
-      subjectId: update.subject_id,
-      subjectType: update.subject_type,
-      slots: [],
-    };
-    subject.slots.push(slot);
-    bySubject.set(key, subject);
-  }
-
-  const updates = [...bySubject.values()].map((subject): Update => {
-    const updateId = deps.generateUpdateId();
-    const hlc = deps.hlc();
-    const fields: Record<string, FieldValue> = {};
-    const byField = new Map<string, ConflictSlot[]>();
-    for (const slot of subject.slots) {
-      const list = byField.get(slot.field) ?? [];
-      list.push(slot);
-      byField.set(slot.field, list);
-    }
-    for (const [field, slots] of byField) {
-      const value = fieldValue(slots, entry.action, updateId, hlc);
-      if (value !== undefined) fields[field] = value;
-    }
-    return {
-      id: updateId,
-      subject_id: subject.subjectId,
-      subject_type: subject.subjectType,
-      method: "patch",
-      data: { fields },
-    };
-  });
-  if (updates.length === 0) return null;
-  return deps.stampAction(updates);
-};
+const restampAction = (action: Action, deps: Restamper): Action =>
+  deps.stampAction(action.updates.map((update) => restampUpdate(update, deps)));
 
 /**
  * Build the conflict view over the outbox.
@@ -329,19 +363,22 @@ const rebaseAction = (entry: ConflictEntry, deps: RebaseStamper): Action | null 
  */
 export function createConflicts(deps: ConflictsDependencies): ConflictManager {
   let entries: readonly ConflictEntry[] = [];
+  let conflicts: readonly Conflict[] = [];
+  let byConflictId = new Map<string, Conflict>();
+  let byEntryId = new Map<string, ConflictEntry>();
   let rehydration: Promise<void> | null = null;
-  const observable = createObservable<ConflictSnapshot>({ count: 0, entries: [] });
+  const observable = createObservable<ConflictSnapshot>({ count: 0, conflicts: [] });
 
   const emit = (): void => {
-    observable.set({ count: entries.length, entries });
+    observable.set({ count: conflicts.length, conflicts });
   };
 
-  /** Re-project the outbox's conflicted rows, oldest detection first. */
+  /** Re-project and regroup the outbox's conflicted rows. */
   const refresh = (): void => {
-    entries = deps.outbox
-      .conflicts()
-      .map(toEntry)
-      .sort((a, b) => compare(a.detectedAtHlc, b.detectedAtHlc));
+    entries = deps.outbox.conflicts().map(toEntry);
+    conflicts = groupConflicts(entries);
+    byConflictId = new Map(conflicts.map((conflict) => [conflict.id, conflict]));
+    byEntryId = new Map(entries.map((entry) => [entry.action.id, entry]));
     emit();
   };
 
@@ -363,45 +400,88 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
   // current without a poll.
   deps.outbox.onChange(refresh);
 
-  const resolve = async (actionId: string, resolution: ConflictResolution): Promise<void> => {
-    await rehydrate();
-    const entry = entries.find((candidate) => candidate.action.id === actionId);
-    if (entry === undefined) return;
-
+  const applyOne = async (entry: ConflictEntry, resolution: ConflictResolution): Promise<void> => {
     if (resolution === "retry") {
       // Enqueue before clearing: a durable-buffer failure must leave the
       // conflict resolvable rather than drop the user's write.
-      const rebased = rebaseAction(entry, deps);
-      if (rebased !== null) await deps.requeue(rebased);
+      await deps.requeue(restampAction(entry.action, deps));
     } else {
       await deps.reMaterialize(entry.action);
     }
-    // `clearConflict` fires the outbox change stream, so `entries` here
-    // is the post-resolution set. An entity another conflict still holds
-    // stays captured.
-    await deps.outbox.clearConflict(actionId);
+    await deps.outbox.clearConflict(entry.action.id);
+  };
+
+  /**
+   * Release the pre-sync captures of every resolved subject no remaining
+   * conflict still references. Reads the post-resolution entries, which
+   * `clearConflict`'s change stream has already refreshed.
+   */
+  const releaseSubjectsAfter = (resolved: readonly Action[]): void => {
+    if (resolved.length === 0) return;
     const stillConflicted = new Set<string>();
-    for (const remaining of entries) {
-      for (const subjectId of subjectIds(remaining.action)) stillConflicted.add(subjectId);
+    for (const entry of byEntryId.values()) {
+      for (const subjectId of subjectIds(entry.action)) stillConflicted.add(subjectId);
     }
-    const released = subjectIds(entry.action).filter(
-      (subjectId) => !stillConflicted.has(subjectId),
+    const released = new Set<string>();
+    for (const action of resolved) {
+      for (const subjectId of subjectIds(action)) {
+        if (!stillConflicted.has(subjectId)) released.add(subjectId);
+      }
+    }
+    if (released.size > 0) deps.releaseSubjects([...released]);
+  };
+
+  const resolveEntries = async (
+    entryIds: readonly string[],
+    resolution: ConflictResolution,
+  ): Promise<ResolveResult> => {
+    await rehydrate();
+    const resolved: string[] = [];
+    const failed: FailedResolution[] = [];
+    const resolvedActions: Action[] = [];
+    for (const entryId of entryIds) {
+      const entry = byEntryId.get(entryId);
+      if (entry === undefined) continue;
+      try {
+        await applyOne(entry, resolution);
+        resolved.push(entryId);
+        resolvedActions.push(entry.action);
+      } catch (error) {
+        // No rollback: a later entry still resolves, and the failed entry
+        // keeps its row and `conflictId`.
+        failed.push({ entryId, error });
+      }
+    }
+    releaseSubjectsAfter(resolvedActions);
+    return { resolved, failed };
+  };
+
+  const resolve = async (
+    conflictId: string,
+    resolution: ConflictResolution,
+  ): Promise<ResolveResult> => {
+    await rehydrate();
+    const conflict = byConflictId.get(conflictId);
+    if (conflict === undefined) return { resolved: [], failed: [] };
+    return resolveEntries(
+      conflict.entries.map((entry) => entry.action.id),
+      resolution,
     );
-    if (released.length > 0) deps.releaseSubjects(released);
   };
 
   void rehydrate().catch(() => {});
 
-  const conflicts: Conflicts = {
+  const conflictsApi: Conflicts = {
     list: async () => {
       await rehydrate();
-      return entries;
+      return conflicts;
     },
-    count: () => entries.length,
+    count: () => conflicts.length,
     resolve,
-    onChange: (listener) => observable.subscribe((snapshot) => listener(snapshot.entries)),
+    resolveEntries,
+    onChange: (listener) => observable.subscribe((snapshot) => listener(snapshot.conflicts)),
     rehydrate,
   };
 
-  return { conflicts, observable };
+  return { conflicts: conflictsApi, observable };
 }
