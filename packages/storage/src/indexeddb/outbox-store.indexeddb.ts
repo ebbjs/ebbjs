@@ -35,6 +35,19 @@ export const createIndexedDBOutboxStore = (db: IDBPDatabase<EbbDBSchema>): Outbo
       });
     },
 
+    async putAndDelete(entry: OutboxEntry, deleteId: string): Promise<void> {
+      const tx = db.transaction("outbox", "readwrite");
+      tx.store.put({
+        action: entry.action,
+        status: entry.status,
+        enqueuedAtHlc: entry.enqueuedAtHlc,
+        basedOnGsn: entry.basedOnGsn,
+        conflict: entry.conflict,
+      });
+      tx.store.delete(deleteId);
+      await tx.done;
+    },
+
     async list(): Promise<readonly OutboxEntry[]> {
       const rows = await db.getAll("outbox");
       return rows.map(toEntry).sort((a, b) => compare(a.enqueuedAtHlc, b.enqueuedAtHlc));

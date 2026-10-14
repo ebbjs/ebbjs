@@ -682,17 +682,17 @@ describe("client.conflicts (#310)", () => {
     expect(a.hlc).not.toBe(LOCAL_HLC);
   });
 
-  it("reports per-entry resolution failures and keeps the failed entry resolvable", async () => {
+  it("reports per-entry resolution failures and leaves the failed entry resolvable", async () => {
     const storage = createMemoryAdapter();
     const outboxStore = storage.outbox;
-    let failPut = false;
+    let failAtomicWrite = false;
     const guarded: ReturnType<typeof createMemoryAdapter> = {
       ...storage,
       outbox: {
         ...outboxStore,
-        put: async (entry) => {
-          if (failPut) throw new Error("outbox store unavailable");
-          await outboxStore.put(entry);
+        putAndDelete: async (entry, deleteId) => {
+          if (failAtomicWrite) throw new Error("outbox store unavailable");
+          await outboxStore.putAndDelete(entry, deleteId);
         },
       },
     };
@@ -715,21 +715,25 @@ describe("client.conflicts (#310)", () => {
     const entryId = conflict.entries[0]?.action.id;
     if (entryId === undefined) throw new Error("expected an entry");
 
-    // A store fault refilling the pending write leaves the entry
-    // conflicted rather than dropped.
-    failPut = true;
+    // A fault on the atomic retry write leaves the entry conflicted and
+    // enqueues nothing, so the next retry cannot duplicate the write.
+    failAtomicWrite = true;
     const result = await client.conflicts.resolveEntries([entryId], "retry");
 
     expect(result.resolved).toEqual([]);
     expect(result.failed).toHaveLength(1);
     expect(result.failed[0]?.entryId).toBe(entryId);
     expect(result.failed[0]?.error).toBeInstanceOf(Error);
+    expect(client.outbox.pending()).toEqual([]);
     expect((await client.conflicts.list())[0]?.id).toBe(conflict.id);
 
-    // The entry is still resolvable once the store recovers.
-    failPut = false;
+    // The entry is still resolvable once the store recovers, and the
+    // retry replaces the conflicted row rather than adding a second one.
+    failAtomicWrite = false;
     const recovered = await client.conflicts.resolve(conflict.id, "retry");
     expect(recovered).toEqual({ resolved: [entryId], failed: [] });
     expect(await client.conflicts.list()).toEqual([]);
+    // One re-assert, not a second copy: the atomic write replaced the row.
+    expect(client.outbox.unrejected()).toHaveLength(1);
   });
 });

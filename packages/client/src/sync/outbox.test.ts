@@ -16,7 +16,7 @@ import type {
   OutboxStore,
 } from "@ebbjs/storage/types";
 
-import { createOutbox, type OutboxDependencies, type OutboxEntry } from "./outbox";
+import { createOutbox, type OutboxDependencies, type OutboxEntry, type StoreFault } from "./outbox";
 
 /** Minimal well-formed Action; only the identity matters to the outbox. */
 const mkAction = (id: string): Action => ({
@@ -110,6 +110,10 @@ const mkStore = (
   return {
     rows,
     put: vi.fn(async (entry: StoredOutboxEntry) => {
+      rows.set(entry.action.id, structuredClone(entry));
+    }),
+    putAndDelete: vi.fn(async (entry: StoredOutboxEntry, deleteId: string) => {
+      rows.delete(deleteId);
       rows.set(entry.action.id, structuredClone(entry));
     }),
     list: vi.fn(async () => [...rows.values()].map((entry) => structuredClone(entry))),
@@ -1255,7 +1259,7 @@ describe("createOutbox conflict detection", () => {
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local"]);
   });
 
-  it("still holds a detected loser when the durable write fails", async () => {
+  it("still holds a detected loser when the durable write fails, and surfaces the fault", async () => {
     // Detection is the only durable write. A store fault must not reopen
     // the flush path: the in-memory status transition is the hold.
     let puts = 0;
@@ -1268,14 +1272,20 @@ describe("createOutbox conflict detection", () => {
     };
     const deps = mkDeps({ store });
     const { outbox } = await seed(deps);
+    const faults: StoreFault[] = [];
+    outbox.onStoreFault((fault) => faults.push(fault));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const detected = await outbox.detectConflicts([peerTitle()], "cu_1");
 
     expect(detected.map((conflict) => conflict.actionId)).toEqual(["a_local"]);
+    expect(outbox.storeFaults()).toBe(1);
+    expect(faults.map((fault) => fault.actionId)).toEqual(["a_local"]);
     expect(outbox.pending()).toEqual([]);
     expect(outbox.size("conflicted")).toBe(1);
     await expect(outbox.flush()).resolves.toEqual({ kind: "empty" });
     expect(deps.submitted).toEqual([]);
+    consoleError.mockRestore();
   });
 
   it("moves every losing pending entry in buffer order", async () => {
@@ -1698,6 +1708,114 @@ describe("createOutbox counts + onChange", () => {
 
     expect(good).toHaveBeenCalledTimes(1);
     expect(good).toHaveBeenCalledWith({ pending: 1, acknowledged: 0, error: 0, conflicted: 0 });
+    consoleError.mockRestore();
+  });
+});
+
+describe("createOutbox conflict holds and retries", () => {
+  /** A peer `patch` concurrent with a base-0 `todo_1` write. */
+  const peer = (): Action =>
+    mkFieldAction({
+      id: "a_peer",
+      subjectId: "todo_1",
+      fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+      gsn: 5,
+    });
+
+  const localTitle = (): Action =>
+    mkFieldAction({
+      id: "a_local",
+      subjectId: "todo_1",
+      fields: { title: { value: "mine", update_id: "u_local", hlc: "10" } },
+    });
+
+  /** A store whose `put` faults for a `conflicted` row, as a disk fault would. */
+  const faultingStore = (): OutboxStore & { rows: Map<string, StoredOutboxEntry> } => {
+    const store = mkStore();
+    return {
+      ...store,
+      put: vi.fn(async (entry: StoredOutboxEntry) => {
+        if (entry.status === "conflicted") throw new Error("disk full");
+        store.rows.set(entry.action.id, structuredClone(entry));
+      }),
+    };
+  };
+
+  it("replaces a conflicted row with a pending re-assert in one durable write", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(localTitle());
+    await outbox.detectConflicts([peer()], "cu_1");
+    expect(outbox.size("conflicted")).toBe(1);
+    expect(deps.applied).toHaveLength(1);
+
+    const reassert = mkFieldAction({
+      id: "a_reassert",
+      subjectId: "todo_1",
+      fields: { title: { value: "mine", update_id: "u_new", hlc: "30" } },
+    });
+    await outbox.retryConflicted("a_local", reassert);
+
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_reassert"]);
+    expect(outbox.size("conflicted")).toBe(0);
+    // The atomic write replaced the row: the old id is gone from the store.
+    expect(await deps.store.get("a_local")).toBeNull();
+    expect(await deps.store.get("a_reassert")).toMatchObject({
+      action: reassert,
+      status: "pending",
+    });
+    expect(deps.applied).toHaveLength(2);
+  });
+
+  it("leaves the conflict resolvable when the atomic retry write fails", async () => {
+    const store = mkStore();
+    const outbox = createOutbox(
+      mkDeps({
+        store: {
+          ...store,
+          putAndDelete: vi.fn(async () => {
+            throw new Error("disk full");
+          }),
+        },
+      }),
+    );
+    await outbox.enqueue(localTitle());
+    await outbox.detectConflicts([peer()], "cu_1");
+
+    await expect(outbox.retryConflicted("a_local", mkAction("a_reassert"))).rejects.toThrow(
+      "disk full",
+    );
+
+    // No half-applied transition: the loser is still held and nothing new
+    // is pending.
+    expect(outbox.size("conflicted")).toBe(1);
+    expect(outbox.pending()).toEqual([]);
+    expect(await store.get("a_local")).toMatchObject({ status: "conflicted" });
+  });
+
+  it("no-ops retryConflicted for an unknown or non-conflicted id", async () => {
+    const outbox = createOutbox(mkDeps());
+    await outbox.enqueue(mkAction("a_pending"));
+
+    await outbox.retryConflicted("a_pending", mkAction("a_reassert"));
+    await outbox.retryConflicted("a_missing", mkAction("a_reassert"));
+
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_pending"]);
+  });
+
+  it("isolates a throwing store-fault listener", async () => {
+    const outbox = createOutbox(mkDeps({ store: faultingStore() }));
+    const good = vi.fn();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    outbox.onStoreFault(() => {
+      throw new Error("listener blew up");
+    });
+    outbox.onStoreFault(good);
+
+    await outbox.enqueue(localTitle());
+    await outbox.detectConflicts([peer()], "cu_1");
+
+    expect(good).toHaveBeenCalledTimes(1);
     consoleError.mockRestore();
   });
 });

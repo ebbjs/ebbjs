@@ -115,6 +115,13 @@ export interface OutboxEntry {
  */
 export interface OutboxStore {
   put(entry: OutboxEntry): Promise<void>;
+  /**
+   * Persist `entry` and delete `deleteId` in one durable operation. Used
+   * to resolve a conflict by retrying: the fresh re-assert must never
+   * exist without the conflicted row being gone, nor the row be gone
+   * without the re-assert persisted.
+   */
+  putAndDelete(entry: OutboxEntry, deleteId: string): Promise<void>;
   list(): Promise<readonly OutboxEntry[]>;
   get(actionId: string): Promise<OutboxEntry | null>;
   delete(actionId: string): Promise<void>;
