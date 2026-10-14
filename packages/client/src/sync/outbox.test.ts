@@ -1630,7 +1630,7 @@ describe("createOutbox counts + onChange", () => {
     expect(seen).toEqual([{ pending: 0, acknowledged: 0, error: 0, conflicted: 0 }]);
   });
 
-  it("fires when a conflict moves an entry out of the buffer", async () => {
+  it("fires when a detection marks an entry conflicted", async () => {
     const deps = mkDeps();
     const outbox = createOutbox(deps);
     await outbox.enqueue(
