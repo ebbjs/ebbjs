@@ -129,9 +129,6 @@ export const actionWrites = (action: Action): Map<string, PendingWrite> => {
   return writes;
 };
 
-export const actionTouchesSubject = (action: Action, subjectId: string): boolean =>
-  action.updates.some((update) => update.subject_id === subjectId);
-
 /** True when an inbound write to `field` can silently overwrite a local one. */
 export const isConflictableField = (
   isLwwField: LwwFieldOracle,

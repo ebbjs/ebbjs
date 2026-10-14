@@ -49,7 +49,6 @@ import type {
 
 import type { Rejection, WriteResponse } from "./types";
 import {
-  actionTouchesSubject,
   actionWrites,
   conflictSlot,
   foldInboundWindow,
@@ -57,6 +56,7 @@ import {
   isConflictableField,
   overlappingPaths,
   slotKey,
+  type InboundSubject,
 } from "./conflict-slots";
 import { createObservable } from "./observable";
 
@@ -93,6 +93,9 @@ export interface ConflictedOutboxEntry extends OutboxEntry {
 
 const isConflicted = (entry: OutboxEntry): entry is ConflictedOutboxEntry =>
   entry.status === "conflicted" && entry.conflict !== undefined;
+
+/** Whether a missed Action out-dates a buffered write — the concurrency rule. */
+const isConcurrent = (entry: OutboxEntry, action: Action): boolean => action.gsn > entry.basedOnGsn;
 
 /** A loser subject's pre-detection state; `after` is read at detection. */
 interface LoserSubject {
@@ -761,7 +764,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     // conflict: a new pass mints a fresh id.
     const losers: Loser[] = [];
     for (const entry of candidates) {
-      if (!window.some(({ action }) => action.gsn > entry.basedOnGsn)) continue;
+      if (!window.some(({ action }) => isConcurrent(entry, action))) continue;
       const subjects: string[] = [];
       const subjectStates: LoserSubject[] = [];
       const slots: ConflictSlot[] = [];
@@ -769,12 +772,19 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
       for (const [subjectId, pending] of actionWrites(entry.action)) {
         const inbound = folded.get(subjectId);
         if (inbound === undefined) continue;
-        const overlap: ConflictSlot[] = [];
+        // A subject is at risk only when an Action that out-dates this
+        // write touches it. `folded` covers the whole window, including a
+        // touch already applied at authoring time (`gsn <= basedOnGsn`),
+        // which is a deliberate override rather than a conflict.
+        const concurrent: InboundSubject[] = [];
         for (const { action, subjects: actionSubjects } of window) {
-          if (action.gsn <= entry.basedOnGsn) continue;
-          if (!actionTouchesSubject(action, subjectId)) continue;
+          if (!isConcurrent(entry, action)) continue;
           const actionInbound = actionSubjects.get(subjectId);
-          if (actionInbound === undefined) continue;
+          if (actionInbound !== undefined) concurrent.push(actionInbound);
+        }
+        if (concurrent.length === 0) continue;
+        const overlap: ConflictSlot[] = [];
+        for (const actionInbound of concurrent) {
           for (const [field, pendingValue] of pending.fields) {
             if (!isConflictableField(deps.isLwwField, inbound.subjectType, field)) continue;
             const remoteField = inbound.fields.get(field);
