@@ -62,6 +62,7 @@ const mkRow = (
   basedOnGsn: 0,
   conflict: {
     subjects: overrides.subjects ?? ["todo_1"],
+    subjectStates: [],
     slots: overrides.slots ?? [mkSlot()],
     catchUpId: "cu_1",
     conflictId: overrides.conflictId ?? `c_${actionId}`,

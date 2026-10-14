@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, type Mock } from "vitest";
-import type { Action, FieldValue } from "@ebbjs/core";
+import type { Action, Entity, FieldValue } from "@ebbjs/core";
 import type {
   ConflictSide,
   ConflictSlot,
@@ -130,6 +130,17 @@ const mkStore = (
   };
 };
 
+/** A full entity row for the before/after capture fixtures. */
+const mkEntity = (id: string, title: string): Entity => ({
+  id,
+  type: "todo",
+  data: { fields: { title: { value: title, update_id: `u_${id}`, hlc: "1" } } },
+  created_hlc: "1",
+  updated_hlc: "1",
+  deleted_hlc: null,
+  last_gsn: 1,
+});
+
 /** Deps with recording fakes; overrides let a test swap one behavior. */
 const mkDeps = (
   overrides: Partial<OutboxDependencies> = {},
@@ -156,6 +167,8 @@ const mkDeps = (
     conflictScope: () => "field" as const,
     conflictId: vi.fn(() => `c_${++conflicts}`),
     hlc: vi.fn(() => String(++clock)),
+    preSyncRow: vi.fn(() => null),
+    readEntity: vi.fn(async () => null),
     ...overrides,
   };
 };
@@ -813,6 +826,98 @@ describe("createOutbox conflict detection", () => {
 
     expect(detected.map((conflict) => conflict.actionId)).toEqual(["a_local"]);
     expect(outbox.size("conflicted")).toBe(1);
+  });
+
+  it("attaches the captured and materialized rows per losing subject", async () => {
+    const before = mkEntity("todo_1", "mine");
+    const after = mkEntity("todo_1", "theirs");
+    const preSyncRow = vi.fn(() => before);
+    const readEntity = vi.fn(async () => after);
+    const deps = mkDeps({ preSyncRow, readEntity });
+    const { outbox } = await seed(deps);
+
+    await outbox.detectConflicts([peerTitle()], "cu_1");
+
+    const entry = outbox.conflicts()[0];
+    expect(entry?.conflict.subjectStates).toEqual([
+      { subjectId: "todo_1", subjectType: "todo", before, after },
+    ]);
+  });
+
+  it("reads the pass's captured row keyed by the pass's catchUpId", async () => {
+    const preSyncRow = vi.fn(() => mkEntity("todo_1", "mine"));
+    const deps = mkDeps({ preSyncRow, readEntity: async () => mkEntity("todo_1", "theirs") });
+    const { outbox } = await seed(deps);
+
+    await outbox.detectConflicts([peerTitle()], "cu_42");
+
+    expect(preSyncRow).toHaveBeenCalledWith("cu_42", "todo_1");
+  });
+
+  it("carries both rows on an entity-scope loss with no position overlap", async () => {
+    const before = mkEntity("todo_1", "mine");
+    const after = mkEntity("todo_1", "theirs");
+    const deps = mkDeps({
+      conflictScope: () => "entity",
+      preSyncRow: () => before,
+      readEntity: async () => after,
+    });
+    const { outbox } = await seed(deps);
+
+    await outbox.detectConflicts(
+      [
+        mkFieldAction({
+          id: "a_peer",
+          subjectId: "todo_1",
+          fields: { completed: { value: true, update_id: "u_peer", hlc: "20" } },
+          gsn: 5,
+        }),
+      ],
+      "cu_1",
+    );
+
+    const entry = outbox.conflicts()[0];
+    expect(entry?.conflict.slots).toEqual([]);
+    expect(entry?.conflict.subjectStates).toEqual([
+      { subjectId: "todo_1", subjectType: "todo", before, after },
+    ]);
+  });
+
+  it("records null before and after when neither row is materialized", async () => {
+    const deps = mkDeps({ preSyncRow: () => null, readEntity: async () => null });
+    const { outbox } = await seed(deps);
+
+    await outbox.detectConflicts([peerTitle()], "cu_1");
+
+    const entry = outbox.conflicts()[0];
+    expect(entry?.conflict.subjectStates).toEqual([
+      { subjectId: "todo_1", subjectType: "todo", before: null, after: null },
+    ]);
+  });
+
+  it("records a null after when replay yields no row", async () => {
+    const before = mkEntity("todo_1", "mine");
+    const deps = mkDeps({ preSyncRow: () => before, readEntity: async () => null });
+    const { outbox } = await seed(deps);
+
+    await outbox.detectConflicts([peerTitle()], "cu_1");
+
+    expect(outbox.conflicts()[0]?.conflict.subjectStates).toEqual([
+      { subjectId: "todo_1", subjectType: "todo", before, after: null },
+    ]);
+  });
+
+  it("persists subjectStates on the losing row", async () => {
+    const before = mkEntity("todo_1", "mine");
+    const after = mkEntity("todo_1", "theirs");
+    const deps = mkDeps({ preSyncRow: () => before, readEntity: async () => after });
+    const { outbox } = await seed(deps);
+
+    await outbox.detectConflicts([peerTitle()], "cu_1");
+
+    expect((await deps.store.get("a_local"))?.conflict?.subjectStates).toEqual([
+      { subjectId: "todo_1", subjectType: "todo", before, after },
+    ]);
   });
 
   it("does not flag a concurrent write to a different map key", async () => {

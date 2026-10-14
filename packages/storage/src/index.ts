@@ -19,5 +19,6 @@ export type {
   OutboxConflict,
   ConflictSide,
   ConflictSlot,
+  ConflictSubjectState,
 } from "./types/outbox-store";
 export type { StorageAdapter } from "./types/storage-adapter";

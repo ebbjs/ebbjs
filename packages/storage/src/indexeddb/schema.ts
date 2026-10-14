@@ -24,12 +24,14 @@ import type { IndexRows } from "../internal/reverse-index";
  * a dev database carrying legacy `text_document` rows reopens and those
  * rows go unread. Version 6 adds `basedOnGsn` to the persisted outbox
  * entry and moves the conflict payload onto the outbox row (issue #390),
- * so the outbox is the single durable source for a losing Action. There
+ * so the outbox is the single durable source for a losing Action. Version
+ * 7 adds `subjectStates` — the full before/after entity rows per losing
+ * subject — to that persisted conflict payload (issue #408). There
  * are no production consumers yet, so there is no migration: the bump
  * resets a dev database and no legacy row is read. Bump this when adding
  * or changing object stores, or when a persisted row shape changes.
  */
-export const EBB_SCHEMA_VERSION = 6;
+export const EBB_SCHEMA_VERSION = 7;
 
 /**
  * Structural schema for the six object stores the IndexedDB adapter

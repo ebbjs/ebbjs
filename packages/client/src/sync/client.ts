@@ -165,7 +165,7 @@ export class SyncClient implements PermissionQuery {
   /**
    * Pre-sync captures: the row each at-risk buffered write was built on,
    * retained for backup / undo. Local-only; one read per at-risk entity
-   * per sync. See {@link Snapshots}.
+   * per catch-up pass. See {@link Snapshots}.
    */
   readonly snapshots: Snapshots;
   /**
@@ -230,7 +230,7 @@ export class SyncClient implements PermissionQuery {
   private readonly clock: HLCState = createClock();
   /** TextDocument registry (one document per docId, per actor). */
   private readonly textDocumentRegistry = new TextDocumentRegistry();
-  /** Owns the capture lifecycle behind the public {@link snapshots} surface. */
+  /** Owns the per-pass capture lifecycle behind the public {@link snapshots} surface. */
   private readonly snapshotManager: SnapshotManager;
   /**
    * User-registered listeners for schema-registry violations. Fired
@@ -261,7 +261,7 @@ export class SyncClient implements PermissionQuery {
     // when tearing down.
     this.presence = new PresenceManager(this);
     // Captures are local-only: one read of the cached row per at-risk
-    // entity, taken before the catch-up window is applied.
+    // entity per catch-up pass, taken before that pass's window is applied.
     this.snapshotManager = createSnapshots({
       read: (entityId) => this.storage.entities.get(entityId),
     });
@@ -286,6 +286,8 @@ export class SyncClient implements PermissionQuery {
       baseGsn: () => this.appliedBaseGsn(),
       hlc: () => this.freshHlc(),
       conflictId: () => generateId("c"),
+      preSyncRow: (catchUpId, subjectId) => this.snapshotManager.readPass(catchUpId, subjectId),
+      readEntity: (subjectId) => this.storage.entities.get(subjectId),
     });
     // The view projects the outbox's conflicted rows; resolution moves
     // them back through the same outbox transition it reads.
@@ -990,10 +992,10 @@ export class SyncClient implements PermissionQuery {
         await this.waitForReconnectTimer();
       }
     } finally {
-      // The session is over whichever way the loop exits; a capture is
-      // per session and does not outlive it. This also covers a cancel
-      // that lands after `cancelSubscription` already cleared but before
-      // an in-flight catch-up finished capturing.
+      // The session is over whichever way the loop exits; captures do
+      // not outlive it. This also covers a cancel that lands after
+      // `cancelSubscription` already cleared but before an in-flight
+      // catch-up finished capturing.
       this.snapshots.clear();
     }
   }
@@ -1009,10 +1011,14 @@ export class SyncClient implements PermissionQuery {
       // The rebase phase gates the wire so a pending Action cannot post
       // before it has been swept against the missed window (#309). The
       // pre-sync capture is taken first: once the window is applied the
-      // optimistic rows the buffered writes produced are gone.
+      // optimistic rows the buffered writes produced are gone. The pass
+      // id threads both the capture and the detection, so a second
+      // reconnect captures afresh and its conflict pairs with its own
+      // window's row.
       this.flushScheduler.hold();
-      await this.capturePreSyncSnapshots();
-      await this.catchUpSubscribed(sub);
+      const catchUpId = generateId("cu");
+      await this.capturePreSyncSnapshots(catchUpId);
+      await this.catchUpSubscribed(sub, catchUpId);
       if (sub.cancelled) return "cancelled";
       // Readiness checkpoint: catch-up is done and the conflict detection
       // pass has run, so pending entries may flush.
@@ -1073,10 +1079,7 @@ export class SyncClient implements PermissionQuery {
    * every concurrent buffered write to Conflicts — before the checkpoint
    * releases the flush.
    */
-  private async catchUpSubscribed(sub: ActiveSubscription): Promise<void> {
-    // One identity per reconnect, stamped on every conflict the pass
-    // produces so a later grouping can tell passes apart.
-    const catchUpId = generateId("cu");
+  private async catchUpSubscribed(sub: ActiveSubscription, catchUpId: string): Promise<void> {
     const missed: Action[] = [];
     for (const groupId of sub.groupIds) {
       // First page: let `catchUp` pick up from the durable cursor.
@@ -1125,13 +1128,14 @@ export class SyncClient implements PermissionQuery {
 
   /**
    * Capture the row behind every buffered local write before the missed
-   * window is applied. Only `pending` / `acknowledged` entries are at
-   * risk — a rejected entry never reaches the wire. An entity captured
-   * earlier in the session is left untouched, so its pre-merge row lasts
-   * until its conflict resolves or the session ends. Best-effort: a store
-   * read failure captures nothing rather than breaking the loop.
+   * window is applied, keyed by this pass's `catchUpId`. Only `pending` /
+   * `acknowledged` / `conflicted` entries are at risk — a rejected entry
+   * never reaches the wire. A row captured on an earlier pass is not
+   * reused: this pass must pair its conflict with the row that preceded
+   * its own window. Best-effort: a store read failure captures nothing
+   * rather than breaking the loop.
    */
-  private async capturePreSyncSnapshots(): Promise<void> {
+  private async capturePreSyncSnapshots(catchUpId: string): Promise<void> {
     try {
       await this.outbox.rehydrate();
     } catch {
@@ -1141,7 +1145,7 @@ export class SyncClient implements PermissionQuery {
     for (const entry of this.outbox.unrejected()) {
       for (const entityId of subjectIds(entry.action)) atRisk.add(entityId);
     }
-    await this.snapshotManager.capture(atRisk);
+    await this.snapshotManager.capture(catchUpId, atRisk);
   }
 
   /**

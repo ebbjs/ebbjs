@@ -463,6 +463,84 @@ describe("SyncClient pre-sync snapshots (#395)", () => {
     unsubscribe();
   });
 
+  it("captures afresh on each reconnect so two conflicts pair with their own before rows", async () => {
+    const localA = putAction({
+      id: "act_a",
+      gsn: 0,
+      hlc: makeHlc(1711036800000),
+      updateId: "u_a",
+      title: "mine1",
+    });
+    const localB = putAction({
+      id: "act_b",
+      gsn: 0,
+      hlc: makeHlc(1711036800000, 5),
+      updateId: "u_b",
+      title: "mine2",
+    });
+    const peer1 = putAction({
+      id: "act_peer1",
+      gsn: 1,
+      hlc: makeHlc(1711036800000, 1),
+      updateId: "u_peer1",
+      title: "peer1",
+    });
+    const peer2 = putAction({
+      id: "act_peer2",
+      gsn: 2,
+      hlc: makeHlc(1711036800000, 2),
+      updateId: "u_peer2",
+      title: "peer2",
+    });
+
+    let catchUps = 0;
+    let liveOpens = 0;
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes("/sync/actions")) return jsonResponse({ rejected: [] });
+      if (url.includes("/sync/groups/")) {
+        catchUps += 1;
+        const action = catchUps === 1 ? peer1 : peer2;
+        return jsonResponse([action], {
+          "stream-next-offset": String(action.gsn),
+          "stream-up-to-date": "true",
+        });
+      }
+      if (url.includes("/sync/live")) {
+        liveOpens += 1;
+        return liveOpens === 1 ? closingSseResponse([controlReconnect(0)]) : openSseResponse();
+      }
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_self",
+      fetchImpl,
+      reconnectInitialMs: 100,
+      reconnectMaxMs: 100,
+    });
+    await client.outbox.enqueue(localA);
+
+    const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
+
+    // Pass one: capture "mine1", apply peer1, detect the first conflict.
+    await waitFor(async () => (await client.conflicts.list()).length === 1);
+
+    // A second offline cycle, arriving while the reconnect is pending.
+    await client.outbox.enqueue(localB);
+
+    // Pass two: capture afresh ("mine2"), apply peer2, detect conflict two.
+    await waitFor(async () => (await client.conflicts.list()).length === 2);
+
+    const states = client.outbox.conflicts().map((entry) => entry.conflict.subjectStates[0]);
+    // Each conflict's `before` is the row immediately before its own
+    // window, not the first pass's.
+    expect(states.map((state) => titleOf(state?.before ?? null))).toEqual(["mine1", "mine2"]);
+    expect(states.map((state) => titleOf(state?.after ?? null))).toEqual(["peer1", "peer2"]);
+
+    unsubscribe();
+  });
+
   it("captures only entities with a buffered outbox write", async () => {
     const local = putAction({
       id: "act_local",
@@ -514,7 +592,7 @@ describe("SyncClient pre-sync snapshots (#395)", () => {
     unsubscribe();
   });
 
-  it("keeps a capture for the session and clears it on unsubscribe", async () => {
+  it("keeps a pass's capture until the session ends and clears it on unsubscribe", async () => {
     const local = putAction({
       id: "act_local",
       gsn: 0,
@@ -550,8 +628,9 @@ describe("SyncClient pre-sync snapshots (#395)", () => {
 
     const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
 
-    // The capture belongs to the session, not to one catch-up pass, so a
-    // contest-free merge does not drop it.
+    // The capture belongs to its catch-up pass and is retained until the
+    // entity is released or the session ends, so a contest-free merge does
+    // not drop it.
     await waitFor(() => client.state === "live");
     expect(client.snapshots.list()).toEqual(["todo_1"]);
 

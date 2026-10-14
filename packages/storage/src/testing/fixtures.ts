@@ -1,4 +1,4 @@
-import { makeHlc, type Action } from "@ebbjs/core";
+import { makeHlc, type Action, type Entity } from "@ebbjs/core";
 
 import type { OutboxConflict } from "../types/outbox-store";
 
@@ -276,6 +276,17 @@ export const buildEntityGroupDeleteAction = (args: { id: string }, gsn: number):
   };
 };
 
+/** A minimal `todo_1` row for the before/after payload fixture. */
+const buildTodoEntity = (title: string, hlc: string): Entity => ({
+  id: "todo_1",
+  type: "todo",
+  data: { fields: { title: { value: title, update_id: "u_1", hlc } } },
+  created_hlc: hlc,
+  updated_hlc: hlc,
+  deleted_hlc: null,
+  last_gsn: 1,
+});
+
 /**
  * A conflict payload for a losing `put` on `todo_1`: the `title` slot's
  * local / remote sides, detected at `detectedAtMs`. Callers attach it to
@@ -283,6 +294,14 @@ export const buildEntityGroupDeleteAction = (args: { id: string }, gsn: number):
  */
 export const buildOutboxConflict = (detectedAtMs = 1): OutboxConflict => ({
   subjects: ["todo_1"],
+  subjectStates: [
+    {
+      subjectId: "todo_1",
+      subjectType: "todo",
+      before: buildTodoEntity("Hello", makeHlc(HLC_BASE)),
+      after: buildTodoEntity("Updated", makeHlc(HLC_BASE, detectedAtMs)),
+    },
+  ],
   slots: [
     {
       subjectId: "todo_1",
