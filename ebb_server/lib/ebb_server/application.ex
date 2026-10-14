@@ -8,18 +8,31 @@ defmodule EbbServer.Application do
     data_dir = runtime_data_dir()
     port = runtime_port()
 
-    children = [
-      {EbbServer.Storage.Supervisor, [data_dir: data_dir]},
-      EbbServer.Telemetry.Sampler,
-      {Registry, keys: :unique, name: EbbServer.Sync.GroupRegistry},
-      EbbServer.Sync.Supervisor,
-      # Attached before Bandit so every request Bandit accepts is sampled.
-      EbbServer.Telemetry.HTTP,
-      {Bandit, plug: EbbServer.Sync.Router, port: port}
-    ]
+    children =
+      [
+        {EbbServer.Storage.Supervisor, [data_dir: data_dir]},
+        EbbServer.Telemetry.Sampler,
+        {Registry, keys: :unique, name: EbbServer.Sync.GroupRegistry},
+        EbbServer.Sync.Supervisor,
+        # Attached before Bandit so every request Bandit accepts is sampled.
+        EbbServer.Telemetry.HTTP,
+        {Bandit, plug: EbbServer.Sync.Router, port: port}
+      ] ++ action_export_children()
 
     opts = [strategy: :one_for_one, name: EbbServer.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  # The exporter is opt-in: without a configured handler it is never
+  # started, so an unconfigured node pays nothing for the feature.
+  @doc false
+  @spec action_export_children() :: [Supervisor.child_spec()]
+  def action_export_children do
+    if Application.get_env(:ebb_server, :on_action) do
+      [EbbServer.ActionExport.Supervisor]
+    else
+      []
+    end
   end
 
   # Resolution order for the storage data directory:

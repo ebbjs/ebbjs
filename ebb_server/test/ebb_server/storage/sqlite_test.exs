@@ -188,6 +188,55 @@ defmodule EbbServer.Storage.SQLiteTest do
     end
   end
 
+  describe "cursors" do
+    test "get_cursor returns :not_found for a missing name", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      assert :not_found = SQLite.get_cursor("action_export", name)
+    end
+
+    test "put_cursor then get_cursor round-trips", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      assert :ok = SQLite.put_cursor("action_export", 42, name)
+      assert {:ok, 42} = SQLite.get_cursor("action_export", name)
+    end
+
+    test "put_cursor upserts and advances the value", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      assert :ok = SQLite.put_cursor("action_export", 42, name)
+      assert :ok = SQLite.put_cursor("action_export", 43, name)
+      assert {:ok, 43} = SQLite.get_cursor("action_export", name)
+    end
+
+    test "cursors are independent by name", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      assert :ok = SQLite.put_cursor("action_export", 1, name)
+      assert :ok = SQLite.put_cursor("other_consumer", 99, name)
+
+      assert {:ok, 1} = SQLite.get_cursor("action_export", name)
+      assert {:ok, 99} = SQLite.get_cursor("other_consumer", name)
+    end
+
+    test "a cursor survives a SQLite restart", context do
+      dir = tmp_dir(context)
+      %{name: name, pid: pid} = start_sqlite(dir)
+
+      :ok = SQLite.put_cursor("action_export", 7, name)
+      safe_stop(pid)
+
+      %{name: restarted} = start_sqlite(dir)
+
+      assert {:ok, 7} = SQLite.get_cursor("action_export", restarted)
+    end
+  end
+
   describe "generated columns" do
     test "source_id and target_id are populated from JSON data", context do
       dir = tmp_dir(context)

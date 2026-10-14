@@ -28,6 +28,10 @@ defmodule EbbServer.Telemetry do
   | `ebb.fanout.active_groups`                | `count`                               | —                                                   |
   | `ebb.http.request_latency_ms`             | `duration` (native)                   | `method`, `route`, `status`                         |
   | `ebb.sync.catch_up`                       | `count`                               | `group_id`, `from_offset`, `returned`, `up_to_date` |
+  | `ebb.action_export.batch`                 | `count`                               | `from_gsn`, `to_gsn`                                |
+  | `ebb.action_export.failed`                | `count`                               | `gsn`, `reason`                                     |
+  | `ebb.action_export.filtered`              | `count`                               | —                                                   |
+  | `ebb.action_export.lag`                   | `lag` (watermark − cursor)            | `cursor`                                            |
 
   Start/stop pairs use `span/3`; they emit `<event>.start` and `<event>.stop`
   (and `<event>.exception` on failure) with the measurements `:telemetry.span/3`
@@ -42,6 +46,13 @@ defmodule EbbServer.Telemetry do
   of 0 marks a full resync; a non-zero offset is an incremental catch-up, so a
   reporter can compute the resync ratio from the metadata alone. Peer
   replication does not exist yet, so peer cursor/lag metrics are out of scope.
+
+  `ebb.action_export.*` describes the opt-in Action exporter. `lag` is
+  `committed watermark − durable cursor`, so a stalled or failing sink shows up
+  as a lag that never drains. `batch` counts the Actions delivered in one
+  drained range (after system-row filtering) and `filtered` counts the Updates
+  that filtering stripped; a permanently failing handler emits `failed` and
+  leaves the cursor where it was.
 
   ## Conventions
 
