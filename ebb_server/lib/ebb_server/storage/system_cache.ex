@@ -38,7 +38,9 @@ defmodule EbbServer.Storage.SystemCache do
   `RelationshipCache` from the system entities in RocksDB before returning. The
   outer `Storage.Supervisor` uses `rest_for_one` so RocksDB is up before
   any cache child starts; the supervision tree blocks accepting
-  connections until this returns.
+  connections until this returns. If population raises, `init/1` tears
+  down the cache children and fails the start rather than reporting
+  health over a half-populated cache.
 
   ## Load-bearing decisions
 
@@ -56,6 +58,15 @@ defmodule EbbServer.Storage.SystemCache do
   - **Populate-on-startup only.** The caches are loaded once from RocksDB
     on `init/1` and then mutated in-memory by the Writer; they do not
     re-read from RocksDB on each access.
+  - **Fail loud, never half-populated.** A raise during population
+    propagates out of `init/1`; there is no rescue that turns a partial
+    rebuild into a healthy-looking cache. The Writer then cannot serve
+    reads derived from a diverged cache.
+  - **One-time type-entities backfill.** The `cf_actions` walk that
+    repairs `cf_type_entities` is a migration, not a per-boot step: a
+    successful run writes a durable marker in the default column family
+    and later boots skip the scan (which is O(all Updates) and a memory
+    cliff for the append-only log).
 
   ## Child start arguments
 
@@ -90,7 +101,37 @@ defmodule EbbServer.Storage.SystemCache do
     RocksDB
   }
 
+  alias EbbServer.Telemetry
+
   @default_gsn_counter_name :ebb_gsn_counter
+
+  # Durable marker written once a full type-entities backfill has
+  # completed, in the default column family so the migration adds no
+  # column family and an older binary can still open the database. Its
+  # presence is what makes later boots skip the action-log scan; the value
+  # is the migration version, so bumping it forces the backfill to run
+  # again.
+  @type_entities_backfill_marker "system_cache:type_entities_backfill"
+  @type_entities_backfill_version "v1"
+
+  @empty_measurements %{
+    entity_types: 0,
+    group_members: 0,
+    entity_groups: 0,
+    relationships: 0,
+    backfilled: 0
+  }
+
+  @populate_opt_keys [
+    :rocks_name,
+    :table,
+    :relationships,
+    :relationships_by_id,
+    :entity_groups,
+    :entity_groups_by_id,
+    :entity_groups_by_group,
+    :entity_types
+  ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -98,11 +139,16 @@ defmodule EbbServer.Storage.SystemCache do
   end
 
   @doc """
-  Public entry point for the startup cache-rebuild flow. Same logic
-  that runs from `init/1`: backfill the type-entities index from the
-  action log, then materialize every entity into GroupCache and
-  RelationshipCache. Used by tests that want to verify the rebuild
-  without spinning up a fresh supervisor.
+  Public entry point for the startup cache-rebuild flow, and what
+  `init/1` runs. It fills `EntityTypeCache` from `cf_type_entities`,
+  runs the one-time `cf_type_entities` backfill if this database has
+  never completed it, then materializes every system entity into
+  `GroupCache`, `EntityGroupCache` and `RelationshipCache`.
+
+  Emits `[:ebb, :system_cache, :populated]` with per-cache counts and a
+  native `duration`, and metadata `outcome` (`:ok` or `:error`). On a
+  failed rebuild the counts reached so far are included, so a partially
+  populated cache is observable before the raise propagates.
 
   Accepts the same keyword options as `init/1` (`:rocks_name`,
   `:table`, `:relationships`, `:relationships_by_id`,
@@ -112,6 +158,28 @@ defmodule EbbServer.Storage.SystemCache do
 
   @spec populate_system_caches(keyword()) :: :ok
   def populate_system_caches(opts \\ []) do
+    started = System.monotonic_time()
+
+    case do_populate_system_caches(opts) do
+      {:ok, measurements} ->
+        emit_populate_telemetry(started, measurements, %{outcome: :ok})
+        :ok
+
+      {:error, measurements, kind, reason, stacktrace} ->
+        emit_populate_telemetry(started, measurements, %{
+          outcome: :error,
+          reason: telemetry_reason(kind, reason)
+        })
+
+        :erlang.raise(kind, reason, stacktrace)
+    end
+  end
+
+  # Failures before the first phase (table-name resolution, the marker
+  # read) must not escape without an event, so wrap the whole rebuild and
+  # report zero progress for them. All counted work must stay inside
+  # `phase/3`; anything that raises out here is reported as zero progress.
+  defp do_populate_system_caches(opts) do
     rocks_name = Keyword.get(opts, :rocks_name, EbbServer.Storage.RocksDB)
     gm_table = Keyword.get(opts, :table) || CacheTables.group_members()
 
@@ -135,8 +203,6 @@ defmodule EbbServer.Storage.SystemCache do
 
     dirty_set = Keyword.get(opts, :dirty_set) || DirtyTracker.dirty_set_name()
 
-    backfill_type_entities(rocks_name)
-
     tables = %{
       group_members: gm_table,
       relationships: rel_table,
@@ -148,6 +214,10 @@ defmodule EbbServer.Storage.SystemCache do
     }
 
     populate_caches_from_indexes(rocks_name, tables, dirty_set, opts)
+  rescue
+    e -> {:error, @empty_measurements, :error, e, __STACKTRACE__}
+  catch
+    kind, reason -> {:error, @empty_measurements, kind, reason, __STACKTRACE__}
   end
 
   @impl true
@@ -182,27 +252,20 @@ defmodule EbbServer.Storage.SystemCache do
 
     case Supervisor.start_link(__MODULE__.Children, {:start_children, children}) do
       {:ok, sup_pid} ->
-        gsn_counter = setup_gsn_counter(opts, gsn_counter_name)
-
         try do
-          populate_system_caches(
-            Keyword.take(opts, [
-              :rocks_name,
-              :table,
-              :relationships,
-              :relationships_by_id,
-              :entity_groups,
-              :entity_groups_by_id,
-              :entity_groups_by_group,
-              :entity_types
-            ])
-          )
-        rescue
-          e ->
-            Logger.warning("Failed to populate system caches: #{inspect(e)}")
-        end
+          gsn_counter = setup_gsn_counter(opts, gsn_counter_name)
+          :ok = populate_system_caches(Keyword.take(opts, @populate_opt_keys))
 
-        {:ok, %{sup_pid: sup_pid, gsn_counter: gsn_counter, gsn_counter_name: gsn_counter_name}}
+          {:ok, %{sup_pid: sup_pid, gsn_counter: gsn_counter, gsn_counter_name: gsn_counter_name}}
+        catch
+          kind, reason ->
+            # A partial start must not serve reads: stop the children this
+            # init started (init never reaches terminate/2 on failure) and
+            # let the supervisor see a failed start.
+            Logger.error(Exception.format(kind, reason, __STACKTRACE__))
+            stop_children(sup_pid)
+            {:stop, {:system_cache_init_failed, reason}}
+        end
 
       {:error, reason} ->
         {:stop, reason}
@@ -270,82 +333,170 @@ defmodule EbbServer.Storage.SystemCache do
     counter
   end
 
+  # Each phase counts its progress through a shared `:atomics` counter that
+  # is read even when the phase raises, so a partial rebuild reports how far
+  # it got before failing. Phases are ordered because `entity_types` must
+  # finish (and, on a first boot, backfill must run) before the prefix walks
+  # read the index.
   defp populate_caches_from_indexes(rocks_name, tables, dirty_set, opts) do
     sqlite_opts = Keyword.take(opts, [:sqlite_name])
+    backfilled? = type_entities_backfilled?(rocks_name)
 
-    populate_entity_types(rocks_name, tables.entity_types)
+    with {:ok, existing_keys, m1} <-
+           phase(@empty_measurements, :entity_types, fn counter ->
+             populate_entity_types(rocks_name, tables.entity_types, not backfilled?, counter)
+           end),
+         {:ok, _backfilled, m2} <-
+           phase(m1, :backfilled, fn counter ->
+             maybe_backfill_type_entities(
+               backfilled?,
+               rocks_name,
+               tables.entity_types,
+               existing_keys,
+               counter
+             )
+           end),
+         {:ok, _group_members, m3} <-
+           phase(m2, :group_members, fn counter ->
+             populate_group_members(rocks_name, tables, dirty_set, sqlite_opts, counter)
+           end),
+         {:ok, _entity_groups, m4} <-
+           phase(m3, :entity_groups, fn counter ->
+             populate_entity_groups(rocks_name, tables, dirty_set, sqlite_opts, counter)
+           end),
+         {:ok, _relationships, m5} <-
+           phase(m4, :relationships, fn counter ->
+             populate_relationships(rocks_name, tables, dirty_set, sqlite_opts, counter)
+           end) do
+      {:ok, m5}
+    else
+      {:error, _measurements, _kind, _reason, _stacktrace} = error -> error
+    end
+  end
 
+  defp phase(measurements, key, fun) do
+    counter = :atomics.new(1, signed: false)
+
+    try do
+      value = fun.(counter)
+      {:ok, value, Map.put(measurements, key, :atomics.get(counter, 1))}
+    rescue
+      e ->
+        {:error, Map.put(measurements, key, :atomics.get(counter, 1)), :error, e, __STACKTRACE__}
+    catch
+      kind, reason ->
+        {:error, Map.put(measurements, key, :atomics.get(counter, 1)), kind, reason,
+         __STACKTRACE__}
+    end
+  end
+
+  defp maybe_backfill_type_entities(
+         true,
+         _rocks_name,
+         _entity_types_table,
+         _existing_keys,
+         _counter
+       ),
+       do: :ok
+
+  defp maybe_backfill_type_entities(
+         false,
+         rocks_name,
+         entity_types_table,
+         existing_keys,
+         counter
+       ) do
+    count = backfill_type_entities(rocks_name, entity_types_table, existing_keys)
+    :atomics.add(counter, 1, count)
+    mark_type_entities_backfilled(rocks_name)
+    :ok
+  end
+
+  defp populate_group_members(rocks_name, tables, dirty_set, sqlite_opts, counter) do
     populate_type(
       "groupMember",
       rocks_name,
       dirty_set,
-      fn entity_data ->
-        data = entity_data.data || %{}
-
-        member = %{
-          id: entity_data.id,
-          actor_id: Fields.get(data, "actor_id"),
-          group_id: Fields.get(data, "group_id"),
-          permissions: Fields.get(data, "permissions")
-        }
-
-        GroupCache.put_group_member(member, tables.group_members)
-      end,
-      sqlite_opts
+      &put_group_member(&1, tables.group_members),
+      sqlite_opts,
+      counter
     )
+  end
 
+  defp put_group_member(entity_data, table) do
+    data = entity_data.data || %{}
+
+    member = %{
+      id: entity_data.id,
+      actor_id: Fields.get(data, "actor_id"),
+      group_id: Fields.get(data, "group_id"),
+      permissions: Fields.get(data, "permissions")
+    }
+
+    GroupCache.put_group_member(member, table)
+  end
+
+  defp populate_entity_groups(rocks_name, tables, dirty_set, sqlite_opts, counter) do
     populate_type(
       "entityGroup",
       rocks_name,
       dirty_set,
-      fn entity_data ->
-        data = entity_data.data || %{}
-
-        EntityGroupCache.put_entity_group(
-          %{
-            id: entity_data.id,
-            entity_id: Fields.get(data, "entity_id"),
-            group_id: Fields.get(data, "group_id")
-          },
-          entity_groups: tables.entity_groups,
-          entity_groups_by_id: tables.entity_groups_by_id,
-          entity_groups_by_group: tables.entity_groups_by_group
-        )
-      end,
-      sqlite_opts
+      &put_entity_group(&1, tables),
+      sqlite_opts,
+      counter
     )
+  end
 
+  defp put_entity_group(entity_data, tables) do
+    data = entity_data.data || %{}
+
+    EntityGroupCache.put_entity_group(
+      %{
+        id: entity_data.id,
+        entity_id: Fields.get(data, "entity_id"),
+        group_id: Fields.get(data, "group_id")
+      },
+      entity_groups: tables.entity_groups,
+      entity_groups_by_id: tables.entity_groups_by_id,
+      entity_groups_by_group: tables.entity_groups_by_group
+    )
+  end
+
+  defp populate_relationships(rocks_name, tables, dirty_set, sqlite_opts, counter) do
     populate_type(
       "relationship",
       rocks_name,
       dirty_set,
-      fn entity_data ->
-        data = entity_data.data || %{}
-
-        RelationshipCache.put_relationship(
-          %{
-            id: entity_data.id,
-            source_id: Fields.get(data, "source_id"),
-            target_id: Fields.get(data, "target_id"),
-            type: Fields.get(data, "type"),
-            field: Fields.get(data, "field")
-          },
-          relationships: tables.relationships,
-          relationships_by_id: tables.relationships_by_id
-        )
-      end,
-      sqlite_opts
+      &put_relationship(&1, tables),
+      sqlite_opts,
+      counter
     )
   end
 
-  defp populate_type(type, rocks_name, dirty_set, insert_fn, opts) do
+  defp put_relationship(entity_data, tables) do
+    data = entity_data.data || %{}
+
+    RelationshipCache.put_relationship(
+      %{
+        id: entity_data.id,
+        source_id: Fields.get(data, "source_id"),
+        target_id: Fields.get(data, "target_id"),
+        type: Fields.get(data, "type"),
+        field: Fields.get(data, "field")
+      },
+      relationships: tables.relationships,
+      relationships_by_id: tables.relationships_by_id
+    )
+  end
+
+  defp populate_type(type, rocks_name, dirty_set, insert_fn, opts, counter) do
     prefix = type <> <<0>>
     cf = RocksDB.cf_type_entities(rocks_name)
     sqlite_name = Keyword.get(opts, :sqlite_name, EbbServer.Storage.SQLite)
 
     cf
     |> RocksDB.prefix_iterator(prefix, name: rocks_name)
-    |> Stream.each(fn {key, _value} ->
+    |> Enum.each(fn {key, _value} ->
       <<_type_bytes::binary-size(byte_size(type)), 0, entity_id::binary>> = key
 
       case EntityStore.materialize(
@@ -354,48 +505,49 @@ defmodule EbbServer.Storage.SystemCache do
              sqlite_name: sqlite_name,
              dirty_set: dirty_set
            ) do
-        {:ok, entity} -> insert_fn.(entity)
-        error -> Logger.warning("Failed to materialize entity #{entity_id}: #{inspect(error)}")
+        {:ok, entity} ->
+          insert_fn.(entity)
+          :atomics.add(counter, 1, 1)
+
+        error ->
+          Logger.warning("Failed to materialize entity #{entity_id}: #{inspect(error)}")
       end
     end)
-    |> Stream.run()
   end
 
   # The authorizer resolves an existing entity's type for membership
   # permissions, so every `cf_type_entities` pair must be in ETS before
-  # the first write is authorized. The index is append-only and mirrors
-  # the Writer's per-Update maintenance exactly, so a full walk keeps the
-  # two in sync. Decoding the key never materializes the entity.
-  defp populate_entity_types(rocks_name, table) do
+  # the first write is authorized. When a full backfill is still pending
+  # the same walk also collects the keys it must diff against, so the
+  # migration pays for one `cf_type_entities` walk rather than two.
+  defp populate_entity_types(rocks_name, table, collect_existing?, counter) do
     rocks_name
     |> RocksDB.cf_type_entities()
     |> RocksDB.full_iterator(name: rocks_name)
-    |> Stream.each(fn {key, _value} ->
+    |> Enum.reduce(if(collect_existing?, do: MapSet.new()), fn {key, _value}, existing_keys ->
       case :binary.split(key, <<0>>) do
-        [type, entity_id] -> EntityTypeCache.put_type(entity_id, type, entity_types: table)
-        _ -> :ok
+        [type, entity_id] ->
+          EntityTypeCache.put_type(entity_id, type, entity_types: table)
+          :atomics.add(counter, 1, 1)
+          put_existing_key(existing_keys, key)
+
+        _ ->
+          existing_keys
       end
     end)
-    |> Stream.run()
   end
 
+  defp put_existing_key(nil, _key), do: nil
+  defp put_existing_key(%MapSet{} = keys, key), do: MapSet.put(keys, key)
+
   # Walk every action in `cf_actions` and ensure each (type, entity_id)
-  # pair has an entry in `cf_type_entities`. Idempotent — skips entries
-  # that already exist. Skips tombstones (a tombstoned entity was
-  # created at some point, so its initial put/update still warrants an
-  # index entry; we don't bother adding one if the action itself is a
-  # pure tombstone of a never-created entity).
-  defp backfill_type_entities(rocks_name) do
+  # pair has an entry in `cf_type_entities`. Runs once per database: the
+  # marker written on success makes later boots skip the O(all Updates)
+  # scan. A raise here is deliberately not rescued — a half-backfilled
+  # index must neither be marked complete nor served.
+  defp backfill_type_entities(rocks_name, entity_types_table, existing_keys) do
     cf_actions = RocksDB.cf_actions(rocks_name)
     cf_type_entities = RocksDB.cf_type_entities(rocks_name)
-
-    # Use a Set for membership tests in the inner loop. For the demo's
-    # action-log size (a few thousand entries) building the set up-front
-    # is cheaper than a per-key RocksDB lookup.
-    existing_keys =
-      cf_type_entities
-      |> RocksDB.full_iterator(name: rocks_name)
-      |> Enum.reduce(MapSet.new(), fn {key, _value}, acc -> MapSet.put(acc, key) end)
 
     ops =
       cf_actions
@@ -421,26 +573,67 @@ defmodule EbbServer.Storage.SystemCache do
       end)
       |> Stream.filter(fn {key, _type, _id} -> not MapSet.member?(existing_keys, key) end)
       |> Stream.uniq_by(fn {key, _, _} -> key end)
-      |> Enum.map(fn {key, _type, _id} -> {:put, cf_type_entities, key, <<>>} end)
+      |> Enum.map(fn {key, type, id} ->
+        EntityTypeCache.put_type(id, type, entity_types: entity_types_table)
+        {:put, cf_type_entities, key, <<>>}
+      end)
 
-    ops_list = Enum.to_list(ops)
+    case ops do
+      [] ->
+        0
 
-    if ops_list != [] do
-      Logger.info("Backfilling #{length(ops_list)} missing cf_type_entities entries")
+      ops ->
+        Logger.info("Backfilling #{length(ops)} missing cf_type_entities entries")
 
-      case RocksDB.write_batch(ops_list, name: rocks_name) do
-        :ok ->
-          :ok
-
-        {:error, reason} ->
-          Logger.warning("cf_type_entities backfill write failed: #{inspect(reason)}")
-      end
+        case RocksDB.write_batch(ops, name: rocks_name) do
+          :ok -> length(ops)
+          {:error, reason} -> raise "cf_type_entities backfill write failed: #{inspect(reason)}"
+        end
     end
-
-    :ok
-  rescue
-    e ->
-      Logger.warning("Failed to backfill cf_type_entities: #{inspect(e)}")
-      :ok
   end
+
+  defp type_entities_backfilled?(rocks_name) do
+    case RocksDB.get(
+           RocksDB.cf_default(rocks_name),
+           @type_entities_backfill_marker,
+           name: rocks_name
+         ) do
+      {:ok, @type_entities_backfill_version} -> true
+      _ -> false
+    end
+  end
+
+  defp mark_type_entities_backfilled(rocks_name) do
+    op =
+      {:put, RocksDB.cf_default(rocks_name), @type_entities_backfill_marker,
+       @type_entities_backfill_version}
+
+    case RocksDB.write_batch([op], name: rocks_name) do
+      :ok -> :ok
+      {:error, reason} -> raise "default column family marker write failed: #{inspect(reason)}"
+    end
+  end
+
+  defp emit_populate_telemetry(started, measurements, metadata) do
+    duration = System.monotonic_time() - started
+
+    Telemetry.execute(
+      [:system_cache, :populated],
+      Map.put(measurements, :duration, duration),
+      metadata
+    )
+  end
+
+  # Metadata must not carry entity content, and a raised exception or a
+  # `GenServer.call` exit reason can embed the terms that triggered it.
+  # Report only the failure class: the exception module, or the atom the
+  # exit/throw carried.
+  defp telemetry_reason(:error, reason) when is_exception(reason), do: reason.__struct__
+
+  defp telemetry_reason(:exit, {{reason, _stacktrace}, {GenServer, :call, _args}})
+       when is_exception(reason),
+       do: reason.__struct__
+
+  defp telemetry_reason(_kind, reason) when is_atom(reason), do: reason
+  defp telemetry_reason(kind, _reason), do: kind
 end

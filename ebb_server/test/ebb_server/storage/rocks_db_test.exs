@@ -13,6 +13,7 @@ defmodule EbbServer.Storage.RocksDBTest do
       refute is_nil(RocksDB.cf_entity_actions(name))
       refute is_nil(RocksDB.cf_type_entities(name))
       refute is_nil(RocksDB.cf_action_dedup(name))
+      refute is_nil(RocksDB.cf_default(name))
     end
 
     test "persistent_term keys are erased after stop", context do
@@ -26,6 +27,7 @@ defmodule EbbServer.Storage.RocksDBTest do
       assert_raise ArgumentError, fn -> RocksDB.cf_type_entities(name) end
       assert_raise ArgumentError, fn -> RocksDB.cf_action_dedup(name) end
       assert_raise ArgumentError, fn -> RocksDB.cf_group_actions(name) end
+      assert_raise ArgumentError, fn -> RocksDB.cf_default(name) end
     end
 
     test "start_rocks + safe_stop releases the lock and the rocksdb directory can be removed",

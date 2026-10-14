@@ -14,6 +14,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
     EntityTypeCache,
     RelationshipCache,
     RocksDB,
+    SQLite,
     SystemCache,
     Writer
   }
@@ -390,5 +391,212 @@ defmodule EbbServer.Storage.SystemCacheTest do
       assert EntityTypeCache.get_type("todo_typed", entity_types_table) == "todo"
       assert EntityTypeCache.get_type("eg_typed", entity_types_table) == "entityGroup"
     end
+  end
+
+  describe "startup telemetry" do
+    test "emits per-cache counts, a duration, and outcome :ok", ctx do
+      ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
+
+      :ok = SystemCache.populate_system_caches(populate_opts(ctx))
+
+      assert [{[:ebb, :system_cache, :populated], measurements, %{outcome: :ok}}] =
+               TestHelpers.telemetry_events(ref)
+
+      assert is_integer(measurements.duration)
+      assert measurements.entity_types == 0
+      assert measurements.group_members == 0
+      assert measurements.entity_groups == 0
+      assert measurements.relationships == 0
+      assert measurements.backfilled == 0
+    end
+
+    test "reports the counts reached and outcome :error when the action log cannot be decoded",
+         ctx do
+      ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
+
+      # One indexed entity clears the entity-type phase; the corrupt Action
+      # then detonates `binary_to_term/2` during the backfill. The old code
+      # rescued that and still reported healthy.
+      :ok =
+        :rocksdb.put(
+          RocksDB.db_ref(ctx.rocks_name),
+          RocksDB.cf_type_entities(ctx.rocks_name),
+          RocksDB.encode_type_entity_key("todo", "todo_partial"),
+          <<>>,
+          []
+        )
+
+      :ok =
+        :rocksdb.put(
+          RocksDB.db_ref(ctx.rocks_name),
+          RocksDB.cf_actions(ctx.rocks_name),
+          RocksDB.encode_gsn_key(1),
+          <<0, 1, 2>>,
+          []
+        )
+
+      assert_raise ArgumentError, fn ->
+        SystemCache.populate_system_caches(populate_opts(ctx))
+      end
+
+      assert [
+               {[:ebb, :system_cache, :populated], measurements,
+                %{outcome: :error, reason: reason}}
+             ] = TestHelpers.telemetry_events(ref)
+
+      assert reason == ArgumentError
+      assert is_integer(measurements.duration)
+      assert measurements.entity_types == 1
+      assert measurements.group_members == 0
+      assert measurements.backfilled == 0
+    end
+
+    test "reports the failing phase's progress, not just completed phases", ctx do
+      ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
+      cf_type = RocksDB.cf_type_entities(ctx.rocks_name)
+      db = RocksDB.db_ref(ctx.rocks_name)
+
+      valid_data =
+        Jason.encode!(%{
+          "fields" => %{
+            "actor_id" => %{"value" => "a_partial"},
+            "group_id" => %{"value" => "g_partial"},
+            "permissions" => %{"value" => ["group.read"]}
+          }
+        })
+
+      :ok = SQLite.upsert_entity(entity_row("gm_partial_aaa_valid", valid_data), ctx.sqlite_name)
+      # A non-map JSON payload survives materialization but breaks
+      # `Fields.get/2` in the groupMember insert, aborting the phase after
+      # the first row is cached.
+      :ok = SQLite.upsert_entity(entity_row("gm_partial_zzz_bad", "[1,2,3]"), ctx.sqlite_name)
+
+      for id <- ["gm_partial_aaa_valid", "gm_partial_zzz_bad"] do
+        :ok =
+          :rocksdb.put(db, cf_type, RocksDB.encode_type_entity_key("groupMember", id), <<>>, [])
+      end
+
+      assert_raise FunctionClauseError, fn ->
+        SystemCache.populate_system_caches(populate_opts(ctx))
+      end
+
+      assert [
+               {[:ebb, :system_cache, :populated], measurements,
+                %{outcome: :error, reason: reason}}
+             ] = TestHelpers.telemetry_events(ref)
+
+      assert reason == FunctionClauseError
+      assert measurements.entity_types == 2
+      assert measurements.group_members == 1
+      assert measurements.entity_groups == 0
+    end
+
+    test "emits outcome :error when the rebuild fails before the first phase", ctx do
+      ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
+
+      # No RocksDB is registered under this name, so the marker read raises
+      # before any phase runs. The failure must still be observable.
+      opts = Keyword.put(populate_opts(ctx), :rocks_name, :ebb_421_missing_rocks)
+
+      assert_raise ArgumentError, fn -> SystemCache.populate_system_caches(opts) end
+
+      assert [
+               {[:ebb, :system_cache, :populated], measurements,
+                %{outcome: :error, reason: reason}}
+             ] = TestHelpers.telemetry_events(ref)
+
+      assert reason == ArgumentError
+      assert measurements.entity_types == 0
+      assert measurements.backfilled == 0
+    end
+
+    test "reports an exit as a safe failure class, not the exit term", ctx do
+      ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
+
+      :ok =
+        :rocksdb.put(
+          RocksDB.db_ref(ctx.rocks_name),
+          RocksDB.cf_type_entities(ctx.rocks_name),
+          RocksDB.encode_type_entity_key("groupMember", "gm_exit"),
+          <<>>,
+          []
+        )
+
+      :ok = GenServer.stop(Process.whereis(ctx.sqlite_name))
+
+      assert catch_exit(SystemCache.populate_system_caches(populate_opts(ctx)))
+
+      assert [
+               {[:ebb, :system_cache, :populated], measurements,
+                %{outcome: :error, reason: :exit}}
+             ] = TestHelpers.telemetry_events(ref)
+
+      assert measurements.group_members == 0
+    end
+  end
+
+  describe "type-entities backfill migration" do
+    test "writes a durable marker and skips the action-log scan on later boots", ctx do
+      :ok = SystemCache.populate_system_caches(populate_opts(ctx))
+
+      assert {:ok, "v1"} =
+               RocksDB.get(
+                 RocksDB.cf_default(ctx.rocks_name),
+                 "system_cache:type_entities_backfill",
+                 name: ctx.rocks_name
+               )
+
+      # A corrupt action would raise if the second populate still walked
+      # cf_actions. It does not, so the migration was skipped.
+      :ok =
+        :rocksdb.put(
+          RocksDB.db_ref(ctx.rocks_name),
+          RocksDB.cf_actions(ctx.rocks_name),
+          RocksDB.encode_gsn_key(1),
+          <<0, 1, 2>>,
+          []
+        )
+
+      assert :ok = SystemCache.populate_system_caches(populate_opts(ctx))
+    end
+
+    test "a stale marker version forces the backfill to run again", ctx do
+      :ok =
+        :rocksdb.put(
+          RocksDB.db_ref(ctx.rocks_name),
+          RocksDB.cf_default(ctx.rocks_name),
+          "system_cache:type_entities_backfill",
+          "v0",
+          []
+        )
+
+      # The stale version means the backfill is not skipped, so the
+      # corrupt Action is decoded and raises.
+      :ok =
+        :rocksdb.put(
+          RocksDB.db_ref(ctx.rocks_name),
+          RocksDB.cf_actions(ctx.rocks_name),
+          RocksDB.encode_gsn_key(1),
+          <<0, 1, 2>>,
+          []
+        )
+
+      assert_raise ArgumentError, fn ->
+        SystemCache.populate_system_caches(populate_opts(ctx))
+      end
+    end
+  end
+
+  defp entity_row(id, data) do
+    %{
+      id: id,
+      type: "groupMember",
+      data: data,
+      created_hlc: 0,
+      updated_hlc: 0,
+      deleted_hlc: nil,
+      deleted_by: nil,
+      last_gsn: 0
+    }
   end
 end
