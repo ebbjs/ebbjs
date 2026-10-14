@@ -1,4 +1,4 @@
-import type { Action } from "@ebbjs/core";
+import type { Action, Entity } from "@ebbjs/core";
 
 /**
  * Lifecycle status of a buffered local Action. The store persists
@@ -50,6 +50,22 @@ export interface ConflictSlot {
 }
 
 /**
+ * The before/after entity rows for one losing subject. `before` is the
+ * row as the client had it immediately before the catch-up window was
+ * applied: last-synced server state with its own unflushed writes
+ * optimistically applied. `after` is the materialized row at detection,
+ * once the inbound window has replaced the optimistic row with the
+ * server's view. Both are structured-clone copies, not references into
+ * the action log, so the comparison survives a reload and compaction.
+ */
+export interface ConflictSubjectState {
+  readonly subjectId: string;
+  readonly subjectType: string;
+  readonly before: Entity | null;
+  readonly after: Entity | null;
+}
+
+/**
  * The conflict payload detection stamps onto a losing Action's outbox
  * row. It travels with the row rather than in a second store, so the
  * hold and the record are the same durable write and cannot disagree.
@@ -60,6 +76,12 @@ export interface OutboxConflict {
    * the entity that lost, so a freshly created entity is not dragged in.
    */
   readonly subjects: readonly string[];
+  /**
+   * Full entity rows for each losing subject, in the same order as
+   * `subjects`. `after` is read as the materialized row at detection and
+   * is `null` only when replay yields no row.
+   */
+  readonly subjectStates: readonly ConflictSubjectState[];
   /**
    * Overlapping contested positions, in detection order. Empty when the
    * entity-level scope surfaced a subject with no position overlap; an
