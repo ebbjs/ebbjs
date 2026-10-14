@@ -401,6 +401,40 @@ describe("client.conflicts (#310)", () => {
     });
   });
 
+  it("persists subjectStates with both rows across a reload", async () => {
+    const storage = createMemoryAdapter();
+    const stub = mkStubFetch();
+    const client = mkClient(stub.fn, storage);
+    await client.outbox.enqueue(
+      mkTodoWrite({ id: "act_local", value: "mine", updateId: "u_local", hlc: LOCAL_HLC, gsn: 0 }),
+    );
+    // Capture the optimistic row the way a catch-up pass does, before the
+    // peer's window replaces it.
+    await (
+      client as unknown as { capturePreSyncSnapshots(catchUpId: string): Promise<void> }
+    ).capturePreSyncSnapshots("cu_1");
+    const peer = mkTodoWrite({
+      id: "act_peer",
+      value: "theirs",
+      updateId: "u_peer",
+      hlc: PEER_HLC,
+      gsn: 9,
+    });
+    await callApplyAction(client, peer, "g_1");
+    await client.outbox.detectConflicts([peer], "cu_1");
+
+    const states = client.outbox.conflicts()[0]?.conflict.subjectStates;
+    expect(states?.[0]?.before?.data.fields.title.value).toBe("mine");
+    expect(states?.[0]?.after?.data.fields.title.value).toBe("theirs");
+    client.close();
+
+    const reloaded = mkStubFetch();
+    const clientB = mkClient(reloaded.fn, storage);
+    await clientB.outbox.rehydrate();
+
+    expect(clientB.outbox.conflicts()[0]?.conflict.subjectStates).toEqual(states);
+  });
+
   it("re-materializes a losing Action's non-conflicting entity on discard", async () => {
     const storage = createMemoryAdapter();
     const stub = mkStubFetch();

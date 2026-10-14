@@ -39,8 +39,13 @@
  * storage adapter and fetch.
  */
 
-import { compare, type Action } from "@ebbjs/core";
-import type { ConflictSlot, OutboxConflict, OutboxStore } from "@ebbjs/storage/types";
+import { compare, type Action, type Entity } from "@ebbjs/core";
+import type {
+  ConflictSlot,
+  ConflictSubjectState,
+  OutboxConflict,
+  OutboxStore,
+} from "@ebbjs/storage/types";
 
 import type { Rejection, WriteResponse } from "./types";
 import {
@@ -89,10 +94,18 @@ export interface ConflictedOutboxEntry extends OutboxEntry {
 const isConflicted = (entry: OutboxEntry): entry is ConflictedOutboxEntry =>
   entry.status === "conflicted" && entry.conflict !== undefined;
 
+/** A loser subject's pre-detection state; `after` is read at detection. */
+interface LoserSubject {
+  readonly subjectId: string;
+  readonly subjectType: string;
+  readonly before: Entity | null;
+}
+
 /** One losing entry classified by a detection pass, before grouping. */
 interface Loser {
   readonly id: string;
   readonly subjects: string[];
+  readonly subjectStates: readonly LoserSubject[];
   readonly slots: ConflictSlot[];
 }
 
@@ -220,6 +233,17 @@ export interface OutboxDependencies {
   hlc: () => string;
   /** Mint an id for one detected conflict entry. */
   conflictId: () => string;
+  /**
+   * The row captured for `subjectId` immediately before this pass's
+   * window; `null` when none was captured. Keyed by `catchUpId` so one
+   * pass's capture cannot satisfy another pass's read.
+   */
+  preSyncRow: (catchUpId: string, subjectId: string) => Entity | null;
+  /**
+   * The materialized row for `subjectId` at detection — the server's view
+   * once the window landed; `null` when replay yields no row.
+   */
+  readEntity: (subjectId: string) => Promise<Entity | null>;
 }
 
 /**
@@ -735,10 +759,11 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     // grouping survives a reload and a partial resolution. A later pass
     // that shares a subject with an already-conflicted row is a distinct
     // conflict: a new pass mints a fresh id.
-    const losers: { id: string; subjects: string[]; slots: ConflictSlot[] }[] = [];
+    const losers: Loser[] = [];
     for (const entry of candidates) {
       if (!window.some(({ action }) => action.gsn > entry.basedOnGsn)) continue;
       const subjects: string[] = [];
+      const subjectStates: LoserSubject[] = [];
       const slots: ConflictSlot[] = [];
       const seen = new Set<string>();
       for (const [subjectId, pending] of actionWrites(entry.action)) {
@@ -776,19 +801,34 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
         }
         if (deps.conflictScope(inbound.subjectType) === "entity" || overlap.length > 0) {
           subjects.push(subjectId);
+          subjectStates.push({
+            subjectId,
+            subjectType: inbound.subjectType,
+            before: deps.preSyncRow(catchUpId, subjectId),
+          });
           slots.push(...overlap);
         }
       }
       if (subjects.length === 0) continue;
-      losers.push({ id: entry.action.id, subjects, slots });
+      losers.push({ id: entry.action.id, subjects, subjectStates, slots });
     }
     if (losers.length === 0) return [];
 
     const grouped = groupLosers(losers, deps.conflictId);
     const detected: DetectedConflict[] = [];
     for (const { loser, conflictId } of grouped) {
+      // `after` is measured once, at detection. The inbound window has
+      // already replaced the optimistic row, so no log-emptiness check is
+      // needed to know the materialized row is the server's view.
+      const subjectStates: ConflictSubjectState[] = await Promise.all(
+        loser.subjectStates.map(async (state) => ({
+          ...state,
+          after: await deps.readEntity(state.subjectId),
+        })),
+      );
       const conflict: OutboxConflict = {
         subjects: loser.subjects,
+        subjectStates,
         slots: loser.slots,
         catchUpId,
         conflictId,
