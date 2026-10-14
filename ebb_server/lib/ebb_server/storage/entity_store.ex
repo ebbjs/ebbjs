@@ -104,7 +104,7 @@ defmodule EbbServer.Storage.EntityStore do
   since all use the same numeric HLC and lexicographic string comparison rules.
   """
 
-  alias EbbServer.Storage.{DirtyTracker, RocksDB, SQLite}
+  alias EbbServer.Storage.{DirtyTracker, PermissionHelper, RocksDB, SQLite}
   alias EbbServer.Telemetry
 
   @default_rocks_name EbbServer.Storage.RocksDB
@@ -588,15 +588,8 @@ defmodule EbbServer.Storage.EntityStore do
   end
 
   defp materialize_system_entities(rocks_name, sqlite_name, dirty_set) do
-    system_prefixes = ["gm_", "eg_", "rel_"]
-
     dirty_ids =
-      dirty_set
-      |> :ets.tab2list()
-      |> Enum.map(fn {id, _} -> id end)
-      |> Enum.filter(fn id ->
-        Enum.any?(system_prefixes, &String.starts_with?(id, &1))
-      end)
+      DirtyTracker.dirty_entity_ids_for_types(PermissionHelper.system_entity_types(), dirty_set)
 
     Enum.each(dirty_ids, fn id ->
       materialize(id, rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set)

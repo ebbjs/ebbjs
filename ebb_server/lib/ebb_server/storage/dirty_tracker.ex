@@ -2,9 +2,12 @@ defmodule EbbServer.Storage.DirtyTracker do
   @moduledoc """
   GenServer that owns the dirty set ETS table.
 
-  Tracks which entity IDs need re-materialization. Each mark stores the
-  entity ID together with a monotonic generation stamped when the mark
-  is written: `{entity_id, generation}`.
+  Tracks which entities need re-materialization. Each mark stores the
+  entity ID together with its subject type and a monotonic generation
+  stamped when the mark is written: `{entity_id, subject_type,
+  generation}`. The recorded type is what lets a query materialize the
+  dirty entities of a type without inferring the type from the ID —
+  clients own ID generation, so a prefix carries no type information.
 
   A materializer reads the generation before it scans, then clears with
   a compare-and-clear (`clear_dirty/3`): the mark is removed only if the
@@ -34,6 +37,7 @@ defmodule EbbServer.Storage.DirtyTracker do
 
   @default_dirty_set_name :ebb_dirty_set
 
+  @type entity_mark :: {entity_id :: String.t(), subject_type :: String.t()}
   @type t :: %__MODULE__{
           dirty_set: atom()
         }
@@ -45,30 +49,25 @@ defmodule EbbServer.Storage.DirtyTracker do
   end
 
   @doc """
-  Marks a batch of entity IDs as dirty (needs re-materialization).
+  Marks a batch of `{entity_id, subject_type}` pairs as dirty (needs
+  re-materialization).
 
-  Every ID in the batch shares one fresh generation.
+  Every entity in the batch shares one fresh generation.
 
   ## Examples
 
-      iex> DirtyTracker.mark_dirty_batch(["todo_1", "todo_2"])
+      iex> DirtyTracker.mark_dirty_batch([{"todo_1", "todo"}, {"todo_2", "todo"}])
       :ok
   """
-  @spec mark_dirty_batch([String.t()], atom()) :: :ok
-  def mark_dirty_batch(entity_ids, dirty_set \\ @default_dirty_set_name)
-      when is_list(entity_ids) do
-    generation = :erlang.unique_integer([:monotonic, :positive])
-
-    Enum.each(entity_ids, fn id ->
-      :ets.insert(dirty_set, {id, generation})
-    end)
-
-    :ok
+  @spec mark_dirty_batch([entity_mark()], atom()) :: :ok
+  def mark_dirty_batch(entities, dirty_set \\ @default_dirty_set_name)
+      when is_list(entities) do
+    insert_marks(entities, dirty_set, :erlang.unique_integer([:monotonic, :positive]))
   end
 
   @doc """
-  Marks a batch of entity IDs as provisionally dirty while a commit is in
-  flight.
+  Marks a batch of `{entity_id, subject_type}` pairs as provisionally
+  dirty while a commit is in flight.
 
   The Writer writes a provisional mark *before* it attempts the durable
   commit, so an entity is never observed clean between the commit landing
@@ -81,20 +80,15 @@ defmodule EbbServer.Storage.DirtyTracker do
 
   ## Examples
 
-      iex> generation = DirtyTracker.mark_pending_batch(["todo_1"])
+      iex> generation = DirtyTracker.mark_pending_batch([{"todo_1", "todo"}])
       iex> DirtyTracker.pending?(DirtyTracker.dirty_generation("todo_1"))
       true
   """
-  @spec mark_pending_batch([String.t()], atom()) :: non_neg_integer()
-  def mark_pending_batch(entity_ids, dirty_set \\ @default_dirty_set_name)
-      when is_list(entity_ids) do
+  @spec mark_pending_batch([entity_mark()], atom()) :: non_neg_integer()
+  def mark_pending_batch(entities, dirty_set \\ @default_dirty_set_name)
+      when is_list(entities) do
     generation = :erlang.unique_integer([:monotonic, :positive])
-    mark = {:pending, generation}
-
-    Enum.each(entity_ids, fn id ->
-      :ets.insert(dirty_set, {id, mark})
-    end)
-
+    insert_marks(entities, dirty_set, {:pending, generation})
     generation
   end
 
@@ -109,16 +103,16 @@ defmodule EbbServer.Storage.DirtyTracker do
 
   ## Examples
 
-      iex> generation = DirtyTracker.mark_pending_batch(["todo_1"])
-      iex> DirtyTracker.clear_pending_batch(["todo_1"], generation, :ebb_dirty_set)
+      iex> generation = DirtyTracker.mark_pending_batch([{"todo_1", "todo"}])
+      iex> DirtyTracker.clear_pending_batch([{"todo_1", "todo"}], generation, :ebb_dirty_set)
       :ok
   """
-  @spec clear_pending_batch([String.t()], non_neg_integer(), atom()) :: :ok
+  @spec clear_pending_batch([entity_mark()], non_neg_integer(), atom()) :: :ok
   # No default for `dirty_set`: a two-arity call must not silently pass a
   # table where a generation is expected.
-  def clear_pending_batch(entity_ids, generation, dirty_set) when is_list(entity_ids) do
-    Enum.each(entity_ids, fn id ->
-      :ets.delete_object(dirty_set, {id, {:pending, generation}})
+  def clear_pending_batch(entities, generation, dirty_set) when is_list(entities) do
+    Enum.each(entities, fn {id, subject_type} ->
+      :ets.delete_object(dirty_set, {id, subject_type, {:pending, generation}})
     end)
 
     :ok
@@ -145,8 +139,11 @@ defmodule EbbServer.Storage.DirtyTracker do
     dirty_set
     |> :ets.tab2list()
     |> Enum.each(fn
-      {entity_id, {:pending, _}} -> :ets.insert(dirty_set, {entity_id, generation})
-      _settled -> :ok
+      {entity_id, subject_type, {:pending, _}} ->
+        :ets.insert(dirty_set, {entity_id, subject_type, generation})
+
+      _settled ->
+        :ok
     end)
 
     :ok
@@ -193,7 +190,7 @@ defmodule EbbServer.Storage.DirtyTracker do
   @spec dirty_generation(String.t(), atom()) :: term()
   def dirty_generation(entity_id, dirty_set \\ @default_dirty_set_name) do
     case :ets.lookup(dirty_set, entity_id) do
-      [{^entity_id, generation}] -> generation
+      [{^entity_id, _subject_type, mark}] -> mark
       [] -> nil
     end
   end
@@ -235,13 +232,14 @@ defmodule EbbServer.Storage.DirtyTracker do
 
       iex> generation = DirtyTracker.dirty_generation("todo_1")
       iex> DirtyTracker.clear_dirty("todo_1", generation, :ebb_dirty_set)
-      true
+      :ok
   """
-  @spec clear_dirty(String.t(), term(), atom()) :: true
+  @spec clear_dirty(String.t(), term(), atom()) :: :ok
   # No default for `dirty_set`: a two-arity call must not silently pass a
   # table where a generation is expected.
   def clear_dirty(entity_id, observed_generation, dirty_set) do
-    :ets.delete_object(dirty_set, {entity_id, observed_generation})
+    :ets.select_delete(dirty_set, [{{entity_id, :_, observed_generation}, [], [true]}])
+    :ok
   end
 
   @doc """
@@ -270,7 +268,30 @@ defmodule EbbServer.Storage.DirtyTracker do
   end
 
   @doc """
-  Returns all dirty entity IDs that match a given type prefix.
+  Returns all dirty entity IDs recorded under any of the given subject
+  types.
+
+  Classification is by the type recorded in the mark, never by the ID
+  prefix. The result order is unspecified.
+
+  ## Examples
+
+      iex> DirtyTracker.dirty_entity_ids_for_types(["todo"])
+      ["todo_abc", "todo_xyz"]
+  """
+  @spec dirty_entity_ids_for_types([String.t()], atom()) :: [String.t()]
+  def dirty_entity_ids_for_types(types, dirty_set \\ @default_dirty_set_name)
+      when is_list(types) do
+    match_spec =
+      types
+      |> Enum.uniq()
+      |> Enum.map(fn type -> {{:"$1", type, :_}, [], [:"$1"]} end)
+
+    :ets.select(dirty_set, match_spec)
+  end
+
+  @doc """
+  Returns all dirty entity IDs recorded under a single subject type.
 
   ## Examples
 
@@ -279,22 +300,12 @@ defmodule EbbServer.Storage.DirtyTracker do
   """
   @spec dirty_entity_ids_for_type(String.t(), atom()) :: [String.t()]
   def dirty_entity_ids_for_type(type, dirty_set \\ @default_dirty_set_name) do
-    type_prefixes =
-      case type do
-        "groupMember" -> ["gm_", "groupMember_"]
-        "entityGroup" -> ["eg_", "entityGroup_"]
-        "relationship" -> ["rel_", "relationship_"]
-        _ -> [type <> "_"]
-      end
+    dirty_entity_ids_for_types([type], dirty_set)
+  end
 
-    dirty_set
-    |> :ets.tab2list()
-    |> Enum.reduce([], fn {entity_id, _}, acc ->
-      if Enum.any?(type_prefixes, &String.starts_with?(entity_id, &1)) do
-        [entity_id | acc]
-      else
-        acc
-      end
+  defp insert_marks(entities, dirty_set, mark) do
+    Enum.each(entities, fn {id, subject_type} ->
+      :ets.insert(dirty_set, {id, subject_type, mark})
     end)
   end
 

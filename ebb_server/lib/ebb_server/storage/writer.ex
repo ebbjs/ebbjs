@@ -616,8 +616,8 @@ defmodule EbbServer.Storage.Writer do
   # clear.
   defp write_batch(fresh, gsn_start, gsn_end, state) do
     started_at = System.monotonic_time()
-    entity_ids = affected_entity_ids(fresh)
-    pending = {entity_ids, DirtyTracker.mark_pending_batch(entity_ids, state.dirty_set)}
+    entities = affected_entities(fresh)
+    pending = {entities, DirtyTracker.mark_pending_batch(entities, state.dirty_set)}
 
     # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
     try do
@@ -710,7 +710,7 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp apply_post_commit(fresh, state) do
-    :ok = DirtyTracker.mark_dirty_batch(affected_entity_ids(fresh), state.dirty_set)
+    :ok = DirtyTracker.mark_dirty_batch(affected_entities(fresh), state.dirty_set)
 
     fresh
     |> plan_cache_mutations(state)
@@ -940,11 +940,15 @@ defmodule EbbServer.Storage.Writer do
     )
   end
 
-  defp affected_entity_ids(fresh) do
+  # The dirty mark records the subject type so a query can find the dirty
+  # entities of a type without inferring the type from the ID. The first
+  # update for an ID wins: all updates in a flush for one entity carry the
+  # same type.
+  defp affected_entities(fresh) do
     fresh
-    |> Enum.flat_map(fn action -> action.updates end)
-    |> Enum.map(fn update -> update.subject_id end)
-    |> Enum.uniq()
+    |> Enum.flat_map(& &1.updates)
+    |> Enum.map(&{&1.subject_id, &1.subject_type})
+    |> Enum.uniq_by(&elem(&1, 0))
   end
 
   # The batch is durable, so the reply contract is success; the caches are
@@ -987,8 +991,8 @@ defmodule EbbServer.Storage.Writer do
   # A failed or raised commit wrote nothing, so the provisional marks it
   # placed must go. Compare-and-clear by generation keeps a settled mark, or
   # a newer batch's provisional mark, in place.
-  defp clear_pending(state, {entity_ids, generation}) do
-    DirtyTracker.clear_pending_batch(entity_ids, generation, state.dirty_set)
+  defp clear_pending(state, {entities, generation}) do
+    DirtyTracker.clear_pending_batch(entities, generation, state.dirty_set)
   end
 
   defp mark_committed(%{watermark_tracker: nil}, _gsn_start, _gsn_end), do: :ok
