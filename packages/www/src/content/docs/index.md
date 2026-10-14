@@ -142,7 +142,7 @@ Shipped primitives:
 - **Typed ORM namespace** — `client.<entity>.query()` / `get()` / `create()` / `update()`, plus `link` / `unlink` for relationships. Payloads are validated against the schema with TypeBox at runtime.
 - **Reactive subscribe** — `client.<entity>.subscribe(filter, cb)` fires on matching-set changes; `client.onStateChange(cb)` tracks the connection state machine.
 - **Presence** — `client.presence` broadcasts and reads ephemeral cursors and selections.
-- **Collaborative text** — `client.textDocument(docId)` opens a causal-tree document with a local edit API and conflict events; `@ebbjs/codemirror` bridges it to a CodeMirror 6 view.
+- **Collaborative text** — `client.textDocument(docId)` opens a causal-tree document with a local edit API; `@ebbjs/codemirror` bridges it to a CodeMirror 6 view. Writes that race while offline surface through [`client.conflicts`](/docs/conflicts).
 
 See [`packages/client/src/`](https://github.com/ebbjs/ebbjs/tree/main/packages/client/src).
 
