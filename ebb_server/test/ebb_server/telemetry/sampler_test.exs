@@ -43,7 +43,11 @@ defmodule EbbServer.Telemetry.SamplerTest do
           name: rocks.name
         )
 
-      :ok = DirtyTracker.mark_dirty_batch(["todo_a", "todo_b", "todo_c"], cache.dirty_set)
+      :ok =
+        DirtyTracker.mark_dirty_batch(
+          [{"todo_a", "todo"}, {"todo_b", "todo"}, {"todo_c", "todo"}],
+          cache.dirty_set
+        )
 
       expected_lag =
         RocksDB.get_max_gsn(rocks.name) -
@@ -91,7 +95,7 @@ defmodule EbbServer.Telemetry.SamplerTest do
     end
 
     test "keeps sampling when the watermark lag read fails", %{cache: cache} do
-      :ok = DirtyTracker.mark_dirty_batch(["todo_a"], cache.dirty_set)
+      :ok = DirtyTracker.mark_dirty_batch([{"todo_a", "todo"}], cache.dirty_set)
       ref = attach_telemetry([[:ebb, :watermark, :lag], [:ebb, :dirty_set, :size]])
 
       pid =

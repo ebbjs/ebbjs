@@ -1,7 +1,7 @@
 defmodule EbbServer.Storage.EntityStoreQueryTest do
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{DirtyTracker, EntityStore, Writer}
+  alias EbbServer.Storage.{DirtyTracker, EntityStore, SQLite, Writer}
 
   import EbbServer.TestHelpers
 
@@ -291,6 +291,85 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       refute DirtyTracker.dirty?("todo_dirty", dirty_set)
     end
 
+    test "query materializes an SDK-shaped e_ entity by its recorded type", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      group_id = "g_sdk_#{System.unique_integer([:positive])}"
+      actor_id = "a_sdk_#{System.unique_integer([:positive])}"
+
+      bootstrap_group(group_id, actor_id, writer_name)
+
+      # The client SDK generates user-entity IDs as `e_<nanoid>`, so the ID
+      # prefix carries no type information.
+      sdk_id = "e_" <> Nanoid.generate()
+      write_todo(sdk_id, group_id, actor_id, writer_name)
+
+      {:ok, todos} =
+        EntityStore.query("todo", nil, actor_id,
+          rocks_name: rocks_name,
+          sqlite_name: sqlite_name,
+          dirty_set: dirty_set
+        )
+
+      assert Enum.any?(todos, fn todo -> todo.id == sdk_id end)
+    end
+
+    test "a cross-type query materializes dirty system entities", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      group_id = "g_cross_#{System.unique_integer([:positive])}"
+      actor_id = "a_cross_#{System.unique_integer([:positive])}"
+
+      %{gm_id: gm_id, eg_id: eg_id} = bootstrap_group(group_id, actor_id, writer_name)
+
+      rel_id = "rel_" <> Nanoid.generate()
+      write_relationship(rel_id, "todo_cross_a", "todo_cross_b", actor_id, writer_name)
+
+      assert :not_found = SQLite.get_entity(gm_id, sqlite_name)
+      assert :not_found = SQLite.get_entity(eg_id, sqlite_name)
+      assert :not_found = SQLite.get_entity(rel_id, sqlite_name)
+
+      {:ok, _posts} =
+        EntityStore.query("post", nil, actor_id,
+          rocks_name: rocks_name,
+          sqlite_name: sqlite_name,
+          dirty_set: dirty_set
+        )
+
+      assert {:ok, _} = SQLite.get_entity(gm_id, sqlite_name)
+      assert {:ok, _} = SQLite.get_entity(eg_id, sqlite_name)
+      assert {:ok, _} = SQLite.get_entity(rel_id, sqlite_name)
+    end
+
+    test "a cross-type query materializes a dirty group entity", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      group_id = "grp_" <> Nanoid.generate()
+      actor_id = "a_group_#{System.unique_integer([:positive])}"
+
+      write_group(group_id, actor_id, writer_name)
+
+      assert :not_found = SQLite.get_entity(group_id, sqlite_name)
+
+      {:ok, _posts} =
+        EntityStore.query("post", nil, actor_id,
+          rocks_name: rocks_name,
+          sqlite_name: sqlite_name,
+          dirty_set: dirty_set
+        )
+
+      assert {:ok, _} = SQLite.get_entity(group_id, sqlite_name)
+    end
+
     test "query returns empty list when no entities match", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
@@ -378,6 +457,61 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
 
       refute Enum.any?(todos, fn todo -> todo.id == todo_id end)
     end
+  end
+
+  defp write_relationship(rel_id, source_id, target_id, actor_id, writer_name) do
+    hlc = generate_hlc()
+
+    action = %{
+      id: "act_" <> Nanoid.generate(),
+      actor_id: actor_id,
+      hlc: hlc,
+      updates: [
+        %{
+          id: "upd_" <> Nanoid.generate(),
+          subject_id: rel_id,
+          subject_type: "relationship",
+          method: :put,
+          data: %{
+            "fields" => %{
+              "source_id" => %{"type" => "lww", "value" => source_id, "hlc" => hlc},
+              "target_id" => %{"type" => "lww", "value" => target_id, "hlc" => hlc},
+              "type" => %{"type" => "lww", "value" => "assignedTo", "hlc" => hlc},
+              "field" => %{"type" => "lww", "value" => "assignee", "hlc" => hlc}
+            }
+          }
+        }
+      ]
+    }
+
+    {:ok, {gsn, gsn}, []} = Writer.write_actions([action], writer_name)
+    %{rel_id: rel_id, gsn: gsn}
+  end
+
+  defp write_group(group_id, actor_id, writer_name) do
+    hlc = generate_hlc()
+
+    action = %{
+      id: "act_" <> Nanoid.generate(),
+      actor_id: actor_id,
+      hlc: hlc,
+      updates: [
+        %{
+          id: "upd_" <> Nanoid.generate(),
+          subject_id: group_id,
+          subject_type: "group",
+          method: :put,
+          data: %{
+            "fields" => %{
+              "name" => %{"type" => "lww", "value" => "Test group", "hlc" => hlc}
+            }
+          }
+        }
+      ]
+    }
+
+    {:ok, {gsn, gsn}, []} = Writer.write_actions([action], writer_name)
+    %{group_id: group_id, gsn: gsn}
   end
 
   defp write_post(post_id, group_id, actor_id, writer_name, opts \\ []) do

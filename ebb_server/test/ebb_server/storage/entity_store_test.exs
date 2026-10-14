@@ -181,13 +181,13 @@ defmodule EbbServer.Storage.EntityStoreTest do
       # A Writer writes this before its commit attempt and settles it once
       # the commit returns. Until then the read may materialize, but it must
       # not clear the mark and reopen the window it exists to close.
-      DirtyTracker.mark_pending_batch([entity_id], dirty_set)
+      DirtyTracker.mark_pending_batch([{entity_id, "todo"}], dirty_set)
 
       assert {:ok, entity} = EntityStore.materialize(entity_id, opts)
       assert entity.last_gsn == 1
       assert DirtyTracker.pending?(DirtyTracker.dirty_generation(entity_id, dirty_set))
 
-      :ok = DirtyTracker.mark_dirty_batch([entity_id], dirty_set)
+      :ok = DirtyTracker.mark_dirty_batch([{entity_id, "todo"}], dirty_set)
       assert {:ok, _entity} = EntityStore.materialize(entity_id, opts)
       refute DirtyTracker.dirty?(entity_id, dirty_set)
     end
@@ -198,7 +198,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
       dirty_set: dirty_set
     } do
       entity_id = "todo_unknown_provisional"
-      DirtyTracker.mark_pending_batch([entity_id], dirty_set)
+      DirtyTracker.mark_pending_batch([{entity_id, "todo"}], dirty_set)
 
       assert :not_found =
                EntityStore.get(entity_id, "a_test",

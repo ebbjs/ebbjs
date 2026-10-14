@@ -31,7 +31,7 @@ defmodule EbbServer.Sync.Router.MaterializationErrorTest do
           name: rocks_name
         )
 
-      :ets.insert(dirty_set, {entity_id, true})
+      :ets.insert(dirty_set, {entity_id, "todo", true})
 
       assert {:error, :materialization_failed} =
                EntityStore.get(entity_id, "a_test",
@@ -66,7 +66,7 @@ defmodule EbbServer.Sync.Router.MaterializationErrorTest do
           name: rocks_name
         )
 
-      :ets.insert(dirty_set, {entity_id, true})
+      :ets.insert(dirty_set, {entity_id, "todo", true})
 
       assert {:error, :materialization_failed} =
                EntityStore.get(entity_id, "a_test",
@@ -93,7 +93,7 @@ defmodule EbbServer.Sync.Router.MaterializationErrorTest do
           name: rocks_name
         )
 
-      :ets.insert(dirty_set, {entity_id, true})
+      :ets.insert(dirty_set, {entity_id, "todo", true})
 
       assert_raise CaseClauseError, fn ->
         case EntityStore.get(entity_id, "a_test",

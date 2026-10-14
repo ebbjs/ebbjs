@@ -273,7 +273,7 @@ defmodule EbbServer.Storage.WriterTest do
     end
 
     test "startup settles provisional marks left by a crashed writer", ctx do
-      DirtyTracker.mark_pending_batch(["todo_orphan"], ctx.dirty_set)
+      DirtyTracker.mark_pending_batch([{"todo_orphan", "todo"}], ctx.dirty_set)
 
       %{name: _writer_name} = start_writer(ctx)
 
