@@ -28,14 +28,18 @@ defmodule EbbServer.Storage.SQLite do
   Generated columns extract field values from the per-entity JSON `data`
   so that `WHERE` clauses can reference them via `json_extract` without
   parsing JSON at read time. Field values live at `data.fields.X.value`.
+  A separate `cursors` table holds durable named consumer cursors (Action
+  export today, peer replication later).
 
   ## Reads vs. writes
 
-  This module is **only** read+upsert against the cache. The Writer
-  commits to RocksDB and triggers on-demand materialization in this
-  module via `upsert_entity/1` / `upsert_entities/1`. We never write
-  to SQLite on the hot write path — that goes through RocksDB and
-  fans out to materialization after commit.
+  This module is read+upsert against the entity cache, plus the small
+  `cursors` table of durable consumer positions (Action export today, peer
+  replication later). The Writer commits to RocksDB and triggers on-demand
+  materialization in this module via `upsert_entity/1` /
+  `upsert_entities/1`. We never write to SQLite on the hot write path —
+  that goes through RocksDB and fans out to materialization after commit;
+  a cursor write happens off the commit path, on the consumer's own poll.
 
   ## Isolated instances
 
@@ -110,6 +114,19 @@ defmodule EbbServer.Storage.SQLite do
 
   @get_last_gsn_sql "SELECT last_gsn FROM entities WHERE id = ?"
 
+  # Generic durable consumer cursor. #367's Action export owns the
+  # `"action_export"` row; peer replication (#113) will add its own.
+  @create_cursors_table """
+  CREATE TABLE IF NOT EXISTS cursors (name TEXT PRIMARY KEY, gsn INTEGER NOT NULL);
+  """
+
+  @get_cursor_sql "SELECT gsn FROM cursors WHERE name = ?"
+
+  @put_cursor_sql """
+  INSERT INTO cursors (name, gsn) VALUES (?, ?)
+  ON CONFLICT(name) DO UPDATE SET gsn = excluded.gsn
+  """
+
   # ---------------------------------------------------------------------------
   # Public API — start / stop
   # ---------------------------------------------------------------------------
@@ -161,6 +178,29 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   # ---------------------------------------------------------------------------
+  # Public API — durable consumer cursors
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Reads a named durable cursor.
+
+  Returns `:not_found` when the cursor has never been written, which a
+  consumer should treat as "start from 0".
+  """
+  @spec get_cursor(String.t(), GenServer.server()) :: {:ok, non_neg_integer()} | :not_found
+  def get_cursor(name, server \\ __MODULE__) do
+    GenServer.call(server, {:get_cursor, name})
+  end
+
+  @doc """
+  Writes a named durable cursor, upserting any existing value.
+  """
+  @spec put_cursor(String.t(), non_neg_integer(), GenServer.server()) :: :ok
+  def put_cursor(name, gsn, server \\ __MODULE__) do
+    GenServer.call(server, {:put_cursor, name, gsn})
+  end
+
+  # ---------------------------------------------------------------------------
   # GenServer callbacks
   # ---------------------------------------------------------------------------
 
@@ -178,18 +218,23 @@ defmodule EbbServer.Storage.SQLite do
     # DDL
     :ok = Sqlite3.execute(db, @create_entities_table)
     :ok = Sqlite3.execute(db, @create_indexes)
+    :ok = Sqlite3.execute(db, @create_cursors_table)
 
     # Prepare cached statements
     {:ok, upsert_stmt} = Sqlite3.prepare(db, @upsert_sql)
     {:ok, get_entity_stmt} = Sqlite3.prepare(db, @get_entity_sql)
     {:ok, get_last_gsn_stmt} = Sqlite3.prepare(db, @get_last_gsn_sql)
+    {:ok, get_cursor_stmt} = Sqlite3.prepare(db, @get_cursor_sql)
+    {:ok, put_cursor_stmt} = Sqlite3.prepare(db, @put_cursor_sql)
 
     state = %{
       db: db,
       stmts: %{
         upsert: upsert_stmt,
         get_entity: get_entity_stmt,
-        get_last_gsn: get_last_gsn_stmt
+        get_last_gsn: get_last_gsn_stmt,
+        get_cursor: get_cursor_stmt,
+        put_cursor: put_cursor_stmt
       }
     }
 
@@ -250,6 +295,34 @@ defmodule EbbServer.Storage.SQLite do
     :ok = Sqlite3.reset(stmt)
 
     {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:get_cursor, name}, _from, state) do
+    %{db: db, stmts: %{get_cursor: stmt}} = state
+
+    :ok = Sqlite3.bind(stmt, [name])
+
+    result =
+      case Sqlite3.step(db, stmt) do
+        {:row, [gsn]} -> {:ok, gsn}
+        :done -> :not_found
+      end
+
+    :ok = Sqlite3.reset(stmt)
+
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:put_cursor, name, gsn}, _from, state) do
+    %{db: db, stmts: %{put_cursor: stmt}} = state
+
+    :ok = Sqlite3.bind(stmt, [name, gsn])
+    :done = Sqlite3.step(db, stmt)
+    :ok = Sqlite3.reset(stmt)
+
+    {:reply, :ok, state}
   end
 
   @impl true
