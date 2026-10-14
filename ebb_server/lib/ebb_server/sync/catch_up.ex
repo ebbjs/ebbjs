@@ -7,7 +7,7 @@ defmodule EbbServer.Sync.CatchUp do
   entities the group contains.
   """
 
-  alias EbbServer.Storage.{GroupCache, RocksDB, WatermarkTracker}
+  alias EbbServer.Storage.{PermissionChecker, RocksDB, WatermarkTracker}
   alias EbbServer.Telemetry
 
   @default_limit 200
@@ -36,21 +36,12 @@ defmodule EbbServer.Sync.CatchUp do
   def catch_up_group(group_id, actor_id, offset \\ 0, opts \\ []) do
     limit = Keyword.get(opts, :limit, @default_limit)
 
-    case verify_membership(actor_id, group_id) do
-      :ok ->
-        result = perform_catch_up(group_id, offset, limit)
-        emit_catch_up(result, group_id, offset)
-        result
-
-      {:error, _} = error ->
-        error
-    end
-  end
-
-  defp verify_membership(actor_id, group_id) do
-    case GroupCache.get_permissions(actor_id, group_id) do
-      nil -> {:error, :not_member}
-      _ -> :ok
+    if PermissionChecker.member_of_group?(group_id, actor_id) do
+      result = perform_catch_up(group_id, offset, limit)
+      emit_catch_up(result, group_id, offset)
+      result
+    else
+      {:error, :not_member}
     end
   end
 

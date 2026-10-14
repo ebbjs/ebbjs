@@ -489,6 +489,41 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     end
   end
 
+  describe "single-entity read authorization" do
+    test "returns the entity to a member of one of its groups" do
+      bootstrap_group("actor_1", "group_1", ["todo.create", "todo.read"])
+      entity_id = "todo_read_#{Nanoid.generate()}"
+      hlc = generate_hlc()
+
+      assert write_entity_in_group("actor_1", entity_id, "todo", "group_1", %{
+               "title" => %{"type" => "lww", "value" => "Readable", "hlc" => hlc}
+             }).status == 200
+
+      conn = get_entity(entity_id, "actor_1")
+      assert conn.status == 200
+      assert Jason.decode!(conn.resp_body)["data"]["fields"]["title"]["value"] == "Readable"
+    end
+
+    test "returns 404 to an authenticated non-member, indistinguishable from missing" do
+      bootstrap_group("actor_1", "group_1", ["todo.create", "todo.read"])
+      bootstrap_group("actor_2", "group_2", ["todo.create", "todo.read"])
+
+      entity_id = "todo_secret_#{Nanoid.generate()}"
+      hlc = generate_hlc()
+
+      write_entity_in_group("actor_1", entity_id, "todo", "group_1", %{
+        "title" => %{"type" => "lww", "value" => "Secret", "hlc" => hlc}
+      })
+
+      hidden = get_entity(entity_id, "actor_2")
+      missing = get_entity("todo_missing_#{Nanoid.generate()}", "actor_2")
+
+      assert hidden.status == 404
+      assert missing.status == 404
+      assert hidden.resp_body == missing.resp_body
+    end
+  end
+
   defp post_membership_action(action) do
     conn = post_actions(msgpack_encode!(%{"actions" => [action]}), "actor_1")
     assert conn.status == 200

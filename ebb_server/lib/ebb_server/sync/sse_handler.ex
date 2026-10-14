@@ -55,7 +55,7 @@ defmodule EbbServer.Sync.SSEHandler do
   - `:closed` from `write_stale_cursor_response/2` (the router also returns this).
   """
 
-  alias EbbServer.Storage.GroupCache
+  alias EbbServer.Storage.PermissionChecker
   alias EbbServer.Sync.{FanOutRouter, SSEConnection, SSEConnectionSupervisor}
 
   @stale_cursor_event ~S(event: control
@@ -66,19 +66,8 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
   @spec open_sse(Plug.Conn.t(), [String.t()], non_neg_integer(), String.t()) ::
           :ok | {:error, :not_member}
   def open_sse(conn, group_ids, cursor, actor_id) do
-    with :ok <- verify_membership(group_ids, actor_id) do
+    if PermissionChecker.member_of_all_groups?(group_ids, actor_id) do
       open_sse_connection(conn, group_ids, cursor, actor_id)
-    end
-  end
-
-  defp verify_membership(group_ids, actor_id) do
-    non_member_groups =
-      Enum.reject(group_ids, fn group_id ->
-        GroupCache.get_permissions(actor_id, group_id) != nil
-      end)
-
-    if non_member_groups == [] do
-      :ok
     else
       {:error, :not_member}
     end

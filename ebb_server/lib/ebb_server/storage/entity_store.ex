@@ -114,8 +114,10 @@ defmodule EbbServer.Storage.EntityStore do
   @doc """
   Fetches an entity by ID, reading from SQLite cache or materializing on demand.
 
-  The `actor_id` parameter is accepted for future access control but is not
-  used in Slice 1.
+  This read is **not** permission-filtered. `actor_id` is part of the
+  interface so read call sites stay uniform, but callers must authorize
+  first with `PermissionChecker.can_read?/3` and report a denial the
+  same as a missing entity (`:not_found`).
 
   Returns `{:ok, entity}`, `:not_found`, or `{:error, :materialization_failed}`.
   """

@@ -296,7 +296,7 @@
         {
           "get":
             {
-              "description": "Retrieves a single entity by its ID, materialized from the action log.",
+              "description": "Retrieves a single entity by its ID, materialized from the action log. Requires the actor to be a member of one of the entity's groups.",
               "operationId": "getEntity",
               "parameters":
                 [
@@ -305,13 +305,6 @@
                     "in": "path",
                     "name": "id",
                     "required": true,
-                    "schema": { "type": "string" },
-                  },
-                  {
-                    "description": "Actor ID override. Usually provided via x-ebb-actor-id header.",
-                    "in": "query",
-                    "name": "actor_id",
-                    "required": false,
                     "schema": { "type": "string" },
                   },
                 ],
@@ -355,7 +348,7 @@
                         },
                       "description": "Entity found",
                     },
-                  "400":
+                  "401":
                     {
                       "content":
                         {
@@ -379,7 +372,7 @@
                                 },
                             },
                         },
-                      "description": "Missing actor_id",
+                      "description": "Missing or invalid x-ebb-actor-id header",
                     },
                   "404":
                     {
@@ -405,7 +398,7 @@
                                 },
                             },
                         },
-                      "description": "Entity not found",
+                      "description": "Entity not found, or the actor is not a member of any of its groups",
                     },
                   "503":
                     {
