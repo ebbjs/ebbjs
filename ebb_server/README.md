@@ -21,7 +21,7 @@ mix dev
 watcher — restart with `mix dev` after editing anything under `lib/`
 or `config/`.
 
-From the repo root, `pnpm dev` runs `mix dev` plus the
+From the repo root, `pnpm dev:collab` runs `mix dev` plus the
 `collaborative-text-demo` Vite app in the same terminal pane.
 
 ## Code Quality

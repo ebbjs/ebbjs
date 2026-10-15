@@ -114,6 +114,6 @@ packages/
   codemirror/  # @ebbjs/codemirror — collaborative-text editor bridge
   www/         # Astro docs site (docs + devlog content under src/content/)
 ebb_server/    # Elixir sync server (RocksDB + SQLite + OTP)
-examples/      # Runnable demos (collaborative-text demo, client smoke test)
+examples/      # Runnable demos (issue tracker, collaborative-text demo, client smoke test)
 experiment/    # Proof-of-concept code (e.g., collaborative-text)
 ```

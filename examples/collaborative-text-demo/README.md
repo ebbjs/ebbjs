@@ -6,10 +6,10 @@ Two tabs editing the same document see each other's keystrokes in real time, wit
 
 ## Run it
 
-From the repo root, one command starts both processes in the same pane:
+From the repo root, one command starts the server and this demo in the same pane:
 
 ```bash
-pnpm dev
+pnpm dev:collab
 ```
 
 Or run them separately if you want isolated logs:
@@ -34,7 +34,7 @@ Type in one tab — the text appears in the other within ~100ms. Concurrent edit
 To open the demo from a second machine on your tailnet, expose the local vite server with `tailscale serve`. Tailscale terminates TLS using your node's magicDNS cert and serves the traffic as HTTP/2, so the browser multiplexes over one connection instead of hitting Chromium's per-origin HTTP/1.1 socket cap (which the SSE long-polls + bootstrap POSTs can exhaust — see [issue #105](https://github.com/ebbjs/ebbjs/issues/105)).
 
 ```bash
-# On the node running bandit + vite, after `pnpm dev` is up:
+# On the node running bandit + vite, after `pnpm dev:collab` is up:
 tailscale serve --https=8443 http://localhost:5173
 ```
 
@@ -48,7 +48,7 @@ Install Caddy by following the [official install instructions](https://caddyserv
 
 ```bash
 cd ebb_server && mix dev       # bandit on :4000
-pnpm dev                         # vite on :5173 via root pnpm dev
+pnpm dev:collab                  # vite on :5173
 caddy run --config Caddyfile     # Caddy on :8443, TLS terminates here
 ```
 

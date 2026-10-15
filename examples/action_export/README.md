@@ -29,7 +29,7 @@ documents the config, payload, and delivery semantics in full.
    mix dev
    ```
 
-   From the repo root, `pnpm dev` starts the same server plus the
+   From the repo root, `pnpm dev:collab` starts the same server plus the
    collaborative-text demo, whose first load seeds a group and a document.
    Any client write — that demo, an HTTP `POST /sync/actions`, another
    client — then shows up as an `[action_sink]` log line on the server:
