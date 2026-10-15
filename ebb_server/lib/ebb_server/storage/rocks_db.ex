@@ -29,7 +29,7 @@ defmodule EbbServer.Storage.RocksDB do
 
   ## Column families
 
-    default           - RocksDB default, unused
+    default           - RocksDB default; holds internal metadata (migration markers)
     cf_actions        - GSN (64-bit big-endian) -> action (ETF binary)
     cf_entity_actions - (entity_id, GSN) -> action_id binary
     cf_type_entities  - (type, 0x00, entity_id) -> <<>> (presence index)
@@ -116,6 +116,14 @@ defmodule EbbServer.Storage.RocksDB do
   @spec cf_group_actions(name()) :: cf_ref()
   def cf_group_actions(name \\ __MODULE__),
     do: :persistent_term.get({:ebb_cf_group_actions, name})
+
+  @doc """
+  The RocksDB default column family. Reserved for internal metadata:
+  it is never scanned, so a small key like a one-shot migration marker
+  costs nothing on the hot path and adds no column family to the schema.
+  """
+  @spec cf_default(name()) :: cf_ref()
+  def cf_default(name \\ __MODULE__), do: :persistent_term.get({:ebb_cf_default, name})
 
   # ---------------------------------------------------------------------------
   # Public API — key encoding / decoding
@@ -429,7 +437,7 @@ defmodule EbbServer.Storage.RocksDB do
     case :rocksdb.open(String.to_charlist(path), db_opts, @cf_descriptors) do
       {:ok, db_ref,
        [
-         _default_cf,
+         default_cf,
          cf_actions,
          cf_entity_actions,
          cf_type_entities,
@@ -438,6 +446,7 @@ defmodule EbbServer.Storage.RocksDB do
        ]} ->
         store_persistent_terms(
           db_ref,
+          default_cf,
           cf_actions,
           cf_entity_actions,
           cf_type_entities,
@@ -469,6 +478,7 @@ defmodule EbbServer.Storage.RocksDB do
 
   defp store_persistent_terms(
          db_ref,
+         default_cf,
          cf_actions,
          cf_entity_actions,
          cf_type_entities,
@@ -477,6 +487,7 @@ defmodule EbbServer.Storage.RocksDB do
          name
        ) do
     :persistent_term.put({:ebb_rocksdb_db, name}, db_ref)
+    :persistent_term.put({:ebb_cf_default, name}, default_cf)
     :persistent_term.put({:ebb_cf_actions, name}, cf_actions)
     :persistent_term.put({:ebb_cf_entity_actions, name}, cf_entity_actions)
     :persistent_term.put({:ebb_cf_type_entities, name}, cf_type_entities)
@@ -520,6 +531,7 @@ defmodule EbbServer.Storage.RocksDB do
     :persistent_term.erase({:ebb_cf_type_entities, name})
     :persistent_term.erase({:ebb_cf_action_dedup, name})
     :persistent_term.erase({:ebb_cf_group_actions, name})
+    :persistent_term.erase({:ebb_cf_default, name})
   end
 
   defp safe_close(nil), do: :ok

@@ -19,6 +19,7 @@ defmodule EbbServer.Telemetry do
   | `ebb.writer.actions_per_sec`              | `count`                               | —                                                   |
   | `ebb.writer.range_resolved`               | `count`                               | `gsn_start`, `gsn_end`, `reason`                    |
   | `ebb.writer.commit_failed`                | `count`                               | `gsn_start`, `gsn_end`, `reason`                    |
+  | `ebb.system_cache.populated`              | `duration` (native), `entity_types`, `group_members`, `entity_groups`, `relationships`, `backfilled` | `outcome` (`:ok` / `:error`), `reason` |
   | `ebb.watermark.lag`                       | `lag` (max GSN − committed watermark) | —                                                   |
   | `ebb.dirty_set.size`                      | `size`                                | —                                                   |
   | `ebb.entity_store.materialize_latency_ms` | `duration` (native)                   | `subject_id`, `subject_type`                        |
@@ -53,6 +54,16 @@ defmodule EbbServer.Telemetry do
   drained range (after system-row filtering) and `filtered` counts the Updates
   that filtering stripped; a permanently failing handler emits `failed` and
   leaves the cursor where it was.
+
+  `ebb.system_cache.populated` describes the startup cache rebuild. Counts are
+  the entities materialized into each cache plus the `cf_type_entities` keys
+  repaired by the one-time backfill migration (0 once the marker is written),
+  and `duration` is native. `outcome` is `:ok` on a clean rebuild and `:error`
+  when a phase raised; on failure the counts reached so far are still reported,
+  so a half-populated cache is observable even though the node refuses to start
+  serving. `reason` is the failure class — an exception module or the atom an
+  exit/throw carried — never the raised value, so metadata cannot carry entity
+  content.
 
   ## Conventions
 
