@@ -49,6 +49,55 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       assert entity_id in action_ids("group_1", "actor_1")
       assert entity_id in action_ids("group_2", "actor_1")
     end
+
+    test "rejects a content write that rides a membership write into another group" do
+      bootstrap_group("actor_1", "group_1", ["todo.create", "todo.read"])
+      bootstrap_group("actor_1", "group_2", ["todo.create", "todo.read"])
+
+      hlc = generate_hlc()
+      other_id = "todo_other_#{Nanoid.generate()}"
+      eg_other = "eg_#{Nanoid.generate()}"
+
+      # An existing entity in group_2, so the second membership put below
+      # authorizes on its own; the rejection has to come from the
+      # group-scope check.
+      seed = %{
+        "id" => "act_seed_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(other_id, hlc),
+          entity_group_put(eg_other, other_id, "group_2", hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = post_membership_action(seed)
+
+      leaked_id = "todo_leak_#{Nanoid.generate()}"
+      eg_leak = "eg_#{Nanoid.generate()}"
+      eg_other_2 = "eg_#{Nanoid.generate()}"
+
+      action = %{
+        "id" => "act_leak_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(leaked_id, hlc),
+          entity_group_put(eg_leak, leaked_id, "group_1", hlc),
+          entity_group_put(eg_other_2, other_id, "group_2", hlc)
+        ]
+      }
+
+      assert %{"rejected" => [rejection]} = post_membership_action(action)
+      assert rejection["reason"] == "group_mismatch"
+      assert rejection["id"] == action["id"]
+      assert rejection["details"] =~ "group_1"
+      assert rejection["details"] =~ "group_2"
+
+      Process.sleep(50)
+      refute leaked_id in action_ids("group_1", "actor_1")
+      refute leaked_id in action_ids("group_2", "actor_1")
+    end
   end
 
   describe "authorized write" do

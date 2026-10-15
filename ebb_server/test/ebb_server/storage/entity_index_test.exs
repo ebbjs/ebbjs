@@ -274,6 +274,70 @@ defmodule EbbServer.Storage.EntityIndexTest do
     end
   end
 
+  describe "fan_out_groups/2" do
+    test "prefers the wire group for a not-yet-cached membership row" do
+      _t = tables()
+
+      update = %{
+        subject_id: "eg_1",
+        subject_type: "entityGroup",
+        method: :put,
+        data: %{"fields" => %{"group_id" => %{"value" => "g_wire"}}}
+      }
+
+      assert EntityIndex.fan_out_preference(update) == {:wire, ["g_wire"]}
+      assert EntityIndex.fan_out_groups(update, []) == ["g_wire"]
+    end
+
+    test "resolves a membership row from the cache when the wire drops the group" do
+      t = tables()
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+
+      update = %{subject_id: "eg_1", subject_type: "entityGroup", method: :delete, data: nil}
+
+      assert EntityIndex.fan_out_preference(update) == {:by_id, "entityGroup"}
+      assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_1"]
+    end
+
+    test "resolves a relationship through its wire source" do
+      t = tables()
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+
+      update = %{
+        subject_id: "rel_1",
+        subject_type: "relationship",
+        method: :put,
+        data: %{"fields" => %{"source_id" => %{"value" => "todo_1"}}}
+      }
+
+      assert EntityIndex.fan_out_preference(update) == {:source, "todo_1"}
+      assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_1"]
+    end
+
+    test "falls back to the by-id edge's source on a relationship delete" do
+      t = tables()
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+      :ok = put_rel(t, link_rel("rel_1", "todo_1", "col_1"))
+
+      update = %{subject_id: "rel_1", subject_type: "relationship", method: :delete, data: nil}
+
+      assert EntityIndex.fan_out_preference(update) == {:by_id, "relationship"}
+      assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_1"]
+    end
+
+    test "unions a user entity's cached membership with intra-action membership" do
+      t = tables()
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+
+      update = %{subject_id: "todo_1", subject_type: "todo", method: :put, data: %{}}
+
+      assert EntityIndex.fan_out_preference(update) == {:by_id, "todo"}
+
+      assert EntityIndex.fan_out_groups(update, opts(t) ++ [intra_action: %{"todo_1" => ["g_2"]}])
+             |> Enum.sort() == ["g_1", "g_2"]
+    end
+  end
+
   describe "subject_type/2" do
     test "returns the indexed type for an entity" do
       t = tables()

@@ -514,12 +514,6 @@ defmodule EbbServer.Storage.Authorizer do
   defp permission_for(method), do: PermissionHelper.method_to_permission(Atom.to_string(method))
 
   defp ctx_to_opts(ctx) do
-    [
-      entity_groups: ctx.entity_groups_table,
-      entity_groups_by_id: ctx.entity_groups_by_id_table,
-      entity_types: ctx.entity_types_table,
-      relationships_by_id: ctx.relationships_by_id_table,
-      group_members_by_id: ctx.group_members_by_id_table
-    ]
+    AuthorizationContext.to_opts(ctx)
   end
 end

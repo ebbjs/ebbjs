@@ -42,7 +42,13 @@ defmodule EbbServer.Storage.EntityIndex do
   form drops the entity reference).
   """
 
-  alias EbbServer.Storage.{EntityGroupCache, EntityTypeCache, GroupCache, RelationshipCache}
+  alias EbbServer.Storage.{
+    EntityGroupCache,
+    EntityTypeCache,
+    Fields,
+    GroupCache,
+    RelationshipCache
+  }
 
   @typep subject_type :: String.t()
   @typep subject_id :: String.t()
@@ -211,6 +217,56 @@ defmodule EbbServer.Storage.EntityIndex do
   @spec relationship_groups(String.t() | nil, subject_id(), keyword()) :: [String.t()]
   def relationship_groups(nil, rel_id, opts), do: resolve_groups("relationship", rel_id, opts)
   def relationship_groups(source_id, _rel_id, opts), do: source_groups(source_id, opts)
+
+  @doc """
+  Classifies how an Update's fan-out group set is resolved.
+
+  The Writer's `cf_group_actions` index and the `PermissionChecker`
+  group-scope check both consume this decision, so the "wire value wins
+  for a not-yet-cached row" rule lives here once.
+
+  Returns `{:wire, group_ids}` when the Update carries the group on the
+  wire, `{:source, entity_id}` when its scope follows a relationship
+  source, and `{:by_id, subject_type}` when the subject has to be
+  resolved from the caches.
+  """
+  @spec fan_out_preference(map()) ::
+          {:wire, [String.t()]} | {:source, subject_id()} | {:by_id, subject_type()}
+  def fan_out_preference(update) do
+    case update.subject_type do
+      "relationship" ->
+        case Fields.get(update.data, "source_id") do
+          nil -> {:by_id, "relationship"}
+          source_id -> {:source, source_id}
+        end
+
+      type when type in ["entityGroup", "groupMember"] ->
+        case Fields.get(update.data, "group_id") do
+          nil -> {:by_id, type}
+          group_id -> {:wire, [group_id]}
+        end
+
+      type ->
+        {:by_id, type}
+    end
+  end
+
+  @doc """
+  Returns the group set an Update fans out to, before the Writer commits.
+
+  Resolves `fan_out_preference/1` against the caches unioned with the
+  Action's `:intra_action` membership. The brand-new `entityGroup` and
+  `groupMember` rows of the Action are not in the by-id caches yet, so
+  those Updates prefer the group on the wire.
+  """
+  @spec fan_out_groups(map(), keyword()) :: [String.t()]
+  def fan_out_groups(update, opts) do
+    case fan_out_preference(update) do
+      {:wire, group_ids} -> group_ids
+      {:source, source_id} -> source_groups(source_id, opts)
+      {:by_id, subject_type} -> resolve_groups(subject_type, update.subject_id, opts)
+    end
+  end
 
   defp entry_source_id(entry), do: entry[:source_id] || entry["source_id"]
   defp entry_group_id(entry), do: entry[:group_id] || entry["group_id"]
