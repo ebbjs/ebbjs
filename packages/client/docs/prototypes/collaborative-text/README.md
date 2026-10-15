@@ -109,7 +109,9 @@ interface SyncClient {
     fromGsn: number,
   ): Promise<{ actions: Action[]; nextOffset: number | null; upToDate: boolean }>;
 
-  /** GET /sync/live?groups=...&cursor=N. SSE stream; returns unsubscribe fn. */
+  /** GET /sync/live?groups=...&cursor=N. SSE stream; returns unsubscribe fn.
+   *  The cursor is inferred from `handshake()` / storage when omitted. */
+  subscribe(groupIds: GroupId[], onEvent: (event: SSEEvent) => void): () => void;
   subscribe(groupIds: GroupId[], fromGsn: number, onEvent: (event: SSEEvent) => void): () => void;
 
   /** POST /sync/actions. Submit a batch of actions. */
@@ -368,7 +370,7 @@ Five vertical slices, ordered by what unblocks what. Each slice ends with a runn
 
 1. `client.handshake()` → `{ actorId, groups[], cursors }`
 2. `client.catchUp(groupId, fromGsn)` → paginated `/sync/groups/:group_id?offset=N`
-3. `client.subscribe(groupIds, fromGsn, onEvent)` → SSE stream parsing
+3. `client.subscribe(groupIds, onEvent)` → SSE stream parsing (cursor inferred)
 4. Action receipt → `storage.actions.append(action)` → storage marks dirty
 5. `client.write(actions)` → `POST /sync/actions`
 6. Connection state machine (connecting → live → reconnecting → offline) with reconnect backoff

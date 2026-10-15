@@ -3,7 +3,62 @@ import { createClient } from "./client";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { makeHlc, type Action } from "@ebbjs/core";
 import type { SSEEvent } from "./types";
-import { callApplyAction, emptyCatchUpResponse } from "./test-utils";
+import { callApplyAction, emptyCatchUpResponse, jsonResponse, waitFor } from "./test-utils";
+
+const chunkEncoder = new TextEncoder();
+
+/** An SSE `presence` block; handleSSEEvent forwards it without storage work. */
+const presenceChunk = (actorId: string): string =>
+  `event: presence\ndata: ${JSON.stringify({
+    actor_id: actorId,
+    entity_id: "e1",
+    data: {},
+  })}\n\n`;
+
+/**
+ * A fetch mock whose live responses are open streams the test can push
+ * into, one per `subscribe` call.
+ */
+const controllableLiveFetch = (): {
+  fetchImpl: typeof fetch;
+  controllers: ReadableStreamDefaultController<Uint8Array>[];
+} => {
+  const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+  const fetchImpl = vi.fn(async (url: string) => {
+    if (typeof url === "string" && url.includes("/sync/groups/")) {
+      return emptyCatchUpResponse();
+    }
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controllers.push(controller);
+        },
+      }),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  }) as unknown as typeof fetch;
+  return { fetchImpl, controllers };
+};
+
+/** A locally-authored put the Outbox will try to post. */
+const localPut = (id: string): Action => {
+  const hlc = makeHlc(1711036800000);
+  return {
+    id,
+    actor_id: "a_bob",
+    hlc,
+    gsn: 0,
+    updates: [
+      {
+        id: `u_${id}`,
+        subject_id: "todo_1",
+        subject_type: "todo",
+        method: "put",
+        data: { fields: { title: { value: "parked", update_id: `u_${id}`, hlc } } },
+      },
+    ],
+  };
+};
 
 /**
  * SSE-driven subscribe test.
@@ -76,10 +131,47 @@ describe("SyncClient.subscribe (SSE)", () => {
     unsubscribe();
   });
 
-  it("rejects duplicate subscribe calls", () => {
+  it("replaces the active subscription instead of throwing", async () => {
+    const { fetchImpl, controllers } = controllableLiveFetch();
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_bob",
+      fetchImpl,
+    });
+
+    const firstEvents: SSEEvent[] = [];
+    const secondEvents: SSEEvent[] = [];
+    client.subscribe(["grp_1"], 0, (ev) => firstEvents.push(ev));
+    await waitFor(() => controllers.length === 1);
+    controllers[0].enqueue(chunkEncoder.encode(presenceChunk("a_first")));
+    await waitFor(() => firstEvents.length === 1);
+
+    const secondUnsubscribe = client.subscribe(["grp_1"], 0, (ev) => secondEvents.push(ev));
+    await waitFor(() => controllers.length === 2);
+
+    controllers[1].enqueue(chunkEncoder.encode(presenceChunk("a_second")));
+    await waitFor(() => secondEvents.length === 1);
+    expect(secondEvents).toHaveLength(1);
+
+    // The replacement owns the stream now; the stale callback stays silent.
+    controllers[0].enqueue(chunkEncoder.encode(presenceChunk("a_stale")));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(firstEvents).toHaveLength(1);
+
+    secondUnsubscribe();
+    client.close();
+  });
+
+  it("holds the flush gate across a replacement until the new catch-up lands", async () => {
+    const catchUpResolvers: Array<(response: Response) => void> = [];
+    const actionPosts: string[] = [];
     const fetchImpl = vi.fn(async (url: string) => {
       if (typeof url === "string" && url.includes("/sync/groups/")) {
-        return emptyCatchUpResponse();
+        return new Promise<Response>((resolve) => catchUpResolvers.push(resolve));
+      }
+      if (typeof url === "string" && url.includes("/sync/actions")) {
+        actionPosts.push(url);
+        return jsonResponse({ accepted: [] });
       }
       return new Response(new ReadableStream({ start() {} }), {
         status: 200,
@@ -92,8 +184,51 @@ describe("SyncClient.subscribe (SSE)", () => {
       actorId: "a_bob",
       fetchImpl,
     });
+
     client.subscribe(["grp_1"], 0, () => {});
-    expect(() => client.subscribe(["grp_1"], 0, () => {})).toThrow(/active subscription/);
+    await waitFor(() => catchUpResolvers.length === 1);
+
+    // A write during the held rebase parks in the Outbox; `write` reports the
+    // deferral rather than claiming success.
+    await expect(client.write([localPut("act_parked")])).rejects.toThrow(/flush held/);
+
+    // Replacing mid-rebase must not open the gate before the new sweep.
+    client.subscribe(["grp_1"], 0, () => {});
+    await waitFor(() => catchUpResolvers.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(actionPosts).toHaveLength(0);
+
+    for (const resolve of catchUpResolvers) resolve(emptyCatchUpResponse());
+    await waitFor(() => actionPosts.length === 1);
+
+    client.close();
+  });
+
+  it("a stale unsubscribe does not tear down the replacement subscription", async () => {
+    const { fetchImpl, controllers } = controllableLiveFetch();
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_bob",
+      fetchImpl,
+    });
+
+    const firstUnsubscribe = client.subscribe(["grp_1"], 0, () => {});
+    await waitFor(() => controllers.length === 1);
+
+    const secondEvents: SSEEvent[] = [];
+    const secondUnsubscribe = client.subscribe(["grp_1"], 0, (ev) => secondEvents.push(ev));
+    await waitFor(() => controllers.length === 2);
+    await waitFor(() => client.state === "live");
+
+    // The replaced subscription's unsubscribe must not touch the shared
+    // reconnect timer / flush gate / connection state.
+    firstUnsubscribe();
+    expect(client.state).toBe("live");
+
+    controllers[1].enqueue(chunkEncoder.encode(presenceChunk("a_after_stale")));
+    await waitFor(() => secondEvents.length === 1);
+
+    secondUnsubscribe();
     client.close();
   });
 

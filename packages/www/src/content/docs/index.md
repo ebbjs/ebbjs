@@ -109,12 +109,11 @@ const client = createClient({
 });
 
 const { groups } = await client.handshake();
-await client.catchUp(groups[0].id, groups[0].cursor);
 
-// Open the live stream; remote actions land in local storage.
+// Open the live stream; `subscribe` catches up from the cursors cached by
+// `handshake()` before streaming, so no explicit cursor is needed.
 client.subscribe(
   groups.map((group) => group.id),
-  groups[0].cursor,
   () => {},
 );
 
