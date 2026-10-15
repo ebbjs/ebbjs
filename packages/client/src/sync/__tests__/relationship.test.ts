@@ -162,7 +162,11 @@ describe("forwardMany", () => {
       "tag",
     );
     const rows = await qb;
-    expect(rows.map((r) => (r as { name: string }).name).sort()).toEqual(["a", "b", "c"]);
+    expect(rows.map((r) => (r as unknown as { name: string }).name).sort()).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
   });
 
   it("returns an empty list when the source is missing", async () => {
@@ -276,6 +280,6 @@ describe("reverse", () => {
       "todo",
     );
     const rows = await qb;
-    expect(rows.map((r) => (r as { title: string }).title)).toEqual(["Ship", "Other"]);
+    expect(rows.map((r) => (r as unknown as { title: string }).title)).toEqual(["Ship", "Other"]);
   });
 });

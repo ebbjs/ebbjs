@@ -1,8 +1,12 @@
 /**
  * Typed thenable QueryBuilder.
  *
- * `await qb` resolves to `readonly Static<TObject<ShapeFields<TFields>>>[]` after
+ * `await qb` resolves to `readonly ProjectedRow<TFields>[]` after
  * projecting each materialized entity to the schema's TypeBox shape.
+ * A projected row carries the shape's fields plus the entity's `id` —
+ * an addressing key, not envelope access. Raw wire access stays on
+ * `.toRaw()` (collections) and the `EntitySnapshot` passed to
+ * `subscribe` (single rows).
  * The chain mutators (`where` / `or` / `orderBy` / `limit`) are typed
  * against the field map: a field key narrows to `keyof TFields` and
  * its value to the field's TypeBox static type. A key that names a
@@ -91,12 +95,40 @@ export function projectEntity<TFields extends Record<string, TSchema>>(
   return out as Static<TObject<ShapeFields<TFields>>>;
 }
 
-/** Project every row in a list. Pure. */
+/**
+ * A materialized entity projected to the schema's shape, plus the
+ * entity's `id`. The id is the addressing key — `get(row.id)`,
+ * `update(row.id, ...)`, a React `key` — not a wire-envelope
+ * passthrough: `data` / `type` / HLC stamps stay reachable through
+ * `.toRaw()` or the `subscribe` snapshot. The id is `Omit`-ed out of
+ * the shape first, so the entity id wins over a field named `id` of
+ * any declared type.
+ */
+export type ProjectedRow<TFields extends Record<string, TSchema>> = Omit<
+  Static<TObject<ShapeFields<TFields>>>,
+  "id"
+> & {
+  readonly id: string;
+};
+
+/**
+ * Project a materialized entity to a {@link ProjectedRow}: the shape's
+ * fields plus the entity id. Pure; the id is injected last so it wins
+ * over a same-named projected field.
+ */
+export function projectRow<TFields extends Record<string, TSchema>>(
+  entity: Entity,
+  shape: TObject<TFields>,
+): ProjectedRow<TFields> {
+  return { ...projectEntity(entity, shape), id: entity.id };
+}
+
+/** Project every row in a list. Pure; each row carries the entity id. */
 export function projectRows<TFields extends Record<string, TSchema>>(
   rows: readonly Entity[],
   shape: TObject<TFields>,
-): readonly Static<TObject<ShapeFields<TFields>>>[] {
-  return rows.map((row) => projectEntity(row, shape));
+): readonly ProjectedRow<TFields>[] {
+  return rows.map((row) => projectRow(row, shape));
 }
 
 /**
@@ -233,13 +265,13 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
   /** Maximum number of rows. */
   limit(n: number): QueryBuilder<TFields>;
   /** First projected survivor, or `undefined` when the chain is empty. */
-  first(): Promise<Static<TObject<ShapeFields<TFields>>> | undefined>;
+  first(): Promise<ProjectedRow<TFields> | undefined>;
   /** Count of survivors after the chain runs. */
   count(): Promise<number>;
   /** `true` when at least one row survives the chain. */
   exists(): Promise<boolean>;
   /** Streaming iterator over projected survivors. */
-  [Symbol.asyncIterator](): AsyncIterableIterator<Static<TObject<ShapeFields<TFields>>>>;
+  [Symbol.asyncIterator](): AsyncIterableIterator<ProjectedRow<TFields>>;
   /** Materialize the untyped entities, skipping the projection. */
   toRaw(): Promise<readonly Entity[]>;
   /**
@@ -260,11 +292,9 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
    */
   subscribe(listener: () => void): () => void;
   /** Thenable — `await qb` resolves to the projected rows. */
-  then<TResult1 = readonly Static<TObject<ShapeFields<TFields>>>[], TResult2 = never>(
+  then<TResult1 = readonly ProjectedRow<TFields>[], TResult2 = never>(
     onfulfilled?:
-      | ((
-          value: readonly Static<TObject<ShapeFields<TFields>>>[],
-        ) => TResult1 | PromiseLike<TResult1>)
+      | ((value: readonly ProjectedRow<TFields>[]) => TResult1 | PromiseLike<TResult1>)
       | null,
     onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): PromiseLike<TResult1 | TResult2>;
@@ -336,7 +366,7 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
         const candidates = await loadCandidates();
         const survivors = await apply(candidates);
         const head = survivors[0];
-        return head === undefined ? undefined : projectEntity(head, shape);
+        return head === undefined ? undefined : projectRow(head, shape);
       },
       async count() {
         const candidates = await loadCandidates();
@@ -350,7 +380,7 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
         const iter = async function* () {
           const candidates = await loadCandidates();
           for (const row of await apply(candidates)) {
-            yield projectEntity(row, shape);
+            yield projectRow(row, shape);
           }
         };
         return iter();

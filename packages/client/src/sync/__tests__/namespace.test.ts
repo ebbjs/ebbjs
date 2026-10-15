@@ -92,6 +92,18 @@ describe("client.<entity>.query()", () => {
     expect(out.map((r) => r.title).sort()).toEqual(["a", "b"]);
   });
 
+  it("query rows carry the entity id", async () => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    await storage.entities.set(mkEntity("t1", "todo", { title: "a", completed: false }));
+    await storage.entities.set(mkEntity("t2", "todo", { title: "b", completed: true }));
+    const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
+    // Compile-time proof: the projected row exposes `id` with no cast.
+    const rows = await client.todo.query();
+    expect(rows.map((r) => r.id).sort()).toEqual(["t1", "t2"]);
+    expect(rows.map((r) => r.title).sort()).toEqual(["a", "b"]);
+  });
+
   it("rows are readonly Todo[] where Todo = Static<typeof schema.entities.todo.shape>", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
@@ -196,6 +208,48 @@ describe("client.<entity>.get(id)", () => {
     expect(row?.completed).toBe(false);
   });
 
+  it("carries the entity id", async () => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
+    const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
+    const row = await client.todo.get("t1");
+    expect(row?.id).toBe("t1");
+    // Compile-time proof: `row.id` narrows to `string` with no cast.
+    if (row !== null) {
+      const id: string = row.id;
+      expect(id).toBe("t1");
+    }
+  });
+
+  it("the entity id wins over a relationship accessor named `id`", async () => {
+    const idAccessorSchema = defineSchema({
+      entities: { todo, user },
+      relationships: {
+        todo_user_id: defineRelationship({
+          source: todo,
+          target: user,
+          as: "id",
+          sourceCardinality: "one",
+        }),
+      },
+      version: 1,
+    });
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: idAccessorSchema,
+    });
+    const row = await client.todo.get("t1");
+    // Compile-time proof: the row's `id` stays `string`, not the accessor's promise.
+    const entityId: string | undefined = row?.id;
+    expect(entityId).toBe("t1");
+  });
+
   it("returns null for an unknown id", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
@@ -273,10 +327,10 @@ describe("client.<entity>.get(id)", () => {
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
     const row = await client.todo.get("t1");
-    // The projection is the flat TypeBox shape — no `id`, no `data`,
-    // no `type`. Users wanting the wire envelope use
-    // `client.readLocalEntity(id)` instead.
-    expect((row as unknown as Record<string, unknown>)["id"]).toBeUndefined();
+    // `id` is the addressing key, not envelope access; the wire
+    // envelope itself (`data`, `type`) stays off the row. Users wanting
+    // it use `client.readLocalEntity(id)` instead.
+    expect(row?.id).toBe("t1");
     expect((row as unknown as Record<string, unknown>)["data"]).toBeUndefined();
     expect((row as unknown as Record<string, unknown>)["type"]).toBeUndefined();
   });

@@ -16,6 +16,7 @@ import {
   buildQueryBuilder,
   buildLazyQueryBuilder,
   projectEntity,
+  projectRow,
   projectRows,
 } from "../query-builder";
 
@@ -100,6 +101,67 @@ describe("projectEntity — map fields", () => {
     const entity = mkDoc({ value: null, update_id: "u" });
 
     expect(projectEntity(entity, doc)).toEqual({ content: null });
+  });
+});
+
+describe("projected rows carry the entity id", () => {
+  it("projectRow adds the entity id to the shape projection", () => {
+    const entity = mkEntity("t1", { title: "a", completed: false });
+    expect(projectRow(entity, todo.shape)).toEqual({
+      title: "a",
+      completed: false,
+      body: undefined,
+      id: "t1",
+    });
+  });
+
+  it("the injected id wins over a same-named projected field", () => {
+    const withIdField = defineEntity("withIdField", {
+      id: e.string(),
+      title: e.string(),
+    });
+    const entity = mkEntity("t1", { id: "field-value", title: "a" });
+    expect(projectRow(entity, withIdField.shape).id).toBe("t1");
+  });
+
+  it("the injected id wins over a non-string `id` field", () => {
+    const withNumberId = defineEntity("withNumberId", {
+      id: e.number(),
+      title: e.string(),
+    });
+    const entity = mkEntity("t1", { id: 42, title: "a" });
+    const row = projectRow(entity, withNumberId.shape);
+    // Compile-time proof: the row's `id` is `string`, not `number`.
+    const id: string = row.id;
+    expect(id).toBe("t1");
+  });
+
+  it("await qb rows carry the entity id", async () => {
+    const rows = [
+      mkEntity("1", { title: "a", completed: false }),
+      mkEntity("2", { title: "b", completed: true }),
+    ];
+    const out = await buildQueryBuilder(rows, todo.shape);
+    expect(out.map((r) => r.id)).toEqual(["1", "2"]);
+  });
+
+  it(".first() carries the entity id", async () => {
+    const rows = [
+      mkEntity("1", { title: "a", completed: false }),
+      mkEntity("2", { title: "b", completed: true }),
+    ];
+    const first = await buildQueryBuilder(rows, todo.shape).where("completed", true).first();
+    expect(first?.id).toBe("2");
+  });
+
+  it("async iterator rows carry the entity id", async () => {
+    const rows = [
+      mkEntity("1", { title: "a", completed: false }),
+      mkEntity("2", { title: "b", completed: true }),
+    ];
+    const ids: string[] = [];
+    for await (const row of buildQueryBuilder(rows, todo.shape)) ids.push(row.id);
+    expect(ids).toEqual(["1", "2"]);
   });
 });
 

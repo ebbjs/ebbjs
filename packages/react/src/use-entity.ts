@@ -1,10 +1,15 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react";
-import type { EntityRow, EntitySnapshot, EntityWithAccessors, TSchema } from "@ebbjs/client";
+import type { EntityRow, EntitySnapshot, TSchema } from "@ebbjs/client";
 
 /**
  * The value {@link useEntity} exposes: the row `client.<entity>.get(id)`
- * materializes — projected fields plus relationship accessors — without
- * the internal `subscribe` handle, which the hook owns.
+ * materializes — the entity `id`, projected fields, and relationship
+ * accessors — without the internal `subscribe` handle, which the hook
+ * owns.
+ *
+ * `id` is the row's addressing key (`update(row.id, ...)`), not a
+ * wire-envelope passthrough; the raw `EntitySnapshot` stays on the
+ * `subscribe` callback the hook consumes internally.
  *
  * The hook is `null` when `load` resolves `null`, and it flips to `null`
  * when a soft delete is observed while mounted. It cannot see a delete
@@ -15,7 +20,7 @@ import type { EntityRow, EntitySnapshot, EntityWithAccessors, TSchema } from "@e
 export type UseEntityResult<
   TFields extends Record<string, TSchema>,
   TAccessors extends object = Record<never, never>,
-> = EntityWithAccessors<TFields, TAccessors>;
+> = Omit<EntityRow<TFields, TAccessors>, "subscribe">;
 
 /** Reactive cell {@link useEntity} reads through `useSyncExternalStore`. */
 interface EntityStore<TFields extends Record<string, TSchema>, TAccessors extends object> {
@@ -82,7 +87,7 @@ function createEntityStore<TFields extends Record<string, TSchema>, TAccessors e
     row: EntityRow<TFields, TAccessors>,
   ): UseEntityResult<TFields, TAccessors> => {
     const { subscribe: _subscribe, ...data } = row;
-    // `EntityRow` is `EntityWithAccessors & { subscribe }`; TS can't prove
+    // `UseEntityResult` is `EntityRow` minus `subscribe`; TS can't prove
     // the rest-pattern drops exactly the intersection member.
     return data as UseEntityResult<TFields, TAccessors>;
   };
