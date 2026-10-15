@@ -49,8 +49,8 @@ function OpenTodos() {
   if (error) return <span>{error.message}</span>;
   return (
     <ul>
-      {data.map((row, i) => (
-        <li key={i}>{row.title}</li>
+      {data.map((row) => (
+        <li key={row.id}>{row.title}</li>
       ))}
     </ul>
   );

@@ -49,8 +49,10 @@ export {
 export {
   type QueryBuilder,
   type QueryContext,
+  type ProjectedRow,
   type PointerValue,
   projectEntity,
+  projectRow,
   projectRows,
   buildQueryBuilder,
   buildLazyQueryBuilder,

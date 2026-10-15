@@ -130,6 +130,14 @@ const { rejected } = await client.todo.create(
   { groups: groups.map((group) => group.id) },
 );
 
+// Projected query/get rows carry the entity `id` as an addressing
+// key, so a listed row can feed `get(row.id)` / `update(row.id, ...)`
+// without `toRaw()`.
+const [listed] = await client.todo.query().where("completed", false);
+if (listed !== undefined) {
+  await client.todo.update(listed.id, { completed: true });
+}
+
 // `toRaw()` exposes the wire envelope (including `id`).
 const [row] = await client.todo.query().where("completed", false).toRaw();
 if (row !== undefined) {

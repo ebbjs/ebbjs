@@ -46,6 +46,7 @@ import {
   normalizePointer,
   projectEntity,
   projectFieldValue,
+  projectRow,
   type LoadEntities,
   type PointerValue,
   type QueryBuilder,
@@ -232,6 +233,11 @@ export type EntitySnapshot<TFields extends Record<string, TSchema>> = EntitySnap
  * the runtime relationship accessors, and the per-entity reactive
  * `subscribe(cb)`.
  *
+ * `id` is the entity's addressing key, not a wire-envelope passthrough:
+ * `data` / `type` / HLC stamps stay off the row. The injected `id`
+ * always wins — over both a field named `id` and a relationship
+ * accessor named `id`.
+ *
  * `subscribe` fires an `EntitySnapshot<TFields>` on every
  * materialization of the row, and never on subscribe itself:
  * `get(id)` already materialized before the listener attaches.
@@ -242,7 +248,8 @@ export type EntitySnapshot<TFields extends Record<string, TSchema>> = EntitySnap
 export type EntityRow<
   TFields extends Record<string, TSchema>,
   TAccessors extends object = NoAccessors,
-> = EntityWithAccessors<TFields, TAccessors> & {
+> = Omit<EntityWithAccessors<TFields, TAccessors>, "id"> & {
+  readonly id: string;
   subscribe(cb: (snapshot: EntitySnapshot<TFields>) => void): () => void;
 };
 
@@ -720,11 +727,18 @@ export function createEntityNamespace<
       // alongside unknown ids. Callers don't distinguish — a missing
       // row and a wrong-type row are both "no row here".
       if (entity.type !== entityName) return null;
-      const projected = projectEntity(entity, shape);
       const accessors = buildRowAccessors(entityName, id, storage, registry, write);
       const subscribe = (cb: (snapshot: EntitySnapshot<TFields>) => void): (() => void) =>
         subscribeToEntity(storage, entityName, id, shape, cb);
-      return { ...projected, ...accessors, subscribe } as unknown as EntityRow<TFields, TAccessors>;
+      // Accessors spread last so a declared relationship shadows a
+      // same-named field; the entity id spreads after them so it wins
+      // over both.
+      return {
+        ...projectRow(entity, shape),
+        ...accessors,
+        id: entity.id,
+        subscribe,
+      } as unknown as EntityRow<TFields, TAccessors>;
     },
     subscribe(
       filter: QueryFilter<TFields>,

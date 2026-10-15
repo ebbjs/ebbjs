@@ -67,16 +67,19 @@ function renderWithClient(client: Client, ui: ReactNode) {
   return render(<EbbProvider client={client}>{ui}</EbbProvider>);
 }
 
-/** Renders the row's presence, title, and the built-in `groups` accessor. */
+/** Renders the row's presence, id, title, and the built-in `groups` accessor. */
 function TodoProbe({ id, onRender }: { id: string; onRender: () => void }) {
   const client = useClient<Schema>();
   const row = useEntity(() => client.todo.get(id), [id]);
   useEffect(() => {
     onRender();
   });
+  // Compile-time proof: the result exposes the entity id as `string | undefined`.
+  const rowId: string | undefined = row?.id;
   return (
     <div>
       <span data-testid="present">{String(row !== null)}</span>
+      <span data-testid="id">{rowId ?? ""}</span>
       {/* Compile-time proof: the projected field type flows through. */}
       <span data-testid="title">{row?.title ?? ""}</span>
       <span data-testid="accessor">{String(typeof row?.groups)}</span>
@@ -98,10 +101,12 @@ describe("useEntity", () => {
 
     renderWithClient(client, <TodoProbe id="todo_1" onRender={() => {}} />);
     expect(screen.getByTestId("present").textContent).toBe("false");
+    expect(screen.getByTestId("id").textContent).toBe("");
 
     await flush();
 
     expect(screen.getByTestId("present").textContent).toBe("true");
+    expect(screen.getByTestId("id").textContent).toBe("todo_1");
     expect(screen.getByTestId("title").textContent).toBe("Ship it");
   });
 

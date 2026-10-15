@@ -73,6 +73,7 @@ function TodoList({ completed, onRender }: { completed: boolean; onRender: () =>
       <span data-testid="loading">{String(loading)}</span>
       <span data-testid="error">{error === null ? "" : error.message}</span>
       {/* Compile-time proof: the projected field type flows through `data`. */}
+      <span data-testid="ids">{data.map((row) => row.id).join(",")}</span>
       <span data-testid="titles">{data.map((row) => row.title).join(",")}</span>
       <span data-testid="completed">{data.map((row) => String(row.completed)).join(",")}</span>
     </div>
@@ -99,6 +100,7 @@ describe("useQuery", () => {
     await flush();
 
     expect(screen.getByTestId("loading").textContent).toBe("false");
+    expect(screen.getByTestId("ids").textContent).toBe("todo_1");
     expect(screen.getByTestId("titles").textContent).toBe("Ship it");
     expect(screen.getByTestId("completed").textContent).toBe("false");
   });
