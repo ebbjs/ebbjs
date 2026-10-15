@@ -73,6 +73,18 @@ export const projectFieldValue = (field: FieldValue): unknown => {
 };
 
 /**
+ * Project a whole `data.fields` map through {@link projectFieldValue},
+ * key for key. Pure.
+ */
+export function projectFields(fields: Record<string, FieldValue>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, field] of Object.entries(fields)) {
+    out[key] = projectFieldValue(field);
+  }
+  return out;
+}
+
+/**
  * Map a single materialized entity onto the schema's TypeBox shape.
  * Pure: the entity is read-only; the projected row is a fresh object.
  *

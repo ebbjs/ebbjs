@@ -22,6 +22,26 @@ Three scripts:
   tests under `src/__tests__/integration/` against a live `ebb_server`.
   Not run by default.
 
+### Action-inspection helpers
+
+Action-level tests otherwise peel `update.data.fields[k].value` and filter
+Updates by subject by hand. `@ebbjs/client/testing` carries that projection:
+
+```ts
+import { fieldsOf, updatesOfType } from "@ebbjs/client/testing";
+
+expect(fieldsOf(action, "ws_alice")).toEqual({ name: "alice's Workspace" });
+expect(updatesOfType(action, "groupMember")).toHaveLength(1);
+```
+
+- `fieldsOf(action, subjectId)` — projected fields of the one Update
+  targeting `subjectId`; throws unless exactly one matches.
+- `onlyUpdate(action, subjectId)` — that Update.
+- `updatesOfType(action, subjectType)` — Updates matching a subject type.
+- `projectUpdate(update)` — one Update's `data.fields`, unwrapped; `{}` for
+  a `delete`.
+- `projectFieldValue(field)` — the underlying recursive leaf/map projection.
+
 ### Running integration tests locally
 
 1. Build the release once:

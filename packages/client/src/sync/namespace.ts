@@ -45,7 +45,7 @@ import {
   buildLazyQueryBuilder,
   normalizePointer,
   projectEntity,
-  projectFieldValue,
+  projectFields,
   projectRow,
   type LoadEntities,
   type PointerValue,
@@ -1098,7 +1098,7 @@ function buildDuplicateUpdate<TFields extends Record<string, TSchema>>(
 ): Update {
   const fields = input.source.data?.fields ?? {};
   if (input.validate !== false) {
-    const violations = validatePayload(shape, projectFieldValues(fields), entityName, false);
+    const violations = validatePayload(shape, projectFields(fields), entityName, false);
     if (violations.length > 0) {
       throw new EntityValidationError(violations);
     }
@@ -1111,15 +1111,6 @@ function buildDuplicateUpdate<TFields extends Record<string, TSchema>>(
     data: { fields: cloneFields(fields) },
   };
 }
-
-/** Project a wire field map to the plain values the schema validator checks. */
-const projectFieldValues = (fields: Record<string, FieldValue>): Record<string, unknown> => {
-  const out: Record<string, unknown> = {};
-  for (const [key, field] of Object.entries(fields)) {
-    out[key] = projectFieldValue(field);
-  }
-  return out;
-};
 
 /** Deep-clone a wire field value so the copy never aliases the source's objects. */
 const cloneValue = (value: unknown): unknown => {
