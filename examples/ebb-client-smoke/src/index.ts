@@ -119,7 +119,7 @@ async function main(): Promise<void> {
       resolveLiveEvent = resolve;
     });
 
-    const unsubscribe = client.subscribe([SMOKE_GROUP_ID], 0, (ev) => {
+    const unsubscribe = client.subscribe([SMOKE_GROUP_ID], (ev) => {
       events.push(ev.type);
       if (ev.type === "data") {
         log(`received SSE event: action id=${ev.action.id}`);

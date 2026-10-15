@@ -242,10 +242,11 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
         console.warn("[editor] server requested reconnect:", event.control);
       }
     };
-    let unsubscribe = client.subscribe(groupIds, 0, onEvent);
+    let unsubscribe = client.subscribe(groupIds, onEvent);
     reconnectRef.current = () => {
-      unsubscribe();
-      unsubscribe = client.subscribe(groupIds, 0, onEvent);
+      // A new subscribe replaces the previous stream, so reconnecting is
+      // just another call; the returned unsubscribe replaces the old one.
+      unsubscribe = client.subscribe(groupIds, onEvent);
     };
 
     // Periodic flush of pending actions to the server.

@@ -15,8 +15,9 @@
  * const client = createClient({ serverUrl, actorId });
  * const { groups } = await client.handshake();
  * // `subscribe` pulls the missed window for each group, runs the
- * // conflict sweep, and only then opens the live stream.
- * const unsubscribe = client.subscribe(groups.map(g => g.id), 0, (event) => {
+ * // conflict sweep, and only then opens the live stream. The cursor
+ * // is inferred from storage / `handshake()`.
+ * const unsubscribe = client.subscribe(groups.map(g => g.id), (event) => {
  *   if (event.type === "data") applyToLocalState(event.action);
  * });
  * ```
@@ -408,29 +409,52 @@ export class SyncClient implements PermissionQuery {
    * Data events are also appended to `storage.actions` so the storage
    * adapter stays in sync; callers that don't want this can pass a
    * different `storage` or use the raw event handler.
+   *
+   * Calling `subscribe` again replaces the active subscription: the
+   * previous stream and callback are torn down, and the previous
+   * `unsubscribe` becomes inert. Only the latest call's `unsubscribe`
+   * stops the stream.
+   *
+   * The two-argument form infers its resume point the way
+   * `catchUp(groupId)` does — the durable storage cursor, then the
+   * cursors cached by `handshake()`. `fromGsn` in the three-argument form
+   * is only a fallback for when nothing is cached.
    */
+  subscribe(groupIds: readonly string[], onEvent: (event: SSEEvent) => void): () => void;
   subscribe(
     groupIds: readonly string[],
     fromGsn: number,
     onEvent: (event: SSEEvent) => void,
+  ): () => void;
+  subscribe(
+    groupIds: readonly string[],
+    fromGsnOrOnEvent: number | ((event: SSEEvent) => void),
+    onEvent?: (event: SSEEvent) => void,
   ): () => void {
-    if (this.activeSub) {
-      throw new Error(
-        "subscribe: an active subscription already exists; call its unsubscribe first",
-      );
+    const isCallbackForm = typeof fromGsnOrOnEvent === "function";
+    const callback = isCallbackForm ? fromGsnOrOnEvent : onEvent;
+    if (typeof callback !== "function") {
+      throw new TypeError("subscribe: an event callback is required");
+    }
+    const fromGsn = isCallbackForm ? 0 : fromGsnOrOnEvent;
+
+    if (this.activeSub !== null) {
+      // The new call takes over the session. Hold the flush gate through
+      // the handover so a write parked by the old rebase cannot reach the
+      // wire before the new catch-up sweep (#309).
+      this.cancelSubscription(this.activeSub, true);
     }
 
     const sub: ActiveSubscription = {
       groupIds: [...groupIds],
-      onEvent,
+      onEvent: callback,
       cancelled: false,
       stream: null,
       fromGsn,
     };
     this.activeSub = sub;
 
-    // Transition to `connecting` unless we're already there or live
-    // (e.g., a second subscribe call while one is already streaming).
+    // Transition to `connecting` unless already there or live.
     const s = this.stateMachine.state;
     if (s !== "live" && s !== "connecting") {
       this.stateMachine.transition("connecting");
@@ -807,7 +831,7 @@ export class SyncClient implements PermissionQuery {
    *
    * ```ts
    * const doc = client.textDocument('doc_demo');
-   * client.subscribe(groupIds, cursor, (ev) => {
+   * client.subscribe(groupIds, (ev) => {
    *   if (ev.type === 'data') doc.applyActions([ev.action]);
    * });
    * ```
@@ -1263,12 +1287,20 @@ export class SyncClient implements PermissionQuery {
     return "wait";
   }
 
-  private cancelSubscription(sub: ActiveSubscription): void {
+  /**
+   * Stop a subscription. A stale `sub` — one already replaced — is inert:
+   * only the current active sub owns the shared reconnect timer, flush
+   * gate, and connection state.
+   *
+   * `preserveSession` leaves the flush gate and connection state for the
+   * replacement about to take over. Releasing the gate here would flush a
+   * write parked by the old rebase before the new catch-up sweep (#309).
+   */
+  private cancelSubscription(sub: ActiveSubscription, preserveSession = false): void {
     sub.cancelled = true;
     this.closeStream(sub);
-    if (sub === this.activeSub) {
-      this.activeSub = null;
-    }
+    if (sub !== this.activeSub) return;
+    this.activeSub = null;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -1278,6 +1310,7 @@ export class SyncClient implements PermissionQuery {
       this.reconnectTimerResolve = null;
       if (resolve) resolve();
     }
+    if (preserveSession) return;
     // A plain unsubscribe ends the connection lifecycle: no catch-up is
     // coming, so pending writes may flush again.
     this.flushScheduler.release();

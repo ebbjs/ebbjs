@@ -98,7 +98,7 @@ maybeDescribe("ebb client smoke (against running server)", () => {
     const received = new Promise<void>((r) => {
       resolve = r;
     });
-    const unsubscribe = client.subscribe([SMOKE_GROUP_ID], 0, (ev) => {
+    const unsubscribe = client.subscribe([SMOKE_GROUP_ID], (ev) => {
       if (ev.type === "data") {
         resolve();
       }
