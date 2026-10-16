@@ -68,16 +68,6 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
     }
   end
 
-  defp user_patch_update(id, subject_id) do
-    %{
-      "id" => id,
-      "subject_id" => subject_id,
-      "subject_type" => "todo",
-      "method" => "patch",
-      "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
-    }
-  end
-
   defp relationship_put_update(id, source_id, target_id) do
     %{
       "id" => id,

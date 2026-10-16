@@ -9,7 +9,7 @@ defmodule EbbServer.Sync.CatchUp do
   Action contributes to a group's stream only what belongs to it (#473).
   """
 
-  alias EbbServer.Storage.{PermissionChecker, RocksDB, WatermarkTracker}
+  alias EbbServer.Storage.{ActionScope, PermissionChecker, RocksDB, WatermarkTracker}
   alias EbbServer.Telemetry
 
   @default_limit 200
@@ -94,30 +94,14 @@ defmodule EbbServer.Sync.CatchUp do
     end
   end
 
-  # Deliver only the Updates whose own scope includes this group. An Action
-  # committed before per-Update scopes were persisted has no
-  # `"update_scopes"`; return it whole, as catch-up did before #473.
-  defp scope_action(%{"update_scopes" => scopes} = action, group_id) when is_list(scopes) do
-    updates = action["updates"] || []
-
-    if length(updates) == length(scopes) do
-      case scoped_updates(updates, scopes, group_id) do
-        [] -> nil
-        scoped -> Map.put(action, "updates", scoped)
-      end
-    else
-      action
+  # An Action with no Updates scoped to this group contributes nothing: the
+  # group's index entry implies at least one does, but a legacy or corrupt
+  # record could disagree, and pagination must not stall on it.
+  defp scope_action(action, group_id) do
+    case ActionScope.updates_for_group(action, group_id) do
+      [] -> nil
+      updates -> Map.put(action, "updates", updates)
     end
-  end
-
-  defp scope_action(action, _group_id), do: action
-
-  defp scoped_updates(updates, scopes, group_id) do
-    updates
-    |> Enum.zip(scopes)
-    |> Enum.flat_map(fn {update, scope} ->
-      if group_id in scope, do: [update], else: []
-    end)
   end
 
   defp parse_entries(entries) do

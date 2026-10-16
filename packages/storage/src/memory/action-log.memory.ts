@@ -49,9 +49,7 @@ export const createMemoryActionLog = (): ActionLog => {
 
   return {
     async append(action: Action): Promise<void> {
-      // Per-Update delivery (#473) can deliver one Action once per group it
-      // touches, each copy carrying only that group's Updates. Union them
-      // into the one record the id-keyed log holds.
+      // One Action can arrive once per group it touches (#473); merge them.
       const existing = state.actions.find((stored) => stored.id === action.id);
 
       const stored =

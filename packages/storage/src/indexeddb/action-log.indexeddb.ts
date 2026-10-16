@@ -20,9 +20,7 @@ import type { EbbDBSchema } from "./schema";
  * the IndexedDB action log is queried by entity-id, not by entity-type.
  *
  * Per-Update delivery (#473) can deliver one Action once per group it
- * touches, each copy carrying only that group's Updates. `append` unions
- * those copies into the one id-keyed record instead of letting the later
- * copy overwrite the earlier.
+ * touches; `append` merges the copies into the one id-keyed record.
  */
 const collectSubjectIds = (action: Action): readonly string[] => {
   const ids = new Set<string>();

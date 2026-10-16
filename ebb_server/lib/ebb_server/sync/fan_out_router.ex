@@ -78,6 +78,7 @@ defmodule EbbServer.Sync.FanOutRouter do
   use GenServer
 
   alias EbbServer.Storage.{
+    ActionScope,
     CacheTables,
     EntityIndex,
     Fields,
@@ -538,40 +539,13 @@ defmodule EbbServer.Sync.FanOutRouter do
         :error -> resolve_group_ids(action, resolve_opts)
       end
 
-    scopes = update_scopes(action, resolve_opts)
-
     Enum.flat_map(group_ids, fn group_id ->
-      case scope_updates(action["updates"] || [], scopes, group_id) do
+      case ActionScope.updates_for_group(action, group_id) do
         [] -> []
         updates -> [{group_id, Map.put(action, "updates", updates)}]
       end
     end)
   end
-
-  # The Writer persists one group list per Update, index-aligned with
-  # `"updates"`. An Action committed before #473 carries none; resolve
-  # each Update against the caches instead, which is the pre-#473
-  # whole-Action behavior applied per group.
-  defp update_scopes(%{"update_scopes" => scopes}, _opts) when is_list(scopes), do: scopes
-
-  defp update_scopes(action, opts) do
-    updates = action["updates"] || []
-    opts = Keyword.put(opts, :intra_action, PermissionHelper.build_intra_action_context(updates))
-    Enum.map(updates, &resolve_update_group_ids(&1, opts))
-  end
-
-  # Updates whose own scope includes `group_id`, in their original order.
-  # A scope list that does not align with the Updates is a corrupt record;
-  # deliver the whole Action rather than silently dropping Updates.
-  defp scope_updates(updates, scopes, group_id) when length(updates) == length(scopes) do
-    updates
-    |> Enum.zip(scopes)
-    |> Enum.flat_map(fn {update, scope} ->
-      if group_id in scope, do: [update], else: []
-    end)
-  end
-
-  defp scope_updates(updates, _scopes, _group_id), do: updates
 
   defp push_to_group(group_id, actions, committed_at) do
     case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do
