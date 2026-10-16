@@ -74,12 +74,10 @@ defmodule EbbServer.Sync.GroupServer do
 
   @impl true
   def handle_cast({:push_actions, actions, committed_at}, state) do
-    # An Action's payload is identical for every subscriber of this group, so
-    # encode each one once and forward the binary verbatim.
-    payloads = Enum.map(actions, &SSEConnection.encode_action/1)
-
-    for subscriber <- state.subscribers, payload <- payloads do
-      SSEConnection.push_encoded_action(subscriber, payload)
+    for subscriber <- state.subscribers do
+      for action <- actions do
+        SSEConnection.push_action(subscriber, action)
+      end
     end
 
     # One sample per batch per group. A recovered range has no commit
