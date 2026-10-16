@@ -1129,44 +1129,17 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp resolve_update_groups(update, resolve_opts, memo) do
-    case update.subject_type do
-      "relationship" ->
-        resolve_relationship_groups(update, resolve_opts, memo)
+    case EntityIndex.fan_out_preference(update) do
+      {:wire, group_ids} ->
+        {group_ids, memo}
 
-      type when type in ["entityGroup", "groupMember"] ->
-        wire_group_or_resolve(update, type, resolve_opts, memo)
-
-      type ->
-        resolve_memo_groups(memo, type, update.subject_id, resolve_opts)
-    end
-  end
-
-  # A relationship resolves through its source: the wire `source_id` when
-  # the Update carries it, otherwise the by-id edge's source (the delete
-  # wire form drops the data envelope).
-  defp resolve_relationship_groups(update, resolve_opts, memo) do
-    case Fields.get(update.data, "source_id") do
-      nil ->
-        resolve_memo(memo, {"relationship", update.subject_id}, resolve_opts, fn ->
-          EntityIndex.resolve_groups_cached("relationship", update.subject_id, resolve_opts)
-        end)
-
-      source_id ->
+      {:source, source_id} ->
         resolve_memo(memo, {:source, source_id}, resolve_opts, fn ->
           {EntityIndex.source_groups_cached(source_id, resolve_opts), source_id}
         end)
-    end
-  end
 
-  # The by-id cache is empty at write_batch time for a brand-new
-  # membership row, so prefer the group on the wire.
-  defp wire_group_or_resolve(update, type, resolve_opts, memo) do
-    case Fields.get(update.data, "group_id") do
-      nil ->
-        resolve_memo_groups(memo, type, update.subject_id, resolve_opts)
-
-      group_id ->
-        {[group_id], memo}
+      {:by_id, subject_type} ->
+        resolve_memo_groups(memo, subject_type, update.subject_id, resolve_opts)
     end
   end
 

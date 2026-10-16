@@ -59,4 +59,22 @@ defmodule EbbServer.Storage.AuthorizationContext do
       Application.get_env(:ebb_server, key) ||
       default
   end
+
+  @doc """
+  Returns the cache-backed lookup options for this context.
+
+  The single source for the entity/group resolution keyword list shared by
+  `Authorizer`, `EntityIndex`, and `PermissionChecker`, so a new table
+  cannot be added to one call site and forgotten at another.
+  """
+  @spec to_opts(t()) :: keyword()
+  def to_opts(%__MODULE__{} = ctx) do
+    [
+      entity_groups: ctx.entity_groups_table,
+      entity_groups_by_id: ctx.entity_groups_by_id_table,
+      entity_types: ctx.entity_types_table,
+      relationships_by_id: ctx.relationships_by_id_table,
+      group_members_by_id: ctx.group_members_by_id_table
+    ]
+  end
 end
