@@ -3,49 +3,54 @@
  * created in one call and emit exactly one wire-level Action.
  *
  * The callback form receives one draft namespace per schema entity.
- * `draft.create(input)` allocates the entity's id eagerly, records a
- * pending write, and returns a handle carrying the id plus the
- * materialized field values. A value that is itself a handle (or a
+ * `draft.create(input)` allocates the entity's id eagerly, resolves the
+ * input into wire fields, relationship pointers, and derived bodies,
+ * records an operation call, and returns a handle carrying the id plus
+ * the materialized field values. A value that is itself a handle (or a
  * string id / anything with a string `.id`) under a registered
- * relationship key is substituted with the target's id and emitted as
- * a wire `Relationship` Update — no hand-written relationship
- * boilerplate.
+ * relationship key is substituted with the target's id.
  *
- * Every write collected during the callback is flattened into one
- * `createAction`-shaped batch and submitted through the client's write
- * path, so the server sees a single Action and commits it atomically.
+ * Every operation collected during the callback is flattened into one
+ * batch by the committer, so the server sees a single Action and
+ * commits it atomically. The batch runs the same {@link createEntity}
+ * operation the imperative `client.<entity>.create(...)` delegates to,
+ * so the two surfaces cannot drift.
  *
- * The schema-bound `defineAction` form (#232) and the
- * permission-coherence check (#233) layer on top of this resolver;
- * this module stays independent of both.
+ * The schema-bound `defineAction` form (#232) layers on top of this
+ * resolver; this module stays independent of it.
  *
  * ### Permission coherence (#233)
  *
  * #127 makes an Action fully visible or fully invisible to a client, so
- * every write in one call must carry the identical group set. The check
- * runs over the collected writes before submission, and the server's
- * `rejected[]` becomes the same typed failure. A write's group set comes
- * from the required per-create `groups` option (#244), which emits the
- * `entityGroup` rows the check reads.
- *
- * Membership-mutation Actions (`addToGroup` / `removeFromGroup` /
- * `setGroups` on the entity namespace) are exempt: a membership delta
- * spans the union of the pre- and post-Action group sets by
- * construction, which is the correct visibility scope. Those methods
- * do not route through `client.atomic`, so this check never sees them.
+ * every content write in one call must resolve to the identical group
+ * set. The committer enforces the rule over the collected operations
+ * before submission, so an incoherent batch never reaches the outbox.
  */
 
-import { generateId, type FieldValue, type Update } from "@ebbjs/core";
+import { generateId, type FieldValue } from "@ebbjs/core";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { EntityDef, ShapeFields } from "../schema/entity";
-import type { EntityRegistry } from "../schema/entity-registry";
-import { EntityValidationError, validatePayload } from "../schema/entity-registry";
+import { EntityValidationError } from "../schema/entity-registry";
 import type { Schema } from "../schema/schema";
-import { buildEntityGroupUpdates, buildRelationshipUpdate, normalizePointer } from "./relationship";
-import { isCollaborativeText } from "../fields/collaborative-text/schema";
-import { resolveGroupIds, wrapFields, type EntityFields, type GroupRef } from "./namespace";
-import type { Rejection, WriteResponse } from "./types";
+import { normalizePointer } from "./query-builder";
+import { resolveGroupIds, type EntityFields, type GroupRef } from "./namespace";
+import { commit, type CommitCapability } from "./committer";
+import {
+  AtomicActionError,
+  call,
+  createEntity,
+  isAtomicHandle,
+  markHandle,
+  type OperationCall,
+  type OperationHandle,
+  type ResolvedPointer,
+} from "./operations";
+
+export { AtomicActionError, type AtomicRejection } from "./operations";
+
+/** The atomic runtime's write capability — the committer's, by another name. */
+export type AtomicWriteCapability = CommitCapability;
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
 
@@ -60,46 +65,6 @@ export class AtomicResolutionError extends Error {
     this.name = "AtomicResolutionError";
   }
 }
-
-/**
- * One refused Update. Extends the wire `Rejection` with the per-Update
- * `subjectType` the client-side coherence check can attribute, which
- * the server's per-Action report does not carry today.
- */
-export type AtomicRejection = Rejection & { readonly subjectType?: string };
-
-/**
- * Aggregated refusal of an atomic call: a client-side permission
- * coherence failure, or the server's `rejected[]` for the submitted
- * Action. Mirrors `EntityValidationError` — same `Error` shape, named
- * subclass, structured readonly reasons, message formatted from them.
- *
- * Thrown before submission for a coherence failure, so no Action
- * reaches the outbox.
- */
-export class AtomicActionError extends Error {
-  readonly rejections: readonly AtomicRejection[];
-
-  constructor(rejections: readonly AtomicRejection[]) {
-    super(formatRejections(rejections));
-    this.name = "AtomicActionError";
-    this.rejections = rejections;
-  }
-}
-
-const formatRejections = (rejections: readonly AtomicRejection[]): string => {
-  if (rejections.length === 0) return "AtomicActionError";
-  const lines = rejections.map((rejection) => `  - ${describeRejection(rejection)}`);
-  return `AtomicActionError: ${rejections.length} rejected update(s)\n${lines.join("\n")}`;
-};
-
-const describeRejection = (rejection: AtomicRejection): string => {
-  const subject =
-    rejection.subjectType === undefined ? rejection.id : `${rejection.subjectType} ${rejection.id}`;
-  const details =
-    rejection.details === undefined || rejection.details === null ? "" : ` (${rejection.details})`;
-  return `${subject}: ${rejection.reason}${details}`;
-};
 
 /** Handle returned by a draft namespace's `create`. Carries the id eagerly. */
 export type CreatedEntity<TFields extends Record<string, TSchema>> = Static<
@@ -145,52 +110,6 @@ export type AtomicClient<S> =
     ? { atomic<T>(build: (drafts: AtomicDrafts<S>) => T): Promise<T> }
     : // eslint-disable-next-line @typescript-eslint/ban-types
       {};
-
-/**
- * Write-side capability the runtime consumes. The client supplies it
- * so the resolver stays free of the `client → atomic → client` cyclic
- * reference.
- */
-export interface AtomicWriteCapability {
-  readonly registry: EntityRegistry;
-  /** Mint a fresh local HLC for one entity Update's field envelope. */
-  freshHlc(): string;
-  /** Mint a fresh Update id. */
-  generateUpdateId(): string;
-  /** Wrap the batch of Updates in one Action and submit it. */
-  submitRelationshipUpdates(updates: readonly Update[]): Promise<WriteResponse>;
-}
-
-interface PendingPointer {
-  readonly as: string;
-  readonly type: string;
-  readonly targetId: string;
-}
-
-interface PendingWrite {
-  readonly entity: string;
-  readonly id: string;
-  readonly fields: Record<string, unknown>;
-  readonly pointers: readonly PendingPointer[];
-  readonly groups: readonly string[];
-}
-
-const ATOMIC_HANDLE = Symbol.for("@ebbjs/atomic-handle");
-
-interface AtomicHandle {
-  readonly id: string;
-  readonly [ATOMIC_HANDLE]: true;
-}
-
-const isAtomicHandle = (value: unknown): value is AtomicHandle =>
-  typeof value === "object" &&
-  value !== null &&
-  (value as Record<symbol, unknown>)[ATOMIC_HANDLE] === true;
-
-const markHandle = (handle: Record<string, unknown>): AtomicHandle => {
-  Object.defineProperty(handle, ATOMIC_HANDLE, { value: true, enumerable: false });
-  return handle as unknown as AtomicHandle;
-};
 
 /**
  * Resolve a field value into wire-safe data: atomic handles collapse
@@ -245,36 +164,53 @@ const resolvePointerTargets = (
 const declaresField = (def: AnyEntityDef, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(def.shape.properties ?? {}, key);
 
+/**
+ * Resolve one draft `create` into an operation call. The entity id is
+ * minted here (the callback needs it before commit); field references
+ * collapse to ids; derived collaborative-text bodies route to the same
+ * document-expansion path the imperative `create` uses.
+ */
 const createDraftNamespace = (
   entityName: string,
   def: AnyEntityDef,
-  cap: AtomicWriteCapability,
-  writes: PendingWrite[],
+  cap: CommitCapability,
+  calls: OperationCall[],
 ): AtomicDraftNamespace<Record<string, TSchema>> => ({
   create(input, opts) {
     const id = generateId("e");
     const source = (input ?? {}) as Record<string, unknown>;
     const fields: Record<string, unknown> = {};
-    const pointers: PendingPointer[] = [];
+    const pointers: ResolvedPointer[] = [];
+    const bodies: Record<string, string> = {};
     const handle: Record<string, unknown> = { id };
     const groups = resolveGroupIds(opts?.groups, entityName);
+    const derived = def.derived as Record<string, unknown> | undefined;
 
     for (const [key, value] of Object.entries(source)) {
+      if (derived !== undefined && Object.prototype.hasOwnProperty.call(derived, key)) {
+        if (value === undefined || value === null) {
+          handle[key] = null;
+          continue;
+        }
+        if (typeof value !== "string") {
+          throw new EntityValidationError([
+            {
+              entityName,
+              field: key,
+              message: `create: derived field "${key}" must be a string body`,
+            },
+          ]);
+        }
+        handle[key] = value;
+        if (value.length > 0) bodies[key] = value;
+        continue;
+      }
       const rel = cap.registry.getRelationship(entityName, key);
       if (rel === undefined) {
         const resolved = resolveReferences(value);
         fields[key] = resolved;
         handle[key] = resolved;
         continue;
-      }
-      if (isCollaborativeText(rel)) {
-        // The body expands into a document entity plus a map-field write;
-        // `atomic`'s flat field batching cannot express the map yet. Fail
-        // loudly rather than resolving the text as a pointer id.
-        throw new AtomicResolutionError(
-          `atomic: derived field "${entityName}.${key}" is not supported; ` +
-            `use client.${entityName}.create({ ${key}: "…" }) instead`,
-        );
       }
       const targets = resolvePointerTargets(value, entityName, key);
       if (rel.sourceCardinality === "many") {
@@ -300,142 +236,55 @@ const createDraftNamespace = (
       }
     }
 
-    const violations = validatePayload(def.shape, fields, entityName, false);
-    if (violations.length > 0) {
-      throw new EntityValidationError(violations);
-    }
-
-    writes.push({ entity: entityName, id, fields, pointers, groups });
-    return markHandle(handle) as unknown as CreatedEntity<Record<string, TSchema>>;
+    const marked = markHandle(handle) as OperationHandle;
+    calls.push(
+      call(createEntity, {
+        entity: entityName,
+        id,
+        fields,
+        pointers,
+        bodies,
+        groups,
+        handle: marked,
+      }),
+    );
+    return marked as unknown as CreatedEntity<Record<string, TSchema>>;
   },
 });
 
 const buildDrafts = (
   entityDefs: Record<string, AnyEntityDef>,
-  cap: AtomicWriteCapability,
-  writes: PendingWrite[],
+  cap: CommitCapability,
+  calls: OperationCall[],
 ): Record<string, AtomicDraftNamespace<Record<string, TSchema>>> => {
   const out: Record<string, AtomicDraftNamespace<Record<string, TSchema>>> = {};
   for (const [name, def] of Object.entries(entityDefs)) {
     // The map key is the draft handle's property name; the entity's own
     // name is what the wire carries.
-    out[name] = createDraftNamespace(def.name, def, cap, writes);
+    out[name] = createDraftNamespace(def.name, def, cap, calls);
   }
   return out;
 };
 
 /**
- * Flatten the collected writes into the wire Update list: one entity
- * `put` per created entity, one `Relationship` `put` per resolved
- * pointer, and one `entityGroup` `put` per group. The caller wraps
- * the list in one Action.
- */
-const buildUpdates = (writes: readonly PendingWrite[], cap: AtomicWriteCapability): Update[] => {
-  const entityUpdates: Update[] = [];
-  const relationshipUpdates: Update[] = [];
-  for (const write of writes) {
-    const updateId = cap.generateUpdateId();
-    const hlc = cap.freshHlc();
-    entityUpdates.push({
-      id: updateId,
-      subject_id: write.id,
-      subject_type: write.entity,
-      method: "put",
-      data: { fields: wrapFields(write.fields, updateId, hlc) },
-    });
-    for (const pointer of write.pointers) {
-      relationshipUpdates.push(
-        buildRelationshipUpdate({
-          relationshipId: generateId("rel"),
-          sourceId: write.id,
-          targetId: pointer.targetId,
-          field: pointer.as,
-          type: pointer.type,
-          updateId: cap.generateUpdateId(),
-        }),
-      );
-    }
-    relationshipUpdates.push(
-      ...buildEntityGroupUpdates(write.id, write.groups, () => cap.generateUpdateId()),
-    );
-  }
-  return [...entityUpdates, ...relationshipUpdates];
-};
-
-/**
- * Group set of one write, read from the required per-create `groups`
- * option (#244) that also emitted its `entityGroup` rows. Sorted and
- * de-duplicated so the coherence comparison is order-independent.
- */
-const membershipGroupsOf = (write: PendingWrite): readonly string[] =>
-  [...new Set(write.groups)].sort();
-
-const sameGroups = (a: readonly string[], b: readonly string[]): boolean =>
-  a.length === b.length && a.every((group, index) => group === b[index]);
-
-const formatGroups = (groups: readonly string[]): string => `[${groups.join(", ")}]`;
-
-/**
- * #127's strict permission-coherence rule: every write in one Action
- * must have the identical group set, because an Action is fully
- * visible or fully invisible to a client. Refusing here keeps an
- * incoherent batch out of the outbox entirely.
- *
- * The Action's group set is the union of every write's groups, which
- * is exactly the common set when the rule holds — order-independent,
- * so a declaration and the equivalent callback refuse the same writes.
- * Every write whose set differs from that union is reported, naming
- * the subject and both group sets.
- *
- * Returns rejections instead of throwing so the caller owns the
- * failure type. A write set with no groups at all is coherent by this
- * rule; "an entity must belong to at least one group" is a separate
- * precondition (#245).
- */
-const permissionCoherenceRejections = (
-  writes: readonly PendingWrite[],
-): readonly AtomicRejection[] => {
-  const grouped = writes.map((write) => ({ write, groups: membershipGroupsOf(write) }));
-  const actionGroups = [...new Set(grouped.flatMap(({ groups }) => groups))].sort();
-  return grouped.flatMap(({ write, groups }) =>
-    sameGroups(groups, actionGroups)
-      ? []
-      : [
-          {
-            id: write.id,
-            subjectType: write.entity,
-            reason: "group_mismatch",
-            details: `belongs to group(s) ${formatGroups(groups)}; the Action writes to ${formatGroups(actionGroups)}`,
-          },
-        ],
-  );
-};
-
-/**
  * Build the `client.atomic` runtime for a schema. Each call gets a
- * fresh collector, runs the callback to gather writes, flattens them
- * into one Action, and submits once before resolving to the callback's
- * return value.
+ * fresh collector, runs the callback to gather operations, commits them
+ * as one Action, and resolves to the callback's return value. The
+ * committer enforces coherence; a server rejection of the submitted
+ * Action becomes an {@link AtomicActionError}.
  */
 export function createAtomicRuntime<S extends Schema<Record<string, AnyEntityDef>, unknown>>(
   schema: S,
-  cap: AtomicWriteCapability,
+  cap: CommitCapability,
 ): <T>(build: (drafts: AtomicDrafts<S>) => T) => Promise<T> {
   const entityDefs = schema.entities as Record<string, AnyEntityDef>;
   return async function atomic<T>(build: (drafts: AtomicDrafts<S>) => T): Promise<T> {
-    const writes: PendingWrite[] = [];
-    const drafts = buildDrafts(entityDefs, cap, writes);
+    const calls: OperationCall[] = [];
+    const drafts = buildDrafts(entityDefs, cap, calls);
     const result = build(drafts as AtomicDrafts<S>);
-    const rejections = permissionCoherenceRejections(writes);
-    if (rejections.length > 0) {
-      throw new AtomicActionError(rejections);
-    }
-    const updates = buildUpdates(writes, cap);
-    if (updates.length > 0) {
-      const response = await cap.submitRelationshipUpdates(updates);
-      if (response.rejected.length > 0) {
-        throw new AtomicActionError(response.rejected);
-      }
+    const committed = await commit(calls, cap);
+    if (committed.response.rejected.length > 0) {
+      throw new AtomicActionError(committed.response.rejected);
     }
     return result;
   };

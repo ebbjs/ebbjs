@@ -243,14 +243,32 @@ describe("create() with a derived body", () => {
 });
 
 describe("atomic", () => {
-  it("refuses a derived body with a clear error instead of resolving it as a pointer", async () => {
-    const { client } = harness(schema);
+  it("expands a derived body through the same create operation as the imperative path", async () => {
+    const { client, written } = harness(schema);
     await client.handshake();
-    await expect(
-      client.atomic(({ blogPost }) =>
-        blogPost.create({ title: "T", body: "x" }, { groups: ["g_1"] }),
-      ),
-    ).rejects.toThrow(/derived field/);
+
+    const created = await client.atomic(({ blogPost }) =>
+      blogPost.create({ title: "T", body: "x" }, { groups: ["g_1"] }),
+    );
+
+    expect(created.id).toMatch(/^e_/);
+    expect(written).toHaveLength(1);
+    const updates = written[0]!.updates;
+    const byType = (type: string): typeof updates => updates.filter((u) => u.subject_type === type);
+    const docName = generatedDocEntityName("blog_post", "body");
+
+    expect(byType("blog_post")).toHaveLength(1);
+    expect(byType(docName)).toHaveLength(1);
+    expect(byType("relationship")).toHaveLength(1);
+    expect(byType("entityGroup")).toHaveLength(2);
+
+    const docUpdate = byType(docName)[0]!;
+    const content = (
+      docUpdate.data as unknown as { fields: { content: { map: Record<string, unknown> } } }
+    ).fields.content;
+    const runIds = Object.keys(content.map);
+    expect(runIds).toHaveLength(1);
+    expect((content.map[runIds[0]!] as { value: { text: string } }).value.text).toBe("x");
   });
 });
 
