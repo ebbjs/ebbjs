@@ -5,8 +5,8 @@
  */
 
 import { createClient, type SyncClient } from "@ebbjs/client";
-import type { Action } from "@ebbjs/core";
-import { addMember, buildDemoSeed, DEMO_GROUP_ID, deriveSeedIds, seed } from "./seed";
+import type { Action } from "@ebbjs/core/seed";
+import { buildAddMemberSeed, buildDemoSeed, DEMO_GROUP_ID, deriveSeedIds } from "./seed";
 
 /**
  * Shape of `window.__EBB_DEMO_TEST_CONFIG__` — opt-in test seams read
@@ -100,8 +100,9 @@ export interface BootstrapResult {
  * Connect to the server, handshake, ensure the demo group exists, and
  * open the SSE subscription for the demo's groups.
  *
- * The function swallows expected "already exists" errors from `seed()`
- * and proceeds. If anything else fails, it throws.
+ * Seeding is best-effort: `client.seed(...)` tolerates idempotent
+ * re-seeds of an existing group, and a failed seed is logged so the
+ * handshake below can report whether the actor ended up with any groups.
  */
 export async function bootstrap(opts: {
   serverUrl: string;
@@ -121,37 +122,34 @@ export async function bootstrap(opts: {
   const fallbackGroupId = seedGroupId ?? DEMO_GROUP_ID;
   const { docId } = deriveSeedIds(fallbackGroupId);
 
+  // 1. Seed (best-effort) as the dedicated `demo-seeder` actor. One
+  // short-lived client submits both the group/doc fixture and this
+  // actor's membership row, then closes. `client.seed(...)` applies the
+  // shared tolerance policy, so re-seeding an existing group is a no-op.
+  let didSeed = false;
+  if (ensureSeeded) {
+    const seeder = createClient({ serverUrl, actorId: "demo-seeder" });
+    try {
+      await seeder.seed(buildDemoSeed(seedGroupId));
+      didSeed = true;
+      // Without this membership row the handshake returns zero groups
+      // and the demo would have nothing to subscribe to.
+      await seeder.seed(buildAddMemberSeed(actorId, seedGroupId));
+    } catch (err) {
+      // Already-seeded is fine; log anything else and let the handshake
+      // below decide whether the demo is usable.
+      // eslint-disable-next-line no-console
+      console.warn("[bootstrap] seed warning:", err);
+    } finally {
+      seeder.close();
+    }
+  }
+
+  // 2. Handshake.
   const client = createClient({
     serverUrl,
     actorId,
   });
-
-  // 1. Seed (best-effort).
-  let didSeed = false;
-  if (ensureSeeded) {
-    try {
-      await seed(serverUrl, "demo-seeder", buildDemoSeed(seedGroupId));
-      didSeed = true;
-    } catch (err) {
-      // Already-seeded is fine; re-throw anything else.
-      if (!(err instanceof Error && /already/i.test(err.message))) {
-        // eslint-disable-next-line no-console
-        console.warn("[bootstrap] seed warning:", err);
-      }
-    }
-  }
-
-  // 2. Add this actor as a member of the demo group (idempotent).
-  // Without this the handshake would return zero groups and the demo
-  // would have nothing to subscribe to.
-  try {
-    await addMember(serverUrl, actorId, seedGroupId);
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn("[bootstrap] addMember warning:", err);
-  }
-
-  // 3. Handshake.
   const { groups } = await client.handshake();
   const groupIds = groups.map((g) => g.id);
 
@@ -161,7 +159,7 @@ export async function bootstrap(opts: {
     );
   }
 
-  // 4. Catch up — replay every committed action since GSN 0 so the
+  // 3. Catch up — replay every committed action since GSN 0 so the
   // demo doc starts with the current state. Without this, a fresh
   // tab (even for an actor that was already connected in another
   // tab) would start empty and only catch up on the next SSE event.

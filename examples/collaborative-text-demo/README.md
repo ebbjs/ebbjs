@@ -57,7 +57,7 @@ Open `https://localhost:8443/?actor=drew` and `?actor=alice` in two tabs (differ
 ## How it works
 
 1. The `?actor=` URL param sets the actor id (bypass auth mode).
-2. On first load the demo calls `seed()` to bootstrap a `grp_demo` group + `doc_demo` document via `POST /sync/actions`.
+2. On first load a short-lived `demo-seeder` client calls `client.seed()` to bootstrap the `grp_demo` group + `doc_demo` document and add the connecting actor as a member, all through the shared seed path (one Action via `POST /sync/actions`).
 3. A `SyncClient` opens an SSE subscription for the demo's groups.
 4. A CodeMirror 6 view is wired to a `TextDocument` via [`@ebbjs/codemirror`](../../packages/codemirror/).
 5. Local edits self-flush through the client's write path; the editor's 250ms timer remains as a retry safety net.
