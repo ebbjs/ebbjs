@@ -1,38 +1,32 @@
 import { describe, expect, it } from "vitest";
-import type { Action, Update } from "@ebbjs/core";
+import type { EntitySeed, SeedData } from "@ebbjs/core/seed";
 import {
+  SAMPLE_ISSUE_ID,
   SEED_PERMISSIONS,
   SEEDER_ACTOR_ID,
   SHARED_GROUP_ID,
+  SHARED_MEMBER_ID,
   SHARED_WORKSPACE_ID,
+  SHARED_WORKSPACE_MEMBERSHIP_ID,
   SHARED_WORKSPACE_SLUG,
-  SAMPLE_ISSUE_ID,
-  buildActorSeedAction,
-  buildSharedSeedAction,
+  SAMPLE_ISSUE_MEMBERSHIP_ID,
+  buildActorSeed,
+  buildSharedSeed,
   deriveActorSeedIds,
   workspaceEntityId,
 } from "../seed";
 
-/** Updates in the Action with the given subject type. */
-const updatesOfType = (action: Action, type: string): readonly Update[] =>
-  action.updates.filter((update) => update.subject_type === type);
-
-/** Flat field map of a `put`/`patch` Update; system rows are leaf-only. */
-const fieldsOf = (update: Update): Record<string, unknown> => {
-  const data = update.data;
-  if (data === null || !("fields" in data)) return {};
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(data.fields)) {
-    out[key] = "value" in value ? value.value : value;
-  }
-  return out;
+/** Project a seeded entity's plain field values for assertions. */
+const entityFields = (seed: SeedData, id: string): Record<string, unknown> => {
+  const row = seed.entities.find((entry) => entry.id === id);
+  if (row === undefined) throw new Error(`no seeded entity ${id}`);
+  return { ...row.patches[0]!.fields };
 };
 
-/** The single Update for `subjectId`, or a loud failure. */
-const only = (action: Action, subjectId: string): Update => {
-  const matches = action.updates.filter((update) => update.subject_id === subjectId);
-  expect(matches).toHaveLength(1);
-  return matches[0];
+const entity = (seed: SeedData, id: string): EntitySeed => {
+  const row = seed.entities.find((entry) => entry.id === id);
+  if (row === undefined) throw new Error(`no seeded entity ${id}`);
+  return row;
 };
 
 describe("deriveActorSeedIds", () => {
@@ -60,36 +54,33 @@ describe("workspaceEntityId", () => {
   });
 });
 
-describe("buildActorSeedAction", () => {
+describe("buildActorSeed", () => {
   const actorId = "alice";
-  const action = buildActorSeedAction(actorId);
   const ids = deriveActorSeedIds(actorId);
+  const seed = buildActorSeed(actorId);
 
-  it("is attributed to the actor and creates exactly one group", () => {
-    expect(action.actor_id).toBe(actorId);
-    const groups = updatesOfType(action, "group");
-    expect(groups).toHaveLength(1);
-    expect(fieldsOf(groups[0])).toEqual({ name: "alice's Workspace" });
+  it("creates the actor's group and own membership with the seed permissions", () => {
+    expect(seed.groups).toEqual([{ id: ids.groupId, name: "alice's Workspace" }]);
+    expect(seed.groupMembers).toEqual([
+      {
+        id: ids.memberId,
+        actorId,
+        groupId: ids.groupId,
+        permissions: [...SEED_PERMISSIONS],
+      },
+    ]);
   });
 
-  it("creates the actor's own groupMember with the seed permissions", () => {
-    const members = updatesOfType(action, "groupMember");
-    expect(members).toHaveLength(1);
-    expect(members[0].subject_id).toBe(ids.memberId);
-    expect(fieldsOf(members[0])).toEqual({
-      actor_id: actorId,
-      group_id: ids.groupId,
-      permissions: [...SEED_PERMISSIONS],
-    });
-  });
-
-  it("creates the workspace and profile entities", () => {
-    expect(fieldsOf(only(action, ids.workspaceId))).toEqual({
+  it("creates the workspace and profile rows as the schema's entity types", () => {
+    expect(entity(seed, ids.workspaceId).type).toBe("workspace");
+    expect(entityFields(seed, ids.workspaceId)).toEqual({
       name: "alice's Workspace",
       slug: "alice",
       description: "Personal workspace for alice",
     });
-    expect(fieldsOf(only(action, ids.profileId))).toEqual({
+
+    expect(entity(seed, ids.profileId).type).toBe("profile");
+    expect(entityFields(seed, ids.profileId)).toEqual({
       actor_id: "alice",
       display_name: "alice",
       avatar_url: "",
@@ -97,64 +88,55 @@ describe("buildActorSeedAction", () => {
   });
 
   it("files the workspace and profile into the actor's group", () => {
-    const memberships = updatesOfType(action, "entityGroup");
-    expect(memberships).toHaveLength(2);
-    expect(fieldsOf(only(action, ids.workspaceMembershipId))).toEqual({
-      entity_id: ids.workspaceId,
-      group_id: ids.groupId,
-    });
-    expect(fieldsOf(only(action, ids.profileMembershipId))).toEqual({
-      entity_id: ids.profileId,
-      group_id: ids.groupId,
-    });
+    expect(seed.entityGroups).toEqual([
+      {
+        id: ids.workspaceMembershipId,
+        entityId: ids.workspaceId,
+        groupId: ids.groupId,
+      },
+      {
+        id: ids.profileMembershipId,
+        entityId: ids.profileId,
+        groupId: ids.groupId,
+      },
+    ]);
   });
 
   it("stores no group_id field on a user entity", () => {
-    const userEntityIds = new Set([ids.workspaceId, ids.profileId]);
-    const userUpdates = action.updates.filter((update) => userEntityIds.has(update.subject_id));
-    expect(userUpdates).toHaveLength(2);
-    for (const update of userUpdates) {
-      expect(Object.keys(fieldsOf(update))).not.toContain("group_id");
-    }
+    expect(Object.keys(entityFields(seed, ids.workspaceId))).not.toContain("group_id");
+    expect(Object.keys(entityFields(seed, ids.profileId))).not.toContain("group_id");
   });
 
-  it("mints fresh update ids and HLCs on every build", () => {
-    const second = buildActorSeedAction(actorId);
-    expect(second.id).not.toBe(action.id);
-    expect(second.updates.map((update) => update.id)).not.toEqual(
-      action.updates.map((update) => update.id),
-    );
+  it("stores each entity field as a plain value", () => {
+    expect(entity(seed, ids.workspaceId).patches[0]!.fields["name"]).toBe("alice's Workspace");
   });
 });
 
-describe("buildSharedSeedAction", () => {
-  const action = buildSharedSeedAction();
-
-  it("is attributed to the service seeder", () => {
-    expect(action.actor_id).toBe(SEEDER_ACTOR_ID);
-  });
+describe("buildSharedSeed", () => {
+  const seed = buildSharedSeed();
 
   it("creates the shared group and the seeder's membership", () => {
-    const groups = updatesOfType(action, "group");
-    expect(groups).toHaveLength(1);
-    expect(groups[0].subject_id).toBe(SHARED_GROUP_ID);
-
-    const members = updatesOfType(action, "groupMember");
-    expect(members).toHaveLength(1);
-    expect(fieldsOf(members[0])).toEqual({
-      actor_id: SEEDER_ACTOR_ID,
-      group_id: SHARED_GROUP_ID,
-      permissions: [...SEED_PERMISSIONS],
-    });
+    expect(seed.groups).toEqual([{ id: SHARED_GROUP_ID, name: "Shared Workspace" }]);
+    expect(seed.groupMembers).toEqual([
+      {
+        id: SHARED_MEMBER_ID,
+        actorId: SEEDER_ACTOR_ID,
+        groupId: SHARED_GROUP_ID,
+        permissions: [...SEED_PERMISSIONS],
+      },
+    ]);
   });
 
   it("creates the shared workspace with a sample issue", () => {
-    expect(fieldsOf(only(action, SHARED_WORKSPACE_ID))).toEqual({
+    expect(entity(seed, SHARED_WORKSPACE_ID).type).toBe("workspace");
+    expect(entityFields(seed, SHARED_WORKSPACE_ID)).toEqual({
       name: "Shared Workspace",
       slug: SHARED_WORKSPACE_SLUG,
       description: "Issues shared with every member.",
     });
-    expect(fieldsOf(only(action, SAMPLE_ISSUE_ID))).toEqual({
+
+    expect(entity(seed, SAMPLE_ISSUE_ID).type).toBe("issue");
+    expect(entityFields(seed, SAMPLE_ISSUE_ID)).toEqual({
       title: "Welcome to ebb",
       status: "todo",
       priority: "medium",
@@ -163,26 +145,22 @@ describe("buildSharedSeedAction", () => {
   });
 
   it("files the shared workspace and sample issue into the shared group", () => {
-    const memberships = updatesOfType(action, "entityGroup");
-    expect(memberships).toHaveLength(2);
-    expect(
-      memberships
-        .map((update) => fieldsOf(update))
-        .sort((a, b) => String(a.entity_id).localeCompare(String(b.entity_id))),
-    ).toEqual([
-      { entity_id: SAMPLE_ISSUE_ID, group_id: SHARED_GROUP_ID },
-      { entity_id: SHARED_WORKSPACE_ID, group_id: SHARED_GROUP_ID },
+    expect(seed.entityGroups).toEqual([
+      {
+        id: SHARED_WORKSPACE_MEMBERSHIP_ID,
+        entityId: SHARED_WORKSPACE_ID,
+        groupId: SHARED_GROUP_ID,
+      },
+      {
+        id: SAMPLE_ISSUE_MEMBERSHIP_ID,
+        entityId: SAMPLE_ISSUE_ID,
+        groupId: SHARED_GROUP_ID,
+      },
     ]);
   });
 
   it("stores no group_id field on a user entity", () => {
-    const userUpdates = action.updates.filter(
-      (update) =>
-        update.subject_id === SHARED_WORKSPACE_ID || update.subject_id === SAMPLE_ISSUE_ID,
-    );
-    expect(userUpdates).toHaveLength(2);
-    for (const update of userUpdates) {
-      expect(Object.keys(fieldsOf(update))).not.toContain("group_id");
-    }
+    expect(Object.keys(entityFields(seed, SHARED_WORKSPACE_ID))).not.toContain("group_id");
+    expect(Object.keys(entityFields(seed, SAMPLE_ISSUE_ID))).not.toContain("group_id");
   });
 });

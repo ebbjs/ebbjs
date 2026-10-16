@@ -1,13 +1,14 @@
 /**
- * Bootstrap seed for the issue-tracker demo.
+ * Typed seed data for the issue-tracker demo.
  *
- * Two Actions, each self-contained so the server's group bootstrap
- * exemption authorizes it:
+ * Two `SeedData` values, each submitted as its own Action through
+ * `client.seed()`:
  *
  * 1. The signed-in actor's personal workspace (`grp_<actorId>`) with
  *    their own `groupMember` row, a `workspace` and a `profile`, and one
  *    `entityGroup` per user entity. Attributed to the actor, so the
- *    exemption sees the actor bootstrapping their own group.
+ *    server's group-bootstrap exemption sees the actor bootstrapping
+ *    their own group.
  * 2. A shared workspace seeded by the dedicated service actor
  *    `demo-seeder` (the invite/service-account pattern from #126),
  *    carrying a sample issue. The signed-in actor is deliberately not
@@ -19,19 +20,11 @@
  * committed group is authorized by `group.create` in that group, not by
  * the bootstrap exemption).
  *
- * Browser-safe by construction: this module imports only `@ebbjs/core`
- * (pure fetch + msgpack) and never `@ebbjs/server`.
+ * Browser-safe by construction: this module imports only
+ * `@ebbjs/core/seed`.
  */
 
-import {
-  createAction,
-  createClock,
-  encodeSync,
-  localEvent,
-  type Action,
-  type FieldValue,
-  type UpdateInput,
-} from "@ebbjs/core";
+import type { EntitySeed, SeedData } from "@ebbjs/core/seed";
 import { issue, profile, workspace } from "./schema";
 
 /** Service actor that owns the shared workspace fixtures. */
@@ -94,172 +87,79 @@ export function workspaceEntityId(slug: string): string {
   return slug === SHARED_WORKSPACE_SLUG ? SHARED_WORKSPACE_ID : `ws_${slug}`;
 }
 
-type Clock = ReturnType<typeof createClock>;
-
-const leaf = (clock: Clock, value: unknown): FieldValue => ({
-  value,
-  update_id: "seed_update",
-  hlc: localEvent(clock),
+/** One user entity with every field carried as a plain seed value. */
+const entity = (id: string, type: string, fields: Record<string, unknown>): EntitySeed => ({
+  id,
+  type,
+  patches: [{ fields }],
 });
 
-const put = (
-  subjectId: string,
-  subjectType: string,
-  values: Record<string, unknown>,
-  clock: Clock,
-): UpdateInput => {
-  const fields: Record<string, FieldValue> = {};
-  for (const [key, value] of Object.entries(values)) {
-    fields[key] = leaf(clock, value);
-  }
-  return {
-    subject_id: subjectId,
-    subject_type: subjectType,
-    method: "put",
-    data: { fields },
-  };
-};
-
-function buildActorSeedUpdates(actorId: string, clock: Clock): UpdateInput[] {
+/** The actor's personal workspace, profile, and own group membership. */
+export function buildActorSeed(actorId: string): SeedData {
   const ids = deriveActorSeedIds(actorId);
   const workspaceName = `${actorId}'s Workspace`;
 
-  return [
-    put(ids.groupId, "group", { name: workspaceName }, clock),
-    put(
-      ids.memberId,
-      "groupMember",
-      { actor_id: actorId, group_id: ids.groupId, permissions: [...SEED_PERMISSIONS] },
-      clock,
-    ),
-    put(
-      ids.workspaceId,
-      workspace.name,
-      { name: workspaceName, slug: actorId, description: `Personal workspace for ${actorId}` },
-      clock,
-    ),
-    put(
-      ids.workspaceMembershipId,
-      "entityGroup",
-      { entity_id: ids.workspaceId, group_id: ids.groupId },
-      clock,
-    ),
-    put(
-      ids.profileId,
-      profile.name,
-      { actor_id: actorId, display_name: actorId, avatar_url: "" },
-      clock,
-    ),
-    put(
-      ids.profileMembershipId,
-      "entityGroup",
-      { entity_id: ids.profileId, group_id: ids.groupId },
-      clock,
-    ),
-  ];
-}
-
-/** One Action creating the actor's personal workspace, profile, and membership. */
-export function buildActorSeedAction(actorId: string): Action {
-  const clock = createClock();
-  return createAction({ actorId, updates: buildActorSeedUpdates(actorId, clock), clock }).action;
-}
-
-function buildSharedSeedUpdates(clock: Clock): UpdateInput[] {
-  return [
-    put(SHARED_GROUP_ID, "group", { name: "Shared Workspace" }, clock),
-    put(
-      SHARED_MEMBER_ID,
-      "groupMember",
+  return {
+    groups: [{ id: ids.groupId, name: workspaceName }],
+    groupMembers: [
       {
-        actor_id: SEEDER_ACTOR_ID,
-        group_id: SHARED_GROUP_ID,
+        id: ids.memberId,
+        actorId,
+        groupId: ids.groupId,
         permissions: [...SEED_PERMISSIONS],
       },
-      clock,
-    ),
-    put(
-      SHARED_WORKSPACE_ID,
-      workspace.name,
+    ],
+    entities: [
+      entity(ids.workspaceId, workspace.name, {
+        name: workspaceName,
+        slug: actorId,
+        description: `Personal workspace for ${actorId}`,
+      }),
+      entity(ids.profileId, profile.name, {
+        actor_id: actorId,
+        display_name: actorId,
+        avatar_url: "",
+      }),
+    ],
+    entityGroups: [
+      { id: ids.workspaceMembershipId, entityId: ids.workspaceId, groupId: ids.groupId },
+      { id: ids.profileMembershipId, entityId: ids.profileId, groupId: ids.groupId },
+    ],
+  };
+}
+
+/** The shared workspace fixtures, attributed to `demo-seeder`. */
+export function buildSharedSeed(): SeedData {
+  return {
+    groups: [{ id: SHARED_GROUP_ID, name: "Shared Workspace" }],
+    groupMembers: [
       {
+        id: SHARED_MEMBER_ID,
+        actorId: SEEDER_ACTOR_ID,
+        groupId: SHARED_GROUP_ID,
+        permissions: [...SEED_PERMISSIONS],
+      },
+    ],
+    entities: [
+      entity(SHARED_WORKSPACE_ID, workspace.name, {
         name: "Shared Workspace",
         slug: SHARED_WORKSPACE_SLUG,
         description: "Issues shared with every member.",
+      }),
+      entity(SAMPLE_ISSUE_ID, issue.name, {
+        title: "Welcome to ebb",
+        status: "todo",
+        priority: "medium",
+        assignee_id: null,
+      }),
+    ],
+    entityGroups: [
+      {
+        id: SHARED_WORKSPACE_MEMBERSHIP_ID,
+        entityId: SHARED_WORKSPACE_ID,
+        groupId: SHARED_GROUP_ID,
       },
-      clock,
-    ),
-    put(
-      SHARED_WORKSPACE_MEMBERSHIP_ID,
-      "entityGroup",
-      { entity_id: SHARED_WORKSPACE_ID, group_id: SHARED_GROUP_ID },
-      clock,
-    ),
-    put(
-      SAMPLE_ISSUE_ID,
-      issue.name,
-      { title: "Welcome to ebb", status: "todo", priority: "medium", assignee_id: null },
-      clock,
-    ),
-    put(
-      SAMPLE_ISSUE_MEMBERSHIP_ID,
-      "entityGroup",
-      { entity_id: SAMPLE_ISSUE_ID, group_id: SHARED_GROUP_ID },
-      clock,
-    ),
-  ];
-}
-
-/** One Action creating the shared workspace fixtures, attributed to the seeder. */
-export function buildSharedSeedAction(): Action {
-  const clock = createClock();
-  return createAction({
-    actorId: SEEDER_ACTOR_ID,
-    updates: buildSharedSeedUpdates(clock),
-    clock,
-  }).action;
-}
-
-/** Rejection reasons a re-seed may safely ignore. */
-const isTolerable = (reason: unknown): boolean =>
-  reason === "already_exists" || reason === "duplicate_action";
-
-/**
- * Tolerate `already_exists` / `duplicate_action` rejections so a reload
- * re-seeds without failing; any other rejection is fatal.
- */
-async function postAction(serverUrl: string, actorId: string, action: Action): Promise<void> {
-  const body = encodeSync({ actions: [action] });
-  const response = await fetch(`${serverUrl}/sync/actions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/msgpack",
-      "x-ebb-actor-id": actorId,
-    },
-    body: body as BodyInit,
-  });
-
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`seed failed: ${response.status} ${text}`);
-  }
-
-  let rejected: readonly { reason?: unknown }[] = [];
-  try {
-    const parsed = JSON.parse(text) as { rejected?: { reason?: unknown }[] };
-    rejected = parsed.rejected ?? [];
-  } catch {
-    // A non-JSON body on a 2xx is not a rejection.
-    return;
-  }
-
-  const fatal = rejected.filter((entry) => !isTolerable(entry.reason));
-  if (fatal.length > 0) {
-    throw new Error(`seed rejected: ${JSON.stringify(fatal)}`);
-  }
-}
-
-/** Seed the actor's personal workspace, then the shared fixtures. */
-export async function seed(serverUrl: string, actorId: string): Promise<void> {
-  await postAction(serverUrl, actorId, buildActorSeedAction(actorId));
-  await postAction(serverUrl, SEEDER_ACTOR_ID, buildSharedSeedAction());
+      { id: SAMPLE_ISSUE_MEMBERSHIP_ID, entityId: SAMPLE_ISSUE_ID, groupId: SHARED_GROUP_ID },
+    ],
+  };
 }
