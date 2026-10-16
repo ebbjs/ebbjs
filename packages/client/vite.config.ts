@@ -19,7 +19,6 @@ export default defineConfig({
         "src/test-helpers/**",
         "src/integration.test.ts",
         "src/example-usage.ts",
-        "src/testing/**",
       ],
       outDir: "dist",
       rollupTypes: false,

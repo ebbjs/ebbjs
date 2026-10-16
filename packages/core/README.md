@@ -13,9 +13,10 @@ generation.
 | `src/msgpack/`    | `encodeSync/1`, `decodeSync/1` (MessagePack wire format).                                             |
 | `src/id/`         | `nanoid(prefix)` and friends — generates `act_…`, `upd_…`, etc.                                       |
 | `src/action/`     | `createAction/1` — composes Update list into an `Action` with the right HLC + ID bookkeeping.         |
+| `src/seed/`       | `@ebbjs/core/seed`: `buildSeedAction` — turns plain `SeedData` into one wire `Action` (browser-safe). |
 | `src/validate.ts` | Runtime shape checks for inbound action/update payloads.                                              |
 
-105 tests across the package (`pnpm --filter @ebbjs/core test`).
+135 tests across the package (`pnpm --filter @ebbjs/core test`).
 
 ## Usage
 
@@ -41,6 +42,15 @@ const bytes = encodeSync({ actions: [action] });
 // POST bytes to /sync/actions as application/msgpack
 // server will assign the GSN and return it
 ```
+
+## Seeding
+
+`@ebbjs/core/seed` is a browser-safe subpath exporting `SeedData` (and its
+row types) and `buildSeedAction`, which stamps a fixture's plain field values
+into one wire `Action`, plus the shared seed rejection-tolerance policy
+(`assertSeedAccepted` / `SeedRejectedError`). `@ebbjs/client`'s
+`client.seed()` and `@ebbjs/server`'s raw-POST `seed()` both build through it,
+so browser demos and the server test harness share one builder and one policy.
 
 ## HLC
 

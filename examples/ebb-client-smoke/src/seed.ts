@@ -46,11 +46,7 @@ export function buildSmokeSeed(): SeedData {
         patches: [
           {
             fields: {
-              title: {
-                value: "Hello, ebb",
-                update_id: "seed_title",
-                hlc: "0",
-              },
+              title: "Hello, ebb",
             },
           },
         ],

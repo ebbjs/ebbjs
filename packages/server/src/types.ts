@@ -1,5 +1,3 @@
-import { Action } from "@ebbjs/core";
-
 export interface ServerOptions {
   dataDir: string;
   port?: number;
@@ -14,48 +12,15 @@ export interface RunningServer {
   kill(): Promise<void>;
 }
 
-export interface GroupSeed {
-  id: string;
-  name: string;
-}
-
-export interface GroupMemberSeed {
-  id: string;
-  actorId: string;
-  groupId: string;
-  permissions: string[];
-}
-
-export interface EntitySeed {
-  id: string;
-  type: string;
-  patches: Array<{
-    fields: Record<string, { value: unknown; hlc: string; update_id: string }>;
-  }>;
-}
-
-export interface RelationshipSeed {
-  id: string;
-  sourceId: string;
-  targetId: string;
-  type: string;
-  field: string;
-}
-
-/** One entity↔Group membership row, submitted as an `entityGroup` put. */
-export interface EntityGroupSeed {
-  id: string;
-  entityId: string;
-  groupId: string;
-}
-
-export interface SeedData {
-  groups: GroupSeed[];
-  groupMembers: GroupMemberSeed[];
-  entities: EntitySeed[];
-  relationships?: RelationshipSeed[];
-  entityGroups?: EntityGroupSeed[];
-  baseHlc?: number;
-}
-
-export type { Action };
+// Seed types live in the browser-safe `@ebbjs/core/seed` module; the
+// server re-exports them so its public surface is unchanged.
+export type {
+  Action,
+  GroupSeed,
+  GroupMemberSeed,
+  EntitySeed,
+  RelationshipSeed,
+  EntityGroupSeed,
+  SeedData,
+  SeedRejection,
+} from "@ebbjs/core/seed";

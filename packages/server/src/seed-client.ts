@@ -1,123 +1,26 @@
+/**
+ * `@ebbjs/server`'s raw-POST seed harness.
+ *
+ * The fixture builder and rejection policy are the browser-safe
+ * `@ebbjs/core/seed` module; this file adds the HTTP submission the
+ * server test harness needs and re-exports the core seed names so
+ * `@ebbjs/server`'s public surface is unchanged.
+ */
+
 import { encodeSync } from "@ebbjs/core";
-import { Action } from "@ebbjs/core";
-import { createAction } from "@ebbjs/core";
-import { createClock, localEvent } from "@ebbjs/core";
 import {
-  GroupSeed,
-  GroupMemberSeed,
-  EntitySeed,
-  RelationshipSeed,
-  EntityGroupSeed,
-  SeedData,
-} from "./types";
+  assertSeedAccepted,
+  buildSeedAction,
+  type Action,
+  type SeedData,
+  type SeedRejection,
+} from "@ebbjs/core/seed";
 
-export type {
-  GroupSeed,
-  GroupMemberSeed,
-  EntitySeed,
-  RelationshipSeed,
-  EntityGroupSeed,
-  SeedData,
-  Action,
-};
-
-export function buildSeedAction(actorId: string, data: SeedData): Action {
-  const clock = createClock();
-
-  const updates = [];
-
-  for (const group of data.groups) {
-    updates.push({
-      subject_id: group.id,
-      subject_type: "group",
-      method: "put" as const,
-      data: {
-        fields: {
-          name: { value: group.name, update_id: "seed_update", hlc: localEvent(clock) },
-        },
-      },
-    });
-  }
-
-  for (const member of data.groupMembers) {
-    updates.push({
-      subject_id: member.id,
-      subject_type: "groupMember",
-      method: "put" as const,
-      data: {
-        fields: {
-          actor_id: { value: member.actorId, update_id: "seed_update", hlc: localEvent(clock) },
-          group_id: { value: member.groupId, update_id: "seed_update", hlc: localEvent(clock) },
-          permissions: {
-            value: member.permissions,
-            update_id: "seed_update",
-            hlc: localEvent(clock),
-          },
-        },
-      },
-    });
-  }
-
-  for (const entity of data.entities ?? []) {
-    const fields: Record<string, { value: unknown; hlc: string; update_id: string }> = {};
-    for (const patch of entity.patches) {
-      for (const [key, val] of Object.entries(patch.fields)) {
-        fields[key] = val;
-      }
-    }
-
-    updates.push({
-      subject_id: entity.id,
-      subject_type: entity.type,
-      method: "put" as const,
-      data: { fields },
-    });
-  }
-
-  for (const rel of data.relationships ?? []) {
-    updates.push({
-      subject_id: rel.id,
-      subject_type: "relationship",
-      method: "put" as const,
-      data: {
-        fields: {
-          source_id: { value: rel.sourceId, update_id: "seed_update", hlc: localEvent(clock) },
-          target_id: { value: rel.targetId, update_id: "seed_update", hlc: localEvent(clock) },
-          type: { value: rel.type, update_id: "seed_update", hlc: localEvent(clock) },
-          field: { value: rel.field, update_id: "seed_update", hlc: localEvent(clock) },
-        },
-      },
-    });
-  }
-
-  for (const membership of data.entityGroups ?? []) {
-    updates.push({
-      subject_id: membership.id,
-      subject_type: "entityGroup",
-      method: "put" as const,
-      data: {
-        fields: {
-          entity_id: {
-            value: membership.entityId,
-            update_id: "seed_update",
-            hlc: localEvent(clock),
-          },
-          group_id: {
-            value: membership.groupId,
-            update_id: "seed_update",
-            hlc: localEvent(clock),
-          },
-        },
-      },
-    });
-  }
-
-  const { action } = createAction({ actorId, updates, clock });
-  return action;
-}
-
-export async function seed(baseUrl: string, actorId: string, data: SeedData): Promise<void> {
-  const action = buildSeedAction(actorId, data);
+/**
+ * `POST /sync/actions` with a pre-built Action, used by {@link seed}.
+ */
+async function postSeedAction(serverUrl: string, actorId: string, action: Action): Promise<void> {
+  const baseUrl = serverUrl.replace(/\/$/, "");
   const body = encodeSync({ actions: [action] });
 
   const res = await fetch(`${baseUrl}/sync/actions`, {
@@ -133,15 +36,36 @@ export async function seed(baseUrl: string, actorId: string, data: SeedData): Pr
   if (!res.ok) {
     throw new Error(`Seed failed: ${res.status} ${text}`);
   }
+
+  let parsed: { rejected?: SeedRejection[] } = {};
   try {
-    const json = JSON.parse(text);
-    if (json.rejected && json.rejected.length > 0) {
-      throw new Error(`Seed rejected: ${text}`);
-    }
-  } catch (e) {
-    if (e instanceof Error && e.message.startsWith("Seed")) {
-      throw e;
-    }
-    // Ignore JSON parse errors if status is ok
+    parsed = JSON.parse(text);
+  } catch {
+    // A tolerant server may answer with an empty body on success.
   }
+  assertSeedAccepted(parsed.rejected ?? []);
 }
+
+/** Build and submit a seed Action in one call. */
+export async function seed(serverUrl: string, actorId: string, data: SeedData): Promise<void> {
+  await postSeedAction(serverUrl, actorId, buildSeedAction(actorId, data));
+}
+
+export {
+  buildSeedAction,
+  assertSeedAccepted,
+  isToleratedSeedRejection,
+  SeedRejectedError,
+  TOLERATED_SEED_REJECTIONS,
+} from "@ebbjs/core/seed";
+
+export type {
+  Action,
+  GroupSeed,
+  GroupMemberSeed,
+  EntitySeed,
+  RelationshipSeed,
+  EntityGroupSeed,
+  SeedData,
+  SeedRejection,
+} from "@ebbjs/core/seed";
