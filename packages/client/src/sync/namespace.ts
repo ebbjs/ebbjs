@@ -59,6 +59,7 @@ import {
   reverse as reverseTraversal,
 } from "./relationship";
 import { readEntityMemberships, type LiveMembership } from "./entity-group";
+import { readGeneratedParts } from "./generated-parts";
 import {
   lastGroupMemberViolation,
   type GroupMemberDelta,
@@ -963,8 +964,17 @@ export function createEntityNamespace<
       if (currentGroups.includes(target)) {
         return { rejected: [] };
       }
+      const generated = await readGeneratedParts(storage, registry, entityName, id);
       const { response } = await commit(
-        [call(changeGroups, { entity: entityName, entityId: id, puts: [target], currentGroups })],
+        [
+          call(changeGroups, {
+            entity: entityName,
+            entityId: id,
+            puts: [target],
+            currentGroups,
+            generated,
+          }),
+        ],
         write,
       );
       return response;
@@ -981,6 +991,7 @@ export function createEntityNamespace<
           },
         ]);
       }
+      const generated = await readGeneratedParts(storage, registry, entityName, id);
       const { response } = await commit(
         [
           call(changeGroups, {
@@ -988,6 +999,7 @@ export function createEntityNamespace<
             entityId: id,
             removes: [{ membershipId: row.membershipId, groupId: target }],
             currentGroups: current.map((membership) => membership.groupId),
+            generated,
           }),
         ],
         write,
@@ -1006,6 +1018,7 @@ export function createEntityNamespace<
           membershipId: membership.membershipId,
           groupId: membership.groupId,
         }));
+      const generated = await readGeneratedParts(storage, registry, entityName, id);
       // Adds precede removes so an incremental observer never sees the
       // entity with an empty membership set mid-Action.
       const { response } = await commit(
@@ -1016,6 +1029,7 @@ export function createEntityNamespace<
             puts,
             removes,
             currentGroups: current.map((membership) => membership.groupId),
+            generated,
           }),
         ],
         write,

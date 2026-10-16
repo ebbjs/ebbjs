@@ -18,6 +18,7 @@ import { EntityValidationError, validatePayload } from "../schema/entity-registr
 import { GROUPS_ACCESSOR } from "../schema/system-entities";
 import { buildInitialContentField } from "../fields/collaborative-text/wire";
 import { DOC_CONTENT_FIELD, generatedDocEntityName } from "../fields/collaborative-text/schema";
+import type { GeneratedParts } from "./generated-parts";
 import type { Rejection } from "./types";
 import {
   buildEntityGroupDelete,
@@ -451,27 +452,75 @@ export interface ChangeGroupsInput {
    * local view cannot say whether the entity is unowned.
    */
   readonly currentGroups?: readonly string[];
+  /**
+   * The entity's live generated parts (documents + edges), when the
+   * caller resolved them. Absent for an entity with no derived fields,
+   * so the emitted Update shape is unchanged.
+   */
+  readonly generated?: GeneratedParts;
 }
 
 /**
  * Add, remove, or replace an entity's membership rows in one operation.
  * Adds precede removes so an incremental observer never sees the entity
- * with an empty membership set mid-Action. The fan-out scope is the
- * union of every affected group, resolved by the membership checker from
- * the Updates themselves.
+ * with an empty membership set mid-Action. Generated documents are
+ * filed into the added groups and their edges re-emitted in the same
+ * Action; their memberships are deleted alongside the parent's. The
+ * fan-out scope is the union of every affected group, resolved by the
+ * membership checker from the Updates themselves.
  */
 export const changeGroups: Operation<ChangeGroupsInput> = (ctx, input) => {
   const puts = input.puts ?? [];
   const removes = input.removes ?? [];
+  const generated = input.generated;
   const updates: Update[] = [
     ...buildEntityGroupUpdates(input.entityId, puts, () => ctx.ids.updateId()),
+  ];
+
+  for (const document of generated?.documents ?? []) {
+    const held = new Set(document.memberships.map((membership) => membership.groupId));
+    const addedGroups = puts.filter((groupId) => !held.has(groupId));
+    updates.push(...buildEntityGroupUpdates(document.id, addedGroups, () => ctx.ids.updateId()));
+  }
+
+  // The edge is re-emitted under its existing id so the server can
+  // scope it to the new group; with no put there is nothing to carry.
+  if (puts.length > 0) {
+    for (const edge of generated?.edges ?? []) {
+      updates.push(
+        buildRelationshipUpdate({
+          relationshipId: edge.relationshipId,
+          sourceId: edge.sourceId,
+          targetId: edge.targetId,
+          field: edge.field,
+          type: edge.type,
+          updateId: ctx.ids.updateId(),
+        }),
+      );
+    }
+  }
+
+  updates.push(
     ...removes.map((removal) =>
       buildEntityGroupDelete({
         membershipId: removal.membershipId,
         updateId: ctx.ids.updateId(),
       }),
     ),
-  ];
+  );
+
+  const removedGroupIds = new Set(removes.map((removal) => removal.groupId));
+  for (const document of generated?.documents ?? []) {
+    for (const membership of document.memberships) {
+      if (!removedGroupIds.has(membership.groupId)) continue;
+      updates.push(
+        buildEntityGroupDelete({
+          membershipId: membership.membershipId,
+          updateId: ctx.ids.updateId(),
+        }),
+      );
+    }
+  }
 
   const violation = lastMembershipViolation(input.currentGroups, {
     puts,

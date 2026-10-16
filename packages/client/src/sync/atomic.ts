@@ -42,6 +42,7 @@ import {
   type WireStatic,
 } from "./namespace";
 import type { LiveMembership } from "./entity-group";
+import type { GeneratedParts } from "./generated-parts";
 import { commit, type CommitCapability } from "./committer";
 import {
   AtomicActionError,
@@ -118,6 +119,8 @@ export interface AtomicCreateOptions {
  */
 export interface AtomicCapability extends CommitCapability {
   readMemberships(entityId: string): Promise<readonly LiveMembership[]>;
+  /** The entity's live generated parts, read to carry them on a membership change. */
+  readGeneratedParts(entityType: string, entityId: string): Promise<GeneratedParts>;
 }
 
 /** One membership verb a draft collected, resolved after the callback. */
@@ -376,7 +379,13 @@ const resolveMembershipIntents = async (
       removals.push({ membershipId: row.membershipId, groupId });
     }
     if (puts.length === 0 && removals.length === 0) continue;
-    calls.push(call(changeGroups, { entity, entityId, puts, removes: removals, currentGroups }));
+    // An entity `create`d earlier in this same batch is not yet in the
+    // local store, so its parts are not found here; the create already
+    // filed them into the create groups.
+    const generated = await cap.readGeneratedParts(entity, entityId);
+    calls.push(
+      call(changeGroups, { entity, entityId, puts, removes: removals, currentGroups, generated }),
+    );
   }
   return calls;
 };
