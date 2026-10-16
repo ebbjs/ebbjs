@@ -4,8 +4,9 @@
  * form. Reads go through `useQuery`, so optimistic creates and deletes
  * land without a reload (the Outbox materializes them locally first).
  *
- * The list is deliberately read-only here: the board, filters, and live
- * concurrent-edit behaviour are #440.
+ * The list is deliberately read-only here: assignment and the other edits
+ * live in the detail view. The board, filters, and live concurrent-edit
+ * behaviour are #440.
  */
 
 import { useClient, useQuery } from "@ebbjs/react";
@@ -44,7 +45,7 @@ export function IssueList({
         <p className="font-mono text-xs text-stone-500">loading…</p>
       ) : issues.length === 0 ? (
         <p className="font-mono text-xs text-stone-500" data-testid="issue-list-empty">
-          No issues yet. Create one to get started.
+          No issues visible. Create one, or join the shared workspace to see its issues.
         </p>
       ) : (
         <ul className="space-y-1">

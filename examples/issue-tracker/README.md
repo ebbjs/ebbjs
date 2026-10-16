@@ -1,6 +1,6 @@
 # Issue Tracker Demo
 
-A Vite + React 19 + Tailwind v4 app that renders a Linear-style issue tracker against a running ebb sync server. It is the v1 finish-line demo (epic [#348](https://github.com/ebbjs/ebbjs/issues/348)). Slice [#438](https://github.com/ebbjs/ebbjs/issues/438) stood up the shell; slice [#439](https://github.com/ebbjs/ebbjs/issues/439) adds the core write loop — create, edit, and delete issues with optimistic writes and a durable Outbox.
+A Vite + React 19 + Tailwind v4 app that renders a Linear-style issue tracker against a running ebb sync server. It is the v1 finish-line demo (epic [#348](https://github.com/ebbjs/ebbjs/issues/348)). Slice [#438](https://github.com/ebbjs/ebbjs/issues/438) stood up the shell; slice [#439](https://github.com/ebbjs/ebbjs/issues/439) adds the core write loop — create, edit, and delete issues with optimistic writes and a durable Outbox; slice [#441](https://github.com/ebbjs/ebbjs/issues/441) adds workspace membership and per-issue access — joining a shared workspace reveals its issues, `client.can(...)` gates affordances, and the issue→profile `assignee` link proves membership-scoped reach.
 
 Entity declarations and every app read/write go through the documented public API (`@ebbjs/client` / `@ebbjs/react`). Seeding goes through the public `client.seed(SeedData)` path shared with `@ebbjs/server.seed()` ([#466](https://github.com/ebbjs/ebbjs/issues/466), [#452](https://github.com/ebbjs/ebbjs/issues/452)); no demo code hand-rolls a wire Action.
 
@@ -39,7 +39,7 @@ The collaborative-text demo still runs with `pnpm dev:collab`.
    - the **shared workspace** (`grp_shared`) with a sample issue, attributed to the dedicated service actor `demo-seeder` (the invite/service-account pattern from [#126](https://github.com/ebbjs/ebbjs/issues/126)).
 3. A typed `SyncClient` runs `handshake()` and opens an SSE subscription for the actor's groups.
 4. The client persists to IndexedDB (one database per actor), so the Outbox survives a page reload: an unacknowledged write is rehydrated and flushed once the subscription reconnects.
-5. The ready tree is wrapped in `<EbbProvider>`. `useConnection()` drives the badge; `useQuery` drives the workspace switcher, profile card, and issue list; `useEntity` + `useEntityMutations` drive the issue detail.
+5. The ready tree is wrapped in `<EbbProvider>`. `useConnection()` drives the badge; `useQuery` drives the workspace switcher, profile card, membership panel, and issue list; `useEntity` + `useEntityMutations` drive the issue detail. Joining or leaving the shared workspace re-runs `handshake()` and replaces the subscription, so the group set stays current without a reload.
 
 Every seed id is derived from the actor id (or a fixed literal for the shared fixtures), so reloading re-`put`s the same rows: the seed is idempotent and its permissions cover the re-`put` path (a committed group is authorized by `group.create` in that group, not by the bootstrap exemption).
 
@@ -69,7 +69,7 @@ The issue's assignee is an entity link declared with `defineRelationship`, not a
 defineRelationship({ source: issue, target: profile, as: "assignee", sourceCardinality: "one" });
 ```
 
-Reads go through the `issue.assignee` accessor, filters through `.where("assignee", profileId)`, and writes through `client.issue.link` / `unlink` (or atomically with the create). Why the scalar reference field was shelved is on [#454](https://github.com/ebbjs/ebbjs/issues/454).
+Reads go through the `issue.assignee` accessor, filters through `.where("assignee", profileId)`, and writes through `client.issue.link` / `unlink` (or atomically with the create). A `profile` is group-scoped, so a profile is only visible (and therefore only assignable) inside the workspaces its actor has joined. There is deliberately no scalar `assignee_id` ([#454](https://github.com/ebbjs/ebbjs/issues/454)).
 
 Membership is ebb's built-in system, **not** a user-defined entity:
 
@@ -80,9 +80,23 @@ Membership is ebb's built-in system, **not** a user-defined entity:
 
 `profile` is one row per actor, scoped to the workspaces they have joined, so it is visible only inside those workspaces. The profile card finds the row whose `actor_id` matches the signed-in actor.
 
-## Shared-workspace membership is deferred
+## Workspace membership and per-issue access
 
-The seed creates the shared workspace but deliberately does **not** add the signed-in actor to `grp_shared`. Joining and leaving a workspace — putting the actor's `groupMember` row and linking their profile to the group in one atomic Action — is [#441](https://github.com/ebbjs/ebbjs/issues/441). Until then the issue list for the default workspace shows only the issues the actor creates there, which is what this slice's demo walk proves. The write path itself converges across actors in one shared group, covered by `issue-crud.integration.test.ts` (which seeds a shared group for its two actors); the demo's own UI-level two-actor walk lands with #441.
+A workspace **is** a Group; actors join it through a `groupMember` row, and an actor's group-scoped `profile` is made visible to the workspace by an `entityGroup` row. The two stores are independent, so the demo's `addToWorkspace` Action ([`src/workspace.ts`](src/workspace.ts)) writes both in one Action — a partially-joined actor is impossible.
+
+The membership panel joins and leaves the shared workspace:
+
+- **Joining is an invite.** Groups are closed by default ([#126](https://github.com/ebbjs/ebbjs/issues/126)): only an existing member can put another actor's `groupMember` row. The shared workspace's service actor `demo-seeder` runs `addToWorkspace` for the signed-in actor (the invite/service-account pattern).
+- **Leaving is self-service.** The invite grants the new member the permissions to drop its own `groupMember` and `entityGroup` rows again.
+- Either way the actor's client re-handshakes and re-subscribes, so the new workspace's issues appear (and its former issues stop being delivered) without a reload.
+
+Only the groups the actor is a member of are subscribed, so a non-member's client never materializes the shared workspace, its issues, or its members. The membership panel's leave control is gated on `client.can(...)`, which asks the same `<type>.<verb>` question the server enforces; the detail view's assignee picker instead offers only the profiles the membership makes visible.
+
+The issue's assignee is the `issue → profile` link declared in `schema.ts`. A profile is reachable only through the membership that scopes it, so the picker offers exactly the workspace members' profiles. Note that this is a UI affordance, not a server invariant: a relationship write is authorized against the _source_'s (issue's) groups, not the target's, so a raw wire client could link an arbitrary profile id. The demo constrains assignment by what it can show.
+
+### Profile content follows membership
+
+The shared group receives the member's profile `entityGroup` row, and the client's membership backfill ([#475](https://github.com/ebbjs/ebbjs/issues/475)) reads the profile content — which was written in the member's personal group — into the shared group's subscribers. A fellow member can therefore read the joined actor's `display_name` / `avatar_url`, and a non-member still cannot. `client.sync.backfill` reports ids whose content is still being read, so a UI can render a pending row rather than an empty one.
 
 ## Files
 
@@ -90,15 +104,17 @@ The seed creates the shared workspace but deliberately does **not** add the sign
 src/
 ├── main.tsx             # React entry
 ├── App.tsx              # Top-level layout + actor lifecycle
-├── schema.ts            # Pinned data model + assignee relationship
+├── schema.ts            # Pinned data model + issue→profile assignee link
 ├── seed.ts              # Deterministic bootstrap seed (SeedData builders)
-├── bootstrap.ts         # createClient + durable storage + seed + handshake + subscribe
+├── workspace.ts         # addToWorkspace Action + invite/leave helpers
+├── bootstrap.ts         # createClient + durable storage + seed + handshake + subscribe + refresh
 ├── issue-options.ts     # Status / priority / assignee option lists
 ├── SelectField.tsx      # Shared labelled <select>
 ├── ActorPicker.tsx      # Actor identity selector
 ├── ConnectionBadge.tsx  # useConnection() indicator
 ├── WorkspaceSwitcher.tsx# useQuery list + row.groups group id
 ├── ProfileCard.tsx      # Group-scoped profile row
+├── MembershipPanel.tsx  # Join / leave the shared workspace
 ├── IssueList.tsx        # Selectable list + new-issue control
 ├── IssueCreateForm.tsx  # Atomic create with optional assignee
 ├── IssueDetail.tsx      # Edit, link / unlink assignee, delete

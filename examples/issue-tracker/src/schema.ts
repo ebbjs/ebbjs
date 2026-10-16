@@ -35,6 +35,12 @@ export const issue = defineEntity("issue", {
   priority: e.string(),
 });
 
+/**
+ * The issue's assignee is an entity link to an actor's `profile`, not a
+ * scalar id. A profile is group-scoped, so an issue can only be assigned
+ * to a profile visible in the issue's workspace group — that is, to a
+ * workspace member.
+ */
 export const issueAssignee = defineRelationship({
   source: issue,
   target: profile,
