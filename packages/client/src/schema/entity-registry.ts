@@ -10,7 +10,7 @@ import type { Action } from "@ebbjs/core";
 import { Value, type ValueError } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox/type";
 
-import type { ConflictScope, EntityDef, FieldMarker } from "./entity";
+import type { ConflictScope, EntityDef, FieldMarker, ReferenceSpec } from "./entity";
 import type { RelationshipDef, RelationshipKind, SourceCardinality } from "./relationship";
 
 /** One validation failure against a registered entity. */
@@ -129,6 +129,18 @@ export class EntityRegistry {
    */
   getConflictScope(subjectType: string): ConflictScope {
     return this.entities.get(subjectType)?.conflictScope ?? "field";
+  }
+
+  /**
+   * Field-kind lookup: the reference spec declared on `field` of
+   * `subjectType`. `undefined` when the field is not a reference, is
+   * undeclared, or the entity is unknown.
+   */
+  getReference(subjectType: string, field: string): ReferenceSpec | undefined {
+    const references = this.entities.get(subjectType)?.references as
+      | Record<string, ReferenceSpec>
+      | undefined;
+    return references?.[field];
   }
 
   /**

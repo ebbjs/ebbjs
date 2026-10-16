@@ -52,12 +52,56 @@ export type NullableSchema<T extends TSchema> = T & {
  */
 const NULLABLE_MARKER = Symbol.for("@ebbjs/nullable");
 
+/** Runtime description of one reference field, recorded on `EntityDef.references`. */
+export interface ReferenceSpec {
+  /** Referenced kind: a registered or system entity name, or the reserved `"actor"`. */
+  readonly of: string;
+}
+
+/** Options accepted by `e.reference`. */
+export interface ReferenceOptions<TOf extends string = string> {
+  /** Referenced kind: a registered or system entity name, or the reserved `"actor"`. */
+  readonly of: TOf;
+}
+
+const REFERENCE_MARKER = Symbol.for("@ebbjs/reference");
+
+declare const REFERENCE_BRAND: unique symbol;
+
+/**
+ * Marker-stamped `Type.String()` returned by `e.reference()`. The brand
+ * separates a foreign-key-shaped field from free text at the type
+ * level; `TOf` records the referenced kind. A reference is a
+ * *field kind*, orthogonal to merge semantics, so it does not join
+ * {@link FieldMarker}.
+ */
+export type ReferenceSchema<TOf extends string = string> = TString & {
+  readonly [REFERENCE_BRAND]: TOf;
+};
+
+const readReferenceMarker = (schema: TSchema): ReferenceSpec | undefined =>
+  Object.getOwnPropertyDescriptor(schema, REFERENCE_MARKER)?.value as ReferenceSpec | undefined;
+
+/**
+ * Copy the reference marker onto a schema that {@link withNullable} or
+ * {@link withImplicitOptional} just derived. Those helpers build fresh
+ * TypeBox values and TypeBox carries only enumerable own properties, so
+ * a non-enumerable marker would otherwise be lost on a nullable
+ * reference.
+ */
+const copyReferenceMarker = (from: TSchema, to: TSchema): void => {
+  const marker = readReferenceMarker(from);
+  if (marker === undefined) return;
+  Object.defineProperty(to, REFERENCE_MARKER, { value: marker, enumerable: false });
+};
+
 const withNullable = <T extends TSchema>(schema: T): NullableSchema<T> => {
   const self = schema as NullableSchema<T>;
   Object.defineProperty(self, "nullable", {
     value: () => {
       const union = Type.Union([schema, Type.Null()]);
       Object.defineProperty(union, NULLABLE_MARKER, { value: true, enumerable: false });
+      copyReferenceMarker(schema, union);
       return union;
     },
     enumerable: false,
@@ -144,6 +188,23 @@ export const e = {
     });
     return schema as unknown as CollaborativeTextSchema<E>;
   },
+  /**
+   * Declare a reference field: a foreign-key-shaped string naming the
+   * referenced kind (`"actor"`, a system entity, or an app entity).
+   * Wire-level it is a `Type.String()`, so it projects, filters, and
+   * round-trips like any string field; the marker is what lets a UI,
+   * codegen, or tooling tell it apart from free text.
+   */
+  reference: <const TOf extends string>(
+    opts: ReferenceOptions<TOf>,
+  ): NullableSchema<ReferenceSchema<TOf>> => {
+    const schema = Type.String() as ReferenceSchema<TOf>;
+    Object.defineProperty(schema, REFERENCE_MARKER, {
+      value: { of: opts.of } satisfies ReferenceSpec,
+      enumerable: false,
+    });
+    return withNullable(schema);
+  },
 } as const;
 
 const deriveMarker = (_schema: TSchema): FieldMarker => ({ type: "lww" });
@@ -205,6 +266,30 @@ export type DerivedKeys<TFields> = {
 }[keyof TFields];
 
 /**
+ * Keys of `TFields` declared with `e.reference()`, including those that
+ * went through `.nullable()`. `never` when the entity declares none.
+ */
+export type ReferenceKeys<TFields> = {
+  [K in keyof TFields]: IsReferenceSchema<TFields[K]> extends true ? K : never;
+}[keyof TFields];
+
+/**
+ * True at the type level when `T` is a reference, either bare
+ * ({@link ReferenceSchema}) or through the `.nullable()` union
+ * (`TUnion<[ReferenceSchema, TNull]>`). Mirrors {@link IsNullableUnion}.
+ */
+type IsReferenceSchema<T> =
+  T extends ReferenceSchema<string>
+    ? true
+    : T extends TUnion<infer Members>
+      ? Members extends readonly [infer First, TNull]
+        ? First extends ReferenceSchema<string>
+          ? true
+          : false
+        : false
+      : false;
+
+/**
  * `TFields` with its derived keys removed. Feeds `shape`, `QueryFilter`,
  * and `EntityNamespace` so a derived body is neither a wire field nor
  * filterable.
@@ -254,6 +339,8 @@ export interface EntityDef<TFields extends Record<string, TSchema>, TName extend
   readonly fields: { [K in keyof WireFields<TFields>]: FieldMarker };
   /** Fields declared with `e.collaborativeText()`, awaiting expansion. */
   readonly derived: { [K in DerivedKeys<TFields>]: DerivedFieldDef };
+  /** Fields declared with `e.reference()` — a field-kind annotation, not merge semantics. */
+  readonly references: { [K in ReferenceKeys<TFields>]: ReferenceSpec };
 }
 
 /** Options accepted by `defineEntity`. */
@@ -290,6 +377,7 @@ export function buildEntityDef<TFields extends Record<string, TSchema>, TName ex
 ): EntityDef<TFields, TName> {
   const wireFields: Record<string, TSchema> = {};
   const derived: Record<string, DerivedFieldDef> = {};
+  const references: Record<string, ReferenceSpec> = {};
   // A derived body inherits the entity's declared scope unless the
   // field sugar overrides it.
   const entityScope = options.conflictScope ?? "field";
@@ -303,6 +391,8 @@ export function buildEntityDef<TFields extends Record<string, TSchema>, TName ex
       };
       continue;
     }
+    const reference = readReferenceMarker(schema as TSchema);
+    if (reference !== undefined) references[key] = reference;
     wireFields[key] = schema as TSchema;
   }
 
@@ -312,12 +402,14 @@ export function buildEntityDef<TFields extends Record<string, TSchema>, TName ex
     Object.keys(wireFields).map((k) => [k, deriveMarker(wireFields[k] as TSchema)]),
   ) as { [K in keyof WireFields<TFields>]: FieldMarker };
   const derivedMarkers = derived as { [K in DerivedKeys<TFields>]: DerivedFieldDef };
+  const referenceSpecs = references as { [K in ReferenceKeys<TFields>]: ReferenceSpec };
   return Object.freeze({
     name,
     conflictScope: entityScope,
     shape: Type.Object(shapeFields) as EntityShape<WireFields<TFields>>,
     fields: derivedFields,
     derived: derivedMarkers,
+    references: referenceSpecs,
   });
 }
 
@@ -333,9 +425,13 @@ const withImplicitOptional = <TFields extends Record<string, TSchema>>(
 ): Record<string, TSchema> => {
   const out: Record<string, TSchema> = {};
   for (const [key, schema] of Object.entries(fields)) {
-    out[key] = isNullableSchema(schema)
-      ? Type.Optional(schema as Parameters<typeof Type.Optional>[0])
-      : schema;
+    if (isNullableSchema(schema)) {
+      const wrapped = Type.Optional(schema as Parameters<typeof Type.Optional>[0]);
+      copyReferenceMarker(schema, wrapped);
+      out[key] = wrapped;
+    } else {
+      out[key] = schema;
+    }
   }
   return out;
 };

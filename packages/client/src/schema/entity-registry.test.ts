@@ -97,6 +97,44 @@ describe("EntityRegistry.isLwwField", () => {
   });
 });
 
+describe("EntityRegistry.getReference", () => {
+  const issue = defineEntity("issue", {
+    title: e.string(),
+    owner_id: e.reference({ of: "actor" }),
+    workspace_id: e.reference({ of: "workspace" }).nullable(),
+  });
+
+  const issueRegistry = (): EntityRegistry => {
+    const r = new EntityRegistry();
+    r.register(issue);
+    return r;
+  };
+
+  it("reports the reference spec declared on a registered entity", () => {
+    expect(issueRegistry().getReference("issue", "owner_id")).toEqual({ of: "actor" });
+  });
+
+  it("reports a nullable reference", () => {
+    expect(issueRegistry().getReference("issue", "workspace_id")).toEqual({ of: "workspace" });
+  });
+
+  it("returns undefined for a plain field", () => {
+    expect(issueRegistry().getReference("issue", "title")).toBeUndefined();
+  });
+
+  it("returns undefined for an undeclared field", () => {
+    expect(issueRegistry().getReference("issue", "missing")).toBeUndefined();
+  });
+
+  it("returns undefined for an unknown entity", () => {
+    expect(issueRegistry().getReference("missing", "owner_id")).toBeUndefined();
+  });
+
+  it("returns undefined for a client without a schema", () => {
+    expect(new EntityRegistry().getReference("issue", "owner_id")).toBeUndefined();
+  });
+});
+
 describe("EntityRegistry.validateAction", () => {
   it("returns empty for a valid registered action", () => {
     const r = buildRegistry();

@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, expectTypeOf } from "vitest";
 import { Type } from "@sinclair/typebox";
+import type { Static } from "@sinclair/typebox/type";
 import { defineEntity, e, type EntityDef, type NullableSchema } from "./entity";
 import { ReservedNameError, RESERVED_ENTITY_NAMES } from "./reserved";
 
@@ -165,5 +166,90 @@ describe("bare-field-map authoring", () => {
     });
     expect(todo.name).toBe("todo");
     expect(todo.shape.type).toBe("object");
+  });
+});
+
+describe("e.reference()", () => {
+  it("returns a TypeBox string carrying the nullable chain", () => {
+    const ref = e.reference({ of: "actor" });
+    expect(ref.type).toBe("string");
+    expect(typeof ref.nullable).toBe("function");
+  });
+
+  it("records reference specs and leaves plain fields out", () => {
+    const issue = defineEntity("issue", {
+      title: e.string(),
+      owner_id: e.reference({ of: "actor" }),
+      group_id: e.reference({ of: "group" }).nullable(),
+    });
+    expect(issue.references).toEqual({
+      owner_id: { of: "actor" },
+      group_id: { of: "group" },
+    });
+    expect(issue.references).not.toHaveProperty("title");
+  });
+
+  it("produces an empty references map when no field is a reference", () => {
+    const todo = defineEntity("todo", { title: e.string() });
+    expect(todo.references).toEqual({});
+  });
+
+  it("keeps a reference a wire string", () => {
+    const issue = defineEntity("issue", {
+      owner_id: e.reference({ of: "actor" }).nullable(),
+    });
+    expect(issue.shape.properties.owner_id).toMatchObject({
+      anyOf: [
+        expect.objectContaining({ type: "string" }),
+        expect.objectContaining({ type: "null" }),
+      ],
+    });
+    expect(issue.fields.owner_id).toEqual({ type: "lww" });
+  });
+
+  it("preserves the marker through .nullable()", () => {
+    const issue = defineEntity("issue", {
+      owner_id: e.reference({ of: "actor" }).nullable(),
+    });
+    expect(issue.references).toEqual({ owner_id: { of: "actor" } });
+  });
+
+  it("leaves the marker on the wrapped shape for tooling", () => {
+    const issue = defineEntity("issue", {
+      owner_id: e.reference({ of: "actor" }).nullable(),
+    });
+    const marker = Object.getOwnPropertyDescriptor(
+      issue.shape.properties.owner_id,
+      Symbol.for("@ebbjs/reference"),
+    )?.value;
+    expect(marker).toEqual({ of: "actor" });
+  });
+
+  it("keeps a plain nullable string free of a reference spec", () => {
+    const issue = defineEntity("issue", { title: e.string().nullable() });
+    expect(issue.references).toEqual({});
+  });
+});
+
+describe("reference type surface", () => {
+  it("keys only reference fields, nullable or not", () => {
+    const issue = defineEntity("issue", {
+      title: e.string(),
+      owner_id: e.reference({ of: "actor" }),
+      group_id: e.reference({ of: "group" }).nullable(),
+    });
+    type Keys = keyof typeof issue.references;
+    const owner: Keys = "owner_id";
+    const group: Keys = "group_id";
+    // @ts-expect-error `title` is a plain string, not a reference.
+    const title: Keys = "title";
+    expect([owner, group, title]).toEqual(["owner_id", "group_id", "title"]);
+  });
+
+  it("types a reference as string and a nullable one as string | null", () => {
+    const owner = e.reference({ of: "actor" });
+    const group = e.reference({ of: "group" }).nullable();
+    expectTypeOf<Static<typeof owner>>().toEqualTypeOf<string>();
+    expectTypeOf<Static<typeof group>>().toEqualTypeOf<string | null>();
   });
 });
