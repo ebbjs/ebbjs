@@ -14,13 +14,19 @@ defmodule EbbServer.Sync.FanOutRouter do
   3. Takes each Action's group set from the Writer's commit snapshot,
      falling back to `resolve_group_ids/2` (per-Action, via
      `EntityIndex`) only when the notifier did not annotate the GSN.
-  4. Dispatches each Action to the right GroupServer pid.
+  4. Filters each Action's Updates to the ones whose persisted
+     per-Update scope includes the recipient group, then dispatches the
+     filtered copy to that GroupServer. An Update scoped to one group is
+     never delivered to another group that the same Action also touches.
 
   Using the Writer's snapshot keeps live fan-out in agreement with the
   `cf_group_actions` index catch-up reads: the cache has already moved
   by dispatch time, so re-resolving a `relationship`/`groupMember`
   delete there returns `[]` (its by-id entry is gone and the wire form
-  carries no `source_id`).
+  carries no `source_id`). Each Action is stored with its per-Update
+  scopes (`"update_scopes"`) for the same reason; an Action committed
+  before those scopes were persisted has none and is delivered whole, as
+  it was before per-Update delivery (#473).
 
   ## Resolved holes
 
@@ -523,7 +529,8 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   # One push per group per committed range, so a batch that fans out to a
-  # group is dispatched — and sampled — once, not once per Action.
+  # group is dispatched — and sampled — once, not once per Action. Each
+  # copy is filtered to the Updates whose own scope includes the group.
   defp group_memberships(action, groups_by_gsn, resolve_opts) do
     group_ids =
       case Map.fetch(groups_by_gsn, action["gsn"]) do
@@ -531,8 +538,40 @@ defmodule EbbServer.Sync.FanOutRouter do
         :error -> resolve_group_ids(action, resolve_opts)
       end
 
-    Enum.map(group_ids, &{&1, action})
+    scopes = update_scopes(action, resolve_opts)
+
+    Enum.flat_map(group_ids, fn group_id ->
+      case scope_updates(action["updates"] || [], scopes, group_id) do
+        [] -> []
+        updates -> [{group_id, Map.put(action, "updates", updates)}]
+      end
+    end)
   end
+
+  # The Writer persists one group list per Update, index-aligned with
+  # `"updates"`. An Action committed before #473 carries none; resolve
+  # each Update against the caches instead, which is the pre-#473
+  # whole-Action behavior applied per group.
+  defp update_scopes(%{"update_scopes" => scopes}, _opts) when is_list(scopes), do: scopes
+
+  defp update_scopes(action, opts) do
+    updates = action["updates"] || []
+    opts = Keyword.put(opts, :intra_action, PermissionHelper.build_intra_action_context(updates))
+    Enum.map(updates, &resolve_update_group_ids(&1, opts))
+  end
+
+  # Updates whose own scope includes `group_id`, in their original order.
+  # A scope list that does not align with the Updates is a corrupt record;
+  # deliver the whole Action rather than silently dropping Updates.
+  defp scope_updates(updates, scopes, group_id) when length(updates) == length(scopes) do
+    updates
+    |> Enum.zip(scopes)
+    |> Enum.flat_map(fn {update, scope} ->
+      if group_id in scope, do: [update], else: []
+    end)
+  end
+
+  defp scope_updates(updates, _scopes, _group_id), do: updates
 
   defp push_to_group(group_id, actions, committed_at) do
     case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do

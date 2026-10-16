@@ -13,12 +13,9 @@ defmodule EbbServer.Storage.PermissionChecker do
   2. **Authorizer** — for each Update, does the actor have the right
      `<type>.<verb>` (or `<type>.*`) on the entity's group?
 
-  A third check runs after authorization succeeds:
-
-  3. **Group scope** — does a content Action resolve every Update to one
-     group set, so the Writer's union index and the fan-out router cannot
-     push an Update to a subscriber outside its own group? A content
-     Action that spans groups is rejected with `group_mismatch` (#461).
+  Delivery scope is no longer a validation concern: the Writer persists
+  each Update's own fan-out scope and the router delivers per Update
+  (#473), so an Action may span groups.
 
   On success: returns the validated action to the Writer with the same
   shape it came in with, but populates server-side denormalized fields
@@ -70,9 +67,7 @@ defmodule EbbServer.Storage.PermissionChecker do
   alias EbbServer.Storage.Authorizer
   alias EbbServer.Storage.CacheTables
   alias EbbServer.Storage.EntityIndex
-  alias EbbServer.Storage.Fields
   alias EbbServer.Storage.GroupCache
-  alias EbbServer.Storage.PermissionHelper
 
   @type raw_action :: ActionValidator.raw_action()
   @type raw_update :: ActionValidator.raw_update()
@@ -93,8 +88,7 @@ defmodule EbbServer.Storage.PermissionChecker do
 
     case Authorizer.authorize(validated_actions, actor_id, ctx) do
       :ok ->
-        {accepted, mismatched} = split_by_group_scope(validated_actions, ctx)
-        {accepted, rejections ++ mismatched}
+        {validated_actions, rejections}
 
       {:error, reason, details} ->
         # Add authorization failure to all validated actions (they all fail together)
@@ -107,95 +101,6 @@ defmodule EbbServer.Storage.PermissionChecker do
         {[], updated_rejections}
     end
   end
-
-  # The group-scope check is per-Action: a mismatched Action is rejected
-  # while its siblings in the same request still commit.
-  defp split_by_group_scope(actions, ctx) do
-    scope_opts = AuthorizationContext.to_opts(ctx)
-
-    {accepted, rejected} =
-      Enum.reduce(actions, {[], []}, fn action, {accepted, rejected} ->
-        case check_group_scope(action, scope_opts) do
-          :ok ->
-            {[action | accepted], rejected}
-
-          {:error, reason, details} ->
-            {accepted, [%{action_id: action.id, reason: reason, details: details} | rejected]}
-        end
-      end)
-
-    {Enum.reverse(accepted), Enum.reverse(rejected)}
-  end
-
-  # #127/#461: the Writer indexes an Action into the union of its Updates'
-  # fan-out groups and the fan-out router pushes the whole Action to every
-  # group in that union, so an Action stays fully visible or fully invisible
-  # to a subscriber only when every Update resolves to the same group set.
-  # Per-Update authorization is not enough — a content write in group A can
-  # ride a membership write into group B and leak the group-B row to a
-  # subscriber of A. A system-only Action may span groups: a `setGroups`
-  # delta's union is the membership operation's visibility scope.
-  defp check_group_scope(action, opts) do
-    intra_opts =
-      Keyword.put(
-        opts,
-        :intra_action,
-        PermissionHelper.build_intra_action_context(action.updates)
-      )
-
-    scopes =
-      Enum.map(action.updates, fn update ->
-        {update, update |> EntityIndex.fan_out_groups(intra_opts) |> Enum.sort()}
-      end)
-
-    union =
-      scopes |> Enum.flat_map(fn {_update, groups} -> groups end) |> Enum.uniq() |> Enum.sort()
-
-    if Enum.any?(action.updates, &(not system_update?(&1))) do
-      created_ids =
-        PermissionHelper.created_subject_ids(action.updates, fn id ->
-          EntityIndex.exists?(id, opts)
-        end)
-
-      case Enum.reject(scopes, &scope_matches?(&1, union, created_ids)) do
-        [] -> :ok
-        offenders -> {:error, "group_mismatch", render_scope_mismatch(offenders, union)}
-      end
-    else
-      :ok
-    end
-  end
-
-  defp system_update?(update),
-    do: update.subject_type in PermissionHelper.system_entity_types()
-
-  # A content Update must carry the Action's whole group set. A system
-  # Update must too, except an `entityGroup` put that carries a content
-  # entity's own membership: its group is one the entity is created into,
-  # so it is in the union by construction. The exemption is for creates
-  # alone; widening an existing entity's scope beside a content write is
-  # the leak this check blocks.
-  defp scope_matches?({update, groups}, union, created_ids) do
-    groups == union or own_membership_put?(update, created_ids)
-  end
-
-  defp own_membership_put?(%{subject_type: "entityGroup", method: :put} = update, created_ids) do
-    entity_id = Fields.get(update.data, "entity_id")
-    is_binary(entity_id) and MapSet.member?(created_ids, entity_id)
-  end
-
-  defp own_membership_put?(_update, _created_ids), do: false
-
-  defp render_scope_mismatch(offenders, union) do
-    rendered =
-      Enum.map_join(offenders, "; ", fn {update, groups} ->
-        "#{update.subject_type} #{update.id} resolves to #{format_groups(groups)}"
-      end)
-
-    "#{rendered}; the Action spans #{format_groups(union)}"
-  end
-
-  defp format_groups(groups), do: "[" <> Enum.join(groups, ", ") <> "]"
 
   @spec validate_structure(raw_action()) :: :ok | {:error, String.t(), String.t()}
   defdelegate validate_structure(action), to: ActionValidator

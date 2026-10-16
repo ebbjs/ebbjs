@@ -5,6 +5,7 @@ defmodule EbbServer.Sync.CatchUpTest do
   import EbbServer.TestHelpers
 
   alias EbbServer.Integration.ActionHelpers
+  alias EbbServer.Storage.{RocksDB, WatermarkTracker}
   alias EbbServer.Sync.CatchUp
 
   describe "catch_up_group/3" do
@@ -109,6 +110,54 @@ defmodule EbbServer.Sync.CatchUpTest do
       assert length(second_page) == 51
       assert final_meta.up_to_date == true
       assert final_meta.next_offset == nil
+    end
+
+    test "delivers an Action with no per-Update scopes whole (pre-#473 fallback)" do
+      actor_id = "a_legacy_#{:erlang.unique_integer([:positive])}"
+      group_id = "g_legacy_#{:erlang.unique_integer([:positive])}"
+
+      ActionHelpers.bootstrap_group(actor_id, group_id, ["todo.read", "todo.create"])
+      Process.sleep(100)
+
+      gsn = RocksDB.get_max_gsn() + 1
+      hlc = generate_hlc()
+
+      # An Action committed before #473 has no `"update_scopes"`: catch-up
+      # must return it whole rather than dropping it.
+      legacy = %{
+        "id" => "act_legacy_#{:erlang.unique_integer([:positive])}",
+        "actor_id" => actor_id,
+        "hlc" => hlc,
+        "gsn" => gsn,
+        "updates" => [
+          %{
+            "id" => "upd_legacy_#{:erlang.unique_integer([:positive])}",
+            "subject_id" => "todo_legacy",
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{"title" => %{"type" => "lww", "value" => "x", "hlc" => hlc}}
+            }
+          }
+        ]
+      }
+
+      :ok =
+        RocksDB.write_batch([
+          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn),
+           :erlang.term_to_binary(legacy)},
+          {:put, RocksDB.cf_group_actions(), RocksDB.encode_group_action_key(group_id, gsn),
+           legacy["id"]}
+        ])
+
+      :ok = WatermarkTracker.mark_range_committed(gsn, gsn)
+      WatermarkTracker.advance_watermark()
+
+      {:ok, actions, _meta} = CatchUp.catch_up_group(group_id, actor_id, gsn - 1)
+
+      assert [returned] = actions
+      assert returned["id"] == legacy["id"]
+      assert length(returned["updates"]) == 1
     end
 
     test "non-member rejection: returns {:error, :not_member}" do

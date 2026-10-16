@@ -256,6 +256,137 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
     end
   end
 
+  describe "per-Update delivery (#473)" do
+    test "pushes each Update only to the group it scopes to" do
+      actor_id = "a_473_#{:erlang.unique_integer([:positive])}"
+      g1 = "g_473_a_#{:erlang.unique_integer([:positive])}"
+      g2 = "g_473_b_#{:erlang.unique_integer([:positive])}"
+
+      assert ActionHelpers.bootstrap_group(actor_id, g1, ["todo.*", "entityGroup.*"]).status ==
+               200
+
+      assert ActionHelpers.bootstrap_group(actor_id, g2, ["todo.*", "entityGroup.*"]).status ==
+               200
+
+      # An entity already in g2, so the membership delta can target it.
+      hlc = generate_hlc()
+      other_id = "todo_473_other_#{:erlang.unique_integer([:positive])}"
+
+      seed = %{
+        "id" => "act_473_seed_#{:erlang.unique_integer([:positive])}",
+        "actor_id" => actor_id,
+        "hlc" => hlc,
+        "updates" => [
+          todo_update(other_id, hlc),
+          ActionHelpers.entity_group_update(other_id, g2, hlc)
+        ]
+      }
+
+      assert ActionHelpers.post_actions(
+               ActionHelpers.msgpack_encode!(%{"actions" => [seed]}),
+               actor_id
+             ).status == 200
+
+      c1 = start_collector(:g1)
+      c2 = start_collector(:g2)
+
+      {:ok, sse1} = EbbServer.Sync.SSEConnection.start_link(c1, [g1], %{g1 => 0})
+      {:ok, sse2} = EbbServer.Sync.SSEConnection.start_link(c2, [g2], %{g2 => 0})
+
+      :ok = FanOutRouter.subscribe([g1], sse1, actor_id)
+      :ok = FanOutRouter.subscribe([g2], sse2, actor_id)
+
+      leaked_id = "todo_473_leak_#{:erlang.unique_integer([:positive])}"
+      eg_leak = "eg_473_leak_#{:erlang.unique_integer([:positive])}"
+      eg_other = "eg_473_other_#{:erlang.unique_integer([:positive])}"
+      action_id = "act_473_span_#{:erlang.unique_integer([:positive])}"
+
+      action = %{
+        "id" => action_id,
+        "actor_id" => actor_id,
+        "hlc" => hlc,
+        "updates" => [
+          todo_update(leaked_id, hlc),
+          entity_group_put(eg_leak, leaked_id, g1, hlc),
+          entity_group_put(eg_other, other_id, g2, hlc)
+        ]
+      }
+
+      conn =
+        ActionHelpers.post_actions(
+          ActionHelpers.msgpack_encode!(%{"actions" => [action]}),
+          actor_id
+        )
+
+      assert conn.status == 200
+      assert conn.resp_body == ~s({"rejected":[]})
+
+      g1_ids = action_id |> await_chunk(:g1) |> update_subject_ids()
+      g2_ids = action_id |> await_chunk(:g2) |> update_subject_ids()
+
+      # One Action; g1 sees only its own write and membership row, g2 only
+      # the row for the entity it already holds.
+      assert Enum.sort(g1_ids) == Enum.sort([leaked_id, eg_leak])
+      assert g2_ids == [eg_other]
+
+      :ok = FanOutRouter.unsubscribe(sse1)
+      :ok = FanOutRouter.unsubscribe(sse2)
+    end
+  end
+
+  defp todo_update(entity_id, hlc) do
+    %{
+      "id" => "upd_473_#{:erlang.unique_integer([:positive])}",
+      "subject_id" => entity_id,
+      "subject_type" => "todo",
+      "method" => "put",
+      "data" => %{"fields" => %{"title" => %{"type" => "lww", "value" => "x", "hlc" => hlc}}}
+    }
+  end
+
+  defp entity_group_put(eg_id, entity_id, group_id, hlc) do
+    %{
+      "id" => eg_id,
+      "subject_id" => eg_id,
+      "subject_type" => "entityGroup",
+      "method" => "put",
+      "data" => %{
+        "fields" => %{
+          "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
+          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
+        }
+      }
+    }
+  end
+
+  defp start_collector(tag) do
+    test = self()
+    spawn(fn -> collect_chunks(test, tag) end)
+  end
+
+  defp collect_chunks(test, tag) do
+    receive do
+      {:sse_chunk, _type, payload} -> send(test, {tag, payload})
+      _other -> :ok
+    end
+
+    collect_chunks(test, tag)
+  end
+
+  defp await_chunk(action_id, tag) do
+    receive do
+      {^tag, json} ->
+        payload = Jason.decode!(json)
+        if payload["id"] == action_id, do: payload, else: await_chunk(action_id, tag)
+    after
+      5_000 -> flunk("timed out waiting for #{action_id} on #{inspect(tag)}")
+    end
+  end
+
+  defp update_subject_ids(payload) do
+    payload |> Map.get("updates") |> Enum.map(& &1["subject_id"])
+  end
+
   defp router_subscriptions do
     :sys.get_state(FanOutRouter).subscriptions
   end

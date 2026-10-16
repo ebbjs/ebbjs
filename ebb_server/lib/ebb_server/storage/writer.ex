@@ -62,6 +62,14 @@ defmodule EbbServer.Storage.Writer do
   while `cf_group_actions` is emitted once per Action from the union of
   resolved group ids.
 
+  Every resolved per-Update scope is also persisted with the Action, as
+  `"update_scopes"`: one group list per Update, index-aligned with
+  `"updates"`. Fan-out and catch-up filter an Action by those scopes so
+  each Update is delivered only to the groups it belongs to. The scopes
+  cannot be re-derived later (a `relationship`/`entityGroup` delete's
+  by-id cache entry is gone by then), so this snapshot is the delivery
+  contract.
+
   System-cache writes are deduplicated the same way. The post-commit
   pass flattens the flush's Updates once, drops a mutation identical to
   the previous one for the same `{cache, key}`, and applies each survivor
@@ -410,7 +418,8 @@ defmodule EbbServer.Storage.Writer do
   2. Claims one GSN range for the remaining fresh actions.
   3. Builds and synchronously commits a single WriteBatch across the written
      column families:
-     - cf_actions: GSN → full action, including its Updates (ETF encoded)
+     - cf_actions: GSN → full action, including its Updates and their
+       per-Update group scopes (ETF encoded)
      - cf_action_dedup: action_id → GSN (duplicate detection)
      - cf_entity_actions: (subject_id, GSN) → action_id (materialization index)
      - cf_type_entities: (subject_type, subject_id) → <<>> (type index)
@@ -1031,9 +1040,6 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp build_action_ops(action, gsn, rocks_name, flush_opts, memo) do
-    action_with_gsn = to_storage_format(action, gsn)
-    action_etf = :erlang.term_to_binary(action_with_gsn)
-
     resolve_opts =
       Keyword.put(flush_opts, :intra_action, build_intra_action_context(action.updates))
 
@@ -1045,11 +1051,15 @@ defmodule EbbServer.Storage.Writer do
         {ops, {[group_ids | groups], [type_entity_key | keys], memo}}
       end)
 
-    group_ids =
-      group_ids_by_update
-      |> Enum.reverse()
-      |> :lists.append()
-      |> Enum.uniq()
+    # Index-aligned with `action.updates`: the durable record of which
+    # groups each Update is delivered to. Computed here, from the same
+    # snapshot `cf_group_actions` is built from, because the by-id caches
+    # for a relationship/entityGroup delete are gone by fan-out time.
+    update_scopes = Enum.reverse(group_ids_by_update)
+
+    action_etf = :erlang.term_to_binary(to_storage_format(action, gsn, update_scopes))
+
+    group_ids = update_scopes |> :lists.append() |> Enum.uniq()
 
     # The union of resolved groups is indexed once per Action, not once
     # per Update, so repeated memberships cannot write the same
@@ -1083,12 +1093,13 @@ defmodule EbbServer.Storage.Writer do
     PermissionHelper.build_intra_action_context(updates)
   end
 
-  defp to_storage_format(action, gsn) do
+  defp to_storage_format(action, gsn, update_scopes) do
     %{
       "id" => action.id,
       "actor_id" => action.actor_id,
       "hlc" => action.hlc,
       "gsn" => gsn,
+      "update_scopes" => update_scopes,
       "updates" =>
         Enum.map(action.updates, fn update ->
           method_str =
