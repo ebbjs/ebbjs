@@ -14,48 +14,15 @@ export interface RunningServer {
   kill(): Promise<void>;
 }
 
-export interface GroupSeed {
-  id: string;
-  name: string;
-}
-
-export interface GroupMemberSeed {
-  id: string;
-  actorId: string;
-  groupId: string;
-  permissions: string[];
-}
-
-export interface EntitySeed {
-  id: string;
-  type: string;
-  patches: Array<{
-    fields: Record<string, { value: unknown; hlc: string; update_id: string }>;
-  }>;
-}
-
-export interface RelationshipSeed {
-  id: string;
-  sourceId: string;
-  targetId: string;
-  type: string;
-  field: string;
-}
-
-/** One entity↔Group membership row, submitted as an `entityGroup` put. */
-export interface EntityGroupSeed {
-  id: string;
-  entityId: string;
-  groupId: string;
-}
-
-export interface SeedData {
-  groups: GroupSeed[];
-  groupMembers: GroupMemberSeed[];
-  entities: EntitySeed[];
-  relationships?: RelationshipSeed[];
-  entityGroups?: EntityGroupSeed[];
-  baseHlc?: number;
-}
+// Seed types live in the browser-safe `@ebbjs/client/seed` module; the
+// server re-exports them so its public surface is unchanged.
+export type {
+  GroupSeed,
+  GroupMemberSeed,
+  EntitySeed,
+  RelationshipSeed,
+  EntityGroupSeed,
+  SeedData,
+} from "@ebbjs/client/seed";
 
 export type { Action };

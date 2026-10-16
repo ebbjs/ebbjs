@@ -26,6 +26,7 @@
     "fmt:check": "pnpm --root ../../ fmt:check"
   },
   "dependencies": {
+    "@ebbjs/client": "workspace:*",
     "@ebbjs/core": "workspace:*"
   },
   "devDependencies": {
