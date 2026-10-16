@@ -1,7 +1,7 @@
 /**
  * Shape tests for `AtomicActionError`, the typed failure the atomic
- * resolver throws for a coherence refusal and for a server-side
- * rejection.
+ * resolver throws for a client-side membership refusal and for a
+ * server-side rejection.
  */
 
 import { describe, expect, it } from "vitest";
@@ -9,11 +9,11 @@ import { describe, expect, it } from "vitest";
 import { EntityValidationError } from "../../schema/entity-registry";
 import { AtomicActionError, type AtomicRejection } from "../atomic";
 
-const coherenceRejection: AtomicRejection = {
+const membershipRejection: AtomicRejection = {
   id: "e_todo1",
   subjectType: "todo",
-  reason: "group_mismatch",
-  details: "belongs to group(s) [g_1]; the Action writes to [g_1, g_2]",
+  reason: "last_membership",
+  details: "removing this membership would leave the entity with no owning group",
 };
 
 const serverRejection: AtomicRejection = {
@@ -24,14 +24,14 @@ const serverRejection: AtomicRejection = {
 
 describe("AtomicActionError", () => {
   it("carries the rejection reasons and formats one message line per rejection", () => {
-    const error = new AtomicActionError([coherenceRejection, serverRejection]);
+    const error = new AtomicActionError([membershipRejection, serverRejection]);
 
     expect(error).toBeInstanceOf(Error);
     expect(error.name).toBe("AtomicActionError");
-    expect(error.rejections).toEqual([coherenceRejection, serverRejection]);
+    expect(error.rejections).toEqual([membershipRejection, serverRejection]);
     expect(error.message.split("\n")).toEqual([
       "AtomicActionError: 2 rejected update(s)",
-      "  - todo e_todo1: group_mismatch (belongs to group(s) [g_1]; the Action writes to [g_1, g_2])",
+      "  - todo e_todo1: last_membership (removing this membership would leave the entity with no owning group)",
       "  - act_1: not_authorized (actor lacks todo.put in group g_1)",
     ]);
   });
@@ -48,7 +48,7 @@ describe("AtomicActionError", () => {
 
   it("mirrors EntityValidationError's error surface", () => {
     const validation = new EntityValidationError([{ entityName: "todo", message: "bad field" }]);
-    const atomic = new AtomicActionError([coherenceRejection]);
+    const atomic = new AtomicActionError([membershipRejection]);
 
     expect(atomic).toBeInstanceOf(Error);
     expect(validation).toBeInstanceOf(Error);

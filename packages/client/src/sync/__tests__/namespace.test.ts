@@ -1337,7 +1337,7 @@ describe("client.<entity>.link / unlink / setLinks", () => {
     const response = await client.todo.link("todo_1", "list", "list_1");
 
     expect(response.rejected).toEqual([]);
-    // The membership read scopes coherence; it must not add Updates to the Action.
+    // The membership read scopes the write's fan-out; it must not add Updates to the Action.
     expect(seen.filter((url) => url.endsWith("/sync/actions")).length).toBe(before + 1);
   });
 

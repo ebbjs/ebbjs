@@ -41,14 +41,15 @@ export const mergeFields = (existing: Entity["data"], update: Update): Entity["d
  * - PUT: full replacement
  * - PATCH: field-level LWW merge; ignored on a soft-deleted entity
  * - DELETE: soft delete (sets `deleted_hlc`); bumps `last_gsn` and
- *   `updated_hlc`
+ *   `updated_hlc`. A delete for a row that was never materialized is a
+ *   no-op, so a per-Update delivery (#473) cannot break the drain.
  */
 export const applyUpdate = (
   entity: Entity | null,
   update: Update,
   gsn: number,
   hlc: HLCTimestamp,
-): Entity => {
+): Entity | null => {
   switch (update.method) {
     case "put":
       return {
@@ -72,7 +73,10 @@ export const applyUpdate = (
       };
 
     case "delete":
-      if (!entity) throw new Error("Cannot delete non-existent entity");
+      // The delivered group may never have held the row: with per-Update
+      // scope the delete and the put can land in different groups (#473).
+      // Absence is already the post-delete state, so it is a no-op.
+      if (!entity) return null;
       return {
         ...entity,
         deleted_hlc: hlc,

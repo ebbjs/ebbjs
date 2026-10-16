@@ -33,7 +33,9 @@ defmodule EbbServer.ActionExport do
   The exporter bypasses group authorization by design: it reads the log
   directly. System membership rows (`groupMember`, `entityGroup`) are
   stripped from the exported Updates by default, and an Action left with
-  no Updates is dropped entirely.
+  no Updates is dropped entirely. The per-Update delivery scopes (#473)
+  are internal routing metadata, not part of the Action contract, so they
+  are stripped too.
 
   ## Opt-in
 
@@ -207,8 +209,12 @@ defmodule EbbServer.ActionExport do
         removed = length(action["updates"]) - length(updates)
 
         case updates do
-          [] -> {kept, dropped + removed}
-          _ -> {[Map.put(action, "updates", updates) | kept], dropped + removed}
+          [] ->
+            {kept, dropped + removed}
+
+          _ ->
+            exported = action |> Map.put("updates", updates) |> Map.delete("update_scopes")
+            {[exported | kept], dropped + removed}
         end
       end)
 

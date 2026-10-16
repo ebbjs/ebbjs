@@ -205,6 +205,84 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
     end
   end
 
+  describe "per-Update delivery on recovery (#473)" do
+    test "a spanning Action recovered while the Router was down is delivered per scope" do
+      actor_id = "a_473_rec_#{:erlang.unique_integer([:positive])}"
+      g1 = "g_473_rec_a_#{:erlang.unique_integer([:positive])}"
+      g2 = "g_473_rec_b_#{:erlang.unique_integer([:positive])}"
+
+      assert ActionHelpers.bootstrap_group(actor_id, g1, ["todo.*", "entityGroup.*"]).status ==
+               200
+
+      assert ActionHelpers.bootstrap_group(actor_id, g2, ["todo.*", "entityGroup.*"]).status ==
+               200
+
+      # Seed an entity in g2 before anyone subscribes, so the recovered
+      # window holds only the spanning Action.
+      hlc = generate_hlc()
+      other_id = "todo_473_rec_other_#{:erlang.unique_integer([:positive])}"
+
+      seed = %{
+        "id" => "act_473_rec_seed_#{:erlang.unique_integer([:positive])}",
+        "actor_id" => actor_id,
+        "hlc" => hlc,
+        "updates" => [
+          todo_update(other_id, hlc),
+          ActionHelpers.entity_group_update(other_id, g2, hlc)
+        ]
+      }
+
+      assert ActionHelpers.post_actions(
+               ActionHelpers.msgpack_encode!(%{"actions" => [seed]}),
+               actor_id
+             ).status == 200
+
+      {:ok, sse1} = SSEConnection.start_link(self(), [g1], %{g1 => 0})
+      {:ok, sse2} = SSEConnection.start_link(self(), [g2], %{g2 => 0})
+      :ok = FanOutRouter.subscribe([g1], sse1, actor_id)
+      :ok = FanOutRouter.subscribe([g2], sse2, actor_id)
+
+      # The Router is down when the spanning Action commits, so only log
+      # re-derivation and the recovered group index can deliver it.
+      :ok = terminate_router()
+
+      leaked_id = "todo_473_rec_leak_#{:erlang.unique_integer([:positive])}"
+      eg_leak = "eg_473_rec_leak_#{:erlang.unique_integer([:positive])}"
+      eg_other = "eg_473_rec_other_#{:erlang.unique_integer([:positive])}"
+
+      action = %{
+        "id" => "act_473_rec_span_#{:erlang.unique_integer([:positive])}",
+        "actor_id" => actor_id,
+        "hlc" => hlc,
+        "updates" => [
+          todo_update(leaked_id, hlc),
+          entity_group_put(eg_leak, leaked_id, g1, hlc),
+          entity_group_put(eg_other, other_id, g2, hlc)
+        ]
+      }
+
+      assert ActionHelpers.post_actions(
+               ActionHelpers.msgpack_encode!(%{"actions" => [action]}),
+               actor_id
+             ).status == 200
+
+      {:ok, _pid} = restart_router()
+
+      scoped =
+        1..2
+        |> Enum.map(fn _ ->
+          assert_receive {:sse_chunk, "data", json}, 5_000
+          update_subject_ids(Jason.decode!(json))
+        end)
+        |> Enum.sort()
+
+      assert scoped == Enum.sort([Enum.sort([leaked_id, eg_leak]), [eg_other]])
+
+      :ok = FanOutRouter.unsubscribe(sse1)
+      :ok = FanOutRouter.unsubscribe(sse2)
+    end
+  end
+
   describe "recover_committed/2" do
     test "folds present GSNs into contiguous ranges and groups them by GSN" do
       put_action!(2, "act_2")
@@ -240,6 +318,35 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
       assert {ranges, _groups} = FanOutRouter.recover_committed(1, 2)
       assert ranges == [{1, 2}]
     end
+  end
+
+  defp todo_update(entity_id, hlc) do
+    %{
+      "id" => "upd_473_rec_#{:erlang.unique_integer([:positive])}",
+      "subject_id" => entity_id,
+      "subject_type" => "todo",
+      "method" => "put",
+      "data" => %{"fields" => %{"title" => %{"type" => "lww", "value" => "x", "hlc" => hlc}}}
+    }
+  end
+
+  defp entity_group_put(eg_id, entity_id, group_id, hlc) do
+    %{
+      "id" => eg_id,
+      "subject_id" => eg_id,
+      "subject_type" => "entityGroup",
+      "method" => "put",
+      "data" => %{
+        "fields" => %{
+          "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
+          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
+        }
+      }
+    }
+  end
+
+  defp update_subject_ids(payload) do
+    payload |> Map.get("updates") |> Enum.map(& &1["subject_id"]) |> Enum.sort()
   end
 
   defp put_action!(gsn, action_id) do

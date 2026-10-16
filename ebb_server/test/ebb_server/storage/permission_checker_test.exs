@@ -68,16 +68,6 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
     }
   end
 
-  defp user_patch_update(id, subject_id) do
-    %{
-      "id" => id,
-      "subject_id" => subject_id,
-      "subject_type" => "todo",
-      "method" => "patch",
-      "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
-    }
-  end
-
   defp relationship_put_update(id, source_id, target_id) do
     %{
       "id" => id,
@@ -406,7 +396,9 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       assert rejected == []
     end
 
-    test "a content write riding a membership write into another group is rejected" do
+    test "accepts a content write that rides a membership write into another group" do
+      # Delivery, not authorization, keeps each Update in its own scope now
+      # (#473): the pipeline lets a spanning Action through.
       tables = create_isolated_tables()
       opts = auth_opts(tables)
 
@@ -427,12 +419,8 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
 
       {accepted, rejected} = PermissionChecker.validate_and_authorize([action], "a_1", opts)
 
-      assert accepted == []
-      assert [rejection] = rejected
-      assert rejection.action_id == "act_mixed"
-      assert rejection.reason == "group_mismatch"
-      assert rejection.details =~ "g_a"
-      assert rejection.details =~ "g_b"
+      assert [%{id: "act_mixed"}] = accepted
+      assert rejected == []
     end
 
     test "a multi-group content Action is accepted" do
@@ -491,69 +479,6 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       assert rejected == []
     end
 
-    test "a group-mismatched Action is rejected without rejecting its siblings" do
-      tables = create_isolated_tables()
-      opts = auth_opts(tables)
-
-      put_group_member(tables, "g_a", ["todo.create"])
-      put_group_member(tables, "g_b", ["todo.create"], "gm_b")
-      put_entity_type(tables, "other_1", "todo")
-
-      matching = %{
-        "id" => "act_matching",
-        "actor_id" => "a_1",
-        "hlc" => generate_hlc(),
-        "updates" => [
-          user_put_update("upd_ok", "todo_ok"),
-          entity_group_put_update("upd_ok_eg", "todo_ok", "g_a")
-        ]
-      }
-
-      mismatched = %{
-        "id" => "act_mismatched",
-        "actor_id" => "a_1",
-        "hlc" => generate_hlc(),
-        "updates" => [
-          user_put_update("upd_bad", "todo_bad"),
-          entity_group_put_update("upd_bad_eg", "todo_bad", "g_a"),
-          entity_group_put_update("upd_other_eg", "other_1", "g_b")
-        ]
-      }
-
-      {accepted, rejected} =
-        PermissionChecker.validate_and_authorize([matching, mismatched], "a_1", opts)
-
-      assert [%{id: "act_matching"}] = accepted
-      assert [%{action_id: "act_mismatched", reason: "group_mismatch"}] = rejected
-    end
-
-    test "rejects two content writes filed into different groups" do
-      tables = create_isolated_tables()
-      opts = auth_opts(tables)
-
-      put_group_member(tables, "g_a", ["todo.create"])
-      put_group_member(tables, "g_b", ["todo.create"], "gm_b")
-
-      action = %{
-        "id" => "act_two_groups",
-        "actor_id" => "a_1",
-        "hlc" => generate_hlc(),
-        "updates" => [
-          user_put_update("upd_one", "todo_one"),
-          entity_group_put_update("upd_one_eg", "todo_one", "g_a"),
-          user_put_update("upd_two", "todo_two"),
-          entity_group_put_update("upd_two_eg", "todo_two", "g_b")
-        ]
-      }
-
-      {accepted, rejected} = PermissionChecker.validate_and_authorize([action], "a_1", opts)
-
-      assert accepted == []
-      assert [%{reason: "group_mismatch", details: details}] = rejected
-      assert details =~ "todo upd_one resolves to [g_a]"
-      assert details =~ "todo upd_two resolves to [g_b]"
-    end
-
     test "accepts a relationship that follows an entity the same Action creates" do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
@@ -575,96 +500,6 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
 
       assert [%{id: "act_rel_owned"}] = accepted
       assert rejected == []
-    end
-
-    test "rejects a scope-widening membership write on a patched entity" do
-      tables = create_isolated_tables()
-      opts = auth_opts(tables)
-
-      put_group_member(tables, "g_a", ["todo.update"])
-      put_group_member(tables, "g_b", ["todo.create"], "gm_b")
-      put_membership(tables, "todo_1", "g_a", "eg_a")
-      put_entity_type(tables, "todo_1", "todo")
-
-      action = %{
-        "id" => "act_patch_widen",
-        "actor_id" => "a_1",
-        "hlc" => generate_hlc(),
-        "updates" => [
-          user_patch_update("upd_patch", "todo_1"),
-          entity_group_put_update("upd_eg_b", "todo_1", "g_b")
-        ]
-      }
-
-      {accepted, rejected} = PermissionChecker.validate_and_authorize([action], "a_1", opts)
-
-      assert accepted == []
-      assert [%{reason: "group_mismatch", details: details}] = rejected
-      assert details =~ "entityGroup upd_eg_b resolves to [g_b]"
-    end
-
-    test "rejects a content write riding an entityGroup delete" do
-      tables = create_isolated_tables()
-      opts = auth_opts(tables)
-
-      put_group_member(tables, "g_a", ["todo.create"])
-      put_group_member(tables, "g_b", ["todo.update"], "gm_b")
-      put_membership(tables, "other_1", "g_b", "eg_b")
-      put_membership(tables, "other_1", "g_c", "eg_c")
-      put_entity_group_by_id(tables, "eg_b", "other_1", "g_b")
-      put_entity_type(tables, "other_1", "todo")
-
-      action = %{
-        "id" => "act_content_delete",
-        "actor_id" => "a_1",
-        "hlc" => generate_hlc(),
-        "updates" => [
-          user_put_update("upd_todo", "todo_new"),
-          entity_group_put_update("upd_eg_a", "todo_new", "g_a"),
-          %{
-            "id" => "upd_eg_del",
-            "subject_id" => "eg_b",
-            "subject_type" => "entityGroup",
-            "method" => "delete",
-            "data" => nil
-          }
-        ]
-      }
-
-      {accepted, rejected} = PermissionChecker.validate_and_authorize([action], "a_1", opts)
-
-      assert accepted == []
-      assert [%{reason: "group_mismatch", details: details}] = rejected
-      assert details =~ "entityGroup upd_eg_del resolves to [g_b]"
-    end
-
-    test "rejects a multi-group content write riding a relationship from another entity" do
-      tables = create_isolated_tables()
-      opts = auth_opts(tables)
-
-      put_group_member(tables, "g_a", ["todo.create"])
-      put_group_member(tables, "g_b", ["todo.create", "todo.update"], "gm_b")
-      put_membership(tables, "other_1", "g_b", "eg_other")
-      put_entity_type(tables, "other_1", "todo")
-
-      action = %{
-        "id" => "act_rel_foreign",
-        "actor_id" => "a_1",
-        "hlc" => generate_hlc(),
-        "updates" => [
-          user_put_update("upd_todo", "todo_1"),
-          entity_group_put_update("upd_eg_a", "todo_1", "g_a"),
-          entity_group_put_update("upd_eg_b", "todo_1", "g_b"),
-          relationship_put_update("upd_rel", "other_1", "target_1")
-        ]
-      }
-
-      {accepted, rejected} = PermissionChecker.validate_and_authorize([action], "a_1", opts)
-
-      assert accepted == []
-      assert [%{reason: "group_mismatch", details: details}] = rejected
-      refute details =~ "upd_todo"
-      assert details =~ "relationship upd_rel resolves to [g_b]"
     end
   end
 

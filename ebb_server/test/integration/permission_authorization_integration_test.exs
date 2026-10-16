@@ -50,7 +50,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       assert entity_id in action_ids("group_2", "actor_1")
     end
 
-    test "rejects a content write that rides a membership write into another group" do
+    test "delivers a spanning Action per Update scope, with no leak" do
       bootstrap_group("actor_1", "group_1", ["todo.create", "todo.read"])
       bootstrap_group("actor_1", "group_2", ["todo.create", "todo.read"])
 
@@ -59,8 +59,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       eg_other = "eg_#{Nanoid.generate()}"
 
       # An existing entity in group_2, so the second membership put below
-      # authorizes on its own; the rejection has to come from the
-      # group-scope check.
+      # authorizes on its own.
       seed = %{
         "id" => "act_seed_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
@@ -88,15 +87,66 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         ]
       }
 
-      assert %{"rejected" => [rejection]} = post_membership_action(action)
-      assert rejection["reason"] == "group_mismatch"
-      assert rejection["id"] == action["id"]
-      assert rejection["details"] =~ "group_1"
-      assert rejection["details"] =~ "group_2"
+      # The spanning Action commits as one Action; only delivery is scoped.
+      assert %{"rejected" => []} = post_membership_action(action)
 
       Process.sleep(50)
-      refute leaked_id in action_ids("group_1", "actor_1")
+
+      assert leaked_id in action_ids("group_1", "actor_1")
+      assert eg_leak in action_ids("group_1", "actor_1")
+
+      # group_2 gets its own membership row, never the group_1 write.
+      assert eg_other_2 in action_ids("group_2", "actor_1")
       refute leaked_id in action_ids("group_2", "actor_1")
+      refute eg_leak in action_ids("group_2", "actor_1")
+    end
+
+    test "setGroups moving an entity delivers each Update to its own group" do
+      bootstrap_group("actor_1", "group_1", ["todo.create", "todo.update", "todo.read"])
+      bootstrap_group("actor_1", "group_2", ["todo.create", "todo.read"])
+
+      hlc = generate_hlc()
+      entity_id = "todo_move_#{Nanoid.generate()}"
+      eg_old = "eg_#{Nanoid.generate()}"
+      eg_new = "eg_#{Nanoid.generate()}"
+
+      create = %{
+        "id" => "act_move_create_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(entity_id, hlc),
+          entity_group_put(eg_old, entity_id, "group_1", hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = post_membership_action(create)
+
+      move = %{
+        "id" => "act_move_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          entity_group_put(eg_new, entity_id, "group_2", hlc),
+          %{
+            "id" => "upd_move_#{Nanoid.generate()}",
+            "subject_id" => eg_old,
+            "subject_type" => "entityGroup",
+            "method" => "delete",
+            "data" => nil
+          }
+        ]
+      }
+
+      assert %{"rejected" => []} = post_membership_action(move)
+
+      Process.sleep(50)
+
+      # The group it left sees the delete, the group it joined sees the put.
+      assert eg_old in action_ids("group_1", "actor_1")
+      refute eg_new in action_ids("group_1", "actor_1")
+      assert eg_new in action_ids("group_2", "actor_1")
+      refute eg_old in action_ids("group_2", "actor_1")
     end
   end
 

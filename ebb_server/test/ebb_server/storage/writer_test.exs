@@ -128,7 +128,7 @@ defmodule EbbServer.Storage.WriterTest do
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
       gsn_key = RocksDB.encode_gsn_key(1)
-      stored_action = to_storage_format(action, 1)
+      stored_action = to_storage_format(action, 1, [[]])
       action_etf = :erlang.term_to_binary(stored_action)
 
       assert {:ok, stored_etf} =
@@ -160,6 +160,55 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert {:ok, ^gsn_key} =
                RocksDB.get(RocksDB.cf_action_dedup(rocks_name), action.id, name: rocks_name)
+    end
+
+    test "persists each Update's own scope and indexes the Action into their union", ctx do
+      %{rocks_name: rocks_name, writer_name: writer_name} = ctx
+
+      :ok =
+        EntityGroupCache.put_entity_group(
+          %{id: "eg_a", entity_id: "todo_a", group_id: "group_1"},
+          entity_groups: ctx.entity_groups,
+          entity_groups_by_id: ctx.entity_groups_by_id,
+          entity_groups_by_group: ctx.entity_groups_by_group
+        )
+
+      update_a = validated_update(%{subject_id: "todo_a", subject_type: "todo"})
+      update_b = validated_update(%{subject_id: "todo_b", subject_type: "todo"})
+
+      update_eg_b =
+        validated_update(%{
+          id: "eg_b",
+          subject_id: "eg_b",
+          subject_type: "entityGroup",
+          data: %{
+            "fields" => %{
+              "entity_id" => %{"value" => "todo_b"},
+              "group_id" => %{"value" => "group_2"}
+            }
+          }
+        })
+
+      action = validated_action(%{updates: [update_a, update_b, update_eg_b]})
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      {:ok, binary} =
+        RocksDB.get(RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(1), name: rocks_name)
+
+      # The Action spans group_1 (todo_a) and group_2 (the new todo_b and its
+      # membership row); the stored per-Update scopes keep them apart.
+      assert %{"update_scopes" => [["group_1"], ["group_2"], ["group_2"]]} =
+               :erlang.binary_to_term(binary, [:safe])
+
+      for group_id <- ["group_1", "group_2"] do
+        key = RocksDB.encode_group_action_key(group_id, 1)
+
+        assert {:ok, action_id} =
+                 RocksDB.get(RocksDB.cf_group_actions(rocks_name), key, name: rocks_name)
+
+        assert action_id == action.id
+      end
     end
 
     test "dedups repeated (subject_type, subject_id) index puts across the flush", ctx do
@@ -1568,12 +1617,13 @@ defmodule EbbServer.Storage.WriterTest do
     for {:put, ^cf, _key, _value} <- ops, do: :ok
   end
 
-  defp to_storage_format(action, gsn) do
+  defp to_storage_format(action, gsn, update_scopes) do
     %{
       "id" => action.id,
       "actor_id" => action.actor_id,
       "hlc" => action.hlc,
       "gsn" => gsn,
+      "update_scopes" => update_scopes,
       "updates" =>
         Enum.map(action.updates, fn update ->
           %{

@@ -947,9 +947,9 @@ export function createEntityNamespace<
       return submitRelationshipWrite(write, storage, entityName, id, as, { targetIds: patch });
     },
     // Membership mutations are offline-legal (#126) and go through the
-    // normal outbox path as one `changeGroups` operation. Their Actions
-    // are system-only, so the committer lets them span the union of the
-    // pre- and post-Action group sets (#464).
+    // normal outbox path as one `changeGroups` operation. Its Updates
+    // span the pre- and post-Action group sets; the server delivers each
+    // by its own scope (#473).
     async addToGroup(id: string, groupId: GroupRef): Promise<WriteResponse> {
       const target = resolveSingleGroupId(groupId, entityName, "addToGroup");
       const current = await readEntityMemberships(storage, id);

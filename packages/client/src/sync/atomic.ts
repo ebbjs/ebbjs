@@ -19,12 +19,11 @@
  * The schema-bound `defineAction` form (#232) layers on top of this
  * resolver; this module stays independent of it.
  *
- * ### Permission coherence (#233)
+ * ### Per-Update delivery (#473)
  *
- * #127 makes an Action fully visible or fully invisible to a client, so
- * every content write in one call must resolve to the identical group
- * set. The committer enforces the rule over the collected operations
- * before submission, so an incoherent batch never reaches the outbox.
+ * The server delivers each Update by its own group scope, so one batch
+ * may span groups: a content write and a membership delta into
+ * different groups compose into one Action without a client gate.
  */
 
 import { generateId, type FieldValue } from "@ebbjs/core";
@@ -439,9 +438,9 @@ const buildDrafts = (
 /**
  * Build the `client.atomic` runtime for a schema. Each call gets a
  * fresh collector, runs the callback to gather operations, commits them
- * as one Action, and resolves to the callback's return value. The
- * committer enforces coherence; a server rejection of the submitted
- * Action becomes an {@link AtomicActionError}.
+ * as one Action, and resolves to the callback's return value. A server
+ * rejection of the submitted Action becomes an
+ * {@link AtomicActionError}.
  */
 export function createAtomicRuntime<S extends Schema<Record<string, AnyEntityDef>, unknown>>(
   schema: S,

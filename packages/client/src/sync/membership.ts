@@ -7,35 +7,11 @@
  *
  * The rules mirror the server's `EntityIndex.fan_out_groups/2` and
  * `Authorizer` (#461/#264) so the client refuses, before an Action
- * reaches the outbox, what the server would reject anyway. Coherence
- * (the identical-group-set rule) is the committer's job; this module
- * supplies the scope every operation in a batch is compared by.
+ * reaches the outbox, what the server would reject anyway. The scope
+ * resolution also feeds the `groups` union the committer returns.
  */
 
 import type { Update } from "@ebbjs/core";
-
-/**
- * Subject types the server treats as system writes: they are exempt
- * from the identical-group-set rule because a system-only Action's
- * union is the membership operation's visibility scope (#461).
- */
-export const SYSTEM_ENTITY_TYPES = ["group", "groupMember", "relationship", "entityGroup"] as const;
-
-const SYSTEM_TYPE_SET: ReadonlySet<string> = new Set(SYSTEM_ENTITY_TYPES);
-
-/** True for a subject type the server authorizes as a system entity. */
-export const isSystemEntityType = (subjectType: string): boolean =>
-  SYSTEM_TYPE_SET.has(subjectType);
-
-/**
- * True when the Update is a system write. A batch whose Updates are all
- * system writes may span groups; one content write makes the whole
- * Action content-bearing and subject to the identical-group-set rule.
- */
-export const isSystemUpdate = (update: Update): boolean => isSystemEntityType(update.subject_type);
-
-/** True when every Update is a system write. Vacuously true for none. */
-export const isSystemOnly = (updates: readonly Update[]): boolean => updates.every(isSystemUpdate);
 
 /**
  * The local view the checker resolves a system write against. It is

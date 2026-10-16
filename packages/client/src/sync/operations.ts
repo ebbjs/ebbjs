@@ -8,7 +8,7 @@
  * Keeping the mutation as a value (rather than a method that submits)
  * is what lets the imperative namespaces and `client.atomic` /
  * `defineAction` share one planner, and what lets the committer wrap
- * a batch in a single Action while enforcing #127's coherence rule.
+ * a batch in a single Action.
  */
 
 import { generateId, type Update } from "@ebbjs/core";
@@ -32,11 +32,11 @@ import {
 import { lastMembershipViolation, membershipScope, type MembershipView } from "./membership";
 
 /**
- * Refusal of an atomic call: a client-side coherence failure, or the
- * server's `rejected[]` for the submitted Action. Extends the wire
- * `Rejection` with the per-Update `subjectType` the client-side
- * coherence check can attribute, which the server's per-Action report
- * does not carry today.
+ * Refusal of an atomic call: a client-side membership failure
+ * (`last_membership` / `missing_ownership`), or the server's
+ * `rejected[]` for the submitted Action. Extends the wire `Rejection`
+ * with the per-Update `subjectType` the client-side checks can
+ * attribute, which the server's per-Action report does not carry today.
  */
 export type AtomicRejection = Rejection & { readonly subjectType?: string };
 
@@ -45,8 +45,8 @@ export type AtomicRejection = Rejection & { readonly subjectType?: string };
  * `EntityValidationError` — same `Error` shape, named subclass,
  * structured readonly reasons, message formatted from them.
  *
- * Thrown before submission for a coherence failure, so no Action
- * reaches the outbox.
+ * Thrown before submission for a client-side membership failure, so no
+ * Action reaches the outbox.
  */
 export class AtomicActionError extends Error {
   readonly rejections: readonly AtomicRejection[];

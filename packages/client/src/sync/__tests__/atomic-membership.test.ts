@@ -1,9 +1,8 @@
 /**
- * End-to-end tests for the membership operations and the #461/#464
- * coherence carve-out: a system-only Action may span groups, a
- * content-bearing Action must resolve every operation to one group set,
- * and the draft `addToGroup` / `removeFromGroup` verbs compose into the
- * batch.
+ * End-to-end tests for the membership operations (#464): the draft
+ * `addToGroup` / `removeFromGroup` verbs compose into the batch, and a
+ * content write plus a membership delta into different groups compose
+ * into one spanning Action (the server delivers per-Update scope, #473).
  */
 
 import { describe, expect, it } from "vitest";
@@ -91,25 +90,29 @@ describe("drafts — membership verbs (#464)", () => {
     expect(updates.filter((u) => u.subject_type === "entityGroup")).toHaveLength(2);
   });
 
-  it("refuses a content create in g_1 mixed with a membership delta into g_2", async () => {
+  it("submits a content create in g_1 mixed with a membership delta into g_2 as one Action", async () => {
     const { client, actions } = await mkClient();
 
-    const error = await client
-      .atomic(({ todo: draft }) => {
-        draft.create({ title: "Ship it" }, { groups: ["g_1"] });
-        draft.addToGroup("todo_existing", "g_2");
-      })
-      .catch((err: unknown) => err);
+    await client.atomic(({ todo: draft }) => {
+      draft.create({ title: "Ship it" }, { groups: ["g_1"] });
+      draft.addToGroup("todo_existing", "g_2");
+    });
 
-    expect(error).toBeInstanceOf(AtomicActionError);
-    expect((error as AtomicActionError).rejections.map((r) => r.reason)).toEqual([
-      "group_mismatch",
-      "group_mismatch",
-    ]);
-    expect(actions).toHaveLength(0);
+    expect(actions).toHaveLength(1);
+    const updates = updatesOf(actions);
+    // One content put + one entityGroup put for the create, plus one
+    // entityGroup put for the addToGroup. The batch spans g_1 and g_2.
+    expect(updates.filter((u) => u.subject_type === "todo")).toHaveLength(1);
+    expect(updates.filter((u) => u.subject_type === "entityGroup")).toHaveLength(2);
+    expect(
+      updates
+        .filter((u) => u.subject_type === "entityGroup")
+        .map((u) => u.data?.fields?.["group_id"]?.value)
+        .sort(),
+    ).toEqual(["g_1", "g_2"]);
   });
 
-  it("lets a system-only batch span groups in one Action", async () => {
+  it("lets a membership batch span groups in one Action", async () => {
     const { client, actions } = await mkClient();
 
     await client.atomic(({ todo: draft }) => {

@@ -4,10 +4,12 @@ defmodule EbbServer.Sync.CatchUp do
 
   Uses the pre-indexed `cf_group_actions` column family to efficiently
   retrieve all actions for a group in GSN order, regardless of how many
-  entities the group contains.
+  entities the group contains. Each Action is filtered to the Updates
+  whose persisted per-Update scope includes the group, so a spanning
+  Action contributes to a group's stream only what belongs to it (#473).
   """
 
-  alias EbbServer.Storage.{PermissionChecker, RocksDB, WatermarkTracker}
+  alias EbbServer.Storage.{ActionScope, PermissionChecker, RocksDB, WatermarkTracker}
   alias EbbServer.Telemetry
 
   @default_limit 200
@@ -58,27 +60,47 @@ defmodule EbbServer.Sync.CatchUp do
       |> RocksDB.range_iterator(from_key, to_key)
       |> Enum.to_list()
 
-    build_response(entries, limit)
+    build_response(entries, limit, group_id)
   end
 
-  defp build_response([], _limit) do
+  defp build_response([], _limit, _group_id) do
     {:ok, [], %{next_offset: nil, up_to_date: true}}
   end
 
-  defp build_response(entries, limit) do
+  defp build_response(entries, limit, group_id) do
     {gsns, _last_gsn} = parse_entries(entries)
 
     actions =
       gsns
       |> fetch_actions_by_gsn()
+      |> Enum.map(&scope_action(&1, group_id))
+      |> Enum.reject(&is_nil/1)
       |> Enum.sort_by(& &1["gsn"])
 
     if length(entries) <= limit do
       {:ok, actions, %{next_offset: nil, up_to_date: true}}
     else
       trimmed_actions = Enum.take(actions, limit)
-      last_gsn = List.last(trimmed_actions)["gsn"]
+
+      # Advance by the last entry's GSN, not the last returned Action, so a
+      # filtered-out Action can never stall pagination.
+      last_gsn =
+        case List.last(trimmed_actions) do
+          nil -> List.last(gsns)
+          action -> action["gsn"]
+        end
+
       {:ok, trimmed_actions, %{next_offset: last_gsn, up_to_date: false}}
+    end
+  end
+
+  # An Action with no Updates scoped to this group contributes nothing: the
+  # group's index entry implies at least one does, but a legacy or corrupt
+  # record could disagree, and pagination must not stall on it.
+  defp scope_action(action, group_id) do
+    case ActionScope.updates_for_group(action, group_id) do
+      [] -> nil
+      updates -> Map.put(action, "updates", updates)
     end
   end
 
