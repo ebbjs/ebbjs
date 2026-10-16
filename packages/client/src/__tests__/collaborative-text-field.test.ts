@@ -108,20 +108,23 @@ const canonicalize = (action: Action): unknown => {
     ids.set(id, next);
     return next;
   };
-  const canonicalFields = (fields: Record<string, { value: unknown }>): Record<string, unknown> => {
+  const canonicalFields = (fields: Record<string, unknown>): Record<string, unknown> => {
     const out: Record<string, unknown> = {};
     for (const [key, env] of Object.entries(fields)) {
+      const field = env as {
+        value?: unknown;
+        map?: Record<string, { value?: { text?: string } }>;
+      };
       if (key === "content") {
-        const map = (env as unknown as { map: Record<string, { value?: { text?: string } }> }).map;
-        out[key] = Object.values(map)
+        out[key] = Object.values(field.map ?? {})
           .map((entry) => entry.value?.text ?? null)
           .sort();
         continue;
       }
       out[key] =
         key === "source_id" || key === "target_id" || key === "entity_id"
-          ? idOf(env.value as string)
-          : env.value;
+          ? idOf(field.value as string)
+          : field.value;
     }
     return out;
   };
