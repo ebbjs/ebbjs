@@ -103,7 +103,7 @@ after `entity_index` (`watermark_tracker.ex:111-118`), and
 (`writer.ex:1046`, `writer.ex:1054`). Direction: represent the frontier as an
 interval / `{from, to}` instead of one ETS tuple per GSN, and hoist the
 duplicate `advance_watermark` / `affected_entities` computation
-(`writer.ex:676`, `writer.ex:753`). It is also groundwork for #287's
+(`writer.ex:677`, `writer.ex:754`). It is also groundwork for #287's
 claim/abandon ownership semantics.
 
 ### #6 — Startup snapshot — **PARK**

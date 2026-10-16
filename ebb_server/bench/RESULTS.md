@@ -314,8 +314,8 @@ delivery), so it folds in client and transport overhead; the server's own
 ### Fan-out: encode-once prototype (parked, #485)
 
 The prototype (commit `714f9c5`, reverted in `ee599f8`) hoisted encoding
-so each group's payload is built **once per flush** and the same binary is
-handed to every subscriber.
+so each group's payload is built **once per group per committed range** and
+the same binary is handed to every subscriber.
 
 Server-side on the 1000-subscriber run:
 
@@ -620,7 +620,7 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
    instead of 204/s. The dirty set still grows (~1.16M in the t0 spread
    run), but it no longer degrades throughput.
 2. **Any change that keeps a durable log append is capped at ~2.04×** — the
-   append floor is already ~50% of the full flush (1.903 of 3.881 ms/Action,
+   append floor is already ~50% of the full flush (1.903 of 3.881 ms/flush,
    t0 b100, #485), so collapsing the dual store cannot deliver the spike's
    ≥2× on its own: it removes only a subset of the non-append work (`dirty`
    ≈ 0, `cache` 0.17 ms, part of `entity_index`) and leaves
