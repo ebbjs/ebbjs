@@ -95,6 +95,11 @@ export class EntityRegistry {
     return this.entities.get(name);
   }
 
+  /** Every registered entity name, in registration order. */
+  entityNames(): readonly string[] {
+    return [...this.entities.keys()];
+  }
+
   has(name: string): boolean {
     return this.entities.has(name);
   }

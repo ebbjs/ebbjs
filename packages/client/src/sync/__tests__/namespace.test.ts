@@ -1173,7 +1173,7 @@ describe("doc.groups — built-in membership accessor", () => {
     expect(await row.groups).toEqual([]);
   });
 
-  it("exposes no reverse accessor and no group namespace in v1", async () => {
+  it("exposes the group and membership system namespaces, but not entityGroup", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     const client = createClient({
@@ -1182,8 +1182,11 @@ describe("doc.groups — built-in membership accessor", () => {
       storage,
       schema: groupsSchema,
     });
-    // `group` is a registry system entity, not a schema namespace.
-    expect((client as unknown as Record<string, unknown>)["group"]).toBeUndefined();
+    const namespaces = client as unknown as Record<string, unknown>;
+    // `group` / `membership` are system namespaces; `entityGroup` stays internal.
+    expect(namespaces["group"]).toBeDefined();
+    expect(namespaces["membership"]).toBeDefined();
+    expect(namespaces["entityGroup"]).toBeUndefined();
   });
 
   it("keeps the groups accessor out of the entity's data fields on the wire", () => {
