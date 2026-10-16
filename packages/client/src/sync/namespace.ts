@@ -669,9 +669,6 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
  */
 export interface WriteCapability {
   readonly registry: EntityRegistry;
-  buildRelationshipWrite(
-    opts: import("./relationship").BuildRelationshipWriteOptions,
-  ): import("./relationship").BuildRelationshipWriteResult;
   submitRelationshipUpdates(
     updates: readonly import("@ebbjs/core").Update[],
   ): Promise<WriteResponse>;

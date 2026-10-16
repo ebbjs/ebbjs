@@ -93,6 +93,48 @@ const waitForFlush = async (pending: () => readonly Action[]): Promise<void> => 
   }
 };
 
+/**
+ * Structural view of an Action with minted ids, HLCs, and run ids
+ * normalized away, so two runs of the same write compare equal. Run
+ * ids shout through as map keys on `content`; the value's text is what
+ * the equivalence is about.
+ */
+const canonicalize = (action: Action): unknown => {
+  const ids = new Map<string, string>();
+  const idOf = (id: string): string => {
+    const existing = ids.get(id);
+    if (existing !== undefined) return existing;
+    const next = `id_${ids.size}`;
+    ids.set(id, next);
+    return next;
+  };
+  const canonicalFields = (fields: Record<string, { value: unknown }>): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (const [key, env] of Object.entries(fields)) {
+      if (key === "content") {
+        const map = (env as unknown as { map: Record<string, { value?: { text?: string } }> }).map;
+        out[key] = Object.values(map)
+          .map((entry) => entry.value?.text ?? null)
+          .sort();
+        continue;
+      }
+      out[key] =
+        key === "source_id" || key === "target_id" || key === "entity_id"
+          ? idOf(env.value as string)
+          : env.value;
+    }
+    return out;
+  };
+  return action.updates
+    .map((update) => ({
+      subject_id: idOf(update.subject_id),
+      subject_type: update.subject_type,
+      method: update.method,
+      fields: canonicalFields(update.data?.fields ?? {}),
+    }))
+    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+};
+
 // ---------------------------------------------------------------------------
 // Schema sugar
 // ---------------------------------------------------------------------------
@@ -269,6 +311,19 @@ describe("atomic", () => {
     const runIds = Object.keys(content.map);
     expect(runIds).toHaveLength(1);
     expect((content.map[runIds[0]!] as { value: { text: string } }).value.text).toBe("x");
+  });
+
+  it("produces the same Action as the equivalent imperative create", async () => {
+    const { client, written } = harness(schema);
+    await client.handshake();
+
+    await client.blogPost.create({ title: "T", published: false, body: "x" }, { groups: ["g_1"] });
+    await client.atomic(({ blogPost }) =>
+      blogPost.create({ title: "T", published: false, body: "x" }, { groups: ["g_1"] }),
+    );
+
+    expect(written).toHaveLength(2);
+    expect(canonicalize(written[0]!)).toEqual(canonicalize(written[1]!));
   });
 });
 

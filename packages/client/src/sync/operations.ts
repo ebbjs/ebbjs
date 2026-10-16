@@ -1,7 +1,7 @@
 /**
  * The operation vocabulary: a pure, synchronous description of one
  * client mutation. An {@link Operation} receives an {@link OpContext}
- * (ids, handles, the registry — no storage reads) and the planner's
+ * (ids, the registry, the actor — no storage reads) and the planner's
  * resolved input, and returns the wire Updates it would emit together
  * with the group set those Updates fan out to.
  *
@@ -80,28 +80,16 @@ export interface OperationIds {
   hlc(): string;
 }
 
-/** One marked draft handle, addressable by its entity id. */
-export type OperationHandle = { readonly id: string } & Record<string, unknown>;
-
-/**
- * The handle registry a batch accumulates. `idOf` answers "which
- * entity does this value name" only for handles this batch created;
- * anything else (a plain string id, a materialized entity) is null.
- */
-export interface OperationHandles {
-  register(handle: OperationHandle): void;
-  idOf(value: unknown): string | null;
-}
-
 /**
  * What an operation may consult. Pure values only — no storage, no
  * network: an operation that needs a read is a planner concern that
- * hands the resolved value to a pure operation.
+ * hands the resolved value to a pure operation. Draft handles are not
+ * here: the atomic planner mints and resolves them before an operation
+ * runs.
  */
 export interface OpContext {
   readonly registry: EntityRegistry;
   readonly ids: OperationIds;
-  readonly handles: OperationHandles;
   /** Local actor id; collaborative-text run ids embed it. */
   readonly actorId: string;
 }
@@ -117,8 +105,6 @@ export interface OperationResult {
   readonly updates: readonly Update[];
   /** The fan-out scope of these Updates; the committer compares these. */
   readonly groups: readonly string[];
-  /** Marked draft handle this operation created, when it created one. */
-  readonly handle?: OperationHandle;
   /** Diagnostics: the entity this write is attributed to. */
   readonly subject?: OperationSubject;
 }
@@ -142,21 +128,6 @@ export const call = <I>(operation: Operation<I>, input: I): OperationCall => ({
   input: input as never,
 });
 
-const ATOMIC_HANDLE = Symbol.for("@ebbjs/atomic-handle");
-
-const isAtomicHandle = (value: unknown): value is OperationHandle =>
-  typeof value === "object" &&
-  value !== null &&
-  (value as Record<symbol, unknown>)[ATOMIC_HANDLE] === true;
-
-/** Stamp a create handle so later reference resolution recognises it. */
-export const markHandle = <T extends Record<string, unknown>>(handle: T): T => {
-  Object.defineProperty(handle, ATOMIC_HANDLE, { value: true, enumerable: false });
-  return handle;
-};
-
-export { isAtomicHandle };
-
 /**
  * One resolved relationship edge: the accessor name, the wire
  * relationship type, and the target entity id. The planner collapses
@@ -171,9 +142,7 @@ export interface ResolvedPointer {
 /**
  * Input for {@link createEntity}. Field values are already-resolved
  * wire values (handles collapsed); the planner owns minting the id
- * and collapsing references. `handle` is the already-marked draft
- * handle the atomic planner handed back to its callback, threaded
- * through so the op reports the same object.
+ * and collapsing references.
  */
 export interface CreateEntityInput {
   readonly entity: string;
@@ -184,7 +153,6 @@ export interface CreateEntityInput {
   readonly bodies?: Readonly<Record<string, string>>;
   readonly groups: readonly string[];
   readonly validate?: boolean;
-  readonly handle?: OperationHandle;
 }
 
 /**
@@ -267,7 +235,6 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
   return {
     updates,
     groups,
-    handle: input.handle ?? markHandle({ id: input.id, ...input.fields, ...input.bodies }),
     subject: { id: input.id, type: input.entity },
   };
 };

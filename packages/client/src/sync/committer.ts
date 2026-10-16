@@ -21,8 +21,6 @@ import {
   AtomicActionError,
   type AtomicRejection,
   type OperationCall,
-  type OperationHandle,
-  type OperationHandles,
   type OperationResult,
   type OpContext,
 } from "./operations";
@@ -41,10 +39,8 @@ export interface CommitCapability {
 /** The committed batch, as observed by the caller. */
 export interface CommitResult {
   readonly response: WriteResponse;
-  readonly updates: readonly Update[];
   /** Sorted union of every operation's group set. */
   readonly groups: readonly string[];
-  readonly handles: readonly unknown[];
 }
 
 const sameGroups = (a: readonly string[], b: readonly string[]): boolean =>
@@ -85,24 +81,13 @@ const coherenceRejections = (results: readonly OperationResult[]): readonly Atom
 };
 
 /**
- * Run every call in order under one context, enforce coherence, and
- * submit the flattened Updates once. An empty batch submits nothing.
+ * Run every call under one shared context, enforce coherence, and
+ * submit the flattened Updates as one Action.
  */
 export async function commit(
   calls: readonly OperationCall[],
   cap: CommitCapability,
 ): Promise<CommitResult> {
-  const registered = new Map<OperationHandle, string>();
-  const handles: OperationHandle[] = [];
-  const handleRegistry: OperationHandles = {
-    register(handle) {
-      registered.set(handle, handle.id);
-    },
-    idOf(value) {
-      if (typeof value !== "object" || value === null) return null;
-      return registered.get(value as OperationHandle) ?? null;
-    },
-  };
   const ctx: OpContext = {
     registry: cap.registry,
     ids: {
@@ -110,17 +95,10 @@ export async function commit(
       updateId: () => cap.generateUpdateId(),
       hlc: () => cap.freshHlc(),
     },
-    handles: handleRegistry,
     actorId: cap.actorId,
   };
 
   const results = calls.map((entry) => entry.operation(ctx, entry.input));
-  for (const result of results) {
-    if (result.handle === undefined) continue;
-    handles.push(result.handle);
-    handleRegistry.register(result.handle);
-  }
-
   const rejections = coherenceRejections(results);
   if (rejections.length > 0) {
     throw new AtomicActionError(rejections);
@@ -129,8 +107,8 @@ export async function commit(
   const updates = results.flatMap((result) => result.updates);
   const groups = sortedGroups(results.flatMap((result) => result.groups));
   if (updates.length === 0) {
-    return { response: { rejected: [] }, updates, groups, handles };
+    return { response: { rejected: [] }, groups };
   }
   const response = await cap.submitRelationshipUpdates(updates);
-  return { response, updates, groups, handles };
+  return { response, groups };
 }

@@ -1614,7 +1614,6 @@ export function createClient<
   // `client → namespace → client` reference.
   const writeCap = {
     registry: client.registry,
-    buildRelationshipWrite: client.buildRelationshipWrite.bind(client),
     submitRelationshipUpdates: client.submitRelationshipUpdates.bind(client),
     freshHlc: () => client.freshHlc(),
     generateUpdateId: () => client.generateUpdateId(),

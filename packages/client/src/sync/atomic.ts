@@ -40,19 +40,30 @@ import {
   AtomicActionError,
   call,
   createEntity,
-  isAtomicHandle,
-  markHandle,
   type OperationCall,
-  type OperationHandle,
   type ResolvedPointer,
 } from "./operations";
 
 export { AtomicActionError, type AtomicRejection } from "./operations";
 
-/** The atomic runtime's write capability — the committer's, by another name. */
-export type AtomicWriteCapability = CommitCapability;
-
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
+
+const ATOMIC_HANDLE = Symbol.for("@ebbjs/atomic-handle");
+
+interface AtomicHandle {
+  readonly id: string;
+}
+
+const isAtomicHandle = (value: unknown): value is AtomicHandle =>
+  typeof value === "object" &&
+  value !== null &&
+  (value as Record<symbol, unknown>)[ATOMIC_HANDLE] === true;
+
+/** Stamp a create handle so later reference resolution recognises it. */
+const markHandle = <T extends Record<string, unknown>>(handle: T): T => {
+  Object.defineProperty(handle, ATOMIC_HANDLE, { value: true, enumerable: false });
+  return handle;
+};
 
 /**
  * Error raised when the resolver cannot turn the collected drafts into
@@ -236,7 +247,7 @@ const createDraftNamespace = (
       }
     }
 
-    const marked = markHandle(handle) as OperationHandle;
+    const marked = markHandle(handle);
     calls.push(
       call(createEntity, {
         entity: entityName,
@@ -245,7 +256,6 @@ const createDraftNamespace = (
         pointers,
         bodies,
         groups,
-        handle: marked,
       }),
     );
     return marked as unknown as CreatedEntity<Record<string, TSchema>>;
