@@ -169,7 +169,7 @@ export type AtomicDrafts<S> =
   S extends Schema<infer TEntities, unknown>
     ? { [K in keyof TEntities & string]: AtomicDraftNamespace<EntityFields<TEntities[K]>> } & {
         readonly group: AtomicSystemDraftNamespace<GroupFields>;
-        readonly groupMember: AtomicSystemDraftNamespace<GroupMemberFields>;
+        readonly membership: AtomicSystemDraftNamespace<GroupMemberFields>;
       }
     : Record<string, never>;
 
@@ -384,15 +384,15 @@ const resolveMembershipIntents = async (
 
 /**
  * The system draft namespaces. `group.create` records the same
- * bootstrap operation `client.group.create` commits; `groupMember.create`
- * records a single system put. Neither emits an `entityGroup` row.
+ * bootstrap operation `client.group.create` commits; `membership.create`
+ * records a single `groupMember` put. Neither emits an `entityGroup` row.
  */
 const createSystemDrafts = (
   cap: CommitCapability,
   collector: DraftCollector,
 ): {
   group: AtomicSystemDraftNamespace<GroupFields>;
-  groupMember: AtomicSystemDraftNamespace<GroupMemberFields>;
+  membership: AtomicSystemDraftNamespace<GroupMemberFields>;
 } => ({
   group: {
     create(input) {
@@ -404,7 +404,7 @@ const createSystemDrafts = (
       }) as unknown as CreatedEntity<GroupFields>;
     },
   },
-  groupMember: {
+  membership: {
     create(input) {
       const id = generateId("e");
       collector.calls.push(
@@ -432,9 +432,7 @@ const buildDrafts = (
   }
   const system = createSystemDrafts(cap, collector);
   out["group"] = system.group as unknown as AtomicDraftNamespace<Record<string, TSchema>>;
-  out["groupMember"] = system.groupMember as unknown as AtomicDraftNamespace<
-    Record<string, TSchema>
-  >;
+  out["membership"] = system.membership as unknown as AtomicDraftNamespace<Record<string, TSchema>>;
   return out;
 };
 

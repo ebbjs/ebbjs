@@ -1173,7 +1173,7 @@ describe("doc.groups — built-in membership accessor", () => {
     expect(await row.groups).toEqual([]);
   });
 
-  it("exposes the group and groupMember system namespaces, but not entityGroup", async () => {
+  it("exposes the group and membership system namespaces, but not entityGroup", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     const client = createClient({
@@ -1183,9 +1183,9 @@ describe("doc.groups — built-in membership accessor", () => {
       schema: groupsSchema,
     });
     const namespaces = client as unknown as Record<string, unknown>;
-    // `group` / `groupMember` are system namespaces; `entityGroup` stays internal.
+    // `group` / `membership` are system namespaces; `entityGroup` stays internal.
     expect(namespaces["group"]).toBeDefined();
-    expect(namespaces["groupMember"]).toBeDefined();
+    expect(namespaces["membership"]).toBeDefined();
     expect(namespaces["entityGroup"]).toBeUndefined();
   });
 

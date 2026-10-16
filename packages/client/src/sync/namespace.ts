@@ -485,11 +485,11 @@ export type GroupNamespace = Omit<
 };
 
 /**
- * `client.groupMember`: the generic namespace with a plain system put
- * and no membership verbs — an `entityGroup` row for a member is
- * meaningless.
+ * `client.membership`: the generic namespace over the `groupMember`
+ * system entity, with a plain system put and no membership verbs — an
+ * `entityGroup` row for a member is meaningless.
  */
-export type GroupMemberNamespace = Omit<
+export type MembershipNamespace = Omit<
   EntityNamespace<GroupMemberFields, MembershipAccessors>,
   "create" | "addToGroup" | "removeFromGroup" | "setGroups"
 > & {
@@ -499,7 +499,7 @@ export type GroupMemberNamespace = Omit<
 /** The system-entity namespaces every schema-bound client carries. */
 export type SystemNamespaces = {
   readonly group: GroupNamespace;
-  readonly groupMember: GroupMemberNamespace;
+  readonly membership: MembershipNamespace;
 };
 
 /**
@@ -1337,14 +1337,15 @@ function createGroupNamespace(storage: StorageAdapter, write: WriteCapability): 
 }
 
 /**
- * `client.groupMember`: the generic read/write surface with a plain
- * system put. Membership verbs are dropped — a member's scope is its
- * own `group_id`, so an `entityGroup` row for it has no meaning.
+ * `client.membership`: the generic read/write surface over the
+ * `groupMember` system entity, with a plain system put. Membership verbs
+ * are dropped — a member's scope is its own `group_id`, so an
+ * `entityGroup` row for it has no meaning.
  */
-function createGroupMemberNamespace(
+function createMembershipNamespace(
   storage: StorageAdapter,
   write: WriteCapability,
-): GroupMemberNamespace {
+): MembershipNamespace {
   const base = createEntityNamespace<GroupMemberFields, MembershipAccessors>(
     "groupMember",
     groupMemberSystemEntity.shape,
@@ -1382,7 +1383,7 @@ function createGroupMemberNamespace(
 /**
  * Build the typed namespace surface for a schema. Returns an object
  * whose keys are the schema's entity names plus the system `group` /
- * `groupMember` namespaces, and whose values are the per-entity
+ * `membership` namespaces, and whose values are the per-entity
  * `EntityNamespace`s. The Proxy layer in {@link SyncClient} forwards
  * unknown property access to this map.
  */
@@ -1399,7 +1400,7 @@ export function buildEntityNamespaces<
   out["group"] = createGroupNamespace(storage, write) as unknown as EntityNamespace<
     Record<string, TSchema>
   >;
-  out["groupMember"] = createGroupMemberNamespace(storage, write) as unknown as EntityNamespace<
+  out["membership"] = createMembershipNamespace(storage, write) as unknown as EntityNamespace<
     Record<string, TSchema>
   >;
   return out as EntityNamespaces<S>;

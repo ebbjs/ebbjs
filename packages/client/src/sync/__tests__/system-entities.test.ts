@@ -1,5 +1,5 @@
 /**
- * End-to-end tests for the `group` / `groupMember` system namespaces
+ * End-to-end tests for the `group` / `membership` system namespaces
  * (#465) — the imperative bootstrap `create`, the atomic drafts, and
  * the `defineAction` recipe that composes a `groupMember` put with an
  * `entityGroup` put in one Action.
@@ -68,10 +68,10 @@ const schema = defineSchema({ entities: { profile }, version: 1 });
 const addToWorkspace = defineAction(
   schema,
   (
-    { groupMember, profile: profileDraft },
+    { membership, profile: profileDraft },
     params: { profileId: string; groupId: string; permissions: string[] },
   ) => {
-    groupMember.create({
+    membership.create({
       group_id: params.groupId,
       actor_id: "actor_1",
       permissions: params.permissions,
@@ -165,11 +165,11 @@ describe("client.group.create — bootstrap", () => {
   });
 });
 
-describe("client.groupMember.create", () => {
+describe("client.membership.create", () => {
   it("submits one Action with a single groupMember put and no entityGroup row", async () => {
     const { client, seen } = await mkClient();
 
-    const created = await client.groupMember.create({
+    const created = await client.membership.create({
       group_id: "g_1",
       actor_id: "actor_2",
       permissions: ["profile.*"],
@@ -197,7 +197,7 @@ describe("system namespace exposure", () => {
 
     const drafts = await client.atomic((d) => d);
     expect(Object.keys(drafts)).not.toContain("entityGroup");
-    expect(Object.keys(drafts)).toEqual(expect.arrayContaining(["group", "groupMember"]));
+    expect(Object.keys(drafts)).toEqual(expect.arrayContaining(["group", "membership"]));
 
     // An entityGroup row scoping a group or a member is meaningless, so
     // the membership verbs are not part of the runtime surface either.
@@ -205,7 +205,7 @@ describe("system namespace exposure", () => {
     expect(group["addToGroup"]).toBeUndefined();
     expect(group["removeFromGroup"]).toBeUndefined();
     expect(group["setGroups"]).toBeUndefined();
-    const member = client.groupMember as unknown as Record<string, unknown>;
+    const member = client.membership as unknown as Record<string, unknown>;
     expect(member["addToGroup"]).toBeUndefined();
   });
 });
@@ -277,7 +277,7 @@ describe("client.group read path", () => {
   });
 });
 
-describe("client.groupMember typing", () => {
+describe("client.membership typing", () => {
   it("exports GroupMemberFields and rejects an undeclared field on create", async () => {
     const { client } = await mkClient();
 
@@ -291,8 +291,8 @@ describe("client.groupMember typing", () => {
 
     // Never invoked: the @ts-expect-error line below is the assertion.
     const guard = (): void => {
-      // @ts-expect-error — `bogus` is not declared on groupMember.
-      void client.groupMember.create({ bogus: 1 });
+      // @ts-expect-error — `bogus` is not declared on the groupMember shape.
+      void client.membership.create({ bogus: 1 });
     };
     expect(guard).toBeTypeOf("function");
 

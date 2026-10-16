@@ -67,7 +67,7 @@ export {
   type EntityRow,
   type EntitySnapshot,
   type EntityWithAccessors,
-  type GroupMemberNamespace,
+  type MembershipNamespace,
   type GroupNamespace,
   type MembershipAccessors,
   type RowAccessor,

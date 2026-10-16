@@ -1033,9 +1033,9 @@ describe("integration: defineSchema", () => {
       expect(client.registry.getRelationship("todo", "groups")).toBeUndefined();
       expect(client.registry.has("group")).toBe(true);
       expect(client.registry.has("entityGroup")).toBe(true);
-      // `group` / `groupMember` are system namespaces; `entityGroup` stays internal.
+      // `group` / `membership` are system namespaces; `entityGroup` stays internal.
       expect((client as unknown as Record<string, unknown>)["group"]).toBeDefined();
-      expect((client as unknown as Record<string, unknown>)["groupMember"]).toBeDefined();
+      expect((client as unknown as Record<string, unknown>)["membership"]).toBeDefined();
       expect((client as unknown as Record<string, unknown>)["entityGroup"]).toBeUndefined();
 
       // The server tolerates schema_version / min_supported_version
