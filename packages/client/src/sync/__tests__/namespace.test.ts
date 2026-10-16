@@ -12,6 +12,7 @@ import { defineSchema } from "../../schema/schema";
 import { defineRelationship } from "../../schema/relationship";
 import { groupSystemEntity } from "../../schema/system-entities";
 import { EntityValidationError } from "../../schema/entity-registry";
+import { AtomicActionError } from "../operations";
 import type { EntityFields } from "../namespace";
 import type { QueryBuilder } from "../query-builder";
 import type { WriteResponse } from "../types";
@@ -1511,6 +1512,17 @@ describe("client.<entity>.addToGroup / removeFromGroup / setGroups", () => {
     await expect(client.todo.removeFromGroup("todo_1", "g_1")).rejects.toBeInstanceOf(
       EntityValidationError,
     );
+    expect(actions).toHaveLength(0);
+  });
+
+  it("removeFromGroup() of the entity's last membership is refused with last_membership", async () => {
+    const { client, storage, actions } = await mkMembershipClient();
+    await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
+    const error = await client.todo.removeFromGroup("todo_1", "g_1").catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(AtomicActionError);
+    expect((error as AtomicActionError).rejections.map((r) => r.reason)).toEqual([
+      "last_membership",
+    ]);
     expect(actions).toHaveLength(0);
   });
 

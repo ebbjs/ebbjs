@@ -20,6 +20,7 @@ import { buildInitialContentField } from "../fields/collaborative-text/wire";
 import { DOC_CONTENT_FIELD, generatedDocEntityName } from "../fields/collaborative-text/schema";
 import type { Rejection } from "./types";
 import {
+  buildEntityGroupDelete,
   buildEntityGroupUpdates,
   buildManyEntityUpdate,
   collectManyTargetIds,
@@ -28,6 +29,7 @@ import {
   type ManyPointerValue,
   type PointerValue,
 } from "./relationship";
+import { lastMembershipViolation, membershipScope, type MembershipView } from "./membership";
 
 /**
  * Refusal of an atomic call: a client-side coherence failure, or the
@@ -306,6 +308,89 @@ export const deleteEntity: Operation<DeleteEntityInput> = (ctx, input) => ({
   groups: [...input.groups],
   subject: { id: input.id, type: input.entity },
 });
+
+/** One membership row to delete: its id and the group it scopes to. */
+export interface MembershipRemoval {
+  readonly membershipId: string;
+  readonly groupId: string;
+}
+
+/** Input for {@link changeGroups}. */
+export interface ChangeGroupsInput {
+  readonly entity: string;
+  readonly entityId: string;
+  /** Groups to add; one `entityGroup` put each. */
+  readonly puts?: readonly string[];
+  /** Membership rows to delete; one `entityGroup` delete each. */
+  readonly removes?: readonly MembershipRemoval[];
+  /**
+   * The entity's live cached group ids, when the caller read them.
+   * Enables the client-side `last_membership` refusal; absent when the
+   * local view cannot say whether the entity is unowned.
+   */
+  readonly currentGroups?: readonly string[];
+}
+
+/**
+ * Add, remove, or replace an entity's membership rows in one operation.
+ * Adds precede removes so an incremental observer never sees the entity
+ * with an empty membership set mid-Action. The fan-out scope is the
+ * union of every affected group, resolved by the membership checker from
+ * the Updates themselves.
+ */
+export const changeGroups: Operation<ChangeGroupsInput> = (ctx, input) => {
+  const puts = input.puts ?? [];
+  const removes = input.removes ?? [];
+  const updates: Update[] = [
+    ...buildEntityGroupUpdates(input.entityId, puts, () => ctx.ids.updateId()),
+    ...removes.map((removal) =>
+      buildEntityGroupDelete({
+        membershipId: removal.membershipId,
+        updateId: ctx.ids.updateId(),
+      }),
+    ),
+  ];
+
+  const violation = lastMembershipViolation(input.currentGroups, {
+    puts,
+    removedGroups: removes.map((removal) => removal.groupId),
+  });
+  if (violation !== undefined) {
+    throw new AtomicActionError([
+      {
+        id: input.entityId,
+        subjectType: input.entity,
+        reason: "last_membership",
+        details: violation,
+      },
+    ]);
+  }
+
+  const removeByMembershipId = new Map(
+    removes.map((removal) => [removal.membershipId, removal.groupId]),
+  );
+  const view: MembershipView = {
+    groupsOf: (entityId) => (entityId === input.entityId ? (input.currentGroups ?? []) : []),
+    groupOfMembership: (membershipId) => removeByMembershipId.get(membershipId),
+  };
+  const groups = membershipScope(updates, view).filter((groupId) => groupId.length > 0);
+  if (updates.length > 0 && groups.length === 0) {
+    throw new AtomicActionError([
+      {
+        id: input.entityId,
+        subjectType: input.entity,
+        reason: "missing_ownership",
+        details: `membership write for "${input.entityId}" resolves to no owning group`,
+      },
+    ]);
+  }
+
+  return {
+    updates,
+    groups,
+    subject: { id: input.entityId, type: input.entity },
+  };
+};
 
 /** The pointer shape a relationship write carries per cardinality. */
 export interface RelationshipPointer {

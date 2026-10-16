@@ -14,7 +14,13 @@ import type { Update } from "@ebbjs/core";
 import { defineEntity, e } from "../../schema/entity";
 import { EntityRegistry } from "../../schema/entity-registry";
 import { defineRelationship } from "../../schema/relationship";
-import { AtomicActionError, call, createEntity, writeRelationship } from "../operations";
+import {
+  AtomicActionError,
+  call,
+  changeGroups,
+  createEntity,
+  writeRelationship,
+} from "../operations";
 import { commit, type CommitCapability } from "../committer";
 
 const todo = defineEntity("todo", { title: e.string() });
@@ -121,26 +127,76 @@ describe("commit — content coherence", () => {
     expect(result.response.rejected).toEqual([]);
   });
 
-  it("refuses a relationship-only batch whose ops span groups", async () => {
+  it("allows a relationship-only (system-only) batch to span groups", async () => {
+    const { cap, submitted } = mkCap();
+
+    const result = await commit(
+      [
+        call(writeRelationship, {
+          entity: "todo",
+          sourceId: "todo_1",
+          as: "list",
+          pointer: { targetId: "list_1" },
+          groups: ["g_1"],
+        }),
+        call(writeRelationship, {
+          entity: "todo",
+          sourceId: "todo_2",
+          as: "list",
+          pointer: { targetId: "list_2" },
+          groups: ["g_2"],
+        }),
+      ],
+      cap,
+    );
+
+    // A system-only Action's union is the membership operation's
+    // visibility scope (#461); it may span groups.
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]).toHaveLength(2);
+    expect(result.groups).toEqual(["g_1", "g_2"]);
+  });
+
+  it("allows a system-only membership batch to span the affected groups", async () => {
+    const { cap, submitted } = mkCap();
+
+    const result = await commit(
+      [
+        call(changeGroups, {
+          entity: "todo",
+          entityId: "todo_1",
+          puts: ["g_2"],
+          currentGroups: ["g_3"],
+        }),
+        call(changeGroups, {
+          entity: "todo",
+          entityId: "todo_2",
+          removes: [{ membershipId: "eg_1", groupId: "g_3" }],
+          currentGroups: ["g_3", "g_4"],
+        }),
+      ],
+      cap,
+    );
+
+    expect(submitted).toHaveLength(1);
+    // One entityGroup put + one entityGroup delete.
+    expect(submitted[0]).toHaveLength(2);
+    expect(result.groups).toEqual(["g_2", "g_3"]);
+  });
+
+  it("refuses a content create in g_1 mixed with a membership delta into g_2", async () => {
     const { cap, submitted } = mkCap();
 
     const error = (await capture(() =>
       commit(
         [
-          call(writeRelationship, {
+          call(createEntity, {
             entity: "todo",
-            sourceId: "todo_1",
-            as: "list",
-            pointer: { targetId: "list_1" },
+            id: "todo_1",
+            fields: { title: "a" },
             groups: ["g_1"],
           }),
-          call(writeRelationship, {
-            entity: "todo",
-            sourceId: "todo_2",
-            as: "list",
-            pointer: { targetId: "list_2" },
-            groups: ["g_2"],
-          }),
+          call(changeGroups, { entity: "todo", entityId: "todo_2", puts: ["g_2"] }),
         ],
         cap,
       ),
@@ -148,6 +204,53 @@ describe("commit — content coherence", () => {
 
     expect(error).toBeInstanceOf(AtomicActionError);
     expect(error.rejections.map((r) => r.reason)).toEqual(["group_mismatch", "group_mismatch"]);
+    expect(submitted).toHaveLength(0);
+  });
+
+  it("allows a content create in g_1 plus a membership delta into g_1", async () => {
+    const { cap, submitted } = mkCap();
+
+    const result = await commit(
+      [
+        call(createEntity, {
+          entity: "todo",
+          id: "todo_1",
+          fields: { title: "a" },
+          groups: ["g_1"],
+        }),
+        call(changeGroups, {
+          entity: "todo",
+          entityId: "todo_2",
+          puts: ["g_1"],
+          currentGroups: ["g_1"],
+        }),
+      ],
+      cap,
+    );
+
+    expect(submitted).toHaveLength(1);
+    expect(result.groups).toEqual(["g_1"]);
+  });
+
+  it("refuses a membership delta that would leave the entity unowned", async () => {
+    const { cap, submitted } = mkCap();
+
+    const error = (await capture(() =>
+      commit(
+        [
+          call(changeGroups, {
+            entity: "todo",
+            entityId: "todo_1",
+            removes: [{ membershipId: "eg_1", groupId: "g_1" }],
+            currentGroups: ["g_1"],
+          }),
+        ],
+        cap,
+      ),
+    )) as AtomicActionError;
+
+    expect(error).toBeInstanceOf(AtomicActionError);
+    expect(error.rejections.map((r) => r.reason)).toEqual(["last_membership"]);
     expect(submitted).toHaveLength(0);
   });
 
