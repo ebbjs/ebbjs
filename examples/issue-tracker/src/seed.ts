@@ -21,10 +21,10 @@
  * the bootstrap exemption).
  *
  * Browser-safe by construction: this module imports only
- * `@ebbjs/client`.
+ * `@ebbjs/core/seed`.
  */
 
-import type { EntitySeed, SeedData } from "@ebbjs/client";
+import type { EntitySeed, SeedData } from "@ebbjs/core/seed";
 import { issue, profile, workspace } from "./schema";
 
 /** Service actor that owns the shared workspace fixtures. */
@@ -87,26 +87,11 @@ export function workspaceEntityId(slug: string): string {
   return slug === SHARED_WORKSPACE_SLUG ? SHARED_WORKSPACE_ID : `ws_${slug}`;
 }
 
-/** One seed field envelope. The server validates the HLC as a positive integer. */
-type SeedFieldValue = EntitySeed["patches"][number]["fields"][string];
-
-const SEED_UPDATE_ID = "seed_update";
-const SEED_HLC = "1";
-
-const field = (value: unknown): SeedFieldValue => ({
-  value,
-  update_id: SEED_UPDATE_ID,
-  hlc: SEED_HLC,
-});
-
-const fields = (values: Record<string, unknown>): Record<string, SeedFieldValue> =>
-  Object.fromEntries(Object.entries(values).map(([key, value]) => [key, field(value)]));
-
-/** One user entity with every field carried as a seed envelope. */
-const entity = (id: string, type: string, values: Record<string, unknown>): EntitySeed => ({
+/** One user entity with every field carried as a plain seed value. */
+const entity = (id: string, type: string, fields: Record<string, unknown>): EntitySeed => ({
   id,
   type,
-  patches: [{ fields: fields(values) }],
+  patches: [{ fields }],
 });
 
 /** The actor's personal workspace, profile, and own group membership. */

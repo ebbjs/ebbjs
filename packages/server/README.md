@@ -14,25 +14,26 @@ See [`docs/`](./docs/) for the contributor docs — the
 
 Everything below is re-exported from [`src/index.ts`](./src/index.ts):
 
-| Export                                                   | Kind     | Purpose                                                                                          |
-| -------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------ |
-| `RELEASE_BIN_PATH`                                       | const    | Absolute path to the bundled `ebb_server` release binary under `dist/`.                          |
-| `startServer`                                            | function | Spawn the release and resolve a `RunningServer` once it is ready.                                |
-| `waitForReady`                                           | function | Poll a base URL until the server answers routed requests (or time out).                          |
-| `ServerOptions`                                          | type     | `{ dataDir, port?, env? }` accepted by `startServer`.                                            |
-| `RunningServer`                                          | type     | `{ pid, port, url, dataDir, kill() }` returned by `startServer`.                                 |
-| `seed`                                                   | function | POST a `SeedData` fixture to `/sync/actions`. Re-exported from `@ebbjs/client/seed`.             |
-| `buildSeedAction`                                        | function | Build the `Action` that `seed` sends, without doing HTTP. Re-exported from `@ebbjs/client/seed`. |
-| `GroupSeed`, `GroupMemberSeed`, `EntitySeed`, `SeedData` | types    | Shape of the fixture data `seed` accepts.                                                        |
-| `Action`                                                 | type     | Re-exported from `@ebbjs/core`.                                                                  |
+| Export                                                   | Kind     | Purpose                                                                                        |
+| -------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------- |
+| `RELEASE_BIN_PATH`                                       | const    | Absolute path to the bundled `ebb_server` release binary under `dist/`.                        |
+| `startServer`                                            | function | Spawn the release and resolve a `RunningServer` once it is ready.                              |
+| `waitForReady`                                           | function | Poll a base URL until the server answers routed requests (or time out).                        |
+| `ServerOptions`                                          | type     | `{ dataDir, port?, env? }` accepted by `startServer`.                                          |
+| `RunningServer`                                          | type     | `{ pid, port, url, dataDir, kill() }` returned by `startServer`.                               |
+| `seed`                                                   | function | POST a `SeedData` fixture to `/sync/actions`.                                                  |
+| `buildSeedAction`                                        | function | Build the `Action` that `seed` sends, without doing HTTP. Re-exported from `@ebbjs/core/seed`. |
+| `GroupSeed`, `GroupMemberSeed`, `EntitySeed`, `SeedData` | types    | Shape of the fixture data `seed` accepts.                                                      |
+| `Action`                                                 | type     | Re-exported from `@ebbjs/core/seed`.                                                           |
 
-The harness lives in [`src/harness.ts`](./src/harness.ts). The seed surface
-(`seed`, `buildSeedAction`, the `Seed*` types) lives in the browser-safe
-[`@ebbjs/client/seed`](../client/src/seed/index.ts) module — the same code path
-browser demos use — and [`src/seed-client.ts`](./src/seed-client.ts) re-exports
-it unchanged, so `@ebbjs/server`'s public names and signatures are stable.
+The harness lives in [`src/harness.ts`](./src/harness.ts). The browser-safe
+seed builder and the `Seed*` types live in the
+[`@ebbjs/core/seed`](../core/src/seed/index.ts) module — the same code path
+browser demos use through `client.seed()`. [`src/seed-client.ts`](./src/seed-client.ts)
+re-exports those names unchanged and adds the raw-POST `seed()` harness, so
+`@ebbjs/server`'s public names and signatures are stable.
 `SeedData.relationships` accepts a `RelationshipSeed`, also re-exported from
-[`@ebbjs/client/seed`](../client/src/seed/index.ts); it is not currently
+[`@ebbjs/core/seed`](../core/src/seed/index.ts); it is not currently
 re-exported from `src/index.ts`.
 
 ## Quick start

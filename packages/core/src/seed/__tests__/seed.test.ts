@@ -1,27 +1,25 @@
 /**
- * Unit tests for the shared seed layer (`@ebbjs/client/seed`).
+ * Unit tests for the browser-safe seed builder (`@ebbjs/core/seed`).
  *
- * The seed is plain data → one Action, submitted either through the
- * free `seed()` POST or `client.seed()`. These tests pin the wire shape
- * of `buildSeedAction` and the one rejection-tolerance policy in
+ * `buildSeedAction` turns plain seed rows into one wire `Action`; these
+ * tests pin that wire shape — every plain value stamped into a field
+ * envelope — and the one rejection-tolerance policy in
  * `assertSeedAccepted`.
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { decodeSync, type Action } from "@ebbjs/core";
+import { describe, expect, it } from "vitest";
 
 import {
   SeedRejectedError,
+  TOLERATED_SEED_REJECTIONS,
   assertSeedAccepted,
   buildSeedAction,
   isToleratedSeedRejection,
-  seed,
-  TOLERATED_SEED_REJECTIONS,
   type SeedData,
-} from "../../seed";
-import type { Rejection } from "../../sync/types";
+  type SeedRejection,
+} from "../index";
 
-const rejection = (reason: string): Rejection => ({ id: "action_1", reason });
+const rejection = (reason: string): SeedRejection => ({ id: "action_1", reason });
 
 /** A representative seed exercising every row kind. */
 const buildRepresentativeSeed = (): SeedData => ({
@@ -39,11 +37,8 @@ const buildRepresentativeSeed = (): SeedData => ({
       id: "todo_1",
       type: "todo",
       patches: [
-        {
-          fields: {
-            title: { value: "Ship it", hlc: "1", update_id: "u1" },
-          },
-        },
+        { fields: { title: "Ship it" } },
+        { fields: { status: "todo", assignee_id: null } },
       ],
     },
   ],
@@ -82,6 +77,8 @@ describe("buildSeedAction", () => {
     const entity = action.updates.find((u) => u.subject_type === "todo")!;
     expect(entity.subject_id).toBe("todo_1");
     expect(entity.data?.fields?.["title"]?.value).toBe("Ship it");
+    expect(entity.data?.fields?.["status"]?.value).toBe("todo");
+    expect(entity.data?.fields?.["assignee_id"]?.value).toBeNull();
 
     const relationship = action.updates.find((u) => u.subject_type === "relationship")!;
     expect(relationship.subject_id).toBe("rel_1");
@@ -96,11 +93,16 @@ describe("buildSeedAction", () => {
     expect(entityGroup.data?.fields?.["group_id"]?.value).toBe("grp_1");
   });
 
-  it("stamps hand-built rows with the seed update id", () => {
+  it("stamps every plain value into a seed_update envelope with an HLC", () => {
     const action = buildSeedAction("actor_1", buildRepresentativeSeed());
-    const group = action.updates.find((u) => u.subject_type === "group")!;
-    expect(group.data?.fields?.["name"]?.update_id).toBe("seed_update");
-    expect(typeof group.data?.fields?.["name"]?.hlc).toBe("string");
+
+    for (const update of action.updates) {
+      for (const field of Object.values(update.data?.fields ?? {})) {
+        expect(field.update_id).toBe("seed_update");
+        expect(typeof field.hlc).toBe("string");
+        expect(field.hlc).not.toBe("");
+      }
+    }
   });
 });
 
@@ -128,65 +130,5 @@ describe("assertSeedAccepted", () => {
     }
     expect(thrown).toBeInstanceOf(SeedRejectedError);
     expect((thrown as SeedRejectedError).rejections).toEqual([rejection("not_authorized")]);
-  });
-});
-
-describe("seed", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("posts one msgpack Action to /sync/actions with the actor header", async () => {
-    const seen: { url: string; init: RequestInit }[] = [];
-    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
-      seen.push({ url, init });
-      return new Response(JSON.stringify({ rejected: [] }), { status: 200 });
-    });
-
-    await seed("http://localhost:4000", "actor_1", buildRepresentativeSeed());
-
-    expect(seen).toHaveLength(1);
-    expect(seen[0]!.url).toBe("http://localhost:4000/sync/actions");
-    expect(seen[0]!.init.method).toBe("POST");
-    const headers = seen[0]!.init.headers as Record<string, string>;
-    expect(headers["x-ebb-actor-id"]).toBe("actor_1");
-    expect(headers["Content-Type"]).toBe("application/msgpack");
-
-    const actions = decodeSync<{ actions: Action[] }>(seen[0]!.init.body as Uint8Array).actions;
-    expect(actions).toHaveLength(1);
-    expect(actions[0]!.actor_id).toBe("actor_1");
-    expect(actions[0]!.updates).toHaveLength(5);
-  });
-
-  it("resolves when the server tolerates a duplicate", async () => {
-    vi.stubGlobal(
-      "fetch",
-      async () =>
-        new Response(JSON.stringify({ rejected: [rejection("already_exists")] }), { status: 200 }),
-    );
-
-    await expect(seed("http://localhost:4000", "actor_1", buildRepresentativeSeed())).resolves.toBe(
-      undefined,
-    );
-  });
-
-  it("rejects with SeedRejectedError when a row is refused", async () => {
-    vi.stubGlobal(
-      "fetch",
-      async () =>
-        new Response(JSON.stringify({ rejected: [rejection("not_authorized")] }), { status: 200 }),
-    );
-
-    await expect(
-      seed("http://localhost:4000", "actor_1", buildRepresentativeSeed()),
-    ).rejects.toBeInstanceOf(SeedRejectedError);
-  });
-
-  it("rejects on a non-ok response", async () => {
-    vi.stubGlobal("fetch", async () => new Response("boom", { status: 500 }));
-
-    await expect(
-      seed("http://localhost:4000", "actor_1", buildRepresentativeSeed()),
-    ).rejects.toThrow(/Seed failed: 500/);
   });
 });

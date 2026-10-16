@@ -29,6 +29,7 @@ export default defineConfig({
     lib: {
       entry: {
         index: "./src/index.ts",
+        "seed/index": "./src/seed/index.ts",
       },
       name: "@ebbjs/core",
       formats: ["es"],

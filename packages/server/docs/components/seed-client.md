@@ -1,9 +1,10 @@
 # Seed Client
 
-> **Location:** the seed implementation lives in the browser-safe
-> [`@ebbjs/client/seed`](../../../client/src/seed/index.ts) module, so browser
-> demos and this harness share one code path and one rejection-tolerance policy.
-> `@ebbjs/server` re-exports the same names (`seed`, `buildSeedAction`, the
+> **Location:** the seed builder and rejection policy live in the
+> browser-safe [`@ebbjs/core/seed`](../../../core/src/seed/index.ts) module, so
+> browser demos (`client.seed()`) and this harness share one builder and one
+> rejection-tolerance policy. [`src/seed-client.ts`](../../src/seed-client.ts) adds
+> the raw-POST `seed()` and re-exports the core names (`buildSeedAction`, the
 > `SeedData` types) with unchanged signatures.
 
 ## Purpose
@@ -36,9 +37,9 @@ interface GroupMemberSeed {
 interface EntitySeed {
   id: string;
   type: string;
-  /** Ordered field patches; each field carries its own wire envelope. */
+  /** Ordered field patches; each field carries a plain value. */
   patches: Array<{
-    fields: Record<string, { value: unknown; update_id: string; hlc: string }>;
+    fields: Record<string, unknown>;
   }>;
 }
 
@@ -79,10 +80,11 @@ public write path, so a browser app seeds with the client it already has.
 ## How seeding works
 
 `buildSeedAction` emits **one Action** containing every row as an `Update`:
-`group` and `groupMember` puts (fields stamped `update_id: "seed_update"` and a
-fresh HLC), one `put` per entity patch, `relationship` puts, and `entityGroup`
-puts. The acting `actorId` is the Action's actor, which is what the server's
-per-Action authorization reads.
+`group` and `groupMember` puts, one `put` per entity patch, `relationship`
+puts, and `entityGroup` puts. Every plain field value is stamped into the
+wire's per-field envelope (`update_id: "seed_update"` and a fresh HLC). The
+acting `actorId` is the Action's actor, which is what the server's per-Action
+authorization reads.
 
 `seed()` sends that Action with `encodeSync` and a `POST` whose
 `x-ebb-actor-id` header is the actor, then hands the response to
@@ -96,7 +98,8 @@ per-Action authorization reads.
 
 ## Dependencies
 
-| Dependency    | What it needs                                                           |
-| ------------- | ----------------------------------------------------------------------- |
-| `@ebbjs/core` | `createAction` / `createClock` / `localEvent` / `encodeSync` / `Action` |
-| `fetch`       | `POST` to the server's `/sync/actions`                                  |
+| Dependency         | What it needs                                                                |
+| ------------------ | ---------------------------------------------------------------------------- |
+| `@ebbjs/core/seed` | `buildSeedAction` / `assertSeedAccepted` / the `SeedData` and `Action` types |
+| `@ebbjs/core`      | `encodeSync`                                                                 |
+| `fetch`            | `POST` to the server's `/sync/actions`                                       |

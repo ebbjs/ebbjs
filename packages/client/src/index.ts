@@ -25,24 +25,6 @@ export {
 } from "./sync/client";
 
 export {
-  buildSeedAction,
-  seed,
-  assertSeedAccepted,
-  isToleratedSeedRejection,
-  SeedRejectedError,
-  TOLERATED_SEED_REJECTIONS,
-} from "./seed";
-
-export type {
-  SeedData,
-  GroupSeed,
-  GroupMemberSeed,
-  EntitySeed,
-  RelationshipSeed,
-  EntityGroupSeed,
-} from "./seed";
-
-export {
   AtomicActionError,
   AtomicResolutionError,
   type AtomicClient,

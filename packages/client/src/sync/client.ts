@@ -92,7 +92,7 @@ import {
 import { generateId } from "@ebbjs/core";
 import type { EntityDef } from "../schema/entity";
 import { seedRegistry, type Schema } from "../schema/schema";
-import { assertSeedAccepted, buildSeedAction, type SeedData } from "../seed";
+import { assertSeedAccepted, buildSeedAction, type SeedData } from "@ebbjs/core/seed";
 import type { TSchema } from "@sinclair/typebox/type";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;

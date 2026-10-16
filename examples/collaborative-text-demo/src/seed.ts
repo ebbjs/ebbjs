@@ -2,12 +2,12 @@
  * Seed helpers — bootstrap the demo group + member + document on first load.
  *
  * Rows are plain data submitted through the shared seed layer
- * (`@ebbjs/client/seed`), the same path `@ebbjs/server.seed()` uses: the
+ * (`@ebbjs/core/seed`), the same path `@ebbjs/server.seed()` uses: the
  * client builds one Action and submits it through the public write path,
  * applying the shared rejection-tolerance policy.
  */
 
-import type { SeedData } from "@ebbjs/client";
+import type { SeedData } from "@ebbjs/core/seed";
 
 export const DEMO_GROUP_ID = "grp_demo";
 export const DEMO_MEMBER_ID = "gm_demo";
