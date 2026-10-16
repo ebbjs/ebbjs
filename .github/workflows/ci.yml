@@ -350,6 +350,11 @@ jobs:
         # future self-seeding tests added to that directory will run
         # automatically.
         run: pnpm --filter @ebbjs/client test:integration
+      - name: Run issue-tracker integration tests
+        # Seeds the issue-tracker fixtures through the typed client and
+        # asserts the typed namespaces against the same ebb_server; the
+        # test short-circuits when the server is unreachable.
+        run: pnpm --filter issue-tracker test:integration
       - name: Stop ebb_server
         if: always()
         run: |
