@@ -141,6 +141,13 @@ defmodule EbbServer.Storage.Writer do
   Writer once `commit_fn` returns and before the marks settle, so tests
   can observe the durable-commit window deterministically.
 
+  A bench-only `:ablate` option (default `[]`) skips named pieces of the
+  flush critical path — the dedup index, group/type/entity index writes,
+  dirty marks, cache mutations, the watermark advance, and fan-out — so
+  `mix bench.actions --ablate` can price each one. It is never set in
+  production, and an empty list emits exactly the same ops as before.
+  See `EbbServer.Bench.Options`.
+
   ## cf_group_actions index and intra-action context
 
   When building the `cf_group_actions` index entry for an update, the
@@ -217,6 +224,7 @@ defmodule EbbServer.Storage.Writer do
           after_commit: (-> any()) | nil,
           batch_max_size: integer(),
           batch_timeout_ms: non_neg_integer(),
+          ablate: [atom()],
           pending: [{GenServer.from(), [validated_action()]}],
           pending_count: non_neg_integer(),
           flush_timer: reference() | nil,
@@ -240,6 +248,7 @@ defmodule EbbServer.Storage.Writer do
     :after_commit,
     :batch_max_size,
     :batch_timeout_ms,
+    :ablate,
     :pending,
     :pending_count,
     :flush_timer,
@@ -330,6 +339,10 @@ defmodule EbbServer.Storage.Writer do
     commit_fn = Keyword.get(opts, :commit_fn) || (&RocksDB.write_batch/2)
     after_commit = Keyword.get(opts, :after_commit)
 
+    # Bench-only ablation seam (see `--ablate` in `EbbServer.Bench.Options`).
+    # Production passes nothing, so every phase runs.
+    ablate = Keyword.get(opts, :ablate, [])
+
     batch_max_size =
       Keyword.get(
         opts,
@@ -363,6 +376,7 @@ defmodule EbbServer.Storage.Writer do
       after_commit: after_commit,
       batch_max_size: batch_max_size,
       batch_timeout_ms: batch_timeout_ms,
+      ablate: ablate,
       pending: [],
       pending_count: 0,
       flush_timer: nil,
@@ -482,7 +496,7 @@ defmodule EbbServer.Storage.Writer do
     state = cancel_flush_timer(state)
     pending = Enum.reverse(state.pending)
 
-    {fresh, fresh_tagged} = plan(pending, state.rocks_name)
+    {fresh, fresh_tagged} = plan(pending, state)
 
     state = %{state | pending: [], pending_count: 0, flush_scheduled: false}
 
@@ -533,7 +547,7 @@ defmodule EbbServer.Storage.Writer do
   # Arrival order is the caller's position in `pending`; a caller's
   # surviving Actions are contiguous in the global fresh list, so one
   # `{first, last}` per caller is exact.
-  defp plan(pending, rocks_name) do
+  defp plan(pending, state) do
     tagged =
       pending
       |> Enum.with_index()
@@ -544,7 +558,9 @@ defmodule EbbServer.Storage.Writer do
       end)
       |> Enum.uniq_by(fn {_caller_idx, action} -> action.id end)
 
-    fresh_tagged = drop_committed(tagged, rocks_name)
+    fresh_tagged =
+      if ablate?(:dedup, state), do: tagged, else: drop_committed(tagged, state.rocks_name)
+
     fresh = Enum.map(fresh_tagged, &elem(&1, 1))
 
     {fresh, fresh_tagged}
@@ -625,8 +641,7 @@ defmodule EbbServer.Storage.Writer do
   # clear.
   defp write_batch(fresh, gsn_start, gsn_end, state) do
     started_at = System.monotonic_time()
-    entities = affected_entities(fresh)
-    pending = {entities, DirtyTracker.mark_pending_batch(entities, state.dirty_set)}
+    pending = pending_marks(fresh, state)
 
     # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
     try do
@@ -649,7 +664,18 @@ defmodule EbbServer.Storage.Writer do
         %{gsn_start: gsn_start, gsn_end: gsn_end}
       )
 
-      resolve_range(state, gsn_start, gsn_end)
+      unless ablate?(:watermark, state), do: resolve_range(state, gsn_start, gsn_end)
+    end
+  end
+
+  # With `:dirty` ablated there is no mark to place and nothing to settle
+  # or clear, so the pending tuple is inert.
+  defp pending_marks(fresh, state) do
+    if ablate?(:dirty, state) do
+      {[], nil}
+    else
+      entities = affected_entities(fresh)
+      {entities, DirtyTracker.mark_pending_batch(entities, state.dirty_set)}
     end
   end
 
@@ -666,13 +692,18 @@ defmodule EbbServer.Storage.Writer do
       |> Enum.with_index(gsn_start)
       |> Enum.map_reduce({%{}, MapSet.new(), %{}}, fn {action, gsn}, {groups, keys, memo} ->
         {ops, group_ids, action_keys, memo} =
-          build_action_ops(action, gsn, state.rocks_name, resolve_opts, memo)
+          build_action_ops(action, gsn, state, resolve_opts, memo)
 
         keys = MapSet.union(keys, MapSet.new(action_keys))
         {ops, {Map.put(groups, gsn, group_ids), keys, memo}}
       end)
 
-    ops = :lists.append(action_ops) ++ type_entity_ops(type_entity_keys, state.rocks_name)
+    type_ops =
+      if ablate?(:entity_index, state),
+        do: [],
+        else: type_entity_ops(type_entity_keys, state.rocks_name)
+
+    ops = :lists.append(action_ops) ++ type_ops
     {ops, groups_by_gsn}
   end
 
@@ -695,11 +726,11 @@ defmodule EbbServer.Storage.Writer do
 
         # Point of no return: make the range durable-resolved before any
         # raise-capable cache bookkeeping runs.
-        mark_committed(state, gsn_start, gsn_end)
+        unless ablate?(:watermark, state), do: mark_committed(state, gsn_start, gsn_end)
 
         case apply_post_commit(fresh, state) do
           :ok ->
-            notify_batch_committed(state, gsn_start, gsn_end, groups_by_gsn, committed_at)
+            notify_fanout(state, gsn_start, gsn_end, groups_by_gsn, committed_at)
             :ok
 
           {:error, reason} ->
@@ -719,11 +750,15 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp apply_post_commit(fresh, state) do
-    :ok = DirtyTracker.mark_dirty_batch(affected_entities(fresh), state.dirty_set)
+    unless ablate?(:dirty, state) do
+      :ok = DirtyTracker.mark_dirty_batch(affected_entities(fresh), state.dirty_set)
+    end
 
-    fresh
-    |> plan_cache_mutations(state)
-    |> Enum.each(&apply_cache_mutation(&1, state))
+    unless ablate?(:cache, state) do
+      fresh
+      |> plan_cache_mutations(state)
+      |> Enum.each(&apply_cache_mutation(&1, state))
+    end
 
     :ok
   rescue
@@ -977,11 +1012,11 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp abandon(state, pending, gsn_start, gsn_end, reason) do
-    clear_pending(state, pending)
+    unless ablate?(:dirty, state), do: clear_pending(state, pending)
 
     # Resolve before nudging so the router can only observe the advanced
     # frontier. The `after` repeats this, harmlessly.
-    resolve_range(state, gsn_start, gsn_end)
+    unless ablate?(:watermark, state), do: resolve_range(state, gsn_start, gsn_end)
 
     Telemetry.execute(
       [:writer, :range_resolved],
@@ -1020,6 +1055,12 @@ defmodule EbbServer.Storage.Writer do
     :ok
   end
 
+  defp notify_fanout(state, gsn_start, gsn_end, groups_by_gsn, committed_at) do
+    unless ablate?(:fanout, state) do
+      notify_batch_committed(state, gsn_start, gsn_end, groups_by_gsn, committed_at)
+    end
+  end
+
   defp notify_batch_committed(state, gsn_start, gsn_end, groups_by_gsn, committed_at) do
     notify_router(state, {:batch_committed, gsn_start, gsn_end, groups_by_gsn, committed_at})
   end
@@ -1039,14 +1080,16 @@ defmodule EbbServer.Storage.Writer do
     :ok
   end
 
-  defp build_action_ops(action, gsn, rocks_name, flush_opts, memo) do
+  defp build_action_ops(action, gsn, state, flush_opts, memo) do
+    rocks_name = state.rocks_name
+
     resolve_opts =
       Keyword.put(flush_opts, :intra_action, build_intra_action_context(action.updates))
 
     {update_ops, {group_ids_by_update, type_entity_keys, memo}} =
       Enum.map_reduce(action.updates, {[], [], memo}, fn update, {groups, keys, memo} ->
         {ops, group_ids, type_entity_key, memo} =
-          build_update_ops(action.id, update, gsn, rocks_name, resolve_opts, memo)
+          build_update_ops(action.id, update, gsn, state, resolve_opts, memo)
 
         {ops, {[group_ids | groups], [type_entity_key | keys], memo}}
       end)
@@ -1065,16 +1108,25 @@ defmodule EbbServer.Storage.Writer do
     # per Update, so repeated memberships cannot write the same
     # `{group_id, gsn}` row twice.
     group_ops =
-      Enum.map(group_ids, fn group_id ->
-        key = RocksDB.encode_group_action_key(group_id, gsn)
-        {:put, RocksDB.cf_group_actions(rocks_name), key, action.id}
-      end)
+      if ablate?(:group_index, state) do
+        []
+      else
+        Enum.map(group_ids, fn group_id ->
+          key = RocksDB.encode_group_action_key(group_id, gsn)
+          {:put, RocksDB.cf_group_actions(rocks_name), key, action.id}
+        end)
+      end
+
+    dedup_ops =
+      if ablate?(:dedup, state) do
+        []
+      else
+        [{:put, RocksDB.cf_action_dedup(rocks_name), action.id, RocksDB.encode_gsn_key(gsn)}]
+      end
 
     ops =
-      [
-        {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), action_etf},
-        {:put, RocksDB.cf_action_dedup(rocks_name), action.id, RocksDB.encode_gsn_key(gsn)}
-      ] ++ group_ops ++ :lists.append(update_ops)
+      [{:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), action_etf}] ++
+        dedup_ops ++ group_ops ++ :lists.append(update_ops)
 
     {ops, group_ids, type_entity_keys, memo}
   end
@@ -1116,21 +1168,34 @@ defmodule EbbServer.Storage.Writer do
     }
   end
 
-  defp build_update_ops(action_id, update, gsn, rocks_name, resolve_opts, memo) do
-    {group_ids, memo} = group_ids_for_update(update, resolve_opts, memo)
+  defp build_update_ops(action_id, update, gsn, state, resolve_opts, memo) do
+    rocks_name = state.rocks_name
 
-    type_entity_key = RocksDB.encode_type_entity_key(update.subject_type, update.subject_id)
+    {group_ids, memo} =
+      if ablate?(:group_resolution, state) do
+        {[], memo}
+      else
+        group_ids_for_update(update, resolve_opts, memo)
+      end
 
-    # The Update is stored once, inside the `cf_actions` value; there is no
-    # separate per-Update row to maintain. The group index and the type
-    # index are emitted by the caller, which owns the dedup scope.
-    ops = [
-      {:put, RocksDB.cf_entity_actions(rocks_name),
-       RocksDB.encode_entity_gsn_key(update.subject_id, gsn), action_id}
-    ]
+    if ablate?(:entity_index, state) do
+      {[], group_ids, nil, memo}
+    else
+      type_entity_key = RocksDB.encode_type_entity_key(update.subject_type, update.subject_id)
 
-    {ops, group_ids, type_entity_key, memo}
+      # The Update is stored once, inside the `cf_actions` value; there is no
+      # separate per-Update row to maintain. The group index and the type
+      # index are emitted by the caller, which owns the dedup scope.
+      ops = [
+        {:put, RocksDB.cf_entity_actions(rocks_name),
+         RocksDB.encode_entity_gsn_key(update.subject_id, gsn), action_id}
+      ]
+
+      {ops, group_ids, type_entity_key, memo}
+    end
   end
+
+  defp ablate?(phase, state), do: phase in state.ablate
 
   defp group_ids_for_update(update, resolve_opts, memo) do
     case Keyword.get(resolve_opts, :entity_groups) do

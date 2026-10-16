@@ -61,12 +61,13 @@ defmodule EbbServer.Bench.Metrics do
   @spec analyze(Options.t(), map(), [map()], [map()], [map()] | nil, map()) :: map()
   def analyze(%Options{} = config, ctx, worker_stats, resource_samples, fanout, telemetry \\ %{}) do
     merged = merge_stats(worker_stats)
+    watermark_ablated? = :watermark in config.ablate
 
     %{
       tier: config.tier,
       throughput: throughput(config.duration, merged),
       latency: latency(config.duration, merged.samples),
-      correctness: correctness(merged, resource_samples),
+      correctness: correctness(merged, resource_samples, watermark_ablated?),
       resources: resources(resource_samples),
       fanout: fanout_summary(fanout),
       server: server_summary(config.duration, telemetry),
@@ -203,14 +204,18 @@ defmodule EbbServer.Bench.Metrics do
     end)
   end
 
-  defp correctness(merged, resource_samples) do
+  # The watermark frontier is what makes GSN density and lag meaningful; with
+  # `:watermark` ablated the frontier never moves, so both are deliberately
+  # left unmeasured instead of reporting a meaningless number.
+  defp correctness(merged, resource_samples, watermark_ablated?) do
     %{
       accepted: merged.accepted,
       rejected: merged.rejected,
       errors: merged.errors,
-      gsn_holes: count_gsn_holes(),
-      watermark_lag_high: samples_max(resource_samples, &lag/1),
-      watermark_lag_final: final_lag(resource_samples)
+      gsn_holes: if(watermark_ablated?, do: nil, else: count_gsn_holes()),
+      watermark_lag_high:
+        if(watermark_ablated?, do: nil, else: samples_max(resource_samples, &lag/1)),
+      watermark_lag_final: if(watermark_ablated?, do: nil, else: final_lag(resource_samples))
     }
   end
 

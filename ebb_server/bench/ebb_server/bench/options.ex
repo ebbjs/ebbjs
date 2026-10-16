@@ -11,6 +11,16 @@ defmodule EbbServer.Bench.Options do
   @type durability :: :sync | :async
   @type distribution :: :spread | :hot
 
+  @type ablate_phase ::
+          :dedup
+          | :group_resolution
+          | :entity_index
+          | :group_index
+          | :dirty
+          | :cache
+          | :watermark
+          | :fanout
+
   @type t :: %__MODULE__{
           tier: tier(),
           duration: pos_integer(),
@@ -25,7 +35,8 @@ defmodule EbbServer.Bench.Options do
           durability: durability(),
           distribution: distribution(),
           updates_per_action: pos_integer(),
-          subscribers: non_neg_integer()
+          subscribers: non_neg_integer(),
+          ablate: [ablate_phase()]
         }
 
   defstruct tier: :t0,
@@ -41,12 +52,17 @@ defmodule EbbServer.Bench.Options do
             durability: :sync,
             distribution: :spread,
             updates_per_action: 2,
-            subscribers: 0
+            subscribers: 0,
+            ablate: []
 
   @tiers %{"t0" => :t0, "t1" => :t1, "t2" => :t2, "t3" => :t3}
   @durabilities %{"sync" => :sync, "async" => :async}
   @distributions %{"spread" => :spread, "hot" => :hot}
   @updates_per_action [1, 2, 10]
+
+  # Canonical order for the parsed list and the printed command.
+  @ablate_phases ~w(dedup group_resolution entity_index group_index dirty cache watermark fanout)a
+  @ablate_by_name Map.new(@ablate_phases, &{Atom.to_string(&1), &1})
 
   @switches [
     tier: :string,
@@ -62,7 +78,8 @@ defmodule EbbServer.Bench.Options do
     durability: :string,
     distribution: :string,
     updates_per_action: :integer,
-    subscribers: :integer
+    subscribers: :integer,
+    ablate: :string
   ]
 
   @doc """
@@ -102,6 +119,7 @@ defmodule EbbServer.Bench.Options do
       {"Preloaded entities", "#{config.entities}"},
       {"SSE subscribers", "#{config.subscribers}"},
       {"Writers", "#{config.writers}"},
+      {"Ablated phases", ablated_description(config.ablate)},
       {"Port", "#{config.port}"},
       {"Seed", "#{config.seed}"},
       {"Output", config.out || "(default)"}
@@ -129,6 +147,12 @@ defmodule EbbServer.Bench.Options do
       "--port #{config.port}",
       "--seed #{config.seed}"
     ]
+
+    base =
+      case config.ablate do
+        [] -> base
+        phases -> base ++ ["--ablate #{Enum.map_join(phases, ",", &Atom.to_string/1)}"]
+      end
 
     case config.out do
       nil -> Enum.join(base, " ")
@@ -163,11 +187,13 @@ defmodule EbbServer.Bench.Options do
   defp put_opt({:distribution, value}, acc), do: %{acc | distribution: value}
   defp put_opt({:updates_per_action, value}, acc), do: %{acc | updates_per_action: value}
   defp put_opt({:subscribers, value}, acc), do: %{acc | subscribers: value}
+  defp put_opt({:ablate, value}, acc), do: %{acc | ablate: split_ablate(value)}
 
   defp validate(config) do
     with {:ok, tier} <- map_value(config.tier, @tiers, "tier"),
          {:ok, durability} <- map_value(config.durability, @durabilities, "durability"),
          {:ok, distribution} <- map_value(config.distribution, @distributions, "distribution"),
+         {:ok, ablate} <- validate_ablate(config.ablate),
          :ok <- validate_ranges(config),
          :ok <- validate_tier(tier, config) do
       {:ok,
@@ -175,10 +201,50 @@ defmodule EbbServer.Bench.Options do
          config
          | tier: tier,
            durability: durability,
-           distribution: distribution
+           distribution: distribution,
+           ablate: ablate
        })}
     end
   end
+
+  defp split_ablate(value) do
+    value
+    |> String.split(",")
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  # `all` is a convenience for the whole phase set; otherwise every name
+  # must be known. The result is in canonical order so the printed
+  # command is stable regardless of how the run was invoked.
+  defp validate_ablate([]), do: {:ok, []}
+
+  defp validate_ablate(names) do
+    if "all" in names do
+      {:ok, @ablate_phases}
+    else
+      names
+      |> Enum.map(&Map.fetch(@ablate_by_name, &1))
+      |> collect_ablate(names)
+    end
+  end
+
+  defp collect_ablate(fetched, names) do
+    case Enum.find_index(fetched, &(&1 == :error)) do
+      nil ->
+        {:ok, fetched |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> canonical_ablate()}
+
+      index ->
+        {:error,
+         "invalid --ablate phase #{inspect(Enum.at(names, index))}; " <>
+           "expected one of all, #{Enum.join(Map.keys(@ablate_by_name), ", ")}"}
+    end
+  end
+
+  defp canonical_ablate(phases), do: Enum.filter(@ablate_phases, &(&1 in phases))
+
+  defp ablated_description([]), do: "none"
+  defp ablated_description(phases), do: Enum.map_join(phases, ", ", &Atom.to_string/1)
 
   defp validate_ranges(config) do
     with :ok <- check(config.writers == 1, "--writers must be 1; multi-writer is gated on #287"),

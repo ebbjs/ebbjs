@@ -79,8 +79,13 @@ defmodule EbbServer.Bench.Boot do
     end
   end
 
-  defp writer_opts(%{durability: :async}), do: [commit_fn: &__MODULE__.async_commit/2]
-  defp writer_opts(_config), do: []
+  defp writer_opts(config) do
+    [ablate: config.ablate] ++
+      case config.durability do
+        :async -> [commit_fn: &__MODULE__.async_commit/2]
+        :sync -> []
+      end
+  end
 
   defp start_dependencies do
     :ebb_server

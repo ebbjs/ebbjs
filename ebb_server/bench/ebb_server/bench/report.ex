@@ -47,7 +47,7 @@ defmodule EbbServer.Bench.Report do
       fanout_section(result.fanout, result.server),
       "## Correctness and resources",
       "",
-      correctness_table(result),
+      correctness_table(config, result),
       "",
       "## Methodology and limitations",
       "",
@@ -209,17 +209,23 @@ defmodule EbbServer.Bench.Report do
 
   defp overall(windows), do: Enum.find(windows, &(&1.window == "overall"))
 
-  defp correctness_table(result) do
+  defp correctness_table(%Options{} = config, result) do
     correctness = result.correctness
     resources = result.resources
+
+    # The frontier never moves when `:watermark` is ablated, so its derived
+    # numbers are meaningless rather than zero.
+    watermark = fn value ->
+      if :watermark in config.ablate, do: "n/a", else: format_integer(value)
+    end
 
     rows = [
       {"Accepted Actions", format_integer(correctness.accepted)},
       {"Rejected Actions", format_integer(correctness.rejected)},
       {"Write/transport errors", format_integer(correctness.errors)},
-      {"GSN holes", format_integer(correctness.gsn_holes)},
-      {"Watermark lag high-water (GSNs)", format_integer(correctness.watermark_lag_high)},
-      {"Final watermark lag (GSNs)", format_integer(correctness.watermark_lag_final)},
+      {"GSN holes", watermark.(correctness.gsn_holes)},
+      {"Watermark lag high-water (GSNs)", watermark.(correctness.watermark_lag_high)},
+      {"Final watermark lag (GSNs)", watermark.(correctness.watermark_lag_final)},
       {"Peak RSS", format_kb(resources.peak_rss_kb)},
       {"Peak process memory", format_bytes(resources.peak_memory_bytes)},
       {"Peak dirty-set size", format_integer(resources.peak_dirty)},
@@ -247,7 +253,8 @@ defmodule EbbServer.Bench.Report do
       "RocksDB compaction and flush backlog are not measured: the `rocksdb` package exposes no " <>
         "property for them and emits no `:telemetry` event.",
       durability_note(config),
-      steady_note(config)
+      steady_note(config),
+      ablation_note(config)
     ]
     |> Enum.reject(&(&1 == ""))
     |> Enum.join(" ")
@@ -295,6 +302,14 @@ defmodule EbbServer.Bench.Report do
   defp steady_note(_config) do
     "Burst (first 15s) and steady (61s..120s) are reported separately because the two measure " <>
       "different regimes: cold memtable and compaction pressure affect the sustained rate."
+  end
+
+  defp ablation_note(%{ablate: []}), do: ""
+
+  defp ablation_note(%{ablate: phases}) do
+    "Ablation is active: the Writer skipped #{Enum.map_join(phases, ", ", &Atom.to_string/1)} " <>
+      "on the flush critical path, so this run measures a reduced write path and its latency, " <>
+      "density, and dirty-cache numbers are not comparable to an unablated run."
   end
 
   defp table(headers, rows) do
