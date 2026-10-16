@@ -64,10 +64,7 @@ import {
 } from "../schema/entity-registry";
 import type { RelationshipDef } from "../schema/relationship";
 import {
-  buildRelationshipUpdate,
-  normalizeManyPointers,
-  normalizePointer,
-  resolveCardinality,
+  buildRelationshipWrite as buildRelationshipWriteFree,
   type BuildRelationshipWriteOptions,
   type BuildRelationshipWriteResult,
 } from "./relationship";
@@ -884,107 +881,7 @@ export class SyncClient implements PermissionQuery {
    * trust boundary.
    */
   buildRelationshipWrite(opts: BuildRelationshipWriteOptions): BuildRelationshipWriteResult {
-    const { source, as } = opts;
-    const sourceName = source.name;
-
-    // An unknown source name is the same class of error as an unknown
-    // subject_type in `validateAction`. The target is treated as a
-    // wire-level id reference — the server validates its existence
-    // at write time, and primitives like `ownedBy` point the source
-    // at a group (system entity), not at a user entity.
-    this.checkEntityRegistered(sourceName, "source");
-
-    const cardinality = resolveCardinality(this.registry, sourceName, as, opts.sourceCardinality);
-
-    if (cardinality === "one") {
-      const sourceId = requireSourceId(opts, as);
-      const targetId = normalizePointer(opts.targetId, `targetId for "${as}"`);
-      const updateId = generateId("u");
-      const relationshipId = opts.relationshipSubjectId ?? generateId("rel");
-      const relUpdate = buildRelationshipUpdate({
-        relationshipId,
-        sourceId,
-        targetId,
-        field: as,
-        type: this.wireTypeFor(sourceName, as),
-        updateId,
-      });
-      return { relationshipUpdate: relUpdate };
-    }
-
-    // Many-cardinality.
-    const entityUpdate = requireEntityUpdate(opts, as);
-    const sourceId = entityUpdate.subject_id;
-    const targetIds = opts.targetIds;
-    const wireType = this.wireTypeFor(sourceName, as);
-    const updates: Update[] = [];
-    if (targetIds === undefined) {
-      // No `targetIds` — emit the entity Update with no relationship
-      // edges. Matches `targetId: null` on the one-cardinality side;
-      // the `many` side has no per-edge delete in this primitive.
-      return { entityUpdate, relationshipUpdate: updates };
-    }
-    if ("replace" in targetIds) {
-      const normalized = normalizeManyPointers(targetIds, `targetIds for "${as}"`);
-      for (const targetId of normalized) {
-        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, targetId));
-      }
-    } else {
-      for (const targetId of targetIds.add) {
-        const id = normalizePointer(targetId, `targetIds.add for "${as}"`);
-        if (id === null) continue;
-        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, id));
-      }
-      for (const targetId of targetIds.remove) {
-        const id = normalizePointer(targetId, `targetIds.remove for "${as}"`);
-        if (id === null) continue;
-        updates.push(this.makeManyRelationshipUpdate(sourceId, as, wireType, id));
-      }
-    }
-    return { entityUpdate, relationshipUpdate: updates };
-  }
-
-  private makeManyRelationshipUpdate(
-    sourceId: string,
-    as: string,
-    wireType: string,
-    targetId: string,
-  ): Update {
-    return buildRelationshipUpdate({
-      relationshipId: generateId("rel"),
-      sourceId,
-      targetId,
-      field: as,
-      type: wireType,
-      updateId: generateId("u"),
-    });
-  }
-
-  /**
-   * Resolve the wire-level `type` string for a relationship: prefer
-   * the registry's stored `type` override; fall back to the source
-   * entity name. Matches `defineRelationship`'s default.
-   */
-  private wireTypeFor(sourceName: string, as: string): string {
-    const rel = this.registry.getRelationship(sourceName, as);
-    return rel?.type ?? sourceName;
-  }
-
-  /**
-   * Surface unknown source/target entity names as a typed
-   * `EntityValidationError`. When no entities are registered at all
-   * (validation is a no-op across the SDK) the call is skipped —
-   * the server is the authority in that case.
-   */
-  private checkEntityRegistered(name: string, role: "source" | "target"): void {
-    if (this.registry.isEmpty()) return;
-    if (this.registry.has(name)) return;
-    throw new EntityValidationError([
-      {
-        entityName: name,
-        message: `buildRelationshipWrite: ${role} entity "${name}" is not registered in the EntityRegistry`,
-      },
-    ]);
+    return buildRelationshipWriteFree(this.registry, opts);
   }
 
   // -------------------------------------------------------------------------
@@ -1653,36 +1550,6 @@ export interface QueryOptions {
   filter?: Record<string, unknown>;
   limit?: number;
   offset?: number;
-}
-
-/**
- * Resolve the `sourceId` from `BuildRelationshipWriteOptions`. The
- * one-cardinality wire doesn't carry an entity Update, so the
- * caller supplies `sourceId` directly.
- */
-function requireSourceId(opts: BuildRelationshipWriteOptions, as: string): string {
-  if (opts.sourceId !== undefined && opts.sourceId.length > 0) return opts.sourceId;
-  throw new EntityValidationError([
-    {
-      entityName: opts.source.name,
-      message: `buildRelationshipWrite: sourceId is required for one-cardinality relationship "${as}"`,
-    },
-  ]);
-}
-
-/**
- * Resolve the entity Update from `BuildRelationshipWriteOptions`.
- * The many-cardinality wire carries the canonical FK set on the
- * source entity's data field, so the entity Update is required.
- */
-function requireEntityUpdate(opts: BuildRelationshipWriteOptions, as: string): Update {
-  if (opts.entityUpdate !== undefined) return opts.entityUpdate;
-  throw new EntityValidationError([
-    {
-      entityName: opts.source.name,
-      message: `buildRelationshipWrite: entityUpdate is required for many-cardinality relationship "${as}"`,
-    },
-  ]);
 }
 
 /**
