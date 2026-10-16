@@ -73,6 +73,7 @@ defmodule EbbServer.Storage.SystemCache do
   All child modules accept optional keyword arguments to override default ETS table names:
   - `:dirty_set` - defaults to `:ebb_dirty_set`
   - `:table` (GroupCache) - defaults to `:ebb_group_members`
+  - `:group_members_by_group` (GroupCache) - defaults to `:ebb_group_members_by_group`
   - `:entity_groups` - defaults to `:ebb_entity_groups`
   - `:entity_groups_by_id` - defaults to `:ebb_entity_groups_by_id`
   - `:entity_groups_by_group` - defaults to `:ebb_entity_groups_by_group`
@@ -233,7 +234,7 @@ defmodule EbbServer.Storage.SystemCache do
     gsn_counter_name = Keyword.get(opts, :gsn_counter_name, @default_gsn_counter_name)
 
     dirty_set_opts = Keyword.take(opts, [:dirty_set])
-    group_cache_opts = Keyword.take(opts, [:table])
+    group_cache_opts = Keyword.take(opts, [:table, :group_members_by_id, :group_members_by_group])
 
     rel_cache_opts = Keyword.take(opts, [:relationships, :relationships_by_id])
 

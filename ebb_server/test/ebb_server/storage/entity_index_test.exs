@@ -12,6 +12,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
     rbi = :"ei_rbi_#{System.unique_integer([:positive])}"
     gm = :"ei_gm_#{System.unique_integer([:positive])}"
     gm_by_id = :"ei_gmbi_#{System.unique_integer([:positive])}"
+    gm_by_group = :"ei_gmbg_#{System.unique_integer([:positive])}"
     eg = :"ei_eg_#{System.unique_integer([:positive])}"
     eg_by_id = :"ei_egbi_#{System.unique_integer([:positive])}"
     eg_by_group = :"ei_egbg_#{System.unique_integer([:positive])}"
@@ -28,7 +29,8 @@ defmodule EbbServer.Storage.EntityIndexTest do
       GroupCache.start_link(
         name: :"ei_gc_#{System.unique_integer([:positive])}",
         table: gm,
-        group_members_by_id: gm_by_id
+        group_members_by_id: gm_by_id,
+        group_members_by_group: gm_by_group
       )
 
     {:ok, _} =
@@ -61,7 +63,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
 
       EntityTypeCache.reset(entity_types: entity_types)
 
-      for t <- [rel, rbi, gm, gm_by_id, eg, eg_by_id, eg_by_group, entity_types] do
+      for t <- [rel, rbi, gm, gm_by_id, gm_by_group, eg, eg_by_id, eg_by_group, entity_types] do
         try do
           :ets.delete(t)
         rescue
@@ -75,6 +77,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
       relationships_by_id: rbi,
       group_members: gm,
       group_members_by_id: gm_by_id,
+      group_members_by_group: gm_by_group,
       entity_groups: eg,
       entity_groups_by_id: eg_by_id,
       entity_groups_by_group: eg_by_group,

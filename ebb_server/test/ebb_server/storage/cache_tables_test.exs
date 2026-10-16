@@ -37,6 +37,7 @@ defmodule EbbServer.Storage.CacheTablesTest do
           {RelationshipCache, :relationships_by_id},
           {GroupCache, :group_members},
           {GroupCache, :group_members_by_id},
+          {GroupCache, :group_members_by_group},
           {EntityGroupCache, :entity_groups},
           {EntityGroupCache, :entity_groups_by_id},
           {EntityGroupCache, :entity_groups_by_group},
@@ -92,6 +93,19 @@ defmodule EbbServer.Storage.CacheTablesTest do
       publish_and_cleanup(EbbServer.Storage.GroupCache, :group_members_by_id, name)
 
       assert CacheTables.group_members_by_id() == name
+    end
+  end
+
+  describe "group_members_by_group/0" do
+    test "returns the canonical default when GroupCache has not published" do
+      assert CacheTables.group_members_by_group() == :ebb_group_members_by_group
+    end
+
+    test "returns whatever GroupCache published" do
+      name = :"gm_by_group_published_#{System.unique_integer([:positive])}"
+      publish_and_cleanup(EbbServer.Storage.GroupCache, :group_members_by_group, name)
+
+      assert CacheTables.group_members_by_group() == name
     end
   end
 

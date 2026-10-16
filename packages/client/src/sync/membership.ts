@@ -1,9 +1,10 @@
 /**
  * The membership checker: client-side resolution of a system write's
- * fan-out group set, and the two structural refusals the server
- * enforces for membership — `missing_ownership` (a write that resolves
- * to no group) and `last_membership` (a delta that would leave an
- * entity with no owning group).
+ * fan-out group set, and the structural refusals the server enforces
+ * for membership — `missing_ownership` (a write that resolves to no
+ * group), `last_membership` (a delta that would leave an entity with
+ * no owning group), and `last_group_member` (a delta that would leave
+ * a group with no member holding a non-empty permission list).
  *
  * The rules mirror the server's `EntityIndex.fan_out_groups/2` and
  * `Authorizer` (#461/#264) so the client refuses, before an Action
@@ -119,4 +120,53 @@ export const lastMembershipViolation = (
   const resulting = resultingGroups(currentGroups, delta);
   if (resulting.length > 0) return undefined;
   return `removing this membership would leave the entity with no owning group`;
+};
+
+/**
+ * A live `groupMember` row reduced to what the lockout guard reads:
+ * the row id, the group it scopes to, and its permission list. An
+ * empty list grants nothing, so such a member cannot administer the
+ * group.
+ */
+export interface LiveGroupMember {
+  readonly id: string;
+  readonly groupId: string;
+  readonly permissions: readonly string[];
+}
+
+/** One membership row's permission list after the delta, keyed by row id. */
+export interface GroupMemberUpsert {
+  readonly id: string;
+  readonly permissions: readonly string[];
+}
+
+/** A `groupMember` delta: the rows to remove and the permission lists to overwrite. */
+export interface GroupMemberDelta {
+  readonly removedIds: readonly string[];
+  readonly upserts: readonly GroupMemberUpsert[];
+}
+
+/**
+ * The `last_group_member` refusal for a delta that would leave a group
+ * with no membership holding a non-empty permission list, or
+ * `undefined` when at least one capable member survives.
+ *
+ * The check needs the group's current members; a caller whose local
+ * view is empty cannot tell "no members" from "not cached", so it
+ * passes `currentMembers: undefined` and defers to the server. An
+ * upsert the local view does not know is still counted when its
+ * permission list is non-empty — the caller can only add a capable
+ * member, never prove a lockout.
+ */
+export const lastGroupMemberViolation = (
+  currentMembers: readonly LiveGroupMember[] | undefined,
+  delta: GroupMemberDelta,
+): string | undefined => {
+  if (currentMembers === undefined || currentMembers.length === 0) return undefined;
+  const permissions = new Map(currentMembers.map((member) => [member.id, member.permissions]));
+  for (const id of delta.removedIds) permissions.delete(id);
+  for (const upsert of delta.upserts) permissions.set(upsert.id, upsert.permissions);
+  const capable = [...permissions.values()].some((list) => list.length > 0);
+  if (capable) return undefined;
+  return `removing this membership would leave the group with no member that can administer it`;
 };

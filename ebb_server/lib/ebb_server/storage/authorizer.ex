@@ -97,6 +97,23 @@ defmodule EbbServer.Storage.Authorizer do
   membership add in a later Action resolves the type the same request
   introduced.
 
+  ## Last group member
+
+  A group must keep at least one membership holding a non-empty
+  permission list. Anything a `groupMember` put, patch or delete would
+  do to leave it with none is a structural rejection
+  (`last_group_member`), beside `last_membership` (#479). Permissions
+  live only on `groupMember` rows and `GroupCache.get_permissions/3`
+  treats an empty list as no membership, so a group with no capable
+  row is unreachable through the API.
+
+  The check mirrors `last_membership`: the affected groups' cached
+  members, plus the request's puts and patches, minus its deletes, with
+  a member's group change moving it between groups. The delta is
+  carried across the Actions of one request, so two Actions that each
+  remove one of a group's two capable members cannot both pass against
+  the same cache snapshot.
+
   ## Bootstrap existence
 
   Existence is read from the entity-type index (`EntityIndex.exists?/2`),
@@ -132,10 +149,21 @@ defmodule EbbServer.Storage.Authorizer do
   # What the request knows so far on top of the cache snapshot. Caches
   # only advance once the Writer commits, so the last-membership delta
   # and the entity types the earlier Actions resolve travel here.
+  @typep group_member_row :: %{
+           id: String.t(),
+           group_id: String.t(),
+           permissions: [String.t()]
+         }
+
+  # A touched group's members as the request leaves them.
+  @typep members_by_group :: %{String.t() => %{String.t() => [String.t()]}}
+
   @typep request_sim :: %{
            additions: %{String.t() => [String.t()]},
            removals: %{String.t() => [String.t()]},
-           types: %{String.t() => String.t()}
+           types: %{String.t() => String.t()},
+           member_overlay: %{String.t() => group_member_row() | nil},
+           members_by_group: members_by_group()
          }
 
   @type rejection :: %{
@@ -178,7 +206,14 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   @spec new_sim() :: request_sim()
-  defp new_sim, do: %{additions: %{}, removals: %{}, types: %{}}
+  defp new_sim,
+    do: %{
+      additions: %{},
+      removals: %{},
+      types: %{},
+      member_overlay: %{},
+      members_by_group: %{}
+    }
 
   defp authorize_action(action, actor_id, ctx, sim) do
     updates = action.updates
@@ -193,12 +228,14 @@ defmodule EbbServer.Storage.Authorizer do
       created_ids: PermissionHelper.created_subject_ids(updates, exists?),
       created_types: Map.merge(sim.types, PermissionHelper.created_entity_types(updates)),
       deleted_memberships: resolve_deleted_memberships(updates, opts),
+      updates: updates,
       opts: opts,
       ctx: ctx
     }
 
     with :ok <- check_all_updates(updates, actor_id, authz),
-         {:ok, sim} <- check_last_membership(authz, sim) do
+         {:ok, sim} <- check_last_membership(authz, sim),
+         {:ok, sim} <- check_last_group_member(authz, sim) do
       {:ok, %{sim | types: authz.created_types}}
     end
   end
@@ -306,6 +343,140 @@ defmodule EbbServer.Storage.Authorizer do
     |> Enum.reduce(%{}, fn {entity_id, group_id}, acc ->
       Map.update(acc, entity_id, [group_id], &[group_id | &1])
     end)
+  end
+
+  # #479: a group must never resolve to zero memberships holding a
+  # non-empty permission list. Permissions live only on `groupMember`
+  # rows and `get_permissions/3` treats an empty list as no membership,
+  # so a group with no capable row is unreachable through the API. The
+  # check is a net delta per touched group, carried across the request's
+  # Actions because caches only advance once the Writer commits.
+  defp check_last_group_member(authz, sim) do
+    sim =
+      authz.updates
+      |> Enum.filter(&(&1.subject_type == "groupMember"))
+      |> Enum.reduce(sim, fn update, acc -> apply_group_member(update, authz, acc) end)
+
+    if Enum.any?(sim.members_by_group, fn {_group_id, members} -> not capable_group?(members) end) do
+      {:error, "last_group_member",
+       "removing this membership would leave the group with no member that can administer it"}
+    else
+      {:ok, sim}
+    end
+  end
+
+  defp apply_group_member(%{method: method} = update, authz, sim) when method in [:put, :patch] do
+    data = update.data || %{}
+    existing = resolve_group_member(update.subject_id, authz, sim)
+    group_id = member_group_id(method, data, existing)
+
+    if is_nil(group_id) do
+      sim
+    else
+      row = %{
+        id: update.subject_id,
+        group_id: group_id,
+        permissions: resulting_permissions(method, data, existing)
+      }
+
+      sim =
+        sim
+        |> remove_moved_member(existing, row, authz)
+        |> add_group_member(row, authz)
+
+      %{sim | member_overlay: Map.put(sim.member_overlay, row.id, row)}
+    end
+  end
+
+  defp apply_group_member(%{method: :delete} = update, authz, sim) do
+    case resolve_group_member(update.subject_id, authz, sim) do
+      nil ->
+        sim
+
+      row ->
+        sim = remove_group_member(sim, row.id, row.group_id, authz)
+        %{sim | member_overlay: Map.put(sim.member_overlay, row.id, nil)}
+    end
+  end
+
+  # A put's wire fields are authoritative, so a put that drops the group
+  # is a no-op, matching the Writer. A patch falls back to the row it
+  # names.
+  defp member_group_id(:put, data, _existing), do: Fields.get(data, "group_id")
+
+  defp member_group_id(:patch, data, existing),
+    do: Fields.get(data, "group_id") || (existing && existing.group_id)
+
+  defp resulting_permissions(:put, data, _existing),
+    do: List.wrap(Fields.get(data, "permissions"))
+
+  defp resulting_permissions(:patch, data, existing) do
+    case Fields.get(data, "permissions") do
+      nil -> List.wrap(existing && existing.permissions)
+      permissions -> List.wrap(permissions)
+    end
+  end
+
+  # The request's own prior effect first, the committed cache otherwise.
+  defp resolve_group_member(member_id, authz, sim) do
+    case Map.fetch(sim.member_overlay, member_id) do
+      {:ok, row} -> row
+      :error -> cached_group_member(member_id, authz)
+    end
+  end
+
+  defp cached_group_member(member_id, authz) do
+    case GroupCache.get_group_member(member_id, authz.ctx.group_members_by_id_table) do
+      nil ->
+        nil
+
+      row ->
+        %{id: member_id, group_id: row.group_id, permissions: List.wrap(row.permissions)}
+    end
+  end
+
+  defp remove_moved_member(sim, %{group_id: old_group, id: id}, %{group_id: new_group}, authz)
+       when old_group != new_group,
+       do: remove_group_member(sim, id, old_group, authz)
+
+  defp remove_moved_member(sim, _existing, _row, _authz), do: sim
+
+  defp remove_group_member(sim, member_id, group_id, authz) do
+    members = ensure_group(sim.members_by_group, group_id, authz)
+
+    %{
+      sim
+      | members_by_group: Map.put(sim.members_by_group, group_id, Map.delete(members, member_id))
+    }
+  end
+
+  defp add_group_member(sim, row, authz) do
+    members = ensure_group(sim.members_by_group, row.group_id, authz)
+
+    %{
+      sim
+      | members_by_group:
+          Map.put(sim.members_by_group, row.group_id, Map.put(members, row.id, row.permissions))
+    }
+  end
+
+  defp ensure_group(members_by_group, group_id, authz) do
+    Map.get_lazy(members_by_group, group_id, fn -> load_group(group_id, authz) end)
+  end
+
+  defp load_group(group_id, authz) do
+    group_id
+    |> GroupCache.group_member_ids(authz.ctx.group_members_by_group_table)
+    |> Enum.reduce(%{}, fn member_id, acc ->
+      case cached_group_member(member_id, authz) do
+        nil -> acc
+        row -> Map.put(acc, member_id, row.permissions)
+      end
+    end)
+  end
+
+  defp capable_group?(members) do
+    Enum.any?(members, fn {_member_id, permissions} -> permissions != [] end)
   end
 
   # Resolve every `entityGroup` delete once; the delete authorization and

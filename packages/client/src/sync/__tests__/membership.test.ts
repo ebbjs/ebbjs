@@ -8,10 +8,12 @@ import { describe, expect, it } from "vitest";
 import type { Update } from "@ebbjs/core";
 
 import {
+  lastGroupMemberViolation,
   lastMembershipViolation,
   membershipScope,
   resolveUpdateGroups,
   resultingGroups,
+  type LiveGroupMember,
   type MembershipView,
 } from "../membership";
 
@@ -162,5 +164,62 @@ describe("membership checker — last membership net delta", () => {
     expect(
       lastMembershipViolation(["g_1", "g_2"], { puts: [], removedGroups: ["g_1"] }),
     ).toBeUndefined();
+  });
+});
+
+describe("membership checker — last group member net delta", () => {
+  const member = (
+    id: string,
+    permissions: readonly string[],
+    groupId = "g_1",
+  ): LiveGroupMember => ({ id, groupId, permissions });
+
+  it("refuses removing the group's last capable member", () => {
+    const violation = lastGroupMemberViolation([member("gm_1", ["group.*"])], {
+      removedIds: ["gm_1"],
+      upserts: [],
+    });
+    expect(violation).toContain("no member that can administer it");
+  });
+
+  it("allows removing one of two capable members", () => {
+    expect(
+      lastGroupMemberViolation([member("gm_1", ["group.*"]), member("gm_2", ["group.*"])], {
+        removedIds: ["gm_1"],
+        upserts: [],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("counts an empty-list member as incapable when the capable one is removed", () => {
+    const violation = lastGroupMemberViolation([member("gm_1", ["group.*"]), member("gm_2", [])], {
+      removedIds: ["gm_1"],
+      upserts: [],
+    });
+    expect(violation).toContain("no member that can administer it");
+  });
+
+  it("refuses emptying the group's only non-empty permission list", () => {
+    const violation = lastGroupMemberViolation([member("gm_1", ["group.*"])], {
+      removedIds: [],
+      upserts: [{ id: "gm_1", permissions: [] }],
+    });
+    expect(violation).toContain("no member that can administer it");
+  });
+
+  it("allows patching one of several members to an empty list", () => {
+    expect(
+      lastGroupMemberViolation([member("gm_1", ["group.*"]), member("gm_2", ["group.*"])], {
+        removedIds: [],
+        upserts: [{ id: "gm_1", permissions: [] }],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("defers when the local view cannot say whether the group is unowned", () => {
+    expect(
+      lastGroupMemberViolation(undefined, { removedIds: ["gm_1"], upserts: [] }),
+    ).toBeUndefined();
+    expect(lastGroupMemberViolation([], { removedIds: ["gm_1"], upserts: [] })).toBeUndefined();
   });
 });

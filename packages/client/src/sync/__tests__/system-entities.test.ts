@@ -18,6 +18,7 @@ import { defineEntity, e } from "../../schema/entity";
 import { defineSchema } from "../../schema/schema";
 import type { GroupMemberFields } from "../../schema/system-entities";
 import { defineAction, type AnyActionDef } from "../../schema/action";
+import { AtomicActionError } from "../operations";
 import { createClient } from "../client";
 
 interface RecordedRequest {
@@ -186,6 +187,59 @@ describe("client.membership.create", () => {
       permissions: ["profile.*"],
     });
     expect(updates.filter((u) => u.subject_type === "entityGroup")).toHaveLength(0);
+  });
+});
+
+describe("client.membership — last_group_member refusal", () => {
+  const mkMember = (id: string, permissions: readonly string[], groupId = "g_1"): Entity =>
+    mkEntity(id, "groupMember", { group_id: groupId, actor_id: "actor_1", permissions });
+
+  it("delete() of the group's last capable member is refused with last_group_member", async () => {
+    const { client, storage, seen } = await mkClient();
+    await storage.entities.set(mkMember("gm_1", ["groupMember.*"]));
+
+    const error = await client.membership.delete("gm_1").catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(AtomicActionError);
+    expect((error as AtomicActionError).rejections.map((r) => r.reason)).toEqual([
+      "last_group_member",
+    ]);
+    expect(actionCalls(seen)).toHaveLength(0);
+  });
+
+  it("update() emptying the group's only permission list is refused with last_group_member", async () => {
+    const { client, storage, seen } = await mkClient();
+    await storage.entities.set(mkMember("gm_1", ["groupMember.*"]));
+
+    const error = await client.membership
+      .update("gm_1", { permissions: [] })
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(AtomicActionError);
+    expect((error as AtomicActionError).rejections.map((r) => r.reason)).toEqual([
+      "last_group_member",
+    ]);
+    expect(actionCalls(seen)).toHaveLength(0);
+  });
+
+  it("delete() of a non-last member still submits one Action", async () => {
+    const { client, storage, seen } = await mkClient();
+    await storage.entities.set(mkMember("gm_1", ["groupMember.*"]));
+    await storage.entities.set(mkMember("gm_2", ["profile.*"]));
+
+    const response = await client.membership.delete("gm_1");
+
+    expect(response.rejected).toEqual([]);
+    expect(actionCalls(seen)).toHaveLength(1);
+  });
+
+  it("delete() of an uncached row defers to the server", async () => {
+    const { client, seen } = await mkClient();
+
+    const response = await client.membership.delete("gm_absent");
+
+    expect(response.rejected).toEqual([]);
+    expect(actionCalls(seen)).toHaveLength(1);
   });
 });
 

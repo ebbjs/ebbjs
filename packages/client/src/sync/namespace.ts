@@ -60,6 +60,11 @@ import {
 } from "./relationship";
 import { readEntityMemberships, type LiveMembership } from "./entity-group";
 import {
+  lastGroupMemberViolation,
+  type GroupMemberDelta,
+  type LiveGroupMember,
+} from "./membership";
+import {
   call,
   changeGroups,
   createEntity,
@@ -68,6 +73,7 @@ import {
   groupBootstrap,
   patchEntity,
   writeRelationship,
+  AtomicActionError,
   type RelationshipPointer,
 } from "./operations";
 import { commit } from "./committer";
@@ -1307,6 +1313,48 @@ async function resolveUnlinkRelationshipId(
 }
 
 /**
+ * The `last_group_member` refusal for a `groupMember` delta, read from
+ * the local cache. `undefined` when the target row is absent, not a
+ * `groupMember`, tombstoned, or malformed, or when the group's local
+ * member view is empty — the caller then defers to the server's
+ * authoritative check.
+ */
+async function lastGroupMemberRefusal(
+  storage: StorageAdapter,
+  id: string,
+  delta: GroupMemberDelta,
+): Promise<string | undefined> {
+  const row = await storage.entities.get(id);
+  if (row === null || row.type !== "groupMember" || row.deleted_hlc !== null) return undefined;
+  const groupId = row.data?.fields?.["group_id"]?.value;
+  if (typeof groupId !== "string") return undefined;
+  const members = (await storage.entities.query("groupMember")).flatMap((candidate) => {
+    const member = liveGroupMember(candidate);
+    return member === null || member.groupId !== groupId ? [] : [member];
+  });
+  return lastGroupMemberViolation(members, delta);
+}
+
+/**
+ * Reduce a `groupMember` row to the guard's inputs. A tombstoned or
+ * malformed row (missing / non-array permission list) is `null`, so
+ * the caller defers rather than reading it as "no permissions".
+ */
+const liveGroupMember = (row: Entity): LiveGroupMember | null => {
+  if (row.deleted_hlc !== null) return null;
+  const groupId = row.data?.fields?.["group_id"]?.value;
+  const permissions = row.data?.fields?.["permissions"]?.value;
+  if (typeof groupId !== "string" || !isStringArray(permissions)) return null;
+  return { id: row.id, groupId, permissions };
+};
+
+const isStringArray = (value: unknown): value is readonly string[] =>
+  Array.isArray(value) && value.every((entry) => typeof entry === "string");
+
+const lastGroupMemberError = (id: string, details: string): AtomicActionError =>
+  new AtomicActionError([{ id, subjectType: "groupMember", reason: "last_group_member", details }]);
+
+/**
  * `client.group`: the generic read/write surface with the bootstrap
  * `create`. Membership verbs are dropped — a group is its own group,
  * and `entityGroup` rows stay internal.
@@ -1357,8 +1405,33 @@ function createMembershipNamespace(
     get: base.get,
     subscribe: base.subscribe,
     duplicate: base.duplicate,
-    update: base.update,
-    delete: base.delete,
+    async update(
+      id: string,
+      patch: Partial<WireStatic<GroupMemberFields>>,
+      opts?: EntityWriteOptions,
+    ): Promise<WriteResponse> {
+      // Only a permission-only patch is locally provable. A patch that
+      // moves the member to another group changes which group is at
+      // risk, so leave it to the server; a patch that does not touch
+      // `permissions` cannot empty a list either. Changing `actor_id`
+      // keeps the same group, so it stays provable.
+      if (patch.permissions !== undefined && patch.group_id === undefined) {
+        const details = await lastGroupMemberRefusal(storage, id, {
+          removedIds: [],
+          upserts: [{ id, permissions: patch.permissions }],
+        });
+        if (details !== undefined) throw lastGroupMemberError(id, details);
+      }
+      return base.update(id, patch, opts);
+    },
+    async delete(id: string): Promise<WriteResponse> {
+      const details = await lastGroupMemberRefusal(storage, id, {
+        removedIds: [id],
+        upserts: [],
+      });
+      if (details !== undefined) throw lastGroupMemberError(id, details);
+      return base.delete(id);
+    },
     link: base.link,
     unlink: base.unlink,
     setLinks: base.setLinks,

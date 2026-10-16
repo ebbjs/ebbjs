@@ -7,6 +7,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
   import Plug.Conn
   import Plug.Test
 
+  alias EbbServer.Storage.GroupCache
   alias EbbServer.Sync.Router
 
   describe "multi-group membership" do
@@ -635,6 +636,48 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     end
   end
 
+  describe "last group member" do
+    test "refuses removing a group's last capable membership and leaves it committed" do
+      bootstrap =
+        bootstrap_group_action("actor_1", "group_1", [
+          "groupMember.delete",
+          "todo.create",
+          "todo.read"
+        ])
+
+      gm_id = group_member_id(bootstrap)
+
+      assert %{"rejected" => []} = post_membership_action(bootstrap)
+
+      hlc = generate_hlc()
+
+      remove = %{
+        "id" => "act_gm_remove_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          %{
+            "id" => "upd_gm_remove_#{Nanoid.generate()}",
+            "subject_id" => gm_id,
+            "subject_type" => "groupMember",
+            "method" => "delete",
+            "data" => nil
+          }
+        ]
+      }
+
+      response = post_membership_action(remove)
+      assert [rejection] = response["rejected"]
+      assert rejection["reason"] == "last_group_member"
+      assert is_binary(rejection["details"])
+
+      # The refusal is structural, so nothing was written: actor_1 still
+      # holds the group and can still reach it.
+      assert GroupCache.get_permissions("actor_1", "group_1") != nil
+      assert [%{group_id: "group_1"}] = GroupCache.get_actor_groups("actor_1")
+    end
+  end
+
   describe "single-entity read authorization" do
     test "returns the entity to a member of one of its groups" do
       bootstrap_group("actor_1", "group_1", ["todo.create", "todo.read"])
@@ -668,6 +711,12 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       assert missing.status == 404
       assert hidden.resp_body == missing.resp_body
     end
+  end
+
+  defp group_member_id(action) do
+    action["updates"]
+    |> Enum.find(&(&1["subject_type"] == "groupMember"))
+    |> Map.fetch!("subject_id")
   end
 
   defp post_membership_action(action) do

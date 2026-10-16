@@ -17,6 +17,7 @@ defmodule EbbServer.Storage.CacheTables do
 
   @default_group_members :ebb_group_members
   @default_group_members_by_id :ebb_group_members_by_id
+  @default_group_members_by_group :ebb_group_members_by_group
   @default_entity_groups :ebb_entity_groups
   @default_entity_groups_by_id :ebb_entity_groups_by_id
   @default_entity_groups_by_group :ebb_entity_groups_by_group
@@ -31,6 +32,11 @@ defmodule EbbServer.Storage.CacheTables do
   @spec group_members_by_id() :: atom()
   def group_members_by_id,
     do: :persistent_term.get({GroupCache, :group_members_by_id}, @default_group_members_by_id)
+
+  @spec group_members_by_group() :: atom()
+  def group_members_by_group,
+    do:
+      :persistent_term.get({GroupCache, :group_members_by_group}, @default_group_members_by_group)
 
   @spec entity_groups() :: atom()
   def entity_groups,
