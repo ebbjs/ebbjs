@@ -10,15 +10,14 @@
  *
  * Covers:
  * - a non-member never receives the shared group, its workspace, or its
- *   issues;
+ *   issues, and a self-join is refused;
  * - `addToWorkspace` files the actor's `groupMember` row and the
  *   actor's profile into the shared group in one Action, and the member
  *   then reads the shared issue;
- * - `client.can` on the shared issue flips with membership, matching the
- *   server's enforcement;
+ * - `client.can` on the shared issue is allowed for a member and the
+ *   non-member's profile is not visible to assign;
  * - the `assignee` relationship writes and reads back;
- * - leaving drops the membership, so a fresh client for that actor gets
- *   no shared group and no shared issues.
+ * - leaving drops the membership, and re-joining works without a reload.
  *
  * Cross-member profile *content* visibility is blocked on #475 and is
  * asserted as a known gap at the bottom of this file.
@@ -42,54 +41,22 @@ import {
   profileIdForActor,
   workspaceActions,
 } from "../workspace";
-
-const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
+import { SERVER_URL, catchUpUntilCurrent, serverIsReachable } from "./integration-support";
 
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const MEMBER_ID = `mem_it_${RUN_ID}`;
 const OUTSIDER_ID = `out_it_${RUN_ID}`;
 const MEMBER_PROFILE_ID = profileIdForActor(MEMBER_ID);
+const OUTSIDER_PROFILE_ID = profileIdForActor(OUTSIDER_ID);
 
 type Client = NamespacedClient<Schema, typeof workspaceActions>;
-
-let serverReachable: boolean | null = null;
-
-async function ping(url: string): Promise<boolean> {
-  try {
-    const res = await fetch(`${url}/sync/handshake`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-ebb-actor-id": SEEDER_ACTOR_ID },
-      body: "{}",
-    });
-    return res.status < 500;
-  } catch {
-    return false;
-  }
-}
-
-async function ensureServerReachable(): Promise<boolean> {
-  if (serverReachable !== null) return serverReachable;
-  serverReachable = await ping(SERVER_URL);
-  return serverReachable;
-}
-
-const shouldRun = async (): Promise<boolean> => await ensureServerReachable();
-
-/** Drive `catchUp` until the server reports `upToDate: true`. */
-async function catchUpAll(client: Client, groups: readonly { id: string }[]): Promise<void> {
-  for (const group of groups) {
-    for (let i = 0; i < 50; i++) {
-      const { upToDate } = await client.catchUp(group.id);
-      if (upToDate) break;
-      if (i === 49) throw new Error(`catchUpAll: exhausted retries for group ${group.id}`);
-    }
-  }
-}
 
 /** Handshake and materialize every group the actor currently belongs to. */
 async function syncGroups(client: Client): Promise<readonly string[]> {
   const { groups } = await client.handshake();
-  await catchUpAll(client, groups);
+  for (const group of groups) {
+    await catchUpUntilCurrent(client, group.id);
+  }
   return groups.map((group) => group.id);
 }
 
@@ -101,7 +68,7 @@ let outsider: Client;
 let seeder: Client;
 
 beforeAll(async () => {
-  if (!(await ensureServerReachable())) {
+  if (!(await serverIsReachable())) {
     console.warn(`[skip] ebb server not reachable at ${SERVER_URL}`);
     return;
   }
@@ -127,7 +94,7 @@ afterAll(() => {
 
 describe("integration: workspace membership", () => {
   it("a non-member never receives the shared group, workspace, or issues", async () => {
-    if (!(await shouldRun())) return;
+    if (!(await serverIsReachable())) return;
     const groups = await syncGroups(outsider);
     expect(groups).not.toContain(SHARED_GROUP_ID);
     expect(await outsider.workspace.get(SHARED_WORKSPACE_ID)).toBeNull();
@@ -135,8 +102,26 @@ describe("integration: workspace membership", () => {
     expect(await outsider.issue.query()).toEqual([]);
   });
 
+  it("a non-member cannot invite itself into the shared group", async () => {
+    if (!(await serverIsReachable())) return;
+    await syncGroups(outsider);
+
+    await expect(
+      outsider.actions.addToWorkspace({
+        actorId: OUTSIDER_ID,
+        profileId: OUTSIDER_PROFILE_ID,
+        groupId: SHARED_GROUP_ID,
+        permissions: SEED_PERMISSIONS,
+      }),
+    ).rejects.toThrow(/not allowed|missing/i);
+
+    // The refused write left no membership behind.
+    const groups = await syncGroups(outsider);
+    expect(groups).not.toContain(SHARED_GROUP_ID);
+  });
+
   it("inviting a member files the groupMember row and the profile's membership in one Action", async () => {
-    if (!(await shouldRun())) return;
+    if (!(await serverIsReachable())) return;
 
     const invited = await inviteToWorkspace({
       inviter: seeder,
@@ -146,7 +131,7 @@ describe("integration: workspace membership", () => {
     });
     expect(invited).toBe(true);
 
-    // Re-inviting is a no-op: the membership row already exists locally.
+    // Re-inviting is a no-op: the membership row already exists.
     const again = await inviteToWorkspace({
       inviter: seeder,
       actorId: MEMBER_ID,
@@ -170,8 +155,8 @@ describe("integration: workspace membership", () => {
     expect((await profile!.groups.toRaw()).map((group) => group.id)).toContain(SHARED_GROUP_ID);
   });
 
-  it("the member reads the shared issue; client.can matches the server", async () => {
-    if (!(await shouldRun())) return;
+  it("the member reads the shared issue; a non-member's profile is not visible to assign", async () => {
+    if (!(await serverIsReachable())) return;
     await syncGroups(member);
 
     const issue = await member.issue.get(SAMPLE_ISSUE_ID);
@@ -179,10 +164,16 @@ describe("integration: workspace membership", () => {
     expect(issue!.title).toBe("Welcome to ebb");
 
     expect(await member.can(SAMPLE_ISSUE_ID, "update")).toMatchObject({ kind: "allowed" });
+
+    // The assignee picker offers only visible profiles; the outsider has
+    // none in the member's view.
+    const visible = (await member.profile.query()).map((profile) => profile.id);
+    expect(visible).toContain(MEMBER_PROFILE_ID);
+    expect(visible).not.toContain(OUTSIDER_PROFILE_ID);
   });
 
   it("writes and reads the issue→profile assignee relationship", async () => {
-    if (!(await shouldRun())) return;
+    if (!(await serverIsReachable())) return;
     await syncGroups(member);
 
     // A fresh issue per run: `issue_sample` is shared, and a repeated run
@@ -205,7 +196,7 @@ describe("integration: workspace membership", () => {
   });
 
   it("leaving drops the membership, and a fresh client for the actor gets no shared group", async () => {
-    if (!(await shouldRun())) return;
+    if (!(await serverIsReachable())) return;
 
     const left = await leaveWorkspace({
       client: member,
@@ -224,12 +215,30 @@ describe("integration: workspace membership", () => {
     }
   });
 
+  it("re-joining after leaving works within the same session", async () => {
+    if (!(await serverIsReachable())) return;
+
+    // The inviter is not subscribed; `inviteToWorkspace` catches up the
+    // group so the leave is observed before the idempotency check.
+    const rejoin = await inviteToWorkspace({
+      inviter: seeder,
+      actorId: MEMBER_ID,
+      groupId: SHARED_GROUP_ID,
+      permissions: SEED_PERMISSIONS,
+    });
+    expect(rejoin).toBe(true);
+
+    const groups = await syncGroups(member);
+    expect(groups).toContain(SHARED_GROUP_ID);
+    expect(await member.issue.get(SAMPLE_ISSUE_ID)).not.toBeNull();
+  });
+
   // Known gap: the shared group receives the `entityGroup` row naming the
   // member's profile, but not the profile's field writes, which happened
   // in the member's personal group. Backfilling content for membership
   // rows naming un-materialized entities is #475.
   it.skip("a fellow member reads the invited actor's profile content (#475)", async () => {
-    if (!(await shouldRun())) return;
+    if (!(await serverIsReachable())) return;
     const seen = await seeder.profile.get(MEMBER_PROFILE_ID);
     expect(seen?.display_name).toBe(MEMBER_ID);
   });

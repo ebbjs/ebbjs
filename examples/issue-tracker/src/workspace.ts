@@ -77,9 +77,15 @@ export interface InviteToWorkspaceInput {
 /**
  * Invite `actorId` into `groupId` unless a live `groupMember` row already
  * names them. Returns whether an invite was submitted.
+ *
+ * The inviter catches up `groupId` first: it is not subscribed to the
+ * group's live stream, so a membership removed since its last read stays
+ * in its local cache until a catch-up observes the delete. Without this a
+ * leave-then-rejoin within one session looks like a duplicate invite.
  */
 export async function inviteToWorkspace(input: InviteToWorkspaceInput): Promise<boolean> {
   const { inviter, actorId, groupId, permissions } = input;
+  await inviter.catchUp(groupId);
   const members = await inviter.membership.query();
   if (members.some((member) => member.actor_id === actorId && member.group_id === groupId)) {
     return false;

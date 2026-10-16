@@ -47,7 +47,6 @@ export interface BootstrapResult {
   readonly client: IssueTrackerClient;
   /** The shared workspace's service actor; used to invite members. */
   readonly seeder: IssueTrackerClient;
-  readonly groupIds: readonly string[];
   /** The group new issues are filed into (the actor's default workspace). */
   readonly defaultGroupId: string;
   /** Re-handshake and re-subscribe after a membership change. */
@@ -56,12 +55,13 @@ export interface BootstrapResult {
 }
 
 /** Handshake and materialize every group the client belongs to. */
-async function drain(client: IssueTrackerClient): Promise<readonly string[]> {
+async function syncAllGroups(client: IssueTrackerClient): Promise<readonly string[]> {
   const { groups } = await client.handshake();
   for (const group of groups) {
     for (let i = 0; i < 50; i++) {
       const { upToDate } = await client.catchUp(group.id);
       if (upToDate) break;
+      if (i === 49) throw new Error(`bootstrap: catch-up for group ${group.id} did not finish`);
     }
   }
   return groups.map((group) => group.id);
@@ -74,47 +74,55 @@ export async function bootstrap(opts: {
   const { serverUrl, actorId } = opts;
   const storage = await createAppStorage(actorId);
   const client = createClient({ serverUrl, actorId, schema, storage, actions: workspaceActions });
+  let seeder: IssueTrackerClient | null = null;
+  try {
+    await client.seed(buildActorSeed(actorId));
 
-  await client.seed(buildActorSeed(actorId));
+    seeder = createClient({
+      serverUrl,
+      actorId: SEEDER_ACTOR_ID,
+      schema,
+      actions: workspaceActions,
+    });
+    await seeder.seed(buildSharedSeed());
+    await syncAllGroups(seeder);
 
-  const seeder = createClient({
-    serverUrl,
-    actorId: SEEDER_ACTOR_ID,
-    schema,
-    actions: workspaceActions,
-  });
-  await seeder.seed(buildSharedSeed());
-  await drain(seeder);
+    let unsubscribe: () => void = () => {};
+    const subscribe = async (): Promise<readonly string[]> => {
+      const { groups } = await client.handshake();
+      const groupIds = groups.map((group) => group.id);
+      if (groupIds.length === 0) {
+        throw new Error(
+          `bootstrap: actor '${actorId}' is not a member of any group. Did the seed run?`,
+        );
+      }
+      unsubscribe();
+      unsubscribe = client.subscribe(groupIds, 0, () => undefined);
+      return groupIds;
+    };
 
-  let unsubscribe: () => void = () => {};
-  const subscribe = async (): Promise<readonly string[]> => {
-    const { groups } = await client.handshake();
-    const groupIds = groups.map((group) => group.id);
-    if (groupIds.length === 0) {
+    const groupIds = await subscribe();
+    const defaultGroupId = groupIds[0];
+    if (defaultGroupId === undefined) {
       throw new Error(
         `bootstrap: actor '${actorId}' is not a member of any group. Did the seed run?`,
       );
     }
-    unsubscribe();
-    unsubscribe = client.subscribe(groupIds, 0, () => undefined);
-    return groupIds;
-  };
-
-  const groupIds = await subscribe();
-  const defaultGroupId = groupIds[0];
-  if (defaultGroupId === undefined) {
-    throw new Error(`bootstrap: actor '${actorId}' is not a member of any group. Did the seed run?`);
+    const service = seeder;
+    return {
+      client,
+      seeder: service,
+      defaultGroupId,
+      refresh: subscribe,
+      close() {
+        unsubscribe();
+        client.close();
+        service.close();
+      },
+    };
+  } catch (err) {
+    client.close();
+    seeder?.close();
+    throw err;
   }
-  return {
-    client,
-    seeder,
-    groupIds,
-    defaultGroupId,
-    refresh: subscribe,
-    close() {
-      unsubscribe();
-      client.close();
-      seeder.close();
-    },
-  };
 }

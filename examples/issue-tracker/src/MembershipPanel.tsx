@@ -29,7 +29,7 @@ export function MembershipPanel({
   const { data: members } = useQuery(() => client.membership.query());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [canLeave, setCanLeave] = useState<boolean | null>(null);
+  const [leaveDenied, setLeaveDenied] = useState(false);
 
   const membership = members.find(
     (member) => member.actor_id === actorId && member.group_id === SHARED_GROUP_ID,
@@ -37,19 +37,21 @@ export function MembershipPanel({
 
   useEffect(() => {
     if (membership === undefined) {
-      setCanLeave(null);
+      setLeaveDenied(false);
       return;
     }
     let cancelled = false;
+    // `unknown` is not a denial — the server stays the authority, so the
+    // control stays enabled and a refusal surfaces as an error.
     void client.can(membership, "delete").then((result) => {
-      if (!cancelled) setCanLeave(result.kind === "allowed");
+      if (!cancelled) setLeaveDenied(result.kind === "denied");
     });
     return () => {
       cancelled = true;
     };
   }, [client, membership]);
 
-  const run = useCallback(
+  const applyMembershipChange = useCallback(
     async (work: () => Promise<void>) => {
       setBusy(true);
       setError(null);
@@ -67,7 +69,7 @@ export function MembershipPanel({
 
   const join = useCallback(
     () =>
-      run(async () => {
+      applyMembershipChange(async () => {
         await inviteToWorkspace({
           inviter: bootstrap.seeder,
           actorId,
@@ -75,15 +77,15 @@ export function MembershipPanel({
           permissions: SEED_PERMISSIONS,
         });
       }),
-    [run, bootstrap, actorId],
+    [applyMembershipChange, bootstrap, actorId],
   );
 
   const leave = useCallback(
     () =>
-      run(async () => {
+      applyMembershipChange(async () => {
         await leaveWorkspace({ client: bootstrap.client, actorId, groupId: SHARED_GROUP_ID });
       }),
-    [run, bootstrap, actorId],
+    [applyMembershipChange, bootstrap, actorId],
   );
 
   return (
@@ -104,8 +106,8 @@ export function MembershipPanel({
           <button
             type="button"
             onClick={() => void leave()}
-            disabled={busy || canLeave === false}
-            title={canLeave === false ? "the client would not be allowed to leave" : undefined}
+            disabled={busy || leaveDenied}
+            title={leaveDenied ? "the client would not be allowed to leave" : undefined}
             className="rounded border border-stone-600 px-2 py-0.5 font-mono text-xs text-stone-300 hover:border-stone-400 disabled:opacity-50"
           >
             leave
