@@ -43,7 +43,7 @@ import { isolateTestGroup } from "./helpers";
  * `rm -rf` on the data dir before starting, so each CI run starts
  * from a known state. Reusing a previous run's state would mask
  * actor-isolation regressions (e.g., a leaked group membership from
- * a prior run masking a missing addMember call).
+ * a prior run masking a missing membership seed).
  */
 test.describe("two-tab collaborative editing", () => {
   test("text typed in tab 1 appears in tab 2 within a few seconds", async ({ browser }) => {
