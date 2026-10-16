@@ -202,9 +202,9 @@ defmodule EbbServer.Telemetry.SamplerTest do
     name = :"fanout_dyn_sup_#{System.unique_integer([:positive])}"
     {:ok, pid} = DynamicSupervisor.start_link(name: name)
 
-    on_exit(fn ->
-      if Process.alive?(pid), do: DynamicSupervisor.stop(pid)
-    end)
+    # The supervisor is linked to the test process, so it may already be
+    # terminating when `on_exit` runs; `safe_stop/1` swallows the exit.
+    on_exit(fn -> safe_stop(pid) end)
 
     name
   end
