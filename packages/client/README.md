@@ -10,6 +10,39 @@ Working in development. The README will fill out as the SDK stabilizes.
 Today: handshake, catch-up, live SSE, outbox, presence. The React bindings,
 query layer ergonomics, and server functions are still being designed.
 
+## Seeding fixtures
+
+`client.seed(data)` submits a `SeedData` fixture as one Action through the
+public write path, applying the shared rejection-tolerance policy. It is
+schema-less: rows carry their own ids and field envelopes, so a client
+created without a `schema` can still seed fixture data.
+
+```typescript
+import { createClient } from "@ebbjs/client";
+
+const client = createClient({ serverUrl, actorId: "demo-seeder" });
+await client.seed({
+  groups: [{ id: "grp_demo", name: "Demo Group" }],
+  groupMembers: [
+    {
+      id: "gm_demo",
+      actorId: "demo-seeder",
+      groupId: "grp_demo",
+      permissions: ["text_document.*", "group.*"],
+    },
+  ],
+  entities: [],
+});
+client.close();
+```
+
+`@ebbjs/client/seed` is the browser-safe module behind it. It exports
+`SeedData` (and the row types), `buildSeedAction`, the free
+`seed(serverUrl, actorId, data)` POST, and the rejection-tolerance policy
+(`assertSeedAccepted` / `SeedRejectedError`). `@ebbjs/server.seed` re-exports
+the same module, so browser demos and the server test harness share one seed
+path and one tolerance policy, defined in one place.
+
 ## Testing
 
 Three scripts:

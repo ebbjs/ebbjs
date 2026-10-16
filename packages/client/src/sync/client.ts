@@ -92,6 +92,7 @@ import {
 import { generateId } from "@ebbjs/core";
 import type { EntityDef } from "../schema/entity";
 import { seedRegistry, type Schema } from "../schema/schema";
+import { assertSeedAccepted, buildSeedAction, type SeedData } from "../seed";
 import type { TSchema } from "@sinclair/typebox/type";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
@@ -609,6 +610,20 @@ export class SyncClient implements PermissionQuery {
     if (outcome.kind === "unreachable") throw outcome.error;
     if (outcome.kind === "partial") return { rejected: outcome.rejected };
     return { rejected: [] };
+  }
+
+  /**
+   * Seed plain-data rows through the public write path as one Action,
+   * applying the shared rejection-tolerance policy
+   * ({@link assertSeedAccepted}): duplicate / already-exists rejections
+   * are ignored, anything else throws `SeedRejectedError`.
+   *
+   * Schema-less: the rows carry their own field envelopes and ids, so a
+   * client without a schema can still seed fixture data.
+   */
+  async seed(data: SeedData): Promise<void> {
+    const response = await this.write([buildSeedAction(this.actorId, data)]);
+    assertSeedAccepted(response.rejected);
   }
 
   /**

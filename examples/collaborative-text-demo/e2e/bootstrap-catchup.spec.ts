@@ -67,8 +67,8 @@ test.describe("bootstrap catchUp", () => {
     await drewPage.waitForTimeout(3_000);
 
     // Open tab B as a different actor. Bob needs to be added to the
-    // group first — but bootstrap calls addMember() idempotently on
-    // every load, so this works without explicit setup.
+    // group first — but bootstrap idempotently seeds his membership row
+    // on every load, so this works without explicit setup.
     const bobPage = await bobCtx.newPage();
     await bobPage.goto("/?actor=bob");
     await waitForLive(bobPage);
