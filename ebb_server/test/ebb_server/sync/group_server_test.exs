@@ -8,7 +8,14 @@ defmodule EbbServer.Sync.GroupServerTest do
 
   import EbbServer.TestHelpers
 
-  alias EbbServer.Sync.GroupServer
+  alias EbbServer.Sync.{GroupServer, SSEConnection}
+
+  # Byte-for-byte output of the pre-encode-once fan-out encoder. Pinning the
+  # literal keeps the wire format (field set, forbidden extras, key order)
+  # under test rather than recomputing it the way the code does.
+  @pinned_action_payload "{\"actor_id\":\"actor_1\",\"gsn\":1,\"hlc\":1711036800000," <>
+                           "\"id\":\"act_1\",\"updates\":[{\"field\":\"text\"," <>
+                           "\"path\":[\"title\"],\"value\":\"Hello\"}]}"
 
   setup do
     group_id = "test_group_#{:erlang.unique_integer([:positive])}"
@@ -93,6 +100,96 @@ defmodule EbbServer.Sync.GroupServerTest do
       Process.exit(dead_conn, :kill)
 
       :ok = GroupServer.broadcast_presence(gs, "doc_demo", "actor_other", %{"data" => "test"})
+    end
+  end
+
+  describe "push_actions/2 fan-out encoding" do
+    test "encodes each action once per cast, not once per subscriber", %{
+      group_server: gs,
+      group_id: group_id
+    } do
+      sse_pids =
+        for i <- 1..4 do
+          {:ok, pid} = SSEConnection.start_link(self(), [group_id], %{group_id => 0})
+          :ok = GroupServer.add_subscriber(gs, pid, "actor_#{i}")
+          pid
+        end
+
+      actions =
+        for i <- 1..3 do
+          %{
+            "id" => "act_#{i}",
+            "actor_id" => "actor_1",
+            "gsn" => i,
+            "hlc" => 1_711_036_800_000 + i,
+            "updates" => [%{"path" => ["title"], "field" => "text", "value" => "v#{i}"}]
+          }
+        end
+
+      trace_targets = [gs | sse_pids]
+
+      # `trace_pattern/3` only takes effect for an already-loaded module; the
+      # first call would otherwise return 0 and trace nothing.
+      {:module, Jason} = Code.ensure_loaded(Jason)
+      Enum.each(trace_targets, &:erlang.trace(&1, true, [:call]))
+
+      assert :erlang.trace_pattern({Jason, :encode!, 1}, true, [:global]) > 0
+
+      on_exit(fn ->
+        :erlang.trace_pattern({Jason, :encode!, 1}, false, [:global])
+      end)
+
+      :ok = GroupServer.push_actions(gs, actions)
+
+      # `:sys.get_state/1` is a call, so the cast is fully handled (and the
+      # encodes done) by the time it returns. Flushing each subscriber makes
+      # the test independent of how the payloads are forwarded.
+      _state = :sys.get_state(gs)
+      Enum.each(sse_pids, &:sys.get_state/1)
+
+      :erlang.trace_pattern({Jason, :encode!, 1}, false, [:global])
+      Enum.each(trace_targets, &:erlang.trace(&1, false, [:call]))
+
+      encode_count = count_encode_calls()
+
+      assert encode_count == length(actions),
+             "expected one encode per action (#{length(actions)}), got #{encode_count}"
+    end
+
+    test "two subscribers receive byte-identical payloads", %{
+      group_server: gs,
+      group_id: group_id
+    } do
+      action = %{
+        "id" => "act_1",
+        "actor_id" => "actor_1",
+        "gsn" => 1,
+        "hlc" => 1_711_036_800_000,
+        "updates" => [%{"path" => ["title"], "field" => "text", "value" => "Hello"}],
+        # Not a wire field; must not leak into the payload.
+        "extra_ignored" => "nope"
+      }
+
+      for i <- 1..2 do
+        {:ok, pid} = SSEConnection.start_link(self(), [group_id], %{group_id => 0})
+        :ok = GroupServer.add_subscriber(gs, pid, "actor_#{i}")
+      end
+
+      :ok = GroupServer.push_actions(gs, [action])
+
+      assert_receive {:sse_chunk, "data", payload_1}
+      assert_receive {:sse_chunk, "data", payload_2}
+
+      assert payload_1 == @pinned_action_payload
+      assert payload_2 == @pinned_action_payload
+    end
+  end
+
+  defp count_encode_calls(acc \\ 0) do
+    receive do
+      {:trace, _pid, :call, {Jason, :encode!, [_action]}} -> count_encode_calls(acc + 1)
+    after
+      200 -> acc
     end
   end
 

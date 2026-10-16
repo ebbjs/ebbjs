@@ -59,6 +59,30 @@ defmodule EbbServer.Sync.SSEConnection do
   @spec push_action(pid(), map()) :: :ok
   def push_action(pid, action), do: GenServer.cast(pid, {:push_action, action})
 
+  @doc """
+  Encodes an Action's wire fields exactly once, returning the `data:` payload
+  byte-for-byte as `push_action/2` would produce it.
+
+  A group's subscribers all receive the identical payload, so callers that
+  fan an Action out to many connections should encode here and forward the
+  result with `push_encoded_action/2`.
+  """
+  @spec encode_action(map()) :: binary()
+  def encode_action(action) do
+    Jason.encode!(%{
+      "id" => action["id"],
+      "gsn" => action["gsn"],
+      "actor_id" => action["actor_id"],
+      "hlc" => action["hlc"],
+      "updates" => action["updates"]
+    })
+  end
+
+  @spec push_encoded_action(pid(), binary()) :: :ok
+  def push_encoded_action(pid, payload) do
+    GenServer.cast(pid, {:push_encoded_action, payload})
+  end
+
   @spec push_control(pid(), map()) :: :ok
   def push_control(pid, control), do: GenServer.cast(pid, {:push_control, control})
 
@@ -83,17 +107,11 @@ defmodule EbbServer.Sync.SSEConnection do
 
   @impl true
   def handle_cast({:push_action, action}, state) do
-    payload =
-      Jason.encode!(%{
-        "id" => action["id"],
-        "gsn" => action["gsn"],
-        "actor_id" => action["actor_id"],
-        "hlc" => action["hlc"],
-        "updates" => action["updates"]
-      })
+    forward_data(encode_action(action), state)
+  end
 
-    send(state.parent_pid, {:sse_chunk, "data", payload})
-    {:noreply, state}
+  def handle_cast({:push_encoded_action, payload}, state) do
+    forward_data(payload, state)
   end
 
   def handle_cast({:push_control, control}, state) do
@@ -113,6 +131,11 @@ defmodule EbbServer.Sync.SSEConnection do
     # Request process died → chunked conn is gone. Exit so the supervisor
     # removes us and the GroupServer's monitor fires unsubscribe.
     {:stop, :normal, state}
+  end
+
+  defp forward_data(payload, state) do
+    send(state.parent_pid, {:sse_chunk, "data", payload})
+    {:noreply, state}
   end
 
   @doc """
