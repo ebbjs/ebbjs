@@ -8,6 +8,23 @@ below go through the real `ebb_server` pipeline, not a storage primitive.
 Raw per-run Markdown output lands in `bench/results/` (gitignored); the
 tables here are the published subset.
 
+## Refresh (#485)
+
+Refreshed **2026-10-16** on `recsy-vps` (AMD EPYC 7763, 4 schedulers for
+the BEAM, 16 GiB, Elixir 1.17.3 / OTP 27), temp DB, `sync: true`, 2-Update
+Actions. This refresh re-measured the headline/tier, `spread`/`hot`,
+preload, and fan-out tables **in place** after
+[#338](https://github.com/ebbjs/ebbjs/issues/338),
+[#339](https://github.com/ebbjs/ebbjs/issues/339),
+[#340](https://github.com/ebbjs/ebbjs/issues/340) and the `ad8e43b`
+entity-group index fix (`:bag` → `:ordered_set`), and adds the
+[#485](https://github.com/ebbjs/ebbjs/issues/485) two-store-only cost
+breakdown and the parked encode-once fan-out prototype. The
+#332/#338/#339/#340 sections below and their tables are **pre-refresh
+deltas measured against older bases** — they document each change, not
+the current baseline. The batch-size, updates-per-Action, and
+concurrency sweeps were likewise **not** re-measured in this refresh.
+
 ## Reproduction
 
 ```sh
@@ -23,7 +40,7 @@ mix bench.actions --tier t2 --duration 120 --warmup 5 --concurrency 64 \
 
 # Storage ceiling (no HTTP):
 mix bench.actions --tier t0 --duration 120 --warmup 5 --concurrency 1 \
-  --batch-size 100 --distribution hot
+  --batch-size 100 --updates-per-action 2 --distribution hot
 ```
 
 Tier meanings: `t0` = `Writer.write_actions/1` directly; `t1` = real
@@ -49,13 +66,39 @@ dedicated bench rig.
 ## Headline: production configuration
 
 Single Writer, `sync: true`, 2-Update Actions, `--distribution hot`,
-batch 100 Actions/request.
+batch 100 Actions/request. Refreshed 2026-10-16 (#485); the old
+15.3k/15.1k headline is superseded.
 
-| Window           | Seconds |  Accepted | Accepted/sec | Rejected |
-| ---------------- | ------: | --------: | -----------: | -------: |
-| burst (0–15s)    |      15 |   233,300 |   **15,553** |        0 |
-| steady (61–120s) |      59 |   890,200 |   **15,088** |        0 |
-| overall          |     120 | 1,835,700 |       15,298 |        0 |
+```sh
+mix bench.actions --tier t2 --duration 120 --warmup 5 --concurrency 8 \
+  --batch-size 100 --updates-per-action 2 --distribution hot
+```
+
+| Window           | Seconds | Accepted/sec | Scheduler util |  Peak RSS |
+| ---------------- | ------: | -----------: | -------------: | --------: |
+| burst (0–15s)    |      15 |   **21,440** |          23.8% | 446.2 MiB |
+| steady (61–120s) |      59 |   **20,971** |          23.8% | 446.2 MiB |
+| overall          |     120 |       21,173 |          23.8% | 446.2 MiB |
+
+Storage ceiling, same batch and Action shape, direct `Writer` call:
+
+```sh
+mix bench.actions --tier t0 --duration 120 --warmup 5 --concurrency 1 \
+  --batch-size 100 --updates-per-action 2 --distribution hot
+```
+
+| Window           | Seconds | Accepted/sec | Scheduler util |  Peak RSS |
+| ---------------- | ------: | -----------: | -------------: | --------: |
+| burst (0–15s)    |      15 |       24,613 |           9.4% | 370.7 MiB |
+| steady (61–120s) |      59 |   **26,251** |           9.4% | 370.7 MiB |
+| overall          |     120 |       26,243 |           9.4% | 370.7 MiB |
+
+Both runs: **0 rejected Actions, 0 GSN holes, final watermark lag 0**;
+peak dirty set 4 on both.
+
+Pre-refresh history — the c=64 saturation run, its client-side latency,
+and peak RSS were measured against the older base (pre-refresh c=8
+throughput 15,298/s):
 
 Above the saturation point (concurrency 64, same everything else):
 
@@ -76,29 +119,49 @@ latency sourced from `ebb.*` telemetry — see
 | concurrency 8, steady  |  51.5 ms |  61.4 ms |  71.2 ms |
 | concurrency 64, steady | 441.7 ms | 485.1 ms | 513.1 ms |
 
-Both runs: **0 rejected Actions, 0 GSN holes, final watermark lag 0**;
-peak RSS 511 MiB (c=8) and 645 MiB (c=64).
+Pre-refresh peak RSS was 511 MiB (c=8) and 645 MiB (c=64).
 
 **Verdict.** Production is a single Writer with `sync: true`. On this
-machine it sustains ~15.1k Actions/sec, inside the README's 10–20k
-target. The old 108k headline was a 2-writer raw-RocksDB primitive and is
-not reproducible through `ebb_server` — the ceiling here is the
-single-Writer serialization plus per-Action Elixir work, not the disk.
+machine it sustains **~21.2k Actions/sec** (t2 c=8, 120s steady
+**20,971**), with the direct storage ceiling at **26,251/s** steady
+(t0 c=1). `t0` (26.2k) is now clearly above `t2` (21.0k): the
+HTTP/Bandit layer costs **~20%** at c=8, contrary to the old
+"`t0` ≈ `t2`" claim. The old 108k headline was a 2-writer raw-RocksDB
+primitive and is not reproducible through `ebb_server` — the ceiling here
+is single-Writer serialization plus per-Action Elixir work, not the disk.
 
 ## Tier and storage ceiling
 
-| Run                           | Tier | Batch | Conc | Burst /s | Steady /s | Overall /s |      p50 |      p95 |      p99 |
+Refreshed rows (2026-10-16, #485):
+
+```sh
+# t0 storage ceiling
+mix bench.actions --tier t0 --duration 120 --warmup 5 --concurrency 1 \
+  --batch-size 100 --updates-per-action 2 --distribution hot
+
+# t2 production
+mix bench.actions --tier t2 --duration 120 --warmup 5 --concurrency 8 \
+  --batch-size 100 --updates-per-action 2 --distribution hot
+```
+
+| Run                   | Tier | Batch | Conc | Burst /s | Steady /s | Overall /s | Sched util |  Peak RSS |
+| --------------------- | ---- | ----: | ---: | -------: | --------: | ---------: | ---------: | --------: |
+| Storage ceiling, 120s | t0   |   100 |    1 |   24,613 |    26,251 |     26,243 |       9.4% | 370.7 MiB |
+| Production, 120s      | t2   |   100 |    8 |   21,440 |    20,971 |     21,173 |      23.8% | 446.2 MiB |
+
+Pre-refresh rows (older base, kept for history):
+
+| Run (pre-refresh)             | Tier | Batch | Conc | Burst /s | Steady /s | Overall /s |      p50 |      p95 |      p99 |
 | ----------------------------- | ---- | ----: | ---: | -------: | --------: | ---------: | -------: | -------: | -------: |
-| Storage ceiling, 120s         | t0   |   100 |    1 |   16,033 |    15,825 |     16,043 |   5.8 ms |   7.7 ms |  11.0 ms |
 | Single HTTP client, 10s       | t1   |   100 |    1 |    9,610 |       n/a |      9,610 |   9.1 ms |  11.4 ms |  13.1 ms |
-| Production, 120s              | t2   |   100 |    8 |   15,553 |    15,088 |     15,298 |  51.5 ms |  61.4 ms |  71.2 ms |
 | Above saturation, 120s        | t2   |   100 |   64 |   14,987 |    14,417 |     14,550 | 441.7 ms | 485.1 ms | 513.1 ms |
 | Async durability ceiling, 30s | t2   |   100 |    8 |   14,093 |       n/a |     16,327 |  43.2 ms |  71.8 ms |  90.6 ms |
 
-`t0` ≈ `t2` shows the HTTP/Bandit layer is not the ceiling at batch 100;
-the storage path is. The `--durability async` run (`sync: false`) is only
-~3–8% faster than the `sync: true` run, so fsync is not the dominant cost
-at this batch size — the Elixir-side write path is, matching #130's
+`t0` (26.2k) is now clearly above `t2` (21.0k): the HTTP/Bandit layer
+costs ~20% at c=8, so the storage path alone is no longer the whole
+story. The `--durability async` run (`sync: false`) is only ~3–8% faster
+than the `sync: true` run (pre-refresh), so fsync is not the dominant
+cost at this batch size — the Elixir-side write path is, matching #130's
 conclusion.
 
 ## Batch-size sweep
@@ -145,63 +208,137 @@ and latency grows linearly with queue depth at the single Writer.
 
 ## Entity distribution: hot vs spread
 
-T2, batch 100, concurrency 8, 2-Update Actions, 30s windows:
+Batch 100, 2-Update Actions. Refreshed 2026-10-16 (#485) after the
+`ad8e43b` group-index fix (`:bag` → `:ordered_set`):
 
-| Distribution                                    | Burst /s | Overall /s |     p50 | Peak RSS | Peak dirty set |
-| ----------------------------------------------- | -------: | ---------: | ------: | -------: | -------------: |
-| `hot` (one entity, LWW contention)              |   15,147 |     15,347 | 50.7 ms |  457 MiB |              4 |
-| `spread` (fresh entity + membership per Action) |    1,147 |        883 |  799 ms |  297 MiB |         80,602 |
+```sh
+# t0 spread
+mix bench.actions --tier t0 --duration 30 --warmup 5 --concurrency 1 \
+  --batch-size 100 --updates-per-action 2 --distribution spread
 
-`spread` is ~17× slower than `hot` **at the storage layer** (t0 spread is
-also ~1,070/s), so this is a real write-path cost, not HTTP or fan-out:
-creating a new entity plus its membership row per Action is far more
-expensive than re-putting one hot row. The group index and dirty set grow
-monotonically in `spread`, and the growth is the same `EntityGroupCache`
-cost identified below.
+# t2 spread (same, at concurrency 8)
+mix bench.actions --tier t2 --duration 30 --warmup 5 --concurrency 8 \
+  --batch-size 100 --updates-per-action 2 --distribution spread
+```
+
+| Distribution                                    | Tier | Window | Burst /s | Overall /s | Sched util | Peak dirty set |
+| ----------------------------------------------- | ---- | -----: | -------: | ---------: | ---------: | -------------: |
+| `spread` (fresh entity + membership per Action) | t0   |    30s |   18,040 |     16,790 |      10.7% |      1,156,602 |
+| `spread` (fresh entity + membership per Action) | t2   |    30s |   14,133 |     14,077 |      29.1% |        961,202 |
+| `hot` (one entity, LWW contention), canonical   | t2   |   120s |   21,440 |     21,173 |      23.8% |              4 |
+
+Pre-refresh (measured against the old `:bag` group index):
+
+| Distribution (pre-refresh)                      | Burst /s | Overall /s | Peak dirty set |
+| ----------------------------------------------- | -------: | ---------: | -------------: |
+| `hot` (one entity, LWW contention)              |   15,147 |     15,347 |              4 |
+| `spread` (fresh entity + membership per Action) |    1,147 |        883 |         80,602 |
+
+The `ad8e43b` fix removed the O(group size) blowup: **`spread` is now
+~14.1k/s (t2) instead of 883/s** (the old published value; t0 spread was
+~1,070/s and is now 16,790/s), so `spread` is only ~1.5× slower than
+`hot` rather than ~17×. The dirty set still grows to ~1.16M in the t0
+spread run and ~961k in the t2 spread run, yet it no longer degrades
+throughput. This is a **correction** of a stale baseline, not a new
+optimization.
 
 ## DB state: fresh vs entities preloaded
 
-T2, batch 100, concurrency 8, hot. `hot` re-puts one membership row; the
-by-group ETS bag then holds every preloaded membership under the single
-bench group.
+Batch 100, 2-Update Actions, `hot`. `hot` re-puts one membership row; the
+by-group ETS index then holds every preloaded membership under the single
+bench group. Refreshed 2026-10-16 (#485) after the `ad8e43b` fix:
 
-| Preloaded entities | Window |     Accepted/sec |      p50 | Peak dirty set |
-| -----------------: | -----: | ---------------: | -------: | -------------: |
-|          0 (fresh) |   120s |           15,088 |  51.5 ms |              4 |
-|             10,000 |    30s |            2,353 | 336.8 ms |         20,004 |
-|            100,000 |    90s | 204 (steady 207) |    3.9 s |        200,004 |
+```sh
+# 10k preload
+mix bench.actions --tier t2 --duration 30 --warmup 5 --concurrency 8 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --entities 10000
 
-This is **not** a clean memtable/compaction measurement: the rate
-degrades linearly with group membership count because
-`EntityGroupCache.put_entity_group/2` maintains a `:bag` keyed by group
-id, and ETS `:bag` insert/delete traverses the key's bucket — O(group
-size) per membership write. A micro-benchmark of the function alone: 431
-distinct inserts/sec and 3,970 µs per re-put with 100k members in the
-group. The same mechanism drives the `spread`↔`hot` gap above. Filed as
-[#331](https://github.com/ebbjs/ebbjs/issues/331); a clean
-compaction-effect measurement is blocked until it is fixed.
+# 100k preload
+mix bench.actions --tier t2 --duration 90 --warmup 5 --concurrency 8 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --entities 100000
+```
+
+| Preloaded entities | Window | Burst /s |             Overall /s | Sched util | Peak dirty set |
+| -----------------: | -----: | -------: | ---------------------: | ---------: | -------------: |
+|          0 (fresh) |   120s |   21,440 |                 21,173 |      23.8% |              4 |
+|             10,000 |    30s |   21,600 |                 21,677 |      23.9% |         20,004 |
+|            100,000 |    90s |   21,413 | 21,441 (steady 21,521) |      23.7% |        200,004 |
+
+Pre-refresh:
+
+| Preloaded entities (pre-refresh) | Window |     Accepted/sec | Peak dirty set |
+| -------------------------------: | -----: | ---------------: | -------------: |
+|                           10,000 |    30s |            2,353 |         20,004 |
+|                          100,000 |    90s | 204 (steady 207) |        200,004 |
+
+The `ad8e43b` group-index fix removed the O(group size) blowup: **100k
+preload is now ~21.4k/s instead of 204/s** and 10k preload is 21,677/s
+instead of 2,353/s — the preload no longer degrades throughput. The
+pre-refresh account of the mechanism: the rate degraded linearly with
+group membership count because `EntityGroupCache.put_entity_group/2`
+maintained a `:bag` keyed by group id, and ETS `:bag` insert/delete
+traverses the key's bucket — O(group size) per membership write (a
+micro-benchmark of the function alone gave 431 distinct inserts/sec and
+3,970 µs per re-put with 100k members). The same mechanism drove the
+`spread`↔`hot` gap, which is why both tables moved together. This is a
+**correction** of a stale baseline, not a new optimization.
 
 ## Fan-out tax on write throughput
 
-T3, batch 10, concurrency 8, hot, 15s windows, comparing to the T2
-baseline at the same batch/concurrency (6,677 Actions/sec):
+T3, batch 10, concurrency 8, hot, 15s windows. Refreshed 2026-10-16
+(#485), after the `ad8e43b` index fix:
 
-|     Subscribers | Accepted/sec | vs T2 | p50 request | Delivery lag p50 | Delivery lag p99 |  Peak RSS |
-| --------------: | -----------: | ----: | ----------: | ---------------: | ---------------: | --------: |
-| 0 (T2 baseline) |        6,677 |     — |           — |                — |                — |         — |
-|             100 |        1,176 |  −82% |     58.2 ms |           813 ms |         2,711 ms |   384 MiB |
-|            1000 |          611 |  −91% |     59.7 ms |         7,655 ms |        17,174 ms | 1,031 MiB |
+```sh
+mix bench.actions --tier t3 --duration 15 --warmup 3 --concurrency 8 \
+  --batch-size 10 --updates-per-action 2 --distribution hot \
+  --subscribers <N>
+```
 
-Every subscriber receives a JSON-encoded event per Action, so fan-out
-cost scales with subscriber count and dominates the scheduler (49%
-utilization at 100 subscribers vs ~17% without). Delivery lag is a
-client-side stamp (send → delivery), so it folds in client and transport
-overhead; the server's own `ebb.fanout.push_latency_ms` reports commit →
-dispatch separately (see [Server-side
-telemetry](#server-side-telemetry)). **10k subscribers were not measured**
-— at 1,000 subscribers on a 4-scheduler VM the box is already saturated
-and RSS is 1 GiB; a 10k-subscriber point needs a dedicated machine and is
-out of scope here.
+| Subscribers | Baseline before prototype (median of 3) | After "encode once per group" (median of 3) | Delivery rate                 |                      Peak RSS |
+| ----------: | --------------------------------------: | ------------------------------------------: | ----------------------------- | ----------------------------: |
+|  0 (t2 b10) |                                  15,893 |                                      16,069 | —                             |                       272 MiB |
+|         100 |                                   1,647 |                                       1,243 | —                             |                       371 MiB |
+|        1000 |                                     677 |                                          67 | before ≈ 27k/s, after ≈ 39k/s | before 928 MiB, after 447 MiB |
+
+Delivery rate is total delivered over the 87s drain (measured only on the
+1000-subscriber runs). Relative to the **improved** 15,893/s baseline the
+cliff is now **−90% at 100 subscribers and −96% at 1000 subscribers** (the
+old doc's 6,677/s baseline made it −82% / −91%). Every subscriber receives
+a JSON-encoded event per Action, so fan-out cost scales with subscriber
+count and dominates the scheduler (49.8% utilization on the
+1000-subscriber run). Delivery lag is a client-side stamp (send →
+delivery), so it folds in client and transport overhead; the server's own
+`ebb.fanout.push_latency_ms` reports commit → dispatch separately (see
+[Server-side telemetry](#server-side-telemetry)).
+
+### Fan-out: encode-once prototype (parked, #485)
+
+The prototype (commit `714f9c5`, reverted in `ee599f8`) hoisted encoding
+so each group's payload is built **once per flush** and the same binary is
+handed to every subscriber.
+
+Server-side on the 1000-subscriber run:
+
+| Metric                            | Baseline before |  After |
+| --------------------------------- | --------------: | -----: |
+| `ebb.fanout.push_latency_ms` p50  |          8.04 s | 4.09 s |
+| `ebb.writer.batch_latency_ms` p50 |          4.5 ms | 3.8 ms |
+| Scheduler utilization             |           49.8% |  49.8% |
+
+So the hoist **improved** commit → dispatch latency and **halved** RSS
+(928 MiB → 447 MiB) while the harness's Accepted/sec metric fell ~10×
+(677/s → 67/s). `:binary.copy/1` per subscriber did not recover it,
+ruling out shared-refc-binary refcount contention.
+
+**Verdict.** The official t3 Accepted/sec metric is confounded by the
+delivery backlog and client starvation: dispatch got faster and memory
+halved while the write-side metric collapsed, so the metric is not
+measuring the writer. The naive hoist is **parked**, not merged (commits
+`714f9c5` then revert `ee599f8`), and fan-out needs a dedicated harness
+that measures deliveries/sec and commit → dispatch at a **fixed write
+rate**. **10k subscribers were not measured** — at 1,000 subscribers on a
+4-scheduler VM the box is already saturated and RSS was 928 MiB; a
+10k-subscriber point needs a dedicated machine and is out of scope here.
 
 ## Writer batch coalescing (#332)
 
@@ -353,6 +490,58 @@ durable write, so the t0 headline does not move. The single-Writer
 ceiling is still per-Action-bound; spreading op building across
 schedulers is [#336](https://github.com/ebbjs/ebbjs/issues/336).
 
+## Two-store-only cost breakdown (#485)
+
+[#485](https://github.com/ebbjs/ebbjs/issues/485) measures how much of
+the flush critical path is the durable log append versus the
+**two-store-only** bookkeeping a collapsed materialized store would
+remove. The `--ablate <phases>` seam (commit `2ca55a4`) skips named
+phases of the flush critical path — `dedup, group_resolution,
+entity_index, group_index, dirty, cache, watermark, fanout`
+(comma-separated).
+
+```sh
+mix bench.actions --tier t0 --duration 20 --warmup 5 --concurrency 1 \
+  --batch-size 100 --updates-per-action 2 --distribution hot \
+  --ablate <phases>
+```
+
+### Additive ladder — median of 3 × 20s runs
+
+Phases enabled (= not ablated):
+
+| Step (phases enabled, = not ablated)          | Actions/s | µs/Action | ms/flush (100 Actions) |
+| --------------------------------------------- | --------: | --------: | ---------------------: |
+| log only (only `cf_actions` write)            |    52,555 |     19.03 |                  1.903 |
+| + dedup                                       |    49,110 |     20.36 |                  2.036 |
+| + group resolution, entity index, group index |    32,950 |     30.35 |                  3.035 |
+| + dirty marks                                 |    33,365 |     29.97 |                  2.997 |
+| + cache mutations                             |    31,580 |     31.67 |                  3.167 |
+| + watermark bookkeeping                       |    26,415 |     37.86 |                  3.786 |
+| + fan-out notify (= full flush)               |    25,765 |     38.81 |                  3.881 |
+
+### Marginal cost — ablate one phase from the full flush, median of 3 × 15s runs
+
+| Phase ablated                                           | Actions/s | ms/flush | marginal cost (ms/flush) |
+| ------------------------------------------------------- | --------: | -------: | -----------------------: |
+| (none = full)                                           |    26,587 |    3.761 |                        — |
+| dedup                                                   |    26,727 |    3.741 |                    ~0.02 |
+| group_resolution                                        |    28,173 |    3.550 |                     0.21 |
+| entity_index (`cf_entity_actions` + `cf_type_entities`) |    32,173 |    3.108 |                 **0.65** |
+| group_index (`cf_group_actions`)                        |    28,467 |    3.513 |                     0.25 |
+| dirty                                                   |    26,613 |    3.758 |                    ~0.00 |
+| cache                                                   |    27,840 |    3.592 |                     0.17 |
+| watermark                                               |    30,360 |    3.294 |                 **0.47** |
+
+**Conclusion.** The durable log append floor is **1.903 ms/flush**, about
+**50%** of the full 3.881 ms flush. Every two-store-only piece together
+is the other **~1.98 ms (51%)**. Removing **all** of it is a **2.04×**
+ceiling on t0 (52,555 / 25,765). `entity_index` (0.65 ms) and
+`watermark` (0.47 ms) are the two largest single pieces; `dirty` marks
+are unmeasurable at `hot` because the dirty set stays at 4 (the dirty-set
+cost is O(affected entities), so `hot` understates it — the t0 `spread`
+run's dirty set grows to ~1.16M).
+
 ## Correctness under load
 
 Clean across every measured run above: **0 rejected Actions, 0
@@ -424,24 +613,37 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
 
 ## Gaps and follow-ups
 
-1. **EntityGroup membership writes are O(group size)** — filed as
-   [#331](https://github.com/ebbjs/ebbjs/issues/331). It drives both the
-   `spread`↔`hot` gap and the 100k-preload collapse.
-2. **Single-Writer ceiling ≈ 21–24k Actions/sec is per-Action-bound** — batch
-   coalescing shipped in [#332](https://github.com/ebbjs/ebbjs/issues/332)
-   (commit count down ~5–6×, batch-1 throughput ~3×), `cf_updates` was
-   removed in [#338](https://github.com/ebbjs/ebbjs/issues/338) (~+15% at the
-   headline config), and per-flush index writes were deduped in
-   [#339](https://github.com/ebbjs/ebbjs/issues/339) (~+14% on t0); the
-   batch-100 rate is still bound by per-Action Elixir work, so the next lever
-   is spreading it across schedulers, or multi-Writer
+1. **EntityGroup membership writes are no longer O(group size)** —
+   [#331](https://github.com/ebbjs/ebbjs/issues/331) was fixed by
+   `ad8e43b` (`:bag` → `:ordered_set`) and re-measured in this refresh:
+   `spread` is ~14.1k/s (t2) instead of 883/s and 100k preload is ~21.4k/s
+   instead of 204/s. The dirty set still grows (~1.16M in the t0 spread
+   run), but it no longer degrades throughput.
+2. **Any change that keeps a durable log append is capped at ~2.04×** — the
+   append floor is already ~50% of the full flush (1.903 of 3.881 ms/Action,
+   t0 b100, #485), so collapsing the dual store cannot deliver the spike's
+   ≥2× on its own: it removes only a subset of the non-append work (`dirty`
+   ≈ 0, `cache` 0.17 ms, part of `entity_index`) and leaves
+   `cf_group_actions`, `cf_action_dedup` and the watermark in place. Batch
+   coalescing ([#332](https://github.com/ebbjs/ebbjs/issues/332), commit
+   count down ~5–6×, batch-1 throughput ~3×), `cf_updates` removal
+   ([#338](https://github.com/ebbjs/ebbjs/issues/338), ~+15% at the headline
+   config) and per-flush index dedup
+   ([#339](https://github.com/ebbjs/ebbjs/issues/339), ~+14% on t0) are
+   already spent; the next lever is spreading per-Action work across
+   schedulers or multi-Writer
    ([#287](https://github.com/ebbjs/ebbjs/issues/287)).
-3. **10k-subscriber fan-out** — needs a dedicated load-test machine and is
+3. **Fan-out is a separate problem from write throughput** — the t3
+   Accepted/sec metric is confounded by the delivery backlog/client
+   starvation and the encode-once hoist is parked (#485); fan-out needs a
+   dedicated harness that measures deliveries/sec and commit → dispatch at a
+   fixed write rate.
+4. **10k-subscriber fan-out** — needs a dedicated load-test machine and is
    out of scope here.
-4. **Action-log compaction/retention**
+5. **Action-log compaction/retention**
    ([#123](https://github.com/ebbjs/ebbjs/issues/123)) — a longer-horizon
    lever this harness does not exercise.
-5. **README drift corrected.** `:writer_count`, `:warmer_*`, and
+6. **README drift corrected.** `:writer_count`, `:warmer_*`, and
    `:replication_peers` are read by nothing; the server README states the
    actual single-Writer behavior. `:writer_batch_timeout_ms` and
    `:writer_batch_max_size` were read by nothing as of #328 and are now
