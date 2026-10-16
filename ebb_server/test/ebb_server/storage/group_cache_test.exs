@@ -6,20 +6,27 @@ defmodule EbbServer.Storage.GroupCacheTest do
   defp with_isolated_cache do
     table_name = :"test_gm_#{System.unique_integer([:positive])}"
     by_id_name = :"test_gm_by_id_#{System.unique_integer([:positive])}"
+    by_group_name = :"test_gm_by_group_#{System.unique_integer([:positive])}"
     cache_name = :"test_gc_#{System.unique_integer([:positive])}"
 
     {:ok, _pid} =
       GroupCache.start_link(
         name: cache_name,
         table: table_name,
-        group_members_by_id: by_id_name
+        group_members_by_id: by_id_name,
+        group_members_by_group: by_group_name
       )
 
     on_exit(fn ->
       GroupCache.reset(table_name)
     end)
 
-    %{table: table_name, cache_name: cache_name, by_id: by_id_name}
+    %{
+      table: table_name,
+      cache_name: cache_name,
+      by_id: by_id_name,
+      by_group: by_group_name
+    }
   end
 
   describe "put_group_member/2" do
@@ -137,8 +144,8 @@ defmodule EbbServer.Storage.GroupCacheTest do
   end
 
   describe "delete_group_member/2" do
-    test "removes group membership entry from both tables" do
-      %{table: table, by_id: by_id} = with_isolated_cache()
+    test "removes group membership entry from every table" do
+      %{table: table, by_id: by_id, by_group: by_group} = with_isolated_cache()
 
       :ok =
         GroupCache.put_group_member(
@@ -148,11 +155,50 @@ defmodule EbbServer.Storage.GroupCacheTest do
 
       assert GroupCache.get_actor_groups("a_1", table) != []
       assert GroupCache.get_group_member("gm_1", by_id) != nil
+      assert GroupCache.group_member_ids("g_1", by_group) == ["gm_1"]
 
       :ok = GroupCache.delete_group_member("gm_1", table)
 
       assert GroupCache.get_actor_groups("a_1", table) == []
       assert GroupCache.get_group_member("gm_1", by_id) == nil
+      assert GroupCache.group_member_ids("g_1", by_group) == []
+    end
+  end
+
+  describe "group_member_ids/2" do
+    test "enumerates every member row scoping to a group" do
+      %{table: table, by_group: by_group} = with_isolated_cache()
+
+      for {id, group_id} <- [{"gm_1", "g_1"}, {"gm_2", "g_1"}, {"gm_3", "g_2"}] do
+        :ok =
+          GroupCache.put_group_member(
+            %{id: id, actor_id: "a_1", group_id: group_id, permissions: ["todo.create"]},
+            table
+          )
+      end
+
+      assert Enum.sort(GroupCache.group_member_ids("g_1", by_group)) == ["gm_1", "gm_2"]
+      assert GroupCache.group_member_ids("g_2", by_group) == ["gm_3"]
+      assert GroupCache.group_member_ids("unknown", by_group) == []
+    end
+
+    test "a re-put that moves a row drops the stale by-group entry" do
+      %{table: table, by_group: by_group} = with_isolated_cache()
+
+      :ok =
+        GroupCache.put_group_member(
+          %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
+          table
+        )
+
+      :ok =
+        GroupCache.put_group_member(
+          %{id: "gm_1", actor_id: "a_1", group_id: "g_2", permissions: ["todo.create"]},
+          table
+        )
+
+      assert GroupCache.group_member_ids("g_1", by_group) == []
+      assert GroupCache.group_member_ids("g_2", by_group) == ["gm_1"]
     end
   end
 end

@@ -9,6 +9,7 @@ defmodule EbbServer.Storage.AuthorizationContext do
   @enforce_keys []
   defstruct group_members_table: :ebb_group_members,
             group_members_by_id_table: :ebb_group_members_by_id,
+            group_members_by_group_table: :ebb_group_members_by_group,
             entity_groups_table: :ebb_entity_groups,
             entity_groups_by_id_table: :ebb_entity_groups_by_id,
             entity_types_table: :ebb_entity_types,
@@ -18,6 +19,7 @@ defmodule EbbServer.Storage.AuthorizationContext do
   @type t :: %__MODULE__{
           group_members_table: atom(),
           group_members_by_id_table: atom(),
+          group_members_by_group_table: atom(),
           entity_groups_table: atom(),
           entity_groups_by_id_table: atom(),
           entity_types_table: atom(),
@@ -27,6 +29,7 @@ defmodule EbbServer.Storage.AuthorizationContext do
 
   @default_group_members :ebb_group_members
   @default_group_members_by_id :ebb_group_members_by_id
+  @default_group_members_by_group :ebb_group_members_by_group
   @default_entity_groups :ebb_entity_groups
   @default_entity_groups_by_id :ebb_entity_groups_by_id
   @default_entity_types :ebb_entity_types
@@ -44,6 +47,8 @@ defmodule EbbServer.Storage.AuthorizationContext do
       group_members_table: resolve_table(opts, :group_members, @default_group_members),
       group_members_by_id_table:
         resolve_table(opts, :group_members_by_id, @default_group_members_by_id),
+      group_members_by_group_table:
+        resolve_table(opts, :group_members_by_group, @default_group_members_by_group),
       entity_groups_table: resolve_table(opts, :entity_groups, @default_entity_groups),
       entity_groups_by_id_table:
         resolve_table(opts, :entity_groups_by_id, @default_entity_groups_by_id),
@@ -74,7 +79,8 @@ defmodule EbbServer.Storage.AuthorizationContext do
       entity_groups_by_id: ctx.entity_groups_by_id_table,
       entity_types: ctx.entity_types_table,
       relationships_by_id: ctx.relationships_by_id_table,
-      group_members_by_id: ctx.group_members_by_id_table
+      group_members_by_id: ctx.group_members_by_id_table,
+      group_members_by_group: ctx.group_members_by_group_table
     ]
   end
 end

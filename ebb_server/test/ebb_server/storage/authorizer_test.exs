@@ -8,6 +8,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
     AuthorizationContext.build(
       group_members: tables.group_members,
       group_members_by_id: tables.group_members_by_id,
+      group_members_by_group: tables.group_members_by_group,
       entity_groups: tables.entity_groups,
       entity_groups_by_id: tables.entity_groups_by_id,
       entity_types: tables.entity_types,
@@ -26,18 +27,20 @@ defmodule EbbServer.Storage.AuthorizerTest do
     )
   end
 
+  # The actor's own membership, indexed everywhere the guard reads: the
+  # permission table (`group_members`), the by-id row lookup
+  # (`group_members_by_id`) and the by-group enumeration.
   defp put_group_member(tables, group_id, permissions, id \\ "gm_1") do
-    :ets.insert(
-      tables.group_members,
-      {"a_1", %{id: id, group_id: group_id, permissions: permissions}}
-    )
+    row = %{id: id, actor_id: "a_1", group_id: group_id, permissions: permissions}
+    :ets.insert(tables.group_members, {"a_1", row})
+    :ets.insert(tables.group_members_by_id, {id, row})
+    :ets.insert(tables.group_members_by_group, {{group_id, id}})
   end
 
   defp put_group_member_by_id(tables, id, actor_id, group_id, permissions) do
-    :ets.insert(
-      tables.group_members_by_id,
-      {id, %{id: id, actor_id: actor_id, group_id: group_id, permissions: permissions}}
-    )
+    row = %{id: id, actor_id: actor_id, group_id: group_id, permissions: permissions}
+    :ets.insert(tables.group_members_by_id, {id, row})
+    :ets.insert(tables.group_members_by_group, {{group_id, id}})
   end
 
   defp put_entity_group_by_id(tables, id, entity_id, group_id) do
@@ -116,6 +119,25 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
   defp entity_group_delete(id) do
     %{id: id, subject_id: id, subject_type: "entityGroup", method: :delete, data: nil}
+  end
+
+  defp group_member_delete(id) do
+    %{id: id, subject_id: id, subject_type: "groupMember", method: :delete, data: nil}
+  end
+
+  defp group_member_patch(id, group_id, permissions) do
+    %{
+      id: id,
+      subject_id: id,
+      subject_type: "groupMember",
+      method: :patch,
+      data: %{
+        "fields" => %{
+          "group_id" => %{"value" => group_id},
+          "permissions" => %{"value" => permissions}
+        }
+      }
+    }
   end
 
   defp relationship_put(id, source_id, target_id, source_type) do
@@ -428,7 +450,10 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_1", ["groupMember.delete"])
+      # The actor's own capable row is what authorizes the delete and
+      # what keeps the group administered afterwards, so it must be a
+      # different row from the one being deleted.
+      put_group_member(tables, "g_1", ["groupMember.delete"], "gm_actor")
       put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
 
       action =
@@ -1006,6 +1031,155 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action = build_action([entity_group_delete("eg_unknown")])
 
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+  end
+
+  # #479: a group must keep at least one membership holding a non-empty
+  # permission list, because permissions live only on `groupMember` rows
+  # and an empty list grants nothing. The check is a net delta over the
+  # whole request, like `last_membership`.
+  describe "authorize/3 - last group member" do
+    setup do
+      tables = create_isolated_tables()
+      %{tables: tables, ctx: auth_context(tables)}
+    end
+
+    test "deleting a group's only capable membership is refused", %{tables: tables, ctx: ctx} do
+      put_group_member(tables, "g_1", ["groupMember.delete"], "gm_actor")
+
+      action = build_action([group_member_delete("gm_actor")])
+
+      rejection =
+        assert_rejected(Authorizer.authorize([action], "a_1", ctx), "last_group_member")
+
+      assert is_binary(rejection.details)
+    end
+
+    test "a member with an empty permission list does not keep the group alive", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_1", ["groupMember.delete"], "gm_actor")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", [])
+
+      action = build_action([group_member_delete("gm_actor")])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "last_group_member")
+    end
+
+    test "deleting one of two capable memberships is allowed", %{tables: tables, ctx: ctx} do
+      put_group_member(tables, "g_1", ["groupMember.delete"], "gm_actor")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+
+      action = build_action([group_member_delete("gm_1")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "a batch of two Actions that each drop one capable membership is refused", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_1", ["groupMember.delete"], "gm_actor")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+
+      # Each Action is valid against the cache snapshot, but together
+      # they net to zero. The running delta must catch the second.
+      actions = [
+        build_action([group_member_delete("gm_1")]),
+        build_action([group_member_delete("gm_actor")])
+      ]
+
+      # The first Action is accepted against the snapshot, the second is
+      # rejected: the running delta catches the pair netting to zero.
+      assert {_accepted, [rejection]} = Authorizer.authorize(actions, "a_1", ctx)
+      assert rejection.reason == "last_group_member"
+    end
+
+    test "patching the only capable permission list to empty is refused", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_1", ["groupMember.update"], "gm_actor")
+
+      action = build_action([group_member_patch("gm_actor", "g_1", [])])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "last_group_member")
+    end
+
+    test "patching one of two capable permission lists to empty is allowed", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_1", ["groupMember.update"], "gm_actor")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+
+      action = build_action([group_member_patch("gm_1", "g_1", [])])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "transferring the last membership within one Action is allowed", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(
+        tables,
+        "g_1",
+        ["groupMember.delete", "groupMember.create"],
+        "gm_actor"
+      )
+
+      action =
+        build_action([
+          group_member_delete("gm_actor"),
+          group_member_put("gm_new", "a_2", "g_1", ["group.read"])
+        ])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "a put without a wire group is a no-op, not a lockout", %{tables: tables, ctx: ctx} do
+      put_group_member(tables, "g_1", ["groupMember.*"], "gm_actor")
+
+      # No `group_id` on the wire, so the Writer drops the update; the
+      # guard must not read that as emptying the cached row.
+      update = %{
+        id: "upd_gm",
+        subject_id: "gm_actor",
+        subject_type: "groupMember",
+        method: :put,
+        data: %{"fields" => %{"permissions" => %{"value" => []}}}
+      }
+
+      assert_accepted(Authorizer.authorize([build_action([update])], "a_1", ctx))
+    end
+
+    test "moving a membership out of a group that keeps a capable row is allowed", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_2", ["groupMember.update"], "gm_actor")
+      put_group_member(tables, "g_1", ["groupMember.update"], "gm_actor_1")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+
+      action = build_action([group_member_patch("gm_1", "g_2", ["group.read"])])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "moving a group's only capable membership out of it is refused", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      # The actor authorizes the patch in the destination group, so the
+      # origin group has no other capable row to fall back on.
+      put_group_member(tables, "g_2", ["groupMember.update"], "gm_actor")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+
+      action = build_action([group_member_patch("gm_1", "g_2", ["group.read"])])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "last_group_member")
     end
   end
 

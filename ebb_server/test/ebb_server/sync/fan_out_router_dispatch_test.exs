@@ -25,6 +25,7 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
     rbi = :"for_rbi_#{System.unique_integer([:positive])}"
     gm = :"for_gm_#{System.unique_integer([:positive])}"
     gm_by_id = :"for_gmbi_#{System.unique_integer([:positive])}"
+    gm_by_group = :"for_gmbg_#{System.unique_integer([:positive])}"
     eg = :"for_eg_#{System.unique_integer([:positive])}"
     eg_by_id = :"for_egbi_#{System.unique_integer([:positive])}"
     eg_by_group = :"for_egbg_#{System.unique_integer([:positive])}"
@@ -40,7 +41,8 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
       GroupCache.start_link(
         name: :"for_gc_#{System.unique_integer([:positive])}",
         table: gm,
-        group_members_by_id: gm_by_id
+        group_members_by_id: gm_by_id,
+        group_members_by_group: gm_by_group
       )
 
     {:ok, _} =
@@ -65,7 +67,7 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
         entity_groups_by_group: eg_by_group
       )
 
-      for t <- [rel, rbi, gm, gm_by_id, eg, eg_by_id, eg_by_group] do
+      for t <- [rel, rbi, gm, gm_by_id, gm_by_group, eg, eg_by_id, eg_by_group] do
         try do
           :ets.delete(t)
         rescue
