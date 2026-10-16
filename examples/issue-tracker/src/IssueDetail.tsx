@@ -14,21 +14,27 @@
 
 import { useEffect, useState } from "react";
 import { useClient, useEntity, useEntityMutations, useQuery } from "@ebbjs/react";
-import { ISSUE_PRIORITIES, ISSUE_STATUSES, statusLabel } from "./issue-options";
+import { PRIORITY_OPTIONS, STATUS_OPTIONS, assigneeOptions } from "./issue-options";
+import { SelectField } from "./SelectField";
 import type { Schema } from "./schema";
 
 export function IssueDetail({
   issueId,
+  groupId,
   onClose,
   onDeleted,
 }: {
   issueId: string;
+  groupId: string;
   onClose: () => void;
   onDeleted: () => void;
 }) {
   const client = useClient<Schema>();
   const { update, delete: remove } = useEntityMutations(client.issue);
-  const { data: profiles } = useQuery(() => client.profile.query());
+  const { data: profiles } = useQuery(
+    () => client.profile.query().where("groups", groupId),
+    [groupId],
+  );
   const [revision, setRevision] = useState(0);
   const issue = useEntity(() => client.issue.get(issueId), [issueId, revision]);
   const [title, setTitle] = useState("");
@@ -145,51 +151,24 @@ export function IssueDetail({
         </label>
 
         <div className="flex flex-wrap gap-3">
-          <label className="font-mono text-xs text-stone-400">
-            status
-            <select
-              value={issue.status}
-              onChange={(event) => changeStatus(event.target.value)}
-              className="mt-1 block rounded border border-stone-700 bg-stone-900 px-2 py-1 font-mono text-xs text-stone-200 focus:border-emerald-500 focus:outline-none"
-            >
-              {ISSUE_STATUSES.map((value) => (
-                <option key={value} value={value}>
-                  {statusLabel(value)}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="font-mono text-xs text-stone-400">
-            priority
-            <select
-              value={issue.priority}
-              onChange={(event) => changePriority(event.target.value)}
-              className="mt-1 block rounded border border-stone-700 bg-stone-900 px-2 py-1 font-mono text-xs text-stone-200 focus:border-emerald-500 focus:outline-none"
-            >
-              {ISSUE_PRIORITIES.map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="font-mono text-xs text-stone-400">
-            assignee
-            <select
-              value={assigneeId}
-              onChange={(event) => changeAssignee(event.target.value)}
-              className="mt-1 block rounded border border-stone-700 bg-stone-900 px-2 py-1 font-mono text-xs text-stone-200 focus:border-emerald-500 focus:outline-none"
-            >
-              <option value="">unassigned</option>
-              {profiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.display_name} ({profile.actor_id})
-                </option>
-              ))}
-            </select>
-          </label>
+          <SelectField
+            label="status"
+            value={issue.status}
+            onChange={changeStatus}
+            options={STATUS_OPTIONS}
+          />
+          <SelectField
+            label="priority"
+            value={issue.priority}
+            onChange={changePriority}
+            options={PRIORITY_OPTIONS}
+          />
+          <SelectField
+            label="assignee"
+            value={assigneeId}
+            onChange={changeAssignee}
+            options={assigneeOptions(profiles)}
+          />
         </div>
 
         {error !== null && <p className="font-mono text-xs text-red-400">{error}</p>}

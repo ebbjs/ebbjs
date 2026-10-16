@@ -9,7 +9,8 @@
 
 import { useState } from "react";
 import { useClient, useQuery } from "@ebbjs/react";
-import { ISSUE_PRIORITIES, ISSUE_STATUSES, statusLabel } from "./issue-options";
+import { PRIORITY_OPTIONS, STATUS_OPTIONS, assigneeOptions } from "./issue-options";
+import { SelectField } from "./SelectField";
 import type { Schema } from "./schema";
 
 export function IssueCreateForm({
@@ -22,9 +23,12 @@ export function IssueCreateForm({
   onCancel: () => void;
 }) {
   const client = useClient<Schema>();
-  const { data: profiles } = useQuery(() => client.profile.query());
+  const { data: profiles } = useQuery(
+    () => client.profile.query().where("groups", groupId),
+    [groupId],
+  );
   const [title, setTitle] = useState("");
-  const [status, setStatus] = useState<string>(ISSUE_STATUSES[0]);
+  const [status, setStatus] = useState<string>("todo");
   const [priority, setPriority] = useState<string>("medium");
   const [assigneeId, setAssigneeId] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -73,51 +77,24 @@ export function IssueCreateForm({
         </label>
 
         <div className="flex flex-wrap gap-3">
-          <label className="font-mono text-xs text-stone-400">
-            status
-            <select
-              value={status}
-              onChange={(event) => setStatus(event.target.value)}
-              className="mt-1 block rounded border border-stone-700 bg-stone-900 px-2 py-1 font-mono text-xs text-stone-200 focus:border-emerald-500 focus:outline-none"
-            >
-              {ISSUE_STATUSES.map((value) => (
-                <option key={value} value={value}>
-                  {statusLabel(value)}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="font-mono text-xs text-stone-400">
-            priority
-            <select
-              value={priority}
-              onChange={(event) => setPriority(event.target.value)}
-              className="mt-1 block rounded border border-stone-700 bg-stone-900 px-2 py-1 font-mono text-xs text-stone-200 focus:border-emerald-500 focus:outline-none"
-            >
-              {ISSUE_PRIORITIES.map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="font-mono text-xs text-stone-400">
-            assignee
-            <select
-              value={assigneeId}
-              onChange={(event) => setAssigneeId(event.target.value)}
-              className="mt-1 block rounded border border-stone-700 bg-stone-900 px-2 py-1 font-mono text-xs text-stone-200 focus:border-emerald-500 focus:outline-none"
-            >
-              <option value="">unassigned</option>
-              {profiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.display_name} ({profile.actor_id})
-                </option>
-              ))}
-            </select>
-          </label>
+          <SelectField
+            label="status"
+            value={status}
+            onChange={setStatus}
+            options={STATUS_OPTIONS}
+          />
+          <SelectField
+            label="priority"
+            value={priority}
+            onChange={setPriority}
+            options={PRIORITY_OPTIONS}
+          />
+          <SelectField
+            label="assignee"
+            value={assigneeId}
+            onChange={setAssigneeId}
+            options={assigneeOptions(profiles)}
+          />
         </div>
 
         {error !== null && <p className="font-mono text-xs text-red-400">{error}</p>}

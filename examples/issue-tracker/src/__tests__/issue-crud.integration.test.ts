@@ -12,12 +12,11 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createClient, type NamespacedClient, type SyncClient } from "@ebbjs/client";
+import { createClient, type NamespacedClient } from "@ebbjs/client";
 import type { SeedData } from "@ebbjs/core/seed";
 import { schema, type Schema } from "../schema";
 import { SEED_PERMISSIONS, SEEDER_ACTOR_ID, buildActorSeed, deriveActorSeedIds } from "../seed";
-
-const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
+import { SERVER_URL, catchUpUntilCurrent, serverIsReachable } from "./integration-support";
 
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const ALICE = `crud_alice_${RUN_ID}`;
@@ -26,39 +25,6 @@ const SHARED_GROUP_ID = `grp_crud_${RUN_ID}`;
 const ALICE_IDS = deriveActorSeedIds(ALICE);
 
 type Client = NamespacedClient<Schema>;
-
-let serverReachable: boolean | null = null;
-
-async function ping(url: string): Promise<boolean> {
-  try {
-    const res = await fetch(`${url}/sync/handshake`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-ebb-actor-id": SEEDER_ACTOR_ID },
-      body: "{}",
-    });
-    return res.status < 500;
-  } catch {
-    return false;
-  }
-}
-
-async function ensureServerReachable(): Promise<boolean> {
-  if (serverReachable !== null) return serverReachable;
-  serverReachable = await ping(SERVER_URL);
-  return serverReachable;
-}
-
-async function shouldRun(): Promise<boolean> {
-  return await ensureServerReachable();
-}
-
-async function catchUpUntilCurrent(client: SyncClient, groupId: string): Promise<void> {
-  for (let i = 0; i < 50; i++) {
-    const { upToDate } = await client.catchUp(groupId);
-    if (upToDate) return;
-  }
-  throw new Error(`catchUpUntilCurrent: exhausted retries for group ${groupId}`);
-}
 
 /**
  * A shared group the two test actors both belong to. The seeder
@@ -107,7 +73,7 @@ let bob: Client | null = null;
 let seeder: Client | null = null;
 
 beforeAll(async () => {
-  if (!(await ensureServerReachable())) {
+  if (!(await serverIsReachable())) {
     console.warn(`[skip] ebb server not reachable at ${SERVER_URL}`);
     return;
   }
@@ -137,7 +103,7 @@ afterAll(() => {
 
 describe("integration: issue CRUD", () => {
   it("creates with an assignee link and reads it back through the accessor", async () => {
-    if (!(await shouldRun())) return;
+    if (!(await serverIsReachable())) return;
 
     const created = await alice!.atomic((drafts) =>
       drafts.issue.create(
@@ -155,7 +121,7 @@ describe("integration: issue CRUD", () => {
   });
 
   it("updates fields, filters by the relationship, unlinks, and deletes", async () => {
-    if (!(await shouldRun())) return;
+    if (!(await serverIsReachable())) return;
 
     const created = await alice!.atomic((drafts) =>
       drafts.issue.create(
@@ -186,7 +152,7 @@ describe("integration: issue CRUD", () => {
   });
 
   it("converges two actors on one issue state", async () => {
-    if (!(await shouldRun())) return;
+    if (!(await serverIsReachable())) return;
 
     const created = await alice!.atomic((drafts) =>
       drafts.issue.create(

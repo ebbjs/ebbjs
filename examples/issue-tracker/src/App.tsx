@@ -157,6 +157,7 @@ function AppShell({
             selectedId !== null && (
               <IssueDetail
                 issueId={selectedId}
+                groupId={defaultGroupId}
                 onClose={() => setSelectedId(null)}
                 onDeleted={() => setSelectedId(null)}
               />

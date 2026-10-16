@@ -21,8 +21,11 @@ import type { StorageAdapter } from "@ebbjs/storage/types";
 import { schema, type Schema } from "./schema";
 import { SEEDER_ACTOR_ID, buildActorSeed, buildSharedSeed } from "./seed";
 
-/** Durable per-actor storage, falling back to memory off the browser. */
-async function createAppStorage(actorId: string): Promise<StorageAdapter> {
+/**
+ * Durable per-actor storage, falling back to memory off the browser.
+ * Exported so the persistence test can reopen the same database.
+ */
+export async function createAppStorage(actorId: string): Promise<StorageAdapter> {
   if (typeof indexedDB === "undefined") {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     return createMemoryAdapter();

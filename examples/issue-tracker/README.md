@@ -47,7 +47,7 @@ Every seed id is derived from the actor id (or a fixed literal for the shared fi
 
 The list has a **new issue** control and selectable rows. Selecting a row opens the detail view.
 
-- **Create** — `IssueCreateForm` calls `client.atomic` so the row and its optional `assignee` link commit in one Action. The Outbox applies it optimistically, so the issue appears in the list immediately.
+- **Create** — `IssueCreateForm` calls `client.atomic` so the row and its optional `assignee` link commit in one Action. The Outbox applies it optimistically, so the issue appears in the list immediately. The assignee options come from the workspace's profiles (`.where("groups", groupId)`).
 - **Edit** — `IssueDetail` uses `useEntityMutations(client.issue)` for `update` (title, status, priority) and `client.issue.link` / `unlink` for the assignee. `useEntity` re-reads the row so the assignee resolves through the `issue.assignee` accessor.
 - **Delete** — a two-step confirmation, then `delete`; the row drops out of the list and the detail view reports the tombstone as gone.
 
@@ -93,7 +93,8 @@ src/
 ├── schema.ts            # Pinned data model + assignee relationship
 ├── seed.ts              # Deterministic bootstrap seed (SeedData builders)
 ├── bootstrap.ts         # createClient + durable storage + seed + handshake + subscribe
-├── issue-options.ts     # Status / priority vocabulary
+├── issue-options.ts     # Status / priority / assignee option lists
+├── SelectField.tsx      # Shared labelled <select>
 ├── ActorPicker.tsx      # Actor identity selector
 ├── ConnectionBadge.tsx  # useConnection() indicator
 ├── WorkspaceSwitcher.tsx# useQuery list + row.groups group id
