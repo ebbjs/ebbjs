@@ -309,4 +309,48 @@ describe("draft membership verbs carry generated parts (#474)", () => {
     expect(deletes.every((update) => update.subject_type === "entityGroup")).toBe(true);
     expect(updates.filter((update) => update.subject_type === "relationship")).toHaveLength(0);
   });
+
+  it("carries the parts of an entity created earlier in the same batch", async () => {
+    const { client, actions } = await mkClient(schema);
+    let createdId = "";
+
+    await client.atomic(({ blogPost: draft }) => {
+      const created = draft.create(
+        { title: "Hello", body: "world", subtitle: "sub" },
+        { groups: ["g_1"] },
+      );
+      createdId = created.id;
+      draft.addToGroup(created.id, "g_2");
+    });
+
+    const updates = updatesOf(actions[actions.length - 1]!);
+    const documentIds = updates
+      .filter((update) => update.subject_type.startsWith("text_document__"))
+      .map((update) => update.subject_id);
+    expect(documentIds).toHaveLength(2);
+
+    // Parent + both documents filed in g_1 by the create, then again in
+    // g_2 by the addToGroup.
+    const groupPuts = updates.filter(
+      (update) => update.subject_type === "entityGroup" && update.method === "put",
+    );
+    expect(groupPuts).toHaveLength(6);
+    expect(
+      groupPuts
+        .filter((update) => fieldOf(update, "group_id") === "g_2")
+        .map((update) => fieldOf(update, "entity_id"))
+        .sort(),
+    ).toEqual([createdId, ...documentIds].sort());
+
+    // Each of the two edges is emitted twice under its own id: once by
+    // the create, once re-emitted to scope it to g_2.
+    const edgePuts = updates.filter((update) => update.subject_type === "relationship");
+    expect(edgePuts).toHaveLength(4);
+    const emissions = new Map<string, number>();
+    for (const edge of edgePuts) {
+      emissions.set(edge.subject_id, (emissions.get(edge.subject_id) ?? 0) + 1);
+    }
+    expect(emissions.size).toBe(2);
+    expect([...emissions.values()]).toEqual([2, 2]);
+  });
 });

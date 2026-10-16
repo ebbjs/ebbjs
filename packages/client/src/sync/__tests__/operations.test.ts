@@ -120,6 +120,10 @@ describe("changeGroups", () => {
     expect(result.updates[3]!.subject_type).toBe("entityGroup");
     expect(result.updates[4]!.subject_id).toBe("eg_doc_1");
     expect(result.updates[4]!.subject_type).toBe("entityGroup");
+
+    // The fan-out union carries the pre-change group (the edge's scope)
+    // and the added group (the puts).
+    expect(result.groups).toEqual(["g_1", "g_2"]);
   });
 
   it("skips a generated document membership the document already holds", () => {

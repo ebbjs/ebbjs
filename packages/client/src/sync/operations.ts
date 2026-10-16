@@ -154,6 +154,15 @@ export interface CreateEntityInput {
   readonly pointers?: readonly ResolvedPointer[];
   /** Derived collaborative-text bodies, keyed by field. */
   readonly bodies?: Readonly<Record<string, string>>;
+  /**
+   * Pre-minted ids for a derived field's document and edge, keyed by
+   * field. A caller that must reference the parts before this operation
+   * runs (the atomic resolver carrying them on a later membership verb)
+   * supplies them; otherwise the operation mints its own.
+   */
+  readonly generatedIds?: Readonly<
+    Record<string, { readonly documentId: string; readonly relationshipId: string }>
+  >;
   readonly groups: readonly string[];
   readonly validate?: boolean;
 }
@@ -195,7 +204,8 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
     const docEntity =
       ctx.registry.getRelationship(input.entity, field)?.target.name ??
       generatedDocEntityName(input.entity, field);
-    const docId = ctx.ids.entityId();
+    const generatedId = input.generatedIds?.[field];
+    const docId = generatedId?.documentId ?? ctx.ids.entityId();
     const docUpdateId = ctx.ids.updateId();
     const docHlc = ctx.ids.hlc();
     updates.push({
@@ -211,7 +221,7 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
     });
     updates.push(
       buildRelationshipUpdate({
-        relationshipId: generateId("rel"),
+        relationshipId: generatedId?.relationshipId ?? generateId("rel"),
         sourceId: input.id,
         targetId: docId,
         field,

@@ -15,6 +15,7 @@ import type { StorageAdapter } from "@ebbjs/storage/types";
 
 import type { EntityRegistry } from "../schema/entity-registry";
 import { liveMemberships } from "./entity-group";
+import { findRelationshipsByField } from "./relationship";
 
 /** A generated edge: the live `relationship` row linking parent to document. */
 export interface GeneratedEdge {
@@ -77,12 +78,8 @@ export async function readGeneratedParts(
   for (const field of Object.keys(derived)) {
     const rel = registry.getRelationship(entityType, field);
     if (rel === undefined) continue;
-    const row = relationships.find(
-      (candidate) =>
-        candidate.deleted_hlc === null &&
-        candidate.data?.fields?.["source_id"]?.value === entityId &&
-        candidate.data?.fields?.["field"]?.value === field &&
-        candidate.data?.fields?.["type"]?.value === rel.type,
+    const row = findRelationshipsByField(relationships, field, rel.type).find(
+      (candidate) => candidate.data?.fields?.["source_id"]?.value === entityId,
     );
     if (row === undefined) continue;
     const targetId = row.data?.fields?.["target_id"]?.value;
