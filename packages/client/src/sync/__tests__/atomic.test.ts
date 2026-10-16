@@ -364,18 +364,18 @@ describe("client.atomic — one Action, forward references", () => {
   });
 });
 
-describe("client.atomic — permission coherence (#233)", () => {
+describe("client.atomic — per-Update delivery (#473)", () => {
   // Group sets come from the required per-create `groups` option (#244),
-  // which also emits the `entityGroup` rows the check reads.
-  const coherentTodo = defineEntity("todo", { title: e.string() });
-  const coherentList = defineEntity("list", { name: e.string() });
-  const coherenceSchema = defineSchema({
-    entities: { todo: coherentTodo, list: coherentList },
+  // which also emits the `entityGroup` rows.
+  const deliveryTodo = defineEntity("todo", { title: e.string() });
+  const deliveryList = defineEntity("list", { name: e.string() });
+  const deliverySchema = defineSchema({
+    entities: { todo: deliveryTodo, list: deliveryList },
     version: 1,
   });
 
   it("accepts an Action whose writes all carry the same group set", async () => {
-    const { client, seen } = mkClient(coherenceSchema);
+    const { client, seen } = mkClient(deliverySchema);
     await client.handshake();
 
     const created = await client.atomic(({ todo, list }) => {
@@ -395,7 +395,7 @@ describe("client.atomic — permission coherence (#233)", () => {
   });
 
   it("accepts an Action whose writes share a multi-group membership set", async () => {
-    const { client, seen } = mkClient(coherenceSchema);
+    const { client, seen } = mkClient(deliverySchema);
     await client.handshake();
 
     await client.atomic(({ todo, list }) => ({
@@ -408,80 +408,82 @@ describe("client.atomic — permission coherence (#233)", () => {
     expect(updates.filter((u) => u.subject_type === "entityGroup")).toHaveLength(4);
   });
 
-  it("refuses a cross-group Action before any write is submitted", async () => {
-    const { client, seen } = mkClient(coherenceSchema);
+  it("submits a cross-group Action as one Action, each write keeping its own group", async () => {
+    const { client, seen } = mkClient(deliverySchema);
     await client.handshake();
-    const requestsBefore = seen.length;
 
-    const error = await client
-      .atomic(({ todo, list }) => ({
-        list: list.create({ name: "Today" }, { groups: ["g_1"] }),
-        todo: todo.create({ title: "Ship it" }, { groups: ["g_2"] }),
-      }))
-      .catch((err: unknown) => err);
+    await client.atomic(({ todo, list }) => ({
+      list: list.create({ name: "Today" }, { groups: ["g_1"] }),
+      todo: todo.create({ title: "Ship it" }, { groups: ["g_2"] }),
+    }));
 
-    expect(error).toBeInstanceOf(AtomicActionError);
-    expect(actionCalls(seen)).toHaveLength(0);
-    expect(seen.length).toBe(requestsBefore);
+    const calls = actionCalls(seen);
+    expect(calls).toHaveLength(1);
+    const updates = decodeActions(calls[0]!)[0]!.updates;
+    const membershipRows = updates.filter((u) => u.subject_type === "entityGroup");
+    expect(membershipRows.map((r) => r.data?.fields?.["group_id"]?.value).sort()).toEqual([
+      "g_1",
+      "g_2",
+    ]);
   });
 
-  it("counts groups in the check and names every subject whose set differs", async () => {
-    const { client, seen } = mkClient(coherenceSchema);
+  it("emits one membership row per write, each carrying its own group", async () => {
+    const { client, seen } = mkClient(deliverySchema);
     await client.handshake();
 
     let handles: Record<string, { id: string }> = {};
-    const error = (await client
-      .atomic(({ todo, list }) => {
-        handles = {
-          todo: todo.create({ title: "Ship it" }, { groups: ["g_1"] }),
-          list: list.create({ name: "Today" }, { groups: ["g_2"] }),
-        };
-        return handles;
-      })
-      .catch((err: unknown) => err)) as AtomicActionError;
-
-    expect(actionCalls(seen)).toHaveLength(0);
-    expect(error.rejections).toHaveLength(2);
-    expect(error.rejections.map((r) => r.id).sort()).toEqual(
-      [handles.todo!.id, handles.list!.id].sort(),
-    );
-    expect(error.rejections.map((r) => r.subjectType)).toEqual(["todo", "list"]);
-    for (const rejection of error.rejections) {
-      expect(rejection.reason).toBe("group_mismatch");
-      expect(rejection.details).toContain("g_1");
-      expect(rejection.details).toContain("g_2");
-    }
-    expect(error.message).toContain(handles.todo!.id);
-    expect(error.message).toContain(handles.list!.id);
-    expect(error.message.split("\n")).toHaveLength(3);
-  });
-
-  it("names a write whose groups are a strict subset of the Action's group set", async () => {
-    const { client, seen } = mkClient(coherenceSchema);
-    await client.handshake();
-
-    let handles: Record<string, { id: string }> = {};
-    const error = (await client
-      .atomic(({ todo, list }) => {
-        handles = {
-          todo: todo.create({ title: "Ship it" }, { groups: ["g_1", "g_2"] }),
-          list: list.create({ name: "Today" }, { groups: ["g_1"] }),
-        };
-        return handles;
-      })
-      .catch((err: unknown) => err)) as AtomicActionError;
-
-    expect(actionCalls(seen)).toHaveLength(0);
-    expect(error.rejections).toHaveLength(1);
-    expect(error.rejections[0]).toMatchObject({
-      id: handles.list!.id,
-      subjectType: "list",
-      reason: "group_mismatch",
+    await client.atomic(({ todo, list }) => {
+      handles = {
+        todo: todo.create({ title: "Ship it" }, { groups: ["g_1"] }),
+        list: list.create({ name: "Today" }, { groups: ["g_2"] }),
+      };
+      return handles;
     });
+
+    const calls = actionCalls(seen);
+    expect(calls).toHaveLength(1);
+    const updates = decodeActions(calls[0]!)[0]!.updates;
+    const membershipRows = updates.filter((u) => u.subject_type === "entityGroup");
+    const groupByEntity = new Map(
+      membershipRows.map((row) => [
+        row.data?.fields?.["entity_id"]?.value,
+        row.data?.fields?.["group_id"]?.value,
+      ]),
+    );
+    expect(groupByEntity.get(handles.todo!.id)).toBe("g_1");
+    expect(groupByEntity.get(handles.list!.id)).toBe("g_2");
+  });
+
+  it("submits a narrow write alongside a wider write in the same Action", async () => {
+    const { client, seen } = mkClient(deliverySchema);
+    await client.handshake();
+
+    let handles: Record<string, { id: string }> = {};
+    await client.atomic(({ todo, list }) => {
+      handles = {
+        todo: todo.create({ title: "Ship it" }, { groups: ["g_1", "g_2"] }),
+        list: list.create({ name: "Today" }, { groups: ["g_1"] }),
+      };
+      return handles;
+    });
+
+    const calls = actionCalls(seen);
+    expect(calls).toHaveLength(1);
+    const membershipRows = decodeActions(calls[0]!)[0]!.updates.filter(
+      (u) => u.subject_type === "entityGroup",
+    );
+    const rowsFor = (entityId: string) =>
+      membershipRows
+        .filter((row) => row.data?.fields?.["entity_id"]?.value === entityId)
+        .map((row) => row.data?.fields?.["group_id"]?.value)
+        .sort();
+    // The wide write carries both groups; the narrow write only g_1.
+    expect(rowsFor(handles.todo!.id)).toEqual(["g_1", "g_2"]);
+    expect(rowsFor(handles.list!.id)).toEqual(["g_1"]);
   });
 
   it("raises AtomicActionError populated from the server's rejected[] for the submitted Action", async () => {
-    const { client, seen } = mkClient(coherenceSchema, {
+    const { client, seen } = mkClient(deliverySchema, {
       rejectFor: (actions) => [
         {
           id: actions[0]!.id,
@@ -513,7 +515,7 @@ describe("client.atomic — permission coherence (#233)", () => {
   });
 
   it("resolves when the server rejects a different queued Action, not the submitted one", async () => {
-    const { client, seen } = mkClient(coherenceSchema, {
+    const { client, seen } = mkClient(deliverySchema, {
       rejectFor: () => [{ id: "act_someone_else", reason: "not_authorized" }],
     });
     await client.handshake();
@@ -527,7 +529,7 @@ describe("client.atomic — permission coherence (#233)", () => {
   });
 
   it("raises only for a rejection attributed to the submitted Action", async () => {
-    const { client, seen } = mkClient(coherenceSchema, {
+    const { client, seen } = mkClient(deliverySchema, {
       rejectFor: (actions) => [
         { id: "act_someone_else", reason: "not_authorized" },
         { id: actions[0]!.id, reason: "permission_denied" },

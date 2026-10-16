@@ -1038,6 +1038,59 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
       });
     });
 
+    describe("per-Update delivery (#473)", () => {
+      /**
+       * One logical Action that moves a membership from `eg_old` to
+       * `eg_new`, split into two delivered copies by each Update's own
+       * group scope. Both copies keep the Action's id and GSN.
+       */
+      const moveAction = (): Action => {
+        const put = buildEntityGroupPutAction(
+          { id: "eg_new", entityId: "todo_1", groupId: "group_new" },
+          7,
+        );
+        const del = buildEntityGroupDeleteAction({ id: "eg_old" }, 7);
+        return { ...put, updates: [...put.updates, ...del.updates] };
+      };
+
+      it("delivers the new group the put and the old group the delete, neither crashing", async () => {
+        const action = moveAction();
+        const newGroupCopy: Action = {
+          ...action,
+          updates: action.updates.filter((update) => update.subject_id === "eg_new"),
+        };
+        const oldGroupCopy: Action = {
+          ...action,
+          updates: action.updates.filter((update) => update.subject_id === "eg_old"),
+        };
+
+        // The new group's subscriber receives only the put.
+        const newGroup = await factory();
+        await newGroup.actionLog.append(newGroupCopy);
+        await newGroup.dirtyTracker.mark("eg_new", "entityGroup");
+        const materialized = await newGroup.entityStore.get("eg_new");
+        expect(materialized).not.toBeNull();
+        expect((materialized!.data.fields.group_id as { value: unknown }).value).toBe("group_new");
+
+        // The old group's subscriber receives only the delete. It never
+        // materialized `eg_old`, so the delete must be a no-op rather
+        // than a stream-breaking throw.
+        const oldGroup = await factory();
+        await oldGroup.actionLog.append(oldGroupCopy);
+        await oldGroup.dirtyTracker.mark("eg_old", "entityGroup");
+        await expect(oldGroup.entityStore.get("eg_old")).resolves.toBeNull();
+
+        // Re-delivery of a copy is idempotent: the same put leaves the
+        // row in place and the same delete leaves it absent.
+        await newGroup.actionLog.append(newGroupCopy);
+        await newGroup.dirtyTracker.mark("eg_new", "entityGroup");
+        expect(await newGroup.entityStore.get("eg_new")).toEqual(materialized);
+        await oldGroup.actionLog.append(oldGroupCopy);
+        await oldGroup.dirtyTracker.mark("eg_old", "entityGroup");
+        await expect(oldGroup.entityStore.get("eg_old")).resolves.toBeNull();
+      });
+    });
+
     describe("reset", () => {
       it("clears all entities", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();

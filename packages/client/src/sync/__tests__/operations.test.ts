@@ -58,7 +58,7 @@ describe("changeGroups", () => {
     ).toThrowError(AtomicActionError);
   });
 
-  it("commits a system-only span through the committer", async () => {
+  it("commits a membership span through the committer", async () => {
     const submitted: unknown[] = [];
     const cap: CommitCapability = {
       registry: new EntityRegistry(),

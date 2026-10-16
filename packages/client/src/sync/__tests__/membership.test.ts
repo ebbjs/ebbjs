@@ -8,10 +8,6 @@ import { describe, expect, it } from "vitest";
 import type { Update } from "@ebbjs/core";
 
 import {
-  SYSTEM_ENTITY_TYPES,
-  isSystemEntityType,
-  isSystemOnly,
-  isSystemUpdate,
   lastMembershipViolation,
   membershipScope,
   resolveUpdateGroups,
@@ -45,28 +41,6 @@ const update = (spec: UpdateSpec): Update => ({
             Object.entries(spec.fields).map(([key, value]) => [key, { value, update_id: "u_1" }]),
           ),
         },
-});
-
-describe("membership checker — system classification", () => {
-  it("names the server's system entity types", () => {
-    expect([...SYSTEM_ENTITY_TYPES]).toEqual([
-      "group",
-      "groupMember",
-      "relationship",
-      "entityGroup",
-    ]);
-  });
-
-  it("classifies a batch as system-only only when every update is system", () => {
-    const system = update({ subject_id: "eg_1", subject_type: "entityGroup" });
-    const content = update({ subject_id: "todo_1", subject_type: "todo" });
-    expect(isSystemUpdate(system)).toBe(true);
-    expect(isSystemUpdate(content)).toBe(false);
-    expect(isSystemEntityType("todo")).toBe(false);
-    expect(isSystemOnly([system])).toBe(true);
-    expect(isSystemOnly([system, content])).toBe(false);
-    expect(isSystemOnly([])).toBe(true);
-  });
 });
 
 describe("membership checker — fan-out scope", () => {

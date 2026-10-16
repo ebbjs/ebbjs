@@ -1,5 +1,6 @@
 import type { IDBPDatabase } from "idb";
 import type { Action } from "@ebbjs/core";
+import { mergeActionUpdates } from "../internal/action-merge";
 import type { ActionLog } from "../types/action-log";
 import type { EbbDBSchema } from "./schema";
 
@@ -17,6 +18,11 @@ import type { EbbDBSchema } from "./schema";
  *
  * The type index used by the in-memory adapter is not needed here —
  * the IndexedDB action log is queried by entity-id, not by entity-type.
+ *
+ * Per-Update delivery (#473) can deliver one Action once per group it
+ * touches, each copy carrying only that group's Updates. `append` unions
+ * those copies into the one id-keyed record instead of letting the later
+ * copy overwrite the earlier.
  */
 const collectSubjectIds = (action: Action): readonly string[] => {
   const ids = new Set<string>();
@@ -39,8 +45,16 @@ const toPublicAction = (stored: EbbDBSchema["actions"]["value"]): Action => {
 export const createIndexedDBActionLog = (db: IDBPDatabase<EbbDBSchema>): ActionLog => {
   return {
     async append(action: Action): Promise<void> {
-      const stored = { ...action, subject_ids: collectSubjectIds(action) };
-      await db.put("actions", stored);
+      const tx = db.transaction("actions", "readwrite");
+      const existing = await tx.store.get(action.id);
+
+      const merged =
+        existing === undefined
+          ? action
+          : { ...action, updates: mergeActionUpdates(existing.updates, action.updates) };
+
+      await tx.store.put({ ...merged, subject_ids: collectSubjectIds(merged) });
+      await tx.done;
     },
 
     async getAll(): Promise<readonly Action[]> {

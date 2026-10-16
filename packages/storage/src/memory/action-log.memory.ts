@@ -1,4 +1,5 @@
 import type { Action } from "@ebbjs/core";
+import { mergeActionUpdates } from "../internal/action-merge";
 import type { ActionLog } from "../types/action-log";
 
 /**
@@ -48,9 +49,22 @@ export const createMemoryActionLog = (): ActionLog => {
 
   return {
     async append(action: Action): Promise<void> {
+      // Per-Update delivery (#473) can deliver one Action once per group it
+      // touches, each copy carrying only that group's Updates. Union them
+      // into the one record the id-keyed log holds.
+      const existing = state.actions.find((stored) => stored.id === action.id);
+
+      const stored =
+        existing === undefined
+          ? action
+          : { ...existing, updates: mergeActionUpdates(existing.updates, action.updates) };
+
       state = {
-        actions: [...state.actions, action],
-        typeIndex: updateTypeIndex(state.typeIndex, action),
+        actions:
+          existing === undefined
+            ? [...state.actions, stored]
+            : state.actions.map((candidate) => (candidate.id === action.id ? stored : candidate)),
+        typeIndex: updateTypeIndex(state.typeIndex, stored),
       };
     },
 

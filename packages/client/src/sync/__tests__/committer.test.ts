@@ -4,8 +4,9 @@
  *
  * Operations are pure, so these tests supply a `CommitCapability`
  * double: a registry, an id/clock mint, and a submit hook that records
- * every batch. Coherence is the committer's job, so a mismatch must be
- * refused before the submit hook is ever called.
+ * every batch. The committer imposes no group-set gate: a batch that
+ * spans groups is submitted as one Action and each Update keeps its own
+ * scope (#473).
  */
 
 import { describe, expect, it } from "vitest";
@@ -62,42 +63,33 @@ const capture = async (fn: () => Promise<unknown>): Promise<unknown> => {
   }
 };
 
-describe("commit — content coherence", () => {
-  it("refuses content ops with different group sets, naming each subject and both sets", async () => {
+describe("commit — per-Update scope (#473)", () => {
+  it("submits content ops with different group sets as one Action", async () => {
     const { cap, submitted } = mkCap();
 
-    const error = (await capture(() =>
-      commit(
-        [
-          call(createEntity, {
-            entity: "todo",
-            id: "todo_1",
-            fields: { title: "a" },
-            groups: ["g_1"],
-          }),
-          call(createEntity, {
-            entity: "todo",
-            id: "todo_2",
-            fields: { title: "b" },
-            groups: ["g_2"],
-          }),
-        ],
-        cap,
-      ),
-    )) as AtomicActionError;
+    const result = await commit(
+      [
+        call(createEntity, {
+          entity: "todo",
+          id: "todo_1",
+          fields: { title: "a" },
+          groups: ["g_1"],
+        }),
+        call(createEntity, {
+          entity: "todo",
+          id: "todo_2",
+          fields: { title: "b" },
+          groups: ["g_2"],
+        }),
+      ],
+      cap,
+    );
 
-    expect(error).toBeInstanceOf(AtomicActionError);
-    expect(
-      error.rejections.map((r) => ({ id: r.id, subjectType: r.subjectType, reason: r.reason })),
-    ).toEqual([
-      { id: "todo_1", subjectType: "todo", reason: "group_mismatch" },
-      { id: "todo_2", subjectType: "todo", reason: "group_mismatch" },
-    ]);
-    for (const rejection of error.rejections) {
-      expect(rejection.details).toContain("g_1");
-      expect(rejection.details).toContain("g_2");
-    }
-    expect(submitted).toHaveLength(0);
+    expect(submitted).toHaveLength(1);
+    // One put + one entityGroup row per create.
+    expect(submitted[0]).toHaveLength(4);
+    expect(result.groups).toEqual(["g_1", "g_2"]);
+    expect(result.response.rejected).toEqual([]);
   });
 
   it("submits one Action when the content ops share a group set", async () => {
@@ -127,7 +119,7 @@ describe("commit — content coherence", () => {
     expect(result.response.rejected).toEqual([]);
   });
 
-  it("allows a relationship-only (system-only) batch to span groups", async () => {
+  it("allows a relationship-only batch to span groups", async () => {
     const { cap, submitted } = mkCap();
 
     const result = await commit(
@@ -150,14 +142,14 @@ describe("commit — content coherence", () => {
       cap,
     );
 
-    // A system-only Action's union is the membership operation's
-    // visibility scope (#461); it may span groups.
+    // Two relationship puts into different groups; the server delivers
+    // each by its own scope.
     expect(submitted).toHaveLength(1);
     expect(submitted[0]).toHaveLength(2);
     expect(result.groups).toEqual(["g_1", "g_2"]);
   });
 
-  it("allows a system-only membership batch to span the affected groups", async () => {
+  it("allows a membership batch to span the affected groups", async () => {
     const { cap, submitted } = mkCap();
 
     const result = await commit(
@@ -184,27 +176,27 @@ describe("commit — content coherence", () => {
     expect(result.groups).toEqual(["g_2", "g_3"]);
   });
 
-  it("refuses a content create in g_1 mixed with a membership delta into g_2", async () => {
+  it("submits a content create in g_1 plus a membership delta into g_2 as one Action", async () => {
     const { cap, submitted } = mkCap();
 
-    const error = (await capture(() =>
-      commit(
-        [
-          call(createEntity, {
-            entity: "todo",
-            id: "todo_1",
-            fields: { title: "a" },
-            groups: ["g_1"],
-          }),
-          call(changeGroups, { entity: "todo", entityId: "todo_2", puts: ["g_2"] }),
-        ],
-        cap,
-      ),
-    )) as AtomicActionError;
+    const result = await commit(
+      [
+        call(createEntity, {
+          entity: "todo",
+          id: "todo_1",
+          fields: { title: "a" },
+          groups: ["g_1"],
+        }),
+        call(changeGroups, { entity: "todo", entityId: "todo_2", puts: ["g_2"] }),
+      ],
+      cap,
+    );
 
-    expect(error).toBeInstanceOf(AtomicActionError);
-    expect(error.rejections.map((r) => r.reason)).toEqual(["group_mismatch", "group_mismatch"]);
-    expect(submitted).toHaveLength(0);
+    expect(submitted).toHaveLength(1);
+    // One content put + one entityGroup put for the create, plus one
+    // entityGroup put for the membership delta.
+    expect(submitted[0]).toHaveLength(3);
+    expect(result.groups).toEqual(["g_1", "g_2"]);
   });
 
   it("allows a content create in g_1 plus a membership delta into g_1", async () => {
