@@ -313,9 +313,6 @@ importers:
 
   packages/server:
     dependencies:
-      '@ebbjs/client':
-        specifier: workspace:*
-        version: link:../client
       '@ebbjs/core':
         specifier: workspace:*
         version: link:../core

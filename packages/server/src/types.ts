@@ -1,5 +1,3 @@
-import { Action } from "@ebbjs/core";
-
 export interface ServerOptions {
   dataDir: string;
   port?: number;
@@ -14,15 +12,15 @@ export interface RunningServer {
   kill(): Promise<void>;
 }
 
-// Seed types live in the browser-safe `@ebbjs/client/seed` module; the
+// Seed types live in the browser-safe `@ebbjs/core/seed` module; the
 // server re-exports them so its public surface is unchanged.
 export type {
+  Action,
   GroupSeed,
   GroupMemberSeed,
   EntitySeed,
   RelationshipSeed,
   EntityGroupSeed,
   SeedData,
-} from "@ebbjs/client/seed";
-
-export type { Action };
+  SeedRejection,
+} from "@ebbjs/core/seed";

@@ -14,7 +14,7 @@ query layer ergonomics, and server functions are still being designed.
 
 `client.seed(data)` submits a `SeedData` fixture as one Action through the
 public write path, applying the shared rejection-tolerance policy. It is
-schema-less: rows carry their own ids and field envelopes, so a client
+schema-less: rows carry their own ids and plain field values, so a client
 created without a `schema` can still seed fixture data.
 
 ```typescript
@@ -36,12 +36,13 @@ await client.seed({
 client.close();
 ```
 
-`@ebbjs/client/seed` is the browser-safe module behind it. It exports
-`SeedData` (and the row types), `buildSeedAction`, the free
-`seed(serverUrl, actorId, data)` POST, and the rejection-tolerance policy
-(`assertSeedAccepted` / `SeedRejectedError`). `@ebbjs/server.seed` re-exports
-the same module, so browser demos and the server test harness share one seed
-path and one tolerance policy, defined in one place.
+`@ebbjs/core/seed` is the browser-safe module behind it. It exports
+`SeedData` (and the row types), `buildSeedAction`, which stamps plain values
+into wire envelopes, and the rejection-tolerance policy (`assertSeedAccepted`
+/ `SeedRejectedError`). `@ebbjs/server.seed` re-exports the same builder and
+adds the raw-POST `seed(serverUrl, actorId, data)` harness, so browser demos
+and the server test harness share one builder and one tolerance policy,
+defined in one place.
 
 ## Testing
 

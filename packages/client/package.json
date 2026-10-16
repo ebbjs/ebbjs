@@ -10,10 +10,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./seed": {
-      "types": "./dist/seed/index.d.ts",
-      "import": "./dist/seed/index.js"
     }
   },
   "scripts": {

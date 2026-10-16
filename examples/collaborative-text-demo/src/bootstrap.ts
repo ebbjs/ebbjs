@@ -5,7 +5,7 @@
  */
 
 import { createClient, type SyncClient } from "@ebbjs/client";
-import type { Action } from "@ebbjs/client/seed";
+import type { Action } from "@ebbjs/core/seed";
 import { buildAddMemberSeed, buildDemoSeed, DEMO_GROUP_ID, deriveSeedIds } from "./seed";
 
 /**

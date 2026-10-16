@@ -9,7 +9,7 @@ import { decodeSync, type Action } from "@ebbjs/core";
 
 import { createClient } from "../client";
 import type { Rejection } from "../types";
-import { SeedRejectedError, type SeedData } from "../../seed";
+import { SeedRejectedError, type SeedData } from "@ebbjs/core/seed";
 
 interface RecordedRequest {
   readonly url: string;
@@ -24,7 +24,7 @@ const seedData: SeedData = {
     {
       id: "todo_1",
       type: "todo",
-      patches: [{ fields: { title: { value: "Ship it", hlc: "1", update_id: "u1" } } }],
+      patches: [{ fields: { title: "Ship it" } }],
     },
   ],
   entityGroups: [{ id: "eg_1", entityId: "todo_1", groupId: "grp_1" }],

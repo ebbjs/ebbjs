@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { EntitySeed, SeedData } from "@ebbjs/client";
+import type { EntitySeed, SeedData } from "@ebbjs/core/seed";
 import {
   SAMPLE_ISSUE_ID,
   SEED_PERMISSIONS,
@@ -16,16 +16,11 @@ import {
   workspaceEntityId,
 } from "../seed";
 
-/** The frozen seed envelope: one `put` per field, stamped for idempotent re-seed. */
-const v = (value: unknown) => ({ value, update_id: "seed_update", hlc: "1" });
-
-/** Project a seeded entity's field envelopes to `{ name: value }` for assertions. */
+/** Project a seeded entity's plain field values for assertions. */
 const entityFields = (seed: SeedData, id: string): Record<string, unknown> => {
   const row = seed.entities.find((entry) => entry.id === id);
   if (row === undefined) throw new Error(`no seeded entity ${id}`);
-  return Object.fromEntries(
-    Object.entries(row.patches[0]!.fields).map(([key, field]) => [key, field.value]),
-  );
+  return { ...row.patches[0]!.fields };
 };
 
 const entity = (seed: SeedData, id: string): EntitySeed => {
@@ -112,10 +107,8 @@ describe("buildActorSeed", () => {
     expect(Object.keys(entityFields(seed, ids.profileId))).not.toContain("group_id");
   });
 
-  it("stamps every entity field with the seed envelope", () => {
-    expect(entity(seed, ids.workspaceId).patches[0]!.fields["name"]).toEqual(
-      v("alice's Workspace"),
-    );
+  it("stores each entity field as a plain value", () => {
+    expect(entity(seed, ids.workspaceId).patches[0]!.fields["name"]).toBe("alice's Workspace");
   });
 });
 
