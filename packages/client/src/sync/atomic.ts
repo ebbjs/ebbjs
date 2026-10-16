@@ -42,6 +42,8 @@ import {
   type WireStatic,
 } from "./namespace";
 import type { LiveMembership } from "./entity-group";
+import { generatedDocEntityName } from "../fields/collaborative-text/schema";
+import type { GeneratedDocument, GeneratedEdge, GeneratedParts } from "./generated-parts";
 import { commit, type CommitCapability } from "./committer";
 import {
   AtomicActionError,
@@ -118,6 +120,8 @@ export interface AtomicCreateOptions {
  */
 export interface AtomicCapability extends CommitCapability {
   readMemberships(entityId: string): Promise<readonly LiveMembership[]>;
+  /** The entity's live generated parts, read to carry them on a membership change. */
+  readGeneratedParts(entityType: string, entityId: string): Promise<GeneratedParts>;
 }
 
 /** One membership verb a draft collected, resolved after the callback. */
@@ -134,6 +138,8 @@ interface DraftCollector {
   readonly intents: MembershipIntent[];
   /** Groups a batch-local `create` already filed an entity into. */
   readonly createdGroups: Map<string, ReadonlySet<string>>;
+  /** Generated parts a batch-local `create` minted, not yet in the local store. */
+  readonly createdParts: Map<string, GeneratedParts>;
 }
 
 /** Per-entity draft surface passed to the `client.atomic` callback. */
@@ -254,6 +260,9 @@ const createDraftNamespace = (
     const fields: Record<string, unknown> = {};
     const pointers: ResolvedPointer[] = [];
     const bodies: Record<string, string> = {};
+    const generatedIds: Record<string, { documentId: string; relationshipId: string }> = {};
+    const createdDocuments: GeneratedDocument[] = [];
+    const createdEdges: GeneratedEdge[] = [];
     const handle: Record<string, unknown> = { id };
     const groups = resolveGroupIds(opts?.groups, entityName);
     const derived = def.derived as Record<string, unknown> | undefined;
@@ -274,7 +283,28 @@ const createDraftNamespace = (
           ]);
         }
         handle[key] = value;
-        if (value.length > 0) bodies[key] = value;
+        if (value.length > 0) {
+          // Mint the generated part ids here so a membership verb later
+          // in the batch can carry parts the local store cannot see yet.
+          bodies[key] = value;
+          const documentId = generateId("e");
+          const relationshipId = generateId("rel");
+          generatedIds[key] = { documentId, relationshipId };
+          createdDocuments.push({
+            id: documentId,
+            type:
+              cap.registry.getRelationship(entityName, key)?.target.name ??
+              generatedDocEntityName(entityName, key),
+            memberships: [],
+          });
+          createdEdges.push({
+            relationshipId,
+            sourceId: id,
+            targetId: documentId,
+            field: key,
+            type: entityName,
+          });
+        }
         continue;
       }
       const rel = cap.registry.getRelationship(entityName, key);
@@ -310,6 +340,9 @@ const createDraftNamespace = (
 
     const marked = markHandle(handle);
     collector.createdGroups.set(id, new Set(groups));
+    if (createdDocuments.length > 0) {
+      collector.createdParts.set(id, { documents: createdDocuments, edges: createdEdges });
+    }
     collector.calls.push(
       call(createEntity, {
         entity: entityName,
@@ -317,6 +350,7 @@ const createDraftNamespace = (
         fields,
         pointers,
         bodies,
+        generatedIds,
         groups,
       }),
     );
@@ -344,6 +378,7 @@ const createDraftNamespace = (
 const resolveMembershipIntents = async (
   intents: readonly MembershipIntent[],
   cap: AtomicCapability,
+  createdParts: ReadonlyMap<string, GeneratedParts>,
 ): Promise<OperationCall[]> => {
   const byEntity = new Map<string, { entity: string; adds: Set<string>; removes: Set<string> }>();
   for (const intent of intents) {
@@ -376,9 +411,39 @@ const resolveMembershipIntents = async (
       removals.push({ membershipId: row.membershipId, groupId });
     }
     if (puts.length === 0 && removals.length === 0) continue;
-    calls.push(call(changeGroups, { entity, entityId, puts, removes: removals, currentGroups }));
+    // The local store knows a committed entity's parts; a batch-local
+    // `create` minted its parts before they were materialized, so the
+    // two are merged.
+    const generated = mergeGeneratedParts(
+      await cap.readGeneratedParts(entity, entityId),
+      createdParts.get(entityId),
+    );
+    calls.push(
+      call(changeGroups, { entity, entityId, puts, removes: removals, currentGroups, generated }),
+    );
   }
   return calls;
+};
+
+/**
+ * Merge the parts a batch-local `create` minted into the parts read from
+ * the local store, keeping the first entry for a shared id so a read
+ * membership row is never replaced by the create's empty one.
+ */
+const mergeGeneratedParts = (
+  read: GeneratedParts,
+  created: GeneratedParts | undefined,
+): GeneratedParts => {
+  if (created === undefined) return read;
+  const documents = new Map(read.documents.map((document) => [document.id, document]));
+  for (const document of created.documents) {
+    if (!documents.has(document.id)) documents.set(document.id, document);
+  }
+  const edges = new Map(read.edges.map((edge) => [edge.relationshipId, edge]));
+  for (const edge of created.edges) {
+    if (!edges.has(edge.relationshipId)) edges.set(edge.relationshipId, edge);
+  }
+  return { documents: [...documents.values()], edges: [...edges.values()] };
 };
 
 /**
@@ -452,10 +517,13 @@ export function createAtomicRuntime<S extends Schema<Record<string, AnyEntityDef
       calls: [],
       intents: [],
       createdGroups: new Map(),
+      createdParts: new Map(),
     };
     const drafts = buildDrafts(entityDefs, cap, collector);
     const result = build(drafts as AtomicDrafts<S>);
-    collector.calls.push(...(await resolveMembershipIntents(collector.intents, cap)));
+    collector.calls.push(
+      ...(await resolveMembershipIntents(collector.intents, cap, collector.createdParts)),
+    );
     const committed = await commit(collector.calls, cap);
     if (committed.response.rejected.length > 0) {
       throw new AtomicActionError(committed.response.rejected);

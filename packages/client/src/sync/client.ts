@@ -70,6 +70,7 @@ import {
 } from "./relationship";
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { readEntityMemberships } from "./entity-group";
+import { readGeneratedParts } from "./generated-parts";
 import { createAtomicRuntime, type AtomicClient } from "./atomic";
 import {
   PermissionError,
@@ -1627,6 +1628,10 @@ export function createClient<
     // The atomic membership drafts resolve a removal against the local
     // cache after the synchronous callback returns.
     readMemberships: (entityId: string) => readEntityMemberships(client.storage, entityId),
+    // A membership change carries the entity's generated documents and
+    // their edges, resolved from the local cache after the callback.
+    readGeneratedParts: (entityType: string, entityId: string) =>
+      readGeneratedParts(client.storage, client.registry, entityType, entityId),
   };
   const namespaces = buildEntityNamespaces(opts.schema, client.storage, writeCap);
   // `client.atomic` needs the same write capability the namespace
