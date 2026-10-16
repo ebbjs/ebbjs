@@ -33,12 +33,14 @@ import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { EntityDef, ShapeFields } from "../schema/entity";
 import { EntityValidationError } from "../schema/entity-registry";
 import type { Schema } from "../schema/schema";
+import type { GroupFields, GroupMemberFields } from "../schema/system-entities";
 import { normalizePointer } from "./query-builder";
 import {
   resolveGroupIds,
   resolveSingleGroupId,
   type EntityFields,
   type GroupRef,
+  type WireStatic,
 } from "./namespace";
 import type { LiveMembership } from "./entity-group";
 import { commit, type CommitCapability } from "./committer";
@@ -47,6 +49,8 @@ import {
   call,
   changeGroups,
   createEntity,
+  createSystemEntity,
+  groupBootstrap,
   type MembershipRemoval,
   type OperationCall,
   type ResolvedPointer,
@@ -151,10 +155,22 @@ export interface AtomicDraftNamespace<TFields extends Record<string, TSchema>> {
   removeFromGroup(id: string, groupId: GroupRef): void;
 }
 
-/** Draft namespaces keyed by schema entity name. */
+/**
+ * A draft system namespace. `create` is the only verb: an
+ * `entityGroup` row scoping a `group` or `groupMember` is meaningless,
+ * so the membership verbs the content draft surface carries are absent.
+ */
+export interface AtomicSystemDraftNamespace<TFields extends Record<string, TSchema>> {
+  create(input: WireStatic<TFields>): CreatedEntity<TFields>;
+}
+
+/** Draft namespaces keyed by schema entity name, plus the system entities. */
 export type AtomicDrafts<S> =
   S extends Schema<infer TEntities, unknown>
-    ? { [K in keyof TEntities & string]: AtomicDraftNamespace<EntityFields<TEntities[K]>> }
+    ? { [K in keyof TEntities & string]: AtomicDraftNamespace<EntityFields<TEntities[K]>> } & {
+        readonly group: AtomicSystemDraftNamespace<GroupFields>;
+        readonly groupMember: AtomicSystemDraftNamespace<GroupMemberFields>;
+      }
     : Record<string, never>;
 
 /**
@@ -366,6 +382,43 @@ const resolveMembershipIntents = async (
   return calls;
 };
 
+/**
+ * The system draft namespaces. `group.create` records the same
+ * bootstrap operation `client.group.create` commits; `groupMember.create`
+ * records a single system put. Neither emits an `entityGroup` row.
+ */
+const createSystemDrafts = (
+  cap: CommitCapability,
+  collector: DraftCollector,
+): {
+  group: AtomicSystemDraftNamespace<GroupFields>;
+  groupMember: AtomicSystemDraftNamespace<GroupMemberFields>;
+} => ({
+  group: {
+    create(input) {
+      const bootstrap = groupBootstrap(cap.registry, input.name);
+      collector.calls.push(bootstrap.call);
+      return markHandle({
+        id: bootstrap.groupId,
+        name: input.name,
+      }) as unknown as CreatedEntity<GroupFields>;
+    },
+  },
+  groupMember: {
+    create(input) {
+      const id = generateId("e");
+      collector.calls.push(
+        call(createSystemEntity, {
+          entity: "groupMember",
+          id,
+          fields: input as Record<string, unknown>,
+        }),
+      );
+      return markHandle({ id, ...input }) as unknown as CreatedEntity<GroupMemberFields>;
+    },
+  },
+});
+
 const buildDrafts = (
   entityDefs: Record<string, AnyEntityDef>,
   cap: CommitCapability,
@@ -377,6 +430,11 @@ const buildDrafts = (
     // name is what the wire carries.
     out[name] = createDraftNamespace(def.name, def, cap, collector);
   }
+  const system = createSystemDrafts(cap, collector);
+  out["group"] = system.group as unknown as AtomicDraftNamespace<Record<string, TSchema>>;
+  out["groupMember"] = system.groupMember as unknown as AtomicDraftNamespace<
+    Record<string, TSchema>
+  >;
   return out;
 };
 

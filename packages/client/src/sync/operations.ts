@@ -241,6 +241,128 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
   };
 };
 
+/** The local view an empty system write resolves against: no cached membership. */
+const EMPTY_MEMBERSHIP_VIEW: MembershipView = {
+  groupsOf: () => [],
+  groupOfMembership: () => undefined,
+};
+
+/** Input for {@link createSystemEntity}. */
+export interface CreateSystemEntityInput {
+  readonly entity: "group" | "groupMember";
+  readonly id: string;
+  readonly fields: Readonly<Record<string, unknown>>;
+  readonly validate?: boolean;
+}
+
+/**
+ * Put one system entity row. The row's fan-out scope comes from the
+ * wire itself (`group` is its own group; `groupMember` names its
+ * `group_id`), so no cached membership view is consulted. Validation
+ * runs against the registered definition like {@link createEntity}.
+ */
+export const createSystemEntity: Operation<CreateSystemEntityInput> = (ctx, input) => {
+  const def = ctx.registry.get(input.entity);
+  if (input.validate !== false && def !== undefined) {
+    const violations = validatePayload(def.shape, input.fields, input.entity, false);
+    if (violations.length > 0) {
+      throw new EntityValidationError(violations);
+    }
+  }
+  const updateId = ctx.ids.updateId();
+  const update: Update = {
+    id: updateId,
+    subject_id: input.id,
+    subject_type: input.entity,
+    method: "put",
+    data: { fields: wrapFields(input.fields, updateId, ctx.ids.hlc()) },
+  };
+  return {
+    updates: [update],
+    groups: membershipScope([update], EMPTY_MEMBERSHIP_VIEW),
+    subject: { id: input.id, type: input.entity },
+  };
+};
+
+/** Input for {@link createGroup}. */
+export interface CreateGroupInput {
+  readonly groupId: string;
+  readonly memberId: string;
+  readonly name: string;
+  readonly permissions: readonly string[];
+  readonly validate?: boolean;
+}
+
+/**
+ * The canonical group bootstrap: the `group` put plus the acting
+ * actor's own `groupMember` put carrying the caller-derived permission
+ * wildcards, in one Action. A group is its own group, so no
+ * `entityGroup` row is emitted for it.
+ */
+export const createGroup: Operation<CreateGroupInput> = (ctx, input) => {
+  const group = createSystemEntity(ctx, {
+    entity: "group",
+    id: input.groupId,
+    fields: { name: input.name },
+    validate: input.validate,
+  });
+  const member = createSystemEntity(ctx, {
+    entity: "groupMember",
+    id: input.memberId,
+    fields: {
+      group_id: input.groupId,
+      actor_id: ctx.actorId,
+      permissions: [...input.permissions],
+    },
+    validate: input.validate,
+  });
+  return {
+    updates: [...group.updates, ...member.updates],
+    groups: [...new Set([...group.groups, ...member.groups])],
+    subject: { id: input.groupId, type: "group" },
+  };
+};
+
+/**
+ * The permissions a bootstrapping actor needs to operate on every
+ * registered entity. The server matches only an exact `<type>.<verb>`
+ * or `<type>.*`, so the actor's own membership carries one wildcard per
+ * entity name rather than a global `*` that grants nothing.
+ */
+export const fullGroupPermissions = (registry: EntityRegistry): readonly string[] =>
+  [...registry.entityNames()].sort().map((name) => `${name}.*`);
+
+/** The ids and call the group bootstrap shares across both authoring surfaces. */
+export interface GroupBootstrap {
+  readonly groupId: string;
+  readonly memberId: string;
+  readonly call: OperationCall;
+}
+
+/**
+ * Mint the ids and build the bootstrap call for `group.create`, so the
+ * imperative namespace and the atomic draft emit the identical Action.
+ */
+export const groupBootstrap = (
+  registry: EntityRegistry,
+  name: string,
+  validate?: boolean,
+): GroupBootstrap => {
+  const groupId = generateId("e");
+  const memberId = generateId("e");
+  return {
+    groupId,
+    memberId,
+    call: call(createGroup, {
+      groupId,
+      memberId,
+      name,
+      permissions: fullGroupPermissions(registry),
+      validate,
+    }),
+  };
+};
+
 /** Input for {@link patchEntity}. */
 export interface PatchEntityInput {
   readonly entity: string;

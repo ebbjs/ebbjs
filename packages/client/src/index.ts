@@ -33,6 +33,7 @@ export {
   type AtomicDraftNamespace,
   type AtomicDrafts,
   type AtomicRejection,
+  type AtomicSystemDraftNamespace,
   type CreatedEntity,
 } from "./sync/atomic";
 
@@ -66,6 +67,8 @@ export {
   type EntityRow,
   type EntitySnapshot,
   type EntityWithAccessors,
+  type GroupMemberNamespace,
+  type GroupNamespace,
   type MembershipAccessors,
   type RowAccessor,
   type CreateOptions,
@@ -265,5 +268,6 @@ export {
   entityGroupSystemEntity,
   GROUPS_ACCESSOR,
   type GroupFields,
+  type GroupMemberFields,
   type EntityGroupFields,
 } from "./schema/system-entities";

@@ -32,8 +32,12 @@ import { EntityValidationError, validatePayload } from "../schema/entity-registr
 import type { EntityRegistry } from "../schema/entity-registry";
 import type { RelationshipDef } from "../schema/relationship";
 import type { Schema } from "../schema/schema";
-import type { GroupFields } from "../schema/system-entities";
-import { GROUPS_ACCESSOR } from "../schema/system-entities";
+import type { GroupFields, GroupMemberFields } from "../schema/system-entities";
+import {
+  groupMemberSystemEntity,
+  groupSystemEntity,
+  GROUPS_ACCESSOR,
+} from "../schema/system-entities";
 import { DOC_CONTENT_FIELD, isCollaborativeText } from "../fields/collaborative-text/schema";
 import type { TextDocument, TextDocumentSubmit } from "../fields/collaborative-text/text-document";
 import {
@@ -59,7 +63,9 @@ import {
   call,
   changeGroups,
   createEntity,
+  createSystemEntity,
   deleteEntity,
+  groupBootstrap,
   patchEntity,
   writeRelationship,
   type RelationshipPointer,
@@ -467,6 +473,36 @@ export interface DuplicateOptions extends EntityWriteOptions {
 export type EntityFields<D> = D extends EntityDef<infer F> ? F : never;
 
 /**
+ * `client.group`: the generic namespace with a bootstrap `create` that
+ * commits the group put and the acting actor's own membership in one
+ * Action. Membership verbs are not part of the surface.
+ */
+export type GroupNamespace = Omit<
+  EntityNamespace<GroupFields, MembershipAccessors>,
+  "create" | "addToGroup" | "removeFromGroup" | "setGroups"
+> & {
+  create(input: WireStatic<GroupFields>, opts?: EntityWriteOptions): Promise<CreateResult>;
+};
+
+/**
+ * `client.groupMember`: the generic namespace with a plain system put
+ * and no membership verbs — an `entityGroup` row for a member is
+ * meaningless.
+ */
+export type GroupMemberNamespace = Omit<
+  EntityNamespace<GroupMemberFields, MembershipAccessors>,
+  "create" | "addToGroup" | "removeFromGroup" | "setGroups"
+> & {
+  create(input: WireStatic<GroupMemberFields>, opts?: EntityWriteOptions): Promise<CreateResult>;
+};
+
+/** The system-entity namespaces every schema-bound client carries. */
+export type SystemNamespaces = {
+  readonly group: GroupNamespace;
+  readonly groupMember: GroupMemberNamespace;
+};
+
+/**
  * Conditional typed-surface a `SyncClient` grows when constructed
  * with a `Schema`. Each schema-entity name becomes a property whose
  * value is an `EntityNamespace` over that entity's field map.
@@ -488,7 +524,7 @@ export type EntityNamespaces<S> =
             MembershipAccessors &
             DerivedAccessors<EntityFields<TEntities[K]>>
         >;
-      }
+      } & SystemNamespaces
     : NoAccessors;
 
 /**
@@ -1271,10 +1307,84 @@ async function resolveUnlinkRelationshipId(
 }
 
 /**
+ * `client.group`: the generic read/write surface with the bootstrap
+ * `create`. Membership verbs are dropped — a group is its own group,
+ * and `entityGroup` rows stay internal.
+ */
+function createGroupNamespace(storage: StorageAdapter, write: WriteCapability): GroupNamespace {
+  const base = createEntityNamespace<GroupFields, MembershipAccessors>(
+    "group",
+    groupSystemEntity.shape,
+    storage,
+    write,
+  );
+  return {
+    query: base.query,
+    get: base.get,
+    subscribe: base.subscribe,
+    duplicate: base.duplicate,
+    update: base.update,
+    delete: base.delete,
+    link: base.link,
+    unlink: base.unlink,
+    setLinks: base.setLinks,
+    async create(input, opts) {
+      const bootstrap = groupBootstrap(write.registry, input.name, opts?.validate);
+      const { response } = await commit([bootstrap.call], write);
+      return { id: bootstrap.groupId, ...response };
+    },
+  };
+}
+
+/**
+ * `client.groupMember`: the generic read/write surface with a plain
+ * system put. Membership verbs are dropped — a member's scope is its
+ * own `group_id`, so an `entityGroup` row for it has no meaning.
+ */
+function createGroupMemberNamespace(
+  storage: StorageAdapter,
+  write: WriteCapability,
+): GroupMemberNamespace {
+  const base = createEntityNamespace<GroupMemberFields, MembershipAccessors>(
+    "groupMember",
+    groupMemberSystemEntity.shape,
+    storage,
+    write,
+  );
+  return {
+    query: base.query,
+    get: base.get,
+    subscribe: base.subscribe,
+    duplicate: base.duplicate,
+    update: base.update,
+    delete: base.delete,
+    link: base.link,
+    unlink: base.unlink,
+    setLinks: base.setLinks,
+    async create(input, opts) {
+      const id = generateId("e");
+      const { response } = await commit(
+        [
+          call(createSystemEntity, {
+            entity: "groupMember",
+            id,
+            fields: input as Record<string, unknown>,
+            validate: opts?.validate,
+          }),
+        ],
+        write,
+      );
+      return { id, ...response };
+    },
+  };
+}
+
+/**
  * Build the typed namespace surface for a schema. Returns an object
- * whose keys are the schema's entity names and whose values are the
- * per-entity `EntityNamespace`s. The Proxy layer in
- * {@link SyncClient} forwards unknown property access to this map.
+ * whose keys are the schema's entity names plus the system `group` /
+ * `groupMember` namespaces, and whose values are the per-entity
+ * `EntityNamespace`s. The Proxy layer in {@link SyncClient} forwards
+ * unknown property access to this map.
  */
 export function buildEntityNamespaces<
   S extends Schema<Record<string, EntityDef<Record<string, TSchema>>>, unknown>,
@@ -1286,5 +1396,11 @@ export function buildEntityNamespaces<
     // authority for which accessors actually attach.
     out[name] = createEntityNamespace(def.name, def.shape, storage, write, def.derived);
   }
+  out["group"] = createGroupNamespace(storage, write) as unknown as EntityNamespace<
+    Record<string, TSchema>
+  >;
+  out["groupMember"] = createGroupMemberNamespace(storage, write) as unknown as EntityNamespace<
+    Record<string, TSchema>
+  >;
   return out as EntityNamespaces<S>;
 }

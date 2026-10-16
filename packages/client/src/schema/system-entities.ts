@@ -57,6 +57,10 @@ export const entityGroupSystemEntity = buildEntityDef("entityGroup", {
 /** Field map of the client-side `group` entity. */
 export type GroupFields = typeof groupSystemEntity extends EntityDef<infer F> ? F : never;
 
+/** Field map of the `groupMember` system entity. */
+export type GroupMemberFields =
+  typeof groupMemberSystemEntity extends EntityDef<infer F> ? F : never;
+
 /** Field map of the `entityGroup` system entity. */
 export type EntityGroupFields =
   typeof entityGroupSystemEntity extends EntityDef<infer F> ? F : never;
