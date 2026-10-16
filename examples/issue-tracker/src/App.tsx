@@ -15,6 +15,8 @@ import { useEffect, useState } from "react";
 import { EbbProvider } from "@ebbjs/react";
 import { ActorPicker, type ActorId } from "./ActorPicker";
 import { ConnectionBadge } from "./ConnectionBadge";
+import { IssueCreateForm } from "./IssueCreateForm";
+import { IssueDetail } from "./IssueDetail";
 import { IssueList } from "./IssueList";
 import { ProfileCard } from "./ProfileCard";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
@@ -96,7 +98,12 @@ export function App() {
 
   return (
     <EbbProvider client={state.bootstrap.client}>
-      <AppShell actorId={actorId} onActorChange={setActorId} />
+      <AppShell
+        key={actorId}
+        actorId={actorId}
+        onActorChange={setActorId}
+        defaultGroupId={state.bootstrap.defaultGroupId}
+      />
     </EbbProvider>
   );
 }
@@ -104,10 +111,15 @@ export function App() {
 function AppShell({
   actorId,
   onActorChange,
+  defaultGroupId,
 }: {
   actorId: ActorId;
   onActorChange: (actorId: ActorId) => void;
+  defaultGroupId: string;
 }) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+
   return (
     <div className="flex h-screen flex-col">
       <header className="flex flex-wrap items-center gap-4 border-b border-stone-800 px-4 py-2">
@@ -120,7 +132,37 @@ function AppShell({
 
       <main className="flex flex-1 min-h-0 flex-col gap-4 overflow-y-auto p-4">
         <ProfileCard actorId={actorId} />
-        <IssueList />
+        <div className="grid gap-4 xl:grid-cols-2">
+          <IssueList
+            selectedId={selectedId}
+            onSelect={(id) => {
+              setCreating(false);
+              setSelectedId(id);
+            }}
+            onNewIssue={() => {
+              setCreating(true);
+              setSelectedId(null);
+            }}
+          />
+          {creating ? (
+            <IssueCreateForm
+              groupId={defaultGroupId}
+              onCreated={(id) => {
+                setCreating(false);
+                setSelectedId(id);
+              }}
+              onCancel={() => setCreating(false)}
+            />
+          ) : (
+            selectedId !== null && (
+              <IssueDetail
+                issueId={selectedId}
+                onClose={() => setSelectedId(null)}
+                onDeleted={() => setSelectedId(null)}
+              />
+            )
+          )}
+        </div>
       </main>
 
       <footer className="border-t border-stone-800 px-4 py-2 font-mono text-xs text-stone-500">

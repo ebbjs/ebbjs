@@ -176,6 +176,12 @@ importers:
       '@ebbjs/react':
         specifier: workspace:*
         version: link:../../packages/react
+      '@ebbjs/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
+      idb:
+        specifier: ^8.0.3
+        version: 8.0.3
       react:
         specifier: ^19.1.0
         version: 19.2.4

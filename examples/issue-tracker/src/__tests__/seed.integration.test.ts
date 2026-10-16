@@ -172,7 +172,7 @@ describe("integration: issue-tracker seed", () => {
     expect(row!.title).toBe("Welcome to ebb");
     expect(row!.status).toBe("todo");
     expect(row!.priority).toBe("medium");
-    expect(row!.assignee_id).toBeNull();
+    expect(await row!.assignee).toBeNull();
   });
 
   it("the shared workspace reads back through the seeder's typed namespace", async () => {

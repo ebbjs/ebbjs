@@ -10,7 +10,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest --run --passWithNoTests --exclude '**/*.integration.test.ts'",
-    "test:integration": "vitest --run src/__tests__/seed.integration.test.ts",
+    "test:integration": "vitest --run integration",
     "typecheck": "tsc --noEmit",
     "lint": "pnpm --root ../../ lint",
     "lint:fix": "pnpm --root ../../ lint:fix",
@@ -21,6 +21,8 @@
     "@ebbjs/client": "workspace:*",
     "@ebbjs/core": "workspace:*",
     "@ebbjs/react": "workspace:*",
+    "@ebbjs/storage": "workspace:*",
+    "idb": "^8.0.3",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

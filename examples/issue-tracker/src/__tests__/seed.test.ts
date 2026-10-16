@@ -140,7 +140,6 @@ describe("buildSharedSeed", () => {
       title: "Welcome to ebb",
       status: "todo",
       priority: "medium",
-      assignee_id: null,
     });
   });
 
