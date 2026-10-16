@@ -11,7 +11,7 @@ import type { Update } from "@ebbjs/core";
 export const mergeActionUpdates = (
   existing: readonly Update[],
   incoming: readonly Update[],
-): readonly Update[] => {
+): Update[] => {
   const byId = new Map(existing.map((update) => [update.id, update]));
   const order = existing.map((update) => update.id);
 
