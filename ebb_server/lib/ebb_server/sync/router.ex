@@ -598,15 +598,19 @@ defmodule EbbServer.Sync.Router do
 
   defp format_rejections(rejections) do
     Enum.map(rejections, fn %{action_id: id, reason: reason, details: details} ->
-      rejection = %{"id" => id, "reason" => reason}
-      if details, do: Map.put(rejection, "details", details), else: rejection
+      format_rejection(id, reason, details)
     end)
   end
 
   defp format_writer_rejections(rejections) do
-    Enum.map(rejections, fn %{action: action, reason: reason} ->
-      %{"id" => action.id, "reason" => reason}
+    Enum.map(rejections, fn %{action: action, reason: reason} = rejection ->
+      format_rejection(action.id, reason, Map.get(rejection, :details))
     end)
+  end
+
+  defp format_rejection(id, reason, details) do
+    rejection = %{"id" => id, "reason" => reason}
+    if details, do: Map.put(rejection, "details", details), else: rejection
   end
 
   defp send_error(conn, :invalid_msgpack, _reason) do

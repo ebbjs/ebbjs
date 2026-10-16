@@ -150,6 +150,52 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     end
   end
 
+  describe "per-Action outcomes" do
+    test "an unauthorized Action does not reject its authorized sibling in the batch" do
+      bootstrap_group("actor_1", "group_1", ["todo.*", "todo.read"])
+      bootstrap_group("actor_2", "group_2", ["todo.*", "todo.read"])
+
+      hlc = generate_hlc()
+      ok_id = "todo_ok_#{Nanoid.generate()}"
+      bad_id = "todo_bad_#{Nanoid.generate()}"
+
+      authorized = %{
+        "id" => "act_ok_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(ok_id, hlc),
+          entity_group_put("eg_#{Nanoid.generate()}", ok_id, "group_1", hlc)
+        ]
+      }
+
+      # `actor_1` is not a member of `group_2`, so this Action fails
+      # authorization while its sibling must still commit (#469).
+      unauthorized = %{
+        "id" => "act_bad_#{Nanoid.generate()}",
+        "actor_id" => "actor_1",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(bad_id, hlc),
+          entity_group_put("eg_#{Nanoid.generate()}", bad_id, "group_2", hlc)
+        ]
+      }
+
+      conn = post_actions(msgpack_encode!(%{"actions" => [unauthorized, authorized]}), "actor_1")
+      assert conn.status == 200
+
+      assert %{"rejected" => [rejection]} = Jason.decode!(conn.resp_body)
+      assert rejection["id"] == unauthorized["id"]
+      assert rejection["reason"] == "not_authorized"
+
+      Process.sleep(50)
+
+      assert get_entity(ok_id, "actor_1").status == 200
+      assert ok_id in action_ids("group_1", "actor_1")
+      assert get_entity(bad_id, "actor_1").status == 404
+    end
+  end
+
   describe "authorized write" do
     setup do
       bootstrap_group("actor_1", "group_1", ["todo.create", "todo.read"])
@@ -539,7 +585,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       assert get_entity(entity_id, "actor_1").status == 200
     end
 
-    test "a batch of two Actions cannot each remove one of two memberships" do
+    test "a batch of two Actions cannot remove both of an entity's memberships" do
       bootstrap_group("actor_1", "group_1", ["todo.create", "todo.update", "todo.read"])
       bootstrap_group("actor_1", "group_2", ["todo.create", "todo.update", "todo.read"])
 
@@ -580,10 +626,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         |> Map.get(:resp_body)
         |> Jason.decode!()
 
-      assert length(response["rejected"]) == 2
-      assert Enum.all?(response["rejected"], &(&1["reason"] == "last_membership"))
+      assert [rejection] = response["rejected"]
+      assert rejection["reason"] == "last_membership"
 
-      # The whole batch was refused, so the entity keeps a membership.
+      # The first removal committed; the second was refused, so the
+      # entity keeps a membership.
       assert get_entity(entity_id, "actor_1").status == 200
     end
   end

@@ -58,6 +58,17 @@ defmodule EbbServer.Storage.AuthorizerTest do
     %{id: "act_test", actor_id: actor_id, hlc: generate_hlc(), updates: updates}
   end
 
+  defp assert_accepted(result) do
+    assert {accepted, []} = result
+    accepted
+  end
+
+  defp assert_rejected(result, reason) do
+    assert {[], [rejection]} = result
+    assert rejection.reason == reason
+    rejection
+  end
+
   defp group_put(id) do
     %{
       id: id,
@@ -137,7 +148,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_put("eg_1", "todo_1", "g_1")
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "authorized user entity write" do
@@ -158,7 +169,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           }
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "unauthorized write (not a member)" do
@@ -178,7 +189,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           }
         ])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "unauthorized write (wrong permissions)" do
@@ -199,7 +210,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           }
         ])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "wildcard permission matches" do
@@ -220,7 +231,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           }
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "union: a permission held in any one of the entity's groups is enough" do
@@ -244,7 +255,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           }
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "intra-action resolution" do
@@ -259,7 +270,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_put("eg_new", "todo_new", "g_1")
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "system entity update authorized when actor holds groupMember.update" do
@@ -285,7 +296,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           }
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "system entity update rejected when actor is not group member" do
@@ -309,14 +320,14 @@ defmodule EbbServer.Storage.AuthorizerTest do
           }
         ])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "empty action list returns ok" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      assert Authorizer.authorize([], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([], "a_1", ctx))
     end
   end
 
@@ -336,7 +347,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([entity_group_delete("eg_1")])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "entityGroup delete rejects an actor outside the target group" do
@@ -349,7 +360,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([entity_group_delete("eg_1")])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "relationship delete resolves the source's membership after a put" do
@@ -371,7 +382,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           }
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "relationship delete rejects actor not a member of the source's groups" do
@@ -392,7 +403,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           }
         ])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "relationship delete rejects when the relationship is not in cache" do
@@ -410,7 +421,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           }
         ])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "groupMember delete resolves group_id from cache after a put" do
@@ -431,7 +442,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           }
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "relationship put authorizes through the source's membership set, not target_id" do
@@ -444,7 +455,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([relationship_put("rel_1", "todo_1", "col_other", "todo")])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "relationship put rejects when only the target's group would authorize it" do
@@ -456,7 +467,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([relationship_put("rel_1", "todo_1", "g_target", "todo")])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "relationship put ignores a forged wire type and checks the source's true type" do
@@ -471,7 +482,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([relationship_put("rel_1", "todo_1", "other_1", "comment")])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "relationship put authorizes a source type the same request created" do
@@ -488,7 +499,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           relationship_put("rel_1", "todo_1", "other_1", "comment")
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
   end
 
@@ -508,7 +519,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_put("eg_1", "todo_1", "g_1")
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "the actor's declared bootstrap permissions authorize a link edge" do
@@ -524,7 +535,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           relationship_put("rel_1", "todo_1", "other_1", "todo")
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "a third-party groupMember in a bootstrap action is rejected" do
@@ -538,7 +549,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           group_member_put("gm_2", "a_2", "g_1", ["*"])
         ])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "an arbitrary user-entity update in a bootstrap action is rejected" do
@@ -560,7 +571,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           }
         ])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "bootstrap membership may not file an entity the action does not create" do
@@ -577,7 +588,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_put("eg_graft", "todo_other", "g_1")
         ])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "the #246 repro: bootstrap + third party + arbitrary entity update is rejected" do
@@ -600,7 +611,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           }
         ])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "an actor holding groupMember.create may add another actor" do
@@ -611,7 +622,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([group_member_put("gm_2", "a_2", "g_1", ["*"])])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
   end
 
@@ -626,7 +637,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([entity_put("todo_orphan", "todo")])
 
-      assert {:error, "missing_ownership", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "missing_ownership")
     end
 
     test "rejects an unowned put regardless of the actor's permissions" do
@@ -635,7 +646,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([entity_put("todo_orphan", "todo")])
 
-      assert {:error, "missing_ownership", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "missing_ownership")
     end
 
     test "a bootstrap self-create with its membership edge still succeeds" do
@@ -650,7 +661,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_put("eg_1", "todo_1", "g_1")
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "a same-Action membership edge satisfies ownership" do
@@ -665,7 +676,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_put("eg_new", "todo_new", "g_1")
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "cached membership satisfies ownership" do
@@ -677,7 +688,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([entity_put("todo_1", "todo")])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "rejects an unowned patch and delete" do
@@ -702,11 +713,15 @@ defmodule EbbServer.Storage.AuthorizerTest do
         data: nil
       }
 
-      assert {:error, "missing_ownership", _} =
-               Authorizer.authorize([build_action([patch])], "a_1", ctx)
+      assert_rejected(
+        Authorizer.authorize([build_action([patch])], "a_1", ctx),
+        "missing_ownership"
+      )
 
-      assert {:error, "missing_ownership", _} =
-               Authorizer.authorize([build_action([delete])], "a_1", ctx)
+      assert_rejected(
+        Authorizer.authorize([build_action([delete])], "a_1", ctx),
+        "missing_ownership"
+      )
     end
   end
 
@@ -727,7 +742,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_put("eg_2", "todo_multi", "g_2")
         ])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "accepts when the actor holds <type>.create in each target group" do
@@ -744,7 +759,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_put("eg_2", "todo_multi", "g_2")
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
   end
 
@@ -762,7 +777,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "adding an existing entity is allowed with <type>.create in the target group" do
@@ -775,7 +790,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "a type an earlier Action of the request created resolves a later membership add" do
@@ -795,7 +810,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
         build_action([entity_group_put("eg_2", "todo_new", "g_2")])
       ]
 
-      assert Authorizer.authorize(actions, "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize(actions, "a_1", ctx))
     end
 
     test "fails closed when an existing entity's type cannot be resolved" do
@@ -809,7 +824,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([entity_group_put("eg_new", "todo_unknown", "g_2")])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "a same-Action create is authorized by <type>.create, not entityGroup.create" do
@@ -824,7 +839,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_put("eg_new", "todo_new", "g_1")
         ])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "removing a membership requires <type>.update, not entityGroup.delete" do
@@ -839,7 +854,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([entity_group_delete("eg_1")])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "removing a membership is allowed with <type>.update in any current group" do
@@ -856,7 +871,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([entity_group_delete("eg_1")])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "a bootstrap does not exempt adding an existing entity" do
@@ -873,7 +888,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_put("eg_graft", "todo_existing", "g_new")
         ])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
   end
 
@@ -896,10 +911,10 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([entity_group_delete("eg_1")])
 
-      assert {:error, "last_membership", details} =
-               Authorizer.authorize([action], "a_1", ctx)
+      rejection =
+        assert_rejected(Authorizer.authorize([action], "a_1", ctx), "last_membership")
 
-      assert is_binary(details)
+      assert is_binary(rejection.details)
     end
 
     test "deleting one of two memberships is allowed", %{tables: tables, ctx: ctx} do
@@ -910,7 +925,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([entity_group_delete("eg_1")])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "swapping the last membership for a new group in one Action is allowed", %{
@@ -927,10 +942,10 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_delete("eg_1")
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
-    test "a batch of two Actions that each remove one membership is refused", %{
+    test "a batch of two Actions cannot remove both memberships", %{
       tables: tables,
       ctx: ctx
     } do
@@ -941,13 +956,15 @@ defmodule EbbServer.Storage.AuthorizerTest do
       put_entity_type(tables, "todo_1", "todo")
 
       # Each Action is valid against the cache snapshot, but together
-      # they net to zero. The running delta must catch the second.
+      # they net to zero. The running delta must reject the second while
+      # the first still commits.
       actions = [
         build_action([entity_group_delete("eg_1")]),
         build_action([entity_group_delete("eg_2")])
       ]
 
-      assert {:error, "last_membership", _} = Authorizer.authorize(actions, "a_1", ctx)
+      assert {[_accepted], [rejection]} = Authorizer.authorize(actions, "a_1", ctx)
+      assert rejection.reason == "last_membership"
     end
 
     test "re-putting the same group as a new row while deleting the old row is allowed", %{
@@ -966,7 +983,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_delete("eg_1")
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "re-putting the same group then deleting the old row across two Actions is allowed", %{
@@ -982,13 +999,13 @@ defmodule EbbServer.Storage.AuthorizerTest do
         build_action([entity_group_delete("eg_1")])
       ]
 
-      assert Authorizer.authorize(actions, "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize(actions, "a_1", ctx))
     end
 
     test "an unresolvable membership delete is not_authorized", %{ctx: ctx} do
       action = build_action([entity_group_delete("eg_unknown")])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
   end
 
@@ -1011,7 +1028,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           group_member_put("gm_1", "a_1", "g_existing", ["*"])
         ])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "a bootstrap may not file an existing entity even when it self-grants the type" do
@@ -1031,7 +1048,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_put("eg_graft", "todo_existing", "g_1")
         ])
 
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "a genuine new-group self-bootstrap still succeeds" do
@@ -1046,7 +1063,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_put("eg_new", "todo_new", "g_new")
         ])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "an existing group re-put by a member with group.create still succeeds" do
@@ -1056,7 +1073,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       put_entity_type(tables, "g_1", "group")
       put_group_member(tables, "g_1", ["group.create"])
 
-      assert Authorizer.authorize([build_action([group_put("g_1")])], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([build_action([group_put("g_1")])], "a_1", ctx))
     end
 
     test "filing an existing entity into a group the actor really belongs to still works" do
@@ -1069,7 +1086,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
 
-      assert Authorizer.authorize([action], "a_1", ctx) == :ok
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
   end
 
@@ -1088,7 +1105,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
     test "cannot create a groupMember", %{ctx: ctx} do
       action = build_action([group_member_put("gm_2", "a_2", "g_1", ["*"])])
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "cannot update a groupMember", %{ctx: ctx} do
@@ -1106,8 +1123,10 @@ defmodule EbbServer.Storage.AuthorizerTest do
         }
       }
 
-      assert {:error, "not_authorized", _} =
-               Authorizer.authorize([build_action([update])], "a_1", ctx)
+      assert_rejected(
+        Authorizer.authorize([build_action([update])], "a_1", ctx),
+        "not_authorized"
+      )
     end
 
     test "cannot delete a groupMember", %{tables: tables, ctx: ctx} do
@@ -1121,13 +1140,15 @@ defmodule EbbServer.Storage.AuthorizerTest do
         data: nil
       }
 
-      assert {:error, "not_authorized", _} =
-               Authorizer.authorize([build_action([update])], "a_1", ctx)
+      assert_rejected(
+        Authorizer.authorize([build_action([update])], "a_1", ctx),
+        "not_authorized"
+      )
     end
 
     test "cannot create a link relationship", %{ctx: ctx} do
       action = build_action([relationship_put("rel_link", "todo_1", "col_1", "todo")])
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "cannot patch a relationship", %{tables: tables, ctx: ctx} do
@@ -1141,8 +1162,10 @@ defmodule EbbServer.Storage.AuthorizerTest do
         data: %{"fields" => %{"source_id" => %{"value" => "todo_1"}}}
       }
 
-      assert {:error, "not_authorized", _} =
-               Authorizer.authorize([build_action([update])], "a_1", ctx)
+      assert_rejected(
+        Authorizer.authorize([build_action([update])], "a_1", ctx),
+        "not_authorized"
+      )
     end
 
     test "cannot delete a relationship", %{tables: tables, ctx: ctx} do
@@ -1156,15 +1179,17 @@ defmodule EbbServer.Storage.AuthorizerTest do
         data: nil
       }
 
-      assert {:error, "not_authorized", _} =
-               Authorizer.authorize([build_action([update])], "a_1", ctx)
+      assert_rejected(
+        Authorizer.authorize([build_action([update])], "a_1", ctx),
+        "not_authorized"
+      )
     end
 
     test "cannot create an entityGroup for an existing entity", %{tables: tables, ctx: ctx} do
       put_membership(tables, "todo_existing", "g_1", "eg_existing")
 
       action = build_action([entity_group_put("eg_new", "todo_existing", "g_1")])
-      assert {:error, "not_authorized", _} = Authorizer.authorize([action], "a_1", ctx)
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "cannot update an entityGroup", %{tables: tables, ctx: ctx} do
@@ -1178,8 +1203,10 @@ defmodule EbbServer.Storage.AuthorizerTest do
         data: %{"fields" => %{"group_id" => %{"value" => "g_1"}}}
       }
 
-      assert {:error, "not_authorized", _} =
-               Authorizer.authorize([build_action([update])], "a_1", ctx)
+      assert_rejected(
+        Authorizer.authorize([build_action([update])], "a_1", ctx),
+        "not_authorized"
+      )
     end
 
     test "cannot delete an entityGroup", %{tables: tables, ctx: ctx} do
@@ -1193,8 +1220,58 @@ defmodule EbbServer.Storage.AuthorizerTest do
         data: nil
       }
 
-      assert {:error, "not_authorized", _} =
-               Authorizer.authorize([build_action([update])], "a_1", ctx)
+      assert_rejected(
+        Authorizer.authorize([build_action([update])], "a_1", ctx),
+        "not_authorized"
+      )
+    end
+  end
+
+  # #469: authorization decides per Action. One bad Action must not drag
+  # its siblings down, and a rejected Action leaves the request's
+  # simulation untouched so it cannot authorize a later Action.
+  describe "authorize/3 - per-Action outcomes" do
+    test "an unauthorized Action does not reject its authorized sibling" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.create"])
+      put_membership(tables, "todo_ok", "g_1", "eg_ok")
+      put_membership(tables, "todo_bad", "g_2", "eg_bad")
+
+      bad = build_action([entity_put("todo_bad", "todo")]) |> Map.put(:id, "act_bad")
+      ok = build_action([entity_put("todo_ok", "todo")]) |> Map.put(:id, "act_ok")
+
+      assert {[accepted], [rejection]} = Authorizer.authorize([bad, ok], "a_1", ctx)
+      assert accepted.id == "act_ok"
+      assert rejection.action.id == "act_bad"
+      assert rejection.reason == "not_authorized"
+    end
+
+    test "a rejected Action's created type is not visible to a later Action" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.read"])
+
+      # The first Action creates `todo_new` but the actor cannot create
+      # the type, so the Action is rejected and must not seed the request
+      # simulation with `todo_new`'s type.
+      create =
+        build_action([
+          entity_put("todo_new", "todo"),
+          entity_group_put("eg_1", "todo_new", "g_1")
+        ])
+        |> Map.put(:id, "act_create")
+
+      add = build_action([entity_group_put("eg_2", "todo_new", "g_1")])
+
+      assert {[], [create_rejection, add_rejection]} =
+               Authorizer.authorize([create, add], "a_1", ctx)
+
+      assert create_rejection.reason == "not_authorized"
+      assert add_rejection.reason == "not_authorized"
+      assert add_rejection.details =~ "cannot resolve the type"
     end
   end
 end

@@ -479,6 +479,35 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       assert rejected == []
     end
 
+    test "an unauthorized Action does not reject its authorized sibling" do
+      tables = create_isolated_tables()
+      opts = auth_opts(tables)
+
+      put_group_member(tables, "g_1", ["todo.create"])
+      put_membership(tables, "todo_ok", "g_1", "eg_ok")
+      put_membership(tables, "todo_bad", "g_2", "eg_bad")
+
+      authorized =
+        sample_action(%{
+          "id" => "act_ok",
+          "actor_id" => "a_1",
+          "updates" => [user_put_update("upd_ok", "todo_ok")]
+        })
+
+      unauthorized =
+        sample_action(%{
+          "id" => "act_bad",
+          "actor_id" => "a_1",
+          "updates" => [user_put_update("upd_bad", "todo_bad")]
+        })
+
+      {accepted, rejected} =
+        PermissionChecker.validate_and_authorize([unauthorized, authorized], "a_1", opts)
+
+      assert [%{id: "act_ok"}] = accepted
+      assert [%{action_id: "act_bad", reason: "not_authorized"}] = rejected
+    end
+
     test "accepts a relationship that follows an entity the same Action creates" do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
