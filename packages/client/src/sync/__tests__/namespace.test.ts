@@ -1324,6 +1324,19 @@ describe("client.<entity>.link / unlink / setLinks", () => {
     );
   });
 
+  it("reads the source's live memberships to scope the write, without emitting them", async () => {
+    const { client, storage, seen } = await mkClient();
+    await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
+    await storage.entities.set(mkEntityGroup("eg_2", "todo_1", "g_2"));
+
+    const before = seen.filter((url) => url.endsWith("/sync/actions")).length;
+    const response = await client.todo.link("todo_1", "list", "list_1");
+
+    expect(response.rejected).toEqual([]);
+    // The membership read scopes coherence; it must not add Updates to the Action.
+    expect(seen.filter((url) => url.endsWith("/sync/actions")).length).toBe(before + 1);
+  });
+
   it("setLinks({ replace }) emits one entity Update + N Relationship Updates", async () => {
     const { client } = await mkClient();
     const response = await client.todo.setLinks("todo_1", "tags", {

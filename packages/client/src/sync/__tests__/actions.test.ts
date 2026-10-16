@@ -227,3 +227,23 @@ describe("client.actions equivalence", () => {
     expect(viaActions.todo.id).not.toBe(viaAtomic.todo.id);
   });
 });
+
+describe("imperative create / atomic create equivalence", () => {
+  it("submits structurally identical single Actions, with different ids", async () => {
+    const { client, seen } = mkClient();
+    await client.handshake();
+
+    const viaNamespace = await client.list.create({ name: "Today" }, groups);
+    const viaAtomic = await client.atomic(({ list: l }) => l.create({ name: "Today" }, groups));
+
+    const calls = actionCalls(seen);
+    expect(calls).toHaveLength(2);
+    expect(decodeActions(calls[0]!)).toHaveLength(1);
+    expect(decodeActions(calls[1]!)).toHaveLength(1);
+    expect(canonicalize(decodeActions(calls[0]!)[0]!)).toEqual(
+      canonicalize(decodeActions(calls[1]!)[0]!),
+    );
+    // Ids differ per run, so the comparison above is not a tautology.
+    expect(viaNamespace.id).not.toBe(viaAtomic.id);
+  });
+});

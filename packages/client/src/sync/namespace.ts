@@ -34,12 +34,7 @@ import type { RelationshipDef } from "../schema/relationship";
 import type { Schema } from "../schema/schema";
 import type { GroupFields } from "../schema/system-entities";
 import { GROUPS_ACCESSOR } from "../schema/system-entities";
-import {
-  DOC_CONTENT_FIELD,
-  generatedDocEntityName,
-  isCollaborativeText,
-} from "../fields/collaborative-text/schema";
-import { buildInitialContentField } from "../fields/collaborative-text/wire";
+import { DOC_CONTENT_FIELD, isCollaborativeText } from "../fields/collaborative-text/schema";
 import type { TextDocument, TextDocumentSubmit } from "../fields/collaborative-text/text-document";
 import {
   buildLazyQueryBuilder,
@@ -54,7 +49,6 @@ import {
 import {
   buildEntityGroupDelete,
   buildEntityGroupUpdates,
-  buildRelationshipUpdate,
   forwardMany,
   forwardOne,
   membershipGroups,
@@ -62,6 +56,15 @@ import {
   reverse as reverseTraversal,
 } from "./relationship";
 import { readEntityMemberships } from "./entity-group";
+import {
+  call,
+  createEntity,
+  deleteEntity,
+  patchEntity,
+  writeRelationship,
+  type RelationshipPointer,
+} from "./operations";
+import { commit } from "./committer";
 
 /**
  * Runtime shape of a single relationship accessor on a row. The
@@ -666,9 +669,6 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
  */
 export interface WriteCapability {
   readonly registry: EntityRegistry;
-  buildRelationshipWrite(
-    opts: import("./relationship").BuildRelationshipWriteOptions,
-  ): import("./relationship").BuildRelationshipWriteResult;
   submitRelationshipUpdates(
     updates: readonly import("@ebbjs/core").Update[],
   ): Promise<WriteResponse>;
@@ -823,57 +823,27 @@ export function createEntityNamespace<
       input: WireStatic<TFields> & DerivedInputs<TFields>,
       opts: CreateOptions,
     ): Promise<CreateResult> {
-      const subjectId = generateId("e");
-      const groupIds = resolveGroupIds(opts?.groups, entityName);
+      const id = generateId("e");
+      const groups = resolveGroupIds(opts?.groups, entityName);
       const { wire, bodies } = splitDerivedInputs(
         entityName,
         input as Record<string, unknown>,
         derived,
       );
-      const entityUpdate = buildEntityWriteUpdate(write, entityName, shape, {
-        subjectId,
-        payload: wire,
-        partial: false,
-        validate: opts?.validate,
-      });
-      const updates: Update[] = [
-        entityUpdate,
-        ...buildEntityGroupUpdates(subjectId, groupIds, () => write.generateUpdateId()),
-      ];
-      // Derived bodies ride in the same Action as the parent, so the
-      // document, the edge, and both membership sets commit atomically
-      // (and the #233 coherence rule holds by construction).
-      for (const [field, text] of Object.entries(bodies)) {
-        const marker = derived[field];
-        if (marker === undefined || !isCollaborativeText(marker)) continue;
-        const docId = generateId("e");
-        const hlc = write.freshHlc();
-        const docUpdateId = write.generateUpdateId();
-        updates.push({
-          id: docUpdateId,
-          subject_id: docId,
-          subject_type: marker.entity ?? generatedDocEntityName(entityName, field),
-          method: "put",
-          data: {
-            fields: {
-              [DOC_CONTENT_FIELD]: buildInitialContentField(text, hlc, write.actorId, docUpdateId),
-            },
-          },
-        });
-        updates.push(
-          buildRelationshipUpdate({
-            relationshipId: generateId("rel"),
-            sourceId: subjectId,
-            targetId: docId,
-            field,
-            type: entityName,
-            updateId: write.generateUpdateId(),
+      const { response } = await commit(
+        [
+          call(createEntity, {
+            entity: entityName,
+            id,
+            fields: wire,
+            bodies,
+            groups,
+            validate: opts?.validate,
           }),
-        );
-        updates.push(...buildEntityGroupUpdates(docId, groupIds, () => write.generateUpdateId()));
-      }
-      const response = await write.submitRelationshipUpdates(updates);
-      return { id: subjectId, ...response };
+        ],
+        write,
+      );
+      return { id, ...response };
     },
     async duplicate(id: string, opts?: DuplicateOptions): Promise<CreateResult> {
       const at = opts?.at ?? "current";
@@ -904,24 +874,37 @@ export function createEntityNamespace<
       patch: Partial<WireStatic<TFields>>,
       opts?: EntityWriteOptions,
     ): Promise<WriteResponse> {
-      return submitEntityWrite(write, entityName, shape, {
-        subjectId: id,
-        payload: patch,
-        partial: true,
-        validate: opts?.validate,
-      });
+      const groups = await readLiveGroupIds(storage, id);
+      const { response } = await commit(
+        [
+          call(patchEntity, {
+            entity: entityName,
+            id,
+            payload: patch,
+            groups,
+            validate: opts?.validate,
+          }),
+        ],
+        write,
+      );
+      return response;
     },
     async delete(id: string): Promise<WriteResponse> {
-      return submitEntityDelete(write, entityName, id);
+      const groups = await readLiveGroupIds(storage, id);
+      const { response } = await commit(
+        [call(deleteEntity, { entity: entityName, id, groups })],
+        write,
+      );
+      return response;
     },
     async link(id: string, as: string, targetId: PointerValue): Promise<WriteResponse> {
-      return submitRelationshipWrite(write, entityName, id, as, { targetId }, storage);
+      return submitRelationshipWrite(write, storage, entityName, id, as, { targetId });
     },
     async unlink(id: string, as: string): Promise<WriteResponse> {
-      return submitRelationshipWrite(write, entityName, id, as, { targetId: null }, storage);
+      return submitRelationshipWrite(write, storage, entityName, id, as, { targetId: null });
     },
     async setLinks(id: string, as: string, patch: ManyPointerValue): Promise<WriteResponse> {
-      return submitRelationshipWrite(write, entityName, id, as, { targetIds: patch }, storage);
+      return submitRelationshipWrite(write, storage, entityName, id, as, { targetIds: patch });
     },
     // Membership mutations are offline-legal (#126) and go through the
     // normal outbox path. Their Actions are exempt from the #233
@@ -979,73 +962,14 @@ export function createEntityNamespace<
 }
 
 /**
- * Internal options for {@link submitEntityWrite}. `partial=true`
- * flips the validator from full-shape to per-field and routes the
- * wire Update through `method: "patch"`.
+ * The entity's live membership group ids, read from the local
+ * `entityGroup` rows. `create` asks for groups explicitly; `update` /
+ * `delete` / relationship writes carry whatever the local view knows,
+ * which may be empty when the row predates this client's cache.
  */
-interface SubmitEntityWriteInput {
-  subjectId: string;
-  payload: unknown;
-  partial: boolean;
-  validate: boolean | undefined;
-}
-
-/**
- * Validate the payload against the entity shape and ship a single
- * entity Update. Throws `EntityValidationError` on shape mismatch
- * (or empty patch) when validation is on. The local validator is
- * the SDK's contract; the server may still reject the write for
- * permissions, conflicts, or schema drift.
- *
- * `update_id` is minted once per Update so concurrent writers
- * can't collide on the same id; `hlc` is the local clock so the
- * server can detect a causal-order inversion.
- */
-async function submitEntityWrite<TFields extends Record<string, TSchema>>(
-  write: WriteCapability,
-  entityName: string,
-  shape: TObject<TFields>,
-  input: SubmitEntityWriteInput,
-): Promise<WriteResponse> {
-  return write.submitRelationshipUpdates([buildEntityWriteUpdate(write, entityName, shape, input)]);
-}
-
-/**
- * Validate the payload against the entity shape and build the single
- * entity Update. Throws `EntityValidationError` on shape mismatch
- * (or empty patch) when validation is on. Shared by `create`,
- * `update`, and the membership-emitting create path.
- */
-function buildEntityWriteUpdate<TFields extends Record<string, TSchema>>(
-  write: WriteCapability,
-  entityName: string,
-  shape: TObject<TFields>,
-  input: SubmitEntityWriteInput,
-): Update {
-  if (input.validate !== false) {
-    const violations = validatePayload(shape, input.payload, entityName, input.partial);
-    if (violations.length > 0) {
-      throw new EntityValidationError(violations);
-    }
-    if (input.partial && isEmptyPayload(input.payload)) {
-      throw new EntityValidationError([
-        {
-          entityName,
-          message: `update: patch must contain at least one field`,
-        },
-      ]);
-    }
-  }
-  const hlc = write.freshHlc();
-  const updateId = write.generateUpdateId();
-  const fields = wrapFields(input.payload, updateId, hlc);
-  return {
-    id: updateId,
-    subject_id: input.subjectId,
-    subject_type: entityName,
-    method: input.partial ? "patch" : "put",
-    data: { fields },
-  };
+async function readLiveGroupIds(storage: StorageAdapter, entityId: string): Promise<string[]> {
+  const memberships = await readEntityMemberships(storage, entityId);
+  return memberships.map((membership) => membership.groupId);
 }
 
 /**
@@ -1244,152 +1168,80 @@ const resolveSingleGroupId = (group: GroupRef, entityName: string, operation: st
 };
 
 /**
- * Build and submit the single `method: "delete"` Update for an
- * entity row. `data` is `null` per the wire convention; the
- * enclosing Action carries the HLC (see
- * `submitRelationshipUpdates`).
- */
-async function submitEntityDelete(
-  write: WriteCapability,
-  entityName: string,
-  id: string,
-): Promise<WriteResponse> {
-  const update: Update = {
-    id: write.generateUpdateId(),
-    subject_id: id,
-    subject_type: entityName,
-    method: "delete",
-    data: null,
-  };
-  return write.submitRelationshipUpdates([update]);
-}
-
-/** True when the payload is `{}` or every field is `undefined` — a no-op the caller almost certainly didn't intend. */
-const isEmptyPayload = (payload: unknown): boolean => {
-  if (payload === null || typeof payload !== "object") return true;
-  for (const value of Object.values(payload)) {
-    if (value !== undefined) return false;
-  }
-  return true;
-};
-
-/**
- * Flatten a payload into the wire envelope. `undefined` fields are
- * dropped (the wire envelope is absent, not explicitly undefined);
- * `null` is preserved so nullable fields round-trip cleanly.
- */
-export const wrapFields = (
-  payload: unknown,
-  updateId: string,
-  hlc: string,
-): Record<string, { value: unknown; update_id: string; hlc: string }> => {
-  const out: Record<string, { value: unknown; update_id: string; hlc: string }> = {};
-  if (payload === null || typeof payload !== "object") return out;
-  for (const [key, value] of Object.entries(payload)) {
-    if (value === undefined) continue;
-    out[key] = { value, update_id: updateId, hlc };
-  }
-  return out;
-};
-
-/**
- * Look up the relationship by `(source, as)`, build the wire
- * Update(s), and submit. Throws `EntityValidationError` when `as`
- * is not a declared relationship on the entity.
+ * Look up the relationship by `(source, as)`, resolve the one-cardinality
+ * unlink's existing row id (a storage read the pure operation cannot do),
+ * and commit the `writeRelationship` operation. The operation itself owns
+ * the GROUPS_ACCESSOR and undeclared-relationship refusals.
  */
 async function submitRelationshipWrite(
   write: WriteCapability,
+  storage: StorageAdapter,
   entityName: string,
   sourceId: string,
   as: string,
-  pointer: { targetId?: PointerValue; targetIds?: ManyPointerValue },
-  storage: StorageAdapter,
+  pointer: RelationshipPointer,
 ): Promise<WriteResponse> {
-  if (as === GROUPS_ACCESSOR) {
-    throw new EntityValidationError([
-      {
-        entityName,
-        message: `link/unlink/setLinks: "${GROUPS_ACCESSOR}" is the built-in membership accessor; use addToGroup/removeFromGroup/setGroups instead`,
-      },
-    ]);
-  }
-  const rel = write.registry.getRelationship(entityName, as);
-  if (rel === undefined) {
-    const { EntityValidationError } = await import("../schema/entity-registry");
-    throw new EntityValidationError([
-      {
-        entityName,
-        message: `submitRelationshipWrite: relationship "${as}" is not declared on entity "${entityName}"`,
-      },
-    ]);
-  }
-  // Many-cardinality needs an entity Update carrying the canonical
-  // FK set on `data.fields[as]`. The patch shape (`replace` /
-  // `add`/`remove`) is collapsed to a flat id list and emitted as
-  // the field's `value`. The wire-builder treats the canonical set
-  // as the source of truth.
-  const { buildManyEntityUpdate, collectManyTargetIds } = await import("./relationship");
-  let entityUpdate: import("@ebbjs/core").Update | undefined;
-  if (rel.sourceCardinality === "many" && pointer.targetIds !== undefined) {
-    const ids = collectManyTargetIds(pointer.targetIds);
-    const updateId = write.generateUpdateId();
-    entityUpdate = buildManyEntityUpdate({
-      sourceId,
-      sourceEntityName: entityName,
-      as,
-      targetIds: ids,
-      updateId,
-      hlc: write.freshHlc(),
-    });
-  }
-  // One-cardinality delete: the wire Update's `subject_id` must
-  // match the existing relationship's id so the server's authorizer
-  // can recover the group from the cache. Look the existing row up
-  // by `(sourceId, as)` in the materialized Relationship cache;
-  // throw a clear validation error when no such relationship exists
-  // locally (the caller hasn't materialized the link yet, or the
-  // link was created by another client that hasn't synced to us).
-  let relationshipSubjectId: string | undefined;
-  if (
-    rel.sourceCardinality === "one" &&
-    pointer.targetId === null &&
-    pointer.targetIds === undefined
-  ) {
-    const all = await storage.entities.query("relationship");
-    const wireType = rel.type ?? entityName;
-    const match = all.find(
-      (e) =>
-        e.data?.fields?.["source_id"]?.value === sourceId &&
-        e.data?.fields?.["field"]?.value === as &&
-        e.data?.fields?.["type"]?.value === wireType,
-    );
-    if (match === undefined) {
-      const { EntityValidationError } = await import("../schema/entity-registry");
-      throw new EntityValidationError([
-        {
-          entityName,
-          message: `unlink("${as}"): no relationship found for source "${sourceId}" in the materialized cache; did you link() first and wait for catchUp?`,
-        },
-      ]);
-    }
-    relationshipSubjectId = match.id;
-  }
-  const result = write.buildRelationshipWrite({
-    source: { name: entityName },
-    target: { name: rel.target.name },
-    as,
+  const relationshipSubjectId = await resolveUnlinkRelationshipId(
+    write,
+    storage,
+    entityName,
     sourceId,
-    entityUpdate,
-    relationshipSubjectId,
-    ...pointer,
-  });
-  const rels = Array.isArray(result.relationshipUpdate)
-    ? result.relationshipUpdate
-    : [result.relationshipUpdate];
-  const updates: import("@ebbjs/core").Update[] = [];
-  if (result.entityUpdate !== undefined) updates.push(result.entityUpdate);
-  for (const r of rels) updates.push(r);
-  return write.submitRelationshipUpdates(updates);
+    as,
+    pointer,
+  );
+  const groups = await readLiveGroupIds(storage, sourceId);
+  const { response } = await commit(
+    [
+      call(writeRelationship, {
+        entity: entityName,
+        sourceId,
+        as,
+        pointer,
+        relationshipSubjectId,
+        groups,
+      }),
+    ],
+    write,
+  );
+  return response;
+}
+
+/**
+ * The one-cardinality unlink's existing relationship row id. The wire
+ * delete must name the row's id so the server's authorizer can recover its
+ * group. The lookup is skipped for link/setLinks and for refusals the
+ * operation owns (the built-in membership accessor, an undeclared
+ * relationship), so the operation's error is the one the caller sees.
+ */
+async function resolveUnlinkRelationshipId(
+  write: WriteCapability,
+  storage: StorageAdapter,
+  entityName: string,
+  sourceId: string,
+  as: string,
+  pointer: RelationshipPointer,
+): Promise<string | undefined> {
+  if (pointer.targetId !== null || pointer.targetIds !== undefined) return undefined;
+  if (as === GROUPS_ACCESSOR) return undefined;
+  const rel = write.registry.getRelationship(entityName, as);
+  if (rel === undefined || rel.sourceCardinality !== "one") return undefined;
+  const all = await storage.entities.query("relationship");
+  const wireType = rel.type ?? entityName;
+  const match = all.find(
+    (e) =>
+      e.data?.fields?.["source_id"]?.value === sourceId &&
+      e.data?.fields?.["field"]?.value === as &&
+      e.data?.fields?.["type"]?.value === wireType,
+  );
+  if (match === undefined) {
+    throw new EntityValidationError([
+      {
+        entityName,
+        message: `unlink("${as}"): no relationship found for source "${sourceId}" in the materialized cache; did you link() first and wait for catchUp?`,
+      },
+    ]);
+  }
+  return match.id;
 }
 
 /**

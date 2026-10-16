@@ -93,6 +93,51 @@ const waitForFlush = async (pending: () => readonly Action[]): Promise<void> => 
   }
 };
 
+/**
+ * Structural view of an Action with minted ids, HLCs, and run ids
+ * normalized away, so two runs of the same write compare equal. Run
+ * ids shout through as map keys on `content`; the value's text is what
+ * the equivalence is about.
+ */
+const canonicalize = (action: Action): unknown => {
+  const ids = new Map<string, string>();
+  const idOf = (id: string): string => {
+    const existing = ids.get(id);
+    if (existing !== undefined) return existing;
+    const next = `id_${ids.size}`;
+    ids.set(id, next);
+    return next;
+  };
+  const canonicalFields = (fields: Record<string, unknown>): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (const [key, env] of Object.entries(fields)) {
+      const field = env as {
+        value?: unknown;
+        map?: Record<string, { value?: { text?: string } }>;
+      };
+      if (key === "content") {
+        out[key] = Object.values(field.map ?? {})
+          .map((entry) => entry.value?.text ?? null)
+          .sort();
+        continue;
+      }
+      out[key] =
+        key === "source_id" || key === "target_id" || key === "entity_id"
+          ? idOf(field.value as string)
+          : field.value;
+    }
+    return out;
+  };
+  return action.updates
+    .map((update) => ({
+      subject_id: idOf(update.subject_id),
+      subject_type: update.subject_type,
+      method: update.method,
+      fields: canonicalFields(update.data?.fields ?? {}),
+    }))
+    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+};
+
 // ---------------------------------------------------------------------------
 // Schema sugar
 // ---------------------------------------------------------------------------
@@ -243,14 +288,45 @@ describe("create() with a derived body", () => {
 });
 
 describe("atomic", () => {
-  it("refuses a derived body with a clear error instead of resolving it as a pointer", async () => {
-    const { client } = harness(schema);
+  it("expands a derived body through the same create operation as the imperative path", async () => {
+    const { client, written } = harness(schema);
     await client.handshake();
-    await expect(
-      client.atomic(({ blogPost }) =>
-        blogPost.create({ title: "T", body: "x" }, { groups: ["g_1"] }),
-      ),
-    ).rejects.toThrow(/derived field/);
+
+    const created = await client.atomic(({ blogPost }) =>
+      blogPost.create({ title: "T", body: "x" }, { groups: ["g_1"] }),
+    );
+
+    expect(created.id).toMatch(/^e_/);
+    expect(written).toHaveLength(1);
+    const updates = written[0]!.updates;
+    const byType = (type: string): typeof updates => updates.filter((u) => u.subject_type === type);
+    const docName = generatedDocEntityName("blog_post", "body");
+
+    expect(byType("blog_post")).toHaveLength(1);
+    expect(byType(docName)).toHaveLength(1);
+    expect(byType("relationship")).toHaveLength(1);
+    expect(byType("entityGroup")).toHaveLength(2);
+
+    const docUpdate = byType(docName)[0]!;
+    const content = (
+      docUpdate.data as unknown as { fields: { content: { map: Record<string, unknown> } } }
+    ).fields.content;
+    const runIds = Object.keys(content.map);
+    expect(runIds).toHaveLength(1);
+    expect((content.map[runIds[0]!] as { value: { text: string } }).value.text).toBe("x");
+  });
+
+  it("produces the same Action as the equivalent imperative create", async () => {
+    const { client, written } = harness(schema);
+    await client.handshake();
+
+    await client.blogPost.create({ title: "T", published: false, body: "x" }, { groups: ["g_1"] });
+    await client.atomic(({ blogPost }) =>
+      blogPost.create({ title: "T", published: false, body: "x" }, { groups: ["g_1"] }),
+    );
+
+    expect(written).toHaveLength(2);
+    expect(canonicalize(written[0]!)).toEqual(canonicalize(written[1]!));
   });
 });
 
