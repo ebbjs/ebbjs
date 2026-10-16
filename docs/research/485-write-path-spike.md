@@ -60,6 +60,8 @@ stated basis), or **[unmeasured]** with the command that would settle it.
   the existing `rocksdb` NIF for the #343 bulk call is a gray area (§5).
 
 **ROI-per-effort ranking** (details in §2): **#4 > #3 > #5 > #1/#2 > #7 > #6.**
+This ranking is pre-measurement and **superseded by §8.4** after the
+ablation: the measured order is **#4 > #5 > #1/#2 > #7 > #3 > #6**.
 This deliberately differs from #485's leverage ordering: #1 has the highest
 _ceiling_ but the worst effort/risk ratio; #4 is the only change with a
 [measured] cliff to recover at low blast radius.
@@ -750,7 +752,18 @@ flush, vs 2×batch in `spread`).
   parked and was reverted in `ee599f8`.
 - **For context on #3/#4.** The post-`ad8e43b` fan-out sweep (`t3`, b10, c=8,
   hot, 15 s) against the improved `t2` b10 baseline of **15,893/s** is: 100
-  subscribers **1,571/s (−90%)**, 1,000 subscribers **619/s (−96%)**. The
+  subscribers **1,647/s (−90%)**, 1,000 subscribers **677/s (−96%)**. The
   cliff is real and is the worst remaining problem; the hoist above is not the
   fix, so it needs a dedicated harness that measures deliveries/sec and
   commit→dispatch at a fixed write rate (`bench/SPIKE-485.md` §6).
+- **TL;DR ROI ranking — superseded.** The pre-measurement
+  `#4 > #3 > #5 > #1/#2 > #7 > #6` put #3 above #5 on the guess that the
+  fan-out encode would be the win. Measured, the write-side encode is already
+  once per Action and the fan-out hoist failed, while the watermark is a
+  contained **0.47 ms/flush**; the ranking is therefore
+  **#4 (needs a new harness) > #5 (measured, contained) > #1/#2 > #7 > #3 > #6**
+  (`bench/SPIKE-485.md` §3).
+- **Marginal decomposition.** The additive ladder and the per-phase marginal
+  table are in `bench/RESULTS.md` §Two-store-only. `fanout` is the one phase
+  whose marginal is inside the ±5% run-to-run noise (removing it measured
+  slower than the full run); the additive ladder bounds it at ~0.09 ms/flush.

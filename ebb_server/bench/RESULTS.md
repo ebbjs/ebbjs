@@ -522,16 +522,23 @@ Phases enabled (= not ablated):
 
 ### Marginal cost — ablate one phase from the full flush, median of 3 × 15s runs
 
-| Phase ablated                                           | Actions/s | ms/flush | marginal cost (ms/flush) |
-| ------------------------------------------------------- | --------: | -------: | -----------------------: |
-| (none = full)                                           |    26,587 |    3.761 |                        — |
-| dedup                                                   |    26,727 |    3.741 |                    ~0.02 |
-| group_resolution                                        |    28,173 |    3.550 |                     0.21 |
-| entity_index (`cf_entity_actions` + `cf_type_entities`) |    32,173 |    3.108 |                 **0.65** |
-| group_index (`cf_group_actions`)                        |    28,467 |    3.513 |                     0.25 |
-| dirty                                                   |    26,613 |    3.758 |                    ~0.00 |
-| cache                                                   |    27,840 |    3.592 |                     0.17 |
-| watermark                                               |    30,360 |    3.294 |                 **0.47** |
+| Phase ablated                                           | Actions/s | ms/flush |   marginal cost (ms/flush) |
+| ------------------------------------------------------- | --------: | -------: | -------------------------: |
+| (none = full)                                           |    26,587 |    3.761 |                          — |
+| dedup                                                   |    26,727 |    3.741 |                      ~0.02 |
+| group_resolution                                        |    28,173 |    3.550 |                       0.21 |
+| entity_index (`cf_entity_actions` + `cf_type_entities`) |    32,173 |    3.108 |                   **0.65** |
+| group_index (`cf_group_actions`)                        |    28,467 |    3.513 |                       0.25 |
+| dirty                                                   |    26,613 |    3.758 |                      ~0.00 |
+| cache                                                   |    27,840 |    3.592 |                       0.17 |
+| watermark                                               |    30,360 |    3.294 |                   **0.47** |
+| fanout                                                  |    25,393 |    3.938 | not resolvable (±5% noise) |
+
+`fanout` is the one phase whose marginal sits inside this VM's ±5%
+run-to-run spread (removing it measured _slower_ than the full run); the
+additive ladder above bounds it at ~0.09 ms/flush (3.786 → 3.881 ms).
+Scheduler utilization across the ladder runs from **4.5% (log-only) to
+~10% (full)** on the 4-scheduler VM.
 
 **Conclusion.** The durable log append floor is **1.903 ms/flush**, about
 **50%** of the full 3.881 ms flush. Every two-store-only piece together

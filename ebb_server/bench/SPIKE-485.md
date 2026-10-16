@@ -13,8 +13,9 @@ canonical flush two ways: an additive ladder that appends the log and adds one
 post-append phase at a time, and a subtractive set that ablates one phase from
 the full path. All ladder runs are `t0` (direct `Writer.write_actions/1`),
 `--batch-size 100 --updates-per-action 2 --distribution hot`, median of 3. The
-full command lines, environment and per-run Markdown are in `bench/RESULTS.md`;
-the seam that produces them is commit `2ca55a4`. The code map behind these
+full command lines, environment and published tables are in `bench/RESULTS.md`
+(raw per-run Markdown is gitignored under `bench/results/`); the seam that
+produces them is commit `2ca55a4`. The code map behind these
 verdicts is `docs/research/485-write-path-spike.md`; every `file:line` pointer
 below resolves there.
 
@@ -34,16 +35,23 @@ Additive ladder (`t0`, b100, c=1, hot, u2, 20 s, median of 3):
 
 Marginal from full (`t0` 15 s, median of 3, full baseline 26,586.7/s):
 
-| phase ablated    |   rate | ms/flush | marginal ms |
-| ---------------- | -----: | -------: | ----------: |
-| (full)           | 26,587 |    3.761 |           — |
-| dedup            | 26,727 |    3.741 |        0.02 |
-| group_resolution | 28,173 |    3.550 |        0.21 |
-| entity_index     | 32,173 |    3.108 |        0.65 |
-| group_index      | 28,467 |    3.513 |        0.25 |
-| dirty            | 26,613 |    3.758 |       ~0.00 |
-| cache            | 27,840 |    3.592 |        0.17 |
-| watermark        | 30,360 |    3.294 |        0.47 |
+| phase ablated    |   rate | ms/flush |                marginal ms |
+| ---------------- | -----: | -------: | -------------------------: |
+| (full)           | 26,587 |    3.761 |                          — |
+| dedup            | 26,727 |    3.741 |                       0.02 |
+| group_resolution | 28,173 |    3.550 |                       0.21 |
+| entity_index     | 32,173 |    3.108 |                       0.65 |
+| group_index      | 28,467 |    3.513 |                       0.25 |
+| dirty            | 26,613 |    3.758 |                      ~0.00 |
+| cache            | 27,840 |    3.592 |                       0.17 |
+| watermark        | 30,360 |    3.294 |                       0.47 |
+| fanout           | 25,393 |    3.938 | not resolvable (±5% noise) |
+
+`fanout` is the one phase whose marginal sits inside this VM's ±5%
+run-to-run spread (removing it measured _slower_, 25,393/s vs the 26,587/s
+full); the additive ladder bounds it at ~0.09 ms/flush
+(3.786 → 3.881 ms). Scheduler utilization across the ladder runs from
+**4.5% (log-only) to ~10% (full)** on the 4-scheduler VM.
 
 **Headline.** The durable log-append floor is **1.903 ms/flush**. All
 non-append work is **~1.978 ms, 51%** of the 3.881 ms full flush. Removing
@@ -83,8 +91,8 @@ _(subscriber × action)_; the fan-out hoist was attempted, measured and parked
 
 ### #4 — Fan-out shape — **PARK with numbers**
 
-The cliff is the worst remaining problem: **−90% at 100 subscribers** (1,571/s)
-and **−96% at 1,000** (619/s) against the improved `t2` b10 baseline of
+The cliff is the worst remaining problem: **−90% at 100 subscribers** (1,647/s)
+and **−96% at 1,000** (677/s) against the improved `t2` b10 baseline of
 **15,893/s**. The naive "encode once per group" hoist regressed the official t3
 Accepted/sec metric **~10×** (1,000 subs **677 → 67/s**) while _improving_
 commit→dispatch p50 (**8.04 s → 4.09 s**), delivery rate (**27k → 39k/s**) and

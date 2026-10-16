@@ -141,9 +141,9 @@ defmodule EbbServer.Storage.Writer do
   Writer once `commit_fn` returns and before the marks settle, so tests
   can observe the durable-commit window deterministically.
 
-  A bench-only `:ablate` option (default `[]`) skips named pieces of the
-  flush critical path — the dedup index, group/type/entity index writes,
-  dirty marks, cache mutations, the watermark advance, and fan-out — so
+  A bench-only `:ablate` option (default `[]`) skips named phases of the
+  flush critical path — `:dedup`, `:group_resolution`, `:entity_index`,
+  `:group_index`, `:dirty`, `:cache`, `:watermark`, `:fanout` — so
   `mix bench.actions --ablate` can price each one. It is never set in
   production, and an empty list emits exactly the same ops as before.
   See `EbbServer.Bench.Options`.
@@ -694,7 +694,11 @@ defmodule EbbServer.Storage.Writer do
         {ops, group_ids, action_keys, memo} =
           build_action_ops(action, gsn, state, resolve_opts, memo)
 
-        keys = MapSet.union(keys, MapSet.new(action_keys))
+        keys =
+          if ablate?(:entity_index, state),
+            do: keys,
+            else: MapSet.union(keys, MapSet.new(action_keys))
+
         {ops, {Map.put(groups, gsn, group_ids), keys, memo}}
       end)
 
@@ -1179,6 +1183,8 @@ defmodule EbbServer.Storage.Writer do
       end
 
     if ablate?(:entity_index, state) do
+      # The type key is only collected when `:entity_index` is on (see
+      # `build_ops/3`), so there is nothing to compute here.
       {[], group_ids, nil, memo}
     else
       type_entity_key = RocksDB.encode_type_entity_key(update.subject_type, update.subject_id)
