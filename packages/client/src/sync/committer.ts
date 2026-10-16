@@ -2,11 +2,15 @@
  * The committer: turn a batch of operations into one Action.
  *
  * It builds the single {@link OpContext} the batch shares, runs every
- * operation in order, and enforces #127's coherence rule — if any
- * operation resolves to a group set other than the batch's union, the
- * whole thing is refused before a single Update reaches the wire. The
- * server accepts a mixed-group Action (#461), so this client-side gate
- * is the contract, not a nicety.
+ * operation in order, and enforces #127's coherence rule. A batch that
+ * contains any content write must resolve every operation to the
+ * identical group set, else the whole thing is refused with
+ * `group_mismatch` before a single Update reaches the wire. A
+ * system-only batch (`group` / `groupMember` / `entityGroup` /
+ * `relationship`) may span groups: its union is the membership
+ * operation's visibility scope, mirroring the server's carve-out
+ * (#461). The server accepts a mixed-group Action only up to that
+ * system-only case, so this client-side gate is the contract.
  *
  * Server rejections are *not* thrown here: an imperative caller reads
  * `response.rejected` so it can decide what to do. Only
@@ -24,6 +28,7 @@ import {
   type OperationResult,
   type OpContext,
 } from "./operations";
+import { isSystemOnly } from "./membership";
 import type { WriteResponse } from "./types";
 
 /** What the committer needs from the client. */
@@ -58,12 +63,18 @@ const subjectOf = (result: OperationResult): OperationResult["subject"] => {
 
 /**
  * Coherence rejections for the batch. The batch's group set is the
- * union of every operation's groups; any operation whose own sorted,
- * de-duplicated set differs is reported, naming its subject and both
- * sets. Order-independent, so a declaration and the equivalent
- * callback refuse the same writes.
+ * union of every operation's groups; a content-bearing batch refuses
+ * any operation whose own sorted, de-duplicated set differs, naming its
+ * subject and both sets. A system-only batch may span groups and is
+ * never refused here. Order-independent, so a declaration and the
+ * equivalent callback refuse the same writes.
  */
 const coherenceRejections = (results: readonly OperationResult[]): readonly AtomicRejection[] => {
+  // A system-only Action's union is the membership operation's
+  // visibility scope (#461); only a content write makes the Action
+  // subject to the identical-group-set rule.
+  if (isSystemOnly(results.flatMap((result) => result.updates))) return [];
+
   const grouped = results.map((result) => ({ result, groups: sortedGroups(result.groups) }));
   const actionGroups = sortedGroups(grouped.flatMap(({ groups }) => groups));
   return grouped.flatMap(({ result, groups }) => {

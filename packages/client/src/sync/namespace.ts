@@ -47,7 +47,6 @@ import {
   type QueryBuilder,
 } from "./query-builder";
 import {
-  buildEntityGroupDelete,
   buildEntityGroupUpdates,
   forwardMany,
   forwardOne,
@@ -55,9 +54,10 @@ import {
   type ManyPointerValue,
   reverse as reverseTraversal,
 } from "./relationship";
-import { readEntityMemberships } from "./entity-group";
+import { readEntityMemberships, type LiveMembership } from "./entity-group";
 import {
   call,
+  changeGroups,
   createEntity,
   deleteEntity,
   patchEntity,
@@ -403,17 +403,19 @@ export interface EntityNamespace<
   /**
    * Remove a non-last membership. Emits one `entityGroup` delete in
    * one Action. Throws `EntityValidationError` when no live local
-   * membership row matches `(id, groupId)`. A last-membership removal
-   * is refused by the server with reason `last_membership`; the local
-   * view can be stale, so the client does not pre-block it.
+   * membership row matches `(id, groupId)`. When the local view shows
+   * the removal would leave the entity unowned, the committer refuses
+   * it with `last_membership` before any network call; an empty local
+   * view defers to the server's authoritative check.
    */
   removeFromGroup(id: string, groupId: GroupRef): Promise<WriteResponse>;
   /**
    * Replace the entity's membership set: `target − current` puts and
    * `current − target` deletes in ONE Action. Throws
    * `EntityValidationError` for an empty `groupIds` or a malformed
-   * ref, before any network call. A target that nets to zero is
-   * refused by the server with `last_membership`.
+   * ref, before any network call. When the local view shows the delta
+   * would leave the entity unowned, the committer refuses it with
+   * `last_membership` before any network call.
    */
   setGroups(id: string, groupIds: readonly GroupRef[]): Promise<WriteResponse>;
 }
@@ -689,6 +691,8 @@ export interface WriteCapability {
    * `duplicate({ at: "preSync" })`.
    */
   readPreSyncRow(entityId: string): Promise<Entity | null>;
+  /** Live `entityGroup` rows for an entity id, from the local cache. */
+  readMemberships(entityId: string): Promise<readonly LiveMembership[]>;
 }
 
 /** Write path bound to a document for self-flushing locally-authored edits. */
@@ -907,18 +911,21 @@ export function createEntityNamespace<
       return submitRelationshipWrite(write, storage, entityName, id, as, { targetIds: patch });
     },
     // Membership mutations are offline-legal (#126) and go through the
-    // normal outbox path. Their Actions are exempt from the #233
-    // same-group-set rule: a membership delta touches the union of the
-    // pre- and post-Action group sets by construction.
+    // normal outbox path as one `changeGroups` operation. Their Actions
+    // are system-only, so the committer lets them span the union of the
+    // pre- and post-Action group sets (#464).
     async addToGroup(id: string, groupId: GroupRef): Promise<WriteResponse> {
       const target = resolveSingleGroupId(groupId, entityName, "addToGroup");
       const current = await readEntityMemberships(storage, id);
-      if (current.some((membership) => membership.groupId === target)) {
+      const currentGroups = current.map((membership) => membership.groupId);
+      if (currentGroups.includes(target)) {
         return { rejected: [] };
       }
-      return write.submitRelationshipUpdates(
-        buildEntityGroupUpdates(id, [target], () => write.generateUpdateId()),
+      const { response } = await commit(
+        [call(changeGroups, { entity: entityName, entityId: id, puts: [target], currentGroups })],
+        write,
       );
+      return response;
     },
     async removeFromGroup(id: string, groupId: GroupRef): Promise<WriteResponse> {
       const target = resolveSingleGroupId(groupId, entityName, "removeFromGroup");
@@ -932,31 +939,46 @@ export function createEntityNamespace<
           },
         ]);
       }
-      return write.submitRelationshipUpdates([
-        buildEntityGroupDelete({
-          membershipId: row.membershipId,
-          updateId: write.generateUpdateId(),
-        }),
-      ]);
+      const { response } = await commit(
+        [
+          call(changeGroups, {
+            entity: entityName,
+            entityId: id,
+            removes: [{ membershipId: row.membershipId, groupId: target }],
+            currentGroups: current.map((membership) => membership.groupId),
+          }),
+        ],
+        write,
+      );
+      return response;
     },
     async setGroups(id: string, groupIds: readonly GroupRef[]): Promise<WriteResponse> {
       const target = resolveGroupIds(groupIds, entityName, "setGroups", "groupIds");
       const current = await readEntityMemberships(storage, id);
       const currentIds = new Set(current.map((membership) => membership.groupId));
       const targetIds = new Set(target);
-      const toAdd = target.filter((groupId) => !currentIds.has(groupId));
-      const toRemove = current.filter((membership) => !targetIds.has(membership.groupId));
-      // Adds before removes so an incremental observer never sees the
+      const puts = target.filter((groupId) => !currentIds.has(groupId));
+      const removes = current
+        .filter((membership) => !targetIds.has(membership.groupId))
+        .map((membership) => ({
+          membershipId: membership.membershipId,
+          groupId: membership.groupId,
+        }));
+      // Adds precede removes so an incremental observer never sees the
       // entity with an empty membership set mid-Action.
-      return write.submitRelationshipUpdates([
-        ...buildEntityGroupUpdates(id, toAdd, () => write.generateUpdateId()),
-        ...toRemove.map((membership) =>
-          buildEntityGroupDelete({
-            membershipId: membership.membershipId,
-            updateId: write.generateUpdateId(),
+      const { response } = await commit(
+        [
+          call(changeGroups, {
+            entity: entityName,
+            entityId: id,
+            puts,
+            removes,
+            currentGroups: current.map((membership) => membership.groupId),
           }),
-        ),
-      ]);
+        ],
+        write,
+      );
+      return response;
     },
   };
 }
@@ -1147,7 +1169,11 @@ export const resolveGroupIds = (
  * Normalize a single group ref for `addToGroup` / `removeFromGroup`.
  * A malformed ref throws `EntityValidationError` naming the operation.
  */
-const resolveSingleGroupId = (group: GroupRef, entityName: string, operation: string): string => {
+export const resolveSingleGroupId = (
+  group: GroupRef,
+  entityName: string,
+  operation: string,
+): string => {
   let id: string | null;
   try {
     id = normalizePointer(group, `group for "${entityName}"`);

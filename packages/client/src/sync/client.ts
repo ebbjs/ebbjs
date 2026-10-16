@@ -69,6 +69,7 @@ import {
   type BuildRelationshipWriteResult,
 } from "./relationship";
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
+import { readEntityMemberships } from "./entity-group";
 import { createAtomicRuntime, type AtomicClient } from "./atomic";
 import {
   PermissionError,
@@ -1623,6 +1624,9 @@ export function createClient<
     // `findPreSyncRow` reads the entity's earliest unresolved conflict's
     // `before` row (the conflicts view owns the detection-HLC ordering).
     readPreSyncRow: (entityId: string) => findPreSyncRow(client.conflicts, entityId),
+    // The atomic membership drafts resolve a removal against the local
+    // cache after the synchronous callback returns.
+    readMemberships: (entityId: string) => readEntityMemberships(client.storage, entityId),
   };
   const namespaces = buildEntityNamespaces(opts.schema, client.storage, writeCap);
   // `client.atomic` needs the same write capability the namespace

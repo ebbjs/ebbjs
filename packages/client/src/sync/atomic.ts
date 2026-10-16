@@ -34,12 +34,20 @@ import type { EntityDef, ShapeFields } from "../schema/entity";
 import { EntityValidationError } from "../schema/entity-registry";
 import type { Schema } from "../schema/schema";
 import { normalizePointer } from "./query-builder";
-import { resolveGroupIds, type EntityFields, type GroupRef } from "./namespace";
+import {
+  resolveGroupIds,
+  resolveSingleGroupId,
+  type EntityFields,
+  type GroupRef,
+} from "./namespace";
+import type { LiveMembership } from "./entity-group";
 import { commit, type CommitCapability } from "./committer";
 import {
   AtomicActionError,
   call,
+  changeGroups,
   createEntity,
+  type MembershipRemoval,
   type OperationCall,
   type ResolvedPointer,
 } from "./operations";
@@ -100,9 +108,47 @@ export interface AtomicCreateOptions {
   readonly groups: readonly GroupRef[];
 }
 
+/**
+ * The committer capability plus the local membership read the draft
+ * planner needs to resolve a `removeFromGroup` (and an idempotent
+ * `addToGroup`) after the synchronous callback returns.
+ */
+export interface AtomicCapability extends CommitCapability {
+  readMemberships(entityId: string): Promise<readonly LiveMembership[]>;
+}
+
+/** One membership verb a draft collected, resolved after the callback. */
+interface MembershipIntent {
+  readonly kind: "add" | "remove";
+  readonly entity: string;
+  readonly entityId: string;
+  readonly groupId: string;
+}
+
+/** The state a `client.atomic` call accumulates while the callback runs. */
+interface DraftCollector {
+  readonly calls: OperationCall[];
+  readonly intents: MembershipIntent[];
+  /** Groups a batch-local `create` already filed an entity into. */
+  readonly createdGroups: Map<string, ReadonlySet<string>>;
+}
+
 /** Per-entity draft surface passed to the `client.atomic` callback. */
 export interface AtomicDraftNamespace<TFields extends Record<string, TSchema>> {
   create(input: AtomicCreateInput, opts: AtomicCreateOptions): CreatedEntity<TFields>;
+  /**
+   * File an existing entity into `groupId` in the same Action. A no-op
+   * when the batch already created the entity into that group; an
+   * already-committed membership is skipped after the callback reads
+   * the local view.
+   */
+  addToGroup(id: string, groupId: GroupRef): void;
+  /**
+   * Delete an existing entity's membership row for `groupId` in the
+   * same Action. The row is resolved from the local view after the
+   * callback returns; a missing row throws `EntityValidationError`.
+   */
+  removeFromGroup(id: string, groupId: GroupRef): void;
 }
 
 /** Draft namespaces keyed by schema entity name. */
@@ -185,7 +231,7 @@ const createDraftNamespace = (
   entityName: string,
   def: AnyEntityDef,
   cap: CommitCapability,
-  calls: OperationCall[],
+  collector: DraftCollector,
 ): AtomicDraftNamespace<Record<string, TSchema>> => ({
   create(input, opts) {
     const id = generateId("e");
@@ -248,7 +294,8 @@ const createDraftNamespace = (
     }
 
     const marked = markHandle(handle);
-    calls.push(
+    collector.createdGroups.set(id, new Set(groups));
+    collector.calls.push(
       call(createEntity, {
         entity: entityName,
         id,
@@ -260,18 +307,75 @@ const createDraftNamespace = (
     );
     return marked as unknown as CreatedEntity<Record<string, TSchema>>;
   },
+  addToGroup(id, groupId) {
+    const target = resolveSingleGroupId(groupId, entityName, "addToGroup");
+    // A group the batch's own create already filed is redundant; the
+    // committed view is consulted after the callback for the rest.
+    if (collector.createdGroups.get(id)?.has(target) === true) return;
+    collector.intents.push({ kind: "add", entity: entityName, entityId: id, groupId: target });
+  },
+  removeFromGroup(id, groupId) {
+    const target = resolveSingleGroupId(groupId, entityName, "removeFromGroup");
+    collector.intents.push({ kind: "remove", entity: entityName, entityId: id, groupId: target });
+  },
 });
+
+/**
+ * Resolve the membership verbs a draft collected, after the callback
+ * returns and before commit. The local view is read once per entity;
+ * an add that already holds the group is skipped, and a remove with no
+ * row throws the same `EntityValidationError` the imperative verb does.
+ */
+const resolveMembershipIntents = async (
+  intents: readonly MembershipIntent[],
+  cap: AtomicCapability,
+): Promise<OperationCall[]> => {
+  const byEntity = new Map<string, { entity: string; adds: Set<string>; removes: Set<string> }>();
+  for (const intent of intents) {
+    const entry = byEntity.get(intent.entityId) ?? {
+      entity: intent.entity,
+      adds: new Set<string>(),
+      removes: new Set<string>(),
+    };
+    (intent.kind === "add" ? entry.adds : entry.removes).add(intent.groupId);
+    byEntity.set(intent.entityId, entry);
+  }
+
+  const calls: OperationCall[] = [];
+  for (const [entityId, { entity, adds, removes }] of byEntity) {
+    const live = await cap.readMemberships(entityId);
+    const currentGroups = live.map((membership) => membership.groupId);
+    const liveByGroup = new Map(live.map((membership) => [membership.groupId, membership]));
+    const puts = [...adds].filter((groupId) => !liveByGroup.has(groupId));
+    const removals: MembershipRemoval[] = [];
+    for (const groupId of removes) {
+      const row = liveByGroup.get(groupId);
+      if (row === undefined) {
+        throw new EntityValidationError([
+          {
+            entityName: entity,
+            message: `removeFromGroup: no entityGroup membership row for "${entityId}" in group "${groupId}"`,
+          },
+        ]);
+      }
+      removals.push({ membershipId: row.membershipId, groupId });
+    }
+    if (puts.length === 0 && removals.length === 0) continue;
+    calls.push(call(changeGroups, { entity, entityId, puts, removes: removals, currentGroups }));
+  }
+  return calls;
+};
 
 const buildDrafts = (
   entityDefs: Record<string, AnyEntityDef>,
   cap: CommitCapability,
-  calls: OperationCall[],
+  collector: DraftCollector,
 ): Record<string, AtomicDraftNamespace<Record<string, TSchema>>> => {
   const out: Record<string, AtomicDraftNamespace<Record<string, TSchema>>> = {};
   for (const [name, def] of Object.entries(entityDefs)) {
     // The map key is the draft handle's property name; the entity's own
     // name is what the wire carries.
-    out[name] = createDraftNamespace(def.name, def, cap, calls);
+    out[name] = createDraftNamespace(def.name, def, cap, collector);
   }
   return out;
 };
@@ -285,14 +389,19 @@ const buildDrafts = (
  */
 export function createAtomicRuntime<S extends Schema<Record<string, AnyEntityDef>, unknown>>(
   schema: S,
-  cap: CommitCapability,
+  cap: AtomicCapability,
 ): <T>(build: (drafts: AtomicDrafts<S>) => T) => Promise<T> {
   const entityDefs = schema.entities as Record<string, AnyEntityDef>;
   return async function atomic<T>(build: (drafts: AtomicDrafts<S>) => T): Promise<T> {
-    const calls: OperationCall[] = [];
-    const drafts = buildDrafts(entityDefs, cap, calls);
+    const collector: DraftCollector = {
+      calls: [],
+      intents: [],
+      createdGroups: new Map(),
+    };
+    const drafts = buildDrafts(entityDefs, cap, collector);
     const result = build(drafts as AtomicDrafts<S>);
-    const committed = await commit(calls, cap);
+    collector.calls.push(...(await resolveMembershipIntents(collector.intents, cap)));
+    const committed = await commit(collector.calls, cap);
     if (committed.response.rejected.length > 0) {
       throw new AtomicActionError(committed.response.rejected);
     }
