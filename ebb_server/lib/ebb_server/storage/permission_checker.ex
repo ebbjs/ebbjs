@@ -17,6 +17,9 @@ defmodule EbbServer.Storage.PermissionChecker do
   each Update's own fan-out scope and the router delivers per Update
   (#473), so an Action may span groups.
 
+  Both checks are per-Action: a rejected Action in a batch is reported
+  in `rejected[]` while its siblings are still accepted (#469).
+
   On success: returns the validated action to the Writer with the same
   shape it came in with, but populates server-side denormalized fields
   (`gsn`, `server_received_at_hlc`, etc.) so downstream code doesn't
@@ -86,20 +89,13 @@ defmodule EbbServer.Storage.PermissionChecker do
     {validated_actions, rejections} = ActionValidator.validate(actions, actor_id, opts)
     ctx = AuthorizationContext.build(opts)
 
-    case Authorizer.authorize(validated_actions, actor_id, ctx) do
-      :ok ->
-        {validated_actions, rejections}
+    {accepted, authz_rejections} = Authorizer.authorize(validated_actions, actor_id, ctx)
 
-      {:error, reason, details} ->
-        # Add authorization failure to all validated actions (they all fail together)
-        updated_rejections =
-          Enum.map(validated_actions, fn action ->
-            %{action_id: action.id, reason: reason, details: details}
-          end)
-          |> Enum.concat(rejections)
+    {accepted, rejections ++ Enum.map(authz_rejections, &to_rejection/1)}
+  end
 
-        {[], updated_rejections}
-    end
+  defp to_rejection(%{action: action, reason: reason, details: details}) do
+    %{action_id: action.id, reason: reason, details: details}
   end
 
   @spec validate_structure(raw_action()) :: :ok | {:error, String.t(), String.t()}
@@ -117,7 +113,11 @@ defmodule EbbServer.Storage.PermissionChecker do
     ctx = AuthorizationContext.build(opts)
 
     validated_action = ActionValidator.to_validated_action(action)
-    Authorizer.authorize([validated_action], actor_id, ctx)
+
+    case Authorizer.authorize([validated_action], actor_id, ctx) do
+      {[_ | _], []} -> :ok
+      {_accepted, [rejection | _]} -> {:error, rejection.reason, rejection.details}
+    end
   end
 
   @doc """

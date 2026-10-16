@@ -3,7 +3,11 @@ defmodule EbbServer.Storage.Authorizer do
   Authorizes validated actions against the #121 permission table.
 
   Every Update in an Action is checked individually; the first failure
-  rejects the whole Action.
+  rejects that Action. Authorization is per-Action: a rejected Action is
+  reported beside its accepted siblings instead of failing the batch
+  (#469). Only accepted Actions advance the request simulation, so a
+  rejected Action's created entity types and membership delta never
+  resolve for a later Action.
 
   ## Bootstrap
 
@@ -134,27 +138,42 @@ defmodule EbbServer.Storage.Authorizer do
            types: %{String.t() => String.t()}
          }
 
-  @doc """
-  Authorizes a list of validated actions.
+  @type rejection :: %{
+          action: validated_action(),
+          reason: String.t(),
+          details: String.t() | nil
+        }
 
-  Each action must pass authorization checks; the first failure is
-  returned and the Action fails as a whole.
+  @doc """
+  Authorizes a list of validated actions, returning the accepted Actions
+  and the per-Action rejections.
+
+  A rejected Action is reported and left out of the accepted list while
+  its siblings proceed. The request simulation advances only for
+  accepted Actions, so a rejected Action contributes neither its created
+  entity types nor its membership delta to a later Action.
   """
   @spec authorize([validated_action()], String.t(), AuthorizationContext.t()) ::
-          :ok | {:error, String.t(), String.t()}
+          {accepted :: [validated_action()], rejected :: [rejection()]}
   def authorize(actions, actor_id, ctx),
-    do: authorize(actions, actor_id, ctx, new_sim())
+    do: authorize(actions, actor_id, ctx, new_sim(), [], [])
 
   # The fourth argument is the running simulation of what the request's
-  # earlier Actions added, removed and created. Caches only advance once
-  # the Writer commits, so the last-membership delta and the entity
-  # types must travel here (see `check_last_membership/2`).
-  defp authorize([], _actor_id, _ctx, _sim), do: :ok
+  # earlier **accepted** Actions added, removed and created. Caches only
+  # advance once the Writer commits, so the last-membership delta and the
+  # entity types must travel here (see `check_last_membership/2`).
+  defp authorize([], _actor_id, _ctx, _sim, accepted, rejected),
+    do: {Enum.reverse(accepted), Enum.reverse(rejected)}
 
-  defp authorize([action | rest], actor_id, ctx, sim) do
+  defp authorize([action | rest], actor_id, ctx, sim, accepted, rejected) do
     case authorize_action(action, actor_id, ctx, sim) do
-      {:ok, sim} -> authorize(rest, actor_id, ctx, sim)
-      error -> error
+      {:ok, next_sim} ->
+        authorize(rest, actor_id, ctx, next_sim, [action | accepted], rejected)
+
+      {:error, reason, details} ->
+        authorize(rest, actor_id, ctx, sim, accepted, [
+          %{action: action, reason: reason, details: details} | rejected
+        ])
     end
   end
 
