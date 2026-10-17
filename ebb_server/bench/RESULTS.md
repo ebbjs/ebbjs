@@ -309,7 +309,7 @@ a JSON-encoded event per Action, so fan-out cost scales with subscriber
 count and dominates the scheduler (49.8% utilization on the
 1000-subscriber run). Delivery lag is a client-side stamp (send →
 delivery), so it folds in client and transport overhead; the server's own
-`ebb.fanout.push_latency_ms` reports commit → dispatch separately (see
+`ebb.fanout.push_latency_ms` reports commit → broadcast complete separately (see
 [Server-side telemetry](#server-side-telemetry)).
 
 ### Fan-out: encode-once prototype (parked, #485)
@@ -326,30 +326,35 @@ Server-side on the 1000-subscriber run:
 | `ebb.writer.batch_latency_ms` p50 |          4.5 ms | 3.8 ms |
 | Scheduler utilization             |           49.8% |  49.8% |
 
-So the hoist **improved** commit → dispatch latency and **halved** RSS
+So the hoist **improved** commit → broadcast complete latency and **halved** RSS
 (928 MiB → 447 MiB) while the harness's Accepted/sec metric fell ~10×
 (677/s → 67/s). `:binary.copy/1` per subscriber did not recover it,
 ruling out shared-refc-binary refcount contention.
 
 **Verdict.** The prototype remains **parked**, not merged (commits
-`714f9c5` then revert `ee599f8`). The t4 harness now measures the hoist as
-a **commit → dispatch win** — p50 ~3–4× lower under a fixed write rate
-(see [Fixed-rate fan-out](#fixed-rate-fan-out-t4-485)) — but it does **not**
-remove the per-group serial O(N) limit. It should be **re-landed in a
-focused follow-up** once t4 is the accepted fan-out metric. The park does
-**not** rest on the t3 Accepted/sec regression (677/s → 67/s): that metric
-is confounded by the delivery backlog and client starvation, not a fan-out
-verdict. **10k subscribers were not measured** — at 1,000 subscribers on a
+`714f9c5` then revert `ee599f8`). The t4 harness measures the hoist as a
+**commit → broadcast complete win** — p50 ~3–4× lower under a fixed write
+rate (see [Fixed-rate fan-out](#fixed-rate-fan-out-t4-485)) — but it does
+**not** remove the per-group serial O(N) limit. It is **not merged**, and
+because the t4 harness uses **in-process subscribers**, a
+**production-shaped fan-out measurement** (real SSE sockets) gates
+re-landing. The park does **not** rest on the t3 Accepted/sec regression
+(677/s → 67/s): that metric is confounded by the delivery backlog and
+client starvation, not a fan-out verdict. **10k subscribers were not
+measured** — at 1,000 subscribers on a
 4-scheduler VM the box is already saturated and RSS was 928 MiB; a
 10k-subscriber point needs a dedicated machine and is out of scope here.
 
 ## Fixed-rate fan-out (t4, #485)
 
 Tier `t4` (commit `eacd296`) drives `Writer.write_actions/1` at a fixed
-rate `--rate R` and reports delivered Actions/sec plus commit → dispatch
-p50 per 10s bucket, so fan-out is judged with the **write client held
-constant**: `need = R × N` deliveries/sec, and a flat per-bucket p50 means
-fan-out keeps up while a rising one means it does not.
+rate `--rate R` and reports delivered Actions/sec plus **commit → broadcast
+complete** p50 per 10s bucket, so fan-out is judged with the **write client
+held constant**: `need = R × N` deliveries/sec, and a flat per-bucket p50
+means fan-out keeps up while a rising one means it does not. The telemetry
+fires at the **end** of `GroupServer.handle_cast({:push_actions, ...})`,
+after the O(N×A) cast loop, so the label is commit → broadcast complete, not
+commit → dispatch.
 
 ```sh
 mix bench.actions --tier t4 --rate <R> --subscribers <N> --duration 25 \
@@ -359,37 +364,46 @@ mix bench.actions --tier t4 --rate <R> --subscribers <N> --duration 25 \
 
 Keep-up sweep on `recsy-vps` (4 schedulers; p50 across 10s buckets, µs):
 
-|     R |    N | need | achieved | delivered/s | per-sub/s | bucket p50                          | verdict  |
-| ----: | ---: | ---: | -------: | ----------: | --------: | ----------------------------------- | -------- |
-| 20000 |    1 |  20k |   19,964 |      17,108 |    17,108 | 3752 / 3757 / 3929                  | keeps up |
-| 10000 |    1 |  10k |    9,976 |       8,554 |     8,554 | 3634 / 2439 / 2989                  | keeps up |
-|  8000 |   10 |  80k |    8,004 |      68,593 |     6,859 | 5315 / 5057 / 4941                  | keeps up |
-|  5000 |   10 |  50k |    4,996 |      42,865 |     4,286 | 5765 / 5643 / 4919                  | keeps up |
-|   500 |  100 |  50k |      500 |      44,102 |       441 | 36763 / 41357 / 41833               | keeps up |
-|  1000 |  100 | 100k |    1,004 |      85,788 |       858 | 46235 / 51171 / 153332              | marginal |
-| 10000 |   10 | 100k |    9,816 |      64,803 |     6,480 | 7956 / 3,796,023 / 5,184,672        | diverges |
-| 20000 |   10 | 200k |   13,564 |      60,511 |     6,051 | 1,863,154 / 7,168,558 / 10,883,767  | diverges |
-|  2000 |  100 | 200k |    1,877 |      77,618 |       776 | 4,300,822 / 7,009,608 / 13,181,902  | diverges |
-|  8000 |  100 | 800k |    4,237 |      93,397 |       934 | 3,445,610 / 11,173,061 / 19,724,212 | diverges |
-|    50 | 1000 |  50k |       52 |      41,595 |        42 | 567,252 / 642,303 / 2,146,301       | diverges |
-|   100 | 1000 | 100k |      100 |      85,557 |        86 | 598,335 / 817,410 / 945,528         | diverges |
-|   500 | 1000 | 500k |      495 |      98,512 |        99 | 3,604,823 / 10,620,320              | diverges |
-|  2000 | 1000 |   2M |    1,700 |     101,059 |       101 | 3,985,947 / 13,341,271              | diverges |
+|     R |    N | need | achieved | delivered/s | % need | p50 buckets (µs)                    | verdict                       |
+| ----: | ---: | ---: | -------: | ----------: | -----: | ----------------------------------- | ----------------------------- |
+| 10000 |    1 |  10k |    9,848 |       9,524 |    95% | 29,069 / 6,615 / 24,787             | keeps up                      |
+|  7000 |   10 |  70k |    7,000 |      69,959 |   100% | 4,737 / 4,829 / 4,752               | keeps up                      |
+|   500 |  100 |  50k |      500 |      50,194 |   100% | 42,620 / 42,874 / 46,273            | keeps up                      |
+|  1000 |  100 | 100k |    1,000 |     100,003 |   100% | 43,391 / 47,190 / 51,080            | keeps up                      |
+|    50 | 1000 |  50k |       48 |      50,697 |   101% | 537,301 / 636,850 / 648,571         | keeps up (~0.6s)              |
+|   100 | 1000 | 100k |      104 |      98,765 |    99% | 580,151 / 774,715 / 903,755         | at the edge                   |
+|   300 | 1000 | 300k |      300 |     117,992 |    39% | 2,318,603 / 8,337,306 / 13,286,676  | diverges                      |
+|   500 | 1000 | 500k |      504 |     116,457 |    23% | 2,964,171 / 10,483,715 / 17,388,314 | diverges                      |
+|  2000 |  100 | 200k |    1,960 |     116,008 |    58% | 1,106,037 / 4,977,938 / 9,060,987   | diverges                      |
+|  8000 |   10 |  80k |    7,844 |      72,733 |    91% | 4,544 / 7,081 / 947,764             | diverges late                 |
+|  2000 | 1000 |   2M |    1,692 |     113,697 |     6% | 4,540,025 / 13,610,517 / 20,616,455 | diverges                      |
+| 20000 |   10 | 200k |   13,476 |      68,554 |    34% | —                                   | **write-limited** (13.5k<20k) |
+
+**Harness fix (`9d20df6`).** `delivered_rate` now windows the **measured
+window only** (warmup excluded). Before the fix, every report read ~86% of the
+true rate because the denominator spanned warmup plus the measured window;
+that "residual" was **warmup dilution, not end-of-run backlog**. Smoke proof:
+`--rate 1000 --subscribers 10 --duration 5 --warmup 2` read 8,175.6/s before and
+9,989.6/s after (need = 10,000/s). Below the knee, delivered/s ≈ need.
 
 **Findings.**
 
-- The sustainable delivery rate **falls as subscriber count grows**: n=1
-  keeps up at 20k deliveries/s (per-sub 20k/s); n=10 at 80k/s (per-sub
-  8k/s); n=100 at 50k/s (per-sub 500/s); n=1000 already diverges at 50k/s
-  (per-sub <50/s).
-- Total delivered/s saturates at roughly **~100k deliveries/s** once behind,
-  independent of N and R — but the _knee_ is much lower at high N.
-- Mechanism: a group is dispatched by a single `GroupServer` process that
-  serially casts one message per **(subscriber × action)** in the batch
-  (`group_server.ex:76-80`), so the per-batch dispatch cost is O(N) and the
-  sustainable batches/s falls ~1/N.
-- `delivered/s ≈ 86% of need` even in the keeps-up runs: the residual is the
-  backlog at `stop_all` (subscribers are killed, not drained).
+1. **Aggregate delivery keeps up to ~100k deliveries/s.** Below the knee,
+   delivered/s ≈ need (100%, 101%, 99%). Above it, delivered/s saturates
+   ~100–120k/s while the commit → broadcast complete p50 grows without bound
+   (n=1000: 300k need → p50 2.3 s → 13.3 s; 500k → 3.0 s → 17.4 s; 2M →
+   4.5 s → 20.6 s).
+2. **Per-batch latency is O(N).** At the _same_ ~100k deliveries/s, n=100 costs
+   ~45–51 ms while n=1000 costs ~0.6–0.9 s. A group is dispatched by one
+   `GroupServer` process that serially casts one message per (subscriber ×
+   action) (`group_server.ex:76-80`), so the per-batch cost grows with
+   subscribers.
+3. **Consequence at scale.** 1000 subscribers sustains ~100 Actions/s of
+   fan-out at ~0.6–0.9 s dispatch latency; ~100 subscribers sustains ~1000
+   Actions/s at ~45 ms. This is the mechanism behind the t3 cliff.
+4. Only `n=10 R=20000` was **write-limited** (achieved 13,476 < 20,000); the
+   other rows held `achieved ≈ target`, so their divergence is fan-out, not
+   Writer saturation.
 
 **Why the T3 Accepted/sec metric is confounded.** In the t3 run with the
 hoist, the report's _client-side_ latency window is **87s for a 15s run**.
@@ -407,10 +421,14 @@ fan-out shape change.
 | n=1000, r=50  | 567,252 / 642,303 / 2,146,301 | 167,232 / 374,096 / 494,278 | 41,595 → 45,456 |
 | n=100, r=1000 | 46,235 / 51,171 / 153,332     | 16,814 / 25,986 / 31,628    | 85,788 → 85,918 |
 
-The hoist lowers commit → dispatch p50 ~3–4× under a fixed write rate. It
-does not remove the per-group serial O(N) limit (still diverges at n=1000),
-but it is a real fan-out win — the opposite of what the confounded t3
-Accepted/sec metric said (677 → 67/s).
+The hoist lowers commit → broadcast complete p50 ~3–4× under a fixed write
+rate. It does not remove the per-group serial O(N) limit (still diverges at
+n=1000), but it is a real fan-out win — the opposite of what the confounded
+t3 Accepted/sec metric said (677 → 67/s). It is nevertheless **PARKED (not
+merged)**: the t4 harness uses **in-process subscribers**, so a
+**production-shaped fan-out measurement** (real SSE sockets) gates
+re-landing. The earlier park rested on the confounded t3 Accepted/sec metric
+(677 → 67/s).
 
 ## Writer batch coalescing (#332)
 
@@ -635,15 +653,17 @@ Server-side latency is read from the `ebb.*` `:telemetry` events added by
 the measured window and stamps every sample with its offset from the
 window start:
 
-| Event                         | Measures                               | Metadata                    |
-| ----------------------------- | -------------------------------------- | --------------------------- |
-| `ebb.http.request_latency_ms` | time inside the request process        | `method`, `route`, `status` |
-| `ebb.writer.batch_latency_ms` | one durable Writer flush               | `gsn_start`, `gsn_end`      |
-| `ebb.fanout.push_latency_ms`  | commit → dispatch, per batch per group | `group_id`                  |
+| Event                         | Measures                                         | Metadata                    |
+| ----------------------------- | ------------------------------------------------ | --------------------------- |
+| `ebb.http.request_latency_ms` | time inside the request process                  | `method`, `route`, `status` |
+| `ebb.writer.batch_latency_ms` | one durable Writer flush                         | `gsn_start`, `gsn_end`      |
+| `ebb.fanout.push_latency_ms`  | commit → broadcast complete, per batch per group | `group_id`                  |
 
 Every raw run report prints a **Server-side latency** table beside the
-client-side one, and the fan-out section reports commit → dispatch
-separately from the client-stamp delivery lag. The Writer flush timer
+client-side one, and the fan-out section reports commit → broadcast complete
+separately from the client-stamp delivery lag. It fires at the end of
+`GroupServer.handle_cast({:push_actions, ...})`, after the O(N×A) cast loop.
+The Writer flush timer
 starts after the request is dequeued, so the wait a call spends in the
 Writer mailbox is not instrumented. `--tier t0` has no HTTP request, so
 only the Writer flush is reported there.
@@ -715,10 +735,14 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
 3. **Fan-out is bounded by per-group serial dispatch, not write
    throughput** — a single `GroupServer` serially casts one message per
    (subscriber × action) (`group_server.ex:76-80`), so total delivery
-   saturates at ~100k/s once behind and the per-subscriber sustainable rate
-   falls with N (20k/s at n=1 down to <50/s at n=1000). The `t4` tier now
-   measures this at a fixed write rate; the encode-once hoist is a measured
-   commit → dispatch win to re-land (#485).
+   saturates at ~100–120k/s once behind and per-batch commit → broadcast
+   complete latency grows with N (~45–51 ms at n=100 vs ~0.6–0.9 s at
+   n=1000 at the same ~100k deliveries/s). The `t4` tier now measures this at
+   a fixed write rate. The encode-once hoist is a measured t4 commit →
+   broadcast complete win (~3–4× lower p50) but is **parked, not merged**
+   (#485): the t4 harness uses in-process subscribers, so a
+   **production-shaped fan-out measurement** (real SSE sockets) gates
+   re-landing, and the deeper lever remains the O(N) per-group dispatch.
 4. **10k-subscriber fan-out** — needs a dedicated load-test machine and is
    out of scope here.
 5. **Action-log compaction/retention**

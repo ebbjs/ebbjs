@@ -745,24 +745,28 @@ flush, vs 2×batch in `spread`).
 - **§2 #4, "encode once recovers most of the loss" — falsified as stated, but
   the t3 Accepted/sec verdict is confounded.** The one-binary-per-group hoist
   appeared to regress the official t3 Accepted/sec metric ~10× at 1,000
-  subscribers (**677 → 67/s**) even though server commit→dispatch p50 improved
-  (8.04 s → 4.09 s), delivery rate rose (27k → 39k/s) and RSS fell
+  subscribers (**677 → 67/s**) even though server commit→broadcast complete p50
+  improved (8.04 s → 4.09 s), delivery rate rose (27k → 39k/s) and RSS fell
   (928 → 447 MiB); `:binary.copy` did not recover it. The metric is confounded
   by the delivery backlog and the client-side latency window — in that run the
   window is **87s for a 15s run** (the worker loop checks the deadline only
   before each iteration and `Writer.write_actions/1` blocks past it), and
   `delivered_total` counts **post-deadline** Actions that `Accepted/sec` (0–15s)
   never windows. The new **`t4` harness** (commit `eacd296`, fixed write rate)
-  measures the hoist as a **dispatch-latency win** — commit → dispatch p50
-  ~3–4× lower — that does not remove the O(N) per-group limit; it should be
-  **re-landed as a focused follow-up**, not left parked on the confounded
-  metric.
+  measures the hoist as a **commit → broadcast complete p50 win** — ~3–4×
+  lower (n=1000, r=50: 567,252/642,303/2,146,301 µs →
+  167,232/374,096/494,278 µs; n=100, r=1000: 46,235/51,171/153,332 µs →
+  16,814/25,986/31,628 µs) — that does not remove the O(N) per-group limit. It
+  is **parked, not merged**: the t4 harness uses in-process subscribers, so a
+  **production-shaped fan-out measurement** (real SSE sockets) is the gate for
+  re-landing.
 - **§2 #4, "the bottleneck is total CPU volume, not a serialized dispatch
   point" — wrong.** The `GroupServer` **is** a serial O(N) dispatch point per
   group: it casts one message per (subscriber × action)
-  (`group_server.ex:76-80`). t4 showed 10 subscribers sustaining 80k
-  deliveries/s but 1,000 diverging at 50k/s, with total delivery saturating at
-  ~100k/s once behind.
+  (`group_server.ex:76-80`). t4 showed 10 subscribers at R=8000 delivering
+  **72,733/s** (91% of need, diverging late) while n=1000 at R=300 delivered
+  **117,992/s** (39%): total delivery saturates at ~100–120k/s once behind and
+  the commit → broadcast complete p50 grows without bound.
 - **For context on #3/#4.** The post-`ad8e43b` fan-out sweep (`t3`, b10, c=8,
   hot, 15 s) against the improved `t2` b10 baseline of **15,893/s** is: 100
   subscribers **1,647/s (−90%)**, 1,000 subscribers **677/s (−96%)**. The
@@ -771,8 +775,9 @@ flush, vs 2×batch in `spread`).
 - **TL;DR ROI ranking — superseded.** The pre-measurement
   `#4 > #3 > #5 > #1/#2 > #7 > #6` put #3 above #5 on the guess that the
   fan-out encode would be the win. Measured, the write-side encode is already
-  once per Action and the fan-out hoist is a t4-measured dispatch win to
-  re-land, while the watermark is a contained **0.47 ms/flush**; the ranking is
+  once per Action and the fan-out hoist is a t4-measured commit → broadcast
+  complete win that is parked pending a production-shaped measurement, while
+  the watermark is a contained **0.47 ms/flush**; the ranking is
   therefore **#4 (t4 harness now in place) > #5 (measured, contained) > #1/#2 >
   #7 > #3 > #6** (`bench/SPIKE-485.md` §3).
 - **Marginal decomposition.** The additive ladder and the per-phase marginal
