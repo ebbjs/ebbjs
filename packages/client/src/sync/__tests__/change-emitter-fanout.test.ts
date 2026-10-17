@@ -34,6 +34,34 @@ const mkAction = (gsn: number, subjectId: string): Action => ({
   ],
 });
 
+const mkRelationshipAction = (
+  gsn: number,
+  relId: string,
+  sourceId: string,
+  targetId: string,
+): Action => ({
+  id: `act_rel_${gsn}`,
+  actor_id: "actor_1",
+  hlc: makeHlc(1_711_036_800_000, gsn),
+  gsn,
+  updates: [
+    {
+      id: `u_rel_${gsn}`,
+      subject_id: relId,
+      subject_type: "relationship",
+      method: "put",
+      data: {
+        fields: {
+          source_id: { value: sourceId, update_id: `u_rel_${gsn}`, hlc: makeHlc(1) },
+          target_id: { value: targetId, update_id: `u_rel_${gsn}`, hlc: makeHlc(1) },
+          type: { value: "todo", update_id: `u_rel_${gsn}`, hlc: makeHlc(1) },
+          field: { value: "owner", update_id: `u_rel_${gsn}`, hlc: makeHlc(1) },
+        },
+      },
+    },
+  ],
+});
+
 describe("SyncClient._applyAction fan-out to storage change emitter", () => {
   it("fires onEntityChange for every affected id when the action is applied", async () => {
     const storage = createMemoryAdapter();
@@ -110,6 +138,28 @@ describe("SyncClient._applyAction fan-out to storage change emitter", () => {
     // Reading re-materializes (still dirty) → listener fires once.
     expect(fired).toBe(1);
     expect(await storage.isDirty("todo_1")).toBe(false);
+    unsub();
+  });
+
+  it("fires onAccessorChange for a relationship row's source on an inbound action", async () => {
+    const storage = createMemoryAdapter();
+    if (storage.changeEmitter === undefined) {
+      throw new Error("memory adapter must ship a change emitter");
+    }
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      storage,
+    });
+
+    const seen: string[] = [];
+    const unsub = storage.changeEmitter.onAccessorChange("todo_1", () => {
+      seen.push("todo_1");
+    });
+
+    await callApplyAction(client, mkRelationshipAction(1, "rel_1", "todo_1", "user_1"), "grp_1");
+    expect(seen).toEqual(["todo_1"]);
+
     unsub();
   });
 });

@@ -4,8 +4,8 @@ import type { EntityRow, EntitySnapshot, TSchema } from "@ebbjs/client";
 /**
  * The value {@link useEntity} exposes: the row `client.<entity>.get(id)`
  * materializes — the entity `id`, projected fields, and relationship
- * accessors — without the internal `subscribe` handle, which the hook
- * owns.
+ * accessors — without the internal `subscribe` / `subscribeAccessors`
+ * handles, which the hook owns.
  *
  * `id` is the row's addressing key (`update(row.id, ...)`), not a
  * wire-envelope passthrough; the raw `EntitySnapshot` stays on the
@@ -20,7 +20,7 @@ import type { EntityRow, EntitySnapshot, TSchema } from "@ebbjs/client";
 export type UseEntityResult<
   TFields extends Record<string, TSchema>,
   TAccessors extends object = Record<never, never>,
-> = Omit<EntityRow<TFields, TAccessors>, "subscribe">;
+> = Omit<EntityRow<TFields, TAccessors>, "subscribe" | "subscribeAccessors">;
 
 /** Reactive cell {@link useEntity} reads through `useSyncExternalStore`. */
 interface EntityStore<TFields extends Record<string, TSchema>, TAccessors extends object> {
@@ -86,9 +86,9 @@ function createEntityStore<TFields extends Record<string, TSchema>, TAccessors e
   const withoutSubscribe = (
     row: EntityRow<TFields, TAccessors>,
   ): UseEntityResult<TFields, TAccessors> => {
-    const { subscribe: _subscribe, ...data } = row;
-    // `UseEntityResult` is `EntityRow` minus `subscribe`; TS can't prove
-    // the rest-pattern drops exactly the intersection member.
+    const { subscribe: _subscribe, subscribeAccessors: _subscribeAccessors, ...data } = row;
+    // `UseEntityResult` is `EntityRow` minus the subscribe handles; TS
+    // can't prove the rest-pattern drops exactly the intersection members.
     return data as UseEntityResult<TFields, TAccessors>;
   };
 
@@ -130,6 +130,14 @@ function createEntityStore<TFields extends Record<string, TSchema>, TAccessors e
     void reload(loadToken);
   };
 
+  // A relationship / membership write leaves the row's own fields
+  // unchanged but changes its accessors, so it bypasses the field-equality
+  // guard above and always re-reads.
+  const handleAccessorChange = (): void => {
+    loadToken += 1;
+    void reload(loadToken);
+  };
+
   const bootstrap = async (): Promise<void> => {
     const token = ++loadToken;
     let row: EntityRow<TFields, TAccessors> | null;
@@ -147,7 +155,12 @@ function createEntityStore<TFields extends Record<string, TSchema>, TAccessors e
       return;
     }
     state = withoutSubscribe(row);
-    detach = row.subscribe(handleSnapshot);
+    const detachEntity = row.subscribe(handleSnapshot);
+    const detachAccessors = row.subscribeAccessors(handleAccessorChange);
+    detach = () => {
+      detachEntity();
+      detachAccessors();
+    };
     notify();
   };
 

@@ -236,9 +236,13 @@ export type EntitySnapshotOf<TWire extends Record<string, TSchema>> = Static<
  * losing the strict per-field typing.
  *
  * `client.<entity>.get(id)`'s row carries `subscribe(cb)` and
- * fires this shape on every materialization of the row. The
+ * fires this shape on every materialization of the row — including a
+ * relationship / membership write, which re-reads the row. The
  * snapshot is data, not a handle: relationship accessors are async
- * and stay on the row, not in the snapshot.
+ * and stay on the row, not in the snapshot. Because an accessor-only
+ * change leaves the projected fields identical, a consumer that
+ * suppresses no-op snapshots uses the row's `subscribeAccessors` to
+ * force a re-read.
  */
 export type EntitySnapshot<TFields extends Record<string, TSchema>> = EntitySnapshotOf<
   WireFields<TFields>
@@ -267,6 +271,12 @@ export type EntityRow<
 > = Omit<EntityWithAccessors<TFields, TAccessors>, "id"> & {
   readonly id: string;
   subscribe(cb: (snapshot: EntitySnapshot<TFields>) => void): () => void;
+  /**
+   * Subscribe to a change in one of the row's relationship / membership
+   * accessors. The row's own fields are usually unchanged, so a consumer
+   * must re-read the row rather than diff its projected fields.
+   */
+  subscribeAccessors(cb: () => void): () => void;
 };
 
 /**
@@ -699,10 +709,27 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
 ): (() => void) => {
   const emitter = storage.changeEmitter;
   if (emitter === undefined) return () => {};
-  return emitter.onEntityChange(id, (next) => {
+  const unsubscribeEntity = emitter.onEntityChange(id, (next) => {
     if (next === null || next.type !== entityName) return;
     cb(toEntitySnapshot(next, shape));
   });
+  // A relationship / membership write does not materialize the row, so
+  // re-read it and fire the same snapshot contract a field change would.
+  // Consumers that compare projected fields (useEntity) must use
+  // `subscribeAccessors` to force a re-read.
+  let active = true;
+  const unsubscribeAccessors = emitter.onAccessorChange(id, () => {
+    void (async () => {
+      const entity = await storage.entities.get(id);
+      if (!active || entity === null || entity.type !== entityName) return;
+      cb(toEntitySnapshot(entity, shape));
+    })();
+  });
+  return () => {
+    active = false;
+    unsubscribeEntity();
+    unsubscribeAccessors();
+  };
 };
 
 /**
@@ -777,6 +804,11 @@ export function createEntityNamespace<
       const accessors = buildRowAccessors(entityName, id, storage, registry, write);
       const subscribe = (cb: (snapshot: EntitySnapshot<TFields>) => void): (() => void) =>
         subscribeToEntity(storage, entityName, id, shape, cb);
+      const subscribeAccessors = (cb: () => void): (() => void) => {
+        const emitter = storage.changeEmitter;
+        if (emitter === undefined) return () => {};
+        return emitter.onAccessorChange(id, cb);
+      };
       // Accessors spread last so a declared relationship shadows a
       // same-named field; the entity id spreads after them so it wins
       // over both.
@@ -785,6 +817,7 @@ export function createEntityNamespace<
         ...accessors,
         id: entity.id,
         subscribe,
+        subscribeAccessors,
       } as unknown as EntityRow<TFields, TAccessors>;
     },
     subscribe(

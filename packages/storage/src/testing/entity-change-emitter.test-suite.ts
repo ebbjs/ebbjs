@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Action, Entity } from "@ebbjs/core";
+import type { Entity } from "@ebbjs/core";
 import type { EntityChangeEmitter } from "../types/entity-change-emitter";
-import type { ActionLog } from "../types/action-log";
-import type { DirtyTracker } from "../types/dirty-tracker";
-import type { EntityStore } from "../types/entity-store";
 import type { StorageAdapter } from "../types/storage-adapter";
 import { buildPatchAction, buildPutAction } from "./fixtures";
 
@@ -36,6 +33,34 @@ const makeEntity = (overrides: Partial<Entity> = {}): Entity => ({
   last_gsn: 0,
   ...overrides,
 });
+
+const makeRelationship = (overrides: Partial<Entity> = {}): Entity =>
+  makeEntity({
+    id: "rel_1",
+    type: "relationship",
+    data: {
+      fields: {
+        source_id: { value: "todo_1", update_id: "u_rel", hlc: "1-0" },
+        target_id: { value: "user_1", update_id: "u_rel", hlc: "1-0" },
+        type: { value: "todo", update_id: "u_rel", hlc: "1-0" },
+        field: { value: "owner", update_id: "u_rel", hlc: "1-0" },
+      },
+    },
+    ...overrides,
+  });
+
+const makeMembership = (overrides: Partial<Entity> = {}): Entity =>
+  makeEntity({
+    id: "eg_1",
+    type: "entityGroup",
+    data: {
+      fields: {
+        entity_id: { value: "todo_1", update_id: "u_eg", hlc: "1-0" },
+        group_id: { value: "grp_1", update_id: "u_eg", hlc: "1-0" },
+      },
+    },
+    ...overrides,
+  });
 
 export const defineEntityChangeEmitterTests = ({
   name,
@@ -154,6 +179,70 @@ export const defineEntityChangeEmitterTests = ({
         expect(seen).toHaveLength(1);
         expect(seen[0]?.id).toBe("todo_1");
         unsub();
+      });
+    });
+
+    describe("onAccessorChange", () => {
+      it("fires for a relationship row's source on set", async () => {
+        const { adapter, emitter } = await factory();
+        const seen: string[] = [];
+        const unsub = emitter.onAccessorChange("todo_1", () => seen.push("todo_1"));
+        await adapter.entities.set(makeRelationship());
+        expect(seen).toEqual(["todo_1"]);
+        unsub();
+      });
+
+      it("fires for a relationship tombstone so an unlink still wakes the source", async () => {
+        const { adapter, emitter } = await factory();
+        const relationship = makeRelationship();
+        await adapter.entities.set(relationship);
+
+        const seen: string[] = [];
+        const unsub = emitter.onAccessorChange("todo_1", () => seen.push("todo_1"));
+        await adapter.entities.set({ ...relationship, deleted_hlc: "2-0" });
+        expect(seen).toEqual(["todo_1"]);
+        unsub();
+      });
+
+      it("fires for an entityGroup row's entity", async () => {
+        const { adapter, emitter } = await factory();
+        const seen: string[] = [];
+        const unsub = emitter.onAccessorChange("todo_1", () => seen.push("todo_1"));
+        await adapter.entities.set(makeMembership());
+        expect(seen).toEqual(["todo_1"]);
+        unsub();
+      });
+
+      it("does not fire for a plain entity set", async () => {
+        const { adapter, emitter } = await factory();
+        const seen: string[] = [];
+        const unsub = emitter.onAccessorChange("todo_2", () => seen.push("todo_2"));
+        await adapter.entities.set(makeEntity({ id: "todo_2", type: "todo" }));
+        expect(seen).toEqual([]);
+        unsub();
+      });
+
+      it("unsub stops further emissions", async () => {
+        const { adapter, emitter } = await factory();
+        const seen: string[] = [];
+        const unsub = emitter.onAccessorChange("todo_1", () => seen.push("todo_1"));
+        await adapter.entities.set(makeRelationship());
+        expect(seen).toHaveLength(1);
+
+        unsub();
+        await adapter.entities.set(makeRelationship({ id: "rel_2" }));
+        expect(seen).toHaveLength(1);
+      });
+
+      it("a throwing listener does not break sibling listeners", async () => {
+        const { adapter, emitter } = await factory();
+        const good: string[] = [];
+        emitter.onAccessorChange("todo_1", () => {
+          throw new Error("boom");
+        });
+        emitter.onAccessorChange("todo_1", () => good.push("todo_1"));
+        await adapter.entities.set(makeRelationship());
+        expect(good).toEqual(["todo_1"]);
       });
     });
 
