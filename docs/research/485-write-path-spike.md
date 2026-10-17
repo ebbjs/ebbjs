@@ -765,15 +765,24 @@ flush, vs 2×batch in `spread`).
 - **§2 #4, coalesced delivery — measured and merged (`a292f58`).** One binary
   per group per batch, one cast per subscriber, one `chunk/2`; wire bytes
   identical. Back-to-back t4 A/B: commit → broadcast complete p50 falls
-  **5–10×** (n=1000, r=50: 537/637/649 ms → **104/114/125 ms**; n=100, r=1000:
-  43/47/51 ms → **4.5/4.0/4.2 ms**) and CPU is **roughly halved** per delivery
-  (42.3% → 24.3% at n=1000 r=100; 30.4% → 15.7% at n=100 r=1000). The new
-  n=1000 knee is **~100k deliveries/s** (r=100 keeps up at 100,378/s; r=300
-  delivers 138,965/s = 46%), i.e. the ceiling **rises ~18% but is not
-  removed**: coalescing removes message and encode overhead, not the
-  per-delivery **byte volume** (Actions × subscribers × payload), which is
-  unchanged. The remaining levers are reducing bytes (client-side
-  diffing/coalescing) or sharding across groups.
+  **4.5–16×** (n=1000, r=50: 537/637/649 ms → **104/114/125 ms**; n=100, r=1000:
+  43/47/51 ms → **4.5/4.0/4.2 ms**) and utilization falls 42.3% → 22.1% at
+  n=1000 r=100 and 30.4% → 15.7% at n=100 r=1000 — **measured but confounded**,
+  because the t4 subscriber splits each coalesced chunk into per-Action frames,
+  so the coalesced arm carries client-side work the baseline arm did not and
+  there is no split-free control. Against the back-to-back control the delivered
+  delta is **+15%** (87,752 → 100,686) and the latency win **6–16×**; against the
+  earlier unstable baseline (98,765/s) they are **+2%** and **4.5–8×** — always
+  cite the range. The r=300 comparison is stable (118,182 → 143,871, +22%). The
+  new n=1000 knee is **~100k deliveries/s** (r=100 keeps up at 100,686/s; r=300
+  delivers 143,871/s = 48%), i.e. the ceiling **rises ~2–22% depending on
+  baseline but is not removed**: coalescing removes message and encode overhead,
+  not the per-delivery **byte volume** (Actions × subscribers × payload), which
+  is unchanged. The remaining levers are reducing bytes (client-side
+  diffing/coalescing) or sharding across groups. The production-shaped (real SSE
+  socket) measurement was **not** performed — both t3 and t4 use in-process
+  subscribers — so it remains the outstanding gate before treating these
+  numbers as production-representative.
 - **§2 #4, "the bottleneck is total CPU volume, not a serialized dispatch
   point" — wrong.** The `GroupServer` **is** a serial O(N) dispatch point per
   group: it casts one message per (subscriber × action)
@@ -786,12 +795,18 @@ flush, vs 2×batch in `spread`).
   subscribers **1,647/s (−90%)**, 1,000 subscribers **677/s (−96%)**. The
   cliff is real and is the worst remaining problem; the `t4` harness now
   measures it without the write client as a variable (`bench/SPIKE-485.md` §6).
+  Re-running candidate #4's own check **with coalescing** makes the t3
+  Accepted/sec metric _worse_, not better — 0 subs 16,437/s, 100 subs 1,358/s,
+  1,000 subs 136.7/s (util 28.5% / 48.9% / 49.7%) — the same confound as the
+  encode-once hoist (t3 drives writes flat out while a subscriber storm exists,
+  so a faster-draining fan-out starves the in-process `:httpc` clients). `t4` is
+  the valid metric; t3 Accepted/sec cannot judge a fan-out shape change.
 - **TL;DR ROI ranking — superseded.** The pre-measurement
   `#4 > #3 > #5 > #1/#2 > #7 > #6` put #3 above #5 on the guess that the
   fan-out encode would be the win. Measured, the write-side encode is already
   once per Action and the fan-out hoist is a t4-measured commit → broadcast
-  complete win that is parked pending a production-shaped measurement, while
-  the watermark is a contained **0.47 ms/flush**; the ranking is
+  complete win that coalescing supersedes, while the watermark is a contained
+  **0.47 ms/flush**; the ranking is
   therefore **#4 (t4 harness now in place) > #5 (measured, contained) > #1/#2 >
   #7 > #3 > #6** (`bench/SPIKE-485.md` §3).
 - **Marginal decomposition.** The additive ladder and the per-phase marginal
