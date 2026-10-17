@@ -65,8 +65,8 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   ## Sibling modules
 
-  - `EbbServer.Sync.GroupServer` — one pid per active group shard; holds
-    its SSE subscribers' senders.
+  - `EbbServer.Sync.GroupServer` — one pid per active group; holds its
+    SSE subscribers' senders.
   - `EbbServer.Sync.FanOutFrontier` — persisted last-pushed GSN across a
     Router restart.
   - `EbbServer.Sync.SSEConnection` — one pid per live `GET /sync/live`
@@ -94,7 +94,7 @@ defmodule EbbServer.Sync.FanOutRouter do
           pending_groups: %{non_neg_integer() => [String.t()]},
           batch_committed_at: %{{non_neg_integer(), non_neg_integer()} => integer()},
           last_pushed_gsn: non_neg_integer(),
-          subscriptions: %{pid() => [{String.t(), non_neg_integer()}]},
+          subscriptions: %{pid() => [String.t()]},
           monitors: %{pid() => reference()}
         }
 
@@ -219,21 +219,31 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   @impl true
   def handle_call({:subscribe, group_ids, connection_pid, actor_id}, _from, state) do
-    entries =
-      for group_id <- group_ids do
-        shard = shard_for(connection_pid, group_id)
-        group_pid = group_server(group_id, shard)
+    for group_id <- group_ids do
+      group_pid =
+        case DynamicSupervisor.start_child(
+               GroupDynamicSupervisor,
+               {GroupServer, group_id}
+             ) do
+          {:ok, pid} ->
+            pid
 
-        # Forward the authenticated actor_id so GroupServer's broadcast_presence
-        # guard can filter out self-echoes. (Previously this passed group_id,
-        # which made every subscriber look like the group itself.)
-        GroupServer.add_subscriber(group_pid, connection_pid, actor_id)
-        {group_id, shard}
-      end
+          {:error, {:already_started, pid}} ->
+            pid
+
+          {:error, reason} ->
+            raise "Failed to start GroupServer for #{group_id}: #{inspect(reason)}"
+        end
+
+      # Forward the authenticated actor_id so GroupServer's broadcast_presence
+      # guard can filter out self-echoes. (Previously this passed group_id,
+      # which made every subscriber look like the group itself.)
+      GroupServer.add_subscriber(group_pid, connection_pid, actor_id)
+    end
 
     new_subscriptions =
-      Map.update(state.subscriptions, connection_pid, entries, fn existing ->
-        Enum.uniq(existing ++ entries)
+      Map.update(state.subscriptions, connection_pid, group_ids, fn existing ->
+        Enum.uniq(existing ++ group_ids)
       end)
 
     # Monitor on the first subscribe only; a re-subscribe from the same
@@ -249,10 +259,10 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   @impl true
   def handle_call({:unsubscribe, connection_pid}, _from, state) do
-    entries = Map.get(state.subscriptions, connection_pid, [])
+    group_ids = Map.get(state.subscriptions, connection_pid, [])
 
-    for {group_id, shard} <- entries do
-      case Registry.lookup(EbbServer.Sync.GroupRegistry, {group_id, shard}) do
+    for group_id <- group_ids do
+      case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do
         [{pid, _}] -> GroupServer.remove_subscriber(pid, connection_pid)
         [] -> :ok
       end
@@ -263,8 +273,8 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   @impl true
   def handle_cast({:broadcast_presence, group_ids, entity_id, actor_id, data}, state) do
-    for group_id <- group_ids, shard <- 0..(shards() - 1) do
-      case Registry.lookup(EbbServer.Sync.GroupRegistry, {group_id, shard}) do
+    for group_id <- group_ids do
+      case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do
         [{pid, _}] -> GroupServer.broadcast_presence(pid, entity_id, actor_id, data)
         [] -> :ok
       end
@@ -538,44 +548,9 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   defp push_to_group(group_id, actions, committed_at) do
-    for shard <- 0..(shards() - 1) do
-      case Registry.lookup(EbbServer.Sync.GroupRegistry, {group_id, shard}) do
-        [{pid, _}] -> GroupServer.push_actions(pid, actions, committed_at)
-        [] -> :ok
-      end
+    case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do
+      [{pid, _}] -> GroupServer.push_actions(pid, actions, committed_at)
+      [] -> :ok
     end
-
-    :ok
-  end
-
-  # Assigns a connection to a shard for one group. Deterministic in the
-  # connection pid, so subscribe and unsubscribe resolve to the same
-  # GroupServer without persisting a mapping; folding in the group id
-  # spreads one connection's group subscriptions across shards.
-  defp shard_for(connection_pid, group_id) do
-    :erlang.phash2({connection_pid, group_id}, shards())
-  end
-
-  defp group_server(group_id, shard) do
-    case DynamicSupervisor.start_child(
-           GroupDynamicSupervisor,
-           {GroupServer, {group_id, shard}}
-         ) do
-      {:ok, pid} ->
-        pid
-
-      {:error, {:already_started, pid}} ->
-        pid
-
-      {:error, reason} ->
-        raise "Failed to start GroupServer for #{group_id} shard #{shard}: #{inspect(reason)}"
-    end
-  end
-
-  # Shard count is read per dispatch so a runtime change (only the bench
-  # sets it) takes effect without a restart. Clamped so a misconfigured
-  # zero or negative still routes every group somewhere.
-  defp shards do
-    max(Application.get_env(:ebb_server, :fanout_group_shards, 1), 1)
   end
 end

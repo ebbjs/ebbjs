@@ -124,40 +124,6 @@ defmodule EbbServer.Bench.OptionsTest do
     end
   end
 
-  describe "--group-shards" do
-    test "defaults to one shard" do
-      assert {:ok, config} = Options.parse([])
-      assert config.group_shards == 1
-    end
-
-    test "parses the shard count" do
-      assert {:ok, config} = Options.parse(["--group-shards", "4"])
-      assert config.group_shards == 4
-    end
-
-    test "accepts both bounds" do
-      assert {:ok, %{group_shards: 1}} = Options.parse(["--group-shards", "1"])
-      assert {:ok, %{group_shards: 64}} = Options.parse(["--group-shards", "64"])
-    end
-
-    test "rejects a count below one" do
-      assert {:error, message} = Options.parse(["--group-shards", "0"])
-      assert message =~ "--group-shards"
-    end
-
-    test "rejects a count above 64" do
-      assert {:error, message} = Options.parse(["--group-shards", "65"])
-      assert message =~ "--group-shards"
-    end
-
-    test "describe and command carry the shard count" do
-      {:ok, config} = Options.parse(["--group-shards", "3"])
-
-      assert Map.new(Options.describe(config))["Group shards"] == "3"
-      assert Options.command(config) =~ "--group-shards 3"
-    end
-  end
-
   describe "self-describing output" do
     test "describe names the ablated phases" do
       assert {:ok, config} = Options.parse(["--ablate", "cache,watermark"])

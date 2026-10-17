@@ -37,7 +37,6 @@ defmodule EbbServer.Bench.Options do
           updates_per_action: pos_integer(),
           subscribers: non_neg_integer(),
           rate: non_neg_integer(),
-          group_shards: pos_integer(),
           ablate: [ablate_phase()]
         }
 
@@ -56,7 +55,6 @@ defmodule EbbServer.Bench.Options do
             updates_per_action: 2,
             subscribers: 0,
             rate: 0,
-            group_shards: 1,
             ablate: []
 
   @tiers %{"t0" => :t0, "t1" => :t1, "t2" => :t2, "t3" => :t3, "t4" => :t4}
@@ -84,7 +82,6 @@ defmodule EbbServer.Bench.Options do
     updates_per_action: :integer,
     subscribers: :integer,
     rate: :integer,
-    group_shards: :integer,
     ablate: :string
   ]
 
@@ -125,7 +122,6 @@ defmodule EbbServer.Bench.Options do
       {"Preloaded entities", "#{config.entities}"},
       {"SSE subscribers", "#{config.subscribers}"},
       {"Target Actions/sec", target_rate(config.rate)},
-      {"Group shards", "#{config.group_shards}"},
       {"Writers", "#{config.writers}"},
       {"Ablated phases", ablated_description(config.ablate)},
       {"Port", "#{config.port}"},
@@ -152,7 +148,6 @@ defmodule EbbServer.Bench.Options do
       "--entities #{config.entities}",
       "--subscribers #{config.subscribers}",
       "--rate #{config.rate}",
-      "--group-shards #{config.group_shards}",
       "--writers #{config.writers}",
       "--port #{config.port}",
       "--seed #{config.seed}"
@@ -215,7 +210,6 @@ defmodule EbbServer.Bench.Options do
   defp put_opt({:updates_per_action, value}, acc), do: %{acc | updates_per_action: value}
   defp put_opt({:subscribers, value}, acc), do: %{acc | subscribers: value}
   defp put_opt({:rate, value}, acc), do: %{acc | rate: value}
-  defp put_opt({:group_shards, value}, acc), do: %{acc | group_shards: value}
   defp put_opt({:ablate, value}, acc), do: %{acc | ablate: split_ablate(value)}
 
   defp validate(config) do
@@ -288,12 +282,7 @@ defmodule EbbServer.Bench.Options do
          :ok <- check(config.batch_size > 0, "--batch-size must be at least 1"),
          :ok <- check(config.entities >= 0, "--entities must be zero or more"),
          :ok <- check(config.port in 1..65_535, "--port must be a valid TCP port"),
-         :ok <- check(config.subscribers >= 0, "--subscribers must be zero or more"),
-         :ok <-
-           check(
-             config.group_shards in 1..64,
-             "--group-shards must be between 1 and 64"
-           ) do
+         :ok <- check(config.subscribers >= 0, "--subscribers must be zero or more") do
       check(config.rate >= 0, "--rate must be zero or more Actions/sec")
     end
   end
