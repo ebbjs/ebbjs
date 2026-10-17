@@ -27,7 +27,7 @@
  */
 
 import type { Action, Entity, FieldValue, Update } from "@ebbjs/core";
-import { isFieldMap, latestHlc } from "@ebbjs/core";
+import { isFieldMap } from "@ebbjs/core";
 import { applyUpdate } from "../../storage/src/internal/materialize";
 
 export type EntityId = string;
@@ -143,65 +143,6 @@ export const contentChanged = (prev: Entity | null, next: Entity | null): boolea
   if (prev.updated_hlc !== next.updated_hlc) return true;
   if (prev.deleted_hlc !== next.deleted_hlc) return true;
   return !fieldsEqual(prev.data.fields, next.data.fields);
-};
-
-// ---------------------------------------------------------------------------
-// The optimistic overlay merge policy: pending-local-wins.
-//
-// A pending local write must stay visible to its author until the echo or a
-// conflict resolves it, even when it ties or loses the durable LWW rule (an
-// equal-HLC tiebreak that picks the server's update_id, or an older HLC). This
-// is deliberately NOT `applyUpdate` / `mergeFieldValue`: the durable rule is
-// the authority for the base and for folding an inbound window, while the
-// overlay rule is the UI contract. It mirrors `applyLocalUpdate` in the client,
-// which production deletes in favour of this single definition.
-// ---------------------------------------------------------------------------
-
-const mergePendingField = (existing: FieldValue | undefined, incoming: FieldValue): FieldValue => {
-  if (existing === undefined || !isFieldMap(existing) || !isFieldMap(incoming)) return incoming;
-  const map: Record<string, FieldValue> = { ...existing.map };
-  for (const [key, value] of Object.entries(incoming.map)) {
-    const previous = map[key];
-    map[key] = previous === undefined ? value : mergePendingField(previous, value);
-  }
-  return { map };
-};
-
-/** Fold one optimistic Update onto the composed overlay row. */
-export const applyPendingUpdate = (
-  current: Entity | null,
-  update: Update,
-  hlc: string,
-): Entity | null => {
-  const fields = update.data?.fields ?? {};
-  switch (update.method) {
-    case "put":
-      return {
-        id: update.subject_id,
-        type: update.subject_type,
-        data: { fields },
-        created_hlc: hlc,
-        updated_hlc: hlc,
-        deleted_hlc: null,
-        last_gsn: 0,
-      };
-    case "patch": {
-      if (current === null) return null;
-      if (current.deleted_hlc) return current;
-      const merged: Record<string, FieldValue> = { ...current.data.fields };
-      for (const [field, value] of Object.entries(fields)) {
-        merged[field] = mergePendingField(merged[field], value);
-      }
-      return {
-        ...current,
-        data: { fields: merged },
-        updated_hlc: latestHlc(current.updated_hlc, hlc),
-      };
-    }
-    case "delete":
-      if (current === null) return null;
-      return { ...current, deleted_hlc: hlc, updated_hlc: hlc };
-  }
 };
 
 // ---------------------------------------------------------------------------
@@ -344,7 +285,11 @@ export const createReadModel = (): ReadModel => {
       return;
     }
     let row: Entity | null = base;
-    for (const write of writes) row = applyPendingUpdate(row, write.update, write.hlc);
+    // Optimistic overlay uses the SAME durable LWW merge as the base and the
+    // server. A pending write that loses (older HLC, or an equal-HLC tiebreak
+    // the server's update_id wins) must not be shown winning: the server will
+    // settle on the other value, and a pending-wins overlay would flip on ack.
+    for (const write of writes) row = applyUpdate(row, write.update, 0, write.hlc);
     const previous = effective.has(id) ? effective.get(id)! : base;
     if (row === null) {
       effective.delete(id);

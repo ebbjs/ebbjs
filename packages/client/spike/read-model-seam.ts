@@ -19,6 +19,7 @@ import { makeHlc } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 import { applyLocalUpdate } from "../src/sync/client.ts";
+import { applyUpdate } from "../../storage/src/internal/materialize";
 import {
   applyOptimistic,
   createReadModel,
@@ -580,51 +581,22 @@ const runRequiredCases = async (): Promise<void> => {
     );
     await dual.assertEquivalent("backfill with the entity's true gsn", ["todo_tg"], ["todo"]);
   }
-
-  // Optimistic patch at an equal HLC whose update_id loses the durable LWW
-  // tiebreak: the overlay must still show the pending local write. This is the
-  // case that proves `applyLocalUpdate` (pending-wins) is NOT `applyUpdate`.
-  {
-    const dual = new DualRun();
-    await dual.durable(
-      mkAction({
-        id: "a_tie_seed",
-        gsn: 1,
-        hlc: hlc(5),
-        updates: [putUpdate("todo_tie", "todo", { title: leaf("server", hlc(5), "u_seed") })],
-      }),
-    );
-    await dual.optimistic(
-      mkAction({
-        id: "a_tie_local",
-        gsn: 0,
-        hlc: hlc(5),
-        updates: [patchUpdate("todo_tie", { title: leaf("mine", hlc(5), "u_local_2") })],
-      }),
-    );
-    check(
-      "optimistic equal-HLC tiebreak: pending local write wins",
-      dual.model.get("todo_tie")?.data.fields.title?.value === "mine",
-    );
-    await dual.assertEquivalent(
-      "optimistic equal-HLC tiebreak (pending wins)",
-      ["todo_tie"],
-      ["todo"],
-    );
-  }
 };
 
 // ---------------------------------------------------------------------------
-// Two merge policies, not one.
+// Merge policy: the overlay uses durable LWW, not pending-wins.
 //
-// `applyUpdate`/`mergeFieldValue` is the durable LWW fold (the base). The
-// optimistic overlay uses pending-local-wins so the author always sees their
-// unacknowledged write. This compares the overlay fold against the production
-// `applyLocalUpdate`, including the tie/older cases that distinguish them.
+// `applyUpdate` / `mergeFieldValue` is the one merge the server also runs, so
+// the optimistic overlay composes with it: a pending write that loses (older
+// HLC, or an equal-HLC tiebreak the server's update_id wins) is not shown
+// winning, because the server will settle on the other value and a pending-wins
+// overlay would flip on ack. The client's `applyLocalUpdate` differs on exactly
+// those cases; this section asserts the read model matches durable LWW and pins
+// where `applyLocalUpdate` diverges.
 // ---------------------------------------------------------------------------
 
 const runMergeEquivalence = (): void => {
-  section("Overlay merge ≡ production optimistic merge (pending-wins, incl. ties/older)");
+  section("Merge policy: overlay uses durable LWW (client applyLocalUpdate diverges)");
   const base: Entity = {
     id: "todo_1",
     type: "todo",
@@ -688,29 +660,44 @@ const runMergeEquivalence = (): void => {
       hlc(4),
     ],
   ];
+  const strip = (entity: Entity | null): unknown =>
+    entity === null
+      ? null
+      : {
+          id: entity.id,
+          type: entity.type,
+          data: entity.data,
+          updated_hlc: entity.updated_hlc,
+          deleted_hlc: entity.deleted_hlc,
+        };
+  const title = (entity: Entity | null): unknown => {
+    const field = entity?.data.fields.title;
+    return field !== undefined && !("map" in field) ? field.value : undefined;
+  };
   for (const [label, current, update, hlcString] of probes) {
-    const normative = createReadModel();
+    const model = createReadModel();
     if (current !== null) {
-      normative.loadSnapshot({ formatVersion: 1, position: 0, version: 0, entities: [current] });
+      model.loadSnapshot({ formatVersion: 1, position: 0, version: 0, entities: [current] });
     }
-    normative.optimistic(mkAction({ id: "a_opt", gsn: 0, hlc: hlcString, updates: [update] }));
-    const normativeResult = normative.get("todo_1");
-    const bespokeResult = applyLocalUpdate(current, update, hlcString);
-    // Compare only observable parity: id/type/data/deleted_hlc/updated_hlc.
-    const strip = (entity: Entity | null): unknown =>
-      entity === null
-        ? null
-        : {
-            id: entity.id,
-            type: entity.type,
-            data: entity.data,
-            updated_hlc: entity.updated_hlc,
-            deleted_hlc: entity.deleted_hlc,
-          };
+    model.optimistic(mkAction({ id: "a_opt", gsn: 0, hlc: hlcString, updates: [update] }));
+    const overlay = model.get("todo_1");
+    const durable = applyUpdate(current, update, 0, hlcString);
+    check(`overlay == durable LWW: ${label}`, isDeepStrictEqual(strip(overlay), strip(durable)));
+    const pending = applyLocalUpdate(current, update, hlcString);
+    const diverges = !isDeepStrictEqual(strip(pending), strip(durable));
+    const expectedDivergence =
+      label === "patch equal HLC, loses update_id tiebreak" || label === "patch older HLC";
     check(
-      `merge parity: ${label}`,
-      isDeepStrictEqual(strip(normativeResult), strip(bespokeResult)),
+      expectedDivergence
+        ? `applyLocalUpdate diverges (pending-wins): ${label}`
+        : `applyLocalUpdate agrees: ${label}`,
+      diverges === expectedDivergence,
     );
+    if (diverges) {
+      console.log(
+        `  [!] ${label}: durable LWW=${String(title(durable))} vs applyLocalUpdate=${String(title(pending))}`,
+      );
+    }
   }
 };
 
