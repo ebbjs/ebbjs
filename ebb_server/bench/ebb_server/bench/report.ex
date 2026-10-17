@@ -45,6 +45,7 @@ defmodule EbbServer.Bench.Report do
       latency_note(config),
       server_latency_section(result.server),
       fanout_section(result.fanout, result.server),
+      fixed_rate_section(config, result),
       "## Correctness and resources",
       "",
       correctness_table(config, result),
@@ -208,6 +209,43 @@ defmodule EbbServer.Bench.Report do
   end
 
   defp overall(windows), do: Enum.find(windows, &(&1.window == "overall"))
+
+  defp fixed_rate_section(%{tier: :t4} = config, result) do
+    metrics = result.fanout_metrics
+    achieved = overall(result.throughput)
+
+    rows = [
+      {"Target write rate", "#{config.rate} Actions/sec"},
+      {"Achieved write rate", format_rate(achieved.rate)},
+      {"Subscribers", "#{config.subscribers}"},
+      {"Delivered Actions/sec", format_rate(metrics.delivered_per_sec)},
+      {"Delivered per subscriber/sec", format_rate(metrics.delivered_per_subscriber_per_sec)}
+    ]
+
+    "## Fixed-rate fan-out (T4)\n\n" <>
+      table(["Metric", "Value"], rows) <>
+      "\n\nCommit → dispatch latency (`ebb.fanout.push_latency_ms`) per 10s bucket:\n\n" <>
+      bucket_table(result.fanout_series) <>
+      "\n\n" <>
+      "A flat p50 across buckets means fan-out keeps up; a rising p50 means the Router " <>
+      "is falling behind the commit stream.\n"
+  end
+
+  defp fixed_rate_section(_config, _result), do: nil
+
+  defp bucket_table(series) do
+    rows =
+      Enum.map(series, fn bucket ->
+        [
+          "#{bucket.from_second}",
+          "#{bucket.count}",
+          format_value(bucket.p50),
+          format_value(bucket.p95)
+        ]
+      end)
+
+    table(["From second", "Samples", "p50 (µs)", "p95 (µs)"], rows)
+  end
 
   defp correctness_table(%Options{} = config, result) do
     correctness = result.correctness

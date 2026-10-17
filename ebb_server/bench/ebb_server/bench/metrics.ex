@@ -55,6 +55,87 @@ defmodule EbbServer.Bench.Metrics do
   end
 
   @doc """
+  Per-bucket commit→dispatch latency from `ebb.fanout.push_latency_ms`
+  samples.
+
+  The series is the load-bearing signal for the fixed-rate tier: a flat p50
+  across buckets means the Router dispatches as fast as the commit stream
+  feeds it, a rising p50 means the GroupServer queue is falling behind.
+  Buckets start at the measured window's zero and step by `bucket_seconds`;
+  warmup samples carry a negative offset and are dropped.
+  """
+  @spec fanout_series([{integer(), integer()}], pos_integer(), pos_integer()) :: [map()]
+  def fanout_series(samples, duration, bucket_seconds \\ 10)
+      when duration > 0 and bucket_seconds > 0 do
+    0
+    |> Stream.iterate(&(&1 + bucket_seconds))
+    |> Enum.take_while(&(&1 < duration))
+    |> Enum.map(fn from_second -> bucket(samples, from_second, duration, bucket_seconds) end)
+  end
+
+  defp bucket(samples, from_second, duration, bucket_seconds) do
+    to_second = min(from_second + bucket_seconds, duration)
+    from_us = from_second * 1_000_000
+    to_us = to_second * 1_000_000
+
+    values =
+      samples
+      |> Enum.filter(fn {offset_us, _duration} -> offset_us >= from_us and offset_us < to_us end)
+      |> Enum.map(&elem(&1, 1))
+      |> Enum.sort()
+
+    %{
+      from_second: from_second,
+      count: length(values),
+      p50: percentile(values, 50),
+      p95: percentile(values, 95)
+    }
+  end
+
+  @doc """
+  Delivered Actions/sec over the resource-sampling window, for the
+  fixed-rate tier.
+
+  Only t4 samples deliveries, so every other tier gets `nil`. The window
+  is the span between the first and last resource sample (the sampler
+  ticks at ~1Hz across warmup plus the measured window); fewer than two
+  samples, a null delivery counter, or a non-positive span all yield
+  `nil` rates.
+  """
+  @spec delivered_rate([map()], Options.t()) :: map() | nil
+  def delivered_rate(_samples, %Options{tier: tier}) when tier != :t4, do: nil
+
+  def delivered_rate(samples, %Options{tier: :t4} = config) do
+    empty = %{
+      target_rate: config.rate,
+      delivered_per_sec: nil,
+      delivered_per_subscriber_per_sec: nil
+    }
+
+    case samples do
+      [first, _second | _rest] = all ->
+        last = List.last(all)
+        elapsed = (last.at_us - first.at_us) / 1_000_000
+
+        if is_integer(first.delivered) and is_integer(last.delivered) and elapsed > 0 do
+          rate = (last.delivered - first.delivered) / elapsed
+
+          %{
+            empty
+            | delivered_per_sec: rate,
+              delivered_per_subscriber_per_sec:
+                if(config.subscribers > 0, do: rate / config.subscribers, else: nil)
+          }
+        else
+          empty
+        end
+
+      _ ->
+        empty
+    end
+  end
+
+  @doc """
   Aggregates worker stats, resource samples, and fan-out stats into the
   shape `EbbServer.Bench.Report` renders.
   """
@@ -70,6 +151,8 @@ defmodule EbbServer.Bench.Metrics do
       correctness: correctness(merged, resource_samples, watermark_ablated?),
       resources: resources(resource_samples),
       fanout: fanout_summary(fanout),
+      fanout_metrics: delivered_rate(resource_samples, config),
+      fanout_series: fanout_series(samples(telemetry, :fanout_push), config.duration),
       server: server_summary(config.duration, telemetry),
       context: %{
         preloaded_entities: length(ctx.entities),

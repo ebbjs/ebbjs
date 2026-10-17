@@ -46,6 +46,16 @@ defmodule EbbServer.Bench.Subscriber do
   end
 
   @doc """
+  Cumulative `data` chunks delivered to all subscribers.
+
+  `nil` when there are no subscribers, so the fixed-rate metrics can
+  report the delivered rate as not measured.
+  """
+  @spec delivered(t() | nil) :: non_neg_integer() | nil
+  def delivered(nil), do: nil
+  def delivered(%{counters: counters}), do: :counters.get(counters, 1)
+
+  @doc """
   Kills the subscribers and returns the aggregate delivery stats.
   """
   @spec stop_all(t() | nil) :: map() | nil

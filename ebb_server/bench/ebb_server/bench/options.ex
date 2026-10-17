@@ -7,7 +7,7 @@ defmodule EbbServer.Bench.Options do
   storage tree.
   """
 
-  @type tier :: :t0 | :t1 | :t2 | :t3
+  @type tier :: :t0 | :t1 | :t2 | :t3 | :t4
   @type durability :: :sync | :async
   @type distribution :: :spread | :hot
 
@@ -36,6 +36,7 @@ defmodule EbbServer.Bench.Options do
           distribution: distribution(),
           updates_per_action: pos_integer(),
           subscribers: non_neg_integer(),
+          rate: non_neg_integer(),
           ablate: [ablate_phase()]
         }
 
@@ -53,9 +54,10 @@ defmodule EbbServer.Bench.Options do
             distribution: :spread,
             updates_per_action: 2,
             subscribers: 0,
+            rate: 0,
             ablate: []
 
-  @tiers %{"t0" => :t0, "t1" => :t1, "t2" => :t2, "t3" => :t3}
+  @tiers %{"t0" => :t0, "t1" => :t1, "t2" => :t2, "t3" => :t3, "t4" => :t4}
   @durabilities %{"sync" => :sync, "async" => :async}
   @distributions %{"spread" => :spread, "hot" => :hot}
   @updates_per_action [1, 2, 10]
@@ -79,6 +81,7 @@ defmodule EbbServer.Bench.Options do
     distribution: :string,
     updates_per_action: :integer,
     subscribers: :integer,
+    rate: :integer,
     ablate: :string
   ]
 
@@ -118,6 +121,7 @@ defmodule EbbServer.Bench.Options do
       {"Durability", "#{config.durability}"},
       {"Preloaded entities", "#{config.entities}"},
       {"SSE subscribers", "#{config.subscribers}"},
+      {"Target Actions/sec", target_rate(config.rate)},
       {"Writers", "#{config.writers}"},
       {"Ablated phases", ablated_description(config.ablate)},
       {"Port", "#{config.port}"},
@@ -143,6 +147,7 @@ defmodule EbbServer.Bench.Options do
       "--durability #{config.durability}",
       "--entities #{config.entities}",
       "--subscribers #{config.subscribers}",
+      "--rate #{config.rate}",
       "--writers #{config.writers}",
       "--port #{config.port}",
       "--seed #{config.seed}"
@@ -169,6 +174,22 @@ defmodule EbbServer.Bench.Options do
   def tier_description(:t2), do: "POST /sync/actions at requested concurrency"
   def tier_description(:t3), do: "T2 plus in-process SSE subscribers"
 
+  def tier_description(:t4),
+    do: "fixed-rate Writer.write_actions/1 plus in-process SSE subscribers"
+
+  @doc """
+  Microseconds between batches a t4 worker paces to.
+
+  This is the pacing contract for the fixed-rate tier: a worker that waits
+  this long between `batch_size`-Action calls writes at `target_rate`
+  Actions/sec. Returns whole microseconds, so a rate that does not divide
+  the batch evenly rounds down.
+  """
+  @spec batch_interval_us(t()) :: pos_integer()
+  def batch_interval_us(%__MODULE__{batch_size: batch_size, rate: rate}) when rate > 0 do
+    div(batch_size * 1_000_000, rate)
+  end
+
   defp apply_opts(opts, config) do
     Enum.reduce(opts, config, &put_opt/2)
   end
@@ -187,6 +208,7 @@ defmodule EbbServer.Bench.Options do
   defp put_opt({:distribution, value}, acc), do: %{acc | distribution: value}
   defp put_opt({:updates_per_action, value}, acc), do: %{acc | updates_per_action: value}
   defp put_opt({:subscribers, value}, acc), do: %{acc | subscribers: value}
+  defp put_opt({:rate, value}, acc), do: %{acc | rate: value}
   defp put_opt({:ablate, value}, acc), do: %{acc | ablate: split_ablate(value)}
 
   defp validate(config) do
@@ -258,17 +280,37 @@ defmodule EbbServer.Bench.Options do
          :ok <- check(config.concurrency > 0, "--concurrency must be at least 1"),
          :ok <- check(config.batch_size > 0, "--batch-size must be at least 1"),
          :ok <- check(config.entities >= 0, "--entities must be zero or more"),
-         :ok <- check(config.port in 1..65_535, "--port must be a valid TCP port") do
-      check(config.subscribers >= 0, "--subscribers must be zero or more")
+         :ok <- check(config.port in 1..65_535, "--port must be a valid TCP port"),
+         :ok <- check(config.subscribers >= 0, "--subscribers must be zero or more") do
+      check(config.rate >= 0, "--rate must be zero or more Actions/sec")
     end
   end
 
-  defp validate_tier(:t3, _config), do: :ok
+  defp validate_tier(tier, config) do
+    with :ok <- validate_rate(tier, config),
+         :ok <- validate_tier_concurrency(tier, config) do
+      validate_subscribers(tier, config)
+    end
+  end
 
-  defp validate_tier(_tier, %{subscribers: 0}), do: :ok
+  defp validate_rate(:t4, %{rate: rate}) when rate > 0, do: :ok
+  defp validate_rate(:t4, _config), do: {:error, "--tier t4 requires --rate > 0 (Actions/sec)"}
+  defp validate_rate(_tier, %{rate: 0}), do: :ok
+  defp validate_rate(_tier, _config), do: {:error, "--rate is only supported with --tier t4"}
 
-  defp validate_tier(_tier, _config),
-    do: {:error, "--subscribers is only supported with --tier t3"}
+  defp validate_tier_concurrency(:t4, %{concurrency: 1}), do: :ok
+
+  defp validate_tier_concurrency(:t4, _config),
+    do: {:error, "--tier t4 requires --concurrency 1; pacing is per single producer"}
+
+  defp validate_tier_concurrency(_tier, _config), do: :ok
+
+  defp validate_subscribers(:t3, _config), do: :ok
+  defp validate_subscribers(:t4, _config), do: :ok
+  defp validate_subscribers(_tier, %{subscribers: 0}), do: :ok
+
+  defp validate_subscribers(_tier, _config),
+    do: {:error, "--subscribers is only supported with --tier t3 or t4"}
 
   # T1 exists to isolate per-request overhead with no queueing at the
   # Writer, so a concurrency argument cannot change it.
@@ -288,4 +330,7 @@ defmodule EbbServer.Bench.Options do
 
   defp check(true, _message), do: :ok
   defp check(false, message), do: {:error, message}
+
+  defp target_rate(0), do: "unpaced"
+  defp target_rate(rate), do: "#{rate}"
 end

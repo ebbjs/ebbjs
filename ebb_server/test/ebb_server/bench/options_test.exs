@@ -60,6 +60,65 @@ defmodule EbbServer.Bench.OptionsTest do
     end
   end
 
+  describe "--rate and tier t4" do
+    test "t4 requires a positive --rate" do
+      assert {:error, message} = Options.parse(["--tier", "t4"])
+      assert message =~ "--rate"
+    end
+
+    test "t4 accepts a positive rate at concurrency 1" do
+      assert {:ok, config} = Options.parse(["--tier", "t4", "--rate", "1000"])
+      assert config.tier == :t4
+      assert config.rate == 1000
+    end
+
+    test "t4 requires concurrency 1" do
+      assert {:error, message} =
+               Options.parse(["--tier", "t4", "--rate", "1000", "--concurrency", "2"])
+
+      assert message =~ "concurrency"
+    end
+
+    test "rejects --rate on t0, t1, t2, and t3" do
+      for tier <- ~w(t0 t1 t2 t3) do
+        assert {:error, message} = Options.parse(["--tier", tier, "--rate", "1"])
+        assert message =~ "--rate"
+      end
+    end
+
+    test "rejects a negative --rate" do
+      assert {:error, message} = Options.parse(["--tier", "t4", "--rate", "-1"])
+      assert message =~ "--rate"
+    end
+
+    test "allows --subscribers on t3 and t4 but not t0, t1, or t2" do
+      assert {:ok, _config} = Options.parse(["--tier", "t3", "--subscribers", "10"])
+
+      assert {:ok, _config} =
+               Options.parse(["--tier", "t4", "--rate", "100", "--subscribers", "10"])
+
+      assert {:error, message} = Options.parse(["--subscribers", "10"])
+      assert message =~ "--subscribers"
+    end
+
+    test "batch_interval_us paces one batch to the target rate" do
+      {:ok, config} = Options.parse(["--tier", "t4", "--rate", "1000", "--batch-size", "100"])
+      assert Options.batch_interval_us(config) == 100_000
+    end
+
+    test "batch_interval_us scales with the batch size" do
+      {:ok, config} = Options.parse(["--tier", "t4", "--rate", "500", "--batch-size", "10"])
+      assert Options.batch_interval_us(config) == 20_000
+    end
+
+    test "describe and command carry the target rate" do
+      {:ok, config} = Options.parse(["--tier", "t4", "--rate", "250"])
+
+      assert Map.new(Options.describe(config))["Target Actions/sec"] == "250"
+      assert Options.command(config) =~ "--rate 250"
+    end
+  end
+
   describe "self-describing output" do
     test "describe names the ablated phases" do
       assert {:ok, config} = Options.parse(["--ablate", "cache,watermark"])

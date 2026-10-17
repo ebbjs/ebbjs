@@ -49,13 +49,13 @@ defmodule EbbServer.Bench.Runner do
     Http.setup(config.concurrency)
 
     subscribers =
-      if config.tier == :t3, do: Subscriber.start_all(config.subscribers, ctx), else: nil
+      if config.tier in [:t3, :t4], do: Subscriber.start_all(config.subscribers, ctx), else: nil
 
     now = System.monotonic_time(:microsecond)
     measure_start = now + config.warmup * 1_000_000
     deadline = measure_start + config.duration * 1_000_000
 
-    sampler = Sampler.start()
+    sampler = Sampler.start(fn -> Subscriber.delivered(subscribers) end)
     telemetry = Telemetry.start(measure_start)
 
     try do
@@ -87,7 +87,8 @@ defmodule EbbServer.Bench.Runner do
       buckets: %{},
       rejected_buckets: %{},
       reservoir: Metrics.reservoir_new(cap),
-      seq: 0
+      seq: 0,
+      next_due_us: measure_start
     }
 
     loop(id, config, ctx, measure_start, deadline, stats)
@@ -101,11 +102,41 @@ defmodule EbbServer.Bench.Runner do
     else
       {latency, accepted, rejected, errors} = perform(config.tier, config, ctx, id, stats.seq)
       stats = record(stats, now - measure_start, latency, accepted, rejected, errors)
+      stats = %{stats | next_due_us: pace(config, stats.next_due_us, deadline)}
       loop(id, config, ctx, measure_start, deadline, stats)
     end
   end
 
-  defp perform(:t0, config, ctx, id, seq) do
+  # T4 is a single producer paced to a target Actions/sec: each iteration
+  # waits out its slot before the next call. Whole intervals are advanced
+  # until the due time is in the future so a slow iteration cannot build
+  # unbounded debt, and the wait never runs past the deadline.
+  defp pace(%Options{tier: :t4} = config, next_due_us, deadline) do
+    interval = Options.batch_interval_us(config)
+
+    if System.monotonic_time(:microsecond) < next_due_us do
+      sleep_until(next_due_us, deadline)
+    end
+
+    advance_due(next_due_us + interval, interval, System.monotonic_time(:microsecond))
+  end
+
+  defp pace(_config, next_due_us, _deadline), do: next_due_us
+
+  defp advance_due(due_us, _interval, now) when due_us > now, do: due_us
+
+  defp advance_due(due_us, interval, now) when interval > 0,
+    do: advance_due(due_us + interval, interval, now)
+
+  defp advance_due(_due_us, _interval, now), do: now
+
+  defp sleep_until(due_us, deadline) do
+    wake_us = min(due_us, deadline)
+    now = System.monotonic_time(:microsecond)
+    if wake_us > now, do: Process.sleep(div(wake_us - now, 1000))
+  end
+
+  defp perform(tier, config, ctx, id, seq) when tier in [:t0, :t4] do
     actions = build_actions(config, ctx, id, seq)
     validated = Enum.map(actions, &ActionValidator.to_validated_action/1)
 
