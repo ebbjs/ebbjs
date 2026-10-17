@@ -778,8 +778,9 @@ flush, vs 2×batch in `spread`).
   delivers 143,871/s = 48%), i.e. the ceiling **rises ~2–22% depending on
   baseline but is not removed**: coalescing removes message and encode overhead,
   not the per-delivery **byte volume** (Actions × subscribers × payload), which
-  is unchanged. The remaining levers are reducing bytes (client-side
-  diffing/coalescing) or sharding across groups. The production-shaped (real SSE
+  is unchanged. The remaining lever is reducing bytes (client-side
+  diffing/coalescing); sharding `GroupServer`s was tested and ruled out (§8).
+  The production-shaped (real SSE
   socket) measurement was **not** performed — both t3 and t4 use in-process
   subscribers — so it remains the outstanding gate before treating these
   numbers as production-representative.

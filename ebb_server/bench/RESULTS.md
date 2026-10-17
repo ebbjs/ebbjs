@@ -429,9 +429,9 @@ that "residual" was **warmup dilution, not end-of-run backlog**. Smoke proof:
    the ceiling rises **~2–22% depending on baseline** (n=1000 knee ~100k
    deliveries/s), but the total
    byte volume is unchanged, so the ceiling is **not removed**. The next
-   levers are **reducing bytes** (client-side diffing/coalescing) or
-   **sharding across groups**, not more message-level work — the encode-once
-   hoist is **superseded** by coalescing.
+   levers are **reducing bytes** (client-side diffing/coalescing), not more
+   message-level work — sharding `GroupServer`s was tested and ruled out (see
+   below), and the encode-once hoist is **superseded** by coalescing.
 4. Only `n=10 R=20000` was **write-limited** (achieved 13,476 < 20,000); the
    other rows held `achieved ≈ target`, so their divergence is fan-out, not
    Writer saturation.
@@ -536,8 +536,8 @@ subsumes and supersedes the encode-once hoist (which shaved the per-subscriber
 encode but left N×A messages); the original park cited the t3 Accepted/sec
 regression, which is confounded, and coalescing supersedes the hoist, so the
 hoist is now history. The remaining ceiling is the byte volume and the per-group
-process, so the next levers are reducing bytes (client-side diffing/coalescing)
-or sharding across groups — not more message-level work. The production-shaped
+process, so the next lever is reducing bytes (client-side diffing/coalescing);
+sharding `GroupServer`s was tested and ruled out below. The production-shaped
 (real SSE socket) measurement was **not** performed: both t3 and t4 use
 in-process subscribers, so these fan-out numbers are not yet
 production-representative — that remains the outstanding gate.
