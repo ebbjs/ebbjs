@@ -153,6 +153,12 @@ defmodule EbbServer.Bench.Subscriber do
 
         loop(counters, lags, delivered)
 
+      {:sse_chunk, "data", payload} ->
+        :counters.add(counters, 1, 1)
+        delivered = delivered + 1
+        if rem(delivered, @sample_every) == 0, do: maybe_record_lag(lags, payload)
+        loop(counters, lags, delivered)
+
       {:sse_chunk, _kind, _payload} ->
         :counters.add(counters, 2, 1)
         loop(counters, lags, delivered)
