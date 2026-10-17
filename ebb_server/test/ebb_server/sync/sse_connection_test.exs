@@ -55,20 +55,32 @@ defmodule EbbServer.Sync.SSEConnectionTest do
         "extra" => "dropped from the wire"
       }
 
-      assert [payload] = data_payloads(SSEConnection.data_frame(action))
+      assert SSEConnection.data_frame(action) ==
+               "event: data\n" <>
+                 "data: {\"actor_id\":\"a_user1\",\"gsn\":501,\"hlc\":1711036800000," <>
+                 "\"id\":\"act_abc\",\"updates\":[{\"field\":\"value\"}]}\n\n"
+    end
 
-      assert Jason.decode!(payload) == %{
-               "id" => "act_abc",
-               "gsn" => 501,
-               "actor_id" => "a_user1",
-               "hlc" => 1_711_036_800_000,
-               "updates" => [%{"field" => "value"}]
-             }
+    test "drops keys outside the 5-key projection" do
+      frame =
+        SSEConnection.data_frame(%{
+          "id" => "act_1",
+          "gsn" => 1,
+          "actor_id" => "a_user1",
+          "hlc" => 7,
+          "updates" => [],
+          "secret" => "not on the wire"
+        })
+
+      refute frame =~ "secret"
+
+      assert frame |> single_data_payload() |> Jason.decode!() |> Map.keys() |> Enum.sort() ==
+               ["actor_id", "gsn", "hlc", "id", "updates"]
     end
   end
 
-  describe "push_data/2 and push_action/2" do
-    test "push_data forwards the raw bytes to the parent as {:sse_data, bytes}" do
+  describe "push_data/2" do
+    test "forwards the raw bytes to the parent as {:sse_data, bytes}" do
       {:ok, pid} = SSEConnection.start_link(self(), ["g1"], %{"g1" => 0})
 
       bytes =
@@ -84,73 +96,53 @@ defmodule EbbServer.Sync.SSEConnectionTest do
       assert_receive {:sse_data, ^bytes}
     end
 
-    test "push_action shares the same wire shape as push_data" do
+    test "shares one binary across a coalesced batch without re-encoding" do
       {:ok, pid} = SSEConnection.start_link(self(), ["g1"], %{"g1" => 0})
 
-      action = %{
-        "id" => "act_2",
-        "gsn" => 2,
-        "actor_id" => "a_user2",
-        "hlc" => 8,
-        "updates" => []
-      }
+      batch =
+        SSEConnection.data_frame(%{
+          "id" => "act_1",
+          "gsn" => 1,
+          "actor_id" => "a_user1",
+          "hlc" => 7,
+          "updates" => []
+        }) <>
+          SSEConnection.data_frame(%{
+            "id" => "act_2",
+            "gsn" => 2,
+            "actor_id" => "a_user2",
+            "hlc" => 8,
+            "updates" => []
+          })
 
-      assert :ok = SSEConnection.push_action(pid, action)
-      assert_receive {:sse_data, bytes}
-      assert bytes == SSEConnection.data_frame(action)
+      assert :ok = SSEConnection.push_data(pid, batch)
+      assert_receive {:sse_data, ^batch}
+      assert data_payloads(batch) |> Enum.map(&Jason.decode!(&1)["id"]) == ["act_1", "act_2"]
     end
   end
 
   describe "message handling" do
-    test "push_action sends encoded action as :data event" do
-      action = %{
-        "id" => "act_abc",
-        "gsn" => 501,
-        "actor_id" => "a_user1",
-        "hlc" => 1_711_036_800_000,
-        "updates" => [%{"field" => "value", "path" => ["name"]}]
-      }
-
-      encoded = Jason.encode!(action)
-      expected = SSEConnection.format_sse_event("data", encoded)
-
-      assert expected =~ "event: data\n"
-      assert expected =~ ~s("id":"act_abc")
-      assert expected =~ ~s("gsn":501)
-      assert expected =~ ~s("actor_id":"a_user1")
-      assert expected =~ ~s("hlc":1711036800000)
-    end
-
-    test "push_control sends encoded control as :control event" do
+    test "push_control forwards the encoded control payload as :sse_chunk" do
+      {:ok, pid} = SSEConnection.start_link(self(), ["g1"], %{"g1" => 0})
       control = %{"group" => "group_a", "nextOffset" => "502"}
-      encoded = Jason.encode!(control)
-      expected = SSEConnection.format_sse_event("control", encoded)
 
-      assert expected =~ "event: control\n"
-      assert expected =~ ~s("group":"group_a")
-      assert expected =~ ~s("nextOffset":"502")
+      assert :ok = SSEConnection.push_control(pid, control)
+      assert_receive {:sse_chunk, "control", payload}
+      assert Jason.decode!(payload) == control
     end
 
-    test "push_presence sends encoded presence as :presence event" do
+    test "push_presence forwards the encoded presence payload as :sse_chunk" do
+      {:ok, pid} = SSEConnection.start_link(self(), ["g1"], %{"g1" => 0})
+
       presence = %{
         "actor_id" => "a_user1",
         "entity_id" => "doc_1",
         "data" => %{"cursor" => %{"line" => 5, "col" => 12}}
       }
 
-      encoded = Jason.encode!(presence)
-      expected = SSEConnection.format_sse_event("presence", encoded)
-
-      assert expected =~ "event: presence\n"
-      assert expected =~ ~s("actor_id":"a_user1")
-      assert expected =~ ~s("entity_id":"doc_1")
-      assert expected =~ ~s("line":5)
-      assert expected =~ ~s("col":12)
-    end
-
-    test "keepalive format is correct" do
-      keepalive_msg = ": keepalive\n\n"
-      assert keepalive_msg == ": keepalive\n\n"
+      assert :ok = SSEConnection.push_presence(pid, presence)
+      assert_receive {:sse_chunk, "presence", payload}
+      assert Jason.decode!(payload) == presence
     end
   end
 
@@ -170,68 +162,6 @@ defmodule EbbServer.Sync.SSEConnectionTest do
 
       lines = String.split(event, "\n")
       assert Enum.count(lines) == 4
-    end
-  end
-
-  describe "Jason encoding" do
-    test "action fields are correctly extracted and encoded" do
-      action = %{
-        "id" => "act_xyz",
-        "gsn" => 999,
-        "actor_id" => "user_abc",
-        "hlc" => 1_712_000_000_000,
-        "updates" => [
-          %{"path" => ["title"], "field" => "text", "value" => "Hello"}
-        ]
-      }
-
-      id = action["id"]
-      gsn = action["gsn"]
-      actor_id = action["actor_id"]
-      hlc = action["hlc"]
-      updates = action["updates"]
-
-      assert id == "act_xyz"
-      assert gsn == 999
-      assert actor_id == "user_abc"
-      assert hlc == 1_712_000_000_000
-      assert length(updates) == 1
-      assert updates |> hd() |> Map.get("value") == "Hello"
-    end
-
-    test "control events preserve all keys" do
-      control = %{
-        "group" => "group_b",
-        "nextOffset" => "1001",
-        "reconnect" => false
-      }
-
-      assert control["group"] == "group_b"
-      assert control["nextOffset"] == "1001"
-      assert control["reconnect"] == false
-    end
-
-    test "presence events with nested data encode correctly" do
-      presence = %{
-        "actor_id" => "actor_1",
-        "entity_id" => "doc_xyz",
-        "data" => %{
-          "cursor" => %{
-            "line" => 42,
-            "col" => 15
-          },
-          "selection" => %{
-            "start" => 0,
-            "end" => 10
-          }
-        }
-      }
-
-      encoded = Jason.encode!(presence)
-      assert encoded =~ "actor_1"
-      assert encoded =~ "doc_xyz"
-      assert encoded =~ "line"
-      assert encoded =~ "col"
     end
   end
 

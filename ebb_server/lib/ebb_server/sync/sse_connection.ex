@@ -57,12 +57,10 @@ defmodule EbbServer.Sync.SSEConnection do
     GenServer.start_link(__MODULE__, {parent_pid, group_ids, cursors})
   end
 
-  @spec push_action(pid(), map()) :: :ok
-  def push_action(pid, action), do: push_data(pid, data_frame(action))
-
   # The payload is identical for every subscriber of a group, so the caller
-  # encodes it once and shares the binary; BEAM reference-counted binaries
-  # are not copied between processes on send.
+  # encodes it once and shares the binary. A frame is typically large enough
+  # to be a reference-counted binary, so the runtime shares it by reference
+  # across processes rather than copying it per subscriber.
   @spec push_data(pid(), iodata()) :: :ok
   def push_data(pid, bytes), do: GenServer.cast(pid, {:push_data, bytes})
 
@@ -89,11 +87,6 @@ defmodule EbbServer.Sync.SSEConnection do
   end
 
   @impl true
-  def handle_cast({:push_action, action}, state) do
-    send(state.parent_pid, {:sse_data, data_frame(action)})
-    {:noreply, state}
-  end
-
   def handle_cast({:push_data, bytes}, state) do
     send(state.parent_pid, {:sse_data, bytes})
     {:noreply, state}

@@ -112,9 +112,9 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
 
   defp do_sse_loop(conn, sse_pid, monitor_ref) do
     receive do
-      # Coalesced `data` frames: GroupServer encodes one binary per batch per
-      # group and every subscriber writes those exact bytes. The stream is
-      # the same concatenation of SSE events the per-Action path emitted.
+      # A committed batch arrives as one binary covering every frame in it;
+      # write them in a single chunk. SSE is a byte stream, so many events in
+      # one chunk are equivalent to many chunks.
       {:sse_data, bytes} ->
         case chunk(conn, bytes) do
           :ok -> do_sse_loop(conn, sse_pid, monitor_ref)
