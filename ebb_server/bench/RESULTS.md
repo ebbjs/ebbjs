@@ -19,7 +19,8 @@ preload, and fan-out tables **in place** after
 [#340](https://github.com/ebbjs/ebbjs/issues/340) and the `ad8e43b`
 entity-group index fix (`:bag` → `:ordered_set`), and adds the
 [#485](https://github.com/ebbjs/ebbjs/issues/485) two-store-only cost
-breakdown and the parked encode-once fan-out prototype. The
+breakdown, the parked encode-once prototype and the merged coalesced
+fan-out delivery (`a292f58`). The
 #332/#338/#339/#340 sections below and their tables are **pre-refresh
 deltas measured against older bases** — they document each change, not
 the current baseline. The batch-size, updates-per-Action, and
@@ -354,7 +355,8 @@ complete** p50 per 10s bucket, so fan-out is judged with the **write client
 held constant**: `need = R × N` deliveries/sec, and a flat per-bucket p50
 means fan-out keeps up while a rising one means it does not. The telemetry
 fires at the **end** of `GroupServer.handle_cast({:push_actions, ...})`,
-after the O(N×A) cast loop, so the label is commit → broadcast complete, not
+after the per-subscriber cast loop (O(N×A) before coalescing, O(N) after
+`a292f58`), so the label is commit → broadcast complete, not
 commit → dispatch.
 
 ```sh
@@ -395,10 +397,10 @@ that "residual" was **warmup dilution, not end-of-run backlog**. Smoke proof:
    (n=1000: 300k need → p50 2.3 s → 13.3 s; 500k → 3.0 s → 17.4 s; 2M →
    4.5 s → 20.6 s).
 2. **Per-batch latency is O(N).** At the _same_ ~100k deliveries/s, n=100 costs
-   ~45–51 ms while n=1000 costs ~0.6–0.9 s. A group is dispatched by one
-   `GroupServer` process that serially casts one message per (subscriber ×
-   action) (`group_server.ex:76-80`), so the per-batch cost grows with
-   subscribers.
+   ~45–51 ms while n=1000 costs ~0.6–0.9 s. Before `a292f58` a group was
+   dispatched by one `GroupServer` process that serially cast one message per
+   (subscriber × action) (`group_server.ex:76-80`), so the per-batch cost grew
+   with subscribers; coalescing makes it one message per subscriber per batch.
 3. **Consequence at scale, and what coalescing changed.** Before `a292f58`,
    1000 subscribers sustained ~100 Actions/s of fan-out at ~0.6–0.9 s
    dispatch latency while ~100 subscribers sustained ~1000 Actions/s at
@@ -735,7 +737,8 @@ window start:
 Every raw run report prints a **Server-side latency** table beside the
 client-side one, and the fan-out section reports commit → broadcast complete
 separately from the client-stamp delivery lag. It fires at the end of
-`GroupServer.handle_cast({:push_actions, ...})`, after the O(N×A) cast loop.
+`GroupServer.handle_cast({:push_actions, ...})`, after the per-subscriber
+cast loop (O(N×A) before coalescing, O(N) after `a292f58`).
 The Writer flush timer
 starts after the request is dequeued, so the wait a call spends in the
 Writer mailbox is not instrumented. `--tier t0` has no HTTP request, so
