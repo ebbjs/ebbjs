@@ -1502,7 +1502,14 @@ const mergeLocalField = (existing: FieldValue | undefined, incoming: FieldValue)
   return { map };
 };
 
-const applyLocalUpdate = (current: Entity | null, update: Update, hlc: string): Entity | null => {
+// Exported for the #496 throwaway read-model seam spike (`spike/read-model-seam.ts`),
+// which dual-runs the normative `applyUpdate` against this bespoke optimistic merge.
+// Production deletes this helper when the read model lands.
+export const applyLocalUpdate = (
+  current: Entity | null,
+  update: Update,
+  hlc: string,
+): Entity | null => {
   const fields = update.data?.fields ?? {};
   switch (update.method) {
     case "put":

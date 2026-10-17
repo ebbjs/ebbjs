@@ -16,6 +16,7 @@
     "build": "vite build",
     "dev": "vite build --watch",
     "test": "vitest --run --exclude '**/__tests__/integration/**'",
+    "spike:read-model-seam": "tsx spike/read-model-seam.ts",
     "test:watch": "vitest --exclude '**/__tests__/integration/**'",
     "test:integration": "vitest --run src/__tests__/integration",
     "typecheck": "tsc --noEmit",
