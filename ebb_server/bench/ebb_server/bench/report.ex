@@ -44,10 +44,11 @@ defmodule EbbServer.Bench.Report do
       "",
       latency_note(config),
       server_latency_section(result.server),
-      fanout_section(result.fanout, result.server),
+      fanout_section(config, result.fanout, result.server),
+      fixed_rate_section(config, result),
       "## Correctness and resources",
       "",
-      correctness_table(result),
+      correctness_table(config, result),
       "",
       "## Methodology and limitations",
       "",
@@ -133,7 +134,7 @@ defmodule EbbServer.Bench.Report do
           "Captured in the bench process by attaching handlers to the server's `ebb.*` events. " <>
           "`ebb.http.request_latency_ms` is measured inside the request process, so MessagePack " <>
           "encoding and transport are excluded; `ebb.writer.batch_latency_ms` covers one durable " <>
-          "Writer flush; `ebb.fanout.push_latency_ms` is commit → dispatch per batch per group. " <>
+          "Writer flush; `ebb.fanout.push_latency_ms` is commit → broadcast complete per batch per group. " <>
           "The Writer flush timer starts after the request is dequeued, so the wait a call spends " <>
           "in the Writer mailbox is not instrumented and stays inside the client-side number. " <>
           "Durations are converted from native time units to microseconds and windowed like the " <>
@@ -177,10 +178,11 @@ defmodule EbbServer.Bench.Report do
       "a request spends in the Writer mailbox sits between the two and is not instrumented.\n"
   end
 
-  defp fanout_section(nil, _server), do: nil
-  defp fanout_section([], _server), do: nil
+  defp fanout_section(%{tier: :t4}, _fanout, _server), do: nil
+  defp fanout_section(_config, nil, _server), do: nil
+  defp fanout_section(_config, [], _server), do: nil
 
-  defp fanout_section(fanout, server) do
+  defp fanout_section(_config, fanout, server) do
     push = overall(server.fanout_push)
 
     rows = [
@@ -191,9 +193,9 @@ defmodule EbbServer.Bench.Report do
       {"Delivery lag samples", "#{fanout.lag_count}"},
       {"Delivery lag p50 (µs)", format_value(fanout.lag_p50)},
       {"Delivery lag p99 (µs)", format_value(fanout.lag_p99)},
-      {"Server commit→dispatch samples", "#{push.count}"},
-      {"Server commit→dispatch p50 (µs)", format_value(push.p50)},
-      {"Server commit→dispatch p99 (µs)", format_value(push.p99)}
+      {"Server commit→broadcast-complete samples", "#{push.count}"},
+      {"Server commit→broadcast-complete p50 (µs)", format_value(push.p50)},
+      {"Server commit→broadcast-complete p99 (µs)", format_value(push.p99)}
     ]
 
     "## Fan-out (T3)\n\n" <>
@@ -201,7 +203,7 @@ defmodule EbbServer.Bench.Report do
       "\n\n" <>
       "Delivery lag is measured from a monotonic stamp embedded in each Action, so it spans " <>
       "client send → commit → dispatch → subscriber delivery and folds in client and transport " <>
-      "overhead. `ebb.fanout.push_latency_ms` (server commit → dispatch) reports server " <>
+      "overhead. `ebb.fanout.push_latency_ms` (server commit → broadcast complete) reports server " <>
       "queueing separately. Only every 50th delivery is decoded for the sample. Delivered " <>
       "counts cover the whole run (warmup plus measured window); the throughput table above is " <>
       "measured-window only.\n"
@@ -209,17 +211,65 @@ defmodule EbbServer.Bench.Report do
 
   defp overall(windows), do: Enum.find(windows, &(&1.window == "overall"))
 
-  defp correctness_table(result) do
+  defp fixed_rate_section(%{tier: :t4} = config, result) do
+    metrics = result.fanout_metrics
+    achieved = overall(result.throughput)
+
+    rows = [
+      {"Target write rate", "#{config.rate} Actions/sec"},
+      {"Achieved write rate", format_rate(achieved.rate)},
+      {"Subscribers", "#{config.subscribers}"},
+      {"Delivered Actions/sec", format_rate(metrics.delivered_per_sec)},
+      {"Delivered per subscriber/sec", format_rate(metrics.delivered_per_subscriber_per_sec)},
+      {"Server dispatched Actions/sec", format_rate(metrics.dispatched_per_sec)}
+    ]
+
+    "## Fixed-rate fan-out (T4)\n\n" <>
+      table(["Metric", "Value"], rows) <>
+      "\n\nCommit → broadcast complete latency (`ebb.fanout.push_latency_ms`) per 10s bucket:\n\n" <>
+      bucket_table(result.fanout_series) <>
+      "\n\n" <>
+      "A flat p50 across buckets means fan-out keeps up; a rising p50 means the Router " <>
+      "is falling behind the commit stream. `Server dispatched Actions/sec` counts the " <>
+      "deliveries the server enqueued (`count × subscribers` per dispatched batch); " <>
+      "`Delivered Actions/sec` counts what the bench subscribers actually received. If " <>
+      "the two match, the server is the limit; if dispatched far exceeds delivered, the " <>
+      "bench subscriber is the limit.\n"
+  end
+
+  defp fixed_rate_section(_config, _result), do: nil
+
+  defp bucket_table(series) do
+    rows =
+      Enum.map(series, fn bucket ->
+        [
+          "#{bucket.from_second}",
+          "#{bucket.count}",
+          format_value(bucket.p50),
+          format_value(bucket.p95)
+        ]
+      end)
+
+    table(["From second", "Samples", "p50 (µs)", "p95 (µs)"], rows)
+  end
+
+  defp correctness_table(%Options{} = config, result) do
     correctness = result.correctness
     resources = result.resources
+
+    # The frontier never moves when `:watermark` is ablated, so its derived
+    # numbers are meaningless rather than zero.
+    watermark = fn value ->
+      if :watermark in config.ablate, do: "n/a", else: format_integer(value)
+    end
 
     rows = [
       {"Accepted Actions", format_integer(correctness.accepted)},
       {"Rejected Actions", format_integer(correctness.rejected)},
       {"Write/transport errors", format_integer(correctness.errors)},
-      {"GSN holes", format_integer(correctness.gsn_holes)},
-      {"Watermark lag high-water (GSNs)", format_integer(correctness.watermark_lag_high)},
-      {"Final watermark lag (GSNs)", format_integer(correctness.watermark_lag_final)},
+      {"GSN holes", watermark.(correctness.gsn_holes)},
+      {"Watermark lag high-water (GSNs)", watermark.(correctness.watermark_lag_high)},
+      {"Final watermark lag (GSNs)", watermark.(correctness.watermark_lag_final)},
       {"Peak RSS", format_kb(resources.peak_rss_kb)},
       {"Peak process memory", format_bytes(resources.peak_memory_bytes)},
       {"Peak dirty-set size", format_integer(resources.peak_dirty)},
@@ -247,7 +297,8 @@ defmodule EbbServer.Bench.Report do
       "RocksDB compaction and flush backlog are not measured: the `rocksdb` package exposes no " <>
         "property for them and emits no `:telemetry` event.",
       durability_note(config),
-      steady_note(config)
+      steady_note(config),
+      ablation_note(config)
     ]
     |> Enum.reject(&(&1 == ""))
     |> Enum.join(" ")
@@ -295,6 +346,14 @@ defmodule EbbServer.Bench.Report do
   defp steady_note(_config) do
     "Burst (first 15s) and steady (61s..120s) are reported separately because the two measure " <>
       "different regimes: cold memtable and compaction pressure affect the sustained rate."
+  end
+
+  defp ablation_note(%{ablate: []}), do: ""
+
+  defp ablation_note(%{ablate: phases}) do
+    "Ablation is active: the Writer skipped #{Enum.map_join(phases, ", ", &Atom.to_string/1)} " <>
+      "on the flush critical path, so this run measures a reduced write path and its latency, " <>
+      "density, and dirty-cache numbers are not comparable to an unablated run."
   end
 
   defp table(headers, rows) do

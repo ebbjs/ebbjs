@@ -7,9 +7,19 @@ defmodule EbbServer.Bench.Options do
   storage tree.
   """
 
-  @type tier :: :t0 | :t1 | :t2 | :t3
+  @type tier :: :t0 | :t1 | :t2 | :t3 | :t4
   @type durability :: :sync | :async
   @type distribution :: :spread | :hot
+
+  @type ablate_phase ::
+          :dedup
+          | :group_resolution
+          | :entity_index
+          | :group_index
+          | :dirty
+          | :cache
+          | :watermark
+          | :fanout
 
   @type t :: %__MODULE__{
           tier: tier(),
@@ -25,7 +35,10 @@ defmodule EbbServer.Bench.Options do
           durability: durability(),
           distribution: distribution(),
           updates_per_action: pos_integer(),
-          subscribers: non_neg_integer()
+          subscribers: non_neg_integer(),
+          rate: non_neg_integer(),
+          subscriber_lean: boolean(),
+          ablate: [ablate_phase()]
         }
 
   defstruct tier: :t0,
@@ -41,12 +54,19 @@ defmodule EbbServer.Bench.Options do
             durability: :sync,
             distribution: :spread,
             updates_per_action: 2,
-            subscribers: 0
+            subscribers: 0,
+            rate: 0,
+            subscriber_lean: false,
+            ablate: []
 
-  @tiers %{"t0" => :t0, "t1" => :t1, "t2" => :t2, "t3" => :t3}
+  @tiers %{"t0" => :t0, "t1" => :t1, "t2" => :t2, "t3" => :t3, "t4" => :t4}
   @durabilities %{"sync" => :sync, "async" => :async}
   @distributions %{"spread" => :spread, "hot" => :hot}
   @updates_per_action [1, 2, 10]
+
+  # Canonical order for the parsed list and the printed command.
+  @ablate_phases ~w(dedup group_resolution entity_index group_index dirty cache watermark fanout)a
+  @ablate_by_name Map.new(@ablate_phases, &{Atom.to_string(&1), &1})
 
   @switches [
     tier: :string,
@@ -62,7 +82,10 @@ defmodule EbbServer.Bench.Options do
     durability: :string,
     distribution: :string,
     updates_per_action: :integer,
-    subscribers: :integer
+    subscribers: :integer,
+    rate: :integer,
+    subscriber_lean: :boolean,
+    ablate: :string
   ]
 
   @doc """
@@ -101,12 +124,20 @@ defmodule EbbServer.Bench.Options do
       {"Durability", "#{config.durability}"},
       {"Preloaded entities", "#{config.entities}"},
       {"SSE subscribers", "#{config.subscribers}"},
+      {"Target Actions/sec", target_rate(config.rate)},
       {"Writers", "#{config.writers}"},
+      {"Ablated phases", ablated_description(config.ablate)},
       {"Port", "#{config.port}"},
       {"Seed", "#{config.seed}"},
       {"Output", config.out || "(default)"}
-    ]
+    ] ++ lean_description(config)
   end
+
+  defp lean_description(%{subscriber_lean: true}) do
+    [{"Subscriber mode", "lean (per-subscriber counters, no lag sampling)"}]
+  end
+
+  defp lean_description(_config), do: []
 
   @doc """
   The exact command that reproduces the run, with every option explicit.
@@ -125,10 +156,19 @@ defmodule EbbServer.Bench.Options do
       "--durability #{config.durability}",
       "--entities #{config.entities}",
       "--subscribers #{config.subscribers}",
+      "--rate #{config.rate}",
       "--writers #{config.writers}",
       "--port #{config.port}",
       "--seed #{config.seed}"
     ]
+
+    base = if config.subscriber_lean, do: base ++ ["--subscriber-lean"], else: base
+
+    base =
+      case config.ablate do
+        [] -> base
+        phases -> base ++ ["--ablate #{Enum.map_join(phases, ",", &Atom.to_string/1)}"]
+      end
 
     case config.out do
       nil -> Enum.join(base, " ")
@@ -144,6 +184,23 @@ defmodule EbbServer.Bench.Options do
   def tier_description(:t1), do: "POST /sync/actions, concurrency 1"
   def tier_description(:t2), do: "POST /sync/actions at requested concurrency"
   def tier_description(:t3), do: "T2 plus in-process SSE subscribers"
+
+  def tier_description(:t4),
+    do: "fixed-rate Writer.write_actions/1 plus in-process SSE subscribers"
+
+  @doc """
+  Microseconds between batches a t4 worker paces to.
+
+  This is the pacing contract for the fixed-rate tier: a worker that waits
+  this long between `batch_size`-Action calls writes at `target_rate`
+  Actions/sec. Returns whole microseconds, so a rate that does not divide
+  the batch evenly rounds down; a rate high enough to round to zero is
+  floored at one microsecond so pacing is never silently disabled.
+  """
+  @spec batch_interval_us(t()) :: pos_integer()
+  def batch_interval_us(%__MODULE__{batch_size: batch_size, rate: rate}) when rate > 0 do
+    max(div(batch_size * 1_000_000, rate), 1)
+  end
 
   defp apply_opts(opts, config) do
     Enum.reduce(opts, config, &put_opt/2)
@@ -163,11 +220,15 @@ defmodule EbbServer.Bench.Options do
   defp put_opt({:distribution, value}, acc), do: %{acc | distribution: value}
   defp put_opt({:updates_per_action, value}, acc), do: %{acc | updates_per_action: value}
   defp put_opt({:subscribers, value}, acc), do: %{acc | subscribers: value}
+  defp put_opt({:rate, value}, acc), do: %{acc | rate: value}
+  defp put_opt({:subscriber_lean, value}, acc), do: %{acc | subscriber_lean: value}
+  defp put_opt({:ablate, value}, acc), do: %{acc | ablate: split_ablate(value)}
 
   defp validate(config) do
     with {:ok, tier} <- map_value(config.tier, @tiers, "tier"),
          {:ok, durability} <- map_value(config.durability, @durabilities, "durability"),
          {:ok, distribution} <- map_value(config.distribution, @distributions, "distribution"),
+         {:ok, ablate} <- validate_ablate(config.ablate),
          :ok <- validate_ranges(config),
          :ok <- validate_tier(tier, config) do
       {:ok,
@@ -175,10 +236,50 @@ defmodule EbbServer.Bench.Options do
          config
          | tier: tier,
            durability: durability,
-           distribution: distribution
+           distribution: distribution,
+           ablate: ablate
        })}
     end
   end
+
+  defp split_ablate(value) do
+    value
+    |> String.split(",")
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  # `all` is a convenience for the whole phase set; otherwise every name
+  # must be known. The result is in canonical order so the printed
+  # command is stable regardless of how the run was invoked.
+  defp validate_ablate([]), do: {:ok, []}
+
+  defp validate_ablate(names) do
+    if "all" in names do
+      {:ok, @ablate_phases}
+    else
+      names
+      |> Enum.map(&Map.fetch(@ablate_by_name, &1))
+      |> collect_ablate(names)
+    end
+  end
+
+  defp collect_ablate(fetched, names) do
+    case Enum.find_index(fetched, &(&1 == :error)) do
+      nil ->
+        {:ok, fetched |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> canonical_ablate()}
+
+      index ->
+        {:error,
+         "invalid --ablate phase #{inspect(Enum.at(names, index))}; " <>
+           "expected one of all, #{Enum.join(Map.keys(@ablate_by_name), ", ")}"}
+    end
+  end
+
+  defp canonical_ablate(phases), do: Enum.filter(@ablate_phases, &(&1 in phases))
+
+  defp ablated_description([]), do: "none"
+  defp ablated_description(phases), do: Enum.map_join(phases, ", ", &Atom.to_string/1)
 
   defp validate_ranges(config) do
     with :ok <- check(config.writers == 1, "--writers must be 1; multi-writer is gated on #287"),
@@ -192,17 +293,45 @@ defmodule EbbServer.Bench.Options do
          :ok <- check(config.concurrency > 0, "--concurrency must be at least 1"),
          :ok <- check(config.batch_size > 0, "--batch-size must be at least 1"),
          :ok <- check(config.entities >= 0, "--entities must be zero or more"),
-         :ok <- check(config.port in 1..65_535, "--port must be a valid TCP port") do
-      check(config.subscribers >= 0, "--subscribers must be zero or more")
+         :ok <- check(config.port in 1..65_535, "--port must be a valid TCP port"),
+         :ok <- check(config.subscribers >= 0, "--subscribers must be zero or more") do
+      check(config.rate >= 0, "--rate must be zero or more Actions/sec")
     end
   end
 
-  defp validate_tier(:t3, _config), do: :ok
+  defp validate_tier(tier, config) do
+    with :ok <- validate_rate(tier, config),
+         :ok <- validate_tier_concurrency(tier, config),
+         :ok <- validate_subscribers(tier, config) do
+      validate_lean(tier, config)
+    end
+  end
 
-  defp validate_tier(_tier, %{subscribers: 0}), do: :ok
+  defp validate_rate(:t4, %{rate: rate}) when rate > 0, do: :ok
+  defp validate_rate(:t4, _config), do: {:error, "--tier t4 requires --rate > 0 (Actions/sec)"}
+  defp validate_rate(_tier, %{rate: 0}), do: :ok
+  defp validate_rate(_tier, _config), do: {:error, "--rate is only supported with --tier t4"}
 
-  defp validate_tier(_tier, _config),
-    do: {:error, "--subscribers is only supported with --tier t3"}
+  defp validate_tier_concurrency(:t4, %{concurrency: 1}), do: :ok
+
+  defp validate_tier_concurrency(:t4, _config),
+    do: {:error, "--tier t4 requires --concurrency 1; pacing is per single producer"}
+
+  defp validate_tier_concurrency(_tier, _config), do: :ok
+
+  defp validate_subscribers(:t3, _config), do: :ok
+  defp validate_subscribers(:t4, _config), do: :ok
+  defp validate_subscribers(_tier, %{subscribers: 0}), do: :ok
+
+  defp validate_subscribers(_tier, _config),
+    do: {:error, "--subscribers is only supported with --tier t3 or t4"}
+
+  defp validate_lean(:t3, _config), do: :ok
+  defp validate_lean(:t4, _config), do: :ok
+  defp validate_lean(_tier, %{subscriber_lean: false}), do: :ok
+
+  defp validate_lean(_tier, _config),
+    do: {:error, "--subscriber-lean is only supported with --tier t3 or t4"}
 
   # T1 exists to isolate per-request overhead with no queueing at the
   # Writer, so a concurrency argument cannot change it.
@@ -222,4 +351,7 @@ defmodule EbbServer.Bench.Options do
 
   defp check(true, _message), do: :ok
   defp check(false, message), do: {:error, message}
+
+  defp target_rate(0), do: "unpaced"
+  defp target_rate(rate), do: "#{rate}"
 end

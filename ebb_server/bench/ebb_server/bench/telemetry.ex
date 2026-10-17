@@ -17,6 +17,12 @@ defmodule EbbServer.Bench.Telemetry do
   Handlers are attached for the whole run and detached on stop. `detach/1`
   is safe after `stop/1`, so the runner can guarantee cleanup in an `after`
   even when a worker crashes.
+
+  Latency samples are returned as `%{tag => [{offset_us, duration_us}]}`.
+  The dispatched-Actions counter keeps the same row shape under
+  `:fanout_dispatched`, where each value is the deliveries enqueued by one
+  batch (`count * subscribers`); `stop/1` additionally reports the run-scoped
+  `%{total, samples}` under `:fanout_dispatched_summary`.
   """
 
   @handler_id {__MODULE__, :bench}
@@ -28,7 +34,8 @@ defmodule EbbServer.Bench.Telemetry do
   @events [
     [:ebb, :writer, :batch_latency_ms],
     [:ebb, :http, :request_latency_ms],
-    [:ebb, :fanout, :push_latency_ms]
+    [:ebb, :fanout, :push_latency_ms],
+    [:ebb, :fanout, :dispatched_actions]
   ]
 
   @type t :: %{table: :ets.tid(), handler_id: term()}
@@ -59,7 +66,7 @@ defmodule EbbServer.Bench.Telemetry do
     :telemetry.detach(handler_id)
     samples = table |> :ets.tab2list() |> partition()
     :ets.delete(table)
-    samples
+    Map.put(samples, :fanout_dispatched_summary, dispatched_summary(samples))
   end
 
   @doc """
@@ -83,6 +90,10 @@ defmodule EbbServer.Bench.Telemetry do
 
   def handle_event([:ebb, :fanout, :push_latency_ms], measurements, _metadata, config) do
     record(config, :fanout_push, duration_us(measurements))
+  end
+
+  def handle_event([:ebb, :fanout, :dispatched_actions], measurements, _metadata, config) do
+    record(config, :fanout_dispatched, measurements.count * measurements.subscribers)
   end
 
   defp duration_us(measurements) do
@@ -112,5 +123,14 @@ defmodule EbbServer.Bench.Telemetry do
       Map.update(acc, tag, [{offset, value}], &[{offset, value} | &1])
     end)
     |> Map.new(fn {tag, samples} -> {tag, Enum.reverse(samples)} end)
+  end
+
+  defp dispatched_summary(samples) do
+    rows = Map.get(samples, :fanout_dispatched, [])
+
+    %{
+      total: Enum.reduce(rows, 0, fn {_offset, value}, acc -> acc + value end),
+      samples: length(rows)
+    }
   end
 end
