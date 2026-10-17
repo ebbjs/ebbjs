@@ -2,8 +2,9 @@
 
 Decisions artifact for [#485](https://github.com/ebbjs/ebbjs/issues/485),
 "spike the highest-ROI architectural write-path changes". Full per-run tables
-live in `bench/RESULTS.md`; the `--ablate <phase>` harness used for every
-number below landed as commit `2ca55a4`.
+live in `bench/RESULTS.md`; the `--ablate <phase>` harness used for the flush
+cost breakdown below landed as commit `2ca55a4`, and the `t4` fixed-rate
+fan-out tier as `eacd296`.
 
 ## 1. Scope & method
 
@@ -61,6 +62,28 @@ and `watermark` **0.47 ms**; `dirty` is **≈0 at `hot`**. The two full baseline
 differ (25,765 additive / 26,587 subtractive) because they are separate median
 runs, not because the phases moved.
 
+### Fan-out ceiling under a fixed write rate (t4, #485)
+
+The `t4` tier (commit `eacd296`) removes the write client as a variable by
+driving `Writer.write_actions/1` at a fixed `--rate R` and reporting delivered
+Actions/sec plus commit → dispatch p50 per 10s bucket (`need = R × N`). It
+shows the fan-out ceiling is independent of the writer:
+
+- Sustainable delivery falls with subscriber count: **n=1 keeps up at 20k/s**
+  (per-sub 20k/s), **n=10 at 80k/s** (8k/s per sub), **n=100 at 50k/s**
+  (500/s per sub), and **n=1000 already diverges at 50k/s** (<50/s per sub).
+  Total delivered/s saturates at **~100k/s** once behind, but the knee is much
+  lower at high N.
+- Mechanism: a single `GroupServer` serially casts one message per
+  **(subscriber × action)** (`group_server.ex:76-80`), so per-batch dispatch
+  cost is O(N) and sustainable batches/s falls ~1/N.
+- The t3 Accepted/sec metric is **confounded**: the hoist run's client-side
+  latency window is 87s for a 15s run (the worker loop checks the deadline
+  only before each iteration and `Writer.write_actions/1` blocks past it), so
+  `delivered_total` counts post-deadline Actions that `Accepted/sec` (0–15s)
+  never windows. Measured under t4, the hoist is instead a commit → dispatch
+  win (p50 ~3–4× lower) that does not remove the O(N) limit.
+
 ## 3. Candidate verdicts
 
 ### #1 — On-write in-process materialization — **PARK**
@@ -86,22 +109,33 @@ Decision 2 below.
 
 The write-side ETF encode is already **once per Action** (`writer.ex:1103`;
 #338/#340). The remaining redundancy is the fan-out JSON encode per
-_(subscriber × action)_; the fan-out hoist was attempted, measured and parked
-(see #4). No further write-side encode win is available inside `build_ops`.
+_(subscriber × action)_; the fan-out hoist was attempted and, under the t4
+metric, is a dispatch-latency win to re-land (see #4). No further write-side
+encode win is available inside `build_ops`.
 
-### #4 — Fan-out shape — **PARK with numbers**
+### #4 — Fan-out shape — **PARK (shape); re-land the encode-once hoist**
 
 The cliff is the worst remaining problem: **−90% at 100 subscribers** (1,647/s)
 and **−96% at 1,000** (677/s) against the improved `t2` b10 baseline of
-**15,893/s**. The naive "encode once per group" hoist regressed the official t3
-Accepted/sec metric **~10×** (1,000 subs **677 → 67/s**) while _improving_
-commit→dispatch p50 (**8.04 s → 4.09 s**), delivery rate (**27k → 39k/s**) and
-RSS (**928 → 447 MiB**); `:binary.copy` did not recover it. The t3 Accepted/sec
-metric is confounded by the delivery backlog and client starvation — a
-subscriber storm can make the metric worse while the fan-out itself gets
-cheaper. Park the hoist (reverted in `ee599f8`) and require a dedicated fan-out
-harness that measures **deliveries/sec and commit→dispatch at a fixed write
-rate** before any shape change is judged.
+**15,893/s**. The t4 tier (`eacd296`) now measures it at a fixed write rate and
+shows the mechanism: a single `GroupServer` serially casts one message per
+(subscriber × action) (`group_server.ex:76-80`), so the deeper shape change
+(coalesced delivery / off-group dispatch) is **PARK** — total delivery
+saturates at ~100k/s once behind and per-subscriber sustainability falls with N
+(n=10 keeps up at 80k/s, n=1000 diverges at 50k/s).
+
+The specific "encode once per group" hoist is a **measured dispatch-latency win
+under t4 and should be re-landed as a focused follow-up** (it is _not_ merged;
+reverted in `ee599f8`). Under t4 it lowers commit → dispatch p50 **~3–4×**
+(n=1000, r=50: 567,252/642,303/2,146,301 µs → 167,232/374,096/494,278 µs;
+n=100, r=1000: 46,235/51,171/153,332 µs → 16,814/25,986/31,628 µs) without
+removing the O(N) limit. The earlier park rested on the t3 Accepted/sec
+regression (1,000 subs **677 → 67/s**) alongside the improvements in
+commit → dispatch p50 (**8.04 s → 4.09 s**), delivery rate (**27k → 39k/s**) and
+RSS (**928 → 447 MiB**), plus `:binary.copy` failing to recover it; that
+regression is **confounded** — the hoist run's client-side latency window is 87s
+for a 15s run and `delivered_total` counts post-deadline Actions — so it is not
+a fan-out verdict.
 
 ### #5 — Watermark / ETS bookkeeping — **ADOPT (recommended next prototype)**
 
@@ -175,9 +209,12 @@ resolution and the watermark. The goal is bounded: no candidate in #485 reaches
 
 ## 6. Open questions / next steps
 
-- **Dedicated fan-out harness** (#4): deliveries/sec + commit→dispatch at a
-  fixed write rate, so a fan-out change is not judged by the confounded t3
-  Accepted/sec metric.
+- **Fan-out follow-ups** (#4): the dedicated harness is **done** (`eacd296`,
+  the `t4` tier — deliveries/sec + commit → dispatch at a fixed write rate).
+  Next: (a) **re-land the encode-once hoist** against the t4 metric (a measured
+  ~3–4× commit → dispatch p50 win), and (b) **attack the per-group serial O(N)
+  dispatch** in `group_server.ex:76-80` (coalesced delivery / off-group
+  dispatch), which caps total delivery at ~100k/s once behind.
 - **Watermark interval prototype** (#5): `{from, to}` frontier + hoisted
   `advance_watermark`, with before/after on `t0`.
 - **Boot-time metric** (#6): restart-to-ready at `--entities 0/10k/100k` to

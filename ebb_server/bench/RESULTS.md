@@ -45,7 +45,8 @@ mix bench.actions --tier t0 --duration 120 --warmup 5 --concurrency 1 \
 
 Tier meanings: `t0` = `Writer.write_actions/1` directly; `t1` = real
 `POST /sync/actions` at concurrency 1; `t2` = `POST /sync/actions` at the
-requested concurrency; `t3` = `t2` plus in-process SSE subscribers.
+requested concurrency; `t3` = `t2` plus in-process SSE subscribers; `t4` =
+fixed-rate `Writer.write_actions/1` plus in-process SSE subscribers.
 
 ## Environment
 
@@ -330,15 +331,86 @@ So the hoist **improved** commit → dispatch latency and **halved** RSS
 (677/s → 67/s). `:binary.copy/1` per subscriber did not recover it,
 ruling out shared-refc-binary refcount contention.
 
-**Verdict.** The official t3 Accepted/sec metric is confounded by the
-delivery backlog and client starvation: dispatch got faster and memory
-halved while the write-side metric collapsed, so the metric is not
-measuring the writer. The naive hoist is **parked**, not merged (commits
-`714f9c5` then revert `ee599f8`), and fan-out needs a dedicated harness
-that measures deliveries/sec and commit → dispatch at a **fixed write
-rate**. **10k subscribers were not measured** — at 1,000 subscribers on a
+**Verdict.** The prototype remains **parked**, not merged (commits
+`714f9c5` then revert `ee599f8`). The t4 harness now measures the hoist as
+a **commit → dispatch win** — p50 ~3–4× lower under a fixed write rate
+(see [Fixed-rate fan-out](#fixed-rate-fan-out-t4-485)) — but it does **not**
+remove the per-group serial O(N) limit. It should be **re-landed in a
+focused follow-up** once t4 is the accepted fan-out metric. The park does
+**not** rest on the t3 Accepted/sec regression (677/s → 67/s): that metric
+is confounded by the delivery backlog and client starvation, not a fan-out
+verdict. **10k subscribers were not measured** — at 1,000 subscribers on a
 4-scheduler VM the box is already saturated and RSS was 928 MiB; a
 10k-subscriber point needs a dedicated machine and is out of scope here.
+
+## Fixed-rate fan-out (t4, #485)
+
+Tier `t4` (commit `eacd296`) drives `Writer.write_actions/1` at a fixed
+rate `--rate R` and reports delivered Actions/sec plus commit → dispatch
+p50 per 10s bucket, so fan-out is judged with the **write client held
+constant**: `need = R × N` deliveries/sec, and a flat per-bucket p50 means
+fan-out keeps up while a rising one means it does not.
+
+```sh
+mix bench.actions --tier t4 --rate <R> --subscribers <N> --duration 25 \
+  --warmup 5 --concurrency 1 --batch-size 100 --updates-per-action 2 \
+  --distribution hot
+```
+
+Keep-up sweep on `recsy-vps` (4 schedulers; p50 across 10s buckets, µs):
+
+|     R |    N | need | achieved | delivered/s | per-sub/s | bucket p50                          | verdict  |
+| ----: | ---: | ---: | -------: | ----------: | --------: | ----------------------------------- | -------- |
+| 20000 |    1 |  20k |   19,964 |      17,108 |    17,108 | 3752 / 3757 / 3929                  | keeps up |
+| 10000 |    1 |  10k |    9,976 |       8,554 |     8,554 | 3634 / 2439 / 2989                  | keeps up |
+|  8000 |   10 |  80k |    8,004 |      68,593 |     6,859 | 5315 / 5057 / 4941                  | keeps up |
+|  5000 |   10 |  50k |    4,996 |      42,865 |     4,286 | 5765 / 5643 / 4919                  | keeps up |
+|   500 |  100 |  50k |      500 |      44,102 |       441 | 36763 / 41357 / 41833               | keeps up |
+|  1000 |  100 | 100k |    1,004 |      85,788 |       858 | 46235 / 51171 / 153332              | marginal |
+| 10000 |   10 | 100k |    9,816 |      64,803 |     6,480 | 7956 / 3,796,023 / 5,184,672        | diverges |
+| 20000 |   10 | 200k |   13,564 |      60,511 |     6,051 | 1,863,154 / 7,168,558 / 10,883,767  | diverges |
+|  2000 |  100 | 200k |    1,877 |      77,618 |       776 | 4,300,822 / 7,009,608 / 13,181,902  | diverges |
+|  8000 |  100 | 800k |    4,237 |      93,397 |       934 | 3,445,610 / 11,173,061 / 19,724,212 | diverges |
+|    50 | 1000 |  50k |       52 |      41,595 |        42 | 567,252 / 642,303 / 2,146,301       | diverges |
+|   100 | 1000 | 100k |      100 |      85,557 |        86 | 598,335 / 817,410 / 945,528         | diverges |
+|   500 | 1000 | 500k |      495 |      98,512 |        99 | 3,604,823 / 10,620,320              | diverges |
+|  2000 | 1000 |   2M |    1,700 |     101,059 |       101 | 3,985,947 / 13,341,271              | diverges |
+
+**Findings.**
+
+- The sustainable delivery rate **falls as subscriber count grows**: n=1
+  keeps up at 20k deliveries/s (per-sub 20k/s); n=10 at 80k/s (per-sub
+  8k/s); n=100 at 50k/s (per-sub 500/s); n=1000 already diverges at 50k/s
+  (per-sub <50/s).
+- Total delivered/s saturates at roughly **~100k deliveries/s** once behind,
+  independent of N and R — but the _knee_ is much lower at high N.
+- Mechanism: a group is dispatched by a single `GroupServer` process that
+  serially casts one message per **(subscriber × action)** in the batch
+  (`group_server.ex:76-80`), so the per-batch dispatch cost is O(N) and the
+  sustainable batches/s falls ~1/N.
+- `delivered/s ≈ 86% of need` even in the keeps-up runs: the residual is the
+  backlog at `stop_all` (subscribers are killed, not drained).
+
+**Why the T3 Accepted/sec metric is confounded.** In the t3 run with the
+hoist, the report's _client-side_ latency window is **87s for a 15s run**.
+The worker loop checks the deadline only _before_ each iteration, so when
+`Writer.write_actions/1` blocks for seconds the worker records post-deadline
+samples. `delivered_total` counts those post-deadline Actions, while
+`Accepted/sec` windows only 0–15s. That is why delivered exceeded accepted ×
+subscribers (3.39M vs ~1.04M) and why the metric cannot be used to judge a
+fan-out shape change.
+
+**Encode-once hoist A/B (commit `714f9c5`), measured under t4:**
+
+| config        | baseline p50 buckets (µs)     | with hoist p50 buckets (µs) | delivered/s     |
+| ------------- | ----------------------------- | --------------------------- | --------------- |
+| n=1000, r=50  | 567,252 / 642,303 / 2,146,301 | 167,232 / 374,096 / 494,278 | 41,595 → 45,456 |
+| n=100, r=1000 | 46,235 / 51,171 / 153,332     | 16,814 / 25,986 / 31,628    | 85,788 → 85,918 |
+
+The hoist lowers commit → dispatch p50 ~3–4× under a fixed write rate. It
+does not remove the per-group serial O(N) limit (still diverges at n=1000),
+but it is a real fan-out win — the opposite of what the confounded t3
+Accepted/sec metric said (677 → 67/s).
 
 ## Writer batch coalescing (#332)
 
@@ -640,11 +712,13 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
    already spent; the next lever is spreading per-Action work across
    schedulers or multi-Writer
    ([#287](https://github.com/ebbjs/ebbjs/issues/287)).
-3. **Fan-out is a separate problem from write throughput** — the t3
-   Accepted/sec metric is confounded by the delivery backlog/client
-   starvation and the encode-once hoist is parked (#485); fan-out needs a
-   dedicated harness that measures deliveries/sec and commit → dispatch at a
-   fixed write rate.
+3. **Fan-out is bounded by per-group serial dispatch, not write
+   throughput** — a single `GroupServer` serially casts one message per
+   (subscriber × action) (`group_server.ex:76-80`), so total delivery
+   saturates at ~100k/s once behind and the per-subscriber sustainable rate
+   falls with N (20k/s at n=1 down to <50/s at n=1000). The `t4` tier now
+   measures this at a fixed write rate; the encode-once hoist is a measured
+   commit → dispatch win to re-land (#485).
 4. **10k-subscriber fan-out** — needs a dedicated load-test machine and is
    out of scope here.
 5. **Action-log compaction/retention**

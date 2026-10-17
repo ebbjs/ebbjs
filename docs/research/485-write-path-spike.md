@@ -742,27 +742,39 @@ flush, vs 2×batch in `spread`).
   wrong.** Measured **0.47 ms/flush = 12.5%** of the full flush, the largest
   single item after `entity_index`. This is why #5 is the recommended next
   prototype (`bench/SPIKE-485.md` §3).
-- **§2 #4, "encode once recovers most of the loss" — falsified.** The
-  one-binary-per-group hoist regressed the official t3 Accepted/sec metric
-  ~10× at 1,000 subscribers (**677 → 67/s**) even though server
-  commit→dispatch p50 improved (8.04 s → 4.09 s), delivery rate rose
-  (27k → 39k/s) and RSS fell (928 → 447 MiB); `:binary.copy` did not recover
-  it. The Accepted/sec metric is confounded by delivery-backlog/client
-  starvation, so it cannot be used to judge a fan-out shape change. The hoist is
-  parked and was reverted in `ee599f8`.
+- **§2 #4, "encode once recovers most of the loss" — falsified as stated, but
+  the t3 Accepted/sec verdict is confounded.** The one-binary-per-group hoist
+  appeared to regress the official t3 Accepted/sec metric ~10× at 1,000
+  subscribers (**677 → 67/s**) even though server commit→dispatch p50 improved
+  (8.04 s → 4.09 s), delivery rate rose (27k → 39k/s) and RSS fell
+  (928 → 447 MiB); `:binary.copy` did not recover it. The metric is confounded
+  by the delivery backlog and the client-side latency window — in that run the
+  window is **87s for a 15s run** (the worker loop checks the deadline only
+  before each iteration and `Writer.write_actions/1` blocks past it), and
+  `delivered_total` counts **post-deadline** Actions that `Accepted/sec` (0–15s)
+  never windows. The new **`t4` harness** (commit `eacd296`, fixed write rate)
+  measures the hoist as a **dispatch-latency win** — commit → dispatch p50
+  ~3–4× lower — that does not remove the O(N) per-group limit; it should be
+  **re-landed as a focused follow-up**, not left parked on the confounded
+  metric.
+- **§2 #4, "the bottleneck is total CPU volume, not a serialized dispatch
+  point" — wrong.** The `GroupServer` **is** a serial O(N) dispatch point per
+  group: it casts one message per (subscriber × action)
+  (`group_server.ex:76-80`). t4 showed 10 subscribers sustaining 80k
+  deliveries/s but 1,000 diverging at 50k/s, with total delivery saturating at
+  ~100k/s once behind.
 - **For context on #3/#4.** The post-`ad8e43b` fan-out sweep (`t3`, b10, c=8,
   hot, 15 s) against the improved `t2` b10 baseline of **15,893/s** is: 100
   subscribers **1,647/s (−90%)**, 1,000 subscribers **677/s (−96%)**. The
-  cliff is real and is the worst remaining problem; the hoist above is not the
-  fix, so it needs a dedicated harness that measures deliveries/sec and
-  commit→dispatch at a fixed write rate (`bench/SPIKE-485.md` §6).
+  cliff is real and is the worst remaining problem; the `t4` harness now
+  measures it without the write client as a variable (`bench/SPIKE-485.md` §6).
 - **TL;DR ROI ranking — superseded.** The pre-measurement
   `#4 > #3 > #5 > #1/#2 > #7 > #6` put #3 above #5 on the guess that the
   fan-out encode would be the win. Measured, the write-side encode is already
-  once per Action and the fan-out hoist failed, while the watermark is a
-  contained **0.47 ms/flush**; the ranking is therefore
-  **#4 (needs a new harness) > #5 (measured, contained) > #1/#2 > #7 > #3 > #6**
-  (`bench/SPIKE-485.md` §3).
+  once per Action and the fan-out hoist is a t4-measured dispatch win to
+  re-land, while the watermark is a contained **0.47 ms/flush**; the ranking is
+  therefore **#4 (t4 harness now in place) > #5 (measured, contained) > #1/#2 >
+  #7 > #3 > #6** (`bench/SPIKE-485.md` §3).
 - **Marginal decomposition.** The additive ladder and the per-phase marginal
   table are in `bench/RESULTS.md` §Two-store-only. `fanout` is the one phase
   whose marginal is inside the ±5% run-to-run noise (removing it measured
