@@ -98,12 +98,25 @@ the fan-out ceiling is independent of the writer:
 - **Only `n=10 R=20000` was write-limited** (achieved 13,476 < 20,000); the
   other rows held `achieved ≈ target`, so their divergence is fan-out, not
   Writer saturation.
+- **Coalescing is merged (`a292f58`) and moves the curve.** One binary per
+  group per batch, one cast per subscriber, one `chunk/2` (wire bytes
+  identical). Back-to-back A/B: commit → broadcast complete p50 **5–10×
+  lower** (n=1000 r=50: 537/637/649 ms → **104/114/125 ms**; n=100, r=1000:
+  43/47/51 ms → **4.5/4.0/4.2 ms**) and CPU **roughly halved** per delivery
+  (42.3% → 24.3% at n=1000 r=100; 30.4% → 15.7% at n=100 r=1000). The new
+  n=1000 knee is **~100k deliveries/s** (r=100 keeps up at 100,378/s; r=150
+  delivers 125,847/s = 84%; r=200 134,370/s = 67%; r=300 138,965/s = 46%), so
+  the ceiling **rises ~18% but is not removed** — the per-delivery byte volume
+  is unchanged. (Baseline caveat: an earlier n=1000 r=100 baseline read
+  98,765/s with p50 580/775/904 ms; the back-to-back control is the fair
+  comparison.)
 - The t3 Accepted/sec metric is **confounded**: the hoist run's client-side
   latency window is 87s for a 15s run (the worker loop checks the deadline
   only before each iteration and `Writer.write_actions/1` blocks past it), so
   `delivered_total` counts post-deadline Actions that `Accepted/sec` (0–15s)
-  never windows. Measured under t4, the hoist is instead a commit → broadcast
-  complete win (p50 ~3–4× lower) that does not remove the O(N) limit.
+  never windows. Measured under t4, the hoist was instead a commit → broadcast
+  complete win (p50 ~3–4× lower) that did not remove the O(N) limit; it is now
+  **superseded by coalesced delivery** (`a292f58`).
 
 ## 3. Candidate verdicts
 
@@ -131,40 +144,59 @@ Decision 2 below.
 The write-side ETF encode is already **once per Action** (`writer.ex:1103`;
 #338/#340). The remaining redundancy is the fan-out JSON encode per
 _(subscriber × action)_; the fan-out hoist was attempted and, under the t4
-metric, is a commit → broadcast complete p50 win (~3–4×) that is **parked, not
-merged** pending a production-shaped fan-out measurement (see #4). No further
+metric, is a commit → broadcast complete p50 win (~3–4×) that is now
+**superseded by coalesced delivery** (`a292f58`, see #4). No further
 write-side encode win is available inside `build_ops`.
 
-### #4 — Fan-out shape — **PARK (both parts)**
+### #4 — Fan-out shape — **PROTOTYPED + MERGED (coalesced delivery, `a292f58`)**
 
 The cliff is the worst remaining problem: **−90% at 100 subscribers** (1,647/s)
 and **−96% at 1,000** (677/s) against the improved `t2` b10 baseline of
 **15,893/s**. The t4 tier (`eacd296`) measures it at a fixed write rate and
-shows the mechanism: a single `GroupServer` serially casts one message per
-(subscriber × action) (`group_server.ex:76-80`), so per-batch latency is O(N) —
-at the _same_ ~100k deliveries/s, n=100 is ~45–51 ms while n=1000 is
-~0.6–0.9 s. Total delivery saturates at **~100–120k/s** once behind (n=1000:
-R=300 delivers 117,992/s = 39% of need; R=500 116,457/s = 23%; R=2000
-113,697/s = 6%), and the commit → broadcast complete p50 grows without bound
-(2.3 s → 13.3 s; 3.0 s → 17.4 s; 4.5 s → 20.6 s). Both parts of #4 are
-**PARKED with numbers**:
+shows the mechanism: a single `GroupServer` serially cast one message per
+(subscriber × action) (`group_server.ex:76-80`), so per-batch latency was O(N)
+— at the _same_ ~100k deliveries/s, n=100 was ~45–51 ms while n=1000 was
+~0.6–0.9 s. Total delivery saturated at **~100–120k/s** once behind (n=1000:
+R=300 delivered 117,992/s = 39% of need; R=500 116,457/s = 23%; R=2000
+113,697/s = 6%), and the commit → broadcast complete p50 grew without bound
+(2.3 s → 13.3 s; 3.0 s → 17.4 s; 4.5 s → 20.6 s).
 
-- **Deeper shape change (coalesced delivery / off-group dispatch).** The lever
-  t4 says matters: the serial per-group O(N) loop caps aggregate delivery at
-  ~100–120k/s and is worse at high N.
-- **Encode-once hoist.** A measured t4 commit → broadcast complete p50 win
-  (~3–4×: n=1000, r=50: 567,252/642,303/2,146,301 µs →
-  167,232/374,096/494,278 µs; n=100, r=1000: 46,235/51,171/153,332 µs →
-  16,814/25,986/31,628 µs) that does **not** remove the O(N) limit. It is
-  **not merged** (reverted in `ee599f8`) and is **parked**: the t4 harness uses
-  in-process subscribers, so a **production-shaped fan-out measurement** (real
-  SSE sockets) gates re-landing. The earlier park rested on the confounded t3
-  Accepted/sec regression (1,000 subs **677 → 67/s**) alongside improvements in
-  commit → broadcast complete p50 (**8.04 s → 4.09 s**), delivery rate
-  (**27k → 39k/s**) and RSS (**928 → 447 MiB**), plus `:binary.copy` failing to
-  recover it; that regression is **confounded** — the hoist run's client-side
-  latency window is 87s for a 15s run and `delivered_total` counts
-  post-deadline Actions — so it is not a fan-out verdict.
+**Coalesced delivery — MERGED (`a292f58`).** `GroupServer` now encodes **one
+`data` frame per Action once**, concatenates a committed range's frames into
+**one binary**, and `push_data/2`s that same reference-counted binary to every
+subscriber (N casts per batch, one parent message per subscriber per batch);
+`SSEHandler` writes the bytes in one `chunk/2`. **Wire bytes are identical**,
+so there is no protocol or client change. Back-to-back t4 A/B (batch 100,
+`hot`, 2-Update, `--duration 25 --warmup 5 --concurrency 1`, minutes apart on
+the same idle box):
+
+| config        | delivered/s base → coal | commit→broadcast p50 base → coal                       | util base → coal |
+| ------------- | ----------------------: | ------------------------------------------------------ | ---------------: |
+| n=1000, r=50  |         50,697 → 52,903 | 537 / 637 / 649 ms → **104 / 114 / 125 ms**            |     14.7% → 8.8% |
+| n=1000, r=100 |        87,752 → 100,378 | 871 / 1,783 / 3,501 ms → **106 / 132 / 210 ms**        |    42.3% → 24.3% |
+| n=1000, r=300 |       118,182 → 138,965 | 2,459 / 8,558 / 13,478 ms → **236 / 2,232 / 3,430 ms** |    43.5% → 41.1% |
+| n=100, r=1000 |       100,003 → 100,162 | 43 / 47 / 51 ms → **4.5 / 4.0 / 4.2 ms**               |    30.4% → 15.7% |
+
+(Baseline caveat: an earlier n=1000 r=100 baseline read **98,765/s** with p50
+580/775/904 ms; the back-to-back control is the fair comparison.) The new
+n=1000 knee is **~100k deliveries/s** (r=100 keeps up at 100,378/s; r=150
+delivers 125,847/s = 84%). The remaining ceiling is the per-delivery **byte
+volume** (Actions × subscribers × payload), which is unchanged.
+
+- **Encode-once hoist — superseded.** The hoist was a measured t4
+  commit → broadcast complete p50 win (~3–4×: n=1000, r=50:
+  567,252/642,303/2,146,301 µs → 167,232/374,096/494,278 µs; n=100, r=1000:
+  46,235/51,171/153,332 µs → 16,814/25,986/31,628 µs), but it shaved only the
+  per-subscriber encode and still sent N×A messages. Coalescing encodes once
+  per group **and** collapses the message count, so the hoist is **superseded**
+  (`a292f58`) and kept as history, not as the next step. The earlier hoist park
+  rested on the confounded t3 Accepted/sec regression (1,000 subs
+  **677 → 67/s**) alongside improvements in commit → broadcast complete p50
+  (**8.04 s → 4.09 s**), delivery rate (**27k → 39k/s**) and RSS
+  (**928 → 447 MiB**), plus `:binary.copy` failing to recover it; that
+  regression is **confounded** — the hoist run's client-side latency window is
+  87s for a 15s run and `delivered_total` counts post-deadline Actions — so it
+  is not a fan-out verdict.
 
 ### #5 — Watermark / ETS bookkeeping — **ADOPT (recommended next prototype)**
 
@@ -240,12 +272,18 @@ resolution and the watermark. The goal is bounded: no candidate in #485 reaches
 
 - **Fan-out follow-ups** (#4): the dedicated harness is **done** (`eacd296`,
   the `t4` tier — deliveries/sec + commit → broadcast complete at a fixed
-  write rate). Next: (a) a **production-shaped fan-out measurement** (real SSE
-  sockets, not in-process subscribers) to gate re-landing the encode-once
-  hoist (a measured ~3–4× commit → broadcast complete p50 win), and
-  (b) **attack the per-group serial O(N) dispatch** in
-  `group_server.ex:76-80` (coalesced delivery / off-group dispatch), which
-  caps total delivery at ~100–120k/s once behind.
+  write rate). **Coalesced delivery is merged** (`a292f58`): one binary per
+  group per batch, one cast per subscriber, one `chunk/2`; commit → broadcast
+  complete p50 falls **5–10×** and the ceiling rises **~18%** (n=1000 knee
+  ~100k deliveries/s) with identical wire bytes. It does **not** remove the
+  ceiling, because byte volume (Actions × subscribers × payload) is unchanged.
+  Next levers: (a) **reduce bytes** (client-side diffing/coalescing) and
+  (b) **shard the fan-out across groups / off-group dispatch**
+  (`group_server.ex:76-80`), not more message-level work. The parked
+  encode-once hoist is **superseded** by coalescing. Note the t4
+  subscriber-split confound: the bench splits a coalesced chunk into per-Action
+  frames to count deliveries, so the delivered-rate ceiling **understates** the
+  server-side gain (latency and utilization are unaffected).
 - **Watermark interval prototype** (#5): `{from, to}` frontier + hoisted
   `advance_watermark`, with before/after on `t0`.
 - **Boot-time metric** (#6): restart-to-ready at `--entities 0/10k/100k` to

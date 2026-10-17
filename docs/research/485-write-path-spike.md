@@ -757,9 +757,23 @@ flush, vs 2×batch in `spread`).
   lower (n=1000, r=50: 567,252/642,303/2,146,301 µs →
   167,232/374,096/494,278 µs; n=100, r=1000: 46,235/51,171/153,332 µs →
   16,814/25,986/31,628 µs) — that does not remove the O(N) per-group limit. It
-  is **parked, not merged**: the t4 harness uses in-process subscribers, so a
-  **production-shaped fan-out measurement** (real SSE sockets) is the gate for
-  re-landing.
+  is **superseded by coalesced delivery** (`a292f58`): coalescing encodes one
+  `data` frame per Action once, concatenates a group's frames into one binary
+  and pushes it to every subscriber (one cast per subscriber, one `chunk/2`),
+  which subsumes the per-subscriber encode hoist **and** collapses the N×A
+  messages, so the hoist is kept as history, not as the next step.
+- **§2 #4, coalesced delivery — measured and merged (`a292f58`).** One binary
+  per group per batch, one cast per subscriber, one `chunk/2`; wire bytes
+  identical. Back-to-back t4 A/B: commit → broadcast complete p50 falls
+  **5–10×** (n=1000, r=50: 537/637/649 ms → **104/114/125 ms**; n=100, r=1000:
+  43/47/51 ms → **4.5/4.0/4.2 ms**) and CPU is **roughly halved** per delivery
+  (42.3% → 24.3% at n=1000 r=100; 30.4% → 15.7% at n=100 r=1000). The new
+  n=1000 knee is **~100k deliveries/s** (r=100 keeps up at 100,378/s; r=300
+  delivers 138,965/s = 46%), i.e. the ceiling **rises ~18% but is not
+  removed**: coalescing removes message and encode overhead, not the
+  per-delivery **byte volume** (Actions × subscribers × payload), which is
+  unchanged. The remaining levers are reducing bytes (client-side
+  diffing/coalescing) or sharding across groups.
 - **§2 #4, "the bottleneck is total CPU volume, not a serialized dispatch
   point" — wrong.** The `GroupServer` **is** a serial O(N) dispatch point per
   group: it casts one message per (subscriber × action)
