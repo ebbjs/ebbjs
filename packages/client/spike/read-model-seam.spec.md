@@ -205,11 +205,13 @@ interface CursorStorePort {
   into the overlay.
 
 **Finding — `lastGsn()` cannot be the hydrate cursor.** The starting candidate port was
-`append / getForEntity / getAll / lastGsn`. The #475 backfill appends **synthetic gsn-0
-snapshot puts**. A `gsn > watermark` replay drops them, and `lastGsn()` cannot distinguish
+`append / getForEntity / getAll / lastGsn`. gsn is not a unique, monotonic log cursor: an
+Action can be delivered once per group (#473), and `gsn: 0` is legal (#475 backfill, legacy
+entries). A `gsn > watermark` replay both drops zero-gsn entries and cannot distinguish
 "folded into the snapshot" from "appended after it". The port therefore needs an
-**append-order position**, independent of the server gsn. The harness proves the fix: a
-gsn-0 put survives `snapshot + tail` hydrate only because the watermark is a position.
+**append-order position**, independent of the server gsn. This holds whether or not the
+backfill snapshot keeps `gsn: 0` (see the correction in §8.3). The harness proves the cursor
+with the zero-gsn backfill put surviving `snapshot + tail`.
 
 **Finding — a late base must reconcile earlier Updates (`#475` is not only a cursor).**
 Second-guessing the first draft found a real hole: the store materializes by replaying an
@@ -311,29 +313,30 @@ hlc)` on the optimistic fixtures.
 ## 7. Dual-run evidence
 
 Every case updates both the read model and `createMemoryAdapter()`; after each operation the
-harness asserts `get(id)` and `iterate(type)` equivalence (deep, id-sorted). **63/63 checks
+harness asserts `get(id)` and `iterate(type)` equivalence (deep, id-sorted). **67/67 checks
 pass** on the representative run.
 
-| Case                                                                                | Result |
-| ----------------------------------------------------------------------------------- | ------ |
-| put                                                                                 | ✅     |
-| patch (higher HLC wins)                                                             | ✅     |
-| patch (lower HLC ignored) — version handle and version **unchanged**                | ✅     |
-| equal-HLC tiebreak by lexicographically greater `update_id` (win and lose)          | ✅     |
-| map-union field (sibling key retained)                                              | ✅     |
-| delete → tombstone; patch-on-deleted ignored; read of deleted                       | ✅     |
-| optimistic put, visible pre-echo, then server echo converges                        | ✅     |
-| optimistic patch whose base is missing (stays absent)                               | ✅     |
-| #475 backfill (synthetic gsn-0 snapshot put)                                        | ✅     |
-| type-index membership across a type change                                          | ✅     |
-| cursor advances to the max gsn                                                      | ✅     |
-| patch delivered before its backfilled base (#475) — the orphan fix                  | ✅     |
-| an orphan Update spanning a snapshot rehydrates and still reconciles                | ✅     |
-| divergence probe: read model keeps a newer optimistic write the adapter drops       | ✅     |
-| merge parity: `applyUpdate(gsn 0)` ≡ `applyLocalUpdate` on six fixtures             | ✅     |
-| hydrate: snapshot + tail == incremental; full replay == incremental; gsn-0 survives | ✅     |
-| hydrate: durable outbox replays into the optimistic overlay                         | ✅     |
-| seeded fuzz: 300 random durable + optimistic-then-echo ops                          | ✅     |
+| Case                                                                                  | Result |
+| ------------------------------------------------------------------------------------- | ------ |
+| put                                                                                   | ✅     |
+| patch (higher HLC wins)                                                               | ✅     |
+| patch (lower HLC ignored) — version handle and version **unchanged**                  | ✅     |
+| equal-HLC tiebreak by lexicographically greater `update_id` (win and lose)            | ✅     |
+| map-union field (sibling key retained)                                                | ✅     |
+| delete → tombstone; patch-on-deleted ignored; read of deleted                         | ✅     |
+| optimistic put, visible pre-echo, then server echo converges                          | ✅     |
+| optimistic patch whose base is missing (stays absent)                                 | ✅     |
+| #475 backfill (synthetic gsn-0 snapshot put)                                          | ✅     |
+| type-index membership across a type change                                            | ✅     |
+| cursor advances to the max gsn                                                        | ✅     |
+| patch delivered before its backfilled base (#475) — the orphan fix                    | ✅     |
+| backfill snapshot with the entity's **true gsn + updated_hlc** (row keeps `last_gsn`) | ✅     |
+| an orphan Update spanning a snapshot rehydrates and still reconciles                  | ✅     |
+| divergence probe: read model keeps a newer optimistic write the adapter drops         | ✅     |
+| merge parity: `applyUpdate(gsn 0)` ≡ `applyLocalUpdate` on six fixtures               | ✅     |
+| hydrate: snapshot + tail == incremental; full replay == incremental; gsn-0 survives   | ✅     |
+| hydrate: durable outbox replays into the optimistic overlay                           | ✅     |
+| seeded fuzz: 300 random durable + optimistic-then-echo ops                            | ✅     |
 
 **#495 budget check (10k metadata docs, in-process):**
 
@@ -361,19 +364,31 @@ re-measured with production-shaped rows.
    the newer one, both converge on it (LWW) — the older overlay entry loses. The dual-run
    cases assert equivalence on the specified cases and treat the newer-local interleaving as
    a discovery the read model fixes.
-2. **`gsn` is the wrong hydrate cursor** (§4). A log-local append position is required for
-   #475. Append order alone is not enough either: a `put` must reconcile the orphans that
-   precede it, gated by gsn (a newer `put` supersedes older orphans).
-3. **`gsn: 0` on the backfill snapshot is load-bearing, not a placeholder.** The server
-   already returns the entity's real `last_gsn` (`EntityResponse.last_gsn`); the client
-   copies it in `toRuntimeEntity` and then discards it because `snapshotAction` emits
-   `gsn: 0` and the materializer derives the row's `last_gsn` from the _action's_ gsn. Do
-   **not** replace `gsn: 0` with the fetched `last_gsn`: the zero guarantees the synthetic
-   base sorts before every already-delivered Action, so an earlier patch re-applies on top
-   (the #475 fix). A real `last_gsn >=` the patch's gsn could sort the full-replacement put
-   _after_ the patch and drop it. The same action-shaped round-trip also overwrites the
-   fetched `created_hlc` with `updated_hlc`. If the metadata matters, preserve it beside the
-   baseline (a first-class seed/baseline operation) rather than encoding it as a gsn.
+2. **`gsn` is the wrong hydrate cursor** (§4). A log-local append position is the robust
+   cursor: gsn is neither unique (an Action can be delivered once per group, #473) nor
+   guaranteed non-zero. This is independent of what gsn the backfill snapshot carries.
+   Append order alone is not enough for _folding_ either: a `put` must reconcile the
+   orphans that precede it, gated by gsn (a newer `put` supersedes older orphans).
+3. **`gsn: 0` on the backfill snapshot is a conservative shortcut, not a correctness
+   requirement — the entity's true `last_gsn` is better.** The server already returns the
+   entity's real `last_gsn` (`EntityResponse.last_gsn`); the client copies it in
+   `toRuntimeEntity` and then discards it, because `snapshotAction` emits `gsn: 0` and the
+   materializer derives the row's `last_gsn` from the _action's_ gsn. A first draft of this
+   spec argued zero was load-bearing (the base must sort under every delivered Action).
+   That was **wrong**, and second-guessing it against the code disproved it: stamping the
+   true `last_gsn` (with `updated_hlc` as the action HLC) is correct, because gsn ordering
+   places the full-replacement snapshot at its true causal position — an earlier patch
+   (`gsn <= last_gsn`) is subsumed by the snapshot that already contains it, and a later
+   patch (`gsn > last_gsn`) merges on top by HLC, exactly like any other action. Verified
+   two ways: a dual-run case (`backfill with the entity's true gsn`), and running the repo's
+   own backfill suite with `snapshotAction` switched to `entity.last_gsn` — only the two
+   assertions that hardcode `gsn === 0` fail; all 14 behavioral tests pass. The switch
+   needs no merge-logic change; just those two assertions and the comment.
+   The one thing the true gsn does **not** fix is `created_hlc`: the action shape carries a
+   single HLC and `applyUpdate`'s `put` sets `created_hlc = updated_hlc`, so a fetched row
+   that was patched after creation still loses its `created_hlc`. Preserve that with a
+   first-class baseline/seed operation (or an explicit `created_hlc` on the put data) if it
+   matters.
 4. **`applyLocalUpdate` is redundant.** The merge-parity check shows the normative
    `applyUpdate` with `gsn 0` equals it on every optimistic fixture. The only difference is
    `mergeLocalField`'s "local leaf wins outright" vs LWW; that is equivalent because local

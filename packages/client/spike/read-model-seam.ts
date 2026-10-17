@@ -547,6 +547,39 @@ const runRequiredCases = async (): Promise<void> => {
       ["todo"],
     );
   }
+
+  // The backfill snapshot may instead carry the entity's TRUE gsn + updated_hlc
+  // rather than 0. gsn ordering places it at its causal position; the earlier
+  // patch (gsn 2 > snapshot gsn 1) still merges on top. This is the proposed
+  // fix, and it preserves the row's last_gsn.
+  {
+    const dual = new DualRun();
+    await dual.durable(
+      mkAction({
+        id: "a_tg_patch",
+        gsn: 2,
+        hlc: hlc(9),
+        updates: [patchUpdate("todo_tg", { title: leaf("InFlight", hlc(9), "u_inflight") })],
+      }),
+    );
+    await dual.durable(
+      mkAction({
+        id: "a_tg_base",
+        gsn: 1,
+        hlc: hlc(5),
+        updates: [putUpdate("todo_tg", "todo", { title: leaf("Server", hlc(5), "u_server") })],
+      }),
+    );
+    check(
+      "true-gsn backfill: in-flight patch wins",
+      dual.model.get("todo_tg")?.data.fields.title?.value === "InFlight",
+    );
+    check(
+      "true-gsn backfill: row keeps the true last_gsn",
+      dual.model.get("todo_tg")?.last_gsn === 2,
+    );
+    await dual.assertEquivalent("backfill with the entity's true gsn", ["todo_tg"], ["todo"]);
+  }
 };
 
 // ---------------------------------------------------------------------------

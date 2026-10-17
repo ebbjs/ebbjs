@@ -65,10 +65,10 @@ export interface ReadModelSnapshot {
   /**
    * Max log position folded into `entities`; the hydrate replay point.
    *
-   * This is the log's append-order cursor, NOT the server gsn. gsn-0
-   * synthetic snapshot puts (#475 backfill) are durable Actions too, so a
-   * `gsn > watermark` replay would drop them; an append-order position
-   * covers every logged Action exactly once.
+   * This is the log's append-order cursor, NOT the server gsn. gsn is neither
+   * unique (#473 delivers one Action once per group) nor guaranteed non-zero
+   * (#475 backfill, legacy entries), so a `gsn > watermark` replay is not a
+   * total cursor; an append-order position covers every logged Action once.
    */
   readonly position: number;
   /** Local version counter, so a reloaded model does not restart the journal. */
@@ -393,7 +393,7 @@ export const createReadModel = (): ReadModel => {
 /**
  * Append-only action log. `append` returns the new Action's log position; the
  * position is the log's own monotonic append-order cursor, independent of the
- * server gsn, so gsn-0 backfill Actions replay correctly on hydrate.
+ * server gsn (which is neither unique nor always non-zero).
  * `readTail` returns every Action with position > `afterPosition`, in order.
  * `getForEntity` / `getAll` are gone: the read model buffers an Update that
  * arrives before its base and reconciles it when the base lands, so nothing
