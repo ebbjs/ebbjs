@@ -219,6 +219,7 @@ defmodule EbbServer.Bench.Report do
       {"Target write rate", "#{config.rate} Actions/sec"},
       {"Achieved write rate", format_rate(achieved.rate)},
       {"Subscribers", "#{config.subscribers}"},
+      {"Group shards", "#{config.group_shards}"},
       {"Delivered Actions/sec", format_rate(metrics.delivered_per_sec)},
       {"Delivered per subscriber/sec", format_rate(metrics.delivered_per_subscriber_per_sec)}
     ]

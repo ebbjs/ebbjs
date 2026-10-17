@@ -3,6 +3,10 @@ defmodule EbbServer.Sync.GroupServer do
   Per-Group GenServer that maintains SSE connection subscribers for a Group,
   receives Action batches from the FanOutRouter, and pushes those Actions to
   all subscribers. Self-stops when the last subscriber leaves.
+
+  A group may run as K shards (`:fanout_group_shards`), each a separate
+  `{group_id, shard}` process holding the subscribers that hash to it. A
+  batch is pushed to every shard; each subscriber lives on exactly one.
   """
 
   use GenServer, restart: :transient
@@ -19,16 +23,19 @@ defmodule EbbServer.Sync.GroupServer do
 
   @type t :: %__MODULE__{
           group_id: String.t(),
+          shard: non_neg_integer(),
           subscribers: MapSet.t(pid()),
           actors: %{pid() => String.t()}
         }
 
-  defstruct group_id: nil, subscribers: MapSet.new(), actors: %{}
+  defstruct group_id: nil, shard: 0, subscribers: MapSet.new(), actors: %{}
 
-  @spec start_link(String.t()) :: GenServer.on_start()
-  def start_link(group_id) do
-    name = {:via, Registry, {EbbServer.Sync.GroupRegistry, group_id}}
-    GenServer.start_link(__MODULE__, group_id, name: name)
+  @spec start_link(String.t() | {String.t(), non_neg_integer()}) :: GenServer.on_start()
+  def start_link(group_id) when is_binary(group_id), do: start_link({group_id, 0})
+
+  def start_link({group_id, shard}) do
+    name = {:via, Registry, {EbbServer.Sync.GroupRegistry, {group_id, shard}}}
+    GenServer.start_link(__MODULE__, {group_id, shard}, name: name)
   end
 
   @spec push_actions(pid(), [action()], integer() | nil) :: :ok
@@ -52,9 +59,9 @@ defmodule EbbServer.Sync.GroupServer do
   end
 
   @impl true
-  def init(group_id) do
-    Registry.register(EbbServer.Sync.GroupRegistry, group_id, :group_server)
-    {:ok, %__MODULE__{group_id: group_id}}
+  def init({group_id, shard}) do
+    Registry.register(EbbServer.Sync.GroupRegistry, {group_id, shard}, :group_server)
+    {:ok, %__MODULE__{group_id: group_id, shard: shard}}
   end
 
   @impl true
@@ -81,7 +88,7 @@ defmodule EbbServer.Sync.GroupServer do
 
     for subscriber <- state.subscribers, do: SSEConnection.push_data(subscriber, bytes)
 
-    # One sample per batch per group. A recovered range has no commit
+    # One sample per batch per shard. A recovered range has no commit
     # time, so it must not be reported as a latency sample.
     if is_integer(committed_at) do
       Telemetry.execute(

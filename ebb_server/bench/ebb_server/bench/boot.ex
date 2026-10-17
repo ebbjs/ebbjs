@@ -26,6 +26,7 @@ defmodule EbbServer.Bench.Boot do
   def start(%Options{} = config) do
     start_dependencies()
     Application.put_env(:ebb_server, :auth_mode, :bypass)
+    Application.put_env(:ebb_server, :fanout_group_shards, config.group_shards)
 
     tmp_dir = tmp_dir()
     File.mkdir_p!(tmp_dir)
