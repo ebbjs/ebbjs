@@ -129,11 +129,11 @@ defmodule EbbServer.Sync.SSEConnection do
   @doc """
   Formats an Action as its wire `data` event frame.
 
-  The frame is byte-identical to what `format_sse_event("data", encoded)`
-  produced before fan-out coalesced: the same 5-key projection encoded with
-  `Jason.encode!/1`. GroupServer concatenates these frames into one binary
-  and shares it with every subscriber, so the bytes on the wire are the
-  concatenation of the frames the per-Action path used to emit.
+  Projects the Action to the five keys a subscriber consumes (`id`, `gsn`,
+  `actor_id`, `hlc`, `updates`) and encodes them with `Jason.encode!/1`.
+  `GroupServer` concatenates a batch's frames into one binary and shares it
+  with every subscriber, so the stream is the concatenation of per-Action
+  `data` frames.
   """
   @spec data_frame(map()) :: binary()
   def data_frame(action), do: format_sse_event("data", encode_action(action))
