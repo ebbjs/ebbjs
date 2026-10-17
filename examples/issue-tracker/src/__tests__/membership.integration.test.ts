@@ -17,10 +17,8 @@
  * - `client.can` on the shared issue is allowed for a member and the
  *   non-member's profile is not visible to assign;
  * - the `assignee` relationship writes and reads back;
- * - leaving drops the membership, and re-joining works without a reload.
- *
- * Cross-member profile *content* visibility is blocked on #475 and is
- * asserted as a known gap at the bottom of this file.
+ * - leaving drops the membership, and re-joining works without a reload;
+ * - a fellow member backfills and reads the joined actor's profile content.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -233,13 +231,18 @@ describe("integration: workspace membership", () => {
     expect(await member.issue.get(SAMPLE_ISSUE_ID)).not.toBeNull();
   });
 
-  // Known gap: the shared group receives the `entityGroup` row naming the
-  // member's profile, but not the profile's field writes, which happened
-  // in the member's personal group. Backfilling content for membership
-  // rows naming un-materialized entities is #475.
-  it.skip("a fellow member reads the invited actor's profile content (#475)", async () => {
+  it("a fellow member backfills and reads the joined actor's profile content", async () => {
     if (!(await serverIsReachable())) return;
+
+    // The inviter catches up the profile's membership row; backfill then
+    // reads the content, which was written in the member's personal group.
+    await seeder.backfill();
     const seen = await seeder.profile.get(MEMBER_PROFILE_ID);
-    expect(seen?.display_name).toBe(MEMBER_ID);
+    expect(seen).not.toBeNull();
+    expect(seen!.actor_id).toBe(MEMBER_ID);
+    expect(seen!.display_name).toBe(MEMBER_ID);
+
+    // Visibility follows the membership: a non-member still reads nothing.
+    expect(await outsider.profile.get(MEMBER_PROFILE_ID)).toBeNull();
   });
 });
