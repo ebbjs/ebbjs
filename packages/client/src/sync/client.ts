@@ -71,6 +71,7 @@ import {
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { readEntityMemberships } from "./entity-group";
 import { readGeneratedParts } from "./generated-parts";
+import { createBackfill, type Backfill } from "./backfill";
 import { createAtomicRuntime, type AtomicClient } from "./atomic";
 import {
   PermissionError,
@@ -135,6 +136,13 @@ export interface SyncObservables {
   readonly conflicts: ReadonlyObservable<ConflictSnapshot>;
   /** Write-buffer depth + last flush latency (#369). */
   readonly outbox: OutboxObserver;
+  /**
+   * Entity ids whose content is being backfilled from the server because
+   * a membership row names an entity the local cache lacks (#475). Read
+   * synchronously so a UI can render a pending row rather than an empty
+   * one while the read is in flight.
+   */
+  readonly backfill: ReadonlyObservable<readonly string[]>;
 }
 
 export class SyncClient implements PermissionQuery {
@@ -168,10 +176,11 @@ export class SyncClient implements PermissionQuery {
    */
   readonly conflicts: Conflicts;
   /**
-   * Read-only sync observables. `client.sync.conflicts` and
-   * `client.sync.outbox` each publish a synchronous `get()` plus a
-   * `subscribe(cb)` that fires on change, so application UI can render
-   * conflict / pending depth without polling or reaching into internals.
+   * Read-only sync observables. `client.sync.conflicts`,
+   * `client.sync.outbox`, and `client.sync.backfill` each publish a
+   * synchronous `get()` plus a `subscribe(cb)` that fires on change, so
+   * application UI can render conflict / pending depth / in-flight
+   * backfill without polling or reaching into internals.
    */
   readonly sync: SyncObservables;
   /**
@@ -243,6 +252,12 @@ export class SyncClient implements PermissionQuery {
    * on inbound violations when at least one listener is present.
    */
   private readonly registryViolationListeners = new Set<RegistryViolationListener>();
+  /**
+   * Content backfill for membership rows naming unknown entities (#475):
+   * reconciles the local `entityGroup` rows against the cache and reads
+   * the missing entities from the server into the action log.
+   */
+  private readonly backfillRunner: Backfill;
 
   constructor(opts: SyncClientOptions) {
     this.serverUrl = opts.serverUrl.replace(/\/$/, "");
@@ -309,6 +324,10 @@ export class SyncClient implements PermissionQuery {
       initialMs: this.reconnectInitialMs,
       maxMs: this.reconnectMaxMs,
     });
+    this.backfillRunner = createBackfill({
+      storage: this.storage,
+      fetchEntity: (entityId) => this.getEntity(entityId),
+    });
     this.sync = {
       conflicts: conflictsObservable,
       outbox: createOutboxObserver({
@@ -316,6 +335,7 @@ export class SyncClient implements PermissionQuery {
         flushLatency: () => this.flushScheduler.flushLatency,
         onFlushLatency: (listener) => this.flushScheduler.onLatencyChange(listener),
       }),
+      backfill: this.backfillRunner.pending,
     };
     // Built after `sync` so the aggregate composes the fully-wired
     // child observables.
@@ -807,6 +827,17 @@ export class SyncClient implements PermissionQuery {
   }
 
   /**
+   * Reconcile the local `entityGroup` rows against the cache and read
+   * every referenced entity the client lacks from the server (#475).
+   * Runs automatically after catch-up and on a live membership put; this
+   * surface exposes it for callers that want to await or force a pass.
+   * Concurrent calls coalesce into one pass plus one queued re-check.
+   */
+  backfill(): Promise<void> {
+    return this.backfillRunner.run();
+  }
+
+  /**
    * Tear down all subscriptions and timers. After `close()` the client is
    * unusable; create a new one with `createClient`.
    */
@@ -955,6 +986,9 @@ export class SyncClient implements PermissionQuery {
         this.preSyncCaptures.delete(catchUpId);
       }
       if (sub.cancelled) return "cancelled";
+      // A missed window can carry a membership row whose entity content
+      // lives in another group's history, so reconcile before going live.
+      void this.backfill();
       // Readiness checkpoint: catch-up is done and the conflict detection
       // pass has run, so pending entries may flush.
       this.flushScheduler.release();
@@ -1110,6 +1144,7 @@ export class SyncClient implements PermissionQuery {
       // pick the first subscribed group.
       const groupId = sub.groupIds[0];
       await this._applyAction(event.action, groupId);
+      if (isMembershipPut(event.action)) void this.backfill();
       if (event.action.gsn > 0) {
         for (const gid of sub.groupIds) {
           const prev = this.groupCursors.get(gid) ?? 0;
@@ -1555,6 +1590,13 @@ const errorMessage = (err: unknown): string => {
   if (err instanceof Error) return err.message;
   return String(err);
 };
+
+/**
+ * The wake-up for backfill (#475): an `entityGroup` put is the delivery
+ * that can name an entity the client cannot materialize.
+ */
+const isMembershipPut = (action: Action): boolean =>
+  action.updates.some((update) => update.subject_type === "entityGroup" && update.method === "put");
 
 /** Returned by {@link SyncClient.handshake}. */
 export interface HandshakeResult {
