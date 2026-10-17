@@ -115,6 +115,16 @@ the fan-out ceiling is independent of the writer:
   latency win 8–16×, against the earlier run +2% and 4–6×. The r=300
   last-bucket p50 of 313,209 µs sits below its middle bucket — run noise at the
   edge.)
+- **Group sharding tested and ruled out (`fe5f25f` → revert `e5b1e19`).**
+  Sharding one group's fan-out across K `GroupServer` processes (subscribers
+  hashed across `{group_id, shard}` registry keys) left delivered/s **flat**
+  across K=1/2/4/8 at n=1000 r=300 (140,563 / 139,534 / 139,866 / 137,747 at
+  ~40% utilization) and flat at r=100 (100,607 vs 100,347) and r=150 (129,767 vs
+  126,977), so the `GroupServer` is **not** the post-coalescing bottleneck. The
+  ceiling that remains is **non-CPU and configuration-dependent** — ~140–166k
+  deliveries/s at only 30–40% utilization (n=100, r=2000: 166,605/s at 30.7%)
+  — so the next step is to rule out the **bench subscriber's shared
+  instrumentation** before treating that ceiling as a server limit.
 - The t3 Accepted/sec metric is **confounded**: the hoist run's client-side
   latency window is 87s for a 15s run (the worker loop checks the deadline
   only before each iteration and `Writer.write_actions/1` blocks past it), so
@@ -295,9 +305,16 @@ resolution and the watermark. The goal is bounded: no candidate in #485 reaches
   baseline** (n=1000 knee ~100k deliveries/s) with identical wire bytes. It
   does **not** remove the ceiling, because byte volume (Actions × subscribers ×
   payload) is unchanged. Next levers: (a) **reduce bytes** (client-side
-  diffing/coalescing) and (b) **shard the fan-out across groups / off-group
-  dispatch** (`group_server.ex:76-80`), not more message-level work. The
-  encode-once hoist is **superseded** by coalescing; the original park cited the
+  diffing/coalescing); **(b) group sharding is tested and ruled out** (`fe5f25f`,
+  reverted in `e5b1e19`): hashing one group's subscribers across K `GroupServer`
+  processes left delivered/s flat across K=1/2/4/8 at n=1000 r=300 (140,563 /
+  139,534 / 139,866 / 137,747 at ~40% util) and flat at r=100 and r=150, so the
+  `GroupServer` is **not** the post-coalescing bottleneck. The remaining ceiling
+  is **non-CPU and configuration-dependent** (~140–166k deliveries/s at 30–40%
+  utilization) and the next step is to rule out the **bench subscriber's shared
+  instrumentation** — a single shared `:counters` ref and `:bag` ETS lag table —
+  with a split-free subscriber before treating that ceiling as a server limit.
+  The encode-once hoist is **superseded** by coalescing; the original park cited the
   t3 Accepted/sec regression, which is confounded. Note the t4 subscriber-split
   limitation: the bench splits a coalesced chunk into per-Action frames to count
   deliveries, so the coalesced arm carries client-side work the baseline arm did

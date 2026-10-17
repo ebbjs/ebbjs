@@ -542,6 +542,72 @@ or sharding across groups — not more message-level work. The production-shaped
 in-process subscribers, so these fan-out numbers are not yet
 production-representative — that remains the outstanding gate.
 
+### Group sharding (K GroupServers per group) — tested, no effect (revert `e5b1e19`)
+
+Prototype `fe5f25f` sharded a group's fan-out across K `GroupServer`
+processes — subscribers hashed across `{group_id, shard}` registry keys,
+default K=1 — so one hot group's dispatch could run on K processes. It was
+**reverted in `e5b1e19`** after the sweep below: it changes the registry key
+and the subscription shape for zero measured benefit.
+
+```sh
+mix bench.actions --tier t4 --rate R --group-shards K --subscribers N --duration 25 \
+  --warmup 5 --concurrency 1 --batch-size 100 --updates-per-action 2 --distribution hot
+```
+
+K sweep at n=1000, r=300 (need 300,000 deliveries/s):
+
+|   K | achieved write/s | delivered/s |  util | p50 buckets (µs)                 |
+| --: | ---------------: | ----------: | ----: | -------------------------------- |
+|   1 |              160 |     140,563 | 40.0% | 62,112 / 1,718,634 / 3,946,855   |
+|   2 |              168 |     139,534 | 40.3% | 145,751 / 5,020,573 / 8,905,702  |
+|   4 |              220 |     139,866 | 40.8% | 130,564 / 5,656,838 / 10,191,213 |
+|   8 |              216 |     137,747 | 40.2% | 172,374 / 5,145,582 / 7,513,349  |
+
+Delivered/s is **flat across K** (139–141k); utilization is flat at ~40%; p50
+does **not** improve — later buckets get worse, partly because
+`ebb.fanout.push_latency_ms` now emits one sample per batch per shard. At
+n=1000/r=100 delivered is flat too (100,607 K=1 vs 100,347 K=4) though the
+first-bucket p50 drops (96,517 → 14,095 µs); at r=150 delivered is flat
+(129,767 vs 126,977).
+
+**Conclusion: the `GroupServer` is not the current bottleneck.** After
+coalescing its per-batch work is one cast per subscriber of a shared binary;
+sharding it changes nothing.
+
+**The ceiling is not CPU-bound and depends on configuration:**
+
+| config        | need |        delivered/s | util                                            |
+| ------------- | ---: | -----------------: | ----------------------------------------------- |
+| n=1000, r=150 | 150k |            129,767 | 33.9%                                           |
+| n=1000, r=300 | 300k |            140,563 | 40.0%                                           |
+| n=100, r=2000 | 200k |            166,605 | 30.7%                                           |
+| n=100, r=3000 | 300k |            155,095 | 38.1%                                           |
+| n=10, r=10000 | 100k | 100,004 (keeps up) | 9.5%                                            |
+| n=10, r=20000 | 200k |            114,578 | 31.2% (write-limited: achieved 14,204 < 20,000) |
+
+The delivery ceiling sits at **~140–166k deliveries/s** while the box is only
+**30–40% utilized**, and it moves with subscriber count. So the serial/resource
+point is somewhere _other_ than the `GroupServer`. Candidates that remain: the
+single-process `FanOutRouter` (`push_gsn_range` reads and `binary_to_term`s
+each Action), the per-subscriber `SSEConnection` → parent hop, and the **bench
+subscriber's own shared instrumentation** (a single `:counters` ref and a
+shared `:bag` ETS lag table written every 50th delivery from 1,000 processes).
+The last would mean the ~140k figure is a harness artifact rather than a server
+limit, and it needs a split-free control (per-process lag, batched counting) to
+rule out.
+
+**What this rules out:**
+
+- sharding `GroupServer`s to raise the fan-out ceiling (this sweep);
+- subgroups as a _parallelism_ fix, for the same reason — they would not have
+  helped either;
+- CPU saturation as the near-term fan-out limit at these rates.
+
+Where the ~140k ceiling comes from is **still open**: the next step is a bench
+subscriber that does not share an ETS table or a counter across subscribers,
+then re-measure to see whether the ceiling is the server or the harness.
+
 ## Writer batch coalescing (#332)
 
 [#332](https://github.com/ebbjs/ebbjs/issues/332) coalesces concurrent
@@ -856,7 +922,19 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
    (n=1000 knee from ~90–100k to ~100–125k deliveries/s). It does **not**
    remove the ceiling, because the byte volume (Actions × subscribers ×
    payload) is unchanged, so the next levers are **reducing bytes** (client-side
-   diffing/coalescing) or **sharding across groups**. The encode-once hoist is
+   diffing/coalescing). **Sharding is ruled out**: sharding one group's fan-out
+   across K `GroupServer` processes (`fe5f25f`) measured **flat** delivered/s
+   (139–141k) across K=1/2/4/8 at n=1000 r=300 and flat at r=100 (100,607 K=1
+   vs 100,347 K=4) and r=150 (129,767 vs 126,977), so the `GroupServer` is not
+   the post-coalescing bottleneck; the prototype was reverted in `e5b1e19`.
+   The ceiling that remains is **non-CPU and configuration-dependent**:
+   ~140–166k deliveries/s at only **30–40%** utilization (n=100, r=2000 reaches
+   166,605/s at 30.7%; n=1000, r=300 reaches 140,563/s at 40.0%), and it moves
+   with subscriber count. The next step is to rule out the **bench subscriber's
+   shared instrumentation** (a single `:counters` ref and a shared `:bag` ETS
+   lag table written every 50th delivery from 1,000 processes) with a
+   **split-free subscriber** (per-process lag, batched counting) and profiling,
+   before treating the ~140k figure as a server limit. The encode-once hoist is
    **superseded by coalescing** (`a292f58`), not the recommended next step: the
    original park cited the t3 Accepted/sec regression, which is confounded.
    Note the t4 subscriber-split limitation: it splits a coalesced chunk into

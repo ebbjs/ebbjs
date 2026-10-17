@@ -813,3 +813,16 @@ flush, vs 2×batch in `spread`).
   table are in `bench/RESULTS.md` §Two-store-only. `fanout` is the one phase
   whose marginal is inside the ±5% run-to-run noise (removing it measured
   slower than the full run); the additive ladder bounds it at ~0.09 ms/flush.
+- **§2 #4, group sharding — tested, no effect (revert `e5b1e19`).** Sharding a
+  group's fan-out across K `GroupServer` processes (`fe5f25f`; subscribers
+  hashed across `{group_id, shard}` registry keys) left delivered/s **flat**
+  across K=1/2/4/8 at n=1000 r=300 (140,563 / 139,534 / 139,866 / 137,747,
+  ~40% util) and flat at r=100 (100,607 vs 100,347) and r=150 (129,767 vs
+  126,977), so the `GroupServer` is not the post-coalescing bottleneck. The
+  ceiling that remains is **non-CPU and configuration-dependent**: ~140–166k
+  deliveries/s at only 30–40% utilization (n=100, r=2000: 166,605/s at 30.7%;
+  n=10, r=20000 is write-limited, achieved 14,204 < 20,000). Caveat: the bench
+  subscriber shares one `:counters` ref and a `:bag` ETS lag table across 1,000
+  processes, so the ~140k figure could be a harness artifact; it needs a
+  split-free (per-process lag, batched counting) control before being read as a
+  server limit.
