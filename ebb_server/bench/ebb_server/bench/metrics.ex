@@ -55,20 +55,135 @@ defmodule EbbServer.Bench.Metrics do
   end
 
   @doc """
+  Per-bucket commit→broadcast-complete latency from
+  `ebb.fanout.push_latency_ms` samples.
+
+  The series is the load-bearing signal for the fixed-rate tier: a flat p50
+  across buckets means the Router keeps up with the commit stream, a rising
+  p50 means the GroupServer queue is falling behind. Buckets start at the
+  measured window's zero and step by `bucket_seconds`; samples outside
+  `[0, duration)` are dropped—both warmup samples, which carry a negative
+  offset, and post-deadline samples, which a worker loop that overruns the
+  deadline can produce.
+  """
+  @spec fanout_series([{integer(), integer()}], pos_integer(), pos_integer()) :: [map()]
+  def fanout_series(samples, duration, bucket_seconds \\ 10)
+      when duration > 0 and bucket_seconds > 0 do
+    0
+    |> Stream.iterate(&(&1 + bucket_seconds))
+    |> Enum.take_while(&(&1 < duration))
+    |> Enum.map(fn from_second -> bucket(samples, from_second, duration, bucket_seconds) end)
+  end
+
+  defp bucket(samples, from_second, duration, bucket_seconds) do
+    to_second = min(from_second + bucket_seconds, duration)
+    values = window_values(samples, from_second * 1_000_000, to_second * 1_000_000)
+
+    %{
+      from_second: from_second,
+      count: length(values),
+      p50: percentile(values, 50),
+      p95: percentile(values, 95)
+    }
+  end
+
+  # Samples whose offset falls in `[from_us, to_us)`, with the measured
+  # value kept and sorted ascending for nearest-rank percentiles.
+  defp window_values(samples, from_us, to_us) do
+    samples
+    |> Enum.filter(fn {offset_us, _value} -> offset_us >= from_us and offset_us < to_us end)
+    |> Enum.map(&elem(&1, 1))
+    |> Enum.sort()
+  end
+
+  @doc """
+  Delivered Actions/sec over the measured window, for the fixed-rate tier.
+
+  Only t4 samples deliveries, so every other tier gets `nil`. Samples are
+  windowed to `[0, duration)` relative to `measure_start`—exactly like
+  `latency/2`—so warmup deliveries and any post-deadline sampler ticks are
+  excluded; the rate is then the delivery-counter delta over the span
+  between the first and last in-window sample. Fewer than two in-window
+  samples, a null delivery counter, or a non-positive span all yield `nil`
+  rates.
+  """
+  @spec delivered_rate([map()], Options.t()) :: map() | nil
+  def delivered_rate(_samples, %Options{tier: tier}) when tier != :t4, do: nil
+
+  def delivered_rate(samples, %Options{tier: :t4} = config) do
+    empty = %{delivered_per_sec: nil, delivered_per_subscriber_per_sec: nil}
+
+    window =
+      Enum.filter(samples, fn %{offset_us: offset_us} ->
+        offset_us >= 0 and offset_us < config.duration * 1_000_000
+      end)
+
+    case window do
+      [first, _second | _rest] ->
+        last = List.last(window)
+        elapsed = (last.offset_us - first.offset_us) / 1_000_000
+
+        if is_integer(first.delivered) and is_integer(last.delivered) and elapsed > 0 do
+          rate = (last.delivered - first.delivered) / elapsed
+
+          %{
+            empty
+            | delivered_per_sec: rate,
+              delivered_per_subscriber_per_sec:
+                if(config.subscribers > 0, do: rate / config.subscribers, else: nil)
+          }
+        else
+          empty
+        end
+
+      _ ->
+        empty
+    end
+  end
+
+  @doc """
+  Deliveries the server enqueued per second over the measured window.
+
+  `telemetry` is the map from `EbbServer.Bench.Telemetry.stop/1`; each
+  `:fanout_dispatched` row is `{offset_us, count * subscribers}` for one
+  dispatched batch. Only rows whose offset falls in `[0, duration)` are
+  counted—warmup rows carry a negative offset and post-deadline rows are
+  outside the window—and the sum is divided by `duration`. `nil` when no
+  dispatched samples were captured at all, so an uninstrumented run reports
+  the rate as not measured.
+  """
+  @spec dispatched_rate(map(), pos_integer()) :: float() | nil
+  def dispatched_rate(telemetry, duration) when duration > 0 do
+    case Map.get(telemetry, :fanout_dispatched, []) do
+      [] -> nil
+      rows -> Enum.reduce(rows, 0, &add_in_window(&1, &2, duration)) / duration
+    end
+  end
+
+  defp add_in_window({offset_us, value}, acc, duration)
+       when offset_us >= 0 and offset_us < duration * 1_000_000,
+       do: acc + value
+
+  defp add_in_window(_row, acc, _duration), do: acc
+
+  @doc """
   Aggregates worker stats, resource samples, and fan-out stats into the
   shape `EbbServer.Bench.Report` renders.
   """
   @spec analyze(Options.t(), map(), [map()], [map()], [map()] | nil, map()) :: map()
   def analyze(%Options{} = config, ctx, worker_stats, resource_samples, fanout, telemetry \\ %{}) do
     merged = merge_stats(worker_stats)
+    watermark_ablated? = :watermark in config.ablate
 
     %{
       tier: config.tier,
       throughput: throughput(config.duration, merged),
       latency: latency(config.duration, merged.samples),
-      correctness: correctness(merged, resource_samples),
+      correctness: correctness(merged, resource_samples, watermark_ablated?),
       resources: resources(resource_samples),
       fanout: fanout_summary(fanout),
+      fanout_metrics: fanout_metrics(config, resource_samples, telemetry),
+      fanout_series: fanout_series(samples(telemetry, :fanout_push), config.duration),
       server: server_summary(config.duration, telemetry),
       context: %{
         preloaded_entities: length(ctx.entities),
@@ -185,13 +300,7 @@ defmodule EbbServer.Bench.Metrics do
     duration
     |> windows()
     |> Enum.map(fn w ->
-      window_samples =
-        samples
-        |> Enum.filter(fn {offset_us, _latency} ->
-          offset_us >= w.from_us and offset_us < w.to_us
-        end)
-        |> Enum.map(&elem(&1, 1))
-        |> Enum.sort()
+      window_samples = window_values(samples, w.from_us, w.to_us)
 
       %{
         window: w.name,
@@ -203,14 +312,18 @@ defmodule EbbServer.Bench.Metrics do
     end)
   end
 
-  defp correctness(merged, resource_samples) do
+  # The watermark frontier is what makes GSN density and lag meaningful; with
+  # `:watermark` ablated the frontier never moves, so both are deliberately
+  # left unmeasured instead of reporting a meaningless number.
+  defp correctness(merged, resource_samples, watermark_ablated?) do
     %{
       accepted: merged.accepted,
       rejected: merged.rejected,
       errors: merged.errors,
-      gsn_holes: count_gsn_holes(),
-      watermark_lag_high: samples_max(resource_samples, &lag/1),
-      watermark_lag_final: final_lag(resource_samples)
+      gsn_holes: if(watermark_ablated?, do: nil, else: count_gsn_holes()),
+      watermark_lag_high:
+        if(watermark_ablated?, do: nil, else: samples_max(resource_samples, &lag/1)),
+      watermark_lag_final: if(watermark_ablated?, do: nil, else: final_lag(resource_samples))
     }
   end
 
@@ -253,6 +366,19 @@ defmodule EbbServer.Bench.Metrics do
     active = Enum.reduce(samples, 0, &(&2 + (&1.sched_active || 0)))
     total = Enum.reduce(samples, 0, &(&2 + (&1.sched_total || 0)))
     if total > 0, do: active / total, else: nil
+  end
+
+  # The fixed-rate fan-out metrics pair the delivered rate (measured by the
+  # subscriber sampler) with the dispatched rate (measured server-side), so a
+  # report can tell a server-side limit from a subscriber-side one.
+  defp fanout_metrics(config, resource_samples, telemetry) do
+    case delivered_rate(resource_samples, config) do
+      nil ->
+        nil
+
+      delivered ->
+        Map.put(delivered, :dispatched_per_sec, dispatched_rate(telemetry, config.duration))
+    end
   end
 
   defp fanout_summary(nil), do: nil
