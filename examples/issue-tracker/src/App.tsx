@@ -7,8 +7,9 @@
  * new identity — the same path a fresh load takes.
  *
  * Ready state is wrapped in `EbbProvider`, so the header's
- * `useConnection()` badge, the workspace switcher, the profile card, and
- * the issue list all read the typed client from context.
+ * `useConnection()` badge, the workspace switcher, the membership
+ * panel, the profile card, and the issue list all read the typed client
+ * from context.
  */
 
 import { useEffect, useState } from "react";
@@ -18,6 +19,7 @@ import { ConnectionBadge } from "./ConnectionBadge";
 import { IssueCreateForm } from "./IssueCreateForm";
 import { IssueDetail } from "./IssueDetail";
 import { IssueList } from "./IssueList";
+import { MembershipPanel } from "./MembershipPanel";
 import { ProfileCard } from "./ProfileCard";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { bootstrap, type BootstrapResult } from "./bootstrap";
@@ -54,8 +56,7 @@ export function App() {
         const result = await bootstrap({ serverUrl: SERVER_URL, actorId });
         created = result;
         if (cancelled) {
-          result.unsubscribe();
-          result.client.close();
+          result.close();
           return;
         }
         setState({ status: "ready", bootstrap: result });
@@ -66,8 +67,7 @@ export function App() {
     })();
     return () => {
       cancelled = true;
-      created?.unsubscribe();
-      created?.client.close();
+      created?.close();
     };
   }, [actorId]);
 
@@ -103,6 +103,7 @@ export function App() {
         actorId={actorId}
         onActorChange={setActorId}
         defaultGroupId={state.bootstrap.defaultGroupId}
+        bootstrap={state.bootstrap}
       />
     </EbbProvider>
   );
@@ -112,10 +113,12 @@ function AppShell({
   actorId,
   onActorChange,
   defaultGroupId,
+  bootstrap,
 }: {
   actorId: ActorId;
   onActorChange: (actorId: ActorId) => void;
   defaultGroupId: string;
+  bootstrap: BootstrapResult;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -132,6 +135,7 @@ function AppShell({
 
       <main className="flex flex-1 min-h-0 flex-col gap-4 overflow-y-auto p-4">
         <ProfileCard actorId={actorId} />
+        <MembershipPanel actorId={actorId} bootstrap={bootstrap} />
         <div className="grid gap-4 xl:grid-cols-2">
           <IssueList
             selectedId={selectedId}
