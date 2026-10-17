@@ -21,6 +21,7 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
   alias EbbServer.Storage.RocksDB
   alias EbbServer.Sync.{CatchUp, FanOutRouter, SSEConnection}
   alias EbbServer.TestHelpers
+  alias EbbServer.SSEHelpers
 
   describe "delete fan-out uses the commit snapshot (#251)" do
     test "entityGroup delete reaches live subscribers and cf_group_actions" do
@@ -90,13 +91,15 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
     timeout = max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
-      {:sse_chunk, "data", json} ->
-        payload = Jason.decode!(json)
+      {:sse_data, bytes} ->
+        payloads = Enum.map(SSEHelpers.data_payloads(bytes), &Jason.decode!/1)
 
-        if Enum.any?(payload["updates"], &delete_of?(&1, deleted_id)) do
-          payload
-        else
-          await_action(deleted_id, deadline)
+        case Enum.find(
+               payloads,
+               &Enum.any?(&1["updates"], fn update -> delete_of?(update, deleted_id) end)
+             ) do
+          nil -> await_action(deleted_id, deadline)
+          payload -> payload
         end
     after
       timeout ->

@@ -14,6 +14,23 @@ defmodule EbbServer.Sync.SSEHandlerTest do
   alias EbbServer.Storage.GroupCache
   alias EbbServer.Sync.{Router, SSEHandler}
 
+  # Records what `do_sse_loop/3` hands to `Plug.Conn.chunk/2`, so a test can
+  # assert the bytes written are the bytes received.
+  defmodule RecordingAdapter do
+    @moduledoc false
+
+    def send_chunked(%{test: test}, _status, _headers) do
+      send(test, :chunked_started)
+      {:ok, "", %{test: test}}
+    end
+
+    def chunk(%{test: test} = state, body) do
+      bytes = IO.iodata_to_binary(body)
+      send(test, {:chunk_written, bytes})
+      {:ok, bytes, state}
+    end
+  end
+
   describe "open_sse/4" do
     test "returns {:error, :not_member} when actor is not a member of the group" do
       cursor = 0
@@ -22,6 +39,41 @@ defmodule EbbServer.Sync.SSEHandlerTest do
         SSEHandler.open_sse(self(), ["nonexistent_group"], cursor, "stranger")
 
       assert result == {:error, :not_member}
+    end
+  end
+
+  describe "do_sse_loop/3 data path" do
+    test "writes a coalesced {:sse_data, bytes} chunk verbatim" do
+      group_id = "g_sse_data_#{:erlang.unique_integer([:positive])}"
+      actor_id = "a_sse_data_#{:erlang.unique_integer([:positive])}"
+
+      GroupCache.put_group_member(%{
+        id: "gm_sse_data_#{:erlang.unique_integer([:positive])}",
+        actor_id: actor_id,
+        group_id: group_id,
+        permissions: ["read"]
+      })
+
+      conn =
+        Plug.Test.conn(:get, "/")
+        |> Map.put(:adapter, {RecordingAdapter, %{test: self()}})
+
+      test_pid = self()
+
+      task =
+        Task.async(fn ->
+          send(test_pid, {:sse_loop_pid, self()})
+          SSEHandler.open_sse(conn, [group_id], 0, actor_id)
+        end)
+
+      assert_receive {:sse_loop_pid, loop_pid}, 5_000
+
+      bytes = "event: data\ndata: {\"id\":\"act_verbatim\"}\n\nevent: data\ndata: {}\n\n"
+      send(loop_pid, {:sse_data, bytes})
+
+      assert_receive {:chunk_written, ^bytes}, 5_000
+
+      Task.shutdown(task, :brutal_kill)
     end
   end
 

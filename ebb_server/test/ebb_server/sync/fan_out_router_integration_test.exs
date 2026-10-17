@@ -9,6 +9,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
   use ExUnit.Case, async: false
   use EbbServer.Integration.StorageCase
 
+  import EbbServer.SSEHelpers
   import EbbServer.TestHelpers
 
   alias EbbServer.Integration.ActionHelpers
@@ -115,8 +116,8 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       assert conn.status == 200
       assert conn.resp_body == ~s({"rejected":[]})
 
-      assert_receive {:sse_chunk, "data", json}, 5_000
-      payload = Jason.decode!(json)
+      assert_receive {:sse_data, bytes}, 5_000
+      payload = bytes |> single_data_payload() |> Jason.decode!()
 
       subject_types =
         payload["updates"]
@@ -148,7 +149,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       assert conn.status == 200
       assert conn.resp_body == ~s({"rejected":[]})
 
-      assert_receive {:sse_chunk, "data", _json}, 5_000
+      assert_receive {:sse_data, _bytes}, 5_000
 
       assert [{[:ebb, :fanout, :push_latency_ms], %{duration: duration}, %{group_id: ^group_id}}] =
                telemetry_events(ref)
@@ -207,9 +208,10 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       assert conn.status == 200
       assert conn.resp_body == ~s({"rejected":[]})
 
-      # Both Actions reach the group as one dispatched batch.
-      assert_receive {:sse_chunk, "data", _json}, 5_000
-      assert_receive {:sse_chunk, "data", _json}, 5_000
+      # Both Actions reach the group as one dispatched batch, coalesced
+      # into a single chunk carrying one frame per Action.
+      assert_receive {:sse_data, bytes}, 5_000
+      assert length(data_payloads(bytes)) == 2
 
       assert [{[:ebb, :fanout, :push_latency_ms], %{duration: duration}, %{group_id: ^group_id}}] =
                telemetry_events(ref)
@@ -366,8 +368,11 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
 
   defp collect_chunks(test, tag) do
     receive do
-      {:sse_chunk, _type, payload} -> send(test, {tag, payload})
-      _other -> :ok
+      {:sse_data, bytes} ->
+        for payload <- data_payloads(bytes), do: send(test, {tag, payload})
+
+      _other ->
+        :ok
     end
 
     collect_chunks(test, tag)

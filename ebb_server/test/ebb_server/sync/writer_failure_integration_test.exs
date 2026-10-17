@@ -239,6 +239,7 @@ defmodule EbbServer.Sync.WriterFailureEndToEndTest do
   alias EbbServer.Storage.RocksDB
   alias EbbServer.Sync.{FanOutRouter, SSEConnection}
   alias EbbServer.TestHelpers
+  alias EbbServer.SSEHelpers
 
   # Runs once per setup, so the counter is fresh for each test. The
   # closure captures its own counter; no globals or test process needed.
@@ -277,8 +278,8 @@ defmodule EbbServer.Sync.WriterFailureEndToEndTest do
     assert second.status == 200
     assert second.resp_body == ~s({"rejected":[]})
 
-    assert_receive {:sse_chunk, "data", json}, 5_000
-    payload = Jason.decode!(json)
+    assert_receive {:sse_data, bytes}, 5_000
+    payload = bytes |> SSEHelpers.single_data_payload() |> Jason.decode!()
     assert payload["actor_id"] == actor_id
 
     :ok = FanOutRouter.unsubscribe(sse_pid)
