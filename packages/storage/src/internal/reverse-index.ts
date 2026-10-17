@@ -102,6 +102,12 @@ export const membershipEntryFor = (entity: Entity): IndexEntry | null => {
   return { key: membershipIndexKey(groupId), rowId: entity.id, sourceId: entityId };
 };
 
+/** The entity field each accessor-affecting row type names its subject with. */
+const ACCESSOR_SUBJECT_FIELD: Readonly<Record<string, string>> = {
+  [RELATIONSHIP_ENTITY_TYPE]: "source_id",
+  [MEMBERSHIP_ENTITY_TYPE]: "entity_id",
+};
+
 /**
  * The entity whose accessors a materialized `relationship` /
  * `entityGroup` row affects, or `null` for any other row. Unlike
@@ -110,9 +116,8 @@ export const membershipEntryFor = (entity: Entity): IndexEntry | null => {
  * tombstone retains the fields.
  */
 export const accessorAffectedEntityId = (entity: Entity): string | null => {
-  if (entity.type === RELATIONSHIP_ENTITY_TYPE) return readStringField(entity, "source_id");
-  if (entity.type === MEMBERSHIP_ENTITY_TYPE) return readStringField(entity, "entity_id");
-  return null;
+  const field = ACCESSOR_SUBJECT_FIELD[entity.type];
+  return field === undefined ? null : readStringField(entity, field);
 };
 
 /**

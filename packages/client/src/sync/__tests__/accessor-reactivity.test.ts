@@ -1,11 +1,11 @@
 /**
- * Prototype (#489): a `relationship` write should wake the source
- * entity's accessor subscribers and re-fire the source type, so a
- * forward-one accessor and a relationship-filtered query stay live
- * without the app re-reading manually.
+ * A relationship / membership write changes the accessors of the entity
+ * it points at without touching that entity's own fields. These tests pin
+ * the reactivity that keeps a forward-one accessor and a relationship- /
+ * membership-filtered query live without the app re-reading manually.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Entity } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { createClient } from "../client";
@@ -79,7 +79,7 @@ const fresh = async (): Promise<{
   return { storage, client };
 };
 
-describe("prototype: relationship accessor reactivity (#489)", () => {
+describe("relationship accessor reactivity", () => {
   it("wakes subscribeAccessors on link and unlink, and re-derives the accessor", async () => {
     const { storage, client } = await fresh();
 
@@ -89,8 +89,12 @@ describe("prototype: relationship accessor reactivity (#489)", () => {
 
     let accessorFires = 0;
     let edgeTypeFires = 0;
+    const snapshots: string[] = [];
     const unsubAccessor = before.subscribeAccessors(() => {
       accessorFires += 1;
+    });
+    const unsubSnapshot = before.subscribe((snapshot) => {
+      snapshots.push(snapshot.id);
     });
     const unsubType = storage.changeEmitter!.onTypeChange("relationship", () => {
       edgeTypeFires += 1;
@@ -99,6 +103,9 @@ describe("prototype: relationship accessor reactivity (#489)", () => {
     await storage.entities.set(mkRel("rel_1", "t1", "u1"));
     expect(accessorFires).toBe(1);
     expect(edgeTypeFires).toBe(1);
+    // `row.subscribe` re-reads the row and fires too, so a direct
+    // subscriber (not just useEntity) is woken by the accessor change.
+    await vi.waitFor(() => expect(snapshots).toEqual(["t1"]));
 
     const linked = await client.todo.get("t1");
     const owner = await linked!.owner;
@@ -113,6 +120,7 @@ describe("prototype: relationship accessor reactivity (#489)", () => {
     expect(await unlinked!.owner).toBeNull();
 
     unsubAccessor();
+    unsubSnapshot();
     unsubType();
   });
 

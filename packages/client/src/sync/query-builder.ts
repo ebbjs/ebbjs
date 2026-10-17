@@ -402,15 +402,15 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
         // entity it points at, so a chain with an edge or membership
         // predicate must also wake when one of those rows changes. The
         // rows carry no entity type for membership, and a relationship's
-        // `type` may be overridden, so subscribe coarsely to the row types
-        // rather than guessing the source type. Identical results are
-        // suppressed downstream by the consumer's snapshot compare.
-        const hasEdgeFilter = groups.some((and) => and.some((filter) => filter.kind !== "field"));
-        if (hasEdgeFilter) {
-          unsubscribers.push(
-            emitter.onTypeChange(relationshipSystemEntity.name, listener),
-            emitter.onTypeChange(entityGroupSystemEntity.name, listener),
-          );
+        // `type` may be overridden, so subscribe to the row type rather
+        // than guessing the source type. Identical results are suppressed
+        // downstream by the consumer's snapshot compare.
+        const predicates = groups.flat();
+        if (predicates.some((filter) => filter.kind === "relationship")) {
+          unsubscribers.push(emitter.onTypeChange(relationshipSystemEntity.name, listener));
+        }
+        if (predicates.some((filter) => filter.kind === "membership")) {
+          unsubscribers.push(emitter.onTypeChange(entityGroupSystemEntity.name, listener));
         }
         return () => {
           for (const unsub of unsubscribers) unsub();

@@ -73,7 +73,6 @@ function createEntityStore<TFields extends Record<string, TSchema>, TAccessors e
   let state: UseEntityResult<TFields, TAccessors> | null = null;
   const listeners = new Set<() => void>();
   let detach: (() => void) | null = null;
-  let detachAccessors: (() => void) | null = null;
   // Fields of the most recently applied snapshot, for no-op suppression.
   let lastFields: Record<string, unknown> | null = null;
   // Invalidates an in-flight load when the subscription is torn down or
@@ -156,8 +155,12 @@ function createEntityStore<TFields extends Record<string, TSchema>, TAccessors e
       return;
     }
     state = withoutSubscribe(row);
-    detach = row.subscribe(handleSnapshot);
-    detachAccessors = row.subscribeAccessors(handleAccessorChange);
+    const detachEntity = row.subscribe(handleSnapshot);
+    const detachAccessors = row.subscribeAccessors(handleAccessorChange);
+    detach = () => {
+      detachEntity();
+      detachAccessors();
+    };
     notify();
   };
 
@@ -173,8 +176,6 @@ function createEntityStore<TFields extends Record<string, TSchema>, TAccessors e
         if (listeners.size === 0) {
           detach?.();
           detach = null;
-          detachAccessors?.();
-          detachAccessors = null;
           // A load that resolves after teardown must not resurrect state;
           // drop the comparison baseline so a later remount re-reads fresh.
           loadToken += 1;

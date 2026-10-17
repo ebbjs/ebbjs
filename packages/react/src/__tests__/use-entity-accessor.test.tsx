@@ -1,8 +1,8 @@
 /**
- * Prototype (#489): `useEntity` must re-read a row when one of its
- * relationship accessors changes, even though the row's own fields are
- * unchanged. Without the accessor subscription the hook's field-equality
- * guard suppresses the change and the accessor stays stale.
+ * `useEntity` must re-read a row when one of its relationship accessors
+ * changes, even though the row's own fields are unchanged. Without the
+ * accessor subscription the hook's field-equality guard suppresses the
+ * change and the accessor stays stale.
  */
 
 import { useEffect, useState } from "react";
@@ -89,7 +89,7 @@ const makeClient = (): Client =>
 
 afterEach(cleanup);
 
-describe("prototype: useEntity accessor reactivity (#489)", () => {
+describe("useEntity accessor reactivity", () => {
   it("re-reads the row when a relationship is linked, without a field change", async () => {
     const client = makeClient();
     await client.storage.entities.set(mkEntity("t1", "todo", { title: "T" }));
