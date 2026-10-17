@@ -330,7 +330,7 @@ snapshot (the journal is bounded in production).
 ## 7. Dual-run evidence
 
 Every case updates both the read model and `createMemoryAdapter()`; after each operation the
-harness asserts `get(id)` and `iterate(type)` equivalence (deep, id-sorted). **77/77 checks
+harness asserts `get(id)` and `iterate(type)` equivalence (deep, id-sorted). **84/84 checks
 pass** on the representative run.
 
 | Case                                                                                  | Result |
@@ -352,6 +352,9 @@ pass** on the representative run.
 | divergence probe: read model keeps a newer optimistic write the adapter drops         | ✅     |
 | merge policy: overlay == durable LWW on every fixture                                 | ✅     |
 | documented divergence: `applyLocalUpdate` pending-wins on tie/older (pinned)          | ✅     |
+| #473 per-group delivery (disjoint copies) fold once                                   | ✅     |
+| #473 re-delivery dedups by update id (newer patch survives)                           | ✅     |
+| write path: winning ingest within 2.5x of `applyUpdate`                               | ✅     |
 | hydrate: snapshot + tail == incremental; full replay == incremental; gsn-0 survives   | ✅     |
 | hydrate: durable outbox replays into the optimistic overlay                           | ✅     |
 | seeded fuzz: 300 random durable + optimistic-then-echo ops                            | ✅     |
@@ -369,6 +372,13 @@ The footprint matches the reference once the generator matches the reference's r
 (no optional per-leaf `hlc`; placeholder envelope HLCs). **Caveat:** real writes stamp
 per-leaf HLCs, which inflates the resident bytes — the ≤ 32 MB budget on #503 should be
 re-measured with production-shaped rows.
+
+**Write-path caveat (new, and the biggest open risk).** The 495 budget was read-focused.
+The prototype's write-path probe patches one key of an N-key map field and measures:
+N=100 ≈ 6 µs, N=1000 ≈ 225 µs (`applyUpdate`) / 275 µs (read-model ingest), N=5000 ≈
+2 ms. The merge copies the whole map, and V8's property cliff makes that steep. The read
+model adds ~20% on a winning patch (`contentChanged` short-circuits on `updated_hlc`), but
+a losing patch pays a full structural scan. See §8.9.
 
 ---
 
@@ -432,6 +442,24 @@ re-materializes a losing Action's non-conflicting entity` — which pins `"mine"
 7. **`changesSince` needs a bounded journal in production.** The spike's journal is
    unbounded; a real implementation compacts and forces a snapshot rebuild for a stale
    watermark.
+8. **A repeated Action id (#473) requires the port to report a delta.** One Action id can
+   arrive once per group, each copy carrying disjoint Updates. An incremental model must
+   fold only the newly-added Updates (`LoggedAction.added`); folding a re-delivered copy
+   wholesale re-applies an older `put` and reverts a newer `patch`. The real `ActionLog`
+   already merges by id (`mergeActionUpdates`); the port must expose the delta, not just
+   the merged Action. Pinned by the `#473 per-group delivery` and `#473 re-delivery`
+   dual-run cases.
+9. **The write path for large map fields is the real scalability risk, not reads.** The
+   normative `mergeFields` / `mergeFieldValue` copy the whole map on every patch
+   (`{ ...existing.map }`). Measured one-key patch: N=10 ≈ 3 µs, N=100 ≈ 6 µs, N=1000 ≈
+   225 µs (`applyUpdate`) / 275 µs (read-model ingest), N=5000 ≈ 2 ms — a steep V8
+   property cliff, not a smooth O(N). The read model adds ~20% on a winning patch (the
+   `contentChanged` `updated_hlc` short-circuit holds), but a **losing** patch falls through
+   to a full structural scan (N=1000: ~480 µs). This is inherited from the existing merge
+   (the server pays it too) and is not fixed by residency. It argues for a different
+   representation for large content maps (chunked / per-run entities, or a persistent map)
+   and for `mergeFields` / `applyUpdate` to report whether anything changed so the read
+   model need not rescan. The read budget on #503 says nothing about this write cost.
 
 ---
 

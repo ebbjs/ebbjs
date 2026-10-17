@@ -85,8 +85,10 @@ export interface ApplyContext {
 export interface ReadModel extends ReadModelHandle {
   /** The current version handle (same reference `ingest`/`optimistic` return until content changes). */
   handle(): ReadModelHandle;
-  /** Durable provenance: fold an action's Updates into the base. Append is the port's job. */
-  ingest(action: Action, position: number): ReadModelHandle;
+  /** Deferred: the Updates to fold. An append returns only the newly-added
+   * Updates (a repeated Action id may deliver disjoint per-group copies, #473);
+   * a `readTail` entry carries the whole merged Action. */
+  ingest(action: Action, position: number, updates?: readonly Update[]): ReadModelHandle;
   /** Optimistic provenance: fold into the overlay only; never the base, never the log. */
   optimistic(action: Action): ReadModelHandle;
   /** Drop one optimistic action's writes (echo convergence or conflict resolution). */
@@ -309,9 +311,10 @@ export const createReadModel = (): ReadModel => {
     iterate,
     changesSince: (from: number) => journal.filter((change) => change.version > from),
 
-    ingest(action: Action, position: number): ReadModelHandle {
+    ingest(action: Action, position: number, updates?: readonly Update[]): ReadModelHandle {
+      const list = updates ?? action.updates;
       const touched: EntityId[] = [];
-      for (const update of action.updates) {
+      for (const update of list) {
         const id = update.subject_id;
         touched.push(id);
         if (foldBase(update, { gsn: action.gsn, hlc: action.hlc }, position)) {
@@ -407,6 +410,13 @@ export const createReadModel = (): ReadModel => {
 export interface LoggedAction {
   readonly action: Action;
   readonly position: number;
+  /**
+   * Updates to fold. For `append`, only those not already logged (a repeated
+   * Action id, #473, may carry disjoint per-group copies); for `readTail`, the
+   * whole merged Action's Updates. Folding each Update exactly once keeps the
+   * incremental base equal to the store's merged-log replay.
+   */
+  readonly added: readonly Update[];
 }
 
 export interface ActionLogPort {
@@ -455,7 +465,7 @@ export const ingestDurable = async (
     const previous = await store.cursors.get(groupId);
     if (previous === null || action.gsn > previous) await store.cursors.set(groupId, action.gsn);
   }
-  return model.ingest(entry.action, entry.position);
+  return model.ingest(entry.action, entry.position, entry.added);
 };
 
 /** Optimistic: fold into the overlay only. The caller has already buffered the outbox row. */
@@ -472,7 +482,7 @@ export const hydrate = async (model: ReadModel, store: DurableStore): Promise<Re
   if (snapshot !== null) model.loadSnapshot(snapshot);
   const after = snapshot?.position ?? 0;
   for (const entry of await store.actions.readTail(after)) {
-    model.ingest(entry.action, entry.position);
+    model.ingest(entry.action, entry.position, entry.added);
   }
   for (const entry of await store.outbox.list()) {
     if (entry.status === "pending" || entry.status === "acknowledged")

@@ -20,6 +20,7 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 import { applyLocalUpdate } from "../src/sync/client.ts";
 import { applyUpdate } from "../../storage/src/internal/materialize";
+import { mergeActionUpdates } from "../../storage/src/internal/action-merge";
 import {
   applyOptimistic,
   createReadModel,
@@ -128,26 +129,55 @@ const byId = (rows: readonly Entity[]): Entity[] =>
 // A faithful-enough in-memory DurableStore (ports only).
 // ---------------------------------------------------------------------------
 
+interface StoredLogEntry {
+  action: Action;
+  readonly position: number;
+  added: readonly Update[];
+}
+
 class MemoryPorts implements DurableStore {
-  private log: { action: Action; position: number }[] = [];
+  private log: StoredLogEntry[] = [];
+  private readonly byActionId = new Map<string, StoredLogEntry>();
   private snapshot: ReadModelSnapshot | null = null;
   private position = 0;
   private readonly cursorValues = new Map<string, number>();
   readonly outboxEntries: { action: Action; status: string }[] = [];
 
+  // Mirror the real ActionLog: a repeated Action id merges its Updates (#473),
+  // and append reports only the newly-added Updates so the incremental model
+  // folds each once.
+  private readonly append = async (action: Action): Promise<StoredLogEntry> => {
+    const existing = this.byActionId.get(action.id);
+    if (existing === undefined) {
+      const entry: StoredLogEntry = { action, position: ++this.position, added: action.updates };
+      this.log.push(entry);
+      this.byActionId.set(action.id, entry);
+      return entry;
+    }
+    const known = new Set(existing.action.updates.map((update) => update.id));
+    const added = action.updates.filter((update) => !known.has(update.id));
+    existing.action = {
+      ...existing.action,
+      updates: mergeActionUpdates(existing.action.updates, action.updates),
+    };
+    existing.added = added;
+    return existing;
+  };
+
   readonly actions = {
-    append: async (action: Action): Promise<{ action: Action; position: number }> => {
-      const position = ++this.position;
-      this.log.push({ action, position });
-      return { action, position };
-    },
-    readTail: async (
-      afterPosition: number,
-    ): Promise<readonly { action: Action; position: number }[]> =>
-      this.log.filter((entry) => entry.position > afterPosition),
+    append: this.append,
+    readTail: async (afterPosition: number): Promise<readonly StoredLogEntry[]> =>
+      this.log
+        .filter((entry) => entry.position > afterPosition)
+        .map((entry) => ({
+          action: entry.action,
+          position: entry.position,
+          added: entry.action.updates,
+        })),
     lastPosition: async (): Promise<number> => this.position,
     clear: async (): Promise<void> => {
       this.log = [];
+      this.byActionId.clear();
       this.position = 0;
     },
   };
@@ -580,6 +610,70 @@ const runRequiredCases = async (): Promise<void> => {
       dual.model.get("todo_tg")?.last_gsn === 2,
     );
     await dual.assertEquivalent("backfill with the entity's true gsn", ["todo_tg"], ["todo"]);
+  }
+
+  // #473: one Action id delivered once per group, each copy carrying disjoint
+  // Updates. The read model must fold the union exactly once.
+  {
+    const dual = new DualRun();
+    await dual.durable(
+      mkAction({
+        id: "a_pg",
+        gsn: 5,
+        hlc: hlc(1),
+        updates: [putUpdate("todo_pg1", "todo", { title: leaf("One", hlc(1), "u_pg1") })],
+      }),
+    );
+    await dual.durable(
+      mkAction({
+        id: "a_pg",
+        gsn: 5,
+        hlc: hlc(1),
+        updates: [putUpdate("todo_pg2", "todo", { title: leaf("Two", hlc(1), "u_pg2") })],
+      }),
+    );
+    await dual.assertEquivalent(
+      "#473 per-group delivery (disjoint copies)",
+      ["todo_pg1", "todo_pg2"],
+      ["todo"],
+    );
+  }
+
+  // #473 re-delivery: a second copy repeats an earlier Update after a new one.
+  // The port must report only the newly-added Update, or the older put re-applies
+  // and reverts the newer patch.
+  {
+    const dual = new DualRun();
+    await dual.durable(
+      mkAction({
+        id: "a_rd",
+        gsn: 6,
+        hlc: hlc(1),
+        updates: [putUpdate("todo_rd", "todo", { title: leaf("A", hlc(1), "u_a") }, "u_a")],
+      }),
+    );
+    await dual.durable(
+      mkAction({
+        id: "a_rd",
+        gsn: 6,
+        hlc: hlc(2),
+        updates: [
+          {
+            id: "u_b",
+            subject_id: "todo_rd",
+            subject_type: "todo",
+            method: "patch",
+            data: { fields: { note: leaf("B", hlc(2), "u_b") } },
+          },
+          putUpdate("todo_rd", "todo", { title: leaf("A", hlc(1), "u_a") }, "u_a"),
+        ],
+      }),
+    );
+    check(
+      "#473 re-delivery: newer patch survives",
+      dual.model.get("todo_rd")?.data.fields.note?.value === "B",
+    );
+    await dual.assertEquivalent("#473 re-delivery (dedup by update id)", ["todo_rd"], ["todo"]);
   }
 };
 
@@ -1074,6 +1168,91 @@ const runBudgetCheck = (): void => {
 };
 
 // ---------------------------------------------------------------------------
+// Write-path probe: the normative merge copies the whole map on every patch.
+// The 495 budget was read-focused; this checks the resident model's write path
+// for a collaborative-text-sized map field (N run keys), including the
+// contentChanged overhead the model adds on top of applyUpdate.
+// ---------------------------------------------------------------------------
+
+const runWritePathProbe = (): void => {
+  section("Write-path probe: one-key patch to an N-key map field");
+  const N = 1000;
+  const map: Record<string, FieldValue> = {};
+  for (let k = 0; k < N; k++) map[`k${k}`] = leaf(String(k), hlc(0), `uk_${k}`);
+  const baseEntity: Entity = {
+    id: "doc_w",
+    type: "doc",
+    data: { fields: { content: { map } } },
+    created_hlc: hlc(0),
+    updated_hlc: hlc(0),
+    deleted_hlc: null,
+    last_gsn: 1,
+  };
+  const probePatch = (hlcString: string, updateId: string): Update => ({
+    id: updateId,
+    subject_id: "doc_w",
+    subject_type: "doc",
+    method: "patch",
+    data: { fields: { content: { map: { k0: leaf("x", hlcString, updateId) } } } },
+  });
+  const ITER = 500;
+  let sink: unknown = 0;
+  const bench = (fn: (i: number) => void): number => {
+    for (let i = 0; i < 100; i++) fn(i);
+    const start = performance.now();
+    for (let i = 0; i < ITER; i++) fn(i);
+    return ((performance.now() - start) / ITER) * 1000;
+  };
+
+  let entity: Entity | null = baseEntity;
+  const applyUs = bench((i) => {
+    entity = applyUpdate(entity, probePatch(hlc(1 + i), `uw_${i}`), 0, hlc(1 + i));
+    sink = entity;
+  });
+  const winningModel = createReadModel();
+  winningModel.loadSnapshot({ formatVersion: 1, position: 0, version: 0, entities: [baseEntity] });
+  const winningUs = bench((i) => {
+    winningModel.ingest(
+      mkAction({
+        id: `aw_${i}`,
+        gsn: 0,
+        hlc: hlc(1 + i),
+        updates: [probePatch(hlc(1 + i), `uw_${i}`)],
+      }),
+      i + 1,
+    );
+    sink = winningModel;
+  });
+  // A losing patch keeps updated_hlc, so contentChanged falls through to a full
+  // structural scan of the map.
+  const losingModel = createReadModel();
+  losingModel.loadSnapshot({
+    formatVersion: 1,
+    position: 0,
+    version: 0,
+    entities: [{ ...baseEntity, updated_hlc: hlc(1_000_000) }],
+  });
+  const losingUs = bench((i) => {
+    losingModel.ingest(
+      mkAction({ id: `al_${i}`, gsn: 0, hlc: hlc(1), updates: [probePatch(hlc(1), `ul_${i}`)] }),
+      i + 1,
+    );
+    sink = losingModel;
+  });
+
+  console.log(`  applyUpdate (winning), N=${N}:          ${applyUs.toFixed(0)} µs/op`);
+  console.log(
+    `  read-model ingest (winning):           ${winningUs.toFixed(0)} µs/op  (+${((winningUs / applyUs - 1) * 100).toFixed(0)}%)`,
+  );
+  console.log(`  read-model ingest (losing, full scan):  ${losingUs.toFixed(0)} µs/op`);
+  check("write path: winning ingest within 2.5x of applyUpdate", winningUs < applyUs * 2.5);
+  console.log(
+    "  [!] mergeFields/mergeFieldValue copy the whole map per patch; V8's property cliff makes that O(N) and steep (see spec §8.8).",
+  );
+  void sink;
+};
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -1086,6 +1265,7 @@ const main = async (): Promise<void> => {
   await runFuzz();
   await runDivergenceProbe();
   runBudgetCheck();
+  runWritePathProbe();
 
   section("Summary");
   console.log(`  ${passed} passed, ${failed} failed`);
