@@ -477,7 +477,7 @@ r=1000 the server keeps up **100%** at 1,000,705 delivered/s on 24% CPU. The
    dispatch latency while ~100 subscribers sustained ~1000 Actions/s at
    ~45 ms — the mechanism behind the t3 cliff. **Coalesced delivery is now
    merged** (`a292f58`): with lean subscribers it is a **~6× delivered-throughput
-   win and ~6× less CPU**, and commit → broadcast complete p50 falls to
+   win and up to ~6× less CPU**, and commit → broadcast complete p50 falls to
    **~30 ms versus multi-second** (see
    [Coalesced fan-out delivery](#coalesced-fan-out-delivery-485-merged-in-a292f58)).
    The earlier "+2–22% delivered, ceiling not removed" was an artifact-capped
@@ -967,7 +967,7 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
    per-subscriber `SSEConnection` → parent hop) before treating it as a server
    limit. **Coalesced delivery is merged** (`a292f58`): one binary per group per
    batch, one cast per subscriber, one `chunk/2`, identical wire bytes; with
-   lean subscribers it is a **~6× delivered-throughput win and ~6× less CPU**,
+   lean subscribers it is a **~6× delivered-throughput win and up to ~6× less CPU**,
    with commit → broadcast complete p50 **~30 ms versus multi-second**
    pre-coalescing. The earlier "+2–22%"/"ceiling not removed" figure was
    artifact-capped on both arms. **Sharding is ruled out**: sharding one
@@ -982,7 +982,7 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
    coalesced chunk into per-Action frames to count deliveries, so the coalesced
    arm carries client-side work the baseline arm did not; the utilization
    figures are therefore not a perfectly clean server-only measurement, though
-   the extra client work only makes the ~6× CPU win conservative. The
+   the extra client work only makes the ~6× CPU win at r=300 conservative. The
    production-shaped (real SSE socket) measurement remains outstanding — both
    t3 and t4 use in-process subscribers.
 4. **10k-subscriber fan-out** — needs a dedicated load-test machine and is

@@ -770,7 +770,7 @@ flush, vs 2×batch in `spread`).
   **43.8% → 24.2%**, and commit → broadcast complete p50 from multi-second
   (2,244,930/6,258,054/9,488,254 and 4,110,325/12,180,802/18,527,554 µs) to
   **~30 ms** (32,430/31,634/27,522 and 31,720/25,787/27,375 µs) — a **~6×
-  delivered-throughput win and ~6× less CPU**. The coalesced n=1000 knee is now
+  delivered-throughput win and up to ~6× less CPU**. The coalesced n=1000 knee is now
   **~1M deliveries/s** (r=1000 keeps up; r=3000 1,616,299/s = 54% of need). The
   earlier "+2–22% delivered, ceiling not removed" was artifact-capped on both
   arms (see the harness bullet below). The coalesced arm still splits each chunk

@@ -125,7 +125,7 @@ lean subscribers:
   broadcast complete p50 falling from multi-second
   (2,244,930/6,258,054/9,488,254 and 4,110,325/12,180,802/18,527,554 µs) to
   **~30 ms** (32,430/31,634/27,522 and 31,720/25,787/27,375 µs) — a **~6×
-  delivered-throughput win and ~6× less CPU**. The earlier "+2–22% delivered,
+  delivered-throughput win and up to ~6× less CPU**. The earlier "+2–22% delivered,
   ceiling not removed" was artifact-capped on both arms: the shared harness
   capped them at ~140k, hiding the real pre-coalescing cap (~175k/s, the
   `GroupServer`'s N×A loop) and the coalesced one (≥1M). The coalesced n=1000
@@ -216,7 +216,7 @@ pre-coalescing, after = coalesced):
 | r=300 (need 300k) |   177,778 → **302,756** |  43.8% → **7.5%** | 2,244,930 / 6,258,054 / 9,488,254 → **32,430 / 31,634 / 27,522**   |
 | r=1000 (need 1M)  | 170,408 → **1,000,705** | 43.8% → **24.2%** | 4,110,325 / 12,180,802 / 18,527,554 → **31,720 / 25,787 / 27,375** |
 
-That is a **~6× delivered-throughput win and ~6× less CPU**, and commit →
+That is a **~6× delivered-throughput win and up to ~6× less CPU**, and commit →
 broadcast complete p50 falls from **multi-second to ~30 ms**. The earlier
 "+2–22% delivered, ceiling not removed" was **artifact-capped on both arms**:
 the shared bench subscriber capped pre-coalescing and coalesced at ~140k,
@@ -333,7 +333,7 @@ resolution and the watermark. The goal is bounded: no candidate in #485 reaches
   the `t4` tier — deliveries/sec + commit → broadcast complete at a fixed
   write rate). **Coalesced delivery is merged** (`a292f58`): one binary per
   group per batch, one cast per subscriber, one `chunk/2`. With lean
-  subscribers it is a **~6× delivered-throughput win and ~6× less CPU**
+  subscribers it is a **~6× delivered-throughput win and up to ~6× less CPU**
   (177,778 → 302,756 at r=300; 170,408 → 1,000,705 at r=1000), with commit →
   broadcast complete p50 **~30 ms versus multi-second** and identical wire
   bytes. The earlier "+2–22%, ceiling not removed" was artifact-capped on both
@@ -359,7 +359,7 @@ resolution and the watermark. The goal is bounded: no candidate in #485 reaches
   into per-Action frames to count deliveries, so the coalesced arm carries
   client-side work the baseline arm did not; the utilization figures are
   therefore not a perfectly clean server-only measurement, though the extra
-  client work only makes the ~6× CPU win conservative. The production-shaped
+  client work only makes the ~6× CPU win at r=300 conservative. The production-shaped
   (real SSE socket) measurement was **not** performed — both t3 and t4 use
   in-process subscribers — and remains the outstanding gate before treating
   these fan-out numbers as production-representative.
