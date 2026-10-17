@@ -48,7 +48,11 @@ import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { ShapeFields } from "../schema/entity";
 import { EntityValidationError, type EntityRegistry } from "../schema/entity-registry";
-import { GROUPS_ACCESSOR } from "../schema/system-entities";
+import {
+  GROUPS_ACCESSOR,
+  entityGroupSystemEntity,
+  relationshipSystemEntity,
+} from "../schema/system-entities";
 
 /**
  * Project one wire field value to its application-facing value.
@@ -286,9 +290,10 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
    * exclude it, leaving the consumer to suppress spurious work by
    * comparing snapshots. That is what lets a matching row whose
    * non-filtered field changed wake the chain — the membership-only
-   * listener would stay silent. Relationship and membership filters
-   * are a known limitation: a change to a bare `relationship` row (or
-   * an `entityGroup` row) does not fire this source-type trigger.
+   * listener would stay silent. A chain with a relationship or
+   * membership predicate additionally listens on the `relationship` /
+   * `entityGroup` row types, because those writes do not materialize
+   * the entity they point at (see the `subscribe` implementation).
    */
   subscribe(listener: () => void): () => void;
   /** Thenable — `await qb` resolves to the projected rows. */
@@ -392,7 +397,24 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
       subscribe(listener) {
         const emitter = context?.storage.changeEmitter;
         if (emitter === undefined || context === undefined) return () => {};
-        return emitter.onTypeChange(context.entityName, listener);
+        const unsubscribers = [emitter.onTypeChange(context.entityName, listener)];
+        // A `relationship` / `entityGroup` write does not materialize the
+        // entity it points at, so a chain with an edge or membership
+        // predicate must also wake when one of those rows changes. The
+        // rows carry no entity type for membership, and a relationship's
+        // `type` may be overridden, so subscribe coarsely to the row types
+        // rather than guessing the source type. Identical results are
+        // suppressed downstream by the consumer's snapshot compare.
+        const hasEdgeFilter = groups.some((and) => and.some((filter) => filter.kind !== "field"));
+        if (hasEdgeFilter) {
+          unsubscribers.push(
+            emitter.onTypeChange(relationshipSystemEntity.name, listener),
+            emitter.onTypeChange(entityGroupSystemEntity.name, listener),
+          );
+        }
+        return () => {
+          for (const unsub of unsubscribers) unsub();
+        };
       },
       // oxlint-disable-next-line no-thenable -- the QueryBuilder is intentionally a thenable; awaiting it projects the chain.
       then(onfulfilled, onrejected) {

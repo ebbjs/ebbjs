@@ -267,6 +267,12 @@ export type EntityRow<
 > = Omit<EntityWithAccessors<TFields, TAccessors>, "id"> & {
   readonly id: string;
   subscribe(cb: (snapshot: EntitySnapshot<TFields>) => void): () => void;
+  /**
+   * Subscribe to a change in one of the row's relationship / membership
+   * accessors. The row's own fields are usually unchanged, so a consumer
+   * must re-read the row rather than diff its projected fields.
+   */
+  subscribeAccessors(cb: () => void): () => void;
 };
 
 /**
@@ -777,6 +783,11 @@ export function createEntityNamespace<
       const accessors = buildRowAccessors(entityName, id, storage, registry, write);
       const subscribe = (cb: (snapshot: EntitySnapshot<TFields>) => void): (() => void) =>
         subscribeToEntity(storage, entityName, id, shape, cb);
+      const subscribeAccessors = (cb: () => void): (() => void) => {
+        const emitter = storage.changeEmitter;
+        if (emitter === undefined) return () => {};
+        return emitter.onAccessorChange(id, cb);
+      };
       // Accessors spread last so a declared relationship shadows a
       // same-named field; the entity id spreads after them so it wins
       // over both.
@@ -785,6 +796,7 @@ export function createEntityNamespace<
         ...accessors,
         id: entity.id,
         subscribe,
+        subscribeAccessors,
       } as unknown as EntityRow<TFields, TAccessors>;
     },
     subscribe(

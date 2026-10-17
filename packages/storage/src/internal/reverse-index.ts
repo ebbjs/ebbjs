@@ -103,6 +103,19 @@ export const membershipEntryFor = (entity: Entity): IndexEntry | null => {
 };
 
 /**
+ * The entity whose accessors a materialized `relationship` /
+ * `entityGroup` row affects, or `null` for any other row. Unlike
+ * {@link relationshipEntryFor} this does NOT skip tombstones: an unlink /
+ * removal must still notify the entity whose accessors it changes, and the
+ * tombstone retains the fields.
+ */
+export const accessorAffectedEntityId = (entity: Entity): string | null => {
+  if (entity.type === RELATIONSHIP_ENTITY_TYPE) return readStringField(entity, "source_id");
+  if (entity.type === MEMBERSHIP_ENTITY_TYPE) return readStringField(entity, "entity_id");
+  return null;
+};
+
+/**
  * Every index entry a materialized row contributes. Both entry kinds
  * derive from distinct entity types, so at most one applies.
  */
