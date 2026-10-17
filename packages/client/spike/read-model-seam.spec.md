@@ -211,6 +211,19 @@ snapshot puts**. A `gsn > watermark` replay drops them, and `lastGsn()` cannot d
 **append-order position**, independent of the server gsn. The harness proves the fix: a
 gsn-0 put survives `snapshot + tail` hydrate only because the watermark is a position.
 
+**Finding — a late base must reconcile earlier Updates (`#475` is not only a cursor).**
+Second-guessing the first draft found a real hole: the store materializes by replaying an
+entity's **whole log in gsn order** on every read, so a `patch` that arrives before its base
+is a no-op at first but _re-applies on top of the base_ once the base lands. An incremental
+model that simply drops the no-op loses it. The read model therefore retains every Update
+that arrives with no base (an **orphan**) and, when a `put` seeds the base, replays the
+orphans **whose gsn is greater than the put's**, in gsn order — exactly the store's sort.
+Orphans with a lower gsn are superseded by the full-replacement put. The snapshot watermark
+must not advance past an orphan (`toSnapshot` caps `position` at the oldest orphan), or a
+hydrate would drop the Update before its base arrives. The harness pins both the
+patch-before-backfill case and an orphan spanning a snapshot. This is why `getForEntity`
+can still leave the port: the model buffers what it needs instead of re-reading the log.
+
 **IDB satisfiability (argued, not built).** The snapshot persists as one object store keyed
 by `[type, id]` holding the `Entity` row, plus a cursor record for `position` / `version`.
 Column and adjacency indices are **not** persisted: IDB cannot index nested `FieldValue`
@@ -220,19 +233,19 @@ docs, noise next to hydrate itself.
 
 **What leaves the engine's port**
 
-| Component                                                                          | Fate                                                                                                                       |
-| ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `EntityStore.get`                                                                  | → `readModel.get` (sync)                                                                                                   |
-| `EntityStore.query(type)`                                                          | → `readModel.iterate(type)` (sync)                                                                                         |
-| `EntityStore.set`                                                                  | → `optimistic` (local) / `ingest` (durable); provenance replaces a raw set                                                 |
-| `EntityStore.queryByRelationship` / `queryByMembership`                            | → derived index over the change journal (lands with #497/#498); `internal/reverse-index.ts` is reused                      |
-| `EntityStore.reset`                                                                | → rebuilt from ports                                                                                                       |
-| `DirtyTracker.mark` / `isDirty` / `getDirtyForType` / `clear`                      | → the change journal (`id → version/type/deleted`); no "awaiting rematerialization" state                                  |
-| `EntityChangeEmitter`                                                              | → `version` + `changesSince` (+ a subscribe surface for #501); the journal can reproduce `onEntityChange` / `onTypeChange` |
-| `ActionLog.getForEntity` / `getAll`                                                | → **gone**; nothing replays per entity                                                                                     |
-| `ActionLog.append`                                                                 | survives                                                                                                                   |
-| `StorageAdapter.entities` / `.dirtyTracker` / `.isDirty` / `.materializeKeepDirty` | leave the engine's port (may linger as a shim)                                                                             |
-| `CursorStore`, `OutboxStore`                                                       | survive unchanged                                                                                                          |
+| Component                                                                          | Fate                                                                                                                                                       |
+| ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EntityStore.get`                                                                  | → `readModel.get` (sync)                                                                                                                                   |
+| `EntityStore.query(type)`                                                          | → `readModel.iterate(type)` (sync)                                                                                                                         |
+| `EntityStore.set`                                                                  | → `optimistic` (local) / `ingest` (durable); provenance replaces a raw set                                                                                 |
+| `EntityStore.queryByRelationship` / `queryByMembership`                            | → derived index over the change journal (lands with #497/#498); `internal/reverse-index.ts` is reused                                                      |
+| `EntityStore.reset`                                                                | → rebuilt from ports                                                                                                                                       |
+| `DirtyTracker.mark` / `isDirty` / `getDirtyForType` / `clear`                      | → the change journal (`id → version/type/deleted`); no "awaiting rematerialization" state                                                                  |
+| `EntityChangeEmitter`                                                              | → `version` + `changesSince` (+ a subscribe surface for #501); the journal can reproduce `onEntityChange` / `onTypeChange`                                 |
+| `ActionLog.getForEntity` / `getAll`                                                | → **gone**; the read model buffers an Update that arrives before its base (an orphan) and reconciles it when the base lands, so nothing replays per entity |
+| `ActionLog.append`                                                                 | survives                                                                                                                                                   |
+| `StorageAdapter.entities` / `.dirtyTracker` / `.isDirty` / `.materializeKeepDirty` | leave the engine's port (may linger as a shim)                                                                                                             |
+| `CursorStore`, `OutboxStore`                                                       | survive unchanged                                                                                                                                          |
 
 **Does the existing `StorageAdapter` satisfy the port?** No — it is too broad and its
 `ActionLog` is too thin. `DurableStore` is exactly
@@ -284,9 +297,11 @@ snapshot (the journal is bounded in production).
 4. Ordering: ascending log position, then `updates` order.
 5. `get` returns tombstones; `iterate` includes tombstones.
 6. `last_gsn`-only delivery changes never bump the version.
-7. A patch/delete with no base is a no-op.
+7. A patch/delete with no base is a no-op for the current read, but is **retained as an
+   orphan** and reconciled when a `put` seeds the base — only orphans whose `gsn` exceeds
+   the put's, in gsn order (the store's replay rule).
 8. `hydrate` is `snapshot(position) ⊕ readTail(position) ⊕ outbox overlay`; idempotent;
-   gsn-0 Actions survive.
+   gsn-0 Actions survive; the snapshot watermark never advances past an orphan.
 9. Reads return shared rows; callers must not mutate.
 10. `applyUpdate(prev, update, 0, hlc)` ≡ the production `applyLocalUpdate(prev, update,
 hlc)` on the optimistic fixtures.
@@ -296,7 +311,7 @@ hlc)` on the optimistic fixtures.
 ## 7. Dual-run evidence
 
 Every case updates both the read model and `createMemoryAdapter()`; after each operation the
-harness asserts `get(id)` and `iterate(type)` equivalence (deep, id-sorted). **54/54 checks
+harness asserts `get(id)` and `iterate(type)` equivalence (deep, id-sorted). **63/63 checks
 pass** on the representative run.
 
 | Case                                                                                | Result |
@@ -312,6 +327,9 @@ pass** on the representative run.
 | #475 backfill (synthetic gsn-0 snapshot put)                                        | ✅     |
 | type-index membership across a type change                                          | ✅     |
 | cursor advances to the max gsn                                                      | ✅     |
+| patch delivered before its backfilled base (#475) — the orphan fix                  | ✅     |
+| an orphan Update spanning a snapshot rehydrates and still reconciles                | ✅     |
+| divergence probe: read model keeps a newer optimistic write the adapter drops       | ✅     |
 | merge parity: `applyUpdate(gsn 0)` ≡ `applyLocalUpdate` on six fixtures             | ✅     |
 | hydrate: snapshot + tail == incremental; full replay == incremental; gsn-0 survives | ✅     |
 | hydrate: durable outbox replays into the optimistic overlay                         | ✅     |
@@ -322,9 +340,9 @@ pass** on the representative run.
 | metric                                | measured    | #495 reference            |
 | ------------------------------------- | ----------- | ------------------------- |
 | resident metadata footprint           | **15.5 MB** | 15.1 MB                   |
-| full tree build (adjacency + N reads) | **40.4 ms** | 40.3 ms                   |
-| adjacency build                       | 38.7 ms     | 37.0 ms                   |
-| build 50k metadata rows               | 168 ms      | (excluded from read cost) |
+| full tree build (adjacency + N reads) | **33.0 ms** | 40.3 ms                   |
+| adjacency build                       | 31.4 ms     | 37.0 ms                   |
+| build 50k metadata rows               | 172 ms      | (excluded from read cost) |
 
 The footprint matches the reference once the generator matches the reference's row shape
 (no optional per-leaf `hlc`; placeholder envelope HLCs). **Caveat:** real writes stamp
@@ -335,26 +353,38 @@ re-measured with production-shaped rows.
 
 ## 8. Findings / known divergences
 
-1. **The adapter loses an optimistic overlay on an unrelated durable touch.** If a local
-   Action is optimistically applied and then an _unrelated_ durable Action re-materializes
-   the same entity before the echo, the current adapter replays the log from scratch and
-   silently drops the local write. The overlay read model keeps it (probe output:
-   `read-model title = Local`, `adapter title = Other`). The overlay view is the correct
-   one; the read model fixes a real defect. This is why the dual-run cases assert equivalence
-   on the _specified_ cases and treat this interleaving as a discovery.
-2. **`gsn` is the wrong hydrate cursor** (see §4). A log-local append position is required
-   for #475.
-3. **`applyLocalUpdate` is redundant.** The merge-parity check shows the normative
+1. **A newer optimistic write is lost by the adapter on an unrelated durable touch.** If a
+   local Action is optimistically applied (with a newer HLC than an incoming unrelated
+   durable Action), the current adapter replays the log from scratch and silently drops the
+   local write; the overlay read model keeps it until echo/conflict (probe:
+   `read-model title = Local`, `adapter title = Other`). When the incoming durable Action is
+   the newer one, both converge on it (LWW) — the older overlay entry loses. The dual-run
+   cases assert equivalence on the specified cases and treat the newer-local interleaving as
+   a discovery the read model fixes.
+2. **`gsn` is the wrong hydrate cursor** (§4). A log-local append position is required for
+   #475. Append order alone is not enough either: a `put` must reconcile the orphans that
+   precede it, gated by gsn (a newer `put` supersedes older orphans).
+3. **`gsn: 0` on the backfill snapshot is load-bearing, not a placeholder.** The server
+   already returns the entity's real `last_gsn` (`EntityResponse.last_gsn`); the client
+   copies it in `toRuntimeEntity` and then discards it because `snapshotAction` emits
+   `gsn: 0` and the materializer derives the row's `last_gsn` from the _action's_ gsn. Do
+   **not** replace `gsn: 0` with the fetched `last_gsn`: the zero guarantees the synthetic
+   base sorts before every already-delivered Action, so an earlier patch re-applies on top
+   (the #475 fix). A real `last_gsn >=` the patch's gsn could sort the full-replacement put
+   _after_ the patch and drop it. The same action-shaped round-trip also overwrites the
+   fetched `created_hlc` with `updated_hlc`. If the metadata matters, preserve it beside the
+   baseline (a first-class seed/baseline operation) rather than encoding it as a gsn.
+4. **`applyLocalUpdate` is redundant.** The merge-parity check shows the normative
    `applyUpdate` with `gsn 0` equals it on every optimistic fixture. The only difference is
    `mergeLocalField`'s "local leaf wins outright" vs LWW; that is equivalent because local
    field HLCs are always freshest, an assumption the read model should state. Production can
    delete `applyLocalUpdate` and `mergeLocalField`.
-4. **Reads stop cloning.** The adapter deep-clones each read (`copyEntity`); the read model
+5. **Reads stop cloning.** The adapter deep-clones each read (`copyEntity`); the read model
    returns internal rows. This is the 495 win and the reason a resident model is affordable.
-5. **Ordering is an interface obligation.** Out-of-order durable ingest would diverge from
-   the adapter's gsn sort; single-writer, ascending-position is a documented invariant, not
-   an accident.
-6. **`changesSince` needs a bounded journal in production.** The spike's journal is
+6. **Ordering is an interface obligation.** Out-of-order durable ingest would diverge from
+   the adapter's gsn sort; single-writer, ascending-position is a documented invariant, and
+   orphan reconciliation must be gated by gsn (not arrival order).
+7. **`changesSince` needs a bounded journal in production.** The spike's journal is
    unbounded; a real implementation compacts and forces a snapshot rebuild for a stale
    watermark.
 

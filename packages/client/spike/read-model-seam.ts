@@ -515,6 +515,38 @@ const runRequiredCases = async (): Promise<void> => {
     );
     check("cursor advanced to the max gsn", (await dual.ports.cursors.get("grp_1")) === 7);
   }
+
+  // #475: a patch can be delivered before the base it targets; the backfilled
+  // base arrives later and the in-flight patch must still apply on top.
+  {
+    const dual = new DualRun();
+    await dual.durable(
+      mkAction({
+        id: "a_bf_patch",
+        gsn: 2,
+        hlc: hlc(9),
+        updates: [patchUpdate("todo_bf2", { title: leaf("InFlight", hlc(9), "u_inflight") })],
+      }),
+    );
+    check("patch before base: absent until backfilled", dual.model.get("todo_bf2") === null);
+    await dual.durable(
+      mkAction({
+        id: "a_bf_base",
+        gsn: 0,
+        hlc: hlc(5),
+        updates: [putUpdate("todo_bf2", "todo", { title: leaf("Server", hlc(5), "u_server") })],
+      }),
+    );
+    check(
+      "patch before base: in-flight patch wins",
+      dual.model.get("todo_bf2")?.data.fields.title?.value === "InFlight",
+    );
+    await dual.assertEquivalent(
+      "patch delivered before backfilled base (#475)",
+      ["todo_bf2"],
+      ["todo"],
+    );
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -676,6 +708,44 @@ const runHydrate = async (): Promise<void> => {
     "hydrate: durable outbox replays into the optimistic overlay",
     hydratedPending.get("todo_a")?.data.fields.title?.value === "Pending",
   );
+
+  // An orphan across a snapshot: a patch arrives, a snapshot is taken before its
+  // base is appended, and the rebuilt model must still reconcile the patch.
+  {
+    const live = createReadModel();
+    const ports = new MemoryPorts();
+    const patchEntry = await ports.actions.append(
+      mkAction({
+        id: "h_orphan_patch",
+        gsn: 2,
+        hlc: hlc(9),
+        updates: [patchUpdate("todo_orphan", { title: leaf("InFlight", hlc(9), "u_op") })],
+      }),
+    );
+    live.ingest(patchEntry.action, patchEntry.position);
+    const orphaned = live.toSnapshot();
+    check("orphan snapshot: watermark held before the orphan", orphaned.position === 0);
+    await ports.snapshots.save(orphaned);
+    const baseEntry = await ports.actions.append(
+      mkAction({
+        id: "h_orphan_base",
+        gsn: 0,
+        hlc: hlc(5),
+        updates: [putUpdate("todo_orphan", "todo", { title: leaf("Server", hlc(5), "u_ob") })],
+      }),
+    );
+    live.ingest(baseEntry.action, baseEntry.position);
+    const rebuilt = createReadModel();
+    await hydrate(rebuilt, ports);
+    check(
+      "orphan snapshot: rebuilt equals incremental",
+      isDeepStrictEqual(rebuilt.get("todo_orphan"), live.get("todo_orphan")),
+    );
+    check(
+      "orphan snapshot: in-flight patch survives",
+      rebuilt.get("todo_orphan")?.data.fields.title?.value === "InFlight",
+    );
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -749,11 +819,13 @@ const runFuzz = async (): Promise<void> => {
 const runDivergenceProbe = async (): Promise<void> => {
   section("Divergence probe (finding)");
   const dual = new DualRun();
+  // The local write is newer (hlc 3) than the interfering durable action
+  // (hlc 2), so the optimistic view should keep it until echo/conflict.
   const local = mkAction({
     id: "a_local",
     gsn: 0,
-    hlc: hlc(2),
-    updates: [patchUpdate("todo_x", { title: leaf("Local", hlc(2), "u_local") })],
+    hlc: hlc(3),
+    updates: [patchUpdate("todo_x", { title: leaf("Local", hlc(3), "u_local") })],
   });
   // Base row must exist first.
   await dual.durable(
@@ -765,20 +837,22 @@ const runDivergenceProbe = async (): Promise<void> => {
     }),
   );
   await dual.optimistic(local);
-  // Unrelated durable action on the same entity, before the echo.
+  // Unrelated durable action on the same entity, before the echo. It is older
+  // than the local write, so it must not clobber it.
   await dual.durable(
     mkAction({
       id: "a_other",
       gsn: 2,
-      hlc: hlc(3),
-      updates: [patchUpdate("todo_x", { title: leaf("Other", hlc(3), "u_other") })],
+      hlc: hlc(2),
+      updates: [patchUpdate("todo_x", { title: leaf("Other", hlc(2), "u_other") })],
     }),
   );
   const mine = dual.model.get("todo_x")?.data.fields.title?.value;
   const theirs = (await dual.adapter.entities.get("todo_x"))?.data.fields.title?.value;
-  console.log(`  [!] read-model title = ${String(mine)} (overlay kept)`);
+  check("divergence: read model keeps the newer local write", mine === "Local");
+  check("divergence: adapter drops it (known defect)", theirs === "Other");
+  console.log(`  [!] read-model title = ${String(mine)} (overlay kept, newer HLC)`);
   console.log(`  [!] adapter    title = ${String(theirs)} (overlay dropped by re-materialize)`);
-  console.log("      The overlay view is the correct one; the adapter loses the local write.");
 };
 
 // ---------------------------------------------------------------------------

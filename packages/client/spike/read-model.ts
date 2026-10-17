@@ -155,10 +155,25 @@ interface OptimisticWrite {
   readonly hlc: string;
 }
 
+/**
+ * An Update that arrived before any base row existed. The store's per-entity
+ * gsn-ordered replay keeps it implicitly (replay re-reads the whole log); an
+ * incremental model must keep it explicitly so a later `put` — a backfill
+ * snapshot, or the real base finally delivered — can reconcile it (#475).
+ */
+interface OrphanUpdate {
+  readonly update: Update;
+  readonly gsn: number;
+  readonly hlc: string;
+  readonly position: number;
+}
+
 export const createReadModel = (): ReadModel => {
   const entities = new Map<EntityId, Entity>();
   const typeIndex = new Map<EntityType, Set<EntityId>>();
   const overlay = new Map<EntityId, OptimisticWrite[]>();
+  /** Updates that arrived before any base row; replayed when a `put` seeds one. */
+  const orphans = new Map<EntityId, OrphanUpdate[]>();
   /** Composed base ⊕ overlay row; absent means "fall through to base". */
   const effective = new Map<EntityId, Entity>();
   const journal: EntityChange[] = [];
@@ -210,15 +225,50 @@ export const createReadModel = (): ReadModel => {
     handle = makeHandle();
   };
 
-  const foldBase = (update: Update, ctx: ApplyContext): boolean => {
+  const foldBase = (update: Update, ctx: ApplyContext, position: number): boolean => {
     const id = update.subject_id;
     const previous = entities.get(id) ?? null;
     const next = applyUpdate(previous, update, ctx.gsn, ctx.hlc);
-    if (next === null) return false;
+    if (next === null) {
+      // A patch/delete with no base: retain it so a later base can reconcile it.
+      const pending = orphans.get(id) ?? [];
+      pending.push({ update, gsn: ctx.gsn, hlc: ctx.hlc, position });
+      orphans.set(id, pending);
+      return false;
+    }
     entities.set(id, next);
     if (previous !== null && previous.type !== next.type) removeFromType(previous.type, id);
     addToType(next.type, id);
-    return contentChanged(previous, next);
+    let changed = contentChanged(previous, next);
+
+    // A `put` is a base. Replay the Updates that arrived before it, exactly as
+    // the store's gsn-ordered replay would: only orphans with a gsn *greater*
+    // than the put's survive (older ones were no-ops before it, and the
+    // full-replacement put supersedes them). The fetched snapshot may already
+    // include a survivor's effect; re-applying is idempotent under LWW when it
+    // does, and preserves the newer in-flight write when it does not.
+    if (update.method === "put") {
+      const pending = orphans.get(id);
+      if (pending !== undefined) {
+        orphans.delete(id);
+        const survivors = pending
+          .filter((orphan) => orphan.gsn > ctx.gsn)
+          .sort((a, b) => a.gsn - b.gsn);
+        let row: Entity | null = next;
+        for (const orphan of survivors) {
+          row = applyUpdate(row, orphan.update, orphan.gsn, orphan.hlc);
+        }
+        if (row !== null) {
+          entities.set(id, row);
+          if (next.type !== row.type) {
+            removeFromType(next.type, id);
+            addToType(row.type, id);
+          }
+          changed = contentChanged(next, row) || changed;
+        }
+      }
+    }
+    return changed;
   };
 
   /** Recompute one entity's composed row after an overlay edit. */
@@ -256,16 +306,23 @@ export const createReadModel = (): ReadModel => {
     changesSince: (from: number) => journal.filter((change) => change.version > from),
 
     ingest(action: Action, position: number): ReadModelHandle {
+      const touched: EntityId[] = [];
       for (const update of action.updates) {
-        if (foldBase(update, { gsn: action.gsn, hlc: action.hlc })) {
-          const row = entities.get(update.subject_id)!;
-          bump(row.id, row.type, row.deleted_hlc !== null);
+        const id = update.subject_id;
+        touched.push(id);
+        if (foldBase(update, { gsn: action.gsn, hlc: action.hlc }, position)) {
+          const row = entities.get(id);
+          if (row !== null) bump(row.id, row.type, row.deleted_hlc !== null);
         }
       }
       lastPosition = Math.max(lastPosition, position);
       // The echo carries the optimistic action's id: its overlay writes are now
       // in the base, so drop them. Recomposition is a no-op when they agreed.
       model.discard(action.id);
+      // Any other overlay on a touched id now sits over a new base.
+      for (const id of touched) {
+        if (overlay.has(id)) recompose(id);
+      }
       return handle;
     },
 
@@ -296,6 +353,7 @@ export const createReadModel = (): ReadModel => {
     loadSnapshot(snapshot: ReadModelSnapshot): ReadModelHandle {
       entities.clear();
       typeIndex.clear();
+      orphans.clear();
       for (const entity of snapshot.entities) {
         entities.set(entity.id, entity);
         addToType(entity.type, entity.id);
@@ -307,9 +365,18 @@ export const createReadModel = (): ReadModel => {
     },
 
     toSnapshot(): ReadModelSnapshot {
+      // Never advance the watermark past an orphan: a snapshot omits the orphan
+      // (there is no base row for it), so hydrating from it would lose the
+      // Update before its base arrives. Cap at the oldest orphan's position.
+      let oldest = Number.POSITIVE_INFINITY;
+      for (const pending of orphans.values()) {
+        for (const orphan of pending) oldest = Math.min(oldest, orphan.position);
+      }
+      const position =
+        oldest === Number.POSITIVE_INFINITY ? lastPosition : Math.min(lastPosition, oldest - 1);
       return {
         formatVersion: 1,
-        position: lastPosition,
+        position,
         version,
         entities: [...entities.values()],
       };
@@ -328,7 +395,10 @@ export const createReadModel = (): ReadModel => {
  * position is the log's own monotonic append-order cursor, independent of the
  * server gsn, so gsn-0 backfill Actions replay correctly on hydrate.
  * `readTail` returns every Action with position > `afterPosition`, in order.
- * `getForEntity` / `getAll` are gone: nothing replays per entity any more.
+ * `getForEntity` / `getAll` are gone: the read model buffers an Update that
+ * arrives before its base and reconciles it when the base lands, so nothing
+ * replays per entity. The snapshot watermark must not advance past an orphan
+ * (`toSnapshot` caps it), which is the one remaining ordering obligation.
  */
 export interface LoggedAction {
   readonly action: Action;
