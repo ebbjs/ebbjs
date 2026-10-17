@@ -45,6 +45,18 @@ export interface EntityChangeEmitter {
    */
   onTypeChange(type: string, listener: (entity: Entity) => void): () => void;
 
+  /**
+   * Subscribe to accessor-affecting changes for one entity id. Fires
+   * when a row an entity's accessors depend on materializes: a
+   * `relationship` row whose `source_id` is the id, or an `entityGroup`
+   * row whose `entity_id` is the id (including the tombstone from an
+   * unlink / removal). Unlike {@link onEntityChange} the entity's own
+   * fields are usually unchanged, so a consumer must re-derive its
+   * accessors rather than compare projected fields. Returns an
+   * unsubscribe function.
+   */
+  onAccessorChange(id: string, listener: () => void): () => void;
+
   /** Clear every listener. */
   reset(): void;
 }
