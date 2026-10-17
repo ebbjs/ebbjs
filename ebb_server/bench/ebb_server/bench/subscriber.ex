@@ -1,6 +1,6 @@
 defmodule EbbServer.Bench.Subscriber do
   @moduledoc """
-  In-process SSE subscribers for tier T3.
+  In-process SSE subscribers for tiers T3 and T4.
 
   Each subscriber is a lightweight process that owns one real
   `EbbServer.Sync.SSEConnection` (started under
@@ -16,7 +16,7 @@ defmodule EbbServer.Bench.Subscriber do
   stamp the workbook embeds in every Action; the stamp is client-side, so it
   spans client send → commit → dispatch → subscriber delivery. The server's
   own `ebb.fanout.push_latency_ms` (captured by `EbbServer.Bench.Telemetry`)
-  reports commit → dispatch separately. Only every `@sample_every` delivery
+  reports commit → broadcast complete separately. Only every `@sample_every` delivery
   is decoded, to keep decoding off the hot path.
   """
 
@@ -61,7 +61,7 @@ defmodule EbbServer.Bench.Subscriber do
   @spec stop_all(t() | nil) :: map() | nil
   def stop_all(nil), do: nil
 
-  def stop_all(%{counters: counters, lags: lags, pids: pids}) do
+  def stop_all(%{lags: lags, pids: pids} = subscriber) do
     Enum.each(pids, &Process.exit(&1, :kill))
     # Let the kills land and the SSEConnection monitors fire before the
     # tree is torn down, so the final counters are stable.
@@ -69,8 +69,8 @@ defmodule EbbServer.Bench.Subscriber do
 
     stats = %{
       subscribers: length(pids),
-      delivered_total: :counters.get(counters, 1),
-      control_total: :counters.get(counters, 2),
+      delivered_total: delivered(subscriber),
+      control_total: :counters.get(subscriber.counters, 2),
       lags: lags |> :ets.tab2list() |> Enum.map(&elem(&1, 1))
     }
 

@@ -55,7 +55,7 @@ defmodule EbbServer.Bench.Runner do
     measure_start = now + config.warmup * 1_000_000
     deadline = measure_start + config.duration * 1_000_000
 
-    sampler = Sampler.start(fn -> Subscriber.delivered(subscribers) end)
+    sampler = Sampler.start(fn -> Subscriber.delivered(subscribers) end, measure_start)
     telemetry = Telemetry.start(measure_start)
 
     try do

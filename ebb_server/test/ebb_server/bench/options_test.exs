@@ -111,6 +111,11 @@ defmodule EbbServer.Bench.OptionsTest do
       assert Options.batch_interval_us(config) == 20_000
     end
 
+    test "batch_interval_us floors at one microsecond at extreme rates" do
+      {:ok, config} = Options.parse(["--tier", "t4", "--rate", "2000000", "--batch-size", "1"])
+      assert Options.batch_interval_us(config) == 1
+    end
+
     test "describe and command carry the target rate" do
       {:ok, config} = Options.parse(["--tier", "t4", "--rate", "250"])
 

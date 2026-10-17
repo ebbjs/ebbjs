@@ -15,7 +15,7 @@ defmodule EbbServer.Bench.Sampler do
 
   @doc "Starts the sampler process with no delivery counter."
   @spec start() :: pid()
-  def start, do: start(fn -> 0 end)
+  def start, do: start(fn -> 0 end, System.monotonic_time(:microsecond))
 
   @doc """
   Starts the sampler process.
@@ -23,12 +23,13 @@ defmodule EbbServer.Bench.Sampler do
   `delivered_fn` is polled at each 1Hz sample and its value stored as
   `delivered`; the fixed-rate tier passes the cumulative subscriber
   delivery counter so `EbbServer.Bench.Metrics` can derive a delivered
-  Actions/sec.
+  Actions/sec. Each sample carries `offset_us`, its offset from
+  `measure_start`, so metrics can window to the measured period.
   """
-  @spec start((-> non_neg_integer() | nil)) :: pid()
-  def start(delivered_fn) when is_function(delivered_fn, 0) do
+  @spec start((-> non_neg_integer() | nil), integer()) :: pid()
+  def start(delivered_fn, measure_start) when is_function(delivered_fn, 0) do
     :erlang.system_flag(:scheduler_wall_time, true)
-    spawn(fn -> loop(delivered_fn, sched_snapshot(), []) end)
+    spawn(fn -> loop(delivered_fn, measure_start, sched_snapshot(), []) end)
   end
 
   @doc """
@@ -46,22 +47,23 @@ defmodule EbbServer.Bench.Sampler do
     end
   end
 
-  defp loop(delivered_fn, previous_sched, acc) do
+  defp loop(delivered_fn, measure_start, previous_sched, acc) do
     receive do
       {:stop, from, ref} ->
         send(from, {:samples, ref, Enum.reverse(acc)})
     after
       @interval_ms ->
-        {sample, sched} = take_sample(delivered_fn, previous_sched)
-        loop(delivered_fn, sched, [sample | acc])
+        {sample, sched} = take_sample(delivered_fn, measure_start, previous_sched)
+        loop(delivered_fn, measure_start, sched, [sample | acc])
     end
   end
 
-  defp take_sample(delivered_fn, previous_sched) do
+  defp take_sample(delivered_fn, measure_start, previous_sched) do
     sched = sched_snapshot()
+    at_us = System.monotonic_time(:microsecond)
 
     sample = %{
-      at_us: System.monotonic_time(:microsecond),
+      offset_us: at_us - measure_start,
       delivered: delivered_fn.(),
       watermark: WatermarkTracker.committed_watermark(),
       max_gsn: RocksDB.get_max_gsn(),

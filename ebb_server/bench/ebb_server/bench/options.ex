@@ -183,11 +183,12 @@ defmodule EbbServer.Bench.Options do
   This is the pacing contract for the fixed-rate tier: a worker that waits
   this long between `batch_size`-Action calls writes at `target_rate`
   Actions/sec. Returns whole microseconds, so a rate that does not divide
-  the batch evenly rounds down.
+  the batch evenly rounds down; a rate high enough to round to zero is
+  floored at one microsecond so pacing is never silently disabled.
   """
   @spec batch_interval_us(t()) :: pos_integer()
   def batch_interval_us(%__MODULE__{batch_size: batch_size, rate: rate}) when rate > 0 do
-    div(batch_size * 1_000_000, rate)
+    max(div(batch_size * 1_000_000, rate), 1)
   end
 
   defp apply_opts(opts, config) do

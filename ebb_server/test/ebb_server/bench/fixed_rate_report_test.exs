@@ -2,7 +2,8 @@ defmodule EbbServer.Bench.FixedRateReportTest do
   @moduledoc """
   Pins the t4 report: the fixed-rate section must show the target versus
   achieved write rate, the delivered rate, and the per-bucket
-  commit→dispatch latency series that tells whether fan-out keeps up.
+  commit→broadcast-complete latency series that tells whether fan-out keeps
+  up. A t4 run renders only that section, not the T3 fan-out table.
   """
 
   use ExUnit.Case, async: true
@@ -22,8 +23,8 @@ defmodule EbbServer.Bench.FixedRateReportTest do
     }
 
     resources = [
-      sample(delivered: 0, at_us: 0),
-      sample(delivered: 2000, at_us: 2_000_000)
+      sample(delivered: 0, offset_us: 0),
+      sample(delivered: 2000, offset_us: 2_000_000)
     ]
 
     fanout = %{subscribers: 10, delivered_total: 2000, control_total: 0, lags: []}
@@ -47,7 +48,19 @@ defmodule EbbServer.Bench.FixedRateReportTest do
     assert report =~ "| Delivered per subscriber/sec | 100.0 |"
     assert report =~ "| 0 | 1 | 500 | 500 |"
     assert report =~ "| 10 | 1 | 900 | 900 |"
+    assert report =~ "Commit → broadcast complete latency"
     assert report =~ "A flat p50 across buckets means fan-out keeps up"
+  end
+
+  test "t4 renders only the fixed-rate section, not the T3 fan-out table", context do
+    {:ok, config} =
+      Options.parse(["--tier", "t4", "--rate", "1000", "--subscribers", "10", "--duration", "20"])
+
+    report = Report.render(config, analyze(config, context))
+
+    assert report =~ "## Fixed-rate fan-out (T4)"
+    refute report =~ "## Fan-out (T3)"
+    refute report =~ "Actions delivered (total)"
   end
 
   test "a t4 run without subscribers still renders the section", context do
@@ -63,9 +76,10 @@ defmodule EbbServer.Bench.FixedRateReportTest do
 
   test "non-t4 tiers do not render the fixed-rate section", context do
     {:ok, config} = Options.parse(["--duration", "20"])
-    result = analyze(config, context)
+    report = Report.render(config, analyze(config, context))
 
-    refute Report.render(config, result) =~ "Fixed-rate fan-out"
+    refute report =~ "Fixed-rate fan-out"
+    assert report =~ "## Fan-out (T3)"
   end
 
   defp analyze(config, context) do
