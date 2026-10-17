@@ -8,7 +8,7 @@ defmodule EbbServer.Sync.GroupServerTest do
 
   import EbbServer.TestHelpers
 
-  alias EbbServer.Sync.GroupServer
+  alias EbbServer.Sync.{GroupServer, SSEConnection}
 
   setup do
     group_id = "test_group_#{:erlang.unique_integer([:positive])}"
@@ -127,6 +127,57 @@ defmodule EbbServer.Sync.GroupServerTest do
     end
   end
 
+  describe "push_actions/2 coalescing" do
+    test "sends one push_data per subscriber per batch, not per action", %{
+      group_server: gs
+    } do
+      test_pid = self()
+      subscribers = for _ <- 1..3, do: start_push_collector(test_pid)
+
+      for {subscriber, i} <- Enum.with_index(subscribers) do
+        :ok = GroupServer.add_subscriber(gs, subscriber, "actor_#{i}")
+      end
+
+      actions = [action("act_1", 1), action("act_2", 2), action("act_3", 3), action("act_4", 4)]
+      :ok = GroupServer.push_actions(gs, actions)
+
+      received =
+        for _ <- subscribers do
+          assert_receive {:pushed_data, subscriber, bytes}, 1_000
+          {subscriber, bytes}
+        end
+
+      assert Enum.map(received, &elem(&1, 0)) |> Enum.sort() == Enum.sort(subscribers)
+      refute_receive {:pushed_data, _, _}, 100
+    end
+
+    test "two subscribers of one group receive the same bytes", %{group_server: gs} do
+      test_pid = self()
+      sub1 = start_push_collector(test_pid)
+      sub2 = start_push_collector(test_pid)
+
+      :ok = GroupServer.add_subscriber(gs, sub1, "actor_1")
+      :ok = GroupServer.add_subscriber(gs, sub2, "actor_2")
+
+      :ok = GroupServer.push_actions(gs, [action("act_1", 1), action("act_2", 2)])
+
+      assert_receive {:pushed_data, ^sub1, bytes1}, 1_000
+      assert_receive {:pushed_data, ^sub2, bytes2}, 1_000
+      assert bytes1 == bytes2
+    end
+
+    test "the bytes are the frames of every Action in order", %{group_server: gs} do
+      sub = start_push_collector(self())
+      :ok = GroupServer.add_subscriber(gs, sub, "actor_1")
+
+      actions = [action("act_1", 1), action("act_2", 2)]
+      :ok = GroupServer.push_actions(gs, actions)
+
+      assert_receive {:pushed_data, ^sub, bytes}, 1_000
+      assert bytes == Enum.map_join(actions, &SSEConnection.data_frame/1)
+    end
+  end
+
   describe "push_actions/3 telemetry" do
     test "emits push latency once with the group id when given a commit time", %{
       group_server: gs,
@@ -174,6 +225,24 @@ defmodule EbbServer.Sync.GroupServerTest do
       _state = :sys.get_state(gs)
 
       assert telemetry_events(ref) == []
+    end
+  end
+
+  defp action(id, gsn) do
+    %{"id" => id, "actor_id" => "actor_1", "gsn" => gsn, "hlc" => gsn, "updates" => []}
+  end
+
+  # A subscriber that reports the coalesced bytes GroupServer pushes to it,
+  # so the test can count pushes per batch.
+  defp start_push_collector(test_pid) do
+    spawn(fn -> collect_push_data(test_pid) end)
+  end
+
+  defp collect_push_data(test_pid) do
+    receive do
+      {:"$gen_cast", {:push_data, bytes}} ->
+        send(test_pid, {:pushed_data, self(), bytes})
+        collect_push_data(test_pid)
     end
   end
 

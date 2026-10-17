@@ -8,6 +8,8 @@ defmodule EbbServer.Sync.SSEConnectionTest do
 
   use ExUnit.Case, async: false
 
+  import EbbServer.SSEHelpers
+
   alias EbbServer.Sync.SSEConnection
 
   describe "format_sse_event/2" do
@@ -39,6 +41,63 @@ defmodule EbbServer.Sync.SSEConnectionTest do
       assert result =~ "event: data\n"
       assert result =~ "\ndata: "
       assert result =~ "\n\n"
+    end
+  end
+
+  describe "data_frame/1" do
+    test "renders the exact 5-key action map as one data event" do
+      action = %{
+        "id" => "act_abc",
+        "gsn" => 501,
+        "actor_id" => "a_user1",
+        "hlc" => 1_711_036_800_000,
+        "updates" => [%{"field" => "value"}],
+        "extra" => "dropped from the wire"
+      }
+
+      assert [payload] = data_payloads(SSEConnection.data_frame(action))
+
+      assert Jason.decode!(payload) == %{
+               "id" => "act_abc",
+               "gsn" => 501,
+               "actor_id" => "a_user1",
+               "hlc" => 1_711_036_800_000,
+               "updates" => [%{"field" => "value"}]
+             }
+    end
+  end
+
+  describe "push_data/2 and push_action/2" do
+    test "push_data forwards the raw bytes to the parent as {:sse_data, bytes}" do
+      {:ok, pid} = SSEConnection.start_link(self(), ["g1"], %{"g1" => 0})
+
+      bytes =
+        SSEConnection.data_frame(%{
+          "id" => "act_1",
+          "gsn" => 1,
+          "actor_id" => "a_user1",
+          "hlc" => 7,
+          "updates" => []
+        })
+
+      assert :ok = SSEConnection.push_data(pid, bytes)
+      assert_receive {:sse_data, ^bytes}
+    end
+
+    test "push_action shares the same wire shape as push_data" do
+      {:ok, pid} = SSEConnection.start_link(self(), ["g1"], %{"g1" => 0})
+
+      action = %{
+        "id" => "act_2",
+        "gsn" => 2,
+        "actor_id" => "a_user2",
+        "hlc" => 8,
+        "updates" => []
+      }
+
+      assert :ok = SSEConnection.push_action(pid, action)
+      assert_receive {:sse_data, bytes}
+      assert bytes == SSEConnection.data_frame(action)
     end
   end
 

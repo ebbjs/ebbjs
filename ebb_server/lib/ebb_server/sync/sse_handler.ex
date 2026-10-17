@@ -14,8 +14,10 @@ defmodule EbbServer.Sync.SSEHandler do
      `:chunked state.
   2. It then starts an `SSEConnection` GenServer under
      `SSEConnectionSupervisor` and subscribes it to the `FanOutRouter`.
-  3. It enters a `receive` loop that handles two message types:
+  3. It enters a `receive` loop that handles these message types:
      - `:keepalive` (self-scheduled every 15s) — chunks a `: keepalive\\n\\n` comment.
+     - `{:sse_data, bytes}` from the SSEConnection — chunks the coalesced
+       `data` frames for one committed batch.
      - `{:sse_chunk, kind, payload}` from the SSEConnection — chunks the
        formatted SSE event.
   4. The loop exits when:
@@ -98,9 +100,9 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
     :ok
   end
 
-  # Block the request process, dispatching `:sse_chunk` and `:keepalive`
-  # messages until the connection is closed (write returns :closed) or the
-  # forwarding GenServer exits.
+  # Block the request process, dispatching `:sse_data`, `:sse_chunk` and
+  # `:keepalive` messages until the connection is closed (write returns
+  # :closed) or the forwarding GenServer exits.
   defp run_sse_loop(conn, sse_pid) do
     monitor_ref = Process.monitor(sse_pid)
     Process.send_after(self(), :keepalive, @keepalive_interval_ms)
@@ -110,6 +112,15 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
 
   defp do_sse_loop(conn, sse_pid, monitor_ref) do
     receive do
+      # Coalesced `data` frames: GroupServer encodes one binary per batch per
+      # group and every subscriber writes those exact bytes. The stream is
+      # the same concatenation of SSE events the per-Action path emitted.
+      {:sse_data, bytes} ->
+        case chunk(conn, bytes) do
+          :ok -> do_sse_loop(conn, sse_pid, monitor_ref)
+          :closed -> :ok
+        end
+
       {:sse_chunk, kind, payload} ->
         case chunk(conn, SSEConnection.format_sse_event(kind, payload)) do
           :ok -> do_sse_loop(conn, sse_pid, monitor_ref)

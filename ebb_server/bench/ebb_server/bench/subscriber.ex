@@ -12,7 +12,7 @@ defmodule EbbServer.Bench.Subscriber do
   Delivery counters live in shared ETS rather than in the subscriber's
   mailbox, so a saturation run can be stopped by killing the subscribers
   instead of waiting for a stop message queued behind millions of
-  `{:sse_chunk, ...}` messages. Delivery lag is measured from a monotonic
+  `{:sse_data, ...}` messages. Delivery lag is measured from a monotonic
   stamp the workbook embeds in every Action; the stamp is client-side, so it
   spans client send → commit → dispatch → subscriber delivery. The server's
   own `ebb.fanout.push_latency_ms` (captured by `EbbServer.Bench.Telemetry`)
@@ -100,16 +100,40 @@ defmodule EbbServer.Bench.Subscriber do
 
   defp loop(counters, lags, delivered) do
     receive do
-      {:sse_chunk, "data", payload} ->
-        delivered = delivered + 1
-        :counters.add(counters, 1, 1)
-        if rem(delivered, @sample_every) == 0, do: maybe_record_lag(lags, payload)
+      # One coalesced chunk per batch: it may carry several `data` frames.
+      {:sse_data, bytes} ->
+        payloads = data_payloads(bytes)
+        :counters.add(counters, 1, length(payloads))
+
+        delivered =
+          Enum.reduce(payloads, delivered, fn payload, delivered ->
+            delivered = delivered + 1
+            if rem(delivered, @sample_every) == 0, do: maybe_record_lag(lags, payload)
+            delivered
+          end)
+
         loop(counters, lags, delivered)
 
       {:sse_chunk, _kind, _payload} ->
         :counters.add(counters, 2, 1)
         loop(counters, lags, delivered)
     end
+  end
+
+  # Splits a coalesced chunk into one JSON payload per `data` frame, the
+  # same split the tests use.
+  defp data_payloads(bytes) do
+    bytes
+    |> IO.iodata_to_binary()
+    |> String.split("\n\n", trim: true)
+    |> Enum.map(fn frame ->
+      frame
+      |> String.split("\n")
+      |> Enum.find_value(fn
+        "data: " <> payload -> payload
+        _ -> nil
+      end)
+    end)
   end
 
   defp maybe_record_lag(lags, payload) do

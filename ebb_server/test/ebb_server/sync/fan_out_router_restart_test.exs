@@ -15,6 +15,7 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
   use ExUnit.Case, async: false
   use EbbServer.Integration.StorageCase
 
+  import EbbServer.SSEHelpers
   import EbbServer.TestHelpers
 
   alias EbbServer.Integration.ActionHelpers
@@ -46,8 +47,8 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
 
       {:ok, _pid} = restart_router()
 
-      assert_receive {:sse_chunk, "data", json}, 5_000
-      assert Jason.decode!(json)["actor_id"] == actor_id
+      assert_receive {:sse_data, bytes}, 5_000
+      assert Jason.decode!(single_data_payload(bytes))["actor_id"] == actor_id
 
       sync_router()
       assert FanOutFrontier.get() == {:ok, 2}
@@ -82,8 +83,8 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
       # of racing that init-time read against the advance above.
       send(new_pid, {:range_resolved, 1, 1})
 
-      assert_receive {:sse_chunk, "data", json}, 5_000
-      assert Jason.decode!(json)["actor_id"] == actor_id
+      assert_receive {:sse_data, bytes}, 5_000
+      assert Jason.decode!(single_data_payload(bytes))["actor_id"] == actor_id
 
       sync_router()
       assert FanOutFrontier.get() == {:ok, 2}
@@ -133,8 +134,8 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
 
       send(FanOutRouter, {:range_resolved, 1, 1})
 
-      assert_receive {:sse_chunk, "data", json}, 5_000
-      assert Jason.decode!(json)["actor_id"] == actor_id
+      assert_receive {:sse_data, bytes}, 5_000
+      assert Jason.decode!(single_data_payload(bytes))["actor_id"] == actor_id
 
       :ok = FanOutRouter.unsubscribe(sse_pid)
     end
@@ -175,8 +176,8 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
 
       {:ok, _pid} = restart_router()
 
-      assert_receive {:sse_chunk, "data", json}, 5_000
-      assert Jason.decode!(json)["actor_id"] == actor_id
+      assert_receive {:sse_data, bytes}, 5_000
+      assert Jason.decode!(single_data_payload(bytes))["actor_id"] == actor_id
       sync_router()
       assert FanOutFrontier.get() == {:ok, 1}
 
@@ -198,7 +199,7 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
       ref = attach_telemetry([[:ebb, :fanout, :push_latency_ms]])
       {:ok, _pid} = restart_router()
 
-      assert_receive {:sse_chunk, "data", _json}, 5_000
+      assert_receive {:sse_data, _bytes}, 5_000
       refute_received {:telemetry_event, ^ref, [:ebb, :fanout, :push_latency_ms], _, _}
 
       :ok = FanOutRouter.unsubscribe(sse_pid)
@@ -271,8 +272,8 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
       scoped =
         1..2
         |> Enum.map(fn _ ->
-          assert_receive {:sse_chunk, "data", json}, 5_000
-          update_subject_ids(Jason.decode!(json))
+          assert_receive {:sse_data, bytes}, 5_000
+          update_subject_ids(Jason.decode!(single_data_payload(bytes)))
         end)
         |> Enum.sort()
 
@@ -407,6 +408,6 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
   defp sync_router, do: :sys.get_state(FanOutRouter)
 
   defp assert_no_chunk(timeout) do
-    refute_receive {:sse_chunk, "data", _}, timeout
+    refute_receive {:sse_data, _}, timeout
   end
 end
