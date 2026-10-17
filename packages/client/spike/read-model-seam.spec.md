@@ -33,7 +33,7 @@ command, that exists to settle the seam before #497–#501 build on it.
 | Replace or parallel        | The read model **replaces** `EntityStore` + `DirtyTracker` as the engine's materialized read path. `ActionLog` survives narrowed; `CursorStore` / `OutboxStore` survive unchanged; `SnapshotStore` is new. The old `StorageAdapter.entities` / `.dirtyTracker` may linger as a compatibility shim for non-engine callers, but they leave the engine's port. |
 | The central hypothesis     | **Confirmed with one honest reframe:** the read model subsumes `EntityStore`. It subsumes `DirtyTracker` **only** under the redefinition "changed since version V" (which is exactly what #512 needs), _not_ "awaiting lazy rematerialization". If an expensive lazy projection ever returns, a real dirty set returns with it.                             |
 | Hydrate                    | latest snapshot (`position` watermark) ⊕ `ActionLog.readTail(position)` ⊕ the durable outbox overlay.                                                                                                                                                                                                                                                       |
-| Merge authority            | `applyUpdate` / `mergeFields` from `storage/src/internal/materialize.ts`, used **verbatim by both provenances**. No LWW is re-implemented anywhere in the read model.                                                                                                                                                                                       |
+| Merge authority            | `applyUpdate` / `mergeFields` from `storage/src/internal/materialize.ts`, used **verbatim by the durable fold**. The optimistic overlay uses a second, named policy — **pending-local-wins** (`applyPendingUpdate`) — so an author always sees their unacknowledged write even when it ties or loses LWW.                                                   |
 
 ---
 
@@ -124,9 +124,14 @@ interface ReadModelSnapshot {
 
 **Interface invariants**
 
-1. **Merge authority is singular.** Every fold routes through `applyUpdate(entity, update,
-gsn, hlc)`. `mergeFieldValue` owns LWW and the map-union rule. The read model never
-   compares HLCs, never unwraps field envelopes, never re-implements a tiebreak.
+1. **Two merge policies, both named, neither ad-hoc.** The durable fold routes through
+   `applyUpdate(entity, update, gsn, hlc)`; `mergeFieldValue` owns LWW, the equal-HLC
+   `update_id` tiebreak, and map union. The optimistic overlay routes through
+   `applyPendingUpdate`, which lets a pending local leaf win outright. That overlay rule is
+   a deliberate UI contract, not durable LWW: a pending write that ties (and loses the
+   tiebreak) or is older still shows until echo/conflict. Conflict _detection_ never reads
+   the overlay — it folds the raw buffered action and the missed window with
+   `mergeFieldValue`.
 2. **Version tracks observable content, not bookkeeping.** `contentChanged` compares `type`,
    `updated_hlc`, `deleted_hlc`, and the field map structurally (reference fast path). A
    lower-HLC patch that only bumps `last_gsn` changes the stored row but **not the version**,
@@ -257,16 +262,26 @@ outbox: OutboxStore }`. The memory adapter's `actions.append` returns `void` and
 
 ---
 
-## 5. The apply pipeline — one pipeline, two provenances
+## 5. The apply pipeline — one pipeline, two provenances, two merge policies
 
 ```
                      ┌──────────────────────────────┐
-durable  ingest ───► │  foldUpdate(prev, update,     │ ──► base
-(gsn, log position)  │    { gsn: action.gsn,         │
-                     │      hlc: action.hlc })       │
-optimistic optimistic│                               │ ──► overlay (actionId, update, hlc)
-(gsn = 0)           └──────────────────────────────┘
+durable  ingest ───► │  applyUpdate(prev, update,    │ ──► base
+(gsn, log position)  │    { gsn, hlc })   [LWW]      │
+                     └──────────────────────────────┘
+                     ┌──────────────────────────────┐
+optimistic optimistic│  applyPendingUpdate(prev,     │ ──► overlay (actionId, update, hlc)
+(gsn = 0)            │    update, hlc)  [pending wins]│
+                     └──────────────────────────────┘
 ```
+
+- **Two merge rules.** The durable fold is the normative LWW (`applyUpdate` /
+  `mergeFieldValue`). The overlay fold is pending-local-wins (`applyPendingUpdate`): a
+  local write stamped from this client's clock can still tie or lose durable LWW (equal HLC
+  with a lexicographically smaller `update_id`, or an older HLC after a concurrent remote
+  write), and the author must see their write until the echo or a conflict resolves it.
+  Conflict _detection_ is independent of this choice: it reads the raw buffered action and
+  `foldInboundWindow` with the durable rule.
 
 - **Durable** (`SyncClient._applyAction`): append to the `ActionLog` first, then fold each
   Update into the base. `ingest` then `discard`s any overlay entries carrying the same
@@ -305,15 +320,17 @@ snapshot (the journal is bounded in production).
 8. `hydrate` is `snapshot(position) ⊕ readTail(position) ⊕ outbox overlay`; idempotent;
    gsn-0 Actions survive; the snapshot watermark never advances past an orphan.
 9. Reads return shared rows; callers must not mutate.
-10. `applyUpdate(prev, update, 0, hlc)` ≡ the production `applyLocalUpdate(prev, update,
-hlc)` on the optimistic fixtures.
+10. `applyPendingUpdate` ≡ the production `applyLocalUpdate` on **all** optimistic
+    fixtures, including equal-HLC tiebreak losses and older HLCs. `applyUpdate(gsn 0)` is
+    **not** equivalent there — it is the durable rule, and the two differ exactly when a
+    pending local write ties or loses LWW.
 
 ---
 
 ## 7. Dual-run evidence
 
 Every case updates both the read model and `createMemoryAdapter()`; after each operation the
-harness asserts `get(id)` and `iterate(type)` equivalence (deep, id-sorted). **67/67 checks
+harness asserts `get(id)` and `iterate(type)` equivalence (deep, id-sorted). **72/72 checks
 pass** on the representative run.
 
 | Case                                                                                  | Result |
@@ -333,7 +350,8 @@ pass** on the representative run.
 | backfill snapshot with the entity's **true gsn + updated_hlc** (row keeps `last_gsn`) | ✅     |
 | an orphan Update spanning a snapshot rehydrates and still reconciles                  | ✅     |
 | divergence probe: read model keeps a newer optimistic write the adapter drops         | ✅     |
-| merge parity: `applyUpdate(gsn 0)` ≡ `applyLocalUpdate` on six fixtures               | ✅     |
+| optimistic equal-HLC tiebreak: pending local write wins (overlay policy)              | ✅     |
+| merge parity: `applyPendingUpdate` ≡ `applyLocalUpdate`, incl. tiebreak + older HLC   | ✅     |
 | hydrate: snapshot + tail == incremental; full replay == incremental; gsn-0 survives   | ✅     |
 | hydrate: durable outbox replays into the optimistic overlay                           | ✅     |
 | seeded fuzz: 300 random durable + optimistic-then-echo ops                            | ✅     |
@@ -389,11 +407,20 @@ re-measured with production-shaped rows.
    that was patched after creation still loses its `created_hlc`. Preserve that with a
    first-class baseline/seed operation (or an explicit `created_hlc` on the put data) if it
    matters.
-4. **`applyLocalUpdate` is redundant.** The merge-parity check shows the normative
-   `applyUpdate` with `gsn 0` equals it on every optimistic fixture. The only difference is
-   `mergeLocalField`'s "local leaf wins outright" vs LWW; that is equivalent because local
-   field HLCs are always freshest, an assumption the read model should state. Production can
-   delete `applyLocalUpdate` and `mergeLocalField`.
+4. **`applyLocalUpdate` is NOT redundant — the overlay is a second merge policy.** A first
+   draft claimed `applyUpdate(gsn 0)` was equivalent; that is false.
+   `mergeLocalField`'s "pending local leaf wins outright" differs from durable LWW exactly
+   when a pending write **ties and loses the `update_id` tiebreak**, or is **older** than
+   the cached field. The early merge-parity check only used strictly newer HLCs and missed
+   it. Evidence: switching `mergeLocalField` to `mergeFieldValue` and running the client
+   suite fails one test — `conflicts-integration > re-materializes a losing Action's
+non-conflicting entity` — where the optimistic read of the untouched entity regresses
+   from "mine" to "server" before the conflict is resolved; a direct probe gives
+   durable=`server`, pending=`mine` for both the tie and older cases. **Conflict detection
+   is unaffected**: `detectConflicts` uses `actionWrites(entry.action)` and
+   `foldInboundWindow` (`mergeFieldValue`), never the merged overlay. What changes is the
+   optimistic read and the conflict `before` row. `discard` / `retry` are unaffected:
+   discard re-materializes from the log, and retry stamps a strictly newer action.
 5. **Reads stop cloning.** The adapter deep-clones each read (`copyEntity`); the read model
    returns internal rows. This is the 495 win and the reason a resident model is affordable.
 6. **Ordering is an interface obligation.** Out-of-order durable ingest would diverge from

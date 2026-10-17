@@ -580,18 +580,51 @@ const runRequiredCases = async (): Promise<void> => {
     );
     await dual.assertEquivalent("backfill with the entity's true gsn", ["todo_tg"], ["todo"]);
   }
+
+  // Optimistic patch at an equal HLC whose update_id loses the durable LWW
+  // tiebreak: the overlay must still show the pending local write. This is the
+  // case that proves `applyLocalUpdate` (pending-wins) is NOT `applyUpdate`.
+  {
+    const dual = new DualRun();
+    await dual.durable(
+      mkAction({
+        id: "a_tie_seed",
+        gsn: 1,
+        hlc: hlc(5),
+        updates: [putUpdate("todo_tie", "todo", { title: leaf("server", hlc(5), "u_seed") })],
+      }),
+    );
+    await dual.optimistic(
+      mkAction({
+        id: "a_tie_local",
+        gsn: 0,
+        hlc: hlc(5),
+        updates: [patchUpdate("todo_tie", { title: leaf("mine", hlc(5), "u_local_2") })],
+      }),
+    );
+    check(
+      "optimistic equal-HLC tiebreak: pending local write wins",
+      dual.model.get("todo_tie")?.data.fields.title?.value === "mine",
+    );
+    await dual.assertEquivalent(
+      "optimistic equal-HLC tiebreak (pending wins)",
+      ["todo_tie"],
+      ["todo"],
+    );
+  }
 };
 
 // ---------------------------------------------------------------------------
-// The normative optimistic merge vs the bespoke one.
+// Two merge policies, not one.
 //
-// The whole point of the seam is that `applyUpdate` is the ONE merge. This
-// compares it (gsn 0) against the production `applyLocalUpdate` over the
-// fixtures the optimistic path actually sees.
+// `applyUpdate`/`mergeFieldValue` is the durable LWW fold (the base). The
+// optimistic overlay uses pending-local-wins so the author always sees their
+// unacknowledged write. This compares the overlay fold against the production
+// `applyLocalUpdate`, including the tie/older cases that distinguish them.
 // ---------------------------------------------------------------------------
 
 const runMergeEquivalence = (): void => {
-  section("Normative merge ≡ production optimistic merge (applyUpdate gsn 0 vs applyLocalUpdate)");
+  section("Overlay merge ≡ production optimistic merge (pending-wins, incl. ties/older)");
   const base: Entity = {
     id: "todo_1",
     type: "todo",
@@ -639,6 +672,21 @@ const runMergeEquivalence = (): void => {
       hlc(9),
     ],
     ["delete", base, deleteUpdate("todo_1"), hlc(9)],
+    // The cases that distinguish the overlay rule from durable LWW: a pending
+    // write that ties (and loses the update_id tiebreak) or is older must still
+    // win the optimistic view.
+    [
+      "patch equal HLC, loses update_id tiebreak",
+      base,
+      patchUpdate("todo_1", { title: leaf("Tie", hlc(5), "u_aaa") }),
+      hlc(5),
+    ],
+    [
+      "patch older HLC",
+      base,
+      patchUpdate("todo_1", { title: leaf("Old", hlc(4), "u_old") }),
+      hlc(4),
+    ],
   ];
   for (const [label, current, update, hlcString] of probes) {
     const normative = createReadModel();
