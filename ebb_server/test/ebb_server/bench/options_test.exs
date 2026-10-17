@@ -124,6 +124,40 @@ defmodule EbbServer.Bench.OptionsTest do
     end
   end
 
+  describe "--subscriber-lean" do
+    test "defaults off" do
+      assert {:ok, config} = Options.parse([])
+      refute config.subscriber_lean
+    end
+
+    test "parses the flag on t3 and t4" do
+      assert {:ok, config} =
+               Options.parse([
+                 "--tier",
+                 "t4",
+                 "--rate",
+                 "100",
+                 "--subscribers",
+                 "10",
+                 "--subscriber-lean"
+               ])
+
+      assert config.subscriber_lean
+    end
+
+    test "rejects lean mode on tiers without subscribers" do
+      assert {:error, message} = Options.parse(["--subscriber-lean"])
+      assert message =~ "--subscriber-lean"
+    end
+
+    test "the reproduction command carries the lean flag" do
+      assert {:ok, config} =
+               Options.parse(["--tier", "t3", "--subscribers", "10", "--subscriber-lean"])
+
+      assert Options.command(config) =~ "--subscriber-lean"
+    end
+  end
+
   describe "self-describing output" do
     test "describe names the ablated phases" do
       assert {:ok, config} = Options.parse(["--ablate", "cache,watermark"])

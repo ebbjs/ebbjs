@@ -208,6 +208,30 @@ defmodule EbbServer.Sync.GroupServerTest do
       assert is_integer(duration) and duration >= 0
     end
 
+    test "emits the dispatched Action count and subscriber count per batch", %{
+      group_server: gs,
+      group_id: group_id
+    } do
+      subscribers = for _ <- 1..3, do: spawn(fn -> receive do: (_ -> :ok) end)
+
+      for {subscriber, i} <- Enum.with_index(subscribers) do
+        :ok = GroupServer.add_subscriber(gs, subscriber, "actor_#{i}")
+      end
+
+      ref = attach_telemetry([[:ebb, :fanout, :dispatched_actions]])
+      actions = for gsn <- 1..4, do: action("act_#{gsn}", gsn)
+
+      :ok = GroupServer.push_actions(gs, actions)
+
+      # `get_state/1` is a call, so it is handled after the cast.
+      _state = :sys.get_state(gs)
+
+      assert [
+               {[:ebb, :fanout, :dispatched_actions], %{count: 4, subscribers: 3},
+                %{group_id: ^group_id}}
+             ] = telemetry_events(ref)
+    end
+
     test "emits nothing for a recovered range without a commit time", %{
       group_server: gs
     } do

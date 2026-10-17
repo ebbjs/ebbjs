@@ -28,7 +28,11 @@ defmodule EbbServer.Bench.FixedRateReportTest do
     ]
 
     fanout = %{subscribers: 10, delivered_total: 2000, control_total: 0, lags: []}
-    telemetry = %{fanout_push: [{1_000_000, 500}, {11_000_000, 900}]}
+
+    telemetry = %{
+      fanout_push: [{1_000_000, 500}, {11_000_000, 900}],
+      fanout_dispatched: [{0, 1000}, {10_000_000, 1000}, {25_000_000, 9_999}]
+    }
 
     {:ok, ctx: ctx, worker: worker, resources: resources, fanout: fanout, telemetry: telemetry}
   end
@@ -46,6 +50,7 @@ defmodule EbbServer.Bench.FixedRateReportTest do
     assert report =~ "| Subscribers | 10 |"
     assert report =~ "| Delivered Actions/sec | 1000.0 |"
     assert report =~ "| Delivered per subscriber/sec | 100.0 |"
+    assert report =~ "| Server dispatched Actions/sec | 100.0 |"
     assert report =~ "| 0 | 1 | 500 | 500 |"
     assert report =~ "| 10 | 1 | 900 | 900 |"
     assert report =~ "Commit → broadcast complete latency"
@@ -72,6 +77,7 @@ defmodule EbbServer.Bench.FixedRateReportTest do
     assert report =~ "## Fixed-rate fan-out (T4)"
     assert report =~ "| Target write rate | 100 Actions/sec |"
     assert report =~ "| Delivered Actions/sec | n/a |"
+    assert report =~ "| Server dispatched Actions/sec | n/a |"
   end
 
   test "non-t4 tiers do not render the fixed-rate section", context do

@@ -37,6 +37,7 @@ defmodule EbbServer.Bench.Options do
           updates_per_action: pos_integer(),
           subscribers: non_neg_integer(),
           rate: non_neg_integer(),
+          subscriber_lean: boolean(),
           ablate: [ablate_phase()]
         }
 
@@ -55,6 +56,7 @@ defmodule EbbServer.Bench.Options do
             updates_per_action: 2,
             subscribers: 0,
             rate: 0,
+            subscriber_lean: false,
             ablate: []
 
   @tiers %{"t0" => :t0, "t1" => :t1, "t2" => :t2, "t3" => :t3, "t4" => :t4}
@@ -82,6 +84,7 @@ defmodule EbbServer.Bench.Options do
     updates_per_action: :integer,
     subscribers: :integer,
     rate: :integer,
+    subscriber_lean: :boolean,
     ablate: :string
   ]
 
@@ -127,8 +130,14 @@ defmodule EbbServer.Bench.Options do
       {"Port", "#{config.port}"},
       {"Seed", "#{config.seed}"},
       {"Output", config.out || "(default)"}
-    ]
+    ] ++ lean_description(config)
   end
+
+  defp lean_description(%{subscriber_lean: true}) do
+    [{"Subscriber mode", "lean (per-subscriber counters, no lag sampling)"}]
+  end
+
+  defp lean_description(_config), do: []
 
   @doc """
   The exact command that reproduces the run, with every option explicit.
@@ -152,6 +161,8 @@ defmodule EbbServer.Bench.Options do
       "--port #{config.port}",
       "--seed #{config.seed}"
     ]
+
+    base = if config.subscriber_lean, do: base ++ ["--subscriber-lean"], else: base
 
     base =
       case config.ablate do
@@ -210,6 +221,7 @@ defmodule EbbServer.Bench.Options do
   defp put_opt({:updates_per_action, value}, acc), do: %{acc | updates_per_action: value}
   defp put_opt({:subscribers, value}, acc), do: %{acc | subscribers: value}
   defp put_opt({:rate, value}, acc), do: %{acc | rate: value}
+  defp put_opt({:subscriber_lean, value}, acc), do: %{acc | subscriber_lean: value}
   defp put_opt({:ablate, value}, acc), do: %{acc | ablate: split_ablate(value)}
 
   defp validate(config) do
@@ -289,8 +301,9 @@ defmodule EbbServer.Bench.Options do
 
   defp validate_tier(tier, config) do
     with :ok <- validate_rate(tier, config),
-         :ok <- validate_tier_concurrency(tier, config) do
-      validate_subscribers(tier, config)
+         :ok <- validate_tier_concurrency(tier, config),
+         :ok <- validate_subscribers(tier, config) do
+      validate_lean(tier, config)
     end
   end
 
@@ -312,6 +325,13 @@ defmodule EbbServer.Bench.Options do
 
   defp validate_subscribers(_tier, _config),
     do: {:error, "--subscribers is only supported with --tier t3 or t4"}
+
+  defp validate_lean(:t3, _config), do: :ok
+  defp validate_lean(:t4, _config), do: :ok
+  defp validate_lean(_tier, %{subscriber_lean: false}), do: :ok
+
+  defp validate_lean(_tier, _config),
+    do: {:error, "--subscriber-lean is only supported with --tier t3 or t4"}
 
   # T1 exists to isolate per-request overhead with no queueing at the
   # Writer, so a concurrency argument cannot change it.

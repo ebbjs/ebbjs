@@ -49,7 +49,9 @@ defmodule EbbServer.Bench.Runner do
     Http.setup(config.concurrency)
 
     subscribers =
-      if config.tier in [:t3, :t4], do: Subscriber.start_all(config.subscribers, ctx), else: nil
+      if config.tier in [:t3, :t4],
+        do: Subscriber.start_all(config.subscribers, ctx, lean: config.subscriber_lean),
+        else: nil
 
     now = System.monotonic_time(:microsecond)
     measure_start = now + config.warmup * 1_000_000

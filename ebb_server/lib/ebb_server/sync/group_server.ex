@@ -81,6 +81,14 @@ defmodule EbbServer.Sync.GroupServer do
 
     for subscriber <- state.subscribers, do: SSEConnection.push_data(subscriber, bytes)
 
+    # Observability counter, not a latency: deliveries enqueued for this
+    # batch are `count` Actions × the group's subscriber fan-out.
+    Telemetry.execute(
+      [:fanout, :dispatched_actions],
+      %{count: length(actions), subscribers: MapSet.size(state.subscribers)},
+      %{group_id: state.group_id}
+    )
+
     # One sample per batch per group. A recovered range has no commit
     # time, so it must not be reported as a latency sample.
     if is_integer(committed_at) do

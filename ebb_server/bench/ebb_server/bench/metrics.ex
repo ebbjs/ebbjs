@@ -142,6 +142,31 @@ defmodule EbbServer.Bench.Metrics do
   end
 
   @doc """
+  Deliveries the server enqueued per second over the measured window.
+
+  `telemetry` is the map from `EbbServer.Bench.Telemetry.stop/1`; each
+  `:fanout_dispatched` row is `{offset_us, count * subscribers}` for one
+  dispatched batch. Only rows whose offset falls in `[0, duration)` are
+  counted—warmup rows carry a negative offset and post-deadline rows are
+  outside the window—and the sum is divided by `duration`. `nil` when no
+  dispatched samples were captured at all, so an uninstrumented run reports
+  the rate as not measured.
+  """
+  @spec dispatched_rate(map(), pos_integer()) :: float() | nil
+  def dispatched_rate(telemetry, duration) when duration > 0 do
+    case Map.get(telemetry, :fanout_dispatched, []) do
+      [] -> nil
+      rows -> Enum.reduce(rows, 0, &add_in_window(&1, &2, duration)) / duration
+    end
+  end
+
+  defp add_in_window({offset_us, value}, acc, duration)
+       when offset_us >= 0 and offset_us < duration * 1_000_000,
+       do: acc + value
+
+  defp add_in_window(_row, acc, _duration), do: acc
+
+  @doc """
   Aggregates worker stats, resource samples, and fan-out stats into the
   shape `EbbServer.Bench.Report` renders.
   """
@@ -157,7 +182,7 @@ defmodule EbbServer.Bench.Metrics do
       correctness: correctness(merged, resource_samples, watermark_ablated?),
       resources: resources(resource_samples),
       fanout: fanout_summary(fanout),
-      fanout_metrics: delivered_rate(resource_samples, config),
+      fanout_metrics: fanout_metrics(config, resource_samples, telemetry),
       fanout_series: fanout_series(samples(telemetry, :fanout_push), config.duration),
       server: server_summary(config.duration, telemetry),
       context: %{
@@ -341,6 +366,19 @@ defmodule EbbServer.Bench.Metrics do
     active = Enum.reduce(samples, 0, &(&2 + (&1.sched_active || 0)))
     total = Enum.reduce(samples, 0, &(&2 + (&1.sched_total || 0)))
     if total > 0, do: active / total, else: nil
+  end
+
+  # The fixed-rate fan-out metrics pair the delivered rate (measured by the
+  # subscriber sampler) with the dispatched rate (measured server-side), so a
+  # report can tell a server-side limit from a subscriber-side one.
+  defp fanout_metrics(config, resource_samples, telemetry) do
+    case delivered_rate(resource_samples, config) do
+      nil ->
+        nil
+
+      delivered ->
+        Map.put(delivered, :dispatched_per_sec, dispatched_rate(telemetry, config.duration))
+    end
   end
 
   defp fanout_summary(nil), do: nil

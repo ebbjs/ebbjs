@@ -220,7 +220,8 @@ defmodule EbbServer.Bench.Report do
       {"Achieved write rate", format_rate(achieved.rate)},
       {"Subscribers", "#{config.subscribers}"},
       {"Delivered Actions/sec", format_rate(metrics.delivered_per_sec)},
-      {"Delivered per subscriber/sec", format_rate(metrics.delivered_per_subscriber_per_sec)}
+      {"Delivered per subscriber/sec", format_rate(metrics.delivered_per_subscriber_per_sec)},
+      {"Server dispatched Actions/sec", format_rate(metrics.dispatched_per_sec)}
     ]
 
     "## Fixed-rate fan-out (T4)\n\n" <>
@@ -229,7 +230,11 @@ defmodule EbbServer.Bench.Report do
       bucket_table(result.fanout_series) <>
       "\n\n" <>
       "A flat p50 across buckets means fan-out keeps up; a rising p50 means the Router " <>
-      "is falling behind the commit stream.\n"
+      "is falling behind the commit stream. `Server dispatched Actions/sec` counts the " <>
+      "deliveries the server enqueued (`count × subscribers` per dispatched batch); " <>
+      "`Delivered Actions/sec` counts what the bench subscribers actually received. If " <>
+      "the two match, the server is the limit; if dispatched far exceeds delivered, the " <>
+      "bench subscriber is the limit.\n"
   end
 
   defp fixed_rate_section(_config, _result), do: nil

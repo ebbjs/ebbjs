@@ -38,6 +38,32 @@ defmodule EbbServer.Bench.MetricsTest do
     end
   end
 
+  describe "dispatched_rate/2" do
+    test "sums only in-window deliveries and divides by the window length" do
+      telemetry = %{
+        fanout_dispatched: [
+          {-1_000_000, 500},
+          {0, 100},
+          {1_000_000, 200},
+          {4_000_000, 300},
+          {5_000_000, 9_999}
+        ]
+      }
+
+      # Window is [0, 5s): 100 + 200 + 300 = 600 over 5s.
+      assert Metrics.dispatched_rate(telemetry, 5) == 120.0
+    end
+
+    test "is nil when the run captured no dispatched samples" do
+      assert Metrics.dispatched_rate(%{}, 5) == nil
+      assert Metrics.dispatched_rate(%{fanout_dispatched: []}, 5) == nil
+    end
+
+    test "reports zero when every captured batch dispatched nothing" do
+      assert Metrics.dispatched_rate(%{fanout_dispatched: [{1_000_000, 0}]}, 5) == 0.0
+    end
+  end
+
   describe "delivered_rate/2" do
     test "is nil for tiers that do not sample deliveries" do
       {:ok, config} = Options.parse([])

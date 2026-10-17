@@ -18,6 +18,11 @@ defmodule EbbServer.Bench.Subscriber do
   own `ebb.fanout.push_latency_ms` (captured by `EbbServer.Bench.Telemetry`)
   reports commit → broadcast complete separately. Only every `@sample_every` delivery
   is decoded, to keep decoding off the hot path.
+
+  With `lean: true` every subscriber owns its own counter and the shared lag
+  table is skipped, so a run can tell whether the shared counter/ETS in the
+  harness is the fan-out ceiling. Lean runs report no lag samples; the
+  non-lean default keeps the shared counter and lag sampling.
   """
 
   alias EbbServer.Sync.{FanOutRouter, SSEConnectionSupervisor}
@@ -27,22 +32,42 @@ defmodule EbbServer.Bench.Subscriber do
   @ready_timeout 10_000
   @drain_ms 50
 
-  @type t :: %{counters: :counters.counters_ref(), lags: :ets.tid(), pids: [pid()]}
+  @type counters :: :counters.counters_ref() | [:counters.counters_ref()]
+
+  @type t :: %{
+          counters: counters(),
+          lags: :ets.tid() | nil,
+          pids: [pid()],
+          lean: boolean()
+        }
 
   @doc """
   Starts `count` subscribers on the bench group. Returns `nil` for zero.
   """
   @spec start_all(non_neg_integer(), map()) :: t() | nil
-  def start_all(0, _ctx), do: nil
+  def start_all(count, ctx), do: start_all(count, ctx, [])
 
-  def start_all(count, ctx) do
-    counters = :counters.new(2, [:write_concurrency])
-    lags = :ets.new(:bench_subscriber_lags, [:bag, :public])
+  @doc """
+  Starts `count` subscribers on the bench group.
 
-    pids =
-      Enum.map(1..count, fn _ -> start(ctx, counters, lags) end)
+  `lean: true` gives every subscriber its own delivery counter and skips the
+  shared lag table; the default shares one counter and samples lag.
+  Returns `nil` for zero.
+  """
+  @spec start_all(non_neg_integer(), map(), keyword()) :: t() | nil
+  def start_all(0, _ctx, _opts), do: nil
 
-    %{counters: counters, lags: lags, pids: pids}
+  def start_all(count, ctx, opts) do
+    if Keyword.get(opts, :lean, false) do
+      counters = for _ <- 1..count, do: :counters.new(2, [:write_concurrency])
+      pids = Enum.map(counters, &start(ctx, &1, nil))
+      %{counters: counters, lags: nil, pids: pids, lean: true}
+    else
+      counters = :counters.new(2, [:write_concurrency])
+      lags = :ets.new(:bench_subscriber_lags, [:bag, :public])
+      pids = Enum.map(1..count, fn _ -> start(ctx, counters, lags) end)
+      %{counters: counters, lags: lags, pids: pids, lean: false}
+    end
   end
 
   @doc """
@@ -53,6 +78,11 @@ defmodule EbbServer.Bench.Subscriber do
   """
   @spec delivered(t() | nil) :: non_neg_integer() | nil
   def delivered(nil), do: nil
+
+  def delivered(%{counters: counters, lean: true}) do
+    Enum.reduce(counters, 0, &(:counters.get(&1, 1) + &2))
+  end
+
   def delivered(%{counters: counters}), do: :counters.get(counters, 1)
 
   @doc """
@@ -70,13 +100,22 @@ defmodule EbbServer.Bench.Subscriber do
     stats = %{
       subscribers: length(pids),
       delivered_total: delivered(subscriber),
-      control_total: :counters.get(subscriber.counters, 2),
-      lags: lags |> :ets.tab2list() |> Enum.map(&elem(&1, 1))
+      control_total: control_total(subscriber),
+      lags: lag_samples(lags)
     }
 
-    :ets.delete(lags)
+    if lags, do: :ets.delete(lags)
     stats
   end
+
+  defp control_total(%{counters: counters, lean: true}) do
+    Enum.reduce(counters, 0, &(:counters.get(&1, 2) + &2))
+  end
+
+  defp control_total(%{counters: counters}), do: :counters.get(counters, 2)
+
+  defp lag_samples(nil), do: []
+  defp lag_samples(table), do: table |> :ets.tab2list() |> Enum.map(&elem(&1, 1))
 
   defp start(ctx, counters, lags) do
     parent = self()
@@ -135,6 +174,9 @@ defmodule EbbServer.Bench.Subscriber do
       end)
     end)
   end
+
+  # Lean mode has no shared lag table, so lag sampling is skipped entirely.
+  defp maybe_record_lag(nil, _payload), do: :ok
 
   defp maybe_record_lag(lags, payload) do
     if :ets.info(lags, :size) < @lag_cap do
