@@ -16,10 +16,11 @@ defmodule EbbServer.Sync.SSEConnection do
      `send_chunked/2` and then blocks in a receive loop, keeping Bandit's
      pipeline blocked.
   2. This module is a separate GenServer (started under
-     `SSEConnectionSupervisor`). It receives `push_action` /
+     `SSEConnectionSupervisor`). It receives `push_data` /
      `push_control` / `push_presence` messages from the `FanOutRouter`,
-     formats them as SSE, and forwards each chunk to the request process
-     via a plain `send/2`.
+     formats control/presence as SSE, and forwards each chunk to the request
+     process via a plain `send/2`. `push_data` carries a frame the
+     `GroupServer` already encoded once for the whole group.
   3. The request process writes the chunks (it's the conn owner).
   4. When the request process exits (e.g., on client disconnect), this
      GenServer monitors it and shuts down too, triggering FanOutRouter
@@ -56,8 +57,12 @@ defmodule EbbServer.Sync.SSEConnection do
     GenServer.start_link(__MODULE__, {parent_pid, group_ids, cursors})
   end
 
-  @spec push_action(pid(), map()) :: :ok
-  def push_action(pid, action), do: GenServer.cast(pid, {:push_action, action})
+  # The payload is identical for every subscriber of a group, so the caller
+  # encodes it once and shares the binary. A frame is typically large enough
+  # to be a reference-counted binary, so the runtime shares it by reference
+  # across processes rather than copying it per subscriber.
+  @spec push_data(pid(), iodata()) :: :ok
+  def push_data(pid, bytes), do: GenServer.cast(pid, {:push_data, bytes})
 
   @spec push_control(pid(), map()) :: :ok
   def push_control(pid, control), do: GenServer.cast(pid, {:push_control, control})
@@ -82,17 +87,8 @@ defmodule EbbServer.Sync.SSEConnection do
   end
 
   @impl true
-  def handle_cast({:push_action, action}, state) do
-    payload =
-      Jason.encode!(%{
-        "id" => action["id"],
-        "gsn" => action["gsn"],
-        "actor_id" => action["actor_id"],
-        "hlc" => action["hlc"],
-        "updates" => action["updates"]
-      })
-
-    send(state.parent_pid, {:sse_chunk, "data", payload})
+  def handle_cast({:push_data, bytes}, state) do
+    send(state.parent_pid, {:sse_data, bytes})
     {:noreply, state}
   end
 
@@ -128,5 +124,27 @@ defmodule EbbServer.Sync.SSEConnection do
       data,
       "\n\n"
     ])
+  end
+
+  @doc """
+  Formats an Action as its wire `data` event frame.
+
+  Projects the Action to the five keys a subscriber consumes (`id`, `gsn`,
+  `actor_id`, `hlc`, `updates`) and encodes them with `Jason.encode!/1`.
+  `GroupServer` concatenates a batch's frames into one binary and shares it
+  with every subscriber, so the stream is the concatenation of per-Action
+  `data` frames.
+  """
+  @spec data_frame(map()) :: binary()
+  def data_frame(action), do: format_sse_event("data", encode_action(action))
+
+  defp encode_action(action) do
+    Jason.encode!(%{
+      "id" => action["id"],
+      "gsn" => action["gsn"],
+      "actor_id" => action["actor_id"],
+      "hlc" => action["hlc"],
+      "updates" => action["updates"]
+    })
   end
 end

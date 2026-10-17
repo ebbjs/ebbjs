@@ -25,6 +25,7 @@ defmodule EbbServer.Telemetry do
   | `ebb.entity_store.materialize_latency_ms` | `duration` (native)                   | `subject_id`, `subject_type`                        |
   | `ebb.entity_store.cache_hit_rate`         | `count`                               | `result` (`:hit` / `:miss`)                         |
   | `ebb.fanout.push_latency_ms`              | `duration` (native)                   | `group_id`                                          |
+  | `ebb.fanout.dispatched_actions`           | `count`, `subscribers`                | `group_id`                                          |
   | `ebb.fanout.active_connections`           | `count`                               | —                                                   |
   | `ebb.fanout.active_groups`                | `count`                               | —                                                   |
   | `ebb.http.request_latency_ms`             | `duration` (native)                   | `method`, `route`, `status`                         |
@@ -42,6 +43,13 @@ defmodule EbbServer.Telemetry do
   the GroupServer dispatching the batch to the group's subscribers: one sample
   per dispatched batch per group. Ranges recovered after a Router restart
   carry no commit time and are not sampled.
+
+  `ebb.fanout.dispatched_actions` is an observability counter, not a latency: it
+  fires once per dispatched batch with the number of Actions in the batch
+  (`count`) and the size of the group's subscriber set (`subscribers`), so the
+  deliveries the server enqueued are `count * subscribers`. A reporter can
+  compare that against what subscribers actually received to tell a server-side
+  fan-out limit apart from a consumer-side limit.
 
   `ebb.sync.catch_up` is emitted once per successful catch-up. A `from_offset`
   of 0 marks a full resync; a non-zero offset is an incremental catch-up, so a

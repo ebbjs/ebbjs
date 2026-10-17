@@ -74,11 +74,20 @@ defmodule EbbServer.Sync.GroupServer do
 
   @impl true
   def handle_cast({:push_actions, actions, committed_at}, state) do
-    for subscriber <- state.subscribers do
-      for action <- actions do
-        SSEConnection.push_action(subscriber, action)
-      end
-    end
+    # The payload is identical for every subscriber of this group, so the
+    # frames are encoded once per batch and the resulting binary is shared
+    # with every subscriber instead of encoding N×A small maps.
+    bytes = actions |> Enum.map(&SSEConnection.data_frame/1) |> IO.iodata_to_binary()
+
+    for subscriber <- state.subscribers, do: SSEConnection.push_data(subscriber, bytes)
+
+    # Observability counter, not a latency: deliveries enqueued for this
+    # batch are `count` Actions × the group's subscriber fan-out.
+    Telemetry.execute(
+      [:fanout, :dispatched_actions],
+      %{count: length(actions), subscribers: MapSet.size(state.subscribers)},
+      %{group_id: state.group_id}
+    )
 
     # One sample per batch per group. A recovered range has no commit
     # time, so it must not be reported as a latency sample.
