@@ -63,7 +63,9 @@ export const applyUpdate = (
       };
 
     case "patch":
-      if (!entity) throw new Error("Cannot patch non-existent entity");
+      // A per-Update delivery can land a patch in a group that never held
+      // the base `put`; the content backfill supplies the base (#475).
+      if (!entity) return null;
       if (entity.deleted_hlc) return entity;
       return {
         ...entity,

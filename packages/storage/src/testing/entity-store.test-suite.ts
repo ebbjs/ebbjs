@@ -203,6 +203,23 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect((after!.data.fields.title as { value: unknown }).value).toBe("Updated");
         expect(after!.data.fields).not.toHaveProperty("fields");
       });
+
+      it("treats a patch with no base row as a no-op until the base lands", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        // Per-Update delivery (#473) can hand a group a patch whose base
+        // `put` stayed in another group.
+        await actionLog.append(buildPatchAction());
+        await dirtyTracker.mark("todo_1", "todo");
+
+        expect(await entityStore.get("todo_1")).toBe(null);
+        // The dropped patch leaves the row dirty so a later base still lands.
+        expect(await dirtyTracker.isDirty("todo_1")).toBe(true);
+
+        await actionLog.append(buildPutAction());
+        await dirtyTracker.mark("todo_1", "todo");
+        const entity = await entityStore.get("todo_1");
+        expect((entity!.data.fields.title as { value: unknown }).value).toBe("Updated");
+      });
     });
 
     describe("updated_hlc", () => {
