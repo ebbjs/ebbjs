@@ -86,11 +86,30 @@ the fan-out ceiling is independent of the writer:
 |  2000 | 1000 |   2M |     113,697 |     6% | 4,540,025 / 13,610,517 / 20,616,455 | diverges                      |
 | 20000 |   10 | 200k |      68,554 |    34% | —                                   | **write-limited** (13.5k<20k) |
 
-- **Aggregate delivery keeps up to ~100k deliveries/s.** Below the knee,
-  delivered/s ≈ need (100%, 101%, 99%). Above it, delivered/s saturates
-  **~100–120k/s** while the commit → broadcast complete p50 grows without
-  bound (n=1000: 300k need → 2.3 s → 13.3 s; 500k → 3.0 s → 17.4 s; 2M →
-  4.5 s → 20.6 s).
+**The shared-harness table above is capped by the bench subscriber, not the
+server (`2ad8514`).** `EbbServer.Bench.Subscriber` shared one `:counters` ref
+and one `:bag` ETS lag table across all subscribers, which serialized at high
+subscriber counts and capped measured delivery at ~140k/s. `--subscriber-lean`
+gives every subscriber its own counters and skips the shared lag table; the
+server-side `ebb.fanout.dispatched_actions` counter added in the same commit
+(plus `b998d5b` counting pre-coalescing `{:sse_chunk, "data", …}` as a
+delivery) shows `dispatched/s` equals `delivered/s`. Corrected t4 ceilings with
+lean subscribers:
+
+| config         | need | achieved | dispatched/s | delivered/s |  util |
+| -------------- | ---: | -------: | -----------: | ----------: | ----: |
+| n=1000, r=300  | 300k |      300 |      300,000 |     302,756 |  7.5% |
+| n=1000, r=1000 |   1M |    1,000 |    1,000,000 |   1,000,705 | 24.2% |
+| n=1000, r=3000 |   3M |    2,220 |    1,616,000 |   1,616,299 | 40.1% |
+| n=100, r=2000  | 200k |    2,004 |      200,000 |     200,158 |  5.8% |
+| n=100, r=3000  | 300k |    3,000 |      300,000 |     300,032 |  8.7% |
+| n=100, r=10000 |   1M |    9,908 |      977,600 |     977,731 | 31.2% |
+
+- **Aggregate delivery keeps up past 1M deliveries/s; the real ceiling is
+  ~1–1.6M/s, not ~100–140k.** With lean subscribers the server holds 100% of
+  need at 1,000,705 delivered/s (n=1000, r=1000, 24% CPU) and reaches
+  1,616,299/s (n=1000, r=3000, 40% CPU). Above it, commit → broadcast complete
+  p50 grows without bound (n=1000, r=3000: 2,220 of 3,000 write/s achieved).
 - **Per-batch latency is O(N).** At the _same_ ~100k deliveries/s, n=100 costs
   ~45–51 ms while n=1000 costs ~0.6–0.9 s: a single `GroupServer` serially
   casts one message per **(subscriber × action)** (`group_server.ex:76-80`),
@@ -98,38 +117,41 @@ the fan-out ceiling is independent of the writer:
 - **Only `n=10 R=20000` was write-limited** (achieved 13,476 < 20,000); the
   other rows held `achieved ≈ target`, so their divergence is fan-out, not
   Writer saturation.
-- **Coalescing is merged (`a292f58`) and moves the curve.** One binary per
-  group per batch, one cast per subscriber, one `chunk/2` (wire bytes
-  identical). Back-to-back A/B: commit → broadcast complete p50 **~5–16×
-  lower** (n=1000 r=50: 537/637/649 ms → **104/114/125 ms**; n=100, r=1000:
-  43/47/51 ms → **4.5/4.0/4.2 ms**) and utilization falls 42.3% → 22.1% at
-  n=1000 r=100, 30.4% → 15.7% at n=100 r=1000 — **measured but confounded**,
-  because the t4 subscriber splits each coalesced chunk into per-Action frames,
-  so the coalesced arm carries client-side work the baseline arm did not and
-  there is no split-free control. The new n=1000 knee is **~100k deliveries/s**
-  (r=100 keeps up at 100,686/s; r=150 125,847/s = 84%; r=200 134,370/s = 67%;
-  r=300 143,871/s = 48%), so the ceiling **rises ~2–22% depending on baseline
-  but is not removed** — the per-delivery byte volume is unchanged. (Baseline
-  caveat: an earlier n=1000 r=100 baseline read 98,765/s with p50 580/775/904
-  ms; against the back-to-back control the delivered delta is +15% and the
-  latency win 8–16×, against the earlier run +2% and 4–6×. The r=300
-  last-bucket p50 of 313,209 µs sits below its middle bucket — run noise at the
-  edge.)
+- **Coalescing is merged (`a292f58`) and is a much bigger win than first
+  published.** One binary per group per batch, one cast per subscriber, one
+  `chunk/2` (wire bytes identical). With lean subscribers the A/B is
+  delivered/s **177,778 → 302,756** at r=300 and **170,408 → 1,000,705** at
+  r=1000, utilization **43.8% → 7.5%** and **43.8% → 24.2%**, and commit →
+  broadcast complete p50 falling from multi-second
+  (2,244,930/6,258,054/9,488,254 and 4,110,325/12,180,802/18,527,554 µs) to
+  **~30 ms** (32,430/31,634/27,522 and 31,720/25,787/27,375 µs) — a **~6×
+  delivered-throughput win and ~6× less CPU**. The earlier "+2–22% delivered,
+  ceiling not removed" was artifact-capped on both arms: the shared harness
+  capped them at ~140k, hiding the real pre-coalescing cap (~175k/s, the
+  `GroupServer`'s N×A loop) and the coalesced one (≥1M). The coalesced n=1000
+  knee is now **~1M deliveries/s** (r=1000 keeps up; r=3000 1,616,299/s = 54%
+  of need). The coalesced arm still splits each chunk into per-Action frames
+  to count deliveries, so the CPU win is if anything conservative.
 - **Group sharding tested and ruled out (`fe5f25f` → revert `e5b1e19`).**
   Sharding one group's fan-out across K `GroupServer` processes (subscribers
   hashed across `{group_id, shard}` registry keys) left delivered/s **flat**
   across K=1/2/4/8 at n=1000 r=300 (140,563 / 139,534 / 139,866 / 137,747 at
   ~40% utilization) and flat at r=100 (100,607 vs 100,347) and r=150 (129,767 vs
-  126,977), so the `GroupServer` is **not** the post-coalescing bottleneck. The
-  ceiling that remains is **non-CPU and configuration-dependent** — ~140–166k
-  deliveries/s at only 30–40% utilization (n=100, r=2000: 166,605/s at 30.7%)
-  — so the next step is to rule out the **bench subscriber's shared
-  instrumentation** before treating that ceiling as a server limit.
-- The t3 Accepted/sec metric is **confounded**: the hoist run's client-side
-  latency window is 87s for a 15s run (the worker loop checks the deadline
-  only before each iteration and `Writer.write_actions/1` blocks past it), so
-  `delivered_total` counts post-deadline Actions that `Accepted/sec` (0–15s)
-  never windows. Measured under t4, the hoist was instead a commit → broadcast
+  126,977), so the `GroupServer` is **not** the post-coalescing bottleneck.
+  That sweep was measured on the **coalesced** code, where the N×A loop was
+  already gone (_pre_-coalescing it was the real cap at ~175k/s), and with the
+  shared subscriber, so its flat values sit on the ~140k harness cap. The
+  ceiling that remains is **non-CPU** — ~1.6M deliveries/s at ~40% CPU — so the
+  next step is a **lean-harness re-probe with profiling**, not treating any
+  ~140k figure as a server limit.
+- The t3 Accepted/sec metric is **confounded** (and the t3 sweep was also
+  **harness-capped**): the hoist run's client-side latency window is 87s for a
+  15s run (the worker loop checks the deadline only before each iteration and
+  `Writer.write_actions/1` blocks past it), so `delivered_total` counts
+  post-deadline Actions that `Accepted/sec` (0–15s) never windows. With
+  `--subscriber-lean` the real t3 tax is **−50% at 100 subscribers (8,038/s,
+  was 1,319/s) and −87% at 1000 (2,167/s, was 155/s)**, not the published
+  −92%/−99%. Measured under t4, the hoist was instead a commit → broadcast
   complete win (p50 ~3–4× lower) that did not remove the O(N) limit; it is now
   **superseded by coalesced delivery** (`a292f58`).
 
@@ -165,50 +187,60 @@ write-side encode win is available inside `build_ops`.
 
 ### #4 — Fan-out shape — **PROTOTYPED + MERGED (coalesced delivery, `a292f58`)**
 
-The cliff is the worst remaining problem: **−90% at 100 subscribers** (1,647/s)
-and **−96% at 1,000** (677/s) against the improved `t2` b10 baseline of
-**15,893/s**. The t4 tier (`eacd296`) measures it at a fixed write rate and
-shows the mechanism: a single `GroupServer` serially cast one message per
-(subscriber × action) (`group_server.ex:76-80`), so per-batch latency was O(N)
+The cliff is the worst remaining problem, though smaller than first published:
+with lean subscribers it is **−50% at 100 subscribers** (8,038/s) and **−87%
+at 1,000** (2,167/s) against the `t2` b10 baseline of ~16,129/s (the pre-lean
+sweep's −90%/−96% was harness-capped). The t4 tier (`eacd296`) measures the
+mechanism at a fixed write rate: a single `GroupServer` serially cast one
+message per (subscriber × action) (`group_server.ex:76-80`), so per-batch
+latency was O(N)
 — at the _same_ ~100k deliveries/s, n=100 was ~45–51 ms while n=1000 was
-~0.6–0.9 s. Total delivery saturated at **~100–120k/s** once behind (n=1000:
-R=300 delivered 117,992/s = 39% of need; R=500 116,457/s = 23%; R=2000
-113,697/s = 6%), and the commit → broadcast complete p50 grew without bound
-(2.3 s → 13.3 s; 3.0 s → 17.4 s; 4.5 s → 20.6 s).
+~0.6–0.9 s. The pre-lean t4 sweep read total delivery saturating at
+**~100–120k/s** once behind (n=1000: R=300 delivered 117,992/s = 39% of need;
+R=500 116,457/s = 23%; R=2000 113,697/s = 6%), but that saturation was the
+shared bench subscriber; with lean subscribers the server keeps up past 1M/s
+(see §2).
 
-**Coalesced delivery — MERGED (`a292f58`).** `GroupServer` now encodes **one
-`data` frame per Action once**, concatenates a committed range's frames into
-**one binary**, and `push_data/2`s that same reference-counted binary to every
-subscriber (N casts per batch, one parent message per subscriber per batch);
-`SSEHandler` writes the bytes in one `chunk/2`. **Wire bytes are identical**,
-so there is no protocol or client change. Back-to-back t4 A/B (batch 100,
-`hot`, 2-Update, `--duration 25 --warmup 5 --concurrency 1`, minutes apart on
-the same idle box):
+**Coalesced delivery — MERGED (`a292f58`) — and a much bigger win than first
+published.** `GroupServer` now encodes **one `data` frame per Action once**,
+concatenates a committed range's frames into **one binary**, and `push_data/2`s
+that same reference-counted binary to every subscriber (N casts per batch, one
+parent message per subscriber per batch); `SSEHandler` writes the bytes in one
+`chunk/2`. **Wire bytes are identical**, so there is no protocol or client
+change. Back-to-back t4 A/B **with lean subscribers** (n=1000, batch 100,
+`hot`, 2-Update, `--duration 25 --warmup 5 --concurrency 1`; before =
+pre-coalescing, after = coalesced):
 
-| config        | delivered/s base → coal | commit→broadcast p50 base → coal (µs)                                  | util base → coal |
-| ------------- | ----------------------: | ---------------------------------------------------------------------- | ---------------: |
-| n=1000, r=50  |         50,697 → 52,903 | 537,301 / 636,850 / 648,571 → **103,679 / 113,575 / 124,621**          |     14.7% → 8.8% |
-| n=1000, r=100 |        87,752 → 100,686 | 871,086 / 1,782,999 / 3,501,269 → **103,953 / 185,131 / 217,336**      |    42.3% → 22.1% |
-| n=1000, r=300 |       118,182 → 143,871 | 2,458,991 / 8,557,734 / 13,477,788 → **172,510 / 1,876,496 / 313,209** |    43.5% → 40.4% |
-| n=100, r=1000 |       100,003 → 100,162 | 43,391 / 47,190 / 51,080 → **4,502 / 4,035 / 4,188**                   |    30.4% → 15.7% |
+| config            |  delivered/s pre → coal |   util pre → coal | commit→broadcast p50 pre → coal (µs)                               |
+| ----------------- | ----------------------: | ----------------: | ------------------------------------------------------------------ |
+| r=300 (need 300k) |   177,778 → **302,756** |  43.8% → **7.5%** | 2,244,930 / 6,258,054 / 9,488,254 → **32,430 / 31,634 / 27,522**   |
+| r=1000 (need 1M)  | 170,408 → **1,000,705** | 43.8% → **24.2%** | 4,110,325 / 12,180,802 / 18,527,554 → **31,720 / 25,787 / 27,375** |
 
-(Baseline honesty: at the r=100 edge the baseline is unstable — an earlier
-n=1000 r=100 baseline read **98,765/s** with p50 580/775/904 ms while the
-back-to-back control read 87,752/s. The delivered delta is therefore **+15%
-against the control and +2% against the earlier run**; the latency win is
-**8–16× against the control and 4–6× against the earlier run**. The r=300
-comparison is stable, 118,182 → 143,871 = +22%.) The new n=1000 knee is
-**~100k deliveries/s** (r=100 keeps up at 100,686/s; r=150 delivers 125,847/s
-= 84%; r=200 134,370/s = 67%; r=300 143,871/s = 48%). The remaining ceiling is
-the per-delivery **byte volume** (Actions × subscribers × payload), which is
-unchanged.
+That is a **~6× delivered-throughput win and ~6× less CPU**, and commit →
+broadcast complete p50 falls from **multi-second to ~30 ms**. The earlier
+"+2–22% delivered, ceiling not removed" was **artifact-capped on both arms**:
+the shared bench subscriber capped pre-coalescing and coalesced at ~140k,
+hiding the real pre-coalescing cap (~175k/s, the `GroupServer`'s N×A loop) and
+the coalesced one (≥1M). The coalesced n=1000 knee is now **~1M deliveries/s**
+(r=1000 keeps up at 1,000,705/s; r=3000 reaches 1,616,299/s = 54% of need).
+The coalesced arm still splits each chunk into per-Action frames to count
+deliveries, so the CPU win is if anything conservative.
 
-- **T3 subscriber sweep re-run (candidate #4's own check).** With coalescing,
-  the t3 Accepted/sec metric gets _worse_, not better: 0 subs 16,437/s, 100
-  subs 1,358/s, 1,000 subs 136.7/s (util 28.5% / 48.9% / 49.7%). This is the
-  same confound as the encode-once hoist — t3 drives writes flat out while a
+- **Harness artifact retraction.** The pre-lean t4 sweep's ~140k ceiling came
+  from the bench subscriber sharing one `:counters` ref and one `:bag` ETS lag
+  table across all subscribers, fixed by `--subscriber-lean` (`2ad8514`). The
+  server-side `ebb.fanout.dispatched_actions` counter equals delivered on both
+  modes, so the server was enqueueing everything. The real ceiling is
+  **~1–1.6M deliveries/s** (n=1000, r=1000: 1,000,705/s at 24% CPU; r=3000:
+  1,616,299/s at 40% CPU), still **non-CPU**, and re-probing it needs the lean
+  harness.
+- **T3 subscriber sweep re-run (candidate #4's own check).** The t3
+  Accepted/sec metric is confounded — t3 drives writes flat out while a
   subscriber storm exists, so a faster-draining fan-out starves the in-process
-  `:httpc` clients. `t4` is the valid metric.
+  `:httpc` clients — and the sweep was also harness-capped. The corrected t3
+  tax with lean subscribers is **−50% at 100 subscribers (8,038/s, was
+  1,319/s) and −87% at 1000 (2,167/s, was 155/s)**, not −92%/−99%. `t4` is the
+  valid metric.
 
 - **Encode-once hoist — superseded.** The hoist was a measured t4
   commit → broadcast complete p50 win (~3–4×: n=1000, r=50:
@@ -300,29 +332,37 @@ resolution and the watermark. The goal is bounded: no candidate in #485 reaches
 - **Fan-out follow-ups** (#4): the dedicated harness is **done** (`eacd296`,
   the `t4` tier — deliveries/sec + commit → broadcast complete at a fixed
   write rate). **Coalesced delivery is merged** (`a292f58`): one binary per
-  group per batch, one cast per subscriber, one `chunk/2`; commit → broadcast
-  complete p50 falls **~5–16×** and the ceiling rises **~2–22% depending on
-  baseline** (n=1000 knee ~100k deliveries/s) with identical wire bytes. It
-  does **not** remove the ceiling, because byte volume (Actions × subscribers ×
-  payload) is unchanged. Next levers: (a) **reduce bytes** (client-side
-  diffing/coalescing); **(b) group sharding is tested and ruled out** (`fe5f25f`,
-  reverted in `e5b1e19`): hashing one group's subscribers across K `GroupServer`
-  processes left delivered/s flat across K=1/2/4/8 at n=1000 r=300 (140,563 /
-  139,534 / 139,866 / 137,747 at ~40% util) and flat at r=100 and r=150, so the
-  `GroupServer` is **not** the post-coalescing bottleneck. The remaining ceiling
-  is **non-CPU and configuration-dependent** (~140–166k deliveries/s at 30–40%
-  utilization) and the next step is to rule out the **bench subscriber's shared
-  instrumentation** — a single shared `:counters` ref and `:bag` ETS lag table —
-  with a split-free subscriber before treating that ceiling as a server limit.
-  The encode-once hoist is **superseded** by coalescing; the original park cited the
-  t3 Accepted/sec regression, which is confounded. Note the t4 subscriber-split
-  limitation: the bench splits a coalesced chunk into per-Action frames to count
-  deliveries, so the coalesced arm carries client-side work the baseline arm did
-  not; the utilization figures are **not** a clean server-only measurement and
-  there is no split-free control. The production-shaped (real SSE socket)
-  measurement was **not** performed — both t3 and t4 use in-process subscribers
-  — and remains the outstanding gate before treating these fan-out numbers as
-  production-representative.
+  group per batch, one cast per subscriber, one `chunk/2`. With lean
+  subscribers it is a **~6× delivered-throughput win and ~6× less CPU**
+  (177,778 → 302,756 at r=300; 170,408 → 1,000,705 at r=1000), with commit →
+  broadcast complete p50 **~30 ms versus multi-second** and identical wire
+  bytes. The earlier "+2–22%, ceiling not removed" was artifact-capped on both
+  arms. **The ~140k ceiling was a harness artifact**, fixed by
+  `--subscriber-lean` (`2ad8514`): the bench subscriber shared one `:counters`
+  ref and one `:bag` ETS lag table across all subscribers; the server-side
+  `dispatched/s` equals `delivered/s`, so the server was enqueueing everything.
+  **The real ceiling is ~1–1.6M deliveries/s** (n=1000, r=1000: 1,000,705/s at
+  24% CPU; r=3000: 1,616,299/s at 40% CPU) and is still **non-CPU**; the next
+  step is to **re-probe it with the lean harness and profiling** (candidates:
+  the single `FanOutRouter`, the per-subscriber `SSEConnection` → parent hop)
+  rather than treating any ~140k figure as a server limit. **(b) group sharding
+  is tested and ruled out** (`fe5f25f`, reverted in `e5b1e19`): hashing one
+  group's subscribers across K `GroupServer` processes left delivered/s flat
+  across K=1/2/4/8 at n=1000 r=300 (140,563 / 139,534 / 139,866 / 137,747 at
+  ~40% util) and flat at r=100 and r=150, so the `GroupServer` is **not** the
+  post-coalescing bottleneck; that sweep ran on the coalesced code (the N×A
+  loop was already gone) and with the shared subscriber, so its flat values sit
+  on the harness cap. The encode-once hoist is **superseded** by coalescing;
+  the original park cited the t3 Accepted/sec regression, which is confounded
+  (and the t3 sweep was also harness-capped — the corrected tax is −50%/−87%).
+  Note the t4 subscriber-split limitation: the bench splits a coalesced chunk
+  into per-Action frames to count deliveries, so the coalesced arm carries
+  client-side work the baseline arm did not; the utilization figures are
+  therefore not a perfectly clean server-only measurement, though the extra
+  client work only makes the ~6× CPU win conservative. The production-shaped
+  (real SSE socket) measurement was **not** performed — both t3 and t4 use
+  in-process subscribers — and remains the outstanding gate before treating
+  these fan-out numbers as production-representative.
 - **Watermark interval prototype** (#5): `{from, to}` frontier + hoisted
   `advance_watermark`, with before/after on `t0`.
 - **Boot-time metric** (#6): restart-to-ready at `--entities 0/10k/100k` to
