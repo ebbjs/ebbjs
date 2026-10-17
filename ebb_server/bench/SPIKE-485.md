@@ -100,7 +100,7 @@ the fan-out ceiling is independent of the writer:
   Writer saturation.
 - **Coalescing is merged (`a292f58`) and moves the curve.** One binary per
   group per batch, one cast per subscriber, one `chunk/2` (wire bytes
-  identical). Back-to-back A/B: commit → broadcast complete p50 **4.5–16×
+  identical). Back-to-back A/B: commit → broadcast complete p50 **~5–16×
   lower** (n=1000 r=50: 537/637/649 ms → **104/114/125 ms**; n=100, r=1000:
   43/47/51 ms → **4.5/4.0/4.2 ms**) and utilization falls 42.3% → 22.1% at
   n=1000 r=100, 30.4% → 15.7% at n=100 r=1000 — **measured but confounded**,
@@ -112,7 +112,7 @@ the fan-out ceiling is independent of the writer:
   but is not removed** — the per-delivery byte volume is unchanged. (Baseline
   caveat: an earlier n=1000 r=100 baseline read 98,765/s with p50 580/775/904
   ms; against the back-to-back control the delivered delta is +15% and the
-  latency win 6–16×, against the earlier run +2% and 4.5–8×. The r=300
+  latency win 8–16×, against the earlier run +2% and 4–6×. The r=300
   last-bucket p50 of 313,209 µs sits below its middle bucket — run noise at the
   edge.)
 - The t3 Accepted/sec metric is **confounded**: the hoist run's client-side
@@ -186,7 +186,7 @@ the same idle box):
 n=1000 r=100 baseline read **98,765/s** with p50 580/775/904 ms while the
 back-to-back control read 87,752/s. The delivered delta is therefore **+15%
 against the control and +2% against the earlier run**; the latency win is
-**6–16× against the control and 4.5–8× against the earlier run**. The r=300
+**8–16× against the control and 4–6× against the earlier run**. The r=300
 comparison is stable, 118,182 → 143,871 = +22%.) The new n=1000 knee is
 **~100k deliveries/s** (r=100 keeps up at 100,686/s; r=150 delivers 125,847/s
 = 84%; r=200 134,370/s = 67%; r=300 143,871/s = 48%). The remaining ceiling is
@@ -291,7 +291,7 @@ resolution and the watermark. The goal is bounded: no candidate in #485 reaches
   the `t4` tier — deliveries/sec + commit → broadcast complete at a fixed
   write rate). **Coalesced delivery is merged** (`a292f58`): one binary per
   group per batch, one cast per subscriber, one `chunk/2`; commit → broadcast
-  complete p50 falls **4.5–16×** and the ceiling rises **~2–22% depending on
+  complete p50 falls **~5–16×** and the ceiling rises **~2–22% depending on
   baseline** (n=1000 knee ~100k deliveries/s) with identical wire bytes. It
   does **not** remove the ceiling, because byte volume (Actions × subscribers ×
   payload) is unchanged. Next levers: (a) **reduce bytes** (client-side

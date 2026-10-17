@@ -425,7 +425,7 @@ that "residual" was **warmup dilution, not end-of-run backlog**. Smoke proof:
    1000 subscribers sustained ~100 Actions/s of fan-out at ~0.6–0.9 s
    dispatch latency while ~100 subscribers sustained ~1000 Actions/s at
    ~45 ms — the mechanism behind the t3 cliff. **Coalesced delivery is now
-   merged** (`a292f58`): commit → broadcast complete p50 falls **4.5–16×** and
+   merged** (`a292f58`): commit → broadcast complete p50 falls **~5–16×** and
    the ceiling rises **~2–22% depending on baseline** (n=1000 knee ~100k
    deliveries/s), but the total
    byte volume is unchanged, so the ceiling is **not removed**. The next
@@ -489,7 +489,7 @@ unstable: an earlier n=1000 r=100 run read **98,765/s** with p50
 **580,151/774,715/903,755 µs**, while the back-to-back control read 87,752/s
 with p50 871,086/1,782,999/3,501,269. So the delivered delta is **+15% against
 the back-to-back control and +2% against the earlier run**; the latency win is
-**6–16× against the control and 4.5–8× against the earlier run**. Always state
+**8–16× against the control and 4–6× against the earlier run**. Always state
 the range, never the flattering single baseline. The r=300 comparison is stable
 (118,182 → 143,871, +22%); `coal2-r300`'s last-bucket p50 of 313,209 µs is
 below its middle bucket — run noise at the edge.
@@ -506,7 +506,7 @@ New knee at n=1000 (coalesced):
 
 **Findings.**
 
-1. **Latency: commit → broadcast p50 falls 4.5–16×.** n=1000 r=50:
+1. **Latency: commit → broadcast p50 falls ~5–16×.** n=1000 r=50:
    0.54–0.65 s → 0.10–0.12 s; n=100, r=1000: 43–51 ms → 4–4.5 ms. A real,
    wire-compatible UX win.
 2. **CPU: utilization falls 42.3% → 22.1% (n=1000 r=100) and 30.4% → 15.7%
@@ -852,7 +852,7 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
    n=1000 at the same ~100k deliveries/s). **Coalesced delivery is merged**
    (`a292f58`): one binary per group per batch, one cast per subscriber, one
    `chunk/2`, with **identical wire bytes**; commit → broadcast complete p50
-   falls **4.5–16×** and the ceiling rises **~2–22% depending on baseline**
+   falls **~5–16×** and the ceiling rises **~2–22% depending on baseline**
    (n=1000 knee from ~90–100k to ~100–125k deliveries/s). It does **not**
    remove the ceiling, because the byte volume (Actions × subscribers ×
    payload) is unchanged, so the next levers are **reducing bytes** (client-side

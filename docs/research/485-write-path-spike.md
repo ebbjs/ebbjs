@@ -765,14 +765,14 @@ flush, vs 2×batch in `spread`).
 - **§2 #4, coalesced delivery — measured and merged (`a292f58`).** One binary
   per group per batch, one cast per subscriber, one `chunk/2`; wire bytes
   identical. Back-to-back t4 A/B: commit → broadcast complete p50 falls
-  **4.5–16×** (n=1000, r=50: 537/637/649 ms → **104/114/125 ms**; n=100, r=1000:
+  **~5–16×** (n=1000, r=50: 537/637/649 ms → **104/114/125 ms**; n=100, r=1000:
   43/47/51 ms → **4.5/4.0/4.2 ms**) and utilization falls 42.3% → 22.1% at
   n=1000 r=100 and 30.4% → 15.7% at n=100 r=1000 — **measured but confounded**,
   because the t4 subscriber splits each coalesced chunk into per-Action frames,
   so the coalesced arm carries client-side work the baseline arm did not and
   there is no split-free control. Against the back-to-back control the delivered
-  delta is **+15%** (87,752 → 100,686) and the latency win **6–16×**; against the
-  earlier unstable baseline (98,765/s) they are **+2%** and **4.5–8×** — always
+  delta is **+15%** (87,752 → 100,686) and the latency win **8–16×**; against the
+  earlier unstable baseline (98,765/s) they are **+2%** and **4–6×** — always
   cite the range. The r=300 comparison is stable (118,182 → 143,871, +22%). The
   new n=1000 knee is **~100k deliveries/s** (r=100 keeps up at 100,686/s; r=300
   delivers 143,871/s = 48%), i.e. the ceiling **rises ~2–22% depending on
