@@ -8,9 +8,14 @@
  * `entityGroup`) — no user-defined `member` entity. A row's group comes
  * from the built-in `groups` accessor, not a `group_id` field:
  * `workspace` deliberately carries no `group_id`.
+ *
+ * The assignee is an entity link, not a scalar. `assignee_id` would be a
+ * denormalized reference with no accessor or integrity; `defineRelationship`
+ * gives `issue.assignee`, `.where("assignee", profileId)`, and the
+ * `link` / `unlink` write path. See #441 for the membership side.
  */
 
-import { defineEntity, defineSchema, e } from "@ebbjs/client";
+import { defineEntity, defineRelationship, defineSchema, e } from "@ebbjs/client";
 
 export const workspace = defineEntity("workspace", {
   name: e.string(),
@@ -28,12 +33,19 @@ export const issue = defineEntity("issue", {
   title: e.string(),
   status: e.string(),
   priority: e.string(),
-  assignee_id: e.string().nullable(),
+});
+
+export const issueAssignee = defineRelationship({
+  source: issue,
+  target: profile,
+  as: "assignee",
+  sourceCardinality: "one",
 });
 
 export const schema = defineSchema({
   entities: { workspace, profile, issue },
-  version: 1,
+  relationships: { issueAssignee },
+  version: 2,
 });
 
 export type Schema = typeof schema;

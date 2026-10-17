@@ -150,7 +150,6 @@ export function buildSharedSeed(): SeedData {
         title: "Welcome to ebb",
         status: "todo",
         priority: "medium",
-        assignee_id: null,
       }),
     ],
     entityGroups: [
