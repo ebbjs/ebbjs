@@ -48,6 +48,28 @@ What's actually in the repo today (last meaningful server work: Oct 2026).
 
 For a more detailed breakdown, see [`ebb_server/README.md`](ebb_server/README.md) (server architecture) and the per-package READMEs under `packages/*/`.
 
+## Performance
+
+Single-node figures measured through the real server pipeline (not a storage primitive) on a 4-scheduler VM. Full tables, reproduction commands, and caveats: [`ebb_server/bench/RESULTS.md`](ebb_server/bench/RESULTS.md).
+
+- **Writes:** ~21,000 Actions/sec over HTTP (batch 100, `sync: true`) and ~26,000/sec calling the Writer directly. There is one Writer per server, so every room shares that budget.
+- **Batching dominates.** 100 Actions per request is the sweet spot; one Action per request is roughly an order of magnitude slower. The client outbox already debounces bursts.
+- **Fan-out:** commit → broadcast is ~30 ms, and the server dispatches on the order of **a million deliveries/sec** in-process. A _delivery_ is one Action reaching one subscriber, and it is the number that matters: `room load = edits/second × subscribers`.
+- **Reads:** not benchmarked yet.
+
+Rough scale to expect on one box:
+
+| Shape                                               | Verdict                                             |
+| --------------------------------------------------- | --------------------------------------------------- |
+| Documents / rooms with dozens to hundreds of people | Comfortable                                         |
+| 1,000-person room, low write rate                   | Fine                                                |
+| 1,000-person room, many people editing at once      | Bandwidth-bound, not CPU-bound                      |
+| Hundreds of small rooms                             | Bounded by the shared ~21k Actions/sec write budget |
+
+Presence and cursor updates ride the same fan-out path — throttle them. For very large audiences, reduce the bytes per delivery (deltas, smaller payloads) rather than adding servers.
+
+> These are single-node, 4-scheduler figures, and the fan-out number uses in-process subscribers — real SSE sockets will be lower. Treat them as orders of magnitude, not guarantees.
+
 ## Packages
 
 | Package              | Description                                                                                                                            | State   |
@@ -67,7 +89,7 @@ A Bun-based server-function runtime and a CLI are not in the repo yet but are de
 
 ### Shipped
 
-- Core storage engine — RocksDB action log (single Writer GenServer, `enable_pipelined_write: true` on the DB), on-demand SQLite materialization. Measured through the real server: **~15k Actions/sec sustained** (single Writer, `sync: true`, 2-Update Actions) — see [`ebb_server/bench/RESULTS.md`](ebb_server/bench/RESULTS.md). The older ~108k figure was a 2-writer raw-RocksDB primitive, never the server (see [devlog](packages/www/src/content/devlog/a-rocksdb-solid-start.md)).
+- Core storage engine — RocksDB action log (single Writer GenServer, `enable_pipelined_write: true` on the DB), on-demand SQLite materialization. Measured through the real server: **~21k Actions/sec sustained** over HTTP (batch 100, single Writer, `sync: true`, 2-Update Actions; ~26k calling the Writer directly) — see [`ebb_server/bench/RESULTS.md`](ebb_server/bench/RESULTS.md). The older ~108k figure was a 2-writer raw-RocksDB primitive, never the server (see [devlog](packages/www/src/content/devlog/a-rocksdb-solid-start.md)).
 - Sync protocol — handshake, per-group paginated catch-up, live SSE streaming, watermark-gated fan-out
 - Auth & group-based permissions — `AuthPlug` (bypass + external modes), in-memory Group/GroupMember/Relationship cache
 - Real-time presence — ephemeral broadcasts via `POST /sync/presence`, fanned out over SSE
