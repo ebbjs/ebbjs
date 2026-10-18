@@ -59,9 +59,8 @@ and `ebb_server/lib/ebb_server/storage/action_validator.ex`.
      mutated"). Fragile w.r.t. retained rows; see §6.4.
    - **P1b · shard(64) resident container** — recommended structural shape:
      near-object memory, ~30 lines, no dependency, but needs P0's `changed` flag
-     sharding is the reason the `changed` flag from the merge is mandatory, not
-     optional, for that option) and a container type at the resident
-     boundary.
+     (without it the O(N) scan would dominate and sharding would be pointless)
+     and a container type at the resident boundary.
    - **P1c · HAMT resident container** — best constant, 1.8× memory and an O(N)
      snapshot encode/hydrate; adopt only past ~10–50k runs.
      The measured flip point is **N ≈ 300–500 runs**, where the plain-object copy
