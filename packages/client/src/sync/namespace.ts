@@ -51,6 +51,7 @@ import {
   type QueryBuilder,
 } from "./query-builder";
 import {
+  type AdjacencyReader,
   buildEntityGroupUpdates,
   forwardMany,
   forwardOne,
@@ -551,21 +552,19 @@ export type EntityNamespaces<S> =
  */
 const collaborativeTextForwardOne = (
   readLocalEntity: (id: string) => Promise<Entity | null>,
-  queryEntitiesByType: (type: string) => Promise<readonly Entity[]>,
+  adjacency: AdjacencyReader,
   sourceId: string,
   sourceName: string,
   field: string,
   type: string,
   openTextDocument: (docId: string, docType: string) => TextDocument,
 ): Promise<TextDocument | null> =>
-  forwardOne(readLocalEntity, queryEntitiesByType, sourceId, sourceName, field, type).then(
-    (entity) => {
-      if (entity === null || entity === undefined) return null;
-      const doc = openTextDocument(entity.id, entity.type);
-      doc.hydrate(entity.data?.fields?.[DOC_CONTENT_FIELD]);
-      return doc;
-    },
-  );
+  forwardOne(readLocalEntity, adjacency, sourceId, sourceName, field, type).then((entity) => {
+    if (entity === null || entity === undefined) return null;
+    const doc = openTextDocument(entity.id, entity.type);
+    doc.hydrate(entity.data?.fields?.[DOC_CONTENT_FIELD]);
+    return doc;
+  });
 
 /**
  * Build the runtime accessor record for a single row. Walks the
@@ -598,8 +597,14 @@ function buildRowAccessors(
 ): Record<string, RowAccessor> {
   const out: Record<string, RowAccessor> = {};
   const readLocalEntity = (id: string): Promise<Entity | null> => storage.entities.get(id);
-  const queryEntitiesByType = (type: string): Promise<readonly Entity[]> =>
-    storage.entities.query(type);
+  // Traversals read the adjacency index rather than scanning the
+  // `relationship` / `entityGroup` type, so their cost tracks the
+  // source row's degree.
+  const adjacency: AdjacencyReader = {
+    forwardLinks: (query) => storage.entities.queryByRelationshipSource(query),
+    reverseSourceIds: (query) => storage.entities.queryByRelationship(query),
+    membershipsOf: (entityId) => storage.entities.queryByMembershipEntity(entityId),
+  };
 
   // Forward accessors — relationships where this entity is the source.
   for (const rel of registry.getRelationshipsForSource(entityName)) {
@@ -609,7 +614,7 @@ function buildRowAccessors(
     if (isCollaborativeText(rel)) {
       out[field] = collaborativeTextForwardOne(
         readLocalEntity,
-        queryEntitiesByType,
+        adjacency,
         sourceId,
         entityName,
         field,
@@ -625,7 +630,7 @@ function buildRowAccessors(
       if (targetShape === undefined) continue;
       out[field] = forwardMany(
         readLocalEntity,
-        queryEntitiesByType,
+        adjacency,
         sourceId,
         entityName,
         targetName,
@@ -635,14 +640,7 @@ function buildRowAccessors(
       );
       continue;
     }
-    out[field] = forwardOne(
-      readLocalEntity,
-      queryEntitiesByType,
-      sourceId,
-      entityName,
-      field,
-      relType,
-    );
+    out[field] = forwardOne(readLocalEntity, adjacency, sourceId, entityName, field, relType);
   }
 
   // Reverse accessors — relationships where this entity is the target.
@@ -655,7 +653,7 @@ function buildRowAccessors(
     if (sourceShape === undefined) continue;
     out[field] = reverseTraversal(
       readLocalEntity,
-      queryEntitiesByType,
+      adjacency,
       sourceId,
       sourceName,
       sourceShape,
@@ -670,7 +668,13 @@ function buildRowAccessors(
   const groupShape = registry.get("group")?.shape;
   // Defensive: `group` is always a registered system entity.
   if (groupShape !== undefined) {
-    out[GROUPS_ACCESSOR] = membershipGroups(queryEntitiesByType, sourceId, "group", groupShape);
+    out[GROUPS_ACCESSOR] = membershipGroups(
+      readLocalEntity,
+      adjacency,
+      sourceId,
+      "group",
+      groupShape,
+    );
   }
 
   return out;
@@ -1340,14 +1344,13 @@ async function resolveUnlinkRelationshipId(
   if (as === GROUPS_ACCESSOR) return undefined;
   const rel = write.registry.getRelationship(entityName, as);
   if (rel === undefined || rel.sourceCardinality !== "one") return undefined;
-  const all = await storage.entities.query("relationship");
   const wireType = rel.type ?? entityName;
-  const match = all.find(
-    (e) =>
-      e.data?.fields?.["source_id"]?.value === sourceId &&
-      e.data?.fields?.["field"]?.value === as &&
-      e.data?.fields?.["type"]?.value === wireType,
-  );
+  const links = await storage.entities.queryByRelationshipSource({
+    as,
+    type: wireType,
+    sourceId,
+  });
+  const match = links[0];
   if (match === undefined) {
     throw new EntityValidationError([
       {
@@ -1356,7 +1359,7 @@ async function resolveUnlinkRelationshipId(
       },
     ]);
   }
-  return match.id;
+  return match.relationshipId;
 }
 
 /**
