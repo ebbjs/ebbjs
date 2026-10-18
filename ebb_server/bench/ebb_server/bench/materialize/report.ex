@@ -162,7 +162,8 @@ defmodule EbbServer.Bench.Materialize.Report do
       "means reconciles with the mean wall clock. `fetch_decode` is the SQLite SELECT\n" <>
       "plus `Jason.decode!` of the existing blob; `entries_scan` is the RocksDB\n" <>
       "`cf_entity_actions` prefix scan; `actions_load` is the RocksDB `multi_get` plus\n" <>
-      "ETF decode; `merge` is the LWW replay; `encode` is `Jason.encode!`; `upsert` is\n" <>
+      "ETF decode; `merge` is the LWW replay; `encode` is the JSON the write needs\n" <>
+      "(the whole blob on a replace, the touched keys on a patch); `upsert` is\n" <>
       "the SQLite write including the eight STORED `json_extract` generated columns;\n" <>
       "`format` is the post-#514 pass-through.\n"
   end

@@ -158,6 +158,32 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
+  Applies a per-key patch to an existing entity row with `json_set`.
+
+  `fields` maps a JSON path relative to `$.fields.` to that path's
+  already-encoded JSON value. A path is a top-level field name, optionally
+  extended with `.map."<key>"` components to reach a key inside a map
+  field. Each entry becomes a `json_set(data, '$.fields.<path>', json(?))`
+  pair, so SQLite rewrites the `data` JSON in place and recomputes the
+  STORED generated columns. The caller is responsible for quoting any map
+  key and for rejecting a top-level field name that is not a safe JSON path
+  component.
+
+  `meta` carries the row's non-JSON columns: `:type`, `:updated_hlc`,
+  `:deleted_hlc`, `:deleted_by`, and `:last_gsn`. `created_hlc` is not
+  touched by an update. An empty `fields` map performs a metadata-only
+  update.
+
+  Like `upsert_entity/2`, the write is monotonic in `last_gsn`: the row is
+  only updated when its current `last_gsn` is less than or equal to the
+  patch's. A lower `last_gsn` is rejected and the row is left alone.
+  """
+  @spec patch_entity(String.t(), %{String.t() => String.t()}, map(), GenServer.server()) :: :ok
+  def patch_entity(entity_id, fields, meta, server \\ __MODULE__) do
+    GenServer.call(server, {:patch_entity, entity_id, fields, meta})
+  end
+
+  @doc """
   Fetches an entity by ID.
 
   Returns `{:ok, entity_map}` or `:not_found`.
@@ -259,6 +285,53 @@ defmodule EbbServer.Storage.SQLite do
     :ok = Sqlite3.bind(stmt, values)
     :done = Sqlite3.step(db, stmt)
     :ok = Sqlite3.reset(stmt)
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:patch_entity, id, fields, meta}, _from, state) do
+    %{db: db} = state
+
+    pairs =
+      fields
+      |> Enum.sort_by(fn {name, _json} -> name end)
+      |> Enum.map(fn {name, json} -> {"$.fields." <> name, json} end)
+
+    {data_clause, data_params} =
+      case pairs do
+        [] ->
+          {"", []}
+
+        _ ->
+          placeholders = Enum.map_join(pairs, "", fn _ -> ", ?, json(?)" end)
+          params = Enum.flat_map(pairs, fn {path, json} -> [path, json] end)
+          {"data = json_set(data" <> placeholders <> "), ", params}
+      end
+
+    sql =
+      "UPDATE entities SET " <>
+        data_clause <>
+        "type = ?, updated_hlc = ?, deleted_hlc = ?, deleted_by = ?, last_gsn = ? " <>
+        "WHERE id = ? AND last_gsn <= ?"
+
+    params =
+      data_params ++
+        [
+          meta.type,
+          meta.updated_hlc,
+          meta.deleted_hlc,
+          meta.deleted_by,
+          meta.last_gsn,
+          id,
+          meta.last_gsn
+        ]
+
+    {:ok, stmt} = Sqlite3.prepare(db, sql)
+    :ok = Sqlite3.bind(stmt, params)
+    :done = Sqlite3.step(db, stmt)
+    :ok = Sqlite3.reset(stmt)
+    Sqlite3.release(db, stmt)
 
     {:reply, :ok, state}
   end

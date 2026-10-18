@@ -992,6 +992,139 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert second.data["fields"]["content"]["map"]["b"]["value"] == 2
     end
 
+    test "a one-key patch materializes the fully merged map into SQLite", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_patch_merged"
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+      hlc_put = hlc_from(1_000)
+      hlc_patch = hlc_from(2_000)
+
+      put =
+        put_action(
+          "act_put",
+          entity_id,
+          %{
+            "title" => leaf("Buy milk", hlc_put),
+            "completed" => leaf(false, hlc_put),
+            "content" => map_field(%{"a" => leaf(1, hlc_put), "b" => leaf(2, hlc_put)})
+          },
+          hlc_put
+        )
+
+      Writer.write_actions([put], writer_name)
+      assert {:ok, _materialized} = EntityStore.get(entity_id, "a_test", opts)
+
+      patch =
+        patch_action(
+          "act_patch",
+          entity_id,
+          %{"title" => leaf("Buy oat milk", hlc_patch)},
+          hlc_patch
+        )
+
+      Writer.write_actions([patch], writer_name)
+      assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
+      assert entity.data["fields"]["title"]["value"] == "Buy oat milk"
+
+      # The cached row must hold the whole merged map, not just the patched
+      # key, so a later clean read replays and serves every field.
+      assert {:ok, row} = SQLite.get_entity(entity_id, sqlite_name)
+      data = Jason.decode!(row.data)
+
+      assert data["fields"]["title"]["value"] == "Buy oat milk"
+      assert data["fields"]["completed"]["value"] == false
+      assert data["fields"]["content"]["map"]["a"]["value"] == 1
+      assert data["fields"]["content"]["map"]["b"]["value"] == 2
+    end
+
+    test "a nested map-key patch materializes without dropping its siblings", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_patch_map_key"
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+      hlc_put = hlc_from(1_000)
+      hlc_patch = hlc_from(2_000)
+
+      put =
+        put_action(
+          "act_put",
+          entity_id,
+          %{"content" => map_field(%{"a" => leaf(1, hlc_put), "b" => leaf(2, hlc_put)})},
+          hlc_put
+        )
+
+      Writer.write_actions([put], writer_name)
+      assert {:ok, _materialized} = EntityStore.get(entity_id, "a_test", opts)
+
+      patch =
+        patch_action(
+          "act_patch",
+          entity_id,
+          %{"content" => map_field(%{"b" => leaf(9, hlc_patch)})},
+          hlc_patch
+        )
+
+      Writer.write_actions([patch], writer_name)
+      assert {:ok, _entity} = EntityStore.get(entity_id, "a_test", opts)
+
+      assert {:ok, row} = SQLite.get_entity(entity_id, sqlite_name)
+      content = Jason.decode!(row.data)["fields"]["content"]
+
+      assert content["map"]["a"]["value"] == 1
+      assert content["map"]["b"]["value"] == 9
+    end
+
+    test "a nested kind change rewrites the whole field rather than merging into the old leaf", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_patch_kind_change"
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+      hlc_put = hlc_from(1_000)
+      hlc_patch = hlc_from(2_000)
+
+      # `content.map.a` starts as a leaf.
+      put =
+        put_action(
+          "act_put",
+          entity_id,
+          %{"content" => map_field(%{"a" => leaf(9, hlc_put)})},
+          hlc_put
+        )
+
+      Writer.write_actions([put], writer_name)
+      assert {:ok, _materialized} = EntityStore.get(entity_id, "a_test", opts)
+
+      # A patch turns it into a map. A per-key `json_set` would add `.map`
+      # inside the stored leaf and keep its `value`/`hlc`; the whole field must
+      # be rewritten instead.
+      patch =
+        patch_action(
+          "act_patch",
+          entity_id,
+          %{"content" => map_field(%{"a" => map_field(%{"b" => leaf(1, hlc_patch)})})},
+          hlc_patch
+        )
+
+      Writer.write_actions([patch], writer_name)
+      assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
+
+      assert {:ok, row} = SQLite.get_entity(entity_id, sqlite_name)
+      stored = Jason.decode!(row.data)
+
+      assert stored["fields"]["content"] == entity.data["fields"]["content"]
+      refute Map.has_key?(stored["fields"]["content"]["map"]["a"], "value")
+    end
+
     test "delete-only entity returns :not_found", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,

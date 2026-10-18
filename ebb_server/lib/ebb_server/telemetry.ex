@@ -57,8 +57,10 @@ defmodule EbbServer.Telemetry do
   materialize into `:fetch_decode` (SQLite SELECT + `Jason.decode!`),
   `:entries_scan` (the `cf_entity_actions` prefix scan), `:actions_load` (RocksDB
   `multi_get` + ETF decode), `:merge` (replay), and the `:encode` → `:upsert` →
-  `:format` tail, so the blob JSON, the SQLite upsert, and the merge are
-  separable. `:upsert` includes the eight STORED
+  `:format` tail, so the JSON written back, the SQLite write, and the merge are
+  separable. `:encode` is the JSON the write needs — the whole blob when the
+  write replaces it, the touched keys when it is a per-key patch. `:upsert`
+  includes the eight STORED
   `json_extract` generated columns SQLite recomputes; the phase sample is the
   only place that cost is visible. Phases fire once per dirty materialize and
   only on success; a phase that raises is left to the surrounding rescue and
