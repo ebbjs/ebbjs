@@ -80,6 +80,12 @@ export const isFieldLeaf = (field: FieldValue): field is FieldLeaf => !isFieldMa
  * A leaf `value: null` is a tombstone: it participates in the merge like
  * any other leaf so a late write can still beat it, and the projection
  * is what hides a tombstoned map key.
+ *
+ * The merge copies the map only when a key actually changes. When the
+ * incoming value loses (or contributes nothing), the existing value is
+ * returned by reference, so a caller comparing identity can tell that
+ * nothing observable changed without re-scanning the map. A winning key
+ * still reuses every untouched sibling by reference.
  */
 export const mergeFieldValue = (
   existing: FieldValue | undefined,
@@ -94,11 +100,16 @@ export const mergeFieldValue = (
     return incoming.update_id >= existing.update_id ? incoming : existing;
   }
 
-  const merged: Record<string, FieldValue> = { ...existing.map };
+  let merged: Record<string, FieldValue> | undefined;
   for (const [key, value] of Object.entries(incoming.map)) {
-    merged[key] = mergeFieldValue(merged[key], value);
+    const previous = merged === undefined ? existing.map[key] : merged[key];
+    const next = mergeFieldValue(previous, value);
+    if (next !== previous) {
+      if (merged === undefined) merged = { ...existing.map };
+      merged[key] = next;
+    }
   }
-  return { map: merged };
+  return merged === undefined ? existing : { map: merged };
 };
 
 // An Update's `data` is a `{ fields: Record<string, FieldValue> }`

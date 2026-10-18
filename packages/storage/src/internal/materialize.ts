@@ -23,16 +23,26 @@ export const readFields = (update: Update): Record<string, FieldValue> => {
  * greater `update_id`. A map field merges key by key. The recursive
  * rule itself lives in `@ebbjs/core` so the server, the outbox, and
  * both adapters share one definition.
+ *
+ * The fields record is copied only when a field actually changes; when
+ * the patch contributes nothing, the existing data object is returned
+ * by reference so a caller can detect a no-op without a structural
+ * comparison.
  */
 export const mergeFields = (existing: Entity["data"], update: Update): Entity["data"] => {
   const patch = readFields(update);
-  const merged: Record<string, FieldValue> = { ...existing.fields };
+  let merged: Record<string, FieldValue> | undefined;
 
   for (const [field, patchValue] of Object.entries(patch)) {
-    merged[field] = mergeFieldValue(merged[field], patchValue);
+    const previous = merged === undefined ? existing.fields[field] : merged[field];
+    const next = mergeFieldValue(previous, patchValue);
+    if (next !== previous) {
+      if (merged === undefined) merged = { ...existing.fields };
+      merged[field] = next;
+    }
   }
 
-  return { fields: merged };
+  return merged === undefined ? existing : { fields: merged };
 };
 
 /**
