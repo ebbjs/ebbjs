@@ -48,6 +48,10 @@ and `ebb_server/lib/ebb_server/storage/action_validator.ex`.
    `contentChanged` takes it to **~0.2 µs** at every N. ~30 lines, no wire change, no
    memory change, no protocol change. **Do this regardless of everything below.**
    It does **not** fix the winning keystroke — see P1.
+   **Shipped in [#514](https://github.com/ebbjs/ebbjs/pull/514)** together with the
+   server decode win: the merge-only losing patch at N=5000 fell from **1892 µs to
+   1.5 µs**, and a dirty server materialize at N=5000 from **41.5 ms to 27.4 ms**
+   (client `applyUpdate` winning, and the merge vectors, unchanged).
 2. **P1 · A representation for the winning path, only when N justifies it.**
    [measured] The winning one-key patch is O(N) on a plain object (N=1000 **229 µs**,
    N=10000 **3.9 ms**), O(N) on a native `Map` (still **1.3 ms** at N=10000), but flat
@@ -71,6 +75,8 @@ and `ebb_server/lib/ebb_server/storage/action_validator.ex`.
    cost is JSON: **2 × `Jason.decode!` + 1 × `Jason.encode!` of the whole entity blob
    ≈ 70 ms at N=5000**, ~30× the client's map copy. This is the single largest number
    in this note; it is a server slice, not a client representation problem.
+   **The redundant decode shipped in [#514](https://github.com/ebbjs/ebbjs/pull/514)**;
+   ETF storage / a per-key side table remain open.
 4. **Do not**: one entity per run (breaks group-scoped permission; §6.1), a compact
    envelope / run registry on the wire (protocol change, no write benefit; §6.2),
    a native `Map` container (still O(N); §3.1), or a lazy/windowed content that
@@ -437,7 +443,7 @@ complementary, not a substitute. [reasoned]
 
 ## 7. Recommendation
 
-### P0 — no-op-aware merge and a `changed` signal (do now)
+### P0 — no-op-aware merge and a `changed` signal (do now) — **shipped in #514**
 
 Concrete shape (reference-identity convention; no return-type change, so the
 server mirror and all callers are untouched):
@@ -536,6 +542,11 @@ representation if the server is hot: format the live entity from the in-memory
 replacing the `json_extract` generated columns. This is a server issue, not part
 of #496's client seam, and it is independent of whatever P1 the client picks.
 
+**Shipped in [#514](https://github.com/ebbjs/ebbjs/pull/514)** (the redundant-decode
+half): dirty materialize of a 100-char-run doc fell from a **5.57 ms to 4.52 ms
+median at N=1000** and **41.53 ms to 27.42 ms at N=5000**. ETF storage / side
+index remain open.
+
 ---
 
 ## 8. Migration sketch (P0)
@@ -580,7 +591,9 @@ change.
 1. **#496-A (P0, small, no protocol change):** no-op-aware `mergeFieldValue` /
    `mergeFields` / `applyUpdate` + read-model `changed` fast path + reference
    tests. Ships the largest measured win for the read model and the legacy
-   adapters.
+   adapters. **Shipped in [#514](https://github.com/ebbjs/ebbjs/pull/514)**
+   (the read-model `changed` fast path is spike-scoped and lands with the seam;
+   the production merge reuse is in the PR).
 2. **#496-B (server, small):** remove the redundant `Jason.decode!` on
    materialize and (optionally) skip the `Jason.encode!` when the patch changed
    nothing. Measure with a dirty-materialize microbench at N=1000/5000.
