@@ -23,7 +23,7 @@ defmodule EbbServer.Telemetry do
   | `ebb.watermark.lag`                       | `lag` (max GSN − committed watermark) | —                                                   |
   | `ebb.dirty_set.size`                      | `size`                                | —                                                   |
   | `ebb.entity_store.materialize_latency_ms` | `duration` (native), `byte_size`      | `subject_id`, `subject_type`, `path` (`:dirty_materialize`) |
-  | `ebb.entity_store.materialize_phase_ms`   | `duration` (native)                   | `phase` (`:fetch_decode` / `:actions_load` / `:merge` / `:encode` / `:upsert` / `:format`) |
+  | `ebb.entity_store.materialize_phase_ms`   | `duration` (native)                   | `phase` (`:fetch_decode` / `:entries_scan` / `:actions_load` / `:merge` / `:encode` / `:upsert` / `:format`) |
   | `ebb.entity_store.read_latency_ms`        | `duration` (native), `byte_size`, `row_count` | `path` (`:clean_hit` / `:query`), `subject_id`      |
   | `ebb.entity_store.cache_hit_rate`         | `count`                               | `result` (`:hit` / `:miss`), `path` (`:dirty_materialize` / `:clean_hit` / `:query`) |
   | `ebb.fanout.push_latency_ms`              | `duration` (native)                   | `group_id`                                          |
@@ -55,9 +55,10 @@ defmodule EbbServer.Telemetry do
   walk of the decoded value, so the catalogue does not promise it; byte size is
   the size proxy. `ebb.entity_store.materialize_phase_ms` breaks one dirty
   materialize into `:fetch_decode` (SQLite SELECT + `Jason.decode!`),
-  `:actions_load` (RocksDB `multi_get` + ETF decode), `:merge` (replay), and
-  the `:encode` → `:upsert` → `:format` tail, so the blob JSON, the SQLite
-  upsert, and the merge are separable. `:upsert` includes the eight STORED
+  `:entries_scan` (the `cf_entity_actions` prefix scan), `:actions_load` (RocksDB
+  `multi_get` + ETF decode), `:merge` (replay), and the `:encode` → `:upsert` →
+  `:format` tail, so the blob JSON, the SQLite upsert, and the merge are
+  separable. `:upsert` includes the eight STORED
   `json_extract` generated columns SQLite recomputes; the phase sample is the
   only place that cost is visible. Phases fire once per dirty materialize and
   only on success; a phase that raises is left to the surrounding rescue and

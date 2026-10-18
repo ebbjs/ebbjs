@@ -1717,7 +1717,15 @@ defmodule EbbServer.Storage.EntityStoreTest do
         end)
 
       assert Enum.sort(phases) ==
-               Enum.sort([:fetch_decode, :actions_load, :merge, :encode, :upsert, :format])
+               Enum.sort([
+                 :fetch_decode,
+                 :entries_scan,
+                 :actions_load,
+                 :merge,
+                 :encode,
+                 :upsert,
+                 :format
+               ])
     end
 
     test "a warm dirty materialize reports the pre-existing blob size", ctx do

@@ -218,7 +218,8 @@ defmodule EbbServer.Storage.EntityStore do
     {current_data, last_gsn, existing_row, byte_size} =
       fetch_current_state(entity_id, sqlite_name)
 
-    entries = fetch_relevant_entries(entity_id, rocks_name, last_gsn)
+    entries =
+      timed(:entries_scan, fn -> fetch_relevant_entries(entity_id, rocks_name, last_gsn) end)
 
     if after_scan, do: after_scan.()
 
