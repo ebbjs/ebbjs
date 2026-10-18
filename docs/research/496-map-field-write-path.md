@@ -59,7 +59,8 @@ and `ebb_server/lib/ebb_server/storage/action_validator.ex`.
      mutated"). Fragile w.r.t. retained rows; see §6.4.
    - **P1b · shard(64) resident container** — recommended structural shape:
      near-object memory, ~30 lines, no dependency, but needs P0's `changed` flag
-     (the O(N) scan is _worse_ under sharding) and a container type at the resident
+     sharding is the reason the `changed` flag from the merge is mandatory, not
+     optional, for that option) and a container type at the resident
      boundary.
    - **P1c · HAMT resident container** — best constant, 1.8× memory and an O(N)
      snapshot encode/hydrate; adopt only past ~10–50k runs.
@@ -192,11 +193,14 @@ to the conflict recursion. See §4.
   N=1000 to ~0.2 µs**, at every N — for the current representation, with no memory
   change. The probe's combined losing-ingest number (483 µs at N=1000) is this
   cost.
-- **The scan is the half that sharding does not fix.** `scanChangedRep` iterates
-  both containers; shard and HAMT iteration is _more_ expensive than the plain
-  object's property walk, so a sharded/HAMT map that keeps the O(N) scan is
-  worse than the object. The `changed` flag from the merge is not optional for
-  P1b/P1c; it is what makes them a win.
+- **The scan is the half that no container removes.** `scanChangedRep` is O(N)
+  for every rep that keeps it: hundreds of µs to milliseconds (object 335 µs /
+  HAMT 345 µs at N=1000; 8.4 ms / 4.7 ms at N=10000). The shard/HAMT scans are
+  comparable to or somewhat better than the object's property walk at large N,
+  and shard(16) is worse at small N — i.e. the container does not help here. The
+  `changed` flag from the merge is what makes P1b/P1c a win: without it a shard
+  buys a cheap write and then pays an unchanged O(N) scan, so the scan would
+  dominate and the container would be pointless.
 - HAMT's forced "rebuild" is already a no-op: `hamSet` reuses the node chain when
   the value is unchanged, so it is intrinsically no-op-aware.
 
