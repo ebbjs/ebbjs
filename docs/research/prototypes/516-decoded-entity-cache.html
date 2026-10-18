@@ -1,0 +1,1018 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Prototype — decoded entity cache (issue #516)</title>
+<style>
+  :root {
+    --ink: #1c1f26;
+    --muted: #6b7280;
+    --line: #e3e6eb;
+    --bg: #f7f8fa;
+    --card: #ffffff;
+    --accent: #4f46e5;
+    --accent-soft: #eef0fe;
+    --bad: #b91c1c;
+    --bad-soft: #fdecec;
+    --warn: #b45309;
+    --warn-soft: #fdf3e3;
+    --ok: #15803d;
+    --ok-soft: #e9f6ee;
+    --info: #1d4ed8;
+    --info-soft: #eaf0fe;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 28px 20px 80px; }
+  header h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  header .sub { color: var(--muted); font-size: 14px; }
+  .question {
+    background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+    border-radius: 10px; padding: 16px 18px; margin: 18px 0; box-shadow: 0 1px 2px rgba(16,24,40,.04);
+  }
+  .question h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em; color: var(--accent); margin: 0 0 8px; }
+  .question p { margin: 8px 0 0; }
+  .question ul { margin: 8px 0 0 1.1em; padding: 0; }
+  .question li { margin: 3px 0; }
+  code { font-family: var(--mono); font-size: 12.5px; background: #f1f2f6; padding: 1px 5px; border-radius: 4px; }
+  h3.section { font-size: 13px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 26px 0 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 15px;
+    box-shadow: 0 1px 2px rgba(16,24,40,.04); position: relative;
+  }
+  .card.flash { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .card h4 { margin: 0 0 10px; font-size: 13.5px; display: flex; align-items: baseline; gap: 8px; }
+  .card .tag { font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); }
+  .muted { color: var(--muted); }
+  .mono { font-family: var(--mono); }
+  table.kv { border-collapse: collapse; width: 100%; }
+  table.kv td { padding: 3px 0; vertical-align: top; font-size: 13.5px; }
+  table.kv td.k { color: var(--muted); width: 42%; padding-right: 10px; }
+  .pill { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; letter-spacing: .02em; }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); }
+  .pill.bad { background: var(--bad-soft); color: var(--bad); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.info { background: var(--info-soft); color: var(--info); }
+  .pill.neutral { background: #eef0f3; color: #4b5563; }
+  .big { font-size: 20px; font-family: var(--mono); }
+  .arrow { color: var(--muted); font-size: 12px; }
+
+  /* toggles */
+  .rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 8px 18px; }
+  label.rule { display: flex; gap: 9px; align-items: flex-start; font-size: 13.5px; cursor: pointer; padding: 6px 8px; border-radius: 8px; }
+  label.rule:hover { background: #f1f2f6; }
+  label.rule input { margin-top: 3px; accent-color: var(--accent); }
+  label.rule .hint { display: block; color: var(--muted); font-size: 12px; }
+  label.rule.danger input { accent-color: var(--bad); }
+
+  /* buttons */
+  button {
+    font: inherit; font-size: 13.5px; padding: 8px 13px; border-radius: 8px; border: 1px solid var(--line);
+    background: #fff; color: var(--ink); cursor: pointer; text-align: left;
+  }
+  button:hover:not(:disabled) { border-color: #c7ccd6; background: #fbfbfd; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { background: #4338ca; }
+  button.step { display: block; width: 100%; border-left: 3px solid var(--accent); }
+  button.step.done { border-left-color: var(--ok); opacity: .55; }
+  .btnrow { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  /* tabs */
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 0; }
+  .tab {
+    padding: 7px 12px; border: 1px solid var(--line); background: #fff; border-radius: 999px;
+    font-size: 13px; cursor: pointer; color: #374151;
+  }
+  .tab.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .scenario { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; margin-top: 12px; }
+  .scenario .blurb { color: #374151; font-size: 14px; margin: 0 0 4px; }
+  .scenario .watch { color: var(--warn); font-size: 13px; margin: 6px 0 14px; }
+  .steps { display: flex; flex-direction: column; gap: 8px; }
+  .stepwrap { display: flex; gap: 12px; align-items: flex-start; }
+  .stepnum { flex: none; width: 22px; height: 22px; border-radius: 50%; background: #eef0f3; color: var(--muted); font-size: 12px; display: flex; align-items: center; justify-content: center; margin-top: 8px; }
+  .stepnum.current { background: var(--accent); color: #fff; }
+  .stepnum.done { background: var(--ok-soft); color: var(--ok); }
+  .stepbody { flex: 1; }
+  .stepnote { font-size: 12.5px; color: var(--muted); margin: 4px 0 0 2px; }
+
+  /* log */
+  .log { max-height: 260px; overflow: auto; font-family: var(--mono); font-size: 12px; }
+  .log div { padding: 4px 8px; border-radius: 6px; margin-bottom: 4px; border-left: 3px solid transparent; }
+  .log div.info { background: #f4f5f8; }
+  .log div.ok { background: var(--ok-soft); border-left-color: var(--ok); }
+  .log div.warn { background: var(--warn-soft); border-left-color: var(--warn); }
+  .log div.bad { background: var(--bad-soft); border-left-color: var(--bad); }
+  .alerts { display: flex; flex-direction: column; gap: 8px; }
+  .alert { padding: 10px 12px; border-radius: 8px; font-size: 13.5px; border-left: 4px solid; }
+  .alert.bad { background: var(--bad-soft); border-color: var(--bad); color: #7f1d1d; }
+  .alert.warn { background: var(--warn-soft); border-color: var(--warn); color: #78350f; }
+  .alert.info { background: var(--info-soft); border-color: var(--info); color: #1e3a8a; }
+  .alert.ok { background: var(--ok-soft); border-color: var(--ok); color: #14532d; }
+  .statusbar { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; margin: 16px 0; }
+  .statusbar .item { font-size: 13.5px; }
+  .statusbar .item b { font-family: var(--mono); }
+  .legend { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+  hr { border: none; border-top: 1px solid var(--line); margin: 22px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Decoded entity cache — does it keep reads correct?</h1>
+  <div class="sub">A throwaway logic prototype for issue&nbsp;#516. It models the server’s entity read/write protocol so you can push it through the awkward cases by hand. Nothing here is production code.</div>
+</header>
+
+<div class="question">
+  <h2>What this is asking</h2>
+  <p>The server keeps one materialized copy of an entity in a read database (SQLite), and a <em>dirty mark</em> that tells readers “this entity may be behind the source of truth, re-materialize it first.” A read checks the mark, and if dirty it replays the missing actions, stores the result, then clears the mark — but only if the mark is still the one it saw. #516 wants to add a second, faster copy: a <strong>decoded cache keyed by entity id</strong>, filled when an entity is materialized and thrown away when it is written.</p>
+  <p>This prototype asks one question:</p>
+  <p><strong>Does that second copy preserve the server’s existing correctness under (a) the dirty-mark compare-and-clear protocol, (b) concurrent materializations of the same entity finishing out of order, (c) provisional marks while a commit is in flight, and (d) the multi-writer rules? And what does eviction / memory pressure do to staleness?</strong></p>
+  <ul>
+    <li><b>The source of truth</b> is where committed actions live. Each commit gets the next <b>action&nbsp;#</b> (the real system calls it a GSN).</li>
+    <li><b>SQLite</b> is the materialized copy the server reads from today. Its <b>last materialized action&nbsp;#</b> is how current it is.</li>
+    <li><b>The dirty mark</b> is either <i>settled</i> (a write completed and was not yet folded in) or <i>provisional</i> (a write is in flight). Marks carry an <b>id</b> so a materializer only clears the exact mark it saw.</li>
+    <li><b>The decoded cache</b> is the new second copy: the already-parsed field map plus a last action&nbsp;#.</li>
+  </ul>
+</div>
+
+<div class="statusbar" id="statusbar"></div>
+
+<h3 class="section">Rules to explore — flip these and watch correctness</h3>
+<div class="card">
+  <div class="rules" id="rules"></div>
+  <div class="legend">Defaults are roughly the design as sketched in #516. The two that matter most are <b>monotonic cache write</b> and <b>validate on read</b>.</div>
+</div>
+
+<h3 class="section">Current state</h3>
+<div class="grid" id="state"></div>
+
+<h3 class="section">Guided walkthroughs — click the steps in order</h3>
+<div class="tabs" id="tabs"></div>
+<div id="scenario"></div>
+
+<h3 class="section">Free play — press anything, in any order</h3>
+<div class="card">
+  <div class="btnrow" id="freeplay"></div>
+  <div class="legend">Free play acts on the same live state as the walkthrough. Use <b>Restart scenario</b> to get back to a known state.</div>
+</div>
+
+<h3 class="section">Activity</h3>
+<div class="card"><div class="log" id="log"></div></div>
+
+</div>
+
+<script>
+/* =========================================================================
+   PURE STATE MODULE
+   No DOM, no handlers. Reducer-style functions over a plain data value.
+   Liftable into the real storage module once the question is settled.
+
+   The shape mirrors EbbServer.Storage.EntityStore / DirtyTracker / SQLite:
+     truth    ~ cf_actions + cf_entity_actions (RocksDB, committed)
+     sqlite   ~ the entities table row (read cache)
+     dirty    ~ the ETS dirty set tuple {id, type, mark}
+     cache    ~ the proposed decoded cache entry (new in #516)
+     inflight ~ materializations in progress
+     writes   ~ Writer batches between mark_pending and settle
+   ========================================================================= */
+const Model = (function () {
+  const clone = (o) => (o == null ? o : JSON.parse(JSON.stringify(o)));
+
+  function log(s, text, level) {
+    s.log.unshift({ text: text, level: level || 'info' });
+    if (s.log.length > 80) s.log.pop();
+    return s;
+  }
+
+  function step(s, text, level) {
+    log(s, text, level);
+    return s;
+  }
+
+  function initialState(rules) {
+    const base = {
+      gsn: 1,
+      type: 'todo',
+      fields: { title: 'Ship it', done: false },
+      deleted: false,
+      deletedBy: null,
+    };
+    const defaults = {
+      invalidateOnWrite: true,     // #516's "invalidated when the entity is written"
+      monotonicCacheWrite: true,   // only store a cache entry that advances last_gsn
+      validateRead: false,         // clean read re-checks the cache's action # against SQLite
+      serveCacheWhileDirty: false, // trust the cache even when the mark says dirty (unsafe)
+      populateOnCleanRead: true,   // a clean read that had to decode also fills the cache
+      cacheTombstones: true,       // a deleted entity's row is cached like any other
+      compareAndClear: true,       // only clear the exact mark observed (#281)
+    };
+    return {
+      counters: { gsn: 1, gen: 0, mat: 0, write: 0 },
+      entity: { id: 'todo_1', truth: clone(base) },
+      sqlite: { row: clone(base) },
+      cache: { entry: null },
+      dirty: null,
+      writes: [],
+      inflight: [],
+      rules: Object.assign(defaults, rules || {}),
+      lastRead: null,
+      lastMaterialize: null,
+      log: [],
+      flash: [],
+      staleReads: 0,
+    };
+  }
+
+  function reset(rules) {
+    const s = initialState(rules);
+    return log(s, 'Reset. The entity exists in the source of truth and SQLite at action #1; nothing is dirty and the decoded cache is empty.');
+  }
+
+  function setRule(state, key, value) {
+    const s = clone(state);
+    s.rules[key] = value;
+    s.flash = ['rules'];
+    return log(s, 'Rule “' + key + '” is now ' + (value ? 'ON' : 'OFF') + '.');
+  }
+
+  /* ---- writes (the Writer path) ---------------------------------------- */
+
+  function beginWrite(state, spec) {
+    const s = clone(state);
+    s.counters.write += 1;
+    s.counters.gen += 1;
+    const label = spec.label || ('W' + s.counters.write);
+    const w = {
+      id: 'w' + s.counters.write,
+      label: label,
+      kind: spec.kind || 'patch',
+      field: spec.field,
+      value: spec.value,
+      generation: s.counters.gen,
+      gsn: null,
+      durable: false,
+    };
+    s.writes.push(w);
+    s.dirty = { kind: 'pending', generation: w.generation };
+    s.flash = ['dirty', 'writes'];
+    return step(s, 'Write ' + label + ' (' + describeWrite(w) + ') opens a provisional mark id ' + w.generation + ' before attempting the commit.');
+  }
+
+  function describeWrite(w) {
+    if (w.kind === 'delete') return 'delete';
+    return w.field + ' := ' + JSON.stringify(w.value);
+  }
+
+  function findWrite(s, label) {
+    if (label == null) {
+      for (let i = s.writes.length - 1; i >= 0; i--) if (!s.writes[i].durable) return i;
+      return s.writes.length - 1;
+    }
+    return s.writes.findIndex((w) => w.label === label);
+  }
+
+  function commit(state, label) {
+    const s = clone(state);
+    const i = findWrite(s, label);
+    if (i < 0) return log(s, 'No open write to commit.', 'warn');
+    const w = s.writes[i];
+    if (w.durable) return log(s, 'Write ' + w.label + ' is already durable.', 'warn');
+    s.counters.gsn += 1;
+    w.gsn = s.counters.gsn;
+    w.durable = true;
+    const t = s.entity.truth;
+    t.gsn = w.gsn;
+    if (w.kind === 'delete') {
+      t.deleted = true;
+      t.deletedBy = 'actor_1';
+    } else {
+      t.fields[w.field] = w.value;
+      t.deleted = false;
+      t.deletedBy = null;
+    }
+    if (s.rules.invalidateOnWrite && s.cache.entry) {
+      s.cache.entry = null;
+      log(s, 'The decoded cache entry was discarded on write (rule: invalidate on write).');
+    }
+    s.flash = ['sqlite', 'cache', 'dirty', 'writes'];
+    return step(s, 'Write ' + w.label + ' is durable at action #' + w.gsn + '. The provisional mark is still in place until the writer settles it.');
+  }
+
+  function settle(state, label) {
+    const s = clone(state);
+    const i = findWrite(s, label);
+    if (i < 0) return log(s, 'No open write to settle.', 'warn');
+    const w = s.writes[i];
+    if (!w.durable) return log(s, 'Write ' + w.label + ' is not durable yet; the writer settles only after the commit returns.', 'warn');
+    s.counters.gen += 1;
+    s.dirty = { kind: 'settled', generation: s.counters.gen };
+    s.writes.splice(i, 1);
+    s.flash = ['dirty', 'writes'];
+    return step(s, 'Writer settles write ' + w.label + ': the mark becomes a settled dirty mark id ' + s.dirty.generation + '.');
+  }
+
+  function abort(state, label) {
+    const s = clone(state);
+    const i = findWrite(s, label);
+    if (i < 0) return log(s, 'No open write to abandon.', 'warn');
+    const w = s.writes[i];
+    if (w.durable) return log(s, 'Write ' + w.label + ' is already durable; abandoning would need a compensating write.', 'warn');
+    s.writes.splice(i, 1);
+    if (s.dirty && s.dirty.kind === 'pending' && s.dirty.generation === w.generation) {
+      s.dirty = null;
+      log(s, 'Writer clears its own provisional mark id ' + w.generation + ' (clear_pending_batch): the entity is clean again and no action was committed.');
+    } else {
+      log(s, 'Writer’s clear finds a different mark in place, so nothing is cleared.');
+    }
+    s.flash = ['dirty', 'writes'];
+    return s;
+  }
+
+  function settleAllPending(state) {
+    const s = clone(state);
+    if (s.dirty && s.dirty.kind === 'pending') {
+      s.counters.gen += 1;
+      s.dirty = { kind: 'settled', generation: s.counters.gen };
+      s.flash = ['dirty'];
+      return step(s, 'Writer restart: a surviving provisional mark is settled conservatively (a commit may or may not have landed; re-materializing is safe either way).');
+    }
+    return log(s, 'No provisional mark to settle.');
+  }
+
+  function directWrite(state, spec) {
+    let s = beginWrite(state, spec);
+    s = commit(s, spec.label);
+    s = settle(s, spec.label);
+    return s;
+  }
+
+  /* ---- materialization ------------------------------------------------- */
+
+  function markDesc(m) {
+    if (!m) return 'none (clean)';
+    return (m.kind === 'pending' ? 'provisional' : 'settled') + ' id ' + m.generation;
+  }
+
+  function beginMaterialize(state, label) {
+    const s = clone(state);
+    s.counters.mat += 1;
+    const h = {
+      id: 'm' + s.counters.mat,
+      label: label || ('M' + s.counters.mat),
+      observedGen: s.dirty ? s.dirty.generation : null,
+      observedKind: s.dirty ? s.dirty.kind : null,
+      baseGsn: s.sqlite.row ? s.sqlite.row.gsn : 0,
+      baseRow: clone(s.sqlite.row),
+      scannedGsn: s.entity.truth.gsn,
+      snapshot: {
+        type: s.entity.truth.type,
+        fields: clone(s.entity.truth.fields),
+        deleted: s.entity.truth.deleted,
+        deletedBy: s.entity.truth.deletedBy,
+      },
+    };
+    s.inflight.push(h);
+    s.flash = ['inflight'];
+    return step(s, 'Materialization ' + h.label + ' starts: records mark ' + markDesc(s.dirty) + ', reads SQLite (action #' + h.baseGsn + ') and scans the source of truth up to action #' + h.scannedGsn + '.');
+  }
+
+  function cachePut(s, row, why) {
+    if (row.deleted && !s.rules.cacheTombstones) {
+      return log(s, 'Cache write skipped by ' + why + ': a deleted entity must not be cached, and the existing entry is left alone.', 'warn');
+    }
+    if (s.rules.monotonicCacheWrite && s.cache.entry && row.gsn < s.cache.entry.gsn) {
+      return log(s, 'Cache write refused by ' + why + ': it wants to store action #' + row.gsn + ' but the decoded cache already holds action #' + s.cache.entry.gsn + '.', 'warn');
+    }
+    s.cache.entry = clone(row);
+    return log(s, 'Decoded cache set to action #' + row.gsn + ' by ' + why + '.');
+  }
+
+  function finishMaterialize(state, label) {
+    const s = clone(state);
+    let idx = 0;
+    if (label != null) {
+      idx = s.inflight.findIndex((h) => h.label === label);
+      if (idx < 0) return log(s, 'No materialization named ' + label + ' is in flight.', 'warn');
+    } else if (s.inflight.length === 0) {
+      return log(s, 'No materialization is in flight.', 'warn');
+    }
+    const h = s.inflight.splice(idx, 1)[0];
+
+    let result, how;
+    if (h.scannedGsn <= h.baseGsn) {
+      result = s.sqlite.row ? clone(s.sqlite.row) : null;
+      how = 'found no committed actions newer than its starting point, so it re-read whatever SQLite holds right now';
+    } else {
+      result = {
+        gsn: h.scannedGsn,
+        type: h.snapshot.type,
+        fields: clone(h.snapshot.fields),
+        deleted: h.snapshot.deleted,
+        deletedBy: h.snapshot.deletedBy,
+      };
+      how = 'merged its own scanned snapshot up to action #' + h.scannedGsn;
+    }
+
+    let rejected = false;
+    if (result) {
+      if (!s.sqlite.row || result.gsn >= s.sqlite.row.gsn) {
+        s.sqlite.row = clone(result);
+      } else {
+        rejected = true;
+        log(s, 'SQLite refused ' + h.label + '’s row: action #' + result.gsn + ' is older than the stored action #' + s.sqlite.row.gsn + '. The newer row stands.', 'warn');
+      }
+      cachePut(s, result, 'materialize ' + h.label);
+    }
+
+    if (h.observedGen != null) {
+      if (h.observedKind === 'pending') {
+        log(s, h.label + ' leaves the provisional mark id ' + h.observedGen + ' alone for the writer to settle.');
+      } else if (s.rules.compareAndClear) {
+        if (s.dirty && s.dirty.generation === h.observedGen) {
+          s.dirty = null;
+          log(s, h.label + ' clears the exact mark it observed (id ' + h.observedGen + ').');
+        } else if (s.dirty) {
+          log(s, h.label + ' does not clear: a newer mark (id ' + s.dirty.generation + ') is in place.');
+        } else {
+          log(s, h.label + ' finds the mark already cleared.');
+        }
+      } else {
+        if (s.dirty) {
+          log(s, h.label + ' clears the mark WITHOUT comparing ids (rule off). This is the #281 failure mode.', 'bad');
+          s.dirty = null;
+        }
+      }
+    }
+
+    s.lastMaterialize = { label: h.label, gsn: result ? result.gsn : 0, rejected: rejected, result: result };
+    s.flash = ['sqlite', 'cache', 'dirty', 'inflight'];
+    return step(s, 'Materialization ' + h.label + ' finishes: ' + how + '.');
+  }
+
+  /* ---- reads ----------------------------------------------------------- */
+
+  function cleanRead(s) {
+    if (!s.sqlite.row) return { state: s, payload: null, source: 'SQLite (no row)' };
+    const row = s.sqlite.row;
+    const cacheValid = s.cache.entry && (!s.rules.validateRead || s.cache.entry.gsn === row.gsn);
+    if (cacheValid) {
+      return { state: s, payload: clone(s.cache.entry), source: 'decoded cache' };
+    }
+    const source = s.cache.entry
+      ? 'SQLite (JSON decode; the decoded cache holds action #' + s.cache.entry.gsn + ', out of step)'
+      : 'SQLite (JSON decode)';
+    if (s.rules.populateOnCleanRead) cachePut(s, row, 'clean read');
+    return { state: s, payload: clone(row), source: source };
+  }
+
+  function read(state) {
+    let s = clone(state);
+    const startedAt = s.entity.truth.gsn;
+    let payload, source;
+    if (s.dirty) {
+      if (s.rules.serveCacheWhileDirty && s.cache.entry) {
+        payload = clone(s.cache.entry);
+        source = 'decoded cache (served while dirty)';
+        log(s, 'Read found a ' + s.dirty.kind + ' mark but served the decoded cache anyway (rule: serve cache while dirty).', 'bad');
+      } else {
+        s = beginMaterialize(s, 'read');
+        const lbl = s.inflight[s.inflight.length - 1].label;
+        s = finishMaterialize(s, lbl);
+        payload = s.lastMaterialize.result ? clone(s.lastMaterialize.result) : null;
+        source = 'materialized on demand';
+      }
+    } else {
+      const r = cleanRead(s);
+      s = r.state;
+      payload = r.payload;
+      source = r.source;
+    }
+
+    const servedGsn = payload ? payload.gsn : 0;
+    const notFound = !payload || payload.deleted;
+    const stale = !notFound && servedGsn < startedAt;
+    s.lastRead = {
+      source: source,
+      status: notFound ? 'not found' : 'ok',
+      servedGsn: servedGsn,
+      fields: payload ? clone(payload.fields) : null,
+      startedAt: startedAt,
+      stale: stale,
+    };
+    if (stale) {
+      s.staleReads += 1;
+      log(s, 'STALE READ: the read began after action #' + startedAt + ' was already committed, but it returned action #' + servedGsn + '.', 'bad');
+    } else if (notFound && startedAt > servedGsn && s.entity.truth.deleted === false && payload && payload.deleted) {
+      s.staleReads += 1;
+      s.lastRead.stale = true;
+      log(s, 'STALE READ: the entity is live in the source of truth but the read returned “deleted”.', 'bad');
+    } else {
+      log(s, 'Read served ' + (notFound ? '“not found”' : 'action #' + servedGsn) + ' from ' + source + '.');
+    }
+    s.flash = ['read', 'cache', 'sqlite', 'dirty'];
+    return s;
+  }
+
+  function evict(state) {
+    const s = clone(state);
+    s.cache.entry = null;
+    s.flash = ['cache'];
+    return step(s, 'Memory pressure: the decoded cache entry is evicted. A later clean read will fall back to SQLite and decode.');
+  }
+
+  /* ---- derived: what is wrong right now -------------------------------- */
+
+  function invariants(state) {
+    const out = [];
+    const t = state.entity.truth;
+    const row = state.sqlite.row;
+    const c = state.cache.entry;
+    if (!state.dirty && row && row.gsn < t.gsn) {
+      out.push({ level: 'bad', text: 'CLEAN BUT BEHIND: there is no dirty mark, yet SQLite is at action #' + row.gsn + ' and a write has already committed at action #' + t.gsn + '. Nothing will ever re-materialize this entity — every later read serves stale data permanently.' });
+    }
+    if (!state.dirty && c && row && c.gsn < row.gsn) {
+      out.push({
+        level: state.rules.validateRead ? 'warn' : 'bad',
+        text: 'The decoded cache holds action #' + c.gsn + ' while SQLite holds action #' + row.gsn + '.' +
+          (state.rules.validateRead
+            ? ' A clean read will notice the mismatch and decode from SQLite, so it self-heals.'
+            : ' A clean read trusts the cache and will serve the older map — stale data.'),
+      });
+    }
+    if (!state.dirty && c && row && c.gsn === row.gsn && c.deleted !== row.deleted) {
+      out.push({ level: 'bad', text: 'The decoded cache and SQLite disagree about deletion at the same action number.' });
+    }
+    if (state.dirty && (!row || row.gsn < t.gsn)) {
+      out.push({ level: 'info', text: 'A ' + state.dirty.kind + ' mark is outstanding; the next read will re-materialize before answering.' });
+    }
+    if (state.dirty && row && row.gsn >= t.gsn) {
+      out.push({ level: 'info', text: 'A mark is outstanding but SQLite is already current (a failed commit left a mark, or a write landed and was materialized but not yet cleared). The next read clears it.' });
+    }
+    return out;
+  }
+
+  return {
+    initialState: initialState,
+    reset: reset,
+    setRule: setRule,
+    describeWrite: describeWrite,
+    beginWrite: beginWrite,
+    commit: commit,
+    settle: settle,
+    abort: abort,
+    settleAllPending: settleAllPending,
+    directWrite: directWrite,
+    beginMaterialize: beginMaterialize,
+    finishMaterialize: finishMaterialize,
+    read: read,
+    evict: evict,
+    invariants: invariants,
+  };
+})();
+
+/* =========================================================================
+   PAGE SHELL
+   ========================================================================= */
+const $ = (id) => document.getElementById(id);
+const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+const RULE_META = [
+  { key: 'invalidateOnWrite', label: 'Discard the cache entry when a write commits', hint: '#516’s “invalidated when the entity is written”. Note it does not by itself stop a slow materializer from putting an old entry back.', danger: false },
+  { key: 'monotonicCacheWrite', label: 'Only store a cache entry that advances its action #', hint: 'Mirrors SQLite’s “never regress a row” upsert. The main defence against two materializations finishing out of order.', danger: false },
+  { key: 'validateRead', label: 'On a clean read, check the cache’s action # against SQLite', hint: 'One cheap lookup that does not parse the blob. Makes eviction and out-of-order writes self-healing.', danger: false },
+  { key: 'serveCacheWhileDirty', label: 'Serve the cache even when the mark says dirty', hint: 'An optimisation that skips materialization on a dirty entity. Watch what a commit in flight does to it.', danger: true },
+  { key: 'populateOnCleanRead', label: 'A clean read that had to decode also fills the cache', hint: 'Needed if entities can exist before this process started (otherwise the cache only warms after a write).', danger: false },
+  { key: 'cacheTombstones', label: 'Cache deleted entities like any other row', hint: 'Turning this off without also removing the old entry resurrects a deleted entity.', danger: false },
+  { key: 'compareAndClear', label: 'Only clear the exact dirty mark that was observed', hint: '#281. Turning this off shows how clearing a newer mark hides a committed write forever.', danger: false },
+];
+
+let state = Model.reset();
+let activeScenario = null;
+let stepIndex = 0;
+
+/* ---- render helpers ---------------------------------------------------- */
+
+function fieldsTable(fields) {
+  if (!fields) return '<span class="muted">—</span>';
+  const keys = Object.keys(fields);
+  if (keys.length === 0) return '<span class="muted">(no fields)</span>';
+  return '<table class="kv">' + keys.map((k) =>
+    '<tr><td class="k">' + esc(k) + '</td><td class="mono">' + esc(JSON.stringify(fields[k])) + '</td></tr>'
+  ).join('') + '</table>';
+}
+
+function flashClass(key) {
+  return state.flash && state.flash.indexOf(key) >= 0 ? ' flash' : '';
+}
+
+function markPill(m) {
+  if (!m) return '<span class="pill ok">clean</span>';
+  if (m.kind === 'pending') return '<span class="pill warn">provisional · id ' + m.generation + '</span>';
+  return '<span class="pill bad">settled dirty · id ' + m.generation + '</span>';
+}
+
+function renderStatus() {
+  const won = Model.invariants(state).filter((a) => a.level === 'bad').length;
+  $('statusbar').innerHTML =
+    '<div class="item">Committed action&nbsp;# <b>' + state.entity.truth.gsn + '</b></div>' +
+    '<div class="item">SQLite materialized to <b>#' + (state.sqlite.row ? state.sqlite.row.gsn : '—') + '</b></div>' +
+    '<div class="item">Decoded cache <b>' + (state.cache.entry ? '#' + state.cache.entry.gsn : 'empty') + '</b></div>' +
+    '<div class="item">Dirty mark ' + markPill(state.dirty) + '</div>' +
+    '<div class="item">Materializations in flight <b>' + state.inflight.length + '</b></div>' +
+    '<div class="item">Stale reads so far <b>' + state.staleReads + '</b></div>' +
+    '<div class="item">' + (won ? '<span class="pill bad">' + won + ' correctness problem' + (won > 1 ? 's' : '') + '</span>' : '<span class="pill ok">no correctness problems</span>') + '</div>';
+}
+
+function renderRules() {
+  $('rules').innerHTML = RULE_META.map((r) => {
+    const on = !!state.rules[r.key];
+    return '<label class="rule' + (r.danger ? ' danger' : '') + '">' +
+      '<input type="checkbox" data-rule="' + r.key + '"' + (on ? ' checked' : '') + '>' +
+      '<span><b>' + esc(r.label) + '</b><span class="hint">' + esc(r.hint) + '</span></span></label>';
+  }).join('');
+}
+
+function renderState() {
+  const t = state.entity.truth;
+  const row = state.sqlite.row;
+  const c = state.cache.entry;
+
+  const truthCard =
+    '<div class="card' + flashClass('sqlite') + '"><h4>Source of truth (committed actions) <span class="tag">RocksDB</span></h4>' +
+    '<table class="kv"><tr><td class="k">last committed action #</td><td class="mono">' + t.gsn + '</td></tr>' +
+    '<tr><td class="k">state</td><td>' + (t.deleted ? '<span class="pill bad">deleted by ' + esc(t.deletedBy) + '</span>' : '<span class="pill ok">live</span>') + '</td></tr></table>' +
+    fieldsTable(t.fields) + '</div>';
+
+  const back = row ? t.gsn - row.gsn : null;
+  const sqliteCard =
+    '<div class="card' + flashClass('sqlite') + '"><h4>Materialized read copy <span class="tag">SQLite</span></h4>' +
+    (row
+      ? '<table class="kv"><tr><td class="k">last materialized action #</td><td class="mono">' + row.gsn + '</td></tr>' +
+        '<tr><td class="k">state</td><td>' + (row.deleted ? '<span class="pill bad">tombstone</span>' : '<span class="pill ok">live</span>') + '</td></tr>' +
+        '<tr><td class="k">behind the source of truth by</td><td class="mono">' + back + ' action' + (back === 1 ? '' : 's') + '</td></tr></table>'
+      : '<p class="muted">No row yet.</p>') +
+    fieldsTable(row ? row.fields : null) + '</div>';
+
+  const dirtyCard =
+    '<div class="card' + flashClass('dirty') + '"><h4>Dirty mark <span class="tag">ETS</span></h4>' +
+    '<p>' + markPill(state.dirty) + '</p>' +
+    '<p class="muted" style="font-size:12.5px">' +
+    (!state.dirty
+      ? 'Clean. A read trusts the copies and answers from the cache.'
+      : state.dirty.kind === 'pending'
+        ? 'Provisional: a commit is in flight. Reads re-materialize but never clear this mark; only the writer resolves it.'
+        : 'Settled: a write completed and has not been folded in. The next read materializes and clears it — if the id still matches.') +
+    '</p></div>';
+
+  const cacheFresh = c && row ? (c.gsn === row.gsn ? 'in step with SQLite' : c.gsn < row.gsn ? 'behind SQLite' : 'ahead of SQLite') : null;
+  const cacheCard =
+    '<div class="card' + flashClass('cache') + '"><h4>Decoded cache <span class="tag">new in #516</span></h4>' +
+    (c
+      ? '<table class="kv"><tr><td class="k">action #</td><td class="mono">' + c.gsn + '</td></tr>' +
+        '<tr><td class="k">state</td><td>' + (c.deleted ? '<span class="pill bad">tombstone</span>' : '<span class="pill ok">live</span>') + '</td></tr>' +
+        '<tr><td class="k">vs SQLite</td><td>' + (cacheFresh === 'in step with SQLite' ? '<span class="pill ok">' + cacheFresh + '</span>' : '<span class="pill ' + (state.rules.validateRead ? 'warn' : 'bad') + '">' + cacheFresh + '</span>') + '</td></tr></table>' +
+        fieldsTable(c.fields)
+      : '<p class="muted">Empty. Nothing has been materialized or decoded yet.</p>') +
+    '</div>';
+
+  const writesCard =
+    '<div class="card' + flashClass('writes') + '"><h4>Writes in flight</h4>' +
+    (state.writes.length === 0
+      ? '<p class="muted">None.</p>'
+      : '<table class="kv">' + state.writes.map((w) =>
+          '<tr><td class="k">' + esc(w.label) + '</td><td>' + esc(Model.describeWrite(w)) + '<br>' +
+          (w.durable ? '<span class="pill warn">durable at #' + w.gsn + ', mark not settled</span>' : '<span class="pill neutral">commit in flight · mark id ' + w.generation + '</span>') +
+          '</td></tr>').join('') + '</table>') +
+    '</div>';
+
+  const inflightCard =
+    '<div class="card' + flashClass('inflight') + '"><h4>Materializations in flight</h4>' +
+    (state.inflight.length === 0
+      ? '<p class="muted">None.</p>'
+      : '<table class="kv">' + state.inflight.map((h) =>
+          '<tr><td class="k">' + esc(h.label) + '</td><td>recorded mark id <span class="mono">' + h.observedGen + '</span> (' + (h.observedKind || 'clean') + ')<br>' +
+          'started from SQLite <span class="mono">#' + h.baseGsn + '</span>, scanned up to <span class="mono">#' + h.scannedGsn + '</span>' +
+          '</td></tr>').join('') + '</table>') +
+    '</div>';
+
+  const lr = state.lastRead;
+  const readCard =
+    '<div class="card' + flashClass('read') + '"><h4>Last read returned</h4>' +
+    (lr
+      ? '<table class="kv"><tr><td class="k">status</td><td>' + (lr.status === 'not found' ? '<span class="pill warn">not found</span>' : '<span class="pill ok">ok</span>') +
+        (lr.stale ? ' <span class="pill bad">STALE</span>' : '') + '</td></tr>' +
+        '<tr><td class="k">action # served</td><td class="mono">' + (lr.servedGsn || '—') + '</td></tr>' +
+        '<tr><td class="k">committed when the read began</td><td class="mono">#' + lr.startedAt + '</td></tr>' +
+        '<tr><td class="k">source</td><td>' + esc(lr.source) + '</td></tr></table>' +
+        fieldsTable(lr.fields)
+      : '<p class="muted">No read yet.</p>') +
+    '</div>';
+
+  $('state').innerHTML = truthCard + sqliteCard + dirtyCard + cacheCard + writesCard + inflightCard + readCard;
+
+  const inv = Model.invariants(state);
+  const alertsCard =
+    '<div class="card"><h4>Correctness check</h4>' +
+    (inv.length === 0
+      ? '<div class="alerts"><div class="alert ok">Everything the server promises holds right now: no clean copy is behind the source of truth, and no read has gone backwards.</div></div>'
+      : '<div class="alerts">' + inv.map((a) => '<div class="alert ' + a.level + '">' + esc(a.text) + '</div>').join('') + '</div>') +
+    '</div>';
+  $('state').innerHTML += alertsCard;
+
+  $('log').innerHTML = state.log.map((l) => '<div class="' + l.level + '">' + esc(l.text) + '</div>').join('');
+}
+
+/* ---- free play --------------------------------------------------------- */
+
+function freeplaySpec(kind) {
+  const n = state.counters.write + 1;
+  if (kind === 'delete') return { label: 'W' + n, kind: 'delete' };
+  if (kind === 'done') return { label: 'W' + n, kind: 'patch', field: 'done', value: true };
+  return { label: 'W' + n, kind: 'patch', field: 'title', value: 'Edit ' + n };
+}
+
+function renderFree() {
+  const buttons = [
+    ['Read entity', () => Model.read(state)],
+    ['Begin write — change title', () => Model.beginWrite(state, freeplaySpec('patch'))],
+    ['Begin write — tick “done”', () => Model.beginWrite(state, freeplaySpec('done'))],
+    ['Begin write — delete entity', () => Model.beginWrite(state, freeplaySpec('delete'))],
+    ['Commit the newest open write', () => Model.commit(state, null)],
+    ['Settle the mark', () => Model.settle(state, null)],
+    ['Abandon the newest open write', () => Model.abort(state, null)],
+    ['Start materialization', () => Model.beginMaterialize(state, null)],
+    ['Finish the oldest materialization', () => Model.finishMaterialize(state, null)],
+    ['Memory pressure — evict cache entry', () => Model.evict(state)],
+    ['Writer restart — settle provisional marks', () => Model.settleAllPending(state)],
+    ['Reset everything', () => Model.reset(state.rules)],
+  ];
+  $('freeplay').innerHTML = buttons.map((b, i) => '<button data-free="' + i + '">' + esc(b[0]) + '</button>').join('');
+  $('freeplay').querySelectorAll('button').forEach((el) => {
+    el.onclick = () => {
+      state = buttons[Number(el.dataset.free)][1]();
+      renderAll();
+    };
+  });
+}
+
+/* ---- scenarios --------------------------------------------------------- */
+
+const A = {
+  read: () => (s) => Model.read(s),
+  begin: (label, spec) => (s) => Model.beginWrite(s, Object.assign({ label: label }, spec)),
+  commit: (label) => (s) => Model.commit(s, label),
+  settle: (label) => (s) => Model.settle(s, label),
+  abort: (label) => (s) => Model.abort(s, label),
+  startMat: (label) => (s) => Model.beginMaterialize(s, label),
+  finishMat: (label) => (s) => Model.finishMaterialize(s, label),
+  evict: () => (s) => Model.evict(s),
+  direct: (label, spec) => (s) => Model.directWrite(s, Object.assign({ label: label }, spec)),
+};
+
+function step(btn, note, run) { return { btn: btn, note: note, run: run }; }
+
+function touched(field, value) { return { kind: 'patch', field: field, value: value }; }
+function deleted() { return { kind: 'delete' }; }
+
+function outOfOrderSteps(extraEvict) {
+  const steps = [
+    step('Start write W1 — change the title', 'A writer stamps a provisional mark before it commits.', A.begin('W1', touched('title', 'Edited'))),
+    step('W1 becomes durable', 'Action #2 is committed. The provisional mark is still in place.', A.commit('W1')),
+    step('Writer settles the mark', 'The mark is now an ordinary settled dirty mark.', A.settle('W1')),
+    step('Reader A starts materializing, then stalls', 'A records the mark, reads SQLite at action #1, and scans the source of truth up to action #2 — a non-empty delta, so it will use its own snapshot when it finishes.', A.startMat('A')),
+    step('Write W2 — tick “done”', 'A second write opens its own provisional mark, overwriting the tuple.', A.begin('W2', touched('done', true))),
+    step('W2 becomes durable', 'Action #3 is committed.', A.commit('W2')),
+    step('Writer settles W2’s mark', 'The mark is settled at a newer id than the one A recorded.', A.settle('W2')),
+    step('A different reader materializes fully', 'A normal read runs start-to-finish: stores action #3 and clears the mark.', A.read()),
+  ];
+  if (extraEvict) {
+    steps.push(step('Memory pressure evicts the decoded entry', 'The entry is gone. Nothing records that action #3 was ever cached.', A.evict()));
+  }
+  steps.push(
+    step('Reader A finally finishes', 'A computes action #2 from its old snapshot. SQLite refuses to regress. What about the decoded cache?', A.finishMat('A')),
+    step('Read the entity', 'Watch the action # the read serves, and the correctness check below.', A.read())
+  );
+  return steps;
+}
+
+const SCENARIOS = [
+  {
+    id: 'happy',
+    title: 'Happy path',
+    blurb: 'A clean read decodes once and then hits the cache; a write marks dirty; the next read materializes and refreshes the cache.',
+    watch: 'Watch: the second read does not decode, and after the write the cache and SQLite both move to the new action #.',
+    rules: {},
+    steps: [
+      step('Read the entity', 'Nothing dirty. SQLite decodes the blob and, because populate-on-clean-read is on, fills the decoded cache.', A.read()),
+      step('Read it again', 'A pure cache hit: no JSON parsed.', A.read()),
+      step('Patch the title', 'A commit at action #2 marks the entity dirty and (per the rule) discards the cache entry.', A.direct('W1', touched('title', 'Edited'))),
+      step('Read it', 'Dirty, so it materializes: stores action #2, fills the cache, clears the mark.', A.read()),
+      step('Read it again', 'Clean cache hit at the newest action.', A.read()),
+    ],
+  },
+  {
+    id: 'ooo-guarded',
+    title: 'Out of order — guarded',
+    blurb: 'Two materializations of the same entity run at once; the older one finishes last. This is the case the SQLite upsert already guards with “never regress a row”.',
+    watch: 'Watch: A’s older row is refused by SQLite, and the monotonic cache rule refuses A’s older map too. The final read stays at action #3.',
+    rules: { monotonicCacheWrite: true, validateRead: false },
+    steps: outOfOrderSteps(false),
+  },
+  {
+    id: 'ooo-unguarded',
+    title: 'Out of order — guard off',
+    blurb: 'The same race, with the monotonic cache rule turned off. SQLite still refuses the older row, so the two copies now disagree.',
+    watch: 'Watch: the decoded cache regresses to action #2 while SQLite holds #3. The final read serves the stale map — a real correctness break.',
+    rules: { monotonicCacheWrite: false, validateRead: false },
+    steps: outOfOrderSteps(false),
+  },
+  {
+    id: 'pending-safe',
+    title: 'Commit in flight — safe',
+    blurb: 'A write is durable but the writer has not settled the mark yet. A read now must still see the commit, because it started after the commit completed.',
+    watch: 'Watch: the provisional mark forces the read to materialize rather than trust the cache. Correct, at the cost of one extra materialization later.',
+    rules: { monotonicCacheWrite: true, validateRead: false },
+    steps: [
+      step('Read (warm the decoded cache)', 'Cache now holds action #1.', A.read()),
+      step('Start write W1 — change the title', 'Provisional mark id 1.', A.begin('W1', touched('title', 'Edited'))),
+      step('W1 becomes durable', 'Action #2 is committed, but the writer has not settled the mark. This is the dangerous window.', A.commit('W1')),
+      step('Read the entity', 'The mark is provisional, so the read materializes and returns action #2.', A.read()),
+      step('Writer settles the mark', 'Settled dirty id 2.', A.settle('W1')),
+      step('Read again', 'Dirty again, so it re-materializes (wasted work, still correct) and clears the mark.', A.read()),
+    ],
+  },
+  {
+    id: 'pending-unsafe',
+    title: 'Commit in flight — cache trusted',
+    blurb: 'The same window, with the “serve the cache even when dirty” rule on. Discarding the cache on write is not enough: a materialization that started before the commit re-fills the slot with its older snapshot.',
+    watch: 'Watch: the read starts after the commit is durable yet returns the pre-commit map. That violates the server’s guarantee.',
+    rules: { serveCacheWhileDirty: true, invalidateOnWrite: true },
+    steps: [
+      step('Read (warm the decoded cache)', 'Cache holds action #1.', A.read()),
+      step('Start write W1 — change the title', 'Provisional mark id 1.', A.begin('W1', touched('title', 'Edited'))),
+      step('Reader A starts materializing, then stalls', 'A scans before the commit lands, so it finds no new actions.', A.startMat('A')),
+      step('W1 becomes durable', 'Action #2 is committed. Invalidate-on-write discards the cache entry.', A.commit('W1')),
+      step('Reader A finally finishes', 'A found nothing new, so it re-reads SQLite — still action #1 — and re-fills the now-empty cache slot with that older snapshot.', A.finishMat('A')),
+      step('Read the entity', 'The mark is still provisional and the cache is present, so the read serves action #1 — stale, even though it began after the commit.', A.read()),
+    ],
+  },
+  {
+    id: 'delete-safe',
+    title: 'Delete — tombstone cached',
+    blurb: 'A deleted entity must stay deleted on every later clean read. SQLite stores a tombstone row for exactly this reason.',
+    watch: 'Watch: the cached tombstone keeps returning “not found”.',
+    rules: { cacheTombstones: true, monotonicCacheWrite: true, validateRead: false },
+    steps: [
+      step('Read (warm the decoded cache)', 'Cache holds a live entry at action #1.', A.read()),
+      step('Delete the entity', 'Action #2 is a tombstone; the mark goes dirty.', A.direct('W1', deleted())),
+      step('Read it', 'Materialize: SQLite stores the tombstone, the cache caches the tombstone, the mark clears. Returns “not found”.', A.read()),
+      step('Read it again', 'Clean hit on a tombstone. Must still be “not found”.', A.read()),
+    ],
+  },
+  {
+    id: 'delete-unsafe',
+    title: 'Delete — tombstone not cached',
+    blurb: 'A plausible-sounding rule: don’t cache deleted entities. Unless the old live entry is removed at the same time, it stays behind.',
+    watch: 'Watch: the delete materializes, but the stale live cache entry survives and the next clean read resurrects the entity.',
+    rules: { cacheTombstones: false, monotonicCacheWrite: true, validateRead: false, invalidateOnWrite: false },
+    steps: [
+      step('Read (warm the decoded cache)', 'Cache holds a live entry at action #1.', A.read()),
+      step('Delete the entity', 'Tombstone at action #2. “Invalidate on write” is off here so we isolate the tombstone rule.', A.direct('W1', deleted())),
+      step('Read it', 'Materialize stores the tombstone in SQLite, but skips the cache because of the rule. Returns “not found”.', A.read()),
+      step('Read it again', 'Clean, and the old live cache entry is still there — the entity comes back from the dead.', A.read()),
+    ],
+  },
+  {
+    id: 'cc-safe',
+    title: 'Compare-and-clear — newer mark survives',
+    blurb: 'A write lands while a materialization is in flight. The materializer must clear only the mark it saw (#281), never the newer one.',
+    watch: 'Watch: A’s clear does nothing because the id changed; the next read still re-materializes to the newest action.',
+    rules: { compareAndClear: true, monotonicCacheWrite: true },
+    steps: [
+      step('Start write W1 — change the title', 'Provisional mark id 1.', A.begin('W1', touched('title', 'Edited'))),
+      step('W1 becomes durable', 'Action #2.', A.commit('W1')),
+      step('Writer settles the mark', 'Settled mark id 2.', A.settle('W1')),
+      step('Reader A starts materializing, then stalls', 'A records mark id 2 and scans up to action #2.', A.startMat('A')),
+      step('Write W2 — tick “done”', 'This overwrites the mark with a newer settled id.', A.direct('W2', touched('done', true))),
+      step('Reader A finally finishes', 'A materializes action #2 and tries to clear mark id 2 — which no longer exists.', A.finishMat('A')),
+      step('Read the entity', 'The newer mark survived, so the read materializes action #3 and clears it.', A.read()),
+    ],
+  },
+  {
+    id: 'cc-unsafe',
+    title: 'Compare-and-clear — unconditional clear',
+    blurb: 'The #281 failure mode, reproduced with the compare off. A materializer clears whatever mark is present, including one it never saw.',
+    watch: 'Watch: the entity goes clean while SQLite is still behind a committed action. Permanent staleness — no later read will fix it.',
+    rules: { compareAndClear: false, monotonicCacheWrite: true },
+    steps: [
+      step('Start write W1 — change the title', 'Provisional mark id 1.', A.begin('W1', touched('title', 'Edited'))),
+      step('W1 becomes durable', 'Action #2.', A.commit('W1')),
+      step('Writer settles the mark', 'Settled mark id 2.', A.settle('W1')),
+      step('Reader A starts materializing, then stalls', 'A records mark id 2 and scans up to action #2.', A.startMat('A')),
+      step('Write W2 — tick “done”', 'Action #3 overwrites the mark with a newer settled id.', A.direct('W2', touched('done', true))),
+      step('Reader A finally finishes', 'A clears the mark without comparing ids. The dirty mark is gone even though action #3 was never folded in.', A.finishMat('A')),
+      step('Read the entity', 'No mark, so the read answers from the cache/SQLite at action #2 while the source of truth is at #3.', A.read()),
+    ],
+  },
+  {
+    id: 'evict-unguarded',
+    title: 'Eviction + a late materializer',
+    blurb: 'Memory pressure evicts an entry. A materialization that started before the eviction then re-inserts its old snapshot into the now-empty slot.',
+    watch: 'Watch: with the monotonic rule on, the cache started empty so nothing stops the old write. The final read is stale.',
+    rules: { monotonicCacheWrite: true, validateRead: false },
+    steps: outOfOrderSteps(true),
+  },
+  {
+    id: 'evict-validated',
+    title: 'Eviction — validation heals it',
+    blurb: 'The same sequence, with the clean read checking the cache’s action # against SQLite. The stale entry is simply not trusted.',
+    watch: 'Watch: the read notices the mismatch, decodes from SQLite, and refreshes the cache. Self-healing.',
+    rules: { monotonicCacheWrite: true, validateRead: true },
+    steps: outOfOrderSteps(true),
+  },
+];
+
+function renderTabs() {
+  $('tabs').innerHTML = SCENARIOS.map((sc) =>
+    '<div class="tab' + (activeScenario === sc.id ? ' active' : '') + '" data-sc="' + sc.id + '">' + esc(sc.title) + '</div>'
+  ).join('');
+  $('tabs').querySelectorAll('.tab').forEach((el) => {
+    el.onclick = () => selectScenario(el.dataset.sc);
+  });
+}
+
+function renderScenario() {
+  const sc = SCENARIOS.find((x) => x.id === activeScenario);
+  if (!sc) { $('scenario').innerHTML = ''; return; }
+  const stepsHtml = sc.steps.map((st, i) => {
+    const done = i < stepIndex;
+    const current = i === stepIndex;
+    return '<div class="stepwrap"><div class="stepnum ' + (done ? 'done' : current ? 'current' : '') + '">' + (done ? '✓' : i + 1) + '</div>' +
+      '<div class="stepbody"><button class="step' + (done ? ' done' : '') + '" data-step="' + i + '"' + (current ? '' : ' disabled') + '>' + esc(st.btn) + '</button>' +
+      (current ? '<div class="stepnote">' + esc(st.note) + '</div>' : '') + '</div></div>';
+  }).join('');
+  const finished = stepIndex >= sc.steps.length;
+  $('scenario').innerHTML =
+    '<div class="scenario"><p class="blurb">' + esc(sc.blurb) + '</p>' +
+    '<p class="watch">' + esc(sc.watch) + '</p>' +
+    '<div class="btnrow" style="margin-bottom:14px"><button class="primary" data-restart="1">Restart scenario</button>' +
+    (finished ? '<span class="pill ok" style="align-self:center">walkthrough complete</span>' : '') + '</div>' +
+    '<div class="steps">' + stepsHtml + '</div></div>';
+  $('scenario').querySelector('[data-restart]').onclick = () => startScenario(activeScenario);
+  $('scenario').querySelectorAll('[data-step]').forEach((el) => {
+    el.onclick = () => {
+      const i = Number(el.dataset.step);
+      if (i !== stepIndex) return;
+      state = sc.steps[i].run(state);
+      stepIndex += 1;
+      renderAll();
+    };
+  });
+}
+
+function selectScenario(id) {
+  activeScenario = id;
+  startScenario(id);
+}
+
+function startScenario(id) {
+  const sc = SCENARIOS.find((x) => x.id === id);
+  activeScenario = id;
+  stepIndex = 0;
+  state = Model.reset(sc.rules);
+  renderAll();
+}
+
+/* ---- wiring ------------------------------------------------------------ */
+
+function renderAll() {
+  renderStatus();
+  renderRules();
+  renderState();
+  renderFree();
+  renderTabs();
+  renderScenario();
+}
+
+$('rules').addEventListener('change', (e) => {
+  const key = e.target.dataset.rule;
+  if (!key) return;
+  state = Model.setRule(state, key, e.target.checked);
+  renderAll();
+});
+
+state = Model.reset();
+selectScenario('happy');
+</script>
+</body>
+</html>
