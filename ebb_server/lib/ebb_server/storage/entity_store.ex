@@ -295,7 +295,9 @@ defmodule EbbServer.Storage.EntityStore do
     SQLite.upsert_entity(entity_row, sqlite_name)
     clear_settled(entity_id, observed_generation, dirty_set)
 
-    format_live_entity(entity_row)
+    # `merged_data` is already the decoded form; handing it to the formatter
+    # avoids re-decoding `entity_row.data`, i.e. re-parsing the whole blob.
+    format_live_entity(%{entity_row | data: merged_data})
   end
 
   defp apply_actions(entity_id, data, entries, rocks_name) do
@@ -421,6 +423,10 @@ defmodule EbbServer.Storage.EntityStore do
 
   defp format_live_entity(%{deleted_hlc: nil} = row), do: {:ok, format_entity(row)}
   defp format_live_entity(_row), do: :not_found
+
+  # Callers that already hold the decoded map (materialize) pass it straight
+  # through; SQLite rows carry JSON text and are decoded here.
+  defp format_entity(%{data: data} = row) when is_map(data), do: row
 
   defp format_entity(%{data: nil} = row) do
     raise "Unexpected nil data for entity #{inspect(row.id)}"
