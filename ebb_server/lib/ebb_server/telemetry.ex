@@ -22,8 +22,10 @@ defmodule EbbServer.Telemetry do
   | `ebb.system_cache.populated`              | `duration` (native), `entity_types`, `group_members`, `entity_groups`, `relationships`, `backfilled` | `outcome` (`:ok` / `:error`), `reason` |
   | `ebb.watermark.lag`                       | `lag` (max GSN − committed watermark) | —                                                   |
   | `ebb.dirty_set.size`                      | `size`                                | —                                                   |
-  | `ebb.entity_store.materialize_latency_ms` | `duration` (native)                   | `subject_id`, `subject_type`                        |
-  | `ebb.entity_store.cache_hit_rate`         | `count`                               | `result` (`:hit` / `:miss`)                         |
+  | `ebb.entity_store.materialize_latency_ms` | `duration` (native), `byte_size`      | `subject_id`, `subject_type`, `path` (`:dirty_materialize`) |
+  | `ebb.entity_store.materialize_phase_ms`   | `duration` (native)                   | `phase` (`:fetch_decode` / `:actions_load` / `:merge` / `:encode` / `:upsert` / `:format`) |
+  | `ebb.entity_store.read_latency_ms`        | `duration` (native), `byte_size`, `row_count` | `path` (`:clean_hit` / `:query`), `subject_id`      |
+  | `ebb.entity_store.cache_hit_rate`         | `count`                               | `result` (`:hit` / `:miss`), `path` (`:dirty_materialize` / `:clean_hit` / `:query`) |
   | `ebb.fanout.push_latency_ms`              | `duration` (native)                   | `group_id`                                          |
   | `ebb.fanout.dispatched_actions`           | `count`, `subscribers`                | `group_id`                                          |
   | `ebb.fanout.active_connections`           | `count`                               | —                                                   |
@@ -43,6 +45,27 @@ defmodule EbbServer.Telemetry do
   the GroupServer dispatching the batch to the group's subscribers: one sample
   per dispatched batch per group. Ranges recovered after a Router restart
   carry no commit time and are not sampled.
+
+  `ebb.entity_store.*` attributes the read path by size and phase. `byte_size`
+  is the JSON blob (`row.data`) before it is decoded: the pre-existing blob on
+  a dirty materialize, the returned blob on a clean hit, and the summed blob
+  size of the rows a query decoded. It is a measurement, not metadata, so a
+  reporter records `duration` and `byte_size` together and can bucket one by
+  the other. Counting the `content` field's map keys would be a second O(N)
+  walk of the decoded value, so the catalogue does not promise it; byte size is
+  the size proxy. `ebb.entity_store.materialize_phase_ms` breaks one dirty
+  materialize into `:fetch_decode` (SQLite SELECT + `Jason.decode!`),
+  `:actions_load` (RocksDB `multi_get` + ETF decode), `:merge` (replay), and
+  the `:encode` → `:upsert` → `:format` tail, so the blob JSON, the SQLite
+  upsert, and the merge are separable. `:upsert` includes the eight STORED
+  `json_extract` generated columns SQLite recomputes; the phase sample is the
+  only place that cost is visible. Phases fire once per dirty materialize and
+  only on success; a phase that raises is left to the surrounding rescue and
+  reported as `:materialization_failed`. `ebb.entity_store.read_latency_ms`
+  covers the two decode-only reads — a clean `get` (`:clean_hit`) and the
+  `Enum.map` over a query's rows (`:query`, one sample per query, never per
+  row) — so the decode cost is visible without adding per-row spans to
+  `query/4`.
 
   `ebb.fanout.dispatched_actions` is an observability counter, not a latency: it
   fires once per dispatched batch with the number of Actions in the batch
