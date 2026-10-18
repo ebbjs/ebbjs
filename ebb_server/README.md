@@ -617,8 +617,8 @@ Measured on the bench host described in
 | 1,000 collaborative documents with 10 concurrent editors | Not measured              | Workload-level target; not exercised by the write-path benchmark.                                                                                                                                                                                                  |
 | 10,000–20,000 Action writes/sec sustained                | **Measured: ~15,100/sec** | Single Writer, `sync: true`, 2-Update Actions, 100 Actions/request, 8 concurrent clients; steady 61–120s. See [`bench/RESULTS.md`](bench/RESULTS.md).                                                                                                              |
 | 108k burst                                               | Superseded                | A 2-writer raw-RocksDB primitive from [#130](https://github.com/ebbjs/ebbjs/issues/130), never measured through `ebb_server`. Measured server burst ~15,600/sec.                                                                                                   |
-| `ctx.get(id)`: <2ms p99                                  | Not measured              | Read path; the harness measures writes only.                                                                                                                                                                                                                       |
-| `ctx.query(type)`: <10ms p99 at 100k entities            | Not measured              | Read path.                                                                                                                                                                                                                                                         |
+| `ctx.get(id)`: <2ms p99                                  | Partially measured        | `EntityStore.get` is measured by `mix bench.materialize`: clean-read p50 0.26 ms at 100 run keys, 2.28 ms at 1,000, 10.97 ms at 5,000 (post-#514). Excludes HTTP and reports p50/p95, not p99.                                                                     |
+| `ctx.query(type)`: <10ms p99 at 100k entities            | Partially measured        | `EntityStore.query` p50 2.9 ms for 50 rows at 1,000 keys and 13.5 ms for 50 rows at 5,000 keys; the decode is ~75% of the large case. Not measured at 100k entities or over HTTP.                                                                                  |
 | SSE streaming latency: <50ms p50                         | Not measured              | The server-side leg (Writer commit → GroupServer dispatch) is now measurable via `ebb.fanout.push_latency_ms`. The end-to-end p50 a client observes remains unmeasured: it also includes network transit and client rendering, which no server-side metric covers. |
 
 ### Benchmarking
@@ -634,6 +634,17 @@ sync tree in a temp directory and writes a Markdown report to
 cd ebb_server
 mix bench.actions --tier t2 --duration 120 --warmup 5 --concurrency 8 \
   --batch-size 100 --updates-per-action 2 --distribution hot
+```
+
+`mix bench.materialize` runs the read / materialization benchmark: it
+seeds `content`-map documents of N run keys and measures the cold, dirty,
+and clean `get` paths plus `query` at K rows, with a phase breakdown and a
+SQLite generated-column ablation. Same isolated-boot and report shape.
+
+```sh
+cd ebb_server
+mix bench.materialize --runs 5 --reps 50 \
+  --sizes 100,500,1000,2000,5000 --spread-entities 50 --query-ks 1,10,50
 ```
 
 Published numbers, sweeps, and methodology:
