@@ -857,6 +857,45 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     expect(resolved.map((t) => t.name).sort()).toEqual(["a", "b", "c"]);
   });
 
+  it("routes traversal through the adjacency index, not a type scan", async () => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
+    await storage.entities.set(mkEntity("lbl-a", "label", { name: "a" }));
+    await storage.entities.set(mkEntity("l1", "list", { name: "Work" }));
+    await storage.entities.set(mkEntity("g1", "group", { name: "G" }));
+    await storage.entities.set(mkRelEntity("rel-a", "t1", "lbl-a", "tags", "todo"));
+    await storage.entities.set(mkRelEntity("rel-parent", "t1", "l1", "parentList", "todo"));
+    await storage.entities.set(mkEntityGroup("eg-1", "t1", "g1"));
+
+    const query = vi.spyOn(storage.entities, "query");
+    const forward = vi.spyOn(storage.entities, "queryByRelationshipSource");
+    const reverse = vi.spyOn(storage.entities, "queryByRelationship");
+    const memberships = vi.spyOn(storage.entities, "queryByMembershipEntity");
+
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: schemaWithRels,
+    });
+    const todo = await client.todo.get("t1");
+    if (todo === null) throw new Error("expected row");
+    await todo.tags;
+    await todo.parentList;
+    await todo.groups;
+    const list = await client.list.get("l1");
+    if (list === null) throw new Error("expected row");
+    await list.parentList;
+
+    const scannedTypes = query.mock.calls.map(([type]) => type);
+    expect(scannedTypes).not.toContain("relationship");
+    expect(scannedTypes).not.toContain("entityGroup");
+    expect(forward).toHaveBeenCalled();
+    expect(reverse).toHaveBeenCalled();
+    expect(memberships).toHaveBeenCalled();
+  });
+
   it("forward-one accessor returns the target entity when the edge exists", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
