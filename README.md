@@ -50,12 +50,12 @@ For a more detailed breakdown, see [`ebb_server/README.md`](ebb_server/README.md
 
 ## Performance
 
-Single-node figures measured through the real server pipeline (not a storage primitive) on a 4-scheduler VM. Full tables, reproduction commands, and caveats: [`ebb_server/bench/RESULTS.md`](ebb_server/bench/RESULTS.md).
+Server figures are single-node, measured through the real server pipeline (not a storage primitive) on a 4-scheduler VM. Full tables, reproduction commands, and caveats: [`ebb_server/bench/RESULTS.md`](ebb_server/bench/RESULTS.md). Client replica figures come from the client benchmark (`pnpm client:benchmark`); tables, method, and caveats: [`docs/research/503-replica-read-model.md`](docs/research/503-replica-read-model.md).
 
 - **Writes:** ~21,000 Actions/sec over HTTP (batch 100, `sync: true`) and ~26,000/sec calling the Writer directly. There is one Writer per server, so every room shares that budget.
 - **Batching dominates.** 100 Actions per request is the sweet spot; one Action per request is roughly an order of magnitude slower. The client outbox already debounces bursts.
 - **Fan-out:** commit → broadcast is ~30 ms, and the server dispatches on the order of **a million deliveries/sec** in-process. A _delivery_ is one Action reaching one subscriber, and it is the number that matters: `room load = edits/second × subscribers`.
-- **Reads:** not benchmarked yet.
+- **Reads (client replica):** a 10,000-document workspace holds **~41 MB** of metadata on the client — 29 MB of rows plus 12 MB of adjacency indices, 13% of the 323 MB workspace it represents — and **none of the 306 MB of document bodies**, which stay windowed and open in ~3.6 µs. A relationship or membership traversal reads its adjacency index with **0 rows scanned** in 0.5–0.9 µs; the public row accessor wrapping it costs 7–11 µs. A full scan of all 10,000 held pages — the shape a search over resident pages would use — is ~1.5 ms, against 42.5 ms per keystroke on the old async scan, and a one-pass projection build (hydrating the replica) is ~150 ms.
 
 Rough scale to expect on one box:
 
