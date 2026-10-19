@@ -39,7 +39,7 @@ The collaborative-text demo still runs with `pnpm dev:collab`.
    - the **shared workspace** (`grp_shared`) with a sample issue, attributed to the dedicated service actor `demo-seeder` (the invite/service-account pattern from [#126](https://github.com/ebbjs/ebbjs/issues/126)).
 3. A typed `SyncClient` runs `handshake()` and opens an SSE subscription for the actor's groups.
 4. The client persists to IndexedDB (one database per actor), so the Outbox survives a page reload: an unacknowledged write is rehydrated and flushed once the subscription reconnects.
-5. The ready tree is wrapped in `<EbbProvider>`. `useConnection()` drives the badge; `useQuery` drives the workspace switcher, profile card, membership panel, and issue list; `useEntity` + `useEntityMutations` drive the issue detail. Joining or leaving the shared workspace re-runs `handshake()` and replaces the subscription, so the group set stays current without a reload.
+5. The ready tree is wrapped in `<EbbProvider>`. `useConnection()` drives the badge; `useQuery` drives the workspace switcher, profile card, membership panel, issue list, and issue detail. Joining or leaving the shared workspace re-runs `handshake()` and replaces the subscription, so the group set stays current without a reload.
 
 Every seed id is derived from the actor id (or a fixed literal for the shared fixtures), so reloading re-`put`s the same rows: the seed is idempotent and its permissions cover the re-`put` path (a committed group is authorized by `group.create` in that group, not by the bootstrap exemption).
 
@@ -48,7 +48,7 @@ Every seed id is derived from the actor id (or a fixed literal for the shared fi
 The list has a **new issue** control and selectable rows. Selecting a row opens the detail view.
 
 - **Create** — `IssueCreateForm` calls `client.atomic` so the row and its optional `assignee` link commit in one Action. The Outbox applies it optimistically, so the issue appears in the list immediately. The assignee options come from the workspace's profiles (`.where("groups", groupId)`).
-- **Edit** — `IssueDetail` uses `useEntityMutations(client.issue)` for `update` (title, status, priority) and `client.issue.link` / `unlink` for the assignee. `useEntity` re-reads the row so the assignee resolves through the `issue.assignee` accessor.
+- **Edit** — `IssueDetail` reads the issue and its `assignee` from one `useQuery` with an `assignee` join. `client.issue.update` handles title / status / priority and `client.issue.link` / `unlink` the assignee; the query re-runs from the replica signal, so the projection follows the write without a manual revision bump.
 - **Delete** — a two-step confirmation, then `delete`; the row drops out of the list and the detail view reports the tombstone as gone.
 
 Every write goes through the documented public API — the typed namespace, `client.atomic`, and `link` / `unlink` — and the Outbox, so there are no hand-authored Actions and no bespoke optimistic layer.

@@ -169,22 +169,21 @@ await server.kill();
 
 ### `@ebbjs/react`
 
-React bindings for `@ebbjs/client` — a provider, a connection hook, and the data + mutation hooks. Ships `EbbProvider`, `useClient`, `useConnection`, `useQuery`, `useEntity`, and `useEntityMutations`.
+React bindings for `@ebbjs/client` — a provider, a connection hook, and the query + mutation hooks. Ships `EbbProvider`, `useClient`, `useConnection`, `useQuery`, and `useEntityMutations`.
 
 ```tsx
-import { EbbProvider, useClient, useEntity, useEntityMutations, useQuery } from "@ebbjs/react";
+import { EbbProvider, useClient, useEntityMutations, useQuery, type QueryRoot } from "@ebbjs/react";
 
 function OpenTodos() {
-  const client = useClient<Schema>();
-  const { data, loading, error } = useQuery(() =>
-    client.todo.query().where("completed", false).limit(50),
+  const { data, status, loading, error } = useQuery((q: QueryRoot<Schema>) =>
+    q.todo.query().where("completed", false).limit(50),
   );
 
   if (loading) return <span>loading…</span>;
   if (error) return <span>{error.message}</span>;
   return (
-    <ul>
-      {data.map((todo) => (
+    <ul data-status={status}>
+      {(data ?? []).map((todo) => (
         <li key={todo.id}>{todo.title}</li>
       ))}
     </ul>
@@ -193,10 +192,12 @@ function OpenTodos() {
 
 function TodoRow({ id }: { id: string }) {
   const client = useClient<Schema>();
-  const todo = useEntity(() => client.todo.get(id), [id]);
+  const { data: todos, status } = useQuery((q: QueryRoot<Schema>) => q.todo.query());
+  const todo = todos?.find((row) => row.id === id);
   const { update, delete: remove } = useEntityMutations(client.todo);
 
-  if (todo === null) return <span>missing</span>;
+  if (status === "unloaded") return <span>loading…</span>;
+  if (todo === undefined) return <span>missing</span>;
   return (
     <div>
       <button onClick={() => void update(id, { completed: !todo.completed })}>{todo.title}</button>

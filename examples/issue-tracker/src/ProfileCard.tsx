@@ -4,12 +4,11 @@
  * joined — proof that profile visibility follows group membership.
  */
 
-import { useClient, useQuery } from "@ebbjs/react";
+import { useQuery, type QueryRoot } from "@ebbjs/react";
 import type { Schema } from "./schema";
 
 export function ProfileCard({ actorId }: { actorId: string }) {
-  const client = useClient<Schema>();
-  const { data: profiles = [], loading } = useQuery(() => client.profile.query());
+  const { data: profiles = [], loading } = useQuery((q: QueryRoot<Schema>) => q.profile.query());
   const mine = profiles.find((row) => row.actor_id === actorId);
 
   return (

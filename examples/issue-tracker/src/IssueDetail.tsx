@@ -2,18 +2,15 @@
  * Issue detail view: edit title / status / priority, link or unlink the
  * `assignee` relationship, and delete with a confirmation step.
  *
- * `useEntity` subscribes to the row; `useEntityMutations` supplies
- * `update` / `delete`; `client.issue.link` / `unlink` write the
- * relationship. Every write goes through the Outbox, so the change shows
- * immediately and reconciles when the server acknowledges it.
- *
- * A Relationship write does not emit a change for the source row, so the
- * view bumps `revision` after link / unlink; the re-read is what resolves
- * the assignee through the `issue.assignee` accessor.
+ * The row and its assignee come from one `useQuery` with an `assignee` join,
+ * so a link / unlink re-runs the query and the projection follows without a
+ * manual revision bump. Mutations go straight through the client's issue
+ * namespace; each write applies optimistically through the Outbox and
+ * reconciles when the server acknowledges it.
  */
 
 import { useEffect, useState } from "react";
-import { useClient, useEntity, useEntityMutations, useQuery } from "@ebbjs/react";
+import { useClient, useQuery, type QueryRoot } from "@ebbjs/react";
 import { PRIORITY_OPTIONS, STATUS_OPTIONS, assigneeOptions } from "./issue-options";
 import { SelectField } from "./SelectField";
 import type { Schema } from "./schema";
@@ -30,43 +27,44 @@ export function IssueDetail({
   onDeleted: () => void;
 }) {
   const client = useClient<Schema>();
-  const { update, delete: remove } = useEntityMutations(client.issue);
+  const {
+    data: issues,
+    status,
+    error: queryError,
+  } = useQuery((q: QueryRoot<Schema>) => q.issue.query().with({ assignee: true }));
   const { data: profiles = [] } = useQuery(
-    () => client.profile.query().where("groups", groupId),
+    (q: QueryRoot<Schema>) => q.profile.query().where("groups", groupId),
     [groupId],
   );
-  const [revision, setRevision] = useState(0);
-  const issue = useEntity(() => client.issue.get(issueId), [issueId, revision]);
+  const issue = issues?.find((row) => row.id === issueId) ?? null;
+  const assigneeId = issue?.assignee?.id ?? "";
   const [title, setTitle] = useState("");
-  const [assigneeId, setAssigneeId] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [writeError, setWriteError] = useState<string | null>(null);
 
   useEffect(() => {
     setTitle(issue?.title ?? "");
   }, [issue?.title]);
 
-  useEffect(() => {
-    if (issue === null) {
-      setAssigneeId("");
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      const target = await issue.assignee;
-      if (!cancelled) setAssigneeId(target == null ? "" : target.id);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [issue]);
+  const fail = (err: unknown): void =>
+    setWriteError(err instanceof Error ? err.message : String(err));
 
-  const fail = (err: unknown): void => setError(err instanceof Error ? err.message : String(err));
+  if (status === "unloaded") {
+    return (
+      <section className="rounded border border-stone-800 p-4">
+        <p className="font-mono text-xs text-stone-500">loading…</p>
+      </section>
+    );
+  }
 
   if (issue === null) {
     return (
       <section className="rounded border border-stone-800 p-4">
-        <p className="font-mono text-xs text-stone-500">This issue is no longer available.</p>
+        <p className="font-mono text-xs text-stone-500">
+          {status === "failed"
+            ? (queryError?.message ?? "The issue query failed.")
+            : "This issue is no longer available."}
+        </p>
         <button
           type="button"
           onClick={onClose}
@@ -84,39 +82,32 @@ export function IssueDetail({
       setTitle(issue.title);
       return;
     }
-    setError(null);
-    void update(issue.id, { title: next }).catch(fail);
+    setWriteError(null);
+    void client.issue.update(issue.id, { title: next }).catch(fail);
   };
 
   const changeStatus = (next: string): void => {
-    setError(null);
-    void update(issue.id, { status: next }).catch(fail);
+    setWriteError(null);
+    void client.issue.update(issue.id, { status: next }).catch(fail);
   };
 
   const changePriority = (next: string): void => {
-    setError(null);
-    void update(issue.id, { priority: next }).catch(fail);
+    setWriteError(null);
+    void client.issue.update(issue.id, { priority: next }).catch(fail);
   };
 
   const changeAssignee = (next: string): void => {
-    setError(null);
-    const previous = assigneeId;
-    setAssigneeId(next);
+    setWriteError(null);
     const write =
       next === ""
         ? client.issue.unlink(issue.id, "assignee")
         : client.issue.link(issue.id, "assignee", next);
-    void write
-      .then(() => setRevision((current) => current + 1))
-      .catch((err) => {
-        setAssigneeId(previous);
-        fail(err);
-      });
+    void write.catch(fail);
   };
 
   const confirmDelete = (): void => {
-    setError(null);
-    void remove(issue.id).then(onDeleted).catch(fail);
+    setWriteError(null);
+    void client.issue.delete(issue.id).then(onDeleted).catch(fail);
   };
 
   return (
@@ -171,7 +162,7 @@ export function IssueDetail({
           />
         </div>
 
-        {error !== null && <p className="font-mono text-xs text-red-400">{error}</p>}
+        {writeError !== null && <p className="font-mono text-xs text-red-400">{writeError}</p>}
 
         <div className="flex items-center gap-2 border-t border-stone-800 pt-3">
           {confirmingDelete ? (

@@ -9,7 +9,7 @@
  * behaviour are #440.
  */
 
-import { useClient, useQuery } from "@ebbjs/react";
+import { useQuery, type QueryRoot } from "@ebbjs/react";
 import { statusLabel } from "./issue-options";
 import type { Schema } from "./schema";
 
@@ -22,8 +22,7 @@ export function IssueList({
   onSelect: (id: string) => void;
   onNewIssue: () => void;
 }) {
-  const client = useClient<Schema>();
-  const { data: issues = [], loading, error } = useQuery(() => client.issue.query());
+  const { data: issues = [], loading, error } = useQuery((q: QueryRoot<Schema>) => q.issue.query());
 
   return (
     <section className="rounded border border-stone-800 p-4">

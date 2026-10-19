@@ -8,7 +8,7 @@
  */
 
 import { useState } from "react";
-import { useClient, useQuery } from "@ebbjs/react";
+import { useClient, useQuery, type QueryRoot } from "@ebbjs/react";
 import { PRIORITY_OPTIONS, STATUS_OPTIONS, assigneeOptions } from "./issue-options";
 import { SelectField } from "./SelectField";
 import type { Schema } from "./schema";
@@ -24,7 +24,7 @@ export function IssueCreateForm({
 }) {
   const client = useClient<Schema>();
   const { data: profiles = [] } = useQuery(
-    () => client.profile.query().where("groups", groupId),
+    (q: QueryRoot<Schema>) => q.profile.query().where("groups", groupId),
     [groupId],
   );
   const [title, setTitle] = useState("");

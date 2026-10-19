@@ -1,43 +1,23 @@
 /**
  * Workspace switcher.
  *
- * Lists the workspaces visible to the actor with `useQuery`. Selecting
- * one resolves the row's group through the built-in accessor —
- * `client.workspace.get(id)` then `row.groups.toRaw()` — and prints the
- * group id, proving the `workspace` schema needs no `group_id` field.
- * The entity id comes from the seed's deterministic scheme via
- * `workspaceEntityId`; #447 will surface group ids on query rows and
- * remove the lookup.
+ * Lists the workspaces visible to the actor with `useQuery`, joined to the
+ * workspace's built-in `groups` rows so each row carries its group ids
+ * without a second read. Selecting one swaps the printed group id, proving
+ * the `workspace` schema needs no `group_id` field.
  */
 
-import { useEffect, useState } from "react";
-import { useClient, useQuery } from "@ebbjs/react";
+import { useState } from "react";
+import { useQuery, type QueryRoot } from "@ebbjs/react";
 import type { Schema } from "./schema";
-import { workspaceEntityId } from "./seed";
 
 export function WorkspaceSwitcher() {
-  const client = useClient<Schema>();
-  const { data: workspaces = [], loading } = useQuery(() => client.workspace.query());
+  const { data: workspaces = [], loading } = useQuery((q: QueryRoot<Schema>) =>
+    q.workspace.query().with({ groups: true }),
+  );
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const selected = workspaces.find((row) => row.slug === selectedSlug) ?? workspaces[0];
-  const [groupIds, setGroupIds] = useState<readonly string[]>([]);
-
-  useEffect(() => {
-    if (selected === undefined) {
-      setGroupIds([]);
-      return;
-    }
-    const entityId = workspaceEntityId(selected.slug);
-    let cancelled = false;
-    void (async () => {
-      const row = await client.workspace.get(entityId);
-      const groups = row === null ? [] : await row.groups.toRaw();
-      if (!cancelled) setGroupIds(groups.map((group) => group.id));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [client, selected]);
+  const groupIds = selected?.groups.map((group) => group.id) ?? [];
 
   if (loading) {
     return <span className="font-mono text-xs text-stone-500">workspaces…</span>;

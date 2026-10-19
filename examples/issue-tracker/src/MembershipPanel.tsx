@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { useClient, useQuery } from "@ebbjs/react";
+import { useClient, useQuery, type QueryRoot } from "@ebbjs/react";
 import type { BootstrapResult } from "./bootstrap";
 import type { Schema } from "./schema";
 import { SEED_PERMISSIONS, SHARED_GROUP_ID } from "./seed";
@@ -26,10 +26,10 @@ export function MembershipPanel({
   bootstrap: BootstrapResult;
 }) {
   const client = useClient<Schema>();
-  const { data: members = [] } = useQuery(() => client.membership.query());
+  const { data: members = [] } = useQuery((q: QueryRoot<Schema>) => q.membership.query());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [leaveDenied, setLeaveDenied] = useState(false);
+  const [deniedFor, setDeniedFor] = useState<string | null>(null);
 
   const membership = members.find(
     (member) => member.actor_id === actorId && member.group_id === SHARED_GROUP_ID,
@@ -37,19 +37,19 @@ export function MembershipPanel({
 
   useEffect(() => {
     if (membership === undefined) {
-      setLeaveDenied(false);
+      setDeniedFor(null);
       return;
     }
-    let cancelled = false;
     // `unknown` is not a denial — the server stays the authority, so the
-    // control stays enabled and a refusal surfaces as an error.
+    // control stays enabled and a refusal surfaces as an error. The answer is
+    // recorded against this membership's id, so a late result for a previous
+    // row cannot decide the current control.
     void client.can(membership, "delete").then((result) => {
-      if (!cancelled) setLeaveDenied(result.kind === "denied");
+      if (result.kind === "denied") setDeniedFor(membership.id);
     });
-    return () => {
-      cancelled = true;
-    };
   }, [client, membership]);
+
+  const leaveDenied = membership !== undefined && deniedFor === membership.id;
 
   const applyMembershipChange = useCallback(
     async (work: () => Promise<void>) => {
