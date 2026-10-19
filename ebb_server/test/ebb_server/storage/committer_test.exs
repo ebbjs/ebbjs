@@ -394,7 +394,6 @@ defmodule EbbServer.Storage.CommitterTest do
         Keyword.get_lazy(opts, :payload_etf, fn ->
           action |> ActionFormat.build() |> ActionFormat.encode()
         end),
-      intra_action_context: Keyword.get(opts, :intra_action_context, %{}),
       update_scopes: Keyword.get(opts, :update_scopes, Enum.map(updates, fn _update -> [] end)),
       groups: Keyword.get(opts, :groups, []),
       type_entity_keys:

@@ -91,12 +91,12 @@ ordered-fanout coordination that is not yet built
 
 ### Module map
 
-| Module                                                                           | Purpose                                                            |
-| -------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `EbbServer.Storage.RocksDB`                                                      | DB lifecycle, column families, key encoding, low-level I/O         |
-| `EbbServer.Storage.SQLite`                                                       | Entity cache: schema DDL, UPSERT, filtered query with permissions  |
-| `EbbServer.Storage.SystemCache` (sup.)                                           | ETS + `:atomics` for GSN, watermark, dirty set, group/relationship |
-| `EbbServer.Storage.Writer`                                                      | Sequencer: coalescing, payload pre-encode, GSN claim, group resolution, apply/notify |
+| Module                                                                           | Purpose                                                                              |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `EbbServer.Storage.RocksDB`                                                      | DB lifecycle, column families, key encoding, low-level I/O                           |
+| `EbbServer.Storage.SQLite`                                                       | Entity cache: schema DDL, UPSERT, filtered query with permissions                    |
+| `EbbServer.Storage.SystemCache` (sup.)                                           | ETS + `:atomics` for GSN, watermark, dirty set, group/relationship                   |
+| `EbbServer.Storage.Writer`                                                       | Sequencer: coalescing, payload pre-encode, GSN claim, group resolution, apply/notify |
 | `EbbServer.Storage.Committer`                                                    | Durable half of a flush: wrapper encode, op assembly, `write_batch`                  |
 | `EbbServer.Storage.PreparedAction`                                               | Immutable sequencer → committer boundary payload                                     |
 | `EbbServer.Storage.ActionLog`                                                    | Committed-log reader: decodes an inclusive GSN range in order                        |

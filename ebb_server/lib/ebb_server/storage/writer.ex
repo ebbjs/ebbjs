@@ -196,7 +196,6 @@ defmodule EbbServer.Storage.Writer do
   observe the durable-commit window deterministically.
 
   A bench-only `:ablate` option (default `[]`) skips named phases of the
-  A bench-only `:ablate` option (default `[]`) skips named phases of the
   write path — `:dedup`, `:group_resolution`, `:build`, `:encode`,
   `:entity_index`, `:group_index`, `:dirty`, `:cache`, `:watermark`,
   `:fanout` — so `mix bench.actions --ablate` can price each one. `:dedup`
@@ -260,8 +259,15 @@ defmodule EbbServer.Storage.Writer do
   @type validated_update :: PermissionChecker.validated_update()
 
   # The `:encode` ablation skips the payload encode but must still store a
-  # decodable record: live readers may run against an ablated bench DB.
-  @empty_payload_etf :erlang.term_to_binary(%{})
+  # structurally valid record: live readers may run against an ablated bench DB.
+  @ablated_payload_etf ActionFormat.encode(
+                         ActionFormat.build(%{
+                           id: "ablated",
+                           actor_id: "ablated",
+                           hlc: 0,
+                           updates: []
+                         })
+                       )
 
   @type enqueued_action :: {validated_action(), payload_etf :: binary()}
   @type pending_actions :: [{GenServer.from(), [enqueued_action()]}]
@@ -611,7 +617,7 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp encode_payload(payload, state) do
-    if ablate?(:encode, state), do: @empty_payload_etf, else: ActionFormat.encode(payload)
+    if ablate?(:encode, state), do: @ablated_payload_etf, else: ActionFormat.encode(payload)
   end
 
   # The only place a flush is scheduled. A commit in flight blocks it —
@@ -1047,7 +1053,6 @@ defmodule EbbServer.Storage.Writer do
       hlc: action.hlc,
       updates: action.updates,
       payload_etf: payload_etf,
-      intra_action_context: intra_action_context,
       update_scopes: update_scopes,
       # The union of resolved groups is indexed once per Action, not once
       # per Update, so repeated memberships cannot write the same

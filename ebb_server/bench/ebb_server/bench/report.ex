@@ -415,7 +415,7 @@ defmodule EbbServer.Bench.Report do
 
   defp ablation_note(%{ablate: phases}) do
     "Ablation is active: the Writer skipped #{Enum.map_join(phases, ", ", &Atom.to_string/1)} " <>
-      "on the flush critical path, so this run measures a reduced write path and its latency, " <>
+      "on the write path, so this run measures a reduced write path and its latency, " <>
       "density, and dirty-cache numbers are not comparable to an unablated run."
   end
 

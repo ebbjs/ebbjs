@@ -1097,35 +1097,45 @@ mix bench.actions --tier t2 --duration 15 --warmup 3 --concurrency 8 \
 | t0 (c=1) | 24,513 (22,087–25,260) | 24,073 (22,080–25,293) | −1.8% |
 | t2 (c=8) | 19,107 (16,993–20,853) | 20,993 (13,460–21,860) | +9.9% |
 
-**The expected 1.15–1.25× was not reached.** t0 has a single serial caller:
-the payload is off the claimed path, but at t0 it is still on the caller's
-path, so the only visible change is the wrapper's extra binary copy —
-inside this VM's ±5–10% run-to-run spread. The t2 gain is the intended
-effect: calls arrive while the previous commit is in flight, so the
-sequencer builds and encodes their payloads during the durable write. One
-branch t2 run sampled 13,460/s (the low end of its range); the median is
-robust to it. Every headline run had 0 rejected Actions, 0
-write/transport errors, and 0 GSN holes.
+**The expected 1.15–1.25× was not reached.** t0 has a single serial caller,
+so there is no in-flight commit to overlap the pre-encode with: the work
+still runs on the Writer's call path and the caller waits for it. The only
+visible t0 change is the wrapper's extra binary copy, inside this VM's
+±5–10% run-to-run spread. The t2 arm is where this slice pays: calls arrive
+while the previous commit is in flight, so the sequencer builds and encodes
+their payloads during the durable write. One branch t2 run sampled
+13,460/s (the low end of its range); the median is robust to it. Every
+headline run had 0 rejected Actions, 0 write/transport errors, and 0 GSN
+holes.
 
 ### Pricing the moved work — `--ablate build,encode` (t0)
 
 `:build` skips the payload map construction; `:encode` skips the payload
-ETF encode and stores a precomputed empty-map ETF so the record stays
-decodable. Both arms still write the wrapper and the durable batch. Median
+ETF encode and stores a precomputed ETF for a structurally valid empty
+Action so the record stays decodable. Both arms still write the wrapper and the durable batch. Median
 of 5 × 15 s runs with the run order rotated to spread host drift:
 
-| Arm                     | Actions/s | ms/flush (100 Actions) | Delta vs full | Removed (ms/flush) |
-| :---------------------- | --------: | ---------------------: | ------------: | -----------------: |
-| full                    |    24,327 |                  4.111 |             — |                  — |
-| `--ablate encode`       |    27,293 |                  3.664 |        +12.2% |               0.45 |
-| `--ablate build`        |    28,040 |                  3.566 |        +15.3% |               0.54 |
-| `--ablate build,encode` |    27,667 |                  3.614 |        +13.7% |               0.50 |
+| Arm                     |    Actions/s (min–max) | ms/flush (100 Actions) | Delta vs full | Removed (ms/flush) |
+| :---------------------- | ---------------------: | ---------------------: | ------------: | -----------------: |
+| full                    | 24,327 (23,780–25,180) |                  4.111 |             — |                  — |
+| `--ablate encode`       | 27,293 (26,380–28,327) |                  3.664 |        +12.2% |               0.45 |
+| `--ablate build`        | 28,040 (27,067–29,073) |                  3.566 |        +15.3% |               0.54 |
+| `--ablate build,encode` | 27,667 (27,100–28,787) |                  3.614 |        +13.7% |               0.50 |
 
 The payload build + encode is ~0.45–0.54 ms/flush, or **12–15%** of a t0
-flush. The two removals overlap and are not additive; this is the work V1
-moves off the claimed path and overlaps with the in-flight commit at t2.
-The full arm here (24,327/s) sits inside the headline branch range, so the
-ablation set is consistent with the A/B above.
+flush. The two removals overlap and are not additive: they take similar
+slices of one flush, and the single-phase arms' ordering sits inside their
+ranges. This is the work V1 moves off the claimed path and overlaps with
+the in-flight commit at t2. The full arm here (24,327/s) sits inside the
+headline branch range, so the ablation set is consistent with the A/B
+above.
+
+The scope wrapper was chosen over a companion scopes value: it is one
+atomic `cf_actions` put, while a companion adds a second durable put and a
+second read on every Action. The companion variant was not built or
+measured; the wrapper's claim-time cost is a binary copy plus the scopes
+list and is inside `ebb.writer.commit_latency_ms`, while the ablation above
+prices the payload build + encode that moved before the claim.
 
 ## Correctness under load
 

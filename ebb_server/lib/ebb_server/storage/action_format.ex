@@ -15,8 +15,10 @@ defmodule EbbServer.Storage.ActionFormat do
   Actions committed before #532 are a plain map that carries `"gsn"` and
   `"update_scopes"`. `decode/2` accepts both shapes, trusts a `"gsn"` it
   finds in the decoded map, and otherwise uses the key's GSN, so a
-  database holding a mix of old and new records reads uniformly and a
-  rollback to a reader-only binary still works.
+  database holding a mix of old and new records reads uniformly. This is
+  forward migration only: a pre-#532 reader cannot decode the new wrapper,
+  so rolling the server binary back after new writes requires the old
+  records to still be the only ones read.
 
   Every decode uses `:erlang.binary_to_term/2` with `[:safe]`, so a
   corrupt or hostile record raises rather than constructing arbitrary
@@ -69,17 +71,17 @@ defmodule EbbServer.Storage.ActionFormat do
   def decode(value, gsn) do
     value
     |> :erlang.binary_to_term([:safe])
-    |> expand(gsn)
+    |> inject_gsn_and_scopes(gsn)
   end
 
-  defp expand({payload_etf, update_scopes}, gsn) when is_binary(payload_etf) do
+  defp inject_gsn_and_scopes({payload_etf, update_scopes}, gsn) when is_binary(payload_etf) do
     payload_etf
     |> :erlang.binary_to_term([:safe])
     |> Map.put_new("gsn", gsn)
     |> Map.put_new("update_scopes", update_scopes)
   end
 
-  defp expand(%{} = legacy, gsn) do
+  defp inject_gsn_and_scopes(%{} = legacy, gsn) do
     # A pre-#473 record has no scopes at all; keeping the key absent is
     # what lets `ActionScope` fall back to delivering every Update.
     Map.put_new(legacy, "gsn", gsn)

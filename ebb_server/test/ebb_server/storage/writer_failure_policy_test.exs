@@ -12,7 +12,14 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{ActionFormat, DirtyTracker, InFlightActions, RocksDB, WatermarkTracker, Writer}
+  alias EbbServer.Storage.{
+    ActionFormat,
+    DirtyTracker,
+    InFlightActions,
+    RocksDB,
+    WatermarkTracker,
+    Writer
+  }
 
   import EbbServer.TestHelpers
 

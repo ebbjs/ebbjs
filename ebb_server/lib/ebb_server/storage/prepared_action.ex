@@ -20,10 +20,6 @@ defmodule EbbServer.Storage.PreparedAction do
     (`id`, `actor_id`, `hlc`, `updates`). `update_scopes` stay outside it
     because they are cache-dependent; the Committer wraps the two at
     claim time without re-encoding the payload.
-  - `intra_action_context` — `entity_id => [group_id]` for membership
-    rows created in the same Action, the input to group resolution. It
-    stays on the boundary so the context that resolved the groups sits
-    alongside the write it produced; the Committer does not read it.
   - `update_scopes` — group ids per Update, index-aligned with `updates`.
     Stored as the outer scopes of the `cf_actions` wrapper; it cannot be
     re-derived after the commit, so it doubles as the fan-out delivery
@@ -43,7 +39,6 @@ defmodule EbbServer.Storage.PreparedAction do
     :hlc,
     :updates,
     :payload_etf,
-    :intra_action_context,
     :update_scopes
   ]
   defstruct [
@@ -52,7 +47,6 @@ defmodule EbbServer.Storage.PreparedAction do
     :hlc,
     :updates,
     :payload_etf,
-    :intra_action_context,
     :update_scopes,
     groups: [],
     type_entity_keys: [],
@@ -67,7 +61,6 @@ defmodule EbbServer.Storage.PreparedAction do
           hlc: integer(),
           updates: [map()],
           payload_etf: binary(),
-          intra_action_context: %{optional(String.t()) => [String.t()]},
           update_scopes: [[String.t()]],
           groups: [String.t()],
           type_entity_keys: [binary()],

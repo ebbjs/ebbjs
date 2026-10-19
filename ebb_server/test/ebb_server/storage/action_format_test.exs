@@ -38,7 +38,6 @@ defmodule EbbServer.Storage.ActionFormatTest do
       actor_id: action.actor_id,
       hlc: action.hlc,
       updates: updates,
-      intra_action_context: %{},
       update_scopes: [["g_1"], ["g_1", "g_2"]],
       payload_etf: action |> ActionFormat.build() |> ActionFormat.encode()
     }
