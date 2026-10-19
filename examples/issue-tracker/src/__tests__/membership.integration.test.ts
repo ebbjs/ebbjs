@@ -16,7 +16,8 @@
  *   then reads the shared issue;
  * - `client.can` on the shared issue is allowed for a member and the
  *   non-member's profile is not visible to assign;
- * - the `assignee` relationship writes and reads back;
+ * - the `assignee` relationship writes and reads back through the
+ *   `assignee` join;
  * - leaving drops the membership, and re-joining works without a reload;
  * - a fellow member backfills and reads the joined actor's profile content.
  */
@@ -39,7 +40,7 @@ import {
   profileIdForActor,
   workspaceActions,
 } from "../workspace";
-import { SERVER_URL, catchUpUntilCurrent, serverIsReachable } from "./integration-support";
+import { SERVER_URL, catchUpUntilCurrent, findRow, serverIsReachable } from "./integration-support";
 
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const MEMBER_ID = `mem_it_${RUN_ID}`;
@@ -95,9 +96,10 @@ describe("integration: workspace membership", () => {
     if (!(await serverIsReachable())) return;
     const groups = await syncGroups(outsider);
     expect(groups).not.toContain(SHARED_GROUP_ID);
-    expect(await outsider.workspace.get(SHARED_WORKSPACE_ID)).toBeNull();
-    expect(await outsider.issue.get(SAMPLE_ISSUE_ID)).toBeNull();
-    expect(await outsider.issue.query()).toEqual([]);
+    expect(findRow(await outsider.workspace.query(), SHARED_WORKSPACE_ID)).toBeUndefined();
+    const visibleIssues = await outsider.issue.query();
+    expect(visibleIssues).toEqual([]);
+    expect(findRow(visibleIssues, SAMPLE_ISSUE_ID)).toBeUndefined();
   });
 
   it("a non-member cannot invite itself into the shared group", async () => {
@@ -144,21 +146,21 @@ describe("integration: workspace membership", () => {
     expect(memberRow).toBeDefined();
     expect(memberRow!.permissions).toEqual([...SEED_PERMISSIONS]);
 
-    // The profile membership is observable through the built-in accessor.
+    // The profile membership is observable through the `groups` join.
     const groups = await syncGroups(member);
     expect(groups).toContain(SHARED_GROUP_ID);
 
-    const profile = await member.profile.get(MEMBER_PROFILE_ID);
-    expect(profile).not.toBeNull();
-    expect((await profile!.groups.toRaw()).map((group) => group.id)).toContain(SHARED_GROUP_ID);
+    const profile = findRow(await member.profile.query().with({ groups: true }), MEMBER_PROFILE_ID);
+    expect(profile).toBeDefined();
+    expect(profile!.groups.map((group) => group.id)).toContain(SHARED_GROUP_ID);
   });
 
   it("the member reads the shared issue; a non-member's profile is not visible to assign", async () => {
     if (!(await serverIsReachable())) return;
     await syncGroups(member);
 
-    const issue = await member.issue.get(SAMPLE_ISSUE_ID);
-    expect(issue).not.toBeNull();
+    const issue = findRow(await member.issue.query(), SAMPLE_ISSUE_ID);
+    expect(issue).toBeDefined();
     expect(issue!.title).toBe("Welcome to ebb");
 
     expect(await member.can(SAMPLE_ISSUE_ID, "update")).toMatchObject({ kind: "allowed" });
@@ -183,14 +185,13 @@ describe("integration: workspace membership", () => {
 
     await member.issue.link(created.id, "assignee", MEMBER_PROFILE_ID);
 
-    const issue = await member.issue.get(created.id);
-    expect(issue).not.toBeNull();
-    const assignee = await issue!.assignee;
-    expect(assignee?.id).toBe(MEMBER_PROFILE_ID);
+    const issue = findRow(await member.issue.query().with({ assignee: true }), created.id);
+    expect(issue).toBeDefined();
+    expect(issue!.assignee?.id).toBe(MEMBER_PROFILE_ID);
 
     await member.issue.unlink(created.id, "assignee");
-    const cleared = await member.issue.get(created.id);
-    expect(await cleared!.assignee).toBeNull();
+    const cleared = findRow(await member.issue.query().with({ assignee: true }), created.id);
+    expect(cleared!.assignee).toBeNull();
   });
 
   it("leaving drops the membership, and a fresh client for the actor gets no shared group", async () => {
@@ -207,7 +208,7 @@ describe("integration: workspace membership", () => {
     try {
       const groups = await syncGroups(fresh);
       expect(groups).not.toContain(SHARED_GROUP_ID);
-      expect(await fresh.issue.get(SAMPLE_ISSUE_ID)).toBeNull();
+      expect(findRow(await fresh.issue.query(), SAMPLE_ISSUE_ID)).toBeUndefined();
     } finally {
       fresh.close();
     }
@@ -228,7 +229,7 @@ describe("integration: workspace membership", () => {
 
     const groups = await syncGroups(member);
     expect(groups).toContain(SHARED_GROUP_ID);
-    expect(await member.issue.get(SAMPLE_ISSUE_ID)).not.toBeNull();
+    expect(findRow(await member.issue.query(), SAMPLE_ISSUE_ID)).toBeDefined();
   });
 
   it("a fellow member backfills and reads the joined actor's profile content", async () => {
@@ -237,12 +238,12 @@ describe("integration: workspace membership", () => {
     // The inviter catches up the profile's membership row; backfill then
     // reads the content, which was written in the member's personal group.
     await seeder.backfill();
-    const seen = await seeder.profile.get(MEMBER_PROFILE_ID);
-    expect(seen).not.toBeNull();
+    const seen = findRow(await seeder.profile.query(), MEMBER_PROFILE_ID);
+    expect(seen).toBeDefined();
     expect(seen!.actor_id).toBe(MEMBER_ID);
     expect(seen!.display_name).toBe(MEMBER_ID);
 
     // Visibility follows the membership: a non-member still reads nothing.
-    expect(await outsider.profile.get(MEMBER_PROFILE_ID)).toBeNull();
+    expect(findRow(await outsider.profile.query(), MEMBER_PROFILE_ID)).toBeUndefined();
   });
 });

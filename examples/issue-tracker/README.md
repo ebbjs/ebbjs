@@ -69,13 +69,13 @@ The issue's assignee is an entity link declared with `defineRelationship`, not a
 defineRelationship({ source: issue, target: profile, as: "assignee", sourceCardinality: "one" });
 ```
 
-Reads go through the `issue.assignee` accessor, filters through `.where("assignee", profileId)`, and writes through `client.issue.link` / `unlink` (or atomically with the create). A `profile` is group-scoped, so a profile is only visible (and therefore only assignable) inside the workspaces its actor has joined. There is deliberately no scalar `assignee_id` ([#454](https://github.com/ebbjs/ebbjs/issues/454)).
+Reads join the edge with `q.issue.query().with({ assignee: true })`, filter through `.where("assignee", profileId)`, and write through `client.issue.link` / `unlink` (or atomically with the create). A `profile` is group-scoped, so a profile is only visible (and therefore only assignable) inside the workspaces its actor has joined. There is deliberately no scalar `assignee_id` ([#454](https://github.com/ebbjs/ebbjs/issues/454)).
 
 Membership is ebb's built-in system, **not** a user-defined entity:
 
 - a workspace **is** a Group; actors join through `GroupMember`;
 - issues and profiles are scoped to the workspace group through the `entityGroup` write path;
-- a row's group is read from the built-in `groups` accessor (`await row.groups`), which is why **`workspace` has no `group_id` field**. The workspace switcher demonstrates this by resolving the selected row's group with `client.workspace.get(id)` then `row.groups.toRaw()`;
+- a row's group comes from the built-in `groups` join (`q.workspace.query().with({ groups: true })`), which is why **`workspace` has no `group_id` field**. The workspace switcher demonstrates this by reading each workspace's group ids from that join. Single-row `client.<entity>.get()` and the row accessors are internal; the app reads only through `query()` / `useQuery`.
 - `group`, `groupMember`, and `entityGroup` are reserved system entities. Do not declare a `member` / `membership` entity.
 
 `profile` is one row per actor, scoped to the workspaces they have joined, so it is visible only inside those workspaces. The profile card finds the row whose `actor_id` matches the signed-in actor.
@@ -112,7 +112,7 @@ src/
 ├── SelectField.tsx      # Shared labelled <select>
 ├── ActorPicker.tsx      # Actor identity selector
 ├── ConnectionBadge.tsx  # useConnection() indicator
-├── WorkspaceSwitcher.tsx# useQuery list + row.groups group id
+├── WorkspaceSwitcher.tsx# useQuery list + groups join
 ├── ProfileCard.tsx      # Group-scoped profile row
 ├── MembershipPanel.tsx  # Join / leave the shared workspace
 ├── IssueList.tsx        # Selectable list + new-issue control

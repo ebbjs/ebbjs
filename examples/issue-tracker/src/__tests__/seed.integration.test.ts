@@ -12,9 +12,9 @@
  *
  * Covers:
  * - the actor's personal workspace / profile / group / own membership
- *   read back through `client.<entity>.get` after handshake + catchUp;
- * - the workspace's membership resolves through the built-in `.groups`
- *   accessor to `grp_<actor>` and nothing else;
+ *   read back through `client.<entity>.query()` after handshake + catchUp;
+ * - the workspace's membership resolves through the `groups` join to
+ *   `grp_<actor>` and nothing else;
  * - the shared fixtures land under `demo-seeder` and read back through
  *   a seeder-side client;
  * - the actor's handshake does NOT include the shared group (membership
@@ -35,7 +35,7 @@ import {
   buildSharedSeed,
   deriveActorSeedIds,
 } from "../seed";
-import { SERVER_URL, catchUpUntilCurrent, serverIsReachable } from "./integration-support";
+import { SERVER_URL, catchUpUntilCurrent, findRow, serverIsReachable } from "./integration-support";
 
 /** Unique per run so re-running against the same server does not collide. */
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -86,8 +86,8 @@ describe("integration: issue-tracker seed", () => {
 
   it("the actor's workspace reads back through the typed namespace", async () => {
     if (!(await serverIsReachable())) return;
-    const row = await actor!.workspace.get(IDS.workspaceId);
-    expect(row).not.toBeNull();
+    const row = findRow(await actor!.workspace.query(), IDS.workspaceId);
+    expect(row).toBeDefined();
     expect(row!.name).toBe(`${ACTOR_ID}'s Workspace`);
     expect(row!.slug).toBe(ACTOR_ID);
     expect(row!.description).toBe(`Personal workspace for ${ACTOR_ID}`);
@@ -95,8 +95,8 @@ describe("integration: issue-tracker seed", () => {
 
   it("the actor's profile reads back through the typed namespace", async () => {
     if (!(await serverIsReachable())) return;
-    const row = await actor!.profile.get(IDS.profileId);
-    expect(row).not.toBeNull();
+    const row = findRow(await actor!.profile.query(), IDS.profileId);
+    expect(row).toBeDefined();
     expect(row!.actor_id).toBe(ACTOR_ID);
     expect(row!.display_name).toBe(ACTOR_ID);
     expect(row!.avatar_url).toBe("");
@@ -104,42 +104,41 @@ describe("integration: issue-tracker seed", () => {
 
   it("the actor's group reads back with the seeded name", async () => {
     if (!(await serverIsReachable())) return;
-    const row = await actor!.group.get(IDS.groupId);
-    expect(row).not.toBeNull();
+    const row = findRow(await actor!.group.query(), IDS.groupId);
+    expect(row).toBeDefined();
     expect(row!.name).toBe(`${ACTOR_ID}'s Workspace`);
   });
 
   it("the actor's own membership reads back with the seed permissions", async () => {
     if (!(await serverIsReachable())) return;
-    const row = await actor!.membership.get(IDS.memberId);
-    expect(row).not.toBeNull();
+    const row = findRow(await actor!.membership.query(), IDS.memberId);
+    expect(row).toBeDefined();
     expect(row!.actor_id).toBe(ACTOR_ID);
     expect(row!.group_id).toBe(IDS.groupId);
     expect(row!.permissions).toEqual([...SEED_PERMISSIONS]);
   });
 
-  it("files the workspace only into the actor's group, via the membership accessor", async () => {
+  it("files the workspace only into the actor's group, via the groups join", async () => {
     if (!(await serverIsReachable())) return;
-    const row = await actor!.workspace.get(IDS.workspaceId);
-    expect(row).not.toBeNull();
-    const groups = await row!.groups.toRaw();
-    expect(groups.map((group) => group.id)).toEqual([IDS.groupId]);
+    const row = findRow(await actor!.workspace.query().with({ groups: true }), IDS.workspaceId);
+    expect(row).toBeDefined();
+    expect(row!.groups.map((group) => group.id)).toEqual([IDS.groupId]);
   });
 
   it("the shared sample issue reads back through the seeder's typed namespace", async () => {
     if (!(await serverIsReachable())) return;
-    const row = await seeder!.issue.get(SAMPLE_ISSUE_ID);
-    expect(row).not.toBeNull();
+    const row = findRow(await seeder!.issue.query().with({ assignee: true }), SAMPLE_ISSUE_ID);
+    expect(row).toBeDefined();
     expect(row!.title).toBe("Welcome to ebb");
     expect(row!.status).toBe("todo");
     expect(row!.priority).toBe("medium");
-    expect(await row!.assignee).toBeNull();
+    expect(row!.assignee).toBeNull();
   });
 
   it("the shared workspace reads back through the seeder's typed namespace", async () => {
     if (!(await serverIsReachable())) return;
-    const row = await seeder!.workspace.get(SHARED_WORKSPACE_ID);
-    expect(row).not.toBeNull();
+    const row = findRow(await seeder!.workspace.query(), SHARED_WORKSPACE_ID);
+    expect(row).toBeDefined();
     expect(row!.name).toBe("Shared Workspace");
     expect(row!.slug).toBe(SHARED_WORKSPACE_SLUG);
     expect(row!.description).toBe("Issues shared with every member.");

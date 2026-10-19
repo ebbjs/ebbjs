@@ -6,13 +6,14 @@
  *
  * Membership is ebb's built-in system (`group`, `groupMember`,
  * `entityGroup`) — no user-defined `member` entity. A row's group comes
- * from the built-in `groups` accessor, not a `group_id` field:
- * `workspace` deliberately carries no `group_id`.
+ * from the built-in `groups` join, not a `group_id` field: `workspace`
+ * deliberately carries no `group_id`.
  *
  * The assignee is an entity link, not a scalar. `assignee_id` would be a
- * denormalized reference with no accessor or integrity; `defineRelationship`
- * gives `issue.assignee`, `.where("assignee", profileId)`, and the
- * `link` / `unlink` write path. See #441 for the membership side.
+ * denormalized reference the engine cannot keep consistent;
+ * `defineRelationship` gives the `assignee` join,
+ * `.where("assignee", profileId)`, and the `link` / `unlink` write path.
+ * See #441 for the membership side.
  */
 
 import { defineEntity, defineRelationship, defineSchema, e } from "@ebbjs/client";

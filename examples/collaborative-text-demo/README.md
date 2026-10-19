@@ -64,6 +64,12 @@ Open `https://localhost:8443/?actor=drew` and `?actor=alice` in two tabs (differ
 6. Incoming SSE data events are piped into `doc.applyActions()`, which fires `onUpdate` — the bridge reflects the change in CM.
 7. Concurrent edits to the same run are one map-key slot, recorded by the outbox and grouped into an entity-level `Conflict` surfaced via `client.conflicts.list()` / the `ConflictPanel`.
 
+### Reads
+
+Resident app metadata — groups, memberships, and entity rows — is read through the query surface: `client.<entity>.query()` imperatively, or `useQuery` in React. The single-row `client.<entity>.get()` and the async row accessors are internal; no demo code composes them.
+
+A collaborative-text body is not resident metadata: it is a stream of document actions read on demand. The editor therefore opens it through the low-level document API `client.textDocument(docId)` and applies incoming actions to that `TextDocument`. Bodies stay on that API until [#500](https://github.com/ebbjs/ebbjs/issues/500) exposes them through queries — there is no public `query()` join for a document body today.
+
 ## Files
 
 ```
