@@ -35,8 +35,8 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
       actions = for i <- 1..n, do: validated_action(%{id: "act_#{i}"})
       tasks = run_concurrent_calls(writer, Enum.map(actions, &[&1]))
 
-      assert_receive {:commit_started, _ops}, 2_000
-      send(writer.pid, :release)
+      assert_receive {:commit_started, committer_pid, _ops}, 2_000
+      send(committer_pid, :release)
 
       results = Enum.map(tasks, &Task.await(&1, 2_000))
 
@@ -63,8 +63,8 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
 
       tasks = run_concurrent_calls(writer, action_groups)
 
-      assert_receive {:commit_started, _ops}, 2_000
-      send(writer.pid, :release)
+      assert_receive {:commit_started, committer_pid, _ops}, 2_000
+      send(committer_pid, :release)
 
       results = Enum.map(tasks, &Task.await(&1, 2_000))
       assert Enum.sort(Enum.map(results, &elem(&1, 1))) == [{1, 2}, {3, 4}, {5, 6}]
@@ -96,8 +96,8 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
 
       tasks = run_concurrent_calls(writer, action_groups)
 
-      assert_receive {:commit_started, _ops}, 2_000
-      send(writer.pid, :release)
+      assert_receive {:commit_started, committer_pid, _ops}, 2_000
+      send(committer_pid, :release)
 
       results = Enum.map(tasks, &Task.await(&1, 2_000))
       assert Enum.sort(Enum.map(results, &elem(&1, 1))) == [{0, 0}, {0, 0}, {2, 3}]
@@ -117,8 +117,8 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
       action = validated_action(%{id: "act_dup"})
       tasks = run_concurrent_calls(writer, [[action], [action]])
 
-      assert_receive {:commit_started, _ops}, 2_000
-      send(writer.pid, :release)
+      assert_receive {:commit_started, committer_pid, _ops}, 2_000
+      send(committer_pid, :release)
 
       results = Enum.map(tasks, &Task.await(&1, 2_000))
       assert Enum.sort(Enum.map(results, &elem(&1, 1))) == [{0, 0}, {1, 1}]
@@ -196,6 +196,71 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
       assert Enum.all?(results, &match?({:ok, _range, []}, &1))
     end
 
+    test "accepts and coalesces calls while a commit is in flight, then flushes that burst",
+         ctx do
+      router = register_router()
+      test_pid = self()
+      attempts = :atomics.new(1, signed: false)
+
+      # Block only the first commit: that is the window in which the
+      # sequencer must stay responsive.
+      commit_fn = fn ops, opts ->
+        send(test_pid, {:commit_started, self(), length(ops)})
+
+        if :atomics.add_get(attempts, 1, 1) == 1 do
+          receive do
+            :release -> :ok
+          end
+        end
+
+        RocksDB.write_batch(ops, opts)
+      end
+
+      writer = start_writer(writer_opts(ctx, %{commit_fn: commit_fn, fan_out_router: router}))
+
+      first =
+        Task.async(fn ->
+          Writer.write_actions([validated_action(%{id: "act_inflight_1"})], writer.name)
+        end)
+
+      assert_receive {:commit_started, committer_pid, _ops}, 2_000
+
+      second =
+        Task.async(fn ->
+          Writer.write_actions([validated_action(%{id: "act_inflight_2"})], writer.name)
+        end)
+
+      third =
+        Task.async(fn ->
+          Writer.write_actions([validated_action(%{id: "act_inflight_3"})], writer.name)
+        end)
+
+      # The calls reached the Writer and were enqueued behind the in-flight
+      # commit: no second claim, no reply yet.
+      assert wait_until(fn ->
+               state = :sys.get_state(writer.pid)
+               state.inflight != nil and state.pending_count == 2
+             end)
+
+      assert Task.yield(second, 50) == nil
+      assert Task.yield(third, 50) == nil
+
+      send(committer_pid, :release)
+
+      assert {:ok, {1, 1}, []} = Task.await(first, 2_000)
+
+      # The queued burst coalesces into one flush after the ack. The two
+      # callers raced to enqueue, so only the sub-range set is pinned.
+      queued = [Task.await(second, 2_000), Task.await(third, 2_000)]
+      assert Enum.sort(queued) == [{:ok, {2, 2}, []}, {:ok, {3, 3}, []}]
+
+      assert_receive {:commit_started, ^committer_pid, _ops}
+      assert_receive {:batch_committed, 1, 1, _groups, _committed_at}
+      assert_receive {:batch_committed, 2, 3, groups, _committed_at}
+      assert map_size(groups) == 2
+      refute_receive {:batch_committed, _, _, _, _}, 200
+    end
+
     test "batch_max_size forces a flush at the cap", ctx do
       router = register_router()
 
@@ -243,9 +308,11 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
     name
   end
 
+  # Runs in the Committer, so the test needs the Committer's pid to
+  # release it — the Writer is free to keep taking calls while this blocks.
   defp blocking_commit_fn(test_pid) do
     fn ops, opts ->
-      send(test_pid, {:commit_started, length(ops)})
+      send(test_pid, {:commit_started, self(), length(ops)})
 
       receive do
         :release -> RocksDB.write_batch(ops, opts)

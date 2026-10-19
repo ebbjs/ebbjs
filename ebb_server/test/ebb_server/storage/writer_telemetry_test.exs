@@ -18,6 +18,7 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
   @writer_events [
     [:ebb, :writer, :batch_size],
     [:ebb, :writer, :batch_latency_ms],
+    [:ebb, :writer, :commit_latency_ms],
     [:ebb, :writer, :actions_per_sec],
     [:ebb, :writer, :range_resolved],
     [:ebb, :writer, :commit_failed]
@@ -51,6 +52,11 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
                find_event(events, [:ebb, :writer, :batch_latency_ms])
 
       assert is_integer(duration)
+
+      assert {_event, %{duration: commit_duration}, %{gsn_start: 1, gsn_end: 2}} =
+               find_event(events, [:ebb, :writer, :commit_latency_ms])
+
+      assert is_integer(commit_duration)
 
       assert {_event, %{count: 2}, %{}} = find_event(events, [:ebb, :writer, :actions_per_sec])
 
@@ -140,6 +146,11 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
 
       assert {_event, %{count: 1}, %{gsn_start: 1, gsn_end: 1, reason: :injected_rocksdb_failure}} =
                find_event(events, [:ebb, :writer, :range_resolved])
+
+      assert {_event, %{duration: duration}, %{gsn_start: 1, gsn_end: 1}} =
+               find_event(events, [:ebb, :writer, :commit_latency_ms])
+
+      assert is_integer(duration)
     end
   end
 

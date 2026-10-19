@@ -215,7 +215,10 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
         send(test_pid, {:write_result, catch_exit(Writer.write_actions([action], writer_name))})
       end)
 
-      assert_receive {:commit_started, ^writer_pid}
+      # The commit blocks in the linked Committer, not in the Writer; a
+      # hard kill of the Writer takes the Committer with it via the link.
+      assert_receive {:commit_started, committer_pid}
+      assert committer_pid != writer_pid
       Process.exit(writer_pid, :kill)
       assert_receive {:write_result, _exit}, 2_000
 
