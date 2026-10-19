@@ -578,7 +578,7 @@ export type QueryRoot<S> = {
  * return it. `null` when no document is linked.
  */
 const collaborativeTextForwardOne = (
-  readLocalEntity: (id: string) => Promise<Entity | null>,
+  readEntity: (id: string) => Promise<Entity | null>,
   adjacency: AdjacencyReader,
   sourceId: string,
   sourceName: string,
@@ -586,7 +586,7 @@ const collaborativeTextForwardOne = (
   type: string,
   openTextDocument: (docId: string, docType: string) => TextDocument,
 ): Promise<TextDocument | null> =>
-  forwardOne(readLocalEntity, adjacency, sourceId, sourceName, field, type).then((entity) => {
+  forwardOne(readEntity, adjacency, sourceId, sourceName, field, type).then((entity) => {
     if (entity === null || entity === undefined) return null;
     const doc = openTextDocument(entity.id, entity.type);
     doc.hydrate(entity.data?.fields?.[DOC_CONTENT_FIELD]);
@@ -658,6 +658,13 @@ function buildRowAccessors(
 ): Record<string, RowAccessor> {
   const out: Record<string, RowAccessor> = {};
   const readLocalEntity = (id: string): Promise<Entity | null> => storage.entities.get(id);
+  // A body is an on-demand row: opening it pins it in the replica, so the
+  // document reached through its edge is read through `open`. The local store
+  // stays the fallback for a namespace built without a replica binding.
+  const readDocumentEntity =
+    replica === undefined
+      ? readLocalEntity
+      : (id: string): Promise<Entity | null> => replica.replica.open(id);
   // Traversals read the adjacency index rather than scanning the
   // `relationship` / `entityGroup` type, so their cost tracks the
   // source row's degree. The replica owns the index once supplied;
@@ -678,7 +685,7 @@ function buildRowAccessors(
     const relType = rel.type;
     if (isCollaborativeText(rel)) {
       out[field] = collaborativeTextForwardOne(
-        readLocalEntity,
+        readDocumentEntity,
         adjacency,
         sourceId,
         entityName,
@@ -918,9 +925,19 @@ export function createEntityNamespace<
       // The accessors read the replica's adjacency, so bring it up to
       // date before building them. Memoized on the client, so this is
       // one real await per client.
-      if (replica !== undefined) await replica.hydrate();
+      if (replica === undefined) {
+        const entity = await storage.entities.get(id);
+        return entity === null ? null : buildRow(entity);
+      }
+      await replica.hydrate();
+      // Held rows keep their durable read: a conflicted Action's optimistic
+      // overlay stays on the replica until resolution. An on-demand row is
+      // read through `open` so it lands and pins.
       const entity = await storage.entities.get(id);
-      return entity === null ? null : buildRow(entity);
+      if (entity === null) return null;
+      if (replica.replica.isHeld(entity.type)) return buildRow(entity);
+      const opened = await replica.replica.open(id);
+      return opened === null ? null : buildRow(opened);
     },
     subscribe(
       filter: QueryFilter<TFields>,

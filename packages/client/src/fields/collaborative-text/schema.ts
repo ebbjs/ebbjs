@@ -79,7 +79,9 @@ export function buildTextDocumentEntity<N extends string>(
     {
       [DOC_CONTENT_FIELD]: e.map(RunFieldValueSchema),
     },
-    { conflictScope },
+    // A body is the heavy half of a document: the parent row is what a
+    // scan or tree read wants, so the body is only materialized when opened.
+    { conflictScope, materialization: "on-demand" },
   ) as EntityDef<TextDocumentFields, N>;
 }
 

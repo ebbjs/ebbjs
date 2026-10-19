@@ -42,16 +42,39 @@ export const holdAll: MaterializationPolicy = {
 };
 
 const DEFAULT_JOURNAL_CAPACITY = 1024;
+export const DEFAULT_PINNED_CAPACITY = 16;
+export const DEFAULT_PINNED_TTL_MS = 30_000;
 
 /**
  * A capacity that retains everything is `Infinity`, so the trimmer never finds
  * an excess. Non-positive and non-finite values are unbounded by contract.
  */
-const journalCapacityOf = (capacity: number | undefined): number => {
-  if (capacity === undefined) return DEFAULT_JOURNAL_CAPACITY;
+const capacityOf = (capacity: number | undefined, fallback: number): number => {
+  if (capacity === undefined) return fallback;
   if (!Number.isFinite(capacity) || capacity <= 0) return Number.POSITIVE_INFINITY;
   return Math.max(1, Math.floor(capacity));
 };
+
+/** `Infinity` disables TTL release, so no timer is armed at all. */
+const pinnedTtlOf = (ttlMs: number | undefined): number => {
+  if (ttlMs === undefined) return DEFAULT_PINNED_TTL_MS;
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return Number.POSITIVE_INFINITY;
+  return ttlMs;
+};
+
+/** A pending pin must not keep a Node process alive. */
+const unrefTimer = (timer: ReturnType<typeof setTimeout>): void => {
+  if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") {
+    timer.unref();
+  }
+};
+
+interface Pin {
+  /** Whether the row is currently open; a closed pin is waiting out its TTL. */
+  open: boolean;
+  /** `null` while open, or when TTL release is disabled. */
+  timer: ReturnType<typeof setTimeout> | null;
+}
 
 interface OptimisticWrite {
   readonly actionId: string;
@@ -73,8 +96,9 @@ interface OrphanUpdate {
 
 /**
  * Mutable in-place core. `entities` is the durable base (what `toRecord`
- * persists), `overlay` composes optimistic writes over it, and `effective`
- * caches the composed view for overlaid ids so a read never recomposes.
+ * persists, once pinned on-demand rows are filtered out), `overlay` composes
+ * optimistic writes over it, and `effective` caches the composed view for
+ * overlaid ids so a read never recomposes.
  * `typeIndex` indexes the base; `iterate` layers the overlay's type overrides
  * on top of it.
  */
@@ -87,7 +111,18 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const overlay = new Map<string, OptimisticWrite[]>();
   const effective = new Map<string, Entity | null>();
   const orphans = new Map<string, OrphanUpdate[]>();
-  const journalCapacity = journalCapacityOf(options?.journalCapacity);
+  const journalCapacity = capacityOf(options?.journalCapacity, DEFAULT_JOURNAL_CAPACITY);
+  const pinnedCapacity = capacityOf(options?.pinnedCapacity, DEFAULT_PINNED_CAPACITY);
+  const pinnedTtlMs = pinnedTtlOf(options?.pinnedTtlMs);
+  // Iteration order is LRU order: a touch deletes and re-adds, so the first
+  // key is the oldest pin.
+  const pins = new Map<string, Pin>();
+  const inFlightOpens = new Map<string, Promise<Entity | null>>();
+  /** Cancels a cold read whose row was closed or evicted while it was loading. */
+  const openEpochs = new Map<string, number>();
+  let nextOpenEpoch = 0;
+  /** Updates that landed for an on-demand id while its cold read was in flight. */
+  const pendingOpens = new Map<string, OrphanUpdate[]>();
   let journal: ReplicaChange[] = [];
   // Head cursor into `journal`: trimming advances it in O(1), and a later
   // splice folds the dead prefix away once it dominates the array.
@@ -128,6 +163,57 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     ids.delete(id);
     if (ids.size === 0) typeIndex.delete(type);
   };
+
+  /**
+   * A row stays resident when the policy holds its type or it is pinned. A
+   * closed pin keeps the row cached until its TTL, so a remount reads it back.
+   */
+  const resident = (row: Entity): boolean => holds(row.type) || pins.has(row.id);
+
+  const releasePin = (id: string): void => {
+    const pin = pins.get(id);
+    if (pin === undefined) return;
+    if (pin.timer !== null) clearTimeout(pin.timer);
+    pins.delete(id);
+  };
+
+  /** Stop an in-flight cold read from installing a row that is no longer wanted. */
+  const cancelOpen = (id: string): void => {
+    if (!inFlightOpens.has(id)) return;
+    inFlightOpens.delete(id);
+    pendingOpens.delete(id);
+    openEpochs.set(id, ++nextOpenEpoch);
+  };
+
+  /** Mark `id` as the most recently opened row, releasing the oldest past the window. */
+  const openPin = (id: string): void => {
+    releasePin(id);
+    pins.set(id, { open: true, timer: null });
+    const doomed: string[] = [];
+    for (const candidate of pins.keys()) {
+      if (pins.size - doomed.length <= pinnedCapacity) break;
+      doomed.push(candidate);
+    }
+    if (doomed.length > 0) evict(doomed);
+  };
+
+  /**
+   * Close a pin: the row stays cached until its TTL so a remount does not
+   * re-read, then it leaves the replica. With TTL disabled it leaves now.
+   */
+  const closePin = (id: string): void => {
+    const pin = pins.get(id);
+    if (pin === undefined || !pin.open) return;
+    pin.open = false;
+    if (!Number.isFinite(pinnedTtlMs)) {
+      evict([id]);
+      return;
+    }
+    pin.timer = setTimeout(() => evict([id]), pinnedTtlMs);
+    unrefTimer(pin.timer);
+  };
+
+  const isOpen = (id: string): boolean => pins.get(id)?.open === true;
 
   const bump = (id: string, type: string, deleted: boolean): void => {
     revision += 1;
@@ -175,20 +261,36 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return rows;
   };
 
+  /** Append an update waiting for a base row, keyed by its subject. */
+  const bufferUpdate = (buffer: Map<string, OrphanUpdate[]>, entry: OrphanUpdate): void => {
+    const id = entry.update.subject_id;
+    const pending = buffer.get(id);
+    if (pending === undefined) buffer.set(id, [entry]);
+    else pending.push(entry);
+  };
+
   const foldBase = (update: Update, gsn: number, hlc: string, position: number): void => {
     const id = update.subject_id;
+    // The local store row is read asynchronously; keep updates that land while
+    // that read is in flight so the install replays them instead of hiding
+    // them behind a snapshot taken before they arrived.
+    if (!holds(update.subject_type) && !pins.has(id) && inFlightOpens.has(id)) {
+      bufferUpdate(pendingOpens, { update, gsn, hlc, position });
+      return;
+    }
     const previous = entities.get(id) ?? null;
     const next = applyUpdate(previous, update, gsn, hlc);
 
     if (next === null) {
-      const orphan: OrphanUpdate = { update, gsn, hlc, position };
-      const pending = orphans.get(id);
-      if (pending === undefined) orphans.set(id, [orphan]);
-      else pending.push(orphan);
+      // An unopened on-demand row has no base here by design; the local store
+      // owns the base, so keeping the patch would retain body data the replica
+      // is deliberately not holding.
+      if (!holds(update.subject_type) && !pins.has(id)) return;
+      bufferUpdate(orphans, { update, gsn, hlc, position });
       return;
     }
 
-    if (!holds(next.type)) {
+    if (!resident(next)) {
       // A not-held row is unobservable: it retains nothing and journals
       // nothing. Dropping a previously held row is still observable, and
       // `resync` journals that removal from the composed-view comparison.
@@ -254,7 +356,10 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     if (writes !== undefined) {
       for (const write of writes) next = applyUpdate(next, write.update, 0, write.hlc);
     }
-    const retained = next !== null && holds(next.type) ? next : null;
+    const retained = next !== null && resident(next) ? next : null;
+    // A row that left the replica — or that the policy now holds outright —
+    // must not leave a phantom pin behind.
+    if (retained === null || holds(retained.type)) releasePin(id);
 
     if (writes === undefined || writes.length === 0) effective.delete(id);
     else effective.set(id, retained);
@@ -343,6 +448,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     for (const id of ids) {
       if (seen.has(id)) continue;
       seen.add(id);
+      cancelOpen(id);
+      releasePin(id);
+      pendingOpens.delete(id);
       const previous = viewOf(id);
       const base = entities.get(id);
       entities.delete(id);
@@ -367,6 +475,10 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     orphans.clear();
     overlay.clear();
     effective.clear();
+    pendingOpens.clear();
+    inFlightOpens.clear();
+    openEpochs.clear();
+    for (const id of pins.keys()) releasePin(id);
     journal.length = 0;
     journalStart = 0;
     // One linear pass rebuilds the base and both adjacency directions; the
@@ -381,6 +493,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       else rows[entry.rowId] = entry.value;
     };
     for (const entity of record.entities) {
+      if (!holds(entity.type)) continue;
       entities.set(entity.id, entity);
       addToType(entity.type, entity.id);
       const reverseEntry = indexEntryFor(entity);
@@ -413,26 +526,36 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       format: REPLICA_RECORD_FORMAT,
       position,
       revision,
-      entities: [...entities.values()],
+      // Bodies are residency, not durability: only held rows persist.
+      entities: [...entities.values()].filter((row) => holds(row.type)),
     };
   };
 
   const stats = (): ReplicaStats => {
     const byType: Record<string, number> = {};
+    const heldByType: Record<string, number> = {};
     const types = new Set(typeIndex.keys());
     for (const row of effective.values()) {
       if (row !== null) types.add(row.type);
     }
     let total = 0;
+    let heldTotal = 0;
     for (const type of types) {
       const count = iterate(type).length;
       if (count === 0) continue;
       byType[type] = count;
       total += count;
+      if (holds(type)) {
+        heldByType[type] = count;
+        heldTotal += count;
+      }
     }
     return {
       entities: total,
       byType,
+      held: heldTotal,
+      heldByType,
+      pinned: pins.size,
       revision,
       position: lastPosition,
       changes: retainedChanges(),
@@ -450,6 +573,67 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return changes;
   };
 
+  /**
+   * Install a row read for an on-demand id as the base, journaling it so a
+   * derived reader sees the arrival. The pin lands first so retention sees the
+   * row as resident.
+   */
+  const install = (id: string, row: Entity, buffered: readonly OrphanUpdate[]): void => {
+    const previous = viewOf(id);
+    entities.set(id, row);
+    addToType(row.type, id);
+    openPin(id);
+    for (const entry of buffered) foldBase(entry.update, entry.gsn, entry.hlc, entry.position);
+    resync(id, previous);
+    notify();
+  };
+
+  const open = (id: string): Promise<Entity | null> => {
+    const row = get(id);
+    if (row !== undefined) {
+      if (!holds(row.type)) openPin(id);
+      return Promise.resolve(row);
+    }
+    const pending = inFlightOpens.get(id);
+    if (pending !== undefined) return pending;
+    const readEntity = options?.readEntity;
+    if (readEntity === undefined) return Promise.resolve(null);
+    const epoch = ++nextOpenEpoch;
+    openEpochs.set(id, epoch);
+    const read = readEntity(id).then(
+      (loaded) => {
+        if (inFlightOpens.get(id) === read) inFlightOpens.delete(id);
+        // A close or eviction while the read was in flight wins: the row does
+        // not reappear behind the caller's back.
+        if (openEpochs.get(id) !== epoch) return null;
+        const buffered = pendingOpens.get(id) ?? [];
+        pendingOpens.delete(id);
+        if (loaded === null) return null;
+        if (holds(loaded.type)) return loaded;
+        install(id, loaded, buffered);
+        return get(id) ?? loaded;
+      },
+      (error: unknown) => {
+        if (inFlightOpens.get(id) === read) inFlightOpens.delete(id);
+        throw error;
+      },
+    );
+    inFlightOpens.set(id, read);
+    return read;
+  };
+
+  const close = (id: string): void => {
+    const row = viewOf(id);
+    if (row === null) {
+      cancelOpen(id);
+      return;
+    }
+    if (holds(row.type)) return;
+    cancelOpen(id);
+    if (pins.has(id)) closePin(id);
+    else evict([id]);
+  };
+
   return {
     get revision() {
       return revision;
@@ -459,6 +643,10 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     },
     get,
     iterate,
+    isHeld: holds,
+    open,
+    close,
+    isOpen,
     changesSince,
     stats,
     relationships: (query: RelationshipQuery): readonly string[] => {

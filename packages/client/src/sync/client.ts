@@ -35,7 +35,15 @@ import {
   type Update,
 } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import { createReplica, type Replica, type ReplicaStats } from "@ebbjs/storage/replica";
+import {
+  applyUpdate,
+  createReplica,
+  DEFAULT_PINNED_CAPACITY,
+  DEFAULT_PINNED_TTL_MS,
+  type MaterializationPolicy,
+  type Replica,
+  type ReplicaStats,
+} from "@ebbjs/storage/replica";
 import type { ReplicaRecord, StorageAdapter } from "@ebbjs/storage/types";
 
 import { ConnectionStateMachine, type ConnectionState } from "./connection-state";
@@ -327,7 +335,19 @@ export class SyncClient implements PermissionQuery {
     this.serverUrl = opts.serverUrl.replace(/\/$/, "");
     this.actorId = opts.actorId;
     this.storage = opts.storage ?? createMemoryAdapter();
-    this.replica = createReplica();
+    this.schema = opts.schema;
+    this.schemaHash = opts.schema === undefined ? undefined : computeSchemaHash(opts.schema);
+    // Empty registry makes validation a no-op.
+    this.registry = opts.registry ?? buildRegistryFromSchema(opts.schema);
+    if (opts.onRegistryViolation !== undefined) {
+      this.registryViolationListeners.add(opts.onRegistryViolation);
+    }
+    this.replica = createReplica({
+      materialization: residencyFromRegistry(this.registry),
+      readEntity: (id) => this.storage.entities.get(id),
+      pinnedCapacity: opts.pinnedCapacity ?? DEFAULT_PINNED_CAPACITY,
+      pinnedTtlMs: opts.pinnedTtlMs ?? DEFAULT_PINNED_TTL_MS,
+    });
     this.replicaSignal = createReplicaSignal(this.replica);
     this.queries = createQueryCache(this.replica, this.replicaSignal, {
       ttlMs: opts.queryTtlMs,
@@ -337,13 +357,6 @@ export class SyncClient implements PermissionQuery {
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
     this.replicaSaveEvery = opts.replicaSaveEvery ?? DEFAULT_REPLICA_SAVE_EVERY;
     this.replicaSaveIntervalMs = opts.replicaSaveIntervalMs ?? DEFAULT_REPLICA_SAVE_INTERVAL_MS;
-    this.schema = opts.schema;
-    this.schemaHash = opts.schema === undefined ? undefined : computeSchemaHash(opts.schema);
-    // Empty registry makes validation a no-op.
-    this.registry = opts.registry ?? buildRegistryFromSchema(opts.schema);
-    if (opts.onRegistryViolation !== undefined) {
-      this.registryViolationListeners.add(opts.onRegistryViolation);
-    }
     // PresenceManager wires itself to the SSE stream; the `presence`
     // field on the client is the public API for sending local
     // cursors and reading the map of remote ones. The manager lives
@@ -1643,10 +1656,19 @@ export class SyncClient implements PermissionQuery {
    * replica's composed view, clearing the dirty flag so a later read does
    * not replay the log over them. A subject with no composed row is left
    * untouched — the shim cannot represent absence.
+   *
+   * An on-demand type has no composed replica row to mirror: the replica
+   * drops it unless it is open. The store is that type's read source, so the
+   * update is applied to the stored row directly. A later `open` then installs
+   * and pins it, exactly as it would a row read back from the server.
    */
   private async mirrorReplicaRows(action: Action): Promise<void> {
     for (const update of action.updates) {
-      const row = this.replica.get(update.subject_id);
+      let row = this.replica.get(update.subject_id);
+      if (row === undefined && !this.replica.isHeld(update.subject_type)) {
+        const base = await this.storage.entities.get(update.subject_id);
+        row = applyUpdate(base, update, 0, action.hlc) ?? undefined;
+      }
       if (row === undefined) continue;
       await this.storage.dirtyTracker.clear(update.subject_id);
       await this.storage.entities.set(row);
@@ -1742,6 +1764,15 @@ const buildRegistryFromSchema = (schema: AnySchema | undefined): EntityRegistry 
   seedRegistry(registry, schema.entities, schema.relationships);
   return registry;
 };
+
+/**
+ * Replica residency declared by the entity registry. A type marked
+ * `on-demand` is materialized only while open; anything else — including a
+ * type the registry does not declare — stays held.
+ */
+const residencyFromRegistry = (registry: EntityRegistry): MaterializationPolicy => ({
+  holds: (type) => registry.get(type)?.materialization !== "on-demand",
+});
 
 /**
  * Deterministic content hash of a composed schema. The 64-bit FNV-1a

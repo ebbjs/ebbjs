@@ -232,6 +232,27 @@ describe("defineSchema", () => {
   });
 });
 
+describe("defineSchema materialization", () => {
+  const page = defineEntity("page", { title: e.string() });
+  const pageContent = defineEntity(
+    "page_content",
+    { content: e.map(e.string()) },
+    { materialization: "on-demand" },
+  );
+
+  it("keeps each entity's declared materialization", () => {
+    const schema = defineSchema({ entities: { page, pageContent }, version: 1 });
+    expect(schema.entities.page.materialization).toBe("held");
+    expect(schema.entities.pageContent.materialization).toBe("on-demand");
+  });
+
+  it("leaves system entities held", () => {
+    const schema = defineSchema({ entities: { page }, version: 1 });
+    expect(schema._registry.get("relationship")?.materialization).toBe("held");
+    expect(schema._registry.get("group")?.materialization).toBe("held");
+  });
+});
+
 describe("defineSchema system entities + membership", () => {
   it("registers the system entities alongside user entities", () => {
     const schema = defineSchema({ entities: { todo }, version: 1 });

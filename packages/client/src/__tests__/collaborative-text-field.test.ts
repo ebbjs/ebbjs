@@ -18,7 +18,7 @@ import { EntityValidationError, validatePayload } from "../schema/entity-registr
 import { defineRelationship, type RelationshipDef } from "../schema/relationship";
 import { defineSchema, type Schema } from "../schema/schema";
 import { ConflictScopeMismatchError, DerivedDocNameCollisionError } from "../schema/schema";
-import { generatedDocEntityName } from "../fields/collaborative-text/schema";
+import { generatedDocEntityName, RunFieldValueSchema } from "../fields/collaborative-text/schema";
 import { createClient, type NamespacedClient } from "../sync/client";
 import { callApplyAction, jsonResponse } from "../sync/test-utils";
 
@@ -485,6 +485,34 @@ describe("generated document entities", () => {
     const docName = generatedDocEntityName("blog_post", "body");
     expect(schema.entities["text_document__blog_post__body"].conflictScope).toBe("field");
     expect(schema._registry.getConflictScope(docName)).toBe("field");
+  });
+
+  it("materializes a generated document entity on demand", () => {
+    expect(schema.entities["text_document__blog_post__body"].materialization).toBe("on-demand");
+  });
+
+  it("materializes a custom document entity on demand", () => {
+    const custom = defineEntity("post", {
+      body: e.collaborativeText({ entity: "article_body" }),
+    });
+    const customSchema = defineSchema({ entities: { post: custom }, version: 1 });
+    expect(customSchema.entities.article_body.materialization).toBe("on-demand");
+  });
+
+  it("keeps the materialization of an explicitly declared document entity", () => {
+    const declaredDoc = defineEntity(
+      "article_body",
+      { content: e.map(RunFieldValueSchema) },
+      { materialization: "held" },
+    );
+    const custom = defineEntity("post", {
+      body: e.collaborativeText({ entity: "article_body" }),
+    });
+    const customSchema = defineSchema({
+      entities: { post: custom, article_body: declaredDoc },
+      version: 1,
+    });
+    expect(customSchema.entities.article_body.materialization).toBe("held");
   });
 
   it("inherits the parent entity's conflictScope when the field omits it", () => {

@@ -49,6 +49,7 @@ export {
 } from "./sync/permission";
 
 export {
+  OnDemandQueryError,
   type QueryBuilder,
   type QueryContext,
   type ProjectedRow,
@@ -262,6 +263,7 @@ export {
   type EntityOptions,
   type FieldMarker,
   type ConflictScope,
+  type Materialization,
   type NullableSchema,
   type MapSchema,
   type CollaborativeTextSchema,
