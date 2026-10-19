@@ -13,7 +13,7 @@
  * decision 12).
  */
 
-import { entityGroupSystemEntity } from "../schema/system-entities";
+import { entityGroupSystemEntity, relationshipSystemEntity } from "../schema/system-entities";
 
 import type { Predicate, Query } from "./query";
 
@@ -67,16 +67,17 @@ const orderPredicates = (predicates: readonly PlanPredicate[]): readonly PlanPre
 ];
 
 /**
- * Source first, then each relationship predicate's `type` (the index key
- * the adjacency read uses, normally the source type) and the membership
- * row type, deduplicated — the coarse invalidation set #512 intersects
- * with the replica's journal.
+ * Source first, then the system row types a predicate reads: `relationship`
+ * rows for an adjacency predicate and `entityGroup` rows for membership.
+ * Those are the subject types the replica's journal reports, so #512 can
+ * intersect them with a revision window. A relationship's `type` is the
+ * adjacency index key, not a row type, so it never belongs here.
  */
 const readTypesFor = (query: Query): readonly string[] => {
   const types = new Set<string>([query.source]);
   const predicates = query.groups.flat();
-  for (const predicate of predicates) {
-    if (predicate.kind === "relationship") types.add(predicate.type);
+  if (predicates.some((predicate) => predicate.kind === "relationship")) {
+    types.add(relationshipSystemEntity.name);
   }
   if (predicates.some((predicate) => predicate.kind === "membership")) {
     types.add(entityGroupSystemEntity.name);

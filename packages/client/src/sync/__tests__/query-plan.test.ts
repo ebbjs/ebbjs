@@ -37,7 +37,7 @@ describe("planQuery", () => {
           [
             { kind: "field", field: "completed", value: true },
             { kind: "membership", anyOf: ["group_1"] },
-            { kind: "relationship", as: "owner", type: "user", anyOf: ["user_1"] },
+            { kind: "relationship", as: "owner", type: "todo", anyOf: ["user_1"] },
           ],
         ],
       }),
@@ -47,28 +47,41 @@ describe("planQuery", () => {
       kind: "select",
       predicates: [
         { kind: "membership", anyOf: ["group_1"] },
-        { kind: "adjacency", as: "owner", type: "user", anyOf: ["user_1"] },
+        { kind: "adjacency", as: "owner", type: "todo", anyOf: ["user_1"] },
         { kind: "filter", field: "completed", value: true },
       ],
     });
-    expect(plan.readTypes).toEqual(["todo", "user", "entityGroup"]);
+    expect(plan.readTypes).toEqual(["todo", "relationship", "entityGroup"]);
+  });
+
+  it("records the relationship row type, not the adjacency wire type", () => {
+    const plan = planQuery(
+      query({
+        groups: [
+          [{ kind: "relationship", as: "owner", type: "todo_owner", anyOf: ["user_1"] }],
+          [{ kind: "relationship", as: "reviewer", type: "todo_reviewer", anyOf: ["user_2"] }],
+          [
+            { kind: "membership", anyOf: ["group_1"] },
+            { kind: "relationship", as: "tags", type: "todo_tags", anyOf: null },
+          ],
+        ],
+      }),
+    );
+
+    expect(plan.readTypes).toEqual(["todo", "relationship", "entityGroup"]);
   });
 
   it("deduplicates read types in predicate order", () => {
     const plan = planQuery(
       query({
         groups: [
-          [{ kind: "relationship", as: "owner", type: "user", anyOf: ["user_1"] }],
-          [{ kind: "relationship", as: "reviewer", type: "user", anyOf: ["user_2"] }],
-          [
-            { kind: "membership", anyOf: ["group_1"] },
-            { kind: "relationship", as: "tags", type: "label", anyOf: null },
-          ],
+          [{ kind: "relationship", as: "owner", type: "todo", anyOf: ["user_1"] }],
+          [{ kind: "relationship", as: "reviewer", type: "todo", anyOf: ["user_2"] }],
         ],
       }),
     );
 
-    expect(plan.readTypes).toEqual(["todo", "user", "label", "entityGroup"]);
+    expect(plan.readTypes).toEqual(["todo", "relationship"]);
   });
 
   it("plans an unfiltered query as scan and the default id ordering", () => {
