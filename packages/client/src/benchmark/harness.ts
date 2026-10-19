@@ -200,9 +200,9 @@ export interface SampleOptions {
   readonly batches: number;
   /** Minimum calls per timed batch, so one call is never in timer resolution. */
   readonly callsPerBatch: number;
-  readonly counters?: CounterSet;
+  readonly counters: CounterSet;
   /** Rows a read yields, probed once per sampled id. */
-  readonly degreeOf?: (value: unknown) => number;
+  readonly degreeOf: (value: unknown) => number;
 }
 
 export interface LatencySample {
@@ -224,28 +224,26 @@ export const sampleLatency = async (
   options: SampleOptions,
 ): Promise<LatencySample> => {
   const idCount = Math.max(1, options.ids.length);
-  const inner = Math.max(1, Math.ceil(options.callsPerBatch / idCount));
-  const callsPerBatch = inner * idCount;
+  const repsPerBatch = Math.max(1, Math.ceil(options.callsPerBatch / idCount));
+  const callsPerBatch = repsPerBatch * idCount;
 
   for (const id of options.ids) await read(id);
 
   const batches: number[] = [];
   let counters = zeroCounters();
   for (let batch = 0; batch < options.batches; batch += 1) {
-    options.counters?.reset();
+    options.counters.reset();
     const start = performance.now();
-    for (let rep = 0; rep < inner; rep += 1) {
+    for (let rep = 0; rep < repsPerBatch; rep += 1) {
       for (const id of options.ids) await read(id);
     }
     batches.push((performance.now() - start) / callsPerBatch);
-    counters = options.counters?.snapshot() ?? zeroCounters();
+    counters = options.counters.snapshot();
   }
 
-  const degreeOf = options.degreeOf;
-  const degrees =
-    degreeOf === undefined
-      ? []
-      : await Promise.all(options.ids.map(async (id) => degreeOf(await read(id))));
+  const degrees = await Promise.all(
+    options.ids.map(async (id) => options.degreeOf(await read(id))),
+  );
 
   return {
     medianMs: median(batches),
@@ -255,12 +253,3 @@ export const sampleLatency = async (
     degrees,
   };
 };
-
-/** Stable Markdown number formatting: no locale-dependent grouping. */
-export const grouped = (value: number): string =>
-  Number.isInteger(value)
-    ? value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")
-    : value.toFixed(0);
-
-export const fixed = (value: number, digits: number): string =>
-  Number.isFinite(value) ? value.toFixed(digits) : "n/a";

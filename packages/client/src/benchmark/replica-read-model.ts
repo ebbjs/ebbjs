@@ -26,6 +26,7 @@ import { Type } from "@sinclair/typebox";
 import type { Entity } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 import type { Replica, ReplicaStats } from "@ebbjs/storage/replica";
+import type { ReplicaRecord } from "@ebbjs/storage/types";
 
 import { emptyQuery, type Query } from "../sync/query";
 import { createReplicaExecutor, executePlan } from "../sync/query-execute";
@@ -37,8 +38,6 @@ import {
   createCountingStore,
   createIndexCounter,
   entityDegree,
-  fixed,
-  grouped,
   heldMetadata,
   maxOf,
   median,
@@ -83,6 +82,17 @@ const LOAD_REPS = 5;
 const LATENCY_BATCHES = 5;
 const TRAVERSAL_CALLS_PER_BATCH = 2_000;
 const SEARCH_CALLS_PER_BATCH = 10;
+/** The #495 spike's one-pass projection build at the same 10k shape. */
+const SPIKE_PROJECTION_BUILD_MS = 37.0;
+
+/** Stable Markdown number formatting: no locale-dependent grouping. */
+const grouped = (value: number): string =>
+  Number.isInteger(value)
+    ? value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+    : value.toFixed(0);
+
+const fixed = (value: number, digits: number): string =>
+  Number.isFinite(value) ? value.toFixed(digits) : "n/a";
 
 const jsonBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
 const mb = (bytes: number): string => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -144,13 +154,10 @@ const heapAfterGc = (force: () => void): number => {
 };
 
 /**
- * Paired heap account, every rep inside one measurement window:
- *
- *   1. allocate the held rows fresh (row objects plus the record's reference
- *      array) — the delta is the rows' own heap;
- *   2. `load` a replica over exactly those rows — the delta is the replica's
- *      structures: base map, type index, and both adjacency indices;
- *   3. total = rows + structures, the resident metadata.
+ * Paired heap accounts, every rep inside one measurement window: the held rows
+ * are allocated fresh so the account owns their objects, one `Map<id, row>` is
+ * built over exactly those rows as the reference cost of a base map, and then
+ * a replica is `load`ed over the same rows so its own structures land on top.
  *
  * The earlier rows-only `Map` baseline reused the workspace's row objects, so
  * it never counted them and the replica figure read as a metadata total when
@@ -158,7 +165,9 @@ const heapAfterGc = (force: () => void): number => {
  */
 interface HeapAccounts {
   readonly rows: readonly number[];
+  readonly baseMap: readonly number[];
   readonly replica: readonly number[];
+  readonly indices: readonly number[];
   readonly total: readonly number[];
 }
 
@@ -175,9 +184,13 @@ const measureHeap = (
     ...seed,
     entities: [...rows, ...bodyRows],
   });
+  const mapOf = (rows: readonly Entity[]): ReadonlyMap<string, Entity> =>
+    new Map(rows.map((entity) => [entity.id, entity]));
 
   const rowsAccount: number[] = [];
+  const baseMapAccount: number[] = [];
   const replicaAccount: number[] = [];
+  const indicesAccount: number[] = [];
   const totals: number[] = [];
   // Every account stays pinned for the whole measurement. Freeing a previous
   // rep's account during this rep's forced GC would subtract its bytes from
@@ -188,6 +201,7 @@ const measureHeap = (
   // would otherwise read as a systematically larger account.
   const warmRows = createHeldRows(config);
   const warmRecord = recordFor(warmRows);
+  const warmBaseMap = mapOf(warmRows);
   const warmReplica = createReplica(options);
   warmReplica.load(warmRecord);
   heapAfterGc(force);
@@ -199,6 +213,10 @@ const measureHeap = (
     pinned.push(rows, record);
     const withRows = heapAfterGc(force);
 
+    const baseMap = mapOf(rows);
+    pinned.push(baseMap);
+    const withBaseMap = heapAfterGc(force);
+
     const probe = createReplica(options);
     probe.load(record);
     pinned.push(probe);
@@ -207,20 +225,36 @@ const measureHeap = (
     if (
       rows.length === 0 ||
       rows.length >= seed.entities.length ||
+      baseMap.size !== rows.length ||
       probe.stats().entities !== rows.length
     ) {
       throw new Error("heap account: built object is not the held row set");
     }
-    rowsAccount.push(withRows - base);
-    replicaAccount.push(withReplica - withRows);
-    totals.push(withReplica - base);
+    const rowsBytes = withRows - base;
+    const baseMapBytes = withBaseMap - withRows;
+    const replicaBytes = withReplica - withBaseMap;
+    rowsAccount.push(rowsBytes);
+    baseMapAccount.push(baseMapBytes);
+    replicaAccount.push(replicaBytes);
+    indicesAccount.push(replicaBytes - baseMapBytes);
+    totals.push(rowsBytes + replicaBytes);
   }
 
-  if (pinned.length !== HEAP_REPS * 3) throw new Error("heap account: lost an account");
-  if (warmRows.length === 0 || warmReplica.stats().entities !== warmRows.length) {
+  if (pinned.length !== HEAP_REPS * 4) throw new Error("heap account: lost an account");
+  if (
+    warmRows.length === 0 ||
+    warmBaseMap.size !== warmRows.length ||
+    warmReplica.stats().entities !== warmRows.length
+  ) {
     throw new Error("heap account: warm-up is not the held row set");
   }
-  return { rows: rowsAccount, replica: replicaAccount, total: totals };
+  return {
+    rows: rowsAccount,
+    baseMap: baseMapAccount,
+    replica: replicaAccount,
+    indices: indicesAccount,
+    total: totals,
+  };
 };
 
 const loadOptions = {
@@ -246,13 +280,13 @@ if (heapGc === undefined) {
 // ---------------------------------------------------------------------------
 
 const replica: Replica = createReplica(loadOptions);
-const assembleRecord = (): unknown => ({
+const copyRecord = (): ReplicaRecord => ({
   ...workspace.record,
   entities: [...workspace.record.entities],
 });
 const assemblySamples = Array.from({ length: LOAD_REPS }, () => {
   const start = performance.now();
-  assembleRecord();
+  copyRecord();
   return performance.now() - start;
 });
 
@@ -340,36 +374,52 @@ interface ReadCase {
 
 const sampleIds = spreadIndices(config.n, config.sample).map(pageId);
 
-const accessorCases: readonly ReadCase[] = [
+type RowReader = (id: string) => Promise<Entity | null>;
+
+/**
+ * The four accessor cases the store-backed table mirrors. Both tables build
+ * from here, so swapping the by-id reader cannot drift a reader from the cases
+ * it mirrors.
+ */
+const casesWithReader = (readRow: RowReader): readonly [ReadCase, ReadCase, ReadCase, ReadCase] => [
   {
     label: "`reverse` — children (`parent` target)",
-    read: (id) => reverse(reader, adjacency, id, "page", pageShape, "parent", "page"),
+    read: (id) => reverse(readRow, adjacency, id, "page", pageShape, "parent", "page"),
     degreeOf: arrayLength,
   },
   {
     label: "`forwardOne` — parent (`parent` source)",
-    read: (id) => forwardOne(reader, adjacency, id, "page", "parent", "page"),
+    read: (id) => forwardOne(readRow, adjacency, id, "page", "parent", "page"),
     degreeOf: entityDegree,
   },
+  {
+    label: "`forwardMany` — references (`references` source)",
+    read: (id) =>
+      forwardMany(readRow, adjacency, id, "page", "page", pageShape, "references", "page"),
+    degreeOf: arrayLength,
+  },
+  {
+    label: "`membershipGroups` — groups",
+    read: (id) => membershipGroups(readRow, adjacency, id, "group", groupShape),
+    degreeOf: arrayLength,
+  },
+];
+
+const [childrenCase, parentCase, referencesCase, groupsCase] = casesWithReader(reader);
+
+const accessorCases: readonly ReadCase[] = [
+  childrenCase,
+  parentCase,
   {
     label: "`reverse` — backlinks (`references` target)",
     read: (id) => reverse(reader, adjacency, id, "page", pageShape, "references", "page"),
     degreeOf: arrayLength,
   },
-  {
-    label: "`forwardMany` — references (`references` source)",
-    read: (id) =>
-      forwardMany(reader, adjacency, id, "page", "page", pageShape, "references", "page"),
-    degreeOf: arrayLength,
-  },
-  {
-    label: "`membershipGroups` — groups",
-    read: (id) => membershipGroups(reader, adjacency, id, "group", groupShape),
-    degreeOf: arrayLength,
-  },
+  referencesCase,
+  groupsCase,
 ];
 
-const count = <T extends readonly unknown[]>(rows: T): T => {
+const countIndexRows = <T extends readonly unknown[]>(rows: T): T => {
   indexCounter.record(rows);
   return rows;
 };
@@ -377,63 +427,41 @@ const count = <T extends readonly unknown[]>(rows: T): T => {
 const directCases: readonly ReadCase[] = [
   {
     label: "`relationships` — children (`targetId`)",
-    read: async (id) => count(replica.relationships({ as: "parent", type: "page", targetId: id })),
+    read: async (id) =>
+      countIndexRows(replica.relationships({ as: "parent", type: "page", targetId: id })),
     degreeOf: arrayLength,
   },
   {
     label: "`relationships` — backlinks (`targetId`)",
     read: async (id) =>
-      count(replica.relationships({ as: "references", type: "page", targetId: id })),
+      countIndexRows(replica.relationships({ as: "references", type: "page", targetId: id })),
     degreeOf: arrayLength,
   },
   {
     label: "`relationshipLinks` — parent links (`sourceId`)",
     read: async (id) =>
-      count(replica.relationshipLinks({ as: "parent", type: "page", sourceId: id })),
+      countIndexRows(replica.relationshipLinks({ as: "parent", type: "page", sourceId: id })),
     degreeOf: arrayLength,
   },
   {
     label: "`relationshipLinks` — references links (`sourceId`)",
     read: async (id) =>
-      count(replica.relationshipLinks({ as: "references", type: "page", sourceId: id })),
+      countIndexRows(replica.relationshipLinks({ as: "references", type: "page", sourceId: id })),
     degreeOf: arrayLength,
   },
   {
     label: "`memberships` — groups (`entityId`)",
-    read: async (id) => count(replica.memberships({ entityId: id })),
+    read: async (id) => countIndexRows(replica.memberships({ entityId: id })),
     degreeOf: arrayLength,
   },
   {
     label: "`membershipLinks` — membership rows (`entityId`)",
-    read: async (id) => count(replica.membershipLinks(id)),
+    read: async (id) => countIndexRows(replica.membershipLinks(id)),
     degreeOf: arrayLength,
   },
 ];
 
-const storageReader = store.read;
-const storageCases: readonly ReadCase[] = [
-  {
-    label: "`reverse` — children",
-    read: (id) => reverse(storageReader, adjacency, id, "page", pageShape, "parent", "page"),
-    degreeOf: arrayLength,
-  },
-  {
-    label: "`forwardOne` — parent",
-    read: (id) => forwardOne(storageReader, adjacency, id, "page", "parent", "page"),
-    degreeOf: entityDegree,
-  },
-  {
-    label: "`forwardMany` — references",
-    read: (id) =>
-      forwardMany(storageReader, adjacency, id, "page", "page", pageShape, "references", "page"),
-    degreeOf: arrayLength,
-  },
-  {
-    label: "`membershipGroups` — groups",
-    read: (id) => membershipGroups(storageReader, adjacency, id, "group", groupShape),
-    degreeOf: arrayLength,
-  },
-];
+const storageCases = casesWithReader(store.read);
 
 const measureReads = async (cases: readonly ReadCase[]): Promise<readonly LatencySample[]> => {
   const samples: LatencySample[] = [];
@@ -622,12 +650,13 @@ push(
 
 push("### Heap bytes the replica retains (V8)", "");
 push(
-  "Each rep runs in one measurement window: `heapUsed` after two forced GCs, then the held",
-  "rows allocated fresh (their own row objects, not the workspace's), then a replica `load`ed",
-  "over exactly those rows. That gives the rows' heap, the replica's structures (base map,",
-  "type index, both adjacency indices), and their sum — the resident metadata total. Every",
-  "rep's rows, record, and replica stay pinned, so a later forced GC cannot reclaim an",
-  "earlier rep's account.",
+  "Each rep runs in one measurement window, sampling `heapUsed` after two forced GCs at every",
+  "step: the held rows allocated fresh (their own row objects, not the workspace's), then one",
+  "`Map<id, row>` over exactly those rows, then a replica `load`ed over the same rows — so",
+  "**adjacency indices + type index = replica structures − base map** and **resident metadata",
+  "total = held rows + replica structures**, with the base map kept as the subtraction baseline",
+  "and not added to the total. Every rep's rows, record, map, and replica stay pinned, so a",
+  "later forced GC cannot reclaim an earlier rep's account.",
   "",
 );
 if (heapAccounts === null) {
@@ -637,18 +666,23 @@ if (heapAccounts === null) {
   );
 } else {
   const rowsAccount = heapAccounts.rows;
+  const baseMapAccount = heapAccounts.baseMap;
   const replicaAccount = heapAccounts.replica;
+  const indicesAccount = heapAccounts.indices;
   const totals = heapAccounts.total;
   const fullWorkspaceShare = pct(median(totals), workspaceJson);
-  const replicaShare = pct(median(replicaAccount), median(totals));
+  const indicesShare = pct(median(indicesAccount), median(totals));
+  const baseMapShare = pct(median(baseMapAccount), median(totals));
   push(
     "| account | median | min | max | reps | % of hypothetical full workspace |",
     "| --- | ---: | ---: | ---: | ---: | ---: |",
     `| held rows (fresh row objects + the record's reference array) | ${mb(median(rowsAccount))} | ${mb(minOf(rowsAccount))} | ${mb(maxOf(rowsAccount))} | ${HEAP_REPS} | — |`,
-    `| replica structures (base map + type index + both adjacency indices) | ${mb(median(replicaAccount))} | ${mb(minOf(replicaAccount))} | ${mb(maxOf(replicaAccount))} | ${HEAP_REPS} | — |`,
-    `| **resident metadata total (rows + structures)** | **${mb(median(totals))}** | ${mb(minOf(totals))} | ${mb(maxOf(totals))} | ${HEAP_REPS} | **${fullWorkspaceShare}** |`,
+    `| base map (\`Map<id, row>\` over the same rows — reference cost, not in the total) | ${mb(median(baseMapAccount))} | ${mb(minOf(baseMapAccount))} | ${mb(maxOf(baseMapAccount))} | ${HEAP_REPS} | — |`,
+    `| replica structures (its own base map + type index + both adjacency indices) | ${mb(median(replicaAccount))} | ${mb(minOf(replicaAccount))} | ${mb(maxOf(replicaAccount))} | ${HEAP_REPS} | — |`,
+    `| **adjacency indices + type index (replica structures − base map)** | **${mb(median(indicesAccount))}** | ${mb(minOf(indicesAccount))} | ${mb(maxOf(indicesAccount))} | ${HEAP_REPS} | — |`,
+    `| **resident metadata total (held rows + replica structures)** | **${mb(median(totals))}** | ${mb(minOf(totals))} | ${mb(maxOf(totals))} | ${HEAP_REPS} | **${fullWorkspaceShare}** |`,
     "",
-    `The replica's structures are ${replicaShare} of that total; the freshly allocated rows are the rest.`,
+    `The indices are ${indicesShare} of that total; the replica's own base map is about ${baseMapShare} (the reference map above), and the freshly allocated rows are the rest.`,
     "The JSON row number above and this heap total are different units and must not be added",
     "to each other: JSON bytes are the serialized rows, heap bytes are what V8 retains for the",
     "rows plus the indices built over them.",
@@ -769,9 +803,9 @@ push(
   `Adjacency keys built (derived from the same rows): ${grouped(indexShape.reverseKeys)} reverse, ${grouped(
     indexShape.forwardKeys,
   )} forward, over ${grouped(indexShape.reverseRows)} + ${grouped(indexShape.forwardRows)} index rows.`,
-  `The spike's projection build was **37.0 ms**; this is the shipped replica's \`load\` on a`,
+  `The spike's projection build was **${fixed(SPIKE_PROJECTION_BUILD_MS, 1)} ms**; this is the shipped replica's \`load\` on a`,
   `different machine, so the two are not like-for-like. \`load\` is ~${fixed(
-    loadMedian / 37.0,
+    loadMedian / SPIKE_PROJECTION_BUILD_MS,
     1,
   )}× that`,
   "narrower projection because it derives both adjacency directions for `relationship`",
