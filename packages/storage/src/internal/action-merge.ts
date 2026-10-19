@@ -25,3 +25,17 @@ export const mergeActionUpdates = (
     return update === undefined ? [] : [update];
   });
 };
+
+/**
+ * The Updates in `incoming` whose id is not already stored. For a repeated
+ * Action id (#473) this is the delta a fold may apply: the rest are copies
+ * of Updates already in the base, and re-applying them can revert a newer
+ * write. A first delivery passes `existing` as `[]`.
+ */
+export const addedUpdates = (
+  existing: readonly Update[],
+  incoming: readonly Update[],
+): readonly Update[] => {
+  const known = new Set(existing.map((update) => update.id));
+  return incoming.filter((update) => !known.has(update.id));
+};

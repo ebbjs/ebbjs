@@ -1,12 +1,14 @@
 import type { Action } from "@ebbjs/core";
-import { mergeActionUpdates } from "../internal/action-merge";
-import type { ActionLog } from "../types/action-log";
+import { addedUpdates, mergeActionUpdates } from "../internal/action-merge";
+import type { ActionLog, LoggedAction } from "../types/action-log";
 
 /**
  * MemoryActionLog — in-memory implementation of ActionLog.
  *
  * ## State
- * - `actions` — ordered list of all received actions
+ * - `actions` — Actions in append order; the entry at index `i` sits at
+ *   log position `i + 1`, so positions are 1-based, contiguous, and stable
+ *   across re-delivery of the same Action id
  * - `typeIndex` — maps entity type to set of entity IDs affected (for query optimization)
  *
  * ## Materialization Flow
@@ -48,22 +50,41 @@ export const createMemoryActionLog = (): ActionLog => {
   };
 
   return {
-    async append(action: Action): Promise<void> {
-      // One Action can arrive once per group it touches (#473); merge them.
-      const existing = state.actions.find((stored) => stored.id === action.id);
+    async append(action: Action): Promise<LoggedAction> {
+      const index = state.actions.findIndex((stored) => stored.id === action.id);
+      const existing = index === -1 ? undefined : state.actions[index];
 
+      // One Action can arrive once per group it touches (#473); merge them
+      // under the position the id first claimed.
       const stored =
         existing === undefined
           ? action
           : { ...existing, updates: mergeActionUpdates(existing.updates, action.updates) };
 
+      const created = existing === undefined;
+      const position = created ? state.actions.length + 1 : index + 1;
+      const added = addedUpdates(existing?.updates ?? [], action.updates);
+
       state = {
-        actions:
-          existing === undefined
-            ? [...state.actions, stored]
-            : state.actions.map((candidate) => (candidate.id === action.id ? stored : candidate)),
+        actions: created
+          ? [...state.actions, stored]
+          : state.actions.map((candidate) => (candidate.id === action.id ? stored : candidate)),
         typeIndex: updateTypeIndex(state.typeIndex, stored),
       };
+
+      return { action: stored, position, added };
+    },
+
+    async readTail(afterPosition: number): Promise<readonly LoggedAction[]> {
+      return state.actions.slice(afterPosition).map((action, offset) => ({
+        action,
+        position: afterPosition + offset + 1,
+        added: action.updates,
+      }));
+    },
+
+    async lastPosition(): Promise<number> {
+      return state.actions.length;
     },
 
     async getAll(): Promise<readonly Action[]> {

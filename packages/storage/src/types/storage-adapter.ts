@@ -1,9 +1,10 @@
-import type { ActionLog } from "./action-log";
+import type { ActionLog, LoggedAction } from "./action-log";
 import type { DirtyTracker } from "./dirty-tracker";
 import type { EntityStore } from "./entity-store";
 import type { CursorStore } from "./cursor-store";
 import type { EntityChangeEmitter } from "./entity-change-emitter";
 import type { OutboxStore } from "./outbox-store";
+import type { ReplicaStore } from "./replica-store";
 
 /**
  * StorageAdapter — unified interface composing all storage components.
@@ -18,11 +19,13 @@ import type { OutboxStore } from "./outbox-store";
  * - `cursors` — CursorStore for per-group GSN tracking
  * - `outbox` — OutboxStore for durable pending local Actions; a detected
  *   conflict is a status + payload on its outbox row, not a sibling store
+ * - `replica` — ReplicaStore for the persisted materialized replica; single-slot
+ *   and a fast path only
  *
  * ## Cross-cutting Methods
  * - `isDirty(entityId)` — delegates to dirtyTracker
- * - `reset()` — clears the action log, dirty flags, and entity cache;
- *   outbox entries are durable user data and survive a reset
+ * - `reset()` — clears the action log, dirty flags, entity cache, and the
+ *   persisted replica; outbox entries are durable user data and survive a reset
  */
 export interface StorageAdapter {
   readonly actions: ActionLog;
@@ -30,6 +33,11 @@ export interface StorageAdapter {
   readonly dirtyTracker: DirtyTracker;
   readonly cursors: CursorStore;
   readonly outbox: OutboxStore;
+  /**
+   * Single-slot persistence for the replica. An absent or corrupt record
+   * reads as `null`, so correctness never depends on it existing.
+   */
+  readonly replica: ReplicaStore;
   /**
    * Observer surface for entity-change notifications. Optional —
    * adapters that don't ship an emitter can omit the field, and
@@ -50,7 +58,15 @@ export interface StorageAdapter {
   reset(): Promise<void>;
 }
 
-export type { ActionLog, DirtyTracker, EntityStore, CursorStore, EntityChangeEmitter };
+export type {
+  ActionLog,
+  LoggedAction,
+  DirtyTracker,
+  EntityStore,
+  CursorStore,
+  EntityChangeEmitter,
+};
+export type { ReplicaRecord, ReplicaStore } from "./replica-store";
 export type {
   OutboxStore,
   OutboxEntry,

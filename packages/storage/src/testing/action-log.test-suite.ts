@@ -1,12 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { makeHlc, type Action, type Update } from "@ebbjs/core";
 import type { ActionLog } from "../types/action-log";
-import { buildPutAction } from "./fixtures";
+import { buildPatchAction, buildPutAction } from "./fixtures";
 
 export interface ActionLogTestSuiteOptions {
   name: string;
   factory: () => Promise<ActionLog> | ActionLog;
 }
+
+/** A `delete` for `todo_2` on the same Action id as the put — a #473 per-group copy. */
+const buildPerGroupDelete = (): Update => ({
+  id: "u_delete",
+  subject_id: "todo_2",
+  subject_type: "todo",
+  method: "delete",
+  data: null,
+});
 
 export const defineActionLogTests = ({ name, factory }: ActionLogTestSuiteOptions): void => {
   describe(`${name} ActionLog`, () => {
@@ -30,42 +39,115 @@ export const defineActionLogTests = ({ name, factory }: ActionLogTestSuiteOption
         expect(actions[0].id).toBe("a_1");
         expect(actions[1].id).toBe("a_2");
       });
-    });
 
-    describe("per-Update delivery (#473)", () => {
-      it("unions the Updates of repeated copies of one Action id", async () => {
-        const log = await factory();
-        const put = buildPutAction();
-        const deleteUpdate: Update = {
-          id: "u_delete",
-          subject_id: "todo_2",
-          subject_type: "todo",
-          method: "delete",
-          data: null,
-        };
-
-        // Two filtered copies of the same Action: the put scoped to one
-        // group, the delete scoped to another.
-        await log.append(put);
-        await log.append({ ...put, updates: [deleteUpdate] });
-
-        const actions = await log.getAll();
-        expect(actions).toHaveLength(1);
-        expect(actions[0]!.updates.map((update) => update.id).sort()).toEqual(["u_1", "u_delete"]);
-        expect((await log.getForEntity("todo_1")).map((action) => action.id)).toEqual(["a_1"]);
-        expect((await log.getForEntity("todo_2")).map((action) => action.id)).toEqual(["a_1"]);
-      });
-
-      it("keeps one record when an identical copy is re-delivered", async () => {
+      it("returns the stored action, all its Updates, and its position", async () => {
         const log = await factory();
         const action = buildPutAction();
+        const entry = await log.append(action);
+        expect(entry.action).toEqual(action);
+        expect(entry.added).toEqual(action.updates);
+        expect(entry.position).toBe(1);
+      });
 
-        await log.append(action);
-        await log.append(action);
+      it("assigns monotonically increasing positions to distinct Actions", async () => {
+        const log = await factory();
+        const first = await log.append(buildPutAction());
+        const second = await log.append(buildPatchAction());
+        expect(first.position).toBe(1);
+        expect(second.position).toBe(2);
+      });
+    });
+
+    describe("append position + delta (#518)", () => {
+      it("reports only the newly-added Updates and a stable position for a repeated id", async () => {
+        const log = await factory();
+        const put = buildPutAction();
+        const first = await log.append(put);
+        expect(first.position).toBe(1);
+
+        const perGroup = await log.append({ ...put, updates: [buildPerGroupDelete()] });
+        expect(perGroup.position).toBe(1);
+        expect(perGroup.added.map((update) => update.id)).toEqual(["u_delete"]);
+        expect(perGroup.action.updates.map((update) => update.id).sort()).toEqual([
+          "u_1",
+          "u_delete",
+        ]);
+      });
+
+      it("reports no added Updates for an identical re-delivery", async () => {
+        const log = await factory();
+        const put = buildPutAction();
+        await log.append(put);
+
+        const again = await log.append(put);
+        expect(again.added).toEqual([]);
+        expect(again.position).toBe(1);
 
         const actions = await log.getAll();
         expect(actions).toHaveLength(1);
         expect(actions[0]!.updates).toHaveLength(1);
+      });
+
+      it("does not advance lastPosition on a repeated id", async () => {
+        const log = await factory();
+        await log.append(buildPutAction());
+        await log.append(buildPatchAction());
+        await log.append({ ...buildPutAction(), updates: [buildPerGroupDelete()] });
+        expect(await log.lastPosition()).toBe(2);
+      });
+    });
+
+    describe("readTail", () => {
+      it("returns every Action after the position in append order", async () => {
+        const log = await factory();
+        await log.append(buildPutAction());
+        await log.append(buildPatchAction());
+
+        const tail = await log.readTail(0);
+        expect(tail.map((entry) => entry.position)).toEqual([1, 2]);
+        expect(tail.map((entry) => entry.action.id)).toEqual(["a_1", "a_2"]);
+      });
+
+      it("excludes entries at or before the position", async () => {
+        const log = await factory();
+        await log.append(buildPutAction());
+        await log.append(buildPatchAction());
+
+        const tail = await log.readTail(1);
+        expect(tail.map((entry) => entry.action.id)).toEqual(["a_2"]);
+      });
+
+      it("returns an empty tail past the last position", async () => {
+        const log = await factory();
+        await log.append(buildPutAction());
+        expect(await log.readTail(1)).toEqual([]);
+      });
+
+      it("carries the merged Update list of a repeated id", async () => {
+        const log = await factory();
+        const put = buildPutAction();
+        await log.append(put);
+        await log.append({ ...put, updates: [buildPerGroupDelete()] });
+
+        const tail = await log.readTail(0);
+        expect(tail).toHaveLength(1);
+        expect(tail[0]!.position).toBe(1);
+        expect(tail[0]!.added.map((update) => update.id).sort()).toEqual(["u_1", "u_delete"]);
+      });
+    });
+
+    describe("lastPosition", () => {
+      it("is 0 before anything is appended", async () => {
+        const log = await factory();
+        expect(await log.lastPosition()).toBe(0);
+      });
+
+      it("is the last assigned position", async () => {
+        const log = await factory();
+        await log.append(buildPutAction());
+        expect(await log.lastPosition()).toBe(1);
+        await log.append(buildPatchAction());
+        expect(await log.lastPosition()).toBe(2);
       });
     });
 
@@ -158,6 +240,14 @@ export const defineActionLogTests = ({ name, factory }: ActionLogTestSuiteOption
         await log.clear();
         const actions = await log.getAll();
         expect(actions).toEqual([]);
+      });
+
+      it("resets the position cursor", async () => {
+        const log = await factory();
+        await log.append(buildPutAction());
+        await log.clear();
+        expect(await log.lastPosition()).toBe(0);
+        expect(await log.readTail(0)).toEqual([]);
       });
     });
   });
