@@ -173,13 +173,12 @@ defmodule EbbServer.Bench.Metrics do
   @spec analyze(Options.t(), map(), [map()], [map()], [map()] | nil, map()) :: map()
   def analyze(%Options{} = config, ctx, worker_stats, resource_samples, fanout, telemetry \\ %{}) do
     merged = merge_stats(worker_stats)
-    watermark_ablated? = :watermark in config.ablate
 
     %{
       tier: config.tier,
       throughput: throughput(config.duration, merged),
       latency: latency(config.duration, merged.samples),
-      correctness: correctness(merged, resource_samples, watermark_ablated?),
+      correctness: correctness(merged, resource_samples, config),
       resources: resources(resource_samples),
       fanout: fanout_summary(fanout),
       fanout_metrics: fanout_metrics(config, resource_samples, telemetry),
@@ -312,18 +311,20 @@ defmodule EbbServer.Bench.Metrics do
     end)
   end
 
-  # The watermark frontier is what makes GSN density and lag meaningful; with
-  # `:watermark` ablated the frontier never moves, so both are deliberately
-  # left unmeasured instead of reporting a meaningless number.
-  defp correctness(merged, resource_samples, watermark_ablated?) do
+  # The watermark frontier is what makes GSN density and lag meaningful. With
+  # `:watermark` ablated the frontier never moves, and the t5 spike writes at a
+  # synthetic GSN base without ever advancing it, so both are deliberately left
+  # unmeasured instead of reporting a number that describes nothing.
+  defp correctness(merged, resource_samples, config) do
+    frontier? = Options.measures_frontier?(config)
+
     %{
       accepted: merged.accepted,
       rejected: merged.rejected,
       errors: merged.errors,
-      gsn_holes: if(watermark_ablated?, do: nil, else: count_gsn_holes()),
-      watermark_lag_high:
-        if(watermark_ablated?, do: nil, else: samples_max(resource_samples, &lag/1)),
-      watermark_lag_final: if(watermark_ablated?, do: nil, else: final_lag(resource_samples))
+      gsn_holes: if(frontier?, do: count_gsn_holes(), else: nil),
+      watermark_lag_high: if(frontier?, do: samples_max(resource_samples, &lag/1), else: nil),
+      watermark_lag_final: if(frontier?, do: final_lag(resource_samples), else: nil)
     }
   end
 

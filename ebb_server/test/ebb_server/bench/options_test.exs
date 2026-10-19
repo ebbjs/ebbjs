@@ -158,6 +158,74 @@ defmodule EbbServer.Bench.OptionsTest do
     end
   end
 
+  describe "--tier t5" do
+    test "parses the canonical concurrent write_batch shape" do
+      assert {:ok, config} =
+               Options.parse([
+                 "--tier",
+                 "t5",
+                 "--concurrency",
+                 "4",
+                 "--batch-size",
+                 "100",
+                 "--updates-per-action",
+                 "2",
+                 "--durability",
+                 "async"
+               ])
+
+      assert config.tier == :t5
+      assert config.concurrency == 4
+      assert config.batch_size == 100
+      assert config.durability == :async
+    end
+
+    test "describes the tier and the caller count" do
+      {:ok, config} = Options.parse(["--tier", "t5", "--concurrency", "2"])
+
+      assert Options.tier_description(:t5) =~ "write_batch"
+      assert Options.tier_description(:t5) =~ "no Writer"
+
+      values = Map.new(Options.describe(config))
+      assert values["Tier"] =~ "t5"
+      assert values["Concurrency"] == "2"
+    end
+
+    test "the reproduction command names the caller count and durability" do
+      {:ok, config} =
+        Options.parse(["--tier", "t5", "--concurrency", "2", "--durability", "async"])
+
+      command = Options.command(config)
+
+      assert command =~ "--tier t5"
+      assert command =~ "--concurrency 2"
+      assert command =~ "--durability async"
+    end
+
+    test "rejects --rate" do
+      assert {:error, message} = Options.parse(["--tier", "t5", "--rate", "100"])
+      assert message =~ "--rate"
+    end
+
+    test "rejects --subscribers and --subscriber-lean" do
+      assert {:error, message} = Options.parse(["--tier", "t5", "--subscribers", "10"])
+      assert message =~ "--subscribers"
+
+      assert {:error, message} = Options.parse(["--tier", "t5", "--subscriber-lean"])
+      assert message =~ "--subscriber-lean"
+    end
+
+    test "rejects --ablate" do
+      assert {:error, message} = Options.parse(["--tier", "t5", "--ablate", "dedup"])
+      assert message =~ "--ablate"
+    end
+
+    test "rejects multiple writers" do
+      assert {:error, message} = Options.parse(["--tier", "t5", "--writers", "2"])
+      assert message =~ "--writers"
+    end
+  end
+
   describe "self-describing output" do
     test "describe names the ablated phases" do
       assert {:ok, config} = Options.parse(["--ablate", "cache,watermark"])

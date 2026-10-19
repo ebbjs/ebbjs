@@ -46,6 +46,7 @@ defmodule EbbServer.Bench.Report do
       server_latency_section(result.server),
       fanout_section(config, result.fanout, result.server),
       fixed_rate_section(config, result),
+      write_batch_section(config, result),
       "## Correctness and resources",
       "",
       correctness_table(config, result),
@@ -177,6 +178,13 @@ defmodule EbbServer.Bench.Report do
       "mailbox, which is not separately instrumented.\n"
   end
 
+  defp latency_note(%{tier: :t5}) do
+    "Values are wall time around the raw `:rocksdb.write_batch/3` call in the bench worker. " <>
+      "Batch assembly — Action construction, validation, ETF encoding, key building, and " <>
+      "`batch_put` — is outside the timer, so this is the NIF call alone. The throughput " <>
+      "table above counts wall Actions, assembly included.\n"
+  end
+
   defp latency_note(_config) do
     "Client-side values are wall time around `:httpc` for one request, including MessagePack " <>
       "encoding, transport, and response parsing; server-side `ebb.http.request_latency_ms` " <>
@@ -246,6 +254,34 @@ defmodule EbbServer.Bench.Report do
 
   defp fixed_rate_section(_config, _result), do: nil
 
+  defp write_batch_section(%{tier: :t5} = config, result) do
+    achieved = overall(result.throughput)
+
+    rows = [
+      {"Callers (BEAM processes)", "#{config.concurrency}"},
+      {"write_batch sync", sync_label(config.durability)},
+      {"Actions per call", "#{config.batch_size}"},
+      {"Updates per Action", "#{config.updates_per_action}"},
+      {"GSN ranges", "disjoint per caller, contiguous per call"},
+      {"Achieved Actions/sec", format_rate(achieved.rate)}
+    ]
+
+    "## Concurrent write_batch (T5)\n\n" <>
+      table(["Metric", "Value"], rows) <>
+      "\n\n" <>
+      "Each caller is one BEAM process issuing `:rocksdb.write_batch/3` directly at a " <>
+      "synthetic GSN base; only RocksDB's ability to overlap commits is measured. The run " <>
+      "bypasses the Writer, its caches, the watermark, and fan-out, so nothing here reflects " <>
+      "the production write path's bookkeeping. Comparing callers at the same sync mode is " <>
+      "the point: the gap between one and two callers is the headroom a committer pool " <>
+      "could use.\n"
+  end
+
+  defp write_batch_section(_config, _result), do: nil
+
+  defp sync_label(:sync), do: "sync: true"
+  defp sync_label(:async), do: "sync: false"
+
   defp bucket_table(series) do
     rows =
       Enum.map(series, fn bucket ->
@@ -264,10 +300,11 @@ defmodule EbbServer.Bench.Report do
     correctness = result.correctness
     resources = result.resources
 
-    # The frontier never moves when `:watermark` is ablated, so its derived
-    # numbers are meaningless rather than zero.
+    # The frontier never moves when `:watermark` is ablated or when the run
+    # bypasses the Writer (t5), so its derived numbers are meaningless rather
+    # than zero.
     watermark = fn value ->
-      if :watermark in config.ablate, do: "n/a", else: format_integer(value)
+      if Options.measures_frontier?(config), do: format_integer(value), else: "n/a"
     end
 
     rows = [
@@ -293,17 +330,14 @@ defmodule EbbServer.Bench.Report do
         "but its samples are discarded.",
       database_state(config, result),
       distribution_semantics(config),
-      "Client-side latency is timed in the bench worker (T0) or around `:httpc` (HTTP tiers); " <>
-        "server-side latency is recorded by the server and read from the `ebb.*` telemetry " <>
-        "events (`ebb.http.request_latency_ms`, `ebb.writer.batch_latency_ms`, " <>
-        "`ebb.fanout.push_latency_ms`) with handlers attached in the bench process, so " <>
-        "transport and server queueing are reported separately.",
+      client_latency_note(config),
       "Latency samples use reservoir sampling capped at ~200,000 across all workers " <>
         "(per-worker cap = cap / concurrency), so percentiles describe the retained sample.",
       http_client_note(config),
       "RocksDB compaction and flush backlog are not measured: the `rocksdb` package exposes no " <>
         "property for them and emits no `:telemetry` event.",
       durability_note(config),
+      write_batch_note(config),
       steady_note(config),
       ablation_note(config)
     ]
@@ -330,7 +364,7 @@ defmodule EbbServer.Bench.Report do
       "contend on LWW materialization instead of growing the entity set."
   end
 
-  defp http_client_note(%{tier: :t0}), do: ""
+  defp http_client_note(%{tier: tier}) when tier in [:t0, :t5], do: ""
 
   defp http_client_note(_config) do
     "HTTP tiers use `:httpc` with a keep-alive session pool sized to twice the requested " <>
@@ -345,6 +379,29 @@ defmodule EbbServer.Bench.Report do
   defp durability_note(%{durability: :async}) do
     "Durability is `sync: false` — a measurement-only ceiling, never a candidate configuration."
   end
+
+  defp client_latency_note(%{tier: :t5}) do
+    "Latency is wall time around the raw `:rocksdb.write_batch/3` NIF call; batch assembly " <>
+      "happens before the timer starts and `release_batch` after it. No server-side telemetry " <>
+      "is captured for this tier, because the Writer and the HTTP stack are bypassed."
+  end
+
+  defp client_latency_note(_config) do
+    "Client-side latency is timed in the bench worker (T0) or around `:httpc` (HTTP tiers); " <>
+      "server-side latency is recorded by the server and read from the `ebb.*` telemetry " <>
+      "events (`ebb.http.request_latency_ms`, `ebb.writer.batch_latency_ms`, " <>
+      "`ebb.fanout.push_latency_ms`) with handlers attached in the bench process, so " <>
+      "transport and server queueing are reported separately."
+  end
+
+  defp write_batch_note(%{tier: :t5}) do
+    "This run bypasses the Writer: it commits raw `write_batch` payloads at a synthetic " <>
+      "per-caller GSN base, so no watermark advances, no cache is mutated, and no subscriber " <>
+      "is notified. GSN density and watermark lag are therefore not measured, and the hole " <>
+      "scan is skipped because it would walk from GSN 1 to that base."
+  end
+
+  defp write_batch_note(_config), do: ""
 
   defp steady_note(%{duration: duration}) when duration <= 61 do
     "The run is shorter than 61s, so no sustained window is reported (steady = n/a)."
