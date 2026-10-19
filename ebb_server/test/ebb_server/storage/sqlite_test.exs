@@ -188,6 +188,210 @@ defmodule EbbServer.Storage.SQLiteTest do
     end
   end
 
+  describe "patch_entity/4" do
+    defp seed_entity(name, id, data, last_gsn \\ 1) do
+      :ok =
+        SQLite.upsert_entity(
+          %{
+            id: id,
+            type: "doc",
+            data: data,
+            created_hlc: 1000,
+            updated_hlc: 1000,
+            deleted_hlc: nil,
+            deleted_by: nil,
+            last_gsn: last_gsn
+          },
+          name
+        )
+    end
+
+    test "patches one key while sibling and top-level data keys survive", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      seed_entity(
+        name,
+        "doc_1",
+        ~s({"fields":{"title":{"value":"old","hlc":1},"done":{"value":false,"hlc":1}},"meta":{"v":1}})
+      )
+
+      :ok =
+        SQLite.patch_entity(
+          "doc_1",
+          %{"title" => ~s({"value":"new","hlc":2})},
+          %{type: "doc", updated_hlc: 2000, deleted_hlc: nil, deleted_by: nil, last_gsn: 2},
+          name
+        )
+
+      assert {:ok, row} = SQLite.get_entity("doc_1", name)
+      data = Jason.decode!(row.data)
+
+      assert data["fields"]["title"] == %{"value" => "new", "hlc" => 2}
+      assert data["fields"]["done"] == %{"value" => false, "hlc" => 1}
+      assert data["meta"] == %{"v" => 1}
+    end
+
+    test "updates the metadata columns without touching created_hlc", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      seed_entity(name, "doc_1", ~s({"fields":{"title":{"value":"old","hlc":1}}}))
+
+      :ok =
+        SQLite.patch_entity(
+          "doc_1",
+          %{"title" => ~s({"value":"new","hlc":2})},
+          %{
+            type: "todo",
+            updated_hlc: 3000,
+            deleted_hlc: 4000,
+            deleted_by: "actor_9",
+            last_gsn: 3
+          },
+          name
+        )
+
+      assert {:ok, row} = SQLite.get_entity("doc_1", name)
+      assert row.type == "todo"
+      assert row.created_hlc == 1000
+      assert row.updated_hlc == 3000
+      assert row.deleted_hlc == 4000
+      assert row.deleted_by == "actor_9"
+      assert row.last_gsn == 3
+    end
+
+    test "a lower last_gsn is rejected and leaves the row unchanged", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      seed_entity(name, "doc_1", ~s({"fields":{"title":{"value":"first","hlc":1}}}), 5)
+
+      :ok =
+        SQLite.patch_entity(
+          "doc_1",
+          %{"title" => ~s({"value":"stale","hlc":9})},
+          %{type: "doc", updated_hlc: 1000, deleted_hlc: nil, deleted_by: nil, last_gsn: 3},
+          name
+        )
+
+      assert {:ok, row} = SQLite.get_entity("doc_1", name)
+      assert row.last_gsn == 5
+      assert row.updated_hlc == 1000
+      assert Jason.decode!(row.data)["fields"]["title"]["value"] == "first"
+    end
+
+    test "an equal last_gsn still applies", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      seed_entity(name, "doc_1", ~s({"fields":{"title":{"value":"first","hlc":1}}}), 5)
+
+      :ok =
+        SQLite.patch_entity(
+          "doc_1",
+          %{"title" => ~s({"value":"second","hlc":6})},
+          %{type: "doc", updated_hlc: 6000, deleted_hlc: nil, deleted_by: nil, last_gsn: 5},
+          name
+        )
+
+      assert {:ok, row} = SQLite.get_entity("doc_1", name)
+      assert row.last_gsn == 5
+      assert row.updated_hlc == 6000
+      assert Jason.decode!(row.data)["fields"]["title"]["value"] == "second"
+    end
+
+    test "empty fields performs a metadata-only update", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      seed_entity(name, "doc_1", ~s({"fields":{"title":{"value":"kept","hlc":1}}}), 2)
+
+      :ok =
+        SQLite.patch_entity(
+          "doc_1",
+          %{},
+          %{
+            type: "doc",
+            updated_hlc: 7000,
+            deleted_hlc: 7000,
+            deleted_by: "actor_1",
+            last_gsn: 7
+          },
+          name
+        )
+
+      assert {:ok, row} = SQLite.get_entity("doc_1", name)
+      assert row.last_gsn == 7
+      assert row.updated_hlc == 7000
+      assert row.deleted_hlc == 7000
+      assert row.deleted_by == "actor_1"
+      assert Jason.decode!(row.data)["fields"]["title"]["value"] == "kept"
+    end
+
+    test "a patched nested map key survives alongside its siblings", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      seed_entity(
+        name,
+        "doc_1",
+        ~s({"fields":{"content":{"map":{"a":{"value":1,"hlc":1},"b":{"value":2,"hlc":1}}}}})
+      )
+
+      :ok =
+        SQLite.patch_entity(
+          "doc_1",
+          %{"content.map.\"b\"" => ~s({"value":9,"hlc":2})},
+          %{type: "doc", updated_hlc: 2000, deleted_hlc: nil, deleted_by: nil, last_gsn: 2},
+          name
+        )
+
+      assert {:ok, row} = SQLite.get_entity("doc_1", name)
+      content = Jason.decode!(row.data)["fields"]["content"]
+
+      assert content["map"]["a"] == %{"value" => 1, "hlc" => 1}
+      assert content["map"]["b"] == %{"value" => 9, "hlc" => 2}
+    end
+
+    test "a patched nested map value round-trips through json_extract", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      seed_entity(
+        name,
+        "doc_1",
+        ~s({"fields":{"content":{"map":{}},"source_id":{"value":"src_old","hlc":1}}})
+      )
+
+      :ok =
+        SQLite.patch_entity(
+          "doc_1",
+          %{
+            "content" => ~s({"map":{"run_1":{"value":"z","hlc":9}}}),
+            "source_id" => ~s({"value":"src_new","hlc":2})
+          },
+          %{type: "doc", updated_hlc: 2000, deleted_hlc: nil, deleted_by: nil, last_gsn: 2},
+          name
+        )
+
+      assert {:ok, row} = SQLite.get_entity("doc_1", name)
+      assert Jason.decode!(row.data)["fields"]["content"]["map"]["run_1"]["value"] == "z"
+
+      db = open_readonly(dir)
+
+      {:ok, stmt} =
+        Sqlite3.prepare(
+          db,
+          "SELECT json_extract(data, '$.fields.content.map.run_1.value'), source_id FROM entities WHERE id = ?"
+        )
+
+      :ok = Sqlite3.bind(stmt, ["doc_1"])
+      assert {:row, ["z", "src_new"]} = Sqlite3.step(db, stmt)
+      :ok = Sqlite3.release(db, stmt)
+    end
+  end
+
   describe "cursors" do
     test "get_cursor returns :not_found for a missing name", context do
       dir = tmp_dir(context)
