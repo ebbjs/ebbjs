@@ -104,9 +104,10 @@ ordered-fanout coordination that is not yet built
 | `EbbServer.Storage.EntityStore`                                                  | Read API with on-demand materialization                            |
 | `EbbServer.Storage.PermissionChecker`                                            | Action validation, per-Update + read-side permission decisions     |
 | `EbbServer.Storage.WatermarkTracker`                                             | Resolution-frontier ETS + `:atomics` (SSE fan-out gating)          |
+| `EbbServer.Storage.InFlightActions`                                              | In-flight action-id ETS (idempotent-retry concurrency guard)       |
 | `EbbServer.Storage.{DirtyTracker,GroupCache,EntityGroupCache,RelationshipCache}` | In-memory state children of `SystemCache`                          |
 | `EbbServer.Storage.GSNCounter`                                                   | Lock-free GSN claiming + restart reconcile (`:atomics`)            |
-| `EbbServer.Telemetry.Sampler`                                                    | Periodic watermark / dirty-set / fan-out gauges                    |
+| `EbbServer.Telemetry.Sampler`                                                    | Periodic watermark / dirty-set / in-flight / fan-out gauges        |
 | `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass + external modes)                |
 | `EbbServer.Sync.Router`                                                          | HTTP plug router                                                   |
 | `EbbServer.Sync.CatchUp`                                                         | Paginated catch-up                                                 |
@@ -148,9 +149,10 @@ EbbServer.Supervisor (one_for_one)
 │   │   ├── Storage.EntityGroupCache
 │   │   └── Storage.RelationshipCache
 │   ├── Storage.WatermarkTracker           — resolution-frontier ETS + :atomics
+│   ├── Storage.InFlightActions            — in-flight action-id ETS
 │   └── Storage.Writer                     — sequencer: claim, resolve, apply
 │       └── Storage.Committer              — op assembly + durable write
-├── Telemetry.Sampler                      — 1 Hz watermark / dirty-set / fan-out gauges
+├── Telemetry.Sampler                      — 1 Hz watermark / dirty-set / in-flight / fan-out gauges
 ├── Sync Supervisor (one_for_one)
 │   ├── Sync.FanOutFrontier                — persisted last-pushed frontier
 │   ├── Sync.FanOutRouter
@@ -164,12 +166,13 @@ EbbServer.Supervisor (one_for_one)
 
 `Storage.Writer` is deliberately the **last** child of the `rest_for_one`
 Storage supervisor. A `SystemCache` (or `WatermarkTracker`) failure therefore
-rebuilds the caches and the watermark and restarts the Writer, which
-reconciles against the fresh frontier on `init/1`; a Writer-only crash
-restarts the Writer and its linked Committer together. Any RocksDB crash
-still restarts the whole storage tree in order, because SystemCache
-populates from RocksDB on init and the Writer coordinates through cache
-state.
+rebuilds the caches, the watermark, and the in-flight action-id set and
+restarts the Writer, which reconciles against the fresh frontier on `init/1`;
+a Writer-only crash restarts the Writer and its linked Committer together,
+and the replacement Writer clears the stale in-flight ids on `init/1`. Any
+RocksDB crash still restarts the whole storage tree in order, because
+SystemCache populates from RocksDB on init and the Writer coordinates through
+cache state.
 
 ## Cross-cutting concerns
 
@@ -209,6 +212,7 @@ The periodic metric sampler is configured under its own key,
 | `:rocks_name`            | RocksDB instance to read `max_gsn` from             | `EbbServer.Storage.RocksDB`              |
 | `:watermark_tracker`     | WatermarkTracker instance to read the frontier from | `EbbServer.Storage.WatermarkTracker`     |
 | `:dirty_set`             | Dirty-set ETS table name                            | resolved from `DirtyTracker`             |
+| `:in_flight_actions`     | In-flight action-id tracker to read the size from   | `EbbServer.Storage.InFlightActions`      |
 | `:connection_supervisor` | Supervisor to count active SSE connections from     | `EbbServer.Sync.SSEConnectionSupervisor` |
 | `:group_supervisor`      | Supervisor to count active groups from              | `EbbServer.Sync.GroupDynamicSupervisor`  |
 
@@ -257,6 +261,7 @@ suffix marks a latency metric, not the raw unit. Reporters convert with
 | `ebb.writer.commit_failed`                | `count`                                                                                              | `gsn_start`, `gsn_end`, `reason`                                                                             | Counter                      | `writer`        |
 | `ebb.watermark.lag`                       | `lag` (GSNs)                                                                                         | —                                                                                                            | Gauge                        | `watermark`     |
 | `ebb.dirty_set.size`                      | `size` (entries)                                                                                     | —                                                                                                            | Gauge                        | `dirty_set`     |
+| `ebb.writer.in_flight_action_ids`         | `size` (ids)                                                                                         | —                                                                                                            | Gauge                        | `writer`        |
 | `ebb.entity_store.materialize_latency_ms` | `duration` (native), `byte_size`                                                                     | `subject_id`, `subject_type`, `path` (`:dirty_materialize`)                                                  | Histogram                    | `entity_store`  |
 | `ebb.entity_store.materialize_phase_ms`   | `duration` (native)                                                                                  | `phase` (`:fetch_decode` / `:entries_scan` / `:actions_load` / `:merge` / `:encode` / `:upsert` / `:format`) | Histogram                    | `entity_store`  |
 | `ebb.entity_store.read_latency_ms`        | `duration` (native), `byte_size`, `row_count`                                                        | `path` (`:clean_hit` / `:query`), `subject_id`                                                               | Histogram                    | `entity_store`  |
@@ -272,9 +277,12 @@ suffix marks a latency metric, not the raw unit. Reporters convert with
 | `ebb.action_export.lag`                   | `lag` (GSNs)                                                                                         | `cursor`                                                                                                     | Gauge                        | `action_export` |
 | `ebb.system_cache.populated`              | `duration` (native), `entity_types`, `group_members`, `entity_groups`, `relationships`, `backfilled` | `outcome` (`:ok` / `:error`), `reason`                                                                       | Histogram                    | `system_cache`  |
 
-The `ebb.watermark.lag`, `ebb.dirty_set.size`, `ebb.fanout.active_connections`,
-and `ebb.fanout.active_groups` gauges have no natural event to hang off, so
+The `ebb.watermark.lag`, `ebb.dirty_set.size`,
+`ebb.writer.in_flight_action_ids`, `ebb.fanout.active_connections`, and
+`ebb.fanout.active_groups` gauges have no natural event to hang off, so
 `EbbServer.Telemetry.Sampler` polls them once per second (configurable above).
+`ebb.writer.in_flight_action_ids` is bounded by the write-pipeline depth, not
+by history: ids leave the set when their batch commits or abandons.
 
 `ebb.fanout.push_latency_ms` is measured from the Writer's durable commit to
 the GroupServer dispatching the batch to the group's subscribers: one sample

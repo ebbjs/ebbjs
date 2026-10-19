@@ -3,18 +3,19 @@ defmodule EbbServer.Storage.Supervisor do
   Supervisor for the storage layer.
 
   Starts children in order with `rest_for_one` strategy, ensuring RocksDB
-  and SQLite are ready before SystemCache, WatermarkTracker is ready
-  before Writer, and Writer is last.
+  and SQLite are ready before SystemCache, WatermarkTracker and
+  InFlightActions are ready before Writer, and Writer is last.
 
   The `rest_for_one` strategy means if any child crashes, those started
   after it (higher in the list) will be restarted, but those before it
   will not. Two reasons drive the order:
 
   - A `SystemCache` (or `WatermarkTracker`) failure must rebuild the
-    in-memory caches and the Writer, so the Writer reconciles against the
-    fresh watermark on `init/1`.
+    in-memory caches, the in-flight action-id set, and the Writer, so the
+    Writer reconciles against the fresh watermark on `init/1`.
   - A Writer-only crash restarts the Writer alone, since nothing is
-    ordered after it.
+    ordered after it. Its in-flight markers survive (the Committer died
+    with it) and the replacement Writer clears them on `init/1`.
 
   `:writer_opts` is merged over the Writer's boot defaults so tests can
   inject a `:commit_fn` or a bad cache table while still exercising the
@@ -25,6 +26,7 @@ defmodule EbbServer.Storage.Supervisor do
 
   @writer_defaults [
     watermark_tracker: EbbServer.Storage.WatermarkTracker,
+    in_flight_actions: EbbServer.Storage.InFlightActions,
     fan_out_router: EbbServer.Sync.FanOutRouter
   ]
 
@@ -41,6 +43,7 @@ defmodule EbbServer.Storage.Supervisor do
       {EbbServer.Storage.SQLite, data_dir: data_dir},
       {EbbServer.Storage.SystemCache, []},
       {EbbServer.Storage.WatermarkTracker, []},
+      {EbbServer.Storage.InFlightActions, []},
       {EbbServer.Storage.Writer, writer_opts}
     ]
 

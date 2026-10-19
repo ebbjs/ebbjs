@@ -3,11 +3,11 @@ defmodule EbbServer.Telemetry.Sampler do
   Periodic gauges for live-sync liveness and read-path backlog.
 
   Emits `ebb.watermark.lag` (max GSN − committed watermark),
-  `ebb.dirty_set.size`, `ebb.fanout.active_connections`, and
-  `ebb.fanout.active_groups` on an interval. The gauges are instantaneous
-  values with no natural event to hang off, so they need a poller; it runs
-  in its own process so the sampling reads never land on the Writer or a
-  request path.
+  `ebb.dirty_set.size`, `ebb.writer.in_flight_action_ids`,
+  `ebb.fanout.active_connections`, and `ebb.fanout.active_groups` on an
+  interval. The gauges are instantaneous values with no natural event to
+  hang off, so they need a poller; it runs in its own process so the
+  sampling reads never land on the Writer or a request path.
 
   Each source is read and emitted independently: a failing read is logged
   and that gauge is skipped for the tick, leaving the other gauge and the
@@ -20,7 +20,7 @@ defmodule EbbServer.Telemetry.Sampler do
   use GenServer
   require Logger
 
-  alias EbbServer.Storage.{DirtyTracker, RocksDB, WatermarkTracker}
+  alias EbbServer.Storage.{DirtyTracker, InFlightActions, RocksDB, WatermarkTracker}
   alias EbbServer.Telemetry
 
   @default_interval_ms 1_000
@@ -28,6 +28,7 @@ defmodule EbbServer.Telemetry.Sampler do
   @default_watermark_tracker EbbServer.Storage.WatermarkTracker
   @default_connection_supervisor EbbServer.Sync.SSEConnectionSupervisor
   @default_group_supervisor EbbServer.Sync.GroupDynamicSupervisor
+  @default_in_flight_actions EbbServer.Storage.InFlightActions
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -43,6 +44,7 @@ defmodule EbbServer.Telemetry.Sampler do
         rocks_name: Keyword.get(opts, :rocks_name, @default_rocks_name),
         watermark_tracker: Keyword.get(opts, :watermark_tracker, @default_watermark_tracker),
         dirty_set: Keyword.get(opts, :dirty_set, DirtyTracker.dirty_set_name()),
+        in_flight_actions: Keyword.get(opts, :in_flight_actions, @default_in_flight_actions),
         connection_supervisor:
           Keyword.get(opts, :connection_supervisor, @default_connection_supervisor),
         group_supervisor: Keyword.get(opts, :group_supervisor, @default_group_supervisor)
@@ -60,6 +62,8 @@ defmodule EbbServer.Telemetry.Sampler do
   def handle_info(:sample, state) do
     sample([:watermark, :lag], fn -> watermark_measurements(state) end)
     sample([:dirty_set, :size], fn -> dirty_set_measurements(state) end)
+
+    sample([:writer, :in_flight_action_ids], fn -> in_flight_action_measurements(state) end)
 
     sample([:fanout, :active_connections], fn ->
       active_children_measurements(state.connection_supervisor)
@@ -98,6 +102,10 @@ defmodule EbbServer.Telemetry.Sampler do
 
   defp dirty_set_measurements(%{dirty_set: dirty_set}) do
     %{size: DirtyTracker.size(dirty_set)}
+  end
+
+  defp in_flight_action_measurements(%{in_flight_actions: in_flight_actions}) do
+    %{size: InFlightActions.size(in_flight_actions)}
   end
 
   defp active_children_measurements(supervisor) do
