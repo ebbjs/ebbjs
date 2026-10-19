@@ -703,8 +703,8 @@ defmodule EbbServer.Storage.Writer do
     )
 
     abandon(state, inflight.pending_marks, inflight.gsn_start, inflight.gsn_end, reason)
-    reply_all(inflight.pending, inflight.ranges, {:error, reason})
     emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
+    reply_all(inflight.pending, inflight.ranges, {:error, reason})
 
     schedule_flush(state)
   end
@@ -757,18 +757,18 @@ defmodule EbbServer.Storage.Writer do
           committed_at
         )
 
+        emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
         emit_actions_accepted(inflight.batch_size)
         reply_all(inflight.pending, inflight.ranges, :ok)
-        emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
         schedule_flush(state)
 
       {:error, reason} ->
         # The batch is durable: reply success to every caller first,
         # then escalate, so no caller sees a lost success when the
         # rebuild tears this process down.
+        emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
         emit_actions_accepted(inflight.batch_size)
         reply_all(inflight.pending, inflight.ranges, :ok)
-        emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
         escalate_cache_failure(inflight.gsn_start, inflight.gsn_end, reason)
         state
     end

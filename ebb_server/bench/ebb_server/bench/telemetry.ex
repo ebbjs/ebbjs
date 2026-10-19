@@ -3,9 +3,10 @@ defmodule EbbServer.Bench.Telemetry do
   Collects server-side `ebb.*` latency telemetry for one benchmark run.
 
   The server emits its own latency events — `ebb.writer.batch_latency_ms`,
-  `ebb.http.request_latency_ms`, and `ebb.fanout.push_latency_ms`. Attaching
-  a handler in the bench process lets a run report latency measured *inside*
-  the server instead of inferring it from the client's wall clock.
+  `ebb.writer.commit_latency_ms`, `ebb.http.request_latency_ms`, and
+  `ebb.fanout.push_latency_ms`. Attaching a handler in the bench process lets
+  a run report latency measured *inside* the server instead of inferring it
+  from the client's wall clock.
 
   Handlers run in whichever process emits the event — the Writer, a request
   process, a GroupServer — so samples land in a public ETS table an emitter
@@ -33,6 +34,7 @@ defmodule EbbServer.Bench.Telemetry do
 
   @events [
     [:ebb, :writer, :batch_latency_ms],
+    [:ebb, :writer, :commit_latency_ms],
     [:ebb, :http, :request_latency_ms],
     [:ebb, :fanout, :push_latency_ms],
     [:ebb, :fanout, :dispatched_actions]
@@ -82,6 +84,10 @@ defmodule EbbServer.Bench.Telemetry do
   @doc false
   def handle_event([:ebb, :writer, :batch_latency_ms], measurements, _metadata, config) do
     record(config, :writer_batch, duration_us(measurements))
+  end
+
+  def handle_event([:ebb, :writer, :commit_latency_ms], measurements, _metadata, config) do
+    record(config, :writer_commit, duration_us(measurements))
   end
 
   def handle_event([:ebb, :http, :request_latency_ms], measurements, _metadata, config) do
