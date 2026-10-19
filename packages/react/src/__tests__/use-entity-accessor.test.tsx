@@ -87,6 +87,38 @@ function OwnerProbe({ id }: { id: string }) {
 const makeClient = (): Client =>
   createClient({ serverUrl: "http://localhost:4000", actorId: "test-actor", schema });
 
+let seedPosition = 0;
+
+/**
+ * Write a relationship row to the shim and fold it into the replica the
+ * accessors read (#520). A raw `storage.entities.set` only fires the change
+ * emitter; the adjacency the accessor resolves through lives on the replica.
+ */
+const seedRelationship = async (client: Client, row: ReturnType<typeof mkRel>): Promise<void> => {
+  await client.storage.entities.set(row);
+  seedPosition += 1;
+  const hlc = String(BigInt(seedPosition) << 16n);
+  client.replica.ingest(
+    {
+      id: `a_seed_${seedPosition}`,
+      actor_id: "seed",
+      hlc,
+      gsn: seedPosition,
+      updates: [],
+    },
+    [
+      {
+        id: `u_seed_${seedPosition}`,
+        subject_id: row.id,
+        subject_type: row.type,
+        method: "put",
+        data: { fields: row.data.fields },
+      },
+    ],
+    seedPosition,
+  );
+};
+
 afterEach(cleanup);
 
 describe("useEntity accessor reactivity", () => {
@@ -104,7 +136,7 @@ describe("useEntity accessor reactivity", () => {
     expect(await screen.findByText("none")).toBeTruthy();
 
     await act(async () => {
-      await client.storage.entities.set(mkRel("rel_1", "t1", "u1"));
+      await seedRelationship(client, mkRel("rel_1", "t1", "u1"));
     });
 
     expect(await screen.findByText("u1")).toBeTruthy();
