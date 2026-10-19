@@ -49,8 +49,52 @@ const mkTodo = (id: string, title: string, completed: boolean) => ({
   last_gsn: 1,
 });
 
+let seedPosition = 0;
+
+/**
+ * Fold a row into the client's replica, then write it to the shim.
+ * `useQuery` reads the replica, so a shim-only row is invisible; the
+ * fold uses the same Action / Update path the client's writes do.
+ */
+const seedRow = async (
+  client: Client,
+  row: ReturnType<typeof mkTodo>,
+  method: "put" | "delete" = row.deleted_hlc === null ? "put" : "delete",
+): Promise<void> => {
+  seedPosition += 1;
+  const hlc = String(BigInt(seedPosition) << 16n);
+  client.replica.ingest(
+    {
+      id: `a_seed_${seedPosition}`,
+      actor_id: "seed",
+      hlc,
+      gsn: seedPosition,
+      updates: [],
+    },
+    [
+      method === "put"
+        ? {
+            id: `u_seed_${seedPosition}`,
+            subject_id: row.id,
+            subject_type: row.type,
+            method,
+            data: { fields: row.data.fields },
+          }
+        : {
+            id: `u_seed_${seedPosition}`,
+            subject_id: row.id,
+            subject_type: row.type,
+            method: "delete",
+            data: null,
+          },
+    ],
+    seedPosition,
+  );
+  await client.storage.entities.set(row);
+};
+
 const seed = (client: Client, id: string, title: string, completed: boolean) =>
-  client.storage.entities.set(mkTodo(id, title, completed));
+  seedRow(client, mkTodo(id, title, completed));
 
 afterEach(cleanup);
 
@@ -144,10 +188,7 @@ describe("useQuery", () => {
     const rendersBefore = onRender.mock.calls.length;
 
     await act(async () => {
-      await client.storage.entities.set({
-        ...mkTodo("todo_1", "Ship it", false),
-        deleted_hlc: "2",
-      });
+      await seedRow(client, { ...mkTodo("todo_1", "Ship it", false), deleted_hlc: "2" }, "delete");
     });
 
     expect(screen.getByTestId("titles").textContent).toBe("");
@@ -224,9 +265,9 @@ describe("useQuery", () => {
 
   it("surfaces a materialization error and clears it on the next success", async () => {
     await seed(client, "todo_1", "Fine", false);
-    const querySpy = vi
-      .spyOn(client.storage.entities, "query")
-      .mockRejectedValueOnce(new Error("boom"));
+    const querySpy = vi.spyOn(client.replica, "iterate").mockImplementationOnce(() => {
+      throw new Error("boom");
+    });
 
     renderWithClient(client, <TodoList completed={false} onRender={() => {}} />);
     await flush();
@@ -236,7 +277,7 @@ describe("useQuery", () => {
 
     // A later materialization succeeds and clears the error.
     await act(async () => {
-      await client.storage.entities.set(mkTodo("todo_2", "Recovered", false));
+      await seed(client, "todo_2", "Recovered", false);
     });
     expect(screen.getByTestId("error").textContent).toBe("");
     expect(screen.getByTestId("titles").textContent).toBe("Fine,Recovered");

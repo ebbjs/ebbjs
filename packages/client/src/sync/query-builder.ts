@@ -12,16 +12,21 @@
  * its value to the field's TypeBox static type. A key that names a
  * registered relationship on the entity filters that edge instead —
  * see {@link QueryContext}. The reserved `groups` key filters built-in
- * membership through the storage membership index. Relationship and
- * membership predicates read storage, so the filter pass is
- * asynchronous; every terminal already is.
+ * membership.
  *
- * The predicate set is a disjunction of AND-groups (DNF): `.where`
- * adds a conjunct to the current group, `.or` closes it and starts a
- * new one, so `.where(a).where(b).or(c).where(d)` means
+ * The chain accumulates a serializable {@link Query} (epic decision 13)
+ * exposed through {@link QueryBuilder.toQuery}. Predicates are a
+ * disjunction of AND-groups (DNF): `.where` adds a conjunct to the
+ * current group, `.or` closes it and starts a new one, so
+ * `.where(a).where(b).or(c).where(d)` means
  * `(a AND b) OR (c AND d)`. A leading `.or` starts the first group
- * rather than matching every row. Evaluation intersects each group,
- * then unions the survivors.
+ * rather than matching every row.
+ *
+ * Every terminal plans the query and executes the plan synchronously:
+ * a replica-backed chain hydrates the replica and reads its rows and
+ * adjacency indices; a chain over an already-materialized candidate
+ * list runs against those rows. The builder is async only because
+ * hydration and the candidate loader are.
  *
  * The terminal methods materialize the chain:
  * - `await qb` / `.then(...)` — projected rows.
@@ -31,9 +36,9 @@
  * - `[Symbol.asyncIterator]()` — streaming iterator of projected rows.
  * - `.toRaw()` — untyped escape hatch returning `readonly Entity[]`.
  *
- * Every terminal reads the live collection: a tombstoned candidate
- * (`deleted_hlc` set) is never a survivor, whatever the filters.
- * Deleted-row inspection stays on `get(id)` / the storage adapter.
+ * Every terminal reads live rows: a tombstoned row (`deleted_hlc` set)
+ * is never a survivor, whatever the filters. Deleted-row inspection
+ * stays on `get(id)` / the storage adapter.
  *
  * The builder is thenable (has a `.then` method), not a Promise, so
  * `await qb` and `qb.then(...)` work via the standard thenable
@@ -43,7 +48,7 @@
 
 import type { Entity, FieldValue } from "@ebbjs/core";
 import { isFieldMap } from "@ebbjs/core";
-import type { StorageAdapter } from "@ebbjs/storage/types";
+import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
 import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { ShapeFields } from "../schema/entity";
@@ -53,6 +58,14 @@ import {
   entityGroupSystemEntity,
   relationshipSystemEntity,
 } from "../schema/system-entities";
+import { emptyQuery, type Predicate, type Query } from "./query";
+import { planQuery } from "./query-plan";
+import {
+  createReplicaExecutor,
+  createRowsExecutor,
+  executePlan,
+  type PlanExecutor,
+} from "./query-execute";
 
 /**
  * Project one wire field value to its application-facing value.
@@ -172,59 +185,21 @@ export function normalizePointer(value: unknown, label: string): string | null {
 }
 
 /**
- * Everything `where` needs to infer and execute a relationship
- * predicate. Threaded from the entity namespace, which owns the
- * storage adapter and the client's registry. Bare builders built from
- * a row list carry no context; there, a key that isn't a field is
- * rejected rather than inferred as an edge.
+ * Everything `where` needs to infer and execute a predicate. Threaded
+ * from the entity namespace, which owns the registry and the client's
+ * replica binding. Bare builders built from a row list carry no
+ * context; there, a key that isn't a field is rejected rather than
+ * inferred as an edge.
  */
 export interface QueryContext {
   readonly entityName: string;
   readonly registry: EntityRegistry;
   readonly storage: StorageAdapter;
+  /** The materialized read path the plan executes over. */
+  readonly replica: Replica;
+  /** Bring the replica up to date before the plan runs. Memoized by the client. */
+  hydrate(): Promise<void>;
 }
-
-/** Filter over a data field. Value equality is strict. */
-type FieldFilter = { readonly kind: "field"; readonly key: string; readonly value: unknown };
-
-/**
- * Filter over a relationship edge. `targetIds` is the resolved any-of
- * set, or `null` when the pointer names no live edge — that matches
- * nothing. `context` is captured when the filter is built: the
- * registry resolved the edge at build time, and only `.storage` is
- * read at apply time.
- */
-type RelationshipFilter = {
-  readonly kind: "relationship";
-  readonly as: string;
-  readonly type: string;
-  readonly targetIds: readonly string[] | null;
-  readonly context: QueryContext;
-};
-
-/**
- * Filter over built-in group membership. `targetIds` is the resolved
- * any-of group-id set, or `null` when the pointer names no group —
- * that matches nothing. `context` carries the adapter the membership
- * index read needs, captured when the filter is built.
- */
-type MembershipFilter = {
-  readonly kind: "membership";
-  readonly targetIds: readonly string[] | null;
-  readonly context: QueryContext;
-};
-
-type Filter = FieldFilter | RelationshipFilter | MembershipFilter;
-
-/**
- * A disjunction of AND-groups (DNF): the inner arrays are ANDed, the
- * outer is ORed. No groups means no predicate, so every live candidate
- * survives.
- */
-type FilterGroups = readonly (readonly Filter[])[];
-
-/** Ordering descriptor accumulated by `orderBy`. */
-type OrderBy = { field: string; direction: "asc" | "desc" };
 
 /** Loader for the candidate entity list. Resolved lazily on each materialization. */
 export type LoadEntities = () => Promise<readonly Entity[]>;
@@ -295,6 +270,11 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
    * `entityGroup` row types, because those writes do not materialize
    * the entity they point at (see the `subscribe` implementation).
    */
+  /**
+   * The serializable query value the chain has accumulated. Pure data:
+   * the planner input and, in #512, the result-cache key.
+   */
+  toQuery(): Query;
   subscribe(listener: () => void): () => void;
   /** Thenable — `await qb` resolves to the projected rows. */
   then<TResult1 = readonly ProjectedRow<TFields>[], TResult2 = never>(
@@ -325,135 +305,163 @@ export function buildQueryBuilder<TFields extends Record<string, TSchema>>(
 
 /**
  * Like {@link buildQueryBuilder} but with a lazy candidate loader.
- * The loader is called every time the chain materializes (via
- * `await qb` or `.toRaw()`) so the chain reflects the latest
- * snapshot of the underlying store.
+ * The loader is called every time a candidate chain materializes (via
+ * `await qb` or `.toRaw()`) so the chain reflects the latest snapshot
+ * of the underlying store. With a `context` the chain is replica-backed
+ * instead: it plans over the replica and the loader is never called.
  */
 export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
   loadCandidates: LoadEntities,
   shape: TObject<TFields>,
   context?: QueryContext,
 ): QueryBuilder<TFields> {
-  const make = (
-    groups: FilterGroups,
-    order: OrderBy | null,
-    limitN: number | null,
-  ): QueryBuilder<TFields> => {
-    const apply = async (rows: readonly Entity[]): Promise<Entity[]> => {
-      let out = await applyFilters(rows, groups);
-      if (order !== null) {
-        const { field, direction } = order;
-        out.sort((a, b) => cmpField(a, b, field, direction));
-      }
-      if (limitN !== null && limitN >= 0) {
-        out = out.slice(0, limitN);
-      }
-      return out;
-    };
-    const builder: QueryBuilder<TFields> = {
-      where(key: string, target: unknown) {
-        const filter = buildFilter(key, target, shape, context, "where");
-        const current = groups[groups.length - 1];
-        const next: FilterGroups =
-          current === undefined ? [[filter]] : [...groups.slice(0, -1), [...current, filter]];
-        return make(next, order, limitN);
-      },
-      or(key: string, target: unknown) {
-        return make([...groups, [buildFilter(key, target, shape, context, "or")]], order, limitN);
-      },
-      orderBy(field, direction) {
-        return make(groups, { field, direction }, limitN);
-      },
-      limit(n) {
-        return make(groups, order, n);
-      },
-      async first() {
-        const candidates = await loadCandidates();
-        const survivors = await apply(candidates);
-        const head = survivors[0];
-        return head === undefined ? undefined : projectRow(head, shape);
-      },
-      async count() {
-        const candidates = await loadCandidates();
-        return (await apply(candidates)).length;
-      },
-      async exists() {
-        const candidates = await loadCandidates();
-        return (await apply(candidates)).length > 0;
-      },
-      [Symbol.asyncIterator]() {
-        const iter = async function* () {
-          const candidates = await loadCandidates();
-          for (const row of await apply(candidates)) {
-            yield projectRow(row, shape);
-          }
-        };
-        return iter();
-      },
-      async toRaw() {
-        const candidates = await loadCandidates();
-        return apply(candidates);
-      },
-      subscribe(listener) {
-        const emitter = context?.storage.changeEmitter;
-        if (emitter === undefined || context === undefined) return () => {};
-        const unsubscribers = [emitter.onTypeChange(context.entityName, listener)];
-        // A `relationship` / `entityGroup` write does not materialize the
-        // entity it points at, so a chain with an edge or membership
-        // predicate must also wake when one of those rows changes. The
-        // rows carry no entity type for membership, and a relationship's
-        // `type` may be overridden, so subscribe to the row type rather
-        // than guessing the source type. Identical results are suppressed
-        // downstream by the consumer's snapshot compare.
-        const predicates = groups.flat();
-        if (predicates.some((filter) => filter.kind === "relationship")) {
-          unsubscribers.push(emitter.onTypeChange(relationshipSystemEntity.name, listener));
-        }
-        if (predicates.some((filter) => filter.kind === "membership")) {
-          unsubscribers.push(emitter.onTypeChange(entityGroupSystemEntity.name, listener));
-        }
-        return () => {
-          for (const unsub of unsubscribers) unsub();
-        };
-      },
-      // oxlint-disable-next-line no-thenable -- the QueryBuilder is intentionally a thenable; awaiting it projects the chain.
-      then(onfulfilled, onrejected) {
-        // Forward `onrejected` onto the whole lazy chain, not just the
-        // projection step: a rejecting candidate loader must settle the
-        // awaited builder as a rejection rather than leaving it pending.
-        return loadCandidates()
-          .then(async (candidates) => projectRows(await apply(candidates), shape))
-          .then(onfulfilled, onrejected);
-      },
-    };
-    return builder;
-  };
-  return make([], null, null);
+  const loadExecutor =
+    context === undefined
+      ? async (): Promise<PlanExecutor> => createRowsExecutor(await loadCandidates())
+      : replicaExecutor(context);
+  return buildChain(emptyQuery(context?.entityName ?? ""), shape, context, loadExecutor);
 }
 
 /**
- * Turn one `where` / `or` argument into a filter. A registered forward
- * relationship on the entity wins over a same-named field; an unknown
- * key throws rather than silently matching nothing.
+ * Build the chain `client.<entity>.query()` returns: predicates resolve
+ * against `context`'s registry and every terminal executes the plan
+ * synchronously over the client's replica, hydrated first.
  */
-function buildFilter<TFields extends Record<string, TSchema>>(
+export function buildReplicaQueryBuilder<TFields extends Record<string, TSchema>>(
+  source: string,
+  shape: TObject<TFields>,
+  context: QueryContext,
+): QueryBuilder<TFields> {
+  return buildChain(emptyQuery(source), shape, context, replicaExecutor(context));
+}
+
+/** Hydrate the replica, then read the plan's rows and indices from it. */
+const replicaExecutor = (context: QueryContext) => async (): Promise<PlanExecutor> => {
+  await context.hydrate();
+  return createReplicaExecutor(context.replica);
+};
+
+/**
+ * Execute a chain over the executor its mode supplies. The plan decides
+ * whether a predicate pushes down to an index or filters scanned rows;
+ * the executor itself never awaits.
+ */
+const executeQuery = async (
+  query: Query,
+  loadExecutor: () => Promise<PlanExecutor>,
+): Promise<readonly Entity[]> => executePlan(planQuery(query), await loadExecutor());
+
+/**
+ * The single chain implementation. Each mutator returns a new builder
+ * carrying the next {@link Query}; the original is untouched. Terminals
+ * all funnel through {@link executeQuery}, so a replica chain and a
+ * candidate chain differ only in where the executor comes from.
+ */
+function buildChain<TFields extends Record<string, TSchema>>(
+  initial: Query,
+  shape: TObject<TFields>,
+  context: QueryContext | undefined,
+  loadExecutor: () => Promise<PlanExecutor>,
+): QueryBuilder<TFields> {
+  const make = (query: Query): QueryBuilder<TFields> => ({
+    where(key: string, target: unknown) {
+      const predicate = buildPredicate(key, target, shape, context, "where");
+      const current = query.groups[query.groups.length - 1];
+      const groups =
+        current === undefined
+          ? [[predicate]]
+          : [...query.groups.slice(0, -1), [...current, predicate]];
+      return make({ ...query, groups });
+    },
+    or(key: string, target: unknown) {
+      const predicate = buildPredicate(key, target, shape, context, "or");
+      return make({ ...query, groups: [...query.groups, [predicate]] });
+    },
+    orderBy(field, direction) {
+      return make({ ...query, order: { field, direction } });
+    },
+    limit(n) {
+      return make({ ...query, limit: n });
+    },
+    toQuery: () => query,
+    async first() {
+      const head = (await executeQuery(query, loadExecutor))[0];
+      return head === undefined ? undefined : projectRow(head, shape);
+    },
+    async count() {
+      return (await executeQuery(query, loadExecutor)).length;
+    },
+    async exists() {
+      return (await executeQuery(query, loadExecutor)).length > 0;
+    },
+    [Symbol.asyncIterator]() {
+      const iter = async function* () {
+        for (const row of await executeQuery(query, loadExecutor)) {
+          yield projectRow(row, shape);
+        }
+      };
+      return iter();
+    },
+    async toRaw() {
+      return executeQuery(query, loadExecutor);
+    },
+    subscribe(listener) {
+      const emitter = context?.storage.changeEmitter;
+      if (emitter === undefined || context === undefined) return () => {};
+      const unsubscribers = [emitter.onTypeChange(context.entityName, listener)];
+      // A `relationship` / `entityGroup` write does not materialize the
+      // entity it points at, so a chain with an edge or membership
+      // predicate must also wake when one of those rows changes. The
+      // rows carry no entity type for membership, and a relationship's
+      // `type` may be overridden, so subscribe to the row type rather
+      // than guessing the source type. Identical results are suppressed
+      // downstream by the consumer's snapshot compare.
+      const predicates = query.groups.flat();
+      if (predicates.some((predicate) => predicate.kind === "relationship")) {
+        unsubscribers.push(emitter.onTypeChange(relationshipSystemEntity.name, listener));
+      }
+      if (predicates.some((predicate) => predicate.kind === "membership")) {
+        unsubscribers.push(emitter.onTypeChange(entityGroupSystemEntity.name, listener));
+      }
+      return () => {
+        for (const unsub of unsubscribers) unsub();
+      };
+    },
+    // oxlint-disable-next-line no-thenable -- the QueryBuilder is intentionally a thenable; awaiting it projects the chain.
+    then(onfulfilled, onrejected) {
+      // Forward `onrejected` onto the whole chain, not just the
+      // projection step: a rejecting candidate loader or a failed
+      // hydration must settle the awaited builder as a rejection rather
+      // than leaving it pending.
+      return executeQuery(query, loadExecutor)
+        .then((rows) => projectRows(rows, shape))
+        .then(onfulfilled, onrejected);
+    },
+  });
+  return make(initial);
+}
+
+/**
+ * Turn one `where` / `or` argument into a predicate. A registered
+ * forward relationship on the entity wins over a same-named field; an
+ * unknown key throws rather than silently matching nothing.
+ */
+function buildPredicate<TFields extends Record<string, TSchema>>(
   key: string,
   value: unknown,
   shape: TObject<TFields>,
   context: QueryContext | undefined,
   method: "where" | "or",
-): Filter {
+): Predicate {
   // `groups` is reserved, so it can never be a declared relationship or
-  // a field. With a query context it always means built-in membership,
-  // which needs a storage adapter for the membership index; a bare
-  // builder carries no adapter, so the key falls through to the
+  // a field. With a query context it always means built-in membership;
+  // a bare builder carries no registry, so the key falls through to the
   // unknown-field throw below.
   if (key === GROUPS_ACCESSOR && context !== undefined) {
     const label = `${method}("${GROUPS_ACCESSOR}") on "${context.entityName}"`;
     return {
       kind: "membership",
-      targetIds: resolveTargetIds(value as PointerValue | readonly PointerValue[], label),
-      context,
+      anyOf: resolveTargetIds(value as PointerValue | readonly PointerValue[], label),
     };
   }
   const rel =
@@ -464,8 +472,7 @@ function buildFilter<TFields extends Record<string, TSchema>>(
       kind: "relationship",
       as: key,
       type: rel.type,
-      targetIds: resolveTargetIds(value as PointerValue | readonly PointerValue[], label),
-      context,
+      anyOf: resolveTargetIds(value as PointerValue | readonly PointerValue[], label),
     };
   }
   if (Object.prototype.hasOwnProperty.call(shape.properties, key)) {
@@ -483,7 +490,7 @@ function buildFilter<TFields extends Record<string, TSchema>>(
         },
       ]);
     }
-    return { kind: "field", key, value };
+    return { kind: "field", field: key, value };
   }
   const entityName = context?.entityName ?? "(unknown)";
   throw new EntityValidationError([
@@ -515,110 +522,4 @@ function resolveTargetIds(
     ids.push(id);
   }
   return ids.length === 0 ? null : ids;
-}
-
-/**
- * Intersect one AND-group against a list of live candidates: each
- * filter narrows the row list in turn. Field filters need no storage
- * read; relationship and membership filters resolve to an id set first.
- * Callers pass a non-empty group — `where` / `or` always add a filter —
- * so an empty conjunction cannot arise.
- */
-async function applyGroup(
-  rows: readonly Entity[],
-  filters: readonly Filter[],
-): Promise<readonly Entity[]> {
-  let out: readonly Entity[] = rows;
-  for (const filter of filters) {
-    if (filter.kind === "field") {
-      out = out.filter((row) => eqField(row, filter.key, filter.value));
-      continue;
-    }
-    if (filter.kind === "membership") {
-      const ids = await membershipIdSet(filter);
-      out = out.filter((row) => ids.has(row.id));
-      continue;
-    }
-    const ids = await relationshipIdSet(filter);
-    out = out.filter((row) => ids.has(row.id));
-  }
-  return out;
-}
-
-/**
- * Apply a DNF predicate set. Tombstones are excluded uniformly, then
- * the live candidates in their original order are kept when any group
- * matched them; a row matching several groups appears once. No groups
- * means no predicate, so every live candidate survives.
- */
-async function applyFilters(rows: readonly Entity[], groups: FilterGroups): Promise<Entity[]> {
-  const live = rows.filter((row) => row.deleted_hlc === null);
-  if (groups.length === 0) return live;
-  const survivors = new Set<string>();
-  for (const group of groups) {
-    for (const row of await applyGroup(live, group)) survivors.add(row.id);
-  }
-  return live.filter((row) => survivors.has(row.id));
-}
-
-/**
- * Union the index hits returned for each target id. A `null` target
- * set names nothing, so it matches nothing; otherwise any-of is a
- * union and chained filters intersect by filtering the row list in
- * turn.
- */
-async function indexHits(
-  targetIds: readonly string[] | null,
-  lookup: (targetId: string) => Promise<readonly string[]>,
-): Promise<ReadonlySet<string>> {
-  const ids = new Set<string>();
-  if (targetIds === null) return ids;
-  const perTarget = await Promise.all(targetIds.map(lookup));
-  for (const sourceIds of perTarget) {
-    for (const id of sourceIds) ids.add(id);
-  }
-  return ids;
-}
-
-/** The source ids linked to any of a relationship filter's targets. */
-function relationshipIdSet(filter: RelationshipFilter): Promise<ReadonlySet<string>> {
-  return indexHits(filter.targetIds, (targetId) =>
-    filter.context.storage.entities.queryByRelationship({
-      as: filter.as,
-      type: filter.type,
-      targetId,
-    }),
-  );
-}
-
-/** The member ids of any of a membership filter's target groups. */
-function membershipIdSet(filter: MembershipFilter): Promise<ReadonlySet<string>> {
-  return indexHits(filter.targetIds, (groupId) =>
-    filter.context.storage.entities.queryByMembership(groupId),
-  );
-}
-
-/** Pull `data.fields[field].value` off an Entity, returning `undefined` when absent. */
-function fieldValue(entity: Entity, field: string): FieldValue["value"] {
-  const fv = entity.data?.fields?.[field];
-  if (fv === undefined) return undefined;
-  return fv.value;
-}
-
-function eqField(entity: Entity, field: string, value: unknown): boolean {
-  return fieldValue(entity, field) === value;
-}
-
-function cmpField(a: Entity, b: Entity, field: string, direction: "asc" | "desc"): number {
-  const av = fieldValue(a, field);
-  const bv = fieldValue(b, field);
-  if (av === bv) return 0;
-  if (av === undefined) return 1;
-  if (bv === undefined) return -1;
-  if (typeof av === "number" && typeof bv === "number") {
-    return direction === "asc" ? av - bv : bv - av;
-  }
-  const as = String(av);
-  const bs = String(bv);
-  return direction === "asc" ? as.localeCompare(bs) : bs.localeCompare(as);
 }

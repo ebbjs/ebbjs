@@ -92,7 +92,9 @@ describe("planQuery", () => {
   });
 
   it("plans explicit ordering and a non-negative limit", () => {
-    const plan = planQuery(query({ order: { field: "title", direction: "desc" }, limit: 10 }));
+    const plan = planQuery(
+      query({ groups: [], order: { field: "title", direction: "desc" }, limit: 10 }),
+    );
 
     expect(plan.ops.slice(1)).toEqual([
       { kind: "order", field: "title", direction: "desc" },

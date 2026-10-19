@@ -20,6 +20,7 @@ import type { GroupMemberFields } from "../../schema/system-entities";
 import { defineAction, type AnyActionDef } from "../../schema/action";
 import { AtomicActionError } from "../operations";
 import { createClient } from "../client";
+import { seedReplicaRow } from "../test-utils";
 
 interface RecordedRequest {
   readonly url: string;
@@ -321,7 +322,9 @@ describe("client.group read path", () => {
 
     expect(await client.group.get("g_absent")).toBeNull();
 
-    await storage.entities.set(mkEntity("g_1", "group", { name: "Team" }));
+    const groupRow = mkEntity("g_1", "group", { name: "Team" });
+    seedReplicaRow(client.replica, groupRow);
+    await storage.entities.set(groupRow);
     const row = await client.group.get("g_1");
     expect(row?.id).toBe("g_1");
     expect(row?.name).toBe("Team");

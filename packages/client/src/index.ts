@@ -60,6 +60,17 @@ export {
   type LoadEntities,
 } from "./sync/query-builder";
 
+export { type Query, type Predicate, type QueryOrder } from "./sync/query";
+
+export { type Plan, type PlanOp, type PlanPredicate, planQuery } from "./sync/query-plan";
+
+export {
+  type PlanExecutor,
+  createReplicaExecutor,
+  createRowsExecutor,
+  executePlan,
+} from "./sync/query-execute";
+
 export { traversalCounter } from "./sync/traversal-counter";
 
 export {
