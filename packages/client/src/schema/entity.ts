@@ -39,6 +39,13 @@ export type FieldMarker = { type: "lww" };
  */
 export type ConflictScope = "field" | "entity";
 
+/**
+ * Client-side residency of an entity type. `"held"` keeps every row in
+ * the replica; `"on-demand"` materializes a row only while it is open.
+ * Purely a read-path concern — the wire payload is identical either way.
+ */
+export type Materialization = "held" | "on-demand";
+
 /** Schema with a `.nullable()` chain producing `T | null`. */
 export type NullableSchema<T extends TSchema> = T & {
   readonly nullable: () => ReturnType<typeof Type.Union<[T, ReturnType<typeof Type.Null>]>>;
@@ -246,6 +253,11 @@ export interface EntityDef<TFields extends Record<string, TSchema>, TName extend
    */
   readonly conflictScope: ConflictScope;
   /**
+   * Whether the replica holds every row of this type or materializes a
+   * row only while it is open. Defaults to `"held"`.
+   */
+  readonly materialization: Materialization;
+  /**
    * TypeBox schema — drives value-shape typing. Implicit `Type.Object`
    * wrapper over the *wire* fields; derived fields are hoisted out.
    */
@@ -260,6 +272,8 @@ export interface EntityDef<TFields extends Record<string, TSchema>, TName extend
 export interface EntityOptions {
   /** Conflict granularity the entity declares. Defaults to `"field"`. */
   readonly conflictScope?: ConflictScope;
+  /** Replica residency the entity declares. Defaults to `"held"`. */
+  readonly materialization?: Materialization;
 }
 
 /**
@@ -315,6 +329,7 @@ export function buildEntityDef<TFields extends Record<string, TSchema>, TName ex
   return Object.freeze({
     name,
     conflictScope: entityScope,
+    materialization: options.materialization ?? "held",
     shape: Type.Object(shapeFields) as EntityShape<WireFields<TFields>>,
     fields: derivedFields,
     derived: derivedMarkers,

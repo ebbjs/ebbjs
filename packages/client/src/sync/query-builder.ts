@@ -25,8 +25,15 @@
  * Every terminal plans the query and executes the plan synchronously:
  * a replica-backed chain hydrates the replica and reads its rows and
  * adjacency indices; a chain over an already-materialized candidate
- * list runs against those rows. The builder is async only because
- * hydration and the candidate loader are.
+ * list runs against those rows. The builder is async because
+ * hydration, the candidate loader, and opening a joined on-demand
+ * target are.
+ *
+ * The source type must be held. A query whose source is materialized
+ * on demand is refused with {@link OnDemandQueryError}: a scan is
+ * held-only. A held source may join an on-demand target; the
+ * projecting terminals open those rows before projecting, while
+ * `.count()` / `.exists()` / `.toRaw()` never need them.
  *
  * The terminal methods materialize the chain:
  * - `await qb` / `.then(...)` — projected rows.
@@ -71,6 +78,25 @@ import {
   type PlanExecutor,
 } from "./query-execute";
 import { createLocalQueryStore, type QueryCache, type QueryStore } from "./query-cache";
+
+/**
+ * Raised when a chain's source type is materialized on demand. A scan is
+ * held-only: reading a body is `get(id)` / `replica.open(id)`, not a query
+ * over its type. A held source may still join an on-demand target.
+ */
+export class OnDemandQueryError extends Error {
+  /** The on-demand entity type the refused query scanned. */
+  readonly entityName: string;
+
+  constructor(entityName: string) {
+    super(
+      `query("${entityName}"): "${entityName}" is materialized on demand, and a scan is held-only. ` +
+        `Open the row by id instead, or query a held type that relates to it.`,
+    );
+    this.name = "OnDemandQueryError";
+    this.entityName = entityName;
+  }
+}
 
 /**
  * Project one wire field value to its application-facing value.
@@ -439,6 +465,7 @@ export function buildReplicaQueryBuilder<
   TFields extends Record<string, TSchema>,
   TJoins extends object = NoJoins,
 >(source: string, shape: TObject<TFields>, context: QueryContext): QueryBuilder<TFields, TJoins> {
+  if (!context.replica.isHeld(source)) throw new OnDemandQueryError(source);
   const syncRun = (query: Query): readonly unknown[] => {
     const executor = createReplicaExecutor(context.replica);
     return projectResultRows(
@@ -449,12 +476,17 @@ export function buildReplicaQueryBuilder<
       context,
     );
   };
+  const asyncRun = async (query: Query): Promise<readonly unknown[]> => {
+    const run = await runProjectingPlan(query, replicaExecutor(context), context);
+    return projectResultRows(run.rows, query, shape, run.executor, context);
+  };
   return buildChain<TFields, TJoins>(
     emptyQuery(source),
     shape,
     context,
     replicaExecutor(context),
     syncRun,
+    asyncRun,
   );
 }
 
@@ -508,6 +540,48 @@ const joinIds = (entity: Entity, join: Join, executor: PlanExecutor): readonly s
     case "membership":
       return executor.memberships({ entityId: entity.id });
   }
+};
+
+/** The joins of this query whose target type the replica does not hold. */
+const coldJoins = (query: Query, context: QueryContext | undefined): readonly Join[] =>
+  context === undefined ? [] : query.joins.filter((join) => !context.replica.isHeld(join.target));
+
+/** Whether any join of this query reads a target type the replica does not hold. */
+const hasOnDemandJoin = (query: Query, context: QueryContext | undefined): boolean =>
+  coldJoins(query, context).length > 0;
+
+/**
+ * Materialize the on-demand rows a plan's joins read. A held target is already
+ * resident, so only a cold join loads anything; a failed load rejects the read
+ * rather than projecting a hole.
+ */
+const openJoinedRows = async (
+  rows: readonly Entity[],
+  query: Query,
+  executor: PlanExecutor,
+  context: QueryContext | undefined,
+): Promise<void> => {
+  if (context === undefined) return;
+  const cold = coldJoins(query, context);
+  if (cold.length === 0) return;
+  const ids = new Set<string>();
+  for (const row of rows) {
+    for (const join of cold) {
+      for (const id of joinIds(row, join, executor)) ids.add(id);
+    }
+  }
+  await Promise.all([...ids].map((id) => context.replica.open(id)));
+};
+
+/** Run the plan, then open the on-demand rows its joins read before projecting. */
+const runProjectingPlan = async (
+  query: Query,
+  loadExecutor: () => Promise<PlanExecutor>,
+  context: QueryContext | undefined,
+): Promise<QueryRun> => {
+  const run = await runPlan(query, loadExecutor);
+  await openJoinedRows(run.rows, query, run.executor, context);
+  return run;
 };
 
 const readJoinedRow = (
@@ -643,11 +717,12 @@ function buildChain<
   context: QueryContext | undefined,
   loadExecutor: () => Promise<PlanExecutor>,
   syncRun?: (query: Query) => readonly unknown[],
+  asyncRun?: (query: Query) => Promise<readonly unknown[]>,
 ): QueryBuilder<TFields, TJoins, TJoined> {
   const resultFor = (query: Query): QueryStore<JoinedRow<TFields, TJoined>> => {
     if (context === undefined || syncRun === undefined) {
       return createLocalQueryStore(async () => {
-        const run = await runPlan(query, loadExecutor);
+        const run = await runProjectingPlan(query, loadExecutor, context);
         // SAFETY: the candidate chain's own shape and joins produced these rows.
         return projectResultRows(
           run.rows,
@@ -661,8 +736,14 @@ function buildChain<
     return context.queries.watch<JoinedRow<TFields, TJoined>>("rows", query, {
       ready: () => context.hydrate(),
       isReady: () => context.hydrated(),
-      // SAFETY: `syncRun` closes over this chain's shape and joins.
-      execute: () => syncRun(query) as readonly JoinedRow<TFields, TJoined>[],
+      // A chain with no on-demand join settles synchronously, so its refresh
+      // never flashes `stale`. One that must open a join returns the pending
+      // run, which the #512 cache publishes as `stale` until it settles.
+      execute: () =>
+        hasOnDemandJoin(query, context) && asyncRun !== undefined
+          ? (asyncRun(query) as Promise<readonly JoinedRow<TFields, TJoined>[]>)
+          : // SAFETY: `syncRun` closes over this chain's shape and joins.
+            (syncRun(query) as readonly JoinedRow<TFields, TJoined>[]),
     });
   };
   const make = (query: Query): QueryBuilder<TFields, TJoins, TJoined> => ({
@@ -695,7 +776,7 @@ function buildChain<
     },
     toQuery: () => query,
     async first() {
-      const run = await runPlan(query, loadExecutor);
+      const run = await runProjectingPlan(query, loadExecutor, context);
       const head = projectResultRows(run.rows, query, shape, run.executor, context)[0];
       return head as unknown as JoinedRow<TFields, TJoined> | undefined;
     },
@@ -707,7 +788,7 @@ function buildChain<
     },
     [Symbol.asyncIterator]() {
       const iter = async function* () {
-        const run = await runPlan(query, loadExecutor);
+        const run = await runProjectingPlan(query, loadExecutor, context);
         for (const row of projectResultRows(run.rows, query, shape, run.executor, context)) {
           yield row as unknown as JoinedRow<TFields, TJoined>;
         }
@@ -732,7 +813,7 @@ function buildChain<
       // projection step: a rejecting candidate loader or a failed
       // hydration must settle the awaited builder as a rejection rather
       // than leaving it pending.
-      return runPlan(query, loadExecutor)
+      return runProjectingPlan(query, loadExecutor, context)
         .then((run) => projectResultRows(run.rows, query, shape, run.executor, context))
         .then((rows) => rows as readonly JoinedRow<TFields, TJoined>[])
         .then(onfulfilled, onrejected);

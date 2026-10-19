@@ -34,6 +34,23 @@ export interface MaterializationPolicy {
 export interface ReplicaOptions {
   readonly materialization?: MaterializationPolicy;
   /**
+   * Reads a row from the local stores when `open` misses. Without it an
+   * on-demand id that is not resident stays a miss.
+   */
+  readonly readEntity?: (id: string) => Promise<Entity | null>;
+  /**
+   * Maximum resident on-demand rows. Defaults to 16. A non-positive or
+   * non-finite value keeps every opened row resident; opening past the
+   * window releases the least recently opened one.
+   */
+  readonly pinnedCapacity?: number;
+  /**
+   * How long a closed on-demand row stays cached before release. Defaults to
+   * 30_000 ms. A non-positive or non-finite value releases it immediately on
+   * close. An open row is never released by the TTL.
+   */
+  readonly pinnedTtlMs?: number;
+  /**
    * Maximum retained change-journal entries after trimming. Defaults to 1024.
    * A non-positive or non-finite value keeps the journal unbounded; a
    * positive fraction retains at least one entry.
@@ -47,6 +64,12 @@ export interface ReplicaStats {
   readonly entities: number;
   /** Materialized row count per entity type. */
   readonly byType: Readonly<Record<string, number>>;
+  /** Rows retained because their type is held: the metadata footprint. */
+  readonly held: number;
+  /** Held row count per type; excludes opened on-demand rows. */
+  readonly heldByType: Readonly<Record<string, number>>;
+  /** Resident on-demand rows (open or closed and waiting out their TTL). */
+  readonly pinned: number;
   readonly revision: Revision;
   /** Append cursor of the last durable position folded into the base. */
   readonly position: number;
@@ -97,6 +120,25 @@ export interface Replica {
 
   get(id: string): Entity | undefined;
   iterate(type: string): readonly Entity[];
+  /** Whether the materialization policy holds `type` in full. */
+  isHeld(type: string): boolean;
+  /**
+   * Load `id` through `readEntity` when absent, pinning it and journaling the
+   * install so a derived reader sees the row arrive. Idempotent: a resident row
+   * is marked open and touched (LRU order) without another read, a concurrent
+   * open shares the in-flight read, and a held row is returned without
+   * installing or pinning. Resolves to the composed row, or `null` when the
+   * read misses.
+   */
+  open(id: string): Promise<Entity | null>;
+  /**
+   * Close a pinned row. It stays cached until `pinnedTtlMs` so a remount reads
+   * it back, then leaves; with the TTL disabled it leaves immediately. A no-op
+   * for held rows.
+   */
+  close(id: string): void;
+  /** Whether `id` is currently open (closed rows waiting out their TTL are not). */
+  isOpen(id: string): boolean;
   /**
    * Changes newer than `revision`, ascending. Empty when the cursor predates
    * `changeFloor`, where the trimmed journal can no longer answer it.
@@ -145,10 +187,12 @@ export interface Replica {
 
   /**
    * Subscribe to post-change notifications. Fires after every mutating call
-   * (`ingest` / `optimistic` / `discard` / `load` / `evict`) once the
-   * composed view is settled, so a derived reader can resynchronise from
-   * `revision` and `changesSince`. A no-op write still fires; readers cheaply
-   * ignore an unchanged revision. Returns an unsubscribe function.
+   * (`ingest` / `optimistic` / `discard` / `load` / `evict` / `open` /
+   * `close`) that settles the composed view, so a derived reader can
+   * resynchronise from `revision` and `changesSince`. A no-op write still
+   * fires; readers cheaply ignore an unchanged revision. Re-opening a resident
+   * row only touches the LRU window, so it fires nothing. Returns an
+   * unsubscribe function.
    */
   subscribe(listener: () => void): () => void;
 }

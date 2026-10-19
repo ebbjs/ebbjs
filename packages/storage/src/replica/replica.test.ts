@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeHlc, type Action, type Entity, type FieldValue, type Update } from "@ebbjs/core";
 
 import { REPLICA_RECORD_FORMAT } from "../internal/replica-record";
@@ -1003,10 +1003,13 @@ describe("replica: journal capacity (#499)", () => {
     expect(replica.stats()).toEqual({
       entities: 1,
       byType: { note: 1 },
+      held: 1,
+      heldByType: { note: 1 },
       revision: 4,
       position: 9,
       changes: 0,
       changeFloor: 4,
+      pinned: 0,
     });
     expect(replica.changesSince(0)).toEqual([]);
     expect(replica.changesSince(4)).toEqual([]);
@@ -1071,10 +1074,484 @@ describe("replica: stats (#499)", () => {
     expect(replica.stats()).toEqual({
       entities: 2,
       byType: { todo: 1, note: 1 },
+      held: 2,
+      heldByType: { todo: 1, note: 1 },
       revision: 3,
       position: 7,
       changes: 3,
       changeFloor: 0,
+      pinned: 0,
+    });
+  });
+});
+
+describe("replica: on-demand residency (#500)", () => {
+  // `document` is the heavy body; everything else stays held, as with the
+  // page metadata / content split at 10k documents.
+  const onDemand = { holds: (type: string): boolean => type !== "document" };
+
+  const documentRow = (id: string, text = `body ${id}`): Entity =>
+    entity({
+      id,
+      type: "document",
+      data: { fields: { text: leaf(text, `u_${id}`, 5) } },
+      last_gsn: 5,
+    });
+
+  const reader =
+    (rows: Record<string, Entity>, reads: string[] = []) =>
+    async (id: string): Promise<Entity | null> => {
+      reads.push(id);
+      return rows[id] ?? null;
+    };
+
+  it("reports which types it holds and which it materializes on demand", () => {
+    const replica = createReplica({ materialization: onDemand });
+
+    expect(replica.isHeld("todo")).toBe(true);
+    expect(replica.isHeld("document")).toBe(false);
+    expect(createReplica().isHeld("document")).toBe(true);
+  });
+
+  it("opens a cold on-demand row, pinning and journaling it", async () => {
+    const rows = { doc_1: documentRow("doc_1") };
+    const reads: string[] = [];
+    const replica = createReplica({ materialization: onDemand, readEntity: reader(rows, reads) });
+    let fired = 0;
+    replica.subscribe(() => {
+      fired += 1;
+    });
+
+    const opened = await replica.open("doc_1");
+
+    expect(opened).toEqual(documentRow("doc_1"));
+    expect(reads).toEqual(["doc_1"]);
+    expect(replica.get("doc_1")).toEqual(documentRow("doc_1"));
+    expect(replica.iterate("document")).toEqual([documentRow("doc_1")]);
+    expect(replica.isOpen("doc_1")).toBe(true);
+    expect(replica.stats()).toMatchObject({ entities: 1, byType: { document: 1 }, pinned: 1 });
+    expect(fired).toBe(1);
+    // A derived reader must see the row arrive.
+    expect(replica.changesSince(0)).toEqual([
+      { revision: 1, id: "doc_1", type: "document", deleted: false },
+    ]);
+  });
+
+  it("misses on a cold open that reads nothing, then installs on a later open", async () => {
+    const rows: Record<string, Entity> = {};
+    const reads: string[] = [];
+    const replica = createReplica({ materialization: onDemand, readEntity: reader(rows, reads) });
+
+    expect(await replica.open("doc_1")).toBeNull();
+    expect(replica.isOpen("doc_1")).toBe(false);
+    expect(replica.get("doc_1")).toBeUndefined();
+    expect(replica.revision).toBe(0);
+
+    rows.doc_1 = documentRow("doc_1");
+    expect(await replica.open("doc_1")).toEqual(documentRow("doc_1"));
+    expect(replica.isOpen("doc_1")).toBe(true);
+    expect(reads).toEqual(["doc_1", "doc_1"]);
+  });
+
+  it("coalesces concurrent opens and re-opens without another read", async () => {
+    const rows = { doc_1: documentRow("doc_1") };
+    const reads: string[] = [];
+    const replica = createReplica({ materialization: onDemand, readEntity: reader(rows, reads) });
+
+    const [first, second] = await Promise.all([replica.open("doc_1"), replica.open("doc_1")]);
+    expect(first).toEqual(documentRow("doc_1"));
+    expect(second).toEqual(first);
+    expect(reads).toEqual(["doc_1"]);
+
+    const revision = replica.revision;
+    expect(await replica.open("doc_1")).toEqual(documentRow("doc_1"));
+    expect(reads).toEqual(["doc_1"]);
+    expect(replica.revision).toBe(revision);
+  });
+
+  it("replays updates that land while a cold open is reading", async () => {
+    let release!: (row: Entity) => void;
+    const replica = createReplica({
+      materialization: onDemand,
+      pinnedTtlMs: 0,
+      readEntity: () =>
+        new Promise<Entity>((resolve) => {
+          release = resolve;
+        }),
+    });
+
+    const opening = replica.open("doc_1");
+    ingest(
+      replica,
+      patch({
+        actionId: "a_live",
+        updateId: "u_live",
+        entityId: "doc_1",
+        type: "document",
+        gsn: 6,
+        ms: 6,
+        fields: { text: leaf("live", "u_live", 6) },
+      }),
+      6,
+    );
+    release(documentRow("doc_1"));
+
+    expect(await opening).toEqual(
+      entity({
+        id: "doc_1",
+        type: "document",
+        data: { fields: { text: leaf("live", "u_live", 6) } },
+        updated_hlc: makeHlc(6),
+        last_gsn: 6,
+      }),
+    );
+    expect(replica.get("doc_1")?.data.fields.text).toEqual(leaf("live", "u_live", 6));
+  });
+
+  it("does not resurrect a row whose open was closed while the read was in flight", async () => {
+    let release!: (row: Entity) => void;
+    const replica = createReplica({
+      materialization: onDemand,
+      pinnedTtlMs: 0,
+      readEntity: () =>
+        new Promise<Entity>((resolve) => {
+          release = resolve;
+        }),
+    });
+
+    const opening = replica.open("doc_1");
+    replica.close("doc_1");
+    release(documentRow("doc_1"));
+
+    expect(await opening).toBeNull();
+    expect(replica.get("doc_1")).toBeUndefined();
+    expect(replica.isOpen("doc_1")).toBe(false);
+    expect(replica.stats().pinned).toBe(0);
+  });
+
+  it("serves a held row from the reader without installing or pinning it", async () => {
+    const rows = { e_1: entity({ id: "e_1", type: "todo" }) };
+    const replica = createReplica({ materialization: onDemand, readEntity: reader(rows) });
+
+    expect(await replica.open("e_1")).toEqual(entity({ id: "e_1", type: "todo" }));
+    expect(replica.get("e_1")).toBeUndefined();
+    expect(replica.isOpen("e_1")).toBe(false);
+    expect(replica.revision).toBe(0);
+  });
+
+  it("drops the pin when a fold moves the row into a held type", async () => {
+    const rows = { doc_1: documentRow("doc_1") };
+    const replica = createReplica({ materialization: onDemand, readEntity: reader(rows) });
+    await replica.open("doc_1");
+
+    ingest(
+      replica,
+      put({
+        actionId: "a_move",
+        updateId: "u_move",
+        entityId: "doc_1",
+        type: "todo",
+        gsn: 9,
+        ms: 9,
+        fields: { title: leaf("Now held", "u_move", 9) },
+      }),
+      9,
+    );
+
+    expect(replica.get("doc_1")?.type).toBe("todo");
+    expect(replica.isOpen("doc_1")).toBe(false);
+    expect(replica.stats().pinned).toBe(0);
+
+    replica.close("doc_1");
+    expect(replica.get("doc_1")?.type).toBe("todo");
+  });
+
+  it("keeps folding live updates into a pinned row", async () => {
+    const rows = { doc_1: documentRow("doc_1") };
+    const replica = createReplica({ materialization: onDemand, readEntity: reader(rows) });
+    await replica.open("doc_1");
+
+    ingest(
+      replica,
+      patch({
+        actionId: "a_live",
+        updateId: "u_live",
+        entityId: "doc_1",
+        type: "document",
+        gsn: 6,
+        ms: 6,
+        fields: { text: leaf("live", "u_live", 6) },
+      }),
+      6,
+    );
+
+    expect(replica.get("doc_1")?.data.fields.text).toEqual(leaf("live", "u_live", 6));
+    expect(replica.isOpen("doc_1")).toBe(true);
+  });
+
+  it("drops a patch for an unopened on-demand row instead of retaining an orphan", () => {
+    const replica = createReplica({ materialization: onDemand, pinnedTtlMs: 0 });
+
+    ingest(
+      replica,
+      patch({
+        actionId: "a_cold",
+        updateId: "u_cold",
+        entityId: "doc_1",
+        type: "document",
+        gsn: 7,
+        ms: 7,
+        fields: { text: leaf("cold", "u_cold", 7) },
+      }),
+      7,
+    );
+
+    expect(replica.get("doc_1")).toBeUndefined();
+    expect(replica.changesSince(0)).toEqual([]);
+    // An orphan would hold the record's watermark back to position 6 and
+    // retain the body in memory.
+    expect(replica.toRecord().position).toBe(7);
+    expect(replica.toRecord().entities).toEqual([]);
+  });
+
+  it("keeps 10k held metadata rows and materializes only an opened body", async () => {
+    // The #500 shape at 10k documents: page metadata is held, bodies are not.
+    const entities: Entity[] = [];
+    for (let i = 0; i < 10_000; i += 1) {
+      entities.push(entity({ id: `page_${i}`, type: "page" }));
+      entities.push(documentRow(`doc_${i}`));
+    }
+    const rows = { doc_0: documentRow("doc_0") };
+    const replica = createReplica({
+      materialization: onDemand,
+      pinnedTtlMs: 0,
+      readEntity: reader(rows),
+    });
+
+    replica.load({ format: REPLICA_RECORD_FORMAT, position: 0, revision: 1, entities });
+
+    expect(replica.stats()).toMatchObject({
+      held: 10_000,
+      heldByType: { page: 10_000 },
+      byType: { page: 10_000 },
+      pinned: 0,
+    });
+    expect(replica.stats().byType.document).toBeUndefined();
+
+    await replica.open("doc_0");
+
+    expect(replica.stats()).toMatchObject({
+      held: 10_000,
+      byType: { page: 10_000, document: 1 },
+      pinned: 1,
+    });
+  });
+
+  it("closes an open row, releasing it with the TTL disabled, and leaves held rows alone", async () => {
+    const rows = { doc_1: documentRow("doc_1") };
+    const replica = createReplica({
+      materialization: onDemand,
+      pinnedTtlMs: 0,
+      readEntity: reader(rows),
+    });
+    ingest(
+      replica,
+      put({ actionId: "a_1", updateId: "u_1", ms: 10, fields: { title: leaf("Todo", "u_1", 10) } }),
+      1,
+    );
+    await replica.open("doc_1");
+    const openRevision = replica.revision;
+
+    replica.close("doc_1");
+
+    expect(replica.get("doc_1")).toBeUndefined();
+    expect(replica.isOpen("doc_1")).toBe(false);
+    expect(replica.stats().pinned).toBe(0);
+    expect(replica.changesSince(openRevision)).toEqual([
+      { revision: openRevision + 1, id: "doc_1", type: "document", deleted: true },
+    ]);
+
+    replica.close("e_1");
+    expect(replica.get("e_1")?.type).toBe("todo");
+  });
+
+  it("evicts a row and drops its pin", async () => {
+    const rows = { doc_1: documentRow("doc_1") };
+    const replica = createReplica({ materialization: onDemand, readEntity: reader(rows) });
+    await replica.open("doc_1");
+
+    replica.evict(["doc_1"]);
+
+    expect(replica.isOpen("doc_1")).toBe(false);
+    expect(replica.stats().pinned).toBe(0);
+  });
+
+  it("releases the least recently opened row when the pinned window overflows", async () => {
+    const rows = {
+      doc_1: documentRow("doc_1"),
+      doc_2: documentRow("doc_2"),
+      doc_3: documentRow("doc_3"),
+    };
+    const replica = createReplica({
+      materialization: onDemand,
+      pinnedCapacity: 2,
+      pinnedTtlMs: 0,
+      readEntity: reader(rows),
+    });
+    await replica.open("doc_1");
+    await replica.open("doc_2");
+    await replica.open("doc_1");
+    await replica.open("doc_3");
+
+    expect(replica.isOpen("doc_2")).toBe(false);
+    expect(replica.get("doc_2")).toBeUndefined();
+    expect(replica.isOpen("doc_1")).toBe(true);
+    expect(replica.isOpen("doc_3")).toBe(true);
+    expect(replica.stats().pinned).toBe(2);
+  });
+
+  it("retains every pinned row when the capacity is unbounded", async () => {
+    const rows: Record<string, Entity> = {};
+    for (let i = 1; i <= 20; i += 1) rows[`doc_${i}`] = documentRow(`doc_${i}`);
+    const replica = createReplica({
+      materialization: onDemand,
+      pinnedCapacity: 0,
+      pinnedTtlMs: 0,
+      readEntity: reader(rows),
+    });
+
+    for (const id of Object.keys(rows)) await replica.open(id);
+
+    expect(replica.stats().pinned).toBe(20);
+    expect(replica.stats().byType).toEqual({ document: 20 });
+  });
+
+  it("persists held rows only, never a pinned body", async () => {
+    const rows = { doc_1: documentRow("doc_1") };
+    const replica = createReplica({
+      materialization: onDemand,
+      pinnedTtlMs: 0,
+      readEntity: reader(rows),
+    });
+    ingest(
+      replica,
+      put({ actionId: "a_1", updateId: "u_1", ms: 10, fields: { title: leaf("Todo", "u_1", 10) } }),
+      1,
+    );
+    await replica.open("doc_1");
+
+    expect(replica.toRecord().entities).toEqual([
+      entity({
+        id: "e_1",
+        type: "todo",
+        data: { fields: { title: leaf("Todo", "u_1", 10) } },
+        created_hlc: makeHlc(10),
+        updated_hlc: makeHlc(10),
+        last_gsn: 1,
+      }),
+    ]);
+  });
+
+  it("clears pins on load and installs held rows only", async () => {
+    const rows = { doc_1: documentRow("doc_1") };
+    const replica = createReplica({
+      materialization: onDemand,
+      pinnedTtlMs: 0,
+      readEntity: reader(rows),
+    });
+    await replica.open("doc_1");
+
+    replica.load({
+      format: REPLICA_RECORD_FORMAT,
+      position: 0,
+      revision: 5,
+      entities: [documentRow("doc_2"), entity({ id: "e_1", type: "todo" })],
+    });
+
+    expect(replica.isOpen("doc_1")).toBe(false);
+    expect(replica.get("doc_1")).toBeUndefined();
+    expect(replica.get("doc_2")).toBeUndefined();
+    expect(replica.get("e_1")?.type).toBe("todo");
+    expect(replica.stats()).toMatchObject({ entities: 1, byType: { todo: 1 }, pinned: 0 });
+  });
+
+  describe("pinned TTL", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("releases a closed row once the TTL elapses", async () => {
+      const rows = { doc_1: documentRow("doc_1") };
+      const replica = createReplica({
+        materialization: onDemand,
+        pinnedTtlMs: 1_000,
+        readEntity: reader(rows),
+      });
+      await replica.open("doc_1");
+      replica.close("doc_1");
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(replica.isOpen("doc_1")).toBe(false);
+      expect(replica.get("doc_1")).toEqual(documentRow("doc_1"));
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(replica.get("doc_1")).toBeUndefined();
+      expect(replica.stats().pinned).toBe(0);
+    });
+
+    it("cancels the TTL when a closed row is opened again", async () => {
+      const rows = { doc_1: documentRow("doc_1") };
+      const replica = createReplica({
+        materialization: onDemand,
+        pinnedTtlMs: 1_000,
+        readEntity: reader(rows),
+      });
+      await replica.open("doc_1");
+      replica.close("doc_1");
+
+      await vi.advanceTimersByTimeAsync(600);
+      await replica.open("doc_1");
+      await vi.advanceTimersByTimeAsync(600);
+      expect(replica.isOpen("doc_1")).toBe(true);
+      expect(replica.get("doc_1")).toEqual(documentRow("doc_1"));
+    });
+
+    it("keeps an open row indefinitely and releases it on close when the TTL is disabled", async () => {
+      const rows = { doc_1: documentRow("doc_1") };
+      const replica = createReplica({
+        materialization: onDemand,
+        pinnedTtlMs: 0,
+        readEntity: reader(rows),
+      });
+      await replica.open("doc_1");
+
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(replica.isOpen("doc_1")).toBe(true);
+
+      replica.close("doc_1");
+      expect(replica.get("doc_1")).toBeUndefined();
+    });
+
+    it("cancels a pending TTL release when the row is evicted", async () => {
+      const rows = { doc_1: documentRow("doc_1") };
+      const replica = createReplica({
+        materialization: onDemand,
+        pinnedTtlMs: 1_000,
+        readEntity: reader(rows),
+      });
+      await replica.open("doc_1");
+      replica.close("doc_1");
+      replica.evict(["doc_1"]);
+      const revision = replica.revision;
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(replica.stats().pinned).toBe(0);
+      expect(replica.revision).toBe(revision);
     });
   });
 });

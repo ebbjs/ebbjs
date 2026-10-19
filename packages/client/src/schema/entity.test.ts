@@ -89,6 +89,32 @@ describe("defineEntity", () => {
     const todo = defineEntity("todo", { title: e.string() }, { conflictScope: "entity" });
     expect(todo.conflictScope).toBe("entity");
   });
+
+  it('defaults materialization to "held"', () => {
+    const todo = defineEntity("todo", { title: e.string() });
+    expect(todo.materialization).toBe("held");
+  });
+
+  it("stores an explicit materialization", () => {
+    const pageContent = defineEntity(
+      "page_content",
+      { content: e.map(e.string()) },
+      { materialization: "on-demand" },
+    );
+    expect(pageContent.materialization).toBe("on-demand");
+  });
+
+  it("freezes the declared materialization", () => {
+    const pageContent = defineEntity(
+      "page_content",
+      { content: e.map(e.string()) },
+      { materialization: "on-demand" },
+    );
+    expect(Object.getOwnPropertyDescriptor(pageContent, "materialization")).toMatchObject({
+      value: "on-demand",
+      writable: false,
+    });
+  });
 });
 
 describe("defineEntity reserved names", () => {
