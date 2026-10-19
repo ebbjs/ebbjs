@@ -13,6 +13,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
   import EbbServer.TestHelpers
 
   alias EbbServer.Integration.ActionHelpers
+  alias EbbServer.Storage.{ActionFormat, RocksDB, WatermarkTracker}
   alias EbbServer.Sync.FanOutRouter
 
   describe "subscribe/2 — second subscriber to same group" do
@@ -128,6 +129,71 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       assert "group" in subject_types
       assert "groupMember" in subject_types
       assert "entityGroup" in subject_types
+
+      :ok = FanOutRouter.unsubscribe(sse_pid)
+    end
+  end
+
+  describe "stored action shape (#532)" do
+    test "pushes an Action stored in the new GSN-free wrapper" do
+      group_id = "g_532_#{:erlang.unique_integer([:positive])}"
+      actor_id = "a_532_#{:erlang.unique_integer([:positive])}"
+
+      {:ok, sse_pid} =
+        EbbServer.Sync.SSEConnection.start_link(self(), [group_id], %{group_id => 0})
+
+      :ok = FanOutRouter.subscribe([group_id], sse_pid, actor_id)
+
+      gsn = RocksDB.get_max_gsn() + 1
+      hlc = generate_hlc()
+      action_id = "act_532_#{:erlang.unique_integer([:positive])}"
+      update_id = "upd_532_#{:erlang.unique_integer([:positive])}"
+
+      payload =
+        %{
+          id: action_id,
+          actor_id: actor_id,
+          hlc: hlc,
+          updates: [
+            %{
+              id: update_id,
+              subject_id: "todo_532",
+              subject_type: "todo",
+              method: :put,
+              data: %{
+                "fields" => %{"title" => %{"type" => "lww", "value" => "x", "hlc" => hlc}}
+              }
+            }
+          ]
+        }
+        |> ActionFormat.build()
+        |> ActionFormat.encode()
+
+      wrapper = ActionFormat.wrap(payload, [[group_id]])
+
+      :ok =
+        RocksDB.write_batch([
+          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn), wrapper},
+          {:put, RocksDB.cf_group_actions(), RocksDB.encode_group_action_key(group_id, gsn),
+           action_id}
+        ])
+
+      :ok = WatermarkTracker.mark_range_committed(gsn, gsn)
+      WatermarkTracker.advance_watermark()
+
+      send(
+        FanOutRouter,
+        {:batch_committed, gsn, gsn, %{gsn => [group_id]}, System.monotonic_time()}
+      )
+
+      assert_receive {:sse_data, bytes}, 5_000
+
+      pushed = bytes |> single_data_payload() |> Jason.decode!()
+
+      assert pushed["gsn"] == gsn
+      assert pushed["id"] == action_id
+      assert pushed["actor_id"] == actor_id
+      assert [%{"id" => ^update_id}] = pushed["updates"]
 
       :ok = FanOutRouter.unsubscribe(sse_pid)
     end

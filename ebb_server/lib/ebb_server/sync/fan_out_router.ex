@@ -78,6 +78,7 @@ defmodule EbbServer.Sync.FanOutRouter do
   use GenServer
 
   alias EbbServer.Storage.{
+    ActionFormat,
     ActionScope,
     CacheTables,
     EntityIndex,
@@ -523,7 +524,7 @@ defmodule EbbServer.Sync.FanOutRouter do
     ]
 
     RocksDB.range_iterator(cf, from_key, to_key)
-    |> Stream.map(fn {_key, value} -> :erlang.binary_to_term(value, [:safe]) end)
+    |> Stream.map(fn {key, value} -> ActionFormat.decode(value, RocksDB.decode_gsn_key(key)) end)
     |> Stream.flat_map(&group_memberships(&1, groups_by_gsn, resolve_opts))
     |> Enum.group_by(fn {group_id, _action} -> group_id end, fn {_group_id, action} -> action end)
     |> Enum.each(fn {group_id, actions} -> push_to_group(group_id, actions, committed_at) end)

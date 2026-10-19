@@ -26,6 +26,8 @@ defmodule EbbServer.Storage.WriterTest do
   use ExUnit.Case, async: false
 
   alias EbbServer.Storage.{
+    ActionFormat,
+    ActionLog,
     DirtyTracker,
     EntityGroupCache,
     EntityTypeCache,
@@ -109,7 +111,7 @@ defmodule EbbServer.Storage.WriterTest do
       assert {:ok, binary} =
                RocksDB.get(RocksDB.cf_actions(rocks_name), gsn_key, name: rocks_name)
 
-      decoded = :erlang.binary_to_term(binary, [:safe])
+      decoded = ActionFormat.decode(binary, 1)
       assert decoded["gsn"] == 1
     end
   end
@@ -139,18 +141,19 @@ defmodule EbbServer.Storage.WriterTest do
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
       gsn_key = RocksDB.encode_gsn_key(1)
-      stored_action = to_storage_format(action, 1, [[]])
-      action_etf = :erlang.term_to_binary(stored_action)
 
       assert {:ok, stored_etf} =
                RocksDB.get(RocksDB.cf_actions(rocks_name), gsn_key, name: rocks_name)
 
-      assert stored_etf == action_etf
+      decoded = ActionFormat.decode(stored_etf, 1)
+
+      assert decoded["id"] == action.id
+      assert decoded["actor_id"] == action.actor_id
+      assert decoded["hlc"] == action.hlc
+      assert decoded["gsn"] == 1
 
       # The Update is stored once, inside the cf_actions value.
-      assert [%{"id" => stored_update_id}] =
-               :erlang.binary_to_term(stored_etf, [:safe])["updates"]
-
+      assert [%{"id" => stored_update_id}] = decoded["updates"]
       assert stored_update_id == update.id
 
       entity_gsn_key = RocksDB.encode_entity_gsn_key("todo_test_123", 1)
@@ -210,7 +213,7 @@ defmodule EbbServer.Storage.WriterTest do
       # The Action spans group_1 (todo_a) and group_2 (the new todo_b and its
       # membership row); the stored per-Update scopes keep them apart.
       assert %{"update_scopes" => [["group_1"], ["group_2"], ["group_2"]]} =
-               :erlang.binary_to_term(binary, [:safe])
+               ActionFormat.decode(binary, 1)
 
       for group_id <- ["group_1", "group_2"] do
         key = RocksDB.encode_group_action_key(group_id, 1)
@@ -285,13 +288,59 @@ defmodule EbbServer.Storage.WriterTest do
 
       gsn_key = RocksDB.encode_gsn_key(1)
       {:ok, binary} = RocksDB.get(RocksDB.cf_actions(rocks_name), gsn_key, name: rocks_name)
-      decoded = :erlang.binary_to_term(binary, [:safe])
+      decoded = ActionFormat.decode(binary, 1)
 
       assert decoded["id"] == action.id
       assert decoded["actor_id"] == action.actor_id
       assert decoded["gsn"] == 1
       assert length(decoded["updates"]) == 1
       assert hd(decoded["updates"])["subject_id"] == "todo_roundtrip"
+    end
+  end
+
+  describe "stored value shape (#532)" do
+    test "writes the wrapper with a GSN-free, scopes-free payload", %{
+      writer_name: writer_name,
+      rocks_name: rocks_name
+    } do
+      action = validated_action(%{updates: [validated_update(%{subject_id: "todo_wrapper"})]})
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      {:ok, value} =
+        RocksDB.get(
+          RocksDB.cf_actions(rocks_name),
+          RocksDB.encode_gsn_key(1),
+          name: rocks_name
+        )
+
+      assert {payload_etf, scopes} = :erlang.binary_to_term(value, [:safe])
+      assert is_binary(payload_etf)
+      assert scopes == [[]]
+
+      payload = :erlang.binary_to_term(payload_etf, [:safe])
+
+      assert payload["id"] == action.id
+      refute Map.has_key?(payload, "gsn")
+      refute Map.has_key?(payload, "update_scopes")
+    end
+
+    test "the new shape round-trips through ActionLog.read/3", %{
+      writer_name: writer_name,
+      rocks_name: rocks_name
+    } do
+      update = validated_update(%{subject_id: "todo_action_log"})
+      action = validated_action(%{id: "act_action_log", updates: [update]})
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      assert [stored] = ActionLog.read(1, 1, rocks_name: rocks_name)
+
+      assert stored["id"] == action.id
+      assert stored["gsn"] == 1
+      assert stored["update_scopes"] == [[]]
+      assert [%{"id" => update_id, "subject_id" => "todo_action_log"}] = stored["updates"]
+      assert update_id == update.id
     end
   end
 
@@ -481,7 +530,7 @@ defmodule EbbServer.Storage.WriterTest do
                  name: rocks_name
                )
 
-      assert :erlang.binary_to_term(binary, [:safe])["id"] == action_b.id
+      assert ActionFormat.decode(binary, 2)["id"] == action_b.id
 
       assert {:ok, gsn_binary} =
                RocksDB.get(RocksDB.cf_action_dedup(rocks_name), action_a.id, name: rocks_name)
@@ -1626,25 +1675,5 @@ defmodule EbbServer.Storage.WriterTest do
 
   defp puts_to(ops, cf) do
     for {:put, ^cf, _key, _value} <- ops, do: :ok
-  end
-
-  defp to_storage_format(action, gsn, update_scopes) do
-    %{
-      "id" => action.id,
-      "actor_id" => action.actor_id,
-      "hlc" => action.hlc,
-      "gsn" => gsn,
-      "update_scopes" => update_scopes,
-      "updates" =>
-        Enum.map(action.updates, fn update ->
-          %{
-            "id" => update.id,
-            "subject_id" => update.subject_id,
-            "subject_type" => update.subject_type,
-            "method" => Atom.to_string(update.method),
-            "data" => update.data
-          }
-        end)
-    }
   end
 end

@@ -5,6 +5,16 @@ defmodule EbbServer.Bench.Options do
   Everything here is a pure function so the option surface (and the
   reproduction command the report prints) can be pinned without booting a
   storage tree.
+
+  ## Ablation phases
+
+  `--ablate` names writer phases the bench should skip, so a run can price
+  each one by differencing against the full flush. The canonical order is
+  the order reported and printed, regardless of how the flag was invoked;
+  `all` expands to every phase. `:build` and `:encode` cover the pre-claim
+  payload work: skipping `:build` stores an empty payload map, skipping
+  `:encode` stores a precomputed ETF for a structurally valid empty Action
+  so the record stays decodable by live readers.
   """
 
   @type tier :: :t0 | :t1 | :t2 | :t3 | :t4 | :t5
@@ -14,6 +24,8 @@ defmodule EbbServer.Bench.Options do
   @type ablate_phase ::
           :dedup
           | :group_resolution
+          | :build
+          | :encode
           | :entity_index
           | :group_index
           | :dirty
@@ -65,7 +77,18 @@ defmodule EbbServer.Bench.Options do
   @updates_per_action [1, 2, 10]
 
   # Canonical order for the parsed list and the printed command.
-  @ablate_phases ~w(dedup group_resolution entity_index group_index dirty cache watermark fanout)a
+  @ablate_phases [
+    :dedup,
+    :group_resolution,
+    :build,
+    :encode,
+    :entity_index,
+    :group_index,
+    :dirty,
+    :cache,
+    :watermark,
+    :fanout
+  ]
   @ablate_by_name Map.new(@ablate_phases, &{Atom.to_string(&1), &1})
 
   @switches [

@@ -24,8 +24,10 @@ defmodule EbbServer.Storage.EntityStoreTest do
   use ExUnit.Case, async: false
 
   alias EbbServer.Storage.{
+    ActionFormat,
     DirtyTracker,
     EntityStore,
+    RocksDB,
     SQLite,
     Writer
   }
@@ -138,6 +140,63 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert {:ok, cached} = SQLite.get_entity(entity_id, sqlite_name)
       assert cached.id == entity_id
       assert cached.type == "todo"
+    end
+
+    test "materializes an Action stored in the new GSN-free wrapper", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_wrapper_#{:erlang.unique_integer([:positive])}"
+      hlc = generate_hlc()
+      gsn = 1
+      action_id = "act_wrapper_#{:erlang.unique_integer([:positive])}"
+      update_id = "upd_wrapper_#{:erlang.unique_integer([:positive])}"
+
+      payload =
+        %{
+          id: action_id,
+          actor_id: "a_test",
+          hlc: hlc,
+          updates: [
+            %{
+              id: update_id,
+              subject_id: entity_id,
+              subject_type: "todo",
+              method: :put,
+              data: %{
+                "fields" => %{"title" => %{"value" => "Wrapper", "hlc" => hlc}}
+              }
+            }
+          ]
+        }
+        |> ActionFormat.build()
+        |> ActionFormat.encode()
+
+      wrapper = ActionFormat.wrap(payload, [[]])
+
+      :ok =
+        RocksDB.write_batch(
+          [
+            {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), wrapper},
+            {:put, RocksDB.cf_entity_actions(rocks_name),
+             RocksDB.encode_entity_gsn_key(entity_id, gsn), action_id}
+          ],
+          name: rocks_name
+        )
+
+      :ok = DirtyTracker.mark_dirty_batch([{entity_id, "todo"}], dirty_set)
+
+      assert {:ok, entity} =
+               EntityStore.get(entity_id, "a_test",
+                 rocks_name: rocks_name,
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
+               )
+
+      assert entity.id == entity_id
+      assert entity.last_gsn == gsn
+      assert entity.data["fields"]["title"]["value"] == "Wrapper"
     end
 
     test "dirty bit is cleared after materialization", %{

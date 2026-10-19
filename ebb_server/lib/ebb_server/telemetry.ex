@@ -47,9 +47,10 @@ defmodule EbbServer.Telemetry do
   through the post-commit bookkeeping (dirty settle, cache mutations, and the
   fan-out notification) and is measured on the Writer, which sequences the
   flush. `ebb.writer.commit_latency_ms` is the sub-span the Committer owns —
-  `to_storage_format`, ETF encode, `cf_*` op assembly, and the durable
-  `write_batch/2` — so the pair separates sequencer work from durable-write
-  work for the same GSN range. `commit_latency_ms` is emitted for every
+  wrapper encode, `cf_*` op assembly, and the durable `write_batch/2` — so
+  the pair separates sequencer work from durable-write work for the same GSN
+  range; the expensive payload build and ETF encode already happened on the
+  sequencer before the claim. `commit_latency_ms` is emitted for every
   outcome (`:ok`, `{:error, reason}`, or a raise), so a failing commit stays
   visible in the same series as a successful one.
 

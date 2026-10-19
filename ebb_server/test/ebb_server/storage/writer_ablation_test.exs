@@ -74,6 +74,30 @@ defmodule EbbServer.Storage.WriterAblationTest do
       assert stored_scopes(ops, ctx.rocks_name) == [[], []]
     end
 
+    test ":build stores an empty payload", ctx do
+      writer = start_capturing_writer(ctx, [:build])
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer)
+
+      assert_receive {:captured_ops, ops}
+
+      {payload_etf, _scopes} = stored_value(ops, ctx.rocks_name)
+      assert :erlang.binary_to_term(payload_etf, [:safe]) == %{}
+    end
+
+    test ":encode stores a structurally valid empty payload", ctx do
+      writer = start_capturing_writer(ctx, [:encode])
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer)
+
+      assert_receive {:captured_ops, ops}
+
+      {payload_etf, _scopes} = stored_value(ops, ctx.rocks_name)
+
+      assert %{"id" => "ablated", "actor_id" => "ablated", "hlc" => 0, "updates" => []} =
+               :erlang.binary_to_term(payload_etf, [:safe])
+    end
+
     test "`all` leaves exactly one cf_actions put per Action and nothing else", ctx do
       action = grouped_action()
       writer = start_capturing_writer(ctx, all_phases())
@@ -181,7 +205,18 @@ defmodule EbbServer.Storage.WriterAblationTest do
   end
 
   defp all_phases do
-    [:dedup, :group_resolution, :entity_index, :group_index, :dirty, :cache, :watermark, :fanout]
+    [
+      :dedup,
+      :group_resolution,
+      :build,
+      :encode,
+      :entity_index,
+      :group_index,
+      :dirty,
+      :cache,
+      :watermark,
+      :fanout
+    ]
   end
 
   defp puts_to(ops, cf) do
@@ -189,12 +224,17 @@ defmodule EbbServer.Storage.WriterAblationTest do
   end
 
   defp stored_scopes(ops, rocks_name) do
+    {_payload_etf, scopes} = stored_value(ops, rocks_name)
+    scopes
+  end
+
+  defp stored_value(ops, rocks_name) do
     [value] =
       for {:put, cf, _key, value} <- ops, cf == RocksDB.cf_actions(rocks_name) do
         value
       end
 
-    :erlang.binary_to_term(value, [:safe])["update_scopes"]
+    :erlang.binary_to_term(value, [:safe])
   end
 
   defp grouped_action do

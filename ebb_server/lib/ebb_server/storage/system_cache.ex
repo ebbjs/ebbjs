@@ -94,6 +94,7 @@ defmodule EbbServer.Storage.SystemCache do
   require Logger
 
   alias EbbServer.Storage.{
+    ActionFormat,
     CacheTables,
     DirtyTracker,
     EntityGroupCache,
@@ -560,7 +561,9 @@ defmodule EbbServer.Storage.SystemCache do
         <<0xFFFFFFFFFFFFFFFF::unsigned-big-integer-size(64)>>,
         name: rocks_name
       )
-      |> Stream.map(fn {_gsn_key, action_etf} -> :erlang.binary_to_term(action_etf, [:safe]) end)
+      |> Stream.map(fn {gsn_key, action_etf} ->
+        ActionFormat.decode(action_etf, RocksDB.decode_gsn_key(gsn_key))
+      end)
       |> Stream.flat_map(fn action ->
         # Each update contributes at most one (type, entity_id) pair.
         # Tombstones (method == "delete") still imply a prior create,

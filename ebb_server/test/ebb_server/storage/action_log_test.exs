@@ -10,8 +10,7 @@ defmodule EbbServer.Storage.ActionLogTest do
 
   use ExUnit.Case, async: true
 
-  alias EbbServer.Storage.ActionLog
-  alias EbbServer.Storage.RocksDB
+  alias EbbServer.Storage.{ActionFormat, ActionLog, RocksDB}
 
   import EbbServer.TestHelpers
 
@@ -24,10 +23,36 @@ defmodule EbbServer.Storage.ActionLogTest do
     key = RocksDB.encode_gsn_key(gsn)
     value = :erlang.term_to_binary(action)
 
+    put_value(rocks_name, key, value)
+  end
+
+  defp put_value(rocks_name, key, value) do
     assert :ok =
              RocksDB.write_batch([{:put, RocksDB.cf_actions(rocks_name), key, value}],
                name: rocks_name
              )
+  end
+
+  defp new_wrapper(gsn, update_scopes) do
+    payload =
+      %{
+        id: "act_new",
+        actor_id: "a_1",
+        hlc: 200,
+        updates: [
+          %{
+            id: "upd_new",
+            subject_id: "todo_new",
+            subject_type: "todo",
+            method: :put,
+            data: %{"fields" => %{}}
+          }
+        ]
+      }
+      |> ActionFormat.build()
+      |> ActionFormat.encode()
+
+    {gsn, ActionFormat.wrap(payload, update_scopes)}
   end
 
   describe "read/3" do
@@ -81,6 +106,40 @@ defmodule EbbServer.Storage.ActionLogTest do
       put_action(rocks_name, 1, %{"gsn" => 1})
 
       assert [] = ActionLog.read(5, 2, rocks_name: rocks_name)
+    end
+
+    test "reads a database holding both a legacy map and a new wrapper", %{
+      rocks_name: rocks_name
+    } do
+      legacy = %{
+        "id" => "act_legacy",
+        "actor_id" => "a_1",
+        "hlc" => 100,
+        "gsn" => 1,
+        "update_scopes" => [["g_legacy"]],
+        "updates" => [%{"id" => "upd_legacy", "subject_id" => "todo_legacy"}]
+      }
+
+      put_action(rocks_name, 1, legacy)
+      {new_gsn, wrapper} = new_wrapper(2, [["g_new"]])
+      put_value(rocks_name, RocksDB.encode_gsn_key(new_gsn), wrapper)
+
+      assert [old, new] = ActionLog.read(1, 2, rocks_name: rocks_name)
+
+      assert old["gsn"] == 1
+      assert old["update_scopes"] == [["g_legacy"]]
+      assert old["id"] == "act_legacy"
+
+      assert new["gsn"] == 2
+      assert new["update_scopes"] == [["g_new"]]
+      assert new["id"] == "act_new"
+      assert [%{"id" => "upd_new", "method" => "put"}] = new["updates"]
+    end
+
+    test "a legacy map without a gsn takes the key's gsn", %{rocks_name: rocks_name} do
+      put_action(rocks_name, 9, %{"id" => "act_legacy", "updates" => []})
+
+      assert [%{"gsn" => 9}] = ActionLog.read(9, 9, rocks_name: rocks_name)
     end
   end
 end

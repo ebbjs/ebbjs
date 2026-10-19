@@ -12,7 +12,14 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{DirtyTracker, InFlightActions, RocksDB, WatermarkTracker, Writer}
+  alias EbbServer.Storage.{
+    ActionFormat,
+    DirtyTracker,
+    InFlightActions,
+    RocksDB,
+    WatermarkTracker,
+    Writer
+  }
 
   import EbbServer.TestHelpers
 
@@ -171,6 +178,23 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
     end
   end
 
+  describe "pre-encode before the claim" do
+    test "a raise while building the payload claims no GSN", ctx do
+      %{name: writer_name, pid: writer_pid} = start_writer(ctx)
+      Process.unlink(writer_pid)
+
+      # `ActionFormat.build/1` maps over `updates`, so a non-list raises
+      # while the call is being enqueued — before the flush claims a range.
+      action = validated_action(%{updates: :not_a_list})
+
+      catch_exit(Writer.write_actions([action], writer_name))
+
+      assert :atomics.get(ctx.gsn_counter, 1) == 0
+      assert WatermarkTracker.committed_watermark(ctx.watermark_tracker) == 0
+      assert RocksDB.get_max_gsn(ctx.rocks_name) == 0
+    end
+  end
+
   describe "crash between claim and resolve" do
     test "init/1 reconcile heals the abandoned claim on restart", ctx do
       test_pid = self()
@@ -253,7 +277,7 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
                  name: ctx.rocks_name
                )
 
-      assert :erlang.binary_to_term(binary, [:safe])["id"] == action.id
+      assert ActionFormat.decode(binary, 1)["id"] == action.id
     end
   end
 

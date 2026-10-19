@@ -3,15 +3,15 @@ defmodule EbbServer.Storage.CommitterTest do
   Boundary tests for the Committer (ebbjs/ebbjs#531).
 
   The Committer owns the half of the flush that only needs immutable
-  input: `to_storage_format`, ETF encoding, `cf_*` op assembly, and the
-  durable `write_batch`. These tests pin the ops it builds for a
+  input: wrapper encoding, `cf_*` op assembly, and the durable
+  `write_batch`. These tests pin the ops it builds for a
   `PreparedAction` batch, the shape of the result it reports to the
   sequencer, and the `commit_latency_ms` sample that prices the seam.
   """
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{Committer, PreparedAction, RocksDB}
+  alias EbbServer.Storage.{ActionFormat, Committer, PreparedAction, RocksDB}
 
   import EbbServer.TestHelpers
 
@@ -93,7 +93,7 @@ defmodule EbbServer.Storage.CommitterTest do
                |> Enum.sort()
                |> Enum.map(fn key -> {:put, cf_type, key, <<>>} end)
 
-      assert stored_action(etf_1) == %{
+      assert stored_action(etf_1, 5) == %{
                "id" => "act_1",
                "actor_id" => "a_committer",
                "hlc" => 1,
@@ -110,7 +110,56 @@ defmodule EbbServer.Storage.CommitterTest do
                ]
              }
 
-      assert stored_action(etf_2)["update_scopes"] == [["g_2"], ["g_2"]]
+      assert stored_action(etf_2, 6)["update_scopes"] == [["g_2"], ["g_2"]]
+    end
+
+    test "stores the supplied payload_etf verbatim instead of rebuilding the Action", ctx do
+      test_pid = self()
+      ref = make_ref()
+
+      # The prebuilt payload describes a different Action than the boundary
+      # struct's identity fields, so only the payload can explain what lands
+      # in `cf_actions`.
+      prebuilt = %{
+        id: "act_prebuilt",
+        actor_id: "a_prebuilt",
+        hlc: 99,
+        updates: [update("upd_prebuilt", "todo_prebuilt")]
+      }
+
+      payload_etf = prebuilt |> ActionFormat.build() |> ActionFormat.encode()
+
+      action =
+        prepared_action("act_boundary", [update("upd_boundary", "todo_boundary")],
+          payload_etf: payload_etf,
+          update_scopes: [["g_prebuilt"]]
+        )
+
+      committer =
+        start_committer(ctx, fn ops, _opts ->
+          send(test_pid, {:ops, ops})
+          :ok
+        end)
+
+      :ok = Committer.commit(committer, ref, [action], 7, 7)
+
+      assert_receive {:ops, ops}
+      assert_receive {:committer_result, ^ref, :ok}
+
+      {:put, _cf_actions, _key, value} =
+        Enum.find(ops, fn
+          {:put, cf, _key, _value} -> cf == RocksDB.cf_actions(ctx.rocks_name)
+          _other -> false
+        end)
+
+      stored = ActionFormat.decode(value, 7)
+
+      assert stored["id"] == "act_prebuilt"
+      assert stored["actor_id"] == "a_prebuilt"
+      assert stored["hlc"] == 99
+      assert stored["gsn"] == 7
+      assert stored["update_scopes"] == [["g_prebuilt"]]
+      assert [%{"id" => "upd_prebuilt", "subject_id" => "todo_prebuilt"}] = stored["updates"]
     end
 
     test "writes one cf_type_entities put per unique key across the batch", ctx do
@@ -234,16 +283,16 @@ defmodule EbbServer.Storage.CommitterTest do
       ref = make_ref()
       committer = start_committer(ctx, fn _ops, _opts -> :ok end)
 
-      # An Update without a `:method` makes `to_storage_format` raise, so
-      # the failure lands on the assembly side of the boundary.
+      # A non-list group set makes op assembly raise, so the failure lands
+      # on the assembly side of the boundary rather than in `commit_fn`.
       broken =
-        prepared_action("act_broken", [
-          %{id: "upd_broken", subject_id: "todo_broken", subject_type: "todo", data: nil}
-        ])
+        prepared_action("act_broken", [update("upd_broken", "todo_broken")], groups: :not_a_list)
 
       :ok = Committer.commit(committer, ref, [broken], 1, 1)
 
-      assert_receive {:committer_result, ^ref, {:raised, :error, %KeyError{}, _stacktrace}}
+      assert_receive {:committer_result, ^ref,
+                      {:raised, :error, %Protocol.UndefinedError{}, _stacktrace}}
+
       assert Process.alive?(committer)
     end
   end
@@ -334,12 +383,17 @@ defmodule EbbServer.Storage.CommitterTest do
   end
 
   defp prepared_action(id, updates, opts \\ []) do
+    action = %{id: id, actor_id: "a_committer", hlc: 1, updates: updates}
+
     %PreparedAction{
       id: id,
-      actor_id: "a_committer",
-      hlc: 1,
+      actor_id: action.actor_id,
+      hlc: action.hlc,
       updates: updates,
-      intra_action_context: Keyword.get(opts, :intra_action_context, %{}),
+      payload_etf:
+        Keyword.get_lazy(opts, :payload_etf, fn ->
+          action |> ActionFormat.build() |> ActionFormat.encode()
+        end),
       update_scopes: Keyword.get(opts, :update_scopes, Enum.map(updates, fn _update -> [] end)),
       groups: Keyword.get(opts, :groups, []),
       type_entity_keys:
@@ -365,5 +419,5 @@ defmodule EbbServer.Storage.CommitterTest do
 
   defp affected_entity(update), do: {update.subject_id, update.subject_type}
 
-  defp stored_action(etf), do: :erlang.binary_to_term(etf, [:safe])
+  defp stored_action(etf, gsn), do: ActionFormat.decode(etf, gsn)
 end

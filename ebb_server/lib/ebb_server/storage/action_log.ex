@@ -20,13 +20,15 @@ defmodule EbbServer.Storage.ActionLog do
 
   ## Values
 
-  Each value is decoded with `:erlang.binary_to_term/2` and `[:safe]`, so
-  a corrupt or hostile record raises rather than constructing arbitrary
-  terms. The stored shape is defined by `EbbServer.Storage.Writer`'s
-  `to_storage_format/2`.
+  Each value is decoded with `EbbServer.Storage.ActionFormat.decode/2`,
+  which accepts both the current wrapper and the legacy plain map. A
+  record that carries its own `"gsn"` keeps it; otherwise the GSN comes
+  from the `cf_actions` key. Decoding uses `:erlang.binary_to_term/2`
+  with `[:safe]`, so a corrupt or hostile record raises rather than
+  constructing arbitrary terms.
   """
 
-  alias EbbServer.Storage.RocksDB
+  alias EbbServer.Storage.{ActionFormat, RocksDB}
 
   @type action :: map()
   @type opts :: [rocks_name: GenServer.name()]
@@ -53,6 +55,6 @@ defmodule EbbServer.Storage.ActionLog do
       RocksDB.encode_gsn_key(to_gsn + 1),
       name: rocks_name
     )
-    |> Enum.map(fn {_key, value} -> :erlang.binary_to_term(value, [:safe]) end)
+    |> Enum.map(fn {key, value} -> ActionFormat.decode(value, RocksDB.decode_gsn_key(key)) end)
   end
 end

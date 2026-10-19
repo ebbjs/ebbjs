@@ -10,13 +10,13 @@ defmodule EbbServer.Bench.WriteBatch do
   Everything is bench-only. There is no Writer, no cache mutation, no
   watermark advance, and no fan-out; only the NIF call is measured.
 
-  This is a deliberate copy of the Writer's storage shape rather than a
-  production extraction: the spike must not change the write path. The
-  tests pin the shape, so a Writer format change has to update them.
+  This uses `EbbServer.Storage.ActionFormat` for the `cf_actions` value so the
+  spike mirrors the production wrapper shape without changing the write
+  path. The tests pin the shape, so a format change has to update them.
   """
 
   alias EbbServer.Bench.{Options, Workbook}
-  alias EbbServer.Storage.{ActionValidator, RocksDB}
+  alias EbbServer.Storage.{ActionFormat, ActionValidator, RocksDB}
 
   # Each caller owns a disjoint GSN space far above the seeded Actions' GSNs.
   # Nothing claims from it and nothing scans across it, so a caller can never
@@ -103,10 +103,10 @@ defmodule EbbServer.Bench.WriteBatch do
   defp action_ops(action, gsn) do
     gsn_key = RocksDB.encode_gsn_key(gsn)
     update_scopes = Enum.map(action.updates, fn _ -> [Workbook.group_id()] end)
+    payload = action |> ActionFormat.build() |> ActionFormat.encode()
 
     [
-      {:put, RocksDB.cf_actions(), gsn_key,
-       :erlang.term_to_binary(storage_map(action, gsn, update_scopes))},
+      {:put, RocksDB.cf_actions(), gsn_key, ActionFormat.wrap(payload, update_scopes)},
       {:put, RocksDB.cf_action_dedup(), action.id, gsn_key}
       | group_ops(action, gsn) ++ entity_ops(action, gsn)
     ]
@@ -138,25 +138,5 @@ defmodule EbbServer.Bench.WriteBatch do
     type_keys
     |> Enum.sort()
     |> Enum.map(fn key -> {:put, RocksDB.cf_type_entities(), key, <<>>} end)
-  end
-
-  defp storage_map(action, gsn, update_scopes) do
-    %{
-      "id" => action.id,
-      "actor_id" => action.actor_id,
-      "hlc" => action.hlc,
-      "gsn" => gsn,
-      "update_scopes" => update_scopes,
-      "updates" =>
-        Enum.map(action.updates, fn update ->
-          %{
-            "id" => update.id,
-            "subject_id" => update.subject_id,
-            "subject_type" => update.subject_type,
-            "method" => Atom.to_string(update.method),
-            "data" => update.data
-          }
-        end)
-    }
   end
 end
