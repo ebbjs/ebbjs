@@ -3,7 +3,8 @@
  *
  * Forward accessors (`forwardOne`, `forwardMany`) and the reverse /
  * membership walkers read through an `AdjacencyReader` — the storage
- * layer's adjacency index, not a scan of the whole `relationship` /
+ * layer's adjacency index, or the replica's synchronous one when the
+ * client binds it (#520) — not a scan of the whole `relationship` /
  * `entityGroup` type. The fake here is a small in-memory reader over
  * the same Map the old scan used, so the tests pin the traversal
  * contract and the routing key each helper asks for.

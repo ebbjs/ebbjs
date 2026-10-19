@@ -6,8 +6,9 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import type { Entity } from "@ebbjs/core";
+import { makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
+import type { Replica } from "@ebbjs/storage/types";
 import { createClient } from "../client";
 import { defineEntity, e } from "../../schema/entity";
 import { defineRelationship } from "../../schema/relationship";
@@ -68,6 +69,49 @@ const mkMembership = (id: string, entityId: string, groupId: string): Entity => 
   last_gsn: 0,
 });
 
+let seedPosition = 0;
+
+/** Fold `row` into the replica as a durable put or delete (#520). */
+const foldRow = (replica: Replica, row: Entity, method: "put" | "delete"): void => {
+  seedPosition += 1;
+  const hlc = makeHlc(seedPosition);
+  const update: Update =
+    method === "put"
+      ? {
+          id: `u_seed_${seedPosition}`,
+          subject_id: row.id,
+          subject_type: row.type,
+          method,
+          data: { fields: row.data?.fields ?? {} },
+        }
+      : {
+          id: `u_seed_${seedPosition}`,
+          subject_id: row.id,
+          subject_type: row.type,
+          method: "delete",
+          data: null,
+        };
+  const action: Action = {
+    id: `a_seed_${seedPosition}`,
+    actor_id: "seed",
+    hlc,
+    gsn: seedPosition,
+    updates: [],
+  };
+  replica.ingest(action, [update], seedPosition);
+};
+
+/** Write `row` to the shim and fold it into the replica the accessors read (#520). */
+const seedRow = async (
+  storage: ReturnType<typeof createMemoryAdapter>,
+  replica: Replica,
+  row: Entity,
+  method: "put" | "delete" = "put",
+): Promise<void> => {
+  await storage.entities.set(row);
+  foldRow(replica, row, method);
+};
+
 const fresh = async (): Promise<{
   storage: ReturnType<typeof createMemoryAdapter>;
   client: ReturnType<typeof createClient<typeof schema>>;
@@ -100,7 +144,7 @@ describe("relationship accessor reactivity", () => {
       edgeTypeFires += 1;
     });
 
-    await storage.entities.set(mkRel("rel_1", "t1", "u1"));
+    await seedRow(storage, client.replica, mkRel("rel_1", "t1", "u1"));
     expect(accessorFires).toBe(1);
     expect(edgeTypeFires).toBe(1);
     // `row.subscribe` re-reads the row and fires too, so a direct
@@ -113,7 +157,7 @@ describe("relationship accessor reactivity", () => {
 
     const rel = await storage.entities.get("rel_1");
     if (rel === null) throw new Error("expected relationship row");
-    await storage.entities.set({ ...rel, deleted_hlc: "2" });
+    await seedRow(storage, client.replica, { ...rel, deleted_hlc: "2" }, "delete");
     expect(accessorFires).toBe(2);
 
     const unlinked = await client.todo.get("t1");
@@ -160,7 +204,7 @@ describe("relationship accessor reactivity", () => {
       fires += 1;
     });
 
-    await storage.entities.set(mkMembership("eg_1", "t1", "grp_1"));
+    await seedRow(storage, client.replica, mkMembership("eg_1", "t1", "grp_1"));
     expect(fires).toBe(1);
 
     const moved = await client.todo.get("t1");
