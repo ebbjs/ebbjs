@@ -6,6 +6,7 @@ export type {
   Replica,
   ReplicaChange,
   ReplicaOptions,
+  ReplicaStats,
   RelationshipQuery,
   Revision,
 } from "./types";
