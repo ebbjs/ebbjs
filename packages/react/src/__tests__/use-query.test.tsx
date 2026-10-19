@@ -34,7 +34,22 @@ type Client = NamespacedClient<Schema>;
 const makeClient = (): Client =>
   createClient({ serverUrl: "http://localhost:4000", actorId: "test-actor", schema });
 
-const mkTodo = (id: string, title: string, completed: boolean) => ({
+type TodoRow = {
+  readonly id: string;
+  readonly type: string;
+  readonly data: {
+    readonly fields: Record<
+      string,
+      { readonly value: unknown; readonly update_id: string; readonly hlc: string }
+    >;
+  };
+  readonly created_hlc: string;
+  readonly updated_hlc: string;
+  readonly deleted_hlc: string | null;
+  readonly last_gsn: number;
+};
+
+const mkTodo = (id: string, title: string, completed: boolean): TodoRow => ({
   id,
   type: "todo",
   data: {
