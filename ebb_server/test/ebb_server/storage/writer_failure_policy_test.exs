@@ -91,7 +91,8 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
 
       action = validated_action(%{updates: [validated_update(%{subject_id: "todo_failed"})]})
 
-      catch_exit(Writer.write_actions([action], writer_name))
+      assert {:error, {:rocksdb_write_failed, {:committer_raised, %RuntimeError{}}}} =
+               Writer.write_actions([action], writer_name)
 
       refute DirtyTracker.dirty?("todo_failed", ctx.dirty_set)
     end
@@ -112,7 +113,8 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
 
       action = validated_action()
 
-      catch_exit(Writer.write_actions([action], writer_name))
+      assert {:error, {:rocksdb_write_failed, {:committer_raised, %RuntimeError{}}}} =
+               Writer.write_actions([action], writer_name)
 
       # The raise path abandons like a failed commit: resolve, then nudge.
       assert_receive {:range_resolved, 1, 1}
@@ -219,8 +221,8 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
         send(test_pid, {:write_result, catch_exit(Writer.write_actions([action], writer_name))})
       end)
 
-      # The commit blocks in the linked Committer, not in the Writer; a
-      # hard kill of the Writer takes the Committer with it via the link.
+      # The commit blocks in a pool worker, not in the Writer; a hard
+      # kill of the Writer takes the linked pool and its workers with it.
       assert_receive {:commit_started, committer_pid}
       assert committer_pid != writer_pid
       Process.exit(writer_pid, :kill)
@@ -256,10 +258,11 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
 
       action = validated_action(%{updates: [validated_update(%{subject_id: "todo_lost_ack"})]})
 
-      catch_exit(Writer.write_actions([action], writer_name))
+      assert {:error, {:rocksdb_write_failed, {:committer_raised, %RuntimeError{}}}} =
+               Writer.write_actions([action], writer_name)
 
       # The commit landed before the raise, so GSN 1 is durable even
-      # though the caller saw the Writer crash.
+      # though the caller saw a failed write and the range was resolved.
       assert RocksDB.get_max_gsn(ctx.rocks_name) == 1
 
       %{name: restarted_name} = start_writer(ctx)

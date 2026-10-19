@@ -4,29 +4,36 @@ defmodule EbbServer.Storage.Committer do
   already-encoded payload into `cf_*` ops and writes them in one
   `RocksDB.write_batch/2`.
 
-  The Writer (the sequencer) starts one Committer, linked, in its own
-  `init/1`. A batch is handed over asynchronously with
-  `commit/5`; the Committer replies `{:committer_result, ref, result}` to
-  its owner, where `result` is one of:
+  The Writer owns a `EbbServer.Storage.CommitterPool`, which starts one
+  Committer per pool slot under a `DynamicSupervisor`. A batch is handed
+  over asynchronously with `commit/5`; the Committer replies
+  `{:committer_result, ref, result}` to its owner (the pool), where
+  `result` is one of:
 
   - `:ok` — the batch is durable.
   - `{:error, reason}` — `commit_fn` refused the batch; nothing was
     written.
   - `{:raised, kind, value, stacktrace}` — op assembly or `commit_fn`
-    raised, threw, or exited. The Committer stays alive: the sequencer
-    owns the abandon-then-re-raise policy, so the crash keeps surfacing in
-    the Writer process where the flush used to raise.
+    raised, threw, or exited. The Committer stays alive so the pool can
+    report the failed range and reuse the worker.
+
+  A real worker death is not a result the Committer can send. The pool
+  monitors each worker and turns its `:DOWN` into
+  `{:committer_result, ref, {:crashed, reason}}`, which the Writer treats
+  like any other failed range. This is what keeps one bad range from
+  taking the sequencer or the other in-flight ranges down.
 
   Everything the Committer touches is immutable: op assembly reads only
   the `PreparedAction` fields, never a system cache, and the GSN range is
   already claimed. That is what makes it safe to run the wrapper encode
   and the durable write off the sequencer process.
 
-  Because the Committer is linked, an unexpected death takes the Writer
-  down with it, and `EbbServer.Storage.Supervisor` / the Writer's `init/1`
-  reconcile heal the claimed-but-unresolved range. The Committer also
-  monitors its owner and stops when the Writer goes away, so a normal
-  Writer stop does not leak a process.
+  The Committer monitors its owner (the pool) and stops when it goes
+  away. The pool in turn is linked to and monitors the Writer, so a
+  normal Writer stop does not leak a process. A worker already inside
+  `write_batch` when its owner exits can still finish that NIF call; the
+  Writer's restart reconcile treats that range as an orphaned hole and
+  never reuses the GSN.
 
   `[:ebb, :writer, :commit_latency_ms]` spans wrapper encode + op assembly
   + `write_batch` and is emitted on every outcome, including a raise, so

@@ -127,7 +127,8 @@ defmodule EbbServer.Storage.WriterInFlightTest do
 
       Process.unlink(writer_pid)
 
-      catch_exit(Writer.write_actions([validated_action(%{id: "act_raise"})], writer_name))
+      assert {:error, {:rocksdb_write_failed, {:committer_raised, %RuntimeError{}}}} =
+               Writer.write_actions([validated_action(%{id: "act_raise"})], writer_name)
 
       assert InFlightActions.size(ctx.in_flight_actions) == 0
     end
