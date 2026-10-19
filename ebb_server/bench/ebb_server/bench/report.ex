@@ -142,7 +142,8 @@ defmodule EbbServer.Bench.Report do
           "Captured in the bench process by attaching handlers to the server's `ebb.*` events. " <>
           "`ebb.http.request_latency_ms` is measured inside the request process, so MessagePack " <>
           "encoding and transport are excluded; `ebb.writer.batch_latency_ms` covers one durable " <>
-          "Writer flush; `ebb.fanout.push_latency_ms` is commit → broadcast complete per batch per group. " <>
+          "Writer flush, and `ebb.writer.commit_latency_ms` is the Committer's share of it " <>
+          "(build + encode + `write_batch`); `ebb.fanout.push_latency_ms` is commit → broadcast complete per batch per group. " <>
           "The Writer flush timer starts after the request is dequeued, so the wait a call spends " <>
           "in the Writer mailbox is not instrumented and stays inside the client-side number. " <>
           "Durations are converted from native time units to microseconds and windowed like the " <>
@@ -154,6 +155,7 @@ defmodule EbbServer.Bench.Report do
     [
       {"`ebb.http.request_latency_ms`", server.http_request},
       {"`ebb.writer.batch_latency_ms`", server.writer_batch},
+      {"`ebb.writer.commit_latency_ms`", server.writer_commit},
       {"`ebb.fanout.push_latency_ms`", server.fanout_push}
     ]
     |> Enum.reject(fn {_event, windows} -> Enum.all?(windows, &(&1.count == 0)) end)

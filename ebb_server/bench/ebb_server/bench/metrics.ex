@@ -406,6 +406,7 @@ defmodule EbbServer.Bench.Metrics do
   defp server_summary(duration, telemetry) do
     %{
       writer_batch: latency(duration, samples(telemetry, :writer_batch)),
+      writer_commit: latency(duration, samples(telemetry, :writer_commit)),
       http_request: latency(duration, samples(telemetry, :http_request)),
       fanout_push: latency(duration, samples(telemetry, :fanout_push))
     }

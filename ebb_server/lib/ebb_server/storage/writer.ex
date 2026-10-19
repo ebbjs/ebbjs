@@ -1,8 +1,8 @@
 defmodule EbbServer.Storage.Writer do
   @moduledoc """
   The single serialization point for the storage layer: every committed
-  Action goes through this GenServer and is durably written to RocksDB
-  before its GSN is returned to the caller.
+  Action goes through this GenServer, which sequences its durable write to
+  RocksDB before its GSN is returned to the caller.
 
   ## Why a single Writer
 
@@ -45,16 +45,44 @@ defmodule EbbServer.Storage.Writer do
   Provisional marks, the durable commit, the watermark advance, and the
   fan-out notification are all once-per-flush.
 
+  ## Sequencer and Committer
+
+  The flush is split across two processes. This GenServer is the
+  **sequencer**: it owns everything that needs the live caches or the
+  resolution frontier — coalescing, dedup, the GSN claim, group
+  resolution and `update_scopes`, the provisional dirty marks, apply, the
+  watermark, the fan-out notification, and every reply. The linked
+  `EbbServer.Storage.Committer` owns the parts that only need immutable
+  input: `to_storage_format`, ETF encoding, `cf_*` op assembly, and the
+  durable `write_batch/2`.
+
+  The hand-off is one `EbbServer.Storage.PreparedAction` per Action plus
+  the claimed range. The sequencer sends it asynchronously and the
+  Committer answers with `{:committer_result, ref, result}`. **V0 allows
+  exactly one in-flight commit** (`inflight` in the state): it is a seam
+  and a measurement split, not yet a concurrency change, so apply,
+  notify, and reply still wait for the ack.
+
+  While the ack is outstanding the sequencer keeps accepting
+  `write_actions/2` calls, so the next burst drains and coalesces behind
+  the durable write instead of queueing in the caller. Those calls are
+  only enqueued — no second claim, flush, or timer starts until the ack
+  arrives. At the ack the sequencer captures the commit time, runs the
+  `:after_commit` seam, marks the range committed, settles the dirty
+  marks and cache mutations, notifies `FanOutRouter`, replies to every
+  caller, and then starts the next flush by the same rules as a fresh
+  call.
+
   ## Hot path
 
-  `flush/1` claims a GSN range for the coalesced burst, builds the
-  `cf_group_actions` index via intra-action context (see below), assembles
-  the WriteBatch, marks the affected entities provisionally dirty, commits
-  with `sync: true`, settles the marks, advances the watermark, and notifies
-  `FanOutRouter`. The notification carries the per-Action
-  group set this pass resolved, so live fan-out indexes the same
-  snapshot `cf_group_actions` was built from rather than re-deriving
-  groups after the system caches have moved.
+  `flush/1` claims a GSN range for the coalesced burst, resolves the
+  `cf_group_actions` index via intra-action context (see below), marks the
+  affected entities provisionally dirty, and hands the prepared batch to
+  the Committer. Once the ack lands the sequencer settles the marks,
+  advances the watermark, and notifies `FanOutRouter`. The notification
+  carries the per-Action group set this pass resolved, so live fan-out
+  indexes the same snapshot `cf_group_actions` was built from rather than
+  re-deriving groups after the system caches have moved.
 
   Redundant index writes are dropped during op construction: the
   `cf_type_entities` key has no GSN component, so it is collected as a
@@ -105,29 +133,37 @@ defmodule EbbServer.Storage.Writer do
   - **One commit attempt, no retry.** A commit failure abandons the
     range: it is marked resolved (the watermark advances over the hole),
     `FanOutRouter` is nudged with `{:range_resolved, from, to}` so it can
-    drain anything the hole was gating, and the caller gets
-    every caller in the flush gets `{:error, {:rocksdb_write_failed, reason}}`
-    (`503 write_failed`).
+    drain anything the hole was gating, and every caller in the flush
+    gets `{:error, {:rocksdb_write_failed, reason}}` (`503 write_failed`).
     The client outbox is the only retry; the server never acks undurable
     data and never rewinds or reuses the GSNs.
-  - **Structural resolution.** Claim → build → commit runs inside
-    `try/after`, and the `after` marks the range resolved. A raise while
-    building ops or an exception out of `commit_fn` abandons the range
-    (resolve, log, nudge `FanOutRouter`) and then re-raises, so the
-    exception path behaves like the failed-commit path and only a hard
-    kill can leave a claim unresolved. A failed commit and a raise
+  - **Structural resolution.** Every pre-commit failure path abandons
+    before the failure surfaces: clear the provisional marks, resolve the
+    range, log, nudge `FanOutRouter`, emit telemetry. A `{:error, reason}`
+    from the Committer is replied as a failed write. A raise/throw/exit
+    out of the Committer — from op assembly or from `commit_fn` — is
+    re-raised in the sequencer after the abandon, so callers see the same
+    exit the in-process flush produced. A failed commit and a raise
     therefore both leave the frontier advanced before the nudge is sent.
-  - **Commit is the point of no return.** Once `commit_fn` returns `:ok`
-    the range is marked committed and the frontier advanced before any
-    other raise-capable step runs. Every caller in the flush then gets its
-    success tuple. Dirty tracking and cache updates follow; if they raise, the
-    data is already durable, so the Writer logs, abnormally terminates
-    `EbbServer.Storage.SystemCache`, and relies on
+    A Writer death between claim and resolve can still leave the claim
+    unresolved — including a death that arrives after the Committer has
+    already written, because the write is now in another process. The
+    restart reconcile resolves that tail; a write that landed first stays
+    durable even though the range is reported as resolved rather than
+    committed, so live fan-out can miss it until a later catch-up.
+  - **Commit is the point of no return.** Once the Committer reports
+    `:ok` the range is marked committed and the frontier advanced before
+    any other raise-capable step runs. Every caller in the flush then gets
+    its success tuple. Dirty tracking, `after_commit`, and cache updates
+    follow; if they raise, the data is already durable, so the range is
+    not abandoned or re-reported as a hole, the Writer logs, abnormally
+    terminates `EbbServer.Storage.SystemCache`, and relies on
     `Storage.Supervisor`'s `rest_for_one` to rebuild the caches, the
-    watermark, and this Writer. The success replies are sent before that
-    escalation so a durable batch is never reported as lost. A failed or
-    raised commit instead has its provisional marks compare-and-cleared
-    before the range is resolved.
+    watermark, and this Writer. The success replies for a cache-apply
+    failure are sent before that escalation so a durable batch is never
+    reported as lost; a post-commit raise leaves the provisional marks
+    for `init/1` to settle. A failed or raised commit instead has its
+    provisional marks compare-and-cleared before the range is resolved.
   - **Startup reconcile.** `init/1` raises the counter to the durable log
     max and resolves any remaining tail, healing a Writer-only restart
     that crashed between claim and resolve. It also settles any
@@ -137,9 +173,11 @@ defmodule EbbServer.Storage.Writer do
 
   The test seam is the optional `:commit_fn` (default
   `&RocksDB.write_batch/2`), used for both error injection and crash
-  simulation, plus the optional `:after_commit` fun, invoked inside the
-  Writer once `commit_fn` returns and before the marks settle, so tests
-  can observe the durable-commit window deterministically.
+  simulation. It runs in the Committer, which reports a raised value back
+  instead of crashing, so the sequencer can abandon first. The optional
+  `:after_commit` fun still runs inside the Writer once the Committer
+  reports the durable write and before the marks settle, so tests can
+  observe the durable-commit window deterministically.
 
   A bench-only `:ablate` option (default `[]`) skips named phases of the
   flush critical path — `:dedup`, `:group_resolution`, `:entity_index`,
@@ -185,6 +223,7 @@ defmodule EbbServer.Storage.Writer do
 
   alias EbbServer.Storage.{
     CacheTables,
+    Committer,
     DirtyTracker,
     EntityGroupCache,
     EntityIndex,
@@ -192,6 +231,7 @@ defmodule EbbServer.Storage.Writer do
     Fields,
     GroupCache,
     GsnCounter,
+    PreparedAction,
     RelationshipCache,
     RocksDB
   }
@@ -208,6 +248,23 @@ defmodule EbbServer.Storage.Writer do
           | {:relationship_put, map()}
           | {:relationship_delete, String.t()}
 
+  @type pending_marks :: {[PreparedAction.entity_mark()], non_neg_integer() | nil}
+
+  @type inflight :: %{
+          ref: reference(),
+          pending: [{GenServer.from(), [validated_action()]}],
+          ranges: %{
+            optional(non_neg_integer()) => {non_neg_integer(), non_neg_integer()} | :empty
+          },
+          gsn_start: non_neg_integer(),
+          gsn_end: non_neg_integer(),
+          prepared: [PreparedAction.t()],
+          groups_by_gsn: %{optional(non_neg_integer()) => [String.t()]},
+          started_at: integer(),
+          pending_marks: pending_marks(),
+          batch_size: non_neg_integer()
+        }
+
   @type t :: %__MODULE__{
           rocks_name: GenServer.name(),
           dirty_set: atom(),
@@ -220,7 +277,8 @@ defmodule EbbServer.Storage.Writer do
           entity_types: atom(),
           relationships: atom(),
           relationships_by_id: atom(),
-          commit_fn: (list(), keyword() -> :ok | {:error, term()}),
+          committer: pid() | nil,
+          inflight: inflight() | nil,
           after_commit: (-> any()) | nil,
           batch_max_size: integer(),
           batch_timeout_ms: non_neg_integer(),
@@ -244,7 +302,8 @@ defmodule EbbServer.Storage.Writer do
     :entity_types,
     :relationships,
     :relationships_by_id,
-    :commit_fn,
+    :committer,
+    :inflight,
     :after_commit,
     :batch_max_size,
     :batch_timeout_ms,
@@ -360,6 +419,17 @@ defmodule EbbServer.Storage.Writer do
     fan_out_router = Keyword.get(opts, :fan_out_router, nil)
     watermark_tracker = Keyword.get(opts, :watermark_tracker, nil)
 
+    # One Committer per Writer, linked so an unexpected Committer death
+    # takes this Writer down and the supervisor's restart path (with its
+    # `init/1` reconcile) heals the claim.
+    {:ok, committer} =
+      Committer.start_link(
+        owner: self(),
+        rocks_name: rocks_name,
+        commit_fn: commit_fn,
+        ablate: ablate
+      )
+
     state = %__MODULE__{
       rocks_name: rocks_name,
       dirty_set: dirty_set,
@@ -372,7 +442,8 @@ defmodule EbbServer.Storage.Writer do
       entity_types: entity_types,
       relationships: relationships,
       relationships_by_id: relationships_by_id,
-      commit_fn: commit_fn,
+      committer: committer,
+      inflight: nil,
       after_commit: after_commit,
       batch_max_size: batch_max_size,
       batch_timeout_ms: batch_timeout_ms,
@@ -430,8 +501,10 @@ defmodule EbbServer.Storage.Writer do
      (first occurrence wins across the whole coalesced burst), and drops
      ids already in `cf_action_dedup`.
   2. Claims one GSN range for the remaining fresh actions.
-  3. Builds and synchronously commits a single WriteBatch across the written
-     column families:
+  3. Prepares one `PreparedAction` per fresh Action (group resolution and
+     `update_scopes`), hands the batch to the Committer, and once the
+     Committer reports the durable write builds a single WriteBatch across
+     the written column families:
      - cf_actions: GSN → full action, including its Updates and their
        per-Update group scopes (ETF encoded)
      - cf_action_dedup: action_id → GSN (duplicate detection)
@@ -449,18 +522,50 @@ defmodule EbbServer.Storage.Writer do
   """
   @impl true
   def handle_call({:write_actions, actions}, from, state) when is_list(actions) do
-    state = enqueue(state, from, actions)
+    {:noreply, state |> enqueue(from, actions) |> schedule_flush()}
+  end
 
+  # A marker queued before the dispatch only means the burst is already
+  # being committed; the ack path reschedules if calls piled up behind it.
+  @impl true
+  def handle_info(:flush, %{inflight: %{}} = state) do
+    {:noreply, %{state | flush_scheduled: false}}
+  end
+
+  def handle_info(:flush, state), do: {:noreply, flush(state)}
+
+  def handle_info({:committer_result, ref, result}, %{inflight: %{ref: ref}} = state) do
+    {:noreply, handle_commit_result(result, state)}
+  end
+
+  # A result for an attempt this Writer has already abandoned (it only
+  # happens after the sequencer re-raised) must not reply twice.
+  def handle_info({:committer_result, _stale_ref, _result}, state), do: {:noreply, state}
+
+  defp enqueue(state, from, actions) do
+    %{
+      state
+      | pending: [{from, actions} | state.pending],
+        pending_count: state.pending_count + length(actions)
+    }
+  end
+
+  # The only place a flush is scheduled. A commit in flight blocks it —
+  # V0 keeps one claim — and calls accumulate until the ack reschedules.
+  defp schedule_flush(%{inflight: %{}} = state), do: state
+
+  defp schedule_flush(%{pending: []} = state), do: %{state | flush_scheduled: false}
+
+  defp schedule_flush(state) do
     cond do
       state.batch_max_size > 0 and state.pending_count >= state.batch_max_size ->
-        {:noreply, flush(state)}
+        flush(state)
 
       state.flush_timer != nil ->
-        {:noreply, state}
+        state
 
       state.batch_timeout_ms > 0 ->
-        {:noreply,
-         %{state | flush_timer: Process.send_after(self(), :flush, state.batch_timeout_ms)}}
+        %{state | flush_timer: Process.send_after(self(), :flush, state.batch_timeout_ms)}
 
       true ->
         # Burst-drain: the marker lands at the TAIL of the mailbox, after
@@ -471,23 +576,13 @@ defmodule EbbServer.Storage.Writer do
           send(self(), :flush)
         end
 
-        {:noreply, %{state | flush_scheduled: true}}
+        %{state | flush_scheduled: true}
     end
   end
 
-  @impl true
-  def handle_info(:flush, state), do: {:noreply, flush(state)}
-
-  defp enqueue(state, from, actions) do
-    %{
-      state
-      | pending: [{from, actions} | state.pending],
-        pending_count: state.pending_count + length(actions)
-    }
-  end
-
-  # The single place that claims a GSN range, commits, and replies. A
-  # stale marker or timer must be a no-op when nothing is pending.
+  # The single place that claims a GSN range and hands it to the
+  # Committer. A stale marker or timer must be a no-op when nothing is
+  # pending; the replies wait for the ack.
   defp flush(%{pending: []} = state) do
     %{cancel_flush_timer(state) | flush_scheduled: false}
   end
@@ -506,6 +601,7 @@ defmodule EbbServer.Storage.Writer do
         state
 
       _ ->
+        started_at = System.monotonic_time()
         batch_size = length(fresh)
         caller_count = length(pending)
 
@@ -518,30 +614,201 @@ defmodule EbbServer.Storage.Writer do
           %{gsn_start: gsn_start, gsn_end: gsn_end, callers: caller_count}
         )
 
-        case write_batch(fresh, gsn_start, gsn_end, state) do
-          :ok ->
-            emit_actions_accepted(batch_size)
-            reply_all(pending, ranges, :ok)
-            state
+        dispatch(pending, ranges, fresh, gsn_start, gsn_end, started_at, state)
+    end
+  end
 
-          {:error, reason} ->
-            reply_all(pending, ranges, {:error, reason})
-            state
+  defp dispatch(pending, ranges, fresh, gsn_start, gsn_end, started_at, state) do
+    {prepared, groups_by_gsn} =
+      prepare_or_abandon(fresh, gsn_start, gsn_end, started_at, state)
 
-          {:escalate, reason} ->
-            # The batch is durable: reply success to every caller first,
-            # then escalate, so no caller sees a lost success when the
-            # rebuild tears this process down.
-            emit_actions_accepted(batch_size)
-            reply_all(pending, ranges, :ok)
-            escalate_cache_failure(gsn_start, gsn_end, reason)
-            state
-        end
+    pending_marks = pending_marks(prepared, state)
+    ref = make_ref()
+    Committer.commit(state.committer, ref, prepared, gsn_start, gsn_end)
+
+    %{
+      state
+      | inflight: %{
+          ref: ref,
+          pending: pending,
+          ranges: ranges,
+          gsn_start: gsn_start,
+          gsn_end: gsn_end,
+          prepared: prepared,
+          groups_by_gsn: groups_by_gsn,
+          started_at: started_at,
+          pending_marks: pending_marks,
+          batch_size: length(prepared)
+        }
+    }
+  end
+
+  # Group resolution reads the system caches, so it stays on the
+  # sequencer. A raise here is still a claimed-but-uncommitted range: the
+  # abandon (clear marks, resolve, log, nudge) runs before the re-raise,
+  # exactly like the failure paths after the ack.
+  defp prepare_or_abandon(fresh, gsn_start, gsn_end, started_at, state) do
+    # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
+    try do
+      prepare(fresh, gsn_start, state)
+    rescue
+      error ->
+        emit_batch_latency(gsn_start, gsn_end, started_at)
+        abandon(state, {[], nil}, gsn_start, gsn_end, error)
+        reraise error, __STACKTRACE__
+    catch
+      kind, value ->
+        emit_batch_latency(gsn_start, gsn_end, started_at)
+        abandon(state, {[], nil}, gsn_start, gsn_end, {kind, value})
+        :erlang.raise(kind, value, __STACKTRACE__)
     end
   end
 
   defp emit_actions_accepted(count) do
     Telemetry.execute([:writer, :actions_per_sec], %{count: count}, %{})
+  end
+
+  defp emit_batch_latency(gsn_start, gsn_end, started_at) do
+    Telemetry.execute(
+      [:writer, :batch_latency_ms],
+      %{duration: System.monotonic_time() - started_at},
+      %{gsn_start: gsn_start, gsn_end: gsn_end}
+    )
+  end
+
+  defp handle_commit_result(:ok, state) do
+    inflight = state.inflight
+    state = %{state | inflight: nil}
+
+    case mark_committed_result(inflight, state) do
+      :ok ->
+        committed_at = System.monotonic_time()
+
+        case settle_after_commit(inflight, state, committed_at) do
+          :ok -> schedule_flush(state)
+          :escalated -> state
+        end
+
+      {:raised, kind, value, stacktrace} ->
+        emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
+
+        abandon(
+          state,
+          inflight.pending_marks,
+          inflight.gsn_start,
+          inflight.gsn_end,
+          raised_reason(kind, value)
+        )
+
+        :erlang.raise(kind, value, stacktrace)
+    end
+  end
+
+  defp handle_commit_result({:error, reason}, state) do
+    inflight = state.inflight
+    state = %{state | inflight: nil}
+
+    Telemetry.execute(
+      [:writer, :commit_failed],
+      %{count: 1},
+      %{gsn_start: inflight.gsn_start, gsn_end: inflight.gsn_end, reason: reason}
+    )
+
+    abandon(state, inflight.pending_marks, inflight.gsn_start, inflight.gsn_end, reason)
+    emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
+    reply_all(inflight.pending, inflight.ranges, {:error, reason})
+
+    schedule_flush(state)
+  end
+
+  # The Committer reports the crash instead of taking the write down with
+  # it, so the claim is abandoned here before the same exit reaches the
+  # caller.
+  defp handle_commit_result({:raised, kind, value, stacktrace}, state) do
+    inflight = state.inflight
+    state = %{state | inflight: nil}
+
+    abandon(
+      state,
+      inflight.pending_marks,
+      inflight.gsn_start,
+      inflight.gsn_end,
+      raised_reason(kind, value)
+    )
+
+    emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
+    :erlang.raise(kind, value, stacktrace)
+  end
+
+  defp raised_reason(:error, value), do: value
+  defp raised_reason(kind, value), do: {kind, value}
+
+  # Marking the range committed is the point of no return: it must run
+  # before `after_commit`, apply, or notify, so a later raise cannot be
+  # mistaken for a failed commit. A failure here still leaves the range
+  # unresolved, so it takes the abandon path.
+  defp mark_committed_result(inflight, state) do
+    unless ablate?(:watermark, state),
+      do: mark_committed(state, inflight.gsn_start, inflight.gsn_end)
+
+    :ok
+  catch
+    kind, value -> {:raised, kind, value, __STACKTRACE__}
+  end
+
+  # Everything after the durable mark: any raise here is a post-commit
+  # failure. The range stays committed and its provisional marks are left
+  # for the restarted Writer to settle, so the batch is never reported as
+  # abandoned. Latency is emitted before the re-raise so the sample is not
+  # swallowed.
+  defp settle_after_commit(inflight, state, committed_at) do
+    # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
+    try do
+      if state.after_commit, do: state.after_commit.()
+
+      case apply_post_commit(inflight.prepared, inflight.pending_marks, state) do
+        :ok ->
+          notify_fanout(
+            state,
+            inflight.gsn_start,
+            inflight.gsn_end,
+            inflight.groups_by_gsn,
+            committed_at
+          )
+
+          emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
+          emit_actions_accepted(inflight.batch_size)
+          reply_all(inflight.pending, inflight.ranges, :ok)
+          :ok
+
+        {:error, reason} ->
+          # The batch is durable: reply success to every caller first,
+          # then escalate, so no caller sees a lost success when the
+          # rebuild tears this process down.
+          emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
+          emit_actions_accepted(inflight.batch_size)
+          reply_all(inflight.pending, inflight.ranges, :ok)
+          escalate_cache_failure(inflight.gsn_start, inflight.gsn_end, reason)
+          :escalated
+      end
+    rescue
+      error ->
+        emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
+        log_post_commit_failure(inflight, error)
+        reraise error, __STACKTRACE__
+    catch
+      kind, value ->
+        emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
+        log_post_commit_failure(inflight, {kind, value})
+        :erlang.raise(kind, value, __STACKTRACE__)
+    end
+  end
+
+  defp log_post_commit_failure(inflight, reason) do
+    Logger.error(
+      "Writer committed GSN range #{inflight.gsn_start}..#{inflight.gsn_end} " <>
+        "but a post-commit step failed (#{inspect(reason)}); the range stays committed"
+    )
   end
 
   # Arrival order is the caller's position in `pending`; a caller's
@@ -626,140 +893,104 @@ defmodule EbbServer.Storage.Writer do
     Enum.reject(tagged, fn {_caller_idx, action} -> MapSet.member?(committed, action.id) end)
   end
 
-  # The `after` is the structural guarantee: however the body exits — a
-  # build-time raise, a failed commit, or a cache update that blows up
-  # after the commit landed — the claimed range ends up resolved. The
-  # rescue/catch abandon (clear the provisional marks, resolve, log,
-  # nudge) before re-raising, so the exception path also tells
-  # `FanOutRouter` about the hole; the `after` repeats the resolve, which
-  # is idempotent.
-  #
-  # The provisional marks are written before `build_ops` so that no read
-  # can observe the entity clean between the commit landing and the
-  # settled mark; `abandon` clears them on every failure path. Settling
-  # (in `apply_post_commit`) overwrites them, so the success path needs no
-  # clear.
-  defp write_batch(fresh, gsn_start, gsn_end, state) do
-    started_at = System.monotonic_time()
-    pending = pending_marks(fresh, state)
-
-    # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
-    try do
-      {ops, groups_by_gsn} = build_ops(fresh, gsn_start, state)
-      commit(fresh, pending, ops, groups_by_gsn, gsn_start, gsn_end, state)
-    rescue
-      error ->
-        abandon(state, pending, gsn_start, gsn_end, error)
-        reraise error, __STACKTRACE__
-    catch
-      kind, value ->
-        abandon(state, pending, gsn_start, gsn_end, {kind, value})
-        :erlang.raise(kind, value, __STACKTRACE__)
-    after
-      # Emit before the resolve so a WatermarkTracker failure cannot
-      # swallow the latency sample for a batch that failed to commit.
-      Telemetry.execute(
-        [:writer, :batch_latency_ms],
-        %{duration: System.monotonic_time() - started_at},
-        %{gsn_start: gsn_start, gsn_end: gsn_end}
-      )
-
-      unless ablate?(:watermark, state), do: resolve_range(state, gsn_start, gsn_end)
-    end
-  end
-
-  # With `:dirty` ablated there is no mark to place and nothing to settle
-  # or clear, so the pending tuple is inert.
-  defp pending_marks(fresh, state) do
-    if ablate?(:dirty, state) do
-      {[], nil}
-    else
-      entities = affected_entities(fresh)
-      {entities, DirtyTracker.mark_pending_batch(entities, state.dirty_set)}
-    end
-  end
-
-  # A flush resolves every Action against one cache snapshot, so the
+  # One flush resolves every Action against one cache snapshot, so the
   # cache-only part of group resolution is memoized across the whole
   # flush (see `EntityIndex.resolve_groups_cached/3`). Each Action still
   # unions its own intra-action membership on top, so two Actions that
   # move the same entity cannot see each other's membership.
-  defp build_ops(fresh, gsn_start, state) do
+  defp prepare(fresh, gsn_start, state) do
     resolve_opts = resolve_cache_opts(state)
 
-    {action_ops, {groups_by_gsn, type_entity_keys, _memo}} =
+    {prepared, {groups_by_gsn, _memo}} =
       fresh
       |> Enum.with_index(gsn_start)
-      |> Enum.map_reduce({%{}, MapSet.new(), %{}}, fn {action, gsn}, {groups, keys, memo} ->
-        {ops, group_ids, action_keys, memo} =
-          build_action_ops(action, gsn, state, resolve_opts, memo)
+      |> Enum.map_reduce({%{}, %{}}, fn {action, gsn}, {groups, memo} ->
+        {prepared_action, memo} = prepare_action(action, state, resolve_opts, memo)
 
-        keys =
-          if ablate?(:entity_index, state),
-            do: keys,
-            else: MapSet.union(keys, MapSet.new(action_keys))
-
-        {ops, {Map.put(groups, gsn, group_ids), keys, memo}}
+        {prepared_action, {Map.put(groups, gsn, prepared_action.groups), memo}}
       end)
 
-    type_ops =
-      if ablate?(:entity_index, state),
-        do: [],
-        else: type_entity_ops(type_entity_keys, state.rocks_name)
-
-    ops = :lists.append(action_ops) ++ type_ops
-    {ops, groups_by_gsn}
+    {prepared, groups_by_gsn}
   end
 
-  # No per-GSN component: one put per unique key per flush. Sorted for
-  # reproducible batches.
-  defp type_entity_ops(keys, rocks_name) do
-    keys
-    |> Enum.sort()
-    |> Enum.map(fn key -> {:put, RocksDB.cf_type_entities(rocks_name), key, <<>>} end)
+  defp prepare_action(action, state, resolve_opts, memo) do
+    intra_action_context = PermissionHelper.build_intra_action_context(action.updates)
+
+    resolve_opts =
+      Keyword.put(resolve_opts, :intra_action, intra_action_context)
+
+    {_group_ids, {scopes, type_entity_keys, memo}} =
+      Enum.map_reduce(action.updates, {[], [], memo}, fn update, {scopes, keys, memo} ->
+        {group_ids, memo} =
+          if ablate?(:group_resolution, state) do
+            {[], memo}
+          else
+            group_ids_for_update(update, resolve_opts, memo)
+          end
+
+        key =
+          if ablate?(:entity_index, state),
+            do: nil,
+            else: RocksDB.encode_type_entity_key(update.subject_type, update.subject_id)
+
+        {group_ids, {[group_ids | scopes], [key | keys], memo}}
+      end)
+
+    # Index-aligned with `action.updates`: the durable record of which
+    # groups each Update is delivered to. Computed here, from the same
+    # snapshot `cf_group_actions` is built from, because the by-id caches
+    # for a relationship/entityGroup delete are gone by fan-out time.
+    update_scopes = Enum.reverse(scopes)
+    type_entity_keys = type_entity_keys |> Enum.reverse() |> Enum.reject(&is_nil/1)
+
+    prepared = %PreparedAction{
+      id: action.id,
+      actor_id: action.actor_id,
+      hlc: action.hlc,
+      updates: action.updates,
+      intra_action_context: intra_action_context,
+      update_scopes: update_scopes,
+      # The union of resolved groups is indexed once per Action, not once
+      # per Update, so repeated memberships cannot write the same
+      # `{group_id, gsn}` row twice.
+      groups: update_scopes |> :lists.append() |> Enum.uniq(),
+      type_entity_keys: type_entity_keys,
+      affected_entities: affected_entities(action.updates)
+    }
+
+    {prepared, memo}
   end
 
-  defp commit(fresh, pending, ops, groups_by_gsn, gsn_start, gsn_end, state) do
-    case state.commit_fn.(ops, name: state.rocks_name) do
-      :ok ->
-        # Captured immediately after the durable write: the fan-out push
-        # latency is measured from here, not from batch arrival.
-        committed_at = System.monotonic_time()
-
-        if state.after_commit, do: state.after_commit.()
-
-        # Point of no return: make the range durable-resolved before any
-        # raise-capable cache bookkeeping runs.
-        unless ablate?(:watermark, state), do: mark_committed(state, gsn_start, gsn_end)
-
-        case apply_post_commit(fresh, state) do
-          :ok ->
-            notify_fanout(state, gsn_start, gsn_end, groups_by_gsn, committed_at)
-            :ok
-
-          {:error, reason} ->
-            {:escalate, reason}
-        end
-
-      {:error, reason} ->
-        Telemetry.execute(
-          [:writer, :commit_failed],
-          %{count: 1},
-          %{gsn_start: gsn_start, gsn_end: gsn_end, reason: reason}
-        )
-
-        abandon(state, pending, gsn_start, gsn_end, reason)
-        {:error, reason}
+  # The provisional marks are placed before the batch leaves for the
+  # Committer so that no read can observe the entity clean between the
+  # commit landing and the settled mark; `abandon` clears them on every
+  # failure path. Settling (in `apply_post_commit`) overwrites them, so the
+  # success path needs no clear.
+  #
+  # With `:dirty` ablated there is no mark to place and nothing to settle
+  # or clear, so the pending tuple is inert.
+  defp pending_marks(prepared, state) do
+    if ablate?(:dirty, state) do
+      {[], nil}
+    else
+      entities = prepared_entities(prepared)
+      {entities, DirtyTracker.mark_pending_batch(entities, state.dirty_set)}
     end
   end
 
-  defp apply_post_commit(fresh, state) do
+  defp prepared_entities(prepared) do
+    prepared
+    |> Enum.flat_map(& &1.affected_entities)
+    |> Enum.uniq_by(&elem(&1, 0))
+  end
+
+  defp apply_post_commit(prepared, {entities, _generation}, state) do
     unless ablate?(:dirty, state) do
-      :ok = DirtyTracker.mark_dirty_batch(affected_entities(fresh), state.dirty_set)
+      :ok = DirtyTracker.mark_dirty_batch(entities, state.dirty_set)
     end
 
     unless ablate?(:cache, state) do
-      fresh
+      prepared
       |> plan_cache_mutations(state)
       |> Enum.each(&apply_cache_mutation(&1, state))
     end
@@ -775,9 +1006,12 @@ defmodule EbbServer.Storage.Writer do
   # merged row or an earlier delete without reading a cache this flush has
   # not written yet.
   #
-  # Public so tests can pin the dedup directly; hidden from the docs.
+  # Takes either validated Actions or their `PreparedAction`s: only the
+  # `updates` field matters. Public so tests can pin the dedup directly;
+  # hidden from the docs.
   @doc false
-  @spec plan_cache_mutations([validated_action()], t()) :: [cache_mutation()]
+  @spec plan_cache_mutations([validated_action() | PreparedAction.t()], t()) ::
+          [cache_mutation()]
   def plan_cache_mutations(fresh, state) do
     {mutations, _overlay} =
       fresh
@@ -992,9 +1226,8 @@ defmodule EbbServer.Storage.Writer do
   # entities of a type without inferring the type from the ID. The first
   # update for an ID wins: all updates in a flush for one entity carry the
   # same type.
-  defp affected_entities(fresh) do
-    fresh
-    |> Enum.flat_map(& &1.updates)
+  defp affected_entities(updates) do
+    updates
     |> Enum.map(&{&1.subject_id, &1.subject_type})
     |> Enum.uniq_by(&elem(&1, 0))
   end
@@ -1019,7 +1252,7 @@ defmodule EbbServer.Storage.Writer do
     unless ablate?(:dirty, state), do: clear_pending(state, pending)
 
     # Resolve before nudging so the router can only observe the advanced
-    # frontier. The `after` repeats this, harmlessly.
+    # frontier.
     unless ablate?(:watermark, state), do: resolve_range(state, gsn_start, gsn_end)
 
     Telemetry.execute(
@@ -1084,57 +1317,6 @@ defmodule EbbServer.Storage.Writer do
     :ok
   end
 
-  defp build_action_ops(action, gsn, state, flush_opts, memo) do
-    rocks_name = state.rocks_name
-
-    resolve_opts =
-      Keyword.put(flush_opts, :intra_action, build_intra_action_context(action.updates))
-
-    {update_ops, {group_ids_by_update, type_entity_keys, memo}} =
-      Enum.map_reduce(action.updates, {[], [], memo}, fn update, {groups, keys, memo} ->
-        {ops, group_ids, type_entity_key, memo} =
-          build_update_ops(action.id, update, gsn, state, resolve_opts, memo)
-
-        {ops, {[group_ids | groups], [type_entity_key | keys], memo}}
-      end)
-
-    # Index-aligned with `action.updates`: the durable record of which
-    # groups each Update is delivered to. Computed here, from the same
-    # snapshot `cf_group_actions` is built from, because the by-id caches
-    # for a relationship/entityGroup delete are gone by fan-out time.
-    update_scopes = Enum.reverse(group_ids_by_update)
-
-    action_etf = :erlang.term_to_binary(to_storage_format(action, gsn, update_scopes))
-
-    group_ids = update_scopes |> :lists.append() |> Enum.uniq()
-
-    # The union of resolved groups is indexed once per Action, not once
-    # per Update, so repeated memberships cannot write the same
-    # `{group_id, gsn}` row twice.
-    group_ops =
-      if ablate?(:group_index, state) do
-        []
-      else
-        Enum.map(group_ids, fn group_id ->
-          key = RocksDB.encode_group_action_key(group_id, gsn)
-          {:put, RocksDB.cf_group_actions(rocks_name), key, action.id}
-        end)
-      end
-
-    dedup_ops =
-      if ablate?(:dedup, state) do
-        []
-      else
-        [{:put, RocksDB.cf_action_dedup(rocks_name), action.id, RocksDB.encode_gsn_key(gsn)}]
-      end
-
-    ops =
-      [{:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), action_etf}] ++
-        dedup_ops ++ group_ops ++ :lists.append(update_ops)
-
-    {ops, group_ids, type_entity_keys, memo}
-  end
-
   defp resolve_cache_opts(state) do
     [
       entity_groups: state.entity_groups,
@@ -1143,62 +1325,6 @@ defmodule EbbServer.Storage.Writer do
       relationships_by_id: state.relationships_by_id,
       group_members_by_id: state.group_members_by_id
     ]
-  end
-
-  defp build_intra_action_context(updates) do
-    PermissionHelper.build_intra_action_context(updates)
-  end
-
-  defp to_storage_format(action, gsn, update_scopes) do
-    %{
-      "id" => action.id,
-      "actor_id" => action.actor_id,
-      "hlc" => action.hlc,
-      "gsn" => gsn,
-      "update_scopes" => update_scopes,
-      "updates" =>
-        Enum.map(action.updates, fn update ->
-          method_str =
-            if is_atom(update.method), do: Atom.to_string(update.method), else: update.method
-
-          %{
-            "id" => update.id,
-            "subject_id" => update.subject_id,
-            "subject_type" => update.subject_type,
-            "method" => method_str,
-            "data" => update.data
-          }
-        end)
-    }
-  end
-
-  defp build_update_ops(action_id, update, gsn, state, resolve_opts, memo) do
-    rocks_name = state.rocks_name
-
-    {group_ids, memo} =
-      if ablate?(:group_resolution, state) do
-        {[], memo}
-      else
-        group_ids_for_update(update, resolve_opts, memo)
-      end
-
-    if ablate?(:entity_index, state) do
-      # The type key is only collected when `:entity_index` is on (see
-      # `build_ops/3`), so there is nothing to compute here.
-      {[], group_ids, nil, memo}
-    else
-      type_entity_key = RocksDB.encode_type_entity_key(update.subject_type, update.subject_id)
-
-      # The Update is stored once, inside the `cf_actions` value; there is no
-      # separate per-Update row to maintain. The group index and the type
-      # index are emitted by the caller, which owns the dedup scope.
-      ops = [
-        {:put, RocksDB.cf_entity_actions(rocks_name),
-         RocksDB.encode_entity_gsn_key(update.subject_id, gsn), action_id}
-      ]
-
-      {ops, group_ids, type_entity_key, memo}
-    end
   end
 
   defp ablate?(phase, state), do: phase in state.ablate

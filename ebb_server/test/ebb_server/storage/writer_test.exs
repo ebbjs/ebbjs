@@ -84,6 +84,17 @@ defmodule EbbServer.Storage.WriterTest do
     }
   end
 
+  describe "committer lifecycle" do
+    test "a normal Writer stop takes its linked Committer down", %{writer_name: writer_name} do
+      committer = :sys.get_state(writer_name).committer
+      ref = Process.monitor(committer)
+
+      :ok = GenServer.stop(Process.whereis(writer_name))
+
+      assert_receive {:DOWN, ^ref, :process, ^committer, :normal}, 2_000
+    end
+  end
+
   describe "single action write" do
     test "returns correct GSN range and writes to cf_actions", %{
       writer_name: writer_name,

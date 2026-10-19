@@ -16,6 +16,7 @@ defmodule EbbServer.Telemetry do
   | ----------------------------------------- | ------------------------------------- | --------------------------------------------------- |
   | `ebb.writer.batch_size`                   | `count`                               | `gsn_start`, `gsn_end`, `callers`                   |
   | `ebb.writer.batch_latency_ms`             | `duration` (native)                   | `gsn_start`, `gsn_end`                              |
+  | `ebb.writer.commit_latency_ms`            | `duration` (native)                   | `gsn_start`, `gsn_end`                              |
   | `ebb.writer.actions_per_sec`              | `count`                               | —                                                   |
   | `ebb.writer.range_resolved`               | `count`                               | `gsn_start`, `gsn_end`, `reason`                    |
   | `ebb.writer.commit_failed`                | `count`                               | `gsn_start`, `gsn_end`, `reason`                    |
@@ -40,6 +41,16 @@ defmodule EbbServer.Telemetry do
   Start/stop pairs use `span/3`; they emit `<event>.start` and `<event>.stop`
   (and `<event>.exception` on failure) with the measurements `:telemetry.span/3`
   adds (`monotonic_time`, `system_time`, `duration`).
+
+  `ebb.writer.batch_latency_ms` covers one coalesced flush from its GSN claim
+  through the post-commit bookkeeping (dirty settle, cache mutations, and the
+  fan-out notification) and is measured on the Writer, which sequences the
+  flush. `ebb.writer.commit_latency_ms` is the sub-span the Committer owns —
+  `to_storage_format`, ETF encode, `cf_*` op assembly, and the durable
+  `write_batch/2` — so the pair separates sequencer work from durable-write
+  work for the same GSN range. `commit_latency_ms` is emitted for every
+  outcome (`:ok`, `{:error, reason}`, or a raise), so a failing commit stays
+  visible in the same series as a successful one.
 
   `ebb.fanout.push_latency_ms` is measured from the Writer's durable commit to
   the GroupServer dispatching the batch to the group's subscribers: one sample

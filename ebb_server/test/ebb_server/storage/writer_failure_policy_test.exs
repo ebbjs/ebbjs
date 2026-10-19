@@ -215,7 +215,10 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
         send(test_pid, {:write_result, catch_exit(Writer.write_actions([action], writer_name))})
       end)
 
-      assert_receive {:commit_started, ^writer_pid}
+      # The commit blocks in the linked Committer, not in the Writer; a
+      # hard kill of the Writer takes the Committer with it via the link.
+      assert_receive {:commit_started, committer_pid}
+      assert committer_pid != writer_pid
       Process.exit(writer_pid, :kill)
       assert_receive {:write_result, _exit}, 2_000
 
@@ -272,6 +275,145 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
                )
 
       assert :erlang.binary_to_term(binary, [:safe])["id"] == action.id
+    end
+  end
+
+  describe "post-commit failure" do
+    test "a raise after the durable mark leaves the range committed and still emits latency",
+         ctx do
+      ref =
+        attach_telemetry([
+          [:ebb, :writer, :batch_latency_ms],
+          [:ebb, :writer, :range_resolved]
+        ])
+
+      after_commit = fn -> raise "post-commit boom" end
+
+      %{name: writer_name, pid: writer_pid} =
+        start_writer(Map.merge(ctx, %{after_commit: after_commit}))
+
+      Process.unlink(writer_pid)
+
+      action = validated_action(%{updates: [validated_update(%{subject_id: "todo_post_commit"})]})
+
+      catch_exit(Writer.write_actions([action], writer_name))
+
+      assert RocksDB.get_max_gsn(ctx.rocks_name) == 1
+      assert WatermarkTracker.committed_watermark(ctx.watermark_tracker) == 1
+
+      events = telemetry_events(ref)
+
+      assert Enum.any?(events, fn
+               {[:ebb, :writer, :batch_latency_ms], %{duration: duration},
+                %{gsn_start: 1, gsn_end: 1}} ->
+                 is_integer(duration)
+
+               _ ->
+                 false
+             end)
+
+      refute Enum.any?(events, fn
+               {[:ebb, :writer, :range_resolved], _measurements, %{gsn_start: 1}} -> true
+               _ -> false
+             end)
+    end
+
+    test "a queued flush that fails to prepare does not abandon the committed batch", ctx do
+      ref = attach_telemetry([[:ebb, :writer, :range_resolved]])
+      test_pid = self()
+
+      commit_fn = fn ops, opts ->
+        send(test_pid, {:commit_started, self()})
+
+        receive do
+          :release -> RocksDB.write_batch(ops, opts)
+        end
+      end
+
+      %{name: writer_name, pid: writer_pid} =
+        start_writer(
+          Map.merge(ctx, %{
+            commit_fn: commit_fn,
+            batch_max_size: 1,
+            # Only group resolution reads this table. The first Action is a
+            # `group` update whose group set needs no cache read, so it
+            # commits; the queued `todo` Action's resolution raises.
+            entity_groups: :ebb_531_missing_table
+          })
+        )
+
+      Process.unlink(writer_pid)
+
+      first_action =
+        validated_action(%{
+          id: "act_531_committed_first",
+          updates: [
+            validated_update(%{
+              subject_type: "group",
+              subject_id: "g_531_first",
+              method: :put,
+              data: %{"fields" => %{}}
+            })
+          ]
+        })
+
+      spawn(fn ->
+        result =
+          try do
+            Writer.write_actions([first_action], writer_name)
+          catch
+            :exit, reason -> {:exit, reason}
+          end
+
+        send(test_pid, {:first_result, result})
+      end)
+
+      assert_receive {:commit_started, committer_pid}, 2_000
+
+      broken_action =
+        validated_action(%{
+          id: "act_531_prepare_boom",
+          updates: [validated_update(%{subject_id: "todo_531_boom"})]
+        })
+
+      spawn(fn ->
+        result =
+          try do
+            Writer.write_actions([broken_action], writer_name)
+          catch
+            :exit, reason -> {:exit, reason}
+          end
+
+        send(test_pid, {:second_result, result})
+      end)
+
+      assert wait_until(fn ->
+               state = :sys.get_state(writer_pid)
+               state.inflight != nil and state.pending_count == 1
+             end)
+
+      send(committer_pid, :release)
+
+      assert_receive {:first_result, {:ok, {1, 1}, []}}, 2_000
+      assert_receive {:second_result, {:exit, _reason}}, 2_000
+
+      events = telemetry_events(ref)
+
+      assert Enum.any?(events, fn
+               {[:ebb, :writer, :range_resolved], %{count: 1}, %{gsn_start: 2, gsn_end: 2}} ->
+                 true
+
+               _ ->
+                 false
+             end)
+
+      refute Enum.any?(events, fn
+               {[:ebb, :writer, :range_resolved], _measurements, %{gsn_start: 1}} -> true
+               _ -> false
+             end)
+
+      assert RocksDB.get_max_gsn(ctx.rocks_name) == 1
+      assert WatermarkTracker.committed_watermark(ctx.watermark_tracker) == 2
     end
   end
 
