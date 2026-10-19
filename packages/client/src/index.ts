@@ -52,6 +52,11 @@ export {
   type QueryContext,
   type ProjectedRow,
   type PointerValue,
+  type JoinRecord,
+  type MembershipJoin,
+  type JoinSelection,
+  type JoinedRow,
+  type NoJoins,
   projectEntity,
   projectRow,
   projectRows,
@@ -61,7 +66,14 @@ export {
   type LoadEntities,
 } from "./sync/query-builder";
 
-export { type Query, type Predicate, type QueryOrder } from "./sync/query";
+export {
+  type Query,
+  type Predicate,
+  type QueryOrder,
+  type Join,
+  type JoinDirection,
+  type JoinCardinality,
+} from "./sync/query";
 
 export { type Plan, type PlanOp, type PlanPredicate, planQuery } from "./sync/query-plan";
 

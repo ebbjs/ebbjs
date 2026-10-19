@@ -15,8 +15,8 @@
 
 import { entityGroupSystemEntity, relationshipSystemEntity } from "../schema/system-entities";
 
-import type { Predicate, Query } from "./query";
-import { hasPredicateKind } from "./query";
+import type { Join, Predicate, Query } from "./query";
+import { hasJoinKind, hasPredicateKind } from "./query";
 
 /** A predicate as the executor sees it: index read or row filter. */
 export type PlanPredicate =
@@ -37,6 +37,8 @@ export type PlanOp =
 
 export interface Plan {
   readonly ops: readonly PlanOp[];
+  /** One-level projections the builder applies after the narrowing ops. */
+  readonly joins: readonly Join[];
   readonly readTypes: readonly string[];
 }
 
@@ -68,16 +70,22 @@ const orderPredicates = (predicates: readonly PlanPredicate[]): readonly PlanPre
 ];
 
 /**
- * Source first, then the system row types a predicate reads: `relationship`
- * rows for an adjacency predicate and `entityGroup` rows for membership.
- * Those are the subject types the replica's journal reports, so #512 can
- * intersect them with a revision window. A relationship's `type` is the
- * adjacency index key, not a row type, so it never belongs here.
+ * Source first, then each join target, then the system row types a
+ * predicate or join reads: `relationship` rows for an adjacency predicate
+ * or join and `entityGroup` rows for membership. Those are the subject
+ * types the replica's journal reports, so #512 can intersect them with a
+ * revision window. A relationship's `type` is the adjacency index key, not
+ * a row type, so it never belongs here.
  */
 const readTypesFor = (query: Query): readonly string[] => {
   const types = new Set<string>([query.source]);
-  if (hasPredicateKind(query, "relationship")) types.add(relationshipSystemEntity.name);
-  if (hasPredicateKind(query, "membership")) types.add(entityGroupSystemEntity.name);
+  for (const join of query.joins) types.add(join.target);
+  if (hasPredicateKind(query, "relationship") || hasJoinKind(query, "relationship")) {
+    types.add(relationshipSystemEntity.name);
+  }
+  if (hasPredicateKind(query, "membership") || hasJoinKind(query, "membership")) {
+    types.add(entityGroupSystemEntity.name);
+  }
   return [...types];
 };
 
@@ -95,5 +103,5 @@ export function planQuery(query: Query): Plan {
   if (query.limit !== null && query.limit >= 0) {
     ops.push({ kind: "limit", limit: query.limit });
   }
-  return { ops, readTypes: readTypesFor(query) };
+  return { ops, joins: query.joins, readTypes: readTypesFor(query) };
 }

@@ -28,6 +28,7 @@ import type {
   ShapeFields,
   WireFields,
 } from "../schema/entity";
+import type { AccessorKeyOf, AnyRelationshipDef, EntityNameOf, FieldsOf } from "./definition-types";
 import { EntityValidationError, validatePayload } from "../schema/entity-registry";
 import type { EntityRegistry } from "../schema/entity-registry";
 import type { RelationshipDef } from "../schema/relationship";
@@ -46,6 +47,9 @@ import {
   projectEntity,
   projectFieldValue,
   projectRow,
+  type JoinRecord,
+  type MembershipJoin,
+  type NoJoins,
   type PointerValue,
   type QueryBuilder,
 } from "./query-builder";
@@ -99,21 +103,8 @@ export type RowAccessor =
 /** Empty per-`as` accessor record for entities with no relationships. */
 type NoAccessors = Record<never, never>;
 
-/** Literal entity name carried by an `EntityDef` (see `defineEntity`). */
-type EntityNameOf<D> = D extends EntityDef<Record<string, TSchema>, infer N> ? N : never;
-
-/** Erased relationship definition — the shape a schema's relationship map holds. */
-type AnyRelationshipDef = RelationshipDef<
-  EntityDef<Record<string, TSchema>>,
-  EntityDef<Record<string, TSchema>>
->;
-
 /** Which end of a relationship an accessor is derived from. */
 type RelationshipEnd = "source" | "target";
-
-/** `as` accessor name carried by a relationship. */
-type AccessorKeyOf<R> =
-  R extends RelationshipDef<infer _S, infer _T, infer A, infer _C> ? A : never;
 
 /** The `EntityDef` on one end of a relationship. */
 type EntityAt<R, TEnd extends RelationshipEnd> =
@@ -329,8 +320,9 @@ export type CollectionSnapshot<TFields extends Record<string, TSchema>> = {
 export interface EntityNamespace<
   TFields extends Record<string, TSchema>,
   TAccessors extends object = NoAccessors,
+  TJoins extends object = NoJoins,
 > {
-  query(): QueryBuilder<WireFields<TFields>>;
+  query(): QueryBuilder<WireFields<TFields>, TJoins>;
   get(id: string): Promise<EntityRow<TFields, TAccessors> | null>;
   /**
    * Reactive subscribe on the matching set. Returns an
@@ -487,7 +479,7 @@ export interface DuplicateOptions extends EntityWriteOptions {
  * Map a single entity definition to its field map. `EntityDef<TFields>`
  * carries `TFields` directly, so this is just `infer F`.
  */
-export type EntityFields<D> = D extends EntityDef<infer F> ? F : never;
+export type EntityFields<D> = FieldsOf<D>;
 
 /**
  * `client.group`: the generic namespace with a bootstrap `create` that
@@ -539,7 +531,8 @@ export type EntityNamespaces<S> =
           EntityFields<TEntities[K]>,
           RowAccessorRecord<TRels, EntityNameOf<TEntities[K]>> &
             MembershipAccessors &
-            DerivedAccessors<EntityFields<TEntities[K]>>
+            DerivedAccessors<EntityFields<TEntities[K]>>,
+          JoinRecord<TRels, EntityNameOf<TEntities[K]>> & MembershipJoin
         >;
       } & SystemNamespaces
     : NoAccessors;
@@ -818,6 +811,7 @@ export type { TextDocumentSubmit };
 export function createEntityNamespace<
   TFields extends Record<string, TSchema>,
   TAccessors extends object = NoAccessors,
+  TJoins extends object = NoJoins,
 >(
   entityName: string,
   shape: TObject<WireFields<TFields>>,
@@ -825,10 +819,10 @@ export function createEntityNamespace<
   write: WriteCapability,
   derived: Record<string, DerivedFieldDef> = {},
   replica?: ReplicaAccess,
-): EntityNamespace<TFields, TAccessors> {
+): EntityNamespace<TFields, TAccessors, TJoins> {
   const registry = write.registry;
   return {
-    query(): QueryBuilder<WireFields<TFields>> {
+    query(): QueryBuilder<WireFields<TFields>, TJoins> {
       // Only a directly-constructed namespace can lack the binding;
       // `createClient` always supplies one. Falling back to the storage
       // shim here would silently read a stale, scan-based path.
@@ -837,7 +831,7 @@ export function createEntityNamespace<
           `client.${entityName}.query(): no replica binding — build the namespace through createClient (or pass a ReplicaAccess)`,
         );
       }
-      return buildReplicaQueryBuilder(entityName, shape, {
+      return buildReplicaQueryBuilder<WireFields<TFields>, TJoins>(entityName, shape, {
         entityName,
         registry,
         storage,
