@@ -48,7 +48,8 @@
 
 import type { Entity, FieldValue } from "@ebbjs/core";
 import { isFieldMap } from "@ebbjs/core";
-import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
+import type { Replica } from "@ebbjs/storage/replica";
+import type { StorageAdapter } from "@ebbjs/storage/types";
 import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { ShapeFields } from "../schema/entity";
@@ -58,7 +59,7 @@ import {
   entityGroupSystemEntity,
   relationshipSystemEntity,
 } from "../schema/system-entities";
-import { emptyQuery, type Predicate, type Query } from "./query";
+import { emptyQuery, hasPredicateKind, type Predicate, type Query } from "./query";
 import { planQuery } from "./query-plan";
 import {
   createReplicaExecutor,
@@ -410,11 +411,10 @@ function buildChain<TFields extends Record<string, TSchema>>(
       // `type` may be overridden, so subscribe to the row type rather
       // than guessing the source type. Identical results are suppressed
       // downstream by the consumer's snapshot compare.
-      const predicates = query.groups.flat();
-      if (predicates.some((predicate) => predicate.kind === "relationship")) {
+      if (hasPredicateKind(query, "relationship")) {
         unsubscribers.push(emitter.onTypeChange(relationshipSystemEntity.name, listener));
       }
-      if (predicates.some((predicate) => predicate.kind === "membership")) {
+      if (hasPredicateKind(query, "membership")) {
         unsubscribers.push(emitter.onTypeChange(entityGroupSystemEntity.name, listener));
       }
       return () => {

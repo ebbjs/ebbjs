@@ -20,7 +20,6 @@ import { createClient } from "../client";
 import { buildQueryBuilder } from "../query-builder";
 import { planQuery } from "../query-plan";
 import { callApplyAction } from "../test-utils";
-import { traversalCounter } from "../traversal-counter";
 
 const issue = defineEntity("issue", { title: e.string(), status: e.string() });
 const user = defineEntity("user", { name: e.string() });
@@ -166,17 +165,17 @@ describe("client.<entity>.query() — replica read path", () => {
     const byMembership = vi.spyOn(client.storage.entities, "queryByMembership");
     const byType = vi.spyOn(client.storage.entities, "query");
     const replicaRelationships = vi.spyOn(client.replica, "relationships");
-    traversalCounter.reset();
+    const replicaIterate = vi.spyOn(client.replica, "iterate");
 
     const out = await client.issue.query().where("assignee", "user_1");
 
     expect(ids(out)).toEqual(["issue_1", "issue_2"]);
-    expect(traversalCounter.rowsExamined).toBe(0);
     expect(replicaRelationships).toHaveBeenCalledWith({
       as: "assignee",
       type: "issue",
       targetId: "user_1",
     });
+    expect(replicaIterate).not.toHaveBeenCalled();
     expect(byRelationship).not.toHaveBeenCalled();
     expect(byMembership).not.toHaveBeenCalled();
     expect(byType).not.toHaveBeenCalled();

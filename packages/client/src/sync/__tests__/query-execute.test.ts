@@ -3,9 +3,10 @@
  *
  * The executor reads a {@link Plan} over the replica's materialized rows
  * and adjacency indices. It is fully synchronous — the acceptance
- * criterion is a `readonly Entity[]` with no `await` — and it never
- * scans a type per accessor: an indexed predicate reads
- * `replica.relationships` / `replica.memberships` directly.
+ * criterion is a `readonly Entity[]` with no `await` — and an indexed
+ * predicate seeds its group from `replica.relationships` /
+ * `replica.memberships`, resolving the hits by id: the source type is
+ * never iterated for such a query.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -15,7 +16,6 @@ import { createReplica } from "@ebbjs/storage/replica";
 import { emptyQuery, type Predicate, type Query } from "../query";
 import { planQuery } from "../query-plan";
 import { createReplicaExecutor, createRowsExecutor, executePlan } from "../query-execute";
-import { traversalCounter } from "../traversal-counter";
 
 const field = (value: unknown, updateId: string): FieldValue => ({
   value,
@@ -123,6 +123,7 @@ describe("executePlan", () => {
       }),
     ]);
     const relationships = vi.spyOn(replica, "relationships");
+    const get = vi.spyOn(replica, "get");
     const iterate = vi.spyOn(replica, "iterate");
     const plan = planQuery(
       query({
@@ -130,15 +131,152 @@ describe("executePlan", () => {
       }),
     );
 
-    traversalCounter.reset();
     const rows: readonly Entity[] = executePlan(plan, createReplicaExecutor(replica));
 
     expect(rows.map((row) => row.id)).toEqual(["todo_1", "todo_2"]);
-    expect(traversalCounter.rowsExamined).toBe(0);
     expect(relationships).toHaveBeenCalledWith({ as: "owner", type: "todo", targetId: "user_1" });
-    // One scan, of the source type: the only whole-type read a plan makes.
+    expect(get).toHaveBeenCalledWith("todo_1");
+    expect(get).toHaveBeenCalledWith("todo_2");
+    expect(iterate).not.toHaveBeenCalled();
+  });
+
+  it("does not iterate the source type for a membership query", () => {
+    const replica = seed([
+      put(1, "todo_1", "todo", { title: "Ship" }),
+      put(2, "todo_2", "todo", { title: "Test" }),
+      put(3, "eg_1", "entityGroup", { entity_id: "todo_1", group_id: "group_1" }),
+      put(4, "eg_2", "entityGroup", { entity_id: "todo_2", group_id: "group_2" }),
+    ]);
+    const iterate = vi.spyOn(replica, "iterate");
+
+    const rows = executePlan(
+      planQuery(query({ groups: [[{ kind: "membership", anyOf: ["group_1"] }]] })),
+      createReplicaExecutor(replica),
+    );
+
+    expect(rows.map((row) => row.id)).toEqual(["todo_1"]);
+    expect(iterate).not.toHaveBeenCalled();
+  });
+
+  it("intersects index hits with a field filter without iterating the source type", () => {
+    const replica = seed([
+      put(1, "todo_1", "todo", { title: "Ship", completed: true }),
+      put(2, "todo_2", "todo", { title: "Test", completed: false }),
+      put(3, "todo_3", "todo", { title: "Docs", completed: true }),
+      put(4, "rel_1", "relationship", {
+        source_id: "todo_1",
+        target_id: "user_1",
+        field: "owner",
+        type: "todo",
+      }),
+      put(5, "rel_2", "relationship", {
+        source_id: "todo_2",
+        target_id: "user_1",
+        field: "owner",
+        type: "todo",
+      }),
+    ]);
+    const iterate = vi.spyOn(replica, "iterate");
+
+    const rows = executePlan(
+      planQuery(
+        query({
+          groups: [
+            [
+              { kind: "relationship", as: "owner", type: "todo", anyOf: ["user_1"] },
+              { kind: "field", field: "completed", value: true },
+            ],
+          ],
+        }),
+      ),
+      createReplicaExecutor(replica),
+    );
+
+    expect(rows.map((row) => row.id)).toEqual(["todo_1"]);
+    expect(iterate).not.toHaveBeenCalled();
+  });
+
+  it("drops index hits whose row is missing from the replica", () => {
+    const replica = seed([
+      put(1, "todo_1", "todo", { title: "Ship" }),
+      put(2, "rel_1", "relationship", {
+        source_id: "todo_1",
+        target_id: "user_1",
+        field: "owner",
+        type: "todo",
+      }),
+      put(3, "rel_2", "relationship", {
+        source_id: "todo_missing",
+        target_id: "user_1",
+        field: "owner",
+        type: "todo",
+      }),
+    ]);
+
+    const rows = executePlan(
+      planQuery(
+        query({
+          groups: [[{ kind: "relationship", as: "owner", type: "todo", anyOf: ["user_1"] }]],
+        }),
+      ),
+      createReplicaExecutor(replica),
+    );
+
+    expect(rows.map((row) => row.id)).toEqual(["todo_1"]);
+  });
+
+  it("iterates the source type exactly once for a field-only query", () => {
+    const replica = seed([
+      put(1, "todo_1", "todo", { title: "Ship", completed: true }),
+      put(2, "todo_2", "todo", { title: "Test", completed: false }),
+    ]);
+    const iterate = vi.spyOn(replica, "iterate");
+
+    const rows = executePlan(
+      planQuery(query({ groups: [[{ kind: "field", field: "completed", value: true }]] })),
+      createReplicaExecutor(replica),
+    );
+
+    expect(rows.map((row) => row.id)).toEqual(["todo_1"]);
     expect(iterate).toHaveBeenCalledTimes(1);
     expect(iterate).toHaveBeenCalledWith("todo");
+  });
+
+  it("shares one lazy scan between two field-only groups", () => {
+    const replica = seed([
+      put(1, "todo_1", "todo", { title: "Ship", completed: true }),
+      put(2, "todo_2", "todo", { title: "Ship", completed: false }),
+      put(3, "todo_3", "todo", { title: "Test", completed: false }),
+    ]);
+    const iterate = vi.spyOn(replica, "iterate");
+
+    const rows = executePlan(
+      planQuery(
+        query({
+          groups: [
+            [{ kind: "field", field: "completed", value: true }],
+            [{ kind: "field", field: "title", value: "Ship" }],
+          ],
+        }),
+      ),
+      createReplicaExecutor(replica),
+    );
+
+    expect(rows.map((row) => row.id)).toEqual(["todo_1", "todo_2"]);
+    expect(iterate).toHaveBeenCalledTimes(1);
+  });
+
+  it("iterates once for a plan with no selects", () => {
+    const replica = seed([
+      put(1, "todo_1", "todo", { title: "Ship" }),
+      put(2, "todo_2", "todo", { title: "Test" }),
+    ]);
+    const iterate = vi.spyOn(replica, "iterate");
+
+    const rows = executePlan(planQuery(emptyQuery("todo")), createReplicaExecutor(replica));
+
+    expect(rows.map((row) => row.id)).toEqual(["todo_1", "todo_2"]);
+    expect(iterate).toHaveBeenCalledTimes(1);
   });
 
   it("unions DNF groups and dedupes rows that match more than one", () => {
@@ -315,9 +453,20 @@ describe("executePlan", () => {
     );
 
     expect(selected.map((entity) => entity.id)).toEqual(["todo_2"]);
+    expect(executor.get("todo_1")).toBe(rows[0]);
     expect(() => executor.relationships({ as: "owner", type: "todo", targetId: "user_1" })).toThrow(
       /candidate-only/,
     );
     expect(() => executor.memberships({ groupId: "group_1" })).toThrow(/candidate-only/);
+    expect(() =>
+      executePlan(
+        planQuery(
+          query({
+            groups: [[{ kind: "relationship", as: "owner", type: "todo", anyOf: ["user_1"] }]],
+          }),
+        ),
+        executor,
+      ),
+    ).toThrow(/candidate-only/);
   });
 });

@@ -16,6 +16,7 @@
 import { entityGroupSystemEntity, relationshipSystemEntity } from "../schema/system-entities";
 
 import type { Predicate, Query } from "./query";
+import { hasPredicateKind } from "./query";
 
 /** A predicate as the executor sees it: index read or row filter. */
 export type PlanPredicate =
@@ -75,13 +76,8 @@ const orderPredicates = (predicates: readonly PlanPredicate[]): readonly PlanPre
  */
 const readTypesFor = (query: Query): readonly string[] => {
   const types = new Set<string>([query.source]);
-  const predicates = query.groups.flat();
-  if (predicates.some((predicate) => predicate.kind === "relationship")) {
-    types.add(relationshipSystemEntity.name);
-  }
-  if (predicates.some((predicate) => predicate.kind === "membership")) {
-    types.add(entityGroupSystemEntity.name);
-  }
+  if (hasPredicateKind(query, "relationship")) types.add(relationshipSystemEntity.name);
+  if (hasPredicateKind(query, "membership")) types.add(entityGroupSystemEntity.name);
   return [...types];
 };
 

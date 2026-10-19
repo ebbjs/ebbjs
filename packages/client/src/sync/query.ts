@@ -30,6 +30,11 @@ export interface QueryOrder {
 }
 
 export interface Query {
+  /**
+   * The entity type the query reads. A chain over already-materialized
+   * candidate rows has no source type, so it carries `""` — the one
+   * sentinel in the value.
+   */
   readonly source: string;
   /** DNF: groups are ORed, predicates within a group ANDed. */
   readonly groups: readonly (readonly Predicate[])[];
@@ -47,3 +52,11 @@ export const emptyQuery = (source: string): Query => ({
   limit: null,
   joins: [],
 });
+
+/**
+ * Whether any group holds a predicate of `kind`. One helper for the
+ * planner's read types and the builder's change subscriptions, so both
+ * read the same predicate vocabulary.
+ */
+export const hasPredicateKind = (query: Query, kind: Predicate["kind"]): boolean =>
+  query.groups.some((group) => group.some((predicate) => predicate.kind === kind));
