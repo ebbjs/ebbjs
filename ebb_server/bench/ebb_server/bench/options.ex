@@ -13,7 +13,8 @@ defmodule EbbServer.Bench.Options do
   the order reported and printed, regardless of how the flag was invoked;
   `all` expands to every phase. `:build` and `:encode` cover the pre-claim
   payload work: skipping `:build` stores an empty payload map, skipping
-  `:encode` stores an empty payload ETF.
+  `:encode` stores a precomputed ETF for that empty map so the record stays
+  decodable by live readers.
   """
 
   @type tier :: :t0 | :t1 | :t2 | :t3 | :t4 | :t5

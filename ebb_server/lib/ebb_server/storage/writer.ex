@@ -259,6 +259,10 @@ defmodule EbbServer.Storage.Writer do
   @type validated_action :: PermissionChecker.validated_action()
   @type validated_update :: PermissionChecker.validated_update()
 
+  # The `:encode` ablation skips the payload encode but must still store a
+  # decodable record: live readers may run against an ablated bench DB.
+  @empty_payload_etf :erlang.term_to_binary(%{})
+
   @type enqueued_action :: {validated_action(), payload_etf :: binary()}
   @type pending_actions :: [{GenServer.from(), [enqueued_action()]}]
 
@@ -607,7 +611,7 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp encode_payload(payload, state) do
-    if ablate?(:encode, state), do: <<>>, else: ActionFormat.encode(payload)
+    if ablate?(:encode, state), do: @empty_payload_etf, else: ActionFormat.encode(payload)
   end
 
   # The only place a flush is scheduled. A commit in flight blocks it —

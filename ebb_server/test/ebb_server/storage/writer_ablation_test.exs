@@ -85,14 +85,15 @@ defmodule EbbServer.Storage.WriterAblationTest do
       assert :erlang.binary_to_term(payload_etf, [:safe]) == %{}
     end
 
-    test ":encode stores an empty payload_etf", ctx do
+    test ":encode stores a decodable empty payload", ctx do
       writer = start_capturing_writer(ctx, [:encode])
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer)
 
       assert_receive {:captured_ops, ops}
 
-      assert {<<>>, _scopes} = stored_value(ops, ctx.rocks_name)
+      {payload_etf, _scopes} = stored_value(ops, ctx.rocks_name)
+      assert :erlang.binary_to_term(payload_etf, [:safe]) == %{}
     end
 
     test "`all` leaves exactly one cf_actions put per Action and nothing else", ctx do
