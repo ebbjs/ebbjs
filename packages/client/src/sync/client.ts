@@ -35,8 +35,8 @@ import {
   type Update,
 } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import { createReplica, type Replica } from "@ebbjs/storage/replica";
-import type { StorageAdapter } from "@ebbjs/storage/types";
+import { createReplica, type Replica, type ReplicaStats } from "@ebbjs/storage/replica";
+import type { ReplicaRecord, StorageAdapter } from "@ebbjs/storage/types";
 
 import { ConnectionStateMachine, type ConnectionState } from "./connection-state";
 import { PresenceManager } from "../presence/presence";
@@ -54,6 +54,7 @@ import { createFlushScheduler, type FlushScheduler } from "./flush-scheduler";
 import { createOutboxObserver, type OutboxObserver } from "./outbox-observer";
 import { createClientStatus, type ClientStatus, type ClientStatusController } from "./status";
 import { createQueryCache, type QueryCache } from "./query-cache";
+import { evictableRowIds, scopeEvictedGroupIds } from "./scope-eviction";
 import { createReplicaSignal, type ReplicaSignal } from "./replica-signal";
 import { backoffDelayMs } from "./backoff";
 import { TextDocument, TextDocumentRegistry } from "../fields/collaborative-text/text-document";
@@ -121,6 +122,26 @@ import type {
 const DEFAULT_RECONNECT_INITIAL_MS = 1_000;
 const DEFAULT_RECONNECT_MAX_MS = 60_000;
 const MAX_RECONNECT_ATTEMPTS = 10;
+const DEFAULT_REPLICA_SAVE_EVERY = 100;
+const DEFAULT_REPLICA_SAVE_INTERVAL_MS = 5_000;
+
+/** What the last replica hydration read and how long it took (#499). */
+export interface ReplicaLoadReport {
+  /** Wall-clock time from store load through the outbox overlay, in ms. */
+  readonly durationMs: number;
+  /** Rows restored from the persisted replica record. */
+  readonly recordEntities: number;
+  /** Log entries replayed after the record's position. */
+  readonly tailEntries: number;
+  /** Updates folded from those entries. */
+  readonly tailActions: number;
+  /** Durable outbox entries overlaid on the hydrated base. */
+  readonly outboxEntries: number;
+  /** The record's/log's append position after hydration. */
+  readonly position: number;
+  /** The replica revision after hydration. */
+  readonly revision: number;
+}
 
 /**
  * Read-only observables over the client's sync state, mounted as
@@ -279,6 +300,28 @@ export class SyncClient implements PermissionQuery {
   private replicaHydration: Promise<void> | null = null;
   /** True once {@link loadReplica} completed, so synchronous readers can run. */
   private replicaHydrated = false;
+  /** Durable Actions folded since the last persisted-replica save. */
+  private replicaActionsSinceSave = 0;
+  /** Periodic save timer; armed by the first unsaved Action. */
+  private replicaSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Serializes record writes so a slow IndexedDB save cannot interleave. */
+  private replicaSaveChain: Promise<void> = Promise.resolve();
+  /** True while a coalesced automatic save is running. */
+  private replicaSaveInFlight = false;
+  /** Another automatic save was requested while one was running. */
+  private replicaSavePending = false;
+  /** Full record captured before a scope eviction; merged until the next save. */
+  private evictedBackup: ReplicaRecord | null = null;
+  /** Groups whose rows are expected to be resident right now. */
+  private replicaScope: Set<string> = new Set();
+  /** Groups whose rows were evicted and need restoring before a rejoin. */
+  private evictedGroupIds: Set<string> = new Set();
+  /** Serializes asynchronous scope restores. */
+  private replicaScopeChain: Promise<void> = Promise.resolve();
+  /** The last hydration's bounded-load report. */
+  private replicaLoadReport: ReplicaLoadReport | null = null;
+  private readonly replicaSaveEvery: number;
+  private readonly replicaSaveIntervalMs: number;
 
   constructor(opts: SyncClientOptions) {
     this.serverUrl = opts.serverUrl.replace(/\/$/, "");
@@ -286,10 +329,14 @@ export class SyncClient implements PermissionQuery {
     this.storage = opts.storage ?? createMemoryAdapter();
     this.replica = createReplica();
     this.replicaSignal = createReplicaSignal(this.replica);
-    this.queries = createQueryCache(this.replica, this.replicaSignal);
+    this.queries = createQueryCache(this.replica, this.replicaSignal, {
+      ttlMs: opts.queryTtlMs,
+    });
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
+    this.replicaSaveEvery = opts.replicaSaveEvery ?? DEFAULT_REPLICA_SAVE_EVERY;
+    this.replicaSaveIntervalMs = opts.replicaSaveIntervalMs ?? DEFAULT_REPLICA_SAVE_INTERVAL_MS;
     this.schema = opts.schema;
     this.schemaHash = opts.schema === undefined ? undefined : computeSchemaHash(opts.schema);
     // Empty registry makes validation a no-op.
@@ -353,6 +400,7 @@ export class SyncClient implements PermissionQuery {
       fetchEntity: (entityId) => this.getEntity(entityId),
       onAppended: (entry) => {
         this.replica.ingest(entry.action, entry.added, entry.position);
+        this.noteReplicaMutation();
       },
     });
     this.sync = {
@@ -500,6 +548,7 @@ export class SyncClient implements PermissionQuery {
       fromGsn,
     };
     this.activeSub = sub;
+    this.applyReplicaScope(sub.groupIds);
 
     // Transition to `connecting` unless already there or live.
     const s = this.stateMachine.state;
@@ -508,6 +557,9 @@ export class SyncClient implements PermissionQuery {
     }
 
     this.runSubscriptionLoop(sub);
+    // A plain unsubscribe ends the session; it is not a group leaving the
+    // subscription. Residency follows the explicit group set, so the caller
+    // can tear down and re-open the stream without wiping the replica.
     return () => this.cancelSubscription(sub);
   }
 
@@ -885,23 +937,196 @@ export class SyncClient implements PermissionQuery {
     return this.replicaHydrated;
   }
 
-  /** Persist {@link replica}'s record as the durable fast path for hydration. */
+  /** What the last hydration read, and how long it took; `null` before it runs. */
+  get replicaLoad(): ReplicaLoadReport | null {
+    return this.replicaLoadReport;
+  }
+
+  /** The materialized set's size, type counts, journal depth, and position. */
+  get replicaStats(): ReplicaStats {
+    return this.replica.stats();
+  }
+
+  /**
+   * Persist {@link replica}'s record as the durable fast path for hydration.
+   * Saves are serialized. While a scope eviction is in flight the durable
+   * base is the union of the resident rows and the captured full record, so
+   * leaving a group frees memory without losing the rows from the durable
+   * fast path.
+   */
   async persistReplica(): Promise<void> {
-    await this.storage.replica.save(this.replica.toRecord());
+    const save = this.replicaSaveChain.then(() => this.writeReplicaRecord());
+    // A failed save must not poison the chain; the caller still sees the error.
+    this.replicaSaveChain = save.catch(() => {});
+    return save;
+  }
+
+  private async writeReplicaRecord(): Promise<void> {
+    const savedActions = this.replicaActionsSinceSave;
+    let record = this.replica.toRecord();
+    if (this.evictedGroupIds.size > 0 || this.evictedBackup !== null) {
+      const durable = this.evictedBackup ?? (await this.storage.replica.load());
+      if (durable !== null) record = withRetainedRows(record, durable);
+    }
+    await this.storage.replica.save(record);
+    this.replicaActionsSinceSave -= savedActions;
+    this.evictedBackup = null;
+  }
+
+  /**
+   * A durable Action landed: count it toward the next save and arm the
+   * interval. A burst saves at the count boundary; an idle client saves at
+   * the interval, so the log tail stays bounded without a write per Action.
+   */
+  private noteReplicaMutation(): void {
+    this.replicaActionsSinceSave += 1;
+    if (this.replicaSaveEvery > 0 && this.replicaActionsSinceSave >= this.replicaSaveEvery) {
+      this.clearReplicaSaveTimer();
+      this.requestReplicaSave();
+      return;
+    }
+    this.armReplicaSaveTimer();
+  }
+
+  /**
+   * Coalesce automatic saves: a burst past the action threshold queues one
+   * follow-up, never one full-record write per Action.
+   */
+  private requestReplicaSave(): void {
+    if (this.replicaSaveInFlight) {
+      this.replicaSavePending = true;
+      return;
+    }
+    this.replicaSaveInFlight = true;
+    void this.persistReplica()
+      .catch(logReplicaSaveError)
+      .finally(() => {
+        this.replicaSaveInFlight = false;
+        if (!this.replicaSavePending) return;
+        this.replicaSavePending = false;
+        this.requestReplicaSave();
+      });
+  }
+
+  private armReplicaSaveTimer(): void {
+    if (
+      !Number.isFinite(this.replicaSaveIntervalMs) ||
+      this.replicaSaveIntervalMs <= 0 ||
+      this.replicaSaveTimer !== null
+    ) {
+      return;
+    }
+    this.replicaSaveTimer = setTimeout(() => {
+      this.replicaSaveTimer = null;
+      if (this.replicaActionsSinceSave === 0) return;
+      this.requestReplicaSave();
+    }, this.replicaSaveIntervalMs);
+    (this.replicaSaveTimer as { unref?: () => void }).unref?.();
+  }
+
+  private clearReplicaSaveTimer(): void {
+    if (this.replicaSaveTimer === null) return;
+    clearTimeout(this.replicaSaveTimer);
+    this.replicaSaveTimer = null;
   }
 
   private async loadReplica(): Promise<void> {
+    const started = performance.now();
     const record = await this.storage.replica.load();
     if (record !== null) this.replica.load(record);
-    for (const entry of await this.storage.actions.readTail(record?.position ?? 0)) {
+    const tail = await this.storage.actions.readTail(record?.position ?? 0);
+    for (const entry of tail) {
       this.replica.ingest(entry.action, entry.added, entry.position);
+    }
+    const outbox = await this.storage.outbox.list();
+    let outboxEntries = 0;
+    for (const entry of outbox) {
+      if (entry.status === "pending" || entry.status === "acknowledged") {
+        this.replica.optimistic(entry.action);
+        outboxEntries += 1;
+      }
+    }
+    this.replicaHydrated = true;
+    this.evictedGroupIds.clear();
+    this.evictedBackup = null;
+    const stats = this.replica.stats();
+    this.replicaLoadReport = {
+      durationMs: performance.now() - started,
+      recordEntities: record?.entities.length ?? 0,
+      tailEntries: tail.length,
+      tailActions: tail.reduce((count, entry) => count + entry.added.length, 0),
+      outboxEntries,
+      position: stats.position,
+      revision: stats.revision,
+    };
+  }
+
+  /**
+   * Re-read the durable base after scope eviction removed rows the new scope
+   * wants back. The captured full record (or the persisted one) carries the
+   * evicted rows; the tail after its position brings it current.
+   */
+  private async restoreEvictedReplica(): Promise<void> {
+    await this.persistReplica();
+    const record = await this.storage.replica.load();
+    if (record !== null) {
+      this.replica.load(record);
+      for (const entry of await this.storage.actions.readTail(record.position)) {
+        this.replica.ingest(entry.action, entry.added, entry.position);
+      }
+    } else {
+      this.replica.load({ ...this.replica.toRecord(), position: 0, revision: 0, entities: [] });
+      for (const entry of await this.storage.actions.readTail(0)) {
+        this.replica.ingest(entry.action, entry.added, entry.position);
+      }
     }
     for (const entry of await this.storage.outbox.list()) {
       if (entry.status === "pending" || entry.status === "acknowledged") {
         this.replica.optimistic(entry.action);
       }
     }
-    this.replicaHydrated = true;
+    this.evictedGroupIds.clear();
+    this.evictedBackup = null;
+  }
+
+  /** Apply the subscription's group scope to the materialized set. */
+  private applyReplicaScope(groupIds: readonly string[]): void {
+    const next = new Set(groupIds);
+    for (const previous of this.replicaScope) {
+      if (!next.has(previous)) this.evictedGroupIds.add(previous);
+    }
+    const rejoining = [...next].some((groupId) => this.evictedGroupIds.has(groupId));
+    this.replicaScope = next;
+
+    if (!this.replicaHydrated) {
+      void this.hydrateReplica().then(() => this.applyReplicaScope([...this.replicaScope]));
+      return;
+    }
+    if (rejoining) {
+      const restore = this.replicaScopeChain
+        .then(() => this.restoreEvictedReplica())
+        .then(() => this.evictUnsubscribedRows())
+        .catch(logReplicaSaveError);
+      this.replicaScopeChain = restore;
+      return;
+    }
+    this.evictUnsubscribedRows();
+  }
+
+  /**
+   * Drop resident rows no subscribed group can reach. The full record is
+   * captured first so the next save keeps the durable base complete.
+   */
+  private evictUnsubscribedRows(): void {
+    const groups = [...this.replicaScope];
+    const ids = evictableRowIds(this.replica, groups);
+    if (ids.length === 0) return;
+    for (const groupId of scopeEvictedGroupIds(this.replica, groups)) {
+      this.evictedGroupIds.add(groupId);
+    }
+    this.evictedBackup = mergeReplicaRecords(this.evictedBackup, this.replica.toRecord());
+    this.replica.evict(ids);
+    this.requestReplicaSave();
   }
 
   /**
@@ -912,6 +1137,8 @@ export class SyncClient implements PermissionQuery {
     // Stop timers and in-flight retries first: no flush should start while
     // the rest of the client is tearing down.
     this.flushScheduler.stop();
+    this.clearReplicaSaveTimer();
+    if (this.replicaHydrated && this.replicaActionsSinceSave > 0) this.requestReplicaSave();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -1366,6 +1593,7 @@ export class SyncClient implements PermissionQuery {
     }
     const logged = await this.storage.actions.append(action);
     this.replica.ingest(logged.action, logged.added, logged.position);
+    this.noteReplicaMutation();
     // The single inbound receipt hook: an Action that matches a buffered
     // Outbox entry (with a server GSN) is this client's own echo, so the
     // entry is now proven canonical and can be removed. Runs after the
@@ -1466,6 +1694,34 @@ export class SyncClient implements PermissionQuery {
     emitRegistryViolations(this.registryViolationListeners, violations, context);
   }
 }
+
+/**
+ * Fold `extra`'s rows into `base` by id, with `base` winning an overlap. A
+ * full record captured before eviction is the source of the rows currently
+ * absent from the resident set.
+ */
+const mergeReplicaRecords = (extra: ReplicaRecord | null, base: ReplicaRecord): ReplicaRecord => {
+  if (extra === null) return base;
+  const rows = new Map(base.entities.map((entity) => [entity.id, entity]));
+  for (const entity of extra.entities) {
+    if (!rows.has(entity.id)) rows.set(entity.id, entity);
+  }
+  return { ...base, entities: [...rows.values()] };
+};
+
+/** Keep the rows the resident record no longer carries, preferring its current row. */
+const withRetainedRows = (record: ReplicaRecord, durable: ReplicaRecord): ReplicaRecord => {
+  const current = new Set(record.entities.map((entity) => entity.id));
+  const retained = durable.entities.filter((entity) => !current.has(entity.id));
+  return retained.length === 0
+    ? record
+    : { ...record, entities: [...record.entities, ...retained] };
+};
+
+const logReplicaSaveError = (thrown: unknown): void => {
+  // eslint-disable-next-line no-console
+  console.error("[SyncClient] replica save failed:", thrown);
+};
 
 // ---------------------------------------------------------------------------
 // Helpers

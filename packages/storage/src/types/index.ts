@@ -22,6 +22,7 @@ export type {
   Replica,
   ReplicaChange,
   ReplicaOptions,
+  ReplicaStats,
   RelationshipQuery,
   Revision,
 } from "../replica/types";

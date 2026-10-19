@@ -34,6 +34,13 @@ import type { Query } from "./query";
 import { planQuery } from "./query-plan";
 import { createReplicaSignal, type ReplicaSignal } from "./replica-signal";
 
+/**
+ * How long a result stays cached after its last subscriber leaves. Long
+ * enough that route flaps and remounts reuse held data, short enough that
+ * abandoned query results do not accumulate.
+ */
+export const DEFAULT_QUERY_TTL_MS = 5 * 60_000;
+
 /** Derived lifecycle of a cached query result. */
 export type QueryStatus = "unloaded" | "stale" | "current" | "failed";
 
@@ -83,6 +90,11 @@ export interface QuerySource<T> {
   execute(): readonly T[] | Promise<readonly T[]>;
 }
 
+export interface QueryCacheOptions {
+  /** Inactive-result lifetime in milliseconds; `0` or a non-finite value disables eviction. */
+  readonly ttlMs?: number;
+}
+
 export interface QueryCache {
   /**
    * Read or start the cached result for `query` on `surface`. Two chains that
@@ -101,8 +113,10 @@ interface CacheEntry<T> {
   snapshot: QueryResult<T>;
   /** Each listener, whether it wants the first run, and the revision it joined at. */
   readonly listeners: Map<() => void, { initial: boolean; revision: Revision }>;
-  /** Subscriber refcount; the entry stays cached at zero for #499's TTL. */
+  /** Subscriber refcount; the entry stays cached at zero until its TTL. */
   refs: number;
+  /** Inactive-entry eviction timer; `null` while subscribed or after expiry. */
+  evictTimer: ReturnType<typeof setTimeout> | null;
   running: boolean;
 }
 
@@ -173,8 +187,26 @@ const initialSnapshot = <T>(): QueryResult<T> => ({
 export const createQueryCache = (
   replica: Replica,
   signal: ReplicaSignal = createReplicaSignal(replica),
+  options: QueryCacheOptions = {},
 ): QueryCache => {
   const entries = new Map<string, CacheEntry<unknown>>();
+  const ttlMs = options.ttlMs ?? DEFAULT_QUERY_TTL_MS;
+
+  const cancelEviction = (entry: CacheEntry<unknown>): void => {
+    if (entry.evictTimer === null) return;
+    clearTimeout(entry.evictTimer);
+    entry.evictTimer = null;
+  };
+
+  const scheduleEviction = (key: string, entry: CacheEntry<unknown>): void => {
+    if (!Number.isFinite(ttlMs) || ttlMs <= 0 || entry.evictTimer !== null) return;
+    entry.evictTimer = setTimeout(() => {
+      entry.evictTimer = null;
+      if (entry.refs === 0 && entry.listeners.size === 0) entries.delete(key);
+    }, ttlMs);
+    // A pending result must not keep a Node process alive.
+    (entry.evictTimer as { unref?: () => void }).unref?.();
+  };
 
   const statusOf = <T>(entry: CacheEntry<T>): QueryStatus => {
     if (entry.error !== null) return "failed";
@@ -378,6 +410,7 @@ export const createQueryCache = (
           snapshot: initialSnapshot(),
           listeners: new Map(),
           refs: 0,
+          evictTimer: null,
           running: false,
         };
         entries.set(key, created);
@@ -389,6 +422,7 @@ export const createQueryCache = (
         // erased it only so the cache can hold heterogeneous results.
         getSnapshot: () => settled.snapshot as QueryResult<T>,
         subscribe(listener, subscribeOptions) {
+          if (settled.refs === 0) cancelEviction(settled);
           settled.listeners.set(listener, {
             initial: subscribeOptions?.initial ?? true,
             revision: replica.revision,
@@ -406,6 +440,7 @@ export const createQueryCache = (
           return () => {
             if (!settled.listeners.delete(listener)) return;
             settled.refs -= 1;
+            if (settled.refs === 0) scheduleEviction(key, settled);
           };
         },
       };

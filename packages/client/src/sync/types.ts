@@ -188,6 +188,24 @@ export interface SyncClientOptions {
   /** Maximum reconnect backoff in ms. Defaults to 60000. */
   reconnectMaxMs?: number;
   /**
+   * Number of durable Actions folded between persisted-replica saves.
+   * Defaults to 100. A non-positive value disables the count trigger; the
+   * interval below still bounds the log tail.
+   */
+  replicaSaveEvery?: number;
+  /**
+   * Maximum wall-clock time between persisted-replica saves, in ms.
+   * Defaults to 5000. A non-positive or non-finite value disables the
+   * interval trigger.
+   */
+  replicaSaveIntervalMs?: number;
+  /**
+   * How long an inactive query result stays cached, in ms. Defaults to
+   * `DEFAULT_QUERY_TTL_MS` (five minutes). A non-positive or non-finite
+   * value keeps inactive results forever.
+   */
+  queryTtlMs?: number;
+  /**
    * Schema-layer entity registry. When provided, `client.write()` and
    * `client.queryEntities()` validate against it before any network
    * call, and incoming actions via SSE / catchUp warn-and-log

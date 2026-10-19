@@ -50,6 +50,52 @@ const patch = (spec: WriteSpec): Action => action("patch", spec, { fields: spec.
 const remove = (spec: Omit<WriteSpec, "fields">): Action =>
   action("delete", { ...spec, fields: {} }, null);
 
+/** A materialized relationship row: `sourceId` —author/wrote→ `targetId`. */
+const relationship = (
+  actionId: string,
+  rowId: string,
+  sourceId: string,
+  targetId: string,
+  gsn: number,
+  ms: number,
+): Action =>
+  put({
+    actionId,
+    updateId: `u_${rowId}`,
+    entityId: rowId,
+    type: "relationship",
+    gsn,
+    ms,
+    fields: {
+      field: leaf("author", `u_${rowId}`, ms),
+      type: leaf("wrote", `u_${rowId}`, ms),
+      source_id: leaf(sourceId, `u_${rowId}`, ms),
+      target_id: leaf(targetId, `u_${rowId}`, ms),
+    },
+  });
+
+/** A materialized entityGroup row putting `entityId` in `groupId`. */
+const membership = (
+  actionId: string,
+  rowId: string,
+  groupId: string,
+  entityId: string,
+  gsn: number,
+  ms: number,
+): Action =>
+  put({
+    actionId,
+    updateId: `u_${rowId}`,
+    entityId: rowId,
+    type: "entityGroup",
+    gsn,
+    ms,
+    fields: {
+      group_id: leaf(groupId, `u_${rowId}`, ms),
+      entity_id: leaf(entityId, `u_${rowId}`, ms),
+    },
+  });
+
 const ingest = (replica: Replica, write: Action, position: number): number =>
   replica.ingest(write, write.updates, position);
 
@@ -836,5 +882,199 @@ describe("replica: change signal", () => {
     expect(fired).toBe(1);
     expect(replica.revision).toBe(7);
     expect(replica.get("e_9")?.type).toBe("note");
+  });
+});
+
+describe("replica: evict (#499)", () => {
+  it("drops rows and their adjacency, journaling each removal and ignoring absent ids", () => {
+    const replica = createReplica();
+    ingest(replica, relationship("a_r", "r_1", "src_1", "tgt_1", 1, 1), 1);
+    ingest(replica, membership("a_m", "m_1", "grp_1", "e_1", 2, 2), 2);
+    let fired = 0;
+    replica.subscribe(() => {
+      fired += 1;
+    });
+
+    expect(replica.evict(["r_1", "m_1", "missing", "r_1"])).toBe(4);
+
+    expect(replica.get("r_1")).toBeUndefined();
+    expect(replica.get("m_1")).toBeUndefined();
+    expect(replica.iterate("relationship")).toEqual([]);
+    expect(replica.iterate("entityGroup")).toEqual([]);
+    expect(replica.relationships({ as: "author", type: "wrote", sourceId: "src_1" })).toEqual([]);
+    expect(replica.relationships({ as: "author", type: "wrote", targetId: "tgt_1" })).toEqual([]);
+    expect(replica.memberships({ groupId: "grp_1" })).toEqual([]);
+    expect(replica.memberships({ entityId: "e_1" })).toEqual([]);
+    expect(replica.relationshipLinks({ as: "author", type: "wrote", sourceId: "src_1" })).toEqual(
+      [],
+    );
+    expect(replica.membershipLinks("e_1")).toEqual([]);
+    expect(fired).toBe(1);
+    expect(replica.changesSince(2)).toEqual([
+      { revision: 3, id: "r_1", type: "relationship", deleted: true },
+      { revision: 4, id: "m_1", type: "entityGroup", deleted: true },
+    ]);
+
+    // A repeat eviction removes nothing, so it neither bumps nor notifies.
+    expect(replica.evict(["r_1", "missing"])).toBe(4);
+    expect(fired).toBe(1);
+  });
+});
+
+describe("replica: journal capacity (#499)", () => {
+  const seed = (replica: Replica, count: number): void => {
+    for (let i = 1; i <= count; i += 1) {
+      ingest(
+        replica,
+        put({
+          actionId: `a_${i}`,
+          updateId: `u_${i}`,
+          entityId: `e_${i}`,
+          gsn: i,
+          ms: i,
+          fields: { title: leaf(`Row ${i}`, `u_${i}`, i) },
+        }),
+        i,
+      );
+    }
+  };
+
+  it("bounds the retained journal and moves the floor to the newest drop", () => {
+    const replica = createReplica({ journalCapacity: 3 });
+    for (let i = 1; i <= 6; i += 1) {
+      ingest(
+        replica,
+        put({
+          actionId: `a_${i}`,
+          updateId: `u_${i}`,
+          entityId: `e_${i}`,
+          gsn: i,
+          ms: i,
+          fields: { title: leaf(`Row ${i}`, `u_${i}`, i) },
+        }),
+        i,
+      );
+      expect(replica.stats().changes).toBeLessThanOrEqual(3);
+    }
+
+    expect(replica.revision).toBe(6);
+    expect(replica.changeFloor).toBe(3);
+    expect(replica.stats().changeFloor).toBe(replica.changeFloor);
+    expect(replica.stats().changes).toBe(3);
+    // A cursor older than the floor cannot be served: the gap says reload.
+    expect(replica.changesSince(0)).toEqual([]);
+    expect(replica.changesSince(2)).toEqual([]);
+    expect(replica.changesSince(replica.changeFloor)).toEqual([
+      { revision: 4, id: "e_4", type: "todo", deleted: false },
+      { revision: 5, id: "e_5", type: "todo", deleted: false },
+      { revision: 6, id: "e_6", type: "todo", deleted: false },
+    ]);
+  });
+
+  it("keeps the journal unbounded for a non-positive or non-finite capacity", () => {
+    for (const capacity of [0, -1, Number.POSITIVE_INFINITY, Number.NaN]) {
+      const replica = createReplica({ journalCapacity: capacity });
+      seed(replica, 5);
+      expect(replica.changeFloor).toBe(0);
+      expect(replica.stats().changes).toBe(5);
+      expect(replica.changesSince(0)).toHaveLength(5);
+    }
+  });
+
+  it("resets the journal and the floor to the loaded record", () => {
+    const replica = createReplica({ journalCapacity: 2 });
+    seed(replica, 3);
+    expect(replica.changeFloor).toBe(1);
+    expect(replica.stats().changes).toBe(2);
+
+    const record: ReplicaRecord = {
+      format: REPLICA_RECORD_FORMAT,
+      position: 9,
+      revision: 2,
+      entities: [entity({ id: "e_9", type: "note" })],
+    };
+    // The record is older than the resident revision, so load moves the
+    // revision forward rather than backwards.
+    expect(replica.load(record)).toBe(4);
+
+    // The loaded record is the new complete baseline: no retained changes and
+    // a floor at its revision, so only a later cursor is served.
+    expect(replica.changeFloor).toBe(4);
+    expect(replica.stats()).toEqual({
+      entities: 1,
+      byType: { note: 1 },
+      revision: 4,
+      position: 9,
+      changes: 0,
+      changeFloor: 4,
+    });
+    expect(replica.changesSince(0)).toEqual([]);
+    expect(replica.changesSince(4)).toEqual([]);
+  });
+  it("advances the revision when load replaces an equal-revision base", () => {
+    const replica = createReplica();
+    const record: ReplicaRecord = {
+      format: REPLICA_RECORD_FORMAT,
+      position: 4,
+      revision: 2,
+      entities: [entity({ id: "e_9", type: "note" })],
+    };
+
+    expect(replica.load(record)).toBe(2);
+    expect(replica.load(record)).toBe(3);
+    expect(replica.changeFloor).toBe(3);
+  });
+});
+
+describe("replica: stats (#499)", () => {
+  it("counts an optimistic row the composed view exposes", () => {
+    const replica = createReplica();
+    replica.optimistic(
+      put({
+        actionId: "a_1",
+        updateId: "u_1",
+        ms: 10,
+        fields: { title: leaf("Local", "u_1", 10) },
+      }),
+    );
+
+    expect(replica.stats()).toMatchObject({
+      entities: 1,
+      byType: { todo: 1 },
+      revision: 1,
+    });
+  });
+
+  it("reports materialized counts by type, the revision, and the durable position", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      put({ actionId: "a_1", updateId: "u_1", ms: 10, fields: { title: leaf("Todo", "u_1", 10) } }),
+      3,
+    );
+    ingest(
+      replica,
+      put({
+        actionId: "a_2",
+        updateId: "u_2",
+        entityId: "e_2",
+        type: "note",
+        gsn: 2,
+        ms: 20,
+        fields: { title: leaf("Note", "u_2", 20) },
+      }),
+      5,
+    );
+    ingest(replica, remove({ actionId: "a_3", updateId: "u_3", gsn: 3, ms: 30 }), 7);
+
+    // A tombstone is still a materialized row, so both counts include it.
+    expect(replica.stats()).toEqual({
+      entities: 2,
+      byType: { todo: 1, note: 1 },
+      revision: 3,
+      position: 7,
+      changes: 3,
+      changeFloor: 0,
+    });
   });
 });

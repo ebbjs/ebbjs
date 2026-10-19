@@ -3,7 +3,7 @@ title: "Migrating to queries"
 description: "How to move from entity accessors and useEntity to the query read surface — what changed, what became internal, and what is not here yet."
 ---
 
-> **Shipped.** This page tracks the docs and examples migration in [#502](https://github.com/ebbjs/ebbjs/issues/502), part of the [local query engine epic](https://github.com/ebbjs/ebbjs/issues/495). The React surface landed in [#501](https://github.com/ebbjs/ebbjs/issues/501); the engine and namespace split before it. [#499](https://github.com/ebbjs/ebbjs/issues/499) and [#500](https://github.com/ebbjs/ebbjs/issues/500) remain open.
+> **Shipped.** This page tracks the docs and examples migration in [#502](https://github.com/ebbjs/ebbjs/issues/502), part of the [local query engine epic](https://github.com/ebbjs/ebbjs/issues/495). The React surface landed in [#501](https://github.com/ebbjs/ebbjs/issues/501); the engine, namespace split, and replica lifecycle ([#499](https://github.com/ebbjs/ebbjs/issues/499)) landed before it. [#500](https://github.com/ebbjs/ebbjs/issues/500) remains open.
 
 Queries are now the only public read path. The entity namespace stays — it is still the schema-bound API — but it splits by verb: `query()` reads, the mutation verbs write, and the engine's single-row helpers became internal.
 

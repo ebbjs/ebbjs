@@ -419,3 +419,107 @@ describe("query cache: failure", () => {
     expect(notified).toBe(2);
   });
 });
+
+describe("query cache: inactive result TTL (#499)", () => {
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("evicts a result after its inactive TTL and remounts unloaded", async () => {
+    const replica = createReplica();
+    const cache = createQueryCache(replica, undefined, { ttlMs: 10 });
+    const first = cache.watch(
+      "rows",
+      todoQuery(),
+      sourceWith(() => [row("todo_1")]),
+    );
+    const detach = first.subscribe(() => {});
+    await flush();
+    expect(first.getSnapshot().status).toBe("current");
+    detach();
+
+    await sleep(25);
+
+    const remountSource = sourceWith(() => [row("todo_2")]);
+    const second = cache.watch("rows", todoQuery(), remountSource);
+    expect(second.getSnapshot()).toMatchObject({
+      data: undefined,
+      status: "unloaded",
+      loading: true,
+    });
+    second.subscribe(() => {});
+    await flush();
+    expect(remountSource.runs).toBe(1);
+    expect(second.getSnapshot().data).toEqual([row("todo_2")]);
+  });
+
+  it("keeps a result that remounts before its TTL", async () => {
+    const replica = createReplica();
+    const cache = createQueryCache(replica, undefined, { ttlMs: 1_000 });
+    const source = sourceWith(() => [row("todo_1")]);
+    const detach = cache.watch("rows", todoQuery(), source).subscribe(() => {});
+    await flush();
+    detach();
+
+    const remountSource = sourceWith(() => [row("todo_2")]);
+    const remount = cache.watch("rows", todoQuery(), remountSource);
+    expect(remount.getSnapshot()).toMatchObject({ status: "current", loading: false });
+    expect(remount.getSnapshot().data).toEqual([row("todo_1")]);
+    expect(remountSource.runs).toBe(0);
+  });
+
+  it("does not evict a result while it still has a subscriber", async () => {
+    const replica = createReplica();
+    const cache = createQueryCache(replica, undefined, { ttlMs: 10 });
+    const source = sourceWith(() => [row("todo_1")]);
+    const store = cache.watch("rows", todoQuery(), source);
+    store.subscribe(() => {});
+    await flush();
+
+    await sleep(25);
+
+    const remount = cache.watch(
+      "rows",
+      todoQuery(),
+      sourceWith(() => []),
+    );
+    expect(remount.getSnapshot().data).toEqual([row("todo_1")]);
+    expect(remount.getSnapshot().status).toBe("current");
+  });
+});
+
+describe("query cache: change-journal floor (#499)", () => {
+  it("forces a full re-run when a slow run lets the window trim past its start", async () => {
+    const replica = createReplica({ journalCapacity: 2 });
+    ingest(replica, "todo", "todo_1");
+    const cache = createQueryCache(replica);
+    const source = deferredSource();
+    const store = cache.watch("rows", todoQuery(), source);
+    store.subscribe(() => {});
+    await flush();
+
+    // Prime the cache at revision 1.
+    source.resolve([row("todo_1")]);
+    await flush();
+    expect(store.getSnapshot().status).toBe("current");
+    expect(replica.changeFloor).toBe(0);
+
+    // A relevant change starts the second run at revision 2 and holds it open.
+    ingest(replica, "todo", "todo_1", "todo_1 next");
+    expect(source.runs).toBe(2);
+
+    // More changes than the journal retains land while that run is pending.
+    for (let i = 0; i < 5; i += 1) ingest(replica, "note", `note_${i}`);
+    expect(replica.changeFloor).toBeGreaterThan(2);
+
+    // The run settles at revision 2, which is now below the floor. Without the
+    // floor the note-only window would not intersect `readTypes`; the gap
+    // forces the full re-run instead.
+    source.resolve([row("todo_1", "todo_1 next")]);
+    await flush();
+    expect(source.runs).toBe(3);
+
+    source.resolve([row("todo_1", "todo_1 next")]);
+    await flush();
+    expect(store.getSnapshot().status).toBe("current");
+    expect(store.getSnapshot().data).toEqual([row("todo_1", "todo_1 next")]);
+  });
+});

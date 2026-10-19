@@ -32,12 +32,25 @@ import type {
   Replica,
   ReplicaChange,
   ReplicaOptions,
+  ReplicaStats,
   RelationshipQuery,
   Revision,
 } from "./types";
 
 export const holdAll: MaterializationPolicy = {
   holds: () => true,
+};
+
+const DEFAULT_JOURNAL_CAPACITY = 1024;
+
+/**
+ * A capacity that retains everything is `Infinity`, so the trimmer never finds
+ * an excess. Non-positive and non-finite values are unbounded by contract.
+ */
+const journalCapacityOf = (capacity: number | undefined): number => {
+  if (capacity === undefined) return DEFAULT_JOURNAL_CAPACITY;
+  if (!Number.isFinite(capacity) || capacity <= 0) return Number.POSITIVE_INFINITY;
+  return Math.max(1, Math.floor(capacity));
 };
 
 interface OptimisticWrite {
@@ -74,7 +87,11 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const overlay = new Map<string, OptimisticWrite[]>();
   const effective = new Map<string, Entity | null>();
   const orphans = new Map<string, OrphanUpdate[]>();
-  const journal: ReplicaChange[] = [];
+  const journalCapacity = journalCapacityOf(options?.journalCapacity);
+  let journal: ReplicaChange[] = [];
+  // Head cursor into `journal`: trimming advances it in O(1), and a later
+  // splice folds the dead prefix away once it dominates the array.
+  let journalStart = 0;
 
   // Adjacency over the composed view, not the base map: traversal must see
   // optimistic edges. Both directions share the index module's entry
@@ -83,6 +100,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   let forwardIndex: ReverseIndex = {};
 
   let revision: Revision = 0;
+  let changeFloor: Revision = 0;
   let lastPosition = 0;
   const listeners = new Set<() => void>();
 
@@ -114,6 +132,25 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const bump = (id: string, type: string, deleted: boolean): void => {
     revision += 1;
     journal.push({ revision, id, type, deleted });
+    trimJournal();
+  };
+
+  const retainedChanges = (): number => journal.length - journalStart;
+
+  /**
+   * Drop the oldest changes once the retained window exceeds the configured
+   * capacity. The floor moves to the newest dropped revision: from there the
+   * retained journal is complete again, and an older cursor cannot be served.
+   */
+  const trimJournal = (): void => {
+    const excess = retainedChanges() - journalCapacity;
+    if (excess <= 0) return;
+    journalStart += excess;
+    changeFloor = journal[journalStart - 1].revision;
+    if (journalStart * 2 >= journal.length) {
+      journal = journal.slice(journalStart);
+      journalStart = 0;
+    }
   };
 
   const viewOf = (id: string): Entity | null =>
@@ -295,6 +332,34 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return revision;
   };
 
+  /**
+   * Eviction is a visible removal, so each dropped row journals exactly like
+   * a tombstone would — minus the tombstone. Traces an id leaves in the
+   * overlay or orphan buffer have no row to journal, but go with it.
+   */
+  const evict = (ids: readonly string[]): Revision => {
+    const seen = new Set<string>();
+    let removed = false;
+    for (const id of ids) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const previous = viewOf(id);
+      const base = entities.get(id);
+      entities.delete(id);
+      overlay.delete(id);
+      effective.delete(id);
+      orphans.delete(id);
+      if (base !== undefined) removeFromType(base.type, id);
+      reconcileIndex(previous, null);
+      const row = previous ?? base ?? null;
+      if (row === null) continue;
+      removed = true;
+      bump(id, row.type, true);
+    }
+    if (removed) notify();
+    return revision;
+  };
+
   const load = (record: ReplicaRecord): Revision => {
     if (!isValidReplicaRecord(record)) return revision;
     entities.clear();
@@ -303,6 +368,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     overlay.clear();
     effective.clear();
     journal.length = 0;
+    journalStart = 0;
     // One linear pass rebuilds the base and both adjacency directions; the
     // typed indices are not persisted. Mutating the local row maps keeps the
     // rebuild linear where folding `applyIndexDelta` per row would copy the
@@ -324,7 +390,11 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     }
     reverseIndex = reverse;
     forwardIndex = forward;
-    revision = record.revision;
+    // A load replaces the journal wholesale. When it advances the revision,
+    // that jump is the signal; when it does not (a restore of the same
+    // durable base), bump by one so derived readers still observe the swap.
+    revision = record.revision > revision ? record.revision : revision + 1;
+    changeFloor = revision;
     lastPosition = record.position;
     notify();
     return revision;
@@ -347,13 +417,50 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     };
   };
 
+  const stats = (): ReplicaStats => {
+    const byType: Record<string, number> = {};
+    const types = new Set(typeIndex.keys());
+    for (const row of effective.values()) {
+      if (row !== null) types.add(row.type);
+    }
+    let total = 0;
+    for (const type of types) {
+      const count = iterate(type).length;
+      if (count === 0) continue;
+      byType[type] = count;
+      total += count;
+    }
+    return {
+      entities: total,
+      byType,
+      revision,
+      position: lastPosition,
+      changes: retainedChanges(),
+      changeFloor,
+    };
+  };
+
+  const changesSince = (from: Revision): readonly ReplicaChange[] => {
+    if (from < changeFloor) return [];
+    const changes: ReplicaChange[] = [];
+    for (let index = journalStart; index < journal.length; index += 1) {
+      const change = journal[index];
+      if (change.revision > from) changes.push(change);
+    }
+    return changes;
+  };
+
   return {
     get revision() {
       return revision;
     },
+    get changeFloor() {
+      return changeFloor;
+    },
     get,
     iterate,
-    changesSince: (from: Revision) => journal.filter((change) => change.revision > from),
+    changesSince,
+    stats,
     relationships: (query: RelationshipQuery): readonly string[] => {
       if (query.sourceId !== undefined) {
         return liveSourceIds(forwardIndex[forwardIndexKey(query.as, query.type, query.sourceId)]);
@@ -381,6 +488,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     discard,
     load,
     toRecord,
+    evict,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => {

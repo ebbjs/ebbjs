@@ -33,6 +33,27 @@ export interface MaterializationPolicy {
 
 export interface ReplicaOptions {
   readonly materialization?: MaterializationPolicy;
+  /**
+   * Maximum retained change-journal entries after trimming. Defaults to 1024.
+   * A non-positive or non-finite value keeps the journal unbounded; a
+   * positive fraction retains at least one entry.
+   */
+  readonly journalCapacity?: number;
+}
+
+/** A snapshot of what the replica currently materializes and retains. */
+export interface ReplicaStats {
+  /** Number of row objects currently materialized (tombstones included). */
+  readonly entities: number;
+  /** Materialized row count per entity type. */
+  readonly byType: Readonly<Record<string, number>>;
+  readonly revision: Revision;
+  /** Append cursor of the last durable position folded into the base. */
+  readonly position: number;
+  /** Retained journal entries. */
+  readonly changes: number;
+  /** Oldest revision after which `changesSince` is complete. */
+  readonly changeFloor: Revision;
 }
 
 /**
@@ -66,10 +87,22 @@ export interface MembershipQuery {
  */
 export interface Replica {
   readonly revision: Revision;
+  /**
+   * Smallest revision for which the retained journal is complete: the
+   * revision of the newest trimmed change, or the loaded record's revision.
+   * A `changesSince` below this floor yields nothing because everything may
+   * have changed.
+   */
+  readonly changeFloor: Revision;
 
   get(id: string): Entity | undefined;
   iterate(type: string): readonly Entity[];
+  /**
+   * Changes newer than `revision`, ascending. Empty when the cursor predates
+   * `changeFloor`, where the trimmed journal can no longer answer it.
+   */
   changesSince(revision: Revision): readonly ReplicaChange[];
+  stats(): ReplicaStats;
 
   /**
    * Distinct live targets out of `(as, type, sourceId)`, or distinct
@@ -93,15 +126,29 @@ export interface Replica {
   /** Drop an overlay Action's writes, reverting the composed view. */
   discard(actionId: string): Revision;
 
+  /**
+   * Replace the materialized base with `record`. The journal resets to that
+   * baseline. The revision advances to the record's revision when that is
+   * newer, and by one otherwise, so a derived reader always observes the
+   * wholesale replacement even when the record is the same revision.
+   */
   load(record: ReplicaRecord): Revision;
   toRecord(): ReplicaRecord;
 
   /**
+   * Drop rows from the in-memory base and indices without tombstoning them:
+   * afterwards `get(id)` is undefined and `iterate(type)` omits the row. Each
+   * removed row journals one change, so derived readers see it leave. Absent
+   * ids are ignored. Returns the resulting revision.
+   */
+  evict(ids: readonly string[]): Revision;
+
+  /**
    * Subscribe to post-change notifications. Fires after every mutating call
-   * (`ingest` / `optimistic` / `discard` / `load`) once the composed view is
-   * settled, so a derived reader can resynchronise from `revision` and
-   * `changesSince`. A no-op write still fires; readers cheaply ignore an
-   * unchanged revision. Returns an unsubscribe function.
+   * (`ingest` / `optimistic` / `discard` / `load` / `evict`) once the
+   * composed view is settled, so a derived reader can resynchronise from
+   * `revision` and `changesSince`. A no-op write still fires; readers cheaply
+   * ignore an unchanged revision. Returns an unsubscribe function.
    */
   subscribe(listener: () => void): () => void;
 }
