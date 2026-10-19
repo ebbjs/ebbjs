@@ -17,6 +17,10 @@
       "types": "./dist/indexeddb/index.d.ts",
       "import": "./dist/indexeddb/index.js"
     },
+    "./replica": {
+      "types": "./dist/replica/index.d.ts",
+      "import": "./dist/replica/index.js"
+    },
     "./types": {
       "types": "./dist/types/index.d.ts"
     }

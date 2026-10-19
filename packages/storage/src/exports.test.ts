@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
  *
  *   @ebbjs/storage/memory     — createMemoryAdapter
  *   @ebbjs/storage/indexeddb  — createIndexedDBAdapter, IndexedDBAdapterOptions
+ *   @ebbjs/storage/replica    — createReplica, contentChanged, holdAll
  *   @ebbjs/storage/types      — ActionLog, DirtyTracker, EntityStore, CursorStore, StorageAdapter, OutboxStore
  */
 
@@ -22,6 +23,14 @@ describe("@ebbjs/storage subpaths", () => {
     expect(typeof mod.createIndexedDBAdapter).toBe("function");
     // IndexedDBAdapterOptions is type-only; we check the runtime surface
     expect(Object.keys(mod).sort()).toEqual(["createIndexedDBAdapter"]);
+  });
+
+  it("@ebbjs/storage/replica re-exports the replica runtime", async () => {
+    const mod = await import("./replica/index");
+    expect(typeof mod.createReplica).toBe("function");
+    expect(typeof mod.contentChanged).toBe("function");
+    expect(typeof mod.holdAll.holds).toBe("function");
+    expect(Object.keys(mod).sort()).toEqual(["contentChanged", "createReplica", "holdAll"]);
   });
 
   it("@ebbjs/storage/types re-exports the five public types as type-only", async () => {

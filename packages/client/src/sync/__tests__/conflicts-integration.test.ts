@@ -501,13 +501,13 @@ describe("client.conflicts (#310)", () => {
     const stub = mkStubFetch();
     const client = mkClient(stub.fn, storage);
 
-    // todo_2 exists on the server with title "server".
+    // todo_2 exists on the server with title "server", older than the local write.
     await callApplyAction(
       client,
       {
         id: "act_seed",
         actor_id: ACTOR_ID,
-        hlc: makeHlc(1_711_036_800_000),
+        hlc: makeHlc(1_711_036_799_000),
         gsn: 5,
         updates: [
           {
@@ -520,7 +520,7 @@ describe("client.conflicts (#310)", () => {
                 title: {
                   value: "server",
                   update_id: "u_seed",
-                  hlc: makeHlc(1_711_036_800_000),
+                  hlc: makeHlc(1_711_036_799_000),
                 },
               },
             },

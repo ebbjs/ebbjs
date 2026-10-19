@@ -126,6 +126,43 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
     unsub();
   });
 
+  it("does not fire for a delivery that only advances last_gsn", async () => {
+    const client = mkClient();
+    const row = await seedRow(client, 1, "todo_1", "T1", false);
+
+    const seen: unknown[] = [];
+    const unsub = row.subscribe((snapshot) => {
+      seen.push(snapshot);
+    });
+
+    // An older Action whose field ties on HLC and loses the update_id
+    // tiebreak: the row keeps its content and only `last_gsn` moves.
+    const stale: Action = {
+      id: "act_stale",
+      actor_id: "actor_1",
+      hlc: makeHlc(1_711_036_800_000, 0),
+      gsn: 9,
+      updates: [
+        {
+          id: "u_stale",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "patch",
+          data: {
+            fields: { title: { value: "Stale", update_id: "u_000", hlc: makeHlc(1) } },
+          },
+        },
+      ],
+    };
+    await callApplyAction(client, stale, "grp_1");
+    globalExpect(seen).toHaveLength(0);
+
+    await callApplyAction(client, mkAction(3, "todo_1", "T3", false), "grp_1");
+    globalExpect(seen).toHaveLength(1);
+
+    unsub();
+  });
+
   it("does not fire immediately on subscribe (no post-read emit)", async () => {
     const client = mkClient();
     const row = await seedRow(client, 1, "todo_1", "T1", false);

@@ -20,6 +20,13 @@ export type {
 export type { CursorStore } from "./types/cursor-store";
 export type { ReplicaRecord, ReplicaStore } from "./types/replica-store";
 export type {
+  MaterializationPolicy,
+  Replica,
+  ReplicaChange,
+  ReplicaOptions,
+  Revision,
+} from "./replica/types";
+export type {
   OutboxEntry,
   OutboxStatus,
   OutboxStore,
