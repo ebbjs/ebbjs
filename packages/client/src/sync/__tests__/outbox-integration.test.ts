@@ -380,6 +380,89 @@ describe("client.outbox", () => {
     expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("Patched");
   });
 
+  it("shows a pending write that loses an equal-HLC tiebreak as the server value", async () => {
+    const { fn } = mkStubFetch();
+    const client = mkClient(fn);
+    const seedHlc = makeHlc(1_711_036_800_000);
+    await callApplyAction(client, {
+      ...mkAction(),
+      gsn: 1,
+      hlc: seedHlc,
+      updates: [
+        {
+          id: "u_seed",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "put",
+          data: { fields: { title: { value: "server", update_id: "u_seed", hlc: seedHlc } } },
+        },
+      ],
+    });
+    const tie = (updateId: string, value: string): Action => ({
+      id: `act_${updateId}`,
+      actor_id: ACTOR_ID,
+      hlc: seedHlc,
+      gsn: 0,
+      updates: [
+        {
+          id: updateId,
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "patch",
+          data: { fields: { title: { value, update_id: updateId, hlc: seedHlc } } },
+        },
+      ],
+    });
+
+    // "u_aaa" < "u_seed": the server keeps "server", so the optimistic
+    // view must not show the losing pending write winning.
+    await client.write([tie("u_aaa", "mine")]);
+    expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("server");
+    client.close();
+  });
+
+  it("shows a pending write that wins an equal-HLC tiebreak", async () => {
+    const { fn } = mkStubFetch();
+    const client = mkClient(fn);
+    const seedHlc = makeHlc(1_711_036_800_000);
+    await callApplyAction(client, {
+      ...mkAction(),
+      gsn: 1,
+      hlc: seedHlc,
+      updates: [
+        {
+          id: "u_seed",
+          subject_id: "todo_1",
+          subject_type: "todo",
+          method: "put",
+          data: { fields: { title: { value: "server", update_id: "u_seed", hlc: seedHlc } } },
+        },
+      ],
+    });
+
+    // "u_zzz" > "u_seed": the server keeps the local write, so it is visible
+    // before the echo.
+    await client.write([
+      {
+        id: "act_win",
+        actor_id: ACTOR_ID,
+        hlc: seedHlc,
+        gsn: 0,
+        updates: [
+          {
+            id: "u_zzz",
+            subject_id: "todo_1",
+            subject_type: "todo",
+            method: "patch",
+            data: { fields: { title: { value: "mine", update_id: "u_zzz", hlc: seedHlc } } },
+          },
+        ],
+      },
+    ]);
+    expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("mine");
+    client.close();
+  });
+
   it("deletes a server-originated row without breaking materialization", async () => {
     const { fn } = mkStubFetch();
     const client = mkClient(fn);

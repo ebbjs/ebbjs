@@ -30,6 +30,7 @@ export default defineConfig({
       entry: {
         "memory/index": "./src/memory/index.ts",
         "indexeddb/index": "./src/indexeddb/index.ts",
+        "replica/index": "./src/replica/index.ts",
         "types/index": "./src/types/index.ts",
       },
       name: "@ebbjs/storage",

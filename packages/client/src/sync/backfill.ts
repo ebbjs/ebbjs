@@ -11,15 +11,19 @@
  *
  * The store is log-derived — entities materialize by replaying
  * `storage.actions` — so the fetched base is written as a synthetic
- * snapshot `put` with `gsn: 0`. It sorts under every real Action for
- * the entity, and because the fetched field envelopes are the server's
- * canonical ones, replaying later Updates merges over the base by HLC
- * without regressing it. A 404 is left absent rather than resurrected:
- * the membership row can outlive the entity's delete.
+ * snapshot `put` stamped with the entity's own `last_gsn` and
+ * `updated_hlc`. That places the full-replacement base at its true
+ * causal position in the log: an already-delivered patch with a lower
+ * gsn is subsumed by the base, a later patch merges on top by HLC, and
+ * an in-flight patch the fetch predates wins. Because the fetched field
+ * envelopes are the server's canonical ones, replaying later Updates
+ * merges over the base by HLC without regressing it. A 404 is left
+ * absent rather than resurrected: the membership row can outlive the
+ * entity's delete.
  */
 
 import { generateId, type Action, type Entity, type FieldValue } from "@ebbjs/core";
-import type { StorageAdapter } from "@ebbjs/storage/types";
+import type { LoggedAction, StorageAdapter } from "@ebbjs/storage/types";
 
 import { liveMemberships } from "./entity-group";
 import { createObservable, type ReadonlyObservable } from "./observable";
@@ -34,8 +38,11 @@ export const BACKFILL_ACTOR_ID = "a_backfill";
 
 /**
  * Build the synthetic `put` that carries a fetched entity into the log.
- * `gsn: 0` orders it under every delivered Action; the field envelopes
- * come through verbatim so later merges are by HLC, not by arrival.
+ * The base is stamped with the entity's own `last_gsn` and `updated_hlc`
+ * so gsn ordering places it at its true causal position: an earlier
+ * patch is subsumed, a later one merges on top by HLC. The field
+ * envelopes come through verbatim so later merges are by HLC, not by
+ * arrival.
  */
 export const snapshotAction = (entity: Entity): Action => {
   const updateId = generateId("u");
@@ -43,7 +50,7 @@ export const snapshotAction = (entity: Entity): Action => {
     id: generateId("a"),
     actor_id: BACKFILL_ACTOR_ID,
     hlc: entity.updated_hlc,
-    gsn: 0,
+    gsn: entity.last_gsn,
     updates: [
       {
         id: updateId,
@@ -131,6 +138,12 @@ export interface BackfillOptions {
   readonly storage: StorageAdapter;
   /** Read one entity from the server; `null` when it is absent or unreadable. */
   readonly fetchEntity: (entityId: string) => Promise<EntityResponse | null>;
+  /**
+   * Called with the logged entry after a fetched base is appended, so the
+   * caller's live replica folds the synthetic `put` in place without a log
+   * replay. Optional — the store's own materialization still happens.
+   */
+  readonly onAppended?: (entry: LoggedAction) => void;
   /** Called when a read throws. Defaults to `console.warn`. */
   readonly onError?: (error: unknown, entityId?: string) => void;
 }
@@ -151,7 +164,7 @@ export interface Backfill {
 }
 
 export function createBackfill(opts: BackfillOptions): Backfill {
-  const { storage, fetchEntity } = opts;
+  const { storage, fetchEntity, onAppended } = opts;
   const onError =
     opts.onError ??
     ((error: unknown, entityId?: string) => {
@@ -192,7 +205,8 @@ export function createBackfill(opts: BackfillOptions): Backfill {
       // It owns the cache until its echo arrives, so it wins over the
       // fetched base rather than being overwritten by the replay.
       if (entity !== null && (await storage.entities.get(entityId)) === null) {
-        await storage.actions.append(snapshotAction(entity));
+        const entry = await storage.actions.append(snapshotAction(entity));
+        onAppended?.(entry);
         // Force materialization so subscribers observe the fetched row.
         await storage.entities.get(entityId);
       }

@@ -16,6 +16,13 @@ export type {
 } from "./entity-store";
 export type { CursorStore } from "./cursor-store";
 export type { ReplicaRecord, ReplicaStore } from "./replica-store";
+export type {
+  MaterializationPolicy,
+  Replica,
+  ReplicaChange,
+  ReplicaOptions,
+  Revision,
+} from "../replica/types";
 export type { EntityChangeEmitter } from "./entity-change-emitter";
 export type {
   OutboxEntry,

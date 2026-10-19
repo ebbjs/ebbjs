@@ -239,8 +239,8 @@ describe("createBackfill", () => {
 
     expect(fetches).toEqual(["post_1"]);
     expect((await storage.entities.get("post_1"))?.data.fields.title?.value).toBe("Hello");
-    // The synthetic base sorts under every delivered Action.
-    expect((await storage.actions.getForEntity("post_1"))[0]?.gsn).toBe(0);
+    // The synthetic base carries the fetched entity's true gsn.
+    expect((await storage.actions.getForEntity("post_1"))[0]?.gsn).toBe(1);
 
     // Reload: drop the cache and re-derive from the durable log alone.
     await storage.entities.reset();
@@ -326,11 +326,11 @@ describe("createBackfill", () => {
 });
 
 describe("snapshotAction", () => {
-  it("carries the canonical envelopes verbatim under gsn 0", () => {
+  it("carries the canonical envelopes verbatim under the entity's true gsn", () => {
     const entity = mkEntity("post_1", "blog_post", { title: "Hello" });
     const action = snapshotAction(entity);
 
-    expect(action.gsn).toBe(0);
+    expect(action.gsn).toBe(entity.last_gsn);
     expect(action.hlc).toBe(entity.updated_hlc);
     expect(action.updates[0]?.method).toBe("put");
     expect(action.updates[0]?.data?.fields).toEqual(entity.data.fields);

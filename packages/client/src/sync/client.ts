@@ -29,15 +29,13 @@ import {
   createAction,
   createClock,
   type Entity,
-  type FieldValue,
   type HLCState,
-  isFieldMap,
   localEvent,
   receiveRemoteHLC,
-  latestHlc,
   type Update,
 } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
+import { createReplica, type Replica } from "@ebbjs/storage/replica";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 
 import { ConnectionStateMachine, type ConnectionState } from "./connection-state";
@@ -149,6 +147,14 @@ export class SyncClient implements PermissionQuery {
   readonly serverUrl: string;
   readonly actorId: string;
   readonly storage: StorageAdapter;
+  /**
+   * The engine's materialized read model (#496): a mutable set of rows with
+   * a per-type index, a monotonic revision, and a change journal. Reads are
+   * synchronous and return shared rows. Hydrated by {@link hydrateReplica};
+   * the async `storage.entities` shim keeps non-engine callers working until
+   * the engine signal re-homes them (#512/#520).
+   */
+  readonly replica: Replica;
   readonly presence: PresenceManager;
   readonly registry: EntityRegistry;
   readonly schema?: AnySchema;
@@ -258,11 +264,14 @@ export class SyncClient implements PermissionQuery {
    * the missing entities from the server into the action log.
    */
   private readonly backfillRunner: Backfill;
+  /** Memoized hydration of {@link replica}; see {@link hydrateReplica}. */
+  private replicaHydration: Promise<void> | null = null;
 
   constructor(opts: SyncClientOptions) {
     this.serverUrl = opts.serverUrl.replace(/\/$/, "");
     this.actorId = opts.actorId;
     this.storage = opts.storage ?? createMemoryAdapter();
+    this.replica = createReplica();
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
@@ -327,6 +336,9 @@ export class SyncClient implements PermissionQuery {
     this.backfillRunner = createBackfill({
       storage: this.storage,
       fetchEntity: (entityId) => this.getEntity(entityId),
+      onAppended: (entry) => {
+        this.replica.ingest(entry.action, entry.added, entry.position);
+      },
     });
     this.sync = {
       conflicts: conflictsObservable,
@@ -491,6 +503,7 @@ export class SyncClient implements PermissionQuery {
    * subsequent `catchUp` / `subscribe` calls can pick up where we left off.
    */
   async handshake(opts: HandshakeRequest = {}): Promise<HandshakeResult> {
+    await this.hydrateReplica();
     const url = `${this.serverUrl}/sync/handshake`;
     const body = JSON.stringify({
       cursors: opts.cursors ?? {},
@@ -533,6 +546,7 @@ export class SyncClient implements PermissionQuery {
    * (populated by `handshake`, `catchUp`, or a server-requested reconnect).
    */
   async catchUp(groupId: string, fromGsn?: number): Promise<CatchUpResponse> {
+    await this.hydrateReplica();
     const offset =
       fromGsn ?? (await this.storage.cursors.get(groupId)) ?? this.groupCursors.get(groupId) ?? 0;
     const url = `${this.serverUrl}/sync/groups/${encodeURIComponent(groupId)}?offset=${offset}`;
@@ -576,6 +590,7 @@ export class SyncClient implements PermissionQuery {
     // now would overstate freshness.
     if (upToDate) {
       this.statusController.markSynced();
+      await this.persistReplica();
     }
 
     return { actions, nextOffset, upToDate };
@@ -833,8 +848,39 @@ export class SyncClient implements PermissionQuery {
    * surface exposes it for callers that want to await or force a pass.
    * Concurrent calls coalesce into one pass plus one queued re-check.
    */
-  backfill(): Promise<void> {
-    return this.backfillRunner.run();
+  async backfill(): Promise<void> {
+    await this.hydrateReplica();
+    await this.backfillRunner.run();
+    await this.persistReplica();
+  }
+
+  /**
+   * Bring {@link replica} up to date: the persisted record, the action-log
+   * tail after its watermark, and the durable outbox overlay. Idempotent and
+   * safe to await from any caller; the sync lifecycle hydrates lazily, so an
+   * engine reading the replica directly should await this first.
+   */
+  async hydrateReplica(): Promise<void> {
+    this.replicaHydration ??= this.loadReplica();
+    return this.replicaHydration;
+  }
+
+  /** Persist {@link replica}'s record as the durable fast path for hydration. */
+  async persistReplica(): Promise<void> {
+    await this.storage.replica.save(this.replica.toRecord());
+  }
+
+  private async loadReplica(): Promise<void> {
+    const record = await this.storage.replica.load();
+    if (record !== null) this.replica.load(record);
+    for (const entry of await this.storage.actions.readTail(record?.position ?? 0)) {
+      this.replica.ingest(entry.action, entry.added, entry.position);
+    }
+    for (const entry of await this.storage.outbox.list()) {
+      if (entry.status === "pending" || entry.status === "acknowledged") {
+        this.replica.optimistic(entry.action);
+      }
+    }
   }
 
   /**
@@ -1280,18 +1326,19 @@ export class SyncClient implements PermissionQuery {
    * that may have fields the local schema doesn't know about is the
    * common case. The action still materializes regardless.
    *
-   * After the action lands in the action log and the affected
-   * entities are marked dirty, this method force-materializes each
-   * affected entity so subscribers on the storage adapter's change
-   * emitter observe the new state immediately. The materialize-on-
-   * read contract would otherwise require every consumer to issue
-   * a read first — not viable for per-collection subscribe, which
+   * After the action lands in the action log it is folded into the
+   * replica, and each entity whose observable content changed is
+   * force-materialized in the `storage.entities` shim so subscribers on the
+   * storage adapter's change emitter observe the new state immediately. The
+   * materialize-on-read contract would otherwise require every consumer to
+   * issue a read first — not viable for per-collection subscribe, which
    * must surface changes without a forced read.
    */
   private async _applyAction(
     action: Action,
     groupId?: string,
   ): Promise<{ entityId: string; entityType: string }[]> {
+    await this.hydrateReplica();
     const violations = this.registry.validateAction(action);
     if (violations.length > 0) {
       this.emitRegistryViolations(violations, { direction: "inbound" });
@@ -1299,7 +1346,9 @@ export class SyncClient implements PermissionQuery {
     if (action.hlc !== undefined) {
       this.mergeRemoteHLC(action.hlc);
     }
-    await this.storage.actions.append(action);
+    const beforeRevision = this.replica.revision;
+    const logged = await this.storage.actions.append(action);
+    this.replica.ingest(logged.action, logged.added, logged.position);
     // The single inbound receipt hook: an Action that matches a buffered
     // Outbox entry (with a server GSN) is this client's own echo, so the
     // entry is now proven canonical and can be removed. Runs after the
@@ -1323,11 +1372,11 @@ export class SyncClient implements PermissionQuery {
     }
     if (this.storage.changeEmitter !== undefined) {
       const keepDirty = this.storage.materializeKeepDirty;
-      for (const { entityId } of affected) {
+      for (const change of this.replica.changesSince(beforeRevision)) {
         if (keepDirty !== undefined) {
-          await keepDirty(entityId);
+          await keepDirty(change.id);
         } else {
-          await this.storage.entities.get(entityId);
+          await this.storage.entities.get(change.id);
         }
       }
     }
@@ -1349,11 +1398,23 @@ export class SyncClient implements PermissionQuery {
    * supplies the base.
    */
   private async applyLocalAction(action: Action): Promise<void> {
+    await this.hydrateReplica();
+    this.replica.optimistic(action);
+    await this.mirrorReplicaRows(action);
+  }
+
+  /**
+   * Replace the durable rows in the `storage.entities` shim with the
+   * replica's composed view, clearing the dirty flag so a later read does
+   * not replay the log over them. A subject with no composed row is left
+   * untouched — the shim cannot represent absence.
+   */
+  private async mirrorReplicaRows(action: Action): Promise<void> {
     for (const update of action.updates) {
-      const current = await this.storage.entities.get(update.subject_id);
-      const next = applyLocalUpdate(current, update, action.hlc);
-      if (next === null) continue;
-      await this.storage.entities.set(next);
+      const row = this.replica.get(update.subject_id);
+      if (row === undefined) continue;
+      await this.storage.dirtyTracker.clear(update.subject_id);
+      await this.storage.entities.set(row);
     }
   }
 
@@ -1372,18 +1433,15 @@ export class SyncClient implements PermissionQuery {
   }
 
   /**
-   * Drop a losing Action's optimistic writes and replay the action log
-   * for every entity it touched, converging the cache on the server's
-   * view. Marking dirty first is what forces the replay: the optimistic
-   * apply wrote the cache directly and left the entity clean. An entity
-   * the server never echoed has no log rows, so replay leaves the cached
-   * row as-is — the store has no way to represent absence.
+   * Drop a losing Action's optimistic writes, converging the replica on the
+   * durable base, and mirror the reverted rows into the async
+   * `storage.entities` shim. An entity the server never echoed has no base
+   * row: the replica drops it, but the shim cannot represent absence and
+   * keeps the stale optimistic row until a durable touch.
    */
   private async reMaterializeFromLog(action: Action): Promise<void> {
-    for (const update of action.updates) {
-      await this.storage.dirtyTracker.mark(update.subject_id, update.subject_type);
-      await this.storage.entities.get(update.subject_id);
-    }
+    this.replica.discard(action.id);
+    await this.mirrorReplicaRows(action);
   }
 
   /**
@@ -1478,63 +1536,6 @@ const collectViolations = (
     out.push(...registry.validateAction(action));
   }
   return out;
-};
-
-/**
- * Project a locally-authored Update onto the cached Entity for the
- * optimistic apply. Returns `null` when a patch or delete has no base
- * row to apply to — the server echo (or a later catch-up) supplies it.
- *
- * A local leaf write wins outright: the Update was stamped from this
- * client's HLC clock after every HLC the cache has seen, so the write is
- * newer than the cached leaf. A map field unions keys instead of
- * replacing, so a write to one key keeps its siblings; the leaf rule is
- * what the optimistic view has always promised, and only map fields add
- * structure the spread could not express.
- */
-const mergeLocalField = (existing: FieldValue | undefined, incoming: FieldValue): FieldValue => {
-  if (existing === undefined || !isFieldMap(existing) || !isFieldMap(incoming)) return incoming;
-  const map: Record<string, FieldValue> = { ...existing.map };
-  for (const [key, value] of Object.entries(incoming.map)) {
-    const previous = map[key];
-    map[key] = previous === undefined ? value : mergeLocalField(previous, value);
-  }
-  return { map };
-};
-
-const applyLocalUpdate = (current: Entity | null, update: Update, hlc: string): Entity | null => {
-  const fields = update.data?.fields ?? {};
-  switch (update.method) {
-    case "put":
-      return {
-        id: update.subject_id,
-        type: update.subject_type,
-        data: { fields },
-        created_hlc: hlc,
-        updated_hlc: hlc,
-        deleted_hlc: null,
-        last_gsn: 0,
-      };
-    case "patch": {
-      if (current === null) return null;
-      if (current.deleted_hlc) return current;
-      const merged: Record<string, FieldValue> = { ...current.data.fields };
-      for (const [field, value] of Object.entries(fields)) {
-        merged[field] = mergeLocalField(merged[field], value);
-      }
-      return {
-        ...current,
-        data: { fields: merged },
-        // A patch's HLC wins when it is later than the cached row's,
-        // mirroring the storage materializer so the optimistic entity
-        // and the post-echo replay converge on the same updated_hlc.
-        updated_hlc: latestHlc(current.updated_hlc, hlc),
-      };
-    }
-    case "delete":
-      if (current === null) return null;
-      return { ...current, deleted_hlc: hlc, updated_hlc: hlc };
-  }
 };
 
 /**
