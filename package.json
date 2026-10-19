@@ -29,6 +29,7 @@
     "www:build": "pnpm --filter @ebbjs/www build",
     "core:test": "pnpm --filter @ebbjs/core test",
     "client:test": "pnpm --filter @ebbjs/client test",
+    "client:benchmark": "pnpm --filter \"@ebbjs/client^...\" build 1>&2 && pnpm --silent --filter @ebbjs/client benchmark",
     "server:test": "pnpm --filter @ebbjs/server test",
     "storage:test": "pnpm --filter @ebbjs/storage test",
     "codemirror:test": "pnpm --filter @ebbjs/codemirror test",
