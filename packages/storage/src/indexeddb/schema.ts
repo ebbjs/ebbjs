@@ -61,10 +61,12 @@ export interface EbbDBSchema extends DBSchema {
     indexes: { type: string };
   };
   /**
-   * Shared reverse index: one record per composite key, mapping each
-   * live row id to its source id. Serves relationship edges keyed by
-   * `(field, type, target_id)` and `entityGroup` membership keyed by the
-   * synthetic `groups` accessor. Keying on the row (not the source)
+   * Shared adjacency index: one record per composite key, mapping each
+   * live row id to its yielded id. Serves relationship edges in both
+   * directions — keyed by `(field, type, target_id)` for the reverse
+   * read and `(field, type, source_id)` for the forward read — and
+   * `entityGroup` membership keyed by the synthetic `groups` accessor
+   * (by group or by member entity). Keying on the row (not the source)
    * keeps a duplicate-natural-key row from erasing a source its sibling
    * still supplies. The name and the schema version are unchanged: the
    * index is derived, and following #248 it is not backfilled, so a

@@ -14,8 +14,6 @@
 import type { StorageAdapter } from "@ebbjs/storage/types";
 
 import type { EntityRegistry } from "../schema/entity-registry";
-import { liveMemberships } from "./entity-group";
-import { findRelationshipsByField } from "./relationship";
 
 /** A generated edge: the live `relationship` row linking parent to document. */
 export interface GeneratedEdge {
@@ -69,42 +67,43 @@ export async function readGeneratedParts(
   const derived = registry.get(entityType)?.derived ?? {};
   if (Object.keys(derived).length === 0) return NO_GENERATED_PARTS;
 
-  const relationships = await storage.entities.query("relationship");
-  const memberships = liveMemberships(await storage.entities.query("entityGroup"));
-
   const documentsById = new Map<string, string>();
   const edges: GeneratedEdge[] = [];
 
   for (const field of Object.keys(derived)) {
     const rel = registry.getRelationship(entityType, field);
     if (rel === undefined) continue;
-    const row = findRelationshipsByField(relationships, field, rel.type).find(
-      (candidate) => candidate.data?.fields?.["source_id"]?.value === entityId,
-    );
-    if (row === undefined) continue;
-    const targetId = row.data?.fields?.["target_id"]?.value;
-    if (typeof targetId !== "string") continue;
-
-    documentsById.set(targetId, rel.target.name);
-    edges.push({
-      relationshipId: row.id,
+    const links = await storage.entities.queryByRelationshipSource({
+      as: field,
+      type: rel.type,
       sourceId: entityId,
-      targetId,
+    });
+    const link = links[0];
+    if (link === undefined) continue;
+
+    documentsById.set(link.targetId, rel.target.name);
+    edges.push({
+      relationshipId: link.relationshipId,
+      sourceId: entityId,
+      targetId: link.targetId,
       field,
       type: rel.type,
     });
   }
 
-  const documents: GeneratedDocument[] = [...documentsById].map(([id, type]) => ({
-    id,
-    type,
-    memberships: memberships
-      .filter((membership) => membership.entityId === id)
-      .map((membership) => ({
-        membershipId: membership.membershipId,
-        groupId: membership.groupId,
-      })),
-  }));
+  const documents: GeneratedDocument[] = await Promise.all(
+    [...documentsById].map(async ([id, type]) => {
+      const memberships = await storage.entities.queryByMembershipEntity(id);
+      return {
+        id,
+        type,
+        memberships: memberships.map((membership) => ({
+          membershipId: membership.membershipId,
+          groupId: membership.groupId,
+        })),
+      };
+    }),
+  );
 
   return { documents, edges };
 }

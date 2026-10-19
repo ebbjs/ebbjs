@@ -9,10 +9,15 @@
  */
 
 import { generateId, type Entity, type Update } from "@ebbjs/core";
+import type {
+  MembershipLink,
+  RelationshipIndexQuery,
+  RelationshipLink,
+  RelationshipSourceQuery,
+} from "@ebbjs/storage/types";
 import type { TObject, TSchema } from "@sinclair/typebox/type";
 
 import { EntityValidationError, type EntityRegistry } from "../schema/entity-registry";
-import { liveMemberships } from "./entity-group";
 import {
   type LoadEntities,
   type PointerValue,
@@ -20,6 +25,7 @@ import {
   buildLazyQueryBuilder,
   normalizePointer,
 } from "./query-builder";
+import { recordTraversalRows } from "./traversal-counter";
 
 /**
  * The value shape for `sourceCardinality: "many"` updates.
@@ -110,57 +116,27 @@ export type { PointerValue, QueryBuilder } from "./query-builder";
 export { buildQueryBuilder, normalizePointer } from "./query-builder";
 
 /**
- * Walk the local cache to collect all `Relationship` entities whose
- * `data.fields.field` matches the given accessor name and whose
- * `data.fields.type` matches the relationship's `type` string. The
- * reverse accessor and the many-forward accessor both call this.
+ * The index reads a traversal needs. Reading through this interface —
+ * rather than scanning the whole `relationship` / `entityGroup` type —
+ * is what keeps a traversal proportional to the degree of the row it
+ * starts from. The client binds it to the storage layer's adjacency
+ * index in `buildRowAccessors`.
  */
-export function findRelationshipsByField(
-  entities: readonly Entity[],
-  field: string,
-  type: string,
-): readonly Entity[] {
-  return entities.filter((e) => {
-    if (e.type !== "relationship") return false;
-    if (e.deleted_hlc !== null) return false;
-    const f = e.data?.fields?.["field"];
-    const t = e.data?.fields?.["type"];
-    return f?.value === field && t?.value === type;
-  });
-}
-
-/**
- * Find the single target id for a one-cardinality forward
- * relationship. Scans the cache for `Relationship` entities with
- * `source_id === sourceId` and matching `field`/`type`.
- *
- * Returns:
- * - `null` when no edge exists (the link was cleared or never set)
- * - `string` when an edge exists (target may be dangling — callers
- *   decide whether dangling reads as `undefined` via
- *   {@link resolveForwardOne})
- */
-function findForwardOneTargetId(
-  entities: readonly Entity[],
-  sourceId: string,
-  field: string,
-  type: string,
-): string | null {
-  const matching = findRelationshipsByField(entities, field, type).filter((rel) => {
-    const s = rel.data?.fields?.["source_id"];
-    return s?.value === sourceId;
-  });
-  if (matching.length === 0) return null;
-  const targetId = matching[0]?.data?.fields?.["target_id"]?.value;
-  return typeof targetId === "string" ? targetId : null;
+export interface AdjacencyReader {
+  /** Live edges out of the query's source under `(as, type)`, ascending by target id. */
+  forwardLinks(query: RelationshipSourceQuery): Promise<readonly RelationshipLink[]>;
+  /** Distinct live source ids pointing at the query's target, ascending. */
+  reverseSourceIds(query: RelationshipIndexQuery): Promise<readonly string[]>;
+  /** Live membership rows of the member entity, ascending by group id. */
+  membershipsOf(entityId: string): Promise<readonly MembershipLink[]>;
 }
 
 /**
  * Build a forward-singular accessor result. For
  * `sourceCardinality: "one"` the canonical FK lives on a materialized
- * `Relationship` entity (scanned by `source_id + field + type`), not
- * on the source entity's data fields. Users don't have to declare
- * the FK field on the source — `defineRelationship({source, target,
+ * `Relationship` entity, read through the forward index by `source_id
+ * + field + type`; it is not a field on the source entity, so users
+ * don't have to declare one — `defineRelationship({source, target,
  * as})` alone wires the link.
  *
  * Returns:
@@ -176,27 +152,29 @@ function findForwardOneTargetId(
  */
 export async function forwardOne(
   readLocalEntity: (id: string) => Promise<Entity | null>,
-  queryEntitiesByType: (type: string) => Promise<readonly Entity[]>,
+  adjacency: AdjacencyReader,
   sourceId: string,
   sourceName: string,
   field: string,
   type: string,
 ): Promise<Entity | null | undefined> {
-  const source = await readLocalEntity(sourceId);
+  const source = await loadEntity(readLocalEntity, sourceId);
   if (source === null) return undefined;
   if (source.type !== sourceName) return undefined;
-  const all = await queryEntitiesByType("relationship");
-  const targetId = findForwardOneTargetId(all, sourceId, field, type);
-  if (targetId === null) return null;
-  const target = await readLocalEntity(targetId);
+  const links = await adjacency.forwardLinks({ as: field, type, sourceId });
+  recordTraversalRows(links.length);
+  const first = links[0];
+  if (first === undefined) return null;
+  const target = await loadEntity(readLocalEntity, first.targetId);
   return target ?? undefined;
 }
 
 /**
- * Build a forward-many accessor result. The canonical FK set lives
- * on materialized `Relationship` entities (scanned by `source_id +
- * field + type`), not on the source entity's data fields. The set
- * of matching target ids is the relationship's set of links.
+ * Build a forward-many accessor result. The canonical FK set lives on
+ * materialized `Relationship` entities, read through the forward index
+ * by `source_id + field + type`; it is not a field on the source
+ * entity. The distinct target ids the index returns are the
+ * relationship's set of links.
  *
  * `targetShape` drives the projection on `await qb` — the chain is
  * generic over the target entity's field map.
@@ -206,7 +184,7 @@ export async function forwardOne(
  */
 export function forwardMany<TFields extends Record<string, TSchema>>(
   readLocalEntity: (id: string) => Promise<Entity | null>,
-  queryEntitiesByType: (type: string) => Promise<readonly Entity[]>,
+  adjacency: AdjacencyReader,
   sourceId: string,
   sourceName: string,
   targetName: string,
@@ -215,47 +193,44 @@ export function forwardMany<TFields extends Record<string, TSchema>>(
   type: string,
 ): QueryBuilder<TFields> {
   const loader: LoadEntities = async () => {
-    const source = await readLocalEntity(sourceId);
+    const source = await loadEntity(readLocalEntity, sourceId);
     if (source === null) return [];
     if (source.type !== sourceName) return [];
-    const all = await queryEntitiesByType("relationship");
-    const ids = findRelationshipsByField(all, field, type)
-      .filter((rel) => rel.data?.fields?.["source_id"]?.value === sourceId)
-      .map((rel) => rel.data?.fields?.["target_id"]?.value)
-      .filter((v): v is string => typeof v === "string");
-    const idSet = new Set(ids);
-    const allTargets = await queryEntitiesByType(targetName);
-    return allTargets.filter((t) => idSet.has(t.id));
+    const links = await adjacency.forwardLinks({ as: field, type, sourceId });
+    recordTraversalRows(links.length);
+    const targetIds = [...new Set(links.map((link) => link.targetId))];
+    return loadRows(readLocalEntity, targetIds, targetName);
   };
   return buildLazyQueryBuilder(loader, targetShape);
 }
 
 /**
- * Build the built-in membership accessor result: the `group` rows
- * whose ids appear as `group_id` on `entityGroup` rows whose
- * `entity_id` is `sourceId`. Reads the local cache, same lazy shape
- * as {@link forwardMany}.
+ * Build the built-in membership accessor result: the `group` rows the
+ * member entity is filed into, read through the entity-keyed
+ * membership index. Same lazy shape as {@link forwardMany}.
  */
 export function membershipGroups<TFields extends Record<string, TSchema>>(
-  queryEntitiesByType: (type: string) => Promise<readonly Entity[]>,
+  readLocalEntity: (id: string) => Promise<Entity | null>,
+  adjacency: AdjacencyReader,
   sourceId: string,
   targetName: string,
   targetShape: TObject<TFields>,
 ): QueryBuilder<TFields> {
   const loader: LoadEntities = async () => {
-    const memberships = liveMemberships(await queryEntitiesByType("entityGroup"));
-    const ids = memberships.filter((m) => m.entityId === sourceId).map((m) => m.groupId);
-    const idSet = new Set(ids);
-    const allTargets = await queryEntitiesByType(targetName);
-    return allTargets.filter((t) => idSet.has(t.id));
+    const memberships = await adjacency.membershipsOf(sourceId);
+    recordTraversalRows(memberships.length);
+    // Two rows may name the same group; the accessor projects each group
+    // once, matching the type-wide read it replaced.
+    const groupIds = [...new Set(memberships.map((membership) => membership.groupId))];
+    return loadRows(readLocalEntity, groupIds, targetName);
   };
   return buildLazyQueryBuilder(loader, targetShape);
 }
 
 /**
- * Build a reverse accessor result. We scan the cache for `Relationship`
- * entities with `target_id === targetId` and the matching `field`/`type`,
- * then load each `source_id`.
+ * Build a reverse accessor result. The reverse index returns the
+ * distinct source ids pointing at `targetId` under `(field, type)`;
+ * each is loaded and kept only when it is a live `sourceName` row.
  *
  * `sourceShape` drives the projection on `await qb` — the chain is
  * generic over the source entity's field map.
@@ -265,7 +240,7 @@ export function membershipGroups<TFields extends Record<string, TSchema>>(
  */
 export function reverse<TFields extends Record<string, TSchema>>(
   readLocalEntity: (id: string) => Promise<Entity | null>,
-  queryEntitiesByType: (type: string) => Promise<readonly Entity[]>,
+  adjacency: AdjacencyReader,
   targetId: string,
   sourceName: string,
   sourceShape: TObject<TFields>,
@@ -273,19 +248,35 @@ export function reverse<TFields extends Record<string, TSchema>>(
   type: string,
 ): QueryBuilder<TFields> {
   const loader: LoadEntities = async () => {
-    const all = await queryEntitiesByType("relationship");
-    const matching = findRelationshipsByField(all, field, type).filter((rel) => {
-      const t = rel.data?.fields?.["target_id"];
-      return t?.value === targetId;
-    });
-    const sourceIds = matching
-      .map((rel) => rel.data?.fields?.["source_id"]?.value)
-      .filter((v): v is string => typeof v === "string");
-    const allSources = await queryEntitiesByType(sourceName);
-    const idSet = new Set(sourceIds);
-    return allSources.filter((s) => idSet.has(s.id));
+    const sourceIds = await adjacency.reverseSourceIds({ as: field, type, targetId });
+    recordTraversalRows(sourceIds.length);
+    return loadRows(readLocalEntity, sourceIds, sourceName);
   };
   return buildLazyQueryBuilder(loader, sourceShape);
+}
+
+/** Load one row and count it as examined by the traversal. */
+async function loadEntity(
+  readLocalEntity: (id: string) => Promise<Entity | null>,
+  id: string,
+): Promise<Entity | null> {
+  const entity = await readLocalEntity(id);
+  recordTraversalRows(1);
+  return entity;
+}
+
+/**
+ * Load the distinct rows an index read names, keeping only rows of
+ * `type`. A miss or a wrong-typed row is dropped, matching the
+ * type-wide read the index replaced.
+ */
+async function loadRows(
+  readLocalEntity: (id: string) => Promise<Entity | null>,
+  ids: readonly string[],
+  type: string,
+): Promise<readonly Entity[]> {
+  const rows = await Promise.all(ids.map((id) => loadEntity(readLocalEntity, id)));
+  return rows.filter((row): row is Entity => row !== null && row.type === type);
 }
 
 /**

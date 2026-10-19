@@ -51,6 +51,7 @@ import {
   type QueryBuilder,
 } from "./query-builder";
 import {
+  type AdjacencyReader,
   buildEntityGroupUpdates,
   forwardMany,
   forwardOne,
@@ -551,21 +552,19 @@ export type EntityNamespaces<S> =
  */
 const collaborativeTextForwardOne = (
   readLocalEntity: (id: string) => Promise<Entity | null>,
-  queryEntitiesByType: (type: string) => Promise<readonly Entity[]>,
+  adjacency: AdjacencyReader,
   sourceId: string,
   sourceName: string,
   field: string,
   type: string,
   openTextDocument: (docId: string, docType: string) => TextDocument,
 ): Promise<TextDocument | null> =>
-  forwardOne(readLocalEntity, queryEntitiesByType, sourceId, sourceName, field, type).then(
-    (entity) => {
-      if (entity === null || entity === undefined) return null;
-      const doc = openTextDocument(entity.id, entity.type);
-      doc.hydrate(entity.data?.fields?.[DOC_CONTENT_FIELD]);
-      return doc;
-    },
-  );
+  forwardOne(readLocalEntity, adjacency, sourceId, sourceName, field, type).then((entity) => {
+    if (entity === null || entity === undefined) return null;
+    const doc = openTextDocument(entity.id, entity.type);
+    doc.hydrate(entity.data?.fields?.[DOC_CONTENT_FIELD]);
+    return doc;
+  });
 
 /**
  * Build the runtime accessor record for a single row. Walks the
@@ -598,8 +597,14 @@ function buildRowAccessors(
 ): Record<string, RowAccessor> {
   const out: Record<string, RowAccessor> = {};
   const readLocalEntity = (id: string): Promise<Entity | null> => storage.entities.get(id);
-  const queryEntitiesByType = (type: string): Promise<readonly Entity[]> =>
-    storage.entities.query(type);
+  // Traversals read the adjacency index rather than scanning the
+  // `relationship` / `entityGroup` type, so their cost tracks the
+  // source row's degree.
+  const adjacency: AdjacencyReader = {
+    forwardLinks: (query) => storage.entities.queryByRelationshipSource(query),
+    reverseSourceIds: (query) => storage.entities.queryByRelationship(query),
+    membershipsOf: (entityId) => storage.entities.queryByMembershipEntity(entityId),
+  };
 
   // Forward accessors — relationships where this entity is the source.
   for (const rel of registry.getRelationshipsForSource(entityName)) {
@@ -609,7 +614,7 @@ function buildRowAccessors(
     if (isCollaborativeText(rel)) {
       out[field] = collaborativeTextForwardOne(
         readLocalEntity,
-        queryEntitiesByType,
+        adjacency,
         sourceId,
         entityName,
         field,
@@ -625,7 +630,7 @@ function buildRowAccessors(
       if (targetShape === undefined) continue;
       out[field] = forwardMany(
         readLocalEntity,
-        queryEntitiesByType,
+        adjacency,
         sourceId,
         entityName,
         targetName,
@@ -635,14 +640,7 @@ function buildRowAccessors(
       );
       continue;
     }
-    out[field] = forwardOne(
-      readLocalEntity,
-      queryEntitiesByType,
-      sourceId,
-      entityName,
-      field,
-      relType,
-    );
+    out[field] = forwardOne(readLocalEntity, adjacency, sourceId, entityName, field, relType);
   }
 
   // Reverse accessors — relationships where this entity is the target.
@@ -655,7 +653,7 @@ function buildRowAccessors(
     if (sourceShape === undefined) continue;
     out[field] = reverseTraversal(
       readLocalEntity,
-      queryEntitiesByType,
+      adjacency,
       sourceId,
       sourceName,
       sourceShape,
@@ -670,7 +668,13 @@ function buildRowAccessors(
   const groupShape = registry.get("group")?.shape;
   // Defensive: `group` is always a registered system entity.
   if (groupShape !== undefined) {
-    out[GROUPS_ACCESSOR] = membershipGroups(queryEntitiesByType, sourceId, "group", groupShape);
+    out[GROUPS_ACCESSOR] = membershipGroups(
+      readLocalEntity,
+      adjacency,
+      sourceId,
+      "group",
+      groupShape,
+    );
   }
 
   return out;
@@ -1283,10 +1287,11 @@ export const resolveSingleGroupId = (
 };
 
 /**
- * Look up the relationship by `(source, as)`, resolve the one-cardinality
- * unlink's existing row id (a storage read the pure operation cannot do),
- * and commit the `writeRelationship` operation. The operation itself owns
- * the GROUPS_ACCESSOR and undeclared-relationship refusals.
+ * Resolve the write's target and commit the `writeRelationship`
+ * operation. A one-cardinality unlink whose edge is already gone —
+ * never linked, or locally tombstoned — is a no-op: there is no row id
+ * for the wire delete to name. The operation itself owns the
+ * GROUPS_ACCESSOR and undeclared-relationship refusals.
  */
 async function submitRelationshipWrite(
   write: WriteCapability,
@@ -1296,14 +1301,9 @@ async function submitRelationshipWrite(
   as: string,
   pointer: RelationshipPointer,
 ): Promise<WriteResponse> {
-  const relationshipSubjectId = await resolveUnlinkRelationshipId(
-    write,
-    storage,
-    entityName,
-    sourceId,
-    as,
-    pointer,
-  );
+  const target = await resolveUnlinkTarget(write, storage, entityName, sourceId, as, pointer);
+  if (target.kind === "unlinked") return { rejected: [] };
+  const relationshipSubjectId = target.kind === "existing" ? target.relationshipId : undefined;
   const groups = await readLiveGroupIds(storage, sourceId);
   const { response } = await commit(
     [
@@ -1322,41 +1322,45 @@ async function submitRelationshipWrite(
 }
 
 /**
- * The one-cardinality unlink's existing relationship row id. The wire
- * delete must name the row's id so the server's authorizer can recover its
- * group. The lookup is skipped for link/setLinks and for refusals the
- * operation owns (the built-in membership accessor, an undeclared
- * relationship), so the operation's error is the one the caller sees.
+ * The one-cardinality unlink's live relationship row, or the reason it
+ * has none. The wire delete must name the row's id so the server's
+ * authorizer can recover its group, so a live edge yields `existing`.
+ * Anything that needs no lookup — link / setLinks, or a refusal the
+ * operation owns (the built-in membership accessor, an undeclared or
+ * many-cardinality relationship) — is `not-applicable`. A one-cardinality
+ * unlink with no live edge (never linked, or locally tombstoned) is
+ * `unlinked`, which the caller treats as a no-op.
  */
-async function resolveUnlinkRelationshipId(
+type UnlinkTarget =
+  | { readonly kind: "not-applicable" }
+  | { readonly kind: "unlinked" }
+  | { readonly kind: "existing"; readonly relationshipId: string };
+
+async function resolveUnlinkTarget(
   write: WriteCapability,
   storage: StorageAdapter,
   entityName: string,
   sourceId: string,
   as: string,
   pointer: RelationshipPointer,
-): Promise<string | undefined> {
-  if (pointer.targetId !== null || pointer.targetIds !== undefined) return undefined;
-  if (as === GROUPS_ACCESSOR) return undefined;
-  const rel = write.registry.getRelationship(entityName, as);
-  if (rel === undefined || rel.sourceCardinality !== "one") return undefined;
-  const all = await storage.entities.query("relationship");
-  const wireType = rel.type ?? entityName;
-  const match = all.find(
-    (e) =>
-      e.data?.fields?.["source_id"]?.value === sourceId &&
-      e.data?.fields?.["field"]?.value === as &&
-      e.data?.fields?.["type"]?.value === wireType,
-  );
-  if (match === undefined) {
-    throw new EntityValidationError([
-      {
-        entityName,
-        message: `unlink("${as}"): no relationship found for source "${sourceId}" in the materialized cache; did you link() first and wait for catchUp?`,
-      },
-    ]);
+): Promise<UnlinkTarget> {
+  if (pointer.targetId !== null || pointer.targetIds !== undefined) {
+    return { kind: "not-applicable" };
   }
-  return match.id;
+  if (as === GROUPS_ACCESSOR) return { kind: "not-applicable" };
+  const rel = write.registry.getRelationship(entityName, as);
+  if (rel === undefined || rel.sourceCardinality !== "one") {
+    return { kind: "not-applicable" };
+  }
+  const wireType = rel.type ?? entityName;
+  const [link] = await storage.entities.queryByRelationshipSource({
+    as,
+    type: wireType,
+    sourceId,
+  });
+  return link === undefined
+    ? { kind: "unlinked" }
+    : { kind: "existing", relationshipId: link.relationshipId };
 }
 
 /**

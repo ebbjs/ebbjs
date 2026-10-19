@@ -60,6 +60,8 @@ export {
   type LoadEntities,
 } from "./sync/query-builder";
 
+export { traversalCounter } from "./sync/traversal-counter";
+
 export {
   type EntityNamespace,
   type EntityFields,

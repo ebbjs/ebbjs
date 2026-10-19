@@ -45,16 +45,19 @@ export function liveMemberships(rows: readonly Entity[]): readonly LiveMembershi
  * needs the row id a delete addresses, which the `groups` accessor's
  * projected group entities do not carry.
  *
- * Storage indexes membership by group, not by entity, so this
- * entity→groups read still scans every `entityGroup` row. Keeping the
- * scan here means callers depend on the shape, not the access path.
+ * Reads the member-keyed membership index, so the cost is the row's
+ * membership count rather than the size of the `entityGroup` type.
  */
 export async function readEntityMemberships(
   storage: StorageAdapter,
   entityId: string,
 ): Promise<readonly LiveMembership[]> {
-  const rows = await storage.entities.query("entityGroup");
-  return liveMemberships(rows).filter((m) => m.entityId === entityId);
+  const links = await storage.entities.queryByMembershipEntity(entityId);
+  return links.map((link) => ({
+    membershipId: link.membershipId,
+    entityId,
+    groupId: link.groupId,
+  }));
 }
 
 /**

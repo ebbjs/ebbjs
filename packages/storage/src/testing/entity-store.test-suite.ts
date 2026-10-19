@@ -144,6 +144,42 @@ const makeEntityGroupEntity = (
   };
 };
 
+/** Append a Relationship put and mark its row dirty. */
+const seedListEdge = async (
+  actionLog: ActionLog,
+  dirtyTracker: DirtyTracker,
+  row: {
+    id: string;
+    sourceId: string;
+    targetId?: string;
+    field?: string;
+    type?: string;
+  },
+): Promise<void> => {
+  await actionLog.append(
+    buildRelationshipPutAction({
+      id: row.id,
+      sourceId: row.sourceId,
+      targetId: row.targetId ?? "list_1",
+      field: row.field ?? "list",
+      type: row.type ?? "todo_list",
+    }),
+  );
+  await dirtyTracker.mark(row.id, "relationship");
+};
+
+/** Append an `entityGroup` put and mark its row dirty. */
+const seedMembership = async (
+  actionLog: ActionLog,
+  dirtyTracker: DirtyTracker,
+  row: { id: string; entityId: string; groupId: string },
+): Promise<void> => {
+  await actionLog.append(
+    buildEntityGroupPutAction({ id: row.id, entityId: row.entityId, groupId: row.groupId }),
+  );
+  await dirtyTracker.mark(row.id, "entityGroup");
+};
+
 export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOptions): void => {
   describe(`${name} EntityStore`, () => {
     describe("get", () => {
@@ -451,29 +487,6 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
     describe("queryByRelationship", () => {
       const listQuery = (entityStore: EntityStore) =>
         entityStore.queryByRelationship({ as: "list", type: "todo_list", targetId: "list_1" });
-
-      const seedListEdge = async (
-        actionLog: ActionLog,
-        dirtyTracker: DirtyTracker,
-        row: {
-          id: string;
-          sourceId: string;
-          targetId?: string;
-          field?: string;
-          type?: string;
-        },
-      ): Promise<void> => {
-        await actionLog.append(
-          buildRelationshipPutAction({
-            id: row.id,
-            sourceId: row.sourceId,
-            targetId: row.targetId ?? "list_1",
-            field: row.field ?? "list",
-            type: row.type ?? "todo_list",
-          }),
-        );
-        await dirtyTracker.mark(row.id, "relationship");
-      };
 
       it("returns source ids for a (field, type, target_id) triple", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
@@ -821,18 +834,203 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
       });
     });
 
-    describe("queryByMembership", () => {
-      const seedMembership = async (
-        actionLog: ActionLog,
-        dirtyTracker: DirtyTracker,
-        row: { id: string; entityId: string; groupId: string },
-      ): Promise<void> => {
-        await actionLog.append(
-          buildEntityGroupPutAction({ id: row.id, entityId: row.entityId, groupId: row.groupId }),
-        );
-        await dirtyTracker.mark(row.id, "entityGroup");
-      };
+    describe("queryByRelationshipSource", () => {
+      const sourceQuery = (entityStore: EntityStore) =>
+        entityStore.queryByRelationshipSource({
+          as: "list",
+          type: "todo_list",
+          sourceId: "todo_1",
+        });
 
+      it("returns the target id and row id for a (field, type, source_id) triple", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
+
+        expect(await sourceQuery(entityStore)).toEqual([
+          { relationshipId: "rel_1", targetId: "list_1" },
+        ]);
+      });
+
+      it("materializes dirty relationship rows on query", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
+        expect(await dirtyTracker.isDirty("rel_1")).toBe(true);
+
+        await sourceQuery(entityStore);
+        expect(await dirtyTracker.isDirty("rel_1")).toBe(false);
+      });
+
+      it("returns every edge in ascending target order, deduped by row", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedListEdge(actionLog, dirtyTracker, {
+          id: "rel_b",
+          sourceId: "todo_1",
+          targetId: "list_b",
+        });
+        await seedListEdge(actionLog, dirtyTracker, {
+          id: "rel_a",
+          sourceId: "todo_1",
+          targetId: "list_a",
+        });
+
+        expect((await sourceQuery(entityStore)).map((l) => l.targetId)).toEqual([
+          "list_a",
+          "list_b",
+        ]);
+      });
+
+      it("keeps two rows that share a natural key and drops only the tombstoned one", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
+        await seedListEdge(actionLog, dirtyTracker, { id: "rel_2", sourceId: "todo_1" });
+        expect((await sourceQuery(entityStore)).map((l) => l.relationshipId)).toEqual([
+          "rel_1",
+          "rel_2",
+        ]);
+
+        await actionLog.append(buildRelationshipDeleteAction({ id: "rel_1" }, 2));
+        await dirtyTracker.mark("rel_1", "relationship");
+        expect((await sourceQuery(entityStore)).map((l) => l.relationshipId)).toEqual(["rel_2"]);
+
+        await actionLog.append(buildRelationshipDeleteAction({ id: "rel_2" }, 3));
+        await dirtyTracker.mark("rel_2", "relationship");
+        expect(await sourceQuery(entityStore)).toEqual([]);
+      });
+
+      it("moves the edge when a patch re-targets the row", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
+
+        await actionLog.append(
+          buildRelationshipRetargetAction({ id: "rel_1", targetId: "list_2" }, 2),
+        );
+        await dirtyTracker.mark("rel_1", "relationship");
+
+        expect(await sourceQuery(entityStore)).toEqual([
+          { relationshipId: "rel_1", targetId: "list_2" },
+        ]);
+      });
+
+      it("moves the edge when a patch changes the accessor field", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
+
+        await actionLog.append(buildRelationshipPatchAction({ id: "rel_1", field: "owner" }, 2));
+        await dirtyTracker.mark("rel_1", "relationship");
+
+        expect(await sourceQuery(entityStore)).toEqual([]);
+        expect(
+          await entityStore.queryByRelationshipSource({
+            as: "owner",
+            type: "todo_list",
+            sourceId: "todo_1",
+          }),
+        ).toEqual([{ relationshipId: "rel_1", targetId: "list_1" }]);
+      });
+
+      it("re-keys the edge when a patch changes the source id", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
+
+        await actionLog.append(
+          buildRelationshipPatchAction({ id: "rel_1", sourceId: "todo_2" }, 2),
+        );
+        await dirtyTracker.mark("rel_1", "relationship");
+
+        expect(await sourceQuery(entityStore)).toEqual([]);
+        expect(
+          (
+            await entityStore.queryByRelationshipSource({
+              as: "list",
+              type: "todo_list",
+              sourceId: "todo_2",
+            })
+          ).map((l) => l.targetId),
+        ).toEqual(["list_1"]);
+      });
+
+      it("drops the edge when the row is tombstoned", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
+
+        await actionLog.append(buildRelationshipDeleteAction({ id: "rel_1" }, 2));
+        await dirtyTracker.mark("rel_1", "relationship");
+
+        expect(await sourceQuery(entityStore)).toEqual([]);
+      });
+
+      it("indexes rows written through set()", async () => {
+        const { entityStore } = await factory();
+        await entityStore.set(
+          makeRelationshipEntity({ id: "rel_2", sourceId: "todo_1", targetId: "list_1" }),
+        );
+
+        expect(await sourceQuery(entityStore)).toEqual([
+          { relationshipId: "rel_2", targetId: "list_1" },
+        ]);
+      });
+
+      it("does not index non-relationship entities that carry the same field names", async () => {
+        const { entityStore } = await factory();
+        await entityStore.set({
+          ...makeEntity({ id: "todo_9", type: "todo" }),
+          data: {
+            fields: {
+              source_id: { value: "todo_1", update_id: "u_9" },
+              target_id: { value: "list_1", update_id: "u_9" },
+              type: { value: "todo_list", update_id: "u_9" },
+              field: { value: "list", update_id: "u_9" },
+            },
+          },
+        });
+
+        expect(await sourceQuery(entityStore)).toEqual([]);
+      });
+
+      it("keeps the forward key out of the reverse key space when a source equals a target", async () => {
+        const { entityStore } = await factory();
+        // `todo_shared` is the target of rel_a and the source of rel_b.
+        await entityStore.set(
+          makeRelationshipEntity({ id: "rel_a", sourceId: "todo_1", targetId: "todo_shared" }),
+        );
+        await entityStore.set(
+          makeRelationshipEntity({ id: "rel_b", sourceId: "todo_shared", targetId: "list_1" }),
+        );
+
+        expect(
+          await entityStore.queryByRelationship({
+            as: "list",
+            type: "todo_list",
+            targetId: "todo_shared",
+          }),
+        ).toEqual(["todo_1"]);
+        expect(
+          (
+            await entityStore.queryByRelationshipSource({
+              as: "list",
+              type: "todo_list",
+              sourceId: "todo_shared",
+            })
+          ).map((l) => l.targetId),
+        ).toEqual(["list_1"]);
+      });
+
+      it("clears the index on reset", async () => {
+        const { entityStore } = await factory();
+        await entityStore.set(
+          makeRelationshipEntity({ id: "rel_2", sourceId: "todo_1", targetId: "list_1" }),
+        );
+        expect(await sourceQuery(entityStore)).toEqual([
+          { relationshipId: "rel_2", targetId: "list_1" },
+        ]);
+
+        await entityStore.reset();
+
+        expect(await sourceQuery(entityStore)).toEqual([]);
+      });
+    });
+
+    describe("queryByMembership", () => {
       it("returns member entity ids for a group id", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
         await seedMembership(actionLog, dirtyTracker, {
@@ -1052,6 +1250,145 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         await entityStore.reset();
 
         expect(await entityStore.queryByMembership("group_1")).toEqual([]);
+      });
+    });
+
+    describe("queryByMembershipEntity", () => {
+      const entityQuery = (entityStore: EntityStore) =>
+        entityStore.queryByMembershipEntity("todo_1");
+
+      it("returns the membership row id and group id for a member entity", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_1",
+          entityId: "todo_1",
+          groupId: "group_1",
+        });
+
+        expect(await entityQuery(entityStore)).toEqual([
+          { membershipId: "eg_1", groupId: "group_1" },
+        ]);
+      });
+
+      it("materializes dirty entityGroup rows on query", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_1",
+          entityId: "todo_1",
+          groupId: "group_1",
+        });
+        expect(await dirtyTracker.isDirty("eg_1")).toBe(true);
+
+        await entityQuery(entityStore);
+        expect(await dirtyTracker.isDirty("eg_1")).toBe(false);
+      });
+
+      it("returns every live membership, ascending by group", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_b",
+          entityId: "todo_1",
+          groupId: "group_b",
+        });
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_a",
+          entityId: "todo_1",
+          groupId: "group_a",
+        });
+
+        expect(await entityQuery(entityStore)).toEqual([
+          { membershipId: "eg_a", groupId: "group_a" },
+          { membershipId: "eg_b", groupId: "group_b" },
+        ]);
+      });
+
+      it("keeps a duplicate membership row while any row with the same ids is live", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_1",
+          entityId: "todo_1",
+          groupId: "group_1",
+        });
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_2",
+          entityId: "todo_1",
+          groupId: "group_1",
+        });
+        expect((await entityQuery(entityStore)).map((m) => m.membershipId)).toEqual([
+          "eg_1",
+          "eg_2",
+        ]);
+
+        await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_1" }, 2));
+        await dirtyTracker.mark("eg_1", "entityGroup");
+        expect((await entityQuery(entityStore)).map((m) => m.membershipId)).toEqual(["eg_2"]);
+
+        await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_2" }, 3));
+        await dirtyTracker.mark("eg_2", "entityGroup");
+        expect(await entityQuery(entityStore)).toEqual([]);
+      });
+
+      it("moves the membership when a patch changes group_id", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_1",
+          entityId: "todo_1",
+          groupId: "group_1",
+        });
+
+        await actionLog.append(buildEntityGroupPatchAction({ id: "eg_1", groupId: "group_2" }, 2));
+        await dirtyTracker.mark("eg_1", "entityGroup");
+
+        expect(await entityQuery(entityStore)).toEqual([
+          { membershipId: "eg_1", groupId: "group_2" },
+        ]);
+      });
+
+      it("re-keys the membership when a patch changes entity_id", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedMembership(actionLog, dirtyTracker, {
+          id: "eg_1",
+          entityId: "todo_1",
+          groupId: "group_1",
+        });
+
+        await actionLog.append(buildEntityGroupPatchAction({ id: "eg_1", entityId: "todo_2" }, 2));
+        await dirtyTracker.mark("eg_1", "entityGroup");
+
+        expect(await entityQuery(entityStore)).toEqual([]);
+        expect(await entityStore.queryByMembershipEntity("todo_2")).toEqual([
+          { membershipId: "eg_1", groupId: "group_1" },
+        ]);
+      });
+
+      it("keeps the member key out of the group key space when an entity equals a group", async () => {
+        const { entityStore } = await factory();
+        // `group_1` is both a group and a member entity id.
+        await entityStore.set(
+          makeEntityGroupEntity({ id: "eg_member", entityId: "group_1", groupId: "group_2" }),
+        );
+        await entityStore.set(
+          makeEntityGroupEntity({ id: "eg_group", entityId: "todo_1", groupId: "group_1" }),
+        );
+
+        expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_1"]);
+        expect(await entityStore.queryByMembershipEntity("group_1")).toEqual([
+          { membershipId: "eg_member", groupId: "group_2" },
+        ]);
+      });
+
+      it("clears the member index on reset", async () => {
+        const { entityStore } = await factory();
+        await entityStore.set(
+          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_1", groupId: "group_1" }),
+        );
+        expect(await entityQuery(entityStore)).toEqual([
+          { membershipId: "eg_2", groupId: "group_1" },
+        ]);
+
+        await entityStore.reset();
+
+        expect(await entityQuery(entityStore)).toEqual([]);
       });
     });
 

@@ -10,7 +10,13 @@
  */
 export type { ActionLog } from "./types/action-log";
 export type { DirtyTracker } from "./types/dirty-tracker";
-export type { EntityStore, RelationshipIndexQuery } from "./types/entity-store";
+export type {
+  EntityStore,
+  RelationshipIndexQuery,
+  RelationshipSourceQuery,
+  RelationshipLink,
+  MembershipLink,
+} from "./types/entity-store";
 export type { CursorStore } from "./types/cursor-store";
 export type {
   OutboxEntry,

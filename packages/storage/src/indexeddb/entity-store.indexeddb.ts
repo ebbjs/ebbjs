@@ -1,6 +1,12 @@
 import type { IDBPDatabase } from "idb";
 import type { Entity } from "@ebbjs/core";
-import type { EntityStore, RelationshipIndexQuery } from "../types/entity-store";
+import type {
+  EntityStore,
+  MembershipLink,
+  RelationshipIndexQuery,
+  RelationshipLink,
+  RelationshipSourceQuery,
+} from "../types/entity-store";
 import type { EntityChangeEmitter } from "../types/entity-change-emitter";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
@@ -8,6 +14,11 @@ import { applyUpdate } from "../internal/materialize";
 import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
 import {
   addIndexRow,
+  forwardIndexDelta,
+  forwardIndexKey,
+  forwardMembershipIndexKey,
+  liveMembershipLinks,
+  liveRelationshipLinks,
   liveSourceIds,
   membershipIndexKey,
   MEMBERSHIP_ENTITY_TYPE,
@@ -29,14 +40,17 @@ import type { EbbDBSchema } from "./schema";
  * the source-of-truth log. Materialization is driven by the same
  * DirtyTracker that drives the in-memory adapter.
  *
- * The `relationships` object store is the shared reverse index: one
- * record per composite key mapping each live row id to its source id.
- * It serves relationship edges (keyed by `(field, type, target_id)`) and
- * `entityGroup` membership (keyed by the synthetic `groups` accessor).
- * The store name and schema version are unchanged; the index is derived
- * and, following #248, is not backfilled, so a database predating
- * membership keys must be cleared rather than reused. It is rewritten
- * alongside the entity store on every materialization.
+ * The `relationships` object store is the shared adjacency index: one
+ * record per composite key mapping each live row id to its yielded id.
+ * It serves relationship edges in both directions — keyed by
+ * `(field, type, target_id)` for the reverse read and
+ * `(field, type, source_id)` for the forward read — and `entityGroup`
+ * membership keyed by the synthetic `groups` accessor (by group or by
+ * member entity). The store name and schema version are unchanged; the
+ * index is derived and, following #248, is not backfilled, so a
+ * database predating membership keys must be cleared rather than
+ * reused. It is rewritten alongside the entity store on every
+ * materialization.
  *
  * ## Materialization Flow
  * 1. Caller invokes `append()` on ActionLog
@@ -89,13 +103,16 @@ export const createIndexedDBEntityStore = (
     await writeRows(entry.key, removeIndexRow(record?.rows, entry));
   };
 
-  const updateReverseIndex = async (
+  const updateIndex = async (
     previous: Entity | undefined,
     next: Entity | undefined,
   ): Promise<void> => {
-    const delta = reverseIndexDelta(previous, next);
-    if (delta.remove !== null) await removeIndexEntry(delta.remove);
-    if (delta.add !== null) await addIndexEntry(delta.add);
+    // Reverse then forward: the same physical store keeps the two
+    // directions under distinct key prefixes.
+    for (const delta of [reverseIndexDelta(previous, next), forwardIndexDelta(previous, next)]) {
+      if (delta.remove !== null) await removeIndexEntry(delta.remove);
+      if (delta.add !== null) await addIndexEntry(delta.add);
+    }
   };
 
   /**
@@ -124,7 +141,7 @@ export const createIndexedDBEntityStore = (
 
     const previous = await db.get("entities", entityId);
     await db.put("entities", copyEntity(entity) as EbbDBSchema["entities"]["value"]);
-    await updateReverseIndex(previous, entity);
+    await updateIndex(previous, entity);
 
     if (clearDirty) {
       await dirtyTracker.clear(entityId);
@@ -156,7 +173,7 @@ export const createIndexedDBEntityStore = (
     async set(entity: Entity): Promise<void> {
       const previous = await db.get("entities", entity.id);
       await db.put("entities", copyEntity(entity) as EbbDBSchema["entities"]["value"]);
-      await updateReverseIndex(previous, entity);
+      await updateIndex(previous, entity);
       emit(entity.id, entity);
     },
 
@@ -177,9 +194,25 @@ export const createIndexedDBEntityStore = (
       return readIndex(reverseIndexKey(as, type, targetId));
     },
 
+    async queryByRelationshipSource({
+      as,
+      type,
+      sourceId,
+    }: RelationshipSourceQuery): Promise<readonly RelationshipLink[]> {
+      await materializeDirtyType(RELATIONSHIP_ENTITY_TYPE);
+      const record = await db.get("relationships", forwardIndexKey(as, type, sourceId));
+      return liveRelationshipLinks(record?.rows);
+    },
+
     async queryByMembership(groupId: string): Promise<readonly string[]> {
       await materializeDirtyType(MEMBERSHIP_ENTITY_TYPE);
       return readIndex(membershipIndexKey(groupId));
+    },
+
+    async queryByMembershipEntity(entityId: string): Promise<readonly MembershipLink[]> {
+      await materializeDirtyType(MEMBERSHIP_ENTITY_TYPE);
+      const record = await db.get("relationships", forwardMembershipIndexKey(entityId));
+      return liveMembershipLinks(record?.rows);
     },
 
     async reset(): Promise<void> {
