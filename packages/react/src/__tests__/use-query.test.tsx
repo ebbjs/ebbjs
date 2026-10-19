@@ -1,29 +1,49 @@
 /**
- * Tests for `useQuery` — subscribe a component to a materialized
- * collection query.
+ * Tests for `useQuery` — subscribe a component to a cached engine query.
  *
- * The hook is backed by `useSyncExternalStore` over the query
- * builder's source-type trigger (`QueryBuilder.subscribe`), not the
- * membership-filtered `EntityNamespace.subscribe`. The distinction is
- * load-bearing: a row that already matches the filter and then
- * changes a non-filtered field (a `title` update on a
- * `completed: false` row) must re-render, and the membership-only
- * listener would stay silent.
+ * The hook hands its callback `q`: the provider's client narrowed to every
+ * entity namespace's `query()`. `q.todo.query` and `client.todo.query` are the
+ * same method, so a hook caller and an imperative caller cannot drift.
+ *
+ * The result is the engine's cached store, keyed by the lowered query. Status
+ * is the cache's, never stored ad hoc — `unloaded` before the first run,
+ * `current` at the replica's revision, `stale` when a held result is older than
+ * the replica and a re-run is pending.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { useEffect, type ReactNode } from "react";
-import { createClient, defineEntity, defineSchema, e, type NamespacedClient } from "@ebbjs/client";
-import { EbbProvider, useClient, useQuery } from "../index";
+import {
+  createClient,
+  defineEntity,
+  defineRelationship,
+  defineSchema,
+  e,
+  type NamespacedClient,
+  type QueryStatus,
+} from "@ebbjs/client";
+import { EbbProvider, useClient, useQuery, type QueryRoot } from "../index";
 
 const todo = defineEntity("todo", {
   title: e.string(),
   completed: e.boolean(),
 });
 
+const user = defineEntity("user", {
+  name: e.string(),
+});
+
 const schema = defineSchema({
-  entities: { todo },
+  entities: { todo, user },
+  relationships: {
+    todo_assignee: defineRelationship({
+      source: todo,
+      target: user,
+      as: "assignee",
+      sourceCardinality: "one",
+    }),
+  },
   version: 1,
 });
 
@@ -34,7 +54,8 @@ type Client = NamespacedClient<Schema>;
 const makeClient = (): Client =>
   createClient({ serverUrl: "http://localhost:4000", actorId: "test-actor", schema });
 
-type TodoRow = {
+/** A replica row: what the client's own writes fold into the replica. */
+type ReplicaRow = {
   readonly id: string;
   readonly type: string;
   readonly data: {
@@ -49,14 +70,16 @@ type TodoRow = {
   readonly last_gsn: number;
 };
 
-const mkTodo = (id: string, title: string, completed: boolean): TodoRow => ({
+const mkRow = (id: string, type: string, fields: Record<string, unknown>): ReplicaRow => ({
   id,
-  type: "todo",
+  type,
   data: {
-    fields: {
-      title: { value: title, update_id: `u_${id}`, hlc: "1" },
-      completed: { value: completed, update_id: `u_${id}`, hlc: "1" },
-    },
+    fields: Object.fromEntries(
+      Object.entries(fields).map(([key, value]) => [
+        key,
+        { value, update_id: `u_${id}`, hlc: "1" },
+      ]),
+    ),
   },
   created_hlc: "1",
   updated_hlc: "1",
@@ -64,16 +87,30 @@ const mkTodo = (id: string, title: string, completed: boolean): TodoRow => ({
   last_gsn: 1,
 });
 
+const mkTodo = (id: string, title: string, completed: boolean): ReplicaRow =>
+  mkRow(id, "todo", { title, completed });
+
+const mkUser = (id: string, name: string): ReplicaRow => mkRow(id, "user", { name });
+
+/** The forward-one edge a `with({ assignee: true })` join reads. */
+const mkAssigneeLink = (id: string, todoId: string, userId: string): ReplicaRow =>
+  mkRow(id, "relationship", {
+    source_id: todoId,
+    target_id: userId,
+    type: "todo",
+    field: "assignee",
+  });
+
 let seedPosition = 0;
 
 /**
  * Fold a row into the client's replica, then write it to the shim.
- * `useQuery` reads the replica, so a shim-only row is invisible; the
- * fold uses the same Action / Update path the client's writes do.
+ * `useQuery` reads the replica, so a shim-only row is invisible; the fold uses
+ * the same Action / Update path the client's writes do.
  */
 const seedRow = async (
   client: Client,
-  row: ReturnType<typeof mkTodo>,
+  row: ReplicaRow,
   method: "put" | "delete" = row.deleted_hlc === null ? "put" : "delete",
 ): Promise<void> => {
   seedPosition += 1;
@@ -111,20 +148,41 @@ const seedRow = async (
 const seed = (client: Client, id: string, title: string, completed: boolean) =>
   seedRow(client, mkTodo(id, title, completed));
 
+/** A todo with `assignee` linked to a user, as a real write would leave it. */
+const seedAssigned = async (client: Client, assigneeName: string): Promise<void> => {
+  await seedRow(client, mkUser("user_1", assigneeName));
+  await seed(client, "todo_1", "Ship it", false);
+  await seedRow(client, mkAssigneeLink("rel_1", "todo_1", "user_1"));
+};
+
 afterEach(cleanup);
 
 function renderWithClient(client: Client, ui: ReactNode) {
   return render(<EbbProvider client={client}>{ui}</EbbProvider>);
 }
 
-/** Renders the queried rows plus `loading` / `error` / commit count. */
-function TodoList({ completed, onRender }: { completed: boolean; onRender: () => void }) {
-  const client = useClient<Schema>();
+const flush = () => act(async () => {});
+
+/** One render's state, so a test can assert a status transition. */
+type RenderSnapshot = { readonly status: QueryStatus; readonly titles: string };
+
+/** Renders the queried rows plus status, loading, and error. */
+function TodoList({
+  completed,
+  onRender,
+  renders,
+}: {
+  completed: boolean;
+  onRender: () => void;
+  /** Receives every render's status and titles, for transition assertions. */
+  renders?: RenderSnapshot[];
+}) {
   const { data, status, loading, error } = useQuery(
-    () => client.todo.query().where("completed", completed),
+    (q: QueryRoot<Schema>) => q.todo.query().where("completed", completed),
     [completed],
   );
   const rows = data ?? [];
+  renders?.push({ status, titles: rows.map((row) => String(row.title)).join(",") });
   useEffect(() => {
     onRender();
   });
@@ -134,15 +192,12 @@ function TodoList({ completed, onRender }: { completed: boolean; onRender: () =>
       <span data-testid="unloaded">{String(data === undefined)}</span>
       <span data-testid="loading">{String(loading)}</span>
       <span data-testid="error">{error === null ? "" : error.message}</span>
-      {/* Compile-time proof: the projected field type flows through `data`. */}
       <span data-testid="ids">{rows.map((row) => row.id).join(",")}</span>
-      <span data-testid="titles">{rows.map((row) => row.title).join(",")}</span>
+      <span data-testid="titles">{rows.map((row) => String(row.title)).join(",")}</span>
       <span data-testid="completed">{rows.map((row) => String(row.completed)).join(",")}</span>
     </div>
   );
 }
-
-const flush = () => act(async () => {});
 
 describe("useQuery", () => {
   let client: Client;
@@ -151,20 +206,163 @@ describe("useQuery", () => {
     client = makeClient();
   });
 
-  it("starts loading, then exposes the materialized rows", async () => {
+  it("hands the callback the provider's client as `q`", async () => {
+    await seed(client, "todo_1", "Ship it", false);
+
+    const roots: unknown[] = [];
+    const queryFns: Array<[unknown, unknown]> = [];
+
+    function Probe() {
+      const bound = useClient<Schema>();
+      useQuery((q: QueryRoot<Schema>) => {
+        roots.push(q);
+        queryFns.push([q.todo.query, bound.todo.query]);
+        // `q` narrows each namespace to `query()`; writes stay on useClient().
+        // @ts-expect-error the q root does not expose mutation verbs.
+        void q.todo.update;
+        return q.todo.query();
+      });
+      return null;
+    }
+
+    renderWithClient(client, <Probe />);
+    await flush();
+
+    expect(roots.length).toBeGreaterThan(0);
+    for (const root of roots) expect(root).toBe(client);
+    for (const [fromRoot, fromClient] of queryFns) {
+      expect(fromRoot).toBe(fromClient);
+      expect(fromRoot).toBe(client.todo.query);
+    }
+  });
+
+  it("renders the joined rows a `with({ assignee })` selection widens", async () => {
+    await seedAssigned(client, "Ada");
+
+    function AssigneeList() {
+      const { data, status } = useQuery((q: QueryRoot<Schema>) =>
+        q.todo.query().with({ assignee: true }),
+      );
+      const rows = data ?? [];
+      return (
+        <div>
+          <span data-testid="status">{status}</span>
+          <span data-testid="assignees">
+            {rows.map((row) => String(row.assignee?.name ?? "none")).join(",")}
+          </span>
+        </div>
+      );
+    }
+
+    renderWithClient(client, <AssigneeList />);
+    await flush();
+
+    expect(screen.getByTestId("status").textContent).toBe("current");
+    expect(screen.getByTestId("assignees").textContent).toBe("Ada");
+  });
+
+  it("types the joined rows from the schema", async () => {
+    await seedAssigned(client, "Ada");
+
+    type JoinedIssue = {
+      readonly id: string;
+      readonly title: string;
+      readonly completed: boolean;
+      readonly assignee: { readonly id: string; readonly name: string } | null;
+    };
+
+    const rendered: (readonly JoinedIssue[] | undefined)[] = [];
+
+    function AssigneeList() {
+      // Annotating `q` leaves every type argument to inference, so the join
+      // selection narrows `data`.
+      const { data } = useQuery((q: QueryRoot<Schema>) => q.todo.query().with({ assignee: true }));
+      // Compile-time proof: field and join types flow through `data`...
+      const typed: readonly JoinedIssue[] | undefined = data;
+      rendered.push(typed);
+      // ...and a wrong join shape is rejected.
+      // @ts-expect-error the join widens `assignee` to the joined user row, not a name string.
+      const wrong: readonly { assignee: string }[] | undefined = data;
+      void wrong;
+      return <span data-testid="assignee">{data?.[0]?.assignee?.name ?? ""}</span>;
+    }
+
+    renderWithClient(client, <AssigneeList />);
+    await flush();
+
+    expect(screen.getByTestId("assignee").textContent).toBe("Ada");
+    expect(rendered.at(-1)?.[0]?.assignee?.id).toBe("user_1");
+  });
+
+  it("reports unloaded while the first run is pending, then the materialized rows", async () => {
     await seed(client, "todo_1", "Ship it", false);
 
     renderWithClient(client, <TodoList completed={false} onRender={() => {}} />);
 
+    expect(screen.getByTestId("status").textContent).toBe("unloaded");
+    expect(screen.getByTestId("unloaded").textContent).toBe("true");
     expect(screen.getByTestId("loading").textContent).toBe("true");
     expect(screen.getByTestId("titles").textContent).toBe("");
 
     await flush();
 
+    expect(screen.getByTestId("status").textContent).toBe("current");
+    expect(screen.getByTestId("unloaded").textContent).toBe("false");
     expect(screen.getByTestId("loading").textContent).toBe("false");
     expect(screen.getByTestId("ids").textContent).toBe("todo_1");
     expect(screen.getByTestId("titles").textContent).toBe("Ship it");
     expect(screen.getByTestId("completed").textContent).toBe("false");
+  });
+
+  it("reads the cached result with status `current` on remount", async () => {
+    await seed(client, "todo_active", "Active", false);
+
+    const first = renderWithClient(client, <TodoList completed={false} onRender={() => {}} />);
+    await flush();
+    expect(screen.getByTestId("status").textContent).toBe("current");
+    expect(screen.getByTestId("titles").textContent).toBe("Active");
+    first.unmount();
+
+    renderWithClient(client, <TodoList completed={false} onRender={() => {}} />);
+
+    expect(screen.getByTestId("status").textContent).toBe("current");
+    expect(screen.getByTestId("loading").textContent).toBe("false");
+    expect(screen.getByTestId("unloaded").textContent).toBe("false");
+    expect(screen.getByTestId("titles").textContent).toBe("Active");
+  });
+
+  it("renders a held result as stale, then current, once it re-runs at the new revision", async () => {
+    await seed(client, "todo_1", "Original", false);
+    const renders: RenderSnapshot[] = [];
+
+    const first = renderWithClient(
+      client,
+      <TodoList completed={false} renders={renders} onRender={() => {}} />,
+    );
+    await flush();
+    expect(screen.getByTestId("status").textContent).toBe("current");
+    first.unmount();
+    renders.length = 0;
+
+    // The replica moves while nothing is subscribed: the cached entry is held
+    // at the older revision, so the remount reads usable-but-stale rows.
+    await act(async () => {
+      await seed(client, "todo_1", "Renamed", false);
+    });
+
+    renderWithClient(client, <TodoList completed={false} renders={renders} onRender={() => {}} />);
+    await flush();
+
+    // The held rows render once as usable-but-stale, then the synchronous
+    // re-run settles them at the replica's revision.
+    const staleIndex = renders.findIndex((render) => render.status === "stale");
+    expect(staleIndex).toBeGreaterThanOrEqual(0);
+    expect(renders[staleIndex]?.titles).toBe("Original");
+    const last = renders.at(-1);
+    expect(last?.status).toBe("current");
+    expect(last?.titles).toBe("Renamed");
+    expect(screen.getByTestId("status").textContent).toBe("current");
+    expect(screen.getByTestId("titles").textContent).toBe("Renamed");
   });
 
   it("re-renders when a matching row is created", async () => {
@@ -187,8 +385,8 @@ describe("useQuery", () => {
     await flush();
     expect(screen.getByTestId("titles").textContent).toBe("Original");
 
-    // `title` is not part of the filter — the membership-only collection
-    // subscribe would not fire here. The source-type trigger must.
+    // `title` is not part of the filter — a membership-only collection
+    // subscribe would not fire here. The projected result must.
     await act(async () => {
       await seed(client, "todo_1", "Renamed", false);
     });
@@ -221,9 +419,9 @@ describe("useQuery", () => {
     await flush();
     const rendersBefore = onRender.mock.calls.length;
 
-    // A `completed: true` row is outside the `completed: false` filter;
-    // a matching row re-materializing with identical fields is also a
-    // no-op. Neither may produce a new snapshot.
+    // A `completed: true` row is outside the `completed: false` filter; a
+    // matching row re-materializing with identical fields is also a no-op.
+    // Neither may produce a new snapshot.
     await act(async () => {
       await seed(client, "todo_done", "Ignored", true);
       await seed(client, "todo_1", "Match", false);
@@ -266,33 +464,6 @@ describe("useQuery", () => {
     expect(active).toBe(0);
   });
 
-  it("does not hand an unloaded query an empty list", async () => {
-    renderWithClient(client, <TodoList completed={false} onRender={() => {}} />);
-
-    expect(screen.getByTestId("status").textContent).toBe("unloaded");
-    expect(screen.getByTestId("unloaded").textContent).toBe("true");
-    expect(screen.getByTestId("loading").textContent).toBe("true");
-
-    await flush();
-    expect(screen.getByTestId("status").textContent).toBe("current");
-    expect(screen.getByTestId("unloaded").textContent).toBe("false");
-  });
-
-  it("reads the cached result with a status on remount", async () => {
-    await seed(client, "todo_active", "Active", false);
-
-    const first = renderWithClient(client, <TodoList completed={false} onRender={() => {}} />);
-    await flush();
-    expect(screen.getByTestId("status").textContent).toBe("current");
-    expect(screen.getByTestId("titles").textContent).toBe("Active");
-    first.unmount();
-
-    renderWithClient(client, <TodoList completed={false} onRender={() => {}} />);
-    expect(screen.getByTestId("status").textContent).toBe("current");
-    expect(screen.getByTestId("loading").textContent).toBe("false");
-    expect(screen.getByTestId("titles").textContent).toBe("Active");
-  });
-
   it("re-subscribes and reflects the new query when deps change", async () => {
     await seed(client, "todo_active", "Active", false);
     await seed(client, "todo_done", "Done", true);
@@ -325,6 +496,7 @@ describe("useQuery", () => {
     renderWithClient(client, <TodoList completed={false} onRender={() => {}} />);
     await flush();
 
+    expect(screen.getByTestId("status").textContent).toBe("failed");
     expect(screen.getByTestId("loading").textContent).toBe("false");
     expect(screen.getByTestId("error").textContent).toBe("boom");
 
@@ -332,6 +504,7 @@ describe("useQuery", () => {
     await act(async () => {
       await seed(client, "todo_2", "Recovered", false);
     });
+    expect(screen.getByTestId("status").textContent).toBe("current");
     expect(screen.getByTestId("error").textContent).toBe("");
     expect(screen.getByTestId("titles").textContent).toBe("Fine,Recovered");
 
