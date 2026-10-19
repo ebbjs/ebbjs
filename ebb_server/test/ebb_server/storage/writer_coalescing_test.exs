@@ -245,6 +245,11 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
       assert Task.yield(second, 50) == nil
       assert Task.yield(third, 50) == nil
 
+      # Only the in-flight batch has a claim; the queued calls must not
+      # consume a GSN until the ack releases the sequencer.
+      assert :atomics.get(ctx.gsn_counter, 1) == 1
+      assert RocksDB.get_max_gsn(ctx.rocks_name) == 0
+
       send(committer_pid, :release)
 
       assert {:ok, {1, 1}, []} = Task.await(first, 2_000)
@@ -258,6 +263,7 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
       assert_receive {:batch_committed, 1, 1, _groups, _committed_at}
       assert_receive {:batch_committed, 2, 3, groups, _committed_at}
       assert map_size(groups) == 2
+      assert :atomics.get(ctx.gsn_counter, 1) == 3
       refute_receive {:batch_committed, _, _, _, _}, 200
     end
 
