@@ -22,19 +22,22 @@ the headline goes (currently "**Reads:** not benchmarked yet.").
 
 ## TL;DR
 
-- **[measured] Resident metadata at 10k documents is 41.0 MB of V8 heap** — 29.4 MB of rows plus
-  **11.7 MB of adjacency indices**, which had never been measured. The rows are 17.3 MB of JSON.
-  That is 12.7% of the 323.4 MB hypothetical workspace; the other 306.0 MB of document bodies stay
-  windowed (0 resident).
+- **[measured] Resident metadata at 10k documents is 41.0 MB of V8 heap** — 29.4 MB of row objects
+  plus 11.7 MB of replica structures, of which **9.9 MB is the adjacency indices and type index,
+  which had never been measured**. The rows are 17.3 MB of JSON. That is 12.7% of the 323.4 MB
+  hypothetical workspace; the other 306.0 MB of document bodies stay windowed (0 resident).
 - **[measured] The 41.0 MB exceeds the epic's 32 MB back-of-envelope allowance**, which was
   "15.1 MB × ~2 V8 overhead" and never included the indices. Recorded here; #503 sets no threshold.
-- **[measured] Traversal is index-bounded: 0 store rows scanned, 0.5–0.9 µs at the index.** The
-  public row accessor that wraps the same read costs 7–11 µs at degree 0–2; the wrapper (async
-  adjacency + `executePlan` + TypeBox projection + id sort) is now the cost, not the scan.
-- **[measured] A search-shaped full scan of the 10,000 held pages is 1.2–1.9 ms per keystroke**,
-  down from 42.5 ms on the old async scan; no search surface ships yet (see open questions).
-- **[measured] The one-pass projection build (`replica.load`) is ~150 ms**, ~4× the spike's 37.0 ms
-  — it derives both adjacency directions plus the type index, where the spike built one direction.
+- **[measured] Traversal is index-bounded: no type scan, 0.5–0.9 µs at the index.** The public row
+  accessors cost 1.5 µs (`forwardOne`) to 12 µs (the query-builder accessors) at degree 0–2; the
+  wrapper (async adjacency + `executePlan` + TypeBox projection + id sort) is now the cost, not the
+  scan.
+- **[measured] A search-shaped full scan of the 10,000 held pages is 1.5–2.8 ms per keystroke**
+  across runs, down from 42.5 ms on the old async scan; no search surface ships yet (see open
+  questions).
+- **[measured] The one-pass projection build (`replica.load`) is ~150–180 ms**, ~4–5× the spike's
+  37.0 ms — it derives both adjacency directions plus the type index, where the spike built one
+  direction.
 - **[measured] A windowed body opens in ~3.6 µs with exactly one store read**, and a pinned re-open
   reads nothing.
 
@@ -73,11 +76,13 @@ so this pass _is_ the projection build.
 
 Footprint is measured two ways. JSON bytes per bucket, for comparison with the epic's 15.1 MB.
 Then, under `--expose-gc`, the heap the replica actually retains, in one measurement window per
-rep: the held rows are allocated **fresh** (their own row objects), a replica is loaded over
-exactly those rows, and `heapUsed` is sampled after two forced GCs at each step. That separates
-the rows' heap from the replica's structures (base map, type index, both adjacency indices) and
-gives their sum as the resident metadata total. Every rep stays pinned, so a later GC cannot
-reclaim an earlier rep's account. The JSON total and the heap total are different units.
+rep: `heapUsed` is sampled after two forced GCs at each step while the held rows are allocated
+**fresh** (their own row objects), a `Map<id, row>` is built over them as a base-map reference
+cost, and a replica is `load`ed over the same rows. That separates the rows' heap from the
+replica's own base map and, by subtraction, its adjacency and type indices; the resident metadata
+total is rows + replica structures, with the reference map deliberately excluded. Every rep stays
+pinned, so a later GC cannot reclaim an earlier rep's account. The JSON total and the heap total
+are different units.
 
 **Traversal.** `relationships`/`memberships` (ids) and `relationshipLinks`/`membershipLinks` (link
 objects) read one index key: O(1) lookup plus O(degree) projection. The accessor layer wraps the same
@@ -101,10 +106,11 @@ rows-examined test.
 
 ## Results
 
-One harness run at `N=10000`: `pnpm --silent client:benchmark`, Node v24.21.0, AMD EPYC 7763
-(shared host), harness runtime 9.8 s. Timing numbers are medians and drift 10–20% between runs
-on this shared host, so compare magnitudes, not decimals; counters, row counts and heap medians are
-stable across runs (the 41.0 MB total moved 0.1 MB over four invocations).
+One representative harness run at `N=10000` (`pnpm --silent client:benchmark`, Node v24.21.0, AMD
+EPYC 7763 shared host), plus the across-run ranges noted under each table. The tables quote that one
+run; timings drift 10–40% between invocations on this host (search 1.5–2.8 ms, repeat `load`
+143–181 ms, cold-open median 3.6–3.9 µs), while the counters, row counts, and heap accounts did not
+move across six runs. Compare magnitudes, not decimals.
 
 ### Footprint
 
@@ -125,15 +131,18 @@ carries a per-field `update_id` of realistic length (`u_page_1234_title`, ~20–
 
 Heap the replica retains (V8, `--expose-gc`, median of 5 reps):
 
-| account                                                             |      median |          min–max | % of workspace |
-| ------------------------------------------------------------------- | ----------: | ---------------: | -------------: |
-| held rows (fresh row objects + the record's reference array)        |     29.4 MB |     29.2–29.4 MB |              — |
-| replica structures (base map + type index + both adjacency indices) |     11.7 MB |          11.7 MB |              — |
-| **resident metadata total (rows + structures)**                     | **41.0 MB** | **40.9–41.1 MB** |      **12.7%** |
+| account                                                                         |      median |          min–max | % of workspace |
+| ------------------------------------------------------------------------------- | ----------: | ---------------: | -------------: |
+| held rows (fresh row objects + the record's reference array)                    |     29.4 MB |     29.1–29.4 MB |              — |
+| base map (`Map<id, row>` over the same rows — reference cost, not in the total) |      1.8 MB |       1.7–1.8 MB |              — |
+| replica structures (its own base map + type index + both adjacency indices)     |     11.7 MB |          11.7 MB |              — |
+| **adjacency indices + type index (replica structures − base map)**              |  **9.9 MB** |  **9.9–10.0 MB** |              — |
+| **resident metadata total (held rows + replica structures)**                    | **41.0 MB** | **40.8–41.1 MB** |      **12.7%** |
 
-**[derived]** The adjacency indices are 0.68× the held rows' JSON bytes and 28.5% of the resident
-total; the rows themselves retain ~1.7× their JSON. The 41.0 MB is above the epic's 32 MB allowance,
-which was sized before the indices were measured — a number to decide on, not a failure.
+**[derived]** The adjacency indices plus type index are 9.9 MB — 0.57× the held rows' JSON bytes and
+24.2% of the resident total; the replica's own base map is ~1.8 MB and the fresh row objects are the
+rest. The 41.0 MB is above the epic's 32 MB allowance, which was sized before the indices were
+measured — a number to decide on, not a failure.
 
 ### Traversal
 
@@ -142,27 +151,28 @@ is `get` calls; "rows examined" is the shipped `traversalCounter`.
 
 | read                                             | µs/call | degree (min–max) | index rows | store reads | rows examined |
 | ------------------------------------------------ | ------: | ---------------: | ---------: | ----------: | ------------: |
-| `reverse` — children, shipped accessor           |    9.42 |       0.0 (0–10) |       0.80 |         0.0 |          1.60 |
-| `forwardOne` — parent, shipped accessor          |    1.57 |        1.0 (1–1) |       1.00 |         0.0 |          3.00 |
-| `reverse` — backlinks, shipped accessor          |   10.34 |        2.0 (2–2) |       2.00 |         0.0 |          4.00 |
-| `forwardMany` — references, shipped accessor     |   11.14 |        2.0 (2–2) |       2.00 |         0.0 |          5.00 |
-| `membershipGroups` — groups, shipped accessor    |    7.34 |        1.0 (1–1) |       1.00 |         0.0 |          2.00 |
-| `relationships` — children (`targetId`)          |    0.50 |       0.0 (0–10) |       0.80 |         0.0 |          0.00 |
-| `relationships` — backlinks (`targetId`)         |    0.76 |        2.0 (2–2) |       2.00 |         0.0 |          0.00 |
-| `relationshipLinks` — parent (`sourceId`)        |    0.59 |        1.0 (1–1) |       1.00 |         0.0 |          0.00 |
-| `relationshipLinks` — references (`sourceId`)    |    0.89 |        2.0 (2–2) |       2.00 |         0.0 |          0.00 |
-| `memberships` — groups (`entityId`)              |    0.60 |        1.0 (1–1) |       1.00 |         0.0 |          0.00 |
+| `reverse` — children, shipped accessor           |    9.23 |       0.0 (0–10) |       0.80 |         0.0 |          1.60 |
+| `forwardOne` — parent, shipped accessor          |    1.50 |        1.0 (1–1) |       1.00 |         0.0 |          3.00 |
+| `reverse` — backlinks, shipped accessor          |    9.92 |        2.0 (2–2) |       2.00 |         0.0 |          4.00 |
+| `forwardMany` — references, shipped accessor     |   11.99 |        2.0 (2–2) |       2.00 |         0.0 |          5.00 |
+| `membershipGroups` — groups, shipped accessor    |    8.34 |        1.0 (1–1) |       1.00 |         0.0 |          2.00 |
+| `relationships` — children (`targetId`)          |    0.52 |       0.0 (0–10) |       0.80 |         0.0 |          0.00 |
+| `relationships` — backlinks (`targetId`)         |    0.87 |        2.0 (2–2) |       2.00 |         0.0 |          0.00 |
+| `relationshipLinks` — parent (`sourceId`)        |    0.62 |        1.0 (1–1) |       1.00 |         0.0 |          0.00 |
+| `relationshipLinks` — references (`sourceId`)    |    0.92 |        2.0 (2–2) |       2.00 |         0.0 |          0.00 |
+| `memberships` — groups (`entityId`)              |    0.64 |        1.0 (1–1) |       1.00 |         0.0 |          0.00 |
 | `membershipLinks` — membership rows (`entityId`) |    0.64 |        1.0 (1–1) |       1.00 |         0.0 |          0.00 |
 
 **The index meets the budget; the wrapper does not.** Direct index reads are 0.5–0.9 µs with zero
-rows scanned and rows examined equal to the row's degree. The shipped accessors over the same index
-cost 7–11 µs at degree 0–2 because each call runs the async adjacency seam, `executePlan`, the
-TypeBox projection, and an id-ordered sort. Rows examined stay degree-bounded either way, so the
-scan gate holds; the remaining cost is fixed per-call work in the accessor layer.
+store reads, no type scan, and rows examined equal to the row's degree. The shipped accessors over
+the same index cost 1.5 µs (`forwardOne`) to 12 µs (the query-builder accessors) at degree 0–2,
+because each call runs the async adjacency seam, `executePlan`, the TypeBox projection, and an
+id-ordered sort. Rows examined stay degree-bounded either way, so the scan gate holds; the remaining
+cost is fixed per-call work in the accessor layer.
 
 The shipped namespace still resolves the source/target **rows** through `storage.entities.get`
-(1–3 by-id reads per call, not a scan): 7.28 µs (children), 1.32 µs (parent), 10.48 µs
-(forward-many), 7.39 µs (groups). Reading those rows from the resident replica instead removes the
+(1–3 by-id reads per call, not a scan): 7.57 µs (children), 1.64 µs (parent), 11.16 µs
+(forward-many), 7.88 µs (groups). Reading those rows from the resident replica instead removes the
 store round trips and moves the same reads to the accessor numbers above.
 
 ### Search over held pages
@@ -173,32 +183,32 @@ Each visits all 10,000 held pages.
 
 | path                                            | µs/call | rows visited | rows matched | store reads |
 | ----------------------------------------------- | ------: | -----------: | -----------: | ----------: |
-| title substring scan (`includes("Document 4")`) |    1460 |       10,000 |        1,111 |         0.0 |
-| `executePlan` — field equality (`updated_at`)   |    1198 |       10,000 |            1 |         0.0 |
-| `executePlan` — whole-type scan (ordered by id) |    1671 |       10,000 |       10,000 |         0.0 |
+| title substring scan (`includes("Document 4")`) |    1520 |       10,000 |        1,111 |         0.0 |
+| `executePlan` — field equality (`updated_at`)   |    1245 |       10,000 |            1 |         0.0 |
+| `executePlan` — whole-type scan (ordered by id) |    1695 |       10,000 |       10,000 |         0.0 |
 
-**[derived]** 1.2–1.9 ms is under the epic's ≤5 ms search budget and 23–36× faster than the old
-async scan's 42.5 ms/keystroke, with zero store reads. The whole-type scan's extra cost over the
-plain substring scan is its O(n log n) `localeCompare` sort.
+**[derived]** 1.5–2.8 ms across runs is under the epic's ≤5 ms search budget and 15–28× faster than
+the old async scan's 42.5 ms/keystroke, with zero store reads. The whole-type scan's extra cost over
+the plain substring scan is its O(n log n) `localeCompare` sort.
 
 ### One-pass projection build
 
 | step                                                             |       median |        min–max | reps |
 | ---------------------------------------------------------------- | -----------: | -------------: | ---: |
-| fixture row generation (one-time, excluded from the build)       |     121.1 ms |              — |    1 |
-| record assembly (copy of 50,003 row references)                  |     264.8 µs | 232.7–322.7 µs |    5 |
-| `replica.load(record)` — first load in this process              | **164.7 ms** |              — |    1 |
-| `replica.load(record)` — repeat loads (each also drops the base) |     153.1 ms | 121.5–175.2 ms |    5 |
+| fixture row generation (one-time, excluded from the build)       |     122.6 ms |              — |    1 |
+| record assembly (copy of 50,003 row references)                  |     241.4 µs | 227.1–319.6 µs |    5 |
+| `replica.load(record)` — first load in this process              | **169.6 ms** |              — |    1 |
+| `replica.load(record)` — repeat loads (each also drops the base) |     142.9 ms | 122.2–149.0 ms |    5 |
 
 Rows resident after load: 50,000. Indices built: 11,001 reverse keys and 29,999 forward keys over
-39,999 + 39,999 index entries. **[derived]** ~3.1 µs per held row and ~1.9 µs per index entry
-(repeat-load median ÷ those counts); at `N=1000` the same shape builds in 10.6 ms (2.1 µs/row), so
-the build is linear in rows with a mild map-growth factor.
+39,999 + 39,999 index entries. **[derived]** ~2.9 µs per held row and ~1.8 µs per index entry
+(repeat-load median ÷ those counts); in an earlier run at `N=1000` the same shape built in 10.6 ms
+(2.1 µs/row), so the build is linear in rows with a mild map-growth factor.
 
-`load` is ~4× the spike's 37.0 ms build, which is a different measurement: the spike built one
-adjacency direction in one pass, while `load` derives both directions for every `relationship` and
-`entityGroup` row into plain objects and rebuilds the type index. It is the cost of hydrating the
-shipped replica, not a like-for-like regression.
+`load` is ~4–5× the spike's 37.0 ms build (repeat-load median 143–181 ms across six runs), which is
+a different measurement: the spike built one adjacency direction in one pass, while `load` derives
+both directions for every `relationship` and `entityGroup` row into plain objects and rebuilds the
+type index. It is the cost of hydrating the shipped replica, not a like-for-like regression.
 
 ### Windowed bodies
 
@@ -206,15 +216,19 @@ shipped replica, not a like-for-like regression.
 through the store into a pinned window. Each timed open follows a `close` with `pinnedTtlMs: 0`, so
 every call is a cold read.
 
-| measure                                      |                value |
-| -------------------------------------------- | -------------------: |
-| distinct documents opened                    |                  100 |
-| cold open, median (min–max)                  | 3.59 µs (2.97–20.90) |
-| body row size (JSON)                         |              31.3 KB |
-| store rows read per cold open                |                    1 |
-| store reads added by re-opening while pinned |                    0 |
-| resident bodies after close                  |                    0 |
-| held bodies (`heldByType`)                   |                    0 |
+| measure                                      |              value |
+| -------------------------------------------- | -----------------: |
+| distinct documents opened                    |                100 |
+| cold open, median                            |            3.63 µs |
+| cold open, min / max                         | 3.19 µs / 55.27 µs |
+| body row size (JSON)                         |            31.3 KB |
+| store rows read per cold open                |                  1 |
+| store reads added by re-opening while pinned |                  0 |
+| resident bodies after close                  |                  0 |
+| held bodies (`heldByType`)                   |                  0 |
+
+The cold-open median is 3.6–3.9 µs across runs; the max is a scheduler/GC outlier (20–55 µs
+depending on the run), not a second read.
 
 ## Caveats
 
@@ -240,5 +254,5 @@ for the heap account; without it the run reports the JSON footprint only and say
 knobs and defaults are the spike's shape: `N=10000`, `SAMPLE=25`, `BRANCH=10`, `REFS_PER_PAGE=2`,
 `BODY_BLOCKS=120`, `BODY_CHARS=200`. Seeding is direct, avoiding the memory adapter's O(n²)
 population (507.7 s for 39,999 `set`s [measured]). The harness writes Markdown to stdout and
-progress to stderr, and prints its own total runtime with the tables; a default run is ~10 s. The
+progress to stderr, and prints its own total runtime with the tables; a default run is ~10–15 s. The
 ~1,985 s full-tree path never runs.
