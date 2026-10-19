@@ -11,7 +11,7 @@ defmodule EbbServer.TestHelpers do
   - `tmp_dir/1` - Create isolated temporary directory with cleanup
 
   **Storage Setup** (for unit tests)
-  - `start_isolated_cache/0` - Create isolated ETS caches (DirtyTracker, GroupCache, EntityGroupCache, EntityTypeCache, RelationshipCache)
+  - `start_isolated_cache/0` - Create isolated ETS caches (DirtyTracker, GroupCache, EntityGroupCache, EntityTypeCache, RelationshipCache, WatermarkTracker, InFlightActions)
   - `start_rocks/1` - Start isolated RocksDB instance
   - `start_sqlite/1` - Start isolated SQLite instance
   - `start_writer/1` - Start isolated Writer instance
@@ -44,6 +44,7 @@ defmodule EbbServer.TestHelpers do
     EntityGroupCache,
     EntityTypeCache,
     GroupCache,
+    InFlightActions,
     RelationshipCache,
     RocksDB,
     SQLite,
@@ -164,6 +165,9 @@ defmodule EbbServer.TestHelpers do
     - entity_types: ETS table name
     - relationships: ETS table name
     - relationships_by_id: ETS table name
+    - watermark_tracker: WatermarkTracker process name
+    - in_flight_actions: InFlightActions process name
+    - in_flight_table: ETS table name for the in-flight set
   """
   def start_isolated_cache do
     unique_id = System.unique_integer([:positive])
@@ -185,6 +189,8 @@ defmodule EbbServer.TestHelpers do
     rc_name = :"rc_#{unique_id}"
     wt_name = :"wt_#{unique_id}"
     wt_table = :"wt_ranges_#{unique_id}"
+    ifa_name = :"ifa_#{unique_id}"
+    ifa_table = :"ifa_ids_#{unique_id}"
 
     counter = :atomics.new(1, signed: false)
     :persistent_term.put(gsn_counter_name, counter)
@@ -228,8 +234,10 @@ defmodule EbbServer.TestHelpers do
 
     {:ok, _pid_wt} = WatermarkTracker.start_link(name: wt_name, table: wt_table, initial_gsn: 0)
 
+    {:ok, _pid_ifa} = InFlightActions.start_link(name: ifa_name, table: ifa_table)
+
     on_exit(fn ->
-      for name <- [dt_name, gc_name, egc_name, etc_name, rc_name, wt_name],
+      for name <- [dt_name, gc_name, egc_name, etc_name, rc_name, wt_name, ifa_name],
           pid = Process.whereis(name),
           do: safe_stop(pid)
 
@@ -243,6 +251,7 @@ defmodule EbbServer.TestHelpers do
       :persistent_term.erase({EntityGroupCache, :entity_groups_by_group})
       :persistent_term.erase({EntityTypeCache, :entity_types})
       :persistent_term.erase({RelationshipCache, :relationships})
+      :persistent_term.erase({ifa_name, :table})
     end)
 
     %{
@@ -257,7 +266,9 @@ defmodule EbbServer.TestHelpers do
       entity_types: entity_types_table,
       relationships: rel_table,
       relationships_by_id: rbi_table,
-      watermark_tracker: wt_name
+      watermark_tracker: wt_name,
+      in_flight_actions: ifa_name,
+      in_flight_table: ifa_table
     }
   end
 
@@ -361,6 +372,7 @@ defmodule EbbServer.TestHelpers do
         relationships: opts.relationships,
         relationships_by_id: opts.relationships_by_id,
         watermark_tracker: opts[:watermark_tracker],
+        in_flight_actions: opts[:in_flight_actions],
         fan_out_router: opts[:fan_out_router],
         commit_fn: opts[:commit_fn],
         after_commit: opts[:after_commit]
@@ -397,7 +409,8 @@ defmodule EbbServer.TestHelpers do
       entity_groups_by_group: ctx.entity_groups_by_group,
       relationships: ctx.relationships,
       relationships_by_id: ctx.relationships_by_id,
-      watermark_tracker: ctx.watermark_tracker
+      watermark_tracker: ctx.watermark_tracker,
+      in_flight_actions: Map.get(ctx, :in_flight_actions)
     }
 
     Map.merge(base, extra)

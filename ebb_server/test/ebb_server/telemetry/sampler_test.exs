@@ -5,7 +5,7 @@ defmodule EbbServer.Telemetry.SamplerTest do
 
   import EbbServer.TestHelpers
 
-  alias EbbServer.Storage.{DirtyTracker, RocksDB, WatermarkTracker}
+  alias EbbServer.Storage.{DirtyTracker, InFlightActions, RocksDB, WatermarkTracker}
   alias EbbServer.Telemetry.Sampler
 
   setup do
@@ -64,7 +64,8 @@ defmodule EbbServer.Telemetry.SamplerTest do
            interval_ms: 30,
            rocks_name: rocks.name,
            watermark_tracker: cache.watermark_tracker,
-           dirty_set: cache.dirty_set
+           dirty_set: cache.dirty_set,
+           in_flight_actions: cache.in_flight_actions
          ]}
       )
 
@@ -82,7 +83,8 @@ defmodule EbbServer.Telemetry.SamplerTest do
            interval_ms: 20,
            rocks_name: rocks.name,
            watermark_tracker: cache.watermark_tracker,
-           dirty_set: cache.dirty_set
+           dirty_set: cache.dirty_set,
+           in_flight_actions: cache.in_flight_actions
          ]}
       )
 
@@ -106,7 +108,8 @@ defmodule EbbServer.Telemetry.SamplerTest do
              interval_ms: 20,
              rocks_name: :rocks_that_is_not_running,
              watermark_tracker: cache.watermark_tracker,
-             dirty_set: cache.dirty_set
+             dirty_set: cache.dirty_set,
+             in_flight_actions: cache.in_flight_actions
            ]}
         )
 
@@ -116,6 +119,32 @@ defmodule EbbServer.Telemetry.SamplerTest do
 
       assert Process.alive?(pid)
       refute_received {:telemetry_event, ^ref, [:ebb, :watermark, :lag], _, _}
+    end
+  end
+
+  describe "writer gauges" do
+    test "emits the in-flight action id count", %{cache: cache, rocks: rocks} do
+      assert {["act_in_flight_1", "act_in_flight_2"], []} =
+               InFlightActions.claim(
+                 ["act_in_flight_1", "act_in_flight_2"],
+                 cache.in_flight_actions
+               )
+
+      ref = attach_telemetry([[:ebb, :writer, :in_flight_action_ids]])
+
+      start_supervised!(
+        {Sampler,
+         [
+           enabled: true,
+           interval_ms: 30,
+           rocks_name: rocks.name,
+           watermark_tracker: cache.watermark_tracker,
+           dirty_set: cache.dirty_set,
+           in_flight_actions: cache.in_flight_actions
+         ]}
+      )
+
+      assert {[:ebb, :writer, :in_flight_action_ids], %{size: 2}, %{}} = await_event(ref)
     end
   end
 
@@ -144,7 +173,8 @@ defmodule EbbServer.Telemetry.SamplerTest do
            watermark_tracker: cache.watermark_tracker,
            dirty_set: cache.dirty_set,
            connection_supervisor: connection_supervisor,
-           group_supervisor: group_supervisor
+           group_supervisor: group_supervisor,
+           in_flight_actions: cache.in_flight_actions
          ]}
       )
 
@@ -177,7 +207,8 @@ defmodule EbbServer.Telemetry.SamplerTest do
              watermark_tracker: cache.watermark_tracker,
              dirty_set: cache.dirty_set,
              connection_supervisor: :fanout_missing_connection_supervisor,
-             group_supervisor: group_supervisor
+             group_supervisor: group_supervisor,
+             in_flight_actions: cache.in_flight_actions
            ]}
         )
 

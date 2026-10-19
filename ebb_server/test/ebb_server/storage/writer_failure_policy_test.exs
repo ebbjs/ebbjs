@@ -12,39 +12,15 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{DirtyTracker, RocksDB, WatermarkTracker, Writer}
+  alias EbbServer.Storage.{DirtyTracker, InFlightActions, RocksDB, WatermarkTracker, Writer}
 
   import EbbServer.TestHelpers
 
   setup do
-    %{
-      dirty_set: dirty_set,
-      gsn_counter: gsn_counter,
-      group_members: group_members,
-      group_members_by_id: group_members_by_id,
-      entity_groups: entity_groups,
-      entity_groups_by_id: entity_groups_by_id,
-      entity_groups_by_group: entity_groups_by_group,
-      relationships: relationships,
-      relationships_by_id: relationships_by_id,
-      watermark_tracker: watermark_tracker
-    } = start_isolated_cache()
-
+    cache = start_isolated_cache()
     %{name: rocks_name} = start_rocks()
 
-    %{
-      dirty_set: dirty_set,
-      gsn_counter: gsn_counter,
-      group_members: group_members,
-      group_members_by_id: group_members_by_id,
-      entity_groups: entity_groups,
-      entity_groups_by_id: entity_groups_by_id,
-      entity_groups_by_group: entity_groups_by_group,
-      relationships: relationships,
-      relationships_by_id: relationships_by_id,
-      watermark_tracker: watermark_tracker,
-      rocks_name: rocks_name
-    }
+    Map.put(cache, :rocks_name, rocks_name)
   end
 
   describe "failed commit abandons and resolves the claim" do
@@ -176,6 +152,9 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
       # The build raise abandons like a failed commit: resolve, then nudge.
       assert_receive {:range_resolved, 1, 2}
       assert WatermarkTracker.committed_watermark(ctx.watermark_tracker) == 2
+
+      # The pre-dispatch raise releases the in-flight ids it just claimed.
+      assert InFlightActions.size(ctx.in_flight_actions) == 0
 
       for i <- 1..2 do
         refute DirtyTracker.dirty?("todo_build_failure_#{i}", ctx.dirty_set)

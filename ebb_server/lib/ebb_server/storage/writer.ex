@@ -124,6 +124,17 @@ defmodule EbbServer.Storage.Writer do
   all already committed replies `{:ok, {0, 0}, []}` — silent idempotent
   success.
 
+  `cf_action_dedup` only marks a durable Action, so it cannot stop a
+  retry planned while its first copy is still in flight.
+  `EbbServer.Storage.InFlightActions` closes that window: `plan/2`
+  atomically claims the surviving ids before the GSN range is claimed and
+  drops any id another batch already owns. An in-flight duplicate replies
+  the same `{:ok, {0, 0}, []}` as a committed one; the tuple means "no
+  GSN assigned to this caller", not "durable". V0 allows one in-flight
+  commit, so the Writer cannot plan a duplicate mid-flight yet; the guard
+  becomes load-bearing with concurrent sub-batches (#536), where a failed
+  owner would leave the duplicate already acked empty.
+
   ## Failure and recovery policy
 
   A GSN range is claimed before the commit attempt, and a claim that is
@@ -135,8 +146,8 @@ defmodule EbbServer.Storage.Writer do
     `FanOutRouter` is nudged with `{:range_resolved, from, to}` so it can
     drain anything the hole was gating, and every caller in the flush
     gets `{:error, {:rocksdb_write_failed, reason}}` (`503 write_failed`).
-    The client outbox is the only retry; the server never acks undurable
-    data and never rewinds or reuses the GSNs.
+    The client outbox is the only retry; the server never acks a GSN
+    range for undurable data and never rewinds or reuses the GSNs.
   - **Structural resolution.** Every pre-commit failure path abandons
     before the failure surfaces: clear the provisional marks, resolve the
     range, log, nudge `FanOutRouter`, emit telemetry. A `{:error, reason}`
@@ -166,10 +177,13 @@ defmodule EbbServer.Storage.Writer do
     provisional marks compare-and-cleared before the range is resolved.
   - **Startup reconcile.** `init/1` raises the counter to the durable log
     max and resolves any remaining tail, healing a Writer-only restart
-    that crashed between claim and resolve. It also settles any
-    provisional mark a crashed Writer left behind: no commit is in flight
-    at startup, so settling is conservative — the entity re-materializes
-    and, if nothing was committed, finds no new Action and clears.
+    that crashed between claim and resolve. It also clears
+    `EbbServer.Storage.InFlightActions`: no commit is in flight at
+    startup, so every surviving id belongs to a crashed Writer, whose
+    linked Committer died with it. It also settles any provisional mark a
+    crashed Writer left behind: no commit is in flight at startup, so
+    settling is conservative — the entity re-materializes and, if nothing
+    was committed, finds no new Action and clears.
 
   The test seam is the optional `:commit_fn` (default
   `&RocksDB.write_batch/2`), used for both error injection and crash
@@ -182,7 +196,8 @@ defmodule EbbServer.Storage.Writer do
   A bench-only `:ablate` option (default `[]`) skips named phases of the
   flush critical path — `:dedup`, `:group_resolution`, `:entity_index`,
   `:group_index`, `:dirty`, `:cache`, `:watermark`, `:fanout` — so
-  `mix bench.actions --ablate` can price each one. It is never set in
+  `mix bench.actions --ablate` can price each one. `:dedup` also skips
+  the in-flight claim, which is dedup work. It is never set in
   production, and an empty list emits exactly the same ops as before.
   See `EbbServer.Bench.Options`.
 
@@ -231,6 +246,7 @@ defmodule EbbServer.Storage.Writer do
     Fields,
     GroupCache,
     GsnCounter,
+    InFlightActions,
     PreparedAction,
     RelationshipCache,
     RocksDB
@@ -250,6 +266,13 @@ defmodule EbbServer.Storage.Writer do
 
   @type pending_marks :: {[PreparedAction.entity_mark()], non_neg_integer() | nil}
 
+  @type claim :: %{
+          required(:action_ids) => [String.t()],
+          required(:pending_marks) => pending_marks(),
+          required(:gsn_start) => non_neg_integer(),
+          required(:gsn_end) => non_neg_integer()
+        }
+
   @type inflight :: %{
           ref: reference(),
           pending: [{GenServer.from(), [validated_action()]}],
@@ -258,6 +281,7 @@ defmodule EbbServer.Storage.Writer do
           },
           gsn_start: non_neg_integer(),
           gsn_end: non_neg_integer(),
+          action_ids: [String.t()],
           prepared: [PreparedAction.t()],
           groups_by_gsn: %{optional(non_neg_integer()) => [String.t()]},
           started_at: integer(),
@@ -288,7 +312,8 @@ defmodule EbbServer.Storage.Writer do
           flush_timer: reference() | nil,
           flush_scheduled: boolean(),
           fan_out_router: GenServer.name() | nil,
-          watermark_tracker: GenServer.name() | nil
+          watermark_tracker: GenServer.name() | nil,
+          in_flight_actions: GenServer.name() | nil
         }
   defstruct [
     :rocks_name,
@@ -313,7 +338,8 @@ defmodule EbbServer.Storage.Writer do
     :flush_timer,
     :flush_scheduled,
     :fan_out_router,
-    :watermark_tracker
+    :watermark_tracker,
+    :in_flight_actions
   ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -418,6 +444,7 @@ defmodule EbbServer.Storage.Writer do
 
     fan_out_router = Keyword.get(opts, :fan_out_router, nil)
     watermark_tracker = Keyword.get(opts, :watermark_tracker, nil)
+    in_flight_actions = Keyword.get(opts, :in_flight_actions, nil)
 
     # One Committer per Writer, linked so an unexpected Committer death
     # takes this Writer down and the supervisor's restart path (with its
@@ -453,8 +480,14 @@ defmodule EbbServer.Storage.Writer do
       flush_timer: nil,
       flush_scheduled: false,
       fan_out_router: fan_out_router,
-      watermark_tracker: watermark_tracker
+      watermark_tracker: watermark_tracker,
+      in_flight_actions: in_flight_actions
     }
+
+    # No commit is in flight at boot, so every surviving id is stale: a
+    # Writer-only crash leaves its markers behind because the linked
+    # Committer died with it.
+    if in_flight_actions, do: InFlightActions.clear(in_flight_actions)
 
     DirtyTracker.settle_all_pending(state.dirty_set)
     reconcile_resolution_frontier(state)
@@ -499,7 +532,8 @@ defmodule EbbServer.Storage.Writer do
   Writer. A flush:
   1. Filters out actions with empty updates, drops duplicate `action_id`s
      (first occurrence wins across the whole coalesced burst), and drops
-     ids already in `cf_action_dedup`.
+     ids already committed (`cf_action_dedup`) or still in flight
+     (`EbbServer.Storage.InFlightActions`).
   2. Claims one GSN range for the remaining fresh actions.
   3. Prepares one `PreparedAction` per fresh Action (group resolution and
      `update_scopes`), hands the batch to the Committer, and once the
@@ -634,6 +668,7 @@ defmodule EbbServer.Storage.Writer do
           ranges: ranges,
           gsn_start: gsn_start,
           gsn_end: gsn_end,
+          action_ids: action_ids(prepared),
           prepared: prepared,
           groups_by_gsn: groups_by_gsn,
           started_at: started_at,
@@ -645,24 +680,33 @@ defmodule EbbServer.Storage.Writer do
 
   # Group resolution reads the system caches, so it stays on the
   # sequencer. A raise here is still a claimed-but-uncommitted range: the
-  # abandon (clear marks, resolve, log, nudge) runs before the re-raise,
-  # exactly like the failure paths after the ack.
+  # abandon (release the ids, clear marks, resolve, log, nudge) runs before
+  # the re-raise, exactly like the failure paths after the ack.
   defp prepare_or_abandon(fresh, gsn_start, gsn_end, started_at, state) do
+    claim = %{
+      action_ids: action_ids(fresh),
+      pending_marks: {[], nil},
+      gsn_start: gsn_start,
+      gsn_end: gsn_end
+    }
+
     # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
     try do
       prepare(fresh, gsn_start, state)
     rescue
       error ->
         emit_batch_latency(gsn_start, gsn_end, started_at)
-        abandon(state, {[], nil}, gsn_start, gsn_end, error)
+        abandon(state, claim, error)
         reraise error, __STACKTRACE__
     catch
       kind, value ->
         emit_batch_latency(gsn_start, gsn_end, started_at)
-        abandon(state, {[], nil}, gsn_start, gsn_end, {kind, value})
+        abandon(state, claim, {kind, value})
         :erlang.raise(kind, value, __STACKTRACE__)
     end
   end
+
+  defp action_ids(actions), do: Enum.map(actions, & &1.id)
 
   defp emit_actions_accepted(count) do
     Telemetry.execute([:writer, :actions_per_sec], %{count: count}, %{})
@@ -680,6 +724,10 @@ defmodule EbbServer.Storage.Writer do
     inflight = state.inflight
     state = %{state | inflight: nil}
 
+    # The durable dedup row now exists for every Action in the batch, so
+    # the commit marker takes over from the concurrency guard.
+    release_in_flight(state, inflight.action_ids)
+
     case mark_committed_result(inflight, state) do
       :ok ->
         committed_at = System.monotonic_time()
@@ -692,13 +740,7 @@ defmodule EbbServer.Storage.Writer do
       {:raised, kind, value, stacktrace} ->
         emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
 
-        abandon(
-          state,
-          inflight.pending_marks,
-          inflight.gsn_start,
-          inflight.gsn_end,
-          raised_reason(kind, value)
-        )
+        abandon(state, inflight, raised_reason(kind, value))
 
         :erlang.raise(kind, value, stacktrace)
     end
@@ -714,7 +756,8 @@ defmodule EbbServer.Storage.Writer do
       %{gsn_start: inflight.gsn_start, gsn_end: inflight.gsn_end, reason: reason}
     )
 
-    abandon(state, inflight.pending_marks, inflight.gsn_start, inflight.gsn_end, reason)
+    abandon(state, inflight, reason)
+
     emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
     reply_all(inflight.pending, inflight.ranges, {:error, reason})
 
@@ -728,13 +771,7 @@ defmodule EbbServer.Storage.Writer do
     inflight = state.inflight
     state = %{state | inflight: nil}
 
-    abandon(
-      state,
-      inflight.pending_marks,
-      inflight.gsn_start,
-      inflight.gsn_end,
-      raised_reason(kind, value)
-    )
+    abandon(state, inflight, raised_reason(kind, value))
 
     emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
     :erlang.raise(kind, value, stacktrace)
@@ -826,11 +863,31 @@ defmodule EbbServer.Storage.Writer do
       |> Enum.uniq_by(fn {_caller_idx, action} -> action.id end)
 
     fresh_tagged =
-      if ablate?(:dedup, state), do: tagged, else: drop_committed(tagged, state.rocks_name)
+      if ablate?(:dedup, state) do
+        tagged
+      else
+        tagged
+        |> drop_committed(state.rocks_name)
+        |> claim_in_flight(state)
+      end
 
     fresh = Enum.map(fresh_tagged, &elem(&1, 1))
 
     {fresh, fresh_tagged}
+  end
+
+  # Claims the burst's ids before `flush/1` claims a GSN range, so a retry
+  # that arrives while its first copy is still in flight is dropped instead
+  # of committing a second copy. The losers are the ids another in-flight
+  # batch owns; their callers get the empty success tuple, not a rejection.
+  defp claim_in_flight(tagged, %{in_flight_actions: nil}), do: tagged
+
+  defp claim_in_flight(tagged, state) do
+    ids = tagged |> Enum.map(&elem(&1, 1)) |> action_ids()
+    {claimed, _in_flight} = InFlightActions.claim(ids, state.in_flight_actions)
+    claimed = MapSet.new(claimed)
+
+    Enum.filter(tagged, fn {_caller_idx, action} -> MapSet.member?(claimed, action.id) end)
   end
 
   defp caller_ranges(fresh_tagged, caller_count, gsn_start) do
@@ -1248,7 +1305,18 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
-  defp abandon(state, pending, gsn_start, gsn_end, reason) do
+  defp abandon(
+         state,
+         %{
+           action_ids: action_ids,
+           pending_marks: pending,
+           gsn_start: gsn_start,
+           gsn_end: gsn_end
+         },
+         reason
+       ) do
+    release_in_flight(state, action_ids)
+
     unless ablate?(:dirty, state), do: clear_pending(state, pending)
 
     # Resolve before nudging so the router can only observe the advanced
@@ -1267,6 +1335,15 @@ defmodule EbbServer.Storage.Writer do
     )
 
     notify_range_resolved(state, gsn_start, gsn_end)
+  end
+
+  # Idempotent: a failed commit and a post-ack raise can both reach the
+  # abandon path, and releasing an id twice must not reopen another
+  # batch's claim.
+  defp release_in_flight(%{in_flight_actions: nil}, _claimed_ids), do: :ok
+
+  defp release_in_flight(state, claimed_ids) do
+    InFlightActions.release(claimed_ids, state.in_flight_actions)
   end
 
   # A failed or raised commit wrote nothing, so the provisional marks it

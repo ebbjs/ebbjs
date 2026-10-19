@@ -23,6 +23,7 @@ defmodule EbbServer.Telemetry do
   | `ebb.system_cache.populated`              | `duration` (native), `entity_types`, `group_members`, `entity_groups`, `relationships`, `backfilled` | `outcome` (`:ok` / `:error`), `reason` |
   | `ebb.watermark.lag`                       | `lag` (max GSN − committed watermark) | —                                                   |
   | `ebb.dirty_set.size`                      | `size`                                | —                                                   |
+  | `ebb.writer.in_flight_action_ids`         | `size`                                | —                                                   |
   | `ebb.entity_store.materialize_latency_ms` | `duration` (native), `byte_size`      | `subject_id`, `subject_type`, `path` (`:dirty_materialize`) |
   | `ebb.entity_store.materialize_phase_ms`   | `duration` (native)                   | `phase` (`:fetch_decode` / `:entries_scan` / `:actions_load` / `:merge` / `:encode` / `:upsert` / `:format`) |
   | `ebb.entity_store.read_latency_ms`        | `duration` (native), `byte_size`, `row_count` | `path` (`:clean_hit` / `:query`), `subject_id`      |

@@ -3,7 +3,8 @@ defmodule EbbServer.Storage.SystemCache do
   Supervisor that owns the in-memory state used on the hot paths:
   permission checks, dirty entity tracking, entity/relationship
   membership, and the GSN counter. The watermark's resolution frontier
-  lives in the sibling `WatermarkTracker`.
+  lives in the sibling `WatermarkTracker`; the in-flight action-id guard
+  that makes retries idempotent lives in the sibling `InFlightActions`.
 
   ## Why this exists
 
@@ -29,8 +30,9 @@ defmodule EbbServer.Storage.SystemCache do
   `:atomics` reference stored in `:persistent_term`, not a process child —
   and repopulates the caches from RocksDB on `init/1`.
 
-  `WatermarkTracker` is *not* a child here. It is a sibling under
-  `Storage.Supervisor`, started after `SystemCache` and before the Writer.
+  `WatermarkTracker` and `InFlightActions` are *not* children here. They
+  are siblings under `Storage.Supervisor`, started after `SystemCache` and
+  before the Writer.
 
   ## Lifecycle
 
@@ -53,8 +55,9 @@ defmodule EbbServer.Storage.SystemCache do
     from RocksDB cannot be trusted to serve the write path.
   - **No message-passing API.** All read paths are pure ETS reads from
     `GenServer`-less modules; the GSN counter is an `:atomics` reference
-    and `WatermarkTracker` coordinates through its own ETS + `:atomics`,
-    so neither adds mailbox traffic to the write path.
+    and `WatermarkTracker` / `InFlightActions` coordinate through their own
+    ETS (plus `:atomics` for the frontier), so none of them adds mailbox
+    traffic to the write path.
   - **Populate-on-startup only.** The caches are loaded once from RocksDB
     on `init/1` and then mutated in-memory by the Writer; they do not
     re-read from RocksDB on each access.
