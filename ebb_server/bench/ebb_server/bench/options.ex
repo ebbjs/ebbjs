@@ -7,7 +7,7 @@ defmodule EbbServer.Bench.Options do
   storage tree.
   """
 
-  @type tier :: :t0 | :t1 | :t2 | :t3 | :t4
+  @type tier :: :t0 | :t1 | :t2 | :t3 | :t4 | :t5
   @type durability :: :sync | :async
   @type distribution :: :spread | :hot
 
@@ -59,7 +59,7 @@ defmodule EbbServer.Bench.Options do
             subscriber_lean: false,
             ablate: []
 
-  @tiers %{"t0" => :t0, "t1" => :t1, "t2" => :t2, "t3" => :t3, "t4" => :t4}
+  @tiers %{"t0" => :t0, "t1" => :t1, "t2" => :t2, "t3" => :t3, "t4" => :t4, "t5" => :t5}
   @durabilities %{"sync" => :sync, "async" => :async}
   @distributions %{"spread" => :spread, "hot" => :hot}
   @updates_per_action [1, 2, 10]
@@ -188,6 +188,28 @@ defmodule EbbServer.Bench.Options do
   def tier_description(:t4),
     do: "fixed-rate Writer.write_actions/1 plus in-process SSE subscribers"
 
+  def tier_description(:t5),
+    do: "raw RocksDB.write_batch/3 from N concurrent callers, no Writer"
+
+  @doc """
+  Whether the run drives the raw storage NIF instead of the Writer.
+  """
+  @spec bypasses_writer?(t()) :: boolean()
+  def bypasses_writer?(%__MODULE__{tier: :t5}), do: true
+  def bypasses_writer?(%__MODULE__{}), do: false
+
+  @doc """
+  Whether GSN density and watermark lag are meaningful for this run.
+
+  The t5 spike writes raw batches at a synthetic per-caller GSN base and
+  never commits through the Writer, so there is no frontier to compare
+  against — and a hole scan would walk from GSN 1 to that base. Ablating
+  `:watermark` likewise freezes the frontier.
+  """
+  @spec measures_frontier?(t()) :: boolean()
+  def measures_frontier?(%__MODULE__{tier: :t5}), do: false
+  def measures_frontier?(%__MODULE__{ablate: ablate}), do: :watermark not in ablate
+
   @doc """
   Microseconds between batches a t4 worker paces to.
 
@@ -302,7 +324,8 @@ defmodule EbbServer.Bench.Options do
   defp validate_tier(tier, config) do
     with :ok <- validate_rate(tier, config),
          :ok <- validate_tier_concurrency(tier, config),
-         :ok <- validate_subscribers(tier, config) do
+         :ok <- validate_subscribers(tier, config),
+         :ok <- validate_tier_ablate(tier, config) do
       validate_lean(tier, config)
     end
   end
@@ -332,6 +355,15 @@ defmodule EbbServer.Bench.Options do
 
   defp validate_lean(_tier, _config),
     do: {:error, "--subscriber-lean is only supported with --tier t3 or t4"}
+
+  # Ablation removes Writer phases from the flush critical path; t5 never
+  # runs the Writer, so there is nothing to ablate.
+  defp validate_tier_ablate(:t5, %{ablate: []}), do: :ok
+
+  defp validate_tier_ablate(:t5, _config),
+    do: {:error, "--ablate is not supported with --tier t5; the spike bypasses the Writer"}
+
+  defp validate_tier_ablate(_tier, _config), do: :ok
 
   # T1 exists to isolate per-request overhead with no queueing at the
   # Writer, so a concurrency argument cannot change it.

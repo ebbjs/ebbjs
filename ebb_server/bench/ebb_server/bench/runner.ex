@@ -17,7 +17,8 @@ defmodule EbbServer.Bench.Runner do
     Sampler,
     Subscriber,
     Telemetry,
-    Workbook
+    Workbook,
+    WriteBatch
   }
 
   alias EbbServer.Storage.{ActionValidator, Writer}
@@ -46,7 +47,7 @@ defmodule EbbServer.Bench.Runner do
   end
 
   defp measure(config, ctx) do
-    Http.setup(config.concurrency)
+    unless Options.bypasses_writer?(config), do: Http.setup(config.concurrency)
 
     subscribers =
       if config.tier in [:t3, :t4],
@@ -152,6 +153,19 @@ defmodule EbbServer.Bench.Runner do
 
       {:error, _reason} ->
         {latency, 0, 0, config.batch_size}
+    end
+  end
+
+  # T5 spikes the NIF itself: the op list and the RocksDB batch are built
+  # before the timer starts, so the sample covers `write_batch` alone. One
+  # worker is one BEAM process and each owns a disjoint GSN range.
+  defp perform(:t5, config, ctx, id, seq) do
+    ops = WriteBatch.build_ops(config, ctx, id, seq)
+    batch = WriteBatch.batch(ops)
+
+    case WriteBatch.commit(batch, config.durability == :sync) do
+      {:ok, latency} -> {latency, config.batch_size, 0, 0}
+      {:error, latency, _reason} -> {latency, 0, 0, config.batch_size}
     end
   end
 
