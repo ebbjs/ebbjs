@@ -8,9 +8,7 @@ import type {
 } from "../types/entity-store";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
-import type { EntityChangeEmitter } from "../types/entity-change-emitter";
 import { applyUpdate } from "../internal/materialize";
-import { createEntityChangeEmitter } from "../internal/entity-change-emitter";
 import {
   applyIndexDelta,
   forwardIndexDelta,
@@ -103,37 +101,18 @@ const updateIndex = (
     forwardIndexDelta(previous, next),
   );
 
-export interface MemoryEntityStoreBundle {
-  store: EntityStore;
-  emitter: EntityChangeEmitter;
-  /**
-   * Replay actions for `entityId` into the cache and fire the
-   * emitter WITHOUT clearing the dirty flag. Used by the
-   * SyncClient fan-out to surface inbound actions to subscribers
-   * while preserving the existing `_applyAction` → `isDirty`
-   * invariant that the SSE tests pin.
-   */
-  materializeKeepDirty(id: string): Promise<void>;
-}
-
 export const createMemoryEntityStore = (
   actionLog: ActionLog,
   dirtyTracker: DirtyTracker,
-): MemoryEntityStoreBundle => {
+): EntityStore => {
   let state: EntityStoreState = { entities: {}, typeIndex: {}, index: {} };
-  const { emitter, emit } = createEntityChangeEmitter();
 
   /**
-   * Replay actions for `entityId` into the cache. The `clearDirty`
-   * flag toggles whether the dirty flag is reset — the public
-   * materialize-on-read path clears it (a subsequent read sees
-   * the cached entity), the eager fan-out path keeps it (the
-   * dirty flag remains so callers checking `isDirty` see the
-   * same state the SSE tests pin).
-   *
-   * Fires the change emitter after the cache lands.
+   * Replay the action log for `entityId` into the cache when the dirty
+   * tracker says it needs materializing, then clear the flag so a later read
+   * sees the cached row.
    */
-  const replay = async (entityId: string, clearDirty: boolean): Promise<void> => {
+  const replay = async (entityId: string): Promise<void> => {
     const isEntityDirty = await dirtyTracker.isDirty(entityId);
     if (!isEntityDirty) return;
 
@@ -158,17 +137,13 @@ export const createMemoryEntityStore = (
       index: updateIndex(state.index, oldEntity, entity),
     };
 
-    if (clearDirty) {
-      await dirtyTracker.clear(entityId);
-    }
-
-    emit(entityId, state.entities[entityId]);
+    await dirtyTracker.clear(entityId);
   };
 
   /** Materialize every dirty row of a type before an index read. */
   const materializeDirtyType = async (entityType: string): Promise<void> => {
     for (const id of await dirtyTracker.getDirtyForType(entityType)) {
-      await replay(id, true);
+      await replay(id);
     }
   };
 
@@ -176,7 +151,7 @@ export const createMemoryEntityStore = (
 
   const store: EntityStore = {
     async get(id: string): Promise<Entity | null> {
-      await replay(id, true);
+      await replay(id);
       const entity = state.entities[id];
       return entity ? copyEntity(entity) : null;
     },
@@ -188,7 +163,6 @@ export const createMemoryEntityStore = (
         typeIndex: updateTypeIndexOnSet(state.typeIndex, entity, oldEntity?.type),
         index: updateIndex(state.index, oldEntity, entity),
       };
-      emit(entity.id, state.entities[entity.id]);
     },
 
     async query(type: string): Promise<readonly Entity[]> {
@@ -229,9 +203,8 @@ export const createMemoryEntityStore = (
 
     async reset(): Promise<void> {
       state = { entities: {}, typeIndex: {}, index: {} };
-      emitter.reset();
     },
   };
 
-  return { store, emitter, materializeKeepDirty: (id) => replay(id, false) };
+  return store;
 };

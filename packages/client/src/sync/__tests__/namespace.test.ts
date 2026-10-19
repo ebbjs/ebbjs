@@ -503,8 +503,8 @@ const mkEntityGroup = (id: string, entityId: string, groupId: string): Entity =>
 
 /**
  * Write `row` to the shim and fold it into the replica the query
- * reads. The fold runs first so the replica is current when the shim's
- * change emitter fires, matching `applyLocalAction`.
+ * reads. The fold runs first so the replica is current when the shim
+ * read happens, matching `applyLocalAction`.
  */
 const seedQueryRow = async (
   storage: StorageAdapter,

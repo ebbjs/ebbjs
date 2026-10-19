@@ -23,7 +23,7 @@ export function IssueList({
   onNewIssue: () => void;
 }) {
   const client = useClient<Schema>();
-  const { data: issues, loading, error } = useQuery(() => client.issue.query());
+  const { data: issues = [], loading, error } = useQuery(() => client.issue.query());
 
   return (
     <section className="rounded border border-stone-800 p-4">

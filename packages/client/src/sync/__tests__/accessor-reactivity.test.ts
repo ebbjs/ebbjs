@@ -101,7 +101,6 @@ describe("relationship accessor reactivity", () => {
     expect(await before.owner).toBeNull();
 
     let accessorFires = 0;
-    let edgeTypeFires = 0;
     const snapshots: string[] = [];
     const unsubAccessor = before.subscribeAccessors(() => {
       accessorFires += 1;
@@ -109,13 +108,8 @@ describe("relationship accessor reactivity", () => {
     const unsubSnapshot = before.subscribe((snapshot) => {
       snapshots.push(snapshot.id);
     });
-    const unsubType = storage.changeEmitter!.onTypeChange("relationship", () => {
-      edgeTypeFires += 1;
-    });
-
     await seedRow(storage, client.replica, mkRel("rel_1", "t1", "u1"));
     expect(accessorFires).toBe(1);
-    expect(edgeTypeFires).toBe(1);
     // `row.subscribe` re-reads the row and fires too, so a direct
     // subscriber (not just useEntity) is woken by the accessor change.
     await vi.waitFor(() => expect(snapshots).toEqual(["t1"]));
@@ -134,7 +128,6 @@ describe("relationship accessor reactivity", () => {
 
     unsubAccessor();
     unsubSnapshot();
-    unsubType();
   });
 
   it("re-materializes a relationship-filtered query on link and unlink", async () => {

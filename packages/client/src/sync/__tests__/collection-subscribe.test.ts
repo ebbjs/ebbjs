@@ -52,6 +52,16 @@ const mkAction = (gsn: number, subjectId: string, completed: boolean): Action =>
   ],
 });
 
+const mkDeleteAction = (gsn: number, subjectId: string): Action => ({
+  id: `act_${gsn}`,
+  actor_id: "actor_1",
+  hlc: makeHlc(1_711_036_800_000, gsn),
+  gsn,
+  updates: [
+    { id: `u_${gsn}`, subject_id: subjectId, subject_type: "todo", method: "delete", data: null },
+  ],
+});
+
 describe("client.<entity>.subscribe(filter, cb)", () => {
   it("fires when an inbound action brings a matching entity into the set", async () => {
     const storage = createMemoryAdapter();
@@ -127,9 +137,7 @@ describe("client.<entity>.subscribe(filter, cb)", () => {
     });
     await flush();
 
-    const live = await client.storage.entities.get("todo_a");
-    if (live === null) throw new Error("todo_a must be materialized");
-    await client.storage.entities.set({ ...live, deleted_hlc: "2" });
+    await callApplyAction(client, mkDeleteAction(2, "todo_a"), "grp_1");
 
     globalExpect(seen).toEqual([{ count: 0, titles: [] }]);
 
@@ -153,10 +161,33 @@ describe("client.<entity>.subscribe(filter, cb)", () => {
     });
     await flush();
 
-    const done = await client.storage.entities.get("todo_done");
-    if (done === null) throw new Error("todo_done must be materialized");
-    await client.storage.entities.set({ ...done, deleted_hlc: "2" });
+    await callApplyAction(client, mkDeleteAction(2, "todo_done"), "grp_1");
 
+    globalExpect(seen).toHaveLength(0);
+
+    unsub();
+  });
+
+  it("does not fire when a matching row edits a field but stays in the set", async () => {
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      storage,
+      schema,
+    });
+
+    await callApplyAction(client, mkAction(1, "todo_a", false), "grp_1");
+
+    const seen: { count: number }[] = [];
+    const unsub = client.todo.subscribe({ completed: false }, (snapshot) => {
+      seen.push({ count: snapshot.count });
+    });
+    await flush();
+
+    // Same id, still matching; the collection result is the id set, so the
+    // field edit is not a membership change.
+    await callApplyAction(client, mkAction(2, "todo_a", false), "grp_1");
     globalExpect(seen).toHaveLength(0);
 
     unsub();

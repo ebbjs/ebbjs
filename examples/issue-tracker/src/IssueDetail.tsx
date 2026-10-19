@@ -31,7 +31,7 @@ export function IssueDetail({
 }) {
   const client = useClient<Schema>();
   const { update, delete: remove } = useEntityMutations(client.issue);
-  const { data: profiles } = useQuery(
+  const { data: profiles = [] } = useQuery(
     () => client.profile.query().where("groups", groupId),
     [groupId],
   );

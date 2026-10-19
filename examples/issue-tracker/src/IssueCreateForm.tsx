@@ -23,7 +23,7 @@ export function IssueCreateForm({
   onCancel: () => void;
 }) {
   const client = useClient<Schema>();
-  const { data: profiles } = useQuery(
+  const { data: profiles = [] } = useQuery(
     () => client.profile.query().where("groups", groupId),
     [groupId],
   );

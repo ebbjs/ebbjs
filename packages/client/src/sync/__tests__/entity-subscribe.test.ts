@@ -14,7 +14,7 @@ import { defineSchema } from "../../schema/schema";
 import { createClient } from "../client";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { StorageAdapter } from "@ebbjs/storage/types";
-import { callApplyAction } from "../test-utils";
+import { callApplyAction, seedReplicaRow } from "../test-utils";
 
 const todo = defineEntity("todo", {
   title: e.string(),
@@ -202,9 +202,11 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
       seen.push(snapshot);
     });
 
-    // Same id, different type — the row no longer represents a `todo`,
-    // matching `get`'s own type guard.
-    await storage.entities.set(mkRawEntity("shared_id", "user", { name: "Ada" }));
+    // Same id, different type — the replica now holds a `user` under the
+    // shared id, so the watcher's type guard drops the snapshot.
+    const other = mkRawEntity("shared_id", "user", { name: "Ada" });
+    seedReplicaRow(client.replica, other);
+    await storage.entities.set(other);
     globalExpect(seen).toHaveLength(0);
 
     unsub();
@@ -271,23 +273,6 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
 
     await callApplyAction(client, mkDeleteAction(2, "todo_1"), "grp_1");
     globalExpect(deletedHlc).not.toBeNull();
-
-    unsub();
-  });
-
-  it("subscribe is a no-op when the adapter ships no change emitter", async () => {
-    const { changeEmitter: _omitted, ...withoutEmitter } = createMemoryAdapter();
-    const client = mkClient(withoutEmitter);
-    const row = await seedRow(client, 1, "todo_1", "T1", false);
-
-    const seen: unknown[] = [];
-    const unsub = row.subscribe((snapshot) => {
-      seen.push(snapshot);
-    });
-
-    await callApplyAction(client, mkAction(2, "todo_1", "T2", false), "grp_1");
-    globalExpect(seen).toHaveLength(0);
-    globalExpect(typeof unsub).toBe("function");
 
     unsub();
   });

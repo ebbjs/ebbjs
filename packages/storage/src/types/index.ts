@@ -25,7 +25,6 @@ export type {
   RelationshipQuery,
   Revision,
 } from "../replica/types";
-export type { EntityChangeEmitter } from "./entity-change-emitter";
 export type {
   OutboxEntry,
   OutboxStatus,

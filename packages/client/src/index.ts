@@ -78,6 +78,18 @@ export {
 export { type Plan, type PlanOp, type PlanPredicate, planQuery } from "./sync/query-plan";
 
 export {
+  type QueryCache,
+  type QueryResult,
+  type QuerySource,
+  type QueryStatus,
+  type QueryStore,
+  type QuerySubscribeOptions,
+  type QuerySurface,
+} from "./sync/query-cache";
+
+export type { ReplicaSignal } from "./sync/replica-signal";
+
+export {
   type PlanExecutor,
   createReplicaExecutor,
   createRowsExecutor,

@@ -34,7 +34,7 @@
  *
  * The module depends only on injected seams: the store, an HLC source
  * for the ordering key, `applyOptimistic` (the client wires it to the
- * entity cache + change emitter), and `submit` (the network write).
+ * replica + shim), and `submit` (the network write).
  * The client remains the only place that knows about the concrete
  * storage adapter and fetch.
  */
@@ -192,9 +192,8 @@ export interface DetectedConflict {
  */
 export interface OutboxDependencies {
   /**
-   * Optimistically apply an Action's Updates to the local entity
-   * cache, firing the change emitter so local reads reflect the
-   * write before the server echo.
+   * Optimistically apply an Action's Updates to the local read model
+   * so local reads reflect the write before the server echo.
    */
   applyOptimistic(action: Action): Promise<void>;
   /**

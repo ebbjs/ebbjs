@@ -120,21 +120,24 @@ function renderWithClient(client: Client, ui: ReactNode) {
 /** Renders the queried rows plus `loading` / `error` / commit count. */
 function TodoList({ completed, onRender }: { completed: boolean; onRender: () => void }) {
   const client = useClient<Schema>();
-  const { data, loading, error } = useQuery(
+  const { data, status, loading, error } = useQuery(
     () => client.todo.query().where("completed", completed),
     [completed],
   );
+  const rows = data ?? [];
   useEffect(() => {
     onRender();
   });
   return (
     <div>
+      <span data-testid="status">{status}</span>
+      <span data-testid="unloaded">{String(data === undefined)}</span>
       <span data-testid="loading">{String(loading)}</span>
       <span data-testid="error">{error === null ? "" : error.message}</span>
       {/* Compile-time proof: the projected field type flows through `data`. */}
-      <span data-testid="ids">{data.map((row) => row.id).join(",")}</span>
-      <span data-testid="titles">{data.map((row) => row.title).join(",")}</span>
-      <span data-testid="completed">{data.map((row) => String(row.completed)).join(",")}</span>
+      <span data-testid="ids">{rows.map((row) => row.id).join(",")}</span>
+      <span data-testid="titles">{rows.map((row) => row.title).join(",")}</span>
+      <span data-testid="completed">{rows.map((row) => String(row.completed)).join(",")}</span>
     </div>
   );
 }
@@ -231,28 +234,63 @@ describe("useQuery", () => {
     expect(screen.getByTestId("titles").textContent).toBe("Match");
   });
 
-  it("unsubscribes from the emitter on unmount", async () => {
-    const emitter = client.storage.changeEmitter;
-    if (emitter === undefined) throw new Error("memory adapter must ship a change emitter");
-    const realOnTypeChange = emitter.onTypeChange.bind(emitter);
-    let unsubscribeCalls = 0;
-    vi.spyOn(emitter, "onTypeChange").mockImplementation((type, listener) => {
-      const unsubscribe = realOnTypeChange(type, listener);
-      return () => {
-        unsubscribeCalls += 1;
-        unsubscribe();
+  it("releases its engine subscription on unmount", async () => {
+    const realWatch = client.queries.watch.bind(client.queries);
+    let active = 0;
+    vi.spyOn(client.queries, "watch").mockImplementation(((
+      ...args: Parameters<typeof realWatch>
+    ) => {
+      const store = realWatch(...args);
+      return {
+        getSnapshot: () => store.getSnapshot(),
+        subscribe: (listener: () => void, options?: { initial?: boolean }) => {
+          active += 1;
+          const unsubscribe = store.subscribe(listener, options);
+          return () => {
+            active -= 1;
+            unsubscribe();
+          };
+        },
       };
-    });
+    }) as typeof realWatch);
 
     const { unmount } = renderWithClient(
       client,
       <TodoList completed={false} onRender={() => {}} />,
     );
     await flush();
+    expect(active).toBe(1);
 
     unmount();
 
-    expect(unsubscribeCalls).toBeGreaterThanOrEqual(1);
+    expect(active).toBe(0);
+  });
+
+  it("does not hand an unloaded query an empty list", async () => {
+    renderWithClient(client, <TodoList completed={false} onRender={() => {}} />);
+
+    expect(screen.getByTestId("status").textContent).toBe("unloaded");
+    expect(screen.getByTestId("unloaded").textContent).toBe("true");
+    expect(screen.getByTestId("loading").textContent).toBe("true");
+
+    await flush();
+    expect(screen.getByTestId("status").textContent).toBe("current");
+    expect(screen.getByTestId("unloaded").textContent).toBe("false");
+  });
+
+  it("reads the cached result with a status on remount", async () => {
+    await seed(client, "todo_active", "Active", false);
+
+    const first = renderWithClient(client, <TodoList completed={false} onRender={() => {}} />);
+    await flush();
+    expect(screen.getByTestId("status").textContent).toBe("current");
+    expect(screen.getByTestId("titles").textContent).toBe("Active");
+    first.unmount();
+
+    renderWithClient(client, <TodoList completed={false} onRender={() => {}} />);
+    expect(screen.getByTestId("status").textContent).toBe("current");
+    expect(screen.getByTestId("loading").textContent).toBe("false");
+    expect(screen.getByTestId("titles").textContent).toBe("Active");
   });
 
   it("re-subscribes and reflects the new query when deps change", async () => {

@@ -18,7 +18,6 @@ import { defineSchema } from "../../schema/schema";
 import { createClient } from "../client";
 import { buildQueryBuilder } from "../query-builder";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import type { StorageAdapter } from "@ebbjs/storage/types";
 import { callApplyAction } from "../test-utils";
 
 const todo = defineEntity("todo", {
@@ -142,15 +141,12 @@ describe("QueryBuilder.subscribe", () => {
     expect(seen).toHaveLength(0);
   });
 
-  it("is a callable no-op when the adapter ships no change emitter", async () => {
-    const emitterless: StorageAdapter = {
-      ...createMemoryAdapter(),
-      changeEmitter: undefined,
-    };
+  it("does not fire for a storage shim write the replica never sees", async () => {
+    const storage = createMemoryAdapter();
     const client = createClient({
       serverUrl: "http://localhost:4000",
       actorId: "actor_1",
-      storage: emitterless,
+      storage,
       schema,
     });
 
@@ -171,7 +167,7 @@ describe("QueryBuilder.subscribe", () => {
       deleted_hlc: null,
       last_gsn: 1,
     };
-    await emitterless.entities.set(entity);
+    await storage.entities.set(entity);
 
     expect(seen).toHaveLength(0);
     expect(() => unsub()).not.toThrow();

@@ -95,4 +95,13 @@ export interface Replica {
 
   load(record: ReplicaRecord): Revision;
   toRecord(): ReplicaRecord;
+
+  /**
+   * Subscribe to post-change notifications. Fires after every mutating call
+   * (`ingest` / `optimistic` / `discard` / `load`) once the composed view is
+   * settled, so a derived reader can resynchronise from `revision` and
+   * `changesSince`. A no-op write still fires; readers cheaply ignore an
+   * unchanged revision. Returns an unsubscribe function.
+   */
+  subscribe(listener: () => void): () => void;
 }

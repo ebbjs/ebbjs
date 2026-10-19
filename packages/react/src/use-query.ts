@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react";
-import type { QueryBuilder, TSchema } from "@ebbjs/client";
+import type { QueryBuilder, QueryStatus, TSchema } from "@ebbjs/client";
 
 /**
  * Projected rows a `QueryBuilder` resolves to. `Awaited` peels the
@@ -7,107 +7,30 @@ import type { QueryBuilder, TSchema } from "@ebbjs/client";
  */
 export type QueryRows<TFields extends Record<string, TSchema>> = Awaited<QueryBuilder<TFields>>;
 
-/** Result of {@link useQuery}: rows plus the subscribe lifecycle. */
+/** Result of {@link useQuery}: rows, status, and the derived loading/error. */
 export interface UseQueryResult<TFields extends Record<string, TSchema>> {
-  readonly data: QueryRows<TFields>;
+  /**
+   * The cached rows. `undefined` while the query is `unloaded`, so a first
+   * mount never renders "no result yet" as an empty list; use {@link status}
+   * to distinguish the two.
+   */
+  readonly data: QueryRows<TFields> | undefined;
+  /** `unloaded` / `stale` / `current` / `failed`, from the engine cache. */
+  readonly status: QueryStatus;
+  /** True only while no result exists yet (`unloaded`). */
   readonly loading: boolean;
   readonly error: Error | null;
 }
 
-/** Internal reactive cell `useQuery` reads through `useSyncExternalStore`. */
-interface QueryStore<TFields extends Record<string, TSchema>> {
-  subscribe(listener: () => void): () => void;
-  getSnapshot(): UseQueryResult<TFields>;
-}
-
 /**
- * One reactive cell per built query. StrictMode's double-subscribe is
- * ref-counted onto a single builder listener rather than leaking a
- * second one.
+ * Subscribe a component to the engine's cached query result.
  *
- * The snapshot reference stays stable until a materialization
- * actually changes `{data, loading, error}`: a source-type emit that
- * did not affect this chain's result must not re-render its consumer.
- */
-function createQueryStore<TFields extends Record<string, TSchema>>(
-  builder: QueryBuilder<TFields>,
-): QueryStore<TFields> {
-  let state: UseQueryResult<TFields> = { data: [], loading: true, error: null };
-  const listeners = new Set<() => void>();
-  let detachTrigger: (() => void) | null = null;
-  // A change that lands mid-materialization would otherwise be missed:
-  // flag it and re-run once the in-flight materialization settles.
-  let materializing = false;
-  let pending = false;
-
-  const notify = (): void => {
-    for (const listener of listeners) listener();
-  };
-
-  const applyRows = (rows: QueryRows<TFields>): void => {
-    // Structural compare so an emit that left the result unchanged
-    // produces no new snapshot (and therefore no re-render).
-    const unchanged = JSON.stringify(rows) === JSON.stringify(state.data);
-    if (unchanged && !state.loading && state.error === null) return;
-    state = { data: unchanged ? state.data : rows, loading: false, error: null };
-    notify();
-  };
-
-  const applyError = (error: Error): void => {
-    state = { data: state.data, loading: false, error };
-    notify();
-  };
-
-  const materialize = async (): Promise<void> => {
-    if (materializing) {
-      pending = true;
-      return;
-    }
-    materializing = true;
-    try {
-      applyRows(await builder);
-    } catch (thrown) {
-      applyError(thrown instanceof Error ? thrown : new Error(String(thrown)));
-    } finally {
-      materializing = false;
-      if (pending) {
-        pending = false;
-        void materialize();
-      }
-    }
-  };
-
-  return {
-    subscribe(listener) {
-      listeners.add(listener);
-      if (listeners.size === 1) {
-        detachTrigger = builder.subscribe(() => void materialize());
-        void materialize();
-      }
-      let active = true;
-      return () => {
-        if (!active) return;
-        active = false;
-        listeners.delete(listener);
-        if (listeners.size === 0) {
-          detachTrigger?.();
-          detachTrigger = null;
-        }
-      };
-    },
-    getSnapshot: () => state,
-  };
-}
-
-/**
- * Subscribe a component to a materialized collection query.
- *
- * `build` runs once per `deps` change (keep `deps` a stable-length
- * list), and `useSyncExternalStore` resubscribes whenever the builder
- * changes. The trigger is the builder's source-entity change stream:
- * any materialization of that entity type re-materializes the chain,
- * and an unchanged result suppresses the snapshot update — so a
- * non-matching change never re-renders the component.
+ * `build` runs once per `deps` change (keep `deps` a stable-length list).
+ * The store is keyed by the lowered query, so two components building the
+ * same chain share one cached result, and a remount reads it back with
+ * `status: "stale" | "current"` instead of starting over. The snapshot
+ * reference stays stable until the result actually changes, so an
+ * invalidation that re-runs to an equal result does not re-render.
  */
 export function useQuery<TFields extends Record<string, TSchema>>(
   build: () => QueryBuilder<TFields>,
@@ -115,9 +38,15 @@ export function useQuery<TFields extends Record<string, TSchema>>(
 ): UseQueryResult<TFields> {
   // oxlint-disable-next-line react-hooks/exhaustive-deps -- `build` is re-run only when the caller's `deps` change; it is intentionally not itself a dependency.
   const builder = useMemo(() => build(), deps);
-  const store = useMemo(() => createQueryStore(builder), [builder]);
+  const store = useMemo(() => builder.result(), [builder]);
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
   const getSnapshot = useCallback(() => store.getSnapshot(), [store]);
 
-  return useSyncExternalStore(subscribe, getSnapshot);
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot);
+  return {
+    data: snapshot.data,
+    status: snapshot.status,
+    loading: snapshot.loading,
+    error: snapshot.error,
+  };
 }
