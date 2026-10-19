@@ -228,21 +228,44 @@ const referenceRows = (config: BenchConfig): readonly Entity[] =>
         referenceRow(Math.floor(k / config.refsPerPage), k % config.refsPerPage, config.n),
       );
 
-export const createWorkspace = (config: BenchConfig): Workspace => {
-  const content = bodyContent(config);
+/**
+ * The four held buckets, in load order: pages, entityGroups, the workspace
+ * group, then the relationship rows. `createHeldRows` and `createWorkspace`
+ * both build from here so their id sets cannot drift apart.
+ */
+const heldRowSet = (config: BenchConfig) => {
   const pages = Array.from({ length: config.n }, (_, index) => pageRow(index));
   const entityGroups = Array.from({ length: config.n }, (_, index) => entityGroupRow(index));
   const parents = Array.from({ length: Math.max(0, config.n - 1) }, (_, k) =>
     parentRow(k + 1, config.branch),
   );
-  const references = referenceRows(config);
-  const relationships = [...parents, ...references];
+  const relationships = [...parents, ...referenceRows(config)];
+  const groups = [groupRow()];
+  return {
+    pages,
+    entityGroups,
+    relationships,
+    groups,
+    rows: [...pages, ...entityGroups, ...groups, ...relationships],
+  };
+};
+
+/**
+ * Freshly allocated held rows only, as `ReplicaRecord.entities` expects them.
+ * The heap account needs its own row objects: the workspace record's rows are
+ * shared with the store, so their bytes could not be attributed to the
+ * benchmark's footprint. Same ids, count, and order as `createWorkspace`.
+ */
+export const createHeldRows = (config: BenchConfig): readonly Entity[] => heldRowSet(config).rows;
+
+export const createWorkspace = (config: BenchConfig): Workspace => {
+  const content = bodyContent(config);
+  const { pages, entityGroups, relationships, groups, rows: metadata } = heldRowSet(config);
 
   const bodyIndices = spreadIndices(config.n, BODY_DOCS);
   const bodies = bodyIndices.map((index) => bodyRow(index, content));
   const recordBodyRows = bodies.slice(0, RECORD_BODY_DOCS);
 
-  const metadata = [...pages, ...entityGroups, groupRow(), ...relationships];
   const record: ReplicaRecord = {
     format: REPLICA_RECORD_FORMAT,
     position: 0,
@@ -262,7 +285,7 @@ export const createWorkspace = (config: BenchConfig): Workspace => {
       pages: pages.length,
       relationships: relationships.length,
       entityGroups: entityGroups.length,
-      groups: 1,
+      groups: groups.length,
       heldRows: metadata.length,
       bodyRows: bodies.length,
       recordBodyRows: recordBodyRows.length,

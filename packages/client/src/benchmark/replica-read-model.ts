@@ -51,6 +51,7 @@ import {
 } from "./harness";
 import {
   configFromEnv,
+  createHeldRows,
   createWorkspace,
   ON_DEMAND_TYPE,
   pageId,
@@ -59,6 +60,7 @@ import {
   summariseIndexKeys,
   UPDATED_AT_BASE,
   WORKSPACE_GROUP_ID,
+  type BenchConfig,
   type Workspace,
 } from "./workspace";
 
@@ -142,11 +144,17 @@ const heapAfterGc = (force: () => void): number => {
 };
 
 /**
- * Paired heap account. Each rep measures, against the same running baseline:
- * the rows-only Map (what the replica's base map costs), then the replica
- * built on top of it (its own base map, the type index, and both adjacency
- * indices). The row objects are shared with the workspace record and never
- * counted twice, so indices are the difference between the two deltas.
+ * Paired heap account, every rep inside one measurement window:
+ *
+ *   1. allocate the held rows fresh (row objects plus the record's reference
+ *      array) — the delta is the rows' own heap;
+ *   2. `load` a replica over exactly those rows — the delta is the replica's
+ *      structures: base map, type index, and both adjacency indices;
+ *   3. total = rows + structures, the resident metadata.
+ *
+ * The earlier rows-only `Map` baseline reused the workspace's row objects, so
+ * it never counted them and the replica figure read as a metadata total when
+ * it was indices only.
  */
 interface HeapAccounts {
   readonly rows: readonly number[];
@@ -156,12 +164,21 @@ interface HeapAccounts {
 
 const measureHeap = (
   force: () => void,
-  record: Workspace["record"],
+  config: BenchConfig,
+  seed: Workspace["record"],
   options: typeof loadOptions,
 ): HeapAccounts => {
-  const rows: number[] = [];
-  const replicas: number[] = [];
-  const total: number[] = [];
+  // The record's on-demand rows ride along with every rep so `load` is still
+  // seen dropping a held type, exactly as on the workspace record.
+  const bodyRows = seed.entities.filter((entity) => !heldMetadata.holds(entity.type));
+  const recordFor = (rows: readonly Entity[]): Workspace["record"] => ({
+    ...seed,
+    entities: [...rows, ...bodyRows],
+  });
+
+  const rowsAccount: number[] = [];
+  const replicaAccount: number[] = [];
+  const totals: number[] = [];
   // Every account stays pinned for the whole measurement. Freeing a previous
   // rep's account during this rep's forced GC would subtract its bytes from
   // the delta being measured, collapsing it to noise.
@@ -169,17 +186,17 @@ const measureHeap = (
 
   // One untimed rep: the first build pays the JIT and inline-cache warm-up and
   // would otherwise read as a systematically larger account.
-  const warmMap = new Map<string, Entity>();
-  for (const entity of heldRows) warmMap.set(entity.id, entity);
+  const warmRows = createHeldRows(config);
+  const warmRecord = recordFor(warmRows);
   const warmReplica = createReplica(options);
-  warmReplica.load(record);
+  warmReplica.load(warmRecord);
   heapAfterGc(force);
 
   for (let rep = 0; rep < HEAP_REPS; rep += 1) {
     const base = heapAfterGc(force);
-    const map = new Map<string, Entity>();
-    for (const entity of heldRows) map.set(entity.id, entity);
-    pinned.push(map);
+    const rows = createHeldRows(config);
+    const record = recordFor(rows);
+    pinned.push(rows, record);
     const withRows = heapAfterGc(force);
 
     const probe = createReplica(options);
@@ -187,19 +204,23 @@ const measureHeap = (
     pinned.push(probe);
     const withReplica = heapAfterGc(force);
 
-    if (map.size === 0 || probe.stats().entities === 0) {
-      throw new Error("heap account: built object is empty");
+    if (
+      rows.length === 0 ||
+      rows.length >= seed.entities.length ||
+      probe.stats().entities !== rows.length
+    ) {
+      throw new Error("heap account: built object is not the held row set");
     }
-    rows.push(withRows - base);
-    replicas.push(withReplica - withRows);
-    total.push(withReplica - base);
+    rowsAccount.push(withRows - base);
+    replicaAccount.push(withReplica - withRows);
+    totals.push(withReplica - base);
   }
 
-  if (pinned.length !== HEAP_REPS * 2) throw new Error("heap account: lost an account");
-  if (warmMap.size === 0 || warmReplica.stats().entities === 0) {
-    throw new Error("heap account: warm-up is empty");
+  if (pinned.length !== HEAP_REPS * 3) throw new Error("heap account: lost an account");
+  if (warmRows.length === 0 || warmReplica.stats().entities !== warmRows.length) {
+    throw new Error("heap account: warm-up is not the held row set");
   }
-  return { rows, replica: replicas, total };
+  return { rows: rowsAccount, replica: replicaAccount, total: totals };
 };
 
 const loadOptions = {
@@ -210,7 +231,7 @@ const loadOptions = {
 } as const;
 
 const heapAccounts: HeapAccounts | null =
-  heapGc === undefined ? null : measureHeap(heapGc, workspace.record, loadOptions);
+  heapGc === undefined ? null : measureHeap(heapGc, config, workspace.record, loadOptions);
 
 if (heapGc === undefined) {
   process.stderr.write(
@@ -592,16 +613,21 @@ push(
   `The record also carries ${grouped(workspace.counts.recordBodyRows)} \`${ON_DEMAND_TYPE}\` rows (${kb(
     recordBodyJson,
   )}) to prove \`load\` drops a non-held type.`,
+  "The totals run ~14% above the #495 spike's 15.1 MB for the same 50,000 rows because every",
+  "field here carries a per-field `update_id` of realistic length (`u_page_1234_title`, ~20–22",
+  "chars, close to a 21-char nanoid) where the spike used short `u_${n}` placeholders, so the",
+  "row bytes are not a like-for-like comparison with the spike.",
   "",
 );
 
 push("### Heap bytes the replica retains (V8)", "");
 push(
-  "Each rep measures `heapUsed` after two forced GCs against the same running baseline:",
-  "first the rows-only `Map<id, row>`, then the replica built on top of it. The row",
-  "objects are shared with the workspace record, so the replica delta is the replica's",
-  "own base map plus the type index and both adjacency indices; the index-only account",
-  "is that delta minus the rows-only Map in the same rep.",
+  "Each rep runs in one measurement window: `heapUsed` after two forced GCs, then the held",
+  "rows allocated fresh (their own row objects, not the workspace's), then a replica `load`ed",
+  "over exactly those rows. That gives the rows' heap, the replica's structures (base map,",
+  "type index, both adjacency indices), and their sum — the resident metadata total. Every",
+  "rep's rows, record, and replica stay pinned, so a later forced GC cannot reclaim an",
+  "earlier rep's account.",
   "",
 );
 if (heapAccounts === null) {
@@ -610,19 +636,22 @@ if (heapAccounts === null) {
     "",
   );
 } else {
-  const rowsOnly = heapAccounts.rows;
-  const replicaTotal = heapAccounts.total;
-  const replicaDelta = heapAccounts.replica;
-  const indexOnly = replicaDelta.map((value, i) => value - (rowsOnly[i] ?? 0));
+  const rowsAccount = heapAccounts.rows;
+  const replicaAccount = heapAccounts.replica;
+  const totals = heapAccounts.total;
+  const fullWorkspaceShare = pct(median(totals), workspaceJson);
+  const replicaShare = pct(median(replicaAccount), median(totals));
   push(
-    "| account | median | min | max | reps |",
-    "| --- | ---: | ---: | ---: | ---: |",
-    `| rows-only baseline (\`Map<id, row>\`, row objects shared) | ${mb(median(rowsOnly))} | ${mb(minOf(rowsOnly))} | ${mb(maxOf(rowsOnly))} | ${HEAP_REPS} |`,
-    `| replica after \`load\` (its own maps + type index + both indices; row objects shared) | ${mb(median(replicaTotal))} | ${mb(minOf(replicaTotal))} | ${mb(maxOf(replicaTotal))} | ${HEAP_REPS} |`,
-    `| replica's own additions (replica delta, per rep) | ${mb(median(replicaDelta))} | ${mb(minOf(replicaDelta))} | ${mb(maxOf(replicaDelta))} | ${HEAP_REPS} |`,
-    `| **adjacency indices + type index (delta − rows Map, per rep)** | **${mb(median(indexOnly))}** | ${mb(minOf(indexOnly))} | ${mb(maxOf(indexOnly))} | ${HEAP_REPS} |`,
+    "| account | median | min | max | reps | % of hypothetical full workspace |",
+    "| --- | ---: | ---: | ---: | ---: | ---: |",
+    `| held rows (fresh row objects + the record's reference array) | ${mb(median(rowsAccount))} | ${mb(minOf(rowsAccount))} | ${mb(maxOf(rowsAccount))} | ${HEAP_REPS} | — |`,
+    `| replica structures (base map + type index + both adjacency indices) | ${mb(median(replicaAccount))} | ${mb(minOf(replicaAccount))} | ${mb(maxOf(replicaAccount))} | ${HEAP_REPS} | — |`,
+    `| **resident metadata total (rows + structures)** | **${mb(median(totals))}** | ${mb(minOf(totals))} | ${mb(maxOf(totals))} | ${HEAP_REPS} | **${fullWorkspaceShare}** |`,
     "",
-    `The index-only account is ${pct(median(indexOnly), median(replicaTotal))} of the replica's own additions and ${(median(indexOnly) / Math.max(1, metadataJson)).toFixed(2)}× the held rows' JSON bytes. Row objects are shared with the workspace, so their heap is not part of any account here; the JSON table is the row account.`,
+    `The replica's structures are ${replicaShare} of that total; the freshly allocated rows are the rest.`,
+    "The JSON row number above and this heap total are different units and must not be added",
+    "to each other: JSON bytes are the serialized rows, heap bytes are what V8 retains for the",
+    "rows plus the indices built over them.",
     "",
   );
 }
@@ -740,11 +769,21 @@ push(
   `Adjacency keys built (derived from the same rows): ${grouped(indexShape.reverseKeys)} reverse, ${grouped(
     indexShape.forwardKeys,
   )} forward, over ${grouped(indexShape.reverseRows)} + ${grouped(indexShape.forwardRows)} index rows.`,
-  `The spike's projection build was **37.0 ms**; this is the shipped replica's \`load\`, so the`,
-  "comparison is indicative, not like-for-like. `load` also does more per row than that",
-  "projection: it derives both adjacency directions (two composite keys per relationship",
-  "row, reverse and forward) into plain objects, plus the type index. The build is",
-  "therefore ~4x the #495 budget, which is a measurement, not a gate failure.",
+  `The spike's projection build was **37.0 ms**; this is the shipped replica's \`load\` on a`,
+  `different machine, so the two are not like-for-like. \`load\` is ~${fixed(
+    loadMedian / 37.0,
+    1,
+  )}× that`,
+  "narrower projection because it derives both adjacency directions for `relationship`",
+  "and `entityGroup` rows into plain objects, plus the type index. Measured:",
+  `${usPerCall(loadMedian / Math.max(1, stats.held))} per held row and ${fixed(
+    (loadMedian / Math.max(1, indexShape.reverseRows + indexShape.forwardRows)) * 1000,
+    3,
+  )} µs per index entry — the repeat-load median divided by the`,
+  `${grouped(stats.held)} held rows and by the ${grouped(
+    indexShape.reverseRows + indexShape.forwardRows,
+  )} reverse+forward index rows above.`,
+  "The build is a measurement, not a gate.",
   "",
 );
 

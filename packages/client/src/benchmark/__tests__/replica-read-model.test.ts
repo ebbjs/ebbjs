@@ -31,7 +31,9 @@ import {
 } from "../harness";
 import {
   configWith,
+  createHeldRows,
   createWorkspace,
+  ON_DEMAND_TYPE,
   pageId,
   parentIndexOf,
   referenceTargetIndex,
@@ -134,6 +136,20 @@ const idsOf = (rows: readonly { readonly id: string }[]): readonly string[] =>
   rows.map((row) => row.id).sort();
 
 describe("replica read-model workspace", () => {
+  it("builds the held rows the workspace record holds", () => {
+    const { workspace } = setup(N);
+    const held = createHeldRows(workspace.config);
+    const recordHeld = workspace.record.entities.filter((entity) =>
+      heldMetadata.holds(entity.type),
+    );
+
+    expect(held.length).toBe(workspace.counts.heldRows);
+    expect(held.length).toBe(recordHeld.length);
+    expect(idsOf(held)).toEqual(idsOf(recordHeld));
+    expect(new Set(held.map((entity) => entity.id)).size).toBe(held.length);
+    expect(held.filter((entity) => entity.type === ON_DEMAND_TYPE)).toEqual([]);
+  });
+
   it("holds only the metadata rows", () => {
     const { replica, workspace } = setup(N);
     const stats = replica.stats();
