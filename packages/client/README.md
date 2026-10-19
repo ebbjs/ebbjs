@@ -7,8 +7,135 @@ writes and a query layer over materialized entities.
 ## Status
 
 Working in development. The README will fill out as the SDK stabilizes.
-Today: handshake, catch-up, live SSE, outbox, presence. The React bindings,
-query layer ergonomics, and server functions are still being designed.
+Today: handshake, catch-up, live SSE, outbox, presence, and the local query
+engine (typed `query()` reads with one-level `with` joins and cached reactive
+results). The React bindings live in `@ebbjs/react`; server functions are
+still being designed.
+
+## Reads and writes
+
+`client.<entity>` is the schema-bound public API; a schema-bound client also
+carries the `client.group` / `client.membership` system namespaces. Reads go
+through `query()`; writes go through the namespace's verbs. The engine's
+single-row read (`get(id)`), its async row accessors, and the collection
+`subscribe(filter, cb)` are internal — they are not public read paths.
+
+### Reads — `client.<entity>.query()`
+
+`query()` returns a typed, immutable chain. Each mutator returns a new chain;
+awaiting it resolves to the projected rows (the schema's fields plus the
+entity `id`).
+
+```typescript
+const issues = await client.issue
+  .query()
+  .where("status", "open")
+  .or("priority", "urgent")
+  .orderBy("updated_at", "desc")
+  .limit(50)
+  .with({ assignee: true });
+```
+
+Grammar:
+
+- `where(key, value)` — equality conjunct. A key may be a shape field, a
+  registered relationship `as` (filters that edge), or the reserved `groups`
+  key (filters built-in membership).
+- `or(key, value)` — starts a new AND-group. Predicates are a disjunction of
+  AND-groups, so `.where(a).where(b).or(c).where(d)` means
+  `(a AND b) OR (c AND d)`.
+- `orderBy(field, "asc" | "desc")` and `limit(n)`.
+- `with({ key: true, ... })` — one-level joins over the schema's relationships
+  plus `groups`. Each selected key is merged onto the row; a nested selector
+  is rejected.
+
+Terminals: `await` / `.then()` for rows, `.first()`, `.count()`, `.exists()`,
+the async iterator, and `.toRaw()` for the untyped wire entities.
+
+A chain's result is cached and reactive: `.result()` returns the engine store
+(`getSnapshot()` reads `{ data, status, loading, error }`; `subscribe(listener)`
+fires on change) and the chain's own `.subscribe(listener)` is the shorthand.
+`status` is one of:
+
+| Status     | Meaning                                                           |
+| ---------- | ----------------------------------------------------------------- |
+| `unloaded` | Never run; `data` is `undefined` (never an empty list).           |
+| `stale`    | A usable result exists at an older revision; a re-run is pending. |
+| `current`  | The result was produced at the replica's current revision.        |
+| `failed`   | The last run threw; sticky until a successful run.                |
+
+Two chains that lower to the same query share one cached result, so a remount
+reads it back instead of re-running. In React, `useQuery` wraps this surface.
+
+### Writes — namespace verbs
+
+Single-entity writes are the namespace verbs, validated against the schema
+before anything reaches the wire:
+
+```typescript
+const { id } = await client.issue.create(
+  { title: "Buy milk", status: "todo" },
+  { groups: [groupId] },
+);
+await client.issue.update(id, { status: "done" });
+await client.issue.link(id, "assignee", profileId);
+await client.issue.unlink(id, "assignee");
+await client.issue.delete(id);
+```
+
+- `create(input, { groups })` — `groups` is required and non-empty; the
+  membership rows ship in the same Action as the entity.
+- `update(id, patch)`, `delete(id)`, `duplicate(id, opts?)`.
+- `link` / `unlink` / `setLinks` for relationships.
+- `addToGroup` / `removeFromGroup` / `setGroups` for membership.
+
+`create` accepts the entity's wire fields. To set a relationship in the same
+Action, create the row through `client.atomic` (below) and pass the target to
+the draft's `create`.
+
+Multi-entity writes are one Action: `client.atomic` resolves handles created in
+one callback, and `defineAction(schema, callback)` mounts the same batch as
+`client.actions.<name>` so it can be reused.
+
+```typescript
+// Two writes, one Action: the new issue and an existing profile's
+// membership in the workspace.
+const issue = await client.atomic((drafts) => {
+  const created = drafts.issue.create(
+    { title: "Ship the docs", status: "todo" },
+    { groups: [groupId] },
+  );
+  drafts.profile.addToGroup(profileId, groupId);
+  return created;
+});
+```
+
+`defineAction(schema, callback)` declares the same batch once and mounts it as
+`client.actions.<name>` when the client is created with `actions`:
+
+```typescript
+const addToWorkspace = defineAction(
+  schema,
+  ({ membership, profile }, params: { actorId: string; profileId: string; groupId: string }) => {
+    membership.create({
+      group_id: params.groupId,
+      actor_id: params.actorId,
+      permissions: [],
+    });
+    profile.addToGroup(params.profileId, params.groupId);
+  },
+);
+
+const client = createClient({ serverUrl, actorId, schema, actions: { addToWorkspace } });
+await client.actions.addToWorkspace({ actorId: personId, profileId, groupId });
+```
+
+### Not yet
+
+The grammar has no `id` predicate: query the collection and select the row.
+`limit(n)` is the only windowing — cursor pagination is deferred. On-demand
+document bodies are not a query either (#500); open collaborative text through
+`client.textDocument(id)`.
 
 ## Seeding fixtures
 
@@ -49,8 +176,8 @@ defined in one place.
 Three scripts:
 
 - `pnpm --filter @ebbjs/client test` — unit tests only. Fast, no server
-  needed. 213 tests across `src/sync/`, `src/fields/`,
-  `src/presence/`, and the storage layer. Runs in CI on every PR.
+  needed. 1119 tests across `src/sync/`, `src/fields/`, `src/presence/`,
+  and the storage layer. Runs in CI on every PR.
 - `pnpm --filter @ebbjs/client test:watch` — same as `test`, in watch mode.
 - `pnpm --filter @ebbjs/client test:integration` — round-trip integration
   tests under `src/__tests__/integration/` against a live `ebb_server`.

@@ -6,7 +6,7 @@
  *
  * Covers:
  * - create with an `assignee` relationship in one atomic Action and read
- *   it back through the `issue.assignee` accessor;
+ *   it back through the `assignee` join;
  * - update, relationship filter, unlink, and soft delete;
  * - two actors in one shared group converge on the same issue state.
  */
@@ -16,7 +16,7 @@ import { createClient, type NamespacedClient } from "@ebbjs/client";
 import type { SeedData } from "@ebbjs/core/seed";
 import { schema, type Schema } from "../schema";
 import { SEED_PERMISSIONS, SEEDER_ACTOR_ID, buildActorSeed, deriveActorSeedIds } from "../seed";
-import { SERVER_URL, catchUpUntilCurrent, serverIsReachable } from "./integration-support";
+import { SERVER_URL, catchUpUntilCurrent, findRow, serverIsReachable } from "./integration-support";
 
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const ALICE = `crud_alice_${RUN_ID}`;
@@ -102,7 +102,7 @@ afterAll(() => {
 });
 
 describe("integration: issue CRUD", () => {
-  it("creates with an assignee link and reads it back through the accessor", async () => {
+  it("creates with an assignee link and reads it back through the assignee join", async () => {
     if (!(await serverIsReachable())) return;
 
     const created = await alice!.atomic((drafts) =>
@@ -113,11 +113,10 @@ describe("integration: issue CRUD", () => {
     );
     await catchUpUntilCurrent(alice!, ALICE_IDS.groupId);
 
-    const row = await alice!.issue.get(created.id);
-    expect(row).not.toBeNull();
+    const row = findRow(await alice!.issue.query().with({ assignee: true }), created.id);
+    expect(row).toBeDefined();
     expect(row!.title).toBe("First issue");
-    const assignee = await row!.assignee;
-    expect(assignee?.id).toBe(ALICE_IDS.profileId);
+    expect(row!.assignee?.id).toBe(ALICE_IDS.profileId);
   });
 
   it("updates fields, filters by the relationship, unlinks, and deletes", async () => {
@@ -133,7 +132,7 @@ describe("integration: issue CRUD", () => {
 
     await alice!.issue.update(created.id, { status: "in_progress", priority: "high" });
     await catchUpUntilCurrent(alice!, ALICE_IDS.groupId);
-    const updated = await alice!.issue.get(created.id);
+    const updated = findRow(await alice!.issue.query(), created.id);
     expect(updated?.status).toBe("in_progress");
     expect(updated?.priority).toBe("high");
 
@@ -142,8 +141,8 @@ describe("integration: issue CRUD", () => {
 
     await alice!.issue.unlink(created.id, "assignee");
     await catchUpUntilCurrent(alice!, ALICE_IDS.groupId);
-    const cleared = await alice!.issue.get(created.id);
-    expect(await cleared!.assignee).toBeNull();
+    const cleared = findRow(await alice!.issue.query().with({ assignee: true }), created.id);
+    expect(cleared!.assignee).toBeNull();
 
     await alice!.issue.delete(created.id);
     await catchUpUntilCurrent(alice!, ALICE_IDS.groupId);
@@ -161,7 +160,7 @@ describe("integration: issue CRUD", () => {
       ),
     );
     await catchUpUntilCurrent(bob!, SHARED_GROUP_ID);
-    const bobView = await bob!.issue.get(created.id);
+    const bobView = findRow(await bob!.issue.query(), created.id);
     expect(bobView?.title).toBe("Shared issue");
 
     // Different fields from each actor so the merge keeps both.
@@ -170,8 +169,8 @@ describe("integration: issue CRUD", () => {
 
     await catchUpUntilCurrent(alice!, SHARED_GROUP_ID);
     await catchUpUntilCurrent(bob!, SHARED_GROUP_ID);
-    const aliceFinal = await alice!.issue.get(created.id);
-    const bobFinal = await bob!.issue.get(created.id);
+    const aliceFinal = findRow(await alice!.issue.query(), created.id);
+    const bobFinal = findRow(await bob!.issue.query(), created.id);
     for (const row of [aliceFinal, bobFinal]) {
       expect(row?.status).toBe("done");
       expect(row?.priority).toBe("urgent");

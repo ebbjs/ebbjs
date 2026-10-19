@@ -94,7 +94,7 @@ The root `@ebbjs/storage` entry is types-only; adapter constructors live on per-
 
 ### `@ebbjs/client`
 
-Local-first sync SDK — handshake, catch-up, live SSE, and a typed ORM namespace over materialized entities. 575 unit tests pass, plus integration tests that round-trip against a live `ebb_server`.
+Local-first sync SDK — handshake, catch-up, live SSE, and a local query engine over a materialized replica. Reads are typed queries through `client.<entity>.query()`; writes go through the schema-bound entity namespaces. 1119 unit tests pass, plus integration tests that round-trip against a live `ebb_server`.
 
 ```ts
 import { createClient, defineEntity, defineSchema, e } from "@ebbjs/client";
@@ -109,45 +109,30 @@ const client = createClient({
 });
 
 const { groups } = await client.handshake();
+const groupIds = groups.map((group) => group.id);
 
 // Open the live stream; `subscribe` catches up from the cursors cached by
 // `handshake()` before streaming, so no explicit cursor is needed.
-client.subscribe(
-  groups.map((group) => group.id),
-  () => {},
-);
+client.subscribe(groupIds, () => {});
 
-// Reactive read: fires when the matching set changes.
-client.todo.subscribe({ completed: false }, (snapshot) => {
-  console.log(snapshot.count, snapshot.entities);
-});
+// Reads: a typed chain per collection. Await it for a snapshot, or take
+// `.result()` / `useQuery` for the cached, reactive result.
+const open = await client.todo.query().where("completed", false);
 
-// Writes go through the client's outbox seam and POST /sync/actions.
-// `groups` must be passed explicitly; the SDK injects the membership rows.
-const { rejected } = await client.todo.create(
+// Writes: namespace verbs. `groups` files the row into its groups in the
+// same Action, and the created id is addressable immediately.
+const { id } = await client.todo.create(
   { title: "Buy milk", completed: false },
-  { groups: groups.map((group) => group.id) },
+  { groups: groupIds },
 );
-
-// Projected query/get rows carry the entity `id` as an addressing
-// key, so a listed row can feed `get(row.id)` / `update(row.id, ...)`
-// without `toRaw()`.
-const [listed] = await client.todo.query().where("completed", false);
-if (listed !== undefined) {
-  await client.todo.update(listed.id, { completed: true });
-}
-
-// `toRaw()` exposes the wire envelope (including `id`).
-const [row] = await client.todo.query().where("completed", false).toRaw();
-if (row !== undefined) {
-  await client.todo.update(row.id, { completed: true });
-}
+await client.todo.update(id, { completed: true });
 ```
 
 Shipped primitives:
 
-- **Typed ORM namespace** — `client.<entity>.query()` / `get()` / `create()` / `update()`, plus `link` / `unlink` for relationships. Payloads are validated against the schema with TypeBox at runtime.
-- **Reactive subscribe** — `client.<entity>.subscribe(filter, cb)` fires on matching-set changes; `client.onStateChange(cb)` tracks the connection state machine.
+- **Query engine** — `client.<entity>.query()` with `where` / `or` / `orderBy` / `limit` and one-level `with` joins. A chain lowers to a serializable query, so an identical chain shares one cached result; `status` is `unloaded` / `stale` / `current` / `failed`. In React, `useQuery` wraps this surface.
+- **Schema-bound entity namespaces** — `client.<entity>` is the public API: `query()` for reads, the write verbs (`create` / `update` / `delete` / `duplicate` / `link` / `unlink` / `setLinks` / membership) for single-entity writes, and `client.atomic` / `defineAction` (`client.actions.<name>`) for multi-entity writes in one Action. `get()`, the async row accessors, and `subscribe(filter, cb)` are internal.
+- **Reactive subscribe** — `client.onStateChange(cb)` tracks the connection state machine; live sync runs through `client.subscribe(groupIds, onEvent)`.
 - **Presence** — `client.presence` broadcasts and reads ephemeral cursors and selections.
 - **Collaborative text** — `client.textDocument(docId)` opens a causal-tree document with a local edit API; `@ebbjs/codemirror` bridges it to a CodeMirror 6 view. Writes that race while offline surface through [`client.conflicts`](/docs/conflicts).
 
@@ -169,7 +154,7 @@ await server.kill();
 
 ### `@ebbjs/react`
 
-React bindings for `@ebbjs/client` — a provider, a connection hook, and the query + mutation hooks. Ships `EbbProvider`, `useClient`, `useConnection`, `useQuery`, and `useEntityMutations`.
+React bindings for `@ebbjs/client` — a provider, a connection hook, and the query + mutation hooks. Ships `EbbProvider`, `useClient`, `useConnection`, `useQuery`, and `useEntityMutations`. `useQuery` is the read root; `useClient` exposes the writes and actions.
 
 ```tsx
 import { EbbProvider, useClient, useEntityMutations, useQuery, type QueryRoot } from "@ebbjs/react";
@@ -207,16 +192,42 @@ function TodoRow({ id }: { id: string }) {
 }
 ```
 
+`useQuery` builds one chain and subscribes to its cached result. Annotate `q`
+with the schema (`(q: QueryRoot<Schema>)`) and omit the hook's type arguments so
+the query surface and the row types both infer. The grammar is the engine's:
+`where` / `or` / `orderBy(field, "asc" | "desc")` / `limit(n)`, plus one-level
+`with` joins typed by the schema's relationship map.
+
+```tsx
+// Joined rows: `issue.assignee` is typed from the relationship.
+useQuery((q: QueryRoot<Schema>) =>
+  q.issue.query().where("status", "open").with({ assignee: true }),
+);
+```
+
+`status` is `unloaded` (never run; `data` is `undefined`, never `[]`), `stale` (a
+usable result at an older revision while a re-run is in flight), `current`, or
+`failed` (sticky until a run succeeds). `loading` is true only while no result
+exists yet, and `error` mirrors `failed`. A cached remount renders the held
+result immediately with `status: "current"` when it matches the replica's
+revision (`"stale"` when the replica has moved on), so there is no loading flash.
+
+Windowing is `limit(n)` only — cursor pagination is deferred. There is no `id`
+predicate, so a single row is a collection query plus `find`. On-demand document
+bodies are not a query yet ([#500](https://github.com/ebbjs/ebbjs/issues/500)).
+
 See [`packages/react/README.md`](https://github.com/ebbjs/ebbjs/blob/main/packages/react/README.md).
 
 ## What's NOT in the repo
 
-| Area                                       | State       | Where it's tracked                                                                |
-| ------------------------------------------ | ----------- | --------------------------------------------------------------------------------- |
-| Server functions (`defineFunction`)        | Not started | [Epic #112](https://github.com/ebbjs/ebbjs/issues/112)                            |
-| Peer replication                           | Not started | [Epic #113](https://github.com/ebbjs/ebbjs/issues/113)                            |
-| Server-side SDK (SSR / external processes) | Not started | [Epic #114](https://github.com/ebbjs/ebbjs/issues/114)                            |
-| CLI tooling                                | Not started | —                                                                                 |
-| Persistent client storage (SQLite adapter) | Not started | `@ebbjs/storage` ships in-memory + IndexedDB adapters; SQLite is a future adapter |
+| Area                                       | State       | Where it's tracked                                                                                  |
+| ------------------------------------------ | ----------- | --------------------------------------------------------------------------------------------------- |
+| Server functions (`defineFunction`)        | Not started | [Epic #112](https://github.com/ebbjs/ebbjs/issues/112)                                              |
+| Peer replication                           | Not started | [Epic #113](https://github.com/ebbjs/ebbjs/issues/113)                                              |
+| Server-side SDK (SSR / external processes) | Not started | [Epic #114](https://github.com/ebbjs/ebbjs/issues/114)                                              |
+| CLI tooling                                | Not started | —                                                                                                   |
+| Persistent client storage (SQLite adapter) | Not started | `@ebbjs/storage` ships in-memory + IndexedDB adapters; SQLite is a future adapter                   |
+| Cursor-paginated queries                   | Not started | `limit(n)` only; deferred past the query engine ([#495](https://github.com/ebbjs/ebbjs/issues/495)) |
+| On-demand document bodies as queries       | Not started | [#500](https://github.com/ebbjs/ebbjs/issues/500); use `client.textDocument(id)` for now            |
 
 For the marketing-facing roadmap, see [ebb.dev/#roadmap](https://ebb.dev/#roadmap). For an honest, repo-grounded roadmap, see the [GitHub README](https://github.com/ebbjs/ebbjs#current-state).

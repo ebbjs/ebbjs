@@ -5,7 +5,9 @@ React bindings for [`@ebbjs/client`](https://github.com/ebbjs/ebbjs/tree/main/pa
 This package ships the client plumbing plus the data hooks:
 
 - `EbbProvider` — context carrying a `NamespacedClient<S, TActions>`.
-- `useClient<S>()` — read the client, typed by the caller's schema, for imperative actions (`client.actions`, `client.atomic`) and writes.
+- `useClient<S>()` — read the client, typed by the caller's schema, for writes
+  and imperative actions (`client.actions`, `client.atomic`, the namespace
+  verbs). Reads go through `useQuery`.
 - `useConnection()` — `useSyncExternalStore` over `client.onStateChange`, returning the `ConnectionState`.
 - `useQuery()` — the reactive read root: build a query through the typed namespaces and subscribe to its cached result.
 - `useEntityMutations()` — stable `create` / `update` / `delete` pass-throughs for one namespace.
@@ -93,6 +95,17 @@ useQuery(
 type follows the selection, so `issue.assignee` is typed from the
 schema's relationship and a nested selector is a compile error.
 
+The rest of the grammar:
+
+- `where(key, value)` — equality conjunct. A key may be a shape field, a
+  registered relationship `as`, or the reserved `groups` key.
+- `or(key, value)` — starts a new AND-group, so
+  `.where(a).where(b).or(c).where(d)` means `(a AND b) OR (c AND d)`.
+- `orderBy(field, "asc" | "desc")` and `limit(n)`.
+
+The chain is immutable, so a helper can return a partially-built query and the
+caller can keep narrowing it.
+
 ### Status
 
 `status` is derived from the engine's cache, never stored ad hoc:
@@ -104,8 +117,8 @@ schema's relationship and a nested selector is a compile error.
 | `current`  | The result was produced at the replica's current revision.        |
 | `failed`   | The last run threw; sticky until a successful run.                |
 
-A held result renders synchronously on first mount: `status` starts at
-`current`, not `unloaded`, so there is no loading flash for cached data.
+A held result renders synchronously on first mount with `status: "current"` or
+`"stale"` (never `unloaded`), so there is no loading flash for cached data.
 `loading` is true only while no result exists yet, and `error` mirrors
 `failed`. A `stale` result is still usable, so it keeps `loading: false`
 while the refresh runs.
@@ -132,12 +145,42 @@ if (issue === undefined) return <span>missing</span>;
 `client.<entity>.get()` and its async relationship accessors are
 internal / undocumented; `useEntity` was removed in #501.
 
-## Writes
+## Not a query (yet)
 
-`useClient<Schema>()` exposes the client's write surface. Single-entity
-verbs live on the typed namespace (`client.issue.update`,
-`client.issue.link`), and multi-entity writes go through
-`client.atomic` or a `defineAction` bound to `client.actions`.
+- **Windowing / cursor pagination is deferred.** `limit(n)` is the only
+  windowing; there is no cursor, offset, or page-boundary API. Query the
+  collection you can afford to hold and slice it in the component if you
+  must.
+- **On-demand document bodies are not yet a query (#500).** A
+  collaborative-text body is a separate document entity that the replica
+  will materialize when opened, not a row the query grammar returns. Open it
+  through the low-level `client.textDocument(id)` for now.
+- **There is no `id` predicate**, so a single row is a collection query plus
+  `find`, as above.
+
+## `useClient` and writes
+
+`useClient<Schema, TActions>()` returns the provider's client typed by the
+caller's schema and action map. It is the write surface, not a read surface:
+reads go through `useQuery`. Single-entity verbs live on the typed namespace
+(`client.issue.update`, `client.issue.link`), and multi-entity writes go
+through `client.atomic` or a `defineAction` bound to `client.actions`.
+
+```tsx
+function NewIssue({ groupId }: { groupId: string }) {
+  const client = useClient<Schema>();
+  const create = () =>
+    client.issue.create({ title: "Buy milk", status: "todo" }, { groups: [groupId] });
+  return <button onClick={() => void create()}>new issue</button>;
+}
+```
+
+A `defineAction` is declared once and called through the action map:
+
+```tsx
+const client = useClient<Schema, typeof workspaceActions>();
+await client.actions.addToWorkspace({ actorId, profileId, groupId, permissions });
+```
 
 `useEntityMutations(client.todo)` returns referentially stable
 `create` / `update` / `delete` functions that forward to the namespace

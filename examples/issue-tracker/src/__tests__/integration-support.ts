@@ -40,3 +40,15 @@ export async function catchUpUntilCurrent(client: SyncClient, groupId: string): 
   }
   throw new Error(`catchUpUntilCurrent: exhausted retries for group ${groupId}`);
 }
+
+/**
+ * Pick one projected row out of a query result by its `id`. The query
+ * grammar has no id predicate yet, so a single-row assertion reads the
+ * visible collection and selects the row here.
+ */
+export function findRow<T extends { readonly id: string }>(
+  rows: readonly T[],
+  id: string,
+): T | undefined {
+  return rows.find((row) => row.id === id);
+}
