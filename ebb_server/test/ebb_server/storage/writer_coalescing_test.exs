@@ -10,7 +10,7 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{DirtyTracker, RocksDB, Writer}
+  alias EbbServer.Storage.{CommitPipeline, DirtyTracker, RocksDB, Writer}
 
   import EbbServer.TestHelpers
 
@@ -239,7 +239,7 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
       # commit: no second claim, no reply yet.
       assert wait_until(fn ->
                state = :sys.get_state(writer.pid)
-               state.inflight != nil and state.pending_count == 2
+               CommitPipeline.inflight?(state.pipeline) and state.pipeline.pending_count == 2
              end)
 
       assert Task.yield(second, 50) == nil
@@ -292,7 +292,7 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
         end)
 
       assert wait_until(fn ->
-               match?(%{flush_timer: ref} when not is_nil(ref), :sys.get_state(writer.pid))
+               match?(%{flush_timer_ref: ref} when not is_nil(ref), :sys.get_state(writer.pid))
              end)
 
       # A burst-drain marker would have replied already; the timer holds it.

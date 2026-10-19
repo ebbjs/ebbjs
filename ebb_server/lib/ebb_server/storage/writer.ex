@@ -59,9 +59,26 @@ defmodule EbbServer.Storage.Writer do
   The hand-off is one `EbbServer.Storage.PreparedAction` per Action plus
   the claimed range. The sequencer sends it asynchronously and the
   Committer answers with `{:committer_result, ref, result}`. **V0 allows
-  exactly one in-flight commit** (`inflight` in the state): it is a seam
-  and a measurement split, not yet a concurrency change, so apply,
-  notify, and reply still wait for the ack.
+  exactly one in-flight commit**: it is a seam and a measurement split,
+  not yet a concurrency change, so apply, notify, and reply still wait for
+  the ack.
+
+  ## Commit pipeline state machine
+
+  The Writer is now only the imperative shell. The pending calls, claimed
+  ranges, in-flight action-id guard, resolution order, and coalescing
+  flags live in `EbbServer.Storage.CommitPipeline`, a pure state machine
+  with explicit `claimed -> prepared -> committing -> committed ->
+  applying -> released` transitions and an `abandoned` terminal path. The
+  Writer owns the live caches, timers, Committer, and durable side
+  effects; every ordering decision comes from the pipeline. That is what
+  makes the transitions testable without a Writer, isolated caches, or
+  RocksDB.
+
+  The pipeline's `claim_order` is the reorder buffer future concurrent
+  batches will release through, and the `Batch` struct is where the
+  cross-flush cache overlay (#533) will attach. Neither V2 feature is
+  enabled here; see `CommitPipeline` for the extension points.
 
   While the ack is outstanding the sequencer keeps accepting
   `write_actions/2` calls, so the next burst drains and coalesces behind
@@ -241,6 +258,7 @@ defmodule EbbServer.Storage.Writer do
   alias EbbServer.Storage.{
     ActionFormat,
     CacheTables,
+    CommitPipeline,
     Committer,
     DirtyTracker,
     EntityGroupCache,
@@ -254,6 +272,8 @@ defmodule EbbServer.Storage.Writer do
     RelationshipCache,
     RocksDB
   }
+
+  alias EbbServer.Storage.CommitPipeline.Batch
 
   @type validated_action :: PermissionChecker.validated_action()
   @type validated_update :: PermissionChecker.validated_update()
@@ -269,9 +289,6 @@ defmodule EbbServer.Storage.Writer do
                          })
                        )
 
-  @type enqueued_action :: {validated_action(), payload_etf :: binary()}
-  @type pending_actions :: [{GenServer.from(), [enqueued_action()]}]
-
   @type cache_mutation ::
           {:entity_type, String.t(), String.t()}
           | {:group_member_put, map()}
@@ -281,30 +298,12 @@ defmodule EbbServer.Storage.Writer do
           | {:relationship_put, map()}
           | {:relationship_delete, String.t()}
 
-  @type pending_marks :: {[PreparedAction.entity_mark()], non_neg_integer() | nil}
+  @type pending_marks :: CommitPipeline.pending_marks()
 
-  @type claim :: %{
-          required(:action_ids) => [String.t()],
-          required(:pending_marks) => pending_marks(),
-          required(:gsn_start) => non_neg_integer(),
-          required(:gsn_end) => non_neg_integer()
-        }
-
-  @type inflight :: %{
-          ref: reference(),
-          pending: pending_actions(),
-          ranges: %{
-            optional(non_neg_integer()) => {non_neg_integer(), non_neg_integer()} | :empty
-          },
-          gsn_start: non_neg_integer(),
-          gsn_end: non_neg_integer(),
-          action_ids: [String.t()],
-          prepared: [PreparedAction.t()],
-          groups_by_gsn: %{optional(non_neg_integer()) => [String.t()]},
-          started_at: integer(),
-          pending_marks: pending_marks(),
-          batch_size: non_neg_integer()
-        }
+  # A caller's surviving Action plus its position in the coalesced burst. The
+  # position is what makes each caller's reply sub-range contiguous.
+  @type tagged_action ::
+          {caller_idx :: non_neg_integer(), validated_action(), payload_etf :: binary()}
 
   @type t :: %__MODULE__{
           rocks_name: GenServer.name(),
@@ -319,15 +318,12 @@ defmodule EbbServer.Storage.Writer do
           relationships: atom(),
           relationships_by_id: atom(),
           committer: pid() | nil,
-          inflight: inflight() | nil,
+          pipeline: CommitPipeline.t(),
           after_commit: (-> any()) | nil,
           batch_max_size: integer(),
           batch_timeout_ms: non_neg_integer(),
           ablate: [atom()],
-          pending: pending_actions(),
-          pending_count: non_neg_integer(),
-          flush_timer: reference() | nil,
-          flush_scheduled: boolean(),
+          flush_timer_ref: reference() | nil,
           fan_out_router: GenServer.name() | nil,
           watermark_tracker: GenServer.name() | nil,
           in_flight_actions: GenServer.name() | nil
@@ -345,15 +341,12 @@ defmodule EbbServer.Storage.Writer do
     :relationships,
     :relationships_by_id,
     :committer,
-    :inflight,
+    :pipeline,
     :after_commit,
     :batch_max_size,
     :batch_timeout_ms,
     :ablate,
-    :pending,
-    :pending_count,
-    :flush_timer,
-    :flush_scheduled,
+    :flush_timer_ref,
     :fan_out_router,
     :watermark_tracker,
     :in_flight_actions
@@ -487,15 +480,12 @@ defmodule EbbServer.Storage.Writer do
       relationships: relationships,
       relationships_by_id: relationships_by_id,
       committer: committer,
-      inflight: nil,
+      pipeline: CommitPipeline.new(),
       after_commit: after_commit,
       batch_max_size: batch_max_size,
       batch_timeout_ms: batch_timeout_ms,
       ablate: ablate,
-      pending: [],
-      pending_count: 0,
-      flush_timer: nil,
-      flush_scheduled: false,
+      flush_timer_ref: nil,
       fan_out_router: fan_out_router,
       watermark_tracker: watermark_tracker,
       in_flight_actions: in_flight_actions
@@ -580,28 +570,26 @@ defmodule EbbServer.Storage.Writer do
   # A marker queued before the dispatch only means the burst is already
   # being committed; the ack path reschedules if calls piled up behind it.
   @impl true
-  def handle_info(:flush, %{inflight: %{}} = state) do
-    {:noreply, %{state | flush_scheduled: false}}
+  def handle_info(:flush, state) do
+    if CommitPipeline.inflight?(state.pipeline) do
+      {:noreply, %{state | pipeline: CommitPipeline.clear_flush_marker(state.pipeline)}}
+    else
+      {:noreply, flush(state)}
+    end
   end
 
-  def handle_info(:flush, state), do: {:noreply, flush(state)}
-
-  def handle_info({:committer_result, ref, result}, %{inflight: %{ref: ref}} = state) do
-    {:noreply, handle_commit_result(result, state)}
+  def handle_info({:committer_result, ref, result}, state) do
+    if CommitPipeline.committing?(state.pipeline, ref) do
+      {:noreply, handle_commit_result(result, ref, state)}
+    else
+      {:noreply, state}
+    end
   end
-
-  # A result for an attempt this Writer has already abandoned (it only
-  # happens after the sequencer re-raised) must not reply twice.
-  def handle_info({:committer_result, _stale_ref, _result}, state), do: {:noreply, state}
 
   defp enqueue(state, from, actions) do
     encoded = Enum.map(actions, &enqueue_action(&1, state))
 
-    %{
-      state
-      | pending: [{from, encoded} | state.pending],
-        pending_count: state.pending_count + length(actions)
-    }
+    %{state | pipeline: CommitPipeline.enqueue(state.pipeline, from, encoded)}
   end
 
   # The payload is GSN-free, so it is built and ETF-encoded as the call
@@ -622,48 +610,41 @@ defmodule EbbServer.Storage.Writer do
 
   # The only place a flush is scheduled. A commit in flight blocks it —
   # V0 keeps one claim — and calls accumulate until the ack reschedules.
-  defp schedule_flush(%{inflight: %{}} = state), do: state
-
-  defp schedule_flush(%{pending: []} = state), do: %{state | flush_scheduled: false}
-
   defp schedule_flush(state) do
-    cond do
-      state.batch_max_size > 0 and state.pending_count >= state.batch_max_size ->
-        flush(state)
+    case CommitPipeline.schedule(
+           state.pipeline,
+           state.batch_max_size,
+           state.batch_timeout_ms
+         ) do
+      {:flush, pipeline} ->
+        flush(%{state | pipeline: pipeline})
 
-      state.flush_timer != nil ->
-        state
-
-      state.batch_timeout_ms > 0 ->
-        %{state | flush_timer: Process.send_after(self(), :flush, state.batch_timeout_ms)}
-
-      true ->
+      {:send_flush, pipeline} ->
         # Burst-drain: the marker lands at the TAIL of the mailbox, after
         # every write_actions call already queued, so it flushes the current
         # burst and adds only a mailbox hop when nothing else is waiting. One
         # marker per burst is enough; the rest of the burst enqueues behind it.
-        unless state.flush_scheduled do
-          send(self(), :flush)
-        end
+        send(self(), :flush)
+        %{state | pipeline: pipeline}
 
-        %{state | flush_scheduled: true}
+      {:schedule_timer, pipeline} ->
+        timer = Process.send_after(self(), :flush, state.batch_timeout_ms)
+        %{state | pipeline: pipeline, flush_timer_ref: timer}
+
+      {status, pipeline} when status in [:wait, :idle] ->
+        %{state | pipeline: pipeline}
     end
   end
 
   # The single place that claims a GSN range and hands it to the
   # Committer. A stale marker or timer must be a no-op when nothing is
   # pending; the replies wait for the ack.
-  defp flush(%{pending: []} = state) do
-    %{cancel_flush_timer(state) | flush_scheduled: false}
-  end
-
   defp flush(state) do
     state = cancel_flush_timer(state)
-    pending = Enum.reverse(state.pending)
+    {pipeline, pending} = CommitPipeline.take_pending(state.pipeline)
+    state = %{state | pipeline: pipeline}
 
     {fresh, fresh_tagged} = plan(pending, state)
-
-    state = %{state | pending: [], pending_count: 0, flush_scheduled: false}
 
     case fresh do
       [] ->
@@ -689,55 +670,60 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp dispatch(pending, ranges, fresh, gsn_start, gsn_end, started_at, state) do
+    ref = make_ref()
+
+    batch = %Batch{
+      ref: ref,
+      gsn_start: gsn_start,
+      gsn_end: gsn_end,
+      action_ids: action_ids(fresh),
+      pending: pending,
+      ranges: ranges,
+      started_at: started_at,
+      batch_size: length(fresh)
+    }
+
+    {:ok, _batch, pipeline} = CommitPipeline.claim(state.pipeline, batch)
+    state = %{state | pipeline: pipeline}
+
     {prepared, groups_by_gsn} =
-      prepare_or_abandon(fresh, gsn_start, gsn_end, started_at, state)
+      prepare_or_abandon(fresh, ref, gsn_start, gsn_end, started_at, state)
 
     pending_marks = pending_marks(prepared, state)
-    ref = make_ref()
-    Committer.commit(state.committer, ref, prepared, gsn_start, gsn_end)
 
-    %{
-      state
-      | inflight: %{
-          ref: ref,
-          pending: pending,
-          ranges: ranges,
-          gsn_start: gsn_start,
-          gsn_end: gsn_end,
-          action_ids: action_ids(prepared),
-          prepared: prepared,
-          groups_by_gsn: groups_by_gsn,
-          started_at: started_at,
-          pending_marks: pending_marks,
-          batch_size: length(prepared)
-        }
-    }
+    {:ok, _batch, pipeline} =
+      CommitPipeline.prepared(
+        state.pipeline,
+        ref,
+        prepared,
+        groups_by_gsn,
+        pending_marks
+      )
+
+    {:ok, _batch, pipeline} = CommitPipeline.committing(pipeline, ref)
+    state = %{state | pipeline: pipeline}
+
+    Committer.commit(state.committer, ref, prepared, gsn_start, gsn_end)
+    state
   end
 
   # Group resolution reads the system caches, so it stays on the
   # sequencer. A raise here is still a claimed-but-uncommitted range: the
   # abandon (release the ids, clear marks, resolve, log, nudge) runs before
   # the re-raise, exactly like the failure paths after the ack.
-  defp prepare_or_abandon(fresh, gsn_start, gsn_end, started_at, state) do
-    claim = %{
-      action_ids: action_ids(fresh),
-      pending_marks: {[], nil},
-      gsn_start: gsn_start,
-      gsn_end: gsn_end
-    }
-
+  defp prepare_or_abandon(fresh, ref, gsn_start, gsn_end, started_at, state) do
     # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
     try do
       prepare(fresh, gsn_start, state)
     rescue
       error ->
         emit_batch_latency(gsn_start, gsn_end, started_at)
-        abandon(state, claim, error)
+        abandon(state, ref, error)
         reraise error, __STACKTRACE__
     catch
       kind, value ->
         emit_batch_latency(gsn_start, gsn_end, started_at)
-        abandon(state, claim, {kind, value})
+        abandon(state, ref, {kind, value})
         :erlang.raise(kind, value, __STACKTRACE__)
     end
   end
@@ -751,6 +737,10 @@ defmodule EbbServer.Storage.Writer do
     Telemetry.execute([:writer, :actions_per_sec], %{count: count}, %{})
   end
 
+  defp emit_batch_latency(%Batch{} = batch) do
+    emit_batch_latency(batch.gsn_start, batch.gsn_end, batch.started_at)
+  end
+
   defp emit_batch_latency(gsn_start, gsn_end, started_at) do
     Telemetry.execute(
       [:writer, :batch_latency_ms],
@@ -759,46 +749,40 @@ defmodule EbbServer.Storage.Writer do
     )
   end
 
-  defp handle_commit_result(:ok, state) do
-    inflight = state.inflight
-    state = %{state | inflight: nil}
+  defp handle_commit_result(:ok, ref, state) do
+    {:ok, batch, pipeline} = CommitPipeline.committed(state.pipeline, ref)
+    state = %{state | pipeline: pipeline}
 
     # The durable dedup row now exists for every Action in the batch, so
     # the commit marker takes over from the concurrency guard.
-    release_in_flight(state, inflight.action_ids)
+    release_in_flight(state, batch.action_ids)
 
-    case mark_committed_result(inflight, state) do
+    case mark_committed_result(batch, state) do
       :ok ->
-        committed_at = System.monotonic_time()
-
-        case settle_after_commit(inflight, state, committed_at) do
-          :ok -> schedule_flush(state)
-          :escalated -> state
-        end
+        apply_and_release(batch, ref, state)
 
       {:raised, kind, value, stacktrace} ->
-        emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
+        emit_batch_latency(batch)
 
-        abandon(state, inflight, raised_reason(kind, value))
+        abandon(state, ref, raised_reason(kind, value))
 
         :erlang.raise(kind, value, stacktrace)
     end
   end
 
-  defp handle_commit_result({:error, reason}, state) do
-    inflight = state.inflight
-    state = %{state | inflight: nil}
+  defp handle_commit_result({:error, reason}, ref, state) do
+    batch = CommitPipeline.get(state.pipeline, ref)
 
     Telemetry.execute(
       [:writer, :commit_failed],
       %{count: 1},
-      %{gsn_start: inflight.gsn_start, gsn_end: inflight.gsn_end, reason: reason}
+      %{gsn_start: batch.gsn_start, gsn_end: batch.gsn_end, reason: reason}
     )
 
-    abandon(state, inflight, reason)
+    state = abandon(state, ref, reason)
 
-    emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
-    reply_all(inflight.pending, inflight.ranges, {:error, reason})
+    emit_batch_latency(batch)
+    reply_all(batch.pending, batch.ranges, {:error, reason})
 
     schedule_flush(state)
   end
@@ -806,14 +790,38 @@ defmodule EbbServer.Storage.Writer do
   # The Committer reports the crash instead of taking the write down with
   # it, so the claim is abandoned here before the same exit reaches the
   # caller.
-  defp handle_commit_result({:raised, kind, value, stacktrace}, state) do
-    inflight = state.inflight
-    state = %{state | inflight: nil}
+  defp handle_commit_result({:raised, kind, value, stacktrace}, ref, state) do
+    batch = CommitPipeline.get(state.pipeline, ref)
 
-    abandon(state, inflight, raised_reason(kind, value))
+    abandon(state, ref, raised_reason(kind, value))
 
-    emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
+    emit_batch_latency(batch)
     :erlang.raise(kind, value, stacktrace)
+  end
+
+  defp apply_and_release(batch, ref, state) do
+    committed_at = System.monotonic_time()
+    {:ok, _batch, pipeline} = CommitPipeline.applying(state.pipeline, ref)
+    state = %{state | pipeline: pipeline}
+
+    case settle_after_commit(batch, state, committed_at) do
+      :ok ->
+        {:ok, _batch, pipeline} = CommitPipeline.release(state.pipeline, ref)
+        state = %{state | pipeline: pipeline}
+
+        if CommitPipeline.inflight?(state.pipeline) do
+          state
+        else
+          schedule_flush(state)
+        end
+
+      # The cache apply failed and the fan-out range was never pushed. Leave
+      # the batch unreleased so a rebuilt Writer cannot let a later range
+      # overtake it; the escalation restarts the storage tree and init/1
+      # reconciles the durable frontier.
+      :escalated ->
+        state
+    end
   end
 
   defp raised_reason(:error, value), do: value
@@ -823,9 +831,9 @@ defmodule EbbServer.Storage.Writer do
   # before `after_commit`, apply, or notify, so a later raise cannot be
   # mistaken for a failed commit. A failure here still leaves the range
   # unresolved, so it takes the abandon path.
-  defp mark_committed_result(inflight, state) do
+  defp mark_committed_result(batch, state) do
     unless ablate?(:watermark, state),
-      do: mark_committed(state, inflight.gsn_start, inflight.gsn_end)
+      do: mark_committed(state, batch.gsn_start, batch.gsn_end)
 
     :ok
   catch
@@ -837,52 +845,52 @@ defmodule EbbServer.Storage.Writer do
   # for the restarted Writer to settle, so the batch is never reported as
   # abandoned. Latency is emitted before the re-raise so the sample is not
   # swallowed.
-  defp settle_after_commit(inflight, state, committed_at) do
+  defp settle_after_commit(batch, state, committed_at) do
     # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
     try do
       if state.after_commit, do: state.after_commit.()
 
-      case apply_post_commit(inflight.prepared, inflight.pending_marks, state) do
+      case apply_post_commit(batch.prepared, batch.pending_marks, state) do
         :ok ->
           notify_fanout(
             state,
-            inflight.gsn_start,
-            inflight.gsn_end,
-            inflight.groups_by_gsn,
+            batch.gsn_start,
+            batch.gsn_end,
+            batch.groups_by_gsn,
             committed_at
           )
 
-          emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
-          emit_actions_accepted(inflight.batch_size)
-          reply_all(inflight.pending, inflight.ranges, :ok)
+          emit_batch_latency(batch)
+          emit_actions_accepted(batch.batch_size)
+          reply_all(batch.pending, batch.ranges, :ok)
           :ok
 
         {:error, reason} ->
           # The batch is durable: reply success to every caller first,
           # then escalate, so no caller sees a lost success when the
           # rebuild tears this process down.
-          emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
-          emit_actions_accepted(inflight.batch_size)
-          reply_all(inflight.pending, inflight.ranges, :ok)
-          escalate_cache_failure(inflight.gsn_start, inflight.gsn_end, reason)
+          emit_batch_latency(batch)
+          emit_actions_accepted(batch.batch_size)
+          reply_all(batch.pending, batch.ranges, :ok)
+          escalate_cache_failure(batch.gsn_start, batch.gsn_end, reason)
           :escalated
       end
     rescue
       error ->
-        emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
-        log_post_commit_failure(inflight, error)
+        emit_batch_latency(batch)
+        log_post_commit_failure(batch, error)
         reraise error, __STACKTRACE__
     catch
       kind, value ->
-        emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
-        log_post_commit_failure(inflight, {kind, value})
+        emit_batch_latency(batch)
+        log_post_commit_failure(batch, {kind, value})
         :erlang.raise(kind, value, __STACKTRACE__)
     end
   end
 
-  defp log_post_commit_failure(inflight, reason) do
+  defp log_post_commit_failure(batch, reason) do
     Logger.error(
-      "Writer committed GSN range #{inflight.gsn_start}..#{inflight.gsn_end} " <>
+      "Writer committed GSN range #{batch.gsn_start}..#{batch.gsn_end} " <>
         "but a post-commit step failed (#{inspect(reason)}); the range stays committed"
     )
   end
@@ -890,6 +898,8 @@ defmodule EbbServer.Storage.Writer do
   # Arrival order is the caller's position in `pending`; a caller's
   # surviving Actions are contiguous in the global fresh list, so one
   # `{first, last}` per caller is exact.
+  @spec plan([CommitPipeline.pending_call()], t()) ::
+          {[CommitPipeline.enqueued_action()], [tagged_action()]}
   defp plan(pending, state) do
     tagged =
       pending
@@ -922,6 +932,7 @@ defmodule EbbServer.Storage.Writer do
   # that arrives while its first copy is still in flight is dropped instead
   # of committing a second copy. The losers are the ids another in-flight
   # batch owns; their callers get the empty success tuple, not a rejection.
+  @spec claim_in_flight([tagged_action()], t()) :: [tagged_action()]
   defp claim_in_flight(tagged, %{in_flight_actions: nil}), do: tagged
 
   defp claim_in_flight(tagged, state) do
@@ -934,6 +945,8 @@ defmodule EbbServer.Storage.Writer do
     end)
   end
 
+  @spec caller_ranges([tagged_action()], non_neg_integer(), non_neg_integer()) ::
+          %{optional(non_neg_integer()) => CommitPipeline.gsn_range()}
   defp caller_ranges(fresh_tagged, caller_count, gsn_start) do
     ranges =
       fresh_tagged
@@ -964,11 +977,10 @@ defmodule EbbServer.Storage.Writer do
   defp build_reply(:ok, :empty), do: {:ok, {0, 0}, []}
   defp build_reply({:error, reason}, _range), do: {:error, {:rocksdb_write_failed, reason}}
 
-  defp cancel_flush_timer(%{flush_timer: nil} = state), do: state
-
   defp cancel_flush_timer(state) do
-    Process.cancel_timer(state.flush_timer)
-    %{state | flush_timer: nil}
+    if state.flush_timer_ref, do: Process.cancel_timer(state.flush_timer_ref)
+
+    %{state | flush_timer_ref: nil, pipeline: CommitPipeline.clear_timer(state.pipeline)}
   end
 
   # `cf_action_dedup` doubles as the commit marker: the index entry and
@@ -977,6 +989,7 @@ defmodule EbbServer.Storage.Writer do
   # already has one must not claim a GSN or append a second log record.
   # Pairing results with ids (not actions) means a short `multi_get`
   # reply keeps the unmatched Actions rather than dropping them.
+  @spec drop_committed([tagged_action()], GenServer.name()) :: [tagged_action()]
   defp drop_committed([], _rocks_name), do: []
 
   defp drop_committed(tagged, rocks_name) do
@@ -1352,36 +1365,40 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
-  defp abandon(
-         state,
-         %{
-           action_ids: action_ids,
-           pending_marks: pending,
-           gsn_start: gsn_start,
-           gsn_end: gsn_end
-         },
-         reason
-       ) do
-    release_in_flight(state, action_ids)
+  defp abandon(state, ref, reason) do
+    case CommitPipeline.abandon(state.pipeline, ref, reason) do
+      {:ok, batch, pipeline} ->
+        state = %{state | pipeline: pipeline}
 
-    unless ablate?(:dirty, state), do: clear_pending(state, pending)
+        release_in_flight(state, batch.action_ids)
 
-    # Resolve before nudging so the router can only observe the advanced
-    # frontier.
-    unless ablate?(:watermark, state), do: resolve_range(state, gsn_start, gsn_end)
+        unless ablate?(:dirty, state), do: clear_pending(state, batch.pending_marks)
 
-    Telemetry.execute(
-      [:writer, :range_resolved],
-      %{count: 1},
-      %{gsn_start: gsn_start, gsn_end: gsn_end, reason: reason}
-    )
+        # Resolve before nudging so the router can only observe the advanced
+        # frontier.
+        unless ablate?(:watermark, state),
+          do: resolve_range(state, batch.gsn_start, batch.gsn_end)
 
-    Logger.error(
-      "Writer abandoned GSN range #{gsn_start}..#{gsn_end} without committing it: " <>
-        inspect(reason)
-    )
+        Telemetry.execute(
+          [:writer, :range_resolved],
+          %{count: 1},
+          %{gsn_start: batch.gsn_start, gsn_end: batch.gsn_end, reason: reason}
+        )
 
-    notify_range_resolved(state, gsn_start, gsn_end)
+        Logger.error(
+          "Writer abandoned GSN range #{batch.gsn_start}..#{batch.gsn_end} " <>
+            "without committing it: " <> inspect(reason)
+        )
+
+        notify_range_resolved(state, batch.gsn_start, batch.gsn_end)
+
+        state
+
+      {:error, _reason} ->
+        # A stale result for a batch this Writer already abandoned must not
+        # resolve or reply twice.
+        state
+    end
   end
 
   # Idempotent: a failed commit and a post-ack raise can both reach the

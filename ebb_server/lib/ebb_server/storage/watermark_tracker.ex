@@ -54,6 +54,10 @@ defmodule EbbServer.Storage.WatermarkTracker do
   scalable hot-path state.
 
   - `:ets :committed_ranges` - ordered_set table, key is {gsn, pid}, value is true
+
+  The Writer's `EbbServer.Storage.CommitPipeline` owns which claimed range
+  is committed or resolved and in what order; this module owns the global
+  frontier that fan-out and restart recovery read.
   """
 
   use GenServer

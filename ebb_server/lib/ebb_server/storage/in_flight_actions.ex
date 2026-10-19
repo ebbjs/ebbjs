@@ -26,6 +26,10 @@ defmodule EbbServer.Storage.InFlightActions do
     `:set` of action ids. `:named_table` plus `:public` lets every process
     insert, delete, and count without a `GenServer.call`.
 
+  The Writer's `EbbServer.Storage.CommitPipeline` owns the claim/release
+  decision and its ordered view of the ids; this table is the lock-free
+  projection that makes the claim atomic across processes.
+
   ## Lifecycle
 
   The GenServer exists only to own the ETS table lifetime. **All public

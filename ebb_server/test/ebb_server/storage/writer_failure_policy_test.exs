@@ -14,6 +14,7 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
 
   alias EbbServer.Storage.{
     ActionFormat,
+    CommitPipeline,
     DirtyTracker,
     InFlightActions,
     RocksDB,
@@ -392,7 +393,7 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
 
       assert wait_until(fn ->
                state = :sys.get_state(writer_pid)
-               state.inflight != nil and state.pending_count == 1
+               CommitPipeline.inflight?(state.pipeline) and state.pipeline.pending_count == 1
              end)
 
       send(committer_pid, :release)
