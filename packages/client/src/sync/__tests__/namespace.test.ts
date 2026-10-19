@@ -1359,12 +1359,28 @@ describe("client.<entity>.link / unlink / setLinks", () => {
     expect(response.rejected).toEqual([]);
   });
 
-  it("unlink() throws EntityValidationError when no relationship exists locally", async () => {
-    const { client } = await mkClient();
-    // Empty materialized cache — nothing to unlink.
-    await expect(client.todo.unlink("todo_1", "list")).rejects.toBeInstanceOf(
-      EntityValidationError,
-    );
+  it("unlink() is a no-op when no relationship exists locally", async () => {
+    const { client, seen } = await mkClient();
+    // Empty materialized cache — nothing to address, so no Action is submitted.
+    const response = await client.todo.unlink("todo_1", "list");
+    expect(response.rejected).toEqual([]);
+    expect(seen.filter((url) => url.endsWith("/sync/actions"))).toEqual([]);
+  });
+
+  it("unlink() is a no-op when the edge is locally tombstoned", async () => {
+    const { client, storage, seen } = await mkClient();
+    await storage.entities.set({
+      ...mkEntity("rel_seeded_1", "relationship", {
+        source_id: "todo_1",
+        target_id: "list_1",
+        field: "list",
+        type: "todo",
+      }),
+      deleted_hlc: "2",
+    });
+    const response = await client.todo.unlink("todo_1", "list");
+    expect(response.rejected).toEqual([]);
+    expect(seen.filter((url) => url.endsWith("/sync/actions"))).toEqual([]);
   });
 
   it("reads the source's live memberships to scope the write, without emitting them", async () => {
