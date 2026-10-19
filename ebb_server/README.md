@@ -243,27 +243,29 @@ reporters. Durations are in native `:telemetry` time units
 suffix marks a latency metric, not the raw unit. Reporters convert with
 `unit: {:native, :millisecond}`.
 
-| Event                                     | Measurements (unit)                                                                                  | Metadata                                            | Metric type                  | Subsystem       |
-| ----------------------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------- | ---------------------------- | --------------- |
-| `ebb.writer.batch_size`                   | `count`                                                                                              | `gsn_start`, `gsn_end`, `callers`                   | Histogram                    | `writer`        |
-| `ebb.writer.batch_latency_ms`             | `duration` (native)                                                                                  | `gsn_start`, `gsn_end`                              | Histogram                    | `writer`        |
-| `ebb.writer.actions_per_sec`              | `count`                                                                                              | —                                                   | Counter                      | `writer`        |
-| `ebb.writer.range_resolved`               | `count`                                                                                              | `gsn_start`, `gsn_end`, `reason`                    | Counter                      | `writer`        |
-| `ebb.writer.commit_failed`                | `count`                                                                                              | `gsn_start`, `gsn_end`, `reason`                    | Counter                      | `writer`        |
-| `ebb.watermark.lag`                       | `lag` (GSNs)                                                                                         | —                                                   | Gauge                        | `watermark`     |
-| `ebb.dirty_set.size`                      | `size` (entries)                                                                                     | —                                                   | Gauge                        | `dirty_set`     |
-| `ebb.entity_store.materialize_latency_ms` | `duration` (native)                                                                                  | `subject_id`, `subject_type`                        | Histogram                    | `entity_store`  |
-| `ebb.entity_store.cache_hit_rate`         | `count`                                                                                              | `result` (`:hit` / `:miss`)                         | Counter (tagged by `result`) | `entity_store`  |
-| `ebb.fanout.push_latency_ms`              | `duration` (native)                                                                                  | `group_id`                                          | Histogram                    | `fanout`        |
-| `ebb.fanout.active_connections`           | `count`                                                                                              | —                                                   | Gauge                        | `fanout`        |
-| `ebb.fanout.active_groups`                | `count`                                                                                              | —                                                   | Gauge                        | `fanout`        |
-| `ebb.http.request_latency_ms`             | `duration` (native)                                                                                  | `method`, `route`, `status`                         | Histogram                    | `http`          |
-| `ebb.sync.catch_up`                       | `count`                                                                                              | `group_id`, `from_offset`, `returned`, `up_to_date` | Counter                      | `sync`          |
-| `ebb.action_export.batch`                 | `count`                                                                                              | `from_gsn`, `to_gsn`                                | Counter                      | `action_export` |
-| `ebb.action_export.failed`                | `count`                                                                                              | `gsn`, `reason`                                     | Counter                      | `action_export` |
-| `ebb.action_export.filtered`              | `count`                                                                                              | —                                                   | Counter                      | `action_export` |
-| `ebb.action_export.lag`                   | `lag` (GSNs)                                                                                         | `cursor`                                            | Gauge                        | `action_export` |
-| `ebb.system_cache.populated`              | `duration` (native), `entity_types`, `group_members`, `entity_groups`, `relationships`, `backfilled` | `outcome` (`:ok` / `:error`), `reason`              | Histogram                    | `system_cache`  |
+| Event                                     | Measurements (unit)                                                                                  | Metadata                                                                                                     | Metric type                  | Subsystem       |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------- | --------------- |
+| `ebb.writer.batch_size`                   | `count`                                                                                              | `gsn_start`, `gsn_end`, `callers`                                                                            | Histogram                    | `writer`        |
+| `ebb.writer.batch_latency_ms`             | `duration` (native)                                                                                  | `gsn_start`, `gsn_end`                                                                                       | Histogram                    | `writer`        |
+| `ebb.writer.actions_per_sec`              | `count`                                                                                              | —                                                                                                            | Counter                      | `writer`        |
+| `ebb.writer.range_resolved`               | `count`                                                                                              | `gsn_start`, `gsn_end`, `reason`                                                                             | Counter                      | `writer`        |
+| `ebb.writer.commit_failed`                | `count`                                                                                              | `gsn_start`, `gsn_end`, `reason`                                                                             | Counter                      | `writer`        |
+| `ebb.watermark.lag`                       | `lag` (GSNs)                                                                                         | —                                                                                                            | Gauge                        | `watermark`     |
+| `ebb.dirty_set.size`                      | `size` (entries)                                                                                     | —                                                                                                            | Gauge                        | `dirty_set`     |
+| `ebb.entity_store.materialize_latency_ms` | `duration` (native), `byte_size`                                                                     | `subject_id`, `subject_type`, `path` (`:dirty_materialize`)                                                  | Histogram                    | `entity_store`  |
+| `ebb.entity_store.materialize_phase_ms`   | `duration` (native)                                                                                  | `phase` (`:fetch_decode` / `:entries_scan` / `:actions_load` / `:merge` / `:encode` / `:upsert` / `:format`) | Histogram                    | `entity_store`  |
+| `ebb.entity_store.read_latency_ms`        | `duration` (native), `byte_size`, `row_count`                                                        | `path` (`:clean_hit` / `:query`), `subject_id`                                                               | Histogram                    | `entity_store`  |
+| `ebb.entity_store.cache_hit_rate`         | `count`                                                                                              | `result` (`:hit` / `:miss`), `path` (`:dirty_materialize` / `:clean_hit` / `:query`)                         | Counter (tagged by `result`) | `entity_store`  |
+| `ebb.fanout.push_latency_ms`              | `duration` (native)                                                                                  | `group_id`                                                                                                   | Histogram                    | `fanout`        |
+| `ebb.fanout.active_connections`           | `count`                                                                                              | —                                                                                                            | Gauge                        | `fanout`        |
+| `ebb.fanout.active_groups`                | `count`                                                                                              | —                                                                                                            | Gauge                        | `fanout`        |
+| `ebb.http.request_latency_ms`             | `duration` (native)                                                                                  | `method`, `route`, `status`                                                                                  | Histogram                    | `http`          |
+| `ebb.sync.catch_up`                       | `count`                                                                                              | `group_id`, `from_offset`, `returned`, `up_to_date`                                                          | Counter                      | `sync`          |
+| `ebb.action_export.batch`                 | `count`                                                                                              | `from_gsn`, `to_gsn`                                                                                         | Counter                      | `action_export` |
+| `ebb.action_export.failed`                | `count`                                                                                              | `gsn`, `reason`                                                                                              | Counter                      | `action_export` |
+| `ebb.action_export.filtered`              | `count`                                                                                              | —                                                                                                            | Counter                      | `action_export` |
+| `ebb.action_export.lag`                   | `lag` (GSNs)                                                                                         | `cursor`                                                                                                     | Gauge                        | `action_export` |
+| `ebb.system_cache.populated`              | `duration` (native), `entity_types`, `group_members`, `entity_groups`, `relationships`, `backfilled` | `outcome` (`:ok` / `:error`), `reason`                                                                       | Histogram                    | `system_cache`  |
 
 The `ebb.watermark.lag`, `ebb.dirty_set.size`, `ebb.fanout.active_connections`,
 and `ebb.fanout.active_groups` gauges have no natural event to hang off, so
@@ -294,6 +296,27 @@ which is how a partial rebuild becomes visible; the node then refuses to start
 serving rather than run against the half-populated caches. `reason` is the
 failure class — an exception module or the atom an exit/throw carried — never
 the raised value, so the event cannot carry entity content.
+
+`ebb.entity_store.*` attributes the read path by size and phase. `byte_size` is
+the JSON blob (`row.data`) before it is decoded: the pre-existing blob on a
+dirty materialize, the returned blob on a clean hit, and the summed blob size
+of the rows a query decoded. It is a measurement, not metadata, so a reporter
+records `duration` and `byte_size` together and can bucket one by the other.
+Counting a `content` map's keys would be a second O(N) walk of the decoded
+value, so the catalogue does not promise it; byte size is the size proxy.
+`ebb.entity_store.materialize_phase_ms` breaks one dirty materialize into
+`:fetch_decode` (SQLite SELECT + `Jason.decode!`), `:entries_scan` (the RocksDB
+`cf_entity_actions` prefix scan), `:actions_load` (RocksDB `multi_get` + ETF
+decode), `:merge` (replay), and the `:encode` → `:upsert` → `:format` tail, so blob
+JSON, the SQLite upsert, and the merge are separable.
+`:upsert` includes the eight STORED `json_extract` generated columns SQLite
+recomputes, which is the only place that cost is visible.
+`ebb.entity_store.read_latency_ms` covers the two decode-only reads — a clean
+`get` (`:clean_hit`) and the `Enum.map` over a query's rows (`:query`, one
+sample per query, never per row) — so decode cost is visible without adding
+per-row spans to `query/4`. Phases fire once per dirty materialize and only on
+success; a phase that raises is reported through the surrounding rescue as
+`:materialization_failed`.
 
 #### Telemetry conventions
 
@@ -594,8 +617,8 @@ Measured on the bench host described in
 | 1,000 collaborative documents with 10 concurrent editors | Not measured              | Workload-level target; not exercised by the write-path benchmark.                                                                                                                                                                                                  |
 | 10,000–20,000 Action writes/sec sustained                | **Measured: ~15,100/sec** | Single Writer, `sync: true`, 2-Update Actions, 100 Actions/request, 8 concurrent clients; steady 61–120s. See [`bench/RESULTS.md`](bench/RESULTS.md).                                                                                                              |
 | 108k burst                                               | Superseded                | A 2-writer raw-RocksDB primitive from [#130](https://github.com/ebbjs/ebbjs/issues/130), never measured through `ebb_server`. Measured server burst ~15,600/sec.                                                                                                   |
-| `ctx.get(id)`: <2ms p99                                  | Not measured              | Read path; the harness measures writes only.                                                                                                                                                                                                                       |
-| `ctx.query(type)`: <10ms p99 at 100k entities            | Not measured              | Read path.                                                                                                                                                                                                                                                         |
+| `ctx.get(id)`: <2ms p99                                  | Partially measured        | `EntityStore.get` is measured by `mix bench.materialize`: clean-read p50 0.26 ms at 100 run keys, 2.28 ms at 1,000, 10.97 ms at 5,000 (post-#514). Excludes HTTP and reports p50/p95, not p99.                                                                     |
+| `ctx.query(type)`: <10ms p99 at 100k entities            | Partially measured        | `EntityStore.query` p50 2.9 ms for 50 rows at 1,000 keys and 13.5 ms for 50 rows at 5,000 keys; the decode is ~75% of the large case. Not measured at 100k entities or over HTTP.                                                                                  |
 | SSE streaming latency: <50ms p50                         | Not measured              | The server-side leg (Writer commit → GroupServer dispatch) is now measurable via `ebb.fanout.push_latency_ms`. The end-to-end p50 a client observes remains unmeasured: it also includes network transit and client rendering, which no server-side metric covers. |
 
 ### Benchmarking
@@ -611,6 +634,17 @@ sync tree in a temp directory and writes a Markdown report to
 cd ebb_server
 mix bench.actions --tier t2 --duration 120 --warmup 5 --concurrency 8 \
   --batch-size 100 --updates-per-action 2 --distribution hot
+```
+
+`mix bench.materialize` runs the read / materialization benchmark: it
+seeds `content`-map documents of N run keys and measures the cold, dirty,
+and clean `get` paths plus `query` at K rows, with a phase breakdown and a
+SQLite generated-column ablation. Same isolated-boot and report shape.
+
+```sh
+cd ebb_server
+mix bench.materialize --runs 5 --reps 50 \
+  --sizes 100,500,1000,2000,5000 --spread-entities 50 --query-ks 1,10,50
 ```
 
 Published numbers, sweeps, and methodology:

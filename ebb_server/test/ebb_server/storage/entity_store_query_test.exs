@@ -190,6 +190,38 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       assert hd(posts).type == "post"
     end
 
+    test "query emits one decode sample with the row count and summed blob size", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      group_id = "g_query_read_#{System.unique_integer([:positive])}"
+      actor_id = "a_query_read_#{System.unique_integer([:positive])}"
+
+      bootstrap_group(group_id, actor_id, writer_name)
+      write_todo("todo_read_1", group_id, actor_id, writer_name)
+      write_todo("todo_read_2", group_id, actor_id, writer_name)
+
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+
+      # Materialize the rows and the system entities first, so the sampled
+      # query decodes only and does not fold materialization into the sample.
+      assert {:ok, _} = EntityStore.query("todo", nil, actor_id, opts)
+
+      ref = attach_telemetry([[:ebb, :entity_store, :read_latency_ms]])
+      assert {:ok, rows} = EntityStore.query("todo", nil, actor_id, opts)
+      assert length(rows) == 2
+
+      assert [
+               {[:ebb, :entity_store, :read_latency_ms],
+                %{duration: duration, byte_size: byte_size, row_count: 2}, %{path: :query}}
+             ] = telemetry_events(ref)
+
+      assert is_integer(duration) and duration >= 0
+      assert byte_size > 0
+    end
+
     test "query respects permissions (only returns entities in actor's groups)", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,

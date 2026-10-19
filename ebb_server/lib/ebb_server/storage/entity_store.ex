@@ -85,7 +85,7 @@ defmodule EbbServer.Storage.EntityStore do
     dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
 
     if DirtyTracker.dirty?(entity_id, dirty_set) do
-      emit_cache_result(:miss)
+      emit_cache_result(:miss, :dirty_materialize)
 
       materialize(entity_id,
         rocks_name: rocks_name,
@@ -93,17 +93,74 @@ defmodule EbbServer.Storage.EntityStore do
         dirty_set: dirty_set
       )
     else
-      emit_cache_result(:hit)
-
-      case SQLite.get_entity(entity_id, sqlite_name) do
-        {:ok, row} -> format_live_entity(row)
-        :not_found -> :not_found
-      end
+      emit_cache_result(:hit, :clean_hit)
+      read_clean_entity(entity_id, sqlite_name)
     end
   end
 
-  defp emit_cache_result(result) do
-    Telemetry.execute([:entity_store, :cache_hit_rate], %{count: 1}, %{result: result})
+  # A clean read is one SQLite SELECT plus a `Jason.decode!` of the row's blob;
+  # the decode is the only O(entity-size) part, so it gets its own sample.
+  defp read_clean_entity(entity_id, sqlite_name) do
+    case SQLite.get_entity(entity_id, sqlite_name) do
+      {:ok, row} ->
+        started_at = System.monotonic_time()
+        result = format_live_entity(row)
+        emit_read_latency(:clean_hit, started_at, subject_id: entity_id, rows: [row])
+        result
+
+      :not_found ->
+        :not_found
+    end
+  end
+
+  defp emit_cache_result(result, path) do
+    Telemetry.execute([:entity_store, :cache_hit_rate], %{count: 1}, %{
+      result: result,
+      path: path
+    })
+  end
+
+  # `read_latency_ms` covers the pure decode on a clean point read and the
+  # per-query decode pass, so the blob-JSON share of a read is a first-class
+  # sample rather than being folded into materialize.
+  defp emit_read_latency(path, started_at, opts) do
+    rows = Keyword.get(opts, :rows, [])
+
+    byte_size =
+      Keyword.get(opts, :byte_size) || Enum.reduce(rows, 0, &(blob_byte_size(&1) + &2))
+
+    Telemetry.execute(
+      [:entity_store, :read_latency_ms],
+      %{
+        duration: System.monotonic_time() - started_at,
+        byte_size: byte_size,
+        row_count: length(rows)
+      },
+      %{path: path, subject_id: Keyword.get(opts, :subject_id)}
+    )
+  end
+
+  # Counting map keys is itself O(N); the JSON blob byte size is free and is
+  # the size proxy the catalogue promises. `data` is JSON text on rows read
+  # back from SQLite and an already-decoded map on the materialize path.
+  defp blob_byte_size(%{data: data}) when is_binary(data), do: byte_size(data)
+  defp blob_byte_size(_row), do: 0
+
+  # Dirty-path phases are emitted on success only; a phase that raises leaves
+  # the segment unmeasured and the caller's rescue reports the failure.
+  defp timed(phase, fun) do
+    started_at = System.monotonic_time()
+    result = fun.()
+    emit_phase(phase, started_at)
+    result
+  end
+
+  defp emit_phase(phase, started_at) do
+    Telemetry.execute(
+      [:entity_store, :materialize_phase_ms],
+      %{duration: System.monotonic_time() - started_at},
+      %{phase: phase}
+    )
   end
 
   @doc """
@@ -133,7 +190,7 @@ defmodule EbbServer.Storage.EntityStore do
   @spec materialize(String.t(), keyword()) :: {:ok, map()} | :not_found | {:error, term()}
   def materialize(entity_id, opts \\ []) do
     started_at = System.monotonic_time()
-    result = do_materialize(entity_id, opts)
+    {result, byte_size} = do_materialize(entity_id, opts)
 
     subject_type =
       case result do
@@ -143,8 +200,8 @@ defmodule EbbServer.Storage.EntityStore do
 
     Telemetry.execute(
       [:entity_store, :materialize_latency_ms],
-      %{duration: System.monotonic_time() - started_at},
-      %{subject_id: entity_id, subject_type: subject_type}
+      %{duration: System.monotonic_time() - started_at, byte_size: byte_size},
+      %{subject_id: entity_id, subject_type: subject_type, path: :dirty_materialize}
     )
 
     result
@@ -157,33 +214,45 @@ defmodule EbbServer.Storage.EntityStore do
     after_scan = Keyword.get(opts, :after_scan)
 
     observed_generation = DirtyTracker.dirty_generation(entity_id, dirty_set)
-    {current_data, last_gsn, existing_row} = fetch_current_state(entity_id, sqlite_name)
-    entries = fetch_relevant_entries(entity_id, rocks_name, last_gsn)
+
+    {current_data, last_gsn, existing_row, byte_size} =
+      fetch_current_state(entity_id, sqlite_name)
+
+    entries =
+      timed(:entries_scan, fn -> fetch_relevant_entries(entity_id, rocks_name, last_gsn) end)
 
     if after_scan, do: after_scan.()
 
-    if entries == [] do
-      handle_empty_entries(entity_id, existing_row, observed_generation, dirty_set, sqlite_name)
-    else
-      apply_entries_and_persist(
-        entity_id,
-        current_data,
-        entries,
-        rocks_name,
-        observed_generation,
-        dirty_set,
-        sqlite_name
-      )
-    end
+    result =
+      if entries == [] do
+        handle_empty_entries(entity_id, existing_row, observed_generation, dirty_set, sqlite_name)
+      else
+        apply_entries_and_persist(
+          entity_id,
+          current_data,
+          entries,
+          rocks_name,
+          observed_generation,
+          dirty_set,
+          sqlite_name
+        )
+      end
+
+    {result, byte_size}
   end
 
   defp fetch_current_state(entity_id, sqlite_name) do
+    started_at = System.monotonic_time()
+
     case SQLite.get_entity(entity_id, sqlite_name) do
       {:ok, row} ->
-        {Jason.decode!(row.data), row.last_gsn, row}
+        data = Jason.decode!(row.data)
+        emit_phase(:fetch_decode, started_at)
+        {data, row.last_gsn, row, blob_byte_size(row)}
 
       :not_found ->
-        {%{"fields" => %{}}, 0, nil}
+        emit_phase(:fetch_decode, started_at)
+        {%{"fields" => %{}}, 0, nil, 0}
     end
   end
 
@@ -241,7 +310,8 @@ defmodule EbbServer.Storage.EntityStore do
        ) do
     materialized =
       try do
-        {:ok, apply_actions(entity_id, current_data, entries, rocks_name)}
+        actions = timed(:actions_load, fn -> load_actions(entries, rocks_name) end)
+        {:ok, timed(:merge, fn -> replay(current_data, actions, entity_id) end)}
       rescue
         e ->
           {:error, e}
@@ -284,7 +354,7 @@ defmodule EbbServer.Storage.EntityStore do
     entity_row = %{
       id: entity_id,
       type: type || "unknown",
-      data: Jason.encode!(merged_data),
+      data: timed(:encode, fn -> Jason.encode!(merged_data) end),
       created_hlc: created_hlc || updated_hlc,
       updated_hlc: updated_hlc,
       deleted_hlc: deleted_hlc,
@@ -292,16 +362,12 @@ defmodule EbbServer.Storage.EntityStore do
       last_gsn: max_gsn
     }
 
-    SQLite.upsert_entity(entity_row, sqlite_name)
+    timed(:upsert, fn -> SQLite.upsert_entity(entity_row, sqlite_name) end)
     clear_settled(entity_id, observed_generation, dirty_set)
 
     # `merged_data` is already the decoded form; handing it to the formatter
     # avoids re-decoding `entity_row.data`, i.e. re-parsing the whole blob.
-    format_live_entity(%{entity_row | data: merged_data})
-  end
-
-  defp apply_actions(entity_id, data, entries, rocks_name) do
-    replay(data, load_actions(entries, rocks_name), entity_id)
+    timed(:format, fn -> format_live_entity(%{entity_row | data: merged_data}) end)
   end
 
   defp load_actions(entries, rocks_name) do
@@ -469,7 +535,11 @@ defmodule EbbServer.Storage.EntityStore do
     end
 
     dirty_system_ids = materialize_system_entities(rocks_name, sqlite_name, dirty_set)
-    emit_cache_result(if dirty_ids == [] and dirty_system_ids == [], do: :hit, else: :miss)
+
+    emit_cache_result(
+      if(dirty_ids == [] and dirty_system_ids == [], do: :hit, else: :miss),
+      :query
+    )
 
     query_params = %{type: type, filter: filter, actor_id: actor_id}
     query_params = if limit, do: Map.put(query_params, :limit, limit), else: query_params
@@ -477,7 +547,15 @@ defmodule EbbServer.Storage.EntityStore do
 
     case SQLite.query_entities(query_params, sqlite_name) do
       {:ok, rows} ->
-        {:ok, Enum.map(rows, &format_entity/1)}
+        started_at = System.monotonic_time()
+
+        {formatted, decoded_bytes} =
+          Enum.map_reduce(rows, 0, fn row, bytes ->
+            {format_entity(row), bytes + blob_byte_size(row)}
+          end)
+
+        emit_read_latency(:query, started_at, rows: rows, byte_size: decoded_bytes)
+        {:ok, formatted}
 
       error ->
         error

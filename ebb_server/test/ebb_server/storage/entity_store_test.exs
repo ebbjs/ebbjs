@@ -1677,5 +1677,125 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert [{[:ebb, :entity_store, :cache_hit_rate], %{count: 1}, %{result: :miss}}] =
                telemetry_events(ref)
     end
+
+    test "dirty materialize reports its path, blob size, and every phase", ctx do
+      ref =
+        attach_telemetry([
+          [:ebb, :entity_store, :cache_hit_rate],
+          [:ebb, :entity_store, :materialize_latency_ms],
+          [:ebb, :entity_store, :materialize_phase_ms]
+        ])
+
+      entity_id = "todo_telemetry_phases"
+      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
+
+      assert {:ok, {1, 1}, []} =
+               Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
+
+      assert {:ok, _} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
+      events = telemetry_events(ref)
+
+      assert [
+               {[:ebb, :entity_store, :cache_hit_rate], %{count: 1},
+                %{result: :miss, path: :dirty_materialize}}
+             ] = events_named(events, [:ebb, :entity_store, :cache_hit_rate])
+
+      assert [
+               {[:ebb, :entity_store, :materialize_latency_ms],
+                %{duration: duration, byte_size: 0}, metadata}
+             ] = events_named(events, [:ebb, :entity_store, :materialize_latency_ms])
+
+      assert is_integer(duration) and duration >= 0
+      assert metadata.subject_id == entity_id
+      assert metadata.path == :dirty_materialize
+
+      phases =
+        events_named(events, [:ebb, :entity_store, :materialize_phase_ms])
+        |> Enum.map(fn {_event, %{duration: duration}, %{phase: phase}} ->
+          assert is_integer(duration) and duration >= 0
+          phase
+        end)
+
+      assert Enum.sort(phases) ==
+               Enum.sort([
+                 :fetch_decode,
+                 :entries_scan,
+                 :actions_load,
+                 :merge,
+                 :encode,
+                 :upsert,
+                 :format
+               ])
+    end
+
+    test "a warm dirty materialize reports the pre-existing blob size", ctx do
+      entity_id = "todo_telemetry_warm"
+      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
+
+      assert {:ok, {1, 1}, []} =
+               Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
+
+      assert {:ok, _} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
+
+      patch =
+        validated_update(%{
+          subject_id: entity_id,
+          subject_type: "todo",
+          method: :patch,
+          data: %{
+            "fields" => %{
+              "title" => %{"type" => "lww", "value" => "patched", "hlc" => generate_hlc()}
+            }
+          }
+        })
+
+      assert {:ok, {2, 2}, []} =
+               Writer.write_actions([validated_action(%{"updates" => [patch]})], ctx.writer_name)
+
+      ref = attach_telemetry([[:ebb, :entity_store, :materialize_latency_ms]])
+      assert {:ok, _} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
+
+      assert [
+               {[:ebb, :entity_store, :materialize_latency_ms], %{byte_size: byte_size},
+                %{path: :dirty_materialize}}
+             ] =
+               events_named(telemetry_events(ref), [:ebb, :entity_store, :materialize_latency_ms])
+
+      assert byte_size > 0
+    end
+
+    test "a clean read reports a decode sample with path and blob size", ctx do
+      entity_id = "todo_telemetry_clean_read"
+      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
+
+      assert {:ok, {1, 1}, []} =
+               Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
+
+      assert {:ok, _} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
+
+      ref =
+        attach_telemetry([
+          [:ebb, :entity_store, :cache_hit_rate],
+          [:ebb, :entity_store, :read_latency_ms]
+        ])
+
+      assert {:ok, _} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
+      events = telemetry_events(ref)
+
+      assert [
+               {[:ebb, :entity_store, :cache_hit_rate], %{count: 1},
+                %{result: :hit, path: :clean_hit}}
+             ] = events_named(events, [:ebb, :entity_store, :cache_hit_rate])
+
+      assert [
+               {[:ebb, :entity_store, :read_latency_ms],
+                %{duration: duration, byte_size: byte_size, row_count: 1}, metadata}
+             ] = events_named(events, [:ebb, :entity_store, :read_latency_ms])
+
+      assert is_integer(duration) and duration >= 0
+      assert byte_size > 0
+      assert metadata.path == :clean_hit
+      assert metadata.subject_id == entity_id
+    end
   end
 end

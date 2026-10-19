@@ -68,6 +68,89 @@ The 4-scheduler figure matters: the box is a VM with a small CPU quota,
 so these are single-node numbers on a modest machine class, not a
 dedicated bench rig.
 
+## Read / materialization (#515)
+
+Produced by `mix bench.materialize`, a separate harness from
+`mix bench.actions`; this section is not part of the write-path tables
+above. Measured **2026-10-18** on the same host, five boots, 50
+repetitions per scenario, medians across runs. The full report is the
+`*-materialize-recsy-vps.md` file in `bench/results/`.
+
+```sh
+cd ebb_server
+mix bench.materialize --runs 5 --reps 50 \
+  --sizes 100,500,1000,2000,5000 --spread-entities 50 --query-ks 1,10,50
+```
+
+A "document" is a `todo` whose `content` field is a wire map of `run_<i>`
+keys with ~130-byte values, so each stored leaf is ~207 B of JSON
+(`value` + `hlc` + key). `hot` seeds one entity with N keys; `spread`
+seeds 50 entities with `N / 50` keys each. `cold` is the first read of an
+unmaterialized entity, `dirty` is a read after a one-key patch, `clean`
+is a read of a materialized entity.
+
+### Hot document, p50/p95 (µs)
+
+|    N |    Blob B | cold p50 | dirty p50 | dirty p95 | clean p50 | clean p95 |
+| ---: | --------: | -------: | --------: | --------: | --------: | --------: |
+|  100 |    20,719 |    2,670 |       947 |     1,786 |       257 |       416 |
+|  500 |   103,519 |    6,198 |     2,621 |     6,567 |     1,140 |     3,999 |
+| 1000 |   207,021 |    5,500 |     4,259 |    12,269 |     2,284 |    20,698 |
+| 2000 |   415,021 |   10,126 |     9,938 |    47,077 |     4,520 |    40,418 |
+| 5000 | 1,039,021 |   48,555 |    89,400 |   137,894 |    10,967 |   100,199 |
+
+`cold` runs once per boot (5 samples) and is noisy; `dirty`/`clean` have
+250 samples. The clean read is ~95% `Jason.decode!` at every size. Dirty
+materialize grows roughly linearly to N=2000 and then jumps ~9× from
+N=2000 to N=5000 for a 2.5× blob.
+
+### Dirty materialize, mean share by phase (hot)
+
+|    N | `fetch_decode` | `encode` | `upsert` | `merge` | `entries_scan` | `actions_load` |
+| ---: | -------------: | -------: | -------: | ------: | -------------: | -------------: |
+|  100 |          59.1% |    12.0% |    13.3% |    0.5% |          13.1% |           2.0% |
+|  500 |          39.9% |    32.6% |    19.0% |    0.2% |           6.1% |           2.1% |
+| 1000 |          42.1% |    37.6% |    16.7% |    0.1% |           3.1% |           0.3% |
+| 2000 |          43.0% |    44.1% |    11.6% |    0.1% |           1.1% |           0.1% |
+| 5000 |          43.5% |    41.1% |    15.0% |    0.0% |           0.3% |           0.0% |
+
+Blob JSON (`fetch_decode` + `encode`) is ~85% of a dirty materialize at
+N≥1000; the SQLite upsert is ~12–15%; the merge is unmeasurable. Means
+are shown because the per-phase medians are not co-monotonic (a slow
+materialize is slow in every phase), so summing medians understates the
+total; the report also publishes each sample's phase sum, which
+reconciles with the wall clock.
+
+### Query amplification (spread), p50 (µs)
+
+|    N |   K |  total | decode | bytes decoded |
+| ---: | --: | -----: | -----: | ------------: |
+| 1000 |   1 |    688 |     37 |         4,118 |
+| 1000 |  10 |  1,077 |    324 |        42,315 |
+| 1000 |  50 |  2,907 |  1,641 |       212,115 |
+| 5000 |   1 |  1,346 |    212 |        20,599 |
+| 5000 |  10 |  3,506 |  2,012 |       207,125 |
+| 5000 |  50 | 13,475 | 10,355 |     1,036,165 |
+
+Each row decodes the whole blob, so query cost scales with `K × N`; the
+permission join is a fixed ~1 ms on top.
+
+### Generated-column ablation (µs)
+
+|    N |  Blob B | 8 generated cols | no generated cols | delta | delta share |
+| ---: | ------: | ---------------: | ----------------: | ----: | ----------: |
+|  100 |  17,724 |               46 |                13 |    33 |       71.7% |
+|  500 |  88,924 |              185 |                20 |   165 |       89.2% |
+| 1000 | 177,925 |              428 |                31 |   397 |       92.8% |
+| 2000 | 356,925 |              927 |               107 |   820 |       88.5% |
+| 5000 | 893,925 |            7,023 |               253 | 6,770 |       96.4% |
+
+The app's upsert SQL against two in-memory SQLite tables, with and
+without the eight STORED `json_extract` columns. The generated columns
+are ~90–96% of the upsert and are themselves superlinear in blob size
+(~8× from N=2000 to N=5000). Absolute times exclude WAL and file I/O, so
+read the delta, not the absolute.
+
 ## Headline: production configuration
 
 Single Writer, `sync: true`, 2-Update Actions, `--distribution hot`,

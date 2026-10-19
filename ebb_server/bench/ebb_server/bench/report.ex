@@ -76,7 +76,14 @@ defmodule EbbServer.Bench.Report do
     Path.join([File.cwd!(), "bench", "results", "#{utc_stamp()}-#{hostname()}.md"])
   end
 
-  defp environment_table do
+  @doc """
+  Renders the host/CPU/RocksDB environment table as Markdown.
+
+  Shared with the read-path report so both benchmarks describe the host the
+  same way.
+  """
+  @spec environment_table() :: String.t()
+  def environment_table do
     rows =
       [
         {"Hostname", hostname()},
@@ -356,7 +363,11 @@ defmodule EbbServer.Bench.Report do
       "density, and dirty-cache numbers are not comparable to an unablated run."
   end
 
-  defp table(headers, rows) do
+  @doc """
+  Renders `headers` and `rows` as a Markdown table.
+  """
+  @spec table([String.t()], [Enumerable.t()]) :: String.t()
+  def table(headers, rows) do
     header = "| " <> Enum.join(headers, " | ") <> " |"
     separator = "| " <> Enum.map_join(headers, " | ", fn _ -> "---" end) <> " |"
 
