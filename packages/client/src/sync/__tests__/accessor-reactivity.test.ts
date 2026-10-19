@@ -6,10 +6,11 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
+import type { Entity } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { Replica } from "@ebbjs/storage/types";
 import { createClient } from "../client";
+import { seedReplicaRow } from "../test-utils";
 import { defineEntity, e } from "../../schema/entity";
 import { defineRelationship } from "../../schema/relationship";
 import { defineSchema } from "../../schema/schema";
@@ -69,47 +70,15 @@ const mkMembership = (id: string, entityId: string, groupId: string): Entity => 
   last_gsn: 0,
 });
 
-let seedPosition = 0;
-
-/** Fold `row` into the replica as a durable put or delete (#520). */
-const foldRow = (replica: Replica, row: Entity, method: "put" | "delete"): void => {
-  seedPosition += 1;
-  const hlc = makeHlc(seedPosition);
-  const update: Update =
-    method === "put"
-      ? {
-          id: `u_seed_${seedPosition}`,
-          subject_id: row.id,
-          subject_type: row.type,
-          method,
-          data: { fields: row.data?.fields ?? {} },
-        }
-      : {
-          id: `u_seed_${seedPosition}`,
-          subject_id: row.id,
-          subject_type: row.type,
-          method: "delete",
-          data: null,
-        };
-  const action: Action = {
-    id: `a_seed_${seedPosition}`,
-    actor_id: "seed",
-    hlc,
-    gsn: seedPosition,
-    updates: [],
-  };
-  replica.ingest(action, [update], seedPosition);
-};
-
-/** Write `row` to the shim and fold it into the replica the accessors read (#520). */
+/** Write `row` to the shim and fold it into the replica the queries read (#520). */
 const seedRow = async (
   storage: ReturnType<typeof createMemoryAdapter>,
   replica: Replica,
   row: Entity,
-  method: "put" | "delete" = "put",
+  method: "put" | "delete" = row.deleted_hlc === null ? "put" : "delete",
 ): Promise<void> => {
+  seedReplicaRow(replica, row, method);
   await storage.entities.set(row);
-  foldRow(replica, row, method);
 };
 
 const fresh = async (): Promise<{
@@ -118,8 +87,8 @@ const fresh = async (): Promise<{
 }> => {
   const storage = createMemoryAdapter();
   const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
-  await storage.entities.set(mkEntity("t1", "todo", { title: "T" }));
-  await storage.entities.set(mkEntity("u1", "user", { name: "Ada" }));
+  await seedRow(storage, client.replica, mkEntity("t1", "todo", { title: "T" }));
+  await seedRow(storage, client.replica, mkEntity("u1", "user", { name: "Ada" }));
   return { storage, client };
 };
 
@@ -179,13 +148,13 @@ describe("relationship accessor reactivity", () => {
       fires += 1;
     });
 
-    await storage.entities.set(mkRel("rel_1", "t1", "u1"));
+    await seedRow(storage, client.replica, mkRel("rel_1", "t1", "u1"));
     expect(fires).toBe(1);
     expect((await query).map((row) => row.id)).toEqual(["t1"]);
 
     const rel = await storage.entities.get("rel_1");
     if (rel === null) throw new Error("expected relationship row");
-    await storage.entities.set({ ...rel, deleted_hlc: "2" });
+    await seedRow(storage, client.replica, { ...rel, deleted_hlc: "2" }, "delete");
     expect(fires).toBe(2);
     expect((await query).map((row) => row.id)).toEqual([]);
 
@@ -194,7 +163,7 @@ describe("relationship accessor reactivity", () => {
 
   it("wakes subscribeAccessors on a membership write (id-keyed signal generalizes)", async () => {
     const { storage, client } = await fresh();
-    await storage.entities.set(mkEntity("grp_1", "group", { name: "G" }));
+    await seedRow(storage, client.replica, mkEntity("grp_1", "group", { name: "G" }));
 
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
@@ -215,7 +184,7 @@ describe("relationship accessor reactivity", () => {
 
   it("re-materializes a membership-filtered query on a membership write", async () => {
     const { storage, client } = await fresh();
-    await storage.entities.set(mkEntity("grp_1", "group", { name: "G" }));
+    await seedRow(storage, client.replica, mkEntity("grp_1", "group", { name: "G" }));
 
     const query = client.todo.query().where("groups", "grp_1");
     expect((await query).map((row) => row.id)).toEqual([]);
@@ -225,7 +194,7 @@ describe("relationship accessor reactivity", () => {
       fires += 1;
     });
 
-    await storage.entities.set(mkMembership("eg_1", "t1", "grp_1"));
+    await seedRow(storage, client.replica, mkMembership("eg_1", "t1", "grp_1"));
     expect(fires).toBe(1);
     expect((await query).map((row) => row.id)).toEqual(["t1"]);
 

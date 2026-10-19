@@ -18,7 +18,8 @@
  * mock object.
  */
 import { vi, type MockInstance } from "vitest";
-import type { Action } from "@ebbjs/core";
+import { makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
+import type { Replica } from "@ebbjs/storage/types";
 import type { createClient } from "./client";
 
 /** A non-streaming `Response` shape — body is a string or binary buffer. */
@@ -52,6 +53,51 @@ export const callApplyAction = (
       _applyAction: (a: Action, g?: string) => Promise<{ entityId: string; entityType: string }[]>;
     }
   )._applyAction.call(client, action, groupId);
+
+let seedPosition = 0;
+
+/**
+ * Fold a seeded row into the replica through the same durable
+ * Action / Update path the client uses. The replica is the client's
+ * read path, so a row a test writes with `storage.entities.set` is
+ * invisible to a query unless it is folded here too.
+ *
+ * Call this before the shim write when the change emitter is the
+ * trigger under test: production ingests the Action before it fans
+ * the change out.
+ */
+export const seedReplicaRow = (
+  replica: Replica,
+  row: Entity,
+  method: "put" | "delete" = row.deleted_hlc === null ? "put" : "delete",
+): void => {
+  seedPosition += 1;
+  const hlc = makeHlc(seedPosition);
+  const update: Update =
+    method === "put"
+      ? {
+          id: `u_seed_${seedPosition}`,
+          subject_id: row.id,
+          subject_type: row.type,
+          method,
+          data: { fields: row.data?.fields ?? {} },
+        }
+      : {
+          id: `u_seed_${seedPosition}`,
+          subject_id: row.id,
+          subject_type: row.type,
+          method: "delete",
+          data: null,
+        };
+  const action: Action = {
+    id: `a_seed_${seedPosition}`,
+    actor_id: "seed",
+    hlc,
+    gsn: seedPosition,
+    updates: [],
+  };
+  replica.ingest(action, [update], seedPosition);
+};
 
 /** A JSON `Response` carrying `body` and optional extra headers. */
 export const jsonResponse = (body: unknown, headers: Record<string, string> = {}): Response =>

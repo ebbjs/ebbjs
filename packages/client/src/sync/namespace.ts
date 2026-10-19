@@ -3,9 +3,9 @@
  *
  * `client.<entity>.query()` returns the same typed thenable chain
  * the relationship accessors consume — one chain, one projection. The
- * namespace is a thin layer over the client's `storage` adapter;
- * candidate rows are loaded lazily on each materialization so the
- * chain reflects the latest snapshot.
+ * namespace is a thin layer over the client's `storage` adapter and
+ * `replica`; a query lowers to a serializable value, is planned, and
+ * executes synchronously over the replica (hydrated first).
  *
  * `client.<entity>.get(id)` returns the typed projection for a
  * single row with relationship accessors attached for every
@@ -41,12 +41,11 @@ import {
 import { DOC_CONTENT_FIELD, isCollaborativeText } from "../fields/collaborative-text/schema";
 import type { TextDocument, TextDocumentSubmit } from "../fields/collaborative-text/text-document";
 import {
-  buildLazyQueryBuilder,
+  buildReplicaQueryBuilder,
   normalizePointer,
   projectEntity,
   projectFieldValue,
   projectRow,
-  type LoadEntities,
   type PointerValue,
   type QueryBuilder,
 } from "./query-builder";
@@ -806,7 +805,9 @@ export type { TextDocumentSubmit };
 
 /**
  * Build a namespace for one entity. The namespace's `query()` returns
- * a lazy QueryBuilder seeded from `storage.entities.query(entityName)`.
+ * a replica-backed QueryBuilder: the chain lowers to a serializable
+ * query, is planned, and executes synchronously over the client's
+ * replica.
  *
  * `shape` is the entity's TypeBox object schema (the projection
  * source); the builder reads it at materialization time to drive
@@ -826,10 +827,23 @@ export function createEntityNamespace<
   replica?: ReplicaAccess,
 ): EntityNamespace<TFields, TAccessors> {
   const registry = write.registry;
-  const loader: LoadEntities = async () => storage.entities.query(entityName);
   return {
     query(): QueryBuilder<WireFields<TFields>> {
-      return buildLazyQueryBuilder(loader, shape, { entityName, registry, storage });
+      // Only a directly-constructed namespace can lack the binding;
+      // `createClient` always supplies one. Falling back to the storage
+      // shim here would silently read a stale, scan-based path.
+      if (replica === undefined) {
+        throw new Error(
+          `client.${entityName}.query(): no replica binding — build the namespace through createClient (or pass a ReplicaAccess)`,
+        );
+      }
+      return buildReplicaQueryBuilder(entityName, shape, {
+        entityName,
+        registry,
+        storage,
+        replica: replica.replica,
+        hydrate: () => replica.hydrate(),
+      });
     },
     async get(id: string): Promise<EntityRow<TFields, TAccessors> | null> {
       // The accessors read the replica's adjacency, so bring it up to
