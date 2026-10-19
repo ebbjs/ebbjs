@@ -5,10 +5,9 @@ React bindings for [`@ebbjs/client`](https://github.com/ebbjs/ebbjs/tree/main/pa
 This package ships the client plumbing plus the data hooks:
 
 - `EbbProvider` — context carrying a `NamespacedClient<S, TActions>`.
-- `useClient<S>()` — read the client, typed by the caller's schema.
+- `useClient<S>()` — read the client, typed by the caller's schema, for imperative actions (`client.actions`, `client.atomic`) and writes.
 - `useConnection()` — `useSyncExternalStore` over `client.onStateChange`, returning the `ConnectionState`.
-- `useQuery()` — subscribe a component to a materialized collection query.
-- `useEntity()` — subscribe a component to a single entity row.
+- `useQuery()` — the reactive read root: build a query through the typed namespaces and subscribe to its cached result.
 - `useEntityMutations()` — stable `create` / `update` / `delete` pass-throughs for one namespace.
 
 SSR / Suspense are out of scope for now.
@@ -17,14 +16,7 @@ SSR / Suspense are out of scope for now.
 
 ```tsx
 import { createClient, defineEntity, defineSchema, e } from "@ebbjs/client";
-import {
-  EbbProvider,
-  useClient,
-  useConnection,
-  useEntity,
-  useEntityMutations,
-  useQuery,
-} from "@ebbjs/react";
+import { EbbProvider, useClient, useConnection, useQuery, type QueryRoot } from "@ebbjs/react";
 
 const todo = defineEntity("todo", { title: e.string(), completed: e.boolean() });
 const schema = defineSchema({ entities: { todo }, version: 1 });
@@ -39,17 +31,17 @@ const client = createClient({
 });
 
 function OpenTodos() {
-  // No cast: `useClient<Schema>()` restores the typed namespaces.
-  const client = useClient<Schema>();
-  const { data, loading, error } = useQuery(() =>
-    client.todo.query().where("completed", false).limit(50),
+  // `q` is the client's typed namespaces narrowed to `query()`; annotating it
+  // with the schema is how the hook infers both `q` and the row types.
+  const { data, status, loading, error } = useQuery((q: QueryRoot<Schema>) =>
+    q.todo.query().where("completed", false).limit(50),
   );
 
   if (loading) return <span>loading…</span>;
   if (error) return <span>{error.message}</span>;
   return (
-    <ul>
-      {data.map((row) => (
+    <ul data-status={status}>
+      {(data ?? []).map((row) => (
         <li key={row.id}>{row.title}</li>
       ))}
     </ul>
@@ -62,20 +54,6 @@ function ConnectionBadge() {
   return <span>{`${actorId}: ${state}`}</span>;
 }
 
-function TodoRow({ id }: { id: string }) {
-  const client = useClient<Schema>();
-  const todo = useEntity(() => client.todo.get(id), [id]);
-  const { update, delete: remove } = useEntityMutations(client.todo);
-
-  if (todo === null) return <span>missing</span>;
-  return (
-    <div>
-      <button onClick={() => void update(id, { completed: !todo.completed })}>{todo.title}</button>
-      <button onClick={() => void remove(id)}>delete</button>
-    </div>
-  );
-}
-
 export function App() {
   return (
     <EbbProvider client={client}>
@@ -86,43 +64,96 @@ export function App() {
 }
 ```
 
-`useQuery(build, deps?)` builds the query once per `deps` change (`deps`
-must keep a stable length) and re-renders the component when the query's
-source entity changes. The trigger is the builder's source-entity change
-stream, so a matching row whose non-filtered field changed still
-re-renders; a change that leaves the materialized rows identical is
-suppressed by a structural snapshot compare.
+## `useQuery(build, deps?)`
 
-`useEntity(load, deps?)` takes the same shape — `load` is
-`() => client.<entity>.get(id)`. It runs on mount, on each `deps` change,
-and again on every live change. It returns the row's projected fields
-plus relationship accessors, or `null` when `get` finds no row — and
-`null` after a soft delete observed while mounted. On a live change it
-re-runs `get` rather than merging the snapshot, so an accessor that
-shares a name with a field keeps the accessor-wins precedence.
+`build` receives `q` — the client's own entity namespaces, narrowed to
+`query()` — so `q.todo.query` is the same method as
+`client.todo.query`. Hook and imperative callers cannot drift.
 
-Two limits come from the client's row surface: a row deleted **before**
-mount reads as its tombstone (`get` returns tombstones for inspection),
-and a row created after an absent read is not observed, because
-`EntityRow.subscribe` only exists once a row does.
+Annotate `q` with your schema, `(q: QueryRoot<Schema>)`, and omit the
+hook's type arguments. That is how TypeScript infers both the query
+surface and the row type: supplying a type argument instead
+(`useQuery<Schema>(...)`) would pin the row generics to their defaults,
+because TypeScript does not partially infer type arguments. `where` keys,
+`with` selections, and the joined `data` shape all follow the annotation.
+
+The callback runs once per `deps` change (`deps` must keep a stable
+length). Keep the query chain deterministic: it lowers to a serializable
+`Query`, which is the cache key, so two components building the same
+chain share one cached result.
+
+```tsx
+useQuery(
+  (q: QueryRoot<Schema>) => q.issue.query().where("status", "open").with({ assignee: true }),
+  [boardId],
+);
+```
+
+`with(...)` widens each row with one-level joins. The result's `data`
+type follows the selection, so `issue.assignee` is typed from the
+schema's relationship and a nested selector is a compile error.
+
+### Status
+
+`status` is derived from the engine's cache, never stored ad hoc:
+
+| Status     | Meaning                                                           |
+| ---------- | ----------------------------------------------------------------- |
+| `unloaded` | Never run; `data` is `undefined` (never an empty list).           |
+| `stale`    | A usable result exists at an older revision; a re-run is pending. |
+| `current`  | The result was produced at the replica's current revision.        |
+| `failed`   | The last run threw; sticky until a successful run.                |
+
+A held result renders synchronously on first mount: `status` starts at
+`current`, not `unloaded`, so there is no loading flash for cached data.
+`loading` is true only while no result exists yet, and `error` mirrors
+`failed`. A `stale` result is still usable, so it keeps `loading: false`
+while the refresh runs.
+
+A remount re-reads the cached result; it does not refetch. A live
+change that leaves the projected rows equal does not re-render.
+
+## Single rows
+
+There is no single-row hook, and the query grammar has no `id` predicate
+yet. Query the collection and select the row; the result is cached and
+reactive, so the selected row follows live changes:
+
+```tsx
+const { data: issues, status } = useQuery((q: QueryRoot<Schema>) =>
+  q.issue.query().with({ assignee: true }),
+);
+const issue = issues?.find((row) => row.id === issueId);
+
+if (status === "unloaded") return <span>loading…</span>;
+if (issue === undefined) return <span>missing</span>;
+```
+
+`client.<entity>.get()` and its async relationship accessors are
+internal / undocumented; `useEntity` was removed in #501.
+
+## Writes
+
+`useClient<Schema>()` exposes the client's write surface. Single-entity
+verbs live on the typed namespace (`client.issue.update`,
+`client.issue.link`), and multi-entity writes go through
+`client.atomic` or a `defineAction` bound to `client.actions`.
 
 `useEntityMutations(client.todo)` returns referentially stable
 `create` / `update` / `delete` functions that forward to the namespace
-unchanged.
+unchanged — a convenience when a component only needs those three.
 
 ## API
 
 | Export                          | What                                                                           |
 | ------------------------------- | ------------------------------------------------------------------------------ |
 | `EbbProvider`                   | Makes a `NamespacedClient<S, TActions>` available to hooks below it.           |
-| `useClient<S>()`                | Returns the nearest provider's client typed by `S`; throws outside a provider. |
+| `useClient<S, TActions>()`      | Returns the nearest provider's client typed by `S`; throws outside a provider. |
 | `useConnection()`               | Subscribes to connection state and re-renders on transitions.                  |
-| `useQuery(build)`               | Subscribes to a materialized collection query; `{ data, loading, error }`.     |
-| `useEntity(load, deps?)`        | Subscribes to a single row; the projected fields + accessors, or `null`.       |
+| `useQuery(build, deps?)`        | Subscribes to a cached query result; `{ data, status, loading, error }`.       |
 | `useEntityMutations(namespace)` | Stable `{ create, update, delete }` pass-throughs.                             |
 | `EbbProviderProps`              | The provider's prop type.                                                      |
 | `UseQueryResult`                | The `useQuery` result type.                                                    |
-| `UseEntityResult`               | The `useEntity` row type.                                                      |
 | `UseEntityMutationsResult`      | The `useEntityMutations` result type.                                          |
 | `QueryRows`                     | The projected row-list type a `QueryBuilder` resolves to.                      |
 | `ConnectionState`               | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.     |

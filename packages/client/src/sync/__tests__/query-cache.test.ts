@@ -265,7 +265,7 @@ describe("query cache: status and subscription", () => {
 });
 
 describe("query cache: coarse invalidation", () => {
-  it("re-runs on a readTypes hit, keeps data usable while stale, and notifies on change", async () => {
+  it("re-runs on a readTypes hit, keeps data usable while stale, and notifies on the status change", async () => {
     const replica = createReplica();
     ingest(replica, "todo", "todo_1");
     const cache = createQueryCache(replica);
@@ -286,11 +286,44 @@ describe("query cache: coarse invalidation", () => {
     expect(store.getSnapshot()).toMatchObject({ status: "stale", loading: false });
     expect(store.getSnapshot().data).toEqual([row("todo_1")]);
     expect(source.runs).toBe(2);
+    // The pending async refresh publishes `stale` so a mounted view can show
+    // the still-usable result while the new one is in flight.
+    await flush();
+    expect(notified).toBe(2);
 
     source.resolve([row("todo_1"), row("todo_2")]);
     await flush();
     expect(store.getSnapshot().status).toBe("current");
+    expect(notified).toBe(3);
+  });
+
+  it("settles a published stale snapshot back to current when the async re-run is equal", async () => {
+    const replica = createReplica();
+    ingest(replica, "todo", "todo_1");
+    const cache = createQueryCache(replica);
+    const source = deferredSource();
+    const store = cache.watch("rows", todoQuery(), source);
+    let notified = 0;
+    store.subscribe(() => {
+      notified += 1;
+    });
+    await flush();
+    source.resolve([row("todo_1")]);
+    await flush();
+    expect(notified).toBe(1);
+
+    // The change re-runs to the same rows, but the pending refresh still
+    // publishes `stale`; its settle must wake the view back to `current`.
+    ingest(replica, "todo", "todo_1");
+    await flush();
+    expect(store.getSnapshot()).toMatchObject({ status: "stale", loading: false });
     expect(notified).toBe(2);
+
+    source.resolve([row("todo_1")]);
+    await flush();
+    expect(store.getSnapshot().status).toBe("current");
+    expect(store.getSnapshot().data).toEqual([row("todo_1")]);
+    expect(notified).toBe(3);
   });
 
   it("advances the revision and stays silent when no change touches readTypes", async () => {

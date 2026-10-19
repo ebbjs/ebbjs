@@ -203,6 +203,10 @@ export type DerivedInputs<TFields extends Record<string, TSchema>> = {
  * field map nor the relationship map (`row.bogus`) stay a compile
  * error.
  *
+ * @internal The async row accessors are not part of the public read
+ * surface. Reads go through `client.<entity>.query()` and `useQuery`;
+ * the engine keeps `get()` and these accessors for internal callers.
+ *
  * `TAccessors` defaults to an empty record so erased usages
  * (`EntityWithAccessors<TFields>`) surface only the projected
  * fields.
@@ -245,9 +249,12 @@ export type EntitySnapshot<TFields extends Record<string, TSchema>> = EntitySnap
 >;
 
 /**
- * Row returned by `client.<entity>.get(id)`: the projected fields,
- * the runtime relationship accessors, and the per-entity reactive
- * `subscribe(cb)`.
+ * Row returned by `client.<entity>.get(id)`.
+ *
+ * @internal `get()` is the engine's single-row read, not a public read
+ * path. Applications query through `client.<entity>.query()` /
+ * `useQuery`; `get()` and the async relationship accessors stay
+ * internal / undocumented (epic decision 5).
  *
  * `id` is the entity's addressing key, not a wire-envelope passthrough:
  * `data` / `type` / HLC stamps stay off the row. The injected `id`
@@ -326,7 +333,14 @@ export interface EntityNamespace<
   TAccessors extends object = NoAccessors,
   TJoins extends object = NoJoins,
 > {
+  /** The public read root: a typed chain over the entity's fields and joins. */
   query(): QueryBuilder<WireFields<TFields>, TJoins>;
+  /**
+   * Single-row read with relationship accessors attached.
+   *
+   * @internal Reads go through {@link EntityNamespace.query} and
+   * `useQuery`; this stays for the engine's own callers.
+   */
   get(id: string): Promise<EntityRow<TFields, TAccessors> | null>;
   /**
    * Reactive subscribe on the matching set. Returns an
@@ -335,6 +349,9 @@ export interface EntityNamespace<
    * the id list, so a field edit on an already-matching row is a
    * no-op. The trigger is the replica's change signal via the
    * client's query cache (#512).
+   *
+   * @internal Query results are the public reactive read; this
+   * collection signal stays internal / undocumented.
    */
   subscribe(
     filter: QueryFilter<TFields>,
@@ -539,6 +556,21 @@ export type EntityNamespaces<S> =
         >;
       } & SystemNamespaces
     : NoAccessors;
+
+/**
+ * The read root `useQuery` hands its callback: every entity namespace
+ * narrowed to its `query()` method. It is the client's own namespaces
+ * object at runtime, so `q.issue.query` and `client.issue.query` are the
+ * same method and hook and imperative callers cannot drift (epic
+ * decision 15). Mutations stay off `q` — write through `useClient()`.
+ */
+export type QueryRoot<S> = {
+  readonly [K in keyof EntityNamespaces<S>]: EntityNamespaces<S>[K] extends {
+    readonly query: infer TQuery;
+  }
+    ? { readonly query: TQuery }
+    : never;
+};
 
 /**
  * Resolve a collaborative-text body: follow the generated edge to the
