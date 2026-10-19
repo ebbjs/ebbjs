@@ -943,11 +943,75 @@ are unmeasurable at `hot` because the dirty set stays at 4 (the dirty-set
 cost is O(affected entities), so `hot` understates it — the t0 `spread`
 run's dirty set grows to ~1.16M).
 
+## Concurrent `write_batch` from multiple BEAM processes (#530)
+
+Gating spike for epic [#529](https://github.com/ebbjs/ebbjs/issues/529). The
+question was whether `:rocksdb.write_batch/3` can be called concurrently from
+independent BEAM processes and actually overlap, or whether the NIF / RocksDB
+serializes them. The NIF registers `write_batch` as
+`ERL_NIF_DIRTY_JOB_IO_BOUND` and calls `DB::Write` directly, with no
+per-database lock; the only serialization is RocksDB's own write thread.
+The source trace is in
+[`docs/research/530-concurrent-write-batch.md`](../../docs/research/530-concurrent-write-batch.md).
+
+Measured **2026-10-19** on `recsy-vps` (same host as the tables above) with the
+new `--tier t5` harness. Each caller is one BEAM process; caller `i` writes a
+disjoint, contiguous 100-GSN range per call and each call commits the
+production-shaped 100-Action × 2-Update batch (502 `cf_*` puts). Batch assembly
+(`Workbook` → action validation → ETF → `batch_put`) happens before the timer,
+so the latency columns are the raw `:rocksdb.write_batch/3` call; the rate
+column is wall Actions/sec and includes assembly. `enable_pipelined_write:
+true`, `max_background_jobs: 4`, fresh temp DB, 20 s measured window after 3 s
+warmup, median of 5 runs; the range is min–max across those runs.
+
+```sh
+mix bench.actions --tier t5 --concurrency 2 --duration 20 --warmup 3 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --durability sync
+```
+
+| Callers | `sync` | Actions/sec (median) |           Range | write_batch p50 |     p95 | Scheduler util | Speedup |
+| ------: | :----- | -------------------: | --------------: | --------------: | ------: | -------------: | ------: |
+|       1 | true   |               41,825 |   30,875–42,315 |         1.38 ms | 1.82 ms |           5.2% |   1.00× |
+|       2 | true   |               75,810 |   70,505–76,890 |         1.42 ms | 2.55 ms |          10.0% |   1.81× |
+|       4 | true   |               83,700 |   81,260–84,985 |         3.26 ms | 5.70 ms |          13.5% |   2.00× |
+|       1 | false  |               61,885 |   61,575–63,645 |         0.59 ms | 0.77 ms |           7.9% |   1.00× |
+|       2 | false  |               98,420 |  92,775–103,165 |         0.66 ms | 1.41 ms |          14.0% |   1.59× |
+|       4 | false  |              116,800 | 114,695–119,210 |         1.40 ms | 4.08 ms |          22.4% |   1.89× |
+
+**Verdict: go for #531.** The NIF does not serialize callers. Two sync callers
+raise wall throughput **1.81×** while per-call p50 stays flat (1.38 → 1.42 ms),
+which implies the commit call itself scales ~**1.94×** (two lanes at nearly the
+same per-call latency) — above the research note's _S_ ≥ 1.5 bar for the commit
+leg. The `sync: false` arm shows the same shape (1.59× wall, p50 0.59 →
+0.66 ms), so fsync/group commit is not the limit. Four callers keep adding
+throughput (2.00× sync, 1.89× async) but with rising p50/p95, i.e. sub-linear
+scaling and queueing rather than a hard lock. Scheduler utilisation stays at
+5–22% of the 8 normal + dirty-CPU scheduler entries, so the 4-caller latency
+rise is not normal-scheduler starvation; the `write_batch` call itself runs on
+the dirty-IO pool (`dirty_io=10`).
+
+The 4-caller sync arm is not a reason to stop Phase 1: #531 needs two
+committers to pay for the pipeline, and the flat p50 at two callers clears the
+commit-leg bar. The step from 2 to 4 callers — p50 rises 2.3× and throughput
+rises only ~10% — is RocksDB write-thread queueing plus background
+flush/compaction at a much higher write rate, not the NIF; it is the same
+territory as the write-stall hardening in
+[#538](https://github.com/ebbjs/ebbjs/issues/538).
+
+Caveats: `t5` bypasses the Writer, so it has no caches, watermark, or fan-out;
+its GSNs are synthetic (`1e9 × caller`) and its holes/lag are reported `n/a`.
+The rate includes per-call batch assembly (normal schedulers), so do not
+compare it directly to `t0`/`t2`. The first sync/1 run (30,875/s) was the first
+run of the batch and is cold; the other four were 41,150–42,315/s. The table's
+median is robust to it, and the range is reported rather than hidden.
+
 ## Correctness under load
 
 Clean across every measured run above: **0 rejected Actions, 0
 write/transport errors, 0 GSN holes**, watermark lag high-water bounded
-by one batch (≤100) and 0 at the end of the run.
+by one batch (≤100) and 0 at the end of the run. The `t5` spike has no
+Writer frontier, so its GSN holes and watermark lag are `n/a` rather than
+zero.
 
 ## Server-side telemetry
 
