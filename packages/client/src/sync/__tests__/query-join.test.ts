@@ -9,13 +9,14 @@
  * relationship map.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { makeHlc, type Action, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
-import { defineEntity, e } from "../../schema/entity";
+import { defineEntity, e, type WireFields } from "../../schema/entity";
 import { defineRelationship } from "../../schema/relationship";
 import { defineSchema } from "../../schema/schema";
+import type { GroupFields } from "../../schema/system-entities";
 import { createClient } from "../client";
 import type { EntityFields } from "../namespace";
 import { planQuery } from "../query-plan";
@@ -80,9 +81,14 @@ const schema = defineSchema({
 });
 
 type Client = ReturnType<typeof createClient<typeof schema>>;
+type IssueRow = ProjectedRow<EntityFields<typeof issue>>;
 type UserRow = ProjectedRow<EntityFields<typeof user>>;
 type LabelRow = ProjectedRow<EntityFields<typeof label>>;
 type PageRow = ProjectedRow<EntityFields<typeof page>>;
+type GroupRow = ProjectedRow<WireFields<GroupFields>>;
+
+type IsAny<T> = 0 extends 1 & T ? true : false;
+type JoinedIssue = Omit<IssueRow, "assignee"> & { readonly assignee: UserRow | null };
 
 const makeClient = (): Client => {
   const storage = createMemoryAdapter();
@@ -228,14 +234,31 @@ describe("with(...) — typing", () => {
     const row = rows[0];
     if (row === undefined) throw new Error("expected a row");
 
-    const assignee: UserRow | null = row.assignee;
-    const tags: readonly LabelRow[] = row.tags;
-    const comments: readonly PageRow[] = row.comments;
-    const title: typeof row.title = row.title;
-    void assignee;
-    void tags;
-    void comments;
-    void title;
+    expectTypeOf(row.assignee).toEqualTypeOf<UserRow | null>();
+    expectTypeOf(row.tags).toEqualTypeOf<readonly LabelRow[]>();
+    expectTypeOf(row.comments).toEqualTypeOf<readonly PageRow[]>();
+    expectTypeOf(row.title).toEqualTypeOf<IssueRow["title"]>();
+
+    const chained = await client.issue.query().with({ assignee: true }).with({ tags: true });
+    const chainedRow = chained[0];
+    if (chainedRow !== undefined) {
+      expectTypeOf(chainedRow.assignee).toEqualTypeOf<UserRow | null>();
+      expectTypeOf(chainedRow.tags).toEqualTypeOf<readonly LabelRow[]>();
+      // @ts-expect-error comments was not selected
+      void chainedRow.comments;
+    }
+
+    const first = await client.issue.query().with({ assignee: true }).first();
+    const firstExpected: JoinedIssue | undefined = first;
+    const firstRoundTrip: typeof first = firstExpected;
+    const firstNotAny: IsAny<typeof first> = false;
+    void firstRoundTrip;
+    void firstNotAny;
+
+    const [withGroups] = await client.issue.query().with({ groups: true });
+    if (withGroups !== undefined) {
+      expectTypeOf(withGroups.groups).toEqualTypeOf<readonly GroupRow[]>();
+    }
 
     const [narrow] = await client.issue.query().with({ assignee: true });
     if (narrow !== undefined) {
