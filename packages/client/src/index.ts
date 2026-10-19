@@ -108,6 +108,7 @@ export {
   type MembershipNamespace,
   type GroupNamespace,
   type MembershipAccessors,
+  type QueryRoot,
   type RowAccessor,
   type CreateOptions,
   type CreateResult,

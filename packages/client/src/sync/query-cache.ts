@@ -19,10 +19,13 @@
  * usable result exists, and `error` mirrors the `failed` status. A `stale`
  * result is usable, so it keeps `loading: false` while the refresh runs.
  *
- * Subscribers are notified on a data change or a failure, and never for an
- * invalidation that re-runs to an equal result. The cache holds projected
- * rows, so a join target change that rewrites a projection is a result change
- * even when the source rows are untouched.
+ * Subscribers are notified on a data change, a failure, or a transition to
+ * `stale` while an async re-run is pending — that last one is what lets a
+ * mounted view show usable-but-refreshing data. A synchronous re-run settles
+ * before anyone is notified, so it never flashes `stale`. An invalidation
+ * that re-runs to an equal result is otherwise silent. The cache holds
+ * projected rows, so a join target change that rewrites a projection is a
+ * result change even when the source rows are untouched.
  */
 
 import type { Replica, Revision } from "@ebbjs/storage/replica";
@@ -239,6 +242,8 @@ export const createQueryCache = (
   const execute = <T>(entry: CacheEntry<T>, revision: Revision): void => {
     const hadData = entry.data !== undefined;
     const hadError = entry.error !== null;
+    const startedStale = entry.snapshot.status === "stale";
+    let publishedStale = false;
     entry.running = true;
     refresh(entry);
 
@@ -251,8 +256,10 @@ export const createQueryCache = (
       entry.error = null;
       entry.revision = revision;
       refresh(entry);
+      // A view that saw `stale` must see the settle even when the rows are
+      // equal, or it would stay stale.
       if (!hadData) notifyInitial(entry);
-      else if (changed || hadError) notifyAll(entry);
+      else if (changed || hadError || startedStale || publishedStale) notifyAll(entry);
       // Changes that landed during the run were skipped by the invalidation
       // sweep, so settle from the current revision before standing down.
       if (replica.revision !== revision) reconcile(entry, replica.revision);
@@ -264,7 +271,7 @@ export const createQueryCache = (
       const changed = entry.error?.message !== error.message;
       entry.error = error;
       refresh(entry);
-      if (changed) {
+      if (changed || startedStale || publishedStale) {
         if (hadData) notifyAll(entry);
         else notifyInitial(entry);
       }
@@ -278,8 +285,21 @@ export const createQueryCache = (
       fail(thrown);
       return;
     }
-    if (result instanceof Promise) result.then(settle, fail);
-    else settle(result);
+    if (result instanceof Promise) {
+      result.then(settle, fail);
+      // Only publish `stale` once the run is genuinely pending. A source that
+      // settles in the next microtask (an already-materialized read behind an
+      // async signature) flips to `current` first, so an equal re-run stays
+      // silent; a slow refresh lets a mounted view show the usable result.
+      queueMicrotask(() => {
+        const stillStale = entry.snapshot.status === "stale";
+        if (!entry.running || !hadData || startedStale || !stillStale) return;
+        publishedStale = true;
+        notifyAll(entry);
+      });
+      return;
+    }
+    settle(result);
   };
 
   /** Bring a never-run entry up to date, then run it. */
