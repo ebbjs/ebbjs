@@ -1691,7 +1691,12 @@ export function createClient<
     readGeneratedParts: (entityType: string, entityId: string) =>
       readGeneratedParts(client.storage, client.registry, entityType, entityId),
   };
-  const namespaces = buildEntityNamespaces(opts.schema, client.storage, writeCap);
+  const namespaces = buildEntityNamespaces(opts.schema, client.storage, writeCap, {
+    replica: client.replica,
+    // Arrow over the public method keeps the namespace free of the
+    // `client → namespace → client` import cycle.
+    hydrate: () => client.hydrateReplica(),
+  });
   // `client.atomic` needs the same write capability the namespace
   // uses. Defining it on the instance keeps the typed surface on
   // `NamespacedClient` while leaving bare `SyncClient` without it

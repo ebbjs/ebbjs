@@ -81,6 +81,7 @@ export {
   type GroupRef,
   createEntityNamespace,
   buildEntityNamespaces,
+  type ReplicaAccess,
 } from "./sync/namespace";
 export { PresenceManager, type PresenceEntry, type CursorPresence } from "./presence/presence";
 

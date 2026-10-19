@@ -1,5 +1,10 @@
 import type { Action, Entity, Update } from "@ebbjs/core";
 
+import type {
+  MembershipLink,
+  RelationshipLink,
+  RelationshipSourceQuery,
+} from "../types/entity-store";
 import type { ReplicaRecord } from "../types/replica-store";
 
 /**
@@ -31,6 +36,29 @@ export interface ReplicaOptions {
 }
 
 /**
+ * Adjacency read key for the replica's relationship index. `sourceId`
+ * reads forward — the targets out of the source; `targetId` reads
+ * reverse — the sources pointing at the target. `sourceId` wins when
+ * both are set, and neither yields no ids.
+ */
+export interface RelationshipQuery {
+  readonly as: string;
+  readonly type: string;
+  readonly sourceId?: string;
+  readonly targetId?: string;
+}
+
+/**
+ * Adjacency read key for the replica's membership index. `groupId`
+ * reads the group's members; `entityId` reads the entity's groups.
+ * `groupId` wins when both are set, and neither yields no ids.
+ */
+export interface MembershipQuery {
+  readonly groupId?: string;
+  readonly entityId?: string;
+}
+
+/**
  * The materialized read path. Writes are synchronous and single-writer: the
  * caller serializes them and folds durable updates in ascending log position.
  * Reads return the replica's own row objects (shared, not cloned), tombstones
@@ -42,6 +70,21 @@ export interface Replica {
   get(id: string): Entity | undefined;
   iterate(type: string): readonly Entity[];
   changesSince(revision: Revision): readonly ReplicaChange[];
+
+  /**
+   * Distinct live targets out of `(as, type, sourceId)`, or distinct
+   * live sources pointing at `(as, type, targetId)`, ascending.
+   */
+  relationships(query: RelationshipQuery): readonly string[];
+  /**
+   * Distinct live member entity ids of a group, or distinct live group
+   * ids of an entity, ascending.
+   */
+  memberships(query: MembershipQuery): readonly string[];
+  /** Live forward relationship edges out of a source, ascending by target then row id. */
+  relationshipLinks(query: RelationshipSourceQuery): readonly RelationshipLink[];
+  /** Live member-keyed membership rows of an entity, ascending by group then row id. */
+  membershipLinks(entityId: string): readonly MembershipLink[];
 
   /** Fold one durable Action's `delta` at its log position. */
   ingest(action: Action, delta: readonly Update[], position: number): Revision;

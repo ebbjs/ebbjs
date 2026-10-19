@@ -17,7 +17,7 @@
 import type { Entity, FieldValue, Update } from "@ebbjs/core";
 import { generateId, isFieldMap } from "@ebbjs/core";
 import type { WriteResponse } from "./types";
-import type { StorageAdapter } from "@ebbjs/storage/types";
+import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
 import type {
@@ -567,6 +567,33 @@ const collaborativeTextForwardOne = (
   });
 
 /**
+ * The replica binding the namespace reads adjacency through. The
+ * client supplies its live {@link Replica} plus a memoized hydration
+ * thunk, so the namespace can bring the replica up to date before the
+ * first accessor read without importing the client (avoiding the
+ * `client → namespace → client` cycle).
+ */
+export interface ReplicaAccess {
+  readonly replica: Replica;
+  hydrate(): Promise<void>;
+}
+
+/**
+ * Wrap the replica's synchronous adjacency reads in the async
+ * {@link AdjacencyReader} the traversal helpers consume. The replica is
+ * the materialized read path after #496, so its indices replace the
+ * storage adapter's async index reads.
+ */
+function replicaAdjacency(access: ReplicaAccess): AdjacencyReader {
+  return {
+    forwardLinks: async (query) => access.replica.relationshipLinks(query),
+    reverseSourceIds: async (query) =>
+      access.replica.relationships({ as: query.as, type: query.type, targetId: query.targetId }),
+    membershipsOf: async (entityId) => access.replica.membershipLinks(entityId),
+  };
+}
+
+/**
  * Build the runtime accessor record for a single row. Walks the
  * registry for relationships where the entity is the source (forward)
  * or the target (reverse) and dispatches per cardinality:
@@ -594,17 +621,22 @@ function buildRowAccessors(
   storage: StorageAdapter,
   registry: EntityRegistry,
   write: WriteCapability,
+  replica?: ReplicaAccess,
 ): Record<string, RowAccessor> {
   const out: Record<string, RowAccessor> = {};
   const readLocalEntity = (id: string): Promise<Entity | null> => storage.entities.get(id);
   // Traversals read the adjacency index rather than scanning the
   // `relationship` / `entityGroup` type, so their cost tracks the
-  // source row's degree.
-  const adjacency: AdjacencyReader = {
-    forwardLinks: (query) => storage.entities.queryByRelationshipSource(query),
-    reverseSourceIds: (query) => storage.entities.queryByRelationship(query),
-    membershipsOf: (entityId) => storage.entities.queryByMembershipEntity(entityId),
-  };
+  // source row's degree. The replica owns the index once supplied;
+  // otherwise the storage adapter's async index stays the default.
+  const adjacency: AdjacencyReader =
+    replica !== undefined
+      ? replicaAdjacency(replica)
+      : {
+          forwardLinks: (query) => storage.entities.queryByRelationshipSource(query),
+          reverseSourceIds: (query) => storage.entities.queryByRelationship(query),
+          membershipsOf: (entityId) => storage.entities.queryByMembershipEntity(entityId),
+        };
 
   // Forward accessors — relationships where this entity is the source.
   for (const rel of registry.getRelationshipsForSource(entityName)) {
@@ -791,6 +823,7 @@ export function createEntityNamespace<
   storage: StorageAdapter,
   write: WriteCapability,
   derived: Record<string, DerivedFieldDef> = {},
+  replica?: ReplicaAccess,
 ): EntityNamespace<TFields, TAccessors> {
   const registry = write.registry;
   const loader: LoadEntities = async () => storage.entities.query(entityName);
@@ -799,13 +832,17 @@ export function createEntityNamespace<
       return buildLazyQueryBuilder(loader, shape, { entityName, registry, storage });
     },
     async get(id: string): Promise<EntityRow<TFields, TAccessors> | null> {
+      // The accessors read the replica's adjacency, so bring it up to
+      // date before building them. Memoized on the client, so this is
+      // one real await per client.
+      if (replica !== undefined) await replica.hydrate();
       const entity = await storage.entities.get(id);
       if (entity === null) return null;
       // Wrong-type reads (different `entity.type`) resolve to `null`
       // alongside unknown ids. Callers don't distinguish — a missing
       // row and a wrong-type row are both "no row here".
       if (entity.type !== entityName) return null;
-      const accessors = buildRowAccessors(entityName, id, storage, registry, write);
+      const accessors = buildRowAccessors(entityName, id, storage, registry, write, replica);
       const subscribe = (cb: (snapshot: EntitySnapshot<TFields>) => void): (() => void) =>
         subscribeToEntity(storage, entityName, id, shape, cb);
       const subscribeAccessors = (cb: () => void): (() => void) => {
@@ -1410,12 +1447,18 @@ const lastGroupMemberError = (id: string, details: string): AtomicActionError =>
  * `create`. Membership verbs are dropped — a group is its own group,
  * and `entityGroup` rows stay internal.
  */
-function createGroupNamespace(storage: StorageAdapter, write: WriteCapability): GroupNamespace {
+function createGroupNamespace(
+  storage: StorageAdapter,
+  write: WriteCapability,
+  replica?: ReplicaAccess,
+): GroupNamespace {
   const base = createEntityNamespace<GroupFields, MembershipAccessors>(
     "group",
     groupSystemEntity.shape,
     storage,
     write,
+    {},
+    replica,
   );
   return {
     query: base.query,
@@ -1444,12 +1487,15 @@ function createGroupNamespace(storage: StorageAdapter, write: WriteCapability): 
 function createMembershipNamespace(
   storage: StorageAdapter,
   write: WriteCapability,
+  replica?: ReplicaAccess,
 ): MembershipNamespace {
   const base = createEntityNamespace<GroupMemberFields, MembershipAccessors>(
     "groupMember",
     groupMemberSystemEntity.shape,
     storage,
     write,
+    {},
+    replica,
   );
   return {
     query: base.query,
@@ -1513,19 +1559,26 @@ function createMembershipNamespace(
  */
 export function buildEntityNamespaces<
   S extends Schema<Record<string, EntityDef<Record<string, TSchema>>>, unknown>,
->(schema: S, storage: StorageAdapter, write: WriteCapability): EntityNamespaces<S> {
+>(
+  schema: S,
+  storage: StorageAdapter,
+  write: WriteCapability,
+  replica?: ReplicaAccess,
+): EntityNamespaces<S> {
   const out: Record<string, EntityNamespace<Record<string, TSchema>>> = {};
   for (const [name, def] of Object.entries(schema.entities)) {
     // The static accessor record is derived by `EntityNamespaces<S>`
     // from the schema's relationship map; the registry is the runtime
     // authority for which accessors actually attach.
-    out[name] = createEntityNamespace(def.name, def.shape, storage, write, def.derived);
+    out[name] = createEntityNamespace(def.name, def.shape, storage, write, def.derived, replica);
   }
-  out["group"] = createGroupNamespace(storage, write) as unknown as EntityNamespace<
+  out["group"] = createGroupNamespace(storage, write, replica) as unknown as EntityNamespace<
     Record<string, TSchema>
   >;
-  out["membership"] = createMembershipNamespace(storage, write) as unknown as EntityNamespace<
-    Record<string, TSchema>
-  >;
+  out["membership"] = createMembershipNamespace(
+    storage,
+    write,
+    replica,
+  ) as unknown as EntityNamespace<Record<string, TSchema>>;
   return out as EntityNamespaces<S>;
 }

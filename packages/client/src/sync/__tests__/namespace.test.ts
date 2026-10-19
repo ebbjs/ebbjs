@@ -4,8 +4,9 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { type Static } from "@sinclair/typebox/type";
-import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
+import { decodeSync, makeHlc, type Action, type Update } from "@ebbjs/core";
 import type { Entity } from "@ebbjs/core";
+import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
 
 import { defineEntity, e } from "../../schema/entity";
 import { defineSchema } from "../../schema/schema";
@@ -438,6 +439,51 @@ const mkEntityGroup = (id: string, entityId: string, groupId: string): Entity =>
   last_gsn: 0,
 });
 
+let seedPosition = 0;
+
+/** Fold `row` into the replica as a durable put or delete (#520). */
+const foldSeed = (replica: Replica, row: Entity, method: "put" | "delete"): void => {
+  seedPosition += 1;
+  const hlc = makeHlc(seedPosition);
+  const update: Update =
+    method === "put"
+      ? {
+          id: `u_seed_${seedPosition}`,
+          subject_id: row.id,
+          subject_type: row.type,
+          method,
+          data: { fields: row.data?.fields ?? {} },
+        }
+      : {
+          id: `u_seed_${seedPosition}`,
+          subject_id: row.id,
+          subject_type: row.type,
+          method: "delete",
+          data: null,
+        };
+  const action: Action = {
+    id: `a_seed_${seedPosition}`,
+    actor_id: "seed",
+    hlc,
+    gsn: seedPosition,
+    updates: [],
+  };
+  replica.ingest(action, [update], seedPosition);
+};
+
+/**
+ * The row accessors read the replica's adjacency (#520), so mirror the
+ * shim's live `relationship` / `entityGroup` rows into it. Entity rows
+ * stay on the shim — only the adjacency indices feed traversal.
+ */
+const syncAdjacency = async (storage: StorageAdapter, replica: Replica): Promise<void> => {
+  for (const type of ["relationship", "entityGroup"]) {
+    for (const row of await storage.entities.query(type)) {
+      if (row.deleted_hlc === null) foldSeed(replica, row, "put");
+    }
+  }
+};
+
 // ---------------------------------------------------------------------------
 // client.<entity>.query().where() — registry-aware predicate (#247)
 // ---------------------------------------------------------------------------
@@ -850,6 +896,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
       storage,
       schema: schemaWithRels,
     });
+    await syncAdjacency(storage, client.replica);
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
     const tags: QueryBuilder<EntityFields<typeof labelEntity>> = row.tags;
@@ -857,7 +904,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     expect(resolved.map((t) => t.name).sort()).toEqual(["a", "b", "c"]);
   });
 
-  it("routes traversal through the adjacency index, not a type scan", async () => {
+  it("routes traversal through the replica's adjacency index, not the storage scan", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
@@ -868,17 +915,22 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     await storage.entities.set(mkRelEntity("rel-parent", "t1", "l1", "parentList", "todo"));
     await storage.entities.set(mkEntityGroup("eg-1", "t1", "g1"));
 
-    const query = vi.spyOn(storage.entities, "query");
-    const forward = vi.spyOn(storage.entities, "queryByRelationshipSource");
-    const reverse = vi.spyOn(storage.entities, "queryByRelationship");
-    const memberships = vi.spyOn(storage.entities, "queryByMembershipEntity");
-
     const client = createClient({
       serverUrl: "http://x",
       actorId: "a",
       storage,
       schema: schemaWithRels,
     });
+    await syncAdjacency(storage, client.replica);
+
+    const query = vi.spyOn(storage.entities, "query");
+    const storageForward = vi.spyOn(storage.entities, "queryByRelationshipSource");
+    const storageReverse = vi.spyOn(storage.entities, "queryByRelationship");
+    const storageMemberships = vi.spyOn(storage.entities, "queryByMembershipEntity");
+    const forward = vi.spyOn(client.replica, "relationshipLinks");
+    const reverse = vi.spyOn(client.replica, "relationships");
+    const memberships = vi.spyOn(client.replica, "membershipLinks");
+
     const todo = await client.todo.get("t1");
     if (todo === null) throw new Error("expected row");
     await todo.tags;
@@ -891,6 +943,11 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     const scannedTypes = query.mock.calls.map(([type]) => type);
     expect(scannedTypes).not.toContain("relationship");
     expect(scannedTypes).not.toContain("entityGroup");
+    // The storage adapter's async indices are bypassed; the replica's
+    // synchronous ones carry the traversal (#520).
+    expect(storageForward).not.toHaveBeenCalled();
+    expect(storageReverse).not.toHaveBeenCalled();
+    expect(storageMemberships).not.toHaveBeenCalled();
     expect(forward).toHaveBeenCalled();
     expect(reverse).toHaveBeenCalled();
     expect(memberships).toHaveBeenCalled();
@@ -908,6 +965,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
       storage,
       schema: schemaWithRels,
     });
+    await syncAdjacency(storage, client.replica);
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
     const ownerPromise: Promise<Entity | null | undefined> = row.owner;
@@ -928,6 +986,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
       storage,
       schema: schemaWithRels,
     });
+    await syncAdjacency(storage, client.replica);
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
     const parentList: Promise<Entity | null | undefined> = row.parentList;
@@ -936,6 +995,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     expect(list).toBeNull();
     // Add the edge and the accessor surfaces the target.
     await storage.entities.set(mkRelEntity("rel-parentList", "t1", "l1", "parentList", "todo"));
+    await syncAdjacency(storage, client.replica);
     const row2 = await client.todo.get("t1");
     if (row2 === null) throw new Error("expected row");
     const list2: Entity | null | undefined = await row2.parentList;
@@ -954,6 +1014,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
       storage,
       schema: schemaWithRels,
     });
+    await syncAdjacency(storage, client.replica);
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
     const owner: Entity | null | undefined = await row.owner;
@@ -977,6 +1038,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
       storage,
       schema: schemaWithRels,
     });
+    await syncAdjacency(storage, client.replica);
     const list = await client.list.get("l1");
     if (list === null) throw new Error("expected row");
     const todos: QueryBuilder<EntityFields<typeof todoEntity>> = list.parentList;
@@ -1016,6 +1078,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
       storage,
       schema: schemaWithOverlap,
     });
+    await syncAdjacency(storage, client.replica);
     const row = await client.card.get("c1");
     if (row === null) throw new Error("expected row");
     // The accessor type (a QueryBuilder), not the `string[]` field type.
@@ -1048,6 +1111,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
       storage,
       schema: schemaWithSelf,
     });
+    await syncAdjacency(storage, client.replica);
     const row = await client.node.get("n1");
     if (row === null) throw new Error("expected row");
     const parent: QueryBuilder<EntityFields<typeof node>> = row.parent;
@@ -1162,6 +1226,7 @@ describe("doc.groups — built-in membership accessor", () => {
       storage,
       schema: groupsSchema,
     });
+    await syncAdjacency(storage, client.replica);
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
     const groups: QueryBuilder<EntityFields<typeof groupSystemEntity>> = row.groups;
@@ -1192,6 +1257,7 @@ describe("doc.groups — built-in membership accessor", () => {
       storage,
       schema: schemaWithOwnedBy,
     });
+    await syncAdjacency(storage, client.replica);
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
     expect((await row.groups).map((g) => g.name)).toEqual(["Demo"]);

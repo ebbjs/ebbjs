@@ -21,9 +21,11 @@ export type { CursorStore } from "./types/cursor-store";
 export type { ReplicaRecord, ReplicaStore } from "./types/replica-store";
 export type {
   MaterializationPolicy,
+  MembershipQuery,
   Replica,
   ReplicaChange,
   ReplicaOptions,
+  RelationshipQuery,
   Revision,
 } from "./replica/types";
 export type {
