@@ -20,6 +20,11 @@ defmodule EbbServer.Sync.FanOutFrontier do
   Router resumes from it, re-deriving the un-pushed committed ranges from
   `cf_actions`/`cf_group_actions`.
 
+  Ordered release decisions come from the Writer's
+  `EbbServer.Storage.CommitPipeline`; this module only persists the highest
+  GSN the Router has actually pushed, so a restart cannot skip an unpushed
+  range.
+
   ## Lock-free reads and writes
 
   Every public function is a direct ETS operation; no `GenServer.call` is
