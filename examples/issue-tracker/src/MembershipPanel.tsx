@@ -26,7 +26,7 @@ export function MembershipPanel({
   bootstrap: BootstrapResult;
 }) {
   const client = useClient<Schema>();
-  const { data: members } = useQuery(() => client.membership.query());
+  const { data: members = [] } = useQuery(() => client.membership.query());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [leaveDenied, setLeaveDenied] = useState(false);

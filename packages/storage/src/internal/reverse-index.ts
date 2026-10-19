@@ -165,24 +165,6 @@ export const forwardMembershipEntryFor = (entity: Entity): IndexEntry | null => 
   return { key: forwardMembershipIndexKey(entityId), rowId: entity.id, value: groupId };
 };
 
-/** The entity field each accessor-affecting row type names its subject with. */
-const ACCESSOR_SUBJECT_FIELD: Readonly<Record<string, string>> = {
-  [RELATIONSHIP_ENTITY_TYPE]: "source_id",
-  [MEMBERSHIP_ENTITY_TYPE]: "entity_id",
-};
-
-/**
- * The entity whose accessors a materialized `relationship` /
- * `entityGroup` row affects, or `null` for any other row. Unlike
- * {@link relationshipEntryFor} this does NOT skip tombstones: an unlink /
- * removal must still notify the entity whose accessors it changes, and the
- * tombstone retains the fields.
- */
-export const accessorAffectedEntityId = (entity: Entity): string | null => {
-  const field = ACCESSOR_SUBJECT_FIELD[entity.type];
-  return field === undefined ? null : readStringField(entity, field);
-};
-
 /**
  * Every index entry a materialized row contributes. Both entry kinds
  * derive from distinct entity types, so at most one applies.

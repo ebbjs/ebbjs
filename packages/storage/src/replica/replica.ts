@@ -84,6 +84,19 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
   let revision: Revision = 0;
   let lastPosition = 0;
+  const listeners = new Set<() => void>();
+
+  /** Notify derived readers after the composed view has settled. */
+  const notify = (): void => {
+    for (const listener of listeners) {
+      try {
+        listener();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[Replica] change listener threw:", err);
+      }
+    }
+  };
 
   const addToType = (type: string, id: string): void => {
     const ids = typeIndex.get(type);
@@ -253,6 +266,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     const touched = new Set<string>(delta.map((update) => update.subject_id));
     for (const id of echoed) touched.add(id);
     for (const id of touched) resync(id, before.get(id) ?? null);
+    notify();
     return revision;
   };
 
@@ -269,6 +283,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       else writes.push(write);
     }
     for (const id of touched) resync(id, before.get(id) ?? null);
+    notify();
     return revision;
   };
 
@@ -276,6 +291,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     const before = new Map<string, Entity | null>();
     const affected = dropOverlay(actionId, before);
     for (const id of affected) resync(id, before.get(id) ?? null);
+    notify();
     return revision;
   };
 
@@ -310,6 +326,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     forwardIndex = forward;
     revision = record.revision;
     lastPosition = record.position;
+    notify();
     return revision;
   };
 
@@ -364,5 +381,11 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     discard,
     load,
     toRecord,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
   };
 };

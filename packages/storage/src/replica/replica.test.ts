@@ -756,3 +756,85 @@ describe("replica: materialization policy", () => {
     ]);
   });
 });
+
+describe("replica: change signal", () => {
+  it("notifies after an observable fold settles and stops on unsubscribe", () => {
+    const replica = createReplica();
+    let fired = 0;
+    const unsub = replica.subscribe(() => {
+      fired += 1;
+    });
+
+    ingest(
+      replica,
+      put({ actionId: "a_1", updateId: "u_1", fields: { title: leaf("Todo", "u_1", 10) } }),
+      1,
+    );
+    expect(fired).toBe(1);
+    expect(replica.revision).toBe(1);
+
+    replica.optimistic(
+      put({ actionId: "a_2", updateId: "u_2", fields: { title: leaf("Next", "u_2", 20) } }),
+    );
+    expect(fired).toBe(2);
+
+    replica.discard("a_2");
+    expect(fired).toBe(3);
+
+    unsub();
+    replica.discard("a_1");
+    expect(fired).toBe(3);
+  });
+
+  it("fires for a no-op write too, leaving the revision to say nothing changed", () => {
+    const replica = createReplica();
+    let fired = 0;
+    replica.subscribe(() => {
+      fired += 1;
+    });
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_1",
+        ms: 20,
+        fields: { title: leaf("Todo", "u_1", 20) },
+      }),
+      1,
+    );
+    const revision = replica.revision;
+
+    ingest(
+      replica,
+      patch({
+        actionId: "a_2",
+        updateId: "u_2",
+        gsn: 2,
+        ms: 10,
+        fields: { title: leaf("Older", "u_2", 10) },
+      }),
+      2,
+    );
+    expect(replica.revision).toBe(revision);
+    expect(fired).toBe(2);
+  });
+
+  it("notifies on load, which replaces the journal wholesale", () => {
+    const replica = createReplica();
+    let fired = 0;
+    replica.subscribe(() => {
+      fired += 1;
+    });
+
+    replica.load({
+      format: REPLICA_RECORD_FORMAT,
+      position: 0,
+      revision: 7,
+      entities: [entity({ id: "e_9", type: "note" })],
+    });
+
+    expect(fired).toBe(1);
+    expect(replica.revision).toBe(7);
+    expect(replica.get("e_9")?.type).toBe("note");
+  });
+});

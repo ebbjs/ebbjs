@@ -17,7 +17,7 @@ import { workspaceEntityId } from "./seed";
 
 export function WorkspaceSwitcher() {
   const client = useClient<Schema>();
-  const { data: workspaces, loading } = useQuery(() => client.workspace.query());
+  const { data: workspaces = [], loading } = useQuery(() => client.workspace.query());
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const selected = workspaces.find((row) => row.slug === selectedSlug) ?? workspaces[0];
   const [groupIds, setGroupIds] = useState<readonly string[]>([]);

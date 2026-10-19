@@ -53,6 +53,8 @@ import type { ReadonlyObservable } from "./observable";
 import { createFlushScheduler, type FlushScheduler } from "./flush-scheduler";
 import { createOutboxObserver, type OutboxObserver } from "./outbox-observer";
 import { createClientStatus, type ClientStatus, type ClientStatusController } from "./status";
+import { createQueryCache, type QueryCache } from "./query-cache";
+import { createReplicaSignal, type ReplicaSignal } from "./replica-signal";
 import { backoffDelayMs } from "./backoff";
 import { TextDocument, TextDocumentRegistry } from "../fields/collaborative-text/text-document";
 import {
@@ -155,6 +157,15 @@ export class SyncClient implements PermissionQuery {
    * the engine signal re-homes them (#512/#520).
    */
   readonly replica: Replica;
+  /**
+   * The engine signal over {@link replica} and its reactive query result
+   * cache (#512). Namespaces and hooks read query results through it, so a
+   * remount gets the cached result and every subscriber sees one invalidation
+   * stream. Hydrated with the replica.
+   */
+  readonly queries: QueryCache;
+  /** The shared per-revision notification stream the cache and watchers read. */
+  readonly replicaSignal: ReplicaSignal;
   readonly presence: PresenceManager;
   readonly registry: EntityRegistry;
   readonly schema?: AnySchema;
@@ -266,12 +277,16 @@ export class SyncClient implements PermissionQuery {
   private readonly backfillRunner: Backfill;
   /** Memoized hydration of {@link replica}; see {@link hydrateReplica}. */
   private replicaHydration: Promise<void> | null = null;
+  /** True once {@link loadReplica} completed, so synchronous readers can run. */
+  private replicaHydrated = false;
 
   constructor(opts: SyncClientOptions) {
     this.serverUrl = opts.serverUrl.replace(/\/$/, "");
     this.actorId = opts.actorId;
     this.storage = opts.storage ?? createMemoryAdapter();
     this.replica = createReplica();
+    this.replicaSignal = createReplicaSignal(this.replica);
+    this.queries = createQueryCache(this.replica, this.replicaSignal);
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
@@ -865,6 +880,11 @@ export class SyncClient implements PermissionQuery {
     return this.replicaHydration;
   }
 
+  /** Whether {@link hydrateReplica} has completed; a synchronous read may run. */
+  isReplicaHydrated(): boolean {
+    return this.replicaHydrated;
+  }
+
   /** Persist {@link replica}'s record as the durable fast path for hydration. */
   async persistReplica(): Promise<void> {
     await this.storage.replica.save(this.replica.toRecord());
@@ -881,6 +901,7 @@ export class SyncClient implements PermissionQuery {
         this.replica.optimistic(entry.action);
       }
     }
+    this.replicaHydrated = true;
   }
 
   /**
@@ -1327,12 +1348,9 @@ export class SyncClient implements PermissionQuery {
    * common case. The action still materializes regardless.
    *
    * After the action lands in the action log it is folded into the
-   * replica, and each entity whose observable content changed is
-   * force-materialized in the `storage.entities` shim so subscribers on the
-   * storage adapter's change emitter observe the new state immediately. The
-   * materialize-on-read contract would otherwise require every consumer to
-   * issue a read first — not viable for per-collection subscribe, which
-   * must surface changes without a forced read.
+   * replica, whose change signal wakes the query cache and row watchers
+   * (#512). The `storage.entities` shim keeps its materialize-on-read
+   * contract for the remaining internal readers.
    */
   private async _applyAction(
     action: Action,
@@ -1346,7 +1364,6 @@ export class SyncClient implements PermissionQuery {
     if (action.hlc !== undefined) {
       this.mergeRemoteHLC(action.hlc);
     }
-    const beforeRevision = this.replica.revision;
     const logged = await this.storage.actions.append(action);
     this.replica.ingest(logged.action, logged.added, logged.position);
     // The single inbound receipt hook: an Action that matches a buffered
@@ -1370,23 +1387,13 @@ export class SyncClient implements PermissionQuery {
         await this.storage.cursors.set(groupId, action.gsn);
       }
     }
-    if (this.storage.changeEmitter !== undefined) {
-      const keepDirty = this.storage.materializeKeepDirty;
-      for (const change of this.replica.changesSince(beforeRevision)) {
-        if (keepDirty !== undefined) {
-          await keepDirty(change.id);
-        } else {
-          await this.storage.entities.get(change.id);
-        }
-      }
-    }
     return affected;
   }
 
   /**
-   * Optimistically apply a locally-authored Action to the cached
-   * entities, firing the change emitter so local reads and subscribers
-   * reflect the write before the server echo. The Action is not
+   * Optimistically apply a locally-authored Action to the replica and
+   * mirror the composed rows into the `storage.entities` shim, so local
+   * reads and replica subscribers reflect the write before the server echo. The Action is not
    * appended to the action log: the log is the replay source the
    * materializer orders by GSN, and an unacknowledged Action has no
    * GSN to order by. The echo — appended with its server GSN — is what
@@ -1693,6 +1700,9 @@ export function createClient<
   };
   const namespaces = buildEntityNamespaces(opts.schema, client.storage, writeCap, {
     replica: client.replica,
+    queries: client.queries,
+    signal: client.replicaSignal,
+    hydrated: () => client.isReplicaHydrated(),
     // Arrow over the public method keeps the namespace free of the
     // `client → namespace → client` import cycle.
     hydrate: () => client.hydrateReplica(),

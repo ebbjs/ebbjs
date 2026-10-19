@@ -53,6 +53,11 @@ import {
   type PointerValue,
   type QueryBuilder,
 } from "./query-builder";
+import { emptyQuery, type Predicate, type Query } from "./query";
+import { planQuery } from "./query-plan";
+import { createReplicaExecutor, executePlan } from "./query-execute";
+import type { QueryCache } from "./query-cache";
+import { createEntityWatcher, type EntityWatcher, type ReplicaSignal } from "./replica-signal";
 import {
   type AdjacencyReader,
   buildEntityGroupUpdates,
@@ -253,8 +258,8 @@ export type EntitySnapshot<TFields extends Record<string, TSchema>> = EntitySnap
  * materialization of the row, and never on subscribe itself:
  * `get(id)` already materialized before the listener attaches.
  * Emits for a wrong-type row are skipped, mirroring `get`'s own
- * type guard. Adapters without an emitter surface a no-op
- * unsubscribe.
+ * type guard. The trigger is the replica's change signal, not the
+ * storage adapter's write path.
  */
 export type EntityRow<
   TFields extends Record<string, TSchema>,
@@ -301,11 +306,10 @@ export type CollectionSnapshot<TFields extends Record<string, TSchema>> = {
  * `subscribe(cb)` for every declared relationship on the entity.
  *
  * `subscribe(filter, cb)` registers a reactive listener on the
- * storage adapter's change emitter. The callback fires whenever
- * the set of entities matching `filter` changes (referential
- * equality on the projected row list; deep-equal is over-engineered
- * per #161's body). Each fire carries a typed `CollectionSnapshot`
- * of the new matching set.
+ * engine's query cache. The callback fires whenever the set of
+ * matching entity ids changes, so a field edit on a row that
+ * already matches is not a collection change. Each fire carries a
+ * typed `CollectionSnapshot` of the current matching set.
  *
  * `link` / `unlink` / `setLinks` build the wire Update(s) and
  * submit via the client's write path. Users never see wire-level
@@ -326,12 +330,11 @@ export interface EntityNamespace<
   get(id: string): Promise<EntityRow<TFields, TAccessors> | null>;
   /**
    * Reactive subscribe on the matching set. Returns an
-   * unsubscribe function. The callback fires when the set
-   * changes, not on every storage emit — referential equality
-   * on the projected row array is the no-op guard. The
-   * underlying emitter is the storage adapter's per-type
-   * observer; adapters that don't ship an emitter surface this
-   * as a no-op (the listener never fires).
+   * unsubscribe function. The callback fires when the matching id
+   * set changes, not on every storage write; the cached result is
+   * the id list, so a field edit on an already-matching row is a
+   * no-op. The trigger is the replica's change signal via the
+   * client's query cache (#512).
    */
   subscribe(
     filter: QueryFilter<TFields>,
@@ -567,6 +570,12 @@ const collaborativeTextForwardOne = (
  */
 export interface ReplicaAccess {
   readonly replica: Replica;
+  /** The reactive query-result cache every chain and collection subscribe shares. */
+  readonly queries: QueryCache;
+  /** The engine signal behind the row-level watchers. */
+  readonly signal: ReplicaSignal;
+  /** Whether the replica is hydrated, so a query can run synchronously. */
+  hydrated(): boolean;
   hydrate(): Promise<void>;
 }
 
@@ -705,6 +714,22 @@ function buildRowAccessors(
 }
 
 /**
+ * Lower a collection filter to a query over the source type. `subscribe`'s
+ * filter shape is field equality only, so every entry is one field predicate
+ * in a single AND-group (an empty filter is the unfiltered type scan).
+ */
+const queryForFilter = <TFields extends Record<string, TSchema>>(
+  entityName: string,
+  filter: QueryFilter<TFields>,
+): Query => {
+  const predicates: Predicate[] = [];
+  for (const [field, value] of Object.entries(filter)) {
+    predicates.push({ kind: "field", field, value });
+  }
+  return { ...emptyQuery(entityName), groups: predicates.length === 0 ? [] : [predicates] };
+};
+
+/**
  * Project a materialized entity into the subscribe snapshot shape:
  * the typed field projection plus the `id` and `entity` escape
  * hatches. Shared by the per-collection and per-entity subscribe
@@ -720,41 +745,32 @@ const toEntitySnapshot = <TWire extends Record<string, TSchema>>(
 });
 
 /**
- * Attach the per-entity reactive listener for `id`. Adapters without
- * an emitter have no reactive trigger, so the returned unsubscribe is
- * a no-op.
+ * Attach the per-entity reactive listener for `id` to the replica's
+ * signal. A namespace built without a replica binding has no trigger, so
+ * the returned unsubscribe is a no-op.
  *
- * A `null` emit (the interface's hard-removal signal) is dropped:
- * the pinned `EntitySnapshot` has no null variant, and both shipped
- * adapters emit the soft-deleted entity (`deleted_hlc` set) instead.
+ * A row that left the replica entirely is dropped: the pinned
+ * `EntitySnapshot` has no null variant; a soft delete stays a row with
+ * `deleted_hlc` set and is delivered normally.
  */
 const subscribeToEntity = <TWire extends Record<string, TSchema>>(
-  storage: StorageAdapter,
+  watcher: EntityWatcher | null,
   entityName: string,
   id: string,
   shape: TObject<TWire>,
   cb: (snapshot: EntitySnapshotOf<TWire>) => void,
 ): (() => void) => {
-  const emitter = storage.changeEmitter;
-  if (emitter === undefined) return () => {};
-  const unsubscribeEntity = emitter.onEntityChange(id, (next) => {
-    if (next === null || next.type !== entityName) return;
-    cb(toEntitySnapshot(next, shape));
-  });
-  // A relationship / membership write does not materialize the row, so
-  // re-read it and fire the same snapshot contract a field change would.
-  // Consumers that compare projected fields (useEntity) must use
-  // `subscribeAccessors` to force a re-read.
-  let active = true;
-  const unsubscribeAccessors = emitter.onAccessorChange(id, () => {
-    void (async () => {
-      const entity = await storage.entities.get(id);
-      if (!active || entity === null || entity.type !== entityName) return;
-      cb(toEntitySnapshot(entity, shape));
-    })();
-  });
+  if (watcher === null) return () => {};
+  const fire = (row: Entity | undefined): void => {
+    if (row === undefined || row.type !== entityName) return;
+    cb(toEntitySnapshot(row, shape));
+  };
+  const unsubscribeEntity = watcher.entity(id, fire);
+  // A relationship / membership write leaves the row's own fields untouched
+  // but changes its accessors; fire the same snapshot contract a field change
+  // would, so a consumer that compares projected fields still sees the row.
+  const unsubscribeAccessors = watcher.accessors(id, fire);
   return () => {
-    active = false;
     unsubscribeEntity();
     unsubscribeAccessors();
   };
@@ -821,6 +837,32 @@ export function createEntityNamespace<
   replica?: ReplicaAccess,
 ): EntityNamespace<TFields, TAccessors, TJoins> {
   const registry = write.registry;
+  const watcher =
+    replica === undefined ? null : createEntityWatcher(replica.replica, replica.signal);
+
+  /** Project one replica row and attach its accessors plus signal handles. */
+  const buildRow = (entity: Entity): EntityRow<TFields, TAccessors> | null => {
+    // Wrong-type reads (different `entity.type`) resolve to `null`
+    // alongside unknown ids. Callers don't distinguish — a missing
+    // row and a wrong-type row are both "no row here".
+    if (entity.type !== entityName) return null;
+    const accessors = buildRowAccessors(entityName, entity.id, storage, registry, write, replica);
+    const subscribe = (cb: (snapshot: EntitySnapshot<TFields>) => void): (() => void) =>
+      subscribeToEntity(watcher, entityName, entity.id, shape, cb);
+    const subscribeAccessors = (cb: () => void): (() => void) =>
+      watcher === null ? () => {} : watcher.accessors(entity.id, cb);
+    // Accessors spread last so a declared relationship shadows a
+    // same-named field; the entity id spreads after them so it wins
+    // over both.
+    return {
+      ...projectRow(entity, shape),
+      ...accessors,
+      id: entity.id,
+      subscribe,
+      subscribeAccessors,
+    } as unknown as EntityRow<TFields, TAccessors>;
+  };
+
   return {
     query(): QueryBuilder<WireFields<TFields>, TJoins> {
       // Only a directly-constructed namespace can lack the binding;
@@ -834,8 +876,9 @@ export function createEntityNamespace<
       return buildReplicaQueryBuilder<WireFields<TFields>, TJoins>(entityName, shape, {
         entityName,
         registry,
-        storage,
         replica: replica.replica,
+        queries: replica.queries,
+        hydrated: () => replica.hydrated(),
         hydrate: () => replica.hydrate(),
       });
     },
@@ -845,108 +888,52 @@ export function createEntityNamespace<
       // one real await per client.
       if (replica !== undefined) await replica.hydrate();
       const entity = await storage.entities.get(id);
-      if (entity === null) return null;
-      // Wrong-type reads (different `entity.type`) resolve to `null`
-      // alongside unknown ids. Callers don't distinguish — a missing
-      // row and a wrong-type row are both "no row here".
-      if (entity.type !== entityName) return null;
-      const accessors = buildRowAccessors(entityName, id, storage, registry, write, replica);
-      const subscribe = (cb: (snapshot: EntitySnapshot<TFields>) => void): (() => void) =>
-        subscribeToEntity(storage, entityName, id, shape, cb);
-      const subscribeAccessors = (cb: () => void): (() => void) => {
-        const emitter = storage.changeEmitter;
-        if (emitter === undefined) return () => {};
-        return emitter.onAccessorChange(id, cb);
-      };
-      // Accessors spread last so a declared relationship shadows a
-      // same-named field; the entity id spreads after them so it wins
-      // over both.
-      return {
-        ...projectRow(entity, shape),
-        ...accessors,
-        id: entity.id,
-        subscribe,
-        subscribeAccessors,
-      } as unknown as EntityRow<TFields, TAccessors>;
+      return entity === null ? null : buildRow(entity);
     },
     subscribe(
       filter: QueryFilter<TFields>,
       cb: (snapshot: CollectionSnapshot<TFields>) => void,
     ): () => void {
-      const emitter = storage.changeEmitter;
-      if (emitter === undefined) {
-        // No emitter → no reactive trigger. The snapshot can still
-        // be polled via `client.<entity>.query()` for one-shot reads.
+      if (replica === undefined) {
+        // No replica binding → no engine signal. A one-shot read is still
+        // available through `client.<entity>.query()`.
         return () => {
           // no-op
         };
       }
-      const matching = new Map<string, Entity>();
-      const matches = (entity: Entity): boolean => {
-        // A soft-deleted row is not a member of the live collection,
-        // so it drops out of the set and fires like any other removal.
-        // `get(id)` still returns the tombstone for per-row inspection.
-        if (entity.deleted_hlc !== null) return false;
-        for (const [field, value] of Object.entries(filter)) {
-          const fieldEntry = entity.data?.fields?.[field];
-          const current = fieldEntry === undefined ? undefined : fieldEntry.value;
-          if (current !== value) return false;
-        }
-        return true;
-      };
-      const buildSnapshot = (): CollectionSnapshot<TFields> => {
-        const entities = [...matching.values()].map((entity) => toEntitySnapshot(entity, shape));
-        return { entities, filter, count: entities.length };
-      };
-      const idSignature = (ids: Iterable<string>): string => [...ids].sort().join("\n");
-      let prevIds = "";
-      const update = (entity: Entity): void => {
-        const wasIn = matching.has(entity.id);
-        const matchesNow = matches(entity);
-        if (matchesNow) {
-          matching.set(entity.id, entity);
-        } else {
-          matching.delete(entity.id);
-        }
-        if (wasIn !== matchesNow) {
-          const ids = idSignature(matching.keys());
-          if (ids !== prevIds) {
-            prevIds = ids;
-            cb(buildSnapshot());
-          }
-        }
-      };
-      // Hydrate the matching set BEFORE the listener attaches so
-      // the hydration's own re-materialization doesn't fire the
-      // callback. Concurrent emits during the async hydration
-      // window are buffered and replayed on attach.
-      let hydrating = true;
-      const buffered: Entity[] = [];
-      const listener = (entity: Entity): void => {
-        if (hydrating) {
-          buffered.push(entity);
-        } else {
-          update(entity);
-        }
-      };
-      let unsubEmitter: (() => void) | null = null;
-      void (async (): Promise<void> => {
-        const rows = await storage.entities.query(entityName);
-        for (const row of rows) {
-          if (matches(row)) matching.set(row.id, row);
-        }
-        prevIds = idSignature(matching.keys());
-        unsubEmitter = emitter.onTypeChange(entityName, listener);
-        hydrating = false;
-        if (buffered.length > 0) {
-          const replay = buffered.splice(0, buffered.length);
-          for (const entity of replay) update(entity);
-        }
-      })();
-      return () => {
-        if (unsubEmitter !== null) unsubEmitter();
-        matching.clear();
-      };
+      const query = queryForFilter(entityName, filter);
+      // The cached result is the matching id list, so a field edit on a row
+      // that already matches is not a collection change (the pinned contract)
+      // while a join, delete, or insert is.
+      const store = replica.queries.watch<string>("collection", query, {
+        ready: () => replica.hydrate(),
+        isReady: () => replica.hydrated(),
+        execute: () => {
+          const executor = createReplicaExecutor(replica.replica);
+          return executePlan(planQuery(query), executor)
+            .filter((row) => row.type === entityName)
+            .map((row) => row.id);
+        },
+      });
+      return store.subscribe(
+        () => {
+          // The cache holds ids; the rows are read from the replica as this
+          // callback runs, after the change that could alter the set has
+          // settled that entry.
+          const ids = store.getSnapshot().data;
+          if (ids === undefined) return;
+          const entities = ids.flatMap((id) => {
+            const row = replica.replica.get(id);
+            return row === undefined
+              ? []
+              : [toEntitySnapshot(row, shape) as EntitySnapshot<TFields>];
+          });
+          cb({ entities, filter, count: entities.length });
+        },
+        // A collection subscribe never fires on subscribe itself; the first
+        // run primes the cache silently and later membership changes fire.
+        { initial: false },
+      );
     },
     async create(
       input: WireStatic<TFields> & DerivedInputs<TFields>,

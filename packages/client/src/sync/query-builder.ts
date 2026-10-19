@@ -49,18 +49,11 @@
 import type { Entity, FieldValue } from "@ebbjs/core";
 import { isFieldMap } from "@ebbjs/core";
 import type { Replica } from "@ebbjs/storage/replica";
-import type { StorageAdapter } from "@ebbjs/storage/types";
 import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { ShapeFields, WireFields } from "../schema/entity";
 import { EntityValidationError, type EntityRegistry } from "../schema/entity-registry";
-import {
-  GROUPS_ACCESSOR,
-  entityGroupSystemEntity,
-  groupSystemEntity,
-  relationshipSystemEntity,
-  type GroupFields,
-} from "../schema/system-entities";
+import { GROUPS_ACCESSOR, groupSystemEntity, type GroupFields } from "../schema/system-entities";
 import type {
   AccessorKeyOf,
   AnyEntityDef,
@@ -69,14 +62,7 @@ import type {
   SourceNameOf,
   TargetNameOf,
 } from "./definition-types";
-import {
-  emptyQuery,
-  hasJoinKind,
-  hasPredicateKind,
-  type Join,
-  type Predicate,
-  type Query,
-} from "./query";
+import { emptyQuery, type Join, type Predicate, type Query } from "./query";
 import { planQuery } from "./query-plan";
 import {
   createReplicaExecutor,
@@ -84,6 +70,7 @@ import {
   executePlan,
   type PlanExecutor,
 } from "./query-execute";
+import { createLocalQueryStore, type QueryCache, type QueryStore } from "./query-cache";
 
 /**
  * Project one wire field value to its application-facing value.
@@ -297,9 +284,12 @@ export function normalizePointer(value: unknown, label: string): string | null {
 export interface QueryContext {
   readonly entityName: string;
   readonly registry: EntityRegistry;
-  readonly storage: StorageAdapter;
   /** The materialized read path the plan executes over. */
   readonly replica: Replica;
+  /** The reactive result cache shared by every chain over this client. */
+  readonly queries: QueryCache;
+  /** Whether the replica is hydrated, so the plan can run synchronously. */
+  hydrated(): boolean;
   /** Bring the replica up to date before the plan runs. Memoized by the client. */
   hydrate(): Promise<void>;
 }
@@ -381,25 +371,19 @@ export interface QueryBuilder<
   /** Materialize the untyped source entities, skipping projection and joins. */
   toRaw(): Promise<readonly Entity[]>;
   /**
-   * Reactive trigger scoped to the chain's source entity type: fires
-   * whenever any entity of that type materializes. Terminal methods
-   * read the latest snapshot, so a listener re-materializes to observe
-   * the new result. No-op when the builder carries no query context or
-   * the adapter ships no change emitter.
-   *
-   * Deliberately coarser than `EntityNamespace.subscribe`: a source
-   * entity field change fires even when the chain's filters would
-   * exclude it, leaving the consumer to suppress spurious work by
-   * comparing snapshots. That is what lets a matching row whose
-   * non-filtered field changed wake the chain — the membership-only
-   * listener would stay silent. A chain with a relationship or
-   * membership predicate additionally listens on the `relationship` /
-   * `entityGroup` row types, because those writes do not materialize
-   * the entity they point at (see the `subscribe` implementation). A
-   * join also listens on the joined target's type, since a target row
-   * change rewrites the projection without touching the source row.
+   * Subscribe to the engine-cached result. The listener fires only when the
+   * result changes — a source- or join-type change that leaves it identical
+   * stays silent. No-op for a chain over an already-materialized list, which
+   * carries no engine signal.
    */
   subscribe(listener: () => void): () => void;
+  /**
+   * The reactive result store — `{ data, status, loading, error }` with a
+   * stable snapshot between result changes. Every chain lowering to the same
+   * query shares one cached entry, so a remount reads it instead of
+   * re-running. A candidate chain gets a one-off store with no invalidation.
+   */
+  result(): QueryStore<JoinedRow<TFields, TJoined>>;
   /**
    * The serializable query value the chain has accumulated. Pure data:
    * the planner input and, in #512, the result-cache key.
@@ -455,7 +439,23 @@ export function buildReplicaQueryBuilder<
   TFields extends Record<string, TSchema>,
   TJoins extends object = NoJoins,
 >(source: string, shape: TObject<TFields>, context: QueryContext): QueryBuilder<TFields, TJoins> {
-  return buildChain<TFields, TJoins>(emptyQuery(source), shape, context, replicaExecutor(context));
+  const syncRun = (query: Query): readonly unknown[] => {
+    const executor = createReplicaExecutor(context.replica);
+    return projectResultRows(
+      executePlan(planQuery(query), executor),
+      query,
+      shape,
+      executor,
+      context,
+    );
+  };
+  return buildChain<TFields, TJoins>(
+    emptyQuery(source),
+    shape,
+    context,
+    replicaExecutor(context),
+    syncRun,
+  );
 }
 
 /** Hydrate the replica, then read the plan's rows and indices from it. */
@@ -642,7 +642,29 @@ function buildChain<
   shape: TObject<TFields>,
   context: QueryContext | undefined,
   loadExecutor: () => Promise<PlanExecutor>,
+  syncRun?: (query: Query) => readonly unknown[],
 ): QueryBuilder<TFields, TJoins, TJoined> {
+  const resultFor = (query: Query): QueryStore<JoinedRow<TFields, TJoined>> => {
+    if (context === undefined || syncRun === undefined) {
+      return createLocalQueryStore(async () => {
+        const run = await runPlan(query, loadExecutor);
+        // SAFETY: the candidate chain's own shape and joins produced these rows.
+        return projectResultRows(
+          run.rows,
+          query,
+          shape,
+          run.executor,
+          context,
+        ) as readonly JoinedRow<TFields, TJoined>[];
+      });
+    }
+    return context.queries.watch<JoinedRow<TFields, TJoined>>("rows", query, {
+      ready: () => context.hydrate(),
+      isReady: () => context.hydrated(),
+      // SAFETY: `syncRun` closes over this chain's shape and joins.
+      execute: () => syncRun(query) as readonly JoinedRow<TFields, TJoined>[],
+    });
+  };
   const make = (query: Query): QueryBuilder<TFields, TJoins, TJoined> => ({
     where(key: string, target: unknown) {
       const predicate = buildPredicate(key, target, shape, context, "where");
@@ -696,31 +718,13 @@ function buildChain<
       return executeQuery(query, loadExecutor);
     },
     subscribe(listener) {
-      const emitter = context?.storage.changeEmitter;
-      if (emitter === undefined || context === undefined) return () => {};
-      const unsubscribers = [emitter.onTypeChange(context.entityName, listener)];
-      // A `relationship` / `entityGroup` write does not materialize the
-      // entity it points at, so a chain with an edge or membership
-      // predicate must also wake when one of those rows changes. The
-      // rows carry no entity type for membership, and a relationship's
-      // `type` may be overridden, so subscribe to the row type rather
-      // than guessing the source type. A join additionally listens on
-      // each target's type: a joined row change rewrites the projection
-      // without touching the source row. Identical results are
-      // suppressed downstream by the consumer's snapshot compare.
-      const joinTypes = new Set(query.joins.map((join) => join.target));
-      for (const type of joinTypes) {
-        unsubscribers.push(emitter.onTypeChange(type, listener));
-      }
-      if (hasPredicateKind(query, "relationship") || hasJoinKind(query, "relationship")) {
-        unsubscribers.push(emitter.onTypeChange(relationshipSystemEntity.name, listener));
-      }
-      if (hasPredicateKind(query, "membership") || hasJoinKind(query, "membership")) {
-        unsubscribers.push(emitter.onTypeChange(entityGroupSystemEntity.name, listener));
-      }
-      return () => {
-        for (const unsub of unsubscribers) unsub();
-      };
+      if (context === undefined || syncRun === undefined) return () => {};
+      // A signal never fires on subscribe itself: the first run primes the
+      // cache silently, later result changes wake the listener.
+      return resultFor(query).subscribe(listener, { initial: false });
+    },
+    result() {
+      return resultFor(query);
     },
     // oxlint-disable-next-line no-thenable -- the QueryBuilder is intentionally a thenable; awaiting it projects the chain.
     then(onfulfilled, onrejected) {

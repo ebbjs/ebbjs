@@ -9,7 +9,7 @@ import type { Schema } from "./schema";
 
 export function ProfileCard({ actorId }: { actorId: string }) {
   const client = useClient<Schema>();
-  const { data: profiles, loading } = useQuery(() => client.profile.query());
+  const { data: profiles = [], loading } = useQuery(() => client.profile.query());
   const mine = profiles.find((row) => row.actor_id === actorId);
 
   return (

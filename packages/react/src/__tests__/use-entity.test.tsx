@@ -59,7 +59,45 @@ const mkTodo = (
 
 type RawTodo = ReturnType<typeof mkTodo>;
 
-const seed = (client: Client, entity: RawTodo) => client.storage.entities.set(entity);
+let seedPosition = 0;
+
+/**
+ * Write the row to the shim and fold it into the replica. `useEntity` reads
+ * the shim through `get`, while its subscription is the replica's change
+ * signal, so both halves must see the write.
+ */
+const seed = async (client: Client, entity: RawTodo): Promise<void> => {
+  seedPosition += 1;
+  const method = entity.deleted_hlc === null ? "put" : "delete";
+  client.replica.ingest(
+    {
+      id: `a_seed_${seedPosition}`,
+      actor_id: "seed",
+      hlc: String(seedPosition),
+      gsn: seedPosition,
+      updates: [],
+    },
+    [
+      method === "put"
+        ? {
+            id: `u_seed_${seedPosition}`,
+            subject_id: entity.id,
+            subject_type: entity.type,
+            method,
+            data: { fields: entity.data.fields },
+          }
+        : {
+            id: `u_seed_${seedPosition}`,
+            subject_id: entity.id,
+            subject_type: entity.type,
+            method: "delete",
+            data: null,
+          },
+    ],
+    seedPosition,
+  );
+  await client.storage.entities.set(entity);
+};
 
 afterEach(cleanup);
 
@@ -232,15 +270,14 @@ describe("useEntity", () => {
     expect(screen.getByTestId("title").textContent).toBe("B");
   });
 
-  it("unsubscribes from the emitter on unmount", async () => {
-    const emitter = client.storage.changeEmitter;
-    if (emitter === undefined) throw new Error("memory adapter must ship a change emitter");
-    const realOnEntityChange = emitter.onEntityChange.bind(emitter);
-    let unsubscribeCalls = 0;
-    vi.spyOn(emitter, "onEntityChange").mockImplementation((id, listener) => {
-      const unsubscribe = realOnEntityChange(id, listener);
+  it("releases its replica subscription on unmount", async () => {
+    const realSubscribe = client.replica.subscribe.bind(client.replica);
+    let active = 0;
+    vi.spyOn(client.replica, "subscribe").mockImplementation((listener) => {
+      active += 1;
+      const unsubscribe = realSubscribe(listener);
       return () => {
-        unsubscribeCalls += 1;
+        active -= 1;
         unsubscribe();
       };
     });
@@ -248,10 +285,11 @@ describe("useEntity", () => {
 
     const { unmount } = renderWithClient(client, <TodoProbe id="todo_1" onRender={() => {}} />);
     await flush();
+    expect(active).toBe(1);
 
     unmount();
 
-    expect(unsubscribeCalls).toBeGreaterThanOrEqual(1);
+    expect(active).toBe(0);
   });
 });
 

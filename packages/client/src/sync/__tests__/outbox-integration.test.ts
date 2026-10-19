@@ -234,21 +234,13 @@ describe("client.outbox", () => {
     });
   });
 
-  it("client.write() fires the storage change emitter before the echo", async () => {
+  it("client.write() applies the optimistic row to the replica before the echo", async () => {
     const { fn } = mkStubFetch();
-    const storage = createMemoryAdapter();
-    const client = mkClient(fn, storage);
-    if (storage.changeEmitter === undefined) {
-      throw new Error("memory adapter must ship a change emitter");
-    }
-    const seen: unknown[] = [];
-    storage.changeEmitter.onEntityChange("todo_1", (entity) => {
-      if (entity !== null) seen.push(entity.data.fields.title.value);
-    });
+    const client = mkClient(fn);
 
     await client.write([mkAction()]);
 
-    expect(seen).toEqual(["Hello"]);
+    expect(client.replica.get("todo_1")?.data.fields.title.value).toBe("Hello");
   });
 
   it("batches a multi-action write into a single request", async () => {
@@ -594,23 +586,16 @@ describe("outbox rehydration across a simulated reload", () => {
     // Stop clientA's background retry; the shared store is clientB's now.
     clientA.close();
 
-    if (storage.changeEmitter === undefined) {
-      throw new Error("memory adapter must ship a change emitter");
-    }
-    // Count every local apply after the failed writer is done. The
-    // rehydrating client must not touch the cache: re-applying an
+    // A rehydrated client must not touch the replica: re-applying an
     // already-optimistically-applied Action is the double-apply bug.
-    const applies: string[] = [];
-    storage.changeEmitter.onEntityChange("todo_1", () => applies.push("change"));
-
     const reloaded = mkStubFetch();
     const clientB = mkClient(reloaded.fn, storage);
+    const revision = clientB.replica.revision;
     await clientB.outbox.rehydrate();
 
     expect(clientB.outbox.size()).toBe(1);
-    expect(applies).toEqual([]);
+    expect(clientB.replica.revision).toBe(revision);
     expect((await clientB.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("Hello");
-    expect(applies).toEqual([]);
   });
 });
 

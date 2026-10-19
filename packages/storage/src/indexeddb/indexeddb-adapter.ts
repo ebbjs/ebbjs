@@ -48,11 +48,7 @@ export const createIndexedDBAdapter = async (
 
   const actionLog = createIndexedDBActionLog(db);
   const dirtyTracker = createIndexedDBDirtyTracker(db);
-  const {
-    store: entityStore,
-    emitter: changeEmitter,
-    materializeKeepDirty,
-  } = createIndexedDBEntityStore(db, actionLog, dirtyTracker);
+  const entityStore = createIndexedDBEntityStore(db, actionLog, dirtyTracker);
   const cursorStore = createIndexedDBCursorStore(db);
   const outboxStore = createIndexedDBOutboxStore(db);
   const replicaStore = createIndexedDBReplicaStore(db);
@@ -120,12 +116,6 @@ export const createIndexedDBAdapter = async (
     outbox: outboxStore,
 
     replica: replicaStore,
-
-    changeEmitter,
-
-    async materializeKeepDirty(entityId: string): Promise<void> {
-      await materializeKeepDirty(entityId);
-    },
 
     async isDirty(entityId: string): Promise<boolean> {
       return dirtyTracker.isDirty(entityId);

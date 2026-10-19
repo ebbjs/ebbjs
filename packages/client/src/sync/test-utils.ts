@@ -62,9 +62,8 @@ let seedPosition = 0;
  * read path, so a row a test writes with `storage.entities.set` is
  * invisible to a query unless it is folded here too.
  *
- * Call this before the shim write when the change emitter is the
- * trigger under test: production ingests the Action before it fans
- * the change out.
+ * Call this before the shim write: production ingests the Action (which
+ * wakes the replica signal) before the shim is materialized.
  */
 export const seedReplicaRow = (
   replica: Replica,
