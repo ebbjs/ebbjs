@@ -14,28 +14,33 @@ defmodule EbbServer.Storage.ActionFormatTest do
   alias EbbServer.Storage.{ActionFormat, PreparedAction}
 
   defp prepared_action do
+    updates = [
+      %{
+        id: "upd_1",
+        subject_id: "todo_1",
+        subject_type: "todo",
+        method: :put,
+        data: %{"fields" => %{}}
+      },
+      %{
+        id: "upd_2",
+        subject_id: "todo_2",
+        subject_type: "todo",
+        method: :delete,
+        data: nil
+      }
+    ]
+
+    action = %{id: "act_1", actor_id: "a_1", hlc: 123, updates: updates}
+
     %PreparedAction{
-      id: "act_1",
-      actor_id: "a_1",
-      hlc: 123,
-      updates: [
-        %{
-          id: "upd_1",
-          subject_id: "todo_1",
-          subject_type: "todo",
-          method: :put,
-          data: %{"fields" => %{}}
-        },
-        %{
-          id: "upd_2",
-          subject_id: "todo_2",
-          subject_type: "todo",
-          method: :delete,
-          data: nil
-        }
-      ],
+      id: action.id,
+      actor_id: action.actor_id,
+      hlc: action.hlc,
+      updates: updates,
       intra_action_context: %{},
-      update_scopes: [["g_1"], ["g_1", "g_2"]]
+      update_scopes: [["g_1"], ["g_1", "g_2"]],
+      payload_etf: action |> ActionFormat.build() |> ActionFormat.encode()
     }
   end
 

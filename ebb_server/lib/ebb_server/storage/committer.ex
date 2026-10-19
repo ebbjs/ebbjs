@@ -1,7 +1,8 @@
 defmodule EbbServer.Storage.Committer do
   @moduledoc """
-  Durability half of the Writer's flush: turns `PreparedAction`s into
-  `cf_*` ops and writes them in one `RocksDB.write_batch/2`.
+  Durability half of the Writer's flush: wraps each `PreparedAction`'s
+  already-encoded payload into `cf_*` ops and writes them in one
+  `RocksDB.write_batch/2`.
 
   The Writer (the sequencer) starts one Committer, linked, in its own
   `init/1`. A batch is handed over asynchronously with
@@ -18,8 +19,8 @@ defmodule EbbServer.Storage.Committer do
 
   Everything the Committer touches is immutable: op assembly reads only
   the `PreparedAction` fields, never a system cache, and the GSN range is
-  already claimed. That is what makes it safe to run the encode and the
-  durable write off the sequencer process.
+  already claimed. That is what makes it safe to run the wrapper encode
+  and the durable write off the sequencer process.
 
   Because the Committer is linked, an unexpected death takes the Writer
   down with it, and `EbbServer.Storage.Supervisor` / the Writer's `init/1`
@@ -27,14 +28,16 @@ defmodule EbbServer.Storage.Committer do
   monitors its owner and stops when the Writer goes away, so a normal
   Writer stop does not leak a process.
 
-  `[:ebb, :writer, :commit_latency_ms]` spans build + encode + commit and
-  is emitted on every outcome, including a raise, so the durable-write
-  cost is separable from the sequencer's batch latency.
+  `[:ebb, :writer, :commit_latency_ms]` spans wrapper encode + op assembly
+  + `write_batch` and is emitted on every outcome, including a raise, so
+  the durable-write cost is separable from the sequencer's batch latency.
+  The expensive payload build and ETF encode already happened in the
+  sequencer before the claim.
   """
 
   use GenServer
 
-  alias EbbServer.Storage.{PreparedAction, RocksDB}
+  alias EbbServer.Storage.{ActionFormat, PreparedAction, RocksDB}
   alias EbbServer.Telemetry
 
   @type result ::
@@ -97,8 +100,8 @@ defmodule EbbServer.Storage.Committer do
   def handle_info(_message, state), do: {:noreply, state}
 
   # Assembly is inside the same catch as the write so a raise while
-  # encoding reports like a raise out of `commit_fn` — the sequencer
-  # cannot tell the two apart and neither can the caller.
+  # wrapping or assembling ops reports like a raise out of `commit_fn` —
+  # the sequencer cannot tell the two apart and neither can the caller.
   defp build_and_commit(prepared, gsn_start, state) do
     ops = build_ops(prepared, gsn_start, state)
     state.commit_fn.(ops, name: state.rocks_name)
@@ -131,7 +134,7 @@ defmodule EbbServer.Storage.Committer do
 
   defp build_action_ops(action, gsn, state) do
     rocks_name = state.rocks_name
-    action_etf = :erlang.term_to_binary(to_storage_format(action, gsn))
+    action_etf = ActionFormat.wrap(action.payload_etf, action.update_scopes)
 
     ops =
       [{:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), action_etf}] ++
@@ -178,29 +181,6 @@ defmodule EbbServer.Storage.Committer do
     keys
     |> Enum.sort()
     |> Enum.map(fn key -> {:put, RocksDB.cf_type_entities(rocks_name), key, <<>>} end)
-  end
-
-  defp to_storage_format(%PreparedAction{} = action, gsn) do
-    %{
-      "id" => action.id,
-      "actor_id" => action.actor_id,
-      "hlc" => action.hlc,
-      "gsn" => gsn,
-      "update_scopes" => action.update_scopes,
-      "updates" =>
-        Enum.map(action.updates, fn update ->
-          method_str =
-            if is_atom(update.method), do: Atom.to_string(update.method), else: update.method
-
-          %{
-            "id" => update.id,
-            "subject_id" => update.subject_id,
-            "subject_type" => update.subject_type,
-            "method" => method_str,
-            "data" => update.data
-          }
-        end)
-    }
   end
 
   defp ablate?(phase, state), do: phase in state.ablate

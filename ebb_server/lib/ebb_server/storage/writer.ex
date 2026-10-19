@@ -49,12 +49,12 @@ defmodule EbbServer.Storage.Writer do
 
   The flush is split across two processes. This GenServer is the
   **sequencer**: it owns everything that needs the live caches or the
-  resolution frontier — coalescing, dedup, the GSN claim, group
-  resolution and `update_scopes`, the provisional dirty marks, apply, the
-  watermark, the fan-out notification, and every reply. The linked
-  `EbbServer.Storage.Committer` owns the parts that only need immutable
-  input: `to_storage_format`, ETF encoding, `cf_*` op assembly, and the
-  durable `write_batch/2`.
+  resolution frontier — coalescing, dedup, the pre-claim payload build and
+  ETF encode, the GSN claim, group resolution and `update_scopes`, the
+  provisional dirty marks, apply, the watermark, the fan-out notification,
+  and every reply. The linked `EbbServer.Storage.Committer` owns the parts
+  that only need immutable input: wrapper encode, `cf_*` op assembly, and
+  the durable `write_batch/2`.
 
   The hand-off is one `EbbServer.Storage.PreparedAction` per Action plus
   the claimed range. The sequencer sends it asynchronously and the
@@ -66,23 +66,25 @@ defmodule EbbServer.Storage.Writer do
   While the ack is outstanding the sequencer keeps accepting
   `write_actions/2` calls, so the next burst drains and coalesces behind
   the durable write instead of queueing in the caller. Those calls are
-  only enqueued — no second claim, flush, or timer starts until the ack
-  arrives. At the ack the sequencer captures the commit time, runs the
-  `:after_commit` seam, marks the range committed, settles the dirty
-  marks and cache mutations, notifies `FanOutRouter`, replies to every
-  caller, and then starts the next flush by the same rules as a fresh
-  call.
+  enqueued and their payloads built and ETF-encoded — work that needs no
+  GSN, so it overlaps the in-flight commit — but no second claim, flush,
+  or timer starts until the ack arrives. At the ack the sequencer captures
+  the commit time, runs the `:after_commit` seam, marks the range
+  committed, settles the dirty marks and cache mutations, notifies
+  `FanOutRouter`, replies to every caller, and then starts the next flush
+  by the same rules as a fresh call.
 
   ## Hot path
 
-  `flush/1` claims a GSN range for the coalesced burst, resolves the
-  `cf_group_actions` index via intra-action context (see below), marks the
-  affected entities provisionally dirty, and hands the prepared batch to
-  the Committer. Once the ack lands the sequencer settles the marks,
-  advances the watermark, and notifies `FanOutRouter`. The notification
-  carries the per-Action group set this pass resolved, so live fan-out
-  indexes the same snapshot `cf_group_actions` was built from rather than
-  re-deriving groups after the system caches have moved.
+  Each call's payload is built and ETF-encoded as it arrives, before any
+  GSN is claimed. `flush/1` then claims a GSN range for the coalesced
+  burst, resolves the `cf_group_actions` index via intra-action context
+  (see below), marks the affected entities provisionally dirty, and hands
+  the prepared batch to the Committer. Once the ack lands the sequencer
+  settles the marks, advances the watermark, and notifies `FanOutRouter`.
+  The notification carries the per-Action group set this pass resolved, so
+  live fan-out indexes the same snapshot `cf_group_actions` was built from
+  rather than re-deriving groups after the system caches have moved.
 
   Redundant index writes are dropped during op construction: the
   `cf_type_entities` key has no GSN component, so it is collected as a
@@ -90,13 +92,13 @@ defmodule EbbServer.Storage.Writer do
   while `cf_group_actions` is emitted once per Action from the union of
   resolved group ids.
 
-  Every resolved per-Update scope is also persisted with the Action, as
-  `"update_scopes"`: one group list per Update, index-aligned with
-  `"updates"`. Fan-out and catch-up filter an Action by those scopes so
-  each Update is delivered only to the groups it belongs to. The scopes
-  cannot be re-derived later (a `relationship`/`entityGroup` delete's
-  by-id cache entry is gone by then), so this snapshot is the delivery
-  contract.
+  Every resolved per-Update scope is also persisted as the outer scopes
+  of the stored `cf_actions` wrapper: one group list per Update,
+  index-aligned with the payload's Updates. Fan-out and catch-up filter
+  an Action by those scopes so each Update is delivered only to the groups
+  it belongs to. The scopes cannot be re-derived later (a
+  `relationship`/`entityGroup` delete's by-id cache entry is gone by
+  then), so this snapshot is the delivery contract.
 
   System-cache writes are deduplicated the same way. The post-commit
   pass flattens the flush's Updates once, drops a mutation identical to
@@ -194,10 +196,11 @@ defmodule EbbServer.Storage.Writer do
   observe the durable-commit window deterministically.
 
   A bench-only `:ablate` option (default `[]`) skips named phases of the
-  flush critical path — `:dedup`, `:group_resolution`, `:entity_index`,
-  `:group_index`, `:dirty`, `:cache`, `:watermark`, `:fanout` — so
-  `mix bench.actions --ablate` can price each one. `:dedup` also skips
-  the in-flight claim, which is dedup work. It is never set in
+  A bench-only `:ablate` option (default `[]`) skips named phases of the
+  write path — `:dedup`, `:group_resolution`, `:build`, `:encode`,
+  `:entity_index`, `:group_index`, `:dirty`, `:cache`, `:watermark`,
+  `:fanout` — so `mix bench.actions --ablate` can price each one. `:dedup`
+  also skips the in-flight claim, which is dedup work. It is never set in
   production, and an empty list emits exactly the same ops as before.
   See `EbbServer.Bench.Options`.
 
@@ -237,6 +240,7 @@ defmodule EbbServer.Storage.Writer do
   alias EbbServer.Telemetry
 
   alias EbbServer.Storage.{
+    ActionFormat,
     CacheTables,
     Committer,
     DirtyTracker,
@@ -254,6 +258,9 @@ defmodule EbbServer.Storage.Writer do
 
   @type validated_action :: PermissionChecker.validated_action()
   @type validated_update :: PermissionChecker.validated_update()
+
+  @type enqueued_action :: {validated_action(), payload_etf :: binary()}
+  @type pending_actions :: [{GenServer.from(), [enqueued_action()]}]
 
   @type cache_mutation ::
           {:entity_type, String.t(), String.t()}
@@ -275,7 +282,7 @@ defmodule EbbServer.Storage.Writer do
 
   @type inflight :: %{
           ref: reference(),
-          pending: [{GenServer.from(), [validated_action()]}],
+          pending: pending_actions(),
           ranges: %{
             optional(non_neg_integer()) => {non_neg_integer(), non_neg_integer()} | :empty
           },
@@ -307,7 +314,7 @@ defmodule EbbServer.Storage.Writer do
           batch_max_size: integer(),
           batch_timeout_ms: non_neg_integer(),
           ablate: [atom()],
-          pending: [{GenServer.from(), [validated_action()]}],
+          pending: pending_actions(),
           pending_count: non_neg_integer(),
           flush_timer: reference() | nil,
           flush_scheduled: boolean(),
@@ -529,7 +536,8 @@ defmodule EbbServer.Storage.Writer do
   Enqueues a write call and triggers a flush.
 
   Actions are already validated by PermissionChecker before reaching the
-  Writer. A flush:
+  Writer, and each Action's GSN-free payload is built and ETF-encoded as
+  the call arrives, before any GSN is claimed. A flush:
   1. Filters out actions with empty updates, drops duplicate `action_id`s
      (first occurrence wins across the whole coalesced burst), and drops
      ids already committed (`cf_action_dedup`) or still in flight
@@ -539,8 +547,8 @@ defmodule EbbServer.Storage.Writer do
      `update_scopes`), hands the batch to the Committer, and once the
      Committer reports the durable write builds a single WriteBatch across
      the written column families:
-     - cf_actions: GSN → full action, including its Updates and their
-       per-Update group scopes (ETF encoded)
+     - cf_actions: GSN → ETF wrapper of the pre-encoded payload and its
+       per-Update group scopes
      - cf_action_dedup: action_id → GSN (duplicate detection)
      - cf_entity_actions: (subject_id, GSN) → action_id (materialization index)
      - cf_type_entities: (subject_type, subject_id) → <<>> (type index)
@@ -577,11 +585,29 @@ defmodule EbbServer.Storage.Writer do
   def handle_info({:committer_result, _stale_ref, _result}, state), do: {:noreply, state}
 
   defp enqueue(state, from, actions) do
+    encoded = Enum.map(actions, &enqueue_action(&1, state))
+
     %{
       state
-      | pending: [{from, actions} | state.pending],
+      | pending: [{from, encoded} | state.pending],
         pending_count: state.pending_count + length(actions)
     }
+  end
+
+  # The payload is GSN-free, so it is built and ETF-encoded as the call
+  # arrives — while the previous commit is still in flight — and never
+  # again on the flush proper. `update_scopes` are cache-dependent and are
+  # attached after the claim.
+  defp enqueue_action(action, state) do
+    {action, action |> build_payload(state) |> encode_payload(state)}
+  end
+
+  defp build_payload(action, state) do
+    if ablate?(:build, state), do: %{}, else: ActionFormat.build(action)
+  end
+
+  defp encode_payload(payload, state) do
+    if ablate?(:encode, state), do: <<>>, else: ActionFormat.encode(payload)
   end
 
   # The only place a flush is scheduled. A commit in flight blocks it —
@@ -706,7 +732,10 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
-  defp action_ids(actions), do: Enum.map(actions, & &1.id)
+  defp action_ids(actions), do: Enum.map(actions, &action_id/1)
+
+  defp action_id({action, _payload_etf}), do: action.id
+  defp action_id(action), do: action.id
 
   defp emit_actions_accepted(count) do
     Telemetry.execute([:writer, :actions_per_sec], %{count: count}, %{})
@@ -857,10 +886,10 @@ defmodule EbbServer.Storage.Writer do
       |> Enum.with_index()
       |> Enum.flat_map(fn {{_from, actions}, caller_idx} ->
         actions
-        |> Enum.reject(&(&1.updates == []))
-        |> Enum.map(&{caller_idx, &1})
+        |> Enum.reject(fn {action, _payload_etf} -> action.updates == [] end)
+        |> Enum.map(fn {action, payload_etf} -> {caller_idx, action, payload_etf} end)
       end)
-      |> Enum.uniq_by(fn {_caller_idx, action} -> action.id end)
+      |> Enum.uniq_by(fn {_caller_idx, action, _payload_etf} -> action.id end)
 
     fresh_tagged =
       if ablate?(:dedup, state) do
@@ -871,7 +900,10 @@ defmodule EbbServer.Storage.Writer do
         |> claim_in_flight(state)
       end
 
-    fresh = Enum.map(fresh_tagged, &elem(&1, 1))
+    fresh =
+      Enum.map(fresh_tagged, fn {_caller_idx, action, payload_etf} ->
+        {action, payload_etf}
+      end)
 
     {fresh, fresh_tagged}
   end
@@ -887,14 +919,16 @@ defmodule EbbServer.Storage.Writer do
     {claimed, _in_flight} = InFlightActions.claim(ids, state.in_flight_actions)
     claimed = MapSet.new(claimed)
 
-    Enum.filter(tagged, fn {_caller_idx, action} -> MapSet.member?(claimed, action.id) end)
+    Enum.filter(tagged, fn {_caller_idx, action, _payload_etf} ->
+      MapSet.member?(claimed, action.id)
+    end)
   end
 
   defp caller_ranges(fresh_tagged, caller_count, gsn_start) do
     ranges =
       fresh_tagged
       |> Enum.with_index()
-      |> Enum.reduce(%{}, fn {{caller_idx, _action}, i}, acc ->
+      |> Enum.reduce(%{}, fn {{caller_idx, _action, _payload_etf}, i}, acc ->
         gsn = gsn_start + i
 
         case Map.get(acc, caller_idx) do
@@ -936,7 +970,7 @@ defmodule EbbServer.Storage.Writer do
   defp drop_committed([], _rocks_name), do: []
 
   defp drop_committed(tagged, rocks_name) do
-    ids = Enum.map(tagged, fn {_caller_idx, action} -> action.id end)
+    ids = Enum.map(tagged, fn {_caller_idx, action, _payload_etf} -> action.id end)
 
     committed =
       RocksDB.multi_get(RocksDB.cf_action_dedup(rocks_name), ids, name: rocks_name)
@@ -947,7 +981,9 @@ defmodule EbbServer.Storage.Writer do
       end)
       |> MapSet.new()
 
-    Enum.reject(tagged, fn {_caller_idx, action} -> MapSet.member?(committed, action.id) end)
+    Enum.reject(tagged, fn {_caller_idx, action, _payload_etf} ->
+      MapSet.member?(committed, action.id)
+    end)
   end
 
   # One flush resolves every Action against one cache snapshot, so the
@@ -961,8 +997,9 @@ defmodule EbbServer.Storage.Writer do
     {prepared, {groups_by_gsn, _memo}} =
       fresh
       |> Enum.with_index(gsn_start)
-      |> Enum.map_reduce({%{}, %{}}, fn {action, gsn}, {groups, memo} ->
-        {prepared_action, memo} = prepare_action(action, state, resolve_opts, memo)
+      |> Enum.map_reduce({%{}, %{}}, fn {{action, payload_etf}, gsn}, {groups, memo} ->
+        {prepared_action, memo} =
+          prepare_action(action, payload_etf, state, resolve_opts, memo)
 
         {prepared_action, {Map.put(groups, gsn, prepared_action.groups), memo}}
       end)
@@ -970,7 +1007,7 @@ defmodule EbbServer.Storage.Writer do
     {prepared, groups_by_gsn}
   end
 
-  defp prepare_action(action, state, resolve_opts, memo) do
+  defp prepare_action(action, payload_etf, state, resolve_opts, memo) do
     intra_action_context = PermissionHelper.build_intra_action_context(action.updates)
 
     resolve_opts =
@@ -1005,6 +1042,7 @@ defmodule EbbServer.Storage.Writer do
       actor_id: action.actor_id,
       hlc: action.hlc,
       updates: action.updates,
+      payload_etf: payload_etf,
       intra_action_context: intra_action_context,
       update_scopes: update_scopes,
       # The union of resolved groups is indexed once per Action, not once

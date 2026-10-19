@@ -14,6 +14,8 @@ defmodule EbbServer.Bench.OptionsTest do
   @phases [
     :dedup,
     :group_resolution,
+    :build,
+    :encode,
     :entity_index,
     :group_index,
     :dirty,
@@ -57,6 +59,11 @@ defmodule EbbServer.Bench.OptionsTest do
     test "canonicalizes the reported order" do
       assert {:ok, config} = Options.parse(["--ablate", "watermark,dirty"])
       assert config.ablate == [:dirty, :watermark]
+    end
+
+    test "parses the pre-encode phases in canonical order" do
+      assert {:ok, config} = Options.parse(["--ablate", "encode,build"])
+      assert config.ablate == [:build, :encode]
     end
   end
 
