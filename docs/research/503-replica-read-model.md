@@ -18,7 +18,7 @@ server-side-JSON follow-up); the spike on `spike/495-read-model-10k`
 `packages/client/src/sync/{namespace,relationship,traversal-counter,query-plan,query-execute}.ts`
 (+ `__tests__/traversal-cost.test.ts` and the collaborative-text schema); house style
 `docs/research/{515,485}-*.md`; `ebb_server/bench/RESULTS.md`; `README.md` "## Performance", where
-the headline goes (currently "**Reads:** not benchmarked yet.").
+the headline now lives.
 
 ## TL;DR
 
