@@ -185,11 +185,10 @@ export function normalizePointer(value: unknown, label: string): string | null {
 }
 
 /**
- * Everything `where` needs to infer and execute a predicate. Threaded
- * from the entity namespace, which owns the registry and the client's
- * replica binding. Bare builders built from a row list carry no
- * context; there, a key that isn't a field is rejected rather than
- * inferred as an edge.
+ * Everything a replica-backed chain needs to infer and execute a
+ * predicate. Built by the entity namespace, which owns the registry and
+ * the client's replica binding. Candidate chains carry no context: there
+ * a key that isn't a field is rejected rather than inferred as an edge.
  */
 export interface QueryContext {
   readonly entityName: string;
@@ -270,12 +269,12 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
    * `entityGroup` row types, because those writes do not materialize
    * the entity they point at (see the `subscribe` implementation).
    */
+  subscribe(listener: () => void): () => void;
   /**
    * The serializable query value the chain has accumulated. Pure data:
    * the planner input and, in #512, the result-cache key.
    */
   toQuery(): Query;
-  subscribe(listener: () => void): () => void;
   /** Thenable — `await qb` resolves to the projected rows. */
   then<TResult1 = readonly ProjectedRow<TFields>[], TResult2 = never>(
     onfulfilled?:
@@ -297,29 +296,24 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
 export function buildQueryBuilder<TFields extends Record<string, TSchema>>(
   candidates: readonly Entity[],
   shape: TObject<TFields>,
-  context?: QueryContext,
 ): QueryBuilder<TFields> {
   const loader: LoadEntities = async () => candidates;
-  return buildLazyQueryBuilder(loader, shape, context);
+  return buildLazyQueryBuilder(loader, shape);
 }
 
 /**
  * Like {@link buildQueryBuilder} but with a lazy candidate loader.
- * The loader is called every time a candidate chain materializes (via
+ * The loader is called every time the chain materializes (via
  * `await qb` or `.toRaw()`) so the chain reflects the latest snapshot
- * of the underlying store. With a `context` the chain is replica-backed
- * instead: it plans over the replica and the loader is never called.
+ * of the underlying rows.
  */
 export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
   loadCandidates: LoadEntities,
   shape: TObject<TFields>,
-  context?: QueryContext,
 ): QueryBuilder<TFields> {
-  const loadExecutor =
-    context === undefined
-      ? async (): Promise<PlanExecutor> => createRowsExecutor(await loadCandidates())
-      : replicaExecutor(context);
-  return buildChain(emptyQuery(context?.entityName ?? ""), shape, context, loadExecutor);
+  const loadExecutor = async (): Promise<PlanExecutor> =>
+    createRowsExecutor(await loadCandidates());
+  return buildChain(emptyQuery(""), shape, undefined, loadExecutor);
 }
 
 /**

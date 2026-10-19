@@ -57,6 +57,7 @@ export {
   projectRows,
   buildQueryBuilder,
   buildLazyQueryBuilder,
+  buildReplicaQueryBuilder,
   type LoadEntities,
 } from "./sync/query-builder";
 
