@@ -1011,6 +1011,49 @@ compare it directly to `t0`/`t2`. The first sync/1 run (30,875/s) was the first
 run of the batch and is cold; the other four were 41,150–42,315/s. The table's
 median is robust to it, and the range is reported rather than hidden.
 
+## Sequencer + committer A/B (#531)
+
+V0 of the [#529](https://github.com/ebbjs/ebbjs/issues/529) pipeline moved
+the immutable half of the flush — `to_storage_format`, ETF encode, `cf_*`
+op assembly, `write_batch` — onto a linked Committer process. The Writer
+stays the sequencer (coalescing, dedup, GSN claim, group resolution,
+provisional dirty marks, apply, watermark, notify, reply) and allows
+exactly one in-flight commit. Measured **2026-10-19** on `recsy-vps`, with
+the branch and `origin/main` (`366cf9c`) benchmarked alternately on the
+same host, fresh temp DB, `sync: true`, 15 s window after 3 s warmup,
+2-Update Actions, `hot`, batch 100. Each arm is the median of 3–4 runs
+(range in parentheses).
+
+```sh
+mix bench.actions --tier t0 --duration 15 --warmup 3 --concurrency 1 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --durability sync
+mix bench.actions --tier t2 --duration 15 --warmup 3 --concurrency 8 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --durability sync
+```
+
+| Tier     | `origin/main` Actions/sec |  Sequencer + committer | Delta |
+| :------- | ------------------------: | ---------------------: | ----: |
+| t0 (c=1) |    25,433 (22,573–26,473) | 24,003 (22,367–24,187) | −5.6% |
+| t2 (c=8) |    19,900 (18,147–20,827) | 18,380 (17,547–19,087) | −7.6% |
+
+Server-side `ebb.writer.batch_latency_ms` p50 rose from **17.5 ms** to
+**19.4 ms** at t2. The new `ebb.writer.commit_latency_ms` attributes
+**7.5 ms** of that flush (p50) to the Committer's build + encode +
+`write_batch`; the rest is the sequencer. Both arms had 0 rejected
+Actions, 0 write/transport errors, and 0 GSN holes; the final watermark
+lag was 0 and the high-water mark stayed bounded by one burst.
+
+The gap is the seam's own cost, not a rocksdb effect. With every bench
+phase ablated (`--ablate all`, so the batch is one `cf_actions` put),
+t0 fell from 53,645 to 50,235 Actions/sec (−6.4%): one extra process
+hand-off and one extra copy of the prepared payload per flush. V0 cannot
+recover that cost because the only work it overlaps is enqueueing; the
+sequencer still cannot begin the next batch's group resolution until the
+current batch's cache mutations have applied (#529 Invariant 7), so the
+serial critical path is unchanged. The Phase-1 win in #529 needs the
+cross-flush overlay (#533) and the ordered apply/notify stage (#534),
+not the single-committer seam alone.
+
 ## Correctness under load
 
 Clean across every measured run above: **0 rejected Actions, 0
@@ -1027,11 +1070,12 @@ Server-side latency is read from the `ebb.*` `:telemetry` events added by
 the measured window and stamps every sample with its offset from the
 window start:
 
-| Event                         | Measures                                         | Metadata                    |
-| ----------------------------- | ------------------------------------------------ | --------------------------- |
-| `ebb.http.request_latency_ms` | time inside the request process                  | `method`, `route`, `status` |
-| `ebb.writer.batch_latency_ms` | one durable Writer flush                         | `gsn_start`, `gsn_end`      |
-| `ebb.fanout.push_latency_ms`  | commit → broadcast complete, per batch per group | `group_id`                  |
+| Event                          | Measures                                         | Metadata                    |
+| ------------------------------ | ------------------------------------------------ | --------------------------- |
+| `ebb.http.request_latency_ms`  | time inside the request process                  | `method`, `route`, `status` |
+| `ebb.writer.batch_latency_ms`  | one durable Writer flush                         | `gsn_start`, `gsn_end`      |
+| `ebb.writer.commit_latency_ms` | Committer build + encode + `write_batch`         | `gsn_start`, `gsn_end`      |
+| `ebb.fanout.push_latency_ms`   | commit → broadcast complete, per batch per group | `group_id`                  |
 
 Every raw run report prints a **Server-side latency** table beside the
 client-side one, and the fan-out section reports commit → broadcast complete
