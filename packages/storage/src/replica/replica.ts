@@ -2,14 +2,37 @@ import type { Action, Entity, Update } from "@ebbjs/core";
 
 import { applyUpdate } from "../internal/materialize";
 import { REPLICA_RECORD_FORMAT, isValidReplicaRecord } from "../internal/replica-record";
+import {
+  applyIndexDelta,
+  forwardIndexDelta,
+  forwardIndexEntryFor,
+  forwardIndexKey,
+  forwardMembershipIndexKey,
+  indexEntryFor,
+  liveMembershipLinks,
+  liveRelationshipLinks,
+  liveSourceIds,
+  membershipIndexKey,
+  reverseIndexDelta,
+  reverseIndexKey,
+  type IndexEntry,
+  type ReverseIndex,
+} from "../internal/reverse-index";
+import type {
+  MembershipLink,
+  RelationshipLink,
+  RelationshipSourceQuery,
+} from "../types/entity-store";
 import type { ReplicaRecord } from "../types/replica-store";
 
 import { contentChanged } from "./content-changed";
 import type {
   MaterializationPolicy,
+  MembershipQuery,
   Replica,
   ReplicaChange,
   ReplicaOptions,
+  RelationshipQuery,
   Revision,
 } from "./types";
 
@@ -52,6 +75,12 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const effective = new Map<string, Entity | null>();
   const orphans = new Map<string, OrphanUpdate[]>();
   const journal: ReplicaChange[] = [];
+
+  // Adjacency over the composed view, not the base map: traversal must see
+  // optimistic edges. Both directions share the index module's entry
+  // derivation, so the replica cannot drift from the adapters.
+  let reverseIndex: ReverseIndex = {};
+  let forwardIndex: ReverseIndex = {};
 
   let revision: Revision = 0;
   let lastPosition = 0;
@@ -150,6 +179,18 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   };
 
   /**
+   * Reconcile both index directions from the two composed versions of a row.
+   * `null` means the composed view is gone, which removes the row's prior
+   * entries. A row that indexes nothing on either side yields empty deltas.
+   */
+  const reconcileIndex = (previous: Entity | null, next: Entity | null): void => {
+    const before = previous ?? undefined;
+    const after = next ?? undefined;
+    reverseIndex = applyIndexDelta(reverseIndex, reverseIndexDelta(before, after));
+    forwardIndex = applyIndexDelta(forwardIndex, forwardIndexDelta(before, after));
+  };
+
+  /**
    * Recompute the composed view after the base or overlay changed, bumping the
    * revision iff a reader can see the difference. `previous` is the composed
    * view captured before the change, which is what makes an echo of an
@@ -166,6 +207,8 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
     if (writes === undefined || writes.length === 0) effective.delete(id);
     else effective.set(id, retained);
+
+    reconcileIndex(previous, retained);
 
     if (retained === null) {
       if (next !== null) bump(id, next.type, next.deleted_hlc !== null);
@@ -243,10 +286,27 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     overlay.clear();
     effective.clear();
     journal.length = 0;
+    // One linear pass rebuilds the base and both adjacency directions; the
+    // typed indices are not persisted. Mutating the local row maps keeps the
+    // rebuild linear where folding `applyIndexDelta` per row would copy the
+    // whole key space each time.
+    const reverse: Record<string, Record<string, string>> = {};
+    const forward: Record<string, Record<string, string>> = {};
+    const add = (index: Record<string, Record<string, string>>, entry: IndexEntry): void => {
+      const rows = index[entry.key];
+      if (rows === undefined) index[entry.key] = { [entry.rowId]: entry.value };
+      else rows[entry.rowId] = entry.value;
+    };
     for (const entity of record.entities) {
       entities.set(entity.id, entity);
       addToType(entity.type, entity.id);
+      const reverseEntry = indexEntryFor(entity);
+      if (reverseEntry !== null) add(reverse, reverseEntry);
+      const forwardEntry = forwardIndexEntryFor(entity);
+      if (forwardEntry !== null) add(forward, forwardEntry);
     }
+    reverseIndex = reverse;
+    forwardIndex = forward;
     revision = record.revision;
     lastPosition = record.position;
     return revision;
@@ -276,6 +336,28 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     get,
     iterate,
     changesSince: (from: Revision) => journal.filter((change) => change.revision > from),
+    relationships: (query: RelationshipQuery): readonly string[] => {
+      if (query.sourceId !== undefined) {
+        return liveSourceIds(forwardIndex[forwardIndexKey(query.as, query.type, query.sourceId)]);
+      }
+      if (query.targetId !== undefined) {
+        return liveSourceIds(reverseIndex[reverseIndexKey(query.as, query.type, query.targetId)]);
+      }
+      return [];
+    },
+    memberships: (query: MembershipQuery): readonly string[] => {
+      if (query.groupId !== undefined) {
+        return liveSourceIds(reverseIndex[membershipIndexKey(query.groupId)]);
+      }
+      if (query.entityId !== undefined) {
+        return liveSourceIds(forwardIndex[forwardMembershipIndexKey(query.entityId)]);
+      }
+      return [];
+    },
+    relationshipLinks: (query: RelationshipSourceQuery): readonly RelationshipLink[] =>
+      liveRelationshipLinks(forwardIndex[forwardIndexKey(query.as, query.type, query.sourceId)]),
+    membershipLinks: (entityId: string): readonly MembershipLink[] =>
+      liveMembershipLinks(forwardIndex[forwardMembershipIndexKey(entityId)]),
     ingest,
     optimistic,
     discard,
