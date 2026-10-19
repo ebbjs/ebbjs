@@ -226,6 +226,45 @@ defmodule EbbServer.Bench.OptionsTest do
     end
   end
 
+  describe "t5 raw write_batch tier" do
+    test "parses and describes the raw NIF tier" do
+      assert {:ok, config} = Options.parse(["--tier", "t5", "--concurrency", "4"])
+      assert config.tier == :t5
+      assert config.concurrency == 4
+
+      descriptions = Map.new(Options.describe(config))
+      assert descriptions["Tier"] =~ "raw RocksDB.write_batch/3"
+      assert Options.command(config) =~ "--tier t5 --duration"
+    end
+
+    test "bypasses_writer?/1 is true only for t5" do
+      for tier <- ~w(t0 t1 t2 t3) do
+        assert {:ok, config} = Options.parse(["--tier", tier])
+        refute Options.bypasses_writer?(config)
+      end
+
+      assert {:ok, t4} = Options.parse(["--tier", "t4", "--rate", "100"])
+      refute Options.bypasses_writer?(t4)
+
+      assert {:ok, t5} = Options.parse(["--tier", "t5"])
+      assert Options.bypasses_writer?(t5)
+    end
+
+    test "rejects Writer-only options" do
+      assert {:error, rate} = Options.parse(["--tier", "t5", "--rate", "100"])
+      assert rate =~ "--rate"
+
+      assert {:error, subs} = Options.parse(["--tier", "t5", "--subscribers", "1"])
+      assert subs =~ "--subscribers"
+
+      assert {:error, lean} = Options.parse(["--tier", "t5", "--subscriber-lean"])
+      assert lean =~ "--subscriber-lean"
+
+      assert {:error, ablate} = Options.parse(["--tier", "t5", "--ablate", "cache"])
+      assert ablate =~ "--ablate"
+    end
+  end
+
   describe "self-describing output" do
     test "describe names the ablated phases" do
       assert {:ok, config} = Options.parse(["--ablate", "cache,watermark"])

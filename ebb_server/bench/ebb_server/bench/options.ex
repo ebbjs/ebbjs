@@ -192,6 +192,13 @@ defmodule EbbServer.Bench.Options do
     do: "raw RocksDB.write_batch/3 from N concurrent callers, no Writer"
 
   @doc """
+  Whether the run drives the raw storage NIF instead of the Writer.
+  """
+  @spec bypasses_writer?(t()) :: boolean()
+  def bypasses_writer?(%__MODULE__{tier: :t5}), do: true
+  def bypasses_writer?(%__MODULE__{}), do: false
+
+  @doc """
   Whether GSN density and watermark lag are meaningful for this run.
 
   The t5 spike writes raw batches at a synthetic per-caller GSN base and

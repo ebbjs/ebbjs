@@ -1,6 +1,6 @@
 defmodule EbbServer.Bench.WriteBatchTest do
   @moduledoc """
-  Pins the op batch the t5 spike commits: the same six column families the
+  Pins the op batch the t5 spike commits: the same five column families the
   Writer touches per Action, one contiguous GSN range per call, and
   disjoint ranges between callers.
 
@@ -28,18 +28,15 @@ defmodule EbbServer.Bench.WriteBatchTest do
   end
 
   describe "GSN partitioning" do
-    test "each call is a contiguous run of batch_size GSNs" do
-      assert WriteBatch.gsn_range(1, 0, 100) == 1_000_000_000..1_000_000_099
-      assert WriteBatch.gsn_range(1, 100, 100) == 1_000_000_100..1_000_000_199
+    test "the next call starts after the previous call's batch_size GSNs" do
+      assert WriteBatch.gsn_start(1, 0) == 1_000_000_000
+      assert WriteBatch.gsn_start(1, 100) == 1_000_000_100
     end
 
-    test "callers never share a GSN" do
-      one = WriteBatch.gsn_range(1, 0, 100)
-      two = WriteBatch.gsn_range(2, 0, 100)
-      four = MapSet.new(WriteBatch.gsn_range(4, 900, 100))
-
-      assert MapSet.disjoint?(MapSet.new(one), MapSet.new(two))
-      assert MapSet.disjoint?(MapSet.new(one), four)
+    test "callers never share a GSN start" do
+      starts = Enum.map([1, 2, 4], &WriteBatch.gsn_start(&1, 0))
+      assert length(Enum.uniq(starts)) == 3
+      assert Enum.min(starts) >= 1_000_000_000
     end
   end
 

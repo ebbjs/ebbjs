@@ -47,7 +47,7 @@ defmodule EbbServer.Bench.Runner do
   end
 
   defp measure(config, ctx) do
-    unless config.tier == :t5, do: Http.setup(config.concurrency)
+    unless Options.bypasses_writer?(config), do: Http.setup(config.concurrency)
 
     subscribers =
       if config.tier in [:t3, :t4],

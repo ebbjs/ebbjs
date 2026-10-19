@@ -270,11 +270,14 @@ defmodule EbbServer.Bench.Report do
       table(["Metric", "Value"], rows) <>
       "\n\n" <>
       "Each caller is one BEAM process issuing `:rocksdb.write_batch/3` directly at a " <>
-      "synthetic GSN base; only RocksDB's ability to overlap commits is measured. The run " <>
-      "bypasses the Writer, its caches, the watermark, and fan-out, so nothing here reflects " <>
-      "the production write path's bookkeeping. Comparing callers at the same sync mode is " <>
-      "the point: the gap between one and two callers is the headroom a committer pool " <>
-      "could use.\n"
+      "synthetic GSN base; only RocksDB's ability to overlap commits is measured. The " <>
+      "measured path bypasses the Writer, so its caches, watermark, and fan-out stay idle " <>
+      "(the storage tree still boots to open the DB and seed the bench context). Nothing here " <>
+      "reflects the production write path's bookkeeping, and GSN holes/watermark lag are " <>
+      "reported `n/a` because no frontier advances. Comparing callers at the same sync mode " <>
+      "is the point: the gap between one and two callers is the headroom a committer pool " <>
+      "could use. The peak-dirty row in the resources table is Workbook seed residue, not a " <>
+      "t5 signal.\n"
   end
 
   defp write_batch_section(_config, _result), do: nil
@@ -381,9 +384,8 @@ defmodule EbbServer.Bench.Report do
   end
 
   defp client_latency_note(%{tier: :t5}) do
-    "Latency is wall time around the raw `:rocksdb.write_batch/3` NIF call; batch assembly " <>
-      "happens before the timer starts and `release_batch` after it. No server-side telemetry " <>
-      "is captured for this tier, because the Writer and the HTTP stack are bypassed."
+    "No server-side telemetry is captured for this tier: the call bypasses the HTTP stack " <>
+      "and the Writer."
   end
 
   defp client_latency_note(_config) do
@@ -392,13 +394,6 @@ defmodule EbbServer.Bench.Report do
       "events (`ebb.http.request_latency_ms`, `ebb.writer.batch_latency_ms`, " <>
       "`ebb.fanout.push_latency_ms`) with handlers attached in the bench process, so " <>
       "transport and server queueing are reported separately."
-  end
-
-  defp write_batch_note(%{tier: :t5}) do
-    "This run bypasses the Writer: it commits raw `write_batch` payloads at a synthetic " <>
-      "per-caller GSN base, so no watermark advances, no cache is mutated, and no subscriber " <>
-      "is notified. GSN density and watermark lag are therefore not measured, and the hole " <>
-      "scan is skipped because it would walk from GSN 1 to that base."
   end
 
   defp write_batch_note(_config), do: ""

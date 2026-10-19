@@ -9,6 +9,10 @@ defmodule EbbServer.Bench.WriteBatch do
 
   Everything is bench-only. There is no Writer, no cache mutation, no
   watermark advance, and no fan-out; only the NIF call is measured.
+
+  This is a deliberate copy of the Writer's storage shape rather than a
+  production extraction: the spike must not change the write path. The
+  tests pin the shape, so a Writer format change has to update them.
   """
 
   alias EbbServer.Bench.{Options, Workbook}
@@ -24,15 +28,6 @@ defmodule EbbServer.Bench.WriteBatch do
   """
   @spec gsn_start(pos_integer(), non_neg_integer()) :: pos_integer()
   def gsn_start(caller_id, seq), do: caller_id * @caller_gsn_base + seq
-
-  @doc """
-  The contiguous GSN range one call writes.
-  """
-  @spec gsn_range(pos_integer(), non_neg_integer(), pos_integer()) :: Range.t()
-  def gsn_range(caller_id, seq, batch_size) do
-    start = gsn_start(caller_id, seq)
-    start..(start + batch_size - 1)
-  end
 
   @doc """
   Builds the complete op list for one call.
