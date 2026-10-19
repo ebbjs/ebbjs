@@ -1,4 +1,10 @@
-import type { IDBPDatabase, DBSchema } from "idb";
+import {
+  unwrap,
+  type DBSchema,
+  type IDBPDatabase,
+  type IDBPTransaction,
+  type StoreNames,
+} from "idb";
 import type { Action, Entity } from "@ebbjs/core";
 import type { OutboxConflict, OutboxStatus } from "../types/outbox-store";
 import type { IndexRows } from "../internal/reverse-index";
@@ -26,34 +32,54 @@ import type { IndexRows } from "../internal/reverse-index";
  * entry and moves the conflict payload onto the outbox row (issue #390),
  * so the outbox is the single durable source for a losing Action. Version
  * 7 adds `subjectStates` — the full before/after entity rows per losing
- * subject — to that persisted conflict payload (issue #408). There
- * are no production consumers yet, so there is no migration: the bump
- * resets a dev database and no legacy row is read. Bump this when adding
+ * subject — to that persisted conflict payload (issue #408). Version 8
+ * adds the replica stores (issue #518): the log-local `position` field plus
+ * index on `actions`, the `sequence` counter that assigns positions, and the
+ * `replica` / `replicaCursor` stores for the persisted materialized replica.
+ * It is the first version with a real migration: an existing database is
+ * upgraded in place, backfilling a position for every stored Action and
+ * leaving actions, cursors, and outbox rows intact. Bump this when adding
  * or changing object stores, or when a persisted row shape changes.
  */
-export const EBB_SCHEMA_VERSION = 7;
+export const EBB_SCHEMA_VERSION = 8;
 
 /**
- * Structural schema for the six object stores the IndexedDB adapter
- * uses. Component factories (`action-log.indexeddb`, etc.) are typed
- * against this interface so the production schema and any test schema
- * satisfying the same shape can both be passed in without a cast.
+ * The `sequence` row that holds the action log's append cursor. One row
+ * per counter; only the action position counter exists today.
  */
+export const ACTION_POSITION_SEQUENCE_ID = "actionPosition";
+
+/**
+ * The `replicaCursor` row that holds the replica's `position` / `revision`
+ * watermark. The replica's rows live in the `replica` store; the cursor is
+ * single-slot and shares the `id` key with the sequence rows' shape.
+ */
+export const REPLICA_CURSOR_ID = "replica";
+
 /**
  * Stored Action shape: the public Action plus a denormalized
  * `subject_ids` array (the unique `subject_id`s of every Update in
- * `updates`). The `subject_id` multiEntry index is keyed on this
- * array so `ActionLog.getForEntity` can range-scan.
+ * `updates`) and the log-local `position` assigned at append. The
+ * `subject_id` multiEntry index is keyed on the array so
+ * `ActionLog.getForEntity` can range-scan; the `position` index backs
+ * `ActionLog.readTail`.
  */
 export interface StoredAction extends Action {
   subject_ids: readonly string[];
+  position: number;
 }
 
+/**
+ * Structural schema for the object stores the IndexedDB adapter uses.
+ * Component factories (`action-log.indexeddb`, etc.) are typed against this
+ * interface so the production schema and any test schema satisfying the same
+ * shape can both be passed in without a cast.
+ */
 export interface EbbDBSchema extends DBSchema {
   actions: {
     key: string;
     value: StoredAction;
-    indexes: { subject_id: string };
+    indexes: { subject_id: string; position: number };
   };
   entities: {
     key: string;
@@ -103,19 +129,50 @@ export interface EbbDBSchema extends DBSchema {
       conflict?: OutboxConflict;
     };
   };
+  /**
+   * Generic monotonic counters, keyed by a fixed id. Holds the action
+   * log's append cursor; a row is always present once v8 has opened.
+   */
+  sequence: {
+    key: string;
+    value: { id: string; value: number };
+  };
+  /**
+   * The persisted materialized replica: one row per entity, keyed by
+   * `[type, id]` so entity rows keep their natural shape and a full
+   * `getAll` read is append-order independent.
+   */
+  replica: {
+    key: [string, string];
+    value: Entity;
+  };
+  /**
+   * The replica's single watermark row — the log position and revision
+   * the `replica` rows were taken at. An absent or corrupt row makes
+   * `load()` return null so the caller replays the full log.
+   */
+  replicaCursor: {
+    key: string;
+    value: { id: string; format: number; position: number; revision: number };
+  };
 }
 
 /**
- * Idempotently creates the six Ebb object stores on a database. Used
- * by both the production adapter (during the `openDB` upgrade) and the
- * test helper (to spin up a fresh DB per test). Safe to call against a
- * database that already has the stores — existing stores are left
- * alone.
+ * Idempotently creates the Ebb object stores on a database. Used by both the
+ * production adapter (during the `openDB` upgrade) and the test helper (to
+ * spin up a fresh DB per test). Safe to call against a database that already
+ * has the stores — existing stores are left alone.
+ *
+ * From v8 the upgrade also backfills an append `position` onto every Action
+ * that predates it: a cursor walks `actions` in key order, stamps the row
+ * 1-based, and the final count is written to the `sequence` counter. A fresh
+ * database runs the same path over zero rows, leaving `sequence = 0`.
  */
 export const createEbbStores = (
   database: IDBPDatabase<EbbDBSchema>,
-  _oldVersion: number,
+  oldVersion: number,
   _newVersion: number | null,
+  transaction: IDBPTransaction<EbbDBSchema, StoreNames<EbbDBSchema>[], "versionchange">,
 ): void => {
   if (!database.objectStoreNames.contains("actions")) {
     const store = database.createObjectStore("actions", { keyPath: "id" });
@@ -128,6 +185,10 @@ export const createEbbStores = (
     // `updates` (which would also work in real browsers but is not
     // supported by fake-indexeddb's key-path extraction).
     store.createIndex("subject_id", "subject_ids", { multiEntry: true });
+    store.createIndex("position", "position");
+  } else if (!transaction.objectStore("actions").indexNames.contains("position")) {
+    // A pre-v8 database carries the store without the append index.
+    transaction.objectStore("actions").createIndex("position", "position");
   }
   if (!database.objectStoreNames.contains("entities")) {
     const store = database.createObjectStore("entities", { keyPath: "id" });
@@ -149,4 +210,45 @@ export const createEbbStores = (
     // denormalized copy of the id.
     database.createObjectStore("outbox", { keyPath: "action.id" });
   }
+  if (!database.objectStoreNames.contains("sequence")) {
+    database.createObjectStore("sequence", { keyPath: "id" });
+  }
+  if (!database.objectStoreNames.contains("replica")) {
+    database.createObjectStore("replica", { keyPath: ["type", "id"] });
+  }
+  if (!database.objectStoreNames.contains("replicaCursor")) {
+    database.createObjectStore("replicaCursor", { keyPath: "id" });
+  }
+
+  if (oldVersion < 8) {
+    backfillActionPositions(transaction);
+  }
+};
+
+/**
+ * Stamps a 1-based append position onto every Action already in `actions`,
+ * in key order, and writes the total to the `sequence` counter. `idb`
+ * wraps requests as promises, so the cursor is driven through the native
+ * store: the raw `onsuccess` / `continue` loop — and issuing the counter
+ * write from inside its final callback — is what keeps the versionchange
+ * transaction alive until the backfill commits.
+ */
+const backfillActionPositions = (
+  transaction: IDBPTransaction<EbbDBSchema, StoreNames<EbbDBSchema>[], "versionchange">,
+): void => {
+  const actions = unwrap(transaction.objectStore("actions"));
+  const sequence = transaction.objectStore("sequence");
+  let count = 0;
+
+  const request = actions.openCursor();
+  request.onsuccess = () => {
+    const cursor = request.result;
+    if (cursor === null) {
+      void sequence.put({ id: ACTION_POSITION_SEQUENCE_ID, value: count });
+      return;
+    }
+    count += 1;
+    cursor.update({ ...(cursor.value as StoredAction), position: count });
+    cursor.continue();
+  };
 };

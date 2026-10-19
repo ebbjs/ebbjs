@@ -1,4 +1,5 @@
 import type { Action } from "@ebbjs/core";
+import type { LoggedAction } from "../types/action-log";
 import type { StorageAdapter } from "../types/storage-adapter";
 
 import { createMemoryActionLog } from "./action-log.memory";
@@ -6,6 +7,7 @@ import { createMemoryDirtyTracker } from "./dirty-tracker.memory";
 import { createMemoryEntityStore } from "./entity-store.memory";
 import { createMemoryCursorStore } from "./cursor-store.memory";
 import { createMemoryOutboxStore } from "./outbox-store.memory";
+import { createMemoryReplicaStore } from "./replica-store.memory";
 
 /**
  * MemoryAdapter — in-memory implementation of StorageAdapter for v1.
@@ -17,6 +19,8 @@ import { createMemoryOutboxStore } from "./outbox-store.memory";
  * - CursorStore — per-group GSN cursors
  * - OutboxStore — durable pending local Actions; a detected conflict is
  *   a status + payload on its outbox row
+ * - ReplicaStore — single-slot persisted replica; a fast path only, so a
+ *   cleared action log invalidates it
  *
  * ## Usage
  * ```typescript
@@ -53,14 +57,24 @@ export const createMemoryAdapter = (): StorageAdapter => {
   } = createMemoryEntityStore(actionLog, dirtyTracker);
   const cursorStore = createMemoryCursorStore();
   const outboxStore = createMemoryOutboxStore();
+  const replicaStore = createMemoryReplicaStore();
 
   return {
     actions: {
-      async append(action: Action): Promise<void> {
-        await actionLog.append(action);
+      async append(action: Action): Promise<LoggedAction> {
+        const entry = await actionLog.append(action);
         for (const update of action.updates) {
           await dirtyTracker.mark(update.subject_id, update.subject_type);
         }
+        return entry;
+      },
+
+      async readTail(afterPosition: number): Promise<readonly LoggedAction[]> {
+        return actionLog.readTail(afterPosition);
+      },
+
+      async lastPosition(): Promise<number> {
+        return actionLog.lastPosition();
       },
 
       async getAll(): Promise<readonly Action[]> {
@@ -75,6 +89,7 @@ export const createMemoryAdapter = (): StorageAdapter => {
         await actionLog.clear();
         await dirtyTracker.clearAll();
         await entityStore.reset();
+        await replicaStore.clear();
       },
     },
 
@@ -106,6 +121,8 @@ export const createMemoryAdapter = (): StorageAdapter => {
 
     outbox: outboxStore,
 
+    replica: replicaStore,
+
     changeEmitter,
 
     /**
@@ -128,6 +145,7 @@ export const createMemoryAdapter = (): StorageAdapter => {
       await actionLog.clear();
       await dirtyTracker.clearAll();
       await entityStore.reset();
+      await replicaStore.clear();
     },
   };
 };

@@ -5,7 +5,7 @@
  * has no runtime surface (every export is a TypeScript type), so
  * importing from it adds zero bytes to a consumer's bundle.
  */
-export type { ActionLog } from "./action-log";
+export type { ActionLog, LoggedAction } from "./action-log";
 export type { DirtyTracker } from "./dirty-tracker";
 export type {
   EntityStore,
@@ -15,6 +15,7 @@ export type {
   MembershipLink,
 } from "./entity-store";
 export type { CursorStore } from "./cursor-store";
+export type { ReplicaRecord, ReplicaStore } from "./replica-store";
 export type { EntityChangeEmitter } from "./entity-change-emitter";
 export type {
   OutboxEntry,

@@ -1,5 +1,6 @@
 import { openDB, type IDBPDatabase } from "idb";
 import type { Action } from "@ebbjs/core";
+import type { LoggedAction } from "../types/action-log";
 import type { StorageAdapter } from "../types/storage-adapter";
 import { createEbbStores, EBB_SCHEMA_VERSION, type EbbDBSchema } from "./schema";
 
@@ -8,6 +9,7 @@ import { createIndexedDBCursorStore } from "./cursor-store.indexeddb";
 import { createIndexedDBDirtyTracker } from "./dirty-tracker.indexeddb";
 import { createIndexedDBEntityStore } from "./entity-store.indexeddb";
 import { createIndexedDBOutboxStore } from "./outbox-store.indexeddb";
+import { createIndexedDBReplicaStore } from "./replica-store.indexeddb";
 
 export interface IndexedDBAdapterOptions {
   dbName?: string;
@@ -53,14 +55,24 @@ export const createIndexedDBAdapter = async (
   } = createIndexedDBEntityStore(db, actionLog, dirtyTracker);
   const cursorStore = createIndexedDBCursorStore(db);
   const outboxStore = createIndexedDBOutboxStore(db);
+  const replicaStore = createIndexedDBReplicaStore(db);
 
   return {
     actions: {
-      async append(action: Action): Promise<void> {
-        await actionLog.append(action);
+      async append(action: Action): Promise<LoggedAction> {
+        const entry = await actionLog.append(action);
         for (const update of action.updates) {
           await dirtyTracker.mark(update.subject_id, update.subject_type);
         }
+        return entry;
+      },
+
+      async readTail(afterPosition: number): Promise<readonly LoggedAction[]> {
+        return actionLog.readTail(afterPosition);
+      },
+
+      async lastPosition(): Promise<number> {
+        return actionLog.lastPosition();
       },
 
       async getAll(): Promise<readonly Action[]> {
@@ -75,6 +87,7 @@ export const createIndexedDBAdapter = async (
         await actionLog.clear();
         await dirtyTracker.clearAll();
         await entityStore.reset();
+        await replicaStore.clear();
       },
     },
 
@@ -106,6 +119,8 @@ export const createIndexedDBAdapter = async (
 
     outbox: outboxStore,
 
+    replica: replicaStore,
+
     changeEmitter,
 
     async materializeKeepDirty(entityId: string): Promise<void> {
@@ -120,6 +135,7 @@ export const createIndexedDBAdapter = async (
       await actionLog.clear();
       await dirtyTracker.clearAll();
       await entityStore.reset();
+      await replicaStore.clear();
     },
   };
 };

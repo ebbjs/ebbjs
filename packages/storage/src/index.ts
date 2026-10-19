@@ -8,7 +8,7 @@
  * (and other shared types) keep working without a subpath, but
  * runtime adapter imports must move to the per-adapter subpath.
  */
-export type { ActionLog } from "./types/action-log";
+export type { ActionLog, LoggedAction } from "./types/action-log";
 export type { DirtyTracker } from "./types/dirty-tracker";
 export type {
   EntityStore,
@@ -18,6 +18,7 @@ export type {
   MembershipLink,
 } from "./types/entity-store";
 export type { CursorStore } from "./types/cursor-store";
+export type { ReplicaRecord, ReplicaStore } from "./types/replica-store";
 export type {
   OutboxEntry,
   OutboxStatus,

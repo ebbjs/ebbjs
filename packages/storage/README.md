@@ -4,14 +4,15 @@ Local-first storage adapters for the ebbjs client. Provides an interface for cac
 
 ## Components
 
-| Component          | Purpose                                                                                                      |
-| ------------------ | ------------------------------------------------------------------------------------------------------------ |
-| **ActionLog**      | Stores received actions. Provides entity-level queries for materialization.                                  |
-| **DirtyTracker**   | Tracks which entities need rematerialization. Queryable by type.                                             |
-| **EntityStore**    | Materialized entity cache. Handles `get` (by ID) and `query` (by type).                                      |
-| **CursorStore**    | Per-group GSN cursor tracking for sync resumption.                                                           |
-| **OutboxStore**    | Durable buffer of locally-authored Actions awaiting acknowledgement, keyed by `action.id`.                   |
-| **StorageAdapter** | Unified interface composing all components. `createMemoryAdapter()` returns a full in-memory implementation. |
+| Component          | Purpose                                                                                                                                                                                               |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **ActionLog**      | Append-ordered log of received actions. `append` returns the newly-added Updates plus a log-local `position`; `readTail` replays a watermark. Also provides entity-level queries for materialization. |
+| **DirtyTracker**   | Tracks which entities need rematerialization. Queryable by type.                                                                                                                                      |
+| **EntityStore**    | Materialized entity cache. Handles `get` (by ID) and `query` (by type).                                                                                                                               |
+| **CursorStore**    | Per-group GSN cursor tracking for sync resumption.                                                                                                                                                    |
+| **OutboxStore**    | Durable buffer of locally-authored Actions awaiting acknowledgement, keyed by `action.id`.                                                                                                            |
+| **ReplicaStore**   | Single-slot persistence for the materialized replica (`ReplicaRecord`: format, position, revision, entities). A fast path only — an absent or corrupt record reads as `null`.                         |
+| **StorageAdapter** | Unified interface composing all components. `createMemoryAdapter()` returns a full in-memory implementation.                                                                                          |
 
 ## Usage
 
