@@ -52,14 +52,31 @@ import type { Replica } from "@ebbjs/storage/replica";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
-import type { ShapeFields } from "../schema/entity";
+import type { ShapeFields, WireFields } from "../schema/entity";
 import { EntityValidationError, type EntityRegistry } from "../schema/entity-registry";
 import {
   GROUPS_ACCESSOR,
   entityGroupSystemEntity,
+  groupSystemEntity,
   relationshipSystemEntity,
+  type GroupFields,
 } from "../schema/system-entities";
-import { emptyQuery, hasPredicateKind, type Predicate, type Query } from "./query";
+import type {
+  AccessorKeyOf,
+  AnyEntityDef,
+  AnyRelationshipDef,
+  FieldsOf,
+  SourceNameOf,
+  TargetNameOf,
+} from "./definition-types";
+import {
+  emptyQuery,
+  hasJoinKind,
+  hasPredicateKind,
+  type Join,
+  type Predicate,
+  type Query,
+} from "./query";
 import { planQuery } from "./query-plan";
 import {
   createReplicaExecutor,
@@ -149,6 +166,92 @@ export function projectRows<TFields extends Record<string, TSchema>>(
   return rows.map((row) => projectRow(row, shape));
 }
 
+/** What a query without schema relationships can join: nothing. */
+export type NoJoins = Record<never, never>;
+
+/** A joined row: the target's wire projection plus its id. No nested accessors. */
+type JoinedTarget<D> = ProjectedRow<WireFields<FieldsOf<D>>>;
+
+type ForwardJoinValue<R> = R extends {
+  readonly target: infer T;
+  readonly sourceCardinality: infer C;
+}
+  ? T extends AnyEntityDef
+    ? [C] extends ["one"]
+      ? JoinedTarget<T> | null
+      : readonly JoinedTarget<T>[]
+    : never
+  : never;
+
+type ReverseJoinValue<R> = R extends { readonly source: infer S }
+  ? S extends AnyEntityDef
+    ? readonly JoinedTarget<S>[]
+    : never
+  : never;
+
+type ForwardJoinSlots<TRels, TName extends string> = {
+  [K in keyof TRels as SourceNameOf<TRels[K]> extends TName
+    ? AccessorKeyOf<TRels[K]>
+    : never]: ForwardJoinValue<TRels[K]>;
+};
+
+type ReverseJoinSlots<TRels, TName extends string> = {
+  [K in keyof TRels as TargetNameOf<TRels[K]> extends TName
+    ? AccessorKeyOf<TRels[K]>
+    : never]: ReverseJoinValue<TRels[K]>;
+};
+
+/**
+ * The join surface a query over entity `TName` exposes, derived from the
+ * schema's relationship map. A source-side relationship joins forward
+ * (one-cardinality to a row or `null`, many to an array); a target-side
+ * one joins reverse (always an array). A forward slot wins a forward /
+ * reverse collision on the same `as`, so a self-referential relationship
+ * joins the direction its own declaration names.
+ *
+ * `TRels` is `undefined` for schemas declared without relationships.
+ */
+export type JoinRecord<TRels, TName extends string> = [TRels] extends [undefined]
+  ? NoJoins
+  : TRels extends Record<string, AnyRelationshipDef>
+    ? ForwardJoinSlots<TRels, TName> &
+        Omit<ReverseJoinSlots<TRels, TName>, keyof ForwardJoinSlots<TRels, TName>>
+    : NoJoins;
+
+/** Built-in membership join carried by every entity's query. */
+export type MembershipJoin = {
+  readonly [GROUPS_ACCESSOR]: readonly ProjectedRow<WireFields<GroupFields>>[];
+};
+
+/** Selector accepted by {@link QueryBuilder.with}. */
+export type JoinSelection<TJoins extends object> = {
+  readonly [K in keyof TJoins]?: true;
+};
+
+type NonUndefined<T> = T extends undefined ? never : T;
+
+/**
+ * The selector argument: `never` when the chain has no join surface, so a
+ * candidate-only chain cannot call `with` at all. The mapped intersection
+ * rejects an explicitly `undefined` selector, which an optional property
+ * would otherwise admit.
+ */
+export type JoinArgument<TJoins extends object, TSelection extends JoinSelection<TJoins>> = [
+  keyof TJoins,
+] extends [never]
+  ? never
+  : TSelection & { readonly [K in keyof TSelection]: NonUndefined<TSelection[K]> };
+
+/**
+ * A projected row widened by its selected joins. Joined keys win over
+ * same-named base fields, matching the row accessors.
+ */
+export type JoinedRow<TFields extends Record<string, TSchema>, TJoined extends object> = Omit<
+  ProjectedRow<TFields>,
+  keyof TJoined
+> &
+  TJoined;
+
 /**
  * A single pointer value accepted by a relationship predicate:
  * - a string id
@@ -210,7 +313,11 @@ export type LoadEntities = () => Promise<readonly Entity[]>;
  * relationship accessors on a projected row — one chain, one
  * projection.
  */
-export interface QueryBuilder<TFields extends Record<string, TSchema>> {
+export interface QueryBuilder<
+  TFields extends Record<string, TSchema>,
+  TJoins extends object = NoJoins,
+  TJoined extends object = NoJoins,
+> {
   /**
    * Equality predicate. A registered relationship key filters that
    * edge — relationship wins over a same-named field, matching the row
@@ -219,39 +326,59 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
    * field's static type; relationship targets accept an id, a handle,
    * or an array meaning any-of. Adds to the current AND-group.
    */
-  where<K extends keyof TFields & string>(key: K, value: Static<TFields[K]>): QueryBuilder<TFields>;
+  where<K extends keyof TFields & string>(
+    key: K,
+    value: Static<TFields[K]>,
+  ): QueryBuilder<TFields, TJoins, TJoined>;
   /**
    * Relationship-target overload. It stays open over every key because
    * the registry decides field vs. edge at runtime and a relationship
    * wins a same-named field — so any field-named key may be an edge.
    * Typing the exact relationship keys is the #181 follow-up.
    */
-  where(key: string, target: PointerValue | readonly PointerValue[]): QueryBuilder<TFields>;
+  where(
+    key: string,
+    target: PointerValue | readonly PointerValue[],
+  ): QueryBuilder<TFields, TJoins, TJoined>;
   /**
    * Disjunction. Accepts the same key/value forms as {@link where} and
    * starts a new AND-group: `.where(a).where(b).or(c).where(d)` means
    * `(a AND b) OR (c AND d)`. A leading `.or` with no prior `.where`
    * starts the first group — it does not match every row.
    */
-  or<K extends keyof TFields & string>(key: K, value: Static<TFields[K]>): QueryBuilder<TFields>;
+  or<K extends keyof TFields & string>(
+    key: K,
+    value: Static<TFields[K]>,
+  ): QueryBuilder<TFields, TJoins, TJoined>;
   /** Open pointer overload for {@link or}, mirroring {@link where}'s. */
-  or(key: string, target: PointerValue | readonly PointerValue[]): QueryBuilder<TFields>;
+  or(
+    key: string,
+    target: PointerValue | readonly PointerValue[],
+  ): QueryBuilder<TFields, TJoins, TJoined>;
   /** Ordering on a field of `TFields`. */
   orderBy<K extends keyof TFields & string>(
     field: K,
     direction: "asc" | "desc",
-  ): QueryBuilder<TFields>;
+  ): QueryBuilder<TFields, TJoins, TJoined>;
   /** Maximum number of rows. */
-  limit(n: number): QueryBuilder<TFields>;
+  limit(n: number): QueryBuilder<TFields, TJoins, TJoined>;
+  /**
+   * Widen each surviving row with one-level joins selected by key. Each
+   * selected key comes from {@link JoinRecord}; a nested selector is
+   * rejected at the type level and at runtime.
+   */
+  with<TSelection extends JoinSelection<TJoins>>(
+    selection: JoinArgument<TJoins, TSelection>,
+  ): QueryBuilder<TFields, TJoins, TJoined & Pick<TJoins, keyof TSelection & keyof TJoins>>;
   /** First projected survivor, or `undefined` when the chain is empty. */
-  first(): Promise<ProjectedRow<TFields> | undefined>;
-  /** Count of survivors after the chain runs. */
+  first(): Promise<JoinedRow<TFields, TJoined> | undefined>;
+  /** Count of survivors after the chain runs. Joins do not affect the count. */
   count(): Promise<number>;
-  /** `true` when at least one row survives the chain. */
+  /** `true` when at least one row survives the chain. Joins do not affect existence. */
   exists(): Promise<boolean>;
   /** Streaming iterator over projected survivors. */
-  [Symbol.asyncIterator](): AsyncIterableIterator<ProjectedRow<TFields>>;
-  /** Materialize the untyped entities, skipping the projection. */
+  [Symbol.asyncIterator](): AsyncIterableIterator<JoinedRow<TFields, TJoined>>;
+  /** Materialize the untyped source entities, skipping projection and joins. */
   toRaw(): Promise<readonly Entity[]>;
   /**
    * Reactive trigger scoped to the chain's source entity type: fires
@@ -268,7 +395,9 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
    * listener would stay silent. A chain with a relationship or
    * membership predicate additionally listens on the `relationship` /
    * `entityGroup` row types, because those writes do not materialize
-   * the entity they point at (see the `subscribe` implementation).
+   * the entity they point at (see the `subscribe` implementation). A
+   * join also listens on the joined target's type, since a target row
+   * change rewrites the projection without touching the source row.
    */
   subscribe(listener: () => void): () => void;
   /**
@@ -277,9 +406,9 @@ export interface QueryBuilder<TFields extends Record<string, TSchema>> {
    */
   toQuery(): Query;
   /** Thenable — `await qb` resolves to the projected rows. */
-  then<TResult1 = readonly ProjectedRow<TFields>[], TResult2 = never>(
+  then<TResult1 = readonly JoinedRow<TFields, TJoined>[], TResult2 = never>(
     onfulfilled?:
-      | ((value: readonly ProjectedRow<TFields>[]) => TResult1 | PromiseLike<TResult1>)
+      | ((value: readonly JoinedRow<TFields, TJoined>[]) => TResult1 | PromiseLike<TResult1>)
       | null,
     onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): PromiseLike<TResult1 | TResult2>;
@@ -322,12 +451,11 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
  * against `context`'s registry and every terminal executes the plan
  * synchronously over the client's replica, hydrated first.
  */
-export function buildReplicaQueryBuilder<TFields extends Record<string, TSchema>>(
-  source: string,
-  shape: TObject<TFields>,
-  context: QueryContext,
-): QueryBuilder<TFields> {
-  return buildChain(emptyQuery(source), shape, context, replicaExecutor(context));
+export function buildReplicaQueryBuilder<
+  TFields extends Record<string, TSchema>,
+  TJoins extends object = NoJoins,
+>(source: string, shape: TObject<TFields>, context: QueryContext): QueryBuilder<TFields, TJoins> {
+  return buildChain<TFields, TJoins>(emptyQuery(source), shape, context, replicaExecutor(context));
 }
 
 /** Hydrate the replica, then read the plan's rows and indices from it. */
@@ -336,29 +464,186 @@ const replicaExecutor = (context: QueryContext) => async (): Promise<PlanExecuto
   return createReplicaExecutor(context.replica);
 };
 
+interface QueryRun {
+  readonly rows: readonly Entity[];
+  readonly executor: PlanExecutor;
+}
+
 /**
- * Execute a chain over the executor its mode supplies. The plan decides
- * whether a predicate pushes down to an index or filters scanned rows;
- * the executor itself never awaits.
+ * Plan and execute the chain's narrowing ops, keeping the executor so
+ * the join projection can read the same replica or candidate list.
  */
+const runPlan = async (
+  query: Query,
+  loadExecutor: () => Promise<PlanExecutor>,
+): Promise<QueryRun> => {
+  const executor = await loadExecutor();
+  return { rows: executePlan(planQuery(query), executor), executor };
+};
+
 const executeQuery = async (
   query: Query,
   loadExecutor: () => Promise<PlanExecutor>,
-): Promise<readonly Entity[]> => executePlan(planQuery(query), await loadExecutor());
+): Promise<readonly Entity[]> => (await runPlan(query, loadExecutor)).rows;
+
+/** Fail loudly rather than projecting through an unregistered shape. */
+const shapeForJoin = (
+  context: QueryContext | undefined,
+  target: string,
+): TObject<Record<string, TSchema>> => {
+  const shape = context?.registry.get(target)?.shape;
+  if (shape === undefined) {
+    throw new Error(`with(): joined entity "${target}" is not registered`);
+  }
+  return shape;
+};
+
+/** Ids a join reads from the replica's adjacency index. */
+const joinIds = (entity: Entity, join: Join, executor: PlanExecutor): readonly string[] => {
+  switch (join.kind) {
+    case "relationship":
+      return join.direction === "forward"
+        ? executor.relationships({ as: join.as, type: join.type, sourceId: entity.id })
+        : executor.relationships({ as: join.as, type: join.type, targetId: entity.id });
+    case "membership":
+      return executor.memberships({ entityId: entity.id });
+  }
+};
+
+const readJoinedRow = (
+  id: string,
+  join: Join,
+  executor: PlanExecutor,
+  context: QueryContext | undefined,
+): ProjectedRow<Record<string, TSchema>> | null => {
+  const row = executor.get(id);
+  if (row === undefined || row.deleted_hlc !== null || row.type !== join.target) return null;
+  return projectRow(row, shapeForJoin(context, join.target));
+};
+
+const resolveJoin = (
+  entity: Entity,
+  join: Join,
+  executor: PlanExecutor,
+  context: QueryContext | undefined,
+): unknown => {
+  const rows = joinIds(entity, join, executor).flatMap((id) => {
+    const row = readJoinedRow(id, join, executor, context);
+    return row === null ? [] : [row];
+  });
+  return join.cardinality === "one" ? (rows[0] ?? null) : rows;
+};
+
+/**
+ * Project each narrowed row through the source shape, then widen it with
+ * the query's joins. Joined keys spread last so they win a same-named
+ * base field, matching the row accessors.
+ */
+const projectResultRows = <TFields extends Record<string, TSchema>>(
+  rows: readonly Entity[],
+  query: Query,
+  shape: TObject<TFields>,
+  executor: PlanExecutor,
+  context: QueryContext | undefined,
+): readonly (ProjectedRow<TFields> & Record<string, unknown>)[] =>
+  rows.map((row) => {
+    const base = projectRow(row, shape);
+    if (query.joins.length === 0) return base;
+    const widened: Record<string, unknown> = { ...base };
+    for (const join of query.joins) {
+      widened[join.as] = resolveJoin(row, join, executor, context);
+    }
+    return widened as ProjectedRow<TFields> & Record<string, unknown>;
+  });
+
+const resolveJoinDef = (entityName: string, key: string, registry: EntityRegistry): Join => {
+  if (key === GROUPS_ACCESSOR) {
+    return { kind: "membership", as: key, target: groupSystemEntity.name, cardinality: "many" };
+  }
+  // Forward wins a collision so a self-referential relationship joins the
+  // direction it declares.
+  const forward = registry.getRelationship(entityName, key);
+  if (forward !== undefined) {
+    return {
+      kind: "relationship",
+      as: key,
+      type: forward.type,
+      target: forward.target.name,
+      direction: "forward",
+      cardinality: forward.sourceCardinality,
+    };
+  }
+  const reverse = registry.getRelationshipsForTarget(entityName).find((rel) => rel.as === key);
+  if (reverse !== undefined) {
+    return {
+      kind: "relationship",
+      as: key,
+      type: reverse.type,
+      target: reverse.source.name,
+      direction: "reverse",
+      cardinality: "many",
+    };
+  }
+  throw new EntityValidationError([
+    {
+      entityName,
+      field: key,
+      message: `with("${key}"): not a declared relationship on "${entityName}"`,
+    },
+  ]);
+};
+
+/**
+ * Validate a `with(...)` selector and lower it to join descriptors. An
+ * existing join with the same key is replaced, so chained `with` calls
+ * widen the same row rather than nesting.
+ */
+const buildJoins = (
+  selection: unknown,
+  context: QueryContext | undefined,
+  existing: readonly Join[],
+): readonly Join[] => {
+  if (context === undefined) {
+    throw new Error(
+      "with(): a chain over already-materialized rows carries no schema to resolve joins",
+    );
+  }
+  if (selection === null || typeof selection !== "object" || Array.isArray(selection)) {
+    throw new Error("with(): expected an object of join selectors");
+  }
+  const merged = new Map(existing.map((join) => [join.as, join]));
+  for (const [key, value] of Object.entries(selection)) {
+    if (value !== true) {
+      throw new EntityValidationError([
+        {
+          entityName: context.entityName,
+          field: key,
+          message: `with("${key}"): select a join with \`true\`; nested with(...) is not supported`,
+        },
+      ]);
+    }
+    merged.set(key, resolveJoinDef(context.entityName, key, context.registry));
+  }
+  return [...merged.values()];
+};
 
 /**
  * The single chain implementation. Each mutator returns a new builder
  * carrying the next {@link Query}; the original is untouched. Terminals
- * all funnel through {@link executeQuery}, so a replica chain and a
- * candidate chain differ only in where the executor comes from.
+ * all funnel through {@link runPlan}, so a replica chain and a candidate
+ * chain differ only in where the executor comes from.
  */
-function buildChain<TFields extends Record<string, TSchema>>(
+function buildChain<
+  TFields extends Record<string, TSchema>,
+  TJoins extends object = NoJoins,
+  TJoined extends object = NoJoins,
+>(
   initial: Query,
   shape: TObject<TFields>,
   context: QueryContext | undefined,
   loadExecutor: () => Promise<PlanExecutor>,
-): QueryBuilder<TFields> {
-  const make = (query: Query): QueryBuilder<TFields> => ({
+): QueryBuilder<TFields, TJoins, TJoined> {
+  const make = (query: Query): QueryBuilder<TFields, TJoins, TJoined> => ({
     where(key: string, target: unknown) {
       const predicate = buildPredicate(key, target, shape, context, "where");
       const current = query.groups[query.groups.length - 1];
@@ -378,10 +663,19 @@ function buildChain<TFields extends Record<string, TSchema>>(
     limit(n) {
       return make({ ...query, limit: n });
     },
+    with<TSelection extends JoinSelection<TJoins>>(selection: JoinArgument<TJoins, TSelection>) {
+      const joins = buildJoins(selection, context, query.joins);
+      return make({ ...query, joins }) as unknown as QueryBuilder<
+        TFields,
+        TJoins,
+        TJoined & Pick<TJoins, keyof TSelection & keyof TJoins>
+      >;
+    },
     toQuery: () => query,
     async first() {
-      const head = (await executeQuery(query, loadExecutor))[0];
-      return head === undefined ? undefined : projectRow(head, shape);
+      const run = await runPlan(query, loadExecutor);
+      const head = projectResultRows(run.rows, query, shape, run.executor, context)[0];
+      return head as unknown as JoinedRow<TFields, TJoined> | undefined;
     },
     async count() {
       return (await executeQuery(query, loadExecutor)).length;
@@ -391,8 +685,9 @@ function buildChain<TFields extends Record<string, TSchema>>(
     },
     [Symbol.asyncIterator]() {
       const iter = async function* () {
-        for (const row of await executeQuery(query, loadExecutor)) {
-          yield projectRow(row, shape);
+        const run = await runPlan(query, loadExecutor);
+        for (const row of projectResultRows(run.rows, query, shape, run.executor, context)) {
+          yield row as unknown as JoinedRow<TFields, TJoined>;
         }
       };
       return iter();
@@ -409,12 +704,18 @@ function buildChain<TFields extends Record<string, TSchema>>(
       // predicate must also wake when one of those rows changes. The
       // rows carry no entity type for membership, and a relationship's
       // `type` may be overridden, so subscribe to the row type rather
-      // than guessing the source type. Identical results are suppressed
-      // downstream by the consumer's snapshot compare.
-      if (hasPredicateKind(query, "relationship")) {
+      // than guessing the source type. A join additionally listens on
+      // each target's type: a joined row change rewrites the projection
+      // without touching the source row. Identical results are
+      // suppressed downstream by the consumer's snapshot compare.
+      const joinTypes = new Set(query.joins.map((join) => join.target));
+      for (const type of joinTypes) {
+        unsubscribers.push(emitter.onTypeChange(type, listener));
+      }
+      if (hasPredicateKind(query, "relationship") || hasJoinKind(query, "relationship")) {
         unsubscribers.push(emitter.onTypeChange(relationshipSystemEntity.name, listener));
       }
-      if (hasPredicateKind(query, "membership")) {
+      if (hasPredicateKind(query, "membership") || hasJoinKind(query, "membership")) {
         unsubscribers.push(emitter.onTypeChange(entityGroupSystemEntity.name, listener));
       }
       return () => {
@@ -427,8 +728,9 @@ function buildChain<TFields extends Record<string, TSchema>>(
       // projection step: a rejecting candidate loader or a failed
       // hydration must settle the awaited builder as a rejection rather
       // than leaving it pending.
-      return executeQuery(query, loadExecutor)
-        .then((rows) => projectRows(rows, shape))
+      return runPlan(query, loadExecutor)
+        .then((run) => projectResultRows(run.rows, query, shape, run.executor, context))
+        .then((rows) => rows as readonly JoinedRow<TFields, TJoined>[])
         .then(onfulfilled, onrejected);
     },
   });
