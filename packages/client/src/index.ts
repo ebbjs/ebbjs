@@ -21,6 +21,7 @@ export {
   type HandshakeResult,
   type NamespacedClient,
   type QueryOptions,
+  type ReplicaLoadReport,
   type SyncObservables,
 } from "./sync/client";
 
@@ -78,7 +79,9 @@ export {
 export { type Plan, type PlanOp, type PlanPredicate, planQuery } from "./sync/query-plan";
 
 export {
+  DEFAULT_QUERY_TTL_MS,
   type QueryCache,
+  type QueryCacheOptions,
   type QueryResult,
   type QuerySource,
   type QueryStatus,
@@ -88,6 +91,7 @@ export {
 } from "./sync/query-cache";
 
 export type { ReplicaSignal } from "./sync/replica-signal";
+export type { ReplicaStats } from "@ebbjs/storage/replica";
 
 export {
   type PlanExecutor,
