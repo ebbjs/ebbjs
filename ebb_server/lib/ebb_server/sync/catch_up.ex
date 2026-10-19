@@ -9,7 +9,14 @@ defmodule EbbServer.Sync.CatchUp do
   Action contributes to a group's stream only what belongs to it (#473).
   """
 
-  alias EbbServer.Storage.{ActionScope, PermissionChecker, RocksDB, WatermarkTracker}
+  alias EbbServer.Storage.{
+    ActionFormat,
+    ActionScope,
+    PermissionChecker,
+    RocksDB,
+    WatermarkTracker
+  }
+
   alias EbbServer.Telemetry
 
   @default_limit 200
@@ -120,11 +127,11 @@ defmodule EbbServer.Sync.CatchUp do
     keys = Enum.map(gsns, &RocksDB.encode_gsn_key/1)
 
     RocksDB.multi_get(cf_actions, keys)
-    |> Enum.map(fn
-      {:ok, binary} -> :erlang.binary_to_term(binary, [:safe])
-      :not_found -> nil
+    |> Enum.zip(gsns)
+    |> Enum.flat_map(fn
+      {{:ok, binary}, gsn} -> [ActionFormat.decode(binary, gsn)]
+      {:not_found, _gsn} -> []
     end)
-    |> Enum.reject(&is_nil/1)
   end
 
   # Only successful reads emit; a full resync is `from_offset == 0` (see the

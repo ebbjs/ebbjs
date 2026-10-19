@@ -12,7 +12,7 @@ defmodule EbbServer.Bench.WriteBatchTest do
   use ExUnit.Case, async: true
 
   alias EbbServer.Bench.{Options, Workbook, WriteBatch}
-  alias EbbServer.Storage.RocksDB
+  alias EbbServer.Storage.{ActionFormat, RocksDB}
 
   setup do
     ctx = %{
@@ -72,12 +72,22 @@ defmodule EbbServer.Bench.WriteBatchTest do
                Enum.to_list(1_000_000_000..1_000_000_009)
     end
 
-    test "cf_actions stores the production storage shape", context do
+    test "cf_actions stores the GSN-free wrapper production shape", context do
       {:ok, config} = Options.parse(["--tier", "t5", "--batch-size", "1"])
       ops = WriteBatch.build_ops(config, context.ctx, 1, 0)
       [{_key, value}] = cf_ops(ops, RocksDB.cf_actions())
 
-      stored = :erlang.binary_to_term(value)
+      # The raw value is the wrapper: a payload ETF plus the scopes. Neither
+      # layer carries the GSN, which lives only in the cf_actions key.
+      assert {payload_etf, scopes} = :erlang.binary_to_term(value)
+      assert is_binary(payload_etf)
+      assert scopes == [[Workbook.group_id()], [Workbook.group_id()]]
+
+      payload = :erlang.binary_to_term(payload_etf)
+      refute Map.has_key?(payload, "gsn")
+      refute Map.has_key?(payload, "update_scopes")
+
+      stored = ActionFormat.decode(value, 1_000_000_000)
 
       assert stored["gsn"] == 1_000_000_000
       assert stored["actor_id"] == Workbook.actor_id()
@@ -90,8 +100,8 @@ defmodule EbbServer.Bench.WriteBatchTest do
       {:ok, config} = Options.parse(["--tier", "t5", "--batch-size", "2"])
       ops = WriteBatch.build_ops(config, context.ctx, 1, 0)
 
-      [{_gsn_key, action_etf}, {_second_gsn_key, _}] = cf_ops(ops, RocksDB.cf_actions())
-      action_id = action_etf |> :erlang.binary_to_term() |> Map.fetch!("id")
+      [{gsn_key, action_value}, {_second_gsn_key, _}] = cf_ops(ops, RocksDB.cf_actions())
+      action_id = ActionFormat.decode(action_value, RocksDB.decode_gsn_key(gsn_key))["id"]
 
       assert [{^action_id, gsn} | _rest] = cf_ops(ops, RocksDB.cf_action_dedup())
       assert RocksDB.decode_gsn_key(gsn) == 1_000_000_000

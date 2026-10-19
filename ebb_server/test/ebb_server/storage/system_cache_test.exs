@@ -10,6 +10,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
   use ExUnit.Case, async: false
 
   alias EbbServer.Storage.{
+    ActionFormat,
     EntityGroupCache,
     EntityTypeCache,
     RelationshipCache,
@@ -536,6 +537,48 @@ defmodule EbbServer.Storage.SystemCacheTest do
   end
 
   describe "type-entities backfill migration" do
+    test "backfills from an Action stored in the new GSN-free wrapper", ctx do
+      entity_id = "todo_wrapper_#{:erlang.unique_integer([:positive])}"
+      action_id = "act_wrapper_#{:erlang.unique_integer([:positive])}"
+
+      payload =
+        %{
+          id: action_id,
+          actor_id: "demo-seeder",
+          hlc: TestHelpers.generate_hlc(),
+          updates: [
+            %{
+              id: "upd_wrapper_#{:erlang.unique_integer([:positive])}",
+              subject_id: entity_id,
+              subject_type: "todo",
+              method: :put,
+              data: %{"fields" => %{}}
+            }
+          ]
+        }
+        |> ActionFormat.build()
+        |> ActionFormat.encode()
+
+      wrapper = ActionFormat.wrap(payload, [[]])
+
+      :ok =
+        RocksDB.write_batch(
+          [{:put, RocksDB.cf_actions(ctx.rocks_name), RocksDB.encode_gsn_key(1), wrapper}],
+          name: ctx.rocks_name
+        )
+
+      assert :ok = SystemCache.populate_system_caches(populate_opts(ctx))
+
+      assert {:ok, <<>>} =
+               RocksDB.get(
+                 RocksDB.cf_type_entities(ctx.rocks_name),
+                 RocksDB.encode_type_entity_key("todo", entity_id),
+                 name: ctx.rocks_name
+               )
+
+      assert EntityTypeCache.get_type(entity_id, ctx.entity_types_table) == "todo"
+    end
+
     test "writes a durable marker and skips the action-log scan on later boots", ctx do
       :ok = SystemCache.populate_system_caches(populate_opts(ctx))
 

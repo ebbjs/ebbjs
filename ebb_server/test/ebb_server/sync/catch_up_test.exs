@@ -5,7 +5,7 @@ defmodule EbbServer.Sync.CatchUpTest do
   import EbbServer.TestHelpers
 
   alias EbbServer.Integration.ActionHelpers
-  alias EbbServer.Storage.{RocksDB, WatermarkTracker}
+  alias EbbServer.Storage.{ActionFormat, RocksDB, WatermarkTracker}
   alias EbbServer.Sync.CatchUp
 
   describe "catch_up_group/3" do
@@ -158,6 +158,67 @@ defmodule EbbServer.Sync.CatchUpTest do
       assert [returned] = actions
       assert returned["id"] == legacy["id"]
       assert length(returned["updates"]) == 1
+    end
+
+    test "delivers an Action stored in the new GSN-free wrapper shape" do
+      actor_id = "a_wrapper_#{:erlang.unique_integer([:positive])}"
+      group_id = "g_wrapper_#{:erlang.unique_integer([:positive])}"
+
+      ActionHelpers.bootstrap_group(actor_id, group_id, ["todo.read", "todo.create"])
+      Process.sleep(100)
+
+      gsn = RocksDB.get_max_gsn() + 1
+      hlc = generate_hlc()
+      action_id = "act_wrapper_#{:erlang.unique_integer([:positive])}"
+      update_id = "upd_wrapper_#{:erlang.unique_integer([:positive])}"
+
+      payload =
+        %{
+          id: action_id,
+          actor_id: actor_id,
+          hlc: hlc,
+          updates: [
+            %{
+              id: update_id,
+              subject_id: "todo_wrapper",
+              subject_type: "todo",
+              method: :put,
+              data: %{
+                "fields" => %{"title" => %{"type" => "lww", "value" => "x", "hlc" => hlc}}
+              }
+            },
+            %{
+              id: "upd_other_#{:erlang.unique_integer([:positive])}",
+              subject_id: "todo_other",
+              subject_type: "todo",
+              method: :put,
+              data: %{}
+            }
+          ]
+        }
+        |> ActionFormat.build()
+        |> ActionFormat.encode()
+
+      # The second Update scopes to another group, so catch-up must use the
+      # wrapper's scopes and drop it.
+      wrapper = ActionFormat.wrap(payload, [[group_id], ["g_other"]])
+
+      :ok =
+        RocksDB.write_batch([
+          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn), wrapper},
+          {:put, RocksDB.cf_group_actions(), RocksDB.encode_group_action_key(group_id, gsn),
+           action_id}
+        ])
+
+      :ok = WatermarkTracker.mark_range_committed(gsn, gsn)
+      WatermarkTracker.advance_watermark()
+
+      {:ok, actions, _meta} = CatchUp.catch_up_group(group_id, actor_id, gsn - 1)
+
+      assert [returned] = actions
+      assert returned["gsn"] == gsn
+      assert returned["id"] == action_id
+      assert [%{"id" => ^update_id}] = returned["updates"]
     end
 
     test "non-member rejection: returns {:error, :not_member}" do

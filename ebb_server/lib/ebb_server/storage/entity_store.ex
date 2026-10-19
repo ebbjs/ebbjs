@@ -63,7 +63,15 @@ defmodule EbbServer.Storage.EntityStore do
   an SQLite SELECT.
   """
 
-  alias EbbServer.Storage.{DirtyTracker, FieldMerge, PermissionHelper, RocksDB, SQLite}
+  alias EbbServer.Storage.{
+    ActionFormat,
+    DirtyTracker,
+    FieldMerge,
+    PermissionHelper,
+    RocksDB,
+    SQLite
+  }
+
   alias EbbServer.Telemetry
 
   @default_rocks_name EbbServer.Storage.RocksDB
@@ -405,7 +413,7 @@ defmodule EbbServer.Storage.EntityStore do
   end
 
   defp decode_action({{:ok, action_etf}, {gsn, _action_id}}) do
-    {gsn, :erlang.binary_to_term(action_etf, [:safe])}
+    {gsn, ActionFormat.decode(action_etf, gsn)}
   end
 
   defp decode_action({:not_found, {gsn, _action_id}}) do
