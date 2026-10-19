@@ -1021,8 +1021,11 @@ provisional dirty marks, apply, watermark, notify, reply) and allows
 exactly one in-flight commit. Measured **2026-10-19** on `recsy-vps`, with
 the branch and `origin/main` (`366cf9c`) benchmarked alternately on the
 same host, fresh temp DB, `sync: true`, 15 s window after 3 s warmup,
-2-Update Actions, `hot`, batch 100. Each arm is the median of 3–4 runs
-(range in parentheses).
+2-Update Actions, `hot`, batch 100. Each throughput arm is the median of
+3–4 alternating runs (t0 baseline 3, t0 branch 4, t2 baseline 3, t2
+branch 4); the range is in parentheses. The ablate-all check is two 10 s
+runs per side. The raw reports are the gitignored
+`bench/results/531-{base,after}-*.md` files from that measurement.
 
 ```sh
 mix bench.actions --tier t0 --duration 15 --warmup 3 --concurrency 1 \

@@ -96,7 +96,9 @@ ordered-fanout coordination that is not yet built
 | `EbbServer.Storage.RocksDB`                                                      | DB lifecycle, column families, key encoding, low-level I/O         |
 | `EbbServer.Storage.SQLite`                                                       | Entity cache: schema DDL, UPSERT, filtered query with permissions  |
 | `EbbServer.Storage.SystemCache` (sup.)                                           | ETS + `:atomics` for GSN, watermark, dirty set, group/relationship |
-| `EbbServer.Storage.Writer`                                                       | Single serialization point: GSN assignment, perm check, WriteBatch |
+| `EbbServer.Storage.Writer`                                                       | Sequencer: coalescing, GSN claim, group resolution, apply/notify   |
+| `EbbServer.Storage.Committer`                                                    | Durable half of a flush: op assembly, ETF encode, `write_batch`    |
+| `EbbServer.Storage.PreparedAction`                                               | Immutable sequencer → committer boundary payload                   |
 | `EbbServer.Storage.ActionLog`                                                    | Committed-log reader: decodes an inclusive GSN range in order      |
 | `EbbServer.ActionExport` (opt-in)                                                | Polls the committed log and invokes the `:on_action` handler       |
 | `EbbServer.Storage.EntityStore`                                                  | Read API with on-demand materialization                            |
@@ -146,7 +148,8 @@ EbbServer.Supervisor (one_for_one)
 │   │   ├── Storage.EntityGroupCache
 │   │   └── Storage.RelationshipCache
 │   ├── Storage.WatermarkTracker           — resolution-frontier ETS + :atomics
-│   └── Storage.Writer                     — serialization point (last child)
+│   └── Storage.Writer                     — sequencer: claim, resolve, apply
+│       └── Storage.Committer              — op assembly + durable write
 ├── Telemetry.Sampler                      — 1 Hz watermark / dirty-set / fan-out gauges
 ├── Sync Supervisor (one_for_one)
 │   ├── Sync.FanOutFrontier                — persisted last-pushed frontier
@@ -163,9 +166,10 @@ EbbServer.Supervisor (one_for_one)
 Storage supervisor. A `SystemCache` (or `WatermarkTracker`) failure therefore
 rebuilds the caches and the watermark and restarts the Writer, which
 reconciles against the fresh frontier on `init/1`; a Writer-only crash
-restarts the Writer alone. Any RocksDB crash still restarts the whole
-storage tree in order, because SystemCache populates from RocksDB on init
-and the Writer coordinates through cache state.
+restarts the Writer and its linked Committer together. Any RocksDB crash
+still restarts the whole storage tree in order, because SystemCache
+populates from RocksDB on init and the Writer coordinates through cache
+state.
 
 ## Cross-cutting concerns
 
@@ -247,6 +251,7 @@ suffix marks a latency metric, not the raw unit. Reporters convert with
 | ----------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------- | --------------- |
 | `ebb.writer.batch_size`                   | `count`                                                                                              | `gsn_start`, `gsn_end`, `callers`                                                                            | Histogram                    | `writer`        |
 | `ebb.writer.batch_latency_ms`             | `duration` (native)                                                                                  | `gsn_start`, `gsn_end`                                                                                       | Histogram                    | `writer`        |
+| `ebb.writer.commit_latency_ms`            | `duration` (native)                                                                                  | `gsn_start`, `gsn_end`                                                                                       | Histogram                    | `writer`        |
 | `ebb.writer.actions_per_sec`              | `count`                                                                                              | —                                                                                                            | Counter                      | `writer`        |
 | `ebb.writer.range_resolved`               | `count`                                                                                              | `gsn_start`, `gsn_end`, `reason`                                                                             | Counter                      | `writer`        |
 | `ebb.writer.commit_failed`                | `count`                                                                                              | `gsn_start`, `gsn_end`, `reason`                                                                             | Counter                      | `writer`        |

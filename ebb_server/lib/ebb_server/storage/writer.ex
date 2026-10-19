@@ -133,31 +133,37 @@ defmodule EbbServer.Storage.Writer do
   - **One commit attempt, no retry.** A commit failure abandons the
     range: it is marked resolved (the watermark advances over the hole),
     `FanOutRouter` is nudged with `{:range_resolved, from, to}` so it can
-    drain anything the hole was gating, and the caller gets
-    every caller in the flush gets `{:error, {:rocksdb_write_failed, reason}}`
-    (`503 write_failed`).
+    drain anything the hole was gating, and every caller in the flush
+    gets `{:error, {:rocksdb_write_failed, reason}}` (`503 write_failed`).
     The client outbox is the only retry; the server never acks undurable
     data and never rewinds or reuses the GSNs.
-  - **Structural resolution.** Every failure path abandons before the
-    failure surfaces: clear the provisional marks, resolve the range,
-    log, nudge `FanOutRouter`, emit telemetry. A `{:error, reason}` from
-    the Committer is replied as a failed write. A raise/throw/exit out of
-    the Committer — from op assembly or from `commit_fn` — is re-raised
-    in the sequencer after the abandon, so callers see the same exit the
-    in-process flush produced. A failed commit and a raise therefore both
-    leave the frontier advanced before the nudge is sent, and only a hard
-    kill can leave a claim unresolved.
+  - **Structural resolution.** Every pre-commit failure path abandons
+    before the failure surfaces: clear the provisional marks, resolve the
+    range, log, nudge `FanOutRouter`, emit telemetry. A `{:error, reason}`
+    from the Committer is replied as a failed write. A raise/throw/exit
+    out of the Committer — from op assembly or from `commit_fn` — is
+    re-raised in the sequencer after the abandon, so callers see the same
+    exit the in-process flush produced. A failed commit and a raise
+    therefore both leave the frontier advanced before the nudge is sent.
+    A Writer death between claim and resolve can still leave the claim
+    unresolved — including a death that arrives after the Committer has
+    already written, because the write is now in another process. The
+    restart reconcile resolves that tail; a write that landed first stays
+    durable even though the range is reported as resolved rather than
+    committed, so live fan-out can miss it until a later catch-up.
   - **Commit is the point of no return.** Once the Committer reports
     `:ok` the range is marked committed and the frontier advanced before
     any other raise-capable step runs. Every caller in the flush then gets
-    its success tuple. Dirty tracking and cache updates follow; if they raise, the
-    data is already durable, so the Writer logs, abnormally terminates
-    `EbbServer.Storage.SystemCache`, and relies on
+    its success tuple. Dirty tracking, `after_commit`, and cache updates
+    follow; if they raise, the data is already durable, so the range is
+    not abandoned or re-reported as a hole, the Writer logs, abnormally
+    terminates `EbbServer.Storage.SystemCache`, and relies on
     `Storage.Supervisor`'s `rest_for_one` to rebuild the caches, the
-    watermark, and this Writer. The success replies are sent before that
-    escalation so a durable batch is never reported as lost. A failed or
-    raised commit instead has its provisional marks compare-and-cleared
-    before the range is resolved.
+    watermark, and this Writer. The success replies for a cache-apply
+    failure are sent before that escalation so a durable batch is never
+    reported as lost; a post-commit raise leaves the provisional marks
+    for `init/1` to settle. A failed or raised commit instead has its
+    provisional marks compare-and-cleared before the range is resolved.
   - **Startup reconcile.** `init/1` raises the counter to the durable log
     max and resolves any remaining tail, healing a Writer-only restart
     that crashed between claim and resolve. It also settles any
@@ -242,6 +248,8 @@ defmodule EbbServer.Storage.Writer do
           | {:relationship_put, map()}
           | {:relationship_delete, String.t()}
 
+  @type pending_marks :: {[PreparedAction.entity_mark()], non_neg_integer() | nil}
+
   @type inflight :: %{
           ref: reference(),
           pending: [{GenServer.from(), [validated_action()]}],
@@ -253,7 +261,7 @@ defmodule EbbServer.Storage.Writer do
           prepared: [PreparedAction.t()],
           groups_by_gsn: %{optional(non_neg_integer()) => [String.t()]},
           started_at: integer(),
-          pending_marks: {[PreparedAction.entity_mark()], non_neg_integer() | nil},
+          pending_marks: pending_marks(),
           batch_size: non_neg_integer()
         }
 
@@ -670,25 +678,29 @@ defmodule EbbServer.Storage.Writer do
 
   defp handle_commit_result(:ok, state) do
     inflight = state.inflight
+    state = %{state | inflight: nil}
 
-    # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
-    try do
-      settle_committed(inflight, state)
-    rescue
-      error ->
-        abandon(state, inflight.pending_marks, inflight.gsn_start, inflight.gsn_end, error)
-        reraise error, __STACKTRACE__
-    catch
-      kind, value ->
+    case mark_committed_result(inflight, state) do
+      :ok ->
+        committed_at = System.monotonic_time()
+
+        case settle_after_commit(inflight, state, committed_at) do
+          :ok -> schedule_flush(state)
+          :escalated -> state
+        end
+
+      {:raised, kind, value, stacktrace} ->
+        emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
+
         abandon(
           state,
           inflight.pending_marks,
           inflight.gsn_start,
           inflight.gsn_end,
-          {kind, value}
+          raised_reason(kind, value)
         )
 
-        :erlang.raise(kind, value, __STACKTRACE__)
+        :erlang.raise(kind, value, stacktrace)
     end
   end
 
@@ -731,47 +743,72 @@ defmodule EbbServer.Storage.Writer do
   defp raised_reason(:error, value), do: value
   defp raised_reason(kind, value), do: {kind, value}
 
-  # The Committer has already returned `:ok`, so everything from here on
-  # is post-commit bookkeeping. A raise abandons the range and re-raises:
-  # the data is durable but the caller sees the same crash the in-process
-  # flush produced.
-  defp settle_committed(inflight, state) do
-    state = %{state | inflight: nil}
-
-    # Captured immediately after the durable write: the fan-out push
-    # latency is measured from here, not from batch arrival.
-    committed_at = System.monotonic_time()
-
-    if state.after_commit, do: state.after_commit.()
-
+  # Marking the range committed is the point of no return: it must run
+  # before `after_commit`, apply, or notify, so a later raise cannot be
+  # mistaken for a failed commit. A failure here still leaves the range
+  # unresolved, so it takes the abandon path.
+  defp mark_committed_result(inflight, state) do
     unless ablate?(:watermark, state),
       do: mark_committed(state, inflight.gsn_start, inflight.gsn_end)
 
-    case apply_post_commit(inflight.prepared, inflight.pending_marks, state) do
-      :ok ->
-        notify_fanout(
-          state,
-          inflight.gsn_start,
-          inflight.gsn_end,
-          inflight.groups_by_gsn,
-          committed_at
-        )
+    :ok
+  catch
+    kind, value -> {:raised, kind, value, __STACKTRACE__}
+  end
 
-        emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
-        emit_actions_accepted(inflight.batch_size)
-        reply_all(inflight.pending, inflight.ranges, :ok)
-        schedule_flush(state)
+  # Everything after the durable mark: any raise here is a post-commit
+  # failure. The range stays committed and its provisional marks are left
+  # for the restarted Writer to settle, so the batch is never reported as
+  # abandoned. Latency is emitted before the re-raise so the sample is not
+  # swallowed.
+  defp settle_after_commit(inflight, state, committed_at) do
+    # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
+    try do
+      if state.after_commit, do: state.after_commit.()
 
-      {:error, reason} ->
-        # The batch is durable: reply success to every caller first,
-        # then escalate, so no caller sees a lost success when the
-        # rebuild tears this process down.
+      case apply_post_commit(inflight.prepared, inflight.pending_marks, state) do
+        :ok ->
+          notify_fanout(
+            state,
+            inflight.gsn_start,
+            inflight.gsn_end,
+            inflight.groups_by_gsn,
+            committed_at
+          )
+
+          emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
+          emit_actions_accepted(inflight.batch_size)
+          reply_all(inflight.pending, inflight.ranges, :ok)
+          :ok
+
+        {:error, reason} ->
+          # The batch is durable: reply success to every caller first,
+          # then escalate, so no caller sees a lost success when the
+          # rebuild tears this process down.
+          emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
+          emit_actions_accepted(inflight.batch_size)
+          reply_all(inflight.pending, inflight.ranges, :ok)
+          escalate_cache_failure(inflight.gsn_start, inflight.gsn_end, reason)
+          :escalated
+      end
+    rescue
+      error ->
         emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
-        emit_actions_accepted(inflight.batch_size)
-        reply_all(inflight.pending, inflight.ranges, :ok)
-        escalate_cache_failure(inflight.gsn_start, inflight.gsn_end, reason)
-        state
+        log_post_commit_failure(inflight, error)
+        reraise error, __STACKTRACE__
+    catch
+      kind, value ->
+        emit_batch_latency(inflight.gsn_start, inflight.gsn_end, inflight.started_at)
+        log_post_commit_failure(inflight, {kind, value})
+        :erlang.raise(kind, value, __STACKTRACE__)
     end
+  end
+
+  defp log_post_commit_failure(inflight, reason) do
+    Logger.error(
+      "Writer committed GSN range #{inflight.gsn_start}..#{inflight.gsn_end} " <>
+        "but a post-commit step failed (#{inspect(reason)}); the range stays committed"
+    )
   end
 
   # Arrival order is the caller's position in `pending`; a caller's

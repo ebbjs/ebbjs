@@ -68,7 +68,7 @@ defmodule EbbServer.Storage.Committer do
        owner: owner,
        owner_ref: Process.monitor(owner),
        rocks_name: Keyword.fetch!(opts, :rocks_name),
-       commit_fn: Keyword.get(opts, :commit_fn) || (&RocksDB.write_batch/2),
+       commit_fn: Keyword.fetch!(opts, :commit_fn),
        ablate: Keyword.get(opts, :ablate, [])
      }}
   end

@@ -16,7 +16,10 @@ defmodule EbbServer.Storage.PreparedAction do
   - `id`, `actor_id`, `hlc` — Action identity, as validated.
   - `updates` — the validated Updates, in order.
   - `intra_action_context` — `entity_id => [group_id]` for membership
-    rows created in the same Action, the input to group resolution.
+    rows created in the same Action, the input to group resolution. It
+    crosses the boundary for the V1 pre-encode stage
+    ([#532](https://github.com/ebbjs/ebbjs/issues/532)); the Committer
+    does not read it today.
   - `update_scopes` — group ids per Update, index-aligned with `updates`.
     Persisted as `"update_scopes"`; it cannot be re-derived after the
     commit, so it doubles as the fan-out delivery contract.
