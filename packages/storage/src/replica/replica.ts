@@ -179,9 +179,10 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   };
 
   /**
-   * Reconcile both index directions from the two composed versions of a row.
-   * `null` means the composed view is gone, which removes the row's prior
-   * entries. A row that indexes nothing on either side yields empty deltas.
+   * Both indices track the composed view, so they must be reconciled
+   * wherever that view changes — which is why this hangs off `resync`, the
+   * one place every base, overlay, and tombstone write already funnels
+   * through.
    */
   const reconcileIndex = (previous: Entity | null, next: Entity | null): void => {
     const before = previous ?? undefined;
