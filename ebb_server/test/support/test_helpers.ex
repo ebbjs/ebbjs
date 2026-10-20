@@ -379,6 +379,8 @@ defmodule EbbServer.TestHelpers do
       ]
       |> put_if_present(:batch_max_size, opts[:batch_max_size])
       |> put_if_present(:batch_timeout_ms, opts[:batch_timeout_ms])
+      |> put_if_present(:max_in_flight, opts[:max_in_flight])
+      |> put_if_present(:committer_pool_size, opts[:committer_pool_size])
       |> put_if_present(:ablate, opts[:ablate])
 
     {:ok, pid} = Writer.start_link(writer_opts)

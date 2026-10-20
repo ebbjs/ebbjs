@@ -99,6 +99,7 @@ ordered-fanout coordination that is not yet built
 | `EbbServer.Storage.Writer`                                                       | Imperative shell: coalescing, payload pre-encode, GSN claim, group resolution, apply/notify |
 | `EbbServer.Storage.CommitPipeline`                                               | Pure pipeline state machine: pending calls, claim order, in-flight guard, release order     |
 | `EbbServer.Storage.Committer`                                                    | Durable half of a flush: wrapper encode, op assembly, `write_batch`                         |
+| `EbbServer.Storage.CommitterPool`                                                | Supervised Committer workers, one job per worker, crash-to-failed-range reporting           |
 | `EbbServer.Storage.PreparedAction`                                               | Immutable sequencer → committer boundary payload                                            |
 | `EbbServer.Storage.ActionLog`                                                    | Committed-log reader: decodes an inclusive GSN range in order                               |
 | `EbbServer.Storage.ActionFormat`                                                 | `cf_actions` value shape: GSN-free payload, scopes wrapper, dual-shape decode               |
@@ -154,7 +155,9 @@ EbbServer.Supervisor (one_for_one)
 │   ├── Storage.InFlightActions            — in-flight action-id ETS
 │   └── Storage.Writer                     — imperative shell: pre-encode, claim, resolve, apply
 │       ├── Storage.CommitPipeline         — pure pending/claim/release ordering state machine
-│       └── Storage.Committer              — wrapper encode + op assembly + durable write
+│       └── Storage.CommitterPool           — supervised workers; contains a worker death per range
+│           ├── DynamicSupervisor
+│           └── Storage.Committer × N       — wrapper encode + op assembly + durable write
 ├── Telemetry.Sampler                      — 1 Hz watermark / dirty-set / in-flight / fan-out gauges
 ├── Sync Supervisor (one_for_one)
 │   ├── Sync.FanOutFrontier                — persisted last-pushed frontier
@@ -171,11 +174,16 @@ EbbServer.Supervisor (one_for_one)
 Storage supervisor. A `SystemCache` (or `WatermarkTracker`) failure therefore
 rebuilds the caches, the watermark, and the in-flight action-id set and
 restarts the Writer, which reconciles against the fresh frontier on `init/1`;
-a Writer-only crash restarts the Writer and its linked Committer together,
-and the replacement Writer clears the stale in-flight ids on `init/1`. Any
-RocksDB crash still restarts the whole storage tree in order, because
-SystemCache populates from RocksDB on init and the Writer coordinates through
-cache state.
+a Writer-only crash restarts the Writer and its linked Committer pool
+together, and the replacement Writer clears the stale in-flight ids and
+reconciles the orphaned tail on `init/1`. An individual Committer death is
+contained inside the pool: the Writer survives, that worker's range is
+abandoned and resolved, and the other in-flight ranges keep committing. A
+worker already inside `write_batch` may finish after the pool shuts down;
+GSNs are never reused, so that late write can only fill a range already
+reported as a hole. Any RocksDB crash still restarts the whole storage tree
+in order, because SystemCache populates from RocksDB on init and the Writer
+coordinates through cache state.
 
 ## Cross-cutting concerns
 
@@ -573,9 +581,12 @@ full generation algorithm.
   deliberately abandoned GSNs, advances over the hole), nudges
   `FanOutRouter` with `{:range_resolved, from, to}` so gated batches can
   drain, and replies `{:error, {:rocksdb_write_failed, reason}}`; the
-  HTTP layer maps that to `503 {"error":"write_failed"}`. The client
-  outbox is the only retry, undurable data is never acked, and GSNs are
-  never rewound or reused. Permanent GSN holes are acceptable.
+  HTTP layer maps that to `503 {"error":"write_failed"}`. A Committer
+  raise or a real worker death is contained the same way and only abandons
+  that worker's range; the Writer and the other in-flight ranges keep
+  running. The client outbox is the only retry, undurable data is never
+  acked, and GSNs are never rewound or reused. Permanent GSN holes are
+  acceptable.
 - **Writer startup reconcile**: `Writer.init/1` raises the GSN counter to
   `max(counter, RocksDB.get_max_gsn/1)` and resolves the remaining tail,
   healing a Writer-only restart that crashed between claim and resolve.

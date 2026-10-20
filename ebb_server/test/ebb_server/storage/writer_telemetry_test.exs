@@ -107,25 +107,24 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
   end
 
   describe "abandon via a raising commit" do
-    test "emits range_resolved with the reason and no commit_failed", ctx do
+    test "containing the raise emits commit_failed and range_resolved with the reason", ctx do
       ref = attach_telemetry(@writer_events)
       commit_fn = fn _ops, _opts -> raise "commit boom" end
 
-      %{name: writer_name, pid: writer_pid} =
-        start_writer(writer_opts(ctx, %{commit_fn: commit_fn}))
+      %{name: writer_name} = start_writer(writer_opts(ctx, %{commit_fn: commit_fn}))
 
-      Process.unlink(writer_pid)
-
-      catch_exit(Writer.write_actions([validated_action(%{id: "act_raise"})], writer_name))
+      assert {:error, {:rocksdb_write_failed, {:committer_raised, %RuntimeError{}}}} =
+               Writer.write_actions([validated_action(%{id: "act_raise"})], writer_name)
 
       events = telemetry_events(ref)
 
       assert {_event, %{count: 1}, %{gsn_start: 1, gsn_end: 1, reason: reason}} =
                find_event(events, [:ebb, :writer, :range_resolved])
 
-      assert %RuntimeError{message: "commit boom"} = reason
+      assert {:committer_raised, %RuntimeError{message: "commit boom"}} = reason
 
-      refute find_event(events, [:ebb, :writer, :commit_failed])
+      assert {_event, %{count: 1}, %{gsn_start: 1, gsn_end: 1, reason: ^reason}} =
+               find_event(events, [:ebb, :writer, :commit_failed])
     end
   end
 

@@ -4,7 +4,7 @@ defmodule EbbServer.Storage.CommitPipeline do
   state that gates durable commits, apply, and fan-out.
 
   The Writer is the imperative shell: it owns the live caches, the
-  Committer, timers, and the durable side effects. This module owns the
+  Committer pool, timers, and the durable side effects. This module owns the
   bookkeeping that used to be spread across the Writer's `pending`,
   `inflight`, `flush_*`, `InFlightActions`, and release-order fields. Every
   transition is a pure function of the pipeline state and an event, so the
@@ -22,10 +22,12 @@ defmodule EbbServer.Storage.CommitPipeline do
   `claimed` means the range exists and its action ids are guarded against a
   second claim. `prepared` means group resolution, `update_scopes`, and the
   provisional dirty marks are attached. `committing` means the batch is at
-  the Committer. Only `committed` is the point of no return; from there the
-  batch may still be abandoned if a post-ack step raises before the durable
-  mark. `abandoned` is terminal and resolved, so its range is a hole in the
-  log rather than a stalled claim. `phase/1` reports the phase of the oldest
+  a Committer worker and `owner` names that worker. `committed` is the
+  durable point of no return; from there the batch may still be abandoned
+  if a post-ack step raises before the durable mark. `applying` covers the
+  ordered apply/notify pass and `released` is its terminal success.
+  `abandoned` is terminal and resolved, so its range is a hole in the log
+  rather than a stalled claim. `phase/1` reports the phase of the oldest
   open batch, or `:idle`.
 
   ## One owner for ordering and guard state
@@ -50,16 +52,20 @@ defmodule EbbServer.Storage.CommitPipeline do
 
   The V0 Writer still allows one in-flight batch; `new/1` takes
   `max_in_flight: 1` by default and `schedule/3` stalls once the pipeline is
-  at that depth. The state machine itself is multi-batch: property tests
-  drive several claims and arbitrary ack orders through it.
+  at that depth. Depth above one is an internal test seam until the overlay
+  (#533) and the full ordered frontier/release work (#534) land. The state
+  machine itself is multi-batch: property tests drive several claims and
+  arbitrary ack orders through it.
 
   - **Reorder buffer (#534).** `claim_order` is the buffer and
     `releasable/1` is the ordered release decision: it returns only the
     committed batches at the head of the buffer, stopping at the first
-    range that is still committing or already applying. The future
+    range that is still committing or already applying. The Writer's
     apply/notify stage walks that list, marks each batch applying, applies
-    it, and calls `release/2`. Notifications must use the same list so the
-    persisted `FanOutFrontier` can never pass an unpushed range.
+    it, and calls `release/2`. Notifications use the same list, so the
+    persisted `FanOutFrontier` cannot pass an unpushed range. At a test
+    depth above one the resolution frontier may still advance over a
+    durable range before its apply; #534 owns tightening that ordering.
   - **Overlay chain (#533).** The `Batch` struct is where #533 adds the
     cache mutations a batch plans before it is applied. The chain is the
     `claim_order` sequence filtered to batches with a planned overlay;
@@ -119,6 +125,7 @@ defmodule EbbServer.Storage.CommitPipeline do
       :prepared,
       :groups_by_gsn,
       :batch_size,
+      :owner,
       :reason,
       pending_marks: {[], nil},
       phase: :claimed
@@ -136,6 +143,7 @@ defmodule EbbServer.Storage.CommitPipeline do
             groups_by_gsn: %{optional(CommitPipeline.gsn()) => [String.t()]} | nil,
             pending_marks: CommitPipeline.pending_marks() | nil,
             batch_size: non_neg_integer(),
+            owner: pid() | nil,
             reason: term(),
             phase: CommitPipeline.phase()
           }
@@ -194,7 +202,7 @@ defmodule EbbServer.Storage.CommitPipeline do
           {:flush | :send_flush | :schedule_timer | :wait | :idle, t()}
   def schedule(%__MODULE__{} = state, batch_max_size, batch_timeout_ms) do
     cond do
-      inflight_count(state) >= state.max_in_flight ->
+      at_capacity?(state) ->
         {:wait, state}
 
       state.pending == [] ->
@@ -272,10 +280,30 @@ defmodule EbbServer.Storage.CommitPipeline do
     end)
   end
 
-  @doc "Marks the batch as handed to the Committer."
-  @spec committing(t(), reference()) :: {:ok, Batch.t(), t()} | {:error, term()}
-  def committing(%__MODULE__{} = state, ref) do
-    update(state, ref, [:prepared], :committing, & &1)
+  @doc """
+  Marks the batch as handed to the Committer and records the worker that
+  owns the range.
+
+  The owner is informational for the Writer: the pool reports the result
+  and any worker death by `ref`, so a restart or reassignment cannot make
+  the Writer resolve another range's claim. `nil` keeps the transition
+  usable in the pure tests that do not model a worker.
+  """
+  @spec committing(t(), reference(), pid() | nil) :: {:ok, Batch.t(), t()} | {:error, term()}
+  def committing(%__MODULE__{} = state, ref, owner \\ nil) do
+    update(state, ref, [:prepared], :committing, fn batch -> %{batch | owner: owner} end)
+  end
+
+  @doc """
+  Records the worker assigned to a committing range.
+
+  The pool dispatches asynchronously, so the Writer learns the owner after
+  the claim has already been handed over. Assigning is idempotent and only
+  valid while the range is committing.
+  """
+  @spec assign_owner(t(), reference(), pid()) :: {:ok, Batch.t(), t()} | {:error, term()}
+  def assign_owner(%__MODULE__{} = state, ref, owner) do
+    update(state, ref, [:committing], :committing, fn batch -> %{batch | owner: owner} end)
   end
 
   @doc """
@@ -376,12 +404,26 @@ defmodule EbbServer.Storage.CommitPipeline do
   end
 
   @doc """
-  True while the pipeline holds a batch that is committing, applying, or
-  waiting in the release buffer. A committed-but-unreleased batch still
-  blocks a new claim in V0, so it counts as in flight here.
+  True while the pipeline holds any batch, including one applying or waiting
+  in the release buffer.
+
+  The shell asks `at_capacity?/1` when deciding whether to claim; this
+  predicate remains the convenient "anything open?" check for callers and
+  tests.
   """
   @spec inflight?(t()) :: boolean()
   def inflight?(%__MODULE__{} = state), do: inflight_count(state) > 0
+
+  @doc """
+  True when the pipeline holds as many batches as the configured depth.
+
+  The shell uses this to decide whether a new claim may start. At the V0
+  depth of one it is equivalent to `inflight?/1`, but a test or a later V2
+  configuration can allow several ranges to commit at once without changing
+  the scheduling rule.
+  """
+  @spec at_capacity?(t()) :: boolean()
+  def at_capacity?(%__MODULE__{} = state), do: inflight_count(state) >= state.max_in_flight
 
   defp inflight_count(%__MODULE__{} = state), do: map_size(state.batches)
 

@@ -45,23 +45,37 @@ defmodule EbbServer.Storage.Writer do
   Provisional marks, the durable commit, the watermark advance, and the
   fan-out notification are all once-per-flush.
 
-  ## Sequencer and Committer
+  ## Sequencer and Committer pool
 
-  The flush is split across two processes. This GenServer is the
+  The flush is split across processes. This GenServer is the
   **sequencer**: it owns everything that needs the live caches or the
   resolution frontier — coalescing, dedup, the pre-claim payload build and
   ETF encode, the GSN claim, group resolution and `update_scopes`, the
   provisional dirty marks, apply, the watermark, the fan-out notification,
-  and every reply. The linked `EbbServer.Storage.Committer` owns the parts
-  that only need immutable input: wrapper encode, `cf_*` op assembly, and
-  the durable `write_batch/2`.
+  and every reply. The linked `EbbServer.Storage.CommitterPool` owns the
+  parts that only need immutable input: wrapper encode, `cf_*` op
+  assembly, and the durable `write_batch/2`.
 
   The hand-off is one `EbbServer.Storage.PreparedAction` per Action plus
-  the claimed range. The sequencer sends it asynchronously and the
-  Committer answers with `{:committer_result, ref, result}`. **V0 allows
-  exactly one in-flight commit**: it is a seam and a measurement split,
-  not yet a concurrency change, so apply, notify, and reply still wait for
-  the ack.
+  the claimed range. The sequencer sends it asynchronously and the pool
+  answers with `{:committer_assigned, ref, worker}` followed by
+  `{:committer_result, ref, result}`. The Writer keeps exactly one range in
+  flight by default, so V0's semantics are unchanged until #533's cache
+  overlay lands. The `:max_in_flight` Writer option is an internal test
+  seam for the multi-range failure paths; it is not a runtime configuration
+  key, because a successor prepared before #533 can resolve stale group
+  scopes.
+
+  The pool is not shared across Writer restarts. It is linked to the
+  Writer and monitors it, so a Writer death sends shutdown to the pool.
+  That shutdown is best-effort: a worker already inside `write_batch` can
+  finish after its owner exits. Any claim still unresolved when the
+  replacement Writer boots is therefore treated as orphaned and resolved
+  as a hole. GSNs are never reused, so a late durable write can only fill a
+  range the new Writer already reported resolved; readers still see it in
+  the log, but live fan-out can miss it until a later catch-up. The
+  `InFlightActions.clear/1` call in `init/1` is safe for the same reason:
+  no old worker can claim a *new* GSN after its Writer is gone.
 
   ## Commit pipeline state machine
 
@@ -69,27 +83,32 @@ defmodule EbbServer.Storage.Writer do
   ranges, in-flight action-id guard, resolution order, and coalescing
   flags live in `EbbServer.Storage.CommitPipeline`, a pure state machine
   with explicit `claimed -> prepared -> committing -> committed ->
-  applying -> released` transitions and an `abandoned` terminal path. The
-  Writer owns the live caches, timers, Committer, and durable side
-  effects; every ordering decision comes from the pipeline. That is what
-  makes the transitions testable without a Writer, isolated caches, or
-  RocksDB.
+  applying -> released` transitions and an `abandoned` terminal path.
+  `Batch.owner` records the Committer worker that owns the range, while
+  `ref` remains the failure identity. The Writer owns the live caches,
+  timers, pool, and durable side effects; every ordering decision comes
+  from the pipeline. The issue's `durable` lifecycle step is the pipeline's
+  `:committed`, and its `released` step is reached after the ordered apply.
+  That is what makes the transitions testable without a Writer, isolated
+  caches, or RocksDB.
 
-  The pipeline's `claim_order` is the reorder buffer future concurrent
-  batches will release through, and the `Batch` struct is where the
-  cross-flush cache overlay (#533) will attach. Neither V2 feature is
-  enabled here; see `CommitPipeline` for the extension points.
+  The pipeline's `claim_order` is the reorder buffer: commit acks may
+  arrive in any order, but `drain_releasable/1` applies and notifies only
+  the committed prefix. An abandoned range is pruned, which lets the
+  healthy range behind it drain. The `Batch` struct is also where the
+  cross-flush cache overlay (#533) will attach; depth stays at one by
+  default until that overlay exists.
 
-  While the ack is outstanding the sequencer keeps accepting
+  While an ack is outstanding the sequencer keeps accepting
   `write_actions/2` calls, so the next burst drains and coalesces behind
   the durable write instead of queueing in the caller. Those calls are
   enqueued and their payloads built and ETF-encoded — work that needs no
-  GSN, so it overlaps the in-flight commit — but no second claim, flush,
-  or timer starts until the ack arrives. At the ack the sequencer captures
-  the commit time, runs the `:after_commit` seam, marks the range
-  committed, settles the dirty marks and cache mutations, notifies
-  `FanOutRouter`, replies to every caller, and then starts the next flush
-  by the same rules as a fresh call.
+  GSN, so it overlaps the in-flight commit. At the ack the sequencer
+  captures the commit time, runs the `:after_commit` seam, marks the range
+  committed, then drains every releasable range in claim order: settle the
+  dirty marks and cache mutations, notify `FanOutRouter`, reply to each
+  caller, and release. It then starts the next flush by the same rules as
+  a fresh call.
 
   ## Hot path
 
@@ -149,10 +168,11 @@ defmodule EbbServer.Storage.Writer do
   atomically claims the surviving ids before the GSN range is claimed and
   drops any id another batch already owns. An in-flight duplicate replies
   the same `{:ok, {0, 0}, []}` as a committed one; the tuple means "no
-  GSN assigned to this caller", not "durable". V0 allows one in-flight
-  commit, so the Writer cannot plan a duplicate mid-flight yet; the guard
-  becomes load-bearing with concurrent sub-batches (#536), where a failed
-  owner would leave the duplicate already acked empty.
+  GSN assigned to this caller", not "durable". At the default depth of
+  one the Writer cannot plan a duplicate mid-flight yet; the guard becomes
+  load-bearing when the internal `:max_in_flight` test seam is raised or
+  concurrent sub-batches (#536) land, where a failed owner would leave the
+  duplicate already acked empty.
 
   ## Failure and recovery policy
 
@@ -171,14 +191,15 @@ defmodule EbbServer.Storage.Writer do
     before the failure surfaces: clear the provisional marks, resolve the
     range, log, nudge `FanOutRouter`, emit telemetry. A `{:error, reason}`
     from the Committer is replied as a failed write. A raise/throw/exit
-    out of the Committer — from op assembly or from `commit_fn` — is
-    re-raised in the sequencer after the abandon, so callers see the same
-    exit the in-process flush produced. A failed commit and a raise
-    therefore both leave the frontier advanced before the nudge is sent.
-    A Writer death between claim and resolve can still leave the claim
-    unresolved — including a death that arrives after the Committer has
-    already written, because the write is now in another process. The
-    restart reconcile resolves that tail; a write that landed first stays
+    out of the Committer — from op assembly or from `commit_fn` — and a
+    real worker death reported by the pool as `{:crashed, reason}` are
+    contained: they abandon only that range and reply
+    `{:error, {:rocksdb_write_failed, reason}}`. The Writer and every
+    other in-flight range keep running. A Writer death between claim and
+    resolve can still leave the claim unresolved — including a death that
+    arrives after the Committer has already written, because the write is
+    now in another process. The pool dies with the Writer, so the restart
+    reconcile resolves the whole tail; a write that landed first stays
     durable even though the range is reported as resolved rather than
     committed, so live fan-out can miss it until a later catch-up.
   - **Commit is the point of no return.** Once the Committer reports
@@ -197,17 +218,23 @@ defmodule EbbServer.Storage.Writer do
   - **Startup reconcile.** `init/1` raises the counter to the durable log
     max and resolves any remaining tail, healing a Writer-only restart
     that crashed between claim and resolve. It also clears
-    `EbbServer.Storage.InFlightActions`: no commit is in flight at
-    startup, so every surviving id belongs to a crashed Writer, whose
-    linked Committer died with it. It also settles any provisional mark a
-    crashed Writer left behind: no commit is in flight at startup, so
-    settling is conservative — the entity re-materializes and, if nothing
-    was committed, finds no new Action and clears.
+    `EbbServer.Storage.InFlightActions`: the replacement Writer treats every
+    surviving id as orphaned because its old pool is gone. A worker that
+    was already inside `write_batch` may still land; GSNs are never reused,
+    so that write can only fill a range already reported as a hole, never
+    collide with a newly claimed range. It also settles any provisional
+    mark a crashed Writer left behind: settling is conservative — the
+    entity re-materializes and, if nothing was committed, finds no new
+    Action and clears.
+
+  A commit that never returns is not handled here: the pool contains
+  crashes and returned errors, but no commit watchdog. Admission control and
+  the hung-commit policy are tracked separately (#538).
 
   The test seam is the optional `:commit_fn` (default
   `&RocksDB.write_batch/2`), used for both error injection and crash
   simulation. It runs in the Committer, which reports a raised value back
-  instead of crashing, so the sequencer can abandon first. The optional
+  instead of crashing, so the pool can report it as a failed range. The optional
   `:after_commit` fun still runs inside the Writer once the Committer
   reports the durable write and before the marks settle, so tests can
   observe the durable-commit window deterministically.
@@ -259,7 +286,7 @@ defmodule EbbServer.Storage.Writer do
     ActionFormat,
     CacheTables,
     CommitPipeline,
-    Committer,
+    CommitterPool,
     DirtyTracker,
     EntityGroupCache,
     EntityIndex,
@@ -317,7 +344,7 @@ defmodule EbbServer.Storage.Writer do
           entity_types: atom(),
           relationships: atom(),
           relationships_by_id: atom(),
-          committer: pid() | nil,
+          committer_pool: pid() | nil,
           pipeline: CommitPipeline.t(),
           after_commit: (-> any()) | nil,
           batch_max_size: integer(),
@@ -340,7 +367,7 @@ defmodule EbbServer.Storage.Writer do
     :entity_types,
     :relationships,
     :relationships_by_id,
-    :committer,
+    :committer_pool,
     :pipeline,
     :after_commit,
     :batch_max_size,
@@ -456,12 +483,25 @@ defmodule EbbServer.Storage.Writer do
     watermark_tracker = Keyword.get(opts, :watermark_tracker, nil)
     in_flight_actions = Keyword.get(opts, :in_flight_actions, nil)
 
-    # One Committer per Writer, linked so an unexpected Committer death
-    # takes this Writer down and the supervisor's restart path (with its
-    # `init/1` reconcile) heals the claim.
-    {:ok, committer} =
-      Committer.start_link(
+    # Internal test seam until #533's overlay and #534's full ordered
+    # frontier make concurrent claims safe to expose as configuration.
+    max_in_flight = Keyword.get(opts, :max_in_flight, 1)
+
+    unless is_integer(max_in_flight) and max_in_flight > 0 do
+      raise ArgumentError,
+            "Writer max_in_flight must be a positive integer, got: #{inspect(max_in_flight)}"
+    end
+
+    pool_size = Keyword.get(opts, :committer_pool_size, max_in_flight)
+
+    # The pool is linked to the Writer and monitors it. An individual
+    # Committer death is contained by the pool; a Writer death stops the
+    # pool, and any claim still unresolved at the replacement's init is
+    # treated as orphaned.
+    {:ok, committer_pool} =
+      CommitterPool.start_link(
         owner: self(),
+        size: pool_size,
         rocks_name: rocks_name,
         commit_fn: commit_fn,
         ablate: ablate
@@ -479,8 +519,8 @@ defmodule EbbServer.Storage.Writer do
       entity_types: entity_types,
       relationships: relationships,
       relationships_by_id: relationships_by_id,
-      committer: committer,
-      pipeline: CommitPipeline.new(),
+      committer_pool: committer_pool,
+      pipeline: CommitPipeline.new(max_in_flight: max_in_flight),
       after_commit: after_commit,
       batch_max_size: batch_max_size,
       batch_timeout_ms: batch_timeout_ms,
@@ -491,9 +531,9 @@ defmodule EbbServer.Storage.Writer do
       in_flight_actions: in_flight_actions
     }
 
-    # No commit is in flight at boot, so every surviving id is stale: a
-    # Writer-only crash leaves its markers behind because the linked
-    # Committer died with it.
+    # Every surviving id is orphaned: the old pool is gone, and a worker
+    # still finishing a write cannot claim a new GSN. See the startup
+    # reconcile note in the moduledoc.
     if in_flight_actions, do: InFlightActions.clear(in_flight_actions)
 
     DirtyTracker.settle_all_pending(state.dirty_set)
@@ -504,10 +544,11 @@ defmodule EbbServer.Storage.Writer do
 
   # A Writer-only restart can leave the counter ahead of the durable log:
   # the crashed writer claimed a range it never committed, and the claim
-  # is still counted. Reuse of those GSNs is exactly what the resolution
-  # frontier prevents, so raise the counter to the durable max and resolve
-  # the abandoned tail. Idempotent on a clean boot, where the counter and
-  # the frontier already agree.
+  # is still counted. The pool is gone by then, so every surviving claim
+  # is orphaned; no commit can still be in flight. Reuse of those GSNs is
+  # exactly what the resolution frontier prevents, so raise the counter to
+  # the durable max and resolve the abandoned tail. Idempotent on a clean
+  # boot, where the counter and the frontier already agree.
   defp reconcile_resolution_frontier(%{watermark_tracker: nil}), do: :ok
 
   defp reconcile_resolution_frontier(state) do
@@ -569,12 +610,31 @@ defmodule EbbServer.Storage.Writer do
 
   # A marker queued before the dispatch only means the burst is already
   # being committed; the ack path reschedules if calls piled up behind it.
+  # At a pipeline depth above one a marker may still be actionable while
+  # another range is committing, so only the depth cap blocks the flush.
   @impl true
   def handle_info(:flush, state) do
-    if CommitPipeline.inflight?(state.pipeline) do
-      {:noreply, %{state | pipeline: CommitPipeline.clear_flush_marker(state.pipeline)}}
+    pipeline = CommitPipeline.clear_flush_marker(state.pipeline)
+    state = %{state | pipeline: pipeline}
+
+    if CommitPipeline.at_capacity?(pipeline) do
+      {:noreply, cancel_flush_timer(state)}
     else
       {:noreply, flush(state)}
+    end
+  end
+
+  def handle_info({:committer_assigned, ref, worker}, state) do
+    case CommitPipeline.assign_owner(state.pipeline, ref, worker) do
+      {:ok, _batch, pipeline} ->
+        {:noreply, %{state | pipeline: pipeline}}
+
+      {:error, reason} ->
+        Logger.warning(
+          "Writer ignored committer assignment for #{inspect(ref)}: #{inspect(reason)}"
+        )
+
+        {:noreply, state}
     end
   end
 
@@ -608,8 +668,9 @@ defmodule EbbServer.Storage.Writer do
     if ablate?(:encode, state), do: @ablated_payload_etf, else: ActionFormat.encode(payload)
   end
 
-  # The only place a flush is scheduled. A commit in flight blocks it —
-  # V0 keeps one claim — and calls accumulate until the ack reschedules.
+  # The only place a flush is scheduled. The pipeline depth blocks it;
+  # at the V0 depth of one this is the old single-in-flight rule, and at a
+  # higher depth calls accumulate only until the next free slot reschedules.
   defp schedule_flush(state) do
     case CommitPipeline.schedule(
            state.pipeline,
@@ -703,7 +764,7 @@ defmodule EbbServer.Storage.Writer do
     {:ok, _batch, pipeline} = CommitPipeline.committing(pipeline, ref)
     state = %{state | pipeline: pipeline}
 
-    Committer.commit(state.committer, ref, prepared, gsn_start, gsn_end)
+    CommitterPool.commit(state.committer_pool, ref, prepared, gsn_start, gsn_end)
     state
   end
 
@@ -759,7 +820,10 @@ defmodule EbbServer.Storage.Writer do
 
     case mark_committed_result(batch, state) do
       :ok ->
-        apply_and_release(batch, ref, state)
+        case drain_releasable(state) do
+          {:ok, state} -> schedule_flush(state)
+          {:escalated, state} -> state
+        end
 
       {:raised, kind, value, stacktrace} ->
         emit_batch_latency(batch)
@@ -771,6 +835,36 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp handle_commit_result({:error, reason}, ref, state) do
+    fail_range(ref, reason, state)
+  end
+
+  # A Committer-side raise or crash is a failed range, not a reason to
+  # take the Writer (and every other in-flight range) down. The pool turns
+  # a process death into `{:crashed, reason}`; a `commit_fn` raise arrives
+  # as `{:raised, ...}`. Both abandon only their own range and reply the
+  # same `503 write_failed` contract as a returned error.
+  defp handle_commit_result({:raised, kind, value, stacktrace}, ref, state) do
+    reason = {:committer_raised, raised_reason(kind, value)}
+
+    case CommitPipeline.get(state.pipeline, ref) do
+      %Batch{} = batch ->
+        Logger.error(
+          "Committer raised for GSN range #{batch.gsn_start}..#{batch.gsn_end}: " <>
+            Exception.format(kind, value, stacktrace)
+        )
+
+      nil ->
+        :ok
+    end
+
+    fail_range(ref, reason, state)
+  end
+
+  defp handle_commit_result({:crashed, reason}, ref, state) do
+    fail_range(ref, {:committer_crashed, reason}, state)
+  end
+
+  defp fail_range(ref, reason, state) do
     batch = CommitPipeline.get(state.pipeline, ref)
 
     Telemetry.execute(
@@ -784,43 +878,42 @@ defmodule EbbServer.Storage.Writer do
     emit_batch_latency(batch)
     reply_all(batch.pending, batch.ranges, {:error, reason})
 
-    schedule_flush(state)
+    case drain_releasable(state) do
+      {:ok, state} -> schedule_flush(state)
+      {:escalated, state} -> state
+    end
   end
 
-  # The Committer reports the crash instead of taking the write down with
-  # it, so the claim is abandoned here before the same exit reaches the
-  # caller.
-  defp handle_commit_result({:raised, kind, value, stacktrace}, ref, state) do
-    batch = CommitPipeline.get(state.pipeline, ref)
+  # The ordered apply/notify stage. Commit acks may arrive in any order,
+  # but `CommitPipeline.releasable/1` only returns the committed prefix, so
+  # a later range never overtakes an earlier one. Abandoned ranges were
+  # pruned, which is what lets the healthy range behind a failed one drain.
+  defp drain_releasable(state) do
+    case CommitPipeline.releasable(state.pipeline) do
+      [] ->
+        {:ok, state}
 
-    abandon(state, ref, raised_reason(kind, value))
-
-    emit_batch_latency(batch)
-    :erlang.raise(kind, value, stacktrace)
+      [batch | _] ->
+        apply_one(batch, state)
+    end
   end
 
-  defp apply_and_release(batch, ref, state) do
+  defp apply_one(batch, state) do
     committed_at = System.monotonic_time()
-    {:ok, _batch, pipeline} = CommitPipeline.applying(state.pipeline, ref)
+    {:ok, _batch, pipeline} = CommitPipeline.applying(state.pipeline, batch.ref)
     state = %{state | pipeline: pipeline}
 
     case settle_after_commit(batch, state, committed_at) do
       :ok ->
-        {:ok, _batch, pipeline} = CommitPipeline.release(state.pipeline, ref)
-        state = %{state | pipeline: pipeline}
-
-        if CommitPipeline.inflight?(state.pipeline) do
-          state
-        else
-          schedule_flush(state)
-        end
+        {:ok, _batch, pipeline} = CommitPipeline.release(state.pipeline, batch.ref)
+        drain_releasable(%{state | pipeline: pipeline})
 
       # The cache apply failed and the fan-out range was never pushed. Leave
       # the batch unreleased so a rebuilt Writer cannot let a later range
       # overtake it; the escalation restarts the storage tree and init/1
       # reconciles the durable frontier.
       :escalated ->
-        state
+        {:escalated, state}
     end
   end
 

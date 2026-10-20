@@ -376,9 +376,12 @@ defmodule EbbServer.Sync.ActionDedupLostAckHttpTest do
         "actions" => [lost_ack_action(actor_id, entity_id, group_id)]
       })
 
-    # The commit lands, then the Writer crashes before replying: the ack
-    # is lost but the Action is durable.
-    catch_exit(ActionHelpers.post_actions(body, actor_id))
+    # The commit lands, then the Committer raises before replying. The
+    # Writer contains the failure and answers 503; the Action is durable
+    # even though the ack was lost.
+    assert %{status: 503, resp_body: ~s({"error":"write_failed"})} =
+             ActionHelpers.post_actions(body, actor_id)
+
     committed_gsn = RocksDB.get_max_gsn()
 
     assert eventually(fn -> writer_ready?() end)
