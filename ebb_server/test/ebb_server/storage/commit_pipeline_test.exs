@@ -198,6 +198,40 @@ defmodule EbbServer.Storage.CommitPipelineTest do
     end
   end
 
+  describe "buffer stats" do
+    test "reports the open claims and the oldest unreleased gsn" do
+      state = CommitPipeline.new(max_in_flight: 2)
+
+      assert CommitPipeline.buffer_stats(state) == %{
+               in_flight_batches: 0,
+               oldest_unreleased_gsn: 0
+             }
+
+      {first_ref, _first, state} = claim!(state, 1)
+
+      assert CommitPipeline.buffer_stats(state) == %{
+               in_flight_batches: 1,
+               oldest_unreleased_gsn: 1
+             }
+
+      {_second_ref, _second, state} = claim!(state, 2)
+
+      assert CommitPipeline.buffer_stats(state) == %{
+               in_flight_batches: 2,
+               oldest_unreleased_gsn: 1
+             }
+
+      state = advance_to(state, first_ref, :committed)
+      {:ok, _batch, state} = CommitPipeline.applying(state, first_ref)
+      {:ok, _batch, state} = CommitPipeline.release(state, first_ref)
+
+      assert CommitPipeline.buffer_stats(state) == %{
+               in_flight_batches: 1,
+               oldest_unreleased_gsn: 2
+             }
+    end
+  end
+
   describe "overlay chain state" do
     test "a released batch drops its cache slice but a successor keeps its own" do
       state = CommitPipeline.new(max_in_flight: 2)

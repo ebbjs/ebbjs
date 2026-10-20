@@ -20,8 +20,10 @@ defmodule EbbServer.Telemetry do
   | `ebb.writer.actions_per_sec`              | `count`                               | —                                                   |
   | `ebb.writer.range_resolved`               | `count`                               | `gsn_start`, `gsn_end`, `reason`                    |
   | `ebb.writer.commit_failed`                | `count`                               | `gsn_start`, `gsn_end`, `reason`                    |
+  | `ebb.writer.in_flight_batches`            | `count`                               | —                                                   |
+  | `ebb.writer.oldest_unreleased_gsn`        | `gsn`                                 | —                                                   |
   | `ebb.system_cache.populated`              | `duration` (native), `entity_types`, `group_members`, `entity_groups`, `relationships`, `backfilled` | `outcome` (`:ok` / `:error`), `reason` |
-  | `ebb.watermark.lag`                       | `lag` (max GSN − committed watermark) | —                                                   |
+  | `ebb.watermark.lag`                       | `lag` (durability: max GSN − committed watermark) | —                                                   |
   | `ebb.dirty_set.size`                      | `size`                                | —                                                   |
   | `ebb.writer.in_flight_action_ids`         | `size`                                | —                                                   |
   | `ebb.entity_store.materialize_latency_ms` | `duration` (native), `byte_size`      | `subject_id`, `subject_type`, `path` (`:dirty_materialize`) |
@@ -53,6 +55,19 @@ defmodule EbbServer.Telemetry do
   sequencer before the claim. `commit_latency_ms` is emitted for every
   outcome (`:ok`, `{:error, reason}`, or a raise), so a failing commit stays
   visible in the same series as a successful one.
+
+  `ebb.writer.in_flight_batches` and `ebb.writer.oldest_unreleased_gsn`
+  are emitted whenever a claim enters or leaves the Writer's reorder
+  buffer. `in_flight_batches` counts every open claim, including one
+  applying; `oldest_unreleased_gsn` is the head of `claim_order`, or `0`
+  when the buffer is empty. They are emitted from the Writer rather than
+  sampled because the buffer only exists in its state. A reporter can
+  graph the pair to see the pipeline depth and the GSN holding release
+  back.
+
+  `ebb.watermark.lag` is a **durability** lag, not a notification lag:
+  the resolution frontier may cover a durable range before its apply.
+  `EbbServer.Sync.FanOutRouter.Plan` is the real notification gate.
 
   `ebb.fanout.push_latency_ms` is measured from the Writer's durable commit to
   the GroupServer dispatching the batch to the group's subscribers: one sample

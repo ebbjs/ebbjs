@@ -18,6 +18,12 @@ defmodule EbbServer.Storage.WatermarkTracker do
   rewound or reused. Density (no holes) is a convenience, not an
   invariant — liveness is.
 
+  The frontier can cover a durable range whose live notification has not
+  been sent yet: the Writer marks the range committed on the ack, while
+  `EbbServer.Sync.FanOutRouter` is notified only after the ordered apply.
+  That is safe because the Router pushes on the notification, not on the
+  frontier; see `EbbServer.Storage.CommitPipeline`.
+
   SSE subscribers send `cursor=N` with `GET /sync/live`; the Fan-Out
   Router only forwards a batch to a subscriber once the resolution
   frontier has passed that batch's end. This makes per-subscriber
