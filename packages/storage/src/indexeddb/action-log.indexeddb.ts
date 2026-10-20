@@ -1,4 +1,4 @@
-import type { IDBPDatabase } from "idb";
+import type { IDBPDatabase, IDBPTransaction, StoreNames } from "idb";
 import type { Action } from "@ebbjs/core";
 import { addedUpdates, mergeActionUpdates } from "../internal/action-merge";
 import type { ActionLog, LoggedAction } from "../types/action-log";
@@ -42,29 +42,53 @@ const toPublicAction = (stored: EbbDBSchema["actions"]["value"]): Action => {
   return rest;
 };
 
+type LogTransaction = IDBPTransaction<EbbDBSchema, StoreNames<EbbDBSchema>[], "readwrite">;
+
+/**
+ * Append one Action inside `tx`. The transaction stays alive across the
+ * awaits because every read it waits on is issued through it, which is what
+ * lets `appendMany` commit a whole page as one unit.
+ */
+const appendInto = async (tx: LogTransaction, action: Action): Promise<LoggedAction> => {
+  const actions = tx.objectStore("actions");
+  const existing = await actions.get(action.id);
+  const sequence = await tx.objectStore("sequence").get(ACTION_POSITION_SEQUENCE_ID);
+
+  const created = existing === undefined;
+  const position = created ? (sequence?.value ?? 0) + 1 : existing.position;
+  const merged =
+    existing === undefined
+      ? action
+      : { ...action, updates: mergeActionUpdates(existing.updates, action.updates) };
+  const added = addedUpdates(existing?.updates ?? [], action.updates);
+
+  await actions.put({ ...merged, position, subject_ids: collectSubjectIds(merged) });
+  if (created) {
+    await tx.objectStore("sequence").put({ id: ACTION_POSITION_SEQUENCE_ID, value: position });
+  }
+
+  return { action: merged, position, added };
+};
+
 export const createIndexedDBActionLog = (db: IDBPDatabase<EbbDBSchema>): ActionLog => {
   return {
     async append(action: Action): Promise<LoggedAction> {
       const tx = db.transaction(["actions", "sequence"], "readwrite");
-      const actions = tx.objectStore("actions");
-      const existing = await actions.get(action.id);
-      const sequence = await tx.objectStore("sequence").get(ACTION_POSITION_SEQUENCE_ID);
+      const entry = await appendInto(tx, action);
+      await tx.done;
 
-      const created = existing === undefined;
-      const position = created ? (sequence?.value ?? 0) + 1 : existing.position;
-      const merged =
-        existing === undefined
-          ? action
-          : { ...action, updates: mergeActionUpdates(existing.updates, action.updates) };
-      const added = addedUpdates(existing?.updates ?? [], action.updates);
+      return entry;
+    },
 
-      await actions.put({ ...merged, position, subject_ids: collectSubjectIds(merged) });
-      if (created) {
-        await tx.objectStore("sequence").put({ id: ACTION_POSITION_SEQUENCE_ID, value: position });
+    async appendMany(actions: readonly Action[]): Promise<readonly LoggedAction[]> {
+      const tx = db.transaction(["actions", "sequence"], "readwrite");
+      const entries: LoggedAction[] = [];
+      for (const action of actions) {
+        entries.push(await appendInto(tx, action));
       }
       await tx.done;
 
-      return { action: merged, position, added };
+      return entries;
     },
 
     async readTail(afterPosition: number): Promise<readonly LoggedAction[]> {

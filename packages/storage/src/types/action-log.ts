@@ -38,6 +38,7 @@ export interface LoggedAction {
  *
  * ## Methods
  * - `append(action)` — stores or merges an Action, returns the delta + position
+ * - `appendMany(actions)` — `append` for a batch, in one durable write
  * - `readTail(afterPosition)` — every entry with `position > afterPosition`, in order
  * - `lastPosition()` — the log's current append cursor
  * - `getAll()` — returns all merged Actions
@@ -46,6 +47,13 @@ export interface LoggedAction {
  */
 export interface ActionLog {
   append(action: Action): Promise<LoggedAction>;
+  /**
+   * Append every Action in one durable write (one IndexedDB transaction), in
+   * order, returning the same entries `append` would. A listing seed writes a
+   * page this way: the page is the unit that must land whole or not at all
+   * (#476).
+   */
+  appendMany(actions: readonly Action[]): Promise<readonly LoggedAction[]>;
   readTail(afterPosition: number): Promise<readonly LoggedAction[]>;
   lastPosition(): Promise<number>;
   getAll(): Promise<readonly Action[]>;

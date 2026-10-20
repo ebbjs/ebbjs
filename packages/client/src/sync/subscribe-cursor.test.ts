@@ -9,7 +9,21 @@ import { describe, it, expect, vi } from "vitest";
 
 import { createClient } from "./client";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import { emptyCatchUpResponse, jsonResponse, openSseResponse, waitFor } from "./test-utils";
+import {
+  emptyCatchUpResponse,
+  emptyListingResponse,
+  isListingRequest,
+  jsonResponse,
+  openSseResponse,
+  waitFor,
+} from "./test-utils";
+
+/**
+ * The catch-up request, not the listing one: both live under
+ * `/sync/groups/`, and the listing runs first.
+ */
+const catchUpCall = (calls: readonly string[]): string =>
+  calls.find((url) => url.includes("/sync/groups/") && !isListingRequest(url)) ?? "";
 
 const handshakeResponse = (groupId: string, cursor: number): Response =>
   jsonResponse({
@@ -31,6 +45,7 @@ describe("SyncClient.subscribe inferred cursor", () => {
     const fetchImpl = vi.fn(async (url: string) => {
       calls.push(url);
       if (url.includes("/sync/handshake")) return handshakeResponse("grp_1", 7);
+      if (isListingRequest(url)) return emptyListingResponse(7, "grp_1");
       if (url.includes("/sync/groups/")) return emptyCatchUpResponse();
       if (url.includes("/sync/live")) return openSseResponse();
       return jsonResponse({});
@@ -47,7 +62,7 @@ describe("SyncClient.subscribe inferred cursor", () => {
 
     await waitFor(() => calls.some((url) => url.includes("/sync/live")));
 
-    expect(calls.find((url) => url.includes("/sync/groups/"))).toContain("offset=7");
+    expect(catchUpCall(calls)).toContain("offset=7");
     expect(calls.find((url) => url.includes("/sync/live"))).toContain("cursor=7");
 
     unsubscribe();
@@ -57,6 +72,7 @@ describe("SyncClient.subscribe inferred cursor", () => {
     const calls: string[] = [];
     const fetchImpl = vi.fn(async (url: string) => {
       calls.push(url);
+      if (isListingRequest(url)) return emptyListingResponse(0, "grp_1");
       if (url.includes("/sync/groups/")) return emptyCatchUpResponse();
       if (url.includes("/sync/live")) return openSseResponse();
       return jsonResponse({});
@@ -76,7 +92,7 @@ describe("SyncClient.subscribe inferred cursor", () => {
 
     await waitFor(() => calls.some((url) => url.includes("/sync/live")));
 
-    expect(calls.find((url) => url.includes("/sync/groups/"))).toContain("offset=12");
+    expect(catchUpCall(calls)).toContain("offset=12");
     expect(calls.find((url) => url.includes("/sync/live"))).toContain("cursor=12");
 
     unsubscribe();
@@ -86,6 +102,7 @@ describe("SyncClient.subscribe inferred cursor", () => {
     const calls: string[] = [];
     const fetchImpl = vi.fn(async (url: string) => {
       calls.push(url);
+      if (isListingRequest(url)) return emptyListingResponse(0, "grp_1");
       if (url.includes("/sync/groups/")) return emptyCatchUpResponse();
       if (url.includes("/sync/live")) return openSseResponse();
       return jsonResponse({});
@@ -101,7 +118,7 @@ describe("SyncClient.subscribe inferred cursor", () => {
 
     await waitFor(() => calls.some((url) => url.includes("/sync/live")));
 
-    expect(calls.find((url) => url.includes("/sync/groups/"))).toContain("offset=0");
+    expect(catchUpCall(calls)).toContain("offset=0");
     expect(calls.find((url) => url.includes("/sync/live"))).toContain("cursor=0");
 
     unsubscribe();

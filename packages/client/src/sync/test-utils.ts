@@ -109,6 +109,22 @@ export const jsonResponse = (body: unknown, headers: Record<string, string> = {}
 export const emptyCatchUpResponse = (): Response =>
   jsonResponse([], { "stream-up-to-date": "true" });
 
+/**
+ * Whether `url` is the group listing (`GET /sync/groups/:id/entities`). The
+ * listing and the catch-up share a path prefix, so a path-dispatching mock
+ * has to tell them apart before it branches on `/sync/groups/`.
+ */
+export const isListingRequest = (url: string): boolean =>
+  url.includes("/sync/groups/") && url.includes("/entities");
+
+/**
+ * A group listing page with no rows. Every cold bootstrap asks for one
+ * before catch-up, so a path-dispatching mock serves this to stay on the
+ * log path; `watermark` is the GSN the client then resumes from.
+ */
+export const emptyListingResponse = (watermark = 0, groupId = "grp_1"): Response =>
+  jsonResponse({ group_id: groupId, watermark, cursor: null, has_more: false, entities: [] });
+
 /** An SSE `Response` whose body never ends, keeping a subscription live. */
 export const openSseResponse = (): Response =>
   new Response(new ReadableStream<Uint8Array>({ start() {} }), {

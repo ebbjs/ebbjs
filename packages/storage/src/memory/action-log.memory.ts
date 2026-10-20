@@ -49,30 +49,38 @@ export const createMemoryActionLog = (): ActionLog => {
     typeIndex: [],
   };
 
+  const append = async (action: Action): Promise<LoggedAction> => {
+    const index = state.actions.findIndex((stored) => stored.id === action.id);
+    const existing = index === -1 ? undefined : state.actions[index];
+
+    // One Action can arrive once per group it touches (#473); merge them
+    // under the position the id first claimed.
+    const stored =
+      existing === undefined
+        ? action
+        : { ...existing, updates: mergeActionUpdates(existing.updates, action.updates) };
+
+    const created = existing === undefined;
+    const position = created ? state.actions.length + 1 : index + 1;
+    const added = addedUpdates(existing?.updates ?? [], action.updates);
+
+    state = {
+      actions: created
+        ? [...state.actions, stored]
+        : state.actions.map((candidate) => (candidate.id === action.id ? stored : candidate)),
+      typeIndex: updateTypeIndex(state.typeIndex, stored),
+    };
+
+    return { action: stored, position, added };
+  };
+
   return {
-    async append(action: Action): Promise<LoggedAction> {
-      const index = state.actions.findIndex((stored) => stored.id === action.id);
-      const existing = index === -1 ? undefined : state.actions[index];
+    append,
 
-      // One Action can arrive once per group it touches (#473); merge them
-      // under the position the id first claimed.
-      const stored =
-        existing === undefined
-          ? action
-          : { ...existing, updates: mergeActionUpdates(existing.updates, action.updates) };
-
-      const created = existing === undefined;
-      const position = created ? state.actions.length + 1 : index + 1;
-      const added = addedUpdates(existing?.updates ?? [], action.updates);
-
-      state = {
-        actions: created
-          ? [...state.actions, stored]
-          : state.actions.map((candidate) => (candidate.id === action.id ? stored : candidate)),
-        typeIndex: updateTypeIndex(state.typeIndex, stored),
-      };
-
-      return { action: stored, position, added };
+    async appendMany(actions: readonly Action[]): Promise<readonly LoggedAction[]> {
+      const entries: LoggedAction[] = [];
+      for (const action of actions) entries.push(await append(action));
+      return entries;
     },
 
     async readTail(afterPosition: number): Promise<readonly LoggedAction[]> {

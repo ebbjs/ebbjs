@@ -119,6 +119,13 @@ export interface Replica {
   readonly changeFloor: Revision;
 
   get(id: string): Entity | undefined;
+  /**
+   * The durable base row for `id`, without this client's optimistic overlay
+   * writes. A reader judging "has this row already folded a later Action than
+   * the one I am delivering" must read the base: an overlay `put` composes
+   * with gsn 0, which would hide the row's folded position.
+   */
+  base(id: string): Entity | undefined;
   iterate(type: string): readonly Entity[];
   /** Whether the materialization policy holds `type` in full. */
   isHeld(type: string): boolean;
