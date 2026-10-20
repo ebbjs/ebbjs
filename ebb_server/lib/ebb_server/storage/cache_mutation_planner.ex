@@ -5,8 +5,8 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
 
   The planner is pure: it reads only the `tables` map it is given and the
   `overlay` it is handed, and it writes no cache. `EbbServer.Storage.Writer`
-  keeps the apply stage — `apply_post_commit/2` plans from its live cache
-  table names, then applies each returned mutation.
+  keeps the apply stage — it plans before the commit, then applies the
+  returned mutations once the range is durable.
 
   ## Overlay
 
@@ -15,11 +15,23 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   in the same plan merges over an earlier put or sees an earlier delete
   instead of reading a cache the plan has not written yet. The overlay is
   returned so the caller can chain plans: plan N+1 can be computed while
-  plan N's mutations are still unapplied, and dropping N's overlay on
-  abandon makes N+1 resolve against the pre-plan cache.
+  plan N's mutations are still unapplied, and dropping N's slice on abandon
+  makes N+1 resolve against the pre-plan cache.
+
+  The overlay is opaque. `EbbServer.Storage.EntityIndex` reads it through
+  the functions here rather than the raw map, so the planner can add
+  projections — such as the entity→groups index below — without changing
+  those callers.
   """
 
-  alias EbbServer.Storage.{EntityGroupCache, Fields, GroupCache, PermissionChecker}
+  alias EbbServer.Storage.{
+    EntityGroupCache,
+    Fields,
+    GroupCache,
+    PermissionChecker
+  }
+
+  alias EbbServer.Storage.CacheMutationPlanner.Overlay
 
   @typedoc """
   The caches a patch merge reads. Both are ETS tables keyed by entry id.
@@ -42,8 +54,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
           | {:relationship_put, map()}
           | {:relationship_delete, String.t()}
 
-  @type cache_key :: {atom(), String.t()}
-  @type overlay :: %{optional(cache_key()) => map() | :deleted}
+  @type overlay :: Overlay.t()
 
   @doc """
   Plans a flat list of validated Updates against the given cache tables.
@@ -56,13 +67,43 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   and the head of the next is emitted (and applied) twice, which every cache
   here treats as idempotent.
   """
-  @spec plan([PermissionChecker.validated_update()], tables(), overlay()) ::
+  @spec plan([PermissionChecker.validated_update()], tables(), overlay() | nil) ::
           {[mutation()], overlay()}
-  def plan(updates, tables, overlay \\ %{}) do
+  def plan(updates, tables, overlay \\ nil) do
+    overlay = Overlay.normalize(overlay)
+
     {mutations, overlay} =
       Enum.reduce(updates, {[], overlay}, fn update, acc -> plan_update(update, tables, acc) end)
 
     {mutations |> Enum.reverse() |> drop_repeats(), overlay}
+  end
+
+  @doc """
+  Returns the slice of `cumulative` that `mutations` contributed.
+
+  A batch stores its own slice, not the cumulative overlay, so releasing it
+  drops exactly its effects from the chain while a successor's later writes
+  survive.
+  """
+  @spec slice(overlay(), [mutation()]) :: overlay()
+  def slice(%Overlay{} = cumulative, mutations) do
+    Enum.reduce(mutations, Overlay.empty(), fn mutation, slice ->
+      slice_mutation(slice, cumulative, mutation)
+    end)
+  end
+
+  @doc """
+  Merges per-batch slices in the order they were planned.
+
+  Later slices override earlier rows. The entity→groups projection is
+  rebuilt from the merged membership rows, so an applied predecessor's
+  slice is absent after release without losing the successor's writes.
+  """
+  @spec merge_overlays([overlay()]) :: overlay()
+  def merge_overlays(overlays) do
+    Enum.reduce(overlays, Overlay.empty(), fn overlay, merged ->
+      Overlay.merge(merged, Overlay.normalize(overlay))
+    end)
   end
 
   # A repeat is dropped only when it is identical to the previous mutation
@@ -89,6 +130,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   # The entity-type index mirrors `cf_type_entities`, which the Writer
   # writes for every Update (including deletes, whose entry stays).
   defp plan_update(update, tables, {mutations, overlay}) do
+    overlay = Overlay.put(overlay, {:entity_types, update.subject_id}, update.subject_type)
     mutations = [{:entity_type, update.subject_id, update.subject_type} | mutations]
     plan_system_mutation(update, tables, mutations, overlay)
   end
@@ -104,7 +146,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
           patch_existing(
             update,
             overlay,
-            key,
+            :group_members_by_id,
             tables.group_members_by_id,
             &GroupCache.get_group_member/2
           )
@@ -122,11 +164,12 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
             permissions: Fields.get(data, "permissions") || existing[:permissions]
           }
 
-          {[{:group_member_put, row} | mutations], Map.put(overlay, key, row)}
+          {[{:group_member_put, row} | mutations], Overlay.put(overlay, key, row)}
         end
 
       :delete ->
-        {[{:group_member_delete, update.subject_id} | mutations], Map.put(overlay, key, :deleted)}
+        {[{:group_member_delete, update.subject_id} | mutations],
+         Overlay.put(overlay, key, :deleted)}
     end
   end
 
@@ -141,7 +184,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
           patch_existing(
             update,
             overlay,
-            key,
+            :entity_groups_by_id,
             tables.entity_groups_by_id,
             &EntityGroupCache.get_entity_group/2
           )
@@ -153,11 +196,14 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
           {mutations, overlay}
         else
           row = %{id: update.subject_id, entity_id: entity_id, group_id: group_id}
-          {[{:entity_group_put, row} | mutations], Map.put(overlay, key, row)}
+          {[{:entity_group_put, row} | mutations], Overlay.put(overlay, key, row)}
         end
 
       :delete ->
-        {[{:entity_group_delete, update.subject_id} | mutations], Map.put(overlay, key, :deleted)}
+        entity_id = entity_group_entity(overlay, update.subject_id, tables)
+
+        {[{:entity_group_delete, update.subject_id} | mutations],
+         Overlay.delete_entity_group(overlay, update.subject_id, entity_id)}
     end
   end
 
@@ -183,11 +229,12 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
             field: Fields.get(data, "field")
           }
 
-          {[{:relationship_put, row} | mutations], Map.put(overlay, key, row)}
+          {[{:relationship_put, row} | mutations], Overlay.put(overlay, key, row)}
         end
 
       :delete ->
-        {[{:relationship_delete, update.subject_id} | mutations], Map.put(overlay, key, :deleted)}
+        {[{:relationship_delete, update.subject_id} | mutations],
+         Overlay.put(overlay, key, :deleted)}
     end
   end
 
@@ -196,15 +243,53 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   # Only a patch consults a pre-existing row. The overlay is the plan's own
   # prior effect, so a delete in the same plan means there is nothing left
   # to merge over and the patch cannot resurrect a pre-plan row.
-  defp patch_existing(%{method: :patch} = update, overlay, key, table, fetch) do
-    case Map.fetch(overlay, key) do
+  defp patch_existing(%{method: :patch} = update, overlay, cache, table, fetch) do
+    case Overlay.fetch(overlay, cache, update.subject_id) do
       {:ok, :deleted} -> %{}
       {:ok, row} -> row
       :error -> fetch.(update.subject_id, table) || %{}
     end
   end
 
-  defp patch_existing(_update, _overlay, _key, _table, _fetch), do: %{}
+  defp patch_existing(_update, _overlay, _cache, _table, _fetch), do: %{}
+
+  # A delete's wire form carries only the membership id, so the projection
+  # needs the entity the row belonged to. Prefer the chain, then the cache.
+  defp entity_group_entity(overlay, membership_id, tables) do
+    Overlay.entity_for_membership(overlay, membership_id) ||
+      case EntityGroupCache.get_entity_group(membership_id, tables.entity_groups_by_id) do
+        nil -> nil
+        entry -> entry[:entity_id] || entry["entity_id"]
+      end
+  end
+
+  defp slice_mutation(slice, _cumulative, {:entity_type, id, type}) do
+    Overlay.put(slice, {:entity_types, id}, type)
+  end
+
+  defp slice_mutation(slice, _cumulative, {:group_member_put, %{id: id} = row}) do
+    Overlay.put(slice, {:group_members_by_id, id}, row)
+  end
+
+  defp slice_mutation(slice, _cumulative, {:group_member_delete, id}) do
+    Overlay.put(slice, {:group_members_by_id, id}, :deleted)
+  end
+
+  defp slice_mutation(slice, _cumulative, {:entity_group_put, %{id: id} = row}) do
+    Overlay.put(slice, {:entity_groups_by_id, id}, row)
+  end
+
+  defp slice_mutation(slice, cumulative, {:entity_group_delete, id}) do
+    Overlay.delete_entity_group(slice, id, Overlay.entity_for_membership(cumulative, id))
+  end
+
+  defp slice_mutation(slice, _cumulative, {:relationship_put, %{id: id} = row}) do
+    Overlay.put(slice, {:relationships_by_id, id}, row)
+  end
+
+  defp slice_mutation(slice, _cumulative, {:relationship_delete, id}) do
+    Overlay.put(slice, {:relationships_by_id, id}, :deleted)
+  end
 
   defp mutation_value({:entity_type, _id, type}), do: type
   defp mutation_value({:group_member_put, row}), do: row
@@ -214,7 +299,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   defp mutation_value({:relationship_put, row}), do: row
   defp mutation_value({:relationship_delete, _id}), do: :deleted
 
-  defp mutation_key({:entity_type, id, _type}), do: {:entity_type, id}
+  defp mutation_key({:entity_type, id, _type}), do: {:entity_types, id}
   defp mutation_key({:group_member_put, %{id: id}}), do: {:group_members_by_id, id}
   defp mutation_key({:group_member_delete, id}), do: {:group_members_by_id, id}
   defp mutation_key({:entity_group_put, %{id: id}}), do: {:entity_groups_by_id, id}

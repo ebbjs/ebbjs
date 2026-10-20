@@ -1,6 +1,7 @@
 defmodule EbbServer.Storage.EntityIndexTest do
   use ExUnit.Case, async: false
 
+  alias EbbServer.Storage.CacheMutationPlanner
   alias EbbServer.Storage.EntityGroupCache
   alias EbbServer.Storage.EntityIndex
   alias EbbServer.Storage.EntityTypeCache
@@ -348,6 +349,23 @@ defmodule EbbServer.Storage.EntityIndexTest do
       :ok = EntityTypeCache.put_type("todo_1", "todo", entity_types: t.entity_types)
 
       assert EntityIndex.subject_type("todo_1", opts(t)) == "todo"
+    end
+
+    test "reads a predecessor batch's planned entity type from the overlay" do
+      t = tables()
+
+      update = %{subject_id: "todo_1", subject_type: "todo", method: :put, data: %{}}
+
+      {_mutations, overlay} =
+        CacheMutationPlanner.plan([update], %{
+          group_members_by_id: t.group_members_by_id,
+          entity_groups_by_id: t.entity_groups_by_id
+        })
+
+      opts = Keyword.put(opts(t), :overlay, overlay)
+
+      assert EntityIndex.subject_type("todo_1", opts) == "todo"
+      assert EntityIndex.exists?("todo_1", opts)
     end
 
     test "returns nil for an unknown entity" do

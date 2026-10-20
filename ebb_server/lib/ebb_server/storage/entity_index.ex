@@ -50,6 +50,8 @@ defmodule EbbServer.Storage.EntityIndex do
     RelationshipCache
   }
 
+  alias EbbServer.Storage.CacheMutationPlanner.Overlay
+
   @typep subject_type :: String.t()
   @typep subject_id :: String.t()
 
@@ -64,6 +66,8 @@ defmodule EbbServer.Storage.EntityIndex do
     - `:group_members_by_id`     — used for `"groupMember"` resolution
     - `:intra_action`            — optional membership from the
       current Action, keyed by entity id
+    - `:overlay`                 — optional `CacheMutationPlanner.Overlay`
+      of planned cache rows a predecessor batch has not applied yet
 
   Missing required options raise `ArgumentError` rather than silently
   falling back to a global default.
@@ -98,7 +102,9 @@ defmodule EbbServer.Storage.EntityIndex do
   def resolve_groups_cached("entityGroup", membership_id, opts) do
     table = Keyword.fetch!(opts, :entity_groups_by_id)
 
-    case EntityGroupCache.get_entity_group(membership_id, table) do
+    case cached_row(opts, :entity_groups_by_id, membership_id, fn ->
+           EntityGroupCache.get_entity_group(membership_id, table)
+         end) do
       nil -> {[], nil}
       entry -> {List.wrap(entry_group_id(entry)), nil}
     end
@@ -107,7 +113,9 @@ defmodule EbbServer.Storage.EntityIndex do
   def resolve_groups_cached("relationship", rel_id, opts) do
     table = Keyword.fetch!(opts, :relationships_by_id)
 
-    case RelationshipCache.get_relationship(rel_id, table) do
+    case cached_row(opts, :relationships_by_id, rel_id, fn ->
+           RelationshipCache.get_relationship(rel_id, table)
+         end) do
       nil ->
         {[], nil}
 
@@ -120,7 +128,9 @@ defmodule EbbServer.Storage.EntityIndex do
   def resolve_groups_cached("groupMember", gm_id, opts) do
     table = Keyword.fetch!(opts, :group_members_by_id)
 
-    case GroupCache.get_group_member(gm_id, table) do
+    case cached_row(opts, :group_members_by_id, gm_id, fn ->
+           GroupCache.get_group_member(gm_id, table)
+         end) do
       nil -> {[], nil}
       entry -> {List.wrap(entry_group_id(entry)), nil}
     end
@@ -166,7 +176,14 @@ defmodule EbbServer.Storage.EntityIndex do
   @spec source_groups_cached(subject_id(), keyword()) :: [String.t()]
   def source_groups_cached(source_id, opts) do
     table = Keyword.fetch!(opts, :entity_groups)
-    EntityGroupCache.entity_groups(source_id, table)
+    entries = EntityGroupCache.entity_group_entries(source_id, table)
+
+    with %Overlay{} = overlay <- Keyword.get(opts, :overlay),
+         {:ok, groups} <- Overlay.entity_groups(overlay, source_id, entries) do
+      groups
+    else
+      _ -> EntityGroupCache.entity_groups_from_entries(entries)
+    end
   end
 
   @doc """
@@ -178,7 +195,10 @@ defmodule EbbServer.Storage.EntityIndex do
   @spec subject_type(subject_id(), keyword()) :: subject_type() | nil
   def subject_type(entity_id, opts) do
     table = Keyword.fetch!(opts, :entity_types)
-    EntityTypeCache.get_type(entity_id, table)
+
+    cached_row(opts, :entity_types, entity_id, fn ->
+      EntityTypeCache.get_type(entity_id, table)
+    end)
   end
 
   @doc """
@@ -202,7 +222,9 @@ defmodule EbbServer.Storage.EntityIndex do
   def membership(membership_id, opts) do
     table = Keyword.fetch!(opts, :entity_groups_by_id)
 
-    case EntityGroupCache.get_entity_group(membership_id, table) do
+    case cached_row(opts, :entity_groups_by_id, membership_id, fn ->
+           EntityGroupCache.get_entity_group(membership_id, table)
+         end) do
       nil -> nil
       entry -> {entry_entity_id(entry), entry_group_id(entry)}
     end
@@ -265,6 +287,22 @@ defmodule EbbServer.Storage.EntityIndex do
       {:wire, group_ids} -> group_ids
       {:source, source_id} -> source_groups(source_id, opts)
       {:by_id, subject_type} -> resolve_groups(subject_type, update.subject_id, opts)
+    end
+  end
+
+  # A planned row shadows the cache for its id; a tombstone means the
+  # successor batch must resolve as if the predecessor had already applied.
+  defp cached_row(opts, cache, id, fetch) do
+    case Keyword.get(opts, :overlay) do
+      %Overlay{} = overlay ->
+        case Overlay.fetch(overlay, cache, id) do
+          {:ok, :deleted} -> nil
+          {:ok, row} -> row
+          :error -> fetch.()
+        end
+
+      _ ->
+        fetch.()
     end
   end
 

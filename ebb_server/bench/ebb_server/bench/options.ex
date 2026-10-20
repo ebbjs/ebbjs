@@ -25,10 +25,12 @@ defmodule EbbServer.Bench.Options do
   the Writer (`t0`, `t2`, `t3`). Repeated depths collapse, so `2,2` is one
   single-depth run, not a sweep.
 
-  Depth is a workload knob, not a promise of pipeline parallelism: the Writer
-  coalesces outstanding calls, so a deeper workload also deepens the flush and
-  costs more per Action. Read the report's `Actions/flush` column, and compare
-  depths only at the same flush shape — the control tables in
+  Depth is both a workload knob and the Writer's `max_in_flight` (capped at
+  4), so depth above one can prepare a successor against the predecessor's
+  cache overlay (#533). It is not a promise of pipeline parallelism: the
+  Writer coalesces outstanding calls, so a deeper workload also deepens the
+  flush and costs more per Action. Read the report's `Actions/flush` column,
+  and compare depths only at the same flush shape — the control tables in
   `ebb_server/bench/RESULTS.md` are what separates the two.
   """
 

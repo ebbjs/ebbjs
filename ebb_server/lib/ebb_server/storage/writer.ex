@@ -59,12 +59,12 @@ defmodule EbbServer.Storage.Writer do
   The hand-off is one `EbbServer.Storage.PreparedAction` per Action plus
   the claimed range. The sequencer sends it asynchronously and the pool
   answers with `{:committer_assigned, ref, worker}` followed by
-  `{:committer_result, ref, result}`. The Writer keeps exactly one range in
-  flight by default, so V0's semantics are unchanged until #533's cache
-  overlay lands. The `:max_in_flight` Writer option is an internal test
-  seam for the multi-range failure paths; it is not a runtime configuration
-  key, because a successor prepared before #533 can resolve stale group
-  scopes.
+  `{:committer_result, ref, result}`. The Writer keeps one range in
+  flight by default. Raising `:max_in_flight` lets a successor be resolved
+  against the predecessor's planned cache overlay while that predecessor
+  commits. A predecessor that planned a membership or relationship move
+  holds the successor at the gate until it is durable, so its abandon
+  rebuilds the chain instead of letting stale scopes reach a durable range.
 
   The pool is not shared across Writer restarts. It is linked to the
   Writer and monitors it, so a Writer death sends shutdown to the pool.
@@ -95,9 +95,10 @@ defmodule EbbServer.Storage.Writer do
   The pipeline's `claim_order` is the reorder buffer: commit acks may
   arrive in any order, but `drain_releasable/1` applies and notifies only
   the committed prefix. An abandoned range is pruned, which lets the
-  healthy range behind it drain. The `Batch` struct is also where the
-  cross-flush cache overlay (#533) will attach; depth stays at one by
-  default until that overlay exists.
+  healthy range behind it drain. Each prepared `Batch` carries the slice
+  of the cross-flush cache overlay it planned; the Writer merges the open
+  slices to resolve the next batch, and an abandon rebuilds every successor
+  that resolved against the failed slice.
 
   While an ack is outstanding the sequencer keeps accepting
   `write_actions/2` calls, so the next burst drains and coalesces behind
@@ -136,14 +137,16 @@ defmodule EbbServer.Storage.Writer do
   `relationship`/`entityGroup` delete's by-id cache entry is gone by
   then), so this snapshot is the delivery contract.
 
-  System-cache writes are deduplicated the same way. The post-commit
-  pass hands the flush's flattened Updates to
+  System-cache writes are deduplicated the same way. The pre-commit pass
+  hands the flush's flattened Updates to
   `EbbServer.Storage.CacheMutationPlanner`, which drops a mutation
   identical to the previous one for the same `{cache, key}` and returns
   the survivors alongside an overlay of the rows the flush itself has
   computed, so a later patch merges over an earlier put — or sees an
   earlier delete — instead of reading the pre-flush cache. The planner is
-  pure and writes no cache; this Writer applies its mutations.
+  pure and writes no cache; this Writer applies its mutations once the
+  range is durable. The batch keeps only its own slice of that overlay, so
+  releasing it drops exactly its effects from the chain.
 
   Provisionally dirty marks close the gap between the durable commit
   returning and the entity being marked dirty: a read that starts after
@@ -172,9 +175,9 @@ defmodule EbbServer.Storage.Writer do
   the same `{:ok, {0, 0}, []}` as a committed one; the tuple means "no
   GSN assigned to this caller", not "durable". At the default depth of
   one the Writer cannot plan a duplicate mid-flight yet; the guard becomes
-  load-bearing when the internal `:max_in_flight` test seam is raised or
-  concurrent sub-batches (#536) land, where a failed owner would leave the
-  duplicate already acked empty.
+  load-bearing when `:max_in_flight` is raised (a prepared successor or the
+  bench) or concurrent sub-batches (#536) land, where a failed owner would
+  leave the duplicate already acked empty.
 
   ## Failure and recovery policy
 
@@ -319,6 +322,9 @@ defmodule EbbServer.Storage.Writer do
                        )
 
   @type pending_marks :: CommitPipeline.pending_marks()
+
+  # The overlay chain is bounded to keep its memory and rebuild cost small.
+  @max_overlay_chain 4
 
   # A caller's surviving Action plus its position in the coalesced burst. The
   # position is what makes each caller's reply sub-range contiguous.
@@ -476,13 +482,15 @@ defmodule EbbServer.Storage.Writer do
     watermark_tracker = Keyword.get(opts, :watermark_tracker, nil)
     in_flight_actions = Keyword.get(opts, :in_flight_actions, nil)
 
-    # Internal test seam until #533's overlay and #534's full ordered
-    # frontier make concurrent claims safe to expose as configuration.
+    # A successor may be prepared ahead of its predecessor's durable commit,
+    # so the chain is capped to keep the overlay bounded. #534 still owns the
+    # full ordered notification frontier.
     max_in_flight = Keyword.get(opts, :max_in_flight, 1)
 
-    unless is_integer(max_in_flight) and max_in_flight > 0 do
+    unless is_integer(max_in_flight) and max_in_flight in 1..@max_overlay_chain do
       raise ArgumentError,
-            "Writer max_in_flight must be a positive integer, got: #{inspect(max_in_flight)}"
+            "Writer max_in_flight must be an integer in 1..#{@max_overlay_chain}, " <>
+              "got: #{inspect(max_in_flight)}"
     end
 
     pool_size = Keyword.get(opts, :committer_pool_size, max_in_flight)
@@ -725,6 +733,7 @@ defmodule EbbServer.Storage.Writer do
 
   defp dispatch(pending, ranges, fresh, gsn_start, gsn_end, started_at, state) do
     ref = make_ref()
+    incoming_overlay = current_overlay(state)
 
     batch = %Batch{
       ref: ref,
@@ -740,8 +749,16 @@ defmodule EbbServer.Storage.Writer do
     {:ok, _batch, pipeline} = CommitPipeline.claim(state.pipeline, batch)
     state = %{state | pipeline: pipeline}
 
-    {prepared, groups_by_gsn} =
-      prepare_or_abandon(fresh, ref, gsn_start, gsn_end, started_at, state)
+    {prepared, groups_by_gsn, cache_plan} =
+      prepare_or_abandon(
+        fresh,
+        ref,
+        gsn_start,
+        gsn_end,
+        started_at,
+        state,
+        incoming_overlay
+      )
 
     pending_marks = pending_marks(prepared, state)
 
@@ -751,24 +768,29 @@ defmodule EbbServer.Storage.Writer do
         ref,
         prepared,
         groups_by_gsn,
-        pending_marks
+        pending_marks,
+        cache_plan
       )
 
-    {:ok, _batch, pipeline} = CommitPipeline.committing(pipeline, ref)
-    state = %{state | pipeline: pipeline}
-
-    CommitterPool.commit(state.committer_pool, ref, prepared, gsn_start, gsn_end)
-    state
+    start_next_commit(%{state | pipeline: pipeline})
   end
 
   # Group resolution reads the system caches, so it stays on the
   # sequencer. A raise here is still a claimed-but-uncommitted range: the
   # abandon (release the ids, clear marks, resolve, log, nudge) runs before
   # the re-raise, exactly like the failure paths after the ack.
-  defp prepare_or_abandon(fresh, ref, gsn_start, gsn_end, started_at, state) do
+  defp prepare_or_abandon(
+         fresh,
+         ref,
+         gsn_start,
+         gsn_end,
+         started_at,
+         state,
+         incoming_overlay
+       ) do
     # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
     try do
-      prepare(fresh, gsn_start, state)
+      prepare(fresh, gsn_start, state, incoming_overlay)
     rescue
       error ->
         emit_batch_latency(gsn_start, gsn_end, started_at)
@@ -813,10 +835,7 @@ defmodule EbbServer.Storage.Writer do
 
     case mark_committed_result(batch, state) do
       :ok ->
-        case drain_releasable(state) do
-          {:ok, state} -> schedule_flush(state)
-          {:escalated, state} -> state
-        end
+        advance_pipeline(state)
 
       {:raised, kind, value, stacktrace} ->
         emit_batch_latency(batch)
@@ -871,16 +890,58 @@ defmodule EbbServer.Storage.Writer do
     emit_batch_latency(batch)
     reply_all(batch.pending, batch.ranges, {:error, reason})
 
+    advance_pipeline(state)
+  end
+
+  # Apply and notify every committed prefix, then hand the next prepared
+  # successor to a Committer. Commit acks may arrive in any order, but
+  # `CommitPipeline.releasable/1` only returns the committed prefix, so a
+  # later range never overtakes an earlier one. Abandoned ranges were
+  # pruned, which is what lets the healthy range behind a failed one drain.
+  defp advance_pipeline(state) do
     case drain_releasable(state) do
-      {:ok, state} -> schedule_flush(state)
+      {:ok, state} -> state |> start_next_commit() |> schedule_flush()
       {:escalated, state} -> state
     end
   end
 
-  # The ordered apply/notify stage. Commit acks may arrive in any order,
-  # but `CommitPipeline.releasable/1` only returns the committed prefix, so
-  # a later range never overtakes an earlier one. Abandoned ranges were
-  # pruned, which is what lets the healthy range behind a failed one drain.
+  defp start_next_commit(state) do
+    case ready_batch(state.pipeline) do
+      %Batch{ref: ref, prepared: prepared, gsn_start: gsn_start, gsn_end: gsn_end} ->
+        {:ok, _batch, pipeline} = CommitPipeline.committing(state.pipeline, ref)
+        state = %{state | pipeline: pipeline}
+        CommitterPool.commit(state.committer_pool, ref, prepared, gsn_start, gsn_end)
+        state
+
+      nil ->
+        state
+    end
+  end
+
+  # A prepared batch may commit while an earlier range is still in flight
+  # only when that range planned no membership or relationship move: then
+  # its eventual abandon cannot invalidate the successor's scopes. A
+  # resolution-affecting predecessor holds the gate until it is durable.
+  defp ready_batch(pipeline) do
+    case first_prepared(pipeline) do
+      nil ->
+        nil
+
+      batch ->
+        pending = CommitPipeline.unresolved_cache_overlay_before(pipeline, batch.ref)
+
+        if CacheMutationPlanner.Overlay.group_resolution_affected?(pending),
+          do: nil,
+          else: batch
+    end
+  end
+
+  defp first_prepared(pipeline) do
+    pipeline
+    |> CommitPipeline.open_batches()
+    |> Enum.find(&(&1.phase == :prepared))
+  end
+
   defp drain_releasable(state) do
     case CommitPipeline.releasable(state.pipeline) do
       [] ->
@@ -936,7 +997,7 @@ defmodule EbbServer.Storage.Writer do
     try do
       if state.after_commit, do: state.after_commit.()
 
-      case apply_post_commit(batch.prepared, batch.pending_marks, state) do
+      case apply_post_commit(batch, state) do
         :ok ->
           notify_fanout(
             state,
@@ -1095,13 +1156,17 @@ defmodule EbbServer.Storage.Writer do
     end)
   end
 
-  # One flush resolves every Action against one cache snapshot, so the
-  # cache-only part of group resolution is memoized across the whole
-  # flush (see `EntityIndex.resolve_groups_cached/3`). Each Action still
-  # unions its own intra-action membership on top, so two Actions that
-  # move the same entity cannot see each other's membership.
-  defp prepare(fresh, gsn_start, state) do
-    resolve_opts = resolve_cache_opts(state)
+  # One flush resolves every Action against one cache snapshot plus the
+  # unapplied slices of the batches ahead of it, so the cache-only part of
+  # group resolution is memoized across the whole flush (see
+  # `EntityIndex.resolve_groups_cached/3`). Each Action still unions its own
+  # intra-action membership on top, so two Actions that move the same entity
+  # cannot see each other's membership.
+  defp prepare(fresh, gsn_start, state, incoming_overlay) do
+    resolve_opts =
+      state
+      |> resolve_cache_opts()
+      |> Keyword.put(:overlay, incoming_overlay)
 
     {prepared, {groups_by_gsn, _memo}} =
       fresh
@@ -1113,8 +1178,29 @@ defmodule EbbServer.Storage.Writer do
         {prepared_action, {Map.put(groups, gsn, prepared_action.groups), memo}}
       end)
 
-    {prepared, groups_by_gsn}
+    {prepared, groups_by_gsn, plan_cache_mutations(fresh, state, incoming_overlay)}
   end
+
+  # Plan before the commit so a successor can resolve against this batch's
+  # rows while it is still unapplied. The batch keeps its own slice; the
+  # cumulative overlay is only an intermediate for the next plan.
+  defp plan_cache_mutations(fresh, state, incoming_overlay) do
+    if ablate?(:cache, state) do
+      {[], nil}
+    else
+      {mutations, cumulative} =
+        fresh
+        |> Enum.flat_map(fn {action, _payload_etf} -> action.updates end)
+        |> CacheMutationPlanner.plan(plan_tables(state), incoming_overlay)
+
+      {mutations, CacheMutationPlanner.slice(cumulative, mutations)}
+    end
+  end
+
+  defp current_overlay(state), do: CommitPipeline.cache_overlay(state.pipeline)
+
+  defp overlay_before(state, ref),
+    do: CommitPipeline.cache_overlay_before(state.pipeline, ref)
 
   defp prepare_action(action, payload_etf, state, resolve_opts, memo) do
     intra_action_context = PermissionHelper.build_intra_action_context(action.updates)
@@ -1187,18 +1273,15 @@ defmodule EbbServer.Storage.Writer do
     |> Enum.uniq_by(&elem(&1, 0))
   end
 
-  defp apply_post_commit(prepared, {entities, _generation}, state) do
+  defp apply_post_commit(%Batch{} = batch, state) do
+    {entities, _generation} = batch.pending_marks
+
     unless ablate?(:dirty, state) do
       :ok = DirtyTracker.mark_dirty_batch(entities, state.dirty_set)
     end
 
     unless ablate?(:cache, state) do
-      {mutations, _overlay} =
-        prepared
-        |> Enum.flat_map(& &1.updates)
-        |> CacheMutationPlanner.plan(plan_tables(state))
-
-      Enum.each(mutations, &apply_cache_mutation(&1, state))
+      Enum.each(batch.cache_mutations, &apply_cache_mutation(&1, state))
     end
 
     :ok
@@ -1285,6 +1368,13 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp abandon(state, ref, reason) do
+    case abandon_batch(state, ref, reason) do
+      {state, nil} -> state
+      {state, batch} -> rebuild_successors(state, batch)
+    end
+  end
+
+  defp abandon_batch(state, ref, reason) do
     case CommitPipeline.abandon(state.pipeline, ref, reason) do
       {:ok, batch, pipeline} ->
         state = %{state | pipeline: pipeline}
@@ -1311,13 +1401,72 @@ defmodule EbbServer.Storage.Writer do
 
         notify_range_resolved(state, batch.gsn_start, batch.gsn_end)
 
-        state
+        {state, batch}
 
       {:error, _reason} ->
         # A stale result for a batch this Writer already abandoned must not
         # resolve or reply twice.
-        state
+        {state, nil}
     end
+  end
+
+  # A successor prepared against the abandoned batch's overlay resolved
+  # scopes that will never exist. None of them has reached a Committer yet
+  # (a Committer is only handed the durable prefix), so rebuilding each one
+  # against the surviving chain is safe and keeps its claim.
+  defp rebuild_successors(state, abandoned) do
+    state.pipeline
+    |> CommitPipeline.open_batches()
+    |> Enum.filter(&(&1.phase == :prepared and &1.gsn_start > abandoned.gsn_start))
+    |> Enum.reduce(state, fn batch, state ->
+      if CommitPipeline.get(state.pipeline, batch.ref),
+        do: rebuild_prepared(state, batch),
+        else: state
+    end)
+  end
+
+  defp rebuild_prepared(state, %Batch{} = batch) do
+    incoming_overlay = overlay_before(state, batch.ref)
+
+    fresh =
+      Enum.map(batch.prepared, fn %PreparedAction{} = prepared ->
+        action = %{
+          id: prepared.id,
+          actor_id: prepared.actor_id,
+          hlc: prepared.hlc,
+          updates: prepared.updates
+        }
+
+        {action, prepared.payload_etf}
+      end)
+
+    {prepared, groups_by_gsn, cache_plan} =
+      prepare(fresh, batch.gsn_start, state, incoming_overlay)
+
+    unless ablate?(:dirty, state), do: clear_pending(state, batch.pending_marks)
+    marks = pending_marks(prepared, state)
+
+    {:ok, _batch, pipeline} =
+      CommitPipeline.reprepared(
+        state.pipeline,
+        batch.ref,
+        prepared,
+        groups_by_gsn,
+        marks,
+        cache_plan
+      )
+
+    %{state | pipeline: pipeline}
+  rescue
+    error ->
+      {state, _batch} = abandon_batch(state, batch.ref, {:rebuild_failed, error})
+      state
+  catch
+    kind, value ->
+      {state, _batch} =
+        abandon_batch(state, batch.ref, {:rebuild_failed, raised_reason(kind, value)})
+
+      state
   end
 
   # Idempotent: a failed commit and a post-ack raise can both reach the

@@ -198,6 +198,46 @@ defmodule EbbServer.Storage.CommitPipelineTest do
     end
   end
 
+  describe "overlay chain state" do
+    test "a released batch drops its cache slice but a successor keeps its own" do
+      state = CommitPipeline.new(max_in_flight: 2)
+      {first_ref, _first, state} = claim!(state, 1)
+      {second_ref, _second, state} = claim!(state, 2)
+
+      {:ok, _first, state} =
+        CommitPipeline.prepared(state, first_ref, [], %{}, {[], nil}, {[], :first_slice})
+
+      {:ok, _second, state} =
+        CommitPipeline.prepared(state, second_ref, [], %{}, {[], nil}, {[], :second_slice})
+
+      assert CommitPipeline.cache_slices(state) == [:first_slice, :second_slice]
+
+      {:ok, _first, state} = CommitPipeline.committing(state, first_ref)
+      {:ok, _first, state} = CommitPipeline.committed(state, first_ref)
+      {:ok, _first, state} = CommitPipeline.applying(state, first_ref)
+      {:ok, _first, state} = CommitPipeline.release(state, first_ref)
+
+      assert CommitPipeline.cache_slices(state) == [:second_slice]
+    end
+
+    test "a prepared successor can be rebuilt in place" do
+      state = CommitPipeline.new()
+      {ref, _batch, state} = claim!(state, 1)
+
+      {:ok, _batch, state} =
+        CommitPipeline.prepared(state, ref, [], %{}, {[], nil}, {[], :stale})
+
+      {:ok, rebuilt, _state} =
+        CommitPipeline.reprepared(state, ref, [:rebuilt], %{1 => ["g_1"]}, {[], 7}, {[], :fresh})
+
+      assert rebuilt.phase == :prepared
+      assert rebuilt.prepared == [:rebuilt]
+      assert rebuilt.groups_by_gsn == %{1 => ["g_1"]}
+      assert rebuilt.pending_marks == {[], 7}
+      assert rebuilt.cache_overlay == :fresh
+    end
+  end
+
   describe "flush scheduling" do
     test "an empty pipeline is idle and a burst drains through one marker" do
       state = CommitPipeline.new()
