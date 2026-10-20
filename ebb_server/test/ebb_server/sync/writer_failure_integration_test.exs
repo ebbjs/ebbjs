@@ -170,6 +170,7 @@ defmodule EbbServer.Sync.FanOutRouterRangeResolvedTest do
 
   alias EbbServer.Storage.{RocksDB, WatermarkTracker}
   alias EbbServer.Sync.FanOutRouter
+  alias EbbServer.Sync.FanOutRouter.Plan
 
   test "re-reads the frontier and drains buffered ranges past a resolved hole" do
     group_id = "g_282_drain_#{:erlang.unique_integer([:positive])}"
@@ -178,7 +179,7 @@ defmodule EbbServer.Sync.FanOutRouterRangeResolvedTest do
       "id" => "act_282_drain",
       "actor_id" => "a_282",
       "hlc" => 1,
-      "gsn" => 1,
+      "gsn" => 2,
       "updates" => [
         %{
           "id" => "upd_282_drain",
@@ -192,32 +193,32 @@ defmodule EbbServer.Sync.FanOutRouterRangeResolvedTest do
 
     :ok =
       RocksDB.write_batch([
-        {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(1), :erlang.term_to_binary(action)}
+        {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(2), :erlang.term_to_binary(action)}
       ])
 
     :sys.replace_state(FanOutRouter, fn state ->
       %{
         state
-        | pending_notifications: [{1, 1}],
-          pending_groups: %{1 => [group_id]},
-          last_pushed_gsn: 0
+        | plan: Plan.new(pending_notifications: [{2, 2}], last_pushed_gsn: 0),
+          pending_groups: %{2 => [group_id]}
       }
     end)
 
     # Frontier still 0: the buffered range stays put and the hole is not
     # buffered. (:sys.get_state/1 synchronizes on the earlier send.)
     send(FanOutRouter, {:range_resolved, 1, 1})
-    assert :sys.get_state(FanOutRouter).pending_notifications == [{1, 1}]
+    assert :sys.get_state(FanOutRouter).plan.pending_notifications == [{2, 2}]
 
     # The Writer resolves the abandoned hole and the frontier passes it.
     WatermarkTracker.mark_range_resolved(1, 1)
+    WatermarkTracker.mark_range_committed(2, 2)
     WatermarkTracker.advance_watermark()
 
     send(FanOutRouter, {:range_resolved, 1, 1})
 
     state = :sys.get_state(FanOutRouter)
-    assert state.pending_notifications == []
-    assert state.last_pushed_gsn == 1
+    assert state.plan.pending_notifications == []
+    assert state.plan.last_pushed_gsn == 2
   end
 end
 

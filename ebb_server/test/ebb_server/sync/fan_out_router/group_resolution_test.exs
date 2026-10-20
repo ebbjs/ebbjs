@@ -1,24 +1,24 @@
-defmodule EbbServer.Sync.FanOutRouterDispatchTest do
+defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
   @moduledoc """
-  Tests for the system-entity fan-out bug surfaced in #197.
+  Tests for the fallback group resolution extracted from `FanOutRouter`.
 
-  `FanOutRouter.dispatch_to_groups/1` previously keyed its group lookup
-  on `subject_id` only, treating every entity id as though it were a
-  membership source. For `relationship`, `groupMember`, and `group`
-  updates the `subject_id` is the entity's own id — not a membership
-  source — so the lookup silently returned `nil` and the update never
-  reached the per-group `GroupServer`.
+  The original fan-out bug (#197) keyed the group lookup on `subject_id`
+  only, treating every entity id as though it were a membership source.
+  For `relationship`, `groupMember`, and `group` updates the `subject_id`
+  is the entity's own id — not a membership source — so the lookup
+  silently returned `nil` and the update never reached the per-group
+  `GroupServer`.
 
-  The fix routes resolution by `subject_type` through
-  `EntityIndex.resolve_groups/3` so each kind of update lands in the
-  right group. These tests pin the resolution surface end-to-end for
-  every subject type the router can encounter.
+  `GroupResolution` resolves by `subject_type` through
+  `EntityIndex.resolve_groups/3` so each kind of update lands in the right
+  group. These tests pin its resolution surface for every subject type the
+  router can encounter.
   """
 
   use ExUnit.Case, async: false
 
   alias EbbServer.Storage.{EntityGroupCache, GroupCache, RelationshipCache}
-  alias EbbServer.Sync.FanOutRouter
+  alias EbbServer.Sync.FanOutRouter.GroupResolution
 
   setup do
     rel = :"for_rel_#{System.unique_integer([:positive])}"
@@ -126,7 +126,7 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
 
       action = %{"updates" => [%{"subject_type" => "todo", "subject_id" => "todo_1"}]}
 
-      assert FanOutRouter.resolve_group_ids(action, opts(t)) == ["g_1"]
+      assert GroupResolution.resolve_group_ids(action, opts(t)) == ["g_1"]
     end
   end
 
@@ -134,7 +134,7 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
     test "routes a group update to the group itself", %{resolve_opts: opts} do
       action = %{"updates" => [%{"subject_type" => "group", "subject_id" => "g_1"}]}
 
-      assert FanOutRouter.resolve_group_ids(action, opts) == ["g_1"]
+      assert GroupResolution.resolve_group_ids(action, opts) == ["g_1"]
     end
 
     test "routes a relationship update to its source's group", %{tables: t} do
@@ -143,7 +143,7 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
 
       action = %{"updates" => [%{"subject_type" => "relationship", "subject_id" => "rel_1"}]}
 
-      assert FanOutRouter.resolve_group_ids(action, opts(t)) == ["g_1"]
+      assert GroupResolution.resolve_group_ids(action, opts(t)) == ["g_1"]
     end
 
     test "resolves groups from the Action's own membership rows", %{resolve_opts: opts} do
@@ -165,7 +165,7 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
         ]
       }
 
-      assert FanOutRouter.resolve_group_ids(action, opts) == ["g_intra"]
+      assert GroupResolution.resolve_group_ids(action, opts) == ["g_intra"]
     end
 
     test "returns every group for a multi-membership source", %{tables: t} do
@@ -174,7 +174,7 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
 
       action = %{"updates" => [%{"subject_type" => "todo", "subject_id" => "todo_1"}]}
 
-      assert FanOutRouter.resolve_group_ids(action, opts(t)) |> Enum.sort() == ["g_1", "g_2"]
+      assert GroupResolution.resolve_group_ids(action, opts(t)) |> Enum.sort() == ["g_1", "g_2"]
     end
 
     test "a relationship whose source has no membership adds no group", %{tables: t} do
@@ -182,7 +182,7 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
 
       action = %{"updates" => [%{"subject_type" => "relationship", "subject_id" => "rel_link"}]}
 
-      assert FanOutRouter.resolve_group_ids(action, opts(t)) == []
+      assert GroupResolution.resolve_group_ids(action, opts(t)) == []
     end
 
     test "routes a groupMember update to the member's group", %{tables: t} do
@@ -194,7 +194,7 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
 
       action = %{"updates" => [%{"subject_type" => "groupMember", "subject_id" => "gm_1"}]}
 
-      assert FanOutRouter.resolve_group_ids(action, opts(t)) == ["g_1"]
+      assert GroupResolution.resolve_group_ids(action, opts(t)) == ["g_1"]
     end
 
     test "deduplicates when multiple updates target the same group", %{tables: t} do
@@ -210,7 +210,7 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
         ]
       }
 
-      assert FanOutRouter.resolve_group_ids(action, opts(t)) == ["g_1"]
+      assert GroupResolution.resolve_group_ids(action, opts(t)) == ["g_1"]
     end
 
     test "drops updates whose entity is not in the cache (silent drop is fine for fan-out)",
@@ -222,7 +222,7 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
         ]
       }
 
-      assert FanOutRouter.resolve_group_ids(action, opts) == []
+      assert GroupResolution.resolve_group_ids(action, opts) == []
     end
 
     test "handles a mixed action with user and system updates across groups", %{tables: t} do
@@ -238,7 +238,7 @@ defmodule EbbServer.Sync.FanOutRouterDispatchTest do
         ]
       }
 
-      assert FanOutRouter.resolve_group_ids(action, opts(t)) |> Enum.sort() == ["g_1", "g_2"]
+      assert GroupResolution.resolve_group_ids(action, opts(t)) |> Enum.sort() == ["g_1", "g_2"]
     end
   end
 end
