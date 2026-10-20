@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { pack, format, type Action, type HLCTimestamp } from "@ebbjs/core";
+import { pack, format, type Action, type FieldValue, type HLCTimestamp } from "@ebbjs/core";
 import { TextDocument, TextDocumentRegistry, type AppliedUpdate } from "../text-document";
 import { DEFAULT_DOC_SUBJECT_TYPE } from "../wire";
 import type { RunNode } from "../tree";
@@ -52,6 +52,63 @@ const makeInsertAction = (run: RunNode): Action => ({
       },
     } as never,
   ],
+});
+
+// ---------------------------------------------------------------------------
+// Hydration from a materialized content map
+// ---------------------------------------------------------------------------
+
+const contentField = (runs: readonly RunNode[]): FieldValue => ({
+  map: Object.fromEntries(
+    runs.map((run) => [run.id, { value: run, update_id: `upd_${run.id}`, hlc: run.hlc }]),
+  ),
+});
+
+describe("hydrate", () => {
+  it("applies a content map to the document state", () => {
+    const doc = new TextDocument({ docId: "doc_1", actorId: "actor_1" });
+    const root = makeRun(1, "actor_1", "hello", "ROOT");
+
+    doc.hydrate(contentField([root]));
+
+    expect(doc.text).toBe("hello");
+  });
+
+  it("is a no-op for the same content version and unchanged state", () => {
+    const doc = new TextDocument({ docId: "doc_1", actorId: "actor_1" });
+    const content = contentField([makeRun(1, "actor_1", "hello", "ROOT")]);
+
+    doc.hydrate(content);
+    const state = doc.docState;
+    doc.hydrate(content);
+
+    expect(doc.docState).toBe(state);
+  });
+
+  it("re-hydrates after a local edit without rewinding it", () => {
+    const doc = new TextDocument({ docId: "doc_1", actorId: "actor_1" });
+    const root = makeRun(1, "actor_1", "hello", "ROOT");
+    const content = contentField([root]);
+
+    doc.hydrate(content);
+    doc.localInsert("!", { afterRun: root.id });
+    const afterEdit = doc.text;
+
+    doc.hydrate(content);
+
+    expect(doc.text).toBe(afterEdit);
+  });
+
+  it("applies a newer content version", () => {
+    const doc = new TextDocument({ docId: "doc_1", actorId: "actor_1" });
+    const root = makeRun(1, "actor_1", "hello", "ROOT");
+    const next = makeRun(2, "actor_2", " world", root.id);
+
+    doc.hydrate(contentField([root]));
+    doc.hydrate(contentField([root, next]));
+
+    expect(doc.text).toBe("hello world");
+  });
 });
 
 // ---------------------------------------------------------------------------

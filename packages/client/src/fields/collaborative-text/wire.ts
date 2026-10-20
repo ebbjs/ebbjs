@@ -121,15 +121,29 @@ export const isDocSubjectUpdate = (update: Update, docSubjectType: string): bool
 // ---------------------------------------------------------------------------
 
 /**
+ * A content map is immutable per version, so its parse is cached by the map
+ * field's identity. A merge or a new snapshot produces a new field object; a
+ * no-op reuses the old one, which is exactly when the cached parse is still
+ * valid. Callers must treat the returned map as read-only, like the field.
+ */
+const parsedContentFields = new WeakMap<FieldValue, ReadonlyMap<string, RunFieldValue>>();
+
+/**
  * Read a document's `content` map into run-id → field-value entries.
  * Silently ignores non-map `content` values and non-leaf entries. The
  * map is the only run surface, so there is no field-name parsing.
+ *
+ * The result is cached per content version: repeated reads of an unchanged
+ * document reuse one parse instead of rebuilding the run map on every render.
  */
 export const parseContentField = (
   content: FieldValue | undefined,
 ): ReadonlyMap<string, RunFieldValue> => {
+  if (content === undefined || !isFieldMap(content)) return new Map();
+  const cached = parsedContentFields.get(content);
+  if (cached !== undefined) return cached;
+
   const out = new Map<string, RunFieldValue>();
-  if (content === undefined || !isFieldMap(content)) return out;
   for (const [runId, entry] of Object.entries(content.map)) {
     if (!isFieldLeaf(entry)) continue;
     const update_id = typeof entry.update_id === "string" ? entry.update_id : "";
@@ -140,6 +154,7 @@ export const parseContentField = (
       out.set(runId, { value: entry.value as RunNode, update_id, hlc });
     }
   }
+  parsedContentFields.set(content, out);
   return out;
 };
 

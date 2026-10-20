@@ -1,6 +1,11 @@
 import type { Action, Entity, Update } from "@ebbjs/core";
 
-import { applyUpdate } from "../internal/materialize";
+import {
+  applyUpdate,
+  RESIDENT_MAP_FIELDS,
+  withAdoptedMapFields,
+  withWireMapFields,
+} from "../internal/materialize";
 import { REPLICA_RECORD_FORMAT, isValidReplicaRecord } from "../internal/replica-record";
 import {
   applyIndexDelta,
@@ -279,7 +284,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       return;
     }
     const previous = entities.get(id) ?? null;
-    const next = applyUpdate(previous, update, gsn, hlc);
+    const next = applyUpdate(previous, update, gsn, hlc, RESIDENT_MAP_FIELDS);
 
     if (next === null) {
       // An unopened on-demand row has no base here by design; the local store
@@ -317,7 +322,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
           .sort((a, b) => a.gsn - b.gsn);
         let row = next;
         for (const orphan of survivors) {
-          row = applyUpdate(row, orphan.update, orphan.gsn, orphan.hlc) ?? row;
+          row = applyUpdate(row, orphan.update, orphan.gsn, orphan.hlc, RESIDENT_MAP_FIELDS) ?? row;
         }
         if (row !== next) {
           entities.set(id, row);
@@ -354,7 +359,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     const writes = overlay.get(id);
     let next = base;
     if (writes !== undefined) {
-      for (const write of writes) next = applyUpdate(next, write.update, 0, write.hlc);
+      for (const write of writes) {
+        next = applyUpdate(next, write.update, 0, write.hlc, RESIDENT_MAP_FIELDS);
+      }
     }
     const retained = next !== null && resident(next) ? next : null;
     // A row that left the replica — or that the policy now holds outright —
@@ -494,11 +501,12 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     };
     for (const entity of record.entities) {
       if (!holds(entity.type)) continue;
-      entities.set(entity.id, entity);
-      addToType(entity.type, entity.id);
-      const reverseEntry = indexEntryFor(entity);
+      const row = withAdoptedMapFields(entity);
+      entities.set(row.id, row);
+      addToType(row.type, row.id);
+      const reverseEntry = indexEntryFor(row);
       if (reverseEntry !== null) add(reverse, reverseEntry);
-      const forwardEntry = forwardIndexEntryFor(entity);
+      const forwardEntry = forwardIndexEntryFor(row);
       if (forwardEntry !== null) add(forward, forwardEntry);
     }
     reverseIndex = reverse;
@@ -522,12 +530,17 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     // not advance past it or hydrate would replay the tail only after the base.
     const position =
       oldest === Number.POSITIVE_INFINITY ? lastPosition : Math.min(lastPosition, oldest - 1);
+    // Bodies are residency, not durability: only held rows persist, and a
+    // resident map field leaves as the flat wire shape.
+    const persisted: Entity[] = [];
+    for (const row of entities.values()) {
+      if (holds(row.type)) persisted.push(withWireMapFields(row));
+    }
     return {
       format: REPLICA_RECORD_FORMAT,
       position,
       revision,
-      // Bodies are residency, not durability: only held rows persist.
-      entities: [...entities.values()].filter((row) => holds(row.type)),
+      entities: persisted,
     };
   };
 
@@ -610,8 +623,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
         pendingOpens.delete(id);
         if (loaded === null) return null;
         if (holds(loaded.type)) return loaded;
-        install(id, loaded, buffered);
-        return get(id) ?? loaded;
+        const adopted = withAdoptedMapFields(loaded);
+        install(id, adopted, buffered);
+        return get(id) ?? adopted;
       },
       (error: unknown) => {
         if (inFlightOpens.get(id) === read) inFlightOpens.delete(id);
