@@ -48,25 +48,34 @@ defmodule EbbServer.Storage.CommitPipeline do
     `EbbServer.Sync.FanOutFrontier`, but their writer-side ordering comes
     from here.
 
-  ## V2 extension points
+  ## Pipeline depth and the reorder buffer
 
   The Writer runs one in-flight batch by default; `new/1` takes
   `max_in_flight: 1` and `schedule/3` stalls once the pipeline is at that
-  depth. Depth above one is used to prepare a successor against the
-  predecessor's cache overlay (#533); it is not yet a runtime configuration
-  surface while the full ordered frontier/release work (#534) is open. The
-  state machine itself is multi-batch: property tests drive several claims
-  and arbitrary ack orders through it.
+  depth. A deployment can raise it with `:writer_max_in_flight` to let a
+  successor prepare against its predecessor's cache overlay and commit
+  while the predecessor is still in flight.
 
-  - **Reorder buffer (#534).** `claim_order` is the buffer and
-    `releasable/1` is the ordered release decision: it returns only the
-    committed batches at the head of the buffer, stopping at the first
-    range that is still committing or already applying. The Writer's
-    apply/notify stage walks that list, marks each batch applying, applies
-    it, and calls `release/2`. Notifications use the same list, so the
-    persisted `FanOutFrontier` cannot pass an unpushed range. At a test
-    depth above one the resolution frontier may still advance over a
-    durable range before its apply; #534 owns tightening that ordering.
+  `claim_order` is the reorder buffer and `releasable/1` is the ordered
+  release decision: it returns only the committed batches at the head of
+  the buffer, stopping at the first range that is still committing or
+  already applying. The Writer's apply/notify stage walks that list, marks
+  each batch applying, applies it, and calls `release/2`. Notifications use
+  the same list, so a later range never reaches the Router before an
+  earlier one. `buffer_stats/1` exposes the buffer as telemetry
+  (`in_flight_batches`, `oldest_unreleased_gsn`).
+
+  The resolution watermark can still cover a durable range before its
+  apply when a later range commits first and the head then commits or
+  abandons. That is safe: the watermark only advances over ranges that are
+  durable or deliberately resolved, and the Router gates a push on the
+  ordered notification rather than on the watermark alone.
+
+  ## V2 extension points
+
+  The state machine is multi-batch: property tests drive several claims and
+  arbitrary ack orders through it.
+
   - **Overlay chain (#533).** `Batch.cache_mutations` is the cache-write
     plan, and `Batch.cache_overlay` is that batch's own slice of the
     predicted future state. `cache_slices/1` exposes the open slices in
@@ -413,13 +422,34 @@ defmodule EbbServer.Storage.CommitPipeline do
   Stops at the first batch that is still committing or already applying, so
   a later durable range never overtakes an earlier one. Abandoned ranges
   were pruned when they were abandoned, so they do not block the buffer.
-  This is the release decision #534's apply/notify stage consumes.
+  This is the release decision the Writer's apply/notify stage consumes.
   """
   @spec releasable(t()) :: [Batch.t()]
   def releasable(%__MODULE__{} = state) do
     state.claim_order
     |> Enum.map(&Map.fetch!(state.batches, &1))
     |> Enum.take_while(&(&1.phase == :committed))
+  end
+
+  @doc """
+  The reorder buffer as telemetry measurements.
+
+  `in_flight_batches` counts every open claim; `oldest_unreleased_gsn` is
+  the start of the oldest claim that has not been released, or `0` when the
+  buffer is empty.
+  """
+  @spec buffer_stats(t()) :: %{
+          in_flight_batches: non_neg_integer(),
+          oldest_unreleased_gsn: gsn()
+        }
+  def buffer_stats(%__MODULE__{} = state) do
+    oldest =
+      case state.claim_order do
+        [] -> 0
+        [ref | _] -> state.batches |> Map.fetch!(ref) |> Map.fetch!(:gsn_start)
+      end
+
+    %{in_flight_batches: map_size(state.batches), oldest_unreleased_gsn: oldest}
   end
 
   @doc """

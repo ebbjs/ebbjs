@@ -79,11 +79,13 @@ defmodule EbbServer.Storage.Writer do
   the claimed range. The sequencer sends it asynchronously and the pool
   answers with `{:committer_assigned, ref, worker}` followed by
   `{:committer_result, ref, result}`. The Writer keeps one range in
-  flight by default. Raising `:max_in_flight` lets a successor be resolved
-  against the predecessor's planned cache overlay while that predecessor
-  commits. A predecessor that planned a membership or relationship move
-  holds the successor at the gate until it is durable, so its abandon
-  rebuilds the chain instead of letting stale scopes reach a durable range.
+  flight by default. Raising `:max_in_flight` (or `:writer_max_in_flight`)
+  lets a successor be resolved against the predecessor's planned cache
+  overlay while that predecessor commits. A predecessor that planned a
+  membership or relationship move holds the successor at the gate until it
+  is durable, so its abandon rebuilds the chain instead of letting stale
+  scopes reach a durable range. Fan-out still follows claim order at any
+  depth because the release stage notifies only the committed prefix.
 
   The pool is not shared across Writer restarts. The Prepare and
   Committer pools are linked to the Writer and monitor it, so a Writer
@@ -115,7 +117,10 @@ defmodule EbbServer.Storage.Writer do
   The pipeline's `claim_order` is the reorder buffer: commit acks may
   arrive in any order, but `drain_releasable/1` applies and notifies only
   the committed prefix. An abandoned range is pruned, which lets the
-  healthy range behind it drain. Each prepared `Batch` carries the slice
+  healthy range behind it drain. The buffer is emitted as
+  `[:ebb, :writer, :in_flight_batches]` and
+  `[:ebb, :writer, :oldest_unreleased_gsn]` whenever a claim enters or
+  leaves it. Each prepared `Batch` carries the slice
   of the cross-flush cache overlay it planned; the Writer merges the open
   slices to resolve the next batch, and an abandon rebuilds every successor
   that resolved against the failed slice.
@@ -522,9 +527,14 @@ defmodule EbbServer.Storage.Writer do
     in_flight_actions = Keyword.get(opts, :in_flight_actions, nil)
 
     # A successor may be prepared ahead of its predecessor's durable commit,
-    # so the chain is capped to keep the overlay bounded. #534 still owns the
-    # full ordered notification frontier.
-    max_in_flight = Keyword.get(opts, :max_in_flight, 1)
+    # so the chain is capped to keep the overlay bounded. The ordered release
+    # stage keeps fan-out in claim order at any depth.
+    max_in_flight =
+      Keyword.get(
+        opts,
+        :max_in_flight,
+        Application.get_env(:ebb_server, :writer_max_in_flight, 1)
+      )
 
     unless is_integer(max_in_flight) and max_in_flight in 1..@max_overlay_chain do
       raise ArgumentError,
@@ -1068,6 +1078,7 @@ defmodule EbbServer.Storage.Writer do
 
     {:ok, _batch, pipeline} = CommitPipeline.claim(state.pipeline, batch)
     state = %{state | pipeline: pipeline}
+    emit_pipeline_gauges(state)
 
     {prepared, groups_by_gsn, cache_plan} =
       prepare_or_abandon(
@@ -1131,6 +1142,16 @@ defmodule EbbServer.Storage.Writer do
 
   defp emit_actions_accepted(count) do
     Telemetry.execute([:writer, :actions_per_sec], %{count: count}, %{})
+  end
+
+  # The buffer size and the head GSN are only known to the Writer, so emit
+  # them here instead of asking the sampler to read the sequencer's state.
+  defp emit_pipeline_gauges(state) do
+    %{in_flight_batches: batches, oldest_unreleased_gsn: gsn} =
+      CommitPipeline.buffer_stats(state.pipeline)
+
+    Telemetry.execute([:writer, :in_flight_batches], %{count: batches}, %{})
+    Telemetry.execute([:writer, :oldest_unreleased_gsn], %{gsn: gsn}, %{})
   end
 
   defp emit_batch_latency(%Batch{} = batch) do
@@ -1291,7 +1312,9 @@ defmodule EbbServer.Storage.Writer do
     case settle_after_commit(batch, state, committed_at) do
       :ok ->
         {:ok, _batch, pipeline} = CommitPipeline.release(state.pipeline, batch.ref)
-        drain_releasable(%{state | pipeline: pipeline})
+        state = %{state | pipeline: pipeline}
+        emit_pipeline_gauges(state)
+        drain_releasable(state)
 
       # The cache apply failed and the fan-out range was never pushed. Leave
       # the batch unreleased so a rebuilt Writer cannot let a later range
@@ -1709,6 +1732,7 @@ defmodule EbbServer.Storage.Writer do
     case CommitPipeline.abandon(state.pipeline, ref, reason) do
       {:ok, batch, pipeline} ->
         state = %{state | pipeline: pipeline}
+        emit_pipeline_gauges(state)
 
         release_in_flight(state, batch.action_ids)
 

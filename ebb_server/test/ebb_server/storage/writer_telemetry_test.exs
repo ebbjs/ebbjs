@@ -6,7 +6,7 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
   counter; the abandon path emits `range_resolved` and the failed-commit
   path emits both `commit_failed` and `range_resolved`. An abandon must
   never be reported as a failed commit, and a committed batch must never
-  report either.
+  report either. The reorder-buffer gauge brackets every claim and release.
   """
 
   use ExUnit.Case, async: false
@@ -21,7 +21,9 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
     [:ebb, :writer, :commit_latency_ms],
     [:ebb, :writer, :actions_per_sec],
     [:ebb, :writer, :range_resolved],
-    [:ebb, :writer, :commit_failed]
+    [:ebb, :writer, :commit_failed],
+    [:ebb, :writer, :in_flight_batches],
+    [:ebb, :writer, :oldest_unreleased_gsn]
   ]
 
   setup do
@@ -59,6 +61,13 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
       assert is_integer(commit_duration)
 
       assert {_event, %{count: 2}, %{}} = find_event(events, [:ebb, :writer, :actions_per_sec])
+
+      assert [
+               {:in_flight_batches, %{count: 1}},
+               {:oldest_unreleased_gsn, %{gsn: 1}},
+               {:in_flight_batches, %{count: 0}},
+               {:oldest_unreleased_gsn, %{gsn: 0}}
+             ] = pipeline_measurements(events)
 
       refute find_event(events, [:ebb, :writer, :range_resolved])
       refute find_event(events, [:ebb, :writer, :commit_failed])
@@ -125,6 +134,13 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
 
       assert {_event, %{count: 1}, %{gsn_start: 1, gsn_end: 1, reason: ^reason}} =
                find_event(events, [:ebb, :writer, :commit_failed])
+
+      assert [
+               {:in_flight_batches, %{count: 1}},
+               {:oldest_unreleased_gsn, %{gsn: 1}},
+               {:in_flight_batches, %{count: 0}},
+               {:oldest_unreleased_gsn, %{gsn: 0}}
+             ] = pipeline_measurements(events)
     end
   end
 
@@ -155,5 +171,12 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
 
   defp find_event(events, name) do
     Enum.find(events, fn {event, _measurements, _metadata} -> event == name end)
+  end
+
+  defp pipeline_measurements(events) do
+    for {event, measurements, _metadata} <- events,
+        event in [[:ebb, :writer, :in_flight_batches], [:ebb, :writer, :oldest_unreleased_gsn]] do
+      {List.last(event), measurements}
+    end
   end
 end

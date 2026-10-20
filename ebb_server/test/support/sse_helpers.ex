@@ -41,6 +41,20 @@ defmodule EbbServer.SSEHelpers do
     payload
   end
 
+  @doc """
+  Collects at least `count` data payloads across coalesced SSE chunks,
+  preserving the order they reached the subscriber.
+  """
+  @spec receive_data_payloads(non_neg_integer(), [String.t()]) :: [String.t()]
+  def receive_data_payloads(count, acc \\ []) do
+    if length(acc) >= count do
+      acc
+    else
+      assert_receive {:sse_data, bytes}, 5_000
+      receive_data_payloads(count, acc ++ data_payloads(bytes))
+    end
+  end
+
   defp data_line(frame) do
     frame
     |> String.split("\n")

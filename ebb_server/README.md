@@ -210,18 +210,19 @@ not atoms.
 
 All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 
-| Key                          | Description                                                                            | Default     |
-| ---------------------------- | -------------------------------------------------------------------------------------- | ----------- |
-| `:port`                      | HTTP listen port                                                                       | 4000        |
-| `:data_dir`                  | Directory for RocksDB + SQLite files                                                   | `./data`    |
-| `:auth_mode`                 | Auth mode (`:bypass` / `:external`)                                                    | `:external` |
-| `:auth_url`                  | Developer's auth endpoint URL                                                          | (required)  |
-| `:writer_batch_max_size`     | Buffered Actions before an immediate commit (`<= 0` = no trigger)                      | 1000        |
-| `:writer_batch_timeout_ms`   | Coalescing window (`0` = burst-drain, no timer)                                        | 0           |
-| `:writer_prepare_pool_size`  | Prepare workers for payload build and ETF encode                                       | 2           |
-| `:writer_prepare_queue_max`  | In-flight prepare calls before the Writer rejects with `503 write_failed`              | 1024        |
-| `:writer_prepare_timeout_ms` | Upper bound on one prepare job before it fails the call                                | 2000        |
-| `:on_action`                 | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook)) | (unset)     |
+| Key                          | Description                                                                                | Default     |
+| ---------------------------- | ------------------------------------------------------------------------------------------ | ----------- |
+| `:port`                      | HTTP listen port                                                                           | 4000        |
+| `:data_dir`                  | Directory for RocksDB + SQLite files                                                       | `./data`    |
+| `:auth_mode`                 | Auth mode (`:bypass` / `:external`)                                                        | `:external` |
+| `:auth_url`                  | Developer's auth endpoint URL                                                              | (required)  |
+| `:writer_batch_max_size`     | Buffered Actions before an immediate commit (`<= 0` = no trigger)                          | 1000        |
+| `:writer_batch_timeout_ms`   | Coalescing window (`0` = burst-drain, no timer)                                            | 0           |
+| `:writer_max_in_flight`      | Claimed ranges the pipeline may hold at once (1–4); higher overlap needs the overlay chain | 1           |
+| `:writer_prepare_pool_size`  | Prepare workers for payload build and ETF encode                                           | 2           |
+| `:writer_prepare_queue_max`  | In-flight prepare calls before the Writer rejects with `503 write_failed`                  | 1024        |
+| `:writer_prepare_timeout_ms` | Upper bound on one prepare job before it fails the call                                    | 2000        |
+| `:on_action`                 | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook))     | (unset)     |
 
 The periodic metric sampler is configured under its own key,
 `Application.get_env(:ebb_server, EbbServer.Telemetry.Sampler)`:
@@ -282,7 +283,9 @@ suffix marks a latency metric, not the raw unit. Reporters convert with
 | `ebb.writer.actions_per_sec`              | `count`                                                                                              | —                                                                                                            | Counter                      | `writer`        |
 | `ebb.writer.range_resolved`               | `count`                                                                                              | `gsn_start`, `gsn_end`, `reason`                                                                             | Counter                      | `writer`        |
 | `ebb.writer.commit_failed`                | `count`                                                                                              | `gsn_start`, `gsn_end`, `reason`                                                                             | Counter                      | `writer`        |
-| `ebb.watermark.lag`                       | `lag` (GSNs)                                                                                         | —                                                                                                            | Gauge                        | `watermark`     |
+| `ebb.writer.in_flight_batches`            | `count`                                                                                              | —                                                                                                            | Gauge                        | `writer`        |
+| `ebb.writer.oldest_unreleased_gsn`        | `gsn`                                                                                                | —                                                                                                            | Gauge                        | `writer`        |
+| `ebb.watermark.lag`                       | `lag` (GSNs; durability: max GSN − committed watermark)                                              | —                                                                                                            | Gauge                        | `watermark`     |
 | `ebb.dirty_set.size`                      | `size` (entries)                                                                                     | —                                                                                                            | Gauge                        | `dirty_set`     |
 | `ebb.writer.in_flight_action_ids`         | `size` (ids)                                                                                         | —                                                                                                            | Gauge                        | `writer`        |
 | `ebb.entity_store.materialize_latency_ms` | `duration` (native), `byte_size`                                                                     | `subject_id`, `subject_type`, `path` (`:dirty_materialize`)                                                  | Histogram                    | `entity_store`  |
@@ -300,10 +303,15 @@ suffix marks a latency metric, not the raw unit. Reporters convert with
 | `ebb.action_export.lag`                   | `lag` (GSNs)                                                                                         | `cursor`                                                                                                     | Gauge                        | `action_export` |
 | `ebb.system_cache.populated`              | `duration` (native), `entity_types`, `group_members`, `entity_groups`, `relationships`, `backfilled` | `outcome` (`:ok` / `:error`), `reason`                                                                       | Histogram                    | `system_cache`  |
 
-The `ebb.watermark.lag`, `ebb.dirty_set.size`,
-`ebb.writer.in_flight_action_ids`, `ebb.fanout.active_connections`, and
-`ebb.fanout.active_groups` gauges have no natural event to hang off, so
-`EbbServer.Telemetry.Sampler` polls them once per second (configurable above).
+`ebb.writer.in_flight_batches` and `ebb.writer.oldest_unreleased_gsn` are
+emitted on every claim and release rather than sampled: the buffer only
+exists in the Writer's state. `in_flight_batches` counts every open claim
+(including one applying) and `oldest_unreleased_gsn` is the head of
+`claim_order` (`0` when idle). The other gauges have no natural event to
+hang off, so `EbbServer.Telemetry.Sampler` polls them once per second
+(configurable above). `ebb.watermark.lag` is a **durability** lag: the
+frontier may cover a durable range before its apply, and the Router's
+`Plan` is the real notification gate.
 `ebb.writer.in_flight_action_ids` is bounded by the write-pipeline depth, not
 by history: ids leave the set when their batch commits or abandons.
 
