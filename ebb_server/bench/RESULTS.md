@@ -1221,16 +1221,72 @@ from depth 1 to 2 and 33.8% from 1 to 4. Scheduler utilisation stays at
 20–25% of four schedulers, so this is not client-side CPU starvation; it is
 per-Action cost inside the serialized flush plus the larger burst's queueing.
 
+### Separating depth from flush size
+
+The t2 table above changes two things at once: pipeline depth and the coalesced
+flush size. Two same-session follow-ups separate them.
+
+**One caller, varying depth** (`--tier t2 --concurrency 1`, five reports):
+
+| Callers | Calls in flight | Actions/sec (median) |         Range | Δ vs depth 1 | p50 (ms) | Actions/flush | Flush p50 (ms) | Commit p50 (ms) |
+| ------: | --------------: | -------------------: | ------------: | -----------: | -------: | ------------: | -------------: | --------------: |
+|       1 |               1 |               13,020 | 11,055–13,120 |            — |     6.67 |           100 |           3.52 |            2.03 |
+|       1 |               2 |               21,745 | 21,170–21,930 |         +67% |     8.01 |           100 |           3.77 |            1.97 |
+|       1 |               4 |               21,095 | 21,035–22,220 |         +62% |    17.53 |           199 |           8.01 |            3.40 |
+
+The t0 depth-1 baseline measured in the same five reports was **22,705**
+(22,315–23,925).
+
+**Constant offered burst** (`--tier t2`, `callers × calls in flight = 8`, five
+runs per row):
+
+| Callers | Calls in flight | Actions/sec (median) |         Range | p50 (ms) | Actions/flush | Flush p50 (ms) | Commit p50 (ms) |
+| ------: | --------------: | -------------------: | ------------: | -------: | ------------: | -------------: | --------------: |
+|       8 |               1 |               19,415 | 19,110–20,295 |    39.29 |           400 |          18.15 |            6.92 |
+|       4 |               2 |               20,210 | 18,260–20,575 |    37.91 |           400 |          17.46 |            6.87 |
+|       2 |               4 |               20,305 | 19,355–20,680 |    37.60 |           400 |          17.32 |            6.50 |
+|       1 |               8 |               20,200 | 18,075–20,225 |    37.98 |           400 |          18.11 |            6.96 |
+
+Three things follow. First, at a constant offered burst every configuration
+coalesces to the same 400 Actions/flush and lands at 19.4–20.3k with
+overlapping ranges: **once the flush shape is held, depth is throughput-neutral**.
+That is the clean form of "the current pipeline cannot use depth". Second, the
+penalty in the t2 table above is flush bloat, not depth: going 8 → 16 → 32
+outstanding calls lifts the flush 400 → 800 → 1600 and the per-Action cost with
+it. Third, the one-caller sweep shows where the headroom actually is: with a
+single serial caller the client is the bottleneck — each 6.7 ms call leaves the
+sequencer idle while MessagePack, the request, the response, and the next
+Action build run — so depth 2 lifts throughput **67%** with the flush unchanged.
+That is the same "keep the sequencer fed" effect as the t0 depth-2 row,
+amplified by the HTTP round trip. Depth 4 coalesces (199/flush) and adds
+queueing without throughput.
+
+Practically: **one client keeping two calls in flight beats eight serial clients**
+on throughput (21,745 vs 19,415) and on p50 (8.0 ms vs 39.3 ms) at an eighth of
+the connections. That is a client-side pipelining lever
+([#201](https://github.com/ebbjs/ebbjs/issues/201) territory), not a
+committer-pool win — and it needs a production client that pipelines, which is
+out of scope for #551.
+
+Caveat: the two tables were measured in different sessions. The t2 sweep table's
+rows come from a session whose own t0 baseline was 21,435; this subsection's was
+22,705, and the same c=8 depth-1 config measured 19,415 here versus 17,985
+there. Compare rows within a table, not across tables.
+
 ### Verdict for the pipeline
 
 The workload the epic wants to optimize (#551) shows **no temporal-parallelism
 gain** on the current pipeline: depth cannot overlap commits because
-`max_in_flight` is 1, and the only measurable win (t0 depth 2) comes from
-overlapping the caller's own prepare work. Increasing depth at a fixed caller
-count does not add independent batches — it only deepens the coalesced flush,
-and past ~400 Actions that costs throughput. V2 (#533/#534) has to show a gain
-on _this_ workload at a comparable flush size; a depth sweep that only grows
-the batch is not evidence of pipeline parallelism.
+`max_in_flight` is 1. At a constant offered burst, depth is throughput-neutral
+(19.4–20.3k across 8×1, 4×2, 2×4, 1×8) because every shape coalesces to the same
+400-Action flush. The measurable wins — t0 depth 2 and t2 one-caller depth 2 —
+come from keeping the sequencer fed while the caller prepares the next batch, not
+from parallel commits. Increasing depth at a fixed caller count does not add
+independent batches: it only deepens the coalesced flush, and past ~400 Actions
+that costs throughput. V2 (#533/#534) has to show a gain on _this_ workload at a
+comparable flush size; a depth sweep that only grows the batch is not evidence of
+pipeline parallelism, and the constant-burst table is the control it should be
+compared against.
 
 ### Harness model and limitations
 
