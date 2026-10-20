@@ -13,7 +13,9 @@ defmodule Mix.Tasks.Bench.Actions do
         --updates-per-action 2 --distribution hot --in-flight 1,2,4
 
   A sweep measures a t0 depth-1 baseline first and then one full pass per
-  depth, each against a fresh booted and seeded DB.
+  depth, each against a fresh booted and seeded DB. Depth also deepens the
+  coalesced flush, so the report pairs it with `Actions/flush`; compare depths
+  only at the same flush shape (see the control tables in `RESULTS.md`).
 
   Boots an isolated storage + sync tree in a temp directory (the
   `:ebb_server` application is not started), seeds a bench actor/group,

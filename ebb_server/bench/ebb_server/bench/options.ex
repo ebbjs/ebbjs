@@ -24,6 +24,12 @@ defmodule EbbServer.Bench.Options do
   default on every tier; a real depth is only allowed where the caller drives
   the Writer (`t0`, `t2`, `t3`). Repeated depths collapse, so `2,2` is one
   single-depth run, not a sweep.
+
+  Depth is a workload knob, not a promise of pipeline parallelism: the Writer
+  coalesces outstanding calls, so a deeper workload also deepens the flush and
+  costs more per Action. Read the report's `Actions/flush` column, and compare
+  depths only at the same flush shape — the control tables in
+  `ebb_server/bench/RESULTS.md` are what separates the two.
   """
 
   @type tier :: :t0 | :t1 | :t2 | :t3 | :t4 | :t5

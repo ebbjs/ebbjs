@@ -666,7 +666,9 @@ mix bench.actions --tier t2 --duration 120 --warmup 5 --concurrency 8 \
 `--in-flight 1,2,4` sweeps pipeline depth: each worker keeps N
 `Writer.write_actions/1` calls outstanding instead of one (`t0`, `t2`,
 `t3` only), and the report adds a depth table with a t0 depth-1
-no-regression baseline row.
+no-regression baseline row. The table pairs depth with `Actions/flush`:
+depth alone is not a pipeline-parallelism result, because the Writer
+coalesces the outstanding calls into shared flushes.
 
 `mix bench.materialize` runs the read / materialization benchmark: it
 seeds `content`-map documents of N run keys and measures the cold, dirty,
