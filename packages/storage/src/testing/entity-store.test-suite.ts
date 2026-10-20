@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isFieldMap, makeHlc, type Action, type Entity, type FieldValue } from "@ebbjs/core";
+import { isShardedMapField } from "../internal/map-field";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
 import type { EntityStore } from "../types/entity-store";
@@ -418,6 +419,29 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
             outer: map({ inner: leaf(1, "u_a", hlcA), other: leaf(2, "u_b", hlcB) }),
           },
         });
+      });
+
+      it("keeps a map above the shard flip point flat across a store round-trip", async () => {
+        const hlc = makeHlc(100);
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        const entries = Object.fromEntries(
+          Array.from({ length: 600 }, (_, index) => [
+            `run_${index}`,
+            leaf(index, `u_${index}`, hlc),
+          ]),
+        );
+        await actionLog.append(buildMapPutAction("u_big", { content: map(entries) }, hlc, 1));
+        await dirtyTracker.mark("todo_1", "todo");
+
+        const entity = await entityStore.get("todo_1");
+        const content = entity!.data.fields.content;
+        if (!isFieldMap(content)) throw new Error("expected a map field");
+
+        // The legacy adapters keep the plain wire shape; the sharded
+        // container is the replica's resident representation only.
+        expect(isShardedMapField(content)).toBe(false);
+        expect(Object.keys(content.map)).toHaveLength(600);
+        expect(content.map.run_0).toEqual(leaf(0, "u_0", hlc));
       });
 
       it("replaces a map wholesale on put", async () => {

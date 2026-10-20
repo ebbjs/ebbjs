@@ -1,6 +1,8 @@
 import type { Entity, FieldValue, HLCTimestamp, Update } from "@ebbjs/core";
 import { latestHlc, mergeFieldValue } from "@ebbjs/core";
 
+import { adoptMapFields, mergeResidentFieldValue, toWireMapFields } from "./map-field";
+
 /**
  * Shared materialization helpers used by every EntityStore implementation.
  *
@@ -18,6 +20,19 @@ export const readFields = (update: Update): Record<string, FieldValue> => {
 };
 
 /**
+ * Whether a materialized row keeps large map fields in the replica's sharded
+ * container. The replica owns its rows and flattens them at the record
+ * boundary; the legacy adapters deep-clone every row, so they keep the plain
+ * wire shape.
+ */
+export interface MaterializeOptions {
+  readonly residentMapFields?: boolean;
+}
+
+/** The replica's materialization options. */
+export const RESIDENT_MAP_FIELDS: MaterializeOptions = { residentMapFields: true };
+
+/**
  * Merges patch fields into existing entity data using LWW semantics.
  * Higher HLC wins; equal HLC breaks toward the lexicographically
  * greater `update_id`. A map field merges key by key. The recursive
@@ -27,15 +42,22 @@ export const readFields = (update: Update): Record<string, FieldValue> => {
  * The fields record is copied only when a field actually changes; when
  * the patch contributes nothing, the existing data object is returned
  * by reference so a caller can detect a no-op without a structural
- * comparison.
+ * comparison. With {@link MaterializeOptions.residentMapFields}, a large map
+ * field is a sharded container, so a winning one-key patch copies one shard
+ * rather than the whole map.
  */
-export const mergeFields = (existing: Entity["data"], update: Update): Entity["data"] => {
+export const mergeFields = (
+  existing: Entity["data"],
+  update: Update,
+  options?: MaterializeOptions,
+): Entity["data"] => {
   const patch = readFields(update);
+  const mergeValue = options?.residentMapFields ? mergeResidentFieldValue : mergeFieldValue;
   let merged: Record<string, FieldValue> | undefined;
 
   for (const [field, patchValue] of Object.entries(patch)) {
     const previous = merged === undefined ? existing.fields[field] : merged[field];
-    const next = mergeFieldValue(previous, patchValue);
+    const next = mergeValue(previous, patchValue);
     if (next !== previous) {
       if (merged === undefined) merged = { ...existing.fields };
       merged[field] = next;
@@ -44,6 +66,29 @@ export const mergeFields = (existing: Entity["data"], update: Update): Entity["d
 
   return merged === undefined ? existing : { fields: merged };
 };
+
+const withTransformedFields = (
+  entity: Entity,
+  transform: (fields: Record<string, FieldValue>) => Record<string, FieldValue>,
+): Entity => {
+  const fields = transform(entity.data.fields);
+  return fields === entity.data.fields ? entity : { ...entity, data: { ...entity.data, fields } };
+};
+
+/**
+ * Adopt the large map fields of a row installed from a cold read or a record.
+ * Returns the same row when every map field is already resident in the shape
+ * the merge path expects.
+ */
+export const withAdoptedMapFields = (entity: Entity): Entity =>
+  withTransformedFields(entity, adoptMapFields);
+
+/**
+ * Flatten a row's resident map fields to the wire shape before it crosses the
+ * record boundary. Returns the same row when it holds no containers.
+ */
+export const withWireMapFields = (entity: Entity): Entity =>
+  withTransformedFields(entity, toWireMapFields);
 
 /**
  * Applies a single update to an entity during materialization.
@@ -59,13 +104,18 @@ export const applyUpdate = (
   update: Update,
   gsn: number,
   hlc: HLCTimestamp,
+  options?: MaterializeOptions,
 ): Entity | null => {
   switch (update.method) {
     case "put":
       return {
         id: update.subject_id,
         type: update.subject_type,
-        data: { fields: readFields(update) },
+        data: {
+          fields: options?.residentMapFields
+            ? adoptMapFields(readFields(update))
+            : readFields(update),
+        },
         created_hlc: hlc,
         updated_hlc: hlc,
         deleted_hlc: null,
@@ -79,7 +129,7 @@ export const applyUpdate = (
       if (entity.deleted_hlc) return entity;
       return {
         ...entity,
-        data: mergeFields(entity.data, update),
+        data: mergeFields(entity.data, update, options),
         updated_hlc: latestHlc(entity.updated_hlc, hlc),
         last_gsn: Math.max(entity.last_gsn, gsn),
       };
