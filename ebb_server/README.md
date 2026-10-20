@@ -117,6 +117,7 @@ ordered-fanout coordination that is not yet built
 | `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass + external modes)                                     |
 | `EbbServer.Sync.Router`                                                          | HTTP plug router                                                                        |
 | `EbbServer.Sync.CatchUp`                                                         | Paginated catch-up                                                                      |
+| `EbbServer.Sync.GroupListing`                                                    | Group-scoped cold-bootstrap entity listing                                              |
 | `EbbServer.Sync.SSEHandler`                                                      | The SSE wire format                                                                     |
 | `EbbServer.Sync.FanOutRouter`                                                    | Watermark-gated routing to per-group `GroupServer`                                      |
 | `EbbServer.Sync.FanOutFrontier`                                                  | Last-pushed GSN persisted across a Router restart                                       |
@@ -129,15 +130,16 @@ hot-path behavior. Read those before making non-trivial changes.
 
 ### HTTP endpoint table
 
-| Method | Path                              | Purpose                                                                |
-| ------ | --------------------------------- | ---------------------------------------------------------------------- |
-| `POST` | `/sync/handshake`                 | Actor identity + group membership (requires `x-ebb-actor-id` header)   |
-| `GET`  | `/sync/groups/:group_id?offset=N` | Paginated catch-up (`stream-next-offset`, `stream-up-to-date` headers) |
-| `GET`  | `/sync/live?groups=...&cursor=N`  | SSE stream of new actions                                              |
-| `POST` | `/sync/actions`                   | Write actions (MessagePack body)                                       |
-| `POST` | `/sync/presence`                  | Broadcast ephemeral presence data on an entity                         |
-| `GET`  | `/entities/:id`                   | Materialized entity (requires `actor_id` query param or header)        |
-| `POST` | `/entities/query`                 | Query entities by type with optional filter/limit/offset               |
+| Method | Path                                             | Purpose                                                                |
+| ------ | ------------------------------------------------ | ---------------------------------------------------------------------- |
+| `POST` | `/sync/handshake`                                | Actor identity + group membership (requires `x-ebb-actor-id` header)   |
+| `GET`  | `/sync/groups/:group_id?offset=N`                | Paginated catch-up (`stream-next-offset`, `stream-up-to-date` headers) |
+| `GET`  | `/sync/groups/:group_id/entities?cursor=&limit=` | Group state at a watermark, for cold bootstrap                         |
+| `GET`  | `/sync/live?groups=...&cursor=N`                 | SSE stream of new actions                                              |
+| `POST` | `/sync/actions`                                  | Write actions (MessagePack body)                                       |
+| `POST` | `/sync/presence`                                 | Broadcast ephemeral presence data on an entity                         |
+| `GET`  | `/entities/:id`                                  | Materialized entity (requires `actor_id` query param or header)        |
+| `POST` | `/entities/query`                                | Query entities by type with optional filter/limit/offset               |
 
 The OpenAPI 3.1 spec is generated from router annotations via
 `mix openapi.gen.spec` and lives at `ebb_server/openapi.yaml`.
