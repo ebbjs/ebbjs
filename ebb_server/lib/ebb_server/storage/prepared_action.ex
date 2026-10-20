@@ -4,9 +4,10 @@ defmodule EbbServer.Storage.PreparedAction do
   `EbbServer.Storage.Committer`.
 
   The sequencer owns everything that needs a live view of the system
-  caches or the resolution frontier: dedup, pre-claim payload build and
-  ETF encode, the GSN claim, group resolution, the per-Update
-  `update_scopes` snapshot, and the provisional dirty marks.
+  caches or the resolution frontier: dedup, the GSN claim, group
+  resolution, the per-Update `update_scopes` snapshot, and the provisional
+  dirty marks. The GSN-free payload build and ETF encode happened in the
+  `EbbServer.Storage.PreparePool` before the call entered the pipeline.
   `PreparedAction` is what is left over — the Action's durable content,
   already encoded, plus every cache-derived decision the Committer needs —
   so op assembly and the durable write can run in another process without

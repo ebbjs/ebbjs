@@ -1321,6 +1321,61 @@ compared against.
   request process; t0 is the cleaner pipeline number. Both tiers use the same
   Action shape and `sync: true`.
 
+## Prepare stage (#553)
+
+[#553](https://github.com/ebbjs/ebbjs/issues/553) moves the GSN-free
+payload build and ETF encode from the Writer's `handle_call` path into a
+linked `PreparePool`. It is a structural change first: arrival order and
+the coalesced flush shape are fixed by a prepare-burst marker, so the
+pool can finish a later call early without reordering claims. The Writer
+now bounds the in-flight prepare queue and times out a job that never
+finishes; neither path claims a GSN.
+
+Measured **2026-10-20** on the same host as the depth tables above, with
+`origin/main` at `8abf4b7` and the prepare branch at the same base plus
+the prepare stage. Two to eight reports per row; the t2 c8 depth-2 row was
+re-run with baseline and prepare interleaved after the final timer fix.
+Medians with the min–max range in parentheses. Default prepare settings
+were used (pool 2, queue 1,024 calls, timeout 2,000 ms). Every run had
+**0 rejected Actions, 0 write/transport errors, 0 GSN holes**, and a final
+watermark lag of 0.
+
+```sh
+mix bench.actions --tier t0 --duration 20 --warmup 3 --concurrency 1 \
+  --in-flight 1,2 --batch-size 100 --updates-per-action 2 --distribution hot --seed 1
+mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 1 \
+  --in-flight 1,2 --batch-size 100 --updates-per-action 2 --distribution hot --seed 1
+mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 8 \
+  --in-flight 1,2 --batch-size 100 --updates-per-action 2 --distribution hot --seed 1
+```
+
+| Tier | Callers | Calls in flight | `origin/main` Actions/sec | Prepare stage Actions/sec |     Δ |
+| :--- | ------: | --------------: | ------------------------: | ------------------------: | ----: |
+| t0   |       1 |               1 |    21,183 (17,970–21,640) |    20,425 (19,990–21,240) | −3.6% |
+| t0   |       1 |               2 |    30,228 (29,400–31,055) |    31,820 (31,255–33,380) | +5.3% |
+| t2   |       1 |               1 |    11,855 (11,850–11,860) |    11,450 (11,300–11,600) | −3.4% |
+| t2   |       1 |               2 |    19,675 (19,475–19,875) |    19,870 (19,055–20,155) | +1.0% |
+| t2   |       8 |               1 |    19,085 (18,715–19,455) |    19,268 (19,215–19,320) | +1.0% |
+| t2   |       8 |               2 |    19,253 (18,860–19,935) |    19,585 (16,870–20,320) | +1.7% |
+
+**Verdict: a documented null result.** The deltas are inside this VM's
+±5–10% single-run noise. The t2 one-caller depth-1 row is the one that
+looks negative, but its own report's t0 baseline was ~4% lower in the
+prepare session than in the `origin/main` session, so the t0-normalized
+ratio is flat. The t2 c8 depth-2 rows overlap heavily: the interleaved
+pair was 18,860/19,225 (`origin/main`) against 19,400/16,870 (prepare),
+and the prepare runs' flush count varied 637–736 against 705–721 for the
+baseline — burst-shape noise, not a consistent regression.
+
+Throughput is unchanged because the flush is still dominated by cache
+resolution and `write_batch`: in the same runs' Server-side latency
+tables, `commit_latency_ms` p50 was 9.3–10.2 ms against a
+`batch_latency_ms` p50 of 48.5–58.7 ms. Overlapping a payload build of a
+few hundred microseconds with the commit cannot move the headline. The
+win is structural — prepare no longer runs on the Writer's call path and
+a slow or dead worker cannot hold a claimed GSN — not a throughput
+number.
+
 ## Correctness under load
 
 Clean across every measured run above: **0 rejected Actions, 0

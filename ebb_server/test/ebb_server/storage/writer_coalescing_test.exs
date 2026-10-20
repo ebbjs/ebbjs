@@ -292,12 +292,15 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
         end)
 
       assert wait_until(fn ->
-               match?(%{flush_timer_ref: ref} when not is_nil(ref), :sys.get_state(writer.pid))
+               match?(%{prepare_timer_ref: ref} when not is_nil(ref), :sys.get_state(writer.pid))
              end)
 
       # A burst-drain marker would have replied already; the timer holds it.
       assert Task.yield(task, 50) == nil
       assert {:ok, {1, 1}, []} = Task.await(task, 2_000)
+
+      # The prepare window must not consume the configured pipeline knob.
+      assert :sys.get_state(writer.pid).batch_timeout_ms == 200
     end
 
     test "write_actions([]) still replies {0,0} without claiming a GSN", ctx do

@@ -184,8 +184,9 @@ defmodule EbbServer.Storage.CommitPipeline do
   @doc """
   Records a caller and its pre-encoded Actions as pending.
 
-  The payload build and encode already happened in the Writer before the
-  call reaches this transition, so nothing here touches a cache or storage.
+  The payload build and encode already happened in the Prepare pool
+  before the call reaches this transition, so nothing here touches a
+  cache or storage.
   """
   @spec enqueue(t(), GenServer.from(), [enqueued_action()]) :: t()
   def enqueue(%__MODULE__{} = state, from, actions) do
@@ -195,6 +196,10 @@ defmodule EbbServer.Storage.CommitPipeline do
         pending_count: state.pending_count + length(actions)
     }
   end
+
+  @doc "The number of Actions waiting in the pre-flush burst."
+  @spec pending_count(t()) :: non_neg_integer()
+  def pending_count(%__MODULE__{pending_count: count}), do: count
 
   @doc """
   Decides what the Writer should do after a call arrived or a batch finished.

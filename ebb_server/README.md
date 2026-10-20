@@ -91,36 +91,38 @@ ordered-fanout coordination that is not yet built
 
 ### Module map
 
-| Module                                                                           | Purpose                                                                                     |
-| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `EbbServer.Storage.RocksDB`                                                      | DB lifecycle, column families, key encoding, low-level I/O                                  |
-| `EbbServer.Storage.SQLite`                                                       | Entity cache: schema DDL, UPSERT, filtered query with permissions                           |
-| `EbbServer.Storage.SystemCache` (sup.)                                           | ETS + `:atomics` for GSN, watermark, dirty set, group/relationship                          |
-| `EbbServer.Storage.Writer`                                                       | Imperative shell: coalescing, payload pre-encode, GSN claim, group resolution, apply/notify |
-| `EbbServer.Storage.CommitPipeline`                                               | Pure pipeline state machine: pending calls, claim order, in-flight guard, release order     |
-| `EbbServer.Storage.CacheMutationPlanner`                                         | Pure cache-write planner: per-flush dedup and the row overlay chained plans share           |
-| `EbbServer.Storage.Committer`                                                    | Durable half of a flush: wrapper encode, op assembly, `write_batch`                         |
-| `EbbServer.Storage.CommitterPool`                                                | Supervised Committer workers, one job per worker, crash-to-failed-range reporting           |
-| `EbbServer.Storage.PreparedAction`                                               | Immutable sequencer → committer boundary payload                                            |
-| `EbbServer.Storage.ActionLog`                                                    | Committed-log reader: decodes an inclusive GSN range in order                               |
-| `EbbServer.Storage.ActionFormat`                                                 | `cf_actions` value shape: GSN-free payload, scopes wrapper, dual-shape decode               |
-| `EbbServer.ActionExport` (opt-in)                                                | Polls the committed log and invokes the `:on_action` handler                                |
-| `EbbServer.Storage.EntityStore`                                                  | Read API with on-demand materialization                                                     |
-| `EbbServer.Storage.PermissionChecker`                                            | Action validation, per-Update + read-side permission decisions                              |
-| `EbbServer.Storage.WatermarkTracker`                                             | Resolution-frontier ETS + `:atomics` (SSE fan-out gating)                                   |
-| `EbbServer.Storage.InFlightActions`                                              | In-flight action-id ETS (idempotent-retry concurrency guard)                                |
-| `EbbServer.Storage.{DirtyTracker,GroupCache,EntityGroupCache,RelationshipCache}` | In-memory state children of `SystemCache`                                                   |
-| `EbbServer.Storage.GSNCounter`                                                   | Lock-free GSN claiming + restart reconcile (`:atomics`)                                     |
-| `EbbServer.Telemetry.Sampler`                                                    | Periodic watermark / dirty-set / in-flight / fan-out gauges                                 |
-| `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass + external modes)                                         |
-| `EbbServer.Sync.Router`                                                          | HTTP plug router                                                                            |
-| `EbbServer.Sync.CatchUp`                                                         | Paginated catch-up                                                                          |
-| `EbbServer.Sync.SSEHandler`                                                      | The SSE wire format                                                                         |
-| `EbbServer.Sync.FanOutRouter`                                                    | Watermark-gated routing to per-group `GroupServer`                                          |
-| `EbbServer.Sync.FanOutFrontier`                                                  | Last-pushed GSN persisted across a Router restart                                           |
-| `EbbServer.Sync.GroupServer`                                                     | Per-group fan-out; holds subscribers' senders                                               |
-| `EbbServer.Sync.SSEConnection`                                                   | Per-live-subscription pid; receives pushes via its `GroupServer`                            |
-| `EbbServer.Storage.BackgroundWarmer` (optional)                                  | Pre-materializes dirty entities during idle periods                                         |
+| Module                                                                           | Purpose                                                                                 |
+| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `EbbServer.Storage.RocksDB`                                                      | DB lifecycle, column families, key encoding, low-level I/O                              |
+| `EbbServer.Storage.SQLite`                                                       | Entity cache: schema DDL, UPSERT, filtered query with permissions                       |
+| `EbbServer.Storage.SystemCache` (sup.)                                           | ETS + `:atomics` for GSN, watermark, dirty set, group/relationship                      |
+| `EbbServer.Storage.Writer`                                                       | Imperative shell: coalescing, GSN claim, group resolution, apply/notify                 |
+| `EbbServer.Storage.PreparePool`                                                  | Supervised prepare workers: GSN-free payload build and ETF encode off the call path     |
+| `EbbServer.Storage.Preparer`                                                     | One prepare worker: `ActionFormat` build + encode, crash-contained per job              |
+| `EbbServer.Storage.CommitPipeline`                                               | Pure pipeline state machine: pending calls, claim order, in-flight guard, release order |
+| `EbbServer.Storage.CacheMutationPlanner`                                         | Pure cache-write planner: per-flush dedup and the row overlay chained plans share       |
+| `EbbServer.Storage.Committer`                                                    | Durable half of a flush: wrapper encode, op assembly, `write_batch`                     |
+| `EbbServer.Storage.CommitterPool`                                                | Supervised Committer workers, one job per worker, crash-to-failed-range reporting       |
+| `EbbServer.Storage.PreparedAction`                                               | Immutable sequencer → committer boundary payload                                        |
+| `EbbServer.Storage.ActionLog`                                                    | Committed-log reader: decodes an inclusive GSN range in order                           |
+| `EbbServer.Storage.ActionFormat`                                                 | `cf_actions` value shape: GSN-free payload, scopes wrapper, dual-shape decode           |
+| `EbbServer.ActionExport` (opt-in)                                                | Polls the committed log and invokes the `:on_action` handler                            |
+| `EbbServer.Storage.EntityStore`                                                  | Read API with on-demand materialization                                                 |
+| `EbbServer.Storage.PermissionChecker`                                            | Action validation, per-Update + read-side permission decisions                          |
+| `EbbServer.Storage.WatermarkTracker`                                             | Resolution-frontier ETS + `:atomics` (SSE fan-out gating)                               |
+| `EbbServer.Storage.InFlightActions`                                              | In-flight action-id ETS (idempotent-retry concurrency guard)                            |
+| `EbbServer.Storage.{DirtyTracker,GroupCache,EntityGroupCache,RelationshipCache}` | In-memory state children of `SystemCache`                                               |
+| `EbbServer.Storage.GSNCounter`                                                   | Lock-free GSN claiming + restart reconcile (`:atomics`)                                 |
+| `EbbServer.Telemetry.Sampler`                                                    | Periodic watermark / dirty-set / in-flight / fan-out gauges                             |
+| `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass + external modes)                                     |
+| `EbbServer.Sync.Router`                                                          | HTTP plug router                                                                        |
+| `EbbServer.Sync.CatchUp`                                                         | Paginated catch-up                                                                      |
+| `EbbServer.Sync.SSEHandler`                                                      | The SSE wire format                                                                     |
+| `EbbServer.Sync.FanOutRouter`                                                    | Watermark-gated routing to per-group `GroupServer`                                      |
+| `EbbServer.Sync.FanOutFrontier`                                                  | Last-pushed GSN persisted across a Router restart                                       |
+| `EbbServer.Sync.GroupServer`                                                     | Per-group fan-out; holds subscribers' senders                                           |
+| `EbbServer.Sync.SSEConnection`                                                   | Per-live-subscription pid; receives pushes via its `GroupServer`                        |
+| `EbbServer.Storage.BackgroundWarmer` (optional)                                  | Pre-materializes dirty entities during idle periods                                     |
 
 Each module's `@moduledoc` documents the load-bearing decisions and the
 hot-path behavior. Read those before making non-trivial changes.
@@ -154,7 +156,10 @@ EbbServer.Supervisor (one_for_one)
 │   │   └── Storage.RelationshipCache
 │   ├── Storage.WatermarkTracker           — resolution-frontier ETS + :atomics
 │   ├── Storage.InFlightActions            — in-flight action-id ETS
-│   └── Storage.Writer                     — imperative shell: pre-encode, claim, resolve, apply
+│   └── Storage.Writer                     — imperative shell: claim, resolve, apply
+│       ├── Storage.PreparePool             — supervised prepare workers; owns no ordering
+│       │   ├── DynamicSupervisor
+│       │   └── Storage.Preparer × N        — GSN-free payload build + ETF encode
 │       ├── Storage.CommitPipeline         — pure pending/claim/release ordering state machine
 │       ├── Storage.CacheMutationPlanner   — pure cache-write planner: dedup + row overlay
 │       └── Storage.CommitterPool           — supervised workers; contains a worker death per range
@@ -205,15 +210,18 @@ not atoms.
 
 All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 
-| Key                        | Description                                                                            | Default     |
-| -------------------------- | -------------------------------------------------------------------------------------- | ----------- |
-| `:port`                    | HTTP listen port                                                                       | 4000        |
-| `:data_dir`                | Directory for RocksDB + SQLite files                                                   | `./data`    |
-| `:auth_mode`               | Auth mode (`:bypass` / `:external`)                                                    | `:external` |
-| `:auth_url`                | Developer's auth endpoint URL                                                          | (required)  |
-| `:writer_batch_max_size`   | Buffered Actions before an immediate commit (`<= 0` = no trigger)                      | 1000        |
-| `:writer_batch_timeout_ms` | Coalescing window (`0` = burst-drain, no timer)                                        | 0           |
-| `:on_action`               | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook)) | (unset)     |
+| Key                          | Description                                                                            | Default     |
+| ---------------------------- | -------------------------------------------------------------------------------------- | ----------- |
+| `:port`                      | HTTP listen port                                                                       | 4000        |
+| `:data_dir`                  | Directory for RocksDB + SQLite files                                                   | `./data`    |
+| `:auth_mode`                 | Auth mode (`:bypass` / `:external`)                                                    | `:external` |
+| `:auth_url`                  | Developer's auth endpoint URL                                                          | (required)  |
+| `:writer_batch_max_size`     | Buffered Actions before an immediate commit (`<= 0` = no trigger)                      | 1000        |
+| `:writer_batch_timeout_ms`   | Coalescing window (`0` = burst-drain, no timer)                                        | 0           |
+| `:writer_prepare_pool_size`  | Prepare workers for payload build and ETF encode                                       | 2           |
+| `:writer_prepare_queue_max`  | In-flight prepare calls before the Writer rejects with `503 write_failed`              | 1024        |
+| `:writer_prepare_timeout_ms` | Upper bound on one prepare job before it fails the call                                | 2000        |
+| `:on_action`                 | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook)) | (unset)     |
 
 The periodic metric sampler is configured under its own key,
 `Application.get_env(:ebb_server, EbbServer.Telemetry.Sampler)`:
@@ -240,9 +248,11 @@ Several keys that appeared in earlier docs — `:writer_count`, `:warmer_*`,
 and `:replication_peers` — are **read by nothing in `lib/` or `config/`**.
 Production runs a single `EbbServer.Storage.Writer` GenServer with batch
 coalescing controlled by the two `:writer_batch_*` knobs above; multi-Writer
-is gated on [#287](https://github.com/ebbjs/ebbjs/issues/287). Benchmarking
-the real write path is what forced the table above to describe what actually
-runs (see [`bench/RESULTS.md`](bench/RESULTS.md)).
+is gated on [#287](https://github.com/ebbjs/ebbjs/issues/287). Payload build
+and ETF encode run ahead of the Writer in the bounded
+`:writer_prepare_*` pool. Benchmarking the real write path is what forced
+the table above to describe what actually runs (see
+[`bench/RESULTS.md`](bench/RESULTS.md)).
 
 ### Observability
 

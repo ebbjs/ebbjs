@@ -29,10 +29,12 @@ defmodule EbbServer.Storage.Writer do
 
   ## Batch coalescing
 
-  `write_actions/2` does not commit inline. `handle_call/3` enqueues the
-  caller and its Actions, then either flushes immediately (once the pending
-  Action count reaches `:writer_batch_max_size`) or schedules a flush. With
-  the default `:writer_batch_timeout_ms` of 0 the Writer burst-drains:
+  `write_actions/2` does not commit inline. `handle_call/3` hands the
+  caller's Actions to the Prepare pool; when their payloads are ready and
+  every earlier call has resolved, the call enters the pipeline and either
+  flushes immediately (once the pending Action count reaches
+  `:writer_batch_max_size`) or schedules a flush. With the default
+  `:writer_batch_timeout_ms` of 0 the Writer burst-drains:
   `handle_call/3` sends itself a `:flush` marker that lands at the tail of
   the mailbox, after every `write_actions` call already queued, so a single
   flush commits the whole burst and adds only a mailbox hop when nothing
@@ -45,16 +47,33 @@ defmodule EbbServer.Storage.Writer do
   Provisional marks, the durable commit, the watermark advance, and the
   fan-out notification are all once-per-flush.
 
-  ## Sequencer and Committer pool
+  ## Sequencer, Prepare pool, and Committer pool
 
   The flush is split across processes. This GenServer is the
   **sequencer**: it owns everything that needs the live caches or the
-  resolution frontier — coalescing, dedup, the pre-claim payload build and
-  ETF encode, the GSN claim, group resolution and `update_scopes`, the
-  provisional dirty marks, apply, the watermark, the fan-out notification,
-  and every reply. The linked `EbbServer.Storage.CommitterPool` owns the
+  resolution frontier — coalescing, dedup, the GSN claim, group resolution
+  and `update_scopes`, the provisional dirty marks, apply, the watermark,
+  the fan-out notification, and every reply. The linked
+  `EbbServer.Storage.PreparePool` owns the GSN-free, cache-free payload
+  build and ETF encode, so that work runs as calls arrive without blocking
+  the sequencer. The linked `EbbServer.Storage.CommitterPool` owns the
   parts that only need immutable input: wrapper encode, `cf_*` op
   assembly, and the durable `write_batch/2`.
+
+  A call's payloads are prepared before it enters the pipeline. Arrival
+  order is fixed when the call reaches this process; a call is only
+  enqueued once every earlier call has been prepared or failed, so the
+  Prepare pool can finish later calls early without reordering claims.
+
+  The prepare queue is bounded by calls, not Actions. A full queue replies
+  `{:error, {:prepare_queue_full, max}}`; a job that exceeds its timeout
+  replies `{:error, {:prepare_failed, {:timeout, ms}}}`. Neither claims a
+  GSN, so an uncommitted call is never acked and the client outbox retries
+  it. The pool size, queue bound, and timeout are the
+  `:prepare_pool_size`, `:prepare_queue_max`, and `:prepare_timeout_ms`
+  Writer options; `:writer_prepare_pool_size`,
+  `:writer_prepare_queue_max`, and `:writer_prepare_timeout_ms` are the
+  matching application env keys.
 
   The hand-off is one `EbbServer.Storage.PreparedAction` per Action plus
   the claimed range. The sequencer sends it asynchronously and the pool
@@ -66,15 +85,16 @@ defmodule EbbServer.Storage.Writer do
   holds the successor at the gate until it is durable, so its abandon
   rebuilds the chain instead of letting stale scopes reach a durable range.
 
-  The pool is not shared across Writer restarts. It is linked to the
-  Writer and monitors it, so a Writer death sends shutdown to the pool.
-  That shutdown is best-effort: a worker already inside `write_batch` can
-  finish after its owner exits. Any claim still unresolved when the
-  replacement Writer boots is therefore treated as orphaned and resolved
-  as a hole. GSNs are never reused, so a late durable write can only fill a
-  range the new Writer already reported resolved; readers still see it in
-  the log, but live fan-out can miss it until a later catch-up. The
-  `InFlightActions.clear/1` call in `init/1` is safe for the same reason:
+  The pool is not shared across Writer restarts. The Prepare and
+  Committer pools are linked to the Writer and monitor it, so a Writer
+  death sends shutdown to both. That shutdown is best-effort: a worker
+  already inside `write_batch` can finish after its owner exits. Any claim
+  still unresolved when the replacement Writer boots is therefore treated
+  as orphaned and resolved as a hole. GSNs are never reused, so a late
+  durable write can only fill a range the new Writer already reported
+  resolved; readers still see it in the log, but live fan-out can miss it
+  until a later catch-up. The `InFlightActions.clear/1` call in `init/1` is
+  safe for the same reason:
   no old worker can claim a *new* GSN after its Writer is gone.
 
   ## Commit pipeline state machine
@@ -113,11 +133,12 @@ defmodule EbbServer.Storage.Writer do
 
   ## Hot path
 
-  Each call's payload is built and ETF-encoded as it arrives, before any
-  GSN is claimed. `flush/1` then claims a GSN range for the coalesced
-  burst, resolves the `cf_group_actions` index via intra-action context
-  (see below), marks the affected entities provisionally dirty, and hands
-  the prepared batch to the Committer. Once the ack lands the sequencer
+  Each call's payload is built and ETF-encoded in the Prepare pool as it
+  arrives, before any GSN is claimed. `flush/1` then claims a GSN range for
+  the prepared prefix of the coalesced burst, resolves the
+  `cf_group_actions` index via intra-action context (see below), marks the
+  affected entities provisionally dirty, and hands the prepared batch to
+  the Committer. Once the ack lands the sequencer
   settles the marks, advances the watermark, and notifies `FanOutRouter`.
   The notification carries the per-Action group set this pass resolved, so
   live fan-out indexes the same snapshot `cf_group_actions` was built from
@@ -239,7 +260,9 @@ defmodule EbbServer.Storage.Writer do
   The test seam is the optional `:commit_fn` (default
   `&RocksDB.write_batch/2`), used for both error injection and crash
   simulation. It runs in the Committer, which reports a raised value back
-  instead of crashing, so the pool can report it as a failed range. The optional
+  instead of crashing, so the pool can report it as a failed range. The
+  optional `:prepare_fn` seam replaces the default build and encode in a
+  prepare worker, for slow, dead, or raising prepare paths. The optional
   `:after_commit` fun still runs inside the Writer once the Committer
   reports the durable write and before the marks settle, so tests can
   observe the durable-commit window deterministically.
@@ -288,7 +311,6 @@ defmodule EbbServer.Storage.Writer do
   alias EbbServer.Telemetry
 
   alias EbbServer.Storage.{
-    ActionFormat,
     CacheMutationPlanner,
     CacheTables,
     CommitPipeline,
@@ -301,6 +323,7 @@ defmodule EbbServer.Storage.Writer do
     GsnCounter,
     InFlightActions,
     PreparedAction,
+    PreparePool,
     RelationshipCache,
     RocksDB
   }
@@ -310,18 +333,14 @@ defmodule EbbServer.Storage.Writer do
   @type validated_action :: PermissionChecker.validated_action()
   @type validated_update :: PermissionChecker.validated_update()
 
-  # The `:encode` ablation skips the payload encode but must still store a
-  # structurally valid record: live readers may run against an ablated bench DB.
-  @ablated_payload_etf ActionFormat.encode(
-                         ActionFormat.build(%{
-                           id: "ablated",
-                           actor_id: "ablated",
-                           hlc: 0,
-                           updates: []
-                         })
-                       )
-
   @type pending_marks :: CommitPipeline.pending_marks()
+
+  # A prepare job waits for the pool, then for every earlier call to
+  # resolve. The queue bound is calls, not Actions, so a burst of large
+  # batched calls cannot grow the Writer's held state without limit.
+  @default_prepare_pool_size 2
+  @default_prepare_queue_max 1_024
+  @default_prepare_timeout_ms 2_000
 
   # The overlay chain is bounded to keep its memory and rebuild cost small.
   @max_overlay_chain 4
@@ -343,6 +362,16 @@ defmodule EbbServer.Storage.Writer do
           entity_types: atom(),
           relationships: atom(),
           relationships_by_id: atom(),
+          prepare_pool: pid() | nil,
+          prepare_timeout_ms: pos_integer(),
+          prepare_queue_max: pos_integer(),
+          next_call_seq: non_neg_integer(),
+          next_enqueue_seq: non_neg_integer(),
+          burst_max_seq: non_neg_integer() | nil,
+          prepare_flush_scheduled: boolean(),
+          prepare_timer_ref: reference() | nil,
+          preparing: map(),
+          prepared: map(),
           committer_pool: pid() | nil,
           pipeline: CommitPipeline.t(),
           after_commit: (-> any()) | nil,
@@ -366,6 +395,16 @@ defmodule EbbServer.Storage.Writer do
     :entity_types,
     :relationships,
     :relationships_by_id,
+    :prepare_pool,
+    :prepare_timeout_ms,
+    :prepare_queue_max,
+    :next_call_seq,
+    :next_enqueue_seq,
+    :burst_max_seq,
+    :prepare_flush_scheduled,
+    :prepare_timer_ref,
+    :preparing,
+    :prepared,
     :committer_pool,
     :pipeline,
     :after_commit,
@@ -495,6 +534,54 @@ defmodule EbbServer.Storage.Writer do
 
     pool_size = Keyword.get(opts, :committer_pool_size, max_in_flight)
 
+    prepare_pool_size =
+      Keyword.get(
+        opts,
+        :prepare_pool_size,
+        Application.get_env(
+          :ebb_server,
+          :writer_prepare_pool_size,
+          @default_prepare_pool_size
+        )
+      )
+
+    prepare_queue_max =
+      Keyword.get(
+        opts,
+        :prepare_queue_max,
+        Application.get_env(
+          :ebb_server,
+          :writer_prepare_queue_max,
+          @default_prepare_queue_max
+        )
+      )
+
+    prepare_timeout_ms =
+      Keyword.get(
+        opts,
+        :prepare_timeout_ms,
+        Application.get_env(
+          :ebb_server,
+          :writer_prepare_timeout_ms,
+          @default_prepare_timeout_ms
+        )
+      )
+
+    prepare_fn = Keyword.get(opts, :prepare_fn)
+
+    validate_prepare_opts!(prepare_pool_size, prepare_queue_max, prepare_timeout_ms)
+
+    # The prepare pool is linked to the Writer and monitors it, so a Writer
+    # restart takes the workers with it. It owns no ordering state: the
+    # Writer fixes arrival order before dispatching a job.
+    {:ok, prepare_pool} =
+      PreparePool.start_link(
+        owner: self(),
+        size: prepare_pool_size,
+        ablate: ablate,
+        prepare_fn: prepare_fn
+      )
+
     # The pool is linked to the Writer and monitors it. An individual
     # Committer death is contained by the pool; a Writer death stops the
     # pool, and any claim still unresolved at the replacement's init is
@@ -520,6 +607,16 @@ defmodule EbbServer.Storage.Writer do
       entity_types: entity_types,
       relationships: relationships,
       relationships_by_id: relationships_by_id,
+      prepare_pool: prepare_pool,
+      prepare_timeout_ms: prepare_timeout_ms,
+      prepare_queue_max: prepare_queue_max,
+      next_call_seq: 0,
+      next_enqueue_seq: 0,
+      burst_max_seq: nil,
+      prepare_flush_scheduled: false,
+      prepare_timer_ref: nil,
+      preparing: %{},
+      prepared: %{},
       committer_pool: committer_pool,
       pipeline: CommitPipeline.new(max_in_flight: max_in_flight),
       after_commit: after_commit,
@@ -578,8 +675,10 @@ defmodule EbbServer.Storage.Writer do
   Enqueues a write call and triggers a flush.
 
   Actions are already validated by PermissionChecker before reaching the
-  Writer, and each Action's GSN-free payload is built and ETF-encoded as
-  the call arrives, before any GSN is claimed. A flush:
+  Writer. Each call's GSN-free, cache-free payloads are built and
+  ETF-encoded in the Prepare pool as the call arrives, before any GSN is
+  claimed; the call enters the pipeline in arrival order once its payloads
+  are ready. A flush:
   1. Filters out actions with empty updates, drops duplicate `action_id`s
      (first occurrence wins across the whole coalesced burst), and drops
      ids already committed (`cf_action_dedup`) or still in flight
@@ -605,8 +704,67 @@ defmodule EbbServer.Storage.Writer do
   caller in the flush sees `{:error, {:rocksdb_write_failed, reason}}`.
   """
   @impl true
+  def handle_call({:write_actions, []}, _from, state) do
+    {:reply, {:ok, {0, 0}, []}, state}
+  end
+
   def handle_call({:write_actions, actions}, from, state) when is_list(actions) do
-    {:noreply, state |> enqueue(from, actions) |> schedule_flush()}
+    if prepare_queue_full?(state) do
+      {:reply, {:error, {:prepare_queue_full, state.prepare_queue_max}}, state}
+    else
+      {:noreply, state |> dispatch_prepare(from, actions) |> maybe_schedule_prepare_flush()}
+    end
+  end
+
+  # A result for a timed-out job is stale: the caller already has its
+  # error and the slot is free, so it must not enqueue or reply twice.
+  def handle_info({:prepare_result, ref, result}, state) do
+    case Map.pop(state.preparing, ref) do
+      {nil, _preparing} ->
+        {:noreply, state}
+
+      {job, preparing} ->
+        cancel_prepare_timer(job.timer)
+        state = %{state | preparing: preparing}
+        {:noreply, complete_prepare(state, job, result)}
+    end
+  end
+
+  def handle_info({:prepare_timeout, ref}, state) do
+    case Map.pop(state.preparing, ref) do
+      {nil, _preparing} ->
+        {:noreply, state}
+
+      {job, preparing} ->
+        state = %{state | preparing: preparing}
+        PreparePool.abandon(state.prepare_pool, ref)
+
+        # The slow call never claimed a GSN, so its seq is a hole the
+        # pipeline skips rather than a range to resolve.
+        {:noreply, fail_prepare(state, job, {:timeout, state.prepare_timeout_ms})}
+    end
+  end
+
+  # The marker is the prepare-stage burst boundary. It lands after every
+  # `write_actions` call already in the mailbox, so the snapshot below is
+  # exactly the set of calls the pre-prepare Writer would have coalesced.
+  # Calls that arrive later get a higher seq and wait for the next burst.
+  def handle_info(:prepare_flush, state) do
+    state = clear_prepare_flush(state)
+
+    cond do
+      state.burst_max_seq != nil ->
+        # A burst is still draining; the next marker is scheduled when it
+        # finishes, so this one has nothing to snapshot.
+        {:noreply, state}
+
+      state.next_call_seq == 0 ->
+        {:noreply, state}
+
+      true ->
+        state = %{state | burst_max_seq: state.next_call_seq - 1}
+        {:noreply, advance_burst(state)}
+    end
   end
 
   # A marker queued before the dispatch only means the burst is already
@@ -647,36 +805,194 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
-  defp enqueue(state, from, actions) do
-    encoded = Enum.map(actions, &enqueue_action(&1, state))
+  # Arrival order is fixed here, before the pool sees the Actions. The
+  # pool may finish a later call first; only the snapshot burst prefix is
+  # drained, so it cannot reorder claims.
+  defp dispatch_prepare(state, from, actions) do
+    seq = state.next_call_seq
+    ref = make_ref()
+    timer = Process.send_after(self(), {:prepare_timeout, ref}, state.prepare_timeout_ms)
 
-    %{state | pipeline: CommitPipeline.enqueue(state.pipeline, from, encoded)}
+    PreparePool.prepare(state.prepare_pool, ref, Enum.map(actions, &prepare_input/1))
+
+    %{
+      state
+      | next_call_seq: seq + 1,
+        preparing:
+          Map.put(state.preparing, ref, %{
+            seq: seq,
+            from: from,
+            actions: actions,
+            timer: timer
+          })
+    }
   end
 
-  # The payload is GSN-free, so it is built and ETF-encoded as the call
-  # arrives — while the previous commit is still in flight — and never
-  # again on the flush proper. `update_scopes` are cache-dependent and are
-  # attached after the claim.
-  defp enqueue_action(action, state) do
-    {action, action |> build_payload(state) |> encode_payload(state)}
+  # The prepare contract is GSN-free and cache-free, so only the payload
+  # fields cross the process boundary.
+  defp prepare_input(action) do
+    %{id: action.id, actor_id: action.actor_id, hlc: action.hlc, updates: action.updates}
   end
 
-  defp build_payload(action, state) do
-    if ablate?(:build, state), do: %{}, else: ActionFormat.build(action)
+  defp complete_prepare(state, job, {:ok, payload_etfs}) when is_list(payload_etfs) do
+    if length(payload_etfs) == length(job.actions) do
+      encoded = Enum.zip(job.actions, payload_etfs)
+
+      advance_burst(%{
+        state
+        | prepared: Map.put(state.prepared, job.seq, {:ready, job.from, encoded})
+      })
+    else
+      fail_prepare(
+        state,
+        job,
+        {:payload_count_mismatch, length(job.actions), length(payload_etfs)}
+      )
+    end
   end
 
-  defp encode_payload(payload, state) do
-    if ablate?(:encode, state), do: @ablated_payload_etf, else: ActionFormat.encode(payload)
+  # A payload build raise was a Writer crash before the prepare stage and
+  # stays one: it is invalid input that validation should have rejected,
+  # not a worker failure. Worker deaths arrive as `{:crashed, reason}` and
+  # are failed per call instead.
+  defp complete_prepare(_state, _job, {:error, {:raised, error, stacktrace}}) do
+    :erlang.raise(:error, error, stacktrace)
+  end
+
+  defp complete_prepare(state, job, {:error, reason}), do: fail_prepare(state, job, reason)
+
+  defp complete_prepare(state, job, other),
+    do: fail_prepare(state, job, {:unexpected_result, other})
+
+  defp fail_prepare(state, job, reason) do
+    GenServer.reply(job.from, {:error, {:prepare_failed, reason}})
+
+    # A failed call never claimed a GSN, so its seq is a hole to skip, not
+    # a range to resolve.
+    advance_burst(%{state | prepared: Map.put(state.prepared, job.seq, :skipped)})
+  end
+
+  # Only the snapshot burst may enter the pipeline. A call that arrived
+  # after the marker stays in `prepared` for the next burst, even if its
+  # payload is ready, so the prepare pool finishing early cannot grow the
+  # current flush.
+  defp advance_burst(%{burst_max_seq: nil} = state), do: state
+
+  defp advance_burst(state) do
+    state = take_burst(state)
+
+    cond do
+      state.next_enqueue_seq > state.burst_max_seq ->
+        state = %{state | burst_max_seq: nil}
+        state = schedule_flush_now(state)
+        maybe_schedule_prepare_flush(state)
+
+      cap_reached?(state) ->
+        # Stop at the cap and flush; the rest of this burst resumes after
+        # the range is released.
+        schedule_flush_now(state)
+
+      true ->
+        state
+    end
+  end
+
+  defp take_burst(state) do
+    cond do
+      state.next_enqueue_seq > state.burst_max_seq ->
+        state
+
+      cap_reached?(state) ->
+        state
+
+      true ->
+        case Map.pop(state.prepared, state.next_enqueue_seq) do
+          {nil, _prepared} ->
+            state
+
+          {:skipped, prepared} ->
+            take_burst(%{
+              state
+              | prepared: prepared,
+                next_enqueue_seq: state.next_enqueue_seq + 1
+            })
+
+          {{:ready, from, encoded}, prepared} ->
+            take_burst(%{
+              state
+              | prepared: prepared,
+                next_enqueue_seq: state.next_enqueue_seq + 1,
+                pipeline: CommitPipeline.enqueue(state.pipeline, from, encoded)
+            })
+        end
+    end
+  end
+
+  # One marker per burst. A marker that arrives while a burst is draining
+  # is dropped; that drain schedules the next one when it finishes.
+  defp maybe_schedule_prepare_flush(state) do
+    cond do
+      state.prepare_flush_scheduled ->
+        state
+
+      state.burst_max_seq != nil ->
+        state
+
+      map_size(state.preparing) + map_size(state.prepared) == 0 ->
+        state
+
+      state.batch_timeout_ms > 0 ->
+        timer = Process.send_after(self(), :prepare_flush, state.batch_timeout_ms)
+        %{state | prepare_flush_scheduled: true, prepare_timer_ref: timer}
+
+      true ->
+        send(self(), :prepare_flush)
+        %{state | prepare_flush_scheduled: true}
+    end
+  end
+
+  defp clear_prepare_flush(state) do
+    if state.prepare_timer_ref, do: Process.cancel_timer(state.prepare_timer_ref)
+
+    %{state | prepare_flush_scheduled: false, prepare_timer_ref: nil}
+  end
+
+  defp cap_reached?(state) do
+    state.batch_max_size > 0 and
+      CommitPipeline.pending_count(state.pipeline) >= state.batch_max_size
+  end
+
+  defp cancel_prepare_timer(timer), do: Process.cancel_timer(timer)
+
+  defp prepare_queue_full?(state) do
+    map_size(state.preparing) + map_size(state.prepared) >= state.prepare_queue_max
+  end
+
+  defp validate_prepare_opts!(pool_size, queue_max, timeout_ms) do
+    unless is_integer(pool_size) and pool_size > 0 do
+      raise ArgumentError,
+            "Writer prepare_pool_size must be a positive integer, got: #{inspect(pool_size)}"
+    end
+
+    unless is_integer(queue_max) and queue_max > 0 do
+      raise ArgumentError,
+            "Writer prepare_queue_max must be a positive integer, got: #{inspect(queue_max)}"
+    end
+
+    unless is_integer(timeout_ms) and timeout_ms > 0 do
+      raise ArgumentError,
+            "Writer prepare_timeout_ms must be a positive integer, got: #{inspect(timeout_ms)}"
+    end
   end
 
   # The only place a flush is scheduled. The pipeline depth blocks it;
   # at the V0 depth of one this is the old single-in-flight rule, and at a
   # higher depth calls accumulate only until the next free slot reschedules.
-  defp schedule_flush(state) do
+  defp schedule_flush(state, timeout_ms) do
     case CommitPipeline.schedule(
            state.pipeline,
            state.batch_max_size,
-           state.batch_timeout_ms
+           timeout_ms
          ) do
       {:flush, pipeline} ->
         flush(%{state | pipeline: pipeline})
@@ -690,13 +1006,17 @@ defmodule EbbServer.Storage.Writer do
         %{state | pipeline: pipeline}
 
       {:schedule_timer, pipeline} ->
-        timer = Process.send_after(self(), :flush, state.batch_timeout_ms)
+        timer = Process.send_after(self(), :flush, timeout_ms)
         %{state | pipeline: pipeline, flush_timer_ref: timer}
 
       {status, pipeline} when status in [:wait, :idle] ->
         %{state | pipeline: pipeline}
     end
   end
+
+  # A visible prepare burst already waited out `batch_timeout_ms`; the
+  # pipeline flush must not defer it a second time.
+  defp schedule_flush_now(state), do: schedule_flush(state, 0)
 
   # The single place that claims a GSN range and hands it to the
   # Committer. A stale marker or timer must be a no-op when nothing is
@@ -900,8 +1220,19 @@ defmodule EbbServer.Storage.Writer do
   # pruned, which is what lets the healthy range behind a failed one drain.
   defp advance_pipeline(state) do
     case drain_releasable(state) do
-      {:ok, state} -> state |> start_next_commit() |> schedule_flush()
-      {:escalated, state} -> state
+      {:ok, state} ->
+        state = advance_burst(state)
+        state = start_next_commit(state)
+
+        # A prepare still in flight must not share this flush; it belongs
+        # to the next snapshot burst. The prepare marker already provided
+        # the coalescing window, so the pipeline does not wait again.
+        if state.burst_max_seq == nil, do: schedule_flush_now(state), else: state
+
+        maybe_schedule_prepare_flush(state)
+
+      {:escalated, state} ->
+        state
     end
   end
 

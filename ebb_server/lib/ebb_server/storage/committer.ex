@@ -39,7 +39,7 @@ defmodule EbbServer.Storage.Committer do
   + `write_batch` and is emitted on every outcome, including a raise, so
   the durable-write cost is separable from the sequencer's batch latency.
   The expensive payload build and ETF encode already happened in the
-  sequencer before the claim.
+  Prepare pool before the claim.
   """
 
   use GenServer
