@@ -3,6 +3,10 @@ defmodule EbbServer.Bench.Report do
   Renders a run's results as a Markdown document with the machine block,
   configuration, throughput, latency, resource/correctness numbers, and a
   methodology section that states the limits of the measurement.
+
+  A result is one entry per measured pass. A pipeline-depth sweep renders the
+  cross-run comparison table first and then one detail block per run; a plain
+  single-depth run keeps the original top-level sections.
   """
 
   alias EbbServer.Bench.Options
@@ -11,8 +15,25 @@ defmodule EbbServer.Bench.Report do
   @doc """
   Renders the full Markdown report.
   """
-  @spec render(Options.t(), map()) :: String.t()
-  def render(%Options{} = config, result) do
+  @spec render(Options.t(), %{runs: [map()], sweep?: boolean()}) :: String.t()
+  def render(%Options{} = config, %{runs: runs, sweep?: sweep?} = result) do
+    failures = Map.get(result, :failures, [])
+    pipelined? = sweep? or Enum.any?(runs, &(&1.depth > 1))
+    baseline? = Enum.any?(runs, &(&1.label == "t0 baseline"))
+
+    (header(config) ++
+       pipeline_depth_section(runs, sweep?) ++
+       List.flatten(run_sections(config, runs, length(runs) > 1)) ++
+       failures_section(failures) ++
+       methodology_section(config, primary_metrics(runs), pipelined?, baseline?))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp primary_metrics([%{metrics: metrics} | _]), do: metrics
+  defp primary_metrics([]), do: nil
+
+  defp header(config) do
     [
       "# ebb_server Actions/sec benchmark",
       "",
@@ -33,7 +54,108 @@ defmodule EbbServer.Bench.Report do
       "```sh",
       Options.command(config),
       "```",
+      ""
+    ]
+  end
+
+  defp pipeline_depth_section(_runs, false), do: []
+
+  defp pipeline_depth_section(runs, true) do
+    rows = Enum.map(runs, &pipeline_depth_row/1)
+
+    [
+      "## Pipeline depth",
       "",
+      table(
+        [
+          "Run",
+          "Tier",
+          "Callers",
+          "Calls in flight per worker",
+          "Observed peak (per worker)",
+          "Observed mean (per worker)",
+          "Accepted/sec (overall)",
+          "p50 (µs)",
+          "p95 (µs)",
+          "p99 (µs)",
+          "Actions/flush",
+          "Flush p50 (µs)",
+          "GSN holes",
+          "Watermark lag high-water"
+        ],
+        rows
+      ),
+      "",
+      "Observed peak and mean count the harness's outstanding `write_actions/1` calls per " <>
+        "worker, not the Writer's in-flight batches (`Callers × Calls in flight` calls are " <>
+        "outstanding in total). The `t0 baseline` row is the no-regression check measured in " <>
+        "this same report. Every depth runs against a fresh booted and seeded DB. " <>
+        "`Actions/flush` and `Flush p50` come from `ebb.writer.batch_latency_ms`: the current " <>
+        "Writer coalesces outstanding calls into shared flushes, so a deeper workload also " <>
+        "deepens the flush, and those two columns make the load change visible.",
+      ""
+    ]
+  end
+
+  defp pipeline_depth_row(%{depth: depth, label: label, metrics: metrics}) do
+    achieved = overall(metrics.throughput)
+    latency = overall(metrics.latency)
+    correctness = metrics.correctness
+
+    [
+      label,
+      "#{metrics.tier}",
+      "#{metrics.context.concurrency}",
+      "#{depth}",
+      format_integer(metrics.in_flight.peak),
+      format_value(metrics.in_flight.mean),
+      format_rate(achieved.rate),
+      format_value(latency.p50),
+      format_value(latency.p95),
+      format_value(latency.p99),
+      format_actions_per_flush(correctness.accepted, metrics.server.writer_batch),
+      format_flush_p50(metrics.server.writer_batch),
+      frontier_value(correctness.gsn_holes),
+      frontier_value(correctness.watermark_lag_high)
+    ]
+  end
+
+  defp format_actions_per_flush(_accepted, []), do: "n/a"
+
+  defp format_actions_per_flush(accepted, windows) do
+    case overall(windows) do
+      %{count: 0} -> "n/a"
+      %{count: count} -> Integer.to_string(div(accepted, count))
+    end
+  end
+
+  defp format_flush_p50([]), do: "n/a"
+
+  defp format_flush_p50(windows) do
+    case overall(windows) do
+      nil -> "n/a"
+      window -> format_value(window.p50)
+    end
+  end
+
+  defp frontier_value(nil), do: "n/a"
+  defp frontier_value(value), do: format_integer(value)
+
+  defp run_sections(config, runs, multiple?) do
+    Enum.map(runs, fn run -> run_section(config, run, multiple?) end)
+  end
+
+  defp run_section(config, run, multiple?) do
+    # The sections are tier-dependent, so each run reports against its own
+    # tier (a t0 baseline inside a t2 sweep is still a t0 run).
+    run_config = %{config | tier: run.metrics.tier}
+
+    heading = if multiple?, do: ["## Run: depth #{run.depth} (#{run.metrics.tier})", ""], else: []
+    heading ++ detail_sections(run_config, run.metrics)
+  end
+
+  defp detail_sections(config, result) do
+    [
       "## Throughput",
       "",
       throughput_table(result.throughput),
@@ -50,14 +172,37 @@ defmodule EbbServer.Bench.Report do
       "## Correctness and resources",
       "",
       correctness_table(config, result),
-      "",
-      "## Methodology and limitations",
-      "",
-      methodology(config, result),
       ""
     ]
     |> Enum.reject(&is_nil/1)
-    |> Enum.join("\n")
+  end
+
+  defp failures_section([]), do: []
+
+  defp failures_section(failures) do
+    rows = Enum.map(failures, &[&1.label, "#{&1.tier}", "#{&1.depth}", &1.error])
+
+    [
+      "## Failed passes",
+      "",
+      table(["Run", "Tier", "Calls in flight per worker", "Error"], rows),
+      "",
+      "These passes did not complete, so the report is incomplete and the run exited with an " <>
+        "error. Every row above was measured against its own freshly booted and seeded DB and " <>
+        "is still valid on its own.",
+      ""
+    ]
+  end
+
+  defp methodology_section(_config, nil, _pipelined?, _baseline?), do: []
+
+  defp methodology_section(config, result, pipelined?, baseline?) do
+    [
+      "## Methodology and limitations",
+      "",
+      methodology(config, result, pipelined?, baseline?),
+      ""
+    ]
   end
 
   @doc """
@@ -331,12 +476,13 @@ defmodule EbbServer.Bench.Report do
     table(["Metric", "Value"], rows)
   end
 
-  defp methodology(config, result) do
+  defp methodology(config, result, pipelined?, baseline?) do
     [
       "The measured window starts after #{config.warmup}s of warmup; warmup traffic is executed " <>
         "but its samples are discarded.",
       database_state(config, result),
       distribution_semantics(config),
+      pipeline_note(pipelined?, baseline?),
       client_latency_note(config),
       "Latency samples use reservoir sampling capped at ~200,000 across all workers " <>
         "(per-worker cap = cap / concurrency), so percentiles describe the retained sample.",
@@ -374,9 +520,31 @@ defmodule EbbServer.Bench.Report do
   defp http_client_note(%{tier: tier}) when tier in [:t0, :t5], do: ""
 
   defp http_client_note(_config) do
-    "HTTP tiers use `:httpc` with a keep-alive session pool sized to twice the requested " <>
-      "concurrency; MessagePack encoding and response parsing are included in every latency sample."
+    "HTTP tiers use `:httpc` with a keep-alive session pool sized to twice the run's " <>
+      "outstanding calls (concurrency × calls in flight per worker); MessagePack encoding and " <>
+      "response parsing are included in every latency sample."
   end
+
+  defp pipeline_note(false, _baseline?), do: ""
+
+  defp pipeline_note(true, baseline?) do
+    "The pipeline-depth workload keeps N `Writer.write_actions/1` calls outstanding per worker " <>
+      "instead of one, so the harness exercises temporal parallelism across GSN ranges. It uses " <>
+      "the headline batch/Action shape (Actions per call, Updates per Action, distribution, and " <>
+      "durability). " <>
+      baseline_note(baseline?) <>
+      "The observed peak and mean are harness-side outstanding calls, not the Writer's " <>
+      "in-flight batches (#537): the current pipeline keeps one claimed range in flight " <>
+      "(`max_in_flight: 1`), so N outstanding calls coalesce into shared flushes. That " <>
+      "coalescing is the measurement's finding, not a harness bug — a real gain requires the " <>
+      "committer pool and the #533 overlay to keep several ranges in flight."
+  end
+
+  defp baseline_note(true) do
+    "A t0 depth-1 baseline was measured in this same report as the no-regression check. "
+  end
+
+  defp baseline_note(false), do: ""
 
   defp durability_note(%{durability: :sync}) do
     "Durability is the production default (`sync: true`): every commit is fsynced before the " <>

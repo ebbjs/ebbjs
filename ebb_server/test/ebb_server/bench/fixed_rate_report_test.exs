@@ -19,7 +19,10 @@ defmodule EbbServer.Bench.FixedRateReportTest do
       errors: 0,
       buckets: %{0 => 2000},
       rejected_buckets: %{},
-      reservoir: Metrics.reservoir_new(10)
+      reservoir: Metrics.reservoir_new(10),
+      in_flight_peak: 1,
+      in_flight_sum: 1,
+      in_flight_samples: 1
     }
 
     resources = [
@@ -42,7 +45,7 @@ defmodule EbbServer.Bench.FixedRateReportTest do
       Options.parse(["--tier", "t4", "--rate", "1000", "--subscribers", "10", "--duration", "20"])
 
     result = analyze(config, context)
-    report = Report.render(config, result)
+    report = render(config, result)
 
     assert report =~ "## Fixed-rate fan-out (T4)"
     assert report =~ "| Target write rate | 1000 Actions/sec |"
@@ -61,7 +64,7 @@ defmodule EbbServer.Bench.FixedRateReportTest do
     {:ok, config} =
       Options.parse(["--tier", "t4", "--rate", "1000", "--subscribers", "10", "--duration", "20"])
 
-    report = Report.render(config, analyze(config, context))
+    report = render(config, analyze(config, context))
 
     assert report =~ "## Fixed-rate fan-out (T4)"
     refute report =~ "## Fan-out (T3)"
@@ -72,7 +75,7 @@ defmodule EbbServer.Bench.FixedRateReportTest do
     {:ok, config} = Options.parse(["--tier", "t4", "--rate", "100", "--duration", "20"])
 
     result = analyze(config, %{context | resources: [], fanout: nil, telemetry: %{}})
-    report = Report.render(config, result)
+    report = render(config, result)
 
     assert report =~ "## Fixed-rate fan-out (T4)"
     assert report =~ "| Target write rate | 100 Actions/sec |"
@@ -82,10 +85,17 @@ defmodule EbbServer.Bench.FixedRateReportTest do
 
   test "non-t4 tiers do not render the fixed-rate section", context do
     {:ok, config} = Options.parse(["--duration", "20"])
-    report = Report.render(config, analyze(config, context))
+    report = render(config, analyze(config, context))
 
     refute report =~ "Fixed-rate fan-out"
     assert report =~ "## Fan-out (T3)"
+  end
+
+  defp render(config, result) do
+    Report.render(config, %{
+      runs: [%{depth: 1, label: "pipeline", metrics: result}],
+      sweep?: false
+    })
   end
 
   defp analyze(config, context) do

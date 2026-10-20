@@ -15,6 +15,21 @@ defmodule EbbServer.Bench.Options do
   payload work: skipping `:build` stores an empty payload map, skipping
   `:encode` stores a precomputed ETF for a structurally valid empty Action
   so the record stays decodable by live readers.
+
+  ## Pipeline depth
+
+  `--in-flight` names how many `Writer.write_actions/1` calls each worker
+  keeps outstanding. A list is a sweep: `EbbServer.Bench.Runner` runs one full
+  measured pass per depth. Depth 1 is the original serial worker loop and the
+  default on every tier; a real depth is only allowed where the caller drives
+  the Writer (`t0`, `t2`, `t3`). Repeated depths collapse, so `2,2` is one
+  single-depth run, not a sweep.
+
+  Depth is a workload knob, not a promise of pipeline parallelism: the Writer
+  coalesces outstanding calls, so a deeper workload also deepens the flush and
+  costs more per Action. Read the report's `Actions/flush` column, and compare
+  depths only at the same flush shape — the control tables in
+  `ebb_server/bench/RESULTS.md` are what separates the two.
   """
 
   @type tier :: :t0 | :t1 | :t2 | :t3 | :t4 | :t5
@@ -38,6 +53,7 @@ defmodule EbbServer.Bench.Options do
           duration: pos_integer(),
           warmup: non_neg_integer(),
           concurrency: pos_integer(),
+          in_flight: [pos_integer()],
           batch_size: pos_integer(),
           port: :inet.port_number(),
           seed: integer(),
@@ -57,6 +73,7 @@ defmodule EbbServer.Bench.Options do
             duration: 10,
             warmup: 3,
             concurrency: 1,
+            in_flight: [1],
             batch_size: 1,
             port: 4111,
             seed: 1,
@@ -96,6 +113,7 @@ defmodule EbbServer.Bench.Options do
     duration: :integer,
     warmup: :integer,
     concurrency: :integer,
+    in_flight: :string,
     batch_size: :integer,
     port: :integer,
     seed: :integer,
@@ -118,9 +136,11 @@ defmodule EbbServer.Bench.Options do
   def parse(args) do
     case OptionParser.parse(args, strict: @switches) do
       {opts, [], []} ->
-        opts
-        |> apply_opts(%__MODULE__{})
-        |> validate()
+        with {:ok, opts} <- parse_in_flight(opts) do
+          opts
+          |> apply_opts(%__MODULE__{})
+          |> validate()
+        end
 
       {_opts, rest, []} ->
         {:error, "unexpected arguments: #{Enum.join(rest, " ")}"}
@@ -141,6 +161,7 @@ defmodule EbbServer.Bench.Options do
       {"Measured window", "#{config.duration}s"},
       {"Warmup", "#{config.warmup}s"},
       {"Concurrency", "#{config.concurrency}"},
+      {"Calls in flight per worker", in_flight_description(config)},
       {"Actions per call/request", "#{config.batch_size}"},
       {"Updates per Action", "#{config.updates_per_action}"},
       {"Distribution", "#{config.distribution}"},
@@ -173,6 +194,7 @@ defmodule EbbServer.Bench.Options do
       "--duration #{config.duration}",
       "--warmup #{config.warmup}",
       "--concurrency #{config.concurrency}",
+      "--in-flight #{Enum.join(config.in_flight, ",")}",
       "--batch-size #{config.batch_size}",
       "--updates-per-action #{config.updates_per_action}",
       "--distribution #{config.distribution}",
@@ -222,6 +244,21 @@ defmodule EbbServer.Bench.Options do
   def bypasses_writer?(%__MODULE__{}), do: false
 
   @doc """
+  The single call depth for a per-run configuration.
+
+  `EbbServer.Bench.Runner` fans a sweep out into one config per depth, so a
+  config that still names several depths is a scheduling mistake and raises
+  rather than silently measuring one of them.
+  """
+  @spec depth(t()) :: pos_integer()
+  def depth(%__MODULE__{in_flight: [depth]}), do: depth
+
+  def depth(%__MODULE__{in_flight: depths}) do
+    raise ArgumentError,
+          "--in-flight must name exactly one depth for a single run, got: #{inspect(depths)}"
+  end
+
+  @doc """
   Whether GSN density and watermark lag are meaningful for this run.
 
   The t5 spike writes raw batches at a synthetic per-caller GSN base and
@@ -255,6 +292,7 @@ defmodule EbbServer.Bench.Options do
   defp put_opt({:duration, value}, acc), do: %{acc | duration: value}
   defp put_opt({:warmup, value}, acc), do: %{acc | warmup: value}
   defp put_opt({:concurrency, value}, acc), do: %{acc | concurrency: value}
+  defp put_opt({:in_flight, value}, acc), do: %{acc | in_flight: value}
   defp put_opt({:batch_size, value}, acc), do: %{acc | batch_size: value}
   defp put_opt({:port, value}, acc), do: %{acc | port: value}
   defp put_opt({:seed, value}, acc), do: %{acc | seed: value}
@@ -274,6 +312,7 @@ defmodule EbbServer.Bench.Options do
          {:ok, durability} <- map_value(config.durability, @durabilities, "durability"),
          {:ok, distribution} <- map_value(config.distribution, @distributions, "distribution"),
          {:ok, ablate} <- validate_ablate(config.ablate),
+         :ok <- validate_in_flight(tier, config),
          :ok <- validate_ranges(config),
          :ok <- validate_tier(tier, config) do
       {:ok,
@@ -293,6 +332,51 @@ defmodule EbbServer.Bench.Options do
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
   end
+
+  # `--in-flight` is the only integer-list option, and an unparsable entry has
+  # no way to report an error from `put_opt/2`, so the raw string is converted
+  # here before the options are applied.
+  defp parse_in_flight(opts) do
+    case List.keyfind(opts, :in_flight, 0) do
+      nil ->
+        {:ok, opts}
+
+      {:in_flight, raw} ->
+        case parse_depths(raw) do
+          {:ok, []} ->
+            {:error, "--in-flight must name at least one depth"}
+
+          {:ok, depths} ->
+            {:ok, List.keyreplace(opts, :in_flight, 0, {:in_flight, Enum.uniq(depths)})}
+
+          :error ->
+            {:error,
+             "--in-flight must be a comma-separated list of integers, got: #{inspect(raw)}"}
+        end
+    end
+  end
+
+  defp parse_depths(raw) do
+    raw
+    |> String.split(",")
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.reduce_while({:ok, []}, fn value, {:ok, acc} ->
+      case Integer.parse(value) do
+        {depth, ""} -> {:cont, {:ok, [depth | acc]}}
+        _ -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, depths} -> {:ok, Enum.reverse(depths)}
+      :error -> :error
+    end
+  end
+
+  defp in_flight_description(%{in_flight: depths}) when length(depths) > 1,
+    do: Enum.join(depths, ", ") <> " (sweep)"
+
+  defp in_flight_description(%{in_flight: depths}), do: Enum.join(depths, ", ")
 
   # `all` is a convenience for the whole phase set; otherwise every name
   # must be known. The result is in canonical order so the printed
@@ -352,6 +436,34 @@ defmodule EbbServer.Bench.Options do
       validate_lean(tier, config)
     end
   end
+
+  # Depth 1 is the untouched serial loop, so it is legal on every tier. A
+  # real depth is only meaningful where the caller drives the Writer: t1 and
+  # t4 are single-producer by construction, and t5 never enters the Writer.
+  defp validate_in_flight(tier, config) do
+    with :ok <- check_positive_depths(config.in_flight) do
+      check_in_flight_tier(tier, config.in_flight)
+    end
+  end
+
+  defp check_positive_depths(depths) do
+    check(
+      Enum.all?(depths, &(is_integer(&1) and &1 > 0)),
+      "--in-flight values must be positive integers"
+    )
+  end
+
+  defp check_in_flight_tier(_tier, [1]), do: :ok
+  defp check_in_flight_tier(tier, _depths) when tier in [:t0, :t2, :t3], do: :ok
+
+  defp check_in_flight_tier(:t1, _depths),
+    do: {:error, "--in-flight is not supported with --tier t1; the tier is single-producer HTTP"}
+
+  defp check_in_flight_tier(:t4, _depths),
+    do: {:error, "--in-flight is not supported with --tier t4; pacing is single-producer"}
+
+  defp check_in_flight_tier(:t5, _depths),
+    do: {:error, "--in-flight is not supported with --tier t5; the spike bypasses the Writer"}
 
   defp validate_rate(:t4, %{rate: rate}) when rate > 0, do: :ok
   defp validate_rate(:t4, _config), do: {:error, "--tier t4 requires --rate > 0 (Actions/sec)"}

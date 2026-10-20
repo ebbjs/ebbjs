@@ -126,4 +126,50 @@ defmodule EbbServer.Bench.MetricsTest do
                Metrics.delivered_rate(samples, config)
     end
   end
+
+  describe "in_flight aggregation" do
+    test "reports the peak and mean observed across workers" do
+      {:ok, config} = Options.parse(["--in-flight", "4"])
+
+      result =
+        Metrics.analyze(
+          config,
+          %{entities: [], seeded_actions: 1},
+          [
+            worker(in_flight_peak: 4, in_flight_sum: 8, in_flight_samples: 4),
+            worker(in_flight_peak: 2, in_flight_sum: 4, in_flight_samples: 2)
+          ],
+          [],
+          nil
+        )
+
+      assert result.in_flight == %{peak: 4, mean: 2.0}
+    end
+
+    test "the mean is nil when no worker saw a completed call" do
+      {:ok, config} = Options.parse(["--in-flight", "2"])
+
+      result =
+        Metrics.analyze(config, %{entities: [], seeded_actions: 1}, [worker()], [], nil)
+
+      assert result.in_flight == %{peak: 0, mean: nil}
+    end
+  end
+
+  defp worker(overrides \\ []) do
+    Map.merge(
+      %{
+        accepted: 1,
+        rejected: 0,
+        errors: 0,
+        buckets: %{0 => 1},
+        rejected_buckets: %{},
+        reservoir: Metrics.reservoir_new(10),
+        in_flight_peak: 0,
+        in_flight_sum: 0,
+        in_flight_samples: 0
+      },
+      Map.new(overrides)
+    )
+  end
 end
