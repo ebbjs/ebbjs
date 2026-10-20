@@ -2,27 +2,30 @@
  * Issue detail view: edit title / status / priority, link or unlink the
  * `assignee` relationship, and delete with a confirmation step.
  *
- * The row and its assignee come from one `useQuery` with an `assignee` join,
- * so a link / unlink re-runs the query and the projection follows without a
- * manual revision bump. Mutations go straight through the client's issue
- * namespace; each write applies optimistically through the Outbox and
- * reconciles when the server acknowledges it.
+ * The row, its assignee, and its workspace group come from one
+ * `useQuery`, so a link / unlink re-runs the query and the projection
+ * follows without a manual revision bump. The assignee options are the
+ * profiles of the issue's own group, read through the built-in `groups`
+ * join — not the workspace new issues are filed into. Mutations go
+ * straight through the client's issue namespace; each write applies
+ * optimistically through the Outbox and reconciles when the server
+ * acknowledges it.
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useClient, useQuery, type QueryRoot } from "@ebbjs/react";
 import { PRIORITY_OPTIONS, STATUS_OPTIONS, assigneeOptions } from "./issue-options";
 import { SelectField } from "./SelectField";
 import type { Schema } from "./schema";
+import { useWorkspaceProfiles } from "./use-workspace-profiles";
+import { useWrite } from "./use-write";
 
 export function IssueDetail({
   issueId,
-  groupId,
   onClose,
   onDeleted,
 }: {
   issueId: string;
-  groupId: string;
   onClose: () => void;
   onDeleted: () => void;
 }) {
@@ -31,23 +34,16 @@ export function IssueDetail({
     data: issues,
     status,
     error: queryError,
-  } = useQuery((q: QueryRoot<Schema>) => q.issue.query().with({ assignee: true }));
-  const { data: profiles = [] } = useQuery(
-    (q: QueryRoot<Schema>) => q.profile.query().where("groups", groupId),
-    [groupId],
-  );
+  } = useQuery((q: QueryRoot<Schema>) => q.issue.query().with({ assignee: true, groups: true }));
   const issue = issues?.find((row) => row.id === issueId) ?? null;
+  const issueGroupId = issue?.groups[0]?.id;
+  const profiles = useWorkspaceProfiles(issueGroupId);
   const assigneeId = issue?.assignee?.id ?? "";
-  const [title, setTitle] = useState("");
+  // `null` follows the row's title; a string is an unsaved edit. Keeping
+  // the draft separate means a remote edit cannot clobber typing.
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const [writeError, setWriteError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setTitle(issue?.title ?? "");
-  }, [issue?.title]);
-
-  const fail = (err: unknown): void =>
-    setWriteError(err instanceof Error ? err.message : String(err));
+  const { pending, error: writeError, run } = useWrite();
 
   if (status === "unloaded") {
     return (
@@ -76,38 +72,41 @@ export function IssueDetail({
     );
   }
 
+  const title = titleDraft ?? issue.title;
+
   const commitTitle = (): void => {
     const next = title.trim();
     if (next === "" || next === issue.title) {
-      setTitle(issue.title);
+      setTitleDraft(null);
       return;
     }
-    setWriteError(null);
-    void client.issue.update(issue.id, { title: next }).catch(fail);
+    void run(async () => {
+      await client.issue.update(issue.id, { title: next });
+      setTitleDraft(null);
+    });
   };
 
   const changeStatus = (next: string): void => {
-    setWriteError(null);
-    void client.issue.update(issue.id, { status: next }).catch(fail);
+    void run(() => client.issue.update(issue.id, { status: next }));
   };
 
   const changePriority = (next: string): void => {
-    setWriteError(null);
-    void client.issue.update(issue.id, { priority: next }).catch(fail);
+    void run(() => client.issue.update(issue.id, { priority: next }));
   };
 
   const changeAssignee = (next: string): void => {
-    setWriteError(null);
-    const write =
+    void run(() =>
       next === ""
         ? client.issue.unlink(issue.id, "assignee")
-        : client.issue.link(issue.id, "assignee", next);
-    void write.catch(fail);
+        : client.issue.link(issue.id, "assignee", next),
+    );
   };
 
   const confirmDelete = (): void => {
-    setWriteError(null);
-    void client.issue.delete(issue.id).then(onDeleted).catch(fail);
+    void run(async () => {
+      await client.issue.delete(issue.id);
+      onDeleted();
+    });
   };
 
   return (
@@ -129,7 +128,7 @@ export function IssueDetail({
           title
           <input
             value={title}
-            onChange={(event) => setTitle(event.target.value)}
+            onChange={(event) => setTitleDraft(event.target.value)}
             onBlur={commitTitle}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
@@ -171,14 +170,16 @@ export function IssueDetail({
               <button
                 type="button"
                 onClick={confirmDelete}
-                className="rounded border border-red-700 px-2 py-0.5 font-mono text-xs text-red-300 hover:border-red-500"
+                disabled={pending}
+                className="rounded border border-red-700 px-2 py-0.5 font-mono text-xs text-red-300 hover:border-red-500 disabled:opacity-50"
               >
                 yes, delete
               </button>
               <button
                 type="button"
                 onClick={() => setConfirmingDelete(false)}
-                className="rounded border border-stone-700 px-2 py-0.5 font-mono text-xs text-stone-400 hover:border-stone-500"
+                disabled={pending}
+                className="rounded border border-stone-700 px-2 py-0.5 font-mono text-xs text-stone-400 hover:border-stone-500 disabled:opacity-50"
               >
                 cancel
               </button>

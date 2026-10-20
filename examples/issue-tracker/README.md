@@ -47,8 +47,8 @@ Every seed id is derived from the actor id (or a fixed literal for the shared fi
 
 The list has a **new issue** control and selectable rows. Selecting a row opens the detail view.
 
-- **Create** — `IssueCreateForm` calls `client.atomic` so the row and its optional `assignee` link commit in one Action. The Outbox applies it optimistically, so the issue appears in the list immediately. The assignee options come from the workspace's profiles (`.where("groups", groupId)`).
-- **Edit** — `IssueDetail` reads the issue and its `assignee` from one `useQuery` with an `assignee` join. `client.issue.update` handles title / status / priority and `client.issue.link` / `unlink` the assignee; the query re-runs from the replica signal, so the projection follows the write without a manual revision bump.
+- **Create** — `IssueCreateForm` calls `client.atomic` so the row and its optional `assignee` link commit in one Action. The Outbox applies it optimistically, so the issue appears in the list immediately. The assignee options come from the profiles filed into the group the issue is created in (`.where("groups", groupId)`).
+- **Edit** — `IssueDetail` reads the issue, its `assignee`, and its workspace group from one `useQuery` with `assignee` and `groups` joins. `client.issue.update` handles title / status / priority and `client.issue.link` / `unlink` the assignee; the query re-runs from the replica signal, so the projection follows the write without a manual revision bump. The assignee picker offers the profiles of the _issue's own_ group, so a shared-workspace issue lists its fellow members, not just the actor's personal workspace.
 - **Delete** — a two-step confirmation, then `delete`; the row drops out of the list and the detail view reports the tombstone as gone.
 
 Every write goes through the documented public API — the typed namespace, `client.atomic`, and `link` / `unlink` — and the Outbox, so there are no hand-authored Actions and no bespoke optimistic layer.
@@ -90,7 +90,7 @@ The membership panel joins and leaves the shared workspace:
 - **Leaving is self-service.** The invite grants the new member the permissions to drop its own `groupMember` and `entityGroup` rows again.
 - Either way the actor's client re-handshakes and re-subscribes, so the new workspace's issues appear (and its former issues stop being delivered) without a reload.
 
-Only the groups the actor is a member of are subscribed, so a non-member's client never materializes the shared workspace, its issues, or its members. The membership panel's leave control is gated on `client.can(...)`, which asks the same `<type>.<verb>` question the server enforces; the detail view's assignee picker instead offers only the profiles the membership makes visible.
+Only the groups the actor is a member of are subscribed, so a non-member's client never materializes the shared workspace, its issues, or its members. The membership panel's leave control is gated on `client.can(...)`, which asks the same `<type>.<verb>` question the server enforces; the detail view's assignee picker instead offers only the profiles of the issue's own workspace group.
 
 The issue's assignee is the `issue → profile` link declared in `schema.ts`. A profile is reachable only through the membership that scopes it, so the picker offers exactly the workspace members' profiles. Note that this is a UI affordance, not a server invariant: a relationship write is authorized against the _source_'s (issue's) groups, not the target's, so a raw wire client could link an arbitrary profile id. The demo constrains assignment by what it can show.
 
@@ -108,7 +108,10 @@ src/
 ├── seed.ts              # Deterministic bootstrap seed (SeedData builders)
 ├── workspace.ts         # addToWorkspace Action + invite/leave helpers
 ├── bootstrap.ts         # createClient + durable storage + seed + handshake + subscribe + refresh
+├── sync-groups.ts       # handshake / catch-up helpers shared with the tests
 ├── issue-options.ts     # Status / priority / assignee option lists
+├── use-workspace-profiles.ts # useQuery: a workspace group's assignable profiles
+├── use-write.ts         # pending / error state for one component's writes
 ├── SelectField.tsx      # Shared labelled <select>
 ├── ActorPicker.tsx      # Actor identity selector
 ├── ConnectionBadge.tsx  # useConnection() indicator

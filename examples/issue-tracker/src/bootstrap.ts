@@ -21,14 +21,15 @@
  * IndexedDB fall back to the in-memory adapter.
  */
 
-import { createClient, type NamespacedClient } from "@ebbjs/client";
+import { createClient } from "@ebbjs/client";
 import type { StorageAdapter } from "@ebbjs/storage/types";
-import { schema, type Schema } from "./schema";
-import { SEEDER_ACTOR_ID, buildActorSeed, buildSharedSeed } from "./seed";
-import { workspaceActions } from "./workspace";
+import { schema } from "./schema";
+import { SEEDER_ACTOR_ID, buildActorSeed, buildSharedSeed, deriveActorSeedIds } from "./seed";
+import { handshakeGroupIds, syncAllGroups } from "./sync-groups";
+import { workspaceActions, type WorkspaceClient } from "./workspace";
 
 /** The typed client the demo passes around: schema-bound with the workspace Actions. */
-export type IssueTrackerClient = NamespacedClient<Schema, typeof workspaceActions>;
+export type IssueTrackerClient = WorkspaceClient;
 
 /**
  * Durable per-actor storage, falling back to memory off the browser.
@@ -47,24 +48,15 @@ export interface BootstrapResult {
   readonly client: IssueTrackerClient;
   /** The shared workspace's service actor; used to invite members. */
   readonly seeder: IssueTrackerClient;
-  /** The group new issues are filed into (the actor's default workspace). */
+  /** The group new issues are filed into (the actor's personal workspace). */
   readonly defaultGroupId: string;
   /** Re-handshake and re-subscribe after a membership change. */
   refresh(): Promise<readonly string[]>;
   close(): void;
 }
 
-/** Handshake and materialize every group the client belongs to. */
-async function syncAllGroups(client: IssueTrackerClient): Promise<readonly string[]> {
-  const { groups } = await client.handshake();
-  for (const group of groups) {
-    for (let i = 0; i < 50; i++) {
-      const { upToDate } = await client.catchUp(group.id);
-      if (upToDate) break;
-      if (i === 49) throw new Error(`bootstrap: catch-up for group ${group.id} did not finish`);
-    }
-  }
-  return groups.map((group) => group.id);
+function noGroupsError(actorId: string): Error {
+  return new Error(`bootstrap: actor '${actorId}' is not a member of any group. Did the seed run?`);
 }
 
 export async function bootstrap(opts: {
@@ -89,24 +81,22 @@ export async function bootstrap(opts: {
 
     let unsubscribe: () => void = () => {};
     const subscribe = async (): Promise<readonly string[]> => {
-      const { groups } = await client.handshake();
-      const groupIds = groups.map((group) => group.id);
+      const groupIds = await handshakeGroupIds(client);
       if (groupIds.length === 0) {
-        throw new Error(
-          `bootstrap: actor '${actorId}' is not a member of any group. Did the seed run?`,
-        );
+        throw noGroupsError(actorId);
       }
       unsubscribe();
-      unsubscribe = client.subscribe(groupIds, 0, () => undefined);
+      unsubscribe = client.subscribe(groupIds, () => undefined);
       return groupIds;
     };
 
     const groupIds = await subscribe();
-    const defaultGroupId = groupIds[0];
+    // The personal workspace is the one the seed derives, not whichever
+    // group the handshake happens to list first (its order is unspecified).
+    const personalGroupId = deriveActorSeedIds(actorId).groupId;
+    const defaultGroupId = groupIds.find((id) => id === personalGroupId) ?? groupIds[0];
     if (defaultGroupId === undefined) {
-      throw new Error(
-        `bootstrap: actor '${actorId}' is not a member of any group. Did the seed run?`,
-      );
+      throw noGroupsError(actorId);
     }
     const service = seeder;
     return {

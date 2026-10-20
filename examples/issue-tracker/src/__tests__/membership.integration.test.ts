@@ -40,7 +40,8 @@ import {
   profileIdForActor,
   workspaceActions,
 } from "../workspace";
-import { SERVER_URL, catchUpUntilCurrent, findRow, serverIsReachable } from "./integration-support";
+import { syncAllGroups } from "../sync-groups";
+import { SERVER_URL, findRow, serverIsReachable } from "./integration-support";
 
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const MEMBER_ID = `mem_it_${RUN_ID}`;
@@ -49,15 +50,6 @@ const MEMBER_PROFILE_ID = profileIdForActor(MEMBER_ID);
 const OUTSIDER_PROFILE_ID = profileIdForActor(OUTSIDER_ID);
 
 type Client = NamespacedClient<Schema, typeof workspaceActions>;
-
-/** Handshake and materialize every group the actor currently belongs to. */
-async function syncGroups(client: Client): Promise<readonly string[]> {
-  const { groups } = await client.handshake();
-  for (const group of groups) {
-    await catchUpUntilCurrent(client, group.id);
-  }
-  return groups.map((group) => group.id);
-}
 
 const mkClient = (actorId: string): Client =>
   createClient({ serverUrl: SERVER_URL, actorId, schema, actions: workspaceActions });
@@ -80,9 +72,9 @@ beforeAll(async () => {
   await outsider.seed(buildActorSeed(OUTSIDER_ID));
   await seeder.seed(buildSharedSeed());
 
-  await syncGroups(member);
-  await syncGroups(outsider);
-  await syncGroups(seeder);
+  await syncAllGroups(member);
+  await syncAllGroups(outsider);
+  await syncAllGroups(seeder);
 });
 
 afterAll(() => {
@@ -94,7 +86,7 @@ afterAll(() => {
 describe("integration: workspace membership", () => {
   it("a non-member never receives the shared group, workspace, or issues", async () => {
     if (!(await serverIsReachable())) return;
-    const groups = await syncGroups(outsider);
+    const groups = await syncAllGroups(outsider);
     expect(groups).not.toContain(SHARED_GROUP_ID);
     expect(findRow(await outsider.workspace.query(), SHARED_WORKSPACE_ID)).toBeUndefined();
     const visibleIssues = await outsider.issue.query();
@@ -104,7 +96,7 @@ describe("integration: workspace membership", () => {
 
   it("a non-member cannot invite itself into the shared group", async () => {
     if (!(await serverIsReachable())) return;
-    await syncGroups(outsider);
+    await syncAllGroups(outsider);
 
     await expect(
       outsider.actions.addToWorkspace({
@@ -116,7 +108,7 @@ describe("integration: workspace membership", () => {
     ).rejects.toThrow(/not allowed|missing/i);
 
     // The refused write left no membership behind.
-    const groups = await syncGroups(outsider);
+    const groups = await syncAllGroups(outsider);
     expect(groups).not.toContain(SHARED_GROUP_ID);
   });
 
@@ -147,7 +139,7 @@ describe("integration: workspace membership", () => {
     expect(memberRow!.permissions).toEqual([...SEED_PERMISSIONS]);
 
     // The profile membership is observable through the `groups` join.
-    const groups = await syncGroups(member);
+    const groups = await syncAllGroups(member);
     expect(groups).toContain(SHARED_GROUP_ID);
 
     const profile = findRow(await member.profile.query().with({ groups: true }), MEMBER_PROFILE_ID);
@@ -157,7 +149,7 @@ describe("integration: workspace membership", () => {
 
   it("the member reads the shared issue; a non-member's profile is not visible to assign", async () => {
     if (!(await serverIsReachable())) return;
-    await syncGroups(member);
+    await syncAllGroups(member);
 
     const issue = findRow(await member.issue.query(), SAMPLE_ISSUE_ID);
     expect(issue).toBeDefined();
@@ -174,7 +166,7 @@ describe("integration: workspace membership", () => {
 
   it("writes and reads the issue→profile assignee relationship", async () => {
     if (!(await serverIsReachable())) return;
-    await syncGroups(member);
+    await syncAllGroups(member);
 
     // A fresh issue per run: `issue_sample` is shared, and a repeated run
     // would otherwise leave assignee edges from earlier runs in the group.
@@ -206,7 +198,7 @@ describe("integration: workspace membership", () => {
 
     const fresh = mkClient(MEMBER_ID);
     try {
-      const groups = await syncGroups(fresh);
+      const groups = await syncAllGroups(fresh);
       expect(groups).not.toContain(SHARED_GROUP_ID);
       expect(findRow(await fresh.issue.query(), SAMPLE_ISSUE_ID)).toBeUndefined();
     } finally {
@@ -227,7 +219,7 @@ describe("integration: workspace membership", () => {
     });
     expect(rejoin).toBe(true);
 
-    const groups = await syncGroups(member);
+    const groups = await syncAllGroups(member);
     expect(groups).toContain(SHARED_GROUP_ID);
     expect(findRow(await member.issue.query(), SAMPLE_ISSUE_ID)).toBeDefined();
   });

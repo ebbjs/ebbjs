@@ -8,10 +8,12 @@
  */
 
 import { useState } from "react";
-import { useClient, useQuery, type QueryRoot } from "@ebbjs/react";
+import { useClient } from "@ebbjs/react";
 import { PRIORITY_OPTIONS, STATUS_OPTIONS, assigneeOptions } from "./issue-options";
 import { SelectField } from "./SelectField";
 import type { Schema } from "./schema";
+import { useWorkspaceProfiles } from "./use-workspace-profiles";
+import { useWrite } from "./use-write";
 
 export function IssueCreateForm({
   groupId,
@@ -23,25 +25,19 @@ export function IssueCreateForm({
   onCancel: () => void;
 }) {
   const client = useClient<Schema>();
-  const { data: profiles = [] } = useQuery(
-    (q: QueryRoot<Schema>) => q.profile.query().where("groups", groupId),
-    [groupId],
-  );
+  const profiles = useWorkspaceProfiles(groupId);
   const [title, setTitle] = useState("");
   const [status, setStatus] = useState<string>("todo");
   const [priority, setPriority] = useState<string>("medium");
   const [assigneeId, setAssigneeId] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { pending: submitting, error, run } = useWrite();
 
   const trimmedTitle = title.trim();
 
-  const submit = async (event: React.FormEvent): Promise<void> => {
+  const submit = (event: React.FormEvent): void => {
     event.preventDefault();
     if (trimmedTitle === "" || submitting) return;
-    setSubmitting(true);
-    setError(null);
-    try {
+    void run(async () => {
       const created = await client.atomic((drafts) =>
         drafts.issue.create(
           {
@@ -54,17 +50,13 @@ export function IssueCreateForm({
         ),
       );
       onCreated(created.id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSubmitting(false);
-    }
+    });
   };
 
   return (
     <section className="rounded border border-stone-800 p-4">
       <h2 className="mb-3 font-mono text-xs uppercase tracking-wide text-stone-500">new issue</h2>
-      <form onSubmit={(event) => void submit(event)} className="space-y-3">
+      <form onSubmit={submit} className="space-y-3">
         <label className="block font-mono text-xs text-stone-400">
           title
           <input

@@ -8,8 +8,11 @@ import { useQuery, type QueryRoot } from "@ebbjs/react";
 import type { Schema } from "./schema";
 
 export function ProfileCard({ actorId }: { actorId: string }) {
-  const { data: profiles = [], loading } = useQuery((q: QueryRoot<Schema>) => q.profile.query());
-  const mine = profiles.find((row) => row.actor_id === actorId);
+  const { data: profiles = [], loading } = useQuery(
+    (q: QueryRoot<Schema>) => q.profile.query().where("actor_id", actorId),
+    [actorId],
+  );
+  const mine = profiles[0];
 
   return (
     <section className="rounded border border-stone-800 p-4">

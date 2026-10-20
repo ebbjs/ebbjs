@@ -11,11 +11,12 @@
  * reload.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useClient, useQuery, type QueryRoot } from "@ebbjs/react";
 import type { BootstrapResult } from "./bootstrap";
 import type { Schema } from "./schema";
 import { SEED_PERMISSIONS, SHARED_GROUP_ID } from "./seed";
+import { useWrite } from "./use-write";
 import { inviteToWorkspace, leaveWorkspace } from "./workspace";
 
 export function MembershipPanel({
@@ -26,14 +27,14 @@ export function MembershipPanel({
   bootstrap: BootstrapResult;
 }) {
   const client = useClient<Schema>();
-  const { data: members = [] } = useQuery((q: QueryRoot<Schema>) => q.membership.query());
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [deniedFor, setDeniedFor] = useState<string | null>(null);
-
-  const membership = members.find(
-    (member) => member.actor_id === actorId && member.group_id === SHARED_GROUP_ID,
+  const { data: members = [] } = useQuery(
+    (q: QueryRoot<Schema>) =>
+      q.membership.query().where("group_id", SHARED_GROUP_ID).where("actor_id", actorId),
+    [actorId],
   );
+  const membership = members[0];
+  const { pending: busy, error, run } = useWrite();
+  const [deniedFor, setDeniedFor] = useState<string | null>(null);
 
   useEffect(() => {
     if (membership === undefined) {
@@ -51,42 +52,24 @@ export function MembershipPanel({
 
   const leaveDenied = membership !== undefined && deniedFor === membership.id;
 
-  const applyMembershipChange = useCallback(
-    async (work: () => Promise<void>) => {
-      setBusy(true);
-      setError(null);
-      try {
-        await work();
-        await bootstrap.refresh();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setBusy(false);
-      }
-    },
-    [bootstrap],
-  );
+  const join = (): void => {
+    void run(async () => {
+      await inviteToWorkspace({
+        inviter: bootstrap.seeder,
+        actorId,
+        groupId: SHARED_GROUP_ID,
+        permissions: SEED_PERMISSIONS,
+      });
+      await bootstrap.refresh();
+    });
+  };
 
-  const join = useCallback(
-    () =>
-      applyMembershipChange(async () => {
-        await inviteToWorkspace({
-          inviter: bootstrap.seeder,
-          actorId,
-          groupId: SHARED_GROUP_ID,
-          permissions: SEED_PERMISSIONS,
-        });
-      }),
-    [applyMembershipChange, bootstrap, actorId],
-  );
-
-  const leave = useCallback(
-    () =>
-      applyMembershipChange(async () => {
-        await leaveWorkspace({ client: bootstrap.client, actorId, groupId: SHARED_GROUP_ID });
-      }),
-    [applyMembershipChange, bootstrap, actorId],
-  );
+  const leave = (): void => {
+    void run(async () => {
+      await leaveWorkspace({ client, actorId, groupId: SHARED_GROUP_ID });
+      await bootstrap.refresh();
+    });
+  };
 
   return (
     <section className="rounded border border-stone-800 p-4">
@@ -96,7 +79,7 @@ export function MembershipPanel({
         {membership === undefined ? (
           <button
             type="button"
-            onClick={() => void join()}
+            onClick={join}
             disabled={busy}
             className="rounded border border-emerald-700 px-2 py-0.5 font-mono text-xs text-emerald-300 hover:border-emerald-500 disabled:opacity-50"
           >
@@ -105,7 +88,7 @@ export function MembershipPanel({
         ) : (
           <button
             type="button"
-            onClick={() => void leave()}
+            onClick={leave}
             disabled={busy || leaveDenied}
             title={leaveDenied ? "the client would not be allowed to leave" : undefined}
             className="rounded border border-stone-600 px-2 py-0.5 font-mono text-xs text-stone-300 hover:border-stone-400 disabled:opacity-50"
