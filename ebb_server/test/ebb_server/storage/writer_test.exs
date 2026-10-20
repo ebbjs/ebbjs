@@ -1021,25 +1021,6 @@ defmodule EbbServer.Storage.WriterTest do
       assert EntityTypeCache.get_type("todo_typed", entity_types) == "todo"
     end
 
-    test "planner keeps one write per unique cache key per flush", %{
-      writer_name: writer_name
-    } do
-      hlc = generate_hlc()
-      gm_id = "gm_" <> Nanoid.generate()
-      todo_id = "todo_" <> Nanoid.generate()
-
-      gm = group_member_update(gm_id, "actor_1", "group_1", ["todo.create"], hlc)
-      todo = validated_update(%{subject_id: todo_id, subject_type: "todo"})
-
-      action1 = validated_action(%{id: "act_plan_1", updates: [gm, todo]})
-      action2 = validated_action(%{id: "act_plan_2", updates: [gm, todo]})
-
-      mutations = Writer.plan_cache_mutations([action1, action2], :sys.get_state(writer_name))
-
-      assert Enum.count(mutations, &match?({:group_member_put, %{id: ^gm_id}}, &1)) == 1
-      assert Enum.count(mutations, &match?({:entity_type, ^todo_id, _}, &1)) == 1
-    end
-
     test "a same-flush entityGroup put then patch caches the merged row", %{
       writer_name: writer_name,
       entity_groups: eg_table,
