@@ -1,29 +1,39 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react";
-import type { NoJoins, QueryBuilder, QueryRoot, QueryStatus, TSchema } from "@ebbjs/client";
+import type {
+  NoJoins,
+  ProjectedRow,
+  QueryBuilder,
+  QueryRoot,
+  QueryStatus,
+  TSchema,
+} from "@ebbjs/client";
 
 import { useClient } from "./context";
 
 /**
  * Projected rows a `QueryBuilder` resolves to, widened by its selected joins.
  * `Awaited` peels the builder's thenable so consumers get the row list type
- * directly.
+ * directly. `TRow` follows the chain: a replica-backed query carries
+ * `groupIds`, a candidate chain does not.
  */
 export type QueryRows<
   TFields extends Record<string, TSchema>,
   TJoined extends object = NoJoins,
-> = Awaited<QueryBuilder<TFields, NoJoins, TJoined>>;
+  TRow extends ProjectedRow<TFields> = ProjectedRow<TFields>,
+> = Awaited<QueryBuilder<TFields, NoJoins, TJoined, TRow>>;
 
 /** Result of {@link useQuery}: rows, status, and the derived loading/error. */
 export interface UseQueryResult<
   TFields extends Record<string, TSchema>,
   TJoined extends object = NoJoins,
+  TRow extends ProjectedRow<TFields> = ProjectedRow<TFields>,
 > {
   /**
    * The cached rows, joined as selected. `undefined` while the query is
    * `unloaded`, so a first mount never renders "no result yet" as an empty
    * list; use {@link status} to distinguish the two.
    */
-  readonly data: QueryRows<TFields, TJoined> | undefined;
+  readonly data: QueryRows<TFields, TJoined, TRow> | undefined;
   /** `unloaded` / `stale` / `current` / `failed`, from the engine cache. */
   readonly status: QueryStatus;
   /** True only while no result exists yet (`unloaded`). */
@@ -61,10 +71,11 @@ export function useQuery<
   TFields extends Record<string, TSchema>,
   TJoins extends object,
   TJoined extends object,
+  TRow extends ProjectedRow<TFields> = ProjectedRow<TFields>,
 >(
-  build: (q: QueryRoot<S>) => QueryBuilder<TFields, TJoins, TJoined>,
+  build: (q: QueryRoot<S>) => QueryBuilder<TFields, TJoins, TJoined, TRow>,
   deps: readonly unknown[] = [],
-): UseQueryResult<TFields, TJoined> {
+): UseQueryResult<TFields, TJoined, TRow> {
   const client = useClient<S>();
   // SAFETY: the provider stores the same client these namespaces come from;
   // `QueryRoot` only narrows that surface to `query()`.

@@ -17,6 +17,7 @@ import {
   buildLazyQueryBuilder,
   projectEntity,
   projectFieldValue,
+  projectQueryRow,
   projectRow,
   projectRows,
 } from "../query-builder";
@@ -116,6 +117,26 @@ describe("projected rows carry the entity id", () => {
     });
   });
 
+  it("projectQueryRow adds the entity id and its group ids", () => {
+    const entity = mkEntity("t1", { title: "a", completed: false });
+    expect(projectQueryRow(entity, todo.shape, ["g1", "g2"])).toEqual({
+      title: "a",
+      completed: false,
+      body: undefined,
+      id: "t1",
+      groupIds: ["g1", "g2"],
+    });
+  });
+
+  it("the injected groupIds wins over a same-named projected field", () => {
+    const withGroupIdsField = defineEntity("withGroupIdsField", {
+      groupIds: e.string(),
+      title: e.string(),
+    });
+    const entity = mkEntity("t1", { groupIds: "field-value", title: "a" });
+    expect(projectQueryRow(entity, withGroupIdsField.shape, ["g1"]).groupIds).toEqual(["g1"]);
+  });
+
   it("the injected id wins over a same-named projected field", () => {
     const withIdField = defineEntity("withIdField", {
       id: e.string(),
@@ -144,6 +165,16 @@ describe("projected rows carry the entity id", () => {
     ];
     const out = await buildQueryBuilder(rows, todo.shape);
     expect(out.map((r) => r.id)).toEqual(["1", "2"]);
+  });
+
+  it("a candidate row carries no groupIds (no membership source)", async () => {
+    const rows = [mkEntity("1", { title: "a", completed: false })];
+    const [row] = await buildQueryBuilder(rows, todo.shape);
+    expect(row).not.toHaveProperty("groupIds");
+    if (row !== undefined) {
+      // @ts-expect-error a candidate chain has no membership index to read.
+      void row.groupIds;
+    }
   });
 
   it(".first() carries the entity id", async () => {

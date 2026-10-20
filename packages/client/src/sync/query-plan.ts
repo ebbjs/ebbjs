@@ -69,13 +69,17 @@ const orderPredicates = (predicates: readonly PlanPredicate[]): readonly PlanPre
   ...predicates.filter((predicate) => !isIndexed(predicate)),
 ];
 
+/** A replica-backed chain names a source; a candidate chain carries the empty sentinel. */
+const isReplicaBacked = (query: Query): boolean => query.source !== "";
+
 /**
- * Source first, then each join target, then the system row types a
- * predicate or join reads: `relationship` rows for an adjacency predicate
- * or join and `entityGroup` rows for membership. Those are the subject
- * types the replica's journal reports, so #512 can intersect them with a
- * revision window. A relationship's `type` is the adjacency index key, not
- * a row type, so it never belongs here.
+ * Source first, then each join target, then the system row types the
+ * query reads: `relationship` rows for an adjacency predicate or join
+ * and always `entityGroup` rows because every replica-backed projected
+ * row carries its live group ids. Those are the subject types the
+ * replica's journal reports, so #512 can intersect them with a revision
+ * window. A relationship's `type` is the adjacency index key, not a row
+ * type, so it never belongs here.
  */
 const readTypesFor = (query: Query): readonly string[] => {
   const types = new Set<string>([query.source]);
@@ -83,9 +87,11 @@ const readTypesFor = (query: Query): readonly string[] => {
   if (hasPredicateKind(query, "relationship") || hasJoinKind(query, "relationship")) {
     types.add(relationshipSystemEntity.name);
   }
-  if (hasPredicateKind(query, "membership") || hasJoinKind(query, "membership")) {
-    types.add(entityGroupSystemEntity.name);
-  }
+  // A query row's `groupIds` follows membership, so an entityGroup change
+  // invalidates the row even when the query filters or joins no membership.
+  // Collection subscriptions over the same plans inherit that
+  // over-invalidation; accepted so a cached row's ids cannot go stale.
+  if (isReplicaBacked(query)) types.add(entityGroupSystemEntity.name);
   return [...types];
 };
 

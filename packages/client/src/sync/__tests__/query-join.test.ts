@@ -20,7 +20,7 @@ import type { GroupFields } from "../../schema/system-entities";
 import { createClient } from "../client";
 import type { EntityFields } from "../namespace";
 import { planQuery } from "../query-plan";
-import type { ProjectedRow } from "../query-builder";
+import type { ProjectedRow, QueryRow } from "../query-builder";
 import { callApplyAction } from "../test-utils";
 
 const issue = defineEntity("issue", { title: e.string(), status: e.string() });
@@ -81,7 +81,7 @@ const schema = defineSchema({
 });
 
 type Client = ReturnType<typeof createClient<typeof schema>>;
-type IssueRow = ProjectedRow<EntityFields<typeof issue>>;
+type IssueRow = QueryRow<EntityFields<typeof issue>>;
 type UserRow = ProjectedRow<EntityFields<typeof user>>;
 type LabelRow = ProjectedRow<EntityFields<typeof label>>;
 type PageRow = ProjectedRow<EntityFields<typeof page>>;
@@ -309,7 +309,7 @@ describe("with(...) — planning and adjacency", () => {
     ]);
 
     const plan = planQuery(query);
-    expect(plan.readTypes).toEqual(["issue", "user", "page", "relationship"]);
+    expect(plan.readTypes).toEqual(["issue", "user", "page", "relationship", "entityGroup"]);
     expect(plan.joins).toEqual(query.joins);
   });
 

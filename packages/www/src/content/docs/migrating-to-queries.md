@@ -13,7 +13,7 @@ Queries are now the only public read path. The entity namespace stays — it is 
 | -------------------------------------------- | --------------------------------------------------------------------------- |
 | `client.<entity>.get(id)` plus row accessors | `client.<entity>.query()`, narrowed by `where` / `or` / `orderBy` / `limit` |
 | `await row.assignee`, `await row.comments`   | `.with({ assignee: true, comments: true })` on the chain                    |
-| `await row.groups`                           | `.with({ groups: true })`, or `.where("groups", groupId)` to filter         |
+| `await row.groups`                           | `.with({ groups: true })`, or `row.groupIds` for the ids alone              |
 | `client.<entity>.subscribe(filter, cb)`      | `useQuery` in React, `query().result()` / `query().subscribe(cb)` otherwise |
 | `useEntity(build, deps)`                     | `useQuery((q: QueryRoot<Schema>) => ...)`                                   |
 | Single row by id                             | Query the collection and select the row with `find`                         |
@@ -61,7 +61,9 @@ q.workspace.query().with({ groups: true });
 q.issue.query().where("status", "open").with({ assignee: true, comments: true });
 ```
 
-To filter by an edge instead of projecting it, use the relationship's `as` key as a `where` key. A relationship key wins over a same-named field, matching the old accessors.
+To filter by an edge instead of projecting it, use the relationship's `as` key as a `where` key. A relationship key wins over a same-named field, matching the old accessors. `.where("groups", groupId)` filters built-in membership through the replica's index.
+
+Every query row also carries `groupIds`, its live group ids, read from the same index. A workspace switcher or a board can read the ids straight off the row instead of denormalising a `group_id` field or projecting the group rows. The ids come from membership rows, so one can name a group whose row is not materialized; use `.with({ groups: true })` when you need the group's fields. Joined target rows and chains over already-materialized candidates are plain projections (fields plus `id`) and carry no `groupIds`.
 
 ## `get()`, accessors, and `subscribe` are internal
 
