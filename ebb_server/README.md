@@ -98,6 +98,7 @@ ordered-fanout coordination that is not yet built
 | `EbbServer.Storage.SystemCache` (sup.)                                           | ETS + `:atomics` for GSN, watermark, dirty set, group/relationship                          |
 | `EbbServer.Storage.Writer`                                                       | Imperative shell: coalescing, payload pre-encode, GSN claim, group resolution, apply/notify |
 | `EbbServer.Storage.CommitPipeline`                                               | Pure pipeline state machine: pending calls, claim order, in-flight guard, release order     |
+| `EbbServer.Storage.CacheMutationPlanner`                                         | Pure cache-write planner: per-flush dedup and the row overlay chained plans share           |
 | `EbbServer.Storage.Committer`                                                    | Durable half of a flush: wrapper encode, op assembly, `write_batch`                         |
 | `EbbServer.Storage.CommitterPool`                                                | Supervised Committer workers, one job per worker, crash-to-failed-range reporting           |
 | `EbbServer.Storage.PreparedAction`                                               | Immutable sequencer → committer boundary payload                                            |
@@ -155,6 +156,7 @@ EbbServer.Supervisor (one_for_one)
 │   ├── Storage.InFlightActions            — in-flight action-id ETS
 │   └── Storage.Writer                     — imperative shell: pre-encode, claim, resolve, apply
 │       ├── Storage.CommitPipeline         — pure pending/claim/release ordering state machine
+│       ├── Storage.CacheMutationPlanner   — pure cache-write planner: dedup + row overlay
 │       └── Storage.CommitterPool           — supervised workers; contains a worker death per range
 │           ├── DynamicSupervisor
 │           └── Storage.Committer × N       — wrapper encode + op assembly + durable write

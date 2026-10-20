@@ -137,11 +137,13 @@ defmodule EbbServer.Storage.Writer do
   then), so this snapshot is the delivery contract.
 
   System-cache writes are deduplicated the same way. The post-commit
-  pass flattens the flush's Updates once, drops a mutation identical to
-  the previous one for the same `{cache, key}`, and applies each survivor
-  once. It carries an overlay of the rows the flush itself has computed,
-  so a later patch merges over an earlier put — or sees an earlier
-  delete — instead of reading the pre-flush cache.
+  pass hands the flush's flattened Updates to
+  `EbbServer.Storage.CacheMutationPlanner`, which drops a mutation
+  identical to the previous one for the same `{cache, key}` and returns
+  the survivors alongside an overlay of the rows the flush itself has
+  computed, so a later patch merges over an earlier put — or sees an
+  earlier delete — instead of reading the pre-flush cache. The planner is
+  pure and writes no cache; this Writer applies its mutations.
 
   Provisionally dirty marks close the gap between the durable commit
   returning and the entity being marked dirty: a read that starts after
@@ -284,6 +286,7 @@ defmodule EbbServer.Storage.Writer do
 
   alias EbbServer.Storage.{
     ActionFormat,
+    CacheMutationPlanner,
     CacheTables,
     CommitPipeline,
     CommitterPool,
@@ -291,7 +294,6 @@ defmodule EbbServer.Storage.Writer do
     EntityGroupCache,
     EntityIndex,
     EntityTypeCache,
-    Fields,
     GroupCache,
     GsnCounter,
     InFlightActions,
@@ -315,15 +317,6 @@ defmodule EbbServer.Storage.Writer do
                            updates: []
                          })
                        )
-
-  @type cache_mutation ::
-          {:entity_type, String.t(), String.t()}
-          | {:group_member_put, map()}
-          | {:group_member_delete, String.t()}
-          | {:entity_group_put, map()}
-          | {:entity_group_delete, String.t()}
-          | {:relationship_put, map()}
-          | {:relationship_delete, String.t()}
 
   @type pending_marks :: CommitPipeline.pending_marks()
 
@@ -1200,9 +1193,12 @@ defmodule EbbServer.Storage.Writer do
     end
 
     unless ablate?(:cache, state) do
-      prepared
-      |> plan_cache_mutations(state)
-      |> Enum.each(&apply_cache_mutation(&1, state))
+      {mutations, _overlay} =
+        prepared
+        |> Enum.flat_map(& &1.updates)
+        |> CacheMutationPlanner.plan(plan_tables(state))
+
+      Enum.each(mutations, &apply_cache_mutation(&1, state))
     end
 
     :ok
@@ -1210,186 +1206,16 @@ defmodule EbbServer.Storage.Writer do
     error -> {:error, error}
   end
 
-  # One pass over the flush's Updates computes the cache mutation each
-  # one would apply and the row it would leave behind. The overlay carries
-  # the flush's own prior effects, so a later Update sees an earlier put's
-  # merged row or an earlier delete without reading a cache this flush has
-  # not written yet.
-  #
-  # Takes either validated Actions or their `PreparedAction`s: only the
-  # `updates` field matters. Public so tests can pin the dedup directly;
-  # hidden from the docs.
-  @doc false
-  @spec plan_cache_mutations([validated_action() | PreparedAction.t()], t()) ::
-          [cache_mutation()]
-  def plan_cache_mutations(fresh, state) do
-    {mutations, _overlay} =
-      fresh
-      |> Enum.flat_map(& &1.updates)
-      |> Enum.reduce({[], %{}}, fn update, acc -> plan_update(update, state, acc) end)
-
-    mutations
-    |> Enum.reverse()
-    |> drop_repeats()
+  # The only two caches a patch merge reads. The planner resolves their
+  # writes itself; this Writer only applies the result.
+  defp plan_tables(state) do
+    %{
+      group_members_by_id: state.group_members_by_id,
+      entity_groups_by_id: state.entity_groups_by_id
+    }
   end
 
-  # A repeat is dropped only when it is identical to the previous mutation
-  # for the same key. Two identical applications in a row are idempotent
-  # for every cache here, so this preserves the final state sequential
-  # per-Update application would produce. It also keeps `GroupCache`'s
-  # actor-keyed cleanup honest: collapsing two *different* rows for one
-  # membership id would strand the first one's primary row.
-  defp drop_repeats(mutations) do
-    {kept, _last} =
-      Enum.reduce(mutations, {[], %{}}, fn mutation, {kept, last} ->
-        key = mutation_key(mutation)
-        value = mutation_value(mutation)
-
-        case Map.fetch(last, key) do
-          {:ok, ^value} -> {kept, last}
-          _ -> {[mutation | kept], Map.put(last, key, value)}
-        end
-      end)
-
-    Enum.reverse(kept)
-  end
-
-  # The entity-type index mirrors `cf_type_entities`, which the Writer
-  # writes for every Update (including deletes, whose entry stays).
-  defp plan_update(update, state, {mutations, overlay}) do
-    mutations = [{:entity_type, update.subject_id, update.subject_type} | mutations]
-    plan_system_mutation(update, state, mutations, overlay)
-  end
-
-  defp plan_system_mutation(%{subject_type: "groupMember"} = update, state, mutations, overlay) do
-    key = {:group_members_by_id, update.subject_id}
-
-    case update.method do
-      method when method in [:put, :patch] ->
-        data = update.data || %{}
-
-        existing =
-          patch_existing(
-            update,
-            overlay,
-            key,
-            state.group_members_by_id,
-            &GroupCache.get_group_member/2
-          )
-
-        actor_id = Fields.get(data, "actor_id") || existing[:actor_id]
-        group_id = Fields.get(data, "group_id") || existing[:group_id]
-
-        if is_nil(actor_id) or is_nil(group_id) do
-          {mutations, overlay}
-        else
-          row = %{
-            id: update.subject_id,
-            actor_id: actor_id,
-            group_id: group_id,
-            permissions: Fields.get(data, "permissions") || existing[:permissions]
-          }
-
-          {[{:group_member_put, row} | mutations], Map.put(overlay, key, row)}
-        end
-
-      :delete ->
-        {[{:group_member_delete, update.subject_id} | mutations], Map.put(overlay, key, :deleted)}
-    end
-  end
-
-  defp plan_system_mutation(%{subject_type: "entityGroup"} = update, state, mutations, overlay) do
-    key = {:entity_groups_by_id, update.subject_id}
-
-    case update.method do
-      method when method in [:put, :patch] ->
-        data = update.data || %{}
-
-        existing =
-          patch_existing(
-            update,
-            overlay,
-            key,
-            state.entity_groups_by_id,
-            &EntityGroupCache.get_entity_group/2
-          )
-
-        entity_id = Fields.get(data, "entity_id") || existing[:entity_id]
-        group_id = Fields.get(data, "group_id") || existing[:group_id]
-
-        if is_nil(entity_id) or is_nil(group_id) do
-          {mutations, overlay}
-        else
-          row = %{id: update.subject_id, entity_id: entity_id, group_id: group_id}
-          {[{:entity_group_put, row} | mutations], Map.put(overlay, key, row)}
-        end
-
-      :delete ->
-        {[{:entity_group_delete, update.subject_id} | mutations], Map.put(overlay, key, :deleted)}
-    end
-  end
-
-  # Relationship rows never merge with the cached row: the wire fields are
-  # authoritative, as in the pre-dedup handler.
-  defp plan_system_mutation(%{subject_type: "relationship"} = update, _state, mutations, overlay) do
-    key = {:relationships_by_id, update.subject_id}
-
-    case update.method do
-      method when method in [:put, :patch] ->
-        data = update.data || %{}
-        source_id = Fields.get(data, "source_id")
-        target_id = Fields.get(data, "target_id")
-
-        if is_nil(source_id) or is_nil(target_id) do
-          {mutations, overlay}
-        else
-          row = %{
-            id: update.subject_id,
-            source_id: source_id,
-            target_id: target_id,
-            type: Fields.get(data, "type"),
-            field: Fields.get(data, "field")
-          }
-
-          {[{:relationship_put, row} | mutations], Map.put(overlay, key, row)}
-        end
-
-      :delete ->
-        {[{:relationship_delete, update.subject_id} | mutations], Map.put(overlay, key, :deleted)}
-    end
-  end
-
-  defp plan_system_mutation(_update, _state, mutations, overlay), do: {mutations, overlay}
-
-  # Only a patch consults a pre-existing row. The overlay is the flush's
-  # own prior effect, so a delete in the same flush means there is nothing
-  # left to merge over and the patch cannot resurrect a pre-flush row.
-  defp patch_existing(%{method: :patch} = update, overlay, key, table, fetch) do
-    case Map.fetch(overlay, key) do
-      {:ok, :deleted} -> %{}
-      {:ok, row} -> row
-      :error -> fetch.(update.subject_id, table) || %{}
-    end
-  end
-
-  defp patch_existing(_update, _overlay, _key, _table, _fetch), do: %{}
-
-  defp mutation_value({:entity_type, _id, type}), do: type
-  defp mutation_value({:group_member_put, row}), do: row
-  defp mutation_value({:group_member_delete, _id}), do: :deleted
-  defp mutation_value({:entity_group_put, row}), do: row
-  defp mutation_value({:entity_group_delete, _id}), do: :deleted
-  defp mutation_value({:relationship_put, row}), do: row
-  defp mutation_value({:relationship_delete, _id}), do: :deleted
-
-  defp mutation_key({:entity_type, id, _type}), do: {:entity_type, id}
-  defp mutation_key({:group_member_put, %{id: id}}), do: {:group_members_by_id, id}
-  defp mutation_key({:group_member_delete, id}), do: {:group_members_by_id, id}
-  defp mutation_key({:entity_group_put, %{id: id}}), do: {:entity_groups_by_id, id}
-  defp mutation_key({:entity_group_delete, id}), do: {:entity_groups_by_id, id}
-  defp mutation_key({:relationship_put, %{id: id}}), do: {:relationships_by_id, id}
-  defp mutation_key({:relationship_delete, id}), do: {:relationships_by_id, id}
-
+  @spec apply_cache_mutation(CacheMutationPlanner.mutation(), t()) :: any()
   defp apply_cache_mutation({:entity_type, id, type}, state) do
     EntityTypeCache.put_type(id, type, entity_types: state.entity_types)
   end
