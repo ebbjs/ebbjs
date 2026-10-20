@@ -163,6 +163,12 @@ export class TextDocument {
   readonly docType: string;
 
   private state: DocState = createDocState();
+  /**
+   * Content version last hydrated and the state it produced. Both are
+   * copy-on-write, so reference equality is a safe "nothing changed" key.
+   */
+  private hydrated: { readonly content: FieldValue | undefined; readonly state: DocState } | null =
+    null;
   private readonly updateListeners = new Set<UpdateListener>();
   /** Outbound queue: local edits waiting for `client.write()`. */
   private readonly pending: Action[] = [];
@@ -214,11 +220,23 @@ export class TextDocument {
    * Actions. Idempotent for the same or older state: a run whose stored
    * HLC is older than the local one is skipped, so a re-read after a
    * local optimistic edit cannot rewind it.
+   *
+   * A repeat hydrate of the same content version with no intervening state
+   * change is a no-op. The content object is immutable per version and the
+   * state is copy-on-write, so reference equality is the cache key; a local
+   * edit or an applied Action replaces the state and re-arms the hydrate.
    */
   hydrate(content: FieldValue | undefined): void {
+    if (
+      this.hydrated !== null &&
+      content === this.hydrated.content &&
+      this.state === this.hydrated.state
+    ) {
+      return;
+    }
     const runs = parseContentField(content);
-    if (runs.size === 0) return;
-    this.state = applyRunFieldUpdates(this.state, runs).state;
+    if (runs.size > 0) this.state = applyRunFieldUpdates(this.state, runs).state;
+    this.hydrated = { content, state: this.state };
   }
 
   /** Sentinel id of the root run — convenience for "insert at start". */
@@ -585,6 +603,7 @@ export class TextDocument {
   /** Reset state to empty (for tests / reload). */
   reset(): void {
     this.state = createDocState();
+    this.hydrated = null;
     this.pending.length = 0;
     this.localHlcState.l = 0n;
     this.localHlcState.c = 0n;

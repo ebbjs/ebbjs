@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { pack, format, type Action, type HLCTimestamp } from "@ebbjs/core";
+import { pack, format, type Action, type FieldValue, type HLCTimestamp } from "@ebbjs/core";
 import {
   applyActions,
   diffRunFields,
@@ -19,6 +19,7 @@ import {
   DEFAULT_DOC_SUBJECT_TYPE,
   docActionToUpdate,
   isDocSubjectUpdate,
+  parseContentField,
 } from "../wire";
 import {
   createDocState,
@@ -484,5 +485,25 @@ describe("acceptance — same edits produce the same document via field-update w
     };
 
     expect(reconstruct(docA.state)).toBe("hello world");
+  });
+});
+
+describe("parseContentField caching", () => {
+  const run = makeRun(1, "actor_1", "hello", "ROOT");
+  const content = (): FieldValue => ({
+    map: { [run.id]: { value: run, update_id: `upd_${run.id}`, hlc: run.hlc } },
+  });
+
+  it("returns the same parse for the same content version", () => {
+    const field = content();
+
+    expect(parseContentField(field)).toBe(parseContentField(field));
+  });
+
+  it("parses a new content version separately", () => {
+    const first = content();
+    const second = content();
+
+    expect(parseContentField(second)).not.toBe(parseContentField(first));
   });
 });

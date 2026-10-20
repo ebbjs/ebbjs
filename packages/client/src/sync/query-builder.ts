@@ -99,6 +99,15 @@ export class OnDemandQueryError extends Error {
 }
 
 /**
+ * A map field is immutable per version, so its projection is cached by the
+ * field's identity. A merge or a new snapshot produces a new field object; a
+ * no-op reuses the old one, which is exactly when the cached projection is
+ * still valid. The projection is shared, so callers must treat it as
+ * read-only, like the field it came from.
+ */
+const projectedMaps = new WeakMap<FieldValue, Record<string, unknown>>();
+
+/**
  * Project one wire field value to its application-facing value.
  *
  * - leaf → its `.value`
@@ -107,22 +116,28 @@ export class OnDemandQueryError extends Error {
  *   projected object while its storage entry is retained.
  *
  * The rule is purely structural: no field-kind dispatch, mirroring the
- * merge rule.
+ * merge rule. A map projection is cached per field version and shared.
  */
 export const projectFieldValue = (field: FieldValue): unknown => {
   if (!isFieldMap(field)) return field.value;
+  const cached = projectedMaps.get(field);
+  if (cached !== undefined) return cached;
+
   const out: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(field.map)) {
     const projected = projectFieldValue(entry);
     if (projected === null) continue;
     out[key] = projected;
   }
+  projectedMaps.set(field, out);
   return out;
 };
 
 /**
  * Map a single materialized entity onto the schema's TypeBox shape.
- * Pure: the entity is read-only; the projected row is a fresh object.
+ * Pure: the entity is read-only; the projected row is a fresh object. A map
+ * field's projection is shared across rows of the same version, so treat it
+ * as read-only.
  *
  * Projection states per field:
  * - `data.fields[K]` absent              → `undefined`

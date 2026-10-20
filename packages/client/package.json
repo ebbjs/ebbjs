@@ -15,6 +15,7 @@
   "scripts": {
     "build": "vite build",
     "benchmark": "NODE_OPTIONS=--expose-gc tsx src/benchmark/replica-read-model.ts",
+    "benchmark:map-read": "tsx src/benchmark/map-read.ts",
     "dev": "vite build --watch",
     "test": "vitest --run --exclude '**/__tests__/integration/**'",
     "test:watch": "vitest --exclude '**/__tests__/integration/**'",

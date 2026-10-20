@@ -16,6 +16,7 @@ import {
   buildQueryBuilder,
   buildLazyQueryBuilder,
   projectEntity,
+  projectFieldValue,
   projectRow,
   projectRows,
 } from "../query-builder";
@@ -816,5 +817,21 @@ describe("buildLazyQueryBuilder", () => {
     const out = await buildLazyQueryBuilder(loader, todo.shape).toRaw();
     expect(out).toHaveLength(1);
     expect(out[0]?.data?.fields?.title?.value).toBe("a");
+  });
+});
+
+describe("projectFieldValue caching", () => {
+  it("returns the same projection for the same map version", () => {
+    const field: FieldValue = { map: { a: { value: "x", update_id: "u" } } };
+
+    expect(projectFieldValue(field)).toBe(projectFieldValue(field));
+  });
+
+  it("projects a new map version separately", () => {
+    const first: FieldValue = { map: { a: { value: "x", update_id: "u" } } };
+    const second: FieldValue = { map: { a: { value: "y", update_id: "u2" } } };
+
+    expect(projectFieldValue(second)).toEqual({ a: "y" });
+    expect(projectFieldValue(first)).toEqual({ a: "x" });
   });
 });
