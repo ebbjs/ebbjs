@@ -534,10 +534,10 @@ defmodule EbbServer.Bench.Report do
       "durability). " <>
       baseline_note(baseline?) <>
       "The observed peak and mean are harness-side outstanding calls, not the Writer's " <>
-      "in-flight batches (#537): the current pipeline keeps one claimed range in flight " <>
-      "(`max_in_flight: 1`), so N outstanding calls coalesce into shared flushes. That " <>
-      "coalescing is the measurement's finding, not a harness bug — a real gain requires the " <>
-      "committer pool and the #533 overlay to keep several ranges in flight."
+      "in-flight batches (#537). The Writer is booted with `max_in_flight` = min(N, 4), so a " <>
+      "successor can resolve against the predecessor's planned cache overlay while it " <>
+      "commits; N outstanding calls can still coalesce into shared flushes, which is why " <>
+      "`Actions/flush` is reported beside every depth row."
   end
 
   defp baseline_note(true) do

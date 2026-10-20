@@ -142,10 +142,36 @@ defmodule EbbServer.Storage.EntityGroupCache do
   """
   @spec entity_groups(String.t(), atom()) :: [String.t()]
   def entity_groups(entity_id, table \\ @default_entity_groups) do
+    entity_id
+    |> entity_group_entries(table)
+    |> entity_groups_from_entries()
+  end
+
+  @doc """
+  Projects raw membership entries to the distinct group ids they name.
+
+  An overlay caller replaces the membership rows it touches before this
+  projection, so a tombstone removes the cached group.
+  """
+  @spec entity_groups_from_entries([map()]) :: [String.t()]
+  def entity_groups_from_entries(entries) do
+    entries
+    |> Enum.map(fn entry -> entry[:group_id] || entry["group_id"] end)
+    |> Enum.uniq()
+  end
+
+  @doc """
+  Returns the raw membership entries for an entity.
+
+  `entity_groups/2` is the plain cached answer; this form lets an overlay
+  replace individual membership rows by id before the group set is
+  projected.
+  """
+  @spec entity_group_entries(String.t(), atom()) :: [map()]
+  def entity_group_entries(entity_id, table \\ @default_entity_groups) do
     table
     |> :ets.lookup(entity_id)
-    |> Enum.map(fn {_entity_id, entry} -> entry.group_id end)
-    |> Enum.uniq()
+    |> Enum.map(fn {_entity_id, entry} -> entry end)
   end
 
   @doc """

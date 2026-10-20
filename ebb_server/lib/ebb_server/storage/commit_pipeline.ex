@@ -50,12 +50,13 @@ defmodule EbbServer.Storage.CommitPipeline do
 
   ## V2 extension points
 
-  The V0 Writer still allows one in-flight batch; `new/1` takes
-  `max_in_flight: 1` by default and `schedule/3` stalls once the pipeline is
-  at that depth. Depth above one is an internal test seam until the overlay
-  (#533) and the full ordered frontier/release work (#534) land. The state
-  machine itself is multi-batch: property tests drive several claims and
-  arbitrary ack orders through it.
+  The Writer runs one in-flight batch by default; `new/1` takes
+  `max_in_flight: 1` and `schedule/3` stalls once the pipeline is at that
+  depth. Depth above one is used to prepare a successor against the
+  predecessor's cache overlay (#533); it is not yet a runtime configuration
+  surface while the full ordered frontier/release work (#534) is open. The
+  state machine itself is multi-batch: property tests drive several claims
+  and arbitrary ack orders through it.
 
   - **Reorder buffer (#534).** `claim_order` is the buffer and
     `releasable/1` is the ordered release decision: it returns only the
@@ -66,14 +67,15 @@ defmodule EbbServer.Storage.CommitPipeline do
     persisted `FanOutFrontier` cannot pass an unpushed range. At a test
     depth above one the resolution frontier may still advance over a
     durable range before its apply; #534 owns tightening that ordering.
-  - **Overlay chain (#533).** The `Batch` struct is where #533 adds the
-    cache mutations a batch plans before it is applied. The chain is the
-    `claim_order` sequence filtered to batches with a planned overlay;
-    `abandon/3` must drop the failed batch's overlay, and `release/2` must
-    prune the applied one. Successor batches must be rebuilt rather than
-    applied against an abandoned predecessor's overlay.
+  - **Overlay chain (#533).** `Batch.cache_mutations` is the cache-write
+    plan, and `Batch.cache_overlay` is that batch's own slice of the
+    predicted future state. `cache_slices/1` exposes the open slices in
+    claim order so the Writer can resolve a successor against them;
+    pruning a released batch drops its slice, and `reprepared/6` replaces a
+    successor that chained an abandoned predecessor.
   """
 
+  alias EbbServer.Storage.CacheMutationPlanner
   alias EbbServer.Storage.PreparedAction
 
   @type gsn :: non_neg_integer()
@@ -84,6 +86,7 @@ defmodule EbbServer.Storage.CommitPipeline do
   @type enqueued_action :: {validated_action(), payload_etf()}
   @type pending_call :: {GenServer.from(), [enqueued_action()]}
   @type pending_marks :: {[PreparedAction.entity_mark()], non_neg_integer() | nil}
+  @type cache_plan :: {[CacheMutationPlanner.mutation()], CacheMutationPlanner.overlay() | nil}
 
   @type phase ::
           :idle
@@ -128,6 +131,8 @@ defmodule EbbServer.Storage.CommitPipeline do
       :owner,
       :reason,
       pending_marks: {[], nil},
+      cache_mutations: [],
+      cache_overlay: nil,
       phase: :claimed
     ]
 
@@ -142,6 +147,8 @@ defmodule EbbServer.Storage.CommitPipeline do
             prepared: [PreparedAction.t()] | nil,
             groups_by_gsn: %{optional(CommitPipeline.gsn()) => [String.t()]} | nil,
             pending_marks: CommitPipeline.pending_marks() | nil,
+            cache_mutations: [EbbServer.Storage.CacheMutationPlanner.mutation()],
+            cache_overlay: EbbServer.Storage.CacheMutationPlanner.overlay() | nil,
             batch_size: non_neg_integer(),
             owner: pid() | nil,
             reason: term(),
@@ -266,17 +273,48 @@ defmodule EbbServer.Storage.CommitPipeline do
     {:ok, batch, state}
   end
 
-  @doc "Attaches the prepared batch, group snapshot, and provisional marks."
-  @spec prepared(t(), reference(), [PreparedAction.t()], map(), pending_marks()) ::
+  @doc "Attaches the prepared batch, group snapshot, provisional marks, and cache slice."
+  @spec prepared(t(), reference(), [PreparedAction.t()], map(), pending_marks(), cache_plan()) ::
           {:ok, Batch.t(), t()} | {:error, term()}
-  def prepared(%__MODULE__{} = state, ref, prepared, groups_by_gsn, pending_marks) do
+  def prepared(
+        %__MODULE__{} = state,
+        ref,
+        prepared,
+        groups_by_gsn,
+        pending_marks,
+        cache_plan \\ {[], nil}
+      ) do
     update(state, ref, [:claimed], :prepared, fn batch ->
-      %{
-        batch
-        | prepared: prepared,
-          groups_by_gsn: groups_by_gsn,
-          pending_marks: pending_marks
-      }
+      attach_prepared(batch, prepared, groups_by_gsn, pending_marks, cache_plan)
+    end)
+  end
+
+  @doc """
+  Replaces a prepared batch's resolution and cache slice.
+
+  Used when an abandoned predecessor invalidates everything a successor
+  resolved against its overlay. The successor has not been handed to a
+  Committer yet, so replacing its prepared data is safe.
+  """
+  @spec reprepared(
+          t(),
+          reference(),
+          [PreparedAction.t()],
+          map(),
+          pending_marks(),
+          {list(), term()}
+        ) ::
+          {:ok, Batch.t(), t()} | {:error, term()}
+  def reprepared(
+        %__MODULE__{} = state,
+        ref,
+        prepared,
+        groups_by_gsn,
+        pending_marks,
+        cache_plan \\ {[], nil}
+      ) do
+    update(state, ref, [:prepared], :prepared, fn batch ->
+      attach_prepared(batch, prepared, groups_by_gsn, pending_marks, cache_plan)
     end)
   end
 
@@ -397,6 +435,60 @@ defmodule EbbServer.Storage.CommitPipeline do
   @spec get(t(), reference()) :: Batch.t() | nil
   def get(%__MODULE__{} = state, ref), do: Map.get(state.batches, ref)
 
+  @doc "The open batches in claim order, oldest first."
+  @spec open_batches(t()) :: [Batch.t()]
+  def open_batches(%__MODULE__{} = state) do
+    Enum.map(state.claim_order, &Map.fetch!(state.batches, &1))
+  end
+
+  @doc "The cache slices of the open batches, oldest first."
+  @spec cache_slices(t()) :: [CacheMutationPlanner.overlay()]
+  def cache_slices(%__MODULE__{} = state) do
+    state
+    |> open_batches()
+    |> Enum.flat_map(fn
+      %Batch{cache_overlay: nil} -> []
+      %Batch{cache_overlay: overlay} -> [overlay]
+    end)
+  end
+
+  @doc "The merged cache overlay of every open batch."
+  @spec cache_overlay(t()) :: CacheMutationPlanner.overlay()
+  def cache_overlay(%__MODULE__{} = state) do
+    state |> cache_slices() |> CacheMutationPlanner.merge_overlays()
+  end
+
+  @doc """
+  The merged cache overlay of the open batches claimed before `ref`.
+
+  This is the snapshot a successor resolved against. Callers that gate a
+  commit also read `unresolved_cache_overlay_before/2`, which ignores
+  already-durable predecessors.
+  """
+  @spec cache_overlay_before(t(), reference()) :: CacheMutationPlanner.overlay()
+  def cache_overlay_before(%__MODULE__{} = state, ref) do
+    state
+    |> open_batches()
+    |> Enum.take_while(&(&1.ref != ref))
+    |> overlay_from_batches()
+  end
+
+  @doc """
+  The merged cache overlay of the non-durable batches claimed before `ref`.
+
+  A durable predecessor can no longer abandon, so its slice no longer
+  blocks a successor from committing. A claimed, prepared, or committing
+  predecessor still can.
+  """
+  @spec unresolved_cache_overlay_before(t(), reference()) :: CacheMutationPlanner.overlay()
+  def unresolved_cache_overlay_before(%__MODULE__{} = state, ref) do
+    state
+    |> open_batches()
+    |> Enum.take_while(&(&1.ref != ref))
+    |> Enum.filter(&(&1.phase in [:claimed, :prepared, :committing]))
+    |> overlay_from_batches()
+  end
+
   @doc "True when `ref` is waiting for a Committer result."
   @spec committing?(t(), reference()) :: boolean()
   def committing?(%__MODULE__{} = state, ref) do
@@ -426,6 +518,26 @@ defmodule EbbServer.Storage.CommitPipeline do
   def at_capacity?(%__MODULE__{} = state), do: inflight_count(state) >= state.max_in_flight
 
   defp inflight_count(%__MODULE__{} = state), do: map_size(state.batches)
+
+  defp overlay_from_batches(batches) do
+    batches
+    |> Enum.flat_map(fn
+      %Batch{cache_overlay: nil} -> []
+      %Batch{cache_overlay: overlay} -> [overlay]
+    end)
+    |> CacheMutationPlanner.merge_overlays()
+  end
+
+  defp attach_prepared(batch, prepared, groups_by_gsn, pending_marks, {mutations, overlay}) do
+    %{
+      batch
+      | prepared: prepared,
+        groups_by_gsn: groups_by_gsn,
+        pending_marks: pending_marks,
+        cache_mutations: mutations,
+        cache_overlay: overlay
+    }
+  end
 
   defp update(state, ref, allowed_from, to, transform, action \\ :none) do
     case Map.fetch(state.batches, ref) do

@@ -38,7 +38,7 @@ defmodule EbbServer.Bench.PipelineDepthReportTest do
     assert report =~ "## Run: depth 4 (t2)"
     assert length(String.split(report, "## Throughput")) == 3
 
-    assert report =~ "max_in_flight: 1"
+    assert report =~ "max_in_flight"
     assert report =~ "coalesce into shared flushes"
     assert report =~ "outstanding `write_actions/1` calls"
     assert report =~ "no-regression"

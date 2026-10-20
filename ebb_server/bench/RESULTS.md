@@ -1158,6 +1158,12 @@ session as the pipelined rows. `--in-flight` is rejected on `t1`/`t4` (pacing
 and per-request isolation are single-producer by construction) and on `t5`
 (the spike bypasses the Writer).
 
+> **Post-#533 harness change.** The tables below were measured before the
+> cross-flush overlay landed. Since #533 the bench also boots the Writer with
+> `max_in_flight = min(depth, 4)`, so a depth row now changes the Writer's
+> claimed-range depth as well as the harness's outstanding calls. Re-measure
+> this matrix against the new harness before treating these rows as current.
+
 The workload uses the headline shape: batch 100, 2-Update Actions, `hot`,
 `sync: true`. Measured **2026-10-19** on `recsy-vps`, 20 s window after 3 s
 warmup, five reports per tier, each report containing every depth. The
@@ -1276,8 +1282,8 @@ there. Compare rows within a table, not across tables.
 ### Verdict for the pipeline
 
 The workload the epic wants to optimize (#551) shows **no temporal-parallelism
-gain** on the current pipeline: depth cannot overlap commits because
-`max_in_flight` is 1. At a constant offered burst, depth is throughput-neutral
+gain** on the pipeline as measured: depth could not overlap commits because
+`max_in_flight` was 1. At a constant offered burst, depth is throughput-neutral
 (19.4–20.3k across 8×1, 4×2, 2×4, 1×8) because every shape coalesces to the same
 400-Action flush. The measurable wins — t0 depth 2 and t2 one-caller depth 2 —
 come from keeping the sequencer fed while the caller prepares the next batch, not
@@ -1293,9 +1299,10 @@ compared against.
 - **What "in flight" counts.** The peak/mean columns count the harness's own
   outstanding `write_actions/1` calls per worker, not the Writer's in-flight
   batches. The Writer has no gauge for that yet
-  ([#537](https://github.com/ebbjs/ebbjs/issues/537)); the current pipeline
-  keeps one claimed range in flight (`max_in_flight: 1`), and the observed
-  `Actions/flush` column is what shows the coalescing that depth causes.
+  ([#537](https://github.com/ebbjs/ebbjs/issues/537)); the rows below kept one
+  claimed range in flight (`max_in_flight: 1`), which is what isolates the
+  coalescing effect. Since #533 the harness raises `max_in_flight` with depth,
+  so a re-measure mixes in the Writer's own pipeline depth.
 - **The workload is not an isolated depth knob.** At a fixed `--concurrency`,
   a deeper pipeline means more calls waiting when the Writer flushes, so the
   flush grows. Compare depth rows against the `Actions/flush` and `Flush p50`
