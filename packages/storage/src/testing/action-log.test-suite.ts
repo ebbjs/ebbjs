@@ -97,6 +97,39 @@ export const defineActionLogTests = ({ name, factory }: ActionLogTestSuiteOption
       });
     });
 
+    describe("appendMany", () => {
+      it("appends every Action in order and returns their entries", async () => {
+        const log = await factory();
+        const first = buildPutAction();
+        const second = buildPatchAction();
+
+        const entries = await log.appendMany([first, second]);
+
+        expect(entries.map((entry) => entry.action.id)).toEqual(["a_1", "a_2"]);
+        expect(entries.map((entry) => entry.position)).toEqual([1, 2]);
+        expect(entries[0]!.added).toEqual(first.updates);
+        expect((await log.getAll()).map((action) => action.id)).toEqual(["a_1", "a_2"]);
+        expect(await log.lastPosition()).toBe(2);
+      });
+
+      it("merges a repeated id inside one batch", async () => {
+        const log = await factory();
+        const put = buildPutAction();
+
+        const entries = await log.appendMany([put, { ...put, updates: [buildPerGroupDelete()] }]);
+
+        expect(entries.map((entry) => entry.position)).toEqual([1, 1]);
+        expect(entries[1]!.added.map((update) => update.id)).toEqual(["u_delete"]);
+        expect(await log.lastPosition()).toBe(1);
+      });
+
+      it("is a no-op for an empty batch", async () => {
+        const log = await factory();
+        expect(await log.appendMany([])).toEqual([]);
+        expect(await log.lastPosition()).toBe(0);
+      });
+    });
+
     describe("readTail", () => {
       it("returns every Action after the position in append order", async () => {
         const log = await factory();

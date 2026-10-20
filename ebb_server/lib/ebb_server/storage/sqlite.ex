@@ -92,6 +92,7 @@ defmodule EbbServer.Storage.SQLite do
   CREATE INDEX IF NOT EXISTS idx_entities_source_id ON entities(source_id) WHERE type = 'relationship' AND deleted_hlc IS NULL;
   CREATE INDEX IF NOT EXISTS idx_entities_group_member ON entities(group_id, actor_id) WHERE type = 'groupMember' AND deleted_hlc IS NULL;
   CREATE INDEX IF NOT EXISTS idx_entities_entity_group ON entities(entity_id, group_id) WHERE type = 'entityGroup' AND deleted_hlc IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_entities_entity_group_page ON entities(group_id, id) WHERE type = 'entityGroup' AND deleted_hlc IS NULL;
   """
 
   @upsert_sql """
@@ -113,6 +114,35 @@ defmodule EbbServer.Storage.SQLite do
   """
 
   @get_last_gsn_sql "SELECT last_gsn FROM entities WHERE id = ?"
+
+  # Group-scoped listing pages (#476). Each query is the keyset for one phase
+  # of `EbbServer.Sync.GroupListing`: group members are ordered by
+  # `(actor_id, id)` through `idx_entities_group_member`, membership rows by
+  # `id` through `idx_entities_entity_group_page`.
+  @list_group_member_ids_sql """
+  SELECT id, actor_id FROM entities
+  WHERE type = 'groupMember' AND group_id = ? AND deleted_hlc IS NULL
+  ORDER BY actor_id, id LIMIT ?
+  """
+
+  @list_group_member_ids_after_sql """
+  SELECT id, actor_id FROM entities
+  WHERE type = 'groupMember' AND group_id = ? AND deleted_hlc IS NULL
+    AND (actor_id > ? OR (actor_id = ? AND id > ?))
+  ORDER BY actor_id, id LIMIT ?
+  """
+
+  @list_entity_group_memberships_sql """
+  SELECT id, entity_id FROM entities
+  WHERE type = 'entityGroup' AND group_id = ? AND deleted_hlc IS NULL
+  ORDER BY id LIMIT ?
+  """
+
+  @list_entity_group_memberships_after_sql """
+  SELECT id, entity_id FROM entities
+  WHERE type = 'entityGroup' AND group_id = ? AND deleted_hlc IS NULL AND id > ?
+  ORDER BY id LIMIT ?
+  """
 
   # Generic durable consumer cursor. #367's Action export owns the
   # `"action_export"` row; peer replication (#113) will add its own.
@@ -201,6 +231,60 @@ defmodule EbbServer.Storage.SQLite do
   @spec get_entity_last_gsn(String.t(), GenServer.server()) :: {:ok, integer()} | :not_found
   def get_entity_last_gsn(id, server \\ __MODULE__) do
     GenServer.call(server, {:get_entity_last_gsn, id})
+  end
+
+  @doc """
+  Lists the group's live `groupMember` rows in keyset order.
+
+  Ordered by `(actor_id, id)`; `after_key` is `nil` to start from the
+  beginning or the `{actor_id, id}` pair of the last row returned by a
+  previous call. The pair, not `actor_id` alone, is the key so two
+  membership rows for one actor cannot shadow each other at a page
+  boundary.
+
+  Returns `[{id, actor_id}]`.
+  """
+  @spec list_group_members(
+          String.t(),
+          {String.t(), String.t()} | nil,
+          pos_integer(),
+          GenServer.server()
+        ) :: [{String.t(), String.t()}]
+  def list_group_members(group_id, after_key, limit, server \\ __MODULE__) do
+    GenServer.call(server, {:list_group_members, group_id, after_key, limit})
+  end
+
+  @doc """
+  Lists the group's live `entityGroup` rows in keyset order.
+
+  Ordered by row `id`; `after_key` is `nil` to start from the beginning or
+  the last row id returned by a previous call.
+
+  Returns `[{membership_id, entity_id}]`.
+  """
+  @spec list_entity_group_memberships(
+          String.t(),
+          String.t() | nil,
+          pos_integer(),
+          GenServer.server()
+        ) :: [{String.t(), String.t()}]
+  def list_entity_group_memberships(group_id, after_key, limit, server \\ __MODULE__) do
+    GenServer.call(server, {:list_entity_group_memberships, group_id, after_key, limit})
+  end
+
+  @doc """
+  Fetches multiple live entity rows by id.
+
+  Rows deleted by tombstone are omitted, so the result can be shorter than
+  the id list. Order is unspecified; callers that need an order index the
+  result by `id`.
+  """
+  @spec get_entities([String.t()], GenServer.server()) :: [map()]
+  def get_entities(ids, server \\ __MODULE__) do
+    case Enum.uniq(ids) do
+      [] -> []
+      ids -> GenServer.call(server, {:get_entities, ids})
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -399,6 +483,50 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @impl true
+  def handle_call({:list_group_members, group_id, after_key, limit}, _from, state) do
+    {sql, params} =
+      case after_key do
+        nil ->
+          {@list_group_member_ids_sql, [group_id, limit]}
+
+        {actor_id, id} ->
+          {@list_group_member_ids_after_sql, [group_id, actor_id, actor_id, id, limit]}
+      end
+
+    {:reply, collect_pairs(state, sql, params), state}
+  end
+
+  @impl true
+  def handle_call({:list_entity_group_memberships, group_id, after_key, limit}, _from, state) do
+    {sql, params} =
+      case after_key do
+        nil -> {@list_entity_group_memberships_sql, [group_id, limit]}
+        id -> {@list_entity_group_memberships_after_sql, [group_id, id, limit]}
+      end
+
+    {:reply, collect_pairs(state, sql, params), state}
+  end
+
+  @impl true
+  def handle_call({:get_entities, ids}, _from, state) do
+    %{db: db} = state
+
+    placeholders = Enum.map_join(ids, ",", fn _ -> "?" end)
+
+    sql = """
+    SELECT id, type, data, created_hlc, updated_hlc, deleted_hlc, deleted_by, last_gsn
+    FROM entities WHERE id IN (#{placeholders}) AND deleted_hlc IS NULL
+    """
+
+    {:ok, stmt} = Sqlite3.prepare(db, sql)
+    :ok = Sqlite3.bind(stmt, ids)
+    rows = collect_rows(db, stmt, [])
+    Sqlite3.release(db, stmt)
+
+    {:reply, rows, state}
+  end
+
+  @impl true
   def handle_call({:query_entities, query}, _from, state) do
     %{db: db} = state
 
@@ -491,6 +619,25 @@ defmodule EbbServer.Storage.SQLite do
   defp collect_rows(db, stmt, acc) do
     case Sqlite3.step(db, stmt) do
       {:row, row} -> collect_rows(db, stmt, [row_to_entity(row) | acc])
+      :done -> Enum.reverse(acc)
+    end
+  end
+
+  defp collect_pairs(state, sql, params) do
+    %{db: db} = state
+
+    {:ok, stmt} = Sqlite3.prepare(db, sql)
+    :ok = Sqlite3.bind(stmt, params)
+
+    pairs = collect_pair_rows(db, stmt, [])
+    Sqlite3.release(db, stmt)
+
+    pairs
+  end
+
+  defp collect_pair_rows(db, stmt, acc) do
+    case Sqlite3.step(db, stmt) do
+      {:row, [first, second]} -> collect_pair_rows(db, stmt, [{first, second} | acc])
       :done -> Enum.reverse(acc)
     end
   end

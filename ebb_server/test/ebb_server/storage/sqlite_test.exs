@@ -469,4 +469,132 @@ defmodule EbbServer.Storage.SQLiteTest do
       assert target_id == "tgt_1"
     end
   end
+
+  describe "group listing queries" do
+    defp entity_row(id, type, fields, overrides \\ %{}) do
+      Map.merge(
+        %{
+          id: id,
+          type: type,
+          data: Jason.encode!(%{"fields" => fields}),
+          created_hlc: 1000,
+          updated_hlc: 1000,
+          deleted_hlc: nil,
+          deleted_by: nil,
+          last_gsn: 1
+        },
+        overrides
+      )
+    end
+
+    defp lww(value), do: %{"type" => "lww", "value" => value, "hlc" => 1}
+
+    test "lists group members in (actor_id, id) order and never skips a tie", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      for {id, actor_id, group_id} <- [
+            {"gm_b", "a_1", "g_1"},
+            {"gm_a", "a_1", "g_1"},
+            {"gm_c", "a_2", "g_1"},
+            {"gm_other", "a_0", "g_2"}
+          ] do
+        :ok =
+          SQLite.upsert_entity(
+            entity_row(id, "groupMember", %{
+              "actor_id" => lww(actor_id),
+              "group_id" => lww(group_id)
+            }),
+            name
+          )
+      end
+
+      :ok =
+        SQLite.upsert_entity(
+          entity_row(
+            "gm_deleted",
+            "groupMember",
+            %{"actor_id" => lww("a_0"), "group_id" => lww("g_1")},
+            %{deleted_hlc: 5, deleted_by: "a_1"}
+          ),
+          name
+        )
+
+      assert SQLite.list_group_members("g_1", nil, 10, name) == [
+               {"gm_a", "a_1"},
+               {"gm_b", "a_1"},
+               {"gm_c", "a_2"}
+             ]
+
+      # The pair, not the actor id alone, is the keyset: resuming after the
+      # first of two rows that share an actor still returns the second.
+      assert SQLite.list_group_members("g_1", {"a_1", "gm_a"}, 10, name) == [
+               {"gm_b", "a_1"},
+               {"gm_c", "a_2"}
+             ]
+
+      assert SQLite.list_group_members("g_1", nil, 1, name) == [{"gm_a", "a_1"}]
+    end
+
+    test "lists entityGroup memberships by row id, excluding tombstones", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      for {id, entity_id} <- [{"eg_2", "todo_2"}, {"eg_1", "todo_1"}, {"eg_9", "todo_9"}] do
+        :ok =
+          SQLite.upsert_entity(
+            entity_row(id, "entityGroup", %{
+              "entity_id" => lww(entity_id),
+              "group_id" => lww("g_1")
+            }),
+            name
+          )
+      end
+
+      :ok =
+        SQLite.upsert_entity(
+          entity_row(
+            "eg_3",
+            "entityGroup",
+            %{"entity_id" => lww("todo_3"), "group_id" => lww("g_1")},
+            %{deleted_hlc: 5, deleted_by: "a_1"}
+          ),
+          name
+        )
+
+      assert SQLite.list_entity_group_memberships("g_1", nil, 10, name) == [
+               {"eg_1", "todo_1"},
+               {"eg_2", "todo_2"},
+               {"eg_9", "todo_9"}
+             ]
+
+      assert SQLite.list_entity_group_memberships("g_1", "eg_1", 10, name) == [
+               {"eg_2", "todo_2"},
+               {"eg_9", "todo_9"}
+             ]
+    end
+
+    test "fetches live rows by id and omits tombstones", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      :ok = SQLite.upsert_entity(entity_row("todo_1", "todo", %{"title" => lww("a")}), name)
+
+      :ok =
+        SQLite.upsert_entity(
+          entity_row("todo_2", "todo", %{"title" => lww("b")}, %{
+            deleted_hlc: 5,
+            deleted_by: "a_1"
+          }),
+          name
+        )
+
+      assert [row] = SQLite.get_entities(["todo_1", "todo_2", "todo_missing"], name)
+      assert row.id == "todo_1"
+      assert row.type == "todo"
+      assert Jason.decode!(row.data) == %{"fields" => %{"title" => lww("a")}}
+
+      assert SQLite.get_entities([], name) == []
+    end
+  end
 end

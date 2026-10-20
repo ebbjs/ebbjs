@@ -241,6 +241,7 @@ export type {
   Rejection,
   EntityResponse,
   EntityQueryResponse,
+  GroupListingResponse,
   SSEEvent,
   ControlEvent,
   PresenceEvent,

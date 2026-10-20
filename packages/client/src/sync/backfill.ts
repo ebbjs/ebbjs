@@ -44,24 +44,38 @@ export const BACKFILL_ACTOR_ID = "a_backfill";
  * envelopes come through verbatim so later merges are by HLC, not by
  * arrival.
  */
-export const snapshotAction = (entity: Entity): Action => {
-  const updateId = generateId("u");
-  return {
-    id: generateId("a"),
-    actor_id: BACKFILL_ACTOR_ID,
+export const snapshotAction = (entity: Entity): Action =>
+  snapshotActionWithIds(entity, { actionId: generateId("a"), updateId: generateId("u") });
+
+/**
+ * The same synthetic base with caller-chosen ids. A group listing seed
+ * derives them from `(group, entity)` so redoing a page merges into the
+ * entry it already wrote instead of duplicating it (#476).
+ */
+export const snapshotActionWithIds = (
+  entity: Entity,
+  ids: {
+    readonly actionId: string;
+    readonly updateId: string;
+    /** Defaults to {@link BACKFILL_ACTOR_ID}; the listing seed names itself. */
+    readonly actorId?: string;
+  },
+): Action =>
+  ({
+    id: ids.actionId,
+    actor_id: ids.actorId ?? BACKFILL_ACTOR_ID,
     hlc: entity.updated_hlc,
     gsn: entity.last_gsn,
     updates: [
       {
-        id: updateId,
+        id: ids.updateId,
         subject_id: entity.id,
         subject_type: entity.type,
         method: "put",
         data: { fields: entity.data.fields },
       },
     ],
-  };
-};
+  });
 
 const hlcToString = (hlc: number | string | null): string | null =>
   hlc === null ? null : typeof hlc === "number" ? String(hlc) : hlc;

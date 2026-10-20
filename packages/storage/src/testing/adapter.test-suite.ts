@@ -236,6 +236,28 @@ export const defineAdapterTests = ({ name, factory }: AdapterTestSuiteOptions): 
         const entity = await adapter.entities.get("todo_1");
         expect(entity).toBe(null);
       });
+
+      it("clears every group cursor and seed marker", async () => {
+        const adapter = await factory();
+        await adapter.cursors.set("group_1", 100);
+        await adapter.cursors.setRecord("group_2", { seed: { group_id: "group_2", w: 3 } });
+
+        await adapter.reset();
+
+        expect((await adapter.cursors.records()).size).toBe(0);
+        expect(await adapter.cursors.get("group_1")).toBe(null);
+      });
+    });
+
+    describe("actions.appendMany", () => {
+      it("appends a page and marks every subject dirty", async () => {
+        const adapter = await factory();
+        const entries = await adapter.actions.appendMany([buildPutAction(), buildPatchAction()]);
+
+        expect(entries.map((entry) => entry.position)).toEqual([1, 2]);
+        expect(await adapter.isDirty("todo_1")).toBe(true);
+        expect((await adapter.entities.get("todo_1"))?.data.fields.title).toBeDefined();
+      });
     });
 
     describe("outbox conflicts", () => {

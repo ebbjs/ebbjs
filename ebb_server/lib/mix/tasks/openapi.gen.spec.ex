@@ -89,6 +89,11 @@ defmodule Mix.Tasks.Openapi.Gen.Spec do
       %{method: :post, path: "/sync/handshake", operation_atom: :handshake},
       %{method: :get, path: "/sync/live", operation_atom: :live_updates},
       %{method: :get, path: "/sync/groups/:group_id", operation_atom: :catch_up_group},
+      %{
+        method: :get,
+        path: "/sync/groups/:group_id/entities",
+        operation_atom: :list_group_entities
+      },
       %{method: :post, path: "/sync/presence", operation_atom: :broadcast_presence}
     ]
   end

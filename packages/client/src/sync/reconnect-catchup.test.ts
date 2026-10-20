@@ -13,6 +13,8 @@ import type { SSEEvent } from "./types";
 import {
   closingSseResponse,
   emptyCatchUpResponse,
+  emptyListingResponse,
+  isListingRequest,
   jsonResponse,
   openSseResponse,
   waitFor,
@@ -177,6 +179,7 @@ describe("SyncClient rebase phase (#309)", () => {
     });
     let posted = 0;
     const fetchImpl = vi.fn(async (url: string) => {
+      if (isListingRequest(url)) return emptyListingResponse(0, "grp_1");
       if (url.includes("/sync/groups/")) {
         if (url.includes("offset=0")) {
           return jsonResponse([firstPage], {
@@ -493,6 +496,7 @@ describe("SyncClient pre-sync capture (#395)", () => {
     let liveOpens = 0;
     const fetchImpl = vi.fn(async (url: string) => {
       if (url.includes("/sync/actions")) return jsonResponse({ rejected: [] });
+      if (isListingRequest(url)) return emptyListingResponse(0, "grp_1");
       if (url.includes("/sync/groups/")) {
         catchUps += 1;
         const action = catchUps === 1 ? peer1 : peer2;

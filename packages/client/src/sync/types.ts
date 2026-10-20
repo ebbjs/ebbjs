@@ -123,6 +123,25 @@ export const EntityResponseSchema = Type.Object({
 });
 export type EntityResponse = Static<typeof EntityResponseSchema>;
 
+/**
+ * Response shape for `GET /sync/groups/:group_id/entities`.
+ *
+ * A page of the group's current row set — the `group` row, its `groupMember`
+ * rows, its live `entityGroup` rows, and the entities those name — taken at
+ * `watermark`, plus the opaque token for the next page. `cursor` is `null`
+ * on the last page. Partial-index keyset pagination on the membership row id,
+ * so a page is not an offset into a shifting list. See
+ * `docs/research/476-group-scoped-listing.md` §5.
+ */
+export const GroupListingResponseSchema = Type.Object({
+  group_id: Type.String(),
+  watermark: Type.Number(),
+  cursor: Type.Union([Type.String(), Type.Null()]),
+  has_more: Type.Boolean(),
+  entities: Type.Array(EntityResponseSchema),
+});
+export type GroupListingResponse = Static<typeof GroupListingResponseSchema>;
+
 /** Response shape for `POST /entities/query`. */
 export type EntityQueryResponse = readonly EntityResponse[];
 

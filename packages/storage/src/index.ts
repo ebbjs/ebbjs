@@ -17,7 +17,7 @@ export type {
   RelationshipLink,
   MembershipLink,
 } from "./types/entity-store";
-export type { CursorStore } from "./types/cursor-store";
+export type { CursorRecord, CursorStore, SeedMarker } from "./types/cursor-store";
 export type { ReplicaRecord, ReplicaStore } from "./types/replica-store";
 export type {
   MaterializationPolicy,

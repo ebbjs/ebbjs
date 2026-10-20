@@ -81,6 +81,7 @@ import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { readEntityMemberships } from "./entity-group";
 import { readGeneratedParts } from "./generated-parts";
 import { createBackfill, type Backfill } from "./backfill";
+import { createGroupListing, LISTING_SEED_ACTOR_ID, type GroupListing } from "./group-listing";
 import { createAtomicRuntime, type AtomicClient } from "./atomic";
 import {
   PermissionError,
@@ -304,6 +305,25 @@ export class SyncClient implements PermissionQuery {
    * the missing entities from the server into the action log.
    */
   private readonly backfillRunner: Backfill;
+  /**
+   * Cold bootstrap from the group-scoped entity listing (#476): seeds a
+   * group whose view the local log cannot describe, and pins the seed's
+   * watermark so a crash redoes the same listing.
+   */
+  private readonly groupListing: GroupListing;
+  /**
+   * How far each group's seeded base folded, by group id. A delivered Action
+   * above every group's bound cannot have been folded by a listing seed, so
+   * the per-row guard can skip the provenance lookup.
+   */
+  private readonly seededThrough = new Map<string, number>();
+  /**
+   * Highest listing-seed position folded into each row, by entity id. A row
+   * is only protected from a re-delivered `put`/`delete` when its own seed
+   * folded that position; the delivering group's bound is not enough, because
+   * a shared row can be seeded by a different group's listing.
+   */
+  private readonly seededEntityThrough = new Map<string, number>();
   /** Memoized hydration of {@link replica}; see {@link hydrateReplica}. */
   private replicaHydration: Promise<void> | null = null;
   /** True once {@link loadReplica} completed, so synchronous readers can run. */
@@ -413,6 +433,19 @@ export class SyncClient implements PermissionQuery {
       fetchEntity: (entityId) => this.getEntity(entityId),
       onAppended: (entry) => {
         this.replica.ingest(entry.action, entry.added, entry.position);
+        this.noteReplicaMutation();
+      },
+    });
+    this.groupListing = createGroupListing({
+      serverUrl: this.serverUrl,
+      actorId: this.actorId,
+      fetchImpl: this.fetchImpl,
+      storage: this.storage,
+      onAppended: (entries) => {
+        for (const entry of entries) {
+          this.noteSeededAction(entry.action);
+          this.replica.ingest(entry.action, entry.added, entry.position);
+        }
         this.noteReplicaMutation();
       },
     });
@@ -586,7 +619,10 @@ export class SyncClient implements PermissionQuery {
     await this.hydrateReplica();
     const url = `${this.serverUrl}/sync/handshake`;
     const body = JSON.stringify({
-      cursors: opts.cursors ?? {},
+      // The server validates these against its watermark and answers
+      // `cursor_valid: false` when it has lost state below them, so it must
+      // see what the client actually has rather than an empty map.
+      cursors: opts.cursors ?? (await this.persistedCursors()),
       schema_version: opts.schema_version ?? this.schema?.version,
       min_supported_version: opts.min_supported_version ?? this.schema?.minSupportedVersion,
       schema_hash: opts.schema_hash ?? this.schemaHash,
@@ -609,14 +645,101 @@ export class SyncClient implements PermissionQuery {
       groups: data.groups.map(toGroupInfo),
     };
 
-    // Refresh the cursor cache from the server's authoritative cursors.
+    // A rejected cursor means the server's log no longer holds a window the
+    // client's bases folded, so every group's base is suspect: reset the
+    // local sync state (keeping the outbox) and let each subscribed group
+    // re-seed. Every group is reset, not just the rejected one, because the
+    // append-only log cannot forget one group's seeded rows.
+    if (result.groups.some((group) => !group.cursorValid)) {
+      await this.resetSyncState();
+    }
+
+    // Refresh the cursor cache from the server's authoritative cursors. An
+    // invalidated group starts from nothing so its bootstrap seeds it: a
+    // cursor restored from the server would claim a view the local reset
+    // just dropped.
     this.groupCursors.clear();
     this.actorGroups = result.groups.map((g) => ({ id: g.id, permissions: g.permissions }));
     this.handshakeRan = true;
     for (const g of result.groups) {
-      this.groupCursors.set(g.id, g.cursor);
+      if (g.cursorValid) this.groupCursors.set(g.id, g.cursor);
     }
     return result;
+  }
+
+  /**
+   * The cursors the client actually holds, as the handshake request's map.
+   * A group mid-seed has no cursor yet, so it is omitted rather than sent
+   * as `0`: the server would validate a claim the client never made.
+   */
+  private async persistedCursors(): Promise<Record<string, number>> {
+    const records = await this.storage.cursors.records();
+    const cursors: Record<string, number> = {};
+    for (const [groupId, record] of records) {
+      if (record.cursor !== undefined) cursors[groupId] = record.cursor;
+    }
+    return cursors;
+  }
+
+  /**
+   * Drop every local sync base: the action log (with the entity cache and
+   * persisted replica it feeds), the group cursors, and the materialized
+   * rows. The outbox survives — those Actions are the user's writes, and
+   * their echo re-establishes them on the freshly seeded base.
+   */
+  private async resetSyncState(): Promise<void> {
+    await this.hydrateReplica();
+    await this.storage.reset();
+    this.replica.load({ ...this.replica.toRecord(), position: 0, revision: 0, entities: [] });
+    this.groupCursors.clear();
+    this.seededThrough.clear();
+    this.seededEntityThrough.clear();
+    this.replicaActionsSinceSave = 0;
+    this.evictedBackup = null;
+    this.evictedGroupIds.clear();
+  }
+
+  /**
+   * Seed one group from the listing when its view is not complete yet,
+   * then restore the optimistic rows the seed's full-replacement `put`s
+   * would otherwise hide from the async `entities` shim.
+   *
+   * Runs inside the rebase phase, before the flush gate releases: a pending
+   * write is stamped with the base GSN, so it must not be posted while the
+   * base it was authored against is still changing.
+   */
+  private async bootstrapGroupListing(groupId: string): Promise<void> {
+    const result = await this.groupListing.bootstrap(groupId);
+    if (result.through > 0) {
+      this.seededThrough.set(
+        groupId,
+        Math.max(result.through, this.seededThrough.get(groupId) ?? 0),
+      );
+    }
+    if (result.seeded) {
+      await this.reapplyOutbox();
+      await this.persistReplica();
+    }
+    if (result.cursor !== null && result.cursor > (this.groupCursors.get(groupId) ?? 0)) {
+      this.groupCursors.set(groupId, result.cursor);
+    }
+  }
+
+  /**
+   * Re-place every live outbox Action on top of a freshly seeded base.
+   *
+   * The composed replica already stacks its optimistic overlay over the
+   * seeded rows, but an overlay `put` was authored against the previous
+   * base and the seed's full-replacement `put` lands under it either way —
+   * so the overlay is rebuilt and mirrored into the shim, which has no
+   * overlay of its own.
+   */
+  private async reapplyOutbox(): Promise<void> {
+    for (const entry of await this.storage.outbox.list()) {
+      this.replica.discard(entry.action.id);
+      this.replica.optimistic(entry.action);
+      await this.mirrorReplicaRows(entry.action);
+    }
   }
 
   /**
@@ -1049,6 +1172,7 @@ export class SyncClient implements PermissionQuery {
     if (record !== null) this.replica.load(record);
     const tail = await this.storage.actions.readTail(record?.position ?? 0);
     for (const entry of tail) {
+      this.noteSeededAction(entry.action);
       this.replica.ingest(entry.action, entry.added, entry.position);
     }
     const outbox = await this.storage.outbox.list();
@@ -1062,6 +1186,11 @@ export class SyncClient implements PermissionQuery {
     this.replicaHydrated = true;
     this.evictedGroupIds.clear();
     this.evictedBackup = null;
+    // A seeded base outlives the session: without its bound, a restart would
+    // let a re-delivered `put` inside the seed's window regress the row.
+    for (const [groupId, cursor] of await this.storage.cursors.records()) {
+      if (cursor.through !== undefined) this.seededThrough.set(groupId, cursor.through);
+    }
     const stats = this.replica.stats();
     this.replicaLoadReport = {
       durationMs: performance.now() - started,
@@ -1357,6 +1486,12 @@ export class SyncClient implements PermissionQuery {
    */
   private async catchUpSubscribed(sub: ActiveSubscription, catchUpId: string): Promise<void> {
     const missed: Action[] = [];
+    // Seed the groups whose view the log cannot describe before any page is
+    // requested: the seed publishes `cursor(G) = W`, which is exactly where
+    // the catch-up below then starts.
+    for (const groupId of sub.groupIds) {
+      await this.bootstrapGroupListing(groupId);
+    }
     for (const groupId of sub.groupIds) {
       // First page: let `catchUp` pick up from the durable cursor.
       let offset: number | undefined;
@@ -1604,9 +1739,12 @@ export class SyncClient implements PermissionQuery {
     if (action.hlc !== undefined) {
       this.mergeRemoteHLC(action.hlc);
     }
-    const logged = await this.storage.actions.append(action);
-    this.replica.ingest(logged.action, logged.added, logged.position);
-    this.noteReplicaMutation();
+    const delivered = await this.withoutFoldedUpdates(action);
+    if (delivered.updates.length > 0) {
+      const logged = await this.storage.actions.append(delivered);
+      this.replica.ingest(logged.action, logged.added, logged.position);
+      this.noteReplicaMutation();
+    }
     // The single inbound receipt hook: an Action that matches a buffered
     // Outbox entry (with a server GSN) is this client's own echo, so the
     // entry is now proven canonical and can be removed. Runs after the
@@ -1629,6 +1767,92 @@ export class SyncClient implements PermissionQuery {
       }
     }
     return affected;
+  }
+
+  /**
+   * Drop the Updates of a delivered Action that its target row already
+   * folded.
+   *
+   * A listing seed stamps each base `put` with the entity's true log
+   * position, so the tail then re-delivers Actions at or below it. Folding
+   * one would rewrite the row with an older state — a full-replacement
+   * `put` above all — until (or unless) the Action that produced the newer
+   * state arrives again. `patch` is left alone: it merges field by field by
+   * HLC, so folding an older one cannot regress the row and can supply
+   * content another group's stream never carried (#473).
+   *
+   * The guard is row-relative and requires seed provenance: a row's
+   * `last_gsn` only means "everything at or below this is folded" when a
+   * listing seed produced it. A log-derived row's `last_gsn` is the max of
+   * this group's partial history, so an older Action from another group can
+   * still carry content it lacks (#473/#475). The delivering group's bound is
+   * not enough: a shared row can be seeded by a different group's listing.
+   *
+   * This guard sits on the delivery seam only. Log replay is exempt: it
+   * rebuilds a row from whatever the log holds, in log order, and must not
+   * second-guess it.
+   */
+  private async withoutFoldedUpdates(action: Action): Promise<Action> {
+    if (action.gsn <= 0) return action;
+    if (action.gsn > this.maxSeededThrough()) return action;
+
+    const kept: Action["updates"][number][] = [];
+    for (const update of action.updates) {
+      // A patch merges field by field by HLC, so an older one cannot regress
+      // the row and can supply content another group's stream never carried
+      // (#473). A `put` is a full replacement, so it can.
+      if (update.method === "patch") {
+        kept.push(update);
+        continue;
+      }
+      const row = this.replica.base(update.subject_id);
+      if (row === undefined || action.gsn > row.last_gsn) {
+        kept.push(update);
+        continue;
+      }
+      // The row's position is only trustworthy as "already folded" when a
+      // listing seed put it there: a log-derived row's `last_gsn` is the max
+      // of this group's partial history, not the entity's global position.
+      if (action.gsn <= (await this.seededThroughForEntity(update.subject_id))) continue;
+      kept.push(update);
+    }
+
+    return kept.length === action.updates.length ? action : { ...action, updates: kept };
+  }
+
+  private maxSeededThrough(): number {
+    let max = 0;
+    for (const through of this.seededThrough.values()) max = Math.max(max, through);
+    return max;
+  }
+
+  private noteSeededAction(action: Action): void {
+    if (action.actor_id !== LISTING_SEED_ACTOR_ID) return;
+    for (const update of action.updates) {
+      const folded = this.seededEntityThrough.get(update.subject_id) ?? 0;
+      this.seededEntityThrough.set(update.subject_id, Math.max(folded, action.gsn));
+    }
+  }
+
+  /**
+   * The highest position a listing seed folded into `entityId`.
+   *
+   * In-session seeds populate this directly. After a restart the seed Actions
+   * are already in the log, so the first guarded delivery reads the row's own
+   * Actions once rather than persisting an entity-indexed watermark.
+   */
+  private async seededThroughForEntity(entityId: string): Promise<number> {
+    const cached = this.seededEntityThrough.get(entityId);
+    if (cached !== undefined) return cached;
+
+    let folded = 0;
+    for (const candidate of await this.storage.actions.getForEntity(entityId)) {
+      if (candidate.actor_id === LISTING_SEED_ACTOR_ID) {
+        folded = Math.max(folded, candidate.gsn);
+      }
+    }
+    this.seededEntityThrough.set(entityId, folded);
+    return folded;
   }
 
   /**

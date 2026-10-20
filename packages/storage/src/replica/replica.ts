@@ -656,6 +656,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       return changeFloor;
     },
     get,
+    base: (id) => entities.get(id),
     iterate,
     isHeld: holds,
     open,

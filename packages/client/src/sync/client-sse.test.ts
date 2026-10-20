@@ -3,7 +3,14 @@ import { createClient } from "./client";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { makeHlc, type Action } from "@ebbjs/core";
 import type { SSEEvent } from "./types";
-import { callApplyAction, emptyCatchUpResponse, jsonResponse, waitFor } from "./test-utils";
+import {
+  callApplyAction,
+  emptyCatchUpResponse,
+  emptyListingResponse,
+  isListingRequest,
+  jsonResponse,
+  waitFor,
+} from "./test-utils";
 
 const chunkEncoder = new TextEncoder();
 
@@ -166,6 +173,7 @@ describe("SyncClient.subscribe (SSE)", () => {
     const catchUpResolvers: Array<(response: Response) => void> = [];
     const actionPosts: string[] = [];
     const fetchImpl = vi.fn(async (url: string) => {
+      if (typeof url === "string" && isListingRequest(url)) return emptyListingResponse(0, "grp_1");
       if (typeof url === "string" && url.includes("/sync/groups/")) {
         return new Promise<Response>((resolve) => catchUpResolvers.push(resolve));
       }

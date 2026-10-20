@@ -6,11 +6,14 @@ defmodule EbbServer.Sync.Router do
 
   ## What this module is
 
-  A `Plug.Router` with seven endpoints and one catch-all 404:
+  A `Plug.Router` with eight endpoints and one catch-all 404:
 
     - `POST /sync/handshake` — returns actor identity, group memberships,
       per-group cursors. Requires `x-ebb-actor-id` header (bypass mode).
     - `GET /sync/groups/:group_id?offset=N` — paginated catch-up for one group.
+    - `GET /sync/groups/:group_id/entities?cursor=&limit=` — cold-bootstrap
+      listing of the group's state at a watermark (see
+      `EbbServer.Sync.GroupListing`).
     - `GET /sync/live?groups=...&cursor=N` — SSE stream of live actions.
     - `POST /sync/actions` — submit a batch of Actions for write.
     - `POST /sync/presence` — broadcast ephemeral presence data on an entity.
@@ -38,6 +41,7 @@ defmodule EbbServer.Sync.Router do
   - `EbbServer.Storage.EntityStore` — reads with on-demand materialization
   - `EbbServer.Sync.SSEHandler` — the SSE wire format
   - `EbbServer.Sync.CatchUp` — paginated catch-up
+  - `EbbServer.Sync.GroupListing` — group-scoped cold-bootstrap listing
   """
 
   use Plug.Router
@@ -52,7 +56,7 @@ defmodule EbbServer.Sync.Router do
     Writer
   }
 
-  alias EbbServer.Sync.{CatchUp, FanOutRouter, SSEHandler}
+  alias EbbServer.Sync.{CatchUp, FanOutRouter, GroupListing, SSEHandler}
   alias EbbServer.Sync.Router.OperationSchema
 
   plug(Plug.Logger)
@@ -105,17 +109,7 @@ defmodule EbbServer.Sync.Router do
 
         case result do
           {:ok, entity} ->
-            response = %{
-              "id" => entity.id,
-              "type" => entity.type,
-              "data" => entity.data,
-              "created_hlc" => entity.created_hlc,
-              "updated_hlc" => entity.updated_hlc,
-              "deleted_hlc" => entity.deleted_hlc,
-              "last_gsn" => entity.last_gsn
-            }
-
-            send_json(conn, 200, response)
+            send_json(conn, 200, entity_json(entity))
 
           # Non-membership maps to the same 404 as a missing entity: a
           # distinct status would turn the endpoint into an existence
@@ -142,18 +136,7 @@ defmodule EbbServer.Sync.Router do
 
         case EntityStore.query(type, filter, actor_id, opts) do
           {:ok, entities} ->
-            response =
-              Enum.map(entities, fn entity ->
-                %{
-                  "id" => entity.id,
-                  "type" => entity.type,
-                  "data" => entity.data,
-                  "created_hlc" => entity.created_hlc,
-                  "updated_hlc" => entity.updated_hlc,
-                  "deleted_hlc" => entity.deleted_hlc,
-                  "last_gsn" => entity.last_gsn
-                }
-              end)
+            response = Enum.map(entities, &entity_json/1)
 
             send_json(conn, 200, response)
 
@@ -260,6 +243,39 @@ defmodule EbbServer.Sync.Router do
 
       _ ->
         send_json(conn, 400, %{"error" => "invalid_params"})
+    end
+  end
+
+  # Defined before `GET /sync/groups/:group_id` so the more specific path is
+  # matched first, even though a `:group_id` segment cannot span a `/`.
+  get "/sync/groups/:group_id/entities" do
+    conn = Plug.Conn.fetch_query_params(conn)
+    group_id = conn.path_params["group_id"]
+    actor_id = conn.assigns.actor_id
+
+    case parse_limit(conn.query_params["limit"]) do
+      {:ok, limit} ->
+        opts = [cursor: conn.query_params["cursor"], limit: limit]
+
+        case GroupListing.list(group_id, actor_id, opts) do
+          {:ok, page} ->
+            send_json(conn, 200, group_listing_json(page))
+
+          {:error, :not_member} ->
+            send_json(conn, 403, %{"error" => "not_member"})
+
+          {:error, :bad_cursor} ->
+            send_json(conn, 400, %{"error" => "bad_cursor"})
+
+          {:error, :invalid_limit} ->
+            send_json(conn, 400, %{"error" => "invalid_limit"})
+
+          {:error, :materialization_failed} ->
+            send_json(conn, 503, %{"error" => "materialization_failed"})
+        end
+
+      {:error, :invalid_limit} ->
+        send_json(conn, 400, %{"error" => "invalid_limit"})
     end
   end
 
@@ -499,6 +515,42 @@ defmodule EbbServer.Sync.Router do
     }
   end
 
+  def openapi_operation(:list_group_entities) do
+    %{
+      operationId: "listGroupEntities",
+      summary: "List a group's entities as of a watermark",
+      description:
+        "Returns one page of the group's state at a resolution frontier: the group row, its " <>
+          "live groupMember rows, every live entityGroup row in the group, and the live " <>
+          "entities those rows name. Page with `cursor` until `has_more` is false, then tail " <>
+          "the group from `watermark`. Entity objects are identical in shape to " <>
+          "`GET /entities/{id}`.",
+      tags: ["Sync"],
+      parameters: [
+        OperationSchema.path_param("group_id", "string", "The group ID to list"),
+        OperationSchema.query_param(
+          "cursor",
+          "string",
+          "Opaque cursor from the previous page (omit for the first page)",
+          required: false
+        ),
+        OperationSchema.query_param(
+          "limit",
+          "integer",
+          "Maximum membership rows per page (1-1000); each may carry its entity",
+          required: false,
+          default: 200
+        )
+      ],
+      responses: %{
+        "200" => OperationSchema.group_listing_response(),
+        "400" => OperationSchema.error_response("Invalid limit or cursor"),
+        "403" => OperationSchema.error_response("Not a member of the group"),
+        "503" => OperationSchema.error_response("Materialization failed")
+      }
+    }
+  end
+
   def openapi_operation(:catch_up_group) do
     %{
       operationId: "catchUpGroup",
@@ -577,6 +629,37 @@ defmodule EbbServer.Sync.Router do
         "422" => OperationSchema.error_response("Validation failed (missing/invalid entity_id)")
       }
     }
+  end
+
+  defp entity_json(entity) do
+    %{
+      "id" => entity.id,
+      "type" => entity.type,
+      "data" => entity.data,
+      "created_hlc" => entity.created_hlc,
+      "updated_hlc" => entity.updated_hlc,
+      "deleted_hlc" => entity.deleted_hlc,
+      "last_gsn" => entity.last_gsn
+    }
+  end
+
+  defp group_listing_json(page) do
+    %{
+      "group_id" => page.group_id,
+      "watermark" => page.watermark,
+      "cursor" => page.cursor,
+      "has_more" => page.has_more,
+      "entities" => Enum.map(page.entities, &entity_json/1)
+    }
+  end
+
+  defp parse_limit(nil), do: {:ok, nil}
+
+  defp parse_limit(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {limit, ""} when limit > 0 -> {:ok, limit}
+      _ -> {:error, :invalid_limit}
+    end
   end
 
   defp decode_msgpack(<<>>) do
@@ -784,6 +867,35 @@ defmodule EbbServer.Sync.Router.OperationSchema do
           schema: %OpenApiSpex.Schema{
             type: :array,
             items: entity()
+          }
+        }
+      }
+    }
+  end
+
+  def group_listing_response do
+    %OpenApiSpex.Response{
+      description: "One page of the group's state at the watermark",
+      content: %{
+        "application/json" => %{
+          schema: %OpenApiSpex.Schema{
+            type: :object,
+            required: ["group_id", "watermark", "cursor", "has_more", "entities"],
+            properties: %{
+              group_id: %OpenApiSpex.Schema{type: :string},
+              watermark: %OpenApiSpex.Schema{
+                type: :integer,
+                format: :int64,
+                description: "Resolution frontier this page is complete as of"
+              },
+              cursor: %OpenApiSpex.Schema{
+                type: :string,
+                nullable: true,
+                description: "Opaque cursor for the next page; null when has_more is false"
+              },
+              has_more: %OpenApiSpex.Schema{type: :boolean},
+              entities: %OpenApiSpex.Schema{type: :array, items: entity()}
+            }
           }
         }
       }

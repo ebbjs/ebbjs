@@ -23,8 +23,9 @@ import type { ReplicaStore } from "./replica-store";
  *
  * ## Cross-cutting Methods
  * - `isDirty(entityId)` — delegates to dirtyTracker
- * - `reset()` — clears the action log, dirty flags, entity cache, and the
- *   persisted replica; outbox entries are durable user data and survive a reset
+ * - `reset()` — clears the action log, dirty flags, entity cache, the
+ *   persisted replica, and every group cursor; outbox entries are durable
+ *   user data and survive a reset
  */
 export interface StorageAdapter {
   readonly actions: ActionLog;
@@ -42,6 +43,7 @@ export interface StorageAdapter {
 }
 
 export type { ActionLog, LoggedAction, DirtyTracker, EntityStore, CursorStore };
+export type { CursorRecord, SeedMarker } from "./cursor-store";
 export type { ReplicaRecord, ReplicaStore } from "./replica-store";
 export type {
   OutboxStore,

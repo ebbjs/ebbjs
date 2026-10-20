@@ -62,6 +62,18 @@ export const createMemoryAdapter = (): StorageAdapter => {
         return entry;
       },
 
+      async appendMany(actions: readonly Action[]): Promise<readonly LoggedAction[]> {
+        const entries = await actionLog.appendMany(actions);
+        // Dirty marks are per-entity rows in a sibling store; the page-sized
+        // win is the log's single transaction, so they stay one write each.
+        for (const action of actions) {
+          for (const update of action.updates) {
+            await dirtyTracker.mark(update.subject_id, update.subject_type);
+          }
+        }
+        return entries;
+      },
+
       async readTail(afterPosition: number): Promise<readonly LoggedAction[]> {
         return actionLog.readTail(afterPosition);
       },
@@ -125,6 +137,9 @@ export const createMemoryAdapter = (): StorageAdapter => {
       await dirtyTracker.clearAll();
       await entityStore.reset();
       await replicaStore.clear();
+      // A wiped log invalidates every group's cursor: resuming from one would
+      // claim a view complete that is no longer held.
+      await cursorStore.clear();
     },
   };
 };
