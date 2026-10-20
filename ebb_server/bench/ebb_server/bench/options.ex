@@ -12,9 +12,10 @@ defmodule EbbServer.Bench.Options do
   each one by differencing against the full flush. The canonical order is
   the order reported and printed, regardless of how the flag was invoked;
   `all` expands to every phase. `:build` and `:encode` cover the pre-claim
-  payload work: skipping `:build` stores an empty payload map, skipping
-  `:encode` stores a precomputed ETF for a structurally valid empty Action
-  so the record stays decodable by live readers.
+  payload work, which runs in the Prepare pool: skipping `:build` stores an
+  empty payload map, skipping `:encode` stores a precomputed ETF for a
+  structurally valid empty Action so the record stays decodable by live
+  readers.
 
   ## Pipeline depth
 

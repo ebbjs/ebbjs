@@ -14,10 +14,10 @@ defmodule EbbServer.Storage.Supervisor do
     in-memory caches, the in-flight action-id set, and the Writer, so the
     Writer reconciles against the fresh watermark on `init/1`.
   - A Writer-only crash restarts the Writer alone, since nothing is
-    ordered after it. The linked Committer pool stops with it, though a
-    worker already inside `write_batch` may finish late. The replacement
-    Writer clears the surviving in-flight ids and treats every unresolved
-    claim as orphaned on `init/1`.
+    ordered after it. The linked Prepare and Committer pools stop with
+    it, though a worker already inside `write_batch` may finish late. The
+    replacement Writer clears the surviving in-flight ids and treats
+    every unresolved claim as orphaned on `init/1`.
 
   `:writer_opts` is merged over the Writer's boot defaults so tests can
   inject a `:commit_fn` or a bad cache table while still exercising the
