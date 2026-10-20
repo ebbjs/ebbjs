@@ -77,16 +77,6 @@ export function deriveActorSeedIds(actorId: string): ActorSeedIds {
   };
 }
 
-/**
- * Resolve a workspace row's entity id from its slug. The seed pins the
- * id scheme (`ws_<slug>`, with the shared workspace fixed at `ws_shared`),
- * so a list view can address a query row with `get(id)` until #447
- * surfaces group ids on query rows and removes the need.
- */
-export function workspaceEntityId(slug: string): string {
-  return slug === SHARED_WORKSPACE_SLUG ? SHARED_WORKSPACE_ID : `ws_${slug}`;
-}
-
 /** One user entity with every field carried as a plain seed value. */
 const entity = (id: string, type: string, fields: Record<string, unknown>): EntitySeed => ({
   id,

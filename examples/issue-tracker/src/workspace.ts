@@ -107,10 +107,7 @@ export interface LeaveWorkspaceInput {
 }
 
 /** The namespaces a leave writes through: the actor's `profile` and `groupMember` rows. */
-export interface MembershipWriter {
-  readonly profile: NamespacedClient<Schema>["profile"];
-  readonly membership: NamespacedClient<Schema>["membership"];
-}
+export type MembershipWriter = Pick<NamespacedClient<Schema>, "profile" | "membership">;
 
 /**
  * Drop the actor's `groupMember` row and their profile's membership in

@@ -16,7 +16,8 @@ import { createClient, type NamespacedClient } from "@ebbjs/client";
 import type { SeedData } from "@ebbjs/core/seed";
 import { schema, type Schema } from "../schema";
 import { SEED_PERMISSIONS, SEEDER_ACTOR_ID, buildActorSeed, deriveActorSeedIds } from "../seed";
-import { SERVER_URL, catchUpUntilCurrent, findRow, serverIsReachable } from "./integration-support";
+import { catchUpGroup, syncAllGroups } from "../sync-groups";
+import { SERVER_URL, findRow, serverIsReachable } from "./integration-support";
 
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const ALICE = `crud_alice_${RUN_ID}`;
@@ -88,10 +89,7 @@ beforeAll(async () => {
   await seedSharedGroup(seeder);
 
   for (const client of [alice, bob]) {
-    const { groups } = await client.handshake();
-    for (const group of groups) {
-      await catchUpUntilCurrent(client, group.id);
-    }
+    await syncAllGroups(client);
   }
 });
 
@@ -111,7 +109,7 @@ describe("integration: issue CRUD", () => {
         { groups: [ALICE_IDS.groupId] },
       ),
     );
-    await catchUpUntilCurrent(alice!, ALICE_IDS.groupId);
+    await catchUpGroup(alice!, ALICE_IDS.groupId);
 
     const row = findRow(await alice!.issue.query().with({ assignee: true }), created.id);
     expect(row).toBeDefined();
@@ -128,10 +126,10 @@ describe("integration: issue CRUD", () => {
         { groups: [ALICE_IDS.groupId] },
       ),
     );
-    await catchUpUntilCurrent(alice!, ALICE_IDS.groupId);
+    await catchUpGroup(alice!, ALICE_IDS.groupId);
 
     await alice!.issue.update(created.id, { status: "in_progress", priority: "high" });
-    await catchUpUntilCurrent(alice!, ALICE_IDS.groupId);
+    await catchUpGroup(alice!, ALICE_IDS.groupId);
     const updated = findRow(await alice!.issue.query(), created.id);
     expect(updated?.status).toBe("in_progress");
     expect(updated?.priority).toBe("high");
@@ -140,12 +138,12 @@ describe("integration: issue CRUD", () => {
     expect(filtered.map((issue) => issue.id)).toContain(created.id);
 
     await alice!.issue.unlink(created.id, "assignee");
-    await catchUpUntilCurrent(alice!, ALICE_IDS.groupId);
+    await catchUpGroup(alice!, ALICE_IDS.groupId);
     const cleared = findRow(await alice!.issue.query().with({ assignee: true }), created.id);
     expect(cleared!.assignee).toBeNull();
 
     await alice!.issue.delete(created.id);
-    await catchUpUntilCurrent(alice!, ALICE_IDS.groupId);
+    await catchUpGroup(alice!, ALICE_IDS.groupId);
     const list = await alice!.issue.query();
     expect(list.map((issue) => issue.id)).not.toContain(created.id);
   });
@@ -159,7 +157,7 @@ describe("integration: issue CRUD", () => {
         { groups: [SHARED_GROUP_ID] },
       ),
     );
-    await catchUpUntilCurrent(bob!, SHARED_GROUP_ID);
+    await catchUpGroup(bob!, SHARED_GROUP_ID);
     const bobView = findRow(await bob!.issue.query(), created.id);
     expect(bobView?.title).toBe("Shared issue");
 
@@ -167,8 +165,8 @@ describe("integration: issue CRUD", () => {
     await bob!.issue.update(created.id, { status: "done" });
     await alice!.issue.update(created.id, { priority: "urgent" });
 
-    await catchUpUntilCurrent(alice!, SHARED_GROUP_ID);
-    await catchUpUntilCurrent(bob!, SHARED_GROUP_ID);
+    await catchUpGroup(alice!, SHARED_GROUP_ID);
+    await catchUpGroup(bob!, SHARED_GROUP_ID);
     const aliceFinal = findRow(await alice!.issue.query(), created.id);
     const bobFinal = findRow(await bob!.issue.query(), created.id);
     for (const row of [aliceFinal, bobFinal]) {

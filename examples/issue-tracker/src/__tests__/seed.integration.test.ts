@@ -35,7 +35,8 @@ import {
   buildSharedSeed,
   deriveActorSeedIds,
 } from "../seed";
-import { SERVER_URL, catchUpUntilCurrent, findRow, serverIsReachable } from "./integration-support";
+import { syncAllGroups } from "../sync-groups";
+import { SERVER_URL, findRow, serverIsReachable } from "./integration-support";
 
 /** Unique per run so re-running against the same server does not collide. */
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -46,7 +47,7 @@ type Client = NamespacedClient<Schema>;
 
 let actor: Client | null = null;
 let seeder: Client | null = null;
-let actorGroups: readonly { id: string }[] = [];
+let actorGroupIds: readonly string[] = [];
 
 beforeAll(async () => {
   if (!(await serverIsReachable())) {
@@ -60,16 +61,8 @@ beforeAll(async () => {
   seeder = createClient({ serverUrl: SERVER_URL, actorId: SEEDER_ACTOR_ID, schema });
   await seeder.seed(buildSharedSeed());
 
-  const { groups } = await actor.handshake();
-  actorGroups = groups;
-  for (const group of groups) {
-    await catchUpUntilCurrent(actor, group.id);
-  }
-
-  const { groups: seederGroups } = await seeder.handshake();
-  for (const group of seederGroups) {
-    await catchUpUntilCurrent(seeder, group.id);
-  }
+  actorGroupIds = await syncAllGroups(actor);
+  await syncAllGroups(seeder);
 });
 
 afterAll(() => {
@@ -80,8 +73,8 @@ afterAll(() => {
 describe("integration: issue-tracker seed", () => {
   it("handshake returns only the actor's personal group, never the shared one", async () => {
     if (!(await serverIsReachable())) return;
-    expect(actorGroups.map((group) => group.id)).toEqual([IDS.groupId]);
-    expect(actorGroups.map((group) => group.id)).not.toContain(SHARED_GROUP_ID);
+    expect(actorGroupIds).toEqual([IDS.groupId]);
+    expect(actorGroupIds).not.toContain(SHARED_GROUP_ID);
   });
 
   it("the actor's workspace reads back through the typed namespace", async () => {

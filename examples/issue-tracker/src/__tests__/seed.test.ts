@@ -13,7 +13,6 @@ import {
   buildActorSeed,
   buildSharedSeed,
   deriveActorSeedIds,
-  workspaceEntityId,
 } from "../seed";
 
 /** Project a seeded entity's plain field values for assertions. */
@@ -41,16 +40,6 @@ describe("deriveActorSeedIds", () => {
     });
     expect(deriveActorSeedIds("alice")).toEqual(deriveActorSeedIds("alice"));
     expect(deriveActorSeedIds("alice").groupId).not.toBe(deriveActorSeedIds("bob").groupId);
-  });
-});
-
-describe("workspaceEntityId", () => {
-  it("maps the shared slug to the shared workspace id", () => {
-    expect(workspaceEntityId(SHARED_WORKSPACE_SLUG)).toBe(SHARED_WORKSPACE_ID);
-  });
-
-  it("maps a personal slug to its derived workspace id", () => {
-    expect(workspaceEntityId("alice")).toBe("ws_alice");
   });
 });
 
