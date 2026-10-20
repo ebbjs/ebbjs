@@ -2,10 +2,17 @@ defmodule EbbServer.Bench.Runner do
   @moduledoc """
   Drives one benchmark run: boot, seed, warmup, measure, sample, report.
 
-  Workers are fed across warmup and measurement so connections and cache
-  state are reuse-warm; only samples after the measurement start are
-  retained. Each worker owns its own reservoir slice, so the total sample
-  count stays near `@latency_cap` regardless of concurrency.
+  A run is one measured pass per requested `--in-flight` depth, each against
+  a freshly booted and freshly seeded DB. In sweep mode a t0 depth-1 pass is
+  measured first as the no-regression baseline. Workers are fed across warmup
+  and measurement so connections and cache state are reuse-warm; only samples
+  after the measurement start are retained. Each worker owns its own reservoir
+  slice, so the total sample count stays near `@latency_cap` regardless of
+  concurrency.
+
+  A depth above 1 keeps that many `Writer.write_actions/1` calls outstanding
+  per worker (`pipelined/6`), so the harness can exercise temporal parallelism
+  across GSN ranges. Depth 1 stays the original serial worker loop.
   """
 
   alias EbbServer.Bench.{
@@ -25,29 +32,138 @@ defmodule EbbServer.Bench.Runner do
 
   @latency_cap 200_000
   @await_buffer_ms 120_000
+  @reply_timeout_ms 30_000
 
   @doc """
   Runs the benchmark described by `config` and writes its Markdown report.
   """
   @spec run(Options.t()) :: {:ok, String.t()}
   def run(%Options{} = config) do
+    {runs, failures} = collect(config, &run_pass/1)
+    result = %{runs: runs, sweep?: sweep?(config), failures: failures}
+
+    report = Report.render(config, result)
+    path = Report.write(report, config)
+    IO.puts(report)
+    IO.puts("\nReport written to #{path}")
+
+    raise_failures(failures)
+    {:ok, path}
+  end
+
+  @doc """
+  Runs every pass, keeping the passes that finished when one fails.
+
+  A sweep is minutes of measurement, so a failure in a later pass must not
+  throw away the earlier ones. `run_fun` is the per-pass measurement, injected
+  so the schedule and its failure handling can be tested without storage.
+  Failed passes are returned with their depth and label so the report can name
+  what is missing instead of silently showing fewer rows.
+  """
+  @spec collect(Options.t(), (Options.t() -> map())) :: {[map()], [map()]}
+  def collect(%Options{} = config, run_fun) when is_function(run_fun, 1) do
+    {runs, failures} =
+      config
+      |> passes()
+      |> Enum.reduce({[], []}, fn %{config: pass, depth: depth, label: label}, {runs, failures} ->
+        case run_safely(run_fun, pass) do
+          {:ok, metrics} ->
+            {[%{depth: depth, label: label, metrics: metrics} | runs], failures}
+
+          {:error, error} ->
+            {runs, [%{depth: depth, label: label, tier: pass.tier, error: error} | failures]}
+        end
+      end)
+
+    {Enum.reverse(runs), Enum.reverse(failures)}
+  end
+
+  defp run_safely(run_fun, pass) do
+    {:ok, run_fun.(pass)}
+  rescue
+    error -> {:error, Exception.message(error)}
+  catch
+    :exit, reason -> {:error, "exited: #{inspect(reason)}"}
+  end
+
+  defp raise_failures([]), do: :ok
+
+  defp raise_failures(failures) do
+    detail =
+      Enum.map_join(failures, "; ", fn %{label: label, depth: depth, error: error} ->
+        "#{label} depth #{depth}: #{error}"
+      end)
+
+    raise "bench pass failed, report is incomplete: #{detail}"
+  end
+
+  @doc """
+  The ordered per-run configurations a run costs.
+
+  One pass per requested depth, each a single-depth config so `Options.depth/1`
+  is total. A sweep first measures a t0 depth-1 pass as the no-regression
+  baseline unless the requested sweep already starts at t0 depth 1 with the
+  plain serial workload — then that pass is the baseline and no extra boot is
+  spent on a duplicate.
+  """
+  @spec passes(Options.t()) :: [%{config: Options.t(), depth: pos_integer(), label: String.t()}]
+  def passes(%Options{} = config) do
+    requested = Enum.map(config.in_flight, &pass(config, &1))
+
+    cond do
+      not sweep?(config) -> requested
+      Enum.any?(requested, &baseline?(&1.config)) -> requested
+      true -> [pass(baseline_config(config), 1) | requested]
+    end
+  end
+
+  defp sweep?(%Options{in_flight: depths}), do: length(depths) > 1
+
+  defp pass(config, depth) do
+    pass_config = %{config | in_flight: [depth]}
+    %{config: pass_config, depth: depth, label: label(pass_config)}
+  end
+
+  # The label names a pass's role in a sweep: the plain t0 depth-1 config is
+  # the no-regression baseline, everything else is the pipelined workload.
+  defp label(config) do
+    if baseline?(config), do: "t0 baseline", else: "pipeline"
+  end
+
+  defp baseline?(%Options{} = config) do
+    Options.depth(config) == 1 and config.tier == :t0 and config.concurrency == 1 and
+      config.rate == 0 and config.subscribers == 0 and config.subscriber_lean == false
+  end
+
+  # The baseline is the pre-pipeline headline shape: one serial t0 caller with
+  # no pacing and no subscribers, on this run's batch size, distribution, and
+  # durability.
+  defp baseline_config(config) do
+    %{
+      config
+      | tier: :t0,
+        concurrency: 1,
+        in_flight: [1],
+        rate: 0,
+        subscribers: 0,
+        subscriber_lean: false
+    }
+  end
+
+  defp run_pass(config) do
     boot = Boot.start(config)
 
     try do
       ctx = Workbook.seed(config)
-      result = measure(config, ctx)
-      report = Report.render(config, result)
-      path = Report.write(report, config)
-      IO.puts(report)
-      IO.puts("\nReport written to #{path}")
-      {:ok, path}
+      measure(config, ctx)
     after
       Boot.stop(boot)
     end
   end
 
   defp measure(config, ctx) do
-    unless Options.bypasses_writer?(config), do: Http.setup(config.concurrency)
+    unless Options.bypasses_writer?(config),
+      do: Http.setup(config.concurrency * Options.depth(config))
 
     subscribers =
       if config.tier in [:t3, :t4],
@@ -82,19 +198,15 @@ defmodule EbbServer.Bench.Runner do
   defp worker(id, config, ctx, measure_start, deadline) do
     :rand.seed(:exsss, {config.seed, id, 0})
     cap = max(div(@latency_cap, config.concurrency), 1)
+    stats = new_stats(cap, measure_start)
+    depth = Options.depth(config)
 
-    stats = %{
-      accepted: 0,
-      rejected: 0,
-      errors: 0,
-      buckets: %{},
-      rejected_buckets: %{},
-      reservoir: Metrics.reservoir_new(cap),
-      seq: 0,
-      next_due_us: measure_start
-    }
-
-    loop(id, config, ctx, measure_start, deadline, stats)
+    if depth == 1 do
+      loop(id, config, ctx, measure_start, deadline, stats)
+    else
+      call = fn seq -> perform(config.tier, config, ctx, id, seq) end
+      pipelined(depth, measure_start, deadline, stats, call, seq_step: config.batch_size)
+    end
   end
 
   defp loop(id, config, ctx, measure_start, deadline, stats) do
@@ -105,8 +217,106 @@ defmodule EbbServer.Bench.Runner do
     else
       {latency, accepted, rejected, errors} = perform(config.tier, config, ctx, id, stats.seq)
       stats = record(stats, now - measure_start, latency, accepted, rejected, errors)
+      stats = sample_in_flight(stats, 1, now - measure_start)
       stats = %{stats | next_due_us: pace(config, stats.next_due_us, deadline)}
       loop(id, config, ctx, measure_start, deadline, stats)
+    end
+  end
+
+  @doc """
+  The per-worker accumulator: counters, throughput buckets, the latency
+  reservoir, the next t4 pacing slot, and the observed pipeline occupancy.
+  """
+  @spec new_stats(pos_integer(), integer()) :: map()
+  def new_stats(cap, measure_start) do
+    %{
+      accepted: 0,
+      rejected: 0,
+      errors: 0,
+      buckets: %{},
+      rejected_buckets: %{},
+      reservoir: Metrics.reservoir_new(cap),
+      seq: 0,
+      next_due_us: measure_start,
+      in_flight_peak: 0,
+      in_flight_sum: 0,
+      in_flight_samples: 0
+    }
+  end
+
+  @doc """
+  Runs the pipelined worker loop for one depth.
+
+  `depth` calls stay outstanding: each runs in its own `spawn_link`ed process
+  so the harness never blocks the worker on a call, reports
+  `{latency, accepted, rejected, errors}` back by message, and gets its own
+  `seq` — `seq_step` apart, which keeps every call's Actions distinct. The
+  link carries a call's real exit reason into the worker instead of leaving it
+  to surface as a reply timeout. No new call starts after `deadline`; the
+  outstanding ones are drained and every reply is recorded. A call that never
+  replies raises rather than letting the run under-report, and the occupancy
+  observed at each measured completion feeds the peak/mean the report prints.
+  """
+  @spec pipelined(
+          pos_integer(),
+          integer(),
+          integer(),
+          map(),
+          (non_neg_integer() ->
+             {integer(), non_neg_integer(), non_neg_integer(), non_neg_integer()}),
+          keyword()
+        ) :: map()
+  def pipelined(depth, measure_start, deadline, stats, call, opts \\ []) do
+    opts = %{
+      seq_step: Keyword.get(opts, :seq_step, 1),
+      reply_timeout_ms: Keyword.get(opts, :reply_timeout_ms, @reply_timeout_ms)
+    }
+
+    drain(depth, measure_start, deadline, stats, call, opts, %{})
+  end
+
+  defp drain(depth, measure_start, deadline, stats, call, opts, outstanding) do
+    {stats, outstanding} = fill(depth, measure_start, deadline, stats, call, opts, outstanding)
+
+    if map_size(outstanding) == 0 do
+      stats
+    else
+      {stats, outstanding} = await_reply(stats, outstanding, opts.reply_timeout_ms)
+      drain(depth, measure_start, deadline, stats, call, opts, outstanding)
+    end
+  end
+
+  defp fill(depth, measure_start, deadline, stats, call, opts, outstanding) do
+    now = System.monotonic_time(:microsecond)
+
+    if now < deadline and map_size(outstanding) < depth do
+      parent = self()
+      ref = make_ref()
+      seq = stats.seq
+
+      spawn_link(fn -> send(parent, {ref, call.(seq)}) end)
+
+      outstanding = Map.put(outstanding, ref, now - measure_start)
+      stats = %{stats | seq: seq + opts.seq_step}
+      fill(depth, measure_start, deadline, stats, call, opts, outstanding)
+    else
+      {stats, outstanding}
+    end
+  end
+
+  defp await_reply(stats, outstanding, timeout) do
+    receive do
+      {ref, {latency, accepted, rejected, errors}} when is_map_key(outstanding, ref) ->
+        observed = map_size(outstanding)
+        started = Map.fetch!(outstanding, ref)
+        outstanding = Map.delete(outstanding, ref)
+
+        stats = record_completion(stats, started, latency, accepted, rejected, errors)
+        {sample_in_flight(stats, observed, started), outstanding}
+    after
+      timeout ->
+        raise "pipelined call never replied within #{timeout}ms at depth " <>
+                "#{map_size(outstanding)}"
     end
   end
 
@@ -186,7 +396,10 @@ defmodule EbbServer.Bench.Runner do
 
   defp record(stats, offset_us, latency, accepted, rejected, errors) do
     stats = %{stats | seq: stats.seq + max(accepted + rejected + errors, 1)}
+    record_completion(stats, offset_us, latency, accepted, rejected, errors)
+  end
 
+  defp record_completion(stats, offset_us, latency, accepted, rejected, errors) do
     if offset_us < 0 do
       stats
     else
@@ -202,6 +415,21 @@ defmodule EbbServer.Bench.Runner do
           reservoir: Metrics.reservoir_add(stats.reservoir, {offset_us, latency})
       }
     end
+  end
+
+  # Sampled once per completed call, counting that call, so the report gets a
+  # mean as well as a peak without sampling the loop from another process.
+  # Warmup completions stay out of the occupancy mean, exactly like their
+  # latency samples, so the reported mean describes the measured window.
+  defp sample_in_flight(stats, _observed, offset_us) when offset_us < 0, do: stats
+
+  defp sample_in_flight(stats, observed, _offset_us) do
+    %{
+      stats
+      | in_flight_peak: max(stats.in_flight_peak, observed),
+        in_flight_sum: stats.in_flight_sum + observed,
+        in_flight_samples: stats.in_flight_samples + 1
+    }
   end
 
   defp bump(buckets, _second, 0), do: buckets

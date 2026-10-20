@@ -45,12 +45,19 @@ mix bench.actions --tier t2 --duration 120 --warmup 5 --concurrency 64 \
 # Storage ceiling (no HTTP):
 mix bench.actions --tier t0 --duration 120 --warmup 5 --concurrency 1 \
   --batch-size 100 --updates-per-action 2 --distribution hot
+
+# Pipeline-depth sweep (t0 baseline, then 1/2/4 calls in flight per worker):
+mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 8 \
+  --in-flight 1,2,4 --batch-size 100 --updates-per-action 2 --distribution hot
 ```
 
 Tier meanings: `t0` = `Writer.write_actions/1` directly; `t1` = real
 `POST /sync/actions` at concurrency 1; `t2` = `POST /sync/actions` at the
 requested concurrency; `t3` = `t2` plus in-process SSE subscribers; `t4` =
 fixed-rate `Writer.write_actions/1` plus in-process SSE subscribers.
+`--in-flight N` keeps N `write_actions/1` calls outstanding per worker and
+is supported on `t0`, `t2`, and `t3`; see
+[Pipeline depth](#pipeline-depth-n-in-flight-calls-551).
 
 ## Environment
 
@@ -1136,6 +1143,120 @@ second read on every Action. The companion variant was not built or
 measured; the wrapper's claim-time cost is a binary copy plus the scopes
 list and is inside `ebb.writer.commit_latency_ms`, while the ablation above
 prices the payload build + encode that moved before the claim.
+
+## Pipeline depth: N in-flight calls (#551)
+
+Harness-only workload for [epic #529](https://github.com/ebbjs/ebbjs/issues/529).
+`--in-flight 1,2,4` keeps N `Writer.write_actions/1` calls outstanding per
+worker instead of one, so the harness can put several batches in the Writer's
+queue at once and measure whether temporal parallelism is worth anything.
+Depth 1 is the original serial worker loop; a list is a sweep, and each depth
+runs in its own pass against a freshly booted and seeded DB. In sweep mode the
+report also measures a **t0 depth-1 baseline** (one caller, no pacing, no
+subscribers) first, so the no-regression row comes from the same host and
+session as the pipelined rows. `--in-flight` is rejected on `t1`/`t4` (pacing
+and per-request isolation are single-producer by construction) and on `t5`
+(the spike bypasses the Writer).
+
+The workload uses the headline shape: batch 100, 2-Update Actions, `hot`,
+`sync: true`. Measured **2026-10-19** on `recsy-vps`, 20 s window after 3 s
+warmup, five reports per tier, each report containing every depth. The
+median across the five passes is reported with the min–max range in
+parentheses; the raw per-pass reports were the `--out` files from that
+measurement and are not committed. Every run below had **0 rejected Actions, 0
+write/transport errors, 0 GSN holes**; the final watermark lag was 0 except
+at depth > 1, where the last 1 Hz sample still catches the calls that were in
+flight when the window closed (255–283 GSNs at t2 depth 2/4).
+
+```sh
+mix bench.actions --tier t0 --duration 20 --warmup 3 --concurrency 1 \
+  --in-flight 1,2,4 --batch-size 100 --updates-per-action 2 --distribution hot --seed 1
+mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 8 \
+  --in-flight 1,2,4 --batch-size 100 --updates-per-action 2 --distribution hot --seed 1
+```
+
+### t0, one caller
+
+| Callers | Calls in flight | Actions/sec (median) |         Range | Δ vs depth 1 | p50 (ms) | p95 (ms) | p99 (ms) | Actions/flush | Flush p50 (ms) | Commit p50 (ms) | Lag high-water |
+| ------: | --------------: | -------------------: | ------------: | -----------: | -------: | -------: | -------: | ------------: | -------------: | --------------: | -------------: |
+|       1 |               1 |               22,465 | 21,845–22,595 |            — |     4.14 |     5.25 |     6.34 |           100 |           3.49 |            2.11 |            100 |
+|       1 |               2 |               25,765 | 22,205–26,240 |       +14.7% |     7.27 |     9.01 |    10.54 |           100 |           3.48 |            1.93 |            100 |
+|       1 |               4 |               23,650 | 22,830–25,040 |        +5.3% |    16.05 |    19.44 |    21.57 |           201 |           7.25 |            3.43 |            211 |
+
+Depth 2 is the only positive delta (**+14.7%** by median) and it is not
+pipeline parallelism: the Writer still keeps one range in flight, the flush
+stays 100 Actions, and its p50 stays 3.48 ms. Four of the five depth-2 passes
+landed at 25,590–26,240/s, above every depth-1 pass (21,845–22,595/s); one
+sampled 22,205, which is the only reason the min–max ranges overlap. The
+reading consistent with the flat flush numbers is overlap of the _client-side_
+work: the next call's Action construction, validation, and encode happen while
+the Writer commits the previous one, so the sequencer is not idle waiting for
+the caller's next `GenServer.call`. That is the work
+[#553](https://github.com/ebbjs/ebbjs/issues/553) proposes to make an explicit
+prepare stage. The delta sits in the 1.08–1.15× band the epic says a single run
+cannot resolve; five 20 s reports is the method used here, and a dedicated run
+on a quiet host should confirm the size before it is quoted as a win.
+
+Depth 4 drops back to +5.3% because the two extra calls now coalesce into a
+201-Action flush (p50 7.25 ms) whose per-Action cost is slightly worse, while
+the overlap gain is already spent. p50 client latency grows with depth
+(4.1 → 7.3 → 16.1 ms) because a call waits behind the flush it was coalesced
+into; throughput is the metric to read here.
+
+### t2, eight callers
+
+| Run         | Calls in flight | Actions/sec (median) |         Range | Δ vs t0 baseline | p50 (ms) | p95 (ms) | p99 (ms) | Actions/flush | Flush p50 (ms) | Commit p50 (ms) | Lag high-water |
+| :---------- | --------------: | -------------------: | ------------: | ---------------: | -------: | -------: | -------: | ------------: | -------------: | --------------: | -------------: |
+| t0 baseline |               1 |               21,435 | 21,230–22,300 |                — |     4.20 |     5.84 |     7.75 |           100 |           3.54 |            2.14 |            100 |
+| t2 pipeline |               1 |               17,985 | 17,025–18,925 |           −16.1% |    42.08 |    52.39 |    57.39 |           400 |          19.03 |            6.32 |            446 |
+| t2 pipeline |               2 |               15,760 | 14,240–16,770 |           −26.5% |    98.28 |   113.89 |   125.70 |           800 |          49.89 |           12.20 |           1000 |
+| t2 pipeline |               4 |               11,900 | 11,030–12,320 |           −44.5% |   261.70 |   310.60 |   336.13 |          1600 |         126.24 |           22.30 |           1660 |
+
+**Depth hurts at t2.** Eight callers already coalesce into a 400-Action flush
+per commit, and each extra call in flight multiplies that: 800 Actions at
+depth 2, 1600 at depth 4. The commit leg scales roughly linearly (6.3 → 12.2 →
+22.3 ms) but the sequencer-side flush grows faster than the Action count
+(19.0 → 49.9 → 126.2 ms for 1×/2×/4× the Actions), so throughput falls 12.4%
+from depth 1 to 2 and 33.8% from 1 to 4. Scheduler utilisation stays at
+20–25% of four schedulers, so this is not client-side CPU starvation; it is
+per-Action cost inside the serialized flush plus the larger burst's queueing.
+
+### Verdict for the pipeline
+
+The workload the epic wants to optimize (#551) shows **no temporal-parallelism
+gain** on the current pipeline: depth cannot overlap commits because
+`max_in_flight` is 1, and the only measurable win (t0 depth 2) comes from
+overlapping the caller's own prepare work. Increasing depth at a fixed caller
+count does not add independent batches — it only deepens the coalesced flush,
+and past ~400 Actions that costs throughput. V2 (#533/#534) has to show a gain
+on _this_ workload at a comparable flush size; a depth sweep that only grows
+the batch is not evidence of pipeline parallelism.
+
+### Harness model and limitations
+
+- **What "in flight" counts.** The peak/mean columns count the harness's own
+  outstanding `write_actions/1` calls per worker, not the Writer's in-flight
+  batches. The Writer has no gauge for that yet
+  ([#537](https://github.com/ebbjs/ebbjs/issues/537)); the current pipeline
+  keeps one claimed range in flight (`max_in_flight: 1`), and the observed
+  `Actions/flush` column is what shows the coalescing that depth causes.
+- **The workload is not an isolated depth knob.** At a fixed `--concurrency`,
+  a deeper pipeline means more calls waiting when the Writer flushes, so the
+  flush grows. Compare depth rows against the `Actions/flush` and `Flush p50`
+  columns before attributing a change to pipeline depth.
+- **Fresh DB per depth.** Each pass boots an isolated storage tree and reseeds
+  the bench context, so no depth pays for another's cache, dirty set, or
+  compaction state. The t0 baseline is a separate boot too.
+- **Baseline in the same report.** The t0 row is measured by the same process
+  on the same host immediately before the pipelined passes; it is the
+  no-regression check against the 22–26k t0 range published above, not a
+  historical constant.
+- **Ordering and noise.** Within a report the passes run baseline, 1, 2, 4, so
+  late passes see slightly more host drift; the min–max ranges above overlap in
+  places and a ±5–10% single-run delta is not resolvable on this VM.
+- **Client overhead at t2.** The t2 rows include `:httpc`, MessagePack, and the
+  request process; t0 is the cleaner pipeline number. Both tiers use the same
+  Action shape and `sync: true`.
 
 ## Correctness under load
 

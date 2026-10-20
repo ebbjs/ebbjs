@@ -17,7 +17,10 @@ defmodule EbbServer.Bench.AblationReportTest do
       errors: 0,
       buckets: %{0 => 10},
       rejected_buckets: %{},
-      reservoir: Metrics.reservoir_new(10)
+      reservoir: Metrics.reservoir_new(10),
+      in_flight_peak: 1,
+      in_flight_sum: 1,
+      in_flight_samples: 1
     }
 
     resources = [
@@ -43,7 +46,7 @@ defmodule EbbServer.Bench.AblationReportTest do
     assert result.correctness.watermark_lag_high == nil
     assert result.correctness.watermark_lag_final == nil
 
-    report = Report.render(config, result)
+    report = render(config, result)
 
     assert report =~ "| GSN holes | n/a |"
     assert report =~ "| Watermark lag high-water (GSNs) | n/a |"
@@ -58,11 +61,18 @@ defmodule EbbServer.Bench.AblationReportTest do
     assert is_integer(result.correctness.gsn_holes)
     assert is_integer(result.correctness.watermark_lag_high)
 
-    report = Report.render(config, result)
+    report = render(config, result)
 
     refute report =~ "| GSN holes | n/a |"
     assert report =~ "| Ablated phases | none |"
     refute report =~ "Ablation is active"
+  end
+
+  defp render(config, result) do
+    Report.render(config, %{
+      runs: [%{depth: 1, label: "pipeline", metrics: result}],
+      sweep?: false
+    })
   end
 
   defp analyze(config, context) do

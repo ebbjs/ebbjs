@@ -18,7 +18,10 @@ defmodule EbbServer.Bench.ConcurrentWriteBatchReportTest do
       errors: 0,
       buckets: %{0 => 20_000},
       rejected_buckets: %{},
-      reservoir: Metrics.reservoir_new(10)
+      reservoir: Metrics.reservoir_new(10),
+      in_flight_peak: 1,
+      in_flight_sum: 1,
+      in_flight_samples: 1
     }
 
     resources = [
@@ -48,7 +51,7 @@ defmodule EbbServer.Bench.ConcurrentWriteBatchReportTest do
 
   test "the report renders n/a for the frontier and explains the raw call", context do
     {:ok, config} = Options.parse(["--tier", "t5", "--concurrency", "2"])
-    report = Report.render(config, analyze(config, context))
+    report = render(config, analyze(config, context))
 
     assert report =~ "| GSN holes | n/a |"
     assert report =~ "| Watermark lag high-water (GSNs) | n/a |"
@@ -62,7 +65,7 @@ defmodule EbbServer.Bench.ConcurrentWriteBatchReportTest do
 
   test "async durability is reported as such", context do
     {:ok, config} = Options.parse(["--tier", "t5", "--durability", "async"])
-    report = Report.render(config, analyze(config, context))
+    report = render(config, analyze(config, context))
 
     assert report =~ "sync: false"
     refute report =~ "sync: true"
@@ -70,10 +73,17 @@ defmodule EbbServer.Bench.ConcurrentWriteBatchReportTest do
 
   test "the t5 report carries no fan-out or fixed-rate sections", context do
     {:ok, config} = Options.parse(["--tier", "t5"])
-    report = Report.render(config, analyze(config, context))
+    report = render(config, analyze(config, context))
 
     refute report =~ "## Fan-out (T3)"
     refute report =~ "## Fixed-rate fan-out (T4)"
+  end
+
+  defp render(config, result) do
+    Report.render(config, %{
+      runs: [%{depth: 1, label: "pipeline", metrics: result}],
+      sweep?: false
+    })
   end
 
   defp analyze(config, context) do

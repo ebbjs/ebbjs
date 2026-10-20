@@ -67,6 +67,74 @@ defmodule EbbServer.Bench.OptionsTest do
     end
   end
 
+  describe "--in-flight" do
+    test "defaults to a single call in flight" do
+      assert {:ok, config} = Options.parse([])
+      assert config.in_flight == [1]
+      assert Options.depth(config) == 1
+    end
+
+    test "parses a comma-separated depth list, deduped in order" do
+      assert {:ok, config} = Options.parse(["--in-flight", " 2 , 1,2,4 "])
+      assert config.in_flight == [2, 1, 4]
+    end
+
+    test "describe marks a sweep and the command carries the list" do
+      assert {:ok, config} = Options.parse(["--in-flight", "1,2,4"])
+
+      assert Map.new(Options.describe(config))["Calls in flight per worker"] == "1, 2, 4 (sweep)"
+      assert Options.command(config) =~ "--in-flight 1,2,4"
+    end
+
+    test "a single depth is described without the sweep marker" do
+      assert {:ok, config} = Options.parse(["--in-flight", "4"])
+
+      assert Map.new(Options.describe(config))["Calls in flight per worker"] == "4"
+      assert Options.command(config) =~ "--in-flight 4"
+    end
+
+    test "depth/1 raises on a sweep" do
+      assert {:ok, config} = Options.parse(["--in-flight", "1,2"])
+      assert_raise ArgumentError, fn -> Options.depth(config) end
+    end
+
+    test "accepts a sweep on t0, t2, and t3" do
+      for tier <- ~w(t0 t2 t3) do
+        assert {:ok, config} = Options.parse(["--tier", tier, "--in-flight", "1,2,4"])
+        assert config.in_flight == [1, 2, 4]
+      end
+    end
+
+    test "rejects pipelining on tiers that cannot keep calls outstanding" do
+      assert {:error, t1} = Options.parse(["--tier", "t1", "--in-flight", "2"])
+      assert t1 =~ "--in-flight"
+
+      assert {:error, t4} = Options.parse(["--tier", "t4", "--rate", "100", "--in-flight", "2"])
+      assert t4 =~ "--in-flight"
+
+      assert {:error, t5} = Options.parse(["--tier", "t5", "--in-flight", "2"])
+      assert t5 =~ "--in-flight"
+    end
+
+    test "a single call in flight stays legal on every tier" do
+      assert {:ok, _config} = Options.parse(["--tier", "t1", "--in-flight", "1"])
+      assert {:ok, _config} = Options.parse(["--tier", "t4", "--rate", "100", "--in-flight", "1"])
+      assert {:ok, _config} = Options.parse(["--tier", "t5", "--in-flight", "1"])
+    end
+
+    test "rejects non-positive and non-integer depths" do
+      for value <- ~w(0 -1 2,x nine) do
+        assert {:error, message} = Options.parse(["--in-flight", value])
+        assert message =~ "--in-flight"
+      end
+    end
+
+    test "rejects an empty list" do
+      assert {:error, message} = Options.parse(["--in-flight", ""])
+      assert message =~ "--in-flight"
+    end
+  end
+
   describe "--rate and tier t4" do
     test "t4 requires a positive --rate" do
       assert {:error, message} = Options.parse(["--tier", "t4"])

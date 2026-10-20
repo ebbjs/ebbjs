@@ -17,7 +17,10 @@ defmodule EbbServer.Bench.Http do
   @keep_alive_length 1_000
 
   @doc """
-  Configures the `:httpc` profile for the run's concurrency.
+  Configures the `:httpc` profile for the run's outstanding calls.
+
+  A pipelined tier keeps `concurrency * in_flight` calls outstanding, so the
+  pool is sized for that product rather than for the worker count alone.
   """
   @spec setup(pos_integer()) :: :ok
   def setup(concurrency) do

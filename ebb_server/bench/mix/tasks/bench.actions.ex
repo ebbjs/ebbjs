@@ -6,6 +6,15 @@ defmodule Mix.Tasks.Bench.Actions do
 
       mix bench.actions --tier t2 --duration 120 --warmup 5 --concurrency 64 --batch-size 10
 
+  Pipeline depth is a sweep over the number of `Writer.write_actions/1` calls
+  a worker keeps outstanding (t0, t2, and t3 only):
+
+      mix bench.actions --tier t2 --concurrency 8 --batch-size 100 \
+        --updates-per-action 2 --distribution hot --in-flight 1,2,4
+
+  A sweep measures a t0 depth-1 baseline first and then one full pass per
+  depth, each against a fresh booted and seeded DB.
+
   Boots an isolated storage + sync tree in a temp directory (the
   `:ebb_server` application is not started), seeds a bench actor/group,
   runs the requested tier, and writes a Markdown report to

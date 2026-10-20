@@ -184,9 +184,11 @@ defmodule EbbServer.Bench.Metrics do
       fanout_metrics: fanout_metrics(config, resource_samples, telemetry),
       fanout_series: fanout_series(samples(telemetry, :fanout_push), config.duration),
       server: server_summary(config.duration, telemetry),
+      in_flight: in_flight(worker_stats),
       context: %{
         preloaded_entities: length(ctx.entities),
         distribution: config.distribution,
+        concurrency: config.concurrency,
         seeded_actions: ctx.seeded_actions
       }
     }
@@ -258,6 +260,21 @@ defmodule EbbServer.Bench.Metrics do
   end
 
   defp sum(stats, key), do: Enum.reduce(stats, 0, &(&2 + Map.fetch!(&1, key)))
+
+  # Occupancy is harness-side: it counts the `write_actions/1` calls the bench
+  # workers kept outstanding, not the Writer's in-flight batches (#537). One
+  # sample per completed call is enough for the mean; the peak is the max of
+  # the per-worker peaks.
+  defp in_flight(worker_stats) do
+    samples = sum(worker_stats, :in_flight_samples)
+    sum = sum(worker_stats, :in_flight_sum)
+    peaks = Enum.map(worker_stats, &Map.fetch!(&1, :in_flight_peak))
+
+    %{
+      peak: Enum.max(peaks, fn -> 0 end),
+      mean: if(samples > 0, do: sum / samples, else: nil)
+    }
+  end
 
   defp merge_buckets(stats, key) do
     Enum.reduce(stats, %{}, fn stat, acc ->
