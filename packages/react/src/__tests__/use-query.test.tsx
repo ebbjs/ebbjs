@@ -294,6 +294,24 @@ describe("useQuery", () => {
     expect(rendered.at(-1)?.[0]?.assignee?.id).toBe("user_1");
   });
 
+  it("types the query row's groupIds from the hook result", async () => {
+    await seed(client, "todo_1", "Ship it", false);
+
+    let seen: readonly string[] | undefined;
+    function GroupIds() {
+      const { data } = useQuery((q: QueryRoot<Schema>) => q.todo.query());
+      // Compile-time proof: a replica-backed query row carries `groupIds`.
+      const groupIds: readonly string[] | undefined = data?.[0]?.groupIds;
+      seen = groupIds;
+      return null;
+    }
+
+    renderWithClient(client, <GroupIds />);
+    await flush();
+
+    expect(seen).toEqual([]);
+  });
+
   it("reports unloaded while the first run is pending, then the materialized rows", async () => {
     await seed(client, "todo_1", "Ship it", false);
 

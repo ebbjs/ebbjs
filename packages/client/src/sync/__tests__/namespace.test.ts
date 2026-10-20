@@ -618,6 +618,51 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     expect(querySpy).not.toHaveBeenCalled();
   });
 
+  it("query rows expose their group ids from the membership index", async () => {
+    const { storage, client, seed } = await buildClient();
+    await seed(mkEntity("d1", "document", { title: "one" }));
+    await seed(mkEntity("d2", "document", { title: "two" }));
+    await seed(mkEntityGroup("eg1", "d1", "g1"));
+    await seed(mkEntityGroup("eg2", "d1", "g2"));
+    await seed(mkEntityGroup("eg3", "d2", "g1"));
+    const querySpy = vi.spyOn(storage.entities, "query");
+    const membershipSpy = vi.spyOn(client.replica, "memberships");
+
+    const rows = await client.document.query().orderBy("title", "asc");
+
+    expect(rows.map((row) => ({ title: row.title, groupIds: row.groupIds }))).toEqual([
+      { title: "one", groupIds: ["g1", "g2"] },
+      { title: "two", groupIds: ["g1"] },
+    ]);
+    // One entity-keyed index lookup per projected row, no entityGroup scan.
+    expect(membershipSpy.mock.calls).toEqual([[{ entityId: "d1" }], [{ entityId: "d2" }]]);
+    expect(querySpy).not.toHaveBeenCalled();
+  });
+
+  it("a row with no membership exposes an empty groupIds", async () => {
+    const { client, seed } = await buildClient();
+    await seed(mkEntity("d1", "document", { title: "one" }));
+    const [row] = await client.document.query();
+    expect(row?.groupIds).toEqual([]);
+  });
+
+  it(".first() carries groupIds", async () => {
+    const { client, seed } = await buildClient();
+    await seed(mkEntity("d1", "document", { title: "one" }));
+    await seed(mkEntityGroup("eg1", "d1", "g1"));
+    const row = await client.document.query().first();
+    expect(row?.groupIds).toEqual(["g1"]);
+  });
+
+  it("a tombstoned entityGroup row is not in groupIds", async () => {
+    const { client, seed } = await buildClient();
+    await seed(mkEntity("d1", "document", { title: "one" }));
+    await seed(mkEntityGroup("eg1", "d1", "g1"));
+    await seed({ ...mkEntityGroup("eg1", "d1", "g1"), deleted_hlc: "2" });
+    const [row] = await client.document.query();
+    expect(row?.groupIds).toEqual([]);
+  });
+
   it('where("groups", [...]) unions the named groups (any-of)', async () => {
     const { client, seed } = await buildClient();
     await seed(mkEntity("d1", "document", { title: "one" }));

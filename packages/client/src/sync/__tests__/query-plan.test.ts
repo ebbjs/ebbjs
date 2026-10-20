@@ -27,7 +27,7 @@ describe("planQuery", () => {
       { kind: "select", predicates: [{ kind: "filter", field: "completed", value: true }] },
       { kind: "order", field: null, direction: "asc" },
     ]);
-    expect(plan.readTypes).toEqual(["todo"]);
+    expect(plan.readTypes).toEqual(["todo", "entityGroup"]);
   });
 
   it("pushes indexed predicates ahead of filters and records the read types", () => {
@@ -81,7 +81,7 @@ describe("planQuery", () => {
       }),
     );
 
-    expect(plan.readTypes).toEqual(["todo", "relationship"]);
+    expect(plan.readTypes).toEqual(["todo", "relationship", "entityGroup"]);
   });
 
   it("plans an unfiltered query as scan and the default id ordering", () => {

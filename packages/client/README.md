@@ -24,7 +24,15 @@ single-row read (`get(id)`), its async row accessors, and the collection
 
 `query()` returns a typed, immutable chain. Each mutator returns a new chain;
 awaiting it resolves to the projected rows (the schema's fields plus the
-entity `id`).
+entity `id`; a replica-backed query row also carries its live `groupIds`).
+
+`groupIds` is read from the replica's membership index — one lookup per row,
+no `entityGroup` scan. Use it when a row only needs the ids it belongs to;
+`.with({ groups: true })` projects the group rows themselves, which matters
+because a group id can name a row that is not materialized. Joined target
+rows are plain projections (fields plus `id`), and a chain over
+already-materialized candidates (`buildQueryBuilder` / row accessors) has no
+membership index, so neither carries `groupIds`.
 
 ```typescript
 const issues = await client.issue

@@ -249,7 +249,7 @@ describe("QueryBuilder.toQuery() — the serializable value", () => {
     expect(planQuery(all).readTypes).toEqual(["issue", "relationship", "entityGroup"]);
 
     const reverse = client.issue.query().where("assignee", "user_1").toQuery();
-    expect(planQuery(reverse).readTypes).toEqual(["issue", "relationship"]);
+    expect(planQuery(reverse).readTypes).toEqual(["issue", "relationship", "entityGroup"]);
   });
 
   it("a chain over materialized rows names no source type", () => {

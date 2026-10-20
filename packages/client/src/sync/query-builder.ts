@@ -1,12 +1,13 @@
 /**
  * Typed thenable QueryBuilder.
  *
- * `await qb` resolves to `readonly ProjectedRow<TFields>[]` after
- * projecting each materialized entity to the schema's TypeBox shape.
- * A projected row carries the shape's fields plus the entity's `id` —
- * an addressing key, not envelope access. Raw wire access stays on
- * `.toRaw()` (collections) and the `EntitySnapshot` passed to
- * `subscribe` (single rows).
+ * `await qb` resolves to rows projected through the chain's base row
+ * type: a replica-backed `query()` row is a {@link QueryRow} — the
+ * shape's fields plus the entity's `id` and live `groupIds` — while a
+ * chain over already-materialized candidates keeps a plain
+ * {@link ProjectedRow} (fields plus `id`). The injected keys are not
+ * envelope access. Raw wire access stays on `.toRaw()` (collections)
+ * and the `EntitySnapshot` passed to `subscribe` (single rows).
  * The chain mutators (`where` / `or` / `orderBy` / `limit`) are typed
  * against the field map: a field key narrows to `keyof TFields` and
  * its value to the field's TypeBox static type. A key that names a
@@ -166,12 +167,36 @@ export function projectEntity<TFields extends Record<string, TSchema>>(
  * `.toRaw()` or the `subscribe` snapshot. The id is `Omit`-ed out of
  * the shape first, so the entity id wins over a field named `id` of
  * any declared type.
+ *
+ * This is the projection of one entity, with no membership source; a
+ * replica-backed query row adds `groupIds` on top as a
+ * {@link QueryRow}. A joined target and an already-materialized
+ * candidate row stay this shape.
  */
 export type ProjectedRow<TFields extends Record<string, TSchema>> = Omit<
   Static<TObject<ShapeFields<TFields>>>,
   "id"
 > & {
   readonly id: string;
+};
+
+/**
+ * A projected query row: the schema's fields, the entity id, and the
+ * row's live group ids. `groupIds` names the groups the row is a live
+ * member of, so a consumer that only needs the ids does not carry a
+ * denormalized `group_id` field or await the `groups` accessor. It is
+ * read from the replica's membership index by the query executor, one
+ * lookup per row.
+ *
+ * Both injected keys are `Omit`-ed out of the shape first, so the
+ * entity values win over same-named fields of any declared type.
+ */
+export type QueryRow<TFields extends Record<string, TSchema>> = Omit<
+  Static<TObject<ShapeFields<TFields>>>,
+  "id" | "groupIds"
+> & {
+  readonly id: string;
+  readonly groupIds: readonly string[];
 };
 
 /**
@@ -192,6 +217,20 @@ export function projectRows<TFields extends Record<string, TSchema>>(
   shape: TObject<TFields>,
 ): readonly ProjectedRow<TFields>[] {
   return rows.map((row) => projectRow(row, shape));
+}
+
+/**
+ * Project a materialized entity to a {@link QueryRow}: the shape's
+ * fields, the entity id, and the supplied group ids. Pure; both
+ * injected keys are injected last so they win over same-named
+ * projected fields.
+ */
+export function projectQueryRow<TFields extends Record<string, TSchema>>(
+  entity: Entity,
+  shape: TObject<TFields>,
+  groupIds: readonly string[],
+): QueryRow<TFields> {
+  return { ...projectEntity(entity, shape), id: entity.id, groupIds };
 }
 
 /** What a query without schema relationships can join: nothing. */
@@ -272,13 +311,15 @@ export type JoinArgument<TJoins extends object, TSelection extends JoinSelection
 
 /**
  * A projected row widened by its selected joins. Joined keys win over
- * same-named base fields, matching the row accessors.
+ * same-named base fields, matching the row accessors. `TRow` is the
+ * chain's base projection: a replica-backed query supplies
+ * {@link QueryRow}, a candidate chain the plain {@link ProjectedRow}.
  */
-export type JoinedRow<TFields extends Record<string, TSchema>, TJoined extends object> = Omit<
-  ProjectedRow<TFields>,
-  keyof TJoined
-> &
-  TJoined;
+export type JoinedRow<
+  TFields extends Record<string, TSchema>,
+  TJoined extends object,
+  TRow extends { readonly id: string } = ProjectedRow<TFields>,
+> = Omit<TRow, keyof TJoined> & TJoined;
 
 /**
  * A single pointer value accepted by a relationship predicate:
@@ -343,11 +384,17 @@ export type LoadEntities = () => Promise<readonly Entity[]>;
  * chain is consumed by `client.<entity>.query()` and by the
  * relationship accessors on a projected row — one chain, one
  * projection.
+ *
+ * `TRow` is the chain's base projection. A replica-backed `query()`
+ * supplies {@link QueryRow} (fields, `id`, `groupIds`); a chain over an
+ * already-materialized candidate list keeps the plain
+ * {@link ProjectedRow} because it has no membership index to read.
  */
 export interface QueryBuilder<
   TFields extends Record<string, TSchema>,
   TJoins extends object = NoJoins,
   TJoined extends object = NoJoins,
+  TRow extends { readonly id: string } = ProjectedRow<TFields>,
 > {
   /**
    * Equality predicate. A registered relationship key filters that
@@ -360,7 +407,7 @@ export interface QueryBuilder<
   where<K extends keyof TFields & string>(
     key: K,
     value: Static<TFields[K]>,
-  ): QueryBuilder<TFields, TJoins, TJoined>;
+  ): QueryBuilder<TFields, TJoins, TJoined, TRow>;
   /**
    * Relationship-target overload. It stays open over every key because
    * the registry decides field vs. edge at runtime and a relationship
@@ -370,7 +417,7 @@ export interface QueryBuilder<
   where(
     key: string,
     target: PointerValue | readonly PointerValue[],
-  ): QueryBuilder<TFields, TJoins, TJoined>;
+  ): QueryBuilder<TFields, TJoins, TJoined, TRow>;
   /**
    * Disjunction. Accepts the same key/value forms as {@link where} and
    * starts a new AND-group: `.where(a).where(b).or(c).where(d)` means
@@ -380,19 +427,19 @@ export interface QueryBuilder<
   or<K extends keyof TFields & string>(
     key: K,
     value: Static<TFields[K]>,
-  ): QueryBuilder<TFields, TJoins, TJoined>;
+  ): QueryBuilder<TFields, TJoins, TJoined, TRow>;
   /** Open pointer overload for {@link or}, mirroring {@link where}'s. */
   or(
     key: string,
     target: PointerValue | readonly PointerValue[],
-  ): QueryBuilder<TFields, TJoins, TJoined>;
+  ): QueryBuilder<TFields, TJoins, TJoined, TRow>;
   /** Ordering on a field of `TFields`. */
   orderBy<K extends keyof TFields & string>(
     field: K,
     direction: "asc" | "desc",
-  ): QueryBuilder<TFields, TJoins, TJoined>;
+  ): QueryBuilder<TFields, TJoins, TJoined, TRow>;
   /** Maximum number of rows. */
-  limit(n: number): QueryBuilder<TFields, TJoins, TJoined>;
+  limit(n: number): QueryBuilder<TFields, TJoins, TJoined, TRow>;
   /**
    * Widen each surviving row with one-level joins selected by key. Each
    * selected key comes from {@link JoinRecord}; a nested selector is
@@ -400,15 +447,15 @@ export interface QueryBuilder<
    */
   with<TSelection extends JoinSelection<TJoins>>(
     selection: JoinArgument<TJoins, TSelection>,
-  ): QueryBuilder<TFields, TJoins, TJoined & Pick<TJoins, keyof TSelection & keyof TJoins>>;
+  ): QueryBuilder<TFields, TJoins, TJoined & Pick<TJoins, keyof TSelection & keyof TJoins>, TRow>;
   /** First projected survivor, or `undefined` when the chain is empty. */
-  first(): Promise<JoinedRow<TFields, TJoined> | undefined>;
+  first(): Promise<JoinedRow<TFields, TJoined, TRow> | undefined>;
   /** Count of survivors after the chain runs. Joins do not affect the count. */
   count(): Promise<number>;
   /** `true` when at least one row survives the chain. Joins do not affect existence. */
   exists(): Promise<boolean>;
   /** Streaming iterator over projected survivors. */
-  [Symbol.asyncIterator](): AsyncIterableIterator<JoinedRow<TFields, TJoined>>;
+  [Symbol.asyncIterator](): AsyncIterableIterator<JoinedRow<TFields, TJoined, TRow>>;
   /** Materialize the untyped source entities, skipping projection and joins. */
   toRaw(): Promise<readonly Entity[]>;
   /**
@@ -424,16 +471,16 @@ export interface QueryBuilder<
    * query shares one cached entry, so a remount reads it instead of
    * re-running. A candidate chain gets a one-off store with no invalidation.
    */
-  result(): QueryStore<JoinedRow<TFields, TJoined>>;
+  result(): QueryStore<JoinedRow<TFields, TJoined, TRow>>;
   /**
    * The serializable query value the chain has accumulated. Pure data:
    * the planner input and, in #512, the result-cache key.
    */
   toQuery(): Query;
   /** Thenable — `await qb` resolves to the projected rows. */
-  then<TResult1 = readonly JoinedRow<TFields, TJoined>[], TResult2 = never>(
+  then<TResult1 = readonly JoinedRow<TFields, TJoined, TRow>[], TResult2 = never>(
     onfulfilled?:
-      | ((value: readonly JoinedRow<TFields, TJoined>[]) => TResult1 | PromiseLike<TResult1>)
+      | ((value: readonly JoinedRow<TFields, TJoined, TRow>[]) => TResult1 | PromiseLike<TResult1>)
       | null,
     onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): PromiseLike<TResult1 | TResult2>;
@@ -468,38 +515,48 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
 ): QueryBuilder<TFields> {
   const loadExecutor = async (): Promise<PlanExecutor> =>
     createRowsExecutor(await loadCandidates());
-  return buildChain(emptyQuery(""), shape, undefined, loadExecutor);
+  const projectBase = (row: Entity): ProjectedRow<TFields> => projectRow(row, shape);
+  return buildChain(emptyQuery(""), shape, undefined, loadExecutor, projectBase);
 }
 
 /**
  * Build the chain `client.<entity>.query()` returns: predicates resolve
  * against `context`'s registry and every terminal executes the plan
- * synchronously over the client's replica, hydrated first.
+ * synchronously over the client's replica, hydrated first. A projected
+ * row is a {@link QueryRow}: the shape's fields, the entity id, and the
+ * live group ids read from the replica's membership index.
  */
 export function buildReplicaQueryBuilder<
   TFields extends Record<string, TSchema>,
   TJoins extends object = NoJoins,
->(source: string, shape: TObject<TFields>, context: QueryContext): QueryBuilder<TFields, TJoins> {
+>(
+  source: string,
+  shape: TObject<TFields>,
+  context: QueryContext,
+): QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>> {
   if (!context.replica.isHeld(source)) throw new OnDemandQueryError(source);
+  const projectBase = (row: Entity, executor: PlanExecutor): QueryRow<TFields> =>
+    projectQueryRow(row, shape, entityGroupIds(row.id, executor));
   const syncRun = (query: Query): readonly unknown[] => {
     const executor = createReplicaExecutor(context.replica);
     return projectResultRows(
       executePlan(planQuery(query), executor),
       query,
-      shape,
       executor,
       context,
+      projectBase,
     );
   };
   const asyncRun = async (query: Query): Promise<readonly unknown[]> => {
     const run = await runProjectingPlan(query, replicaExecutor(context), context);
-    return projectResultRows(run.rows, query, shape, run.executor, context);
+    return projectResultRows(run.rows, query, run.executor, context, projectBase);
   };
-  return buildChain<TFields, TJoins>(
+  return buildChain<TFields, TJoins, NoJoins, QueryRow<TFields>>(
     emptyQuery(source),
     shape,
     context,
     replicaExecutor(context),
+    projectBase,
     syncRun,
     asyncRun,
   );
@@ -553,7 +610,7 @@ const joinIds = (entity: Entity, join: Join, executor: PlanExecutor): readonly s
         ? executor.relationships({ as: join.as, type: join.type, sourceId: entity.id })
         : executor.relationships({ as: join.as, type: join.type, targetId: entity.id });
     case "membership":
-      return executor.memberships({ entityId: entity.id });
+      return entityGroupIds(entity.id, executor);
   }
 };
 
@@ -599,6 +656,13 @@ const runProjectingPlan = async (
   return run;
 };
 
+/**
+ * The group ids a projected query row carries, read from the replica's
+ * entity-keyed membership index.
+ */
+const entityGroupIds = (entityId: string, executor: PlanExecutor): readonly string[] =>
+  executor.memberships({ entityId });
+
 const readJoinedRow = (
   id: string,
   join: Join,
@@ -624,25 +688,28 @@ const resolveJoin = (
 };
 
 /**
- * Project each narrowed row through the source shape, then widen it with
- * the query's joins. Joined keys spread last so they win a same-named
- * base field, matching the row accessors.
+ * Project each narrowed row through the chain's base projection, then
+ * widen it with the query's joins. Joined keys spread last so they win
+ * a same-named base field, matching the row accessors.
  */
-const projectResultRows = <TFields extends Record<string, TSchema>>(
+const projectResultRows = <
+  TFields extends Record<string, TSchema>,
+  TRow extends ProjectedRow<TFields>,
+>(
   rows: readonly Entity[],
   query: Query,
-  shape: TObject<TFields>,
   executor: PlanExecutor,
   context: QueryContext | undefined,
-): readonly (ProjectedRow<TFields> & Record<string, unknown>)[] =>
+  projectBase: (row: Entity, executor: PlanExecutor) => TRow,
+): readonly (TRow & Record<string, unknown>)[] =>
   rows.map((row) => {
-    const base = projectRow(row, shape);
+    const base = projectBase(row, executor);
     if (query.joins.length === 0) return base;
     const widened: Record<string, unknown> = { ...base };
     for (const join of query.joins) {
       widened[join.as] = resolveJoin(row, join, executor, context);
     }
-    return widened as ProjectedRow<TFields> & Record<string, unknown>;
+    return widened as TRow & Record<string, unknown>;
   });
 
 const resolveJoinDef = (entityName: string, key: string, registry: EntityRegistry): Join => {
@@ -726,15 +793,17 @@ function buildChain<
   TFields extends Record<string, TSchema>,
   TJoins extends object = NoJoins,
   TJoined extends object = NoJoins,
+  TRow extends { readonly id: string } = ProjectedRow<TFields>,
 >(
   initial: Query,
   shape: TObject<TFields>,
   context: QueryContext | undefined,
   loadExecutor: () => Promise<PlanExecutor>,
+  projectBase: (row: Entity, executor: PlanExecutor) => TRow,
   syncRun?: (query: Query) => readonly unknown[],
   asyncRun?: (query: Query) => Promise<readonly unknown[]>,
-): QueryBuilder<TFields, TJoins, TJoined> {
-  const resultFor = (query: Query): QueryStore<JoinedRow<TFields, TJoined>> => {
+): QueryBuilder<TFields, TJoins, TJoined, TRow> {
+  const resultFor = (query: Query): QueryStore<JoinedRow<TFields, TJoined, TRow>> => {
     if (context === undefined || syncRun === undefined) {
       return createLocalQueryStore(async () => {
         const run = await runProjectingPlan(query, loadExecutor, context);
@@ -742,13 +811,13 @@ function buildChain<
         return projectResultRows(
           run.rows,
           query,
-          shape,
           run.executor,
           context,
-        ) as readonly JoinedRow<TFields, TJoined>[];
+          projectBase,
+        ) as readonly JoinedRow<TFields, TJoined, TRow>[];
       });
     }
-    return context.queries.watch<JoinedRow<TFields, TJoined>>("rows", query, {
+    return context.queries.watch<JoinedRow<TFields, TJoined, TRow>>("rows", query, {
       ready: () => context.hydrate(),
       isReady: () => context.hydrated(),
       // A chain with no on-demand join settles synchronously, so its refresh
@@ -756,12 +825,12 @@ function buildChain<
       // run, which the #512 cache publishes as `stale` until it settles.
       execute: () =>
         hasOnDemandJoin(query, context) && asyncRun !== undefined
-          ? (asyncRun(query) as Promise<readonly JoinedRow<TFields, TJoined>[]>)
+          ? (asyncRun(query) as Promise<readonly JoinedRow<TFields, TJoined, TRow>[]>)
           : // SAFETY: `syncRun` closes over this chain's shape and joins.
-            (syncRun(query) as readonly JoinedRow<TFields, TJoined>[]),
+            (syncRun(query) as readonly JoinedRow<TFields, TJoined, TRow>[]),
     });
   };
-  const make = (query: Query): QueryBuilder<TFields, TJoins, TJoined> => ({
+  const make = (query: Query): QueryBuilder<TFields, TJoins, TJoined, TRow> => ({
     where(key: string, target: unknown) {
       const predicate = buildPredicate(key, target, shape, context, "where");
       const current = query.groups[query.groups.length - 1];
@@ -786,14 +855,15 @@ function buildChain<
       return make({ ...query, joins }) as unknown as QueryBuilder<
         TFields,
         TJoins,
-        TJoined & Pick<TJoins, keyof TSelection & keyof TJoins>
+        TJoined & Pick<TJoins, keyof TSelection & keyof TJoins>,
+        TRow
       >;
     },
     toQuery: () => query,
     async first() {
       const run = await runProjectingPlan(query, loadExecutor, context);
-      const head = projectResultRows(run.rows, query, shape, run.executor, context)[0];
-      return head as unknown as JoinedRow<TFields, TJoined> | undefined;
+      const head = projectResultRows(run.rows, query, run.executor, context, projectBase)[0];
+      return head as unknown as JoinedRow<TFields, TJoined, TRow> | undefined;
     },
     async count() {
       return (await executeQuery(query, loadExecutor)).length;
@@ -804,8 +874,8 @@ function buildChain<
     [Symbol.asyncIterator]() {
       const iter = async function* () {
         const run = await runProjectingPlan(query, loadExecutor, context);
-        for (const row of projectResultRows(run.rows, query, shape, run.executor, context)) {
-          yield row as unknown as JoinedRow<TFields, TJoined>;
+        for (const row of projectResultRows(run.rows, query, run.executor, context, projectBase)) {
+          yield row as unknown as JoinedRow<TFields, TJoined, TRow>;
         }
       };
       return iter();
@@ -829,8 +899,8 @@ function buildChain<
       // hydration must settle the awaited builder as a rejection rather
       // than leaving it pending.
       return runProjectingPlan(query, loadExecutor, context)
-        .then((run) => projectResultRows(run.rows, query, shape, run.executor, context))
-        .then((rows) => rows as readonly JoinedRow<TFields, TJoined>[])
+        .then((run) => projectResultRows(run.rows, query, run.executor, context, projectBase))
+        .then((rows) => rows as readonly JoinedRow<TFields, TJoined, TRow>[])
         .then(onfulfilled, onrejected);
     },
   });

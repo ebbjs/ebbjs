@@ -52,6 +52,7 @@ import {
   type NoJoins,
   type PointerValue,
   type QueryBuilder,
+  type QueryRow,
 } from "./query-builder";
 import { emptyQuery, type Predicate, type Query } from "./query";
 import { planQuery } from "./query-plan";
@@ -334,7 +335,7 @@ export interface EntityNamespace<
   TJoins extends object = NoJoins,
 > {
   /** The public read root: a typed chain over the entity's fields and joins. */
-  query(): QueryBuilder<WireFields<TFields>, TJoins>;
+  query(): QueryBuilder<WireFields<TFields>, TJoins, NoJoins, QueryRow<WireFields<TFields>>>;
   /**
    * Single-row read with relationship accessors attached.
    *
@@ -903,7 +904,7 @@ export function createEntityNamespace<
   };
 
   return {
-    query(): QueryBuilder<WireFields<TFields>, TJoins> {
+    query(): QueryBuilder<WireFields<TFields>, TJoins, NoJoins, QueryRow<WireFields<TFields>>> {
       // Only a directly-constructed namespace can lack the binding;
       // `createClient` always supplies one. Falling back to the storage
       // shim here would silently read a stale, scan-based path.

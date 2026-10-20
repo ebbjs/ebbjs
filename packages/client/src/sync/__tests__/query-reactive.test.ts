@@ -189,6 +189,27 @@ describe("subscribed query results", () => {
     unsubscribe();
   });
 
+  it("re-runs when a membership changes so a row's groupIds stay live", async () => {
+    const client = makeClient();
+    await seed(client, [put(1, "issue_1", "issue", { title: "Ship", status: "open" })]);
+    const query = client.issue.query();
+    const seen: string[][] = [];
+    const unsubscribe = query.subscribe(() => {
+      const [row] = query.result().getSnapshot().data ?? [];
+      seen.push([...(row?.groupIds ?? [])]);
+    });
+    await flush();
+    expect(seen).toEqual([]);
+
+    await seed(client, [
+      put(2, "eg_1", "entityGroup", { entity_id: "issue_1", group_id: "group_1" }),
+    ]);
+    await flush();
+    expect(seen).toEqual([["group_1"]]);
+
+    unsubscribe();
+  });
+
   it("re-runs a join when the joined target's row changes", async () => {
     const client = makeClient();
     await seed(client, [

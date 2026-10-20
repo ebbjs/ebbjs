@@ -116,7 +116,8 @@ const groupIds = groups.map((group) => group.id);
 client.subscribe(groupIds, () => {});
 
 // Reads: a typed chain per collection. Await it for a snapshot, or take
-// `.result()` / `useQuery` for the cached, reactive result.
+// `.result()` / `useQuery` for the cached, reactive result. Each query row
+// carries the entity `id` and its live `groupIds`.
 const open = await client.todo.query().where("completed", false);
 
 // Writes: namespace verbs. `groups` files the row into its groups in the
