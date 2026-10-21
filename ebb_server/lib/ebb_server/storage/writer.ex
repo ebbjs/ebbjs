@@ -1248,7 +1248,8 @@ defmodule EbbServer.Storage.Writer do
         # A prepare still in flight must not share this flush; it belongs
         # to the next snapshot burst. The prepare marker already provided
         # the coalescing window, so the pipeline does not wait again.
-        if state.burst_max_seq == nil, do: schedule_flush_now(state), else: state
+        state =
+          if state.burst_max_seq == nil, do: schedule_flush_now(state), else: state
 
         maybe_schedule_prepare_flush(state)
 

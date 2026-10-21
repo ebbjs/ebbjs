@@ -11,7 +11,7 @@ defmodule EbbServer.Storage.WriterPrepareStageTest do
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{ActionFormat, RocksDB, Writer}
+  alias EbbServer.Storage.{ActionFormat, CommitPipeline, RocksDB, Writer}
 
   import EbbServer.TestHelpers
 
@@ -265,6 +265,93 @@ defmodule EbbServer.Storage.WriterPrepareStageTest do
       assert {:ok, {2, 2}, []} =
                Writer.write_actions([validated_action(%{id: "act_after_full"})], writer.name)
     end
+  end
+
+  describe "burst scheduling" do
+    test "a commit ack never discards the burst it frees a slot for", ctx do
+      test_pid = self()
+      commits = :atomics.new(1, signed: false)
+
+      # Hold only the first commit, so the test controls the exact moment the
+      # pipeline drops from full to one range with a cap-sized burst waiting.
+      commit_fn = fn ops, opts ->
+        if :atomics.add_get(commits, 1, 1) == 1 do
+          send(test_pid, {:first_commit_started, self()})
+
+          receive do
+            :release -> RocksDB.write_batch(ops, opts)
+          end
+        else
+          RocksDB.write_batch(ops, opts)
+        end
+      end
+
+      writer =
+        start_writer(
+          writer_opts(ctx, %{
+            max_in_flight: 2,
+            committer_pool_size: 2,
+            batch_max_size: 2,
+            commit_fn: commit_fn
+          })
+        )
+
+      # Range 1..2 reaches the held committer.
+      first = Task.async(fn -> write_pair(writer.name, "act_a") end)
+      assert_receive {:first_commit_started, worker}, 2_000
+
+      # Range 3..4 fills the pipeline to max_in_flight.
+      second = Task.async(fn -> write_pair(writer.name, "act_b") end)
+      assert wait_until(fn -> open_batch_count(writer.name) == 2 end)
+
+      # A third call is a complete burst on its own. The pipeline is at
+      # capacity, so only the ack below can free a slot for it -- and that
+      # flush must survive the ack's bookkeeping.
+      third = Task.async(fn -> write_pair(writer.name, "act_c") end)
+      assert wait_until(fn -> pending_count(writer.name) == 2 end)
+
+      send(worker, :release)
+
+      assert {:ok, {1, 2}, []} = Task.await(first, 2_000)
+      assert {:ok, {3, 4}, []} = Task.await(second, 2_000)
+      assert {:ok, {5, 6}, []} = Task.await(third, 2_000)
+
+      # A discarded claim spends its GSNs without writing them: the log would
+      # end at 4 with a hole where 5..6 should be.
+      assert persisted_gsns(ctx.rocks_name) == Enum.to_list(1..6)
+      assert RocksDB.get_max_gsn(ctx.rocks_name) == 6
+    end
+  end
+
+  defp write_pair(writer_name, id_prefix) do
+    actions = [
+      validated_action(%{id: id_prefix <> "_1"}),
+      validated_action(%{id: id_prefix <> "_2"})
+    ]
+
+    Writer.write_actions(actions, writer_name)
+  end
+
+  defp open_batch_count(writer_name) do
+    writer_name |> pipeline() |> CommitPipeline.open_batches() |> length()
+  end
+
+  defp pending_count(writer_name) do
+    writer_name |> pipeline() |> CommitPipeline.pending_count()
+  end
+
+  defp pipeline(writer_name), do: :sys.get_state(writer_name).pipeline
+
+  defp persisted_gsns(rocks_name) do
+    max_gsn = RocksDB.get_max_gsn(rocks_name)
+
+    RocksDB.cf_actions(rocks_name)
+    |> RocksDB.range_iterator(
+      RocksDB.encode_gsn_key(1),
+      RocksDB.encode_gsn_key(max_gsn + 1),
+      name: rocks_name
+    )
+    |> Enum.map(fn {key, _value} -> RocksDB.decode_gsn_key(key) end)
   end
 
   defp persisted_payload(rocks_name, gsn) do
