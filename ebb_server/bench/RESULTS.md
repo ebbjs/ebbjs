@@ -953,7 +953,7 @@ are unmeasurable at `hot` because the dirty set stays at 4 (the dirty-set
 cost is O(affected entities), so `hot` understates it — the t0 `spread`
 run's dirty set grows to ~1.16M).
 
-## Concurrent `write_batch` from multiple BEAM processes (#530)
+## Concurrent `write_batch` from multiple BEAM processes (#530, extended)
 
 Gating spike for epic [#529](https://github.com/ebbjs/ebbjs/issues/529). The
 question was whether `:rocksdb.write_batch/3` can be called concurrently from
@@ -964,62 +964,108 @@ per-database lock; the only serialization is RocksDB's own write thread.
 The source trace is in
 [`docs/research/530-concurrent-write-batch.md`](../../docs/research/530-concurrent-write-batch.md).
 
-Measured **2026-10-19** on `recsy-vps` (same host as the tables above) with the
-new `--tier t5` harness. Each caller is one BEAM process; caller `i` writes a
-disjoint, contiguous 100-GSN range per call and each call commits the
-production-shaped 100-Action × 2-Update batch (502 `cf_*` puts for `hot`; 700 for
-`spread`). Batch assembly
-(`Workbook` → action validation → ETF → `batch_put`) happens before the timer,
-so the latency columns are the raw `:rocksdb.write_batch/3` call; the rate
-column is wall Actions/sec and includes assembly. `enable_pipelined_write:
-true`, `max_background_jobs: 4`, fresh temp DB, 20 s measured window after 3 s
-warmup, median of 5 runs; the range is min–max across those runs.
+Measured with the `--tier t5` harness. Each caller is one BEAM process; caller
+`i` writes a disjoint, contiguous 100-GSN range per call and each call commits
+the production-shaped 100-Action × 2-Update batch (502 `cf_*` puts for `hot`;
+~700 for `spread`). Batch assembly (`Workbook` → action validation → ETF →
+`batch_put`) happens before the timer, so the latency columns are the raw
+`:rocksdb.write_batch/3` call; the rate column is wall Actions/sec and includes
+assembly. `enable_pipelined_write: true`, `max_background_jobs: 4`, fresh temp
+DB, 20 s measured window after 3 s warmup, median of 5 runs, min–max across
+those runs. Extended **2026-10-21** from the original K = 1/2/4 sweep out to
+K = 16, and with an op-set arm that drops op groups from the batch (see below);
+the K = 1 and async K = 2/4 rows are the 2026-10-19 session, the rest are
+2026-10-21, and the shared K = 2 sync row reproduces to within 1.6%.
 
 ```sh
-mix bench.actions --tier t5 --concurrency 2 --duration 20 --warmup 3 \
+# commit-leg scaling
+mix bench.actions --tier t5 --concurrency 8 --duration 20 --warmup 3 \
   --batch-size 100 --updates-per-action 2 --distribution hot --durability sync
+
+# the cheapest durable write an Action can have: cf_actions only
+mix bench.actions --tier t5 --concurrency 8 --duration 20 --warmup 3 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --durability sync \
+  --ablate dedup,entity_index,group_index
 ```
 
-| Callers | `sync` | Actions/sec (median) |           Range | write_batch p50 |     p95 | Scheduler util | Speedup |
-| ------: | :----- | -------------------: | --------------: | --------------: | ------: | -------------: | ------: |
-|       1 | true   |               41,825 |   30,875–42,315 |         1.38 ms | 1.82 ms |           5.2% |   1.00× |
-|       2 | true   |               75,810 |   70,505–76,890 |         1.42 ms | 2.55 ms |          10.0% |   1.81× |
-|       4 | true   |               83,700 |   81,260–84,985 |         3.26 ms | 5.70 ms |          13.5% |   2.00× |
-|       1 | false  |               61,885 |   61,575–63,645 |         0.59 ms | 0.77 ms |           7.9% |   1.00× |
-|       2 | false  |               98,420 |  92,775–103,165 |         0.66 ms | 1.41 ms |          14.0% |   1.59× |
-|       4 | false  |              116,800 | 114,695–119,210 |         1.40 ms | 4.08 ms |          22.4% |   1.89× |
+### Scaling the commit leg
 
-**Verdict: go for #531.** The NIF does not serialize callers. Two sync callers
-raise wall throughput **1.81×** while per-call p50 stays flat (1.38 → 1.42 ms),
-which implies (derived from the flat per-call latency) the commit call itself scales
-~**1.94×** (two lanes at nearly the same per-call latency) — above the research
-note's _S_ ≥ 1.5 bar for the commit leg. At _S_ ≈ 1.94 the note's Phase-1 ceiling
-is ~**1.32× end-to-end**, well above the epic's 1.08–1.15× estimate. The `sync: false` arm shows the same shape (1.59× wall, p50 0.59 →
-0.66 ms), so fsync/group commit is not the limit. Four callers keep adding
-throughput (2.00× sync, 1.89× async) but with rising p50/p95, i.e. sub-linear
-scaling and queueing rather than a hard lock. Scheduler utilisation stays at
-5–22% of the 8 normal + dirty-CPU scheduler entries — at most ~45% of the four
-normal schedulers, since dirty-CPU is idle — so the 4-caller latency rise is not
-normal-scheduler starvation. `:erlang.statistics(:scheduler_wall_time)` does not
-cover dirty-IO time; the dirty-IO claim comes from the NIF registration
-(`ERL_NIF_DIRTY_JOB_IO_BOUND`, `dirty_io=10`), not from an occupancy sample.
+| Callers | `sync` | Actions/sec (median) |           Range | write_batch p50 |      p95 | Scheduler util |
+| ------: | :----- | -------------------: | --------------: | --------------: | -------: | -------------: |
+|       1 | true   |               41,825 |   30,875–42,315 |         1.38 ms |  1.82 ms |           5.2% |
+|       2 | true   |               74,625 |   73,755–75,515 |         1.39 ms |  2.50 ms |          10.2% |
+|       4 | true   |               82,470 |   81,025–83,980 |         3.23 ms |  5.70 ms |          14.1% |
+|       8 | true   |           **90,240** |   88,750–91,550 |         7.06 ms | 10.90 ms |          16.7% |
+|      16 | true   |           **92,040** |   90,420–93,600 |        15.49 ms | 21.33 ms |          16.1% |
+|       1 | false  |               61,885 |   61,575–63,645 |         0.59 ms |  0.77 ms |           7.9% |
+|       2 | false  |               98,420 |  92,775–103,165 |         0.66 ms |  1.41 ms |          14.0% |
+|       4 | false  |              116,800 | 114,695–119,210 |         1.40 ms |  4.08 ms |          22.4% |
+|       8 | false  |          **124,720** | 122,020–125,095 |         3.82 ms |  8.92 ms |          29.6% |
+|      16 | false  |          **128,100** | 126,350–130,845 |         8.53 ms | 15.99 ms |          35.6% |
 
-The 4-caller sync arm is not a reason to stop Phase 1: #531 needs two
-committers to pay for the pipeline, and the flat p50 at two callers clears the
-commit-leg bar. The step from 2 to 4 callers — p50 rises 2.3× and throughput
-rises only ~10% — is RocksDB write-thread queueing plus background
-flush/compaction at a much higher write rate, not the NIF; it is the same
-territory as the write-stall hardening in
-[#538](https://github.com/ebbjs/ebbjs/issues/538).
+**The commit leg saturates at ~92k Actions/s with `sync: true` and ~128k with
+`sync: false`.** The knee is at four callers: K = 8 buys 9% over K = 4 for
+2.2× the per-call latency, and K = 16 buys another 2% for another 2.2×. Past
+the knee this is write-thread queueing plus background flush/compaction, not
+the NIF. The `sync: false` arm shows the same shape at 1.4× the rate, so fsync
+is ~28% of the saturated path but not what sets the ceiling.
 
-Caveats: the measured `t5` path bypasses the Writer, so its caches, watermark,
-and fan-out stay idle (the storage tree still boots to open the DB and seed the
-bench context). Its GSNs are synthetic (`1e9 × caller`) and its holes/lag are
-reported `n/a`; the peak-dirty row is Workbook seed residue, not a t5 signal.
-The rate includes per-call batch assembly (normal schedulers), so do not
-compare it directly to `t0`/`t2`. The first sync/1 run (30,875/s) was the first
-run of the batch and is cold; the other four were 41,150–42,315/s. The table's
-median is robust to it, and the range is reported rather than hidden.
+### What an Action costs to store
+
+`--ablate` on `t5` drops op groups from the committed batch (it names no
+Writer phases there). K = 8, `sync: true`, same workload:
+
+| Op set                  | puts / 100-Action batch | Actions/sec | vs full | write_batch p50 |
+| :---------------------- | ----------------------: | ----------: | ------: | --------------: |
+| full (five CFs)         |                     502 |      90,240 |   1.00× |         7.06 ms |
+| − `dedup`               |                     402 |      92,855 |   1.03× |         6.86 ms |
+| − `group_index`         |                     402 |      94,440 |   1.05× |         6.84 ms |
+| − `entity_index`        |                     302 |     110,205 |   1.22× |         6.01 ms |
+| log only (`cf_actions`) |                     100 | **132,275** |   1.47× |         4.99 ms |
+| log only, `sync: false` |                     100 | **219,405** |   2.43× |         1.76 ms |
+
+and the log-only arm's own scaling: K = 2 → 102,240 (1.26 ms), K = 4 →
+124,535 (2.30 ms), K = 8 → 132,275 (4.99 ms), K = 16 → 132,430 (10.83 ms), so
+it knees at K = 8 and adds nothing after.
+
+Three things follow. First, **a `cf_actions`-only batch with two committers
+(102,240/s) already beats the full five-CF batch with sixteen (92,040/s)** —
+the stored shape of an Action, not the number of committers, is what caps the
+durable write. Second, the costs are super-additive: the three op groups
+individually give +3%, +5% and +22%, but removing all of them gives +47%,
+because per-batch bytes and memtable work fall together. Third, `cf_entity_actions`
+(2 of the 5 puts per Action) is the single most expensive piece of the stored
+shape by a wide margin, which matches the Writer-side ablation ladder, where
+`entity_index` is the second largest phase of the flush (0.67 ms of 3.63 ms).
+
+The `spread` distribution (same Actions, ~700 puts a batch) lands at 78,835/s
+at K = 8 sync and 72,705/s at K = 4, i.e. +39% ops/bytes costs ~13%
+throughput. Fitting hot against spread puts the serialized cost of a put at
+~0.8 µs, which is what the log-only row above then measures directly.
+
+### Verdict
+
+Go for #531, unchanged: the NIF does not serialize callers, and two sync
+callers give **1.81×** wall throughput with a flat per-call p50, which is what
+the committer pool needs. The extension adds the ceiling: **~7.2× on one
+caller to ~92k sync**, and the shape of the curve says to choose K at the knee
+(4) and stop — every caller past it trades ~2× latency for <10% throughput.
+
+For the wider epic, the useful bound is that the full-op-set sync path cannot
+carry more than ~92k Actions/s even with no Writer at all, so any target above
+that requires changing what an Action stores (drop or derive the secondary
+CFs, `entity_index` first) or relaxing durability. See the pipeline-depth
+section for what the Writer itself costs on top, and the latency consequence:
+at the K = 8/16 rows the per-commit p50 is 7–15 ms, so throughput bought by
+queueing shows up as p50/p99 in every client.
+
+Caveats, unchanged: the `t5` path bypasses the Writer, so its caches,
+watermark, and fan-out stay idle (the storage tree still boots to open the DB
+and seed the bench context). Its GSNs are synthetic (`1e9 × caller`) and its
+holes/lag are reported `n/a`; the peak-dirty row is Workbook seed residue, not
+a t5 signal. The rate includes per-call batch assembly (normal schedulers), so
+do not compare it directly to `t0`/`t2`. The original K = 1 sync run (30,875/s)
+was cold; the other four were 41,150–42,315/s, and the median is robust to it.
 
 ## Sequencer + committer A/B (#531)
 
