@@ -17,6 +17,12 @@ defmodule EbbServer.Bench.Options do
   structurally valid empty Action so the record stays decodable by live
   readers.
 
+  `t5` runs no Writer, so it honours only the phases that name an op group:
+  `:dedup`, `:entity_index` and `:group_index`. Ablating those drops the
+  corresponding `cf_*` puts from the spike's batch, which is how the bench
+  prices the stored shape of an Action (`--ablate
+  dedup,entity_index,group_index` leaves a `cf_actions`-only batch).
+
   ## Pipeline depth
 
   `--in-flight` names how many `Writer.write_actions/1` calls each worker
@@ -110,6 +116,9 @@ defmodule EbbServer.Bench.Options do
     :fanout
   ]
   @ablate_by_name Map.new(@ablate_phases, &{Atom.to_string(&1), &1})
+  # `t5` commits an op list instead of running the Writer, so only the phases
+  # that name an op group mean anything there.
+  @t5_op_phases [:dedup, :entity_index, :group_index]
 
   @switches [
     tier: :string,
@@ -237,7 +246,7 @@ defmodule EbbServer.Bench.Options do
     do: "fixed-rate Writer.write_actions/1 plus in-process SSE subscribers"
 
   def tier_description(:t5),
-    do: "raw RocksDB.write_batch/3 from N concurrent callers, no Writer"
+    do: "raw RocksDB.write_batch/3 from N concurrent callers, no Writer, --ablate names op groups"
 
   @doc """
   Whether the run drives the raw storage NIF instead of the Writer.
@@ -494,12 +503,23 @@ defmodule EbbServer.Bench.Options do
   defp validate_lean(_tier, _config),
     do: {:error, "--subscriber-lean is only supported with --tier t3 or t4"}
 
-  # Ablation removes Writer phases from the flush critical path; t5 never
-  # runs the Writer, so there is nothing to ablate.
-  defp validate_tier_ablate(:t5, %{ablate: []}), do: :ok
+  # Ablation removes Writer phases from the flush critical path; t5 builds the
+  # op list itself, so only the phases that name an op group apply.
+  # Phase names arrive as strings here; `validate_ablate/1` normalises them to
+  # atoms after the tier checks, so compare by name.
+  defp validate_tier_ablate(:t5, %{ablate: ablate}) do
+    supported = Enum.map(@t5_op_phases, &Atom.to_string/1)
 
-  defp validate_tier_ablate(:t5, _config),
-    do: {:error, "--ablate is not supported with --tier t5; the spike bypasses the Writer"}
+    case Enum.reject(ablate, &(to_string(&1) in supported)) do
+      [] ->
+        :ok
+
+      unsupported ->
+        {:error,
+         "--ablate #{Enum.map_join(unsupported, ",", &to_string/1)} is not supported with " <>
+           "--tier t5; it runs no Writer (supported: #{Enum.map_join(supported, ",", & &1)})"}
+    end
+  end
 
   defp validate_tier_ablate(_tier, _config), do: :ok
 

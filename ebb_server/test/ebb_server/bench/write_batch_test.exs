@@ -40,6 +40,86 @@ defmodule EbbServer.Bench.WriteBatchTest do
     end
   end
 
+  describe "build_ops/4 with --ablate" do
+    test "ablating the op groups leaves a cf_actions-only batch", context do
+      {:ok, config} =
+        Options.parse([
+          "--tier",
+          "t5",
+          "--batch-size",
+          "100",
+          "--distribution",
+          "hot",
+          "--ablate",
+          "dedup,entity_index,group_index"
+        ])
+
+      ops = WriteBatch.build_ops(config, context.ctx, 1, 0)
+
+      assert length(ops) == 100
+      assert Enum.all?(ops, fn {:put, cf, _key, _value} -> cf == RocksDB.cf_actions() end)
+    end
+
+    test "ablating one group drops only that group's rows", context do
+      {:ok, full} = Options.parse(["--tier", "t5", "--batch-size", "10", "--distribution", "hot"])
+
+      {:ok, no_dedup} =
+        Options.parse([
+          "--tier",
+          "t5",
+          "--batch-size",
+          "10",
+          "--distribution",
+          "hot",
+          "--ablate",
+          "dedup"
+        ])
+
+      {:ok, no_entity_index} =
+        Options.parse([
+          "--tier",
+          "t5",
+          "--batch-size",
+          "10",
+          "--distribution",
+          "hot",
+          "--ablate",
+          "entity_index"
+        ])
+
+      {:ok, no_group_index} =
+        Options.parse([
+          "--tier",
+          "t5",
+          "--batch-size",
+          "10",
+          "--distribution",
+          "hot",
+          "--ablate",
+          "group_index"
+        ])
+
+      count = fn config, cf ->
+        config
+        |> WriteBatch.build_ops(context.ctx, 1, 0)
+        |> Enum.count(fn {:put, op_cf, _key, _value} -> op_cf == cf end)
+      end
+
+      assert count.(full, RocksDB.cf_action_dedup()) == 10
+      assert count.(no_dedup, RocksDB.cf_action_dedup()) == 0
+      assert count.(full, RocksDB.cf_entity_actions()) == 20
+      assert count.(no_entity_index, RocksDB.cf_entity_actions()) == 0
+      assert count.(no_entity_index, RocksDB.cf_type_entities()) == 0
+      assert count.(full, RocksDB.cf_group_actions()) == 10
+      assert count.(no_group_index, RocksDB.cf_group_actions()) == 0
+
+      # Every ablation keeps the log record itself.
+      for config <- [full, no_dedup, no_entity_index, no_group_index] do
+        assert count.(config, RocksDB.cf_actions()) == 10
+      end
+    end
+  end
+
   describe "build_ops/4" do
     test "a hot batch writes five rows per Action plus two shared type keys", context do
       {:ok, config} =

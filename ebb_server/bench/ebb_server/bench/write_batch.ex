@@ -13,6 +13,13 @@ defmodule EbbServer.Bench.WriteBatch do
   This uses `EbbServer.Storage.ActionFormat` for the `cf_actions` value so the
   spike mirrors the production wrapper shape without changing the write
   path. The tests pin the shape, so a format change has to update them.
+
+  `--ablate` narrows the op set to the phases that name an op group —
+  `:dedup` (drop `cf_action_dedup`), `:entity_index` (drop
+  `cf_entity_actions` and `cf_type_entities`), `:group_index` (drop
+  `cf_group_actions`). Ablating all three leaves a `cf_actions`-only batch,
+  which is the cheapest durable write an Action can have; the report prints
+  the ablated phases so a narrowed run is never mistaken for the full shape.
   """
 
   alias EbbServer.Bench.{Options, Workbook}
@@ -50,8 +57,12 @@ defmodule EbbServer.Bench.WriteBatch do
           |> Workbook.build_action(ctx, caller_id, seq + offset)
           |> ActionValidator.to_validated_action()
 
-        ops = action_ops(action, start + offset)
-        {ops, MapSet.union(keys, type_keys(action))}
+        ops = action_ops(action, start + offset, config.ablate)
+
+        keys =
+          if :entity_index in config.ablate, do: keys, else: MapSet.union(keys, type_keys(action))
+
+        {ops, keys}
       end)
 
     :lists.append(action_ops) ++ type_entity_ops(type_keys)
@@ -100,30 +111,42 @@ defmodule EbbServer.Bench.WriteBatch do
 
   defp elapsed(started), do: System.monotonic_time(:microsecond) - started
 
-  defp action_ops(action, gsn) do
+  defp action_ops(action, gsn, ablate) do
     gsn_key = RocksDB.encode_gsn_key(gsn)
     update_scopes = Enum.map(action.updates, fn _ -> [Workbook.group_id()] end)
     payload = action |> ActionFormat.build() |> ActionFormat.encode()
 
     [
-      {:put, RocksDB.cf_actions(), gsn_key, ActionFormat.wrap(payload, update_scopes)},
-      {:put, RocksDB.cf_action_dedup(), action.id, gsn_key}
-      | group_ops(action, gsn) ++ entity_ops(action, gsn)
+      {:put, RocksDB.cf_actions(), gsn_key, ActionFormat.wrap(payload, update_scopes)}
+      | dedup_ops(action, gsn_key, ablate) ++
+          group_ops(action, gsn, ablate) ++ entity_ops(action, gsn, ablate)
     ]
+  end
+
+  defp dedup_ops(action, gsn_key, ablate) do
+    if :dedup in ablate, do: [], else: [{:put, RocksDB.cf_action_dedup(), action.id, gsn_key}]
   end
 
   # The union of resolved groups is indexed once per Action, not once per
   # Update; here every Update resolves to the single bench group.
-  defp group_ops(action, gsn) do
-    key = RocksDB.encode_group_action_key(Workbook.group_id(), gsn)
-    [{:put, RocksDB.cf_group_actions(), key, action.id}]
+  defp group_ops(action, gsn, ablate) do
+    if :group_index in ablate do
+      []
+    else
+      key = RocksDB.encode_group_action_key(Workbook.group_id(), gsn)
+      [{:put, RocksDB.cf_group_actions(), key, action.id}]
+    end
   end
 
-  defp entity_ops(action, gsn) do
-    Enum.map(action.updates, fn update ->
-      key = RocksDB.encode_entity_gsn_key(update.subject_id, gsn)
-      {:put, RocksDB.cf_entity_actions(), key, action.id}
-    end)
+  defp entity_ops(action, gsn, ablate) do
+    if :entity_index in ablate do
+      []
+    else
+      Enum.map(action.updates, fn update ->
+        key = RocksDB.encode_entity_gsn_key(update.subject_id, gsn)
+        {:put, RocksDB.cf_entity_actions(), key, action.id}
+      end)
+    end
   end
 
   defp type_keys(action) do
