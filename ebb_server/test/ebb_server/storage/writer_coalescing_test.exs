@@ -235,12 +235,10 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
           Writer.write_actions([validated_action(%{id: "act_inflight_3"})], writer.name)
         end)
 
-      # The calls reached the Writer and were enqueued behind the in-flight
-      # commit: no second claim, no reply yet.
-      assert wait_until(fn ->
-               state = :sys.get_state(writer.pid)
-               CommitPipeline.inflight?(state.pipeline) and state.pipeline.pending_count == 2
-             end)
+      # A single committer slot means the commit runs in the Writer, so the
+      # calls wait in its mailbox rather than in the pipeline: no second
+      # claim, no reply yet.
+      assert wait_until(fn -> queue_len(writer.pid) >= 2 end)
 
       assert Task.yield(second, 50) == nil
       assert Task.yield(third, 50) == nil

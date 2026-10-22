@@ -85,6 +85,37 @@ defmodule EbbServer.Storage.Committer do
 
   @impl true
   def handle_cast({:commit, ref, prepared, gsn_start, gsn_end}, state) do
+    result =
+      commit_now(prepared, gsn_start, gsn_end,
+        rocks_name: state.rocks_name,
+        commit_fn: state.commit_fn,
+        ablate: state.ablate
+      )
+
+    send(state.owner, {:committer_result, ref, result})
+
+    {:noreply, state}
+  end
+
+  @doc """
+  Runs one commit in the calling process.
+
+  The pool uses it from a worker; the Writer uses it when it has a single
+  committer slot, where handing the batch to another process buys no overlap
+  and costs a copy and three message hops (#529 Step 0).
+
+  Returns `:ok`, `{:error, reason}`, or `{:raised, kind, value, stacktrace}`,
+  and emits `ebb.writer.commit_latency_ms` in either case so the commit's
+  share of the flush stays measurable wherever it ran.
+  """
+  @spec commit_now([PreparedAction.t()], integer(), integer(), keyword()) :: result()
+  def commit_now(prepared, gsn_start, gsn_end, opts) do
+    state = %{
+      rocks_name: Keyword.fetch!(opts, :rocks_name),
+      commit_fn: Keyword.fetch!(opts, :commit_fn),
+      ablate: Keyword.get(opts, :ablate, [])
+    }
+
     started_at = System.monotonic_time()
     result = build_and_commit(prepared, gsn_start, state)
 
@@ -94,9 +125,7 @@ defmodule EbbServer.Storage.Committer do
       %{gsn_start: gsn_start, gsn_end: gsn_end}
     )
 
-    send(state.owner, {:committer_result, ref, result})
-
-    {:noreply, state}
+    result
   end
 
   @impl true

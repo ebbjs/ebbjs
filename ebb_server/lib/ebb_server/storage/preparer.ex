@@ -14,6 +14,11 @@ defmodule EbbServer.Storage.Preparer do
   a result this worker can send; the pool monitors the worker and
   contains it.
 
+  `build/2` is the same work without the process boundary: the Writer runs
+  it inline when it has no other call to overlap the hop with (#574). Both
+  paths share one implementation, so ablation and a custom `prepare_fn`
+  behave identically wherever the work runs.
+
   The worker monitors its owner (the pool) and stops when it goes away.
   """
 
@@ -57,6 +62,25 @@ defmodule EbbServer.Storage.Preparer do
     GenServer.cast(worker, {:prepare, ref, actions})
   end
 
+  @doc """
+  Builds and encodes `actions` in the calling process.
+
+  Raises whatever the payload build raises, exactly as the worker would
+  report it; the caller decides whether that is a failed call or a crash.
+  """
+  @spec build([action()], keyword()) :: [binary()]
+  def build(actions, opts) do
+    fun = Keyword.get(opts, :prepare_fn)
+    ablate = Keyword.get(opts, :ablate, [])
+
+    Enum.map(actions, fn action ->
+      case fun do
+        fun when is_function(fun, 1) -> fun.(action)
+        _ -> default_prepare(action, ablate)
+      end
+    end)
+  end
+
   @impl true
   def init(opts) do
     owner = Keyword.fetch!(opts, :owner)
@@ -74,7 +98,7 @@ defmodule EbbServer.Storage.Preparer do
   def handle_cast({:prepare, ref, actions}, state) do
     result =
       try do
-        {:ok, Enum.map(actions, &prepare_one(&1, state))}
+        {:ok, build(actions, prepare_fn: state.prepare_fn, ablate: state.ablate)}
       rescue
         error -> {:error, {:raised, error, __STACKTRACE__}}
       catch
@@ -91,9 +115,6 @@ defmodule EbbServer.Storage.Preparer do
   end
 
   def handle_info(_message, state), do: {:noreply, state}
-
-  defp prepare_one(action, %{prepare_fn: fun}) when is_function(fun, 1), do: fun.(action)
-  defp prepare_one(action, state), do: default_prepare(action, state.ablate)
 
   defp default_prepare(action, ablate) do
     payload = if :build in ablate, do: %{}, else: ActionFormat.build(action)

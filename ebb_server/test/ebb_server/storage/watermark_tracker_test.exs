@@ -49,28 +49,20 @@ defmodule EbbServer.Storage.WatermarkTrackerTest do
   end
 
   describe "mark_range_committed/2" do
-    test "inserts single GSN into ETS" do
+    test "records a single range as one row" do
       %{table: table, name: name} = with_isolated_tracker()
 
       WatermarkTracker.mark_range_committed(1, 1, name)
 
-      entries = :ets.tab2list(table)
-      assert length(entries) == 1
-      assert [{{1, self()}, true}] == entries
+      assert :ets.tab2list(table) == [{1, 1}]
     end
 
-    test "inserts multiple GSNs into ETS" do
+    test "records a range as one row, not one row per GSN" do
       %{table: table, name: name} = with_isolated_tracker()
 
-      WatermarkTracker.mark_range_committed(1, 3, name)
+      WatermarkTracker.mark_range_committed(1, 1_000_000, name)
 
-      gsns =
-        table
-        |> :ets.tab2list()
-        |> Enum.map(fn {{gsn, _pid}, _} -> gsn end)
-        |> Enum.sort()
-
-      assert gsns == [1, 2, 3]
+      assert :ets.tab2list(table) == [{1, 1_000_000}]
     end
 
     test "idempotent: inserting same GSN twice does not corrupt" do
@@ -90,13 +82,7 @@ defmodule EbbServer.Storage.WatermarkTrackerTest do
 
       WatermarkTracker.mark_range_resolved(2, 4, name)
 
-      gsns =
-        table
-        |> :ets.tab2list()
-        |> Enum.map(fn {{gsn, _pid}, _} -> gsn end)
-        |> Enum.sort()
-
-      assert gsns == [2, 3, 4]
+      assert :ets.tab2list(table) == [{2, 4}]
     end
 
     test "advances the frontier across a resolved hole" do
@@ -183,12 +169,8 @@ defmodule EbbServer.Storage.WatermarkTrackerTest do
     end
 
     test "advances when previous watermark > 0 and next gsn is committed (regression for FanOutRouter slice-1 bug)" do
-      # The previous implementation used `:ets.next(table, current_watermark)`
-      # where the table keys are `{gsn, pid}` tuples. After advancing to 1,
-      # the next call returned `{1, smallest_pid}` (gsn=1, not 2) because
-      # tuple keys sort after integers in Erlang term ordering. The guard
-      # `gsn == current_watermark + 1` (2) then failed and the watermark
-      # never advanced past 1, blocking all subsequent SSE broadcasts.
+      # Rows are keyed by an integer (the range's first GSN), so the tuple
+      # ordering hazard that stalled the frontier before #277 cannot recur.
       %{name: name} = with_isolated_tracker()
 
       WatermarkTracker.mark_range_committed(1, 1, name)
@@ -199,6 +181,64 @@ defmodule EbbServer.Storage.WatermarkTrackerTest do
 
       WatermarkTracker.mark_range_committed(3, 5, name)
       assert WatermarkTracker.advance_watermark(name) == 5
+    end
+  end
+
+  describe "range granularity (#572)" do
+    test "admits a huge range in one row and advances across it in one step" do
+      %{table: table, name: name} = with_isolated_tracker()
+
+      WatermarkTracker.mark_range_committed(1, 2_000_000, name)
+      assert :ets.info(table, :size) == 1
+
+      assert WatermarkTracker.advance_watermark(name) == 2_000_000
+      assert :ets.info(table, :size) == 0
+    end
+
+    test "consumes a contiguous run of ranges in one call" do
+      %{table: table, name: name} = with_isolated_tracker()
+
+      WatermarkTracker.mark_range_committed(1, 100, name)
+      WatermarkTracker.mark_range_committed(101, 250, name)
+      WatermarkTracker.mark_range_committed(251, 300, name)
+
+      assert WatermarkTracker.advance_watermark(name) == 300
+      assert :ets.tab2list(table) == []
+    end
+
+    test "advances across a range that overlaps the frontier" do
+      # The restart reconcile re-marks `(watermark, counter]`, so a row can
+      # straddle the frontier after another process advanced it.
+      %{table: table, name: name} = with_isolated_tracker()
+
+      WatermarkTracker.mark_range_committed(1, 10, name)
+      assert WatermarkTracker.advance_watermark(name) == 10
+
+      WatermarkTracker.mark_range_committed(5, 20, name)
+      assert WatermarkTracker.advance_watermark(name) == 20
+      assert :ets.tab2list(table) == []
+    end
+
+    test "a re-marked resolved range does not stall the frontier" do
+      %{table: table, name: name} = with_isolated_tracker()
+
+      WatermarkTracker.mark_range_committed(1, 5, name)
+      assert WatermarkTracker.advance_watermark(name) == 5
+
+      WatermarkTracker.mark_range_committed(1, 5, name)
+      assert WatermarkTracker.advance_watermark(name) == 5
+      assert :ets.tab2list(table) == []
+    end
+
+    test "does not advance while a gap remains, and absorbs the tail when it fills" do
+      %{name: name} = with_isolated_tracker()
+
+      WatermarkTracker.mark_range_committed(1, 2, name)
+      WatermarkTracker.mark_range_committed(5, 8, name)
+      assert WatermarkTracker.advance_watermark(name) == 2
+
+      WatermarkTracker.mark_range_committed(3, 4, name)
+      assert WatermarkTracker.advance_watermark(name) == 8
     end
   end
 
@@ -219,14 +259,7 @@ defmodule EbbServer.Storage.WatermarkTrackerTest do
       WatermarkTracker.mark_range_committed(4, 4, name)
 
       assert WatermarkTracker.advance_watermark(name) == 2
-
-      remaining =
-        table
-        |> :ets.tab2list()
-        |> Enum.map(fn {{gsn, _pid}, _} -> gsn end)
-        |> Enum.sort()
-
-      assert remaining == [4]
+      assert :ets.tab2list(table) == [{4, 4}]
     end
 
     test "table stays bounded over a long commit sequence" do

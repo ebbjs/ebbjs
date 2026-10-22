@@ -37,9 +37,11 @@ defmodule EbbServer.Storage.WatermarkTracker do
   - `:persistent_term {WatermarkTracker, :gsn_ref}` — the `:atomics.atomics/0`
     reference holding the current committed watermark (one integer).
   - `:persistent_term {WatermarkTracker, :committed_ranges}` — the ETS
-    table name holding `{gsn, pid}` pairs for resolved GSNs (committed or
-    abandoned), used to advance the frontier and to skip the work of the
-    same Writer catching up its own batches.
+    table name holding one `{first_gsn, last_gsn}` row per **resolved
+    range** (committed or abandoned). Rows are the reorder buffer only: a
+    range that continues the frontier advances it and is deleted, so a
+    normal writer keeps at most one row per in-flight range and usually
+    none.
 
   ## Lifecycle
 
@@ -59,7 +61,8 @@ defmodule EbbServer.Storage.WatermarkTracker do
   avoids serializing through a single process for what should be
   scalable hot-path state.
 
-  - `:ets :committed_ranges` - ordered_set table, key is {gsn, pid}, value is true
+  - `:ets :committed_ranges` - ordered_set table, key is the range's first
+    GSN, value is its last GSN
 
   The Writer's `EbbServer.Storage.CommitPipeline` owns which claimed range
   is committed or resolved and in what order; this module owns the global
@@ -93,7 +96,7 @@ defmodule EbbServer.Storage.WatermarkTracker do
   end
 
   @doc """
-  Marks a range of GSNs as resolved (inserts into ETS, does not advance watermark).
+  Marks a range of GSNs as resolved.
 
   Resolved means committed *or* deliberately abandoned; the frontier
   advance cannot tell them apart by design. Use this for a range whose
@@ -110,7 +113,12 @@ defmodule EbbServer.Storage.WatermarkTracker do
   end
 
   @doc """
-  Marks a range of GSNs as committed (inserts into ETS, does not advance watermark).
+  Records a resolved range as one row. Does not advance the watermark.
+
+  Call `advance_watermark/1` afterwards; that is what moves the frontier.
+  One row per range is enough because the frontier moves a whole range at a
+  time, and a range that cannot move it yet is only ever re-examined as a
+  unit.
 
   ## Examples
 
@@ -120,84 +128,81 @@ defmodule EbbServer.Storage.WatermarkTracker do
   @spec mark_range_committed(gsn(), gsn(), GenServer.name()) :: :ok
   def mark_range_committed(first, last, name \\ __MODULE__) when first <= last do
     table_name = :persistent_term.get({name, :committed_ranges})
-    pid = self()
-
-    entries = for gsn <- first..last, do: {{gsn, pid}, true}
-    :ets.insert(table_name, entries)
-
+    :ets.insert(table_name, {first, last})
     :ok
   end
 
   @doc """
-  Advances the watermark to the highest contiguous resolved GSN in the
-  committed ranges table (committed or abandoned — see the moduledoc).
+  Advances the watermark to the highest GSN covered by a contiguous run of
+  resolved ranges.
 
-  Returns the new watermark value. If no advancement is possible (gap in sequence),
-  returns the current watermark.
+  Returns the new watermark value. If no advancement is possible (a gap in
+  the sequence), returns the current watermark.
+
+  Each step consumes a whole range, so a flush that resolves 100 GSNs costs
+  one step, not 100.
   """
   @spec advance_watermark(GenServer.name()) :: gsn()
   def advance_watermark(name \\ __MODULE__) do
     gsn_ref = :persistent_term.get({name, :gsn_ref})
     table_name = :persistent_term.get({name, :committed_ranges})
-    do_advance_loop(gsn_ref, table_name)
+    do_advance(gsn_ref, table_name)
   end
 
-  defp do_advance_loop(gsn_ref, table_name) do
-    current_watermark = :atomics.get(gsn_ref, 1)
-    prune_committed(table_name, current_watermark)
-    next_gsn = current_watermark + 1
+  defp do_advance(gsn_ref, table_name) do
+    current = :atomics.get(gsn_ref, 1)
+    prune_resolved(table_name, current)
 
-    if has_committed?(table_name, next_gsn) do
-      attempt_advance_from(gsn_ref, table_name, current_watermark, next_gsn)
-    else
-      # A concurrent advance may have pruned `next_gsn` between our read
-      # of the watermark and this lookup. Re-read and retry rather than
-      # returning a watermark we know is stale.
-      if :atomics.get(gsn_ref, 1) > current_watermark do
-        do_advance_loop(gsn_ref, table_name)
-      else
-        current_watermark
-      end
-    end
-  end
+    case range_covering(table_name, current + 1) do
+      {_first, last} ->
+        case :atomics.compare_exchange(gsn_ref, 1, current, last) do
+          :ok ->
+            # Absorb any further contiguous range, then drop the rows the
+            # frontier just passed.
+            do_advance(gsn_ref, table_name)
 
-  # The watermark is the GSN up to which all prior GSNs are durable, so
-  # every tuple at or below it is dead weight: `has_committed?/2` only
-  # ever looks at `watermark + 1` and beyond. Dropping them here keeps
-  # the table bounded over the life of the node. Deletes are keyed by
-  # GSN, so a concurrent writer's higher-GSN tuples are untouched.
-  defp prune_committed(_table_name, watermark) when watermark <= 0, do: 0
-
-  defp prune_committed(table_name, watermark) do
-    :ets.select_delete(table_name, [
-      {{{:"$1", :_}, true}, [{:"=<", :"$1", watermark}], [true]}
-    ])
-  end
-
-  # Has any tuple {gsn, _pid} with this gsn been committed?
-  defp has_committed?(table_name, gsn) do
-    :ets.match_object(table_name, {{gsn, :_}, true}) != []
-  end
-
-  # We've confirmed `gsn` is committed. Try to CAS the watermark from
-  # `prev` to `gsn`; on contention, retry the whole loop (the other writer
-  # may have advanced past us, in which case we'll try to advance further
-  # from the new value). On success, recurse to see if `gsn + 1` is also
-  # committed and continue advancing.
-  defp attempt_advance_from(gsn_ref, table_name, prev, gsn) do
-    case :atomics.compare_exchange(gsn_ref, 1, prev, gsn) do
-      :ok ->
-        prune_committed(table_name, gsn)
-
-        if has_committed?(table_name, gsn + 1) do
-          attempt_advance_from(gsn_ref, table_name, gsn, gsn + 1)
-        else
-          gsn
+          _ ->
+            # Another process advanced the frontier first; retry from its
+            # value rather than reporting one we know is stale.
+            do_advance(gsn_ref, table_name)
         end
 
-      _ ->
-        do_advance_loop(gsn_ref, table_name)
+      nil ->
+        # A concurrent advance may have moved the frontier between the read
+        # and the lookup; re-read rather than return a stale value.
+        if :atomics.get(gsn_ref, 1) > current do
+          do_advance(gsn_ref, table_name)
+        else
+          current
+        end
     end
+  end
+
+  # The row covering `gsn`, if any: the largest first-GSN at or below it whose
+  # range reaches it. `:ets.prev/2` makes this O(log n) instead of the scan a
+  # partially-bound match over the key would do.
+  defp range_covering(table_name, gsn) do
+    case :ets.prev(table_name, gsn + 1) do
+      :"$end_of_table" ->
+        nil
+
+      first when is_integer(first) ->
+        case :ets.lookup(table_name, first) do
+          [{^first, last}] when last >= gsn -> {first, last}
+          _ -> nil
+        end
+    end
+  end
+
+  # Rows the frontier has passed are dead weight: `range_covering/2` only ever
+  # looks at `watermark + 1` and beyond. Rows are per range, so this deletes a
+  # handful of tuples, not one per GSN.
+  defp prune_resolved(_table_name, watermark) when watermark <= 0, do: 0
+
+  defp prune_resolved(table_name, watermark) do
+    :ets.select_delete(table_name, [
+      {{:"$1", :"$2"}, [{:"=<", :"$2", watermark}], [true]}
+    ])
   end
 
   @impl true
