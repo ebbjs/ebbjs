@@ -57,7 +57,7 @@ requested concurrency; `t3` = `t2` plus in-process SSE subscribers; `t4` =
 fixed-rate `Writer.write_actions/1` plus in-process SSE subscribers.
 `--in-flight N` keeps N `write_actions/1` calls outstanding per worker and
 is supported on `t0`, `t2`, and `t3`; see
-[Pipeline depth](#pipeline-depth-n-in-flight-calls-551).
+[Pipeline depth](#pipeline-depth-n-in-flight-calls-551-re-measured-for-the-v2-gate).
 
 ## Environment
 
@@ -227,13 +227,19 @@ is single-Writer serialization plus per-Action Elixir work, not the disk.
 
 ## Pre-epic vs current: a rotated A/B (#529)
 
+> **Pre-Step-0 — 2026-10-22.** The `8177744` arm below is the last commit
+> before #579/#582/#581. This section is the honest record of what the epic
+> cost before Step 0; current numbers are in
+> [Step 0](#step-0-depth-1-parity-579-582-581).
+
 The headline above is the last pre-epic refresh. This section measures the
 epic's net effect on the write path directly, because the epic's own gate was
 originally judged on within-session deltas and never against the state it
 started from.
 
 Method: `git worktree` at **`6cba789`** (the commit before the #531 merge that
-introduced the sequencer/committer split) and today's `main` @ **`8177744`**,
+introduced the sequencer/committer split) and the pre-Step-0 `main` @
+**`8177744`**,
 built and benchmarked alternately on the same host, five passes per row with
 the order reversed on alternate passes, plus one 120 s run per row. Same shape
 throughout: batch 100, 2-Update Actions, `hot`, `sync: true`, `--seed 1`. Both
@@ -251,21 +257,21 @@ mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 8 \
 
 ### 20 s windows (5 passes, median)
 
-| Config   | Arm      |  Actions/s |         p50 |     p95 |     p99 | Scheduler util |
-| -------- | -------- | ---------: | ----------: | ------: | ------: | -------------: |
-| `t0 c=1` | pre-#531 | **26,740** |     3.45 ms | 4.36 ms | 5.22 ms |           9.5% |
-| `t0 c=1` | today    |     20,410 |     4.60 ms | 5.50 ms | 6.42 ms |          11.1% |
-| `t2 c=8` | pre-#531 | **21,590** | **35.6 ms** | 42.1 ms | 47.0 ms |          24.3% |
-| `t2 c=8` | today    |     19,515 |     39.5 ms | 46.6 ms | 50.0 ms |          26.3% |
+| Config   | Arm       |  Actions/s |         p50 |     p95 |     p99 | Scheduler util |
+| -------- | --------- | ---------: | ----------: | ------: | ------: | -------------: |
+| `t0 c=1` | pre-#531  | **26,740** |     3.45 ms | 4.36 ms | 5.22 ms |           9.5% |
+| `t0 c=1` | `8177744` |     20,410 |     4.60 ms | 5.50 ms | 6.42 ms |          11.1% |
+| `t2 c=8` | pre-#531  | **21,590** | **35.6 ms** | 42.1 ms | 47.0 ms |          24.3% |
+| `t2 c=8` | `8177744` |     19,515 |     39.5 ms | 46.6 ms | 50.0 ms |          26.3% |
 
 ### 120 s steady window (one run per row)
 
-| Config   | Arm      | Actions/s (steady) |         p50 |     p95 |     p99 | Scheduler util |
-| -------- | -------- | -----------------: | ----------: | ------: | ------: | -------------: |
-| `t0 c=1` | pre-#531 |         **25,402** |     3.59 ms | 4.57 ms | 5.46 ms |           9.6% |
-| `t0 c=1` | today    |             20,219 |     4.62 ms | 5.63 ms | 6.49 ms |          10.9% |
-| `t2 c=8` | pre-#531 |         **20,985** | **36.1 ms** | 42.9 ms | 47.6 ms |          23.8% |
-| `t2 c=8` | today    |             19,249 |     39.8 ms | 46.5 ms | 50.5 ms |          26.4% |
+| Config   | Arm       | Actions/s (steady) |         p50 |     p95 |     p99 | Scheduler util |
+| -------- | --------- | -----------------: | ----------: | ------: | ------: | -------------: |
+| `t0 c=1` | pre-#531  |         **25,402** |     3.59 ms | 4.57 ms | 5.46 ms |           9.6% |
+| `t0 c=1` | `8177744` |             20,219 |     4.62 ms | 5.63 ms | 6.49 ms |          10.9% |
+| `t2 c=8` | pre-#531  |         **20,985** | **36.1 ms** | 42.9 ms | 47.6 ms |          23.8% |
+| `t2 c=8` | `8177744` |             19,249 |     39.8 ms | 46.5 ms | 50.5 ms |          26.4% |
 
 ### What it says
 
@@ -292,6 +298,88 @@ c=1` is **−24%** throughput and **+33%** p50; `t2 c=8` is **−10%**
   ceiling it already passed.** Any claim that the pipeline "paid for itself"
   has to show a depth-1 row at or above these numbers, because production is a
   depth-1 deployment.
+
+## Step 0: depth-1 parity (#579, #582, #581)
+
+Step 0 is the depth-1 debt the A/B above measured. Three changes landed on
+2026-10-22, in order:
+
+- [#579](https://github.com/ebbjs/ebbjs/issues/579) — `WatermarkTracker`
+  advances the resolution frontier **per range** instead of one ETS row and
+  one advance step per GSN ([#572](https://github.com/ebbjs/ebbjs/issues/572)).
+- [#582](https://github.com/ebbjs/ebbjs/issues/582) — payload build + encode
+  runs **on the Writer when its pipeline is idle**, and on the prepare pool
+  otherwise ([#574](https://github.com/ebbjs/ebbjs/issues/574)).
+- [#581](https://github.com/ebbjs/ebbjs/issues/581) — the durable write runs
+  **inline in the Writer when `max_in_flight == 1`**; the committer pool is
+  used at depth > 1.
+
+Measured **2026-10-22** on `recsy-vps`, the same host and shape as the
+rotated A/B: 4 schedulers, `sync: true`, batch 100, 2-Update Actions, `hot`,
+`--seed 1`, 20 s window after 3 s warmup, five reports per row, medians with
+min–max ranges where the run set recorded one. Every run had **0 GSN holes,
+0 rejected Actions, 0 write-transport errors**.
+
+```sh
+mix bench.actions --tier t0 --duration 20 --warmup 3 --concurrency 1 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --seed 1
+mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 8 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --seed 1
+```
+
+| State                        |         `t0 c=1` Actions/s |    `t0` p50 |         `t2 c=8` Actions/s | `t2` p50 | `t2` Actions/flush |
+| ---------------------------- | -------------------------: | ----------: | -------------------------: | -------: | -----------------: |
+| pre-#531 A/B arm (`6cba789`) |                     26,740 |     3.45 ms |                     21,590 |  35.6 ms |               ~400 |
+| `8177744` (before Step 0)    |    20,410 (20,219 @ 120 s) |     4.60 ms |    19,515 (19,249 @ 120 s) |  39.5 ms |                399 |
+| after #579                   |                     24,690 |     3.79 ms |                     26,385 |  28.7 ms |                  — |
+| after #579+#582              |                     24,160 |     3.85 ms |                     26,285 |  28.8 ms |                  — |
+| after #579+#582+#581         | **25,935** (25,690–26,745) | **3.56 ms** | **25,710** (24,615–25,945) |  29.5 ms |            **272** |
+| pre-#531, 120 s steady       |                     25,402 |     3.59 ms |                     20,985 |  36.1 ms |                  — |
+
+**`t2 c=8` now runs at 272 Actions/flush, not the ~400 the older sections
+describe.** In-line prepare and in-line commit mean the Writer no longer waits
+on a pool for the payload or the durable write, so a burst drains sooner and
+fewer calls are still waiting when the next flush closes. The 399–400
+Actions/flush rows above and in
+[Pipeline depth](#pipeline-depth-n-in-flight-calls-551-re-measured-for-the-v2-gate)
+are properties of that older code, not of the current one; that is also why
+depth comparisons have to be read against their own `Actions/flush` column.
+
+**The depth-2 shape is capability, not a parity check.** `t0 c=1 depth 2` went
+from 31,015 to **37,200** (35,660–39,585) Actions/s at p50 4.90 ms after
+#579+#582. The pre-#531 build cannot run it at all (no pipeline,
+`max_in_flight: 1`), so this row says what the pipeline can do, not whether it
+regressed.
+
+**Two items were measured and dropped, and that is part of the record.** An
+O(range) in-flight id guard has no cost left to remove — the `--ablate dedup`
+marginal measures **−1.0%**, i.e. nothing. And the original premise of
+[#574](https://github.com/ebbjs/ebbjs/issues/574) was an arithmetic error: the
+"1.28 ms per call outside the flush" subtracted a flush **p50** from a per-call
+**mean**, and the real per-call gap, matched to the same statistic, is **~0.3
+ms**.
+
+**The watermark's own marginal fell with #579.** `--ablate watermark` at `t0
+c=1` prices it at **0.35 ms** per 100-Action flush, down from **0.88 ms**
+before the change; a later fresh ladder prices it at 0.21 ms.
+
+**Gate outcome against the pre-#531 arm:** `t0 c=1` **−3.0%** (inside the ±5%
+band), `t2 c=8` **+19.1%**, p50 +3% at `t0` and −17% at `t2`. The revert
+fallback #529 pre-committed for this gate was retired on that basis.
+
+### What it says
+
+- **The epic had cost 24% of the storage ceiling and 10% of production
+  throughput, with worse p50 at both metrics.** Step 0 does not argue that
+  cost away; it removes it.
+- **Step 0 closes the ceiling to −3% and puts production 19% ahead of
+  pre-#531**, with p50 17% better at t2 and 3% worse at t0. The pipeline is
+  now the faster configuration at the shape production runs.
+- **The pipeline's remaining advantage over the pre-epic build is the depth-2
+  shape** (37,200 at `t0 c=1`), which production does not use. What sits
+  between here and the next tier is per-Action work inside the flush —
+  `cf_entity_actions`, 21.5% of it
+  ([#575](https://github.com/ebbjs/ebbjs/issues/575)) — not pipeline overhead.
 
 ## Tier and storage ceiling
 
@@ -1260,6 +1348,10 @@ prices the payload build + encode that moved before the claim.
 
 ## Pipeline depth: N in-flight calls (#551, re-measured for the V2 gate)
 
+> **Measured before Step 0 (2026-10-21).** Current numbers are in
+> [Step 0](#step-0-depth-1-parity-579-582-581); the conclusions below still
+> stand.
+
 Harness-only workload for [epic #529](https://github.com/ebbjs/ebbjs/issues/529).
 `--in-flight 1,2,4` keeps N `Writer.write_actions/1` calls outstanding per
 worker instead of one, so the harness can put several batches in the Writer's
@@ -1486,6 +1578,10 @@ connections.
 
 ## Prepare stage (#553)
 
+> **Measured before Step 0 (2026-10-20).** Current numbers are in
+> [Step 0](#step-0-depth-1-parity-579-582-581); the conclusions below still
+> stand.
+
 [#553](https://github.com/ebbjs/ebbjs/issues/553) moves the GSN-free
 payload build and ETF encode from the Writer's `handle_call` path into a
 linked `PreparePool`. It is a structural change first: arrival order and
@@ -1694,8 +1790,12 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
 7. **t0 depth-1 may be ~9% slower than the #551 session.** 20,320/s here versus
    22,465/s then, with non-overlapping ranges on the same host and shape. The
    #551 rows predate #533/#534/#553, so this is plausibly the seam cost of the
-   prepare/overlay/ordered-release work rather than drift; confirm with a
-   rotated A/B against a pre-#533 commit before quoting either number.
+   prepare/overlay/ordered-release work rather than drift. The rotated A/B in
+   [Pre-epic vs current](#pre-epic-vs-current-a-rotated-ab-529) measured the
+   same direction against pre-#531 (−24% rather than −9%), and
+   [Step 0](#step-0-depth-1-parity-579-582-581) is the follow-up that closed
+   most of it (−3.0%); re-read this gap against those two sections rather
+   than the #551 session.
 8. **README drift corrected.** `:writer_count`, `:warmer_*`, and
    `:replication_peers` are read by nothing; the server README states the
    actual single-Writer behavior. `:writer_batch_timeout_ms` and
