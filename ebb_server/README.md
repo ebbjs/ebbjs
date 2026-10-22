@@ -194,6 +194,235 @@ reported as a hole. Any RocksDB crash still restarts the whole storage tree
 in order, because SystemCache populates from RocksDB on init and the Writer
 coordinates through cache state.
 
+### Data flow
+
+The supervision tree is the static shape; these are the paths that run on
+it. Every diagram is the current code, not a target.
+
+#### Request topology
+
+```mermaid
+flowchart TB
+  SDK["Client SDK: outbox, replica, SSE reader"]
+
+  subgraph edge["HTTP edge"]
+    BANDIT["Bandit"]
+    AUTH["AuthPlug"]
+    ROUTER["Sync.Router"]
+    BANDIT --> AUTH --> ROUTER
+  end
+
+  subgraph storage["Storage"]
+    WRITER["Writer: single sequencer"]
+    ETS["ETS + atomics: caches, watermark, in-flight, GSN"]
+    ENTITY["EntityStore"]
+    DB["RocksDB: action log"]
+    SQ["SQLite: materialized entities + cursors"]
+  end
+
+  subgraph sync["Sync"]
+    FANOUT["FanOutRouter"]
+    GS["GroupServer per group"]
+    CONN["SSEConnection per client"]
+    HANDLER["SSEHandler: the request process"]
+  end
+
+  CATCHUP["CatchUp and group listing: stateless reads"]
+
+  SDK <-->|"HTTP + SSE"| BANDIT
+  ROUTER --> WRITER
+  ROUTER --> ENTITY
+  ROUTER --> ETS
+  ROUTER --> CATCHUP
+  CATCHUP --> DB
+  CATCHUP --> ENTITY
+  WRITER --> DB
+  WRITER --> ETS
+  WRITER -->|"batch committed"| FANOUT
+  ENTITY --> SQ
+  ENTITY --> DB
+  FANOUT --> DB
+  FANOUT --> GS
+  GS --> CONN
+  CONN --> HANDLER
+  HANDLER -->|"chunk"| SDK
+```
+
+#### Write path (`POST /sync/actions`)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant R as Router
+  participant P as PermissionChecker
+  participant W as Writer
+  participant PP as PreparePool
+  participant CP as CommitterPool
+  participant DB as RocksDB
+  participant E as ETS
+  participant F as FanOutRouter
+
+  C->>R: POST /sync/actions, msgpack batch
+  R->>R: read_body + Msgpax.unpack
+  R->>P: validate_and_authorize each Action
+  P->>E: ActionValidator + Authorizer group permissions
+  R->>W: GenServer.call write_actions(validated)
+
+  W->>E: claim action ids, idempotent-retry guard
+  W->>DB: multi_get cf_action_dedup, drop duplicates
+  W->>E: :atomics.add_get, claim a GSN range
+  W->>E: memoized group resolution per Update
+  W->>PP: build payload + ETF encode
+  Note over PP: GSN-free and cache-free, so it runs in a pooled<br/>worker instead of on the Writer's call path
+  PP-->>W: one payload_etf per Action
+  W->>CP: commit(prepared, gsn range)
+  CP->>DB: write_batch cf_actions + indexes, sync true
+  CP-->>W: :ok, durable
+
+  W->>E: mark the range committed, resolution watermark
+  W->>E: settle dirty marks, apply cache mutations
+  W->>F: batch_committed(from, to, groups_by_gsn, committed_at)
+  W-->>R: ok, first and last GSN, rejected list
+  R-->>C: 200
+```
+
+#### Fan-out path (committed range to SSE client)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant W as Writer
+  participant F as FanOutRouter
+  participant WP as WatermarkTracker
+  participant DB as RocksDB
+  participant GS as GroupServer
+  participant SC as SSEConnection
+  participant H as SSEHandler
+  participant C as Client
+
+  W->>F: batch_committed(from, to, groups_by_gsn, committed_at)
+  F->>WP: committed_watermark()
+  WP-->>F: frontier
+  Note over F: Plan buffers each range until the frontier covers it,<br/>then releases in claim order
+  F->>DB: range_iterator cf_actions
+  DB-->>F: payload ETF per Action
+  F->>F: ActionFormat.decode + ActionScope filter per group
+  F->>GS: cast push_actions(actions, committed_at)
+  GS->>GS: one data frame per Action, concatenated into one binary
+  GS->>SC: cast push_data(bytes), one cast per subscriber
+  GS->>GS: telemetry dispatched_actions + push_latency_ms
+  SC->>H: send sse_data bytes
+  H->>C: chunk the open SSE response
+  F->>F: FanOutFrontier.put(last_pushed_gsn) after the push
+```
+
+#### Read path (`GET /entities/:id`, `POST /entities/query`)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant R as Router
+  participant P as PermissionChecker
+  participant ES as EntityStore
+  participant D as DirtyTracker
+  participant DB as RocksDB
+  participant SQ as SQLite
+
+  C->>R: get one entity, or query a type
+  R->>P: membership check, ETS only
+  R->>ES: get / query
+  ES->>D: dirty? ETS
+  alt dirty
+    ES->>DB: scan cf_entity_actions since last_gsn
+    DB-->>ES: Action deltas
+    ES->>ES: FieldMerge.merge, last-writer-wins per field
+    ES->>SQ: patch_entity or upsert_entity, monotonic last_gsn
+    ES->>D: compare-and-clear the observed generation
+  end
+  ES->>SQ: SELECT with json_extract filters and membership JOIN
+  SQ-->>ES: rows
+  ES-->>R: entities
+  R-->>C: JSON
+```
+
+A `query` materializes every dirty entity of the requested type before
+it runs, so one stale row costs the whole query.
+
+#### Storage layout
+
+```mermaid
+flowchart LR
+  subgraph rocks["RocksDB: synchronously committed"]
+    direction TB
+    A1["cf_actions: GSN to payload ETF + update_scopes"]
+    A2["cf_group_actions: group, GSN to action id"]
+    A3["cf_entity_actions: entity, GSN to action id"]
+    A4["cf_type_entities: type, entity to presence"]
+    A5["cf_action_dedup: action id to GSN"]
+  end
+
+  subgraph sq["SQLite: rebuildable projection"]
+    direction TB
+    S1["entities: id, type, data JSON, hlc columns, last_gsn"]
+    S2["cursors: per-consumer durable position"]
+  end
+
+  subgraph mem["In-memory: not durable"]
+    direction TB
+    M1["ETS: group members, entity groups, entity types, relationships"]
+    M2["ETS: dirty set, resolution watermark, in-flight ids, fan-out frontier"]
+    M3[":atomics GSN counter, :persistent_term column families"]
+  end
+
+  A2 -->|"catch-up"| sq
+  A3 -->|"dirty materialization"| sq
+  A1 -->|"fan-out decode, export"| mem
+  S2 -->|"exporter, future replication"| A1
+```
+
+#### Batch lifecycle
+
+```mermaid
+stateDiagram-v2
+  [*] --> idle
+  idle --> claimed: GSN range claimed, ids guarded
+  claimed --> prepared: group resolution, update_scopes, provisional dirty
+  prepared --> committing: handed to a Committer worker
+  committing --> committed: write_batch returns ok, durable
+  committed --> applying: ordered release allows it
+  applying --> released: applied, notified, callers acked
+  claimed --> abandoned: commit failed or worker died
+  prepared --> abandoned
+  committing --> abandoned
+  committed --> abandoned: post-ack raise before the durable mark
+  released --> [*]
+  abandoned --> [*]
+```
+
+`claim_order` is the reorder buffer: a batch may not apply or notify until
+every earlier range is released or abandoned. Holes are permanent, because
+GSNs are never reused, which is why the watermark is a _resolution_
+frontier rather than a contiguous-commit one.
+
+**What these paths make visible.**
+
+- **Two serialization points, not one.** The Writer is the documented
+  one. The `SQLite` GenServer is the other, and it sits on every entity
+  read.
+- **The committed log is read back on three paths** — fan-out
+  (`cf_actions`), dirty materialization (`cf_entity_actions`), and
+  catch-up or export (`cf_group_actions`, `cf_actions`).
+- **Live SSE does not replay from the client cursor.** `SSEHandler`
+  passes the cursor to `SSEConnection`, where it is stored but not used
+  to replay; the router only rejects a cursor _ahead_ of the watermark.
+  Gap-filling is the client's HTTP catch-up before it opens the stream,
+  and the `control` event re-triggers it on reconnect.
+- **Presence bypasses the log entirely.** `POST /sync/presence` casts to
+  `FanOutRouter` and on to the `GroupServer`, so it has no durability or
+  ordering story beyond the cast order.
+
 ## Cross-cutting concerns
 
 ### Serialization formats
