@@ -329,6 +329,7 @@ defmodule EbbServer.Storage.Writer do
     InFlightActions,
     PreparedAction,
     PreparePool,
+    Preparer,
     RelationshipCache,
     RocksDB
   }
@@ -343,6 +344,13 @@ defmodule EbbServer.Storage.Writer do
   # A prepare job waits for the pool, then for every earlier call to
   # resolve. The queue bound is calls, not Actions, so a burst of large
   # batched calls cannot grow the Writer's held state without limit.
+  @type prepare :: %{
+          pool: pid() | nil,
+          fn: (map() -> binary()) | nil,
+          timeout_ms: pos_integer(),
+          queue_max: pos_integer()
+        }
+
   @default_prepare_pool_size 2
   @default_prepare_queue_max 1_024
   @default_prepare_timeout_ms 2_000
@@ -367,9 +375,7 @@ defmodule EbbServer.Storage.Writer do
           entity_types: atom(),
           relationships: atom(),
           relationships_by_id: atom(),
-          prepare_pool: pid() | nil,
-          prepare_timeout_ms: pos_integer(),
-          prepare_queue_max: pos_integer(),
+          prepare: prepare(),
           next_call_seq: non_neg_integer(),
           next_enqueue_seq: non_neg_integer(),
           burst_max_seq: non_neg_integer() | nil,
@@ -400,9 +406,7 @@ defmodule EbbServer.Storage.Writer do
     :entity_types,
     :relationships,
     :relationships_by_id,
-    :prepare_pool,
-    :prepare_timeout_ms,
-    :prepare_queue_max,
+    :prepare,
     :next_call_seq,
     :next_enqueue_seq,
     :burst_max_seq,
@@ -617,9 +621,12 @@ defmodule EbbServer.Storage.Writer do
       entity_types: entity_types,
       relationships: relationships,
       relationships_by_id: relationships_by_id,
-      prepare_pool: prepare_pool,
-      prepare_timeout_ms: prepare_timeout_ms,
-      prepare_queue_max: prepare_queue_max,
+      prepare: %{
+        pool: prepare_pool,
+        fn: prepare_fn,
+        timeout_ms: prepare_timeout_ms,
+        queue_max: prepare_queue_max
+      },
       next_call_seq: 0,
       next_enqueue_seq: 0,
       burst_max_seq: nil,
@@ -719,10 +726,15 @@ defmodule EbbServer.Storage.Writer do
   end
 
   def handle_call({:write_actions, actions}, from, state) when is_list(actions) do
-    if prepare_queue_full?(state) do
-      {:reply, {:error, {:prepare_queue_full, state.prepare_queue_max}}, state}
-    else
-      {:noreply, state |> dispatch_prepare(from, actions) |> maybe_schedule_prepare_flush()}
+    cond do
+      prepare_queue_full?(state) ->
+        {:reply, {:error, {:prepare_queue_full, state.prepare.queue_max}}, state}
+
+      inline_prepare?(state) ->
+        {:noreply, prepare_inline(state, from, actions)}
+
+      true ->
+        {:noreply, state |> dispatch_prepare(from, actions) |> maybe_schedule_prepare_flush()}
     end
   end
 
@@ -747,11 +759,11 @@ defmodule EbbServer.Storage.Writer do
 
       {job, preparing} ->
         state = %{state | preparing: preparing}
-        PreparePool.abandon(state.prepare_pool, ref)
+        PreparePool.abandon(state.prepare.pool, ref)
 
         # The slow call never claimed a GSN, so its seq is a hole the
         # pipeline skips rather than a range to resolve.
-        {:noreply, fail_prepare(state, job, {:timeout, state.prepare_timeout_ms})}
+        {:noreply, fail_prepare(state, job, {:timeout, state.prepare.timeout_ms})}
     end
   end
 
@@ -815,15 +827,80 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
+  # With nothing else in flight there is no work for the pool to overlap, so
+  # the round trip is pure latency on the caller's key path. Preparing here
+  # keeps the guarantee that matters (no GSN is claimed before the payload
+  # exists) and costs nothing when the Writer is busy.
+  defp inline_prepare?(state) do
+    map_size(state.preparing) == 0 and
+      map_size(state.prepared) == 0 and
+      state.burst_max_seq == nil and
+      CommitPipeline.pending_count(state.pipeline) == 0 and
+      CommitPipeline.idle?(state.pipeline)
+  end
+
+  # The payload is built here, but arrival order and the coalescing window are
+  # unchanged: the result lands in `prepared` and the marker drains it like a
+  # pooled result would. A burst that arrives on an idle Writer therefore
+  # still coalesces into one flush.
+  defp prepare_inline(state, from, actions) do
+    seq = state.next_call_seq
+    started_at = System.monotonic_time(:microsecond)
+
+    payload_etfs =
+      actions
+      |> Enum.map(&prepare_input/1)
+      |> Preparer.build(prepare_fn: state.prepare.fn, ablate: state.ablate)
+
+    state = %{state | next_call_seq: seq + 1}
+
+    cond do
+      length(payload_etfs) != length(actions) ->
+        fail_inline_prepare(
+          state,
+          from,
+          seq,
+          {:payload_count_mismatch, length(actions), length(payload_etfs)}
+        )
+
+      prepare_elapsed_ms(started_at) > state.prepare.timeout_ms ->
+        fail_inline_prepare(state, from, seq, {:timeout, state.prepare.timeout_ms})
+
+      true ->
+        encoded = Enum.zip(actions, payload_etfs)
+
+        state
+        |> Map.put(:prepared, Map.put(state.prepared, seq, {:ready, from, encoded}))
+        |> maybe_schedule_prepare_flush()
+    end
+  end
+
+  defp fail_inline_prepare(state, from, seq, reason) do
+    GenServer.reply(from, {:error, {:prepare_failed, reason}})
+
+    # A failed call never claimed a GSN, so its seq is a hole to skip.
+    state
+    |> Map.put(:prepared, Map.put(state.prepared, seq, :skipped))
+    |> maybe_schedule_prepare_flush()
+  end
+
+  defp prepare_elapsed_ms(started_at) do
+    System.convert_time_unit(
+      System.monotonic_time(:microsecond) - started_at,
+      :microsecond,
+      :millisecond
+    )
+  end
+
   # Arrival order is fixed here, before the pool sees the Actions. The
   # pool may finish a later call first; only the snapshot burst prefix is
   # drained, so it cannot reorder claims.
   defp dispatch_prepare(state, from, actions) do
     seq = state.next_call_seq
     ref = make_ref()
-    timer = Process.send_after(self(), {:prepare_timeout, ref}, state.prepare_timeout_ms)
+    timer = Process.send_after(self(), {:prepare_timeout, ref}, state.prepare.timeout_ms)
 
-    PreparePool.prepare(state.prepare_pool, ref, Enum.map(actions, &prepare_input/1))
+    PreparePool.prepare(state.prepare.pool, ref, Enum.map(actions, &prepare_input/1))
 
     %{
       state
@@ -975,7 +1052,7 @@ defmodule EbbServer.Storage.Writer do
   defp cancel_prepare_timer(timer), do: Process.cancel_timer(timer)
 
   defp prepare_queue_full?(state) do
-    map_size(state.preparing) + map_size(state.prepared) >= state.prepare_queue_max
+    map_size(state.preparing) + map_size(state.prepared) >= state.prepare.queue_max
   end
 
   defp validate_prepare_opts!(pool_size, queue_max, timeout_ms) do

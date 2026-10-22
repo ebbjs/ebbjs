@@ -470,6 +470,10 @@ defmodule EbbServer.Storage.CommitPipeline do
   @spec get(t(), reference()) :: Batch.t() | nil
   def get(%__MODULE__{} = state, ref), do: Map.get(state.batches, ref)
 
+  @doc "True when no claimed range is in flight, applying, or awaiting release."
+  @spec idle?(t()) :: boolean()
+  def idle?(%__MODULE__{} = state), do: state.batches == %{}
+
   @doc "The open batches in claim order, oldest first."
   @spec open_batches(t()) :: [Batch.t()]
   def open_batches(%__MODULE__{} = state) do
