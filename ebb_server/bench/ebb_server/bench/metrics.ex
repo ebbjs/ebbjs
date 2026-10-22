@@ -195,29 +195,51 @@ defmodule EbbServer.Bench.Metrics do
   end
 
   @doc """
-  Counts GSNs in `1..max_gsn` that have no `cf_actions` record.
+  Counts GSNs in `1..max_gsn` that have no `cf_actions` record and names
+  the first one.
 
-  A commitment failure deliberately abandons its claimed range, so this
-  should be zero on a clean run.
+  A commitment failure deliberately abandons its claimed range, so a clean
+  run has no holes. `first_missing` is `nil` when the log is contiguous.
+  """
+  @spec gsn_holes() :: %{count: non_neg_integer(), first_missing: pos_integer() | nil}
+  def gsn_holes do
+    max_gsn = RocksDB.get_max_gsn()
+    if max_gsn == 0, do: %{count: 0, first_missing: nil}, else: scan_gsn_holes(max_gsn)
+  end
+
+  defp scan_gsn_holes(max_gsn) do
+    RocksDB.cf_actions()
+    |> RocksDB.range_iterator(
+      RocksDB.encode_gsn_key(1),
+      RocksDB.encode_gsn_key(max_gsn + 1)
+    )
+    |> Stream.map(fn {key, _value} -> RocksDB.decode_gsn_key(key) end)
+    |> gsn_hole_stats()
+  end
+
+  @doc """
+  Counts missing GSNs in `1..last_present` from present GSNs in ascending
+  order, and names the first gap.
+  """
+  @spec gsn_hole_stats(Enumerable.t()) :: %{
+          count: non_neg_integer(),
+          first_missing: pos_integer() | nil
+        }
+  def gsn_hole_stats(gsns) do
+    {count, first_missing, _next} =
+      Enum.reduce(gsns, {0, nil, 1}, fn gsn, {count, first, expected} ->
+        missing = max(gsn - expected, 0)
+        {count + missing, first || if(missing > 0, do: expected), gsn + 1}
+      end)
+
+    %{count: count, first_missing: first_missing}
+  end
+
+  @doc """
+  Counts GSNs in `1..max_gsn` that have no `cf_actions` record.
   """
   @spec count_gsn_holes() :: non_neg_integer()
-  def count_gsn_holes do
-    max_gsn = RocksDB.get_max_gsn()
-
-    if max_gsn == 0 do
-      0
-    else
-      present =
-        RocksDB.cf_actions()
-        |> RocksDB.range_iterator(
-          RocksDB.encode_gsn_key(1),
-          RocksDB.encode_gsn_key(max_gsn + 1)
-        )
-        |> Enum.count()
-
-      max_gsn - present
-    end
-  end
+  def count_gsn_holes, do: gsn_holes().count
 
   @doc """
   Throughput windows for a measured window of `duration` seconds.
@@ -334,12 +356,15 @@ defmodule EbbServer.Bench.Metrics do
   # unmeasured instead of reporting a number that describes nothing.
   defp correctness(merged, resource_samples, config) do
     frontier? = Options.measures_frontier?(config)
+    density? = Options.measures_gsn_density?(config)
+    holes = if density?, do: gsn_holes(), else: nil
 
     %{
       accepted: merged.accepted,
       rejected: merged.rejected,
       errors: merged.errors,
-      gsn_holes: if(frontier?, do: count_gsn_holes(), else: nil),
+      gsn_holes: holes && holes.count,
+      gsn_first_hole: holes && holes.first_missing,
       watermark_lag_high: if(frontier?, do: samples_max(resource_samples, &lag/1), else: nil),
       watermark_lag_final: if(frontier?, do: final_lag(resource_samples), else: nil)
     }

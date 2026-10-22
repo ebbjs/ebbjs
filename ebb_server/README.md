@@ -921,6 +921,14 @@ no-regression baseline row. The table pairs depth with `Actions/flush`:
 depth alone is not a pipeline-parallelism result, because the Writer
 coalesces the outstanding calls into shared flushes.
 
+A run fails (non-zero exit) if it loses GSNs, freezes its watermark, or
+reports rejected Actions or write/transport errors; `--no-guardrails` opts
+out for an intentionally degraded run. `--baseline <report>` also fails on an
+Actions/sec drop over 10% or a p50 rise over 25% against a matched pass from a
+prior report. See
+[`bench/RESULTS.md`](bench/RESULTS.md#run-guardrails-577) for the bands and
+the canonical p50/p99 budgets.
+
 `mix bench.materialize` runs the read / materialization benchmark: it
 seeds `content`-map documents of N run keys and measures the cold, dirty,
 and clean `get` paths plus `query` at K rows, with a phase breakdown and a

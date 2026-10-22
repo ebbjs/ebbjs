@@ -371,4 +371,50 @@ defmodule EbbServer.Bench.OptionsTest do
       refute Options.command(config) =~ "--ablate"
     end
   end
+
+  describe "guardrails and baseline options" do
+    test "guardrails are enforced by default" do
+      assert {:ok, config} = Options.parse([])
+      assert config.guardrails
+      assert config.baseline == nil
+      assert Map.new(Options.describe(config))["Guardrails"] == "enforced"
+    end
+
+    test "--no-guardrails disables enforcement and is printed" do
+      assert {:ok, config} = Options.parse(["--no-guardrails"])
+      refute config.guardrails
+
+      values = Map.new(Options.describe(config))
+      assert values["Guardrails"] == "disabled (--no-guardrails)"
+      assert Options.command(config) =~ "--no-guardrails"
+    end
+
+    test "--baseline is carried into the description and command" do
+      assert {:ok, config} = Options.parse(["--baseline", "/tmp/prior.md"])
+      assert config.baseline == "/tmp/prior.md"
+
+      values = Map.new(Options.describe(config))
+      assert values["Baseline"] == "/tmp/prior.md"
+      assert Options.command(config) =~ "--baseline /tmp/prior.md"
+    end
+
+    test "GSN density stays measurable when only the frontier is ablated" do
+      assert {:ok, ablated} = Options.parse(["--ablate", "watermark"])
+      assert Options.measures_gsn_density?(ablated)
+      refute Options.measures_frontier?(ablated)
+
+      assert {:ok, t5} = Options.parse(["--tier", "t5"])
+      refute Options.measures_gsn_density?(t5)
+    end
+
+    test "workload/1 is the stable comparison surface" do
+      assert {:ok, left} = Options.parse(["--seed", "1", "--out", "/tmp/a.md"])
+      assert {:ok, right} = Options.parse(["--seed", "9", "--out", "/tmp/b.md"])
+
+      assert Options.workload(left) == Options.workload(right)
+      refute Map.has_key?(Options.workload(left), "seed")
+      refute Map.has_key?(Options.workload(left), "out")
+      assert Options.workload(left)["tier"] == "t0"
+    end
+  end
 end

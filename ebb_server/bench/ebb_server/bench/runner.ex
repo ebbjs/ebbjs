@@ -16,7 +16,9 @@ defmodule EbbServer.Bench.Runner do
   """
 
   alias EbbServer.Bench.{
+    Baseline,
     Boot,
+    Guardrails,
     Http,
     Metrics,
     Options,
@@ -36,11 +38,23 @@ defmodule EbbServer.Bench.Runner do
 
   @doc """
   Runs the benchmark described by `config` and writes its Markdown report.
+
+  `run_fun` is the per-pass measurement, injectable so the guardrail and
+  report pipeline can be exercised without booting storage.
   """
   @spec run(Options.t()) :: {:ok, String.t()}
-  def run(%Options{} = config) do
-    {runs, failures} = collect(config, &run_pass/1)
-    result = %{runs: runs, sweep?: sweep?(config), failures: failures}
+  @spec run(Options.t(), (Options.t() -> map())) :: {:ok, String.t()}
+  def run(%Options{} = config, run_fun \\ &run_pass/1) do
+    baseline = load_baseline(config)
+    {runs, failures} = collect(config, run_fun)
+    guardrails = Guardrails.evaluate(runs, config, baseline)
+
+    result = %{
+      runs: runs,
+      sweep?: sweep?(config),
+      failures: failures,
+      guardrails: guardrails
+    }
 
     report = Report.render(config, result)
     path = Report.write(report, config)
@@ -48,7 +62,17 @@ defmodule EbbServer.Bench.Runner do
     IO.puts("\nReport written to #{path}")
 
     raise_failures(failures)
+    Guardrails.enforce!(guardrails, config)
     {:ok, path}
+  end
+
+  defp load_baseline(%Options{baseline: nil}), do: nil
+
+  defp load_baseline(%Options{baseline: path}) do
+    case Baseline.load(path) do
+      {:ok, baseline} -> baseline
+      {:error, message} -> raise "invalid --baseline: #{message}"
+    end
   end
 
   @doc """
@@ -68,7 +92,7 @@ defmodule EbbServer.Bench.Runner do
       |> Enum.reduce({[], []}, fn %{config: pass, depth: depth, label: label}, {runs, failures} ->
         case run_safely(run_fun, pass) do
           {:ok, metrics} ->
-            {[%{depth: depth, label: label, metrics: metrics} | runs], failures}
+            {[%{depth: depth, label: label, metrics: metrics, config: pass} | runs], failures}
 
           {:error, error} ->
             {runs, [%{depth: depth, label: label, tier: pass.tier, error: error} | failures]}

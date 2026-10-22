@@ -75,7 +75,9 @@ defmodule EbbServer.Bench.Options do
           subscribers: non_neg_integer(),
           rate: non_neg_integer(),
           subscriber_lean: boolean(),
-          ablate: [ablate_phase()]
+          ablate: [ablate_phase()],
+          baseline: String.t() | nil,
+          guardrails: boolean()
         }
 
   defstruct tier: :t0,
@@ -95,7 +97,9 @@ defmodule EbbServer.Bench.Options do
             subscribers: 0,
             rate: 0,
             subscriber_lean: false,
-            ablate: []
+            ablate: [],
+            baseline: nil,
+            guardrails: true
 
   @tiers %{"t0" => :t0, "t1" => :t1, "t2" => :t2, "t3" => :t3, "t4" => :t4, "t5" => :t5}
   @durabilities %{"sync" => :sync, "async" => :async}
@@ -138,7 +142,9 @@ defmodule EbbServer.Bench.Options do
     subscribers: :integer,
     rate: :integer,
     subscriber_lean: :boolean,
-    ablate: :string
+    ablate: :string,
+    baseline: :string,
+    guardrails: :boolean
   ]
 
   @doc """
@@ -183,6 +189,8 @@ defmodule EbbServer.Bench.Options do
       {"Target Actions/sec", target_rate(config.rate)},
       {"Writers", "#{config.writers}"},
       {"Ablated phases", ablated_description(config.ablate)},
+      {"Guardrails", guardrails_description(config)},
+      {"Baseline", config.baseline || "none"},
       {"Port", "#{config.port}"},
       {"Seed", "#{config.seed}"},
       {"Output", config.out || "(default)"}
@@ -220,6 +228,10 @@ defmodule EbbServer.Bench.Options do
     ]
 
     base = if config.subscriber_lean, do: base ++ ["--subscriber-lean"], else: base
+    base = if config.guardrails, do: base, else: base ++ ["--no-guardrails"]
+
+    base =
+      if config.baseline, do: base ++ ["--baseline #{config.baseline}"], else: base
 
     base =
       case config.ablate do
@@ -231,6 +243,34 @@ defmodule EbbServer.Bench.Options do
       nil -> Enum.join(base, " ")
       out -> Enum.join(base ++ ["--out #{out}"], " ")
     end
+  end
+
+  @doc """
+  The workload fields that determine whether two runs are comparable.
+
+  A `--baseline` comparison pairs a measured pass with a baseline pass only
+  when these fields match. Duration and warmup are included because a shorter
+  or colder window is not comparable; random seed, port, and output path are
+  excluded because they do not change the shape of the load.
+  """
+  @spec workload(t()) :: map()
+  def workload(%__MODULE__{} = config) do
+    %{
+      "tier" => Atom.to_string(config.tier),
+      "duration" => config.duration,
+      "warmup" => config.warmup,
+      "concurrency" => config.concurrency,
+      "in_flight" => config.in_flight,
+      "batch_size" => config.batch_size,
+      "updates_per_action" => config.updates_per_action,
+      "distribution" => Atom.to_string(config.distribution),
+      "durability" => Atom.to_string(config.durability),
+      "entities" => config.entities,
+      "subscribers" => config.subscribers,
+      "subscriber_lean" => config.subscriber_lean,
+      "rate" => config.rate,
+      "ablate" => Enum.map(config.ablate, &Atom.to_string/1)
+    }
   end
 
   @doc """
@@ -271,16 +311,27 @@ defmodule EbbServer.Bench.Options do
   end
 
   @doc """
-  Whether GSN density and watermark lag are meaningful for this run.
+  Whether watermark lag is meaningful for this run.
 
   The t5 spike writes raw batches at a synthetic per-caller GSN base and
   never commits through the Writer, so there is no frontier to compare
-  against — and a hole scan would walk from GSN 1 to that base. Ablating
-  `:watermark` likewise freezes the frontier.
+  against. Ablating `:watermark` likewise freezes the frontier.
   """
   @spec measures_frontier?(t()) :: boolean()
   def measures_frontier?(%__MODULE__{tier: :t5}), do: false
   def measures_frontier?(%__MODULE__{ablate: ablate}), do: :watermark not in ablate
+
+  @doc """
+  Whether a GSN density scan describes this run.
+
+  The t5 spike writes at a synthetic per-caller GSN base, so a scan from
+  GSN 1 would count the base itself as holes. Every Writer-driven tier is
+  measurable, including with `:watermark` ablated: a hole is a missing
+  `cf_actions` record and does not depend on how far the frontier moved.
+  """
+  @spec measures_gsn_density?(t()) :: boolean()
+  def measures_gsn_density?(%__MODULE__{tier: :t5}), do: false
+  def measures_gsn_density?(%__MODULE__{}), do: true
 
   @doc """
   Microseconds between batches a t4 worker paces to.
@@ -318,6 +369,8 @@ defmodule EbbServer.Bench.Options do
   defp put_opt({:rate, value}, acc), do: %{acc | rate: value}
   defp put_opt({:subscriber_lean, value}, acc), do: %{acc | subscriber_lean: value}
   defp put_opt({:ablate, value}, acc), do: %{acc | ablate: split_ablate(value)}
+  defp put_opt({:baseline, value}, acc), do: %{acc | baseline: value}
+  defp put_opt({:guardrails, value}, acc), do: %{acc | guardrails: value}
 
   defp validate(config) do
     with {:ok, tier} <- map_value(config.tier, @tiers, "tier"),
@@ -421,6 +474,9 @@ defmodule EbbServer.Bench.Options do
 
   defp ablated_description([]), do: "none"
   defp ablated_description(phases), do: Enum.map_join(phases, ", ", &Atom.to_string/1)
+
+  defp guardrails_description(%{guardrails: true}), do: "enforced"
+  defp guardrails_description(%{guardrails: false}), do: "disabled (--no-guardrails)"
 
   defp validate_ranges(config) do
     with :ok <- check(config.writers == 1, "--writers must be 1; multi-writer is gated on #287"),

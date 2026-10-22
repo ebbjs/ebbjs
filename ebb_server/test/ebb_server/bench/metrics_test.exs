@@ -156,6 +156,24 @@ defmodule EbbServer.Bench.MetricsTest do
     end
   end
 
+  describe "gsn_hole_stats/1" do
+    test "a contiguous log has no holes" do
+      assert Metrics.gsn_hole_stats([1, 2, 3]) == %{count: 0, first_missing: nil}
+    end
+
+    test "counts missing GSNs and names the first gap" do
+      assert Metrics.gsn_hole_stats([1, 4, 5]) == %{count: 2, first_missing: 2}
+    end
+
+    test "counts several gaps" do
+      assert Metrics.gsn_hole_stats([2, 5, 9]) == %{count: 6, first_missing: 1}
+    end
+
+    test "an empty log has no holes" do
+      assert Metrics.gsn_hole_stats([]) == %{count: 0, first_missing: nil}
+    end
+  end
+
   defp worker(overrides \\ []) do
     Map.merge(
       %{
