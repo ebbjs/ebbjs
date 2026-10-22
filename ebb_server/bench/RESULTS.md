@@ -225,6 +225,74 @@ HTTP/Bandit layer costs **~20%** at c=8, contrary to the old
 primitive and is not reproducible through `ebb_server` — the ceiling here
 is single-Writer serialization plus per-Action Elixir work, not the disk.
 
+## Pre-epic vs current: a rotated A/B (#529)
+
+The headline above is the last pre-epic refresh. This section measures the
+epic's net effect on the write path directly, because the epic's own gate was
+originally judged on within-session deltas and never against the state it
+started from.
+
+Method: `git worktree` at **`6cba789`** (the commit before the #531 merge that
+introduced the sequencer/committer split) and today's `main` @ **`8177744`**,
+built and benchmarked alternately on the same host, five passes per row with
+the order reversed on alternate passes, plus one 120 s run per row. Same shape
+throughout: batch 100, 2-Update Actions, `hot`, `sync: true`, `--seed 1`. Both
+builds report **0 GSN holes, 0 rejected Actions, 0 write/transport errors** on
+every run. The pre-#531 build has no pipeline, so both arms run at depth 1 —
+which is what production runs.
+
+```sh
+# per arm, from its own checkout
+mix bench.actions --tier t0 --duration 20 --warmup 3 --concurrency 1 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --seed 1
+mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 8 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --seed 1
+```
+
+### 20 s windows (5 passes, median)
+
+| Config   | Arm      |  Actions/s |         p50 |     p95 |     p99 | Scheduler util |
+| -------- | -------- | ---------: | ----------: | ------: | ------: | -------------: |
+| `t0 c=1` | pre-#531 | **26,740** |     3.45 ms | 4.36 ms | 5.22 ms |           9.5% |
+| `t0 c=1` | today    |     20,410 |     4.60 ms | 5.50 ms | 6.42 ms |          11.1% |
+| `t2 c=8` | pre-#531 | **21,590** | **35.6 ms** | 42.1 ms | 47.0 ms |          24.3% |
+| `t2 c=8` | today    |     19,515 |     39.5 ms | 46.6 ms | 50.0 ms |          26.3% |
+
+### 120 s steady window (one run per row)
+
+| Config   | Arm      | Actions/s (steady) |         p50 |     p95 |     p99 | Scheduler util |
+| -------- | -------- | -----------------: | ----------: | ------: | ------: | -------------: |
+| `t0 c=1` | pre-#531 |         **25,402** |     3.59 ms | 4.57 ms | 5.46 ms |           9.6% |
+| `t0 c=1` | today    |             20,219 |     4.62 ms | 5.63 ms | 6.49 ms |          10.9% |
+| `t2 c=8` | pre-#531 |         **20,985** | **36.1 ms** | 42.9 ms | 47.6 ms |          23.8% |
+| `t2 c=8` | today    |             19,249 |     39.8 ms | 46.5 ms | 50.5 ms |          26.4% |
+
+### What it says
+
+- **The epic costs throughput and latency at the shape production runs.** `t0
+c=1` is **−24%** throughput and **+33%** p50; `t2 c=8` is **−10%**
+  throughput and **+10%** p50. The 120 s steady windows agree (−20% / −8%), so
+  this is not a short-window artifact.
+- **The cost is the pipeline's depth-1 overhead, not the storage shape.** Both
+  arms write the same five column families with the same records; the current
+  arm adds the prepare hop, the committer handoff, the in-flight id guard, the
+  overlay plan, and the ordered-release bookkeeping. The flush-only ablation
+  ladder above attributes them: watermark +0.41 ms/flush, dedup +0.22,
+  fanout +0.21, cache +0.11 against the pre-epic marginals. The gap is inside
+  the flush: an earlier estimate put ~1 ms/call outside it, but that subtracted
+  a flush **p50** from a per-call **mean**; matched to the same statistic the
+  per-call gap is ~0.3 ms.
+- **The pipeline's remaining measured advantage is the depth-2 shape**, which
+  cannot run on the pre-#531 build: 31,015 Actions/s at `t0 c=1 depth 2`
+  (+52.6% over its own depth-1 row, flush and commit p50 unchanged). At the
+  production shape depth 2 buys +3.8% for 2× p50, so this advantage does not
+  reach production traffic — it reaches single-heavy-client shapes (bulk
+  import) and nothing else measured so far.
+- **Therefore the pre-#531 state is the floor the epic has to beat, not the
+  ceiling it already passed.** Any claim that the pipeline "paid for itself"
+  has to show a depth-1 row at or above these numbers, because production is a
+  depth-1 deployment.
+
 ## Tier and storage ceiling
 
 Refreshed rows (2026-10-16, #485):
