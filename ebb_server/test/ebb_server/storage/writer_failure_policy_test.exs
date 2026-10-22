@@ -84,8 +84,12 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
     test "a commit_fn that raises clears the provisional mark it wrote", ctx do
       commit_fn = fn _ops, _opts -> raise "boom" end
 
+      # Depth 2 so the commit runs in a pool worker: the Writer commits
+      # inline only when it has a single committer slot.
       %{name: writer_name, pid: writer_pid} =
-        start_writer(Map.merge(ctx, %{commit_fn: commit_fn}))
+        start_writer(
+          Map.merge(ctx, %{commit_fn: commit_fn, max_in_flight: 2, committer_pool_size: 2})
+        )
 
       Process.unlink(writer_pid)
 
@@ -210,8 +214,12 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
         end
       end
 
+      # Depth 2 so the commit runs in a pool worker: the Writer commits
+      # inline only when it has a single committer slot.
       %{name: writer_name, pid: writer_pid} =
-        start_writer(Map.merge(ctx, %{commit_fn: commit_fn}))
+        start_writer(
+          Map.merge(ctx, %{commit_fn: commit_fn, max_in_flight: 2, committer_pool_size: 2})
+        )
 
       Process.unlink(writer_pid)
 
@@ -394,10 +402,9 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
         send(test_pid, {:second_result, result})
       end)
 
-      assert wait_until(fn ->
-               state = :sys.get_state(writer_pid)
-               CommitPipeline.inflight?(state.pipeline) and state.pipeline.pending_count == 1
-             end)
+      # A single committer slot puts the commit inside the Writer, so the
+      # broken call waits in the mailbox rather than in the pipeline.
+      assert wait_until(fn -> queue_len(writer_pid) >= 1 end)
 
       send(committer_pid, :release)
 
