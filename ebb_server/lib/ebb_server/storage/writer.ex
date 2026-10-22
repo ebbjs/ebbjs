@@ -319,6 +319,7 @@ defmodule EbbServer.Storage.Writer do
     CacheMutationPlanner,
     CacheTables,
     CommitPipeline,
+    Committer,
     CommitterPool,
     DirtyTracker,
     EntityGroupCache,
@@ -415,6 +416,7 @@ defmodule EbbServer.Storage.Writer do
     :preparing,
     :prepared,
     :committer_pool,
+    :commit_opts,
     :pipeline,
     :after_commit,
     :batch_max_size,
@@ -635,6 +637,7 @@ defmodule EbbServer.Storage.Writer do
       preparing: %{},
       prepared: %{},
       committer_pool: committer_pool,
+      commit_opts: [rocks_name: rocks_name, commit_fn: commit_fn, ablate: ablate],
       pipeline: CommitPipeline.new(max_in_flight: max_in_flight),
       after_commit: after_commit,
       batch_max_size: batch_max_size,
@@ -1340,8 +1343,16 @@ defmodule EbbServer.Storage.Writer do
       %Batch{ref: ref, prepared: prepared, gsn_start: gsn_start, gsn_end: gsn_end} ->
         {:ok, _batch, pipeline} = CommitPipeline.committing(state.pipeline, ref)
         state = %{state | pipeline: pipeline}
-        CommitterPool.commit(state.committer_pool, ref, prepared, gsn_start, gsn_end)
-        state
+
+        # One committer slot means no batch can overlap this one, so the
+        # hand-off buys nothing and costs a copy plus three hops.
+        if state.pipeline.max_in_flight == 1 do
+          result = Committer.commit_now(prepared, gsn_start, gsn_end, state.commit_opts)
+          handle_commit_result(result, ref, state)
+        else
+          CommitterPool.commit(state.committer_pool, ref, prepared, gsn_start, gsn_end)
+          state
+        end
 
       nil ->
         state
