@@ -15,6 +15,58 @@ defmodule EbbServer.Storage.WriterPrepareStageTest do
 
   import EbbServer.TestHelpers
 
+  # Holds one committed range so the Writer is not idle: a prepare arriving
+  # now goes to the pool. The containment tests below are about the pooled
+  # path; `prepare_inline?/1` only applies to a completely idle Writer.
+  defp busy_writer(ctx, prepare_opts) do
+    test_pid = self()
+    commits = :atomics.new(1, signed: false)
+
+    commit_fn = fn ops, opts ->
+      if :atomics.add_get(commits, 1, 1) == 1 do
+        send(test_pid, {:holding_commit, self()})
+
+        receive do
+          :release_held -> RocksDB.write_batch(ops, opts)
+        end
+      else
+        RocksDB.write_batch(ops, opts)
+      end
+    end
+
+    writer =
+      start_writer(
+        writer_opts(
+          ctx,
+          Map.merge(
+            %{max_in_flight: 2, committer_pool_size: 2, commit_fn: commit_fn},
+            prepare_opts
+          )
+        )
+      )
+
+    held =
+      Task.async(fn ->
+        Writer.write_actions([validated_action(%{id: "act_held"})], writer.name)
+      end)
+
+    assert_receive {:holding_commit, worker}, 2_000
+    {writer, %{writer: writer, worker: worker, task: held, released: false}}
+  end
+
+  # The held range is the head of claim order, so nothing behind it can be
+  # released until it commits. Tests call this just before they wait on a
+  # later range's reply.
+  defp release_held_commit(held) do
+    if Map.get(held, :released, false) do
+      held
+    else
+      send(held.worker, :release_held)
+      assert {:ok, {1, 1}, []} = Task.await(held.task, 2_000)
+      Map.put(held, :released, true)
+    end
+  end
+
   setup do
     cache = start_isolated_cache()
     %{name: rocks_name} = start_rocks()
@@ -27,34 +79,83 @@ defmodule EbbServer.Storage.WriterPrepareStageTest do
       action = validated_action(%{id: "act_prepare"})
       expected_etf = action |> ActionFormat.build() |> ActionFormat.encode()
 
-      prepare_fn = fn _input ->
-        send(test_pid, {:preparing, self()})
+      prepare_fn = fn input ->
+        if input.id == "act_prepare" do
+          send(test_pid, {:preparing, self()})
 
-        receive do
-          {:release, etf} -> etf
+          receive do
+            {:release, etf} -> etf
+          end
+        else
+          input |> ActionFormat.build() |> ActionFormat.encode()
         end
       end
 
-      writer =
-        start_writer(
-          writer_opts(ctx, %{
-            prepare_fn: prepare_fn,
-            prepare_pool_size: 1
-          })
-        )
+      {writer, held} =
+        busy_writer(ctx, %{prepare_fn: prepare_fn, prepare_pool_size: 1})
 
       task = Task.async(fn -> Writer.write_actions([action], writer.name) end)
 
       assert_receive {:preparing, worker}, 2_000
 
-      # If build/encode still ran on the Writer's call path this sys call
-      # would not return until the worker was released.
-      assert is_pid(:sys.get_state(writer.pid, 500).prepare_pool)
+      # The prepare runs off the Writer's call path while the pipeline is
+      # busy, so the Writer keeps answering.
+      assert is_pid(:sys.get_state(writer.pid, 500).prepare.pool)
 
       send(worker, {:release, expected_etf})
 
-      assert {:ok, {1, 1}, []} = Task.await(task, 2_000)
-      assert persisted_payload(ctx.rocks_name, 1)["id"] == "act_prepare"
+      release_held_commit(held)
+
+      assert {:ok, {2, 2}, []} = Task.await(task, 2_000)
+      assert persisted_payload(ctx.rocks_name, 2)["id"] == "act_prepare"
+    end
+  end
+
+  describe "inline prepare (#574)" do
+    test "an idle Writer prepares on its own process", ctx do
+      test_pid = self()
+      writer_pid = :erlang.whereis(:writer_placeholder)
+
+      prepare_fn = fn input ->
+        send(test_pid, {:prepared_in, self(), input.id})
+        input |> ActionFormat.build() |> ActionFormat.encode()
+      end
+
+      writer = start_writer(writer_opts(ctx, %{prepare_fn: prepare_fn}))
+
+      assert {:ok, {1, 1}, []} =
+               Writer.write_actions([validated_action(%{id: "act_idle"})], writer.name)
+
+      assert_receive {:prepared_in, prepared_in, "act_idle"}, 2_000
+      assert prepared_in == writer.pid
+      refute writer.pid == writer_pid
+      assert persisted_payload(ctx.rocks_name, 1)["id"] == "act_idle"
+    end
+
+    test "a slow inline prepare fails its call and claims no GSN", ctx do
+      test_pid = self()
+
+      prepare_fn = fn input ->
+        if input.id == "act_slow" do
+          send(test_pid, {:inline_started, self()})
+          Process.sleep(120)
+        end
+
+        input |> ActionFormat.build() |> ActionFormat.encode()
+      end
+
+      writer = start_writer(writer_opts(ctx, %{prepare_fn: prepare_fn, prepare_timeout_ms: 50}))
+
+      assert {:error, {:prepare_failed, {:timeout, 50}}} =
+               Writer.write_actions([validated_action(%{id: "act_slow"})], writer.name)
+
+      assert_receive {:inline_started, prepared_in}, 2_000
+      assert prepared_in == writer.pid
+      assert RocksDB.get_max_gsn(ctx.rocks_name) == 0
+
+      # The next call still commits at the first GSN.
+      assert {:ok, {1, 1}, []} =
+               Writer.write_actions([validated_action(%{id: "act_after_slow"})], writer.name)
     end
   end
 
@@ -74,13 +175,7 @@ defmodule EbbServer.Storage.WriterPrepareStageTest do
         input |> ActionFormat.build() |> ActionFormat.encode()
       end
 
-      writer =
-        start_writer(
-          writer_opts(ctx, %{
-            prepare_fn: prepare_fn,
-            prepare_pool_size: 2
-          })
-        )
+      {writer, held} = busy_writer(ctx, %{prepare_fn: prepare_fn, prepare_pool_size: 2})
 
       first =
         Task.async(fn ->
@@ -100,8 +195,10 @@ defmodule EbbServer.Storage.WriterPrepareStageTest do
 
       send(first_worker, :release)
 
-      assert {:ok, {1, 1}, []} = Task.await(first, 2_000)
-      assert {:ok, {2, 2}, []} = Task.await(second, 2_000)
+      release_held_commit(held)
+
+      assert {:ok, {2, 2}, []} = Task.await(first, 2_000)
+      assert {:ok, {3, 3}, []} = Task.await(second, 2_000)
     end
   end
 
@@ -118,14 +215,8 @@ defmodule EbbServer.Storage.WriterPrepareStageTest do
         input |> ActionFormat.build() |> ActionFormat.encode()
       end
 
-      writer =
-        start_writer(
-          writer_opts(ctx, %{
-            prepare_fn: prepare_fn,
-            prepare_pool_size: 2,
-            prepare_timeout_ms: 50
-          })
-        )
+      {writer, held} =
+        busy_writer(ctx, %{prepare_fn: prepare_fn, prepare_pool_size: 2, prepare_timeout_ms: 50})
 
       stuck =
         Task.async(fn ->
@@ -140,12 +231,15 @@ defmodule EbbServer.Storage.WriterPrepareStageTest do
         end)
 
       assert {:error, {:prepare_failed, {:timeout, 50}}} = Task.await(stuck, 2_000)
-      assert {:ok, {1, 1}, []} = Task.await(next, 2_000)
-      assert persisted_payload(ctx.rocks_name, 1)["id"] == "act_next"
+
+      release_held_commit(held)
+
+      assert {:ok, {2, 2}, []} = Task.await(next, 2_000)
+      assert persisted_payload(ctx.rocks_name, 2)["id"] == "act_next"
 
       # The stuck worker's late result must not claim the timed-out call.
       Process.sleep(600)
-      assert RocksDB.get_max_gsn(ctx.rocks_name) == 1
+      assert RocksDB.get_max_gsn(ctx.rocks_name) == 2
     end
 
     test "a timed-out prepare worker is retired and replaced", ctx do
@@ -163,14 +257,8 @@ defmodule EbbServer.Storage.WriterPrepareStageTest do
         input |> ActionFormat.build() |> ActionFormat.encode()
       end
 
-      writer =
-        start_writer(
-          writer_opts(ctx, %{
-            prepare_fn: prepare_fn,
-            prepare_pool_size: 1,
-            prepare_timeout_ms: 50
-          })
-        )
+      {writer, held} =
+        busy_writer(ctx, %{prepare_fn: prepare_fn, prepare_pool_size: 1, prepare_timeout_ms: 50})
 
       hung =
         Task.async(fn ->
@@ -183,7 +271,9 @@ defmodule EbbServer.Storage.WriterPrepareStageTest do
       # The wedged worker must not permanently consume the only pool slot.
       assert wait_until(fn -> not Process.alive?(worker) end)
 
-      assert {:ok, {1, 1}, []} =
+      release_held_commit(held)
+
+      assert {:ok, {2, 2}, []} =
                Writer.write_actions([validated_action(%{id: "act_after_hang"})], writer.name)
     end
 
@@ -202,13 +292,7 @@ defmodule EbbServer.Storage.WriterPrepareStageTest do
         input |> ActionFormat.build() |> ActionFormat.encode()
       end
 
-      writer =
-        start_writer(
-          writer_opts(ctx, %{
-            prepare_fn: prepare_fn,
-            prepare_pool_size: 1
-          })
-        )
+      {writer, held} = busy_writer(ctx, %{prepare_fn: prepare_fn, prepare_pool_size: 1})
 
       crashed =
         Task.async(fn ->
@@ -220,7 +304,9 @@ defmodule EbbServer.Storage.WriterPrepareStageTest do
 
       assert {:error, {:prepare_failed, {:crashed, :killed}}} = Task.await(crashed, 2_000)
 
-      assert {:ok, {1, 1}, []} =
+      release_held_commit(held)
+
+      assert {:ok, {2, 2}, []} =
                Writer.write_actions([validated_action(%{id: "act_after_crash"})], writer.name)
     end
 
@@ -239,14 +325,8 @@ defmodule EbbServer.Storage.WriterPrepareStageTest do
         input |> ActionFormat.build() |> ActionFormat.encode()
       end
 
-      writer =
-        start_writer(
-          writer_opts(ctx, %{
-            prepare_fn: prepare_fn,
-            prepare_pool_size: 1,
-            prepare_queue_max: 1
-          })
-        )
+      {writer, held} =
+        busy_writer(ctx, %{prepare_fn: prepare_fn, prepare_pool_size: 1, prepare_queue_max: 1})
 
       blocked =
         Task.async(fn ->
@@ -260,9 +340,11 @@ defmodule EbbServer.Storage.WriterPrepareStageTest do
 
       send(worker, :release)
 
-      assert {:ok, {1, 1}, []} = Task.await(blocked, 2_000)
+      release_held_commit(held)
 
-      assert {:ok, {2, 2}, []} =
+      assert {:ok, {2, 2}, []} = Task.await(blocked, 2_000)
+
+      assert {:ok, {3, 3}, []} =
                Writer.write_actions([validated_action(%{id: "act_after_full"})], writer.name)
     end
   end
