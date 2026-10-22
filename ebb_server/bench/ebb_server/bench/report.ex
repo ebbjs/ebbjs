@@ -9,7 +9,7 @@ defmodule EbbServer.Bench.Report do
   single-depth run keeps the original top-level sections.
   """
 
-  alias EbbServer.Bench.Options
+  alias EbbServer.Bench.{Options, RunSummary}
   alias EbbServer.Storage.RocksDB
 
   @doc """
@@ -25,7 +25,9 @@ defmodule EbbServer.Bench.Report do
        pipeline_depth_section(runs, sweep?) ++
        List.flatten(run_sections(config, runs, length(runs) > 1)) ++
        failures_section(failures) ++
-       methodology_section(config, primary_metrics(runs), pipelined?, baseline?))
+       guardrails_section(Map.get(result, :guardrails)) ++
+       methodology_section(config, primary_metrics(runs), pipelined?, baseline?) ++
+       List.wrap(machine_section(config, result)))
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
@@ -192,6 +194,108 @@ defmodule EbbServer.Bench.Report do
         "is still valid on its own.",
       ""
     ]
+  end
+
+  defp guardrails_section(nil), do: []
+
+  defp guardrails_section(guardrails) do
+    status = if guardrails.enforced?, do: "enforced", else: "disabled (--no-guardrails)"
+
+    outcome =
+      cond do
+        guardrails.violations == [] ->
+          "All guardrails passed."
+
+        guardrails.enforced? ->
+          "The run failed #{length(guardrails.violations)} guardrail(s); the report is " <>
+            "still written so the measurement is not lost."
+
+        true ->
+          "#{length(guardrails.violations)} violation(s) recorded; enforcement is off, " <>
+            "so the run did not fail."
+      end
+
+    [
+      "## Guardrails",
+      "",
+      "Status: #{status}. #{outcome}",
+      "",
+      guardrail_bands(guardrails.bands),
+      "",
+      violations_table(guardrails.violations),
+      comparisons_table(guardrails.comparisons)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp guardrail_bands(bands) do
+    "Regression bands against a matched baseline: Actions/sec more than " <>
+      "#{format_percent(bands.rate_regression)} below, or p50 more than " <>
+      "#{format_percent(bands.p50_regression)} above. A GSN hole, an unbounded watermark " <>
+      "lag, a rejected Action, or a write/transport error fails regardless of the baseline."
+  end
+
+  defp violations_table([]), do: nil
+
+  defp violations_table(violations) do
+    rows =
+      Enum.map(violations, fn violation ->
+        [to_string(violation.invariant), violation.run, violation.detail]
+      end)
+
+    "### Violations\n\n" <> table(["Invariant", "Run", "Detail"], rows)
+  end
+
+  defp comparisons_table([]), do: nil
+
+  defp comparisons_table(comparisons) do
+    rows =
+      Enum.map(comparisons, fn comparison ->
+        [
+          comparison.run,
+          comparison.baseline_run || "no match",
+          delta_cell(comparison.rate),
+          delta_cell(comparison.p50),
+          delta_cell(comparison.p95),
+          pair_cell(comparison.gsn_holes),
+          pair_cell(comparison.watermark_lag_final)
+        ]
+      end)
+
+    "### Baseline comparison\n\n" <>
+      table(
+        [
+          "Run",
+          "Baseline",
+          "Actions/sec (Δ)",
+          "p50 µs (Δ)",
+          "p95 µs (Δ)",
+          "Holes (current / baseline)",
+          "Final lag (current / baseline)"
+        ],
+        rows
+      )
+  end
+
+  defp delta_cell(%{current: nil}), do: "n/a"
+
+  defp delta_cell(%{current: current, delta: delta}) do
+    "#{format_value(current)} (#{format_delta(delta)})"
+  end
+
+  defp pair_cell(%{current: current, baseline: baseline}) do
+    "#{format_value(current)} / #{format_value(baseline)}"
+  end
+
+  defp format_delta(nil), do: "n/a"
+
+  defp format_delta(delta) do
+    sign = if delta >= 0, do: "+", else: ""
+    "#{sign}#{:erlang.float_to_binary(delta * 100, decimals: 1)}%"
+  end
+
+  defp format_percent(value) do
+    "#{round(value * 100)}%"
   end
 
   defp methodology_section(_config, nil, _pipelined?, _baseline?), do: []
@@ -373,7 +477,7 @@ defmodule EbbServer.Bench.Report do
       "measured-window only.\n"
   end
 
-  defp overall(windows), do: Enum.find(windows, &(&1.window == "overall"))
+  defp overall(windows), do: RunSummary.overall(windows)
 
   defp fixed_rate_section(%{tier: :t4} = config, result) do
     metrics = result.fanout_metrics
@@ -423,7 +527,8 @@ defmodule EbbServer.Bench.Report do
       "measured path bypasses the Writer, so its caches, watermark, and fan-out stay idle " <>
       "(the storage tree still boots to open the DB and seed the bench context). Nothing here " <>
       "reflects the production write path's bookkeeping, and GSN holes/watermark lag are " <>
-      "reported `n/a` because no frontier advances. Comparing callers at the same sync mode " <>
+      "reported `n/a` because the spike writes at a synthetic GSN base and never advances " <>
+      "the Writer's frontier. Comparing callers at the same sync mode " <>
       "is the point: the gap between one and two callers is the headroom a committer pool " <>
       "could use. The peak-dirty row in the resources table is Workbook seed residue, not a " <>
       "t5 signal.\n"
@@ -453,19 +558,25 @@ defmodule EbbServer.Bench.Report do
     resources = result.resources
 
     # The frontier never moves when `:watermark` is ablated or when the run
+    # The frontier never moves when `:watermark` is ablated or when the run
     # bypasses the Writer (t5), so its derived numbers are meaningless rather
-    # than zero.
-    watermark = fn value ->
+    # than zero. GSN density is separate: only t5 writes at a synthetic base.
+    frontier = fn value ->
       if Options.measures_frontier?(config), do: format_integer(value), else: "n/a"
+    end
+
+    density = fn value ->
+      if Options.measures_gsn_density?(config), do: format_integer(value), else: "n/a"
     end
 
     rows = [
       {"Accepted Actions", format_integer(correctness.accepted)},
       {"Rejected Actions", format_integer(correctness.rejected)},
       {"Write/transport errors", format_integer(correctness.errors)},
-      {"GSN holes", watermark.(correctness.gsn_holes)},
-      {"Watermark lag high-water (GSNs)", watermark.(correctness.watermark_lag_high)},
-      {"Final watermark lag (GSNs)", watermark.(correctness.watermark_lag_final)},
+      {"GSN holes", density.(correctness.gsn_holes)},
+      {"First missing GSN", first_hole_value(config, Map.get(correctness, :gsn_first_hole))},
+      {"Watermark lag high-water (GSNs)", frontier.(correctness.watermark_lag_high)},
+      {"Final watermark lag (GSNs)", frontier.(correctness.watermark_lag_final)},
       {"Peak RSS", format_kb(resources.peak_rss_kb)},
       {"Peak process memory", format_bytes(resources.peak_memory_bytes)},
       {"Peak dirty-set size", format_integer(resources.peak_dirty)},
@@ -665,6 +776,97 @@ defmodule EbbServer.Bench.Report do
     else
       _ -> "unknown"
     end
+  end
+
+  defp first_hole_value(%Options{} = config, value) do
+    cond do
+      not Options.measures_gsn_density?(config) -> "n/a"
+      is_nil(value) -> "none"
+      true -> format_integer(value)
+    end
+  end
+
+  defp machine_section(config, result) do
+    payload = %{
+      "schema" => "ebb-bench-results",
+      "version" => 1,
+      "generated_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "config" => Options.workload(config),
+      "guardrails" => machine_guardrails(Map.get(result, :guardrails)),
+      "runs" => Enum.map(result.runs, &machine_run(config, &1)),
+      "failures" => Enum.map(Map.get(result, :failures, []), &machine_failure/1)
+    }
+
+    [
+      "## Machine-readable results",
+      "",
+      "<!-- ebb-bench-results:v1",
+      Jason.encode!(payload, pretty: true),
+      "-->",
+      ""
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp machine_guardrails(nil), do: nil
+
+  defp machine_guardrails(guardrails) do
+    %{
+      "enforced" => guardrails.enforced?,
+      "baseline" => Map.get(guardrails, :baseline?, false),
+      "bands" => %{
+        "rate_regression" => guardrails.bands.rate_regression,
+        "p50_regression" => guardrails.bands.p50_regression
+      },
+      "violations" =>
+        Enum.map(guardrails.violations, fn violation ->
+          %{
+            "invariant" => to_string(violation.invariant),
+            "run" => violation.run,
+            "detail" => violation.detail
+          }
+        end),
+      "comparisons" => guardrails.comparisons
+    }
+  end
+
+  defp machine_failure(failure) do
+    %{
+      "label" => failure.label,
+      "depth" => failure.depth,
+      "tier" => to_string(failure.tier),
+      "error" => failure.error
+    }
+  end
+
+  defp machine_run(config, run) do
+    summary = RunSummary.from_run(run, config)
+
+    %{
+      "label" => summary.label,
+      "depth" => summary.depth,
+      "config" => summary.config,
+      "throughput" => %{
+        "rate" => summary.rate,
+        "accepted" => summary.throughput_accepted,
+        "rejected" => summary.throughput_rejected
+      },
+      "latency" => %{
+        "count" => summary.latency_count,
+        "p50" => summary.p50,
+        "p95" => summary.p95,
+        "p99" => summary.p99
+      },
+      "correctness" => %{
+        "accepted" => summary.accepted,
+        "rejected" => summary.rejected,
+        "errors" => summary.errors,
+        "gsn_holes" => summary.gsn_holes,
+        "gsn_first_hole" => summary.gsn_first_hole,
+        "watermark_lag_high" => summary.watermark_lag_high,
+        "watermark_lag_final" => summary.watermark_lag_final
+      }
+    }
   end
 
   defp otp_release, do: :erlang.system_info(:otp_release) |> to_string()

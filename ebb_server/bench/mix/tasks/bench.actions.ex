@@ -23,6 +23,14 @@ defmodule Mix.Tasks.Bench.Actions do
   runs the requested tier, and writes a Markdown report to
   `bench/results/`. See `EbbServer.Bench.Options` for the full option list
   and `ebb_server/bench/RESULTS.md` for published runs.
+
+  The run fails (non-zero exit) when a pass loses GSNs, ends with a frozen
+  watermark, or reports rejected Actions or write/transport errors. Opt out
+  with `--no-guardrails`; the report still records the violations. With
+  `--baseline <report>`, each pass is also compared against the pass with the
+  same workload config in a prior report, and an Actions/sec drop over 10% or
+  a p50 rise over 25% fails the run. The bands live in
+  `EbbServer.Bench.Guardrails` and are documented in `bench/RESULTS.md`.
   """
 
   use Mix.Task

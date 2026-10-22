@@ -1,7 +1,8 @@
 defmodule EbbServer.Bench.AblationReportTest do
   @moduledoc """
-  Pins how an ablated run reports itself: `:watermark` ablation must not
-  invent density or lag numbers, and the report must name the phases.
+  Pins how an ablated run reports itself: `:watermark` ablation freezes the
+  frontier, so lag must stay unmeasured; GSN density is independent of the
+  frontier and stays measurable. The report must name the phases.
   """
 
   use ExUnit.Case, async: true
@@ -38,17 +39,17 @@ defmodule EbbServer.Bench.AblationReportTest do
     {:ok, ctx: ctx, worker: worker, resources: resources}
   end
 
-  test "`:watermark` ablation reports n/a instead of a meaningless frontier", context do
+  test "`:watermark` ablation keeps density but leaves lag unmeasured", context do
     {:ok, config} = Options.parse(["--ablate", "watermark"])
     result = analyze(config, context)
 
-    assert result.correctness.gsn_holes == nil
+    assert is_integer(result.correctness.gsn_holes)
     assert result.correctness.watermark_lag_high == nil
     assert result.correctness.watermark_lag_final == nil
 
     report = render(config, result)
 
-    assert report =~ "| GSN holes | n/a |"
+    refute report =~ "| GSN holes | n/a |"
     assert report =~ "| Watermark lag high-water (GSNs) | n/a |"
     assert report =~ "| Ablated phases | watermark |"
     assert report =~ "Ablation is active"

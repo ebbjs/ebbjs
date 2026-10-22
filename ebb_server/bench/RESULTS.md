@@ -59,6 +59,74 @@ fixed-rate `Writer.write_actions/1` plus in-process SSE subscribers.
 is supported on `t0`, `t2`, and `t3`; see
 [Pipeline depth](#pipeline-depth-n-in-flight-calls-551-re-measured-for-the-v2-gate).
 
+## Run guardrails (#577)
+
+`mix bench.actions` refuses to report an invalid run. After every measured
+pass it evaluates the correctness invariants below and exits non-zero, naming
+the invariant, when one fails. The report is still written first, so the
+measurement is not lost; the failure and every comparison are rendered under
+`## Guardrails`.
+
+| Invariant                | Fails when                                                                         |
+| ------------------------ | ---------------------------------------------------------------------------------- |
+| `gsn_holes`              | any GSN in `1..max_gsn` has no `cf_actions` record; prints the count and first gap |
+| `watermark_lag`          | the final watermark lag is at or above the run's accepted GSN count                |
+| `rejected_actions`       | the run reports any rejected Action                                                |
+| `write_transport_errors` | the run reports any write or transport error                                       |
+| `baseline_throughput`    | with `--baseline`: Actions/sec more than **10%** below the matched pass            |
+| `baseline_latency`       | with `--baseline`: p50 more than **25%** above the matched pass                    |
+| `baseline_no_match`      | with `--baseline`: no baseline pass has the same workload config                   |
+
+A normal tail drain passes: the lag only fails when it reaches the whole
+accepted GSN count, which is the frozen-frontier shape from #553/#570. A
+frontier that is deliberately not measured (`t5`, or `--ablate watermark`)
+is skipped rather than treated as zero. GSN density is not tied to the
+frontier: `--ablate watermark` still scans `cf_actions` and can fail on a
+hole, while `t5` skips both because it writes at a synthetic GSN base.
+
+`--no-guardrails` opts an intentionally degraded run (fault injection,
+ablation experiments) out of the exit code. Violations are still evaluated
+and rendered, and the report's configuration table prints
+`disabled (--no-guardrails)`, so an exploratory report cannot quietly claim a
+clean run.
+
+### Comparing against a baseline
+
+```sh
+mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 8 \
+  --batch-size 100 --updates-per-action 2 --distribution hot \
+  --baseline bench/results/20261022T120000Z-recsy-vps.md
+```
+
+`--baseline` pairs each measured pass with the pass in a previous report that
+has the same workload fields: tier, duration, warmup, concurrency, in-flight
+depth, batch size, updates per Action, distribution, durability, preloaded
+entities, subscribers, target rate, and ablated phases. Seed, port, and output
+path are excluded because they do not change the load shape. A report
+carries an `ebb-bench-results:v1` machine block for this; a baseline must be a
+report with the same machine-block version. Actions/sec and p50 are
+enforced; p95 and p99 are compared and printed for diagnosis. The bands live in
+`ebb_server/bench/ebb_server/bench/guardrails.ex`, next to the report and
+failure text that quote them.
+
+### Canonical reference budgets
+
+The enforced rule is relative to a `--baseline` file, not an absolute number.
+These are the published medians a contributor should recognise as the current
+canonical shapes; treat a p50/p99 above them as worth a rotated A/B before it
+is called a regression.
+
+| Config                                             |     p50 |    p99\* |   Actions/sec |
+| -------------------------------------------------- | ------: | -------: | ------------: |
+| `t0 c=1`, batch 100, 2-Update, `hot`, `sync`, 20 s | 3.56 ms |  6.35 ms | 25,690–26,745 |
+| `t2 c=8`, batch 100, 2-Update, `hot`, `sync`, 20 s | 29.5 ms | 50.42 ms | 24,615–25,945 |
+
+The p50 figures are the Step 0 medians above. `*` p99 is the last published
+measurement for the same shape and predates Step 0, which changed the p50; read
+it as an upper reference until it is re-measured, not as a paired current
+number. The values sit inside this VM's ±5–10% run-to-run spread, which is why
+the baseline band is 10%/25% and not a tighter constant.
+
 ## Environment
 
 | Field        | Value                                                                   |
