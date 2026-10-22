@@ -18,11 +18,13 @@ defmodule EbbServer.Sync.GroupListing do
   ## Materialization
 
   The SQLite read model is materialized lazily and `DirtyTracker` marks are
-  in-memory only, so a row that is *not dirty* is not necessarily *current*
-  after a restart (#564). This module therefore materializes the group's
-  dirty system rows before paging and **every** returned row
-  unconditionally as it is read. A seeded row that is stale at `W` would be
-  stale forever, because the tail never revisits it.
+  in-memory only. Boot repairs the gap that leaves: the cache rebuild
+  re-marks every `cf_type_entities` row dirty (#564), so the first read or
+  per-type query after a restart replays the row's delta. This module still
+  materializes the group's dirty system rows before paging and **every**
+  returned row unconditionally as it is read. A seeded row that is stale at
+  `W` would be stale forever, because the tail never revisits it, and that
+  `W` claim must not depend on the dirty set being a complete record.
 
   ## Pagination
 
@@ -224,8 +226,9 @@ defmodule EbbServer.Sync.GroupListing do
   end
 
   # Phase 0 — the bounded prefix. The group row is materialized
-  # unconditionally: `group` is not one of the types the boot path rebuilds,
-  # so its cached row can be clean and stale (#564).
+  # unconditionally: `group` has no eager boot populator, so it stays lazy
+  # like a user type and the listing's `W` guarantee must not rest on the
+  # dirty mark being present.
   defp build_prefix(group_id, limit, :start, opts) do
     case fetch_group_row(group_id, opts) do
       {:ok, nil} -> build_prefix_members(group_id, limit, nil, [], opts)
@@ -316,9 +319,9 @@ defmodule EbbServer.Sync.GroupListing do
     end
   end
 
-  # The prefix rows are materialized unconditionally too: a `groupMember` row
-  # can be clean-but-stale after a restart, which would leave it under the
-  # wrong group or actor in the keyset.
+  # The prefix rows are materialized unconditionally too: reading a cached
+  # `groupMember` row that is behind the log would place it under the wrong
+  # group or actor in the keyset, so the keyset must not trust the dirty set.
   defp emit_members(group_id, taken, opts) do
     ids = Enum.map(taken, fn {id, _actor_id} -> id end)
 
