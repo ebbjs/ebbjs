@@ -226,6 +226,57 @@ are ~90–96% of the upsert and are themselves superlinear in blob size
 (~8× from N=2000 to N=5000). Absolute times exclude WAL and file I/O, so
 read the delta, not the absolute.
 
+## Restart boot re-mark (#564)
+
+Dirty marks are ETS-only, so before #564 a restart left a patched-but-never-read
+row looking clean and a never-materialized row absent. The fix re-marks every
+`cf_type_entities` row dirty during the boot walk that already fills the type
+cache. This section prices the trade-off: boot time is unchanged within run
+noise, but the first read/query after a restart now materializes the marked
+rows instead of returning stale or missing data.
+
+Measured **2026-10-22** on the 4-scheduler development host (load average ~5,
+so absolute boot times are noisy; the query delta is orders of magnitude).
+Dataset: 10,000 `todo` rows, each with an `entityGroup` filing it into one group,
+plus the bootstrap `group` and `groupMember`, written through the real
+`ActionValidator` → `Writer` → RocksDB path. SQLite starts with zero `todo`
+rows because the write path never writes it. Both arms restart on the same
+seeded data dir; medians of five in-process restarts (the harness closes the
+RocksDB/SQLite handles between boots to emulate a process restart).
+
+```
+N=10,000 (median of 5 restarts)        baseline      #564 fix
+boot Storage.Supervisor.start_link       3172 ms       2913 ms
+system_cache.populated telemetry         3034 ms       2875 ms
+dirty set after boot                            0         10,001
+dirty todo / group ids after boot         0 / 0   10,000 / 1
+first query("todo", limit: 1)              2.4 ms       2091 ms
+  rows returned                                0             1
+  entities materialized                        0        10,001
+  summed materialize latency                   0       2045 ms
+SQLite todo rows, before → after        0 → 0    0 → 10,000
+dirty set after the query                      0             0
+second identical query                     1.5 ms         19.8 ms
+```
+
+At **N=1,000** the same shape: boot 272 ms → 312 ms, dirty set 0 → 1,001, and
+the first query 0.5 ms → 233 ms (1,001 materializations). The 10,001 surviving
+marks are the 10,000 todos plus the never-eagerly-populated `group`; the 10,000
+`entityGroup` marks are placed by the walk and cleared by the eager populator
+during the same boot.
+
+A boot-only A/B, alternating fresh VMs on both commits, put boot medians at
+**2409 ms baseline vs 2426 ms fixed (+0.7%)**. The walk writes one mark per
+indexed pair — roughly 20k here — but that ETS work is not measurable next to
+the existing eager population, and only 10,001 marks survive to the first read.
+The cost is the herd, not the boot: `query/4` materializes every dirty id of
+the requested type before it runs the SQL, so `LIMIT 1` does not bound the
+work. (A type query also drains dirty system types, `group` included, so the
+herd scales with group count as well; this dataset has one group.) That is the
+price of serving current data after a restart; a large lazy corpus pays it
+once, on its first read after boot. `ebb.dirty_set.size` exposes the post-boot
+backlog.
+
 ## Headline: production configuration
 
 Single Writer, `sync: true`, 2-Update Actions, `--distribution hot`,
