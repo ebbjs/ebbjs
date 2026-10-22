@@ -278,8 +278,10 @@ c=1` is **−24%** throughput and **+33%** p50; `t2 c=8` is **−10%**
   arm adds the prepare hop, the committer handoff, the in-flight id guard, the
   overlay plan, and the ordered-release bookkeeping. The flush-only ablation
   ladder above attributes them: watermark +0.41 ms/flush, dedup +0.22,
-  fanout +0.21, cache +0.11 against the pre-epic marginals, plus ~1.0 ms/call
-  of prepare round trip that is outside the flush timer entirely.
+  fanout +0.21, cache +0.11 against the pre-epic marginals. The gap is inside
+  the flush: an earlier estimate put ~1 ms/call outside it, but that subtracted
+  a flush **p50** from a per-call **mean**; matched to the same statistic the
+  per-call gap is ~0.3 ms.
 - **The pipeline's remaining measured advantage is the depth-2 shape**, which
   cannot run on the pre-#531 build: 31,015 Actions/s at `t0 c=1 depth 2`
   (+52.6% over its own depth-1 row, flush and commit p50 unchanged). At the
