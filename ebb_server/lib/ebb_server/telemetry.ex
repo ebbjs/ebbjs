@@ -36,6 +36,7 @@ defmodule EbbServer.Telemetry do
   | `ebb.fanout.active_groups`                | `count`                               | —                                                   |
   | `ebb.http.request_latency_ms`             | `duration` (native)                   | `method`, `route`, `status`                         |
   | `ebb.sync.catch_up`                       | `count`                               | `group_id`, `from_offset`, `returned`, `up_to_date` |
+  | `ebb.sync.catch_up_read`                  | `index_rows`, `actions_fetched`       | `group_id`, `from_offset`                           |
   | `ebb.action_export.batch`                 | `count`                               | `from_gsn`, `to_gsn`                                |
   | `ebb.action_export.failed`                | `count`                               | `gsn`, `reason`                                     |
   | `ebb.action_export.filtered`              | `count`                               | —                                                   |
@@ -109,6 +110,14 @@ defmodule EbbServer.Telemetry do
   of 0 marks a full resync; a non-zero offset is an incremental catch-up, so a
   reporter can compute the resync ratio from the metadata alone. Peer
   replication does not exist yet, so peer cursor/lag metrics are out of scope.
+
+  `ebb.sync.catch_up_read` is emitted once per successful page and describes
+  what that page had to read: `index_rows` is how many `cf_group_actions` rows
+  it consumed and `actions_fetched` how many `cf_actions` rows it decoded. A
+  page consumes at most the caller's `limit` index rows (#423), so a stable
+  `index_rows` while the backlog grows is the bound holding;
+  `actions_fetched` below `index_rows` counts index rows whose `cf_actions` row
+  is missing, which is expected because the resolution frontier is sparse.
 
   `ebb.action_export.*` describes the opt-in Action exporter. `lag` is
   `committed watermark − durable cursor`, so a stalled or failing sink shows up
