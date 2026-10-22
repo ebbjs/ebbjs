@@ -290,9 +290,16 @@ defmodule EbbServer.Bench.OptionsTest do
       assert message =~ "--subscriber-lean"
     end
 
-    test "rejects --ablate" do
-      assert {:error, message} = Options.parse(["--tier", "t5", "--ablate", "dedup"])
-      assert message =~ "--ablate"
+    test "accepts the op-group ablations" do
+      assert {:ok, config} =
+               Options.parse(["--tier", "t5", "--ablate", "dedup,entity_index,group_index"])
+
+      assert config.ablate == [:dedup, :entity_index, :group_index]
+    end
+
+    test "rejects an ablation that names a Writer phase" do
+      assert {:error, message} = Options.parse(["--tier", "t5", "--ablate", "cache"])
+      assert message =~ "is not supported with --tier t5"
     end
 
     test "rejects multiple writers" do
