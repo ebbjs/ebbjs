@@ -948,7 +948,7 @@ no-regression baseline row. The table pairs depth with `Actions/flush`:
 depth alone is not a pipeline-parallelism result, because the Writer
 coalesces the outstanding calls into shared flushes. The same section
 reports the Writer's own `ebb.writer.in_flight_batches` and
-`ebb.writer.oldest_unreleased_gsn` gauges and the
+`ebb.writer.oldest_unreleased_gsn` gauges, the flush queue depth, and the
 `ebb.writer.flush_phase_ms` breakdown (p50/p95 per phase) for each depth.
 
 A run fails (non-zero exit) if it loses GSNs, freezes its watermark, or

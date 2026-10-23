@@ -1722,9 +1722,9 @@ connections.
 latency into the phases the pipeline depth actually spends it in. The Writer
 emits [`ebb.writer.flush_phase_ms`](https://github.com/ebbjs/ebbjs/issues/537)
 once per range with six native durations, and the bench sweep renders them
-per depth beside the two pipeline gauges. This is an **accounting** section:
-the point is that every microsecond the client p50 sees is named, not that a
-new number is faster.
+per depth beside the two pipeline gauges and a flush queue depth. This is an
+**accounting** section: the point is that every microsecond the client p50
+sees is named, not that a new number is faster.
 
 Measured **2026-10-23** on `recsy-vps` (AMD EPYC 7763, 4 schedulers, 16 GiB,
 Elixir 1.17.3 / OTP 27), the same host and shape as the rotated A/B: batch
@@ -1740,30 +1740,31 @@ mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 8 \
   --in-flight 1,2,4 --batch-size 100 --updates-per-action 2 --distribution hot --seed 1
 ```
 
-Raw reports: `bench/results/20261023T202717Z-recsy-vps.md`,
-`20261023T202932Z`, `20261023T203113Z`, `20261023T203314Z`,
-`20261023T203448Z`, `20261023T203651Z` (gitignored, as usual).
+Raw reports: `bench/results/20261023T213502Z-recsy-vps.md`,
+`20261023T213700Z`, `20261023T213841Z`, `20261023T214043Z`,
+`20261023T214214Z`, `20261023T214419Z` (gitignored, as usual).
 
 ### The phases sum to the client p50
 
 | Run (median of 3) | Actions/s | Client p50 | Client p95 | Writer flush p50 | Phase sum p50 |          Residual |
 | ----------------- | --------: | ---------: | ---------: | ---------------: | ------------: | ----------------: |
-| t0 depth 1        |    25,618 |    3.59 ms |    4.48 ms |          2.85 ms |       3.56 ms |  +0.03 ms (+0.8%) |
-| t0 depth 2        |    37,290 |    4.86 ms |    6.36 ms |          3.82 ms |       4.80 ms |  +0.06 ms (+1.3%) |
-| t0 depth 4        |    35,105 |   10.83 ms |   13.53 ms |          9.48 ms |      10.75 ms |  +0.08 ms (+0.7%) |
-| t2 depth 1        |    26,055 |   29.35 ms |   36.79 ms |          7.82 ms |      26.00 ms | +3.35 ms (+12.9%) |
-| t2 depth 2        |    31,150 |   48.92 ms |   61.99 ms |         28.36 ms |      45.39 ms |  +3.53 ms (+7.8%) |
-| t2 depth 4        |    28,695 |  108.15 ms |  129.52 ms |         79.95 ms |     103.96 ms |  +4.19 ms (+4.0%) |
+| t0 depth 1        |    26,020 |    3.56 ms |    4.40 ms |          2.82 ms |       3.54 ms |  +0.03 ms (+0.8%) |
+| t0 depth 2        |    37,070 |    4.90 ms |    6.35 ms |          3.85 ms |       4.83 ms |  +0.07 ms (+1.4%) |
+| t0 depth 4        |    35,340 |   10.82 ms |   13.04 ms |          9.45 ms |      10.74 ms |  +0.08 ms (+0.7%) |
+| t2 depth 1        |    25,585 |   29.93 ms |   37.16 ms |          8.06 ms |      26.63 ms | +3.30 ms (+12.4%) |
+| t2 depth 2        |    30,700 |   49.24 ms |   62.80 ms |         28.44 ms |      45.67 ms |  +3.57 ms (+7.8%) |
+| t2 depth 4        |    29,395 |  105.88 ms |  125.46 ms |         78.99 ms |     102.31 ms |  +3.57 ms (+3.5%) |
 
 `Phase sum p50` is the collected `flush_total` sample: the p50 of the per-range
-**sum** of the six phases, from the oldest coalesced call's send to its
-release. Do not add the phase p50 cells in the table below to reproduce it —
-percentiles do not add; the sum column is its own measurement. The `Residual`
-is client-minus-phase-sum, and it is not an unmeasured phase: at `t0` there is
-no HTTP (0.7–1.3%, the harness timer around `write_actions/1`), and at `t2` it
-is the client-side HTTP/MessagePack/`:httpc` cost the client timer includes and
-the Writer cannot see. It shrinks as a share of the client number as depth
-grows the range lifetime: 12.9% at depth 1, 7.8% at depth 2, 4.0% at depth 4.
+**sum** of the six phases, from the oldest coalesced call's send to the end of
+its `notify` phase. Do not add the phase p50 cells in the table below to
+reproduce it — percentiles do not add; the sum column is its own measurement.
+The `Residual` is client-minus-phase-sum, and it is not an unmeasured phase: at
+`t0` there is no HTTP (0.7–1.4%, the harness timer around `write_actions/1`),
+and at `t2` it is the client-side HTTP/MessagePack/`:httpc` cost the client
+timer includes and the Writer cannot see. It shrinks as a share of the client
+number as depth grows the range lifetime: 12.4% at depth 1, 7.8% at depth 2,
+3.5% at depth 4.
 
 The acceptance check in #537 asked for the t2 depth-2 sum to land within 10%
 of the client p50: it lands at **7.8%**, and the t0 depth-1 check at **0.8%**.
@@ -1775,12 +1776,12 @@ the payload build now runs inline on an idle Writer, so that hop is the
 
 | Run        |         queue |      prepare |      resolve |   commit_wait |       apply |      notify |
 | ---------- | ------------: | -----------: | -----------: | ------------: | ----------: | ----------: |
-| t0 depth 1 |   0.13 / 0.33 |  0.25 / 0.42 |  0.99 / 1.36 |   2.04 / 2.58 | 0.08 / 0.13 | 0.02 / 0.04 |
-| t0 depth 2 |   0.13 / 0.33 |  0.43 / 0.60 |  1.07 / 1.71 |   2.93 / 4.16 | 0.10 / 0.16 | 0.02 / 0.04 |
-| t0 depth 4 |   0.33 / 1.09 |  0.45 / 0.70 |  0.97 / 1.84 |  8.63 / 11.06 | 0.11 / 0.17 | 0.02 / 0.04 |
-| t2 depth 1 |  7.06 / 15.59 | 9.45 / 14.28 |  3.76 / 7.17 |   4.78 / 8.39 | 0.19 / 0.33 | 0.05 / 0.10 |
-| t2 depth 2 | 10.99 / 18.77 | 2.70 / 11.09 | 7.77 / 14.67 | 21.77 / 30.91 | 0.54 / 0.88 | 0.07 / 0.19 |
-| t2 depth 4 | 15.68 / 29.03 | 3.12 / 15.50 | 9.93 / 23.80 | 70.83 / 90.80 | 0.91 / 1.64 | 0.08 / 0.20 |
+| t0 depth 1 |   0.12 / 0.33 |  0.25 / 0.41 |  0.98 / 1.34 |   2.02 / 2.51 | 0.08 / 0.13 | 0.02 / 0.04 |
+| t0 depth 2 |   0.12 / 0.36 |  0.43 / 0.61 |  1.08 / 1.69 |   2.95 / 4.22 | 0.10 / 0.16 | 0.02 / 0.04 |
+| t0 depth 4 |   0.23 / 1.07 |  0.46 / 0.76 |  0.97 / 1.86 |  8.59 / 10.61 | 0.11 / 0.17 | 0.02 / 0.04 |
+| t2 depth 1 |  7.38 / 16.15 | 9.63 / 14.47 |  3.87 / 7.44 |   4.88 / 8.41 | 0.20 / 0.34 | 0.05 / 0.10 |
+| t2 depth 2 | 10.71 / 18.82 | 2.49 / 10.58 | 7.83 / 14.52 | 22.02 / 31.94 | 0.53 / 0.89 | 0.07 / 0.19 |
+| t2 depth 4 | 14.73 / 27.15 | 2.84 / 15.33 | 9.79 / 23.27 | 70.02 / 89.12 | 0.85 / 1.57 | 0.08 / 0.23 |
 
 Phase boundaries are fixed in `EbbServer.Telemetry`:
 
@@ -1789,7 +1790,7 @@ Phase boundaries are fixed in `EbbServer.Telemetry`:
   `ebb.writer.batch_latency_ms` has never seen.
 - `prepare` — payload build and ETF encode, inline or on the prepare pool. A
   pooled call's pool queueing is included, which is why `t2 depth 1`'s
-  `prepare` (9.45 ms) is mostly waiting for a pool worker, not encoding: with
+  `prepare` (9.63 ms) is mostly waiting for a pool worker, not encoding: with
   8 callers the Writer is rarely idle, so most calls take the pooled path.
   This is the phase [epic #529](https://github.com/ebbjs/ebbjs/issues/529)'s
   "prepare hop" question can now be read against.
@@ -1808,45 +1809,54 @@ event (`outcome: :abandoned`, with its `reason`); a commit failure reports
 ### What it says
 
 - **Depth is a commit-wait tax, not an apply cost.** At `t2 depth 4`,
-  `commit_wait` is 70.83 ms of the 103.96 ms phase sum (68%); across every row
-  and both tiers `apply` stays at or below 0.91 ms and `notify` at or below
+  `commit_wait` is 70.02 ms of the 102.31 ms phase sum (68%); across every row
+  and both tiers `apply` stays at or below 0.85 ms and `notify` at or below
   0.08 ms. Cache mutations and fan-out are not where depth spends its latency
   — waiting for the durable ack behind an earlier range is.
 - **The unattributed gap at t2 depth 2 decomposes into named phases.** The
-  current build reports a 48.9 ms client p50 against a 28.4 ms flush, leaving
-  ~20 ms that the flush timer never covered; the phases assign it: `queue`
-  11.0, `prepare` 2.7, `resolve` 7.8, `commit_wait` 21.8, `apply` 0.5,
-  `notify` 0.07, summing to 45.4 ms with the remaining 3.5 ms outside the
-  Writer (HTTP/transport). The instrumentation itself is within noise — the
-  interleaved A/B below is −1.3% rate / +0.6% p50 at `t0` c=1. The issue's
-  original
-  30.2 ms gap was measured on the pre-Step-0 build (77.7 ms client vs 47.5 ms
-  flush); its shape — most of it before the claim and in the committer wait —
-  is the same.
+  current build reports a 49.24 ms client p50 against a 28.44 ms flush,
+  leaving ~21 ms that the flush timer never covered; the phases assign it:
+  `queue` 10.7, `prepare` 2.5, `resolve` 7.8, `commit_wait` 22.0, `apply`
+  0.53, `notify` 0.07. The remaining 3.6 ms is outside the Writer
+  (HTTP/transport). The instrumentation itself is within noise — the
+  interleaved A/B below is +2.0% rate / −1.8% p50 at `t0` c=1. The issue's
+  original 30.2 ms gap was measured on the pre-Step-0 build (77.7 ms client
+  vs 47.5 ms flush); its shape — most of it before the claim and in the
+  committer wait — is the same.
 - **The Writer mailbox is a real term only under concurrency.** `queue` is
-  0.13 ms at `t0` c=1 (the Writer is never contended), but 7.06 ms at
-  `t2` c=8 depth 1 — a quarter of the range lifetime before the claim. That is
-  the number a mailbox/batch-window change should move (#576).
+  0.12 ms at `t0` c=1 (the Writer is never contended), but 7.38 ms at
+  `t2` c=8 depth 1 — 28% of the range lifetime before the claim. That is the
+  number a mailbox/batch-window change should move (#576).
 - **Inline prepare is cheap; pooled prepare is a queue.** At `t0` c=1 the
-  inline encode is 0.25 ms into a 3.56 ms range. Serialised through the pool
-  under t2 concurrency, the same work shows up as a 9.45 ms p50 `prepare` that
+  inline encode is 0.25 ms into a 3.54 ms range. Serialised through the pool
+  under t2 concurrency, the same work shows up as a 9.63 ms p50 `prepare` that
   is dominated by pool waiting — the phase boundary deliberately keeps that
   wait in `prepare`, not `queue`.
 
 ### Writer pipeline gauges (median of the per-report peak/mean)
 
-| Run        | `in_flight_batches` peak | mean | `oldest_unreleased_gsn` peak |    mean |
-| ---------- | -----------------------: | ---: | ---------------------------: | ------: |
-| t0 depth 1 |                        1 |  0.5 |                      590,153 | 167,018 |
-| t0 depth 2 |                        2 |  1.5 |                      854,303 | 481,168 |
-| t0 depth 4 |                        4 |  3.5 |                      811,603 | 460,610 |
-| t2 depth 1 |                        1 |  0.5 |                      597,603 | 168,939 |
-| t2 depth 2 |                        2 |  1.5 |                      718,003 | 406,304 |
-| t2 depth 4 |                        4 |  3.5 |                      661,403 | 373,076 |
+| Run        | `queue_depth` peak | mean | `in_flight_batches` peak | mean | `oldest_unreleased_gsn` peak |    mean |
+| ---------- | -----------------: | ---: | -----------------------: | ---: | ---------------------------: | ------: |
+| t0 depth 1 |                  1 |  1.0 |                        1 |  0.5 |                      598,003 | 168,926 |
+| t0 depth 2 |                  1 |  1.0 |                        2 |  1.5 |                      857,303 | 486,287 |
+| t0 depth 4 |                  1 |  1.0 |                        4 |  3.5 |                      818,203 | 464,829 |
+| t2 depth 1 |                  7 |  2.7 |                        1 |  0.5 |                      586,503 | 165,295 |
+| t2 depth 2 |                 10 |  5.2 |                        2 |  1.5 |                      706,403 | 399,864 |
+| t2 depth 4 |                 10 |  6.3 |                        4 |  3.5 |                      671,903 | 378,086 |
 
-These are the Writer's own claim/release events (#534), not the harness's
-outstanding-call columns: `in_flight_batches` tracks the requested depth
-exactly (mean = depth − 0.5, because a claim emits N and its release N − 1).
+`queue_depth` is the number of `write_actions/1` calls one flush drained
+(`ebb.writer.batch_size`'s `callers`), so its peak/mean describe how deep the
+coalescing queue got: at `t0` c=1 one 100-Action call is flushed at a time at
+every depth, while `t2` c=8 grows from 2.7 to 6.3 calls per flush — which is
+the same growth the `Actions/flush` column shows (271 → 635). A depth increase
+at `t0` therefore buys overlap inside the Writer, not a deeper flush; at `t2`
+it buys both.
+
+The other two columns are the Writer's own `ebb.writer.in_flight_batches` and
+`ebb.writer.oldest_unreleased_gsn` gauges, emitted on every claim and release,
+so they describe the actual reorder buffer rather than the harness-side
+`Observed` columns. `in_flight_batches` tracks the requested depth exactly
+(mean = depth − 0.5, because a claim emits N and its release N − 1).
 `oldest_unreleased_gsn` is an **absolute GSN**, not a lag, so its peak/mean
 describe where the run sat in the log rather than a backlog; the gauge's value
 is as a time series — a head that stops advancing while claims advance is a
@@ -1860,13 +1870,14 @@ same shape as above but single-depth:
 
 | Arm                       | Actions/s (median) | p50 (median) | p95 (median) |
 | ------------------------- | -----------------: | -----------: | -----------: |
-| `origin/main` (no phases) |             26,080 |     3.554 ms |     4.324 ms |
-| this branch (`#537`)      |             25,750 |     3.575 ms |     4.467 ms |
-| delta                     |              −1.3% |        +0.6% |        +3.3% |
+| `origin/main` (no phases) |             25,455 |     3.633 ms |     4.425 ms |
+| this branch (`#537`)      |             25,970 |     3.566 ms |     4.355 ms |
+| delta                     |              +2.0% |        −1.8% |        −1.6% |
 
-Both deltas are inside the published ±5–10% single-run VM spread, so the
-per-range stamps and the seven extra telemetry samples per flush are not
-measurably visible at the ceiling.
+Both deltas are inside the published ±5–10% single-run VM spread (an earlier
+three-run session on the same host measured −1.3% rate / +0.6% p50, so the
+sign is noise), so the per-range stamps and the extra telemetry samples per
+flush are not measurably visible at the ceiling.
 
 ## Prepare stage (#553)
 
@@ -2091,7 +2102,15 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
    [Step 0](#step-0-depth-1-parity-579-582-581) is the follow-up that closed
    most of it (−3.0%); re-read this gap against those two sections rather
    than the #551 session.
-8. **README drift corrected.** `:writer_count`, `:warmer_*`, and
+8. **A single-depth run collects the flush phases but does not render them.**
+   [#537](https://github.com/ebbjs/ebbjs/issues/537)'s phase and gauge tables
+   live in the sweep-only pipeline-depth section, as the issue specified, so
+   the headline `t0`/`t2` single-depth reports still print only the client and
+   `batch_latency_ms`/`commit_latency_ms` views. Running the same config as
+   `--in-flight 1,2` (or reading the raw `flush_phase_ms` samples) is the
+   workaround; a per-run phase table is a follow-up if the accounting is
+   wanted on every report.
+9. **README drift corrected.** `:writer_count`, `:warmer_*`, and
    `:replication_peers` are read by nothing; the server README states the
    actual single-Writer behavior. `:writer_batch_timeout_ms` and
    `:writer_batch_max_size` were read by nothing as of #328 and are now
