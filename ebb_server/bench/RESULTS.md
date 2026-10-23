@@ -57,7 +57,9 @@ requested concurrency; `t3` = `t2` plus in-process SSE subscribers; `t4` =
 fixed-rate `Writer.write_actions/1` plus in-process SSE subscribers.
 `--in-flight N` keeps N `write_actions/1` calls outstanding per worker and
 is supported on `t0`, `t2`, and `t3`; see
-[Pipeline depth](#pipeline-depth-n-in-flight-calls-551-re-measured-for-the-v2-gate).
+[Pipeline depth](#pipeline-depth-n-in-flight-calls-551-re-measured-for-the-v2-gate)
+and, for the phase accounting and Writer gauges a sweep now renders,
+[Flush phase attribution](#flush-phase-attribution-537).
 
 ## Run guardrails (#577)
 
@@ -1692,9 +1694,9 @@ connections.
 
 - **What "in flight" counts.** The peak/mean columns count the harness's own
   outstanding `write_actions/1` calls per worker, not the Writer's in-flight
-  batches. The Writer now emits `ebb.writer.in_flight_batches` and
-  `ebb.writer.oldest_unreleased_gsn` (#534), but the bench report does not
-  consume them yet ([#537](https://github.com/ebbjs/ebbjs/issues/537)).
+  batches. The Writer's own `ebb.writer.in_flight_batches` and
+  `ebb.writer.oldest_unreleased_gsn` gauges are published in
+  [Flush phase attribution](#flush-phase-attribution-537).
 - **Depth and flush size move together.** Since #553 the coalescing window is a
   prepare-burst marker, so the flush size is a function of the offered burst and
   not a constant. Compare depth rows against the `Actions/flush` and
@@ -1713,6 +1715,158 @@ connections.
 - **Client overhead at t2.** The t2 rows include `:httpc`, MessagePack, and the
   request process; t0 is the cleaner pipeline number. Both tiers use the same
   Action shape and `sync: true`.
+
+## Flush phase attribution (#537)
+
+[#537](https://github.com/ebbjs/ebbjs/issues/537) splits one claimed range's
+latency into the phases the pipeline depth actually spends it in. The Writer
+emits [`ebb.writer.flush_phase_ms`](https://github.com/ebbjs/ebbjs/issues/537)
+once per range with six native durations, and the bench sweep renders them
+per depth beside the two pipeline gauges. This is an **accounting** section:
+the point is that every microsecond the client p50 sees is named, not that a
+new number is faster.
+
+Measured **2026-10-23** on `recsy-vps` (AMD EPYC 7763, 4 schedulers, 16 GiB,
+Elixir 1.17.3 / OTP 27), the same host and shape as the rotated A/B: batch
+100, 2-Update Actions, `hot`, `sync: true`, `--seed 1`, 20 s window after 3 s
+warmup, three reports per row (the t0 depth-1 row pools the six baseline
+passes the two sweeps each measure). Median of the per-report medians. Every
+run had **0 GSN holes, 0 rejected Actions, 0 write/transport errors**.
+
+```sh
+mix bench.actions --tier t0 --duration 20 --warmup 3 --concurrency 1 \
+  --in-flight 1,2,4 --batch-size 100 --updates-per-action 2 --distribution hot --seed 1
+mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 8 \
+  --in-flight 1,2,4 --batch-size 100 --updates-per-action 2 --distribution hot --seed 1
+```
+
+Raw reports: `bench/results/20261023T202717Z-recsy-vps.md`,
+`20261023T202932Z`, `20261023T203113Z`, `20261023T203314Z`,
+`20261023T203448Z`, `20261023T203651Z` (gitignored, as usual).
+
+### The phases sum to the client p50
+
+| Run (median of 3) | Actions/s | Client p50 | Client p95 | Writer flush p50 | Phase sum p50 |          Residual |
+| ----------------- | --------: | ---------: | ---------: | ---------------: | ------------: | ----------------: |
+| t0 depth 1        |    25,618 |    3.59 ms |    4.48 ms |          2.85 ms |       3.56 ms |  +0.03 ms (+0.8%) |
+| t0 depth 2        |    37,290 |    4.86 ms |    6.36 ms |          3.82 ms |       4.80 ms |  +0.06 ms (+1.3%) |
+| t0 depth 4        |    35,105 |   10.83 ms |   13.53 ms |          9.48 ms |      10.75 ms |  +0.08 ms (+0.7%) |
+| t2 depth 1        |    26,055 |   29.35 ms |   36.79 ms |          7.82 ms |      26.00 ms | +3.35 ms (+12.9%) |
+| t2 depth 2        |    31,150 |   48.92 ms |   61.99 ms |         28.36 ms |      45.39 ms |  +3.53 ms (+7.8%) |
+| t2 depth 4        |    28,695 |  108.15 ms |  129.52 ms |         79.95 ms |     103.96 ms |  +4.19 ms (+4.0%) |
+
+`Phase sum p50` is the collected `flush_total` sample: the p50 of the per-range
+**sum** of the six phases, from the oldest coalesced call's send to its
+release. Do not add the phase p50 cells in the table below to reproduce it —
+percentiles do not add; the sum column is its own measurement. The `Residual`
+is client-minus-phase-sum, and it is not an unmeasured phase: at `t0` there is
+no HTTP (0.7–1.3%, the harness timer around `write_actions/1`), and at `t2` it
+is the client-side HTTP/MessagePack/`:httpc` cost the client timer includes and
+the Writer cannot see. It shrinks as a share of the client number as depth
+grows the range lifetime: 12.9% at depth 1, 7.8% at depth 2, 4.0% at depth 4.
+
+The acceptance check in #537 asked for the t2 depth-2 sum to land within 10%
+of the client p50: it lands at **7.8%**, and the t0 depth-1 check at **0.8%**.
+The issue's "4.95 ms wall plus the prepare hop" wording predates #574/#582:
+the payload build now runs inline on an idle Writer, so that hop is the
+`prepare` phase itself and the sum accounts for the wall directly.
+
+### The phase breakdown (median p50 / p95, ms)
+
+| Run        |         queue |      prepare |      resolve |   commit_wait |       apply |      notify |
+| ---------- | ------------: | -----------: | -----------: | ------------: | ----------: | ----------: |
+| t0 depth 1 |   0.13 / 0.33 |  0.25 / 0.42 |  0.99 / 1.36 |   2.04 / 2.58 | 0.08 / 0.13 | 0.02 / 0.04 |
+| t0 depth 2 |   0.13 / 0.33 |  0.43 / 0.60 |  1.07 / 1.71 |   2.93 / 4.16 | 0.10 / 0.16 | 0.02 / 0.04 |
+| t0 depth 4 |   0.33 / 1.09 |  0.45 / 0.70 |  0.97 / 1.84 |  8.63 / 11.06 | 0.11 / 0.17 | 0.02 / 0.04 |
+| t2 depth 1 |  7.06 / 15.59 | 9.45 / 14.28 |  3.76 / 7.17 |   4.78 / 8.39 | 0.19 / 0.33 | 0.05 / 0.10 |
+| t2 depth 2 | 10.99 / 18.77 | 2.70 / 11.09 | 7.77 / 14.67 | 21.77 / 30.91 | 0.54 / 0.88 | 0.07 / 0.19 |
+| t2 depth 4 | 15.68 / 29.03 | 3.12 / 15.50 | 9.93 / 23.80 | 70.83 / 90.80 | 0.91 / 1.64 | 0.08 / 0.20 |
+
+Phase boundaries are fixed in `EbbServer.Telemetry`:
+
+- `queue` — the oldest coalesced call's mailbox wait plus the wait from its
+  payload being ready to the flush dequeue. This is the term
+  `ebb.writer.batch_latency_ms` has never seen.
+- `prepare` — payload build and ETF encode, inline or on the prepare pool. A
+  pooled call's pool queueing is included, which is why `t2 depth 1`'s
+  `prepare` (9.45 ms) is mostly waiting for a pool worker, not encoding: with
+  8 callers the Writer is rarely idle, so most calls take the pooled path.
+  This is the phase [epic #529](https://github.com/ebbjs/ebbjs/issues/529)'s
+  "prepare hop" question can now be read against.
+- `resolve` — dedup/in-flight filtering, the GSN claim, group resolution +
+  `update_scopes`, and the cache mutation plan.
+- `commit_wait` — the hand-off to a Committer through the durable ack,
+  including waiting behind an earlier range for the resolution gate.
+- `apply` — the durable mark and the ordered apply: any wait behind an earlier
+  range in claim order, cache mutations, and the dirty settle.
+- `notify` — the fan-out nudge and the callers' replies.
+
+A phase a range never reached is `0`, so an abandoned range still emits one
+event (`outcome: :abandoned`, with its `reason`); a commit failure reports
+`apply` and `notify` as `0`, not as missing data.
+
+### What it says
+
+- **Depth is a commit-wait tax, not an apply cost.** At `t2 depth 4`,
+  `commit_wait` is 70.83 ms of the 103.96 ms phase sum (68%); across every row
+  and both tiers `apply` stays at or below 0.91 ms and `notify` at or below
+  0.08 ms. Cache mutations and fan-out are not where depth spends its latency
+  — waiting for the durable ack behind an earlier range is.
+- **The unattributed gap at t2 depth 2 decomposes into named phases.** The
+  current build reports a 48.9 ms client p50 against a 28.4 ms flush, leaving
+  ~20 ms that the flush timer never covered; the phases assign it: `queue`
+  11.0, `prepare` 2.7, `resolve` 7.8, `commit_wait` 21.8, `apply` 0.5,
+  `notify` 0.07, summing to 45.4 ms with the remaining 3.5 ms outside the
+  Writer (HTTP/transport). The instrumentation itself is within noise — the
+  interleaved A/B below is −1.3% rate / +0.6% p50 at `t0` c=1. The issue's
+  original
+  30.2 ms gap was measured on the pre-Step-0 build (77.7 ms client vs 47.5 ms
+  flush); its shape — most of it before the claim and in the committer wait —
+  is the same.
+- **The Writer mailbox is a real term only under concurrency.** `queue` is
+  0.13 ms at `t0` c=1 (the Writer is never contended), but 7.06 ms at
+  `t2` c=8 depth 1 — a quarter of the range lifetime before the claim. That is
+  the number a mailbox/batch-window change should move (#576).
+- **Inline prepare is cheap; pooled prepare is a queue.** At `t0` c=1 the
+  inline encode is 0.25 ms into a 3.56 ms range. Serialised through the pool
+  under t2 concurrency, the same work shows up as a 9.45 ms p50 `prepare` that
+  is dominated by pool waiting — the phase boundary deliberately keeps that
+  wait in `prepare`, not `queue`.
+
+### Writer pipeline gauges (median of the per-report peak/mean)
+
+| Run        | `in_flight_batches` peak | mean | `oldest_unreleased_gsn` peak |    mean |
+| ---------- | -----------------------: | ---: | ---------------------------: | ------: |
+| t0 depth 1 |                        1 |  0.5 |                      590,153 | 167,018 |
+| t0 depth 2 |                        2 |  1.5 |                      854,303 | 481,168 |
+| t0 depth 4 |                        4 |  3.5 |                      811,603 | 460,610 |
+| t2 depth 1 |                        1 |  0.5 |                      597,603 | 168,939 |
+| t2 depth 2 |                        2 |  1.5 |                      718,003 | 406,304 |
+| t2 depth 4 |                        4 |  3.5 |                      661,403 | 373,076 |
+
+These are the Writer's own claim/release events (#534), not the harness's
+outstanding-call columns: `in_flight_batches` tracks the requested depth
+exactly (mean = depth − 0.5, because a claim emits N and its release N − 1).
+`oldest_unreleased_gsn` is an **absolute GSN**, not a lag, so its peak/mean
+describe where the run sat in the log rather than a backlog; the gauge's value
+is as a time series — a head that stops advancing while claims advance is a
+stalled range — which is why the tables publish peak/mean only because #537
+asks for them.
+
+### Instrumentation cost
+
+`t0` c=1, three runs per arm, interleaved (`origin/main` before the branch),
+same shape as above but single-depth:
+
+| Arm                       | Actions/s (median) | p50 (median) | p95 (median) |
+| ------------------------- | -----------------: | -----------: | -----------: |
+| `origin/main` (no phases) |             26,080 |     3.554 ms |     4.324 ms |
+| this branch (`#537`)      |             25,750 |     3.575 ms |     4.467 ms |
+| delta                     |              −1.3% |        +0.6% |        +3.3% |
+
+Both deltas are inside the published ±5–10% single-run VM spread, so the
+per-range stamps and the seven extra telemetry samples per flush are not
+measurably visible at the ceiling.
 
 ## Prepare stage (#553)
 
@@ -1798,22 +1952,25 @@ Server-side latency is read from the `ebb.*` `:telemetry` events added by
 the measured window and stamps every sample with its offset from the
 window start:
 
-| Event                          | Measures                                               | Metadata                    |
-| ------------------------------ | ------------------------------------------------------ | --------------------------- |
-| `ebb.http.request_latency_ms`  | time inside the request process                        | `method`, `route`, `status` |
-| `ebb.writer.batch_latency_ms`  | one durable Writer flush                               | `gsn_start`, `gsn_end`      |
-| `ebb.writer.commit_latency_ms` | Committer wrapper encode + op assembly + `write_batch` | `gsn_start`, `gsn_end`      |
-| `ebb.fanout.push_latency_ms`   | commit → broadcast complete, per batch per group       | `group_id`                  |
+| Event                          | Measures                                                                        | Metadata                                                     |
+| ------------------------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `ebb.http.request_latency_ms`  | time inside the request process                                                 | `method`, `route`, `status`                                  |
+| `ebb.writer.batch_latency_ms`  | one durable Writer flush, from just before the GSN claim                        | `gsn_start`, `gsn_end`                                       |
+| `ebb.writer.commit_latency_ms` | Committer wrapper encode + op assembly + `write_batch`                          | `gsn_start`, `gsn_end`                                       |
+| `ebb.writer.flush_phase_ms`    | one range split into `queue`/`prepare`/`resolve`/`commit_wait`/`apply`/`notify` | `gsn_start`, `gsn_end`, `outcome`, `reason` (abandoned only) |
+| `ebb.fanout.push_latency_ms`   | commit → broadcast complete, per batch per group                                | `group_id`                                                   |
 
 Every raw run report prints a **Server-side latency** table beside the
 client-side one, and the fan-out section reports commit → broadcast complete
 separately from the client-stamp delivery lag. It fires at the end of
 `GroupServer.handle_cast({:push_actions, ...})`, after the per-subscriber
 cast loop (O(N×A) before coalescing, O(N) after #509).
-The Writer flush timer
-starts after the request is dequeued, so the wait a call spends in the
-Writer mailbox is not instrumented. `--tier t0` has no HTTP request, so
-only the Writer flush is reported there.
+The Writer flush timer starts after the request is dequeued, so the wait a
+call spends in the Writer mailbox is not part of `batch_latency_ms`:
+`ebb.writer.flush_phase_ms` reports it as `queue`, with the payload build as
+`prepare`, and a sweep renders the phase table in its pipeline-depth section
+([Flush phase attribution](#flush-phase-attribution-537)). `--tier t0` has no
+HTTP request, so only the Writer flush and its phases are reported there.
 
 `ebb.watermark.lag` and `ebb.dirty_set.size` are read directly from
 `WatermarkTracker` and `DirtyTracker` by the harness's own 1 Hz sampler
