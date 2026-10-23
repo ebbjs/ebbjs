@@ -1,0 +1,95 @@
+---
+name: Release
+
+# Publishing runs on `main` only. A merge that still carries changesets opens
+# or updates the version PR; a merge of that version PR publishes. See
+# docs/tooling/releasing.md for the one-time npm side of the setup.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  # npm trusted publishing: the registry verifies this workflow's OIDC token
+  # instead of receiving a long-lived token.
+  id-token: write
+
+jobs:
+  release:
+    name: Version or publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The version PR commit and the release tag both need real history.
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          # No `registry-url`: it writes an `_authToken`-based .npmrc, and a
+          # registry token takes precedence over the OIDC exchange.
+      - name: Install npm with trusted publishing support
+        # `pnpm publish` hands the upload to the npm CLI, so the npm on PATH is
+        # what negotiates the OIDC token. 11.5.1 is the first release that can.
+        run: npm install --global npm@^11.5.1
+      - name: Report tool versions
+        run: |
+          node --version
+          pnpm --version
+          npm --version
+      - run: pnpm install --frozen-lockfile
+      - name: Build the published packages
+        # `@ebbjs/server` builds an Elixir release and `@ebbjs/www` builds the
+        # docs site; neither is published. The version PR is opened with
+        # GITHUB_TOKEN, so GitHub runs no CI on it — this job is the gate for
+        # the five packages that do ship.
+        run: pnpm build:packages
+      - name: Test the published packages
+        run: pnpm test:packages
+      - name: Verify the packed artifacts
+        run: pnpm verify:packages
+      - name: Open the version PR, or publish to npm
+        id: changesets
+        uses: changesets/action@v2
+        with:
+          version-script: pnpm version-packages
+          publish-script: pnpm release
+          commit-message: "chore(release): version packages"
+          pr-title: "chore(release): version packages"
+          # changesets tags each package as `<name>@<version>`; the packages
+          # share one version, so the release train is tagged `v<version>` in
+          # the step below instead.
+          create-github-releases: false
+          push-git-tags: false
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          # Trusted publishing already attests provenance; setting this keeps
+          # the attestation when a token-based publish is ever used instead.
+          npm_config_provenance: "true"
+      - name: Tag the release train
+        # Derived from the manifest rather than from `published`, so a rerun
+        # after a failed tag still finishes the job. Creates `v<version>` only
+        # once that version is on the registry, and only once.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(node -p "require('./packages/core/package.json').version")
+          tag="v$version"
+          if ! npm view "@ebbjs/core@$version" version >/dev/null 2>&1; then
+            echo "@ebbjs/core@$version is not published; nothing to tag"
+            exit 0
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag already released"
+            exit 0
+          fi
+          gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes
