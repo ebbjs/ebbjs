@@ -6,8 +6,11 @@ defmodule EbbServer.Sync.Router do
 
   ## What this module is
 
-  A `Plug.Router` with eight endpoints and one catch-all 404:
+  A `Plug.Router` with nine endpoints and one catch-all 404:
 
+    - `GET /healthz` — unauthenticated readiness probe backed by
+      `EbbServer.Health`; `200` once the storage layer answers, `503`
+      while it is still coming up.
     - `POST /sync/handshake` — returns actor identity, group memberships,
       per-group cursors. Requires `x-ebb-actor-id` header (bypass mode).
     - `GET /sync/groups/:group_id?offset=N` — paginated catch-up for one group.
@@ -26,8 +29,8 @@ defmodule EbbServer.Sync.Router do
 
   All errors use the appropriate HTTP status code (`400` for malformed
   body, `401` for auth failures, `403` for permission denied,
-  `404` for unknown entity, `409` for HLC drift, `500`/`502` for server
-  errors). The Action-submission endpoint also returns per-Action
+  `404` for unknown entity, `409` for HLC drift, `500`/`502`/`503` for
+  server errors and readiness failures). The Action-submission endpoint also returns per-Action
   rejections in a `rejected` array so the client can roll back optimistic
   applies.
 
@@ -63,9 +66,23 @@ defmodule EbbServer.Sync.Router do
   alias EbbServer.Sync.Router.OperationSchema
 
   plug(Plug.Logger)
+
+  # Before AuthPlug: a readiness probe must not depend on the auth
+  # configuration or on a caller-supplied actor identity.
+  plug(:health_check)
+
   plug(EbbServer.Sync.AuthPlug)
   plug(:match)
   plug(:dispatch)
+
+  defp health_check(%Plug.Conn{method: "GET", path_info: ["healthz"]} = conn, _opts) do
+    case EbbServer.Health.status() do
+      :ok -> send_json(conn, 200, %{"status" => "ok"})
+      {:error, _reason} -> send_json(conn, 503, %{"status" => "unavailable"})
+    end
+  end
+
+  defp health_check(conn, _opts), do: conn
 
   post "/sync/actions" do
     {:ok, body, conn} = Plug.Conn.read_body(conn)
@@ -618,6 +635,25 @@ defmodule EbbServer.Sync.Router do
     }
   end
 
+  def openapi_operation(:health) do
+    %{
+      operationId: "health",
+      summary: "Readiness probe",
+      description:
+        "Reports whether the node can serve sync traffic. Requires no authentication and " <>
+          "returns 200 only after the storage layer answers a cheap read.",
+      tags: ["Health"],
+      responses: %{
+        "200" => OperationSchema.health_response("ok", "Storage layer is ready"),
+        "503" =>
+          OperationSchema.health_response(
+            "unavailable",
+            "Application or storage layer is not ready; retry after it recovers"
+          )
+      }
+    }
+  end
+
   defp group_listing_json(page) do
     %{
       "group_id" => page.group_id,
@@ -903,6 +939,23 @@ defmodule EbbServer.Sync.Router.OperationSchema do
         id: %OpenApiSpex.Schema{type: :string, description: "ID of the rejected action"},
         reason: %OpenApiSpex.Schema{type: :string, description: "Rejection reason code"},
         details: %OpenApiSpex.Schema{type: :string, nullable: true}
+      }
+    }
+  end
+
+  def health_response(status, description) do
+    %OpenApiSpex.Response{
+      description: description,
+      content: %{
+        "application/json" => %{
+          schema: %OpenApiSpex.Schema{
+            type: :object,
+            required: ["status"],
+            properties: %{
+              status: %OpenApiSpex.Schema{type: :string, enum: [status]}
+            }
+          }
+        }
       }
     }
   end

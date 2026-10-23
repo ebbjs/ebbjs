@@ -51,10 +51,47 @@ mix openapi.gen.spec
 
 ## Configuration
 
-| Variable       | Default     | Description                     |
-| -------------- | ----------- | ------------------------------- |
-| `EBB_PORT`     | `4000`      | HTTP listen port                |
-| `EBB_DATA_DIR` | `/app/data` | RocksDB + SQLite data directory |
+| Variable        | Default           | Description                                                              |
+| --------------- | ----------------- | ------------------------------------------------------------------------ |
+| `EBB_PORT`      | `4000`            | HTTP listen port                                                         |
+| `EBB_DATA_DIR`  | `/app/data`       | RocksDB + SQLite data directory                                          |
+| `EBB_AUTH_MODE` | (none — required) | Auth mode: `bypass` or `external`. The node refuses to boot without one. |
+| `EBB_AUTH_URL`  | (none)            | Identity service URL. Required when `EBB_AUTH_MODE=external`.            |
+
+Auth is the one setting whose precedence is reversed: `EBB_AUTH_MODE` and
+`EBB_AUTH_URL` win over the compiled `:auth_mode` / `:auth_url` values,
+because the operator's runtime instruction must not be silently
+overridden by a release's baked-in config. There is deliberately no
+default mode — a bare `mix release` boot without auth configuration
+fails before any child starts rather than silently allowing every client
+to forge an actor identity. `:bypass` logs a warning at boot and must
+never be exposed publicly.
+
+`EBB_PORT` and `EBB_DATA_DIR` keep the opposite precedence: a compiled
+`:port` / `:data_dir` (what `MIX_ENV=test` uses) wins over the
+environment, so a test run cannot leak state into a deployment path or a
+port another service holds. `mix dev` and the release leave both unset,
+so the environment supplies them there.
+
+## Self-hosting in Docker
+
+The image in `ebb_server/Dockerfile` assembles the release in a builder
+stage and runs it from `debian:bookworm-slim` as a non-root user, with
+`GET /healthz` backing the container healthcheck and `/app/data` as the
+volume. `EBB_AUTH_MODE` must be set explicitly; the container refuses to
+boot otherwise.
+
+```bash
+docker build -f ebb_server/Dockerfile -t ebb_server:local .   # repo root
+docker run -d -p 4000:4000 -v ebb-data:/app/data \
+  -e EBB_AUTH_MODE=external -e EBB_AUTH_URL=https://identity.example.com \
+  ebb_server:local
+```
+
+See [`docs/self-hosting.md`](../docs/self-hosting.md) for compose
+profiles, persistence, upgrades, and backups, and
+[`scripts/docker-smoke-test.sh`](../scripts/docker-smoke-test.sh) for the
+container acceptance checks CI runs on every pull request.
 
 ## Architecture
 
@@ -143,6 +180,7 @@ hot-path behavior. Read those before making non-trivial changes.
 
 | Method | Path                                             | Purpose                                                                |
 | ------ | ------------------------------------------------ | ---------------------------------------------------------------------- |
+| `GET`  | `/healthz`                                       | Readiness probe (`200` ready / `503` not ready), no auth required      |
 | `POST` | `/sync/handshake`                                | Actor identity + group membership (requires `x-ebb-actor-id` header)   |
 | `GET`  | `/sync/groups/:group_id?offset=N`                | Paginated catch-up (`stream-next-offset`, `stream-up-to-date` headers) |
 | `GET`  | `/sync/groups/:group_id/entities?cursor=&limit=` | Group state at a watermark, for cold bootstrap                         |
@@ -452,19 +490,19 @@ not atoms.
 
 All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 
-| Key                          | Description                                                                                | Default     |
-| ---------------------------- | ------------------------------------------------------------------------------------------ | ----------- |
-| `:port`                      | HTTP listen port                                                                           | 4000        |
-| `:data_dir`                  | Directory for RocksDB + SQLite files                                                       | `./data`    |
-| `:auth_mode`                 | Auth mode (`:bypass` / `:external`)                                                        | `:external` |
-| `:auth_url`                  | Developer's auth endpoint URL                                                              | (required)  |
-| `:writer_batch_max_size`     | Buffered Actions before an immediate commit (`<= 0` = no trigger)                          | 1000        |
-| `:writer_batch_timeout_ms`   | Coalescing window (`0` = burst-drain, no timer)                                            | 0           |
-| `:writer_max_in_flight`      | Claimed ranges the pipeline may hold at once (1–4); higher overlap needs the overlay chain | 1           |
-| `:writer_prepare_pool_size`  | Prepare workers for payload build and ETF encode                                           | 2           |
-| `:writer_prepare_queue_max`  | In-flight prepare calls before the Writer rejects with `503 write_failed`                  | 1024        |
-| `:writer_prepare_timeout_ms` | Upper bound on one prepare job before it fails the call                                    | 2000        |
-| `:on_action`                 | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook))     | (unset)     |
+| Key                          | Description                                                                                | Default    |
+| ---------------------------- | ------------------------------------------------------------------------------------------ | ---------- |
+| `:port`                      | HTTP listen port                                                                           | 4000       |
+| `:data_dir`                  | Directory for RocksDB + SQLite files                                                       | `./data`   |
+| `:auth_mode`                 | Auth mode (`:bypass` / `:external`); `EBB_AUTH_MODE` overrides it                          | (none)     |
+| `:auth_url`                  | Developer's auth endpoint URL; `EBB_AUTH_URL` overrides it; required for `:external`       | (required) |
+| `:writer_batch_max_size`     | Buffered Actions before an immediate commit (`<= 0` = no trigger)                          | 1000       |
+| `:writer_batch_timeout_ms`   | Coalescing window (`0` = burst-drain, no timer)                                            | 0          |
+| `:writer_max_in_flight`      | Claimed ranges the pipeline may hold at once (1–4); higher overlap needs the overlay chain | 1          |
+| `:writer_prepare_pool_size`  | Prepare workers for payload build and ETF encode                                           | 2          |
+| `:writer_prepare_queue_max`  | In-flight prepare calls before the Writer rejects with `503 write_failed`                  | 1024       |
+| `:writer_prepare_timeout_ms` | Upper bound on one prepare job before it fails the call                                    | 2000       |
+| `:on_action`                 | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook))     | (unset)    |
 
 The periodic metric sampler is configured under its own key,
 `Application.get_env(:ebb_server, EbbServer.Telemetry.Sampler)`:
