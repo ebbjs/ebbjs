@@ -1598,6 +1598,58 @@ defmodule EbbServer.Storage.EntityStoreTest do
       refute DirtyTracker.dirty?(entity_id, dirty_set)
     end
 
+    test "materialize returns the row it fetched before the scan, without a second read", ctx do
+      entity_id = "todo_snapshot"
+      first_hlc = hlc_from(1_000)
+
+      action =
+        put_action(
+          "act_snapshot",
+          entity_id,
+          %{"title" => leaf("First", first_hlc)},
+          first_hlc
+        )
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], ctx.writer_name)
+
+      opts = store_opts(ctx)
+      assert {:ok, _} = EntityStore.get(entity_id, "a_test", opts)
+
+      DirtyTracker.mark_dirty_batch([{entity_id, "todo"}], ctx.dirty_set)
+
+      newer_hlc = hlc_from(2_000)
+      newer_title = leaf("Changed in SQLite", newer_hlc)
+
+      result =
+        EntityStore.materialize(
+          entity_id,
+          Keyword.put(opts, :after_scan, fn ->
+            SQLite.upsert_entity(
+              %{
+                id: entity_id,
+                type: "todo",
+                data: Jason.encode!(%{"fields" => %{"title" => newer_title}}),
+                created_hlc: first_hlc,
+                updated_hlc: newer_hlc,
+                deleted_hlc: nil,
+                deleted_by: nil,
+                last_gsn: 1
+              },
+              ctx.sqlite_name
+            )
+          end)
+        )
+
+      assert {:ok, entity} = result
+      assert entity.data["fields"]["title"]["value"] == "First"
+      refute DirtyTracker.dirty?(entity_id, ctx.dirty_set)
+
+      # The row really changed in SQLite; the materializer returned its own
+      # pre-scan snapshot instead of reading the row a second time.
+      assert {:ok, row} = SQLite.get_entity(entity_id, ctx.sqlite_name)
+      assert Jason.decode!(row.data)["fields"]["title"]["value"] == "Changed in SQLite"
+    end
+
     test "a newer materialization is not regressed by an older one", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
