@@ -108,8 +108,8 @@ defmodule EbbServer.Bench.Telemetry do
     record(config, :writer_commit, duration_us(measurements))
   end
 
-  def handle_event([:ebb, :writer, :batch_size], measurements, _metadata, config) do
-    record(config, :writer_queue_depth, measurements.callers)
+  def handle_event([:ebb, :writer, :batch_size], _measurements, %{callers: callers}, config) do
+    record(config, :writer_queue_depth, callers)
   end
 
   def handle_event([:ebb, :writer, :flush_phase_ms], measurements, _metadata, config) do
