@@ -10,6 +10,7 @@ defmodule EbbServer.Bench.Metrics do
 
   alias EbbServer.Bench.Options
   alias EbbServer.Storage.RocksDB
+  alias EbbServer.Telemetry
 
   @burst_seconds 15
   @steady_start_seconds 61
@@ -444,13 +445,38 @@ defmodule EbbServer.Bench.Metrics do
 
   # Server-side samples come from `EbbServer.Bench.Telemetry` as
   # `%{tag => [{offset_us, duration_us}]}`. `latency/2` windows them and
-  # drops warmup samples (negative offset), like the client-side worker.
+  # drops warmup samples (negative offset), like the client-side worker. The
+  # flush phases come from `ebb.writer.flush_phase_ms`, one tagged series per
+  # phase plus the per-range accounting total; the gauges are the Writer's
+  # claim/release snapshots, not harness occupancy.
   defp server_summary(duration, telemetry) do
     %{
       writer_batch: latency(duration, samples(telemetry, :writer_batch)),
       writer_commit: latency(duration, samples(telemetry, :writer_commit)),
       http_request: latency(duration, samples(telemetry, :http_request)),
-      fanout_push: latency(duration, samples(telemetry, :fanout_push))
+      fanout_push: latency(duration, samples(telemetry, :fanout_push)),
+      flush_phases: flush_phases(duration, telemetry),
+      flush_total: latency(duration, samples(telemetry, :writer_flush_total)),
+      in_flight_batches: gauge(duration, samples(telemetry, :writer_in_flight)),
+      oldest_unreleased_gsn: gauge(duration, samples(telemetry, :writer_oldest_unreleased_gsn))
+    }
+  end
+
+  defp flush_phases(duration, telemetry) do
+    Map.new(Telemetry.writer_flush_phases(), fn phase ->
+      {phase, latency(duration, samples(telemetry, {:writer_flush_phase, phase}))}
+    end)
+  end
+
+  # A gauge series is a level, not a duration: the same measured window as
+  # `latency/2`, reported as the sample count, mean level, and peak level.
+  defp gauge(duration, samples) do
+    values = window_values(samples, 0, duration * 1_000_000)
+
+    %{
+      count: length(values),
+      mean: if(values == [], do: nil, else: Enum.sum(values) / length(values)),
+      peak: List.last(values)
     }
   end
 
