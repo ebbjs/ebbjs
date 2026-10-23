@@ -297,7 +297,7 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
       assert measurements.notify == 0
     end
 
-    test "a failed cache apply reports the durable range as ok with no notify", ctx do
+    test "a failed cache apply reports the durable range as ok with the replies in notify", ctx do
       ref = attach_telemetry(@writer_events)
 
       %{name: writer_name} =
@@ -310,7 +310,8 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
                flush_phase_events(telemetry_events(ref))
 
       assert metadata == %{gsn_start: 1, gsn_end: 1, outcome: :ok}
-      assert measurements.notify == 0
+      assert measurements.apply > 0
+      assert measurements.notify > 0
     end
 
     test "a resolve-time abandon reports queue, prepare, and resolve only", ctx do

@@ -756,10 +756,6 @@ defmodule EbbServer.Storage.Writer do
   caller in the flush sees `{:error, {:rocksdb_write_failed, reason}}`.
   """
   @impl true
-  def handle_call({:write_actions, actions}, from, state) when is_list(actions) do
-    handle_write_actions(actions, from, nil, state)
-  end
-
   def handle_call({:write_actions, actions, sent_at}, from, state)
       when is_list(actions) and is_integer(sent_at) do
     handle_write_actions(actions, from, sent_at, state)
@@ -1236,9 +1232,8 @@ defmodule EbbServer.Storage.Writer do
         cache_plan
       )
 
-    # The resolve phase ends at the hand-off, so this stamp is taken after
-    # the group resolution and the cache plan and before a Committer is
-    # asked for the range.
+    # The resolve phase ends here, where the range is ready for a Committer
+    # and the hand-off itself belongs to `commit_wait`.
     state = %{state | pipeline: pipeline}
     state = update_range_timing(state, ref, &%{&1 | resolve_at: System.monotonic_time()})
 
@@ -1404,7 +1399,7 @@ defmodule EbbServer.Storage.Writer do
   defp record_arrival(state, from, sent_at) do
     dequeued_at = System.monotonic_time()
 
-    arrival = %{sent_at: sent_at || dequeued_at, dequeued_at: dequeued_at, ready_at: nil}
+    arrival = %{sent_at: sent_at, dequeued_at: dequeued_at, ready_at: nil}
 
     put_arrivals(state, Map.put(state.timings.arrivals, from, arrival))
   end
@@ -1663,6 +1658,7 @@ defmodule EbbServer.Storage.Writer do
           emit_batch_latency(batch)
           emit_actions_accepted(batch.batch_size)
           reply_all(batch.pending, batch.ranges, :ok)
+          state = mark_notify_done(state, batch.ref)
           state = emit_flush_phases(state, batch.ref, :ok)
           escalate_cache_failure(batch.gsn_start, batch.gsn_end, reason)
           {:escalated, state}
@@ -1670,11 +1666,13 @@ defmodule EbbServer.Storage.Writer do
     rescue
       error ->
         emit_batch_latency(batch)
+        state = emit_flush_phases(state, batch.ref, :ok)
         log_post_commit_failure(batch, error)
         reraise error, __STACKTRACE__
     catch
       kind, value ->
         emit_batch_latency(batch)
+        state = emit_flush_phases(state, batch.ref, :ok)
         log_post_commit_failure(batch, {kind, value})
         :erlang.raise(kind, value, __STACKTRACE__)
     end

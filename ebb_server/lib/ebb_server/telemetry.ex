@@ -77,10 +77,11 @@ defmodule EbbServer.Telemetry do
   phases that decide whether pipeline depth trades throughput for latency.
   It fires once per range, keeps every phase as a separate measurement so a
   reporter can aggregate them independently, and the six sum to the range's
-  lifetime from the oldest coalesced call's `write_actions/2` send to its
-  release. The phase vocabulary is `#{inspect(@writer_flush_phases)}` (also
-  returned by `writer_flush_phases/0`) and is defined here so every reporter
-  and follow-up issue measures the same terms:
+  lifetime from the oldest coalesced call's `write_actions/2` send to the end
+  of its `notify` phase (the fan-out nudge and the caller replies). The phase
+  vocabulary is `#{inspect(@writer_flush_phases)}` (also returned by
+  `writer_flush_phases/0`) and is defined here so every reporter and
+  follow-up issue measures the same terms:
 
   - `queue` — the oldest coalesced call's mailbox wait, plus the wait from
     its payload being ready to the flush dequeue (the coalescing window).
@@ -100,11 +101,13 @@ defmodule EbbServer.Telemetry do
   A phase that did not run for a range is `0`, so the sum stays the range's
   wall time: a range abandoned during resolve reports `commit_wait`,
   `apply`, and `notify` as `0`; a range abandoned by a failed commit reports
-  `apply` and `notify` as `0`. `outcome` is `:ok` for a durable range and
-  `:abandoned` otherwise, and `reason` is present only on `:abandoned`.
-  `ebb.writer.batch_latency_ms` remains the total from just before the GSN
-  claim to release, so history stays comparable; `queue` (before the claim)
-  and `prepare` (before the flush) are exactly the terms it cannot see.
+  `apply` and `notify` as `0`. A post-commit raise still emits, because the
+  range is durable: `outcome` stays `:ok` and `notify` is `0`. `outcome` is
+  `:ok` for a durable range and `:abandoned` otherwise, and `reason` is
+  present only on `:abandoned`. `ebb.writer.batch_latency_ms` remains the
+  total from just before the GSN claim to the end of `notify`, so history
+  stays comparable; `queue`, `prepare`, and the burst filter/dedup part of
+  `resolve` happen before its timer starts.
 
   `ebb.fanout.push_latency_ms` is measured from the Writer's durable commit to
   the GroupServer dispatching the batch to the group's subscribers: one sample
