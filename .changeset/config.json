@@ -1,0 +1,17 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@4.0.1/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": false,
+  "fixed": [
+    ["@ebbjs/core", "@ebbjs/storage", "@ebbjs/client", "@ebbjs/react", "@ebbjs/codemirror"]
+  ],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "privatePackages": {
+    "version": false,
+    "tag": false
+  },
+  "format": "oxfmt"
+}
