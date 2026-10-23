@@ -457,6 +457,7 @@ defmodule EbbServer.Bench.Metrics do
       fanout_push: latency(duration, samples(telemetry, :fanout_push)),
       flush_phases: flush_phases(duration, telemetry),
       flush_total: latency(duration, samples(telemetry, :writer_flush_total)),
+      queue_depth: gauge(duration, samples(telemetry, :writer_queue_depth)),
       in_flight_batches: gauge(duration, samples(telemetry, :writer_in_flight)),
       oldest_unreleased_gsn: gauge(duration, samples(telemetry, :writer_oldest_unreleased_gsn))
     }
@@ -470,13 +471,14 @@ defmodule EbbServer.Bench.Metrics do
 
   # A gauge series is a level, not a duration: the same measured window as
   # `latency/2`, reported as the sample count, mean level, and peak level.
+  # `window_values/3` sorts, but `Enum.max` states the peak's intent.
   defp gauge(duration, samples) do
     values = window_values(samples, 0, duration * 1_000_000)
 
     %{
       count: length(values),
       mean: if(values == [], do: nil, else: Enum.sum(values) / length(values)),
-      peak: List.last(values)
+      peak: if(values == [], do: nil, else: Enum.max(values))
     }
   end
 

@@ -562,11 +562,11 @@ by history: ids leave the set when their batch commits or abandons.
 `queue`, `prepare`, `resolve`, `commit_wait`, `apply`, and `notify` (see
 `EbbServer.Telemetry.writer_flush_phases/0` for the canonical order). The
 six phases sum to the range's lifetime from the oldest coalesced call's
-`write_actions/2` send to its release, so a reporter can attribute client
-latency instead of treating everything outside `batch_latency_ms` as
-residual. A phase that did not run is `0`: an abandoned range keeps its
-`outcome: :abandoned` and `reason`, and reports the phases it never reached
-as zero.
+`write_actions/2` send to the end of its `notify` phase (the fan-out nudge
+and the caller replies), so a reporter can attribute client latency instead
+of treating everything outside `batch_latency_ms` as residual. A phase that
+did not run is `0`: an abandoned range keeps its `outcome: :abandoned` and
+`reason`, and reports the phases it never reached as zero.
 
 `ebb.fanout.push_latency_ms` is measured from the Writer's durable commit to
 the GroupServer dispatching the batch to the group's subscribers: one sample

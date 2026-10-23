@@ -171,7 +171,8 @@ defmodule EbbServer.Bench.MetricsTest do
         {:writer_flush_phase, :apply} => [{0, 8_000}],
         {:writer_flush_phase, :notify} => [{0, 10_000}],
         :writer_flush_total => [{0, 31_000}, {2_000_000, 35_000}],
-        :writer_in_flight => [{0, 1}, {1_000_000, 3}],
+        :writer_queue_depth => [{0, 1}, {1_000_000, 3}],
+        :writer_in_flight => [{0, 3}, {1_000_000, 1}],
         :writer_oldest_unreleased_gsn => [{0, 0}, {1_000_000, 8}]
       }
 
@@ -188,6 +189,7 @@ defmodule EbbServer.Bench.MetricsTest do
       assert overall(server.flush_phases.notify).p50 == 10_000
 
       assert %{count: 2, p50: 31_000} = overall(server.flush_total)
+      assert server.queue_depth == %{count: 2, mean: 2.0, peak: 3}
       assert server.in_flight_batches == %{count: 2, mean: 2.0, peak: 3}
       assert server.oldest_unreleased_gsn == %{count: 2, mean: 4.0, peak: 8}
     end
@@ -202,6 +204,7 @@ defmodule EbbServer.Bench.MetricsTest do
       end
 
       assert overall(server.flush_total).count == 0
+      assert server.queue_depth == %{count: 0, mean: nil, peak: nil}
       assert server.in_flight_batches == %{count: 0, mean: nil, peak: nil}
       assert server.oldest_unreleased_gsn == %{count: 0, mean: nil, peak: nil}
     end

@@ -110,11 +110,14 @@ defmodule EbbServer.Bench.Report do
   defp writer_gauge_section(runs) do
     rows =
       Enum.map(runs, fn run ->
+        queue = Map.fetch!(run.metrics.server, :queue_depth)
         in_flight = Map.fetch!(run.metrics.server, :in_flight_batches)
         oldest = Map.fetch!(run.metrics.server, :oldest_unreleased_gsn)
 
         [
           run.label,
+          format_value(queue.peak),
+          format_value(queue.mean),
           format_value(in_flight.peak),
           format_value(in_flight.mean),
           format_value(oldest.peak),
@@ -128,6 +131,8 @@ defmodule EbbServer.Bench.Report do
       table(
         [
           "Run",
+          "`queue_depth` peak",
+          "`queue_depth` mean",
           "`in_flight_batches` peak",
           "`in_flight_batches` mean",
           "`oldest_unreleased_gsn` peak",
@@ -136,12 +141,14 @@ defmodule EbbServer.Bench.Report do
         rows
       ),
       "",
-      "These are the Writer's own `ebb.writer.in_flight_batches` and " <>
-        "`ebb.writer.oldest_unreleased_gsn` gauges, emitted on every claim and release, so " <>
-        "they describe the actual reorder buffer rather than the harness-side `Observed` " <>
-        "columns above. `in_flight_batches` counts every open claim, including one applying; " <>
-        "`oldest_unreleased_gsn` is the head of the claim order and `0` when the buffer is " <>
-        "empty, so its mean includes idle samples.",
+      "`queue_depth` is the number of `write_actions/1` calls one flush drained, taken from " <>
+        "`ebb.writer.batch_size`'s `callers`, so its peak/mean describe how deep the coalescing " <>
+        "queue got, not a sampled mailbox length. The other two columns are the Writer's own " <>
+        "`ebb.writer.in_flight_batches` and `ebb.writer.oldest_unreleased_gsn` gauges, emitted " <>
+        "on every claim and release, so they describe the actual reorder buffer rather than the " <>
+        "harness-side `Observed` columns above. `in_flight_batches` counts every open claim, " <>
+        "including one applying; `oldest_unreleased_gsn` is the head of the claim order and `0` " <>
+        "when the buffer is empty, so its mean includes idle samples.",
       ""
     ]
   end
@@ -170,11 +177,11 @@ defmodule EbbServer.Bench.Report do
           table(["Run" | Enum.map(phases, &Atom.to_string/1)] ++ ["sum p50"], rows),
           "",
           "Each phase cell is `p50 / p95` in µs. The six phases sum to one claimed range's " <>
-            "lifetime, from the oldest coalesced call's send to its release, so `sum p50` " <>
-            "(the per-range sum the collector records as `flush_total`) is the flush a caller " <>
-            "waited on. `queue` and `prepare` are the terms `ebb.writer.batch_latency_ms` " <>
-            "cannot see, because its timer starts after the request is dequeued and the " <>
-            "payload is built. A phase that did " <>
+            "lifetime, from the oldest coalesced call's send to the end of its `notify` phase, " <>
+            "so `sum p50` (the per-range sum the collector records as `flush_total`) is the " <>
+            "flush a caller waited on. `queue` and `prepare` are the terms " <>
+            "`ebb.writer.batch_latency_ms` cannot see, because its timer starts after the " <>
+            "request is dequeued and the payload is built. A phase that did " <>
             "not run is `0`, not missing, so an abandoned range reports `0` for the phases it " <>
             "never reached.",
           ""

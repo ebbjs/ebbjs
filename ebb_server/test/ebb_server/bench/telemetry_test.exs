@@ -65,8 +65,13 @@ defmodule EbbServer.Bench.TelemetryTest do
   test "records the pipeline gauges at their raw level", %{config: config} do
     Telemetry.handle_event([:ebb, :writer, :in_flight_batches], %{count: 3}, %{}, config)
     Telemetry.handle_event([:ebb, :writer, :oldest_unreleased_gsn], %{gsn: 42}, %{}, config)
+    Telemetry.handle_event([:ebb, :writer, :batch_size], %{count: 200, callers: 2}, %{}, config)
 
-    assert rows(config) == [{:writer_in_flight, 3}, {:writer_oldest_unreleased_gsn, 42}]
+    assert rows(config) == [
+             {:writer_in_flight, 3},
+             {:writer_oldest_unreleased_gsn, 42},
+             {:writer_queue_depth, 2}
+           ]
   end
 
   # The event carries native durations; the collector must convert them, so

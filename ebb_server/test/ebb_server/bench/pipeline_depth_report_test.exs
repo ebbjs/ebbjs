@@ -64,11 +64,13 @@ defmodule EbbServer.Bench.PipelineDepthReportTest do
     assert report =~ "### Writer pipeline gauges"
 
     assert report =~
-             "| Run | `in_flight_batches` peak | `in_flight_batches` mean | " <>
+             "| Run | `queue_depth` peak | `queue_depth` mean | " <>
+               "`in_flight_batches` peak | `in_flight_batches` mean | " <>
                "`oldest_unreleased_gsn` peak | `oldest_unreleased_gsn` mean |"
 
-    assert report =~ "| t0 baseline | 2 | 1.5 | 3 | 1.5 |"
-    assert report =~ "| pipeline | 2 | 1.5 | 3 | 1.5 |"
+    assert report =~ "| t0 baseline | 2 | 1.5 | 2 | 1.5 | 3 | 1.5 |"
+    assert report =~ "| pipeline | 2 | 1.5 | 2 | 1.5 | 3 | 1.5 |"
+    assert report =~ "calls one flush drained"
     assert report =~ "emitted on every claim and release"
     assert report =~ "`0` when the buffer is empty, so its mean includes idle samples"
 
@@ -106,7 +108,7 @@ defmodule EbbServer.Bench.PipelineDepthReportTest do
     refute report =~ "| Run | queue | prepare |"
 
     assert report =~ "### Writer pipeline gauges"
-    assert report =~ "| t0 baseline | n/a | n/a | n/a | n/a |"
+    assert report =~ "| t0 baseline | n/a | n/a | n/a | n/a | n/a | n/a |"
   end
 
   test "a single pipelined run does not claim a baseline it never measured" do
@@ -193,6 +195,7 @@ defmodule EbbServer.Bench.PipelineDepthReportTest do
       {:writer_flush_phase, :apply} => [{0, 70}],
       {:writer_flush_phase, :notify} => [{0, 80}],
       :writer_flush_total => [{0, 400}],
+      :writer_queue_depth => [{0, 1}, {1_000_000, 2}],
       :writer_in_flight => [{0, 1}, {1_000_000, 2}],
       :writer_oldest_unreleased_gsn => [{0, 0}, {1_000_000, 3}]
     }

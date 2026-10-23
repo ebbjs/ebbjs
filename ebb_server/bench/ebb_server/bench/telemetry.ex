@@ -12,7 +12,9 @@ defmodule EbbServer.Bench.Telemetry do
   `{:writer_flush_phase, phase}` plus the range's accounting total under
   `:writer_flush_total`, so a report can attribute one flush without
   re-summing the phase rows. The Writer's two pipeline gauges are recorded
-  raw under `:writer_in_flight` and `:writer_oldest_unreleased_gsn`.
+  raw under `:writer_in_flight` and `:writer_oldest_unreleased_gsn`, and the
+  flush queue depth (the number of calls one flush drained, from
+  `ebb.writer.batch_size`'s `callers`) under `:writer_queue_depth`.
 
   Handlers run in whichever process emits the event — the Writer, a request
   process, a GroupServer — so samples land in a public ETS table an emitter
@@ -43,6 +45,7 @@ defmodule EbbServer.Bench.Telemetry do
   @cap 2_000_000
 
   @events [
+    [:ebb, :writer, :batch_size],
     [:ebb, :writer, :batch_latency_ms],
     [:ebb, :writer, :commit_latency_ms],
     [:ebb, :writer, :flush_phase_ms],
@@ -103,6 +106,10 @@ defmodule EbbServer.Bench.Telemetry do
 
   def handle_event([:ebb, :writer, :commit_latency_ms], measurements, _metadata, config) do
     record(config, :writer_commit, duration_us(measurements))
+  end
+
+  def handle_event([:ebb, :writer, :batch_size], measurements, _metadata, config) do
+    record(config, :writer_queue_depth, measurements.callers)
   end
 
   def handle_event([:ebb, :writer, :flush_phase_ms], measurements, _metadata, config) do
