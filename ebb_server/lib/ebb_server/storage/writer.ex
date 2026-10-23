@@ -1666,13 +1666,13 @@ defmodule EbbServer.Storage.Writer do
     rescue
       error ->
         emit_batch_latency(batch)
-        state = emit_flush_phases(state, batch.ref, :ok)
+        emit_flush_phases(state, batch.ref, :ok)
         log_post_commit_failure(batch, error)
         reraise error, __STACKTRACE__
     catch
       kind, value ->
         emit_batch_latency(batch)
-        state = emit_flush_phases(state, batch.ref, :ok)
+        emit_flush_phases(state, batch.ref, :ok)
         log_post_commit_failure(batch, {kind, value})
         :erlang.raise(kind, value, __STACKTRACE__)
     end
