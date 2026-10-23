@@ -322,6 +322,7 @@ jobs:
       - run: pnpm build
       - name: Start ebb_server
         env:
+          EBB_AUTH_MODE: bypass
           EBB_DATA_DIR: /tmp/ebb-integration-data
         run: |
           mkdir -p "$EBB_DATA_DIR"
@@ -408,3 +409,69 @@ jobs:
           name: playwright-report
           path: examples/collaborative-text-demo/playwright-report
           retention-days: 7
+
+  # ─────────────────────────────────────────────────────────
+  # Container image — builds the same artifact a release tag
+  # publishes and gates it on scripts/docker-smoke-test.sh.
+  # The GHCR push is main-only and comes after the smoke test,
+  # so a red PR never publishes an image.
+  # ─────────────────────────────────────────────────────────
+
+  docker-image:
+    name: Docker Image
+    runs-on: ubuntu-latest
+    # The RocksDB NIF compiles from source inside the builder; ~20 min
+    # cold, so leave room for a slow runner and the apt steps.
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      # Needed by the main-branch push. Fork PRs get this downgraded to
+      # read by GitHub, which is fine because PRs never push.
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: actions/setup-node@v4
+        with:
+          # scripts/docker-smoke-test.sh drives
+          # scripts/docker-persistence-check.mjs through node.
+          node-version: "22"
+      - name: Log in to GHCR
+        # Only a push to main publishes, so only then do we authenticate.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ebb_server/Dockerfile
+          platforms: linux/amd64
+          # Loaded into the runner's daemon so the smoke test can run it;
+          # publishing is a separate, main-only step below.
+          load: true
+          push: false
+          tags: ebb_server:ci
+          cache-from: type=gha,scope=ebb-server
+          cache-to: type=gha,mode=max,scope=ebb-server
+      - name: Smoke test image
+        # The script is the single source of truth for the container
+        # acceptance checks: runtime-image guardrails, size budget,
+        # auth fail-fast, unauthenticated health, auth gate, write,
+        # recreation against the same volume, read-back.
+        run: bash scripts/docker-smoke-test.sh ebb_server:ci
+      - name: Push image to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          LOCAL_IMAGE: ebb_server:ci
+          REGISTRY_IMAGE: ghcr.io/ebbjs/ebb_server
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse --short HEAD)"
+          docker tag "$LOCAL_IMAGE" "$REGISTRY_IMAGE:main"
+          docker tag "$LOCAL_IMAGE" "$REGISTRY_IMAGE:sha-$sha"
+          docker push "$REGISTRY_IMAGE:main"
+          docker push "$REGISTRY_IMAGE:sha-$sha"
