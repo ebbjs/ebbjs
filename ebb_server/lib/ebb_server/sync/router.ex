@@ -39,6 +39,8 @@ defmodule EbbServer.Sync.Router do
   - `EbbServer.Storage.PermissionChecker` — per-update auth
   - `EbbServer.Storage.Writer` — write serialization
   - `EbbServer.Storage.EntityStore` — reads with on-demand materialization
+  - `EbbServer.Storage.EntityView` — the authorized read and its wire view
+  - `EbbServer.Storage.ActionSubmission` — the write sequence and its rejection list
   - `EbbServer.Sync.SSEHandler` — the SSE wire format
   - `EbbServer.Sync.CatchUp` — paginated catch-up
   - `EbbServer.Sync.GroupListing` — group-scoped cold-bootstrap listing
@@ -47,13 +49,14 @@ defmodule EbbServer.Sync.Router do
   use Plug.Router
 
   alias EbbServer.Storage.{
+    ActionSubmission,
     CacheTables,
     EntityIndex,
     EntityStore,
+    EntityView,
     GroupCache,
     PermissionChecker,
-    WatermarkTracker,
-    Writer
+    WatermarkTracker
   }
 
   alias EbbServer.Sync.{CatchUp, FanOutRouter, GroupListing, SSEHandler}
@@ -70,21 +73,12 @@ defmodule EbbServer.Sync.Router do
 
     case decode_msgpack(body) do
       {:ok, actions} ->
-        {accepted, pc_rejected} = PermissionChecker.validate_and_authorize(actions, actor_id)
+        case ActionSubmission.submit(actions, actor_id) do
+          {:ok, _gsn_range, rejected} ->
+            send_json(conn, 200, %{"rejected" => rejected})
 
-        if accepted == [] do
-          send_json(conn, 200, %{"rejected" => format_rejections(pc_rejected)})
-        else
-          case Writer.write_actions(accepted) do
-            {:ok, _gsn_range, writer_rejected} ->
-              all_rejected =
-                format_rejections(pc_rejected) ++ format_writer_rejections(writer_rejected)
-
-              send_json(conn, 200, %{"rejected" => all_rejected})
-
-            {:error, _reason} ->
-              send_json(conn, 503, %{"error" => "write_failed"})
-          end
+          {:error, _reason} ->
+            send_json(conn, 503, %{"error" => "write_failed"})
         end
 
       {:error, error_type, reason} ->
@@ -100,16 +94,9 @@ defmodule EbbServer.Sync.Router do
         send_json(conn, 401, %{"error" => "unauthorized"})
 
       actor_id ->
-        result =
-          if PermissionChecker.can_read?(entity_id, actor_id) do
-            EntityStore.get(entity_id, actor_id)
-          else
-            :not_found
-          end
-
-        case result do
-          {:ok, entity} ->
-            send_json(conn, 200, entity_json(entity))
+        case EntityView.for_actor(entity_id, actor_id) do
+          {:ok, view} ->
+            send_json(conn, 200, view)
 
           # Non-membership maps to the same 404 as a missing entity: a
           # distinct status would turn the endpoint into an existence
@@ -136,7 +123,7 @@ defmodule EbbServer.Sync.Router do
 
         case EntityStore.query(type, filter, actor_id, opts) do
           {:ok, entities} ->
-            response = Enum.map(entities, &entity_json/1)
+            response = Enum.map(entities, &EntityView.json/1)
 
             send_json(conn, 200, response)
 
@@ -631,25 +618,13 @@ defmodule EbbServer.Sync.Router do
     }
   end
 
-  defp entity_json(entity) do
-    %{
-      "id" => entity.id,
-      "type" => entity.type,
-      "data" => entity.data,
-      "created_hlc" => entity.created_hlc,
-      "updated_hlc" => entity.updated_hlc,
-      "deleted_hlc" => entity.deleted_hlc,
-      "last_gsn" => entity.last_gsn
-    }
-  end
-
   defp group_listing_json(page) do
     %{
       "group_id" => page.group_id,
       "watermark" => page.watermark,
       "cursor" => page.cursor,
       "has_more" => page.has_more,
-      "entities" => Enum.map(page.entities, &entity_json/1)
+      "entities" => Enum.map(page.entities, &EntityView.json/1)
     }
   end
 
@@ -677,23 +652,6 @@ defmodule EbbServer.Sync.Router do
       {:error, reason} ->
         {:error, :invalid_msgpack, reason}
     end
-  end
-
-  defp format_rejections(rejections) do
-    Enum.map(rejections, fn %{action_id: id, reason: reason, details: details} ->
-      format_rejection(id, reason, details)
-    end)
-  end
-
-  defp format_writer_rejections(rejections) do
-    Enum.map(rejections, fn %{action: action, reason: reason} = rejection ->
-      format_rejection(action.id, reason, Map.get(rejection, :details))
-    end)
-  end
-
-  defp format_rejection(id, reason, details) do
-    rejection = %{"id" => id, "reason" => reason}
-    if details, do: Map.put(rejection, "details", details), else: rejection
   end
 
   defp send_error(conn, :invalid_msgpack, _reason) do
