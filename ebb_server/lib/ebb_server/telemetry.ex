@@ -1,4 +1,6 @@
 defmodule EbbServer.Telemetry do
+  @writer_flush_phases [:queue, :prepare, :resolve, :commit_wait, :apply, :notify]
+
   @moduledoc """
   Server-side telemetry: the single place that fixes event names and payload
   conventions for every `:telemetry` event Ebb emits.
@@ -22,6 +24,7 @@ defmodule EbbServer.Telemetry do
   | `ebb.writer.commit_failed`                | `count`                               | `gsn_start`, `gsn_end`, `reason`                    |
   | `ebb.writer.in_flight_batches`            | `count`                               | —                                                   |
   | `ebb.writer.oldest_unreleased_gsn`        | `gsn`                                 | —                                                   |
+  | `ebb.writer.flush_phase_ms`               | one native measurement per phase (`writer_flush_phases/0`) | `gsn_start`, `gsn_end`, `outcome` (`:ok` / `:abandoned`), `reason` (abandoned only) |
   | `ebb.system_cache.populated`              | `duration` (native), `entity_types`, `group_members`, `entity_groups`, `relationships`, `backfilled` | `outcome` (`:ok` / `:error`), `reason` |
   | `ebb.watermark.lag`                       | `lag` (durability: max GSN − committed watermark) | —                                                   |
   | `ebb.dirty_set.size`                      | `size`                                | —                                                   |
@@ -69,6 +72,38 @@ defmodule EbbServer.Telemetry do
   `ebb.watermark.lag` is a **durability** lag, not a notification lag:
   the resolution frontier may cover a durable range before its apply.
   `EbbServer.Sync.FanOutRouter.Plan` is the real notification gate.
+
+  `ebb.writer.flush_phase_ms` splits one claimed range's wall time into the
+  phases that decide whether pipeline depth trades throughput for latency.
+  It fires once per range, keeps every phase as a separate measurement so a
+  reporter can aggregate them independently, and the six sum to the range's
+  lifetime from the oldest coalesced call's `write_actions/2` send to its
+  release. The phase vocabulary is `#{inspect(@writer_flush_phases)}` (also
+  returned by `writer_flush_phases/0`) and is defined here so every reporter
+  and follow-up issue measures the same terms:
+
+  - `queue` — the oldest coalesced call's mailbox wait, plus the wait from
+    its payload being ready to the flush dequeue (the coalescing window).
+  - `prepare` — payload build and ETF encode, inline on the Writer or on the
+    prepare pool. A pooled call's pool queueing lands here, not in `queue`.
+  - `resolve` — the flush dequeue through dedup/in-flight filtering, the GSN
+    claim, group resolution and `update_scopes`, the cache mutation plan,
+    and the hand-off to a Committer.
+  - `commit_wait` — the hand-off through the durable ack, including waiting
+    behind an earlier range for the resolution gate and a Committer worker.
+  - `apply` — from the durable ack through the durable mark and the ordered
+    apply: waiting behind an earlier range in claim order, cache mutations,
+    and the dirty settle.
+  - `notify` — the fan-out nudge and the callers' replies.
+
+  A phase that did not run for a range is `0`, so the sum stays the range's
+  wall time: a range abandoned during resolve reports `commit_wait`,
+  `apply`, and `notify` as `0`; a range abandoned by a failed commit reports
+  `apply` and `notify` as `0`. `outcome` is `:ok` for a durable range and
+  `:abandoned` otherwise, and `reason` is present only on `:abandoned`.
+  `ebb.writer.batch_latency_ms` remains the total from just before the GSN
+  claim to release, so history stays comparable; `queue` (before the claim)
+  and `prepare` (before the flush) are exactly the terms it cannot see.
 
   `ebb.fanout.push_latency_ms` is measured from the Writer's durable commit to
   the GroupServer dispatching the batch to the group's subscribers: one sample
@@ -152,6 +187,16 @@ defmodule EbbServer.Telemetry do
   """
 
   @prefix :ebb
+
+  @doc """
+  The phase measurements `ebb.writer.flush_phase_ms` carries, in pipeline
+  order.
+
+  Reports and follow-up issues reference this list instead of repeating the
+  phase names, so the published tables stay comparable between issues.
+  """
+  @spec writer_flush_phases() :: [atom()]
+  def writer_flush_phases, do: @writer_flush_phases
 
   @doc """
   Emits `[:ebb | event]` with `measurements` and `metadata`.
