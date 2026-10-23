@@ -384,6 +384,10 @@ defmodule EbbServer.Storage.Writer do
           prepare_timer_ref: reference() | nil,
           preparing: map(),
           prepared: map(),
+          timings: %{
+            arrivals: %{optional(GenServer.from()) => arrival()},
+            ranges: %{optional(reference()) => range_timing()}
+          },
           committer_pool: pid() | nil,
           pipeline: CommitPipeline.t(),
           after_commit: (-> any()) | nil,
@@ -425,8 +429,34 @@ defmodule EbbServer.Storage.Writer do
     :flush_timer_ref,
     :fan_out_router,
     :watermark_tracker,
-    :in_flight_actions
+    :in_flight_actions,
+    timings: %{arrivals: %{}, ranges: %{}}
   ]
+
+  # A call's arrival stamps, keyed by its `GenServer.from()`, so the flush can
+  # attribute one range's queue and prepare phases to its oldest call. Dropped
+  # when the call is flushed or fails its prepare.
+  @type arrival :: %{
+          sent_at: integer(),
+          dequeued_at: integer(),
+          ready_at: integer() | nil
+        }
+
+  # One claimed range's phase boundaries. Every field after `gsn_end` is a
+  # `System.monotonic_time()` stamp, `nil` until the phase is reached; a phase
+  # whose end stamp is `nil` is emitted as `0`.
+  @type range_timing :: %{
+          gsn_start: non_neg_integer(),
+          gsn_end: non_neg_integer(),
+          sent_at: integer() | nil,
+          dequeued_at: integer() | nil,
+          ready_at: integer() | nil,
+          flush_at: integer(),
+          resolve_at: integer() | nil,
+          ack_at: integer() | nil,
+          apply_at: integer() | nil,
+          notify_at: integer() | nil
+        }
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -439,7 +469,9 @@ defmodule EbbServer.Storage.Writer do
 
   @spec write_actions([validated_action()], GenServer.name()) :: write_result() | {:error, term()}
   def write_actions(actions, name \\ __MODULE__) do
-    GenServer.call(name, {:write_actions, actions})
+    # The queue phase starts here, before the message reaches the mailbox.
+    sent_at = System.monotonic_time()
+    GenServer.call(name, {:write_actions, actions, sent_at})
   end
 
   @impl true
@@ -724,20 +756,30 @@ defmodule EbbServer.Storage.Writer do
   caller in the flush sees `{:error, {:rocksdb_write_failed, reason}}`.
   """
   @impl true
-  def handle_call({:write_actions, []}, _from, state) do
+  def handle_call({:write_actions, actions}, from, state) when is_list(actions) do
+    handle_write_actions(actions, from, nil, state)
+  end
+
+  def handle_call({:write_actions, actions, sent_at}, from, state)
+      when is_list(actions) and is_integer(sent_at) do
+    handle_write_actions(actions, from, sent_at, state)
+  end
+
+  defp handle_write_actions([], _from, _sent_at, state) do
     {:reply, {:ok, {0, 0}, []}, state}
   end
 
-  def handle_call({:write_actions, actions}, from, state) when is_list(actions) do
+  defp handle_write_actions(actions, from, sent_at, state) do
     cond do
       prepare_queue_full?(state) ->
         {:reply, {:error, {:prepare_queue_full, state.prepare.queue_max}}, state}
 
       inline_prepare?(state) ->
-        {:noreply, prepare_inline(state, from, actions)}
+        {:noreply, prepare_inline(record_arrival(state, from, sent_at), from, actions)}
 
       true ->
-        {:noreply, state |> dispatch_prepare(from, actions) |> maybe_schedule_prepare_flush()}
+        state = state |> record_arrival(from, sent_at) |> dispatch_prepare(from, actions)
+        {:noreply, maybe_schedule_prepare_flush(state)}
     end
   end
 
@@ -855,6 +897,7 @@ defmodule EbbServer.Storage.Writer do
       |> Enum.map(&prepare_input/1)
       |> Preparer.build(prepare_fn: state.prepare.fn, ablate: state.ablate)
 
+    ready_at = System.monotonic_time()
     state = %{state | next_call_seq: seq + 1}
 
     cond do
@@ -873,6 +916,7 @@ defmodule EbbServer.Storage.Writer do
         encoded = Enum.zip(actions, payload_etfs)
 
         state
+        |> mark_payload_ready(from, ready_at)
         |> Map.put(:prepared, Map.put(state.prepared, seq, {:ready, from, encoded}))
         |> maybe_schedule_prepare_flush()
     end
@@ -881,8 +925,10 @@ defmodule EbbServer.Storage.Writer do
   defp fail_inline_prepare(state, from, seq, reason) do
     GenServer.reply(from, {:error, {:prepare_failed, reason}})
 
-    # A failed call never claimed a GSN, so its seq is a hole to skip.
+    # A failed call never claimed a GSN, so its seq is a hole to skip and its
+    # arrival stamps are no longer attributable to any range.
     state
+    |> drop_arrival(from)
     |> Map.put(:prepared, Map.put(state.prepared, seq, :skipped))
     |> maybe_schedule_prepare_flush()
   end
@@ -928,10 +974,10 @@ defmodule EbbServer.Storage.Writer do
     if length(payload_etfs) == length(job.actions) do
       encoded = Enum.zip(job.actions, payload_etfs)
 
-      advance_burst(%{
-        state
-        | prepared: Map.put(state.prepared, job.seq, {:ready, job.from, encoded})
-      })
+      state
+      |> mark_payload_ready(job.from)
+      |> Map.put(:prepared, Map.put(state.prepared, job.seq, {:ready, job.from, encoded}))
+      |> advance_burst()
     else
       fail_prepare(
         state,
@@ -959,7 +1005,10 @@ defmodule EbbServer.Storage.Writer do
 
     # A failed call never claimed a GSN, so its seq is a hole to skip, not
     # a range to resolve.
-    advance_burst(%{state | prepared: Map.put(state.prepared, job.seq, :skipped)})
+    state
+    |> drop_arrival(job.from)
+    |> Map.put(:prepared, Map.put(state.prepared, job.seq, :skipped))
+    |> advance_burst()
   end
 
   # Only the snapshot burst may enter the pipeline. A call that arrived
@@ -1112,9 +1161,10 @@ defmodule EbbServer.Storage.Writer do
   # Committer. A stale marker or timer must be a no-op when nothing is
   # pending; the replies wait for the ack.
   defp flush(state) do
+    flush_at = System.monotonic_time()
     state = cancel_flush_timer(state)
     {pipeline, pending} = CommitPipeline.take_pending(state.pipeline)
-    state = %{state | pipeline: pipeline}
+    {oldest_arrival, state} = take_flush_arrivals(%{state | pipeline: pipeline}, pending)
 
     {fresh, fresh_tagged} = plan(pending, state)
 
@@ -1137,11 +1187,13 @@ defmodule EbbServer.Storage.Writer do
           %{gsn_start: gsn_start, gsn_end: gsn_end, callers: caller_count}
         )
 
-        dispatch(pending, ranges, fresh, gsn_start, gsn_end, started_at, state)
+        timing = range_timing(oldest_arrival, gsn_start, gsn_end, flush_at)
+
+        dispatch(pending, ranges, fresh, gsn_start, gsn_end, started_at, timing, state)
     end
   end
 
-  defp dispatch(pending, ranges, fresh, gsn_start, gsn_end, started_at, state) do
+  defp dispatch(pending, ranges, fresh, gsn_start, gsn_end, started_at, timing, state) do
     ref = make_ref()
     incoming_overlay = current_overlay(state)
 
@@ -1158,6 +1210,7 @@ defmodule EbbServer.Storage.Writer do
 
     {:ok, _batch, pipeline} = CommitPipeline.claim(state.pipeline, batch)
     state = %{state | pipeline: pipeline}
+    state = put_range_timing(state, ref, timing)
     emit_pipeline_gauges(state)
 
     {prepared, groups_by_gsn, cache_plan} =
@@ -1183,7 +1236,13 @@ defmodule EbbServer.Storage.Writer do
         cache_plan
       )
 
-    start_next_commit(%{state | pipeline: pipeline})
+    # The resolve phase ends at the hand-off, so this stamp is taken after
+    # the group resolution and the cache plan and before a Committer is
+    # asked for the range.
+    state = %{state | pipeline: pipeline}
+    state = update_range_timing(state, ref, &%{&1 | resolve_at: System.monotonic_time()})
+
+    start_next_commit(state)
   end
 
   # Group resolution reads the system caches, so it stays on the
@@ -1246,7 +1305,143 @@ defmodule EbbServer.Storage.Writer do
     )
   end
 
-  defp handle_commit_result(:ok, ref, state) do
+  # Arrival stamps belong to the calls the flush just took, so every one of
+  # them is consumed here. A call that failed its prepare dropped its own
+  # record, and the oldest surviving call is the range's queue/prepare anchor.
+  defp take_flush_arrivals(state, pending) do
+    arrivals = state.timings.arrivals
+    oldest = Enum.find_value(pending, fn {from, _actions} -> Map.get(arrivals, from) end)
+    arrivals = Map.drop(arrivals, Enum.map(pending, fn {from, _actions} -> from end))
+
+    {oldest, put_arrivals(state, arrivals)}
+  end
+
+  defp range_timing(oldest, gsn_start, gsn_end, flush_at) do
+    %{
+      gsn_start: gsn_start,
+      gsn_end: gsn_end,
+      sent_at: oldest && oldest.sent_at,
+      dequeued_at: oldest && oldest.dequeued_at,
+      ready_at: oldest && oldest.ready_at,
+      flush_at: flush_at,
+      resolve_at: nil,
+      ack_at: nil,
+      apply_at: nil,
+      notify_at: nil
+    }
+  end
+
+  defp mark_apply_done(state, ref) do
+    update_range_timing(state, ref, &%{&1 | apply_at: System.monotonic_time()})
+  end
+
+  defp mark_notify_done(state, ref) do
+    update_range_timing(state, ref, &%{&1 | notify_at: System.monotonic_time()})
+  end
+
+  # An abandon that never finished its resolve reports the time it did spend
+  # there; the phases after it stay `0`.
+  defp emit_abandoned_phases(state, ref, reason, abandoned_at) do
+    state =
+      update_range_timing(state, ref, fn timing ->
+        %{timing | resolve_at: timing.resolve_at || abandoned_at}
+      end)
+
+    emit_flush_phases(state, ref, :abandoned, reason)
+  end
+
+  defp emit_flush_phases(state, ref, outcome, reason \\ nil) do
+    case Map.pop(state.timings.ranges, ref) do
+      {nil, _ranges} ->
+        state
+
+      {timing, ranges} ->
+        metadata = %{gsn_start: timing.gsn_start, gsn_end: timing.gsn_end, outcome: outcome}
+
+        metadata =
+          case reason do
+            nil -> metadata
+            reason -> Map.put(metadata, :reason, reason)
+          end
+
+        Telemetry.execute(
+          [:writer, :flush_phase_ms],
+          flush_phase_measurements(timing),
+          metadata
+        )
+
+        put_ranges(state, ranges)
+    end
+  end
+
+  defp flush_phase_measurements(timing) do
+    %{
+      queue:
+        phase_span(timing.sent_at, timing.dequeued_at) +
+          phase_span(timing.ready_at, timing.flush_at),
+      prepare: phase_span(timing.dequeued_at, timing.ready_at),
+      resolve: phase_span(timing.flush_at, timing.resolve_at),
+      commit_wait: phase_span(timing.resolve_at, timing.ack_at),
+      apply: phase_span(timing.ack_at, timing.apply_at),
+      notify: phase_span(timing.apply_at, timing.notify_at)
+    }
+  end
+
+  defp phase_span(from, to) when is_integer(from) and is_integer(to), do: max(to - from, 0)
+  defp phase_span(_from, _to), do: 0
+
+  defp put_range_timing(state, ref, timing) do
+    put_ranges(state, Map.put(state.timings.ranges, ref, timing))
+  end
+
+  defp update_range_timing(state, ref, update) do
+    case Map.fetch(state.timings.ranges, ref) do
+      {:ok, timing} -> put_range_timing(state, ref, update.(timing))
+      :error -> state
+    end
+  end
+
+  defp record_arrival(state, from, sent_at) do
+    dequeued_at = System.monotonic_time()
+
+    arrival = %{sent_at: sent_at || dequeued_at, dequeued_at: dequeued_at, ready_at: nil}
+
+    put_arrivals(state, Map.put(state.timings.arrivals, from, arrival))
+  end
+
+  defp mark_payload_ready(state, from, ready_at \\ System.monotonic_time()) do
+    case Map.fetch(state.timings.arrivals, from) do
+      {:ok, arrival} ->
+        put_arrivals(
+          state,
+          Map.put(state.timings.arrivals, from, %{arrival | ready_at: ready_at})
+        )
+
+      :error ->
+        state
+    end
+  end
+
+  defp drop_arrival(state, from) do
+    put_arrivals(state, Map.delete(state.timings.arrivals, from))
+  end
+
+  defp put_arrivals(state, arrivals) do
+    %{state | timings: %{state.timings | arrivals: arrivals}}
+  end
+
+  defp put_ranges(state, ranges) do
+    %{state | timings: %{state.timings | ranges: ranges}}
+  end
+
+  # The durable ack closes `commit_wait` for every outcome, including a
+  # raised or crashed Committer, before the abandon or apply work runs.
+  defp handle_commit_result(result, ref, state) do
+    state = update_range_timing(state, ref, &%{&1 | ack_at: System.monotonic_time()})
+    do_handle_commit_result(result, ref, state)
+  end
+
+  defp do_handle_commit_result(:ok, ref, state) do
     {:ok, batch, pipeline} = CommitPipeline.committed(state.pipeline, ref)
     state = %{state | pipeline: pipeline}
 
@@ -1267,7 +1462,7 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
-  defp handle_commit_result({:error, reason}, ref, state) do
+  defp do_handle_commit_result({:error, reason}, ref, state) do
     fail_range(ref, reason, state)
   end
 
@@ -1276,7 +1471,7 @@ defmodule EbbServer.Storage.Writer do
   # a process death into `{:crashed, reason}`; a `commit_fn` raise arrives
   # as `{:raised, ...}`. Both abandon only their own range and reply the
   # same `503 write_failed` contract as a returned error.
-  defp handle_commit_result({:raised, kind, value, stacktrace}, ref, state) do
+  defp do_handle_commit_result({:raised, kind, value, stacktrace}, ref, state) do
     reason = {:committer_raised, raised_reason(kind, value)}
 
     case CommitPipeline.get(state.pipeline, ref) do
@@ -1293,7 +1488,7 @@ defmodule EbbServer.Storage.Writer do
     fail_range(ref, reason, state)
   end
 
-  defp handle_commit_result({:crashed, reason}, ref, state) do
+  defp do_handle_commit_result({:crashed, reason}, ref, state) do
     fail_range(ref, {:committer_crashed, reason}, state)
   end
 
@@ -1399,7 +1594,7 @@ defmodule EbbServer.Storage.Writer do
     state = %{state | pipeline: pipeline}
 
     case settle_after_commit(batch, state, committed_at) do
-      :ok ->
+      {:ok, state} ->
         {:ok, _batch, pipeline} = CommitPipeline.release(state.pipeline, batch.ref)
         state = %{state | pipeline: pipeline}
         emit_pipeline_gauges(state)
@@ -1409,7 +1604,7 @@ defmodule EbbServer.Storage.Writer do
       # the batch unreleased so a rebuilt Writer cannot let a later range
       # overtake it; the escalation restarts the storage tree and init/1
       # reconciles the durable frontier.
-      :escalated ->
+      {:escalated, state} ->
         {:escalated, state}
     end
   end
@@ -1442,6 +1637,8 @@ defmodule EbbServer.Storage.Writer do
 
       case apply_post_commit(batch, state) do
         :ok ->
+          state = mark_apply_done(state, batch.ref)
+
           notify_fanout(
             state,
             batch.gsn_start,
@@ -1453,17 +1650,22 @@ defmodule EbbServer.Storage.Writer do
           emit_batch_latency(batch)
           emit_actions_accepted(batch.batch_size)
           reply_all(batch.pending, batch.ranges, :ok)
-          :ok
+          state = mark_notify_done(state, batch.ref)
+
+          {:ok, emit_flush_phases(state, batch.ref, :ok)}
 
         {:error, reason} ->
           # The batch is durable: reply success to every caller first,
           # then escalate, so no caller sees a lost success when the
           # rebuild tears this process down.
+          state = mark_apply_done(state, batch.ref)
+
           emit_batch_latency(batch)
           emit_actions_accepted(batch.batch_size)
           reply_all(batch.pending, batch.ranges, :ok)
+          state = emit_flush_phases(state, batch.ref, :ok)
           escalate_cache_failure(batch.gsn_start, batch.gsn_end, reason)
-          :escalated
+          {:escalated, state}
       end
     rescue
       error ->
@@ -1818,9 +2020,12 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp abandon_batch(state, ref, reason) do
+    abandoned_at = System.monotonic_time()
+
     case CommitPipeline.abandon(state.pipeline, ref, reason) do
       {:ok, batch, pipeline} ->
         state = %{state | pipeline: pipeline}
+        state = emit_abandoned_phases(state, ref, reason, abandoned_at)
         emit_pipeline_gauges(state)
 
         release_in_flight(state, batch.action_ids)

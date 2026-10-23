@@ -87,10 +87,11 @@ defmodule EbbServer.Telemetry do
   - `prepare` — payload build and ETF encode, inline on the Writer or on the
     prepare pool. A pooled call's pool queueing lands here, not in `queue`.
   - `resolve` — the flush dequeue through dedup/in-flight filtering, the GSN
-    claim, group resolution and `update_scopes`, the cache mutation plan,
-    and the hand-off to a Committer.
-  - `commit_wait` — the hand-off through the durable ack, including waiting
-    behind an earlier range for the resolution gate and a Committer worker.
+    claim, group resolution and `update_scopes`, and the cache mutation plan,
+    ending where the range is ready for a Committer.
+  - `commit_wait` — the hand-off to a Committer through the durable ack,
+    including waiting behind an earlier range for the resolution gate and a
+    Committer worker.
   - `apply` — from the durable ack through the durable mark and the ordered
     apply: waiting behind an earlier range in claim order, cache mutations,
     and the dirty settle.
