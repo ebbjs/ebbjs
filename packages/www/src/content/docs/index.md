@@ -21,19 +21,20 @@ An Elixir/OTP application. Single-node sync server with a complete HTTP API. See
 | Auth plug (bypass + external modes)                                               | `lib/ebb_server/sync/auth_plug.ex`                                                                                    | `auth_plug_test.exs`                                                                 |
 | HTTP API (handshake, catch-up, SSE, presence, writes, reads)                      | `lib/ebb_server/sync/router.ex`                                                                                       | `integration/*_test.exs` (9 files), `sync/*_test.exs` (~12 files)                    |
 | Fan-out (watermark-gated SSE delivery)                                            | `lib/ebb_server/sync/fan_out_router.ex`, `group_server.ex`, `sse_connection.ex`                                       | `fan_out_router_test.exs`, `group_server_test.exs`, `sse_connection_test.exs`        |
-| Docker self-hosting                                                               | `ebb_server/Dockerfile`                                                                                               | —                                                                                    |
+| Docker self-hosting                                                               | `ebb_server/Dockerfile`, `compose.yaml`, `docs/self-hosting.md`                                                       | `scripts/docker-smoke-test.sh` (CI `docker-image` job)                               |
 
 **HTTP endpoints (all live):**
 
-| Method | Path                              | Purpose                                                                             |
-| ------ | --------------------------------- | ----------------------------------------------------------------------------------- |
-| `POST` | `/sync/handshake`                 | Actor identity + group membership (requires `x-ebb-actor-id` header in bypass mode) |
-| `GET`  | `/sync/groups/:group_id?offset=N` | Paginated catch-up (returns `stream-next-offset` and `stream-up-to-date` headers)   |
-| `GET`  | `/sync/live?groups=...&cursor=N`  | Server-Sent Events stream of new actions                                            |
-| `POST` | `/sync/actions`                   | Write actions (msgpack body)                                                        |
-| `POST` | `/sync/presence`                  | Broadcast ephemeral presence data on an entity                                      |
-| `GET`  | `/entities/:id`                   | Materialized entity (requires `actor_id` query param or header)                     |
-| `POST` | `/entities/query`                 | Query entities by type with optional filter/limit/offset                            |
+| Method | Path                              | Purpose                                                                                         |
+| ------ | --------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `GET`  | `/healthz`                        | Readiness probe — `200` once the storage supervisor is up, `503` before then (no auth required) |
+| `POST` | `/sync/handshake`                 | Actor identity + group membership (requires `x-ebb-actor-id` header in bypass mode)             |
+| `GET`  | `/sync/groups/:group_id?offset=N` | Paginated catch-up (returns `stream-next-offset` and `stream-up-to-date` headers)               |
+| `GET`  | `/sync/live?groups=...&cursor=N`  | Server-Sent Events stream of new actions                                                        |
+| `POST` | `/sync/actions`                   | Write actions (msgpack body)                                                                    |
+| `POST` | `/sync/presence`                  | Broadcast ephemeral presence data on an entity                                                  |
+| `GET`  | `/entities/:id`                   | Materialized entity (requires `actor_id` query param or header)                                 |
+| `POST` | `/entities/query`                 | Query entities by type with optional filter/limit/offset                                        |
 
 See [`ebb_server/openapi.yaml`](https://github.com/ebbjs/ebbjs/blob/main/ebb_server/openapi.yaml) for the full generated OpenAPI 3.1 spec.
 
