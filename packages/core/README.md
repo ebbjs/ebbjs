@@ -4,6 +4,19 @@ TypeScript foundation for the ebbjs domain model: shared types, HLC
 implementation, MessagePack wire codec, action creation helper, and ID
 generation.
 
+## Install
+
+```bash
+npm install @ebbjs/core
+```
+
+Node `>=22.8.0`. The package has two entry points:
+
+```typescript
+import { createAction, createClock } from "@ebbjs/core";
+import { buildSeedAction, type SeedData } from "@ebbjs/core/seed";
+```
+
 ## Module map
 
 | Module            | What it ships                                                                                         |
@@ -16,7 +29,7 @@ generation.
 | `src/seed/`       | `@ebbjs/core/seed`: `buildSeedAction` — turns plain `SeedData` into one wire `Action` (browser-safe). |
 | `src/validate.ts` | Runtime shape checks for inbound action/update payloads.                                              |
 
-135 tests across the package (`pnpm --filter @ebbjs/core test`).
+135 tests across the package (see [Development](#development)).
 
 ## Usage
 
@@ -66,3 +79,9 @@ is more than 120s in the future or 24h in the past) is documented in
 
 TypeBox (schemas — only used inside validation paths) and `msgpackr`
 (wire codec). No other runtime deps.
+
+## Development
+
+```bash
+pnpm --filter @ebbjs/core test
+```

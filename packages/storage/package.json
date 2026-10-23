@@ -1,8 +1,23 @@
 {
   "name": "@ebbjs/storage",
   "version": "0.0.1",
-  "private": true,
+  "private": false,
   "description": "Storage components for ebbjs",
+  "homepage": "https://ebbjs.com",
+  "bugs": {
+    "url": "https://github.com/ebbjs/ebbjs/issues"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ebbjs/ebbjs.git",
+    "directory": "packages/storage"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE.txt"
+  ],
   "type": "module",
   "sideEffects": false,
   "exports": {
@@ -25,6 +40,9 @@
       "types": "./dist/types/index.d.ts"
     }
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "vite build",
     "dev": "vite build --watch",
@@ -37,10 +55,11 @@
     "lint": "pnpm --root ../../ lint",
     "lint:fix": "pnpm --root ../../ lint:fix",
     "fmt": "pnpm --root ../../ fmt",
-    "fmt:check": "pnpm --root ../../ fmt:check"
+    "fmt:check": "pnpm --root ../../ fmt:check",
+    "prepack": "node ../../scripts/copy-license.mjs"
   },
   "dependencies": {
-    "@ebbjs/core": "workspace:*"
+    "@ebbjs/core": "workspace:^"
   },
   "devDependencies": {
     "fake-indexeddb": "^6.2.5",
@@ -56,5 +75,8 @@
     "idb": {
       "optional": true
     }
+  },
+  "engines": {
+    "node": ">=22.8.0"
   }
 }

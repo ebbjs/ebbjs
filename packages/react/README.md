@@ -14,6 +14,18 @@ This package ships the client plumbing plus the data hooks:
 
 SSR / Suspense are out of scope for now.
 
+## Install
+
+```bash
+npm install @ebbjs/react react   # react ^18 || ^19 is a peer
+```
+
+Node `>=22.8.0`. `@ebbjs/client` is a normal dependency and installs with it.
+
+```tsx
+import { EbbProvider, useClient, useConnection, useQuery } from "@ebbjs/react";
+```
+
 ## Usage
 
 ```tsx
@@ -211,7 +223,7 @@ unchanged — a convenience when a component only needs those three.
 
 `@ebbjs/client` is a regular dependency.
 
-## Testing
+## Development
 
 ```bash
 pnpm --filter @ebbjs/react test

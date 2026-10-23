@@ -10,6 +10,9 @@
     "dev:collab": "concurrently -n server,demo -c blue,magenta 'cd ebb_server && mix dev' 'pnpm --filter collaborative-text-demo dev'",
     "pretest": "node scripts/ensure-built.mjs",
     "test": "pnpm --recursive exec vitest --run --passWithNoTests",
+    "verify:packages": "node scripts/verify-packages.mjs",
+    "build:packages": "pnpm -r --filter \"@ebbjs/*\" --filter \"!@ebbjs/server\" --filter \"!@ebbjs/www\" build",
+    "test:packages": "pnpm -r --filter \"@ebbjs/*\" --filter \"!@ebbjs/server\" --filter \"!@ebbjs/www\" exec vitest --run --passWithNoTests",
     "client": "pnpm --filter @ebbjs/client",
     "core": "pnpm --filter @ebbjs/core",
     "react": "pnpm --filter @ebbjs/react",
@@ -42,6 +45,7 @@
     "typescript": "^5.9.2"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
     "@oxlint/plugins": "1.56.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.2.3",
@@ -50,6 +54,9 @@
     "lefthook": "^2.1.5",
     "oxfmt": "^0.32.0",
     "oxlint": "1.56.0",
+    "publint": "^0.3.25",
+    "rollup": "^4.59.0",
+    "rollup-plugin-dts": "^6.5.1",
     "tsx": "^4.21.0",
     "vite": "^7.1.2",
     "vite-plugin-checker": "^0.12.0",

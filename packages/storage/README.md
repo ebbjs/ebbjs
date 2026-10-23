@@ -1,6 +1,22 @@
 # @ebbjs/storage
 
-Local-first storage adapters for the ebbjs client. Provides an interface for caching and querying entity data, with a full in-memory implementation for v1.
+Local-first storage adapters for the ebbjs client. Provides an interface for caching and querying entity data, with in-memory and IndexedDB implementations.
+
+## Install
+
+```bash
+npm install @ebbjs/storage
+npm install idb              # only for @ebbjs/storage/indexeddb
+```
+
+Node `>=22.8.0`. The root entry is types-only; runtime imports come from a
+subpath:
+
+```typescript
+import type { StorageAdapter } from "@ebbjs/storage";
+import { createMemoryAdapter } from "@ebbjs/storage/memory";
+// also: @ebbjs/storage/indexeddb, @ebbjs/storage/replica, @ebbjs/storage/types
+```
 
 ## Components
 
@@ -17,7 +33,7 @@ Local-first storage adapters for the ebbjs client. Provides an interface for cac
 ## Usage
 
 ```typescript
-import { createMemoryAdapter } from "@ebbjs/storage";
+import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 const storage = createMemoryAdapter();
 
@@ -62,7 +78,6 @@ Client receives action
 ## Future Adapters
 
 - **SQLite** — persistent browser/storage adapter
-- **IndexedDB** — persistent browser adapter
 - **Subscribe / Outbox** — push-style subscriptions and the write outbox
   live in `@ebbjs/client` (see
   [Epic #115](https://github.com/ebbjs/ebbjs/issues/115) and

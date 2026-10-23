@@ -4,6 +4,18 @@ Local-first sync client for the ebbjs stack. Performs handshake, catch-up,
 and live SSE streaming against an `ebb_server`, with an outbox for offline
 writes and a query layer over materialized entities.
 
+## Install
+
+```bash
+npm install @ebbjs/client
+```
+
+Node `>=22.8.0`. The package ships one entry point:
+
+```typescript
+import { createClient } from "@ebbjs/client";
+```
+
 ## Status
 
 Working in development. The README will fill out as the SDK stabilizes.
@@ -206,7 +218,7 @@ adds the raw-POST `seed(serverUrl, actorId, data)` harness, so browser demos
 and the server test harness share one builder and one tolerance policy,
 defined in one place.
 
-## Testing
+## Development
 
 Three scripts:
 
