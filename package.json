@@ -13,6 +13,9 @@
     "verify:packages": "node scripts/verify-packages.mjs",
     "build:packages": "pnpm -r --filter \"@ebbjs/*\" --filter \"!@ebbjs/server\" --filter \"!@ebbjs/www\" build",
     "test:packages": "pnpm -r --filter \"@ebbjs/*\" --filter \"!@ebbjs/server\" --filter \"!@ebbjs/www\" exec vitest --run --passWithNoTests",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "changeset publish",
     "client": "pnpm --filter @ebbjs/client",
     "core": "pnpm --filter @ebbjs/core",
     "react": "pnpm --filter @ebbjs/react",
@@ -46,6 +49,7 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
+    "@changesets/cli": "^3.0.3",
     "@oxlint/plugins": "1.56.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.2.3",

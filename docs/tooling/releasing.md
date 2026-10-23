@@ -1,7 +1,8 @@
 # releasing
 
-How the `@ebbjs/*` packages are packaged and checked before they reach npm
-(issue #565). The checks live in `scripts/verify-packages.mjs`.
+How the `@ebbjs/*` packages reach npm (issue #565). The release mechanics live
+in `.github/workflows/release.yml`, `.changeset/config.json`, and
+`scripts/verify-packages.mjs`.
 
 ## What publishes
 
@@ -15,8 +16,84 @@ How the `@ebbjs/*` packages are packaged and checked before they reach npm
 | `@ebbjs/server`     | no        | Private E2E harness.                                          |
 | `@ebbjs/www`        | no        | Private Astro docs site.                                      |
 
-All five published packages are intended to share **one version** and are
-ESM-only, supporting Node `>=22.8.0`.
+All five published packages share **one version** (a changesets `fixed` group).
+They are ESM-only and support Node `>=22.8.0`.
+
+## Adding a change
+
+```bash
+pnpm changeset
+```
+
+Pick the bump type and describe the change in the `.changeset/*.md` file it
+writes; commit that file with the PR. `pnpm changeset status` shows what the
+next release would contain.
+
+## What CI does
+
+- **Every PR** runs the pack verification (see Guardrails below), so a broken
+  `exports`, a missing type file, or a stray `workspace:` reference fails before
+  it can be published.
+- **Every push to `main`** runs the Release workflow. While changesets are
+  pending it opens or updates the `chore(release): version packages` PR. When
+  that PR merges, the same workflow builds, tests, verifies, and publishes the
+  changed packages, then tags `v<version>` and creates the GitHub release.
+  Changesets' per-package `<name>@<version>` tags and releases are disabled: the
+  five packages share a version, so `v<version>` names the release train.
+- **Re-running on an unchanged commit is a no-op.** Changesets reads the
+  registry, skips versions that are already published, and exits successfully.
+
+The version PR does not get a CI run: it is opened with the repository
+`GITHUB_TOKEN`, and GitHub suppresses workflows for token-authored events. The
+Release job therefore builds, tests, and verifies the five published packages
+itself before publishing. Pass an app or PAT token to the action's
+`github-token` input if you want full CI on that PR as well.
+
+## One-time npm setup
+
+Nothing in this repository can create the npm side of trusted publishing; it is
+configured per package on npmjs.com by an owner:
+
+1. npm cannot attach a trusted publisher to a name that does not exist yet, so
+   `0.1.0` is bootstrapped once with a
+   [granular access token](https://docs.npmjs.com/creating-and-viewing-access-tokens),
+   from a checkout of `main`:
+
+   ```bash
+   pnpm version-packages     # consumes .changeset/*.md, writes 0.1.0 + CHANGELOGs
+   git commit -am "chore(release): 0.1.0"
+   pnpm build:packages
+   NODE_AUTH_TOKEN=<token> pnpm -r --filter "@ebbjs/*" \
+     --filter "!@ebbjs/server" --filter "!@ebbjs/www" publish \
+     --access public --no-git-checks
+   git push                  # Release finds no changesets and does nothing
+   ```
+
+   This is the only publish that uses a token, and the only one without
+   provenance. Delete the token afterwards.
+
+2. On each of the five packages: **Settings → Trusted publishing → GitHub
+   Actions**, with repository `ebbjs/ebbjs` and workflow filename `release.yml`.
+   No environment is used. A new trusted publisher must complete a publish
+   within two days or it expires.
+3. Confirm nothing in CI sets `NODE_AUTH_TOKEN` or `registry-url`: a configured
+   registry token takes precedence over the OIDC exchange. Nothing in
+   `release.yml` reads a token secret.
+4. In **Settings → Actions → General**, enable _Allow GitHub Actions to create
+   and approve pull requests_, or the version PR cannot be opened.
+
+The workflow installs `npm@^11.5.1` on the runner because `pnpm publish` hands
+the upload to the npm CLI, and 11.5.1 is the first version that can exchange the
+OIDC token (`@changesets/cli` v3 needs Node `>=22.11`; trusted publishing needs
+Node `>=22.14`). Provenance is generated automatically for an OIDC publish from
+a public repository; the workflow also sets `npm_config_provenance=true`, which
+pnpm forwards to `npm publish`, so the attestation survives a token-based
+publish.
+
+Action pairing matters: `changesets/action@v1` detects published packages from
+CLI 2's `New tag:` output, so CLI 3 with action v1 publishes without ever
+tagging or creating a release. This repo uses `@changesets/cli@^3` with
+`changesets/action@v2`.
 
 ## Guardrails
 
@@ -87,12 +164,30 @@ their JavaScript. It is the better long-term config hygiene for this repo, but
 it is a ~360-specifier source change across packages with in-flight branches, and
 bundling already produces a correct artifact.
 
+## After publishing
+
+```bash
+npm view @ebbjs/core@0.1.0 dist.integrity dist.attestations
+```
+
+Then confirm the registry install path, which CI cannot do before the first
+publish:
+
+```bash
+mkdir /tmp/ebb-registry-smoke && cd /tmp/ebb-registry-smoke
+npm init -y
+npm install @ebbjs/core@0.1.0 @ebbjs/storage@0.1.0 @ebbjs/client@0.1.0 \
+  @ebbjs/react@0.1.0 @ebbjs/codemirror@0.1.0 react @codemirror/state @codemirror/view codemirror idb
+node --input-type=module -e 'for (const s of ["@ebbjs/core","@ebbjs/storage/memory","@ebbjs/client","@ebbjs/react","@ebbjs/codemirror"]) await import(s)'
+```
+
 ## Adding a new public package
 
 Flip `"private": false`, copy the metadata block from a published package
 (`license`, `repository.directory`, `homepage`, `bugs`, `engines`, `files`,
-`publishConfig`, `sideEffects`), add a `prepack` license copy, add the
-declaration bundling plugin to `vite.config.ts`, then add the name to
-`EXPECTED_PUBLISHED` in `scripts/verify-packages.mjs`. `scripts/generate-package.sh`
-does not emit any of this yet, so a package created from the template will fail
-`verify:packages` until it does.
+`publishConfig`, `sideEffects`), add a `prepack` license copy, append the
+declaration bundling plugin to `vite.config.ts`, then add the name to `EXPECTED_PUBLISHED`
+in `scripts/verify-packages.mjs` and to the `fixed` group in
+`.changeset/config.json`. `scripts/generate-package.sh` does not emit any of
+this yet, so a package created from the template will fail `verify:packages`
+until it does.
