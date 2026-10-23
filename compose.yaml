@@ -1,0 +1,69 @@
+# Self-hosting stack for ebb_server.
+#
+# The default service (`ebb`) requires real auth: `EBB_AUTH_MODE=external` plus
+# a reachable `EBB_AUTH_URL`. It does not paper over a missing value — the
+# server refuses to boot without auth at all, and that is the intended
+# production behaviour. The `dev` profile runs the same image with
+# `EBB_AUTH_MODE=bypass` for a local demo.
+#
+#   EBB_AUTH_URL=https://identity.example.com docker compose up -d
+#   docker compose --profile dev up ebb-dev
+#   EBB_HOST_PORT=8080 docker compose up -d      # publish on another host port
+#
+# `--profile dev` on its own would start `ebb` too — profiles are additive —
+# and both services publish host port 4000, so name `ebb-dev` to run the demo
+# alone. Full guide: docs/self-hosting.md
+
+name: ebb
+
+# Shared by both profiles; only `environment` (and the demo profile) differ.
+x-ebb-service: &ebb-service
+  image: ${EBB_IMAGE:-ghcr.io/ebbjs/ebb_server:latest}
+  build:
+    context: .
+    dockerfile: ebb_server/Dockerfile
+  ports:
+    # `EBB_HOST_PORT` moves only the published host port. The container always
+    # listens on 4000 (the image's `EBB_PORT`), which is what the healthcheck
+    # and EXPOSE refer to.
+    - "${EBB_HOST_PORT:-4000}:4000"
+  volumes:
+    - ebb-data:/app/data
+  restart: unless-stopped
+  stop_grace_period: 30s
+  healthcheck:
+    test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --show-error
+      - --max-time
+      - "2"
+      - http://127.0.0.1:4000/healthz
+    interval: 10s
+    timeout: 3s
+    start_period: 30s
+    retries: 3
+
+services:
+  ebb:
+    <<: *ebb-service
+    environment:
+      # Empty `EBB_AUTH_URL` is read by the server as unset, so a
+      # `docker compose up` without it fails loudly at boot rather than
+      # serving unauthenticated traffic.
+      EBB_AUTH_MODE: external
+      EBB_AUTH_URL: ${EBB_AUTH_URL:-}
+
+  # Demo profile: `bypass` trusts the `x-ebb-actor-id` header, so ANY client
+  # can claim ANY actor identity. Never run this profile on a reachable
+  # network, and never point a real deployment at it.
+  ebb-dev:
+    <<: *ebb-service
+    profiles: ["dev"]
+    environment:
+      EBB_AUTH_MODE: bypass
+
+volumes:
+  ebb-data:
