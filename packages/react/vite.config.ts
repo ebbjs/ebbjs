@@ -1,20 +1,15 @@
 import { defineConfig } from "vite";
 import { externalizeDeps } from "vite-plugin-externalize-deps";
-import dts from "vite-plugin-dts";
 import tsconfigPaths from "vite-tsconfig-paths";
 import checker from "vite-plugin-checker";
+import { bundleDeclarations } from "../../scripts/vite-plugin-bundle-declarations.mjs";
 
 export default defineConfig({
   plugins: [
     externalizeDeps(),
     checker({ typescript: true }),
+    bundleDeclarations(),
     tsconfigPaths(),
-    dts({
-      include: ["src/**/*"],
-      exclude: ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/__tests__/**"],
-      outDir: "dist",
-      rollupTypes: false,
-    }),
   ],
   build: {
     lib: {

@@ -72,16 +72,21 @@ Presence and cursor updates ride the same fan-out path — throttle them. For ve
 
 ## Packages
 
-| Package              | Description                                                                                                                            | State   |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| `@ebbjs/core`        | TypeBox schemas, HLC, MessagePack codec, `createAction` helper.                                                                        | Working |
-| `@ebbjs/storage`     | `StorageAdapter` interface + in-memory and IndexedDB implementations (ActionLog, DirtyTracker, EntityStore, CursorStore, OutboxStore). | Working |
-| `@ebbjs/server` (TS) | E2E test harness — spawns the Elixir release, `seed()` helper for fixtures.                                                            | Working |
-| `ebb_server/`        | Elixir/OTP sync server: RocksDB action log, SQLite materialization, HTTP API, SSE fan-out, permissions, presence.                      | Working |
-| `@ebbjs/client`      | Local-first sync client (handshake, SSE, catch-up, `query()` read root, namespace write verbs, in-memory outbox).                      | Working |
-| `@ebbjs/react`       | React bindings — `EbbProvider`, `useClient`, `useConnection`, `useQuery`, `useEntityMutations`.                                        | Partial |
-| `@ebbjs/codemirror`  | CodeMirror 6 bridge for causal-tree collaborative text.                                                                                | Working |
-| `@ebbjs/www`         | Astro docs site.                                                                                                                       | Working |
+| Package              | Description                                                                                                                            | State   | Distribution          |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------- | --------------------- |
+| `@ebbjs/core`        | TypeBox schemas, HLC, MessagePack codec, `createAction` helper.                                                                        | Working | npm                   |
+| `@ebbjs/storage`     | `StorageAdapter` interface + in-memory and IndexedDB implementations (ActionLog, DirtyTracker, EntityStore, CursorStore, OutboxStore). | Working | npm                   |
+| `@ebbjs/server` (TS) | E2E test harness — spawns the Elixir release, `seed()` helper for fixtures.                                                            | Working | private (in-repo)     |
+| `ebb_server/`        | Elixir/OTP sync server: RocksDB action log, SQLite materialization, HTTP API, SSE fan-out, permissions, presence.                      | Working | `mix release`, Docker |
+| `@ebbjs/client`      | Local-first sync client (handshake, SSE, catch-up, `query()` read root, namespace write verbs, in-memory outbox).                      | Working | npm                   |
+| `@ebbjs/react`       | React bindings — `EbbProvider`, `useClient`, `useConnection`, `useQuery`, `useEntityMutations`.                                        | Partial | npm                   |
+| `@ebbjs/codemirror`  | CodeMirror 6 bridge for causal-tree collaborative text.                                                                                | Working | npm                   |
+| `@ebbjs/www`         | Astro docs site.                                                                                                                       | Working | private (in-repo)     |
+
+The npm packages (`@ebbjs/core`, `@ebbjs/storage`, `@ebbjs/client`,
+`@ebbjs/react`, `@ebbjs/codemirror`) are published in lockstep at one shared
+version and require Node `>=22.8.0`. `@ebbjs/server` and `@ebbjs/www` are
+workspace-only.
 
 A Bun-based server-function runtime and a CLI are not in the repo yet but are described in the public docs as the planned v1 surface.
 
@@ -114,6 +119,14 @@ A Bun-based server-function runtime and a CLI are not in the repo yet but are de
 See the website [roadmap](https://ebb.dev/#roadmap) for the marketing-facing version of this list.
 
 ## Development
+
+Consumers install the published packages from npm:
+
+```bash
+npm install @ebbjs/client
+```
+
+The commands below are for working in this repository.
 
 ```bash
 pnpm install          # install dependencies and wire git hooks

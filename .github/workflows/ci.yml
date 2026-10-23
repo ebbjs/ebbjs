@@ -294,6 +294,8 @@ jobs:
           key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: Verify packed artifacts
+        run: pnpm verify:packages
       - run: pnpm --recursive exec vitest --run --passWithNoTests
 
   elixir-integration-tests:

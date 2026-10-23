@@ -3,7 +3,9 @@
 > **TS package — e2e test harness only.** This is not a runtime. It
 > spawns the `ebb_server` Elixir release as a child process, waits until
 > it accepts HTTP requests, and seeds fixtures through the same action
-> write path real clients use.
+> write path real clients use. The package is private and is not
+> published to npm, so the imports below resolve only inside this
+> monorepo.
 
 See [`docs/`](./docs/) for the contributor docs — the
 [harness](./docs/components/harness.md),

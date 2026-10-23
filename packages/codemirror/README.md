@@ -7,6 +7,19 @@ CodeMirror 6 bridge for [`@ebbjs/client`](https://github.com/ebbjs/ebbjs/tree/ma
 
 A CM `StateField` mirrors `doc.docState.index.spans`, so consumers (presence, cursor anchoring, etc.) can map CM positions to run ids.
 
+## Install
+
+```bash
+npm install @ebbjs/codemirror
+npm install @codemirror/state @codemirror/view codemirror   # peers
+```
+
+Node `>=22.8.0`. `@ebbjs/client` is a normal dependency and installs with it.
+
+```ts
+import { createBridgeExtension, mountEditorBridge } from "@ebbjs/codemirror";
+```
+
 ## Usage
 
 ```ts

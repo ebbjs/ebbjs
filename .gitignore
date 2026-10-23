@@ -16,3 +16,6 @@ ebb_server/bench/results/*.md
 # Playwright artifacts
 **/test-results/
 **/playwright-report/
+
+# Copied into package directories at pack time (scripts/copy-license.mjs)
+packages/*/LICENSE.txt
