@@ -38,11 +38,15 @@ defmodule EbbServer.Storage.SystemCache do
 
   On init, the supervisor populates `GroupCache`, `EntityGroupCache` and
   `RelationshipCache` from the system entities in RocksDB before returning. The
-  outer `Storage.Supervisor` uses `rest_for_one` so RocksDB is up before
-  any cache child starts; the supervision tree blocks accepting
-  connections until this returns. If population raises, `init/1` tears
-  down the cache children and fails the start rather than reporting
-  health over a half-populated cache.
+  same `cf_type_entities` walk re-marks every indexed row dirty; dirty marks
+  are in-memory and would otherwise be lost on a restart, leaving patch-only
+  rows clean-but-stale and never-materialized rows missing (#564). The eager
+  system-type populators clear their marks by materializing; `group` and user
+  types stay marked until their first read. The outer `Storage.Supervisor`
+  uses `rest_for_one` so RocksDB is up before any cache child starts; the
+  supervision tree blocks accepting connections until this returns. If
+  population raises, `init/1` tears down the cache children and fails the
+  start rather than reporting health over a half-populated cache.
 
   ## Load-bearing decisions
 
@@ -60,7 +64,18 @@ defmodule EbbServer.Storage.SystemCache do
     traffic to the write path.
   - **Populate-on-startup only.** The caches are loaded once from RocksDB
     on `init/1` and then mutated in-memory by the Writer; they do not
-    re-read from RocksDB on each access.
+    re-read from RocksDB on each access. The same boot walk marks every
+    indexed entity dirty so a read after a restart still sees a mark and
+    replays its delta instead of trusting a possibly-stale SQLite row.
+  - **Boot re-mark, not a persisted dirty set.** The dirty set can hold
+    every lazily materialized entity after a boot, but persisting it would
+    add write amplification and wiping SQLite would lose the cache #421
+    rebuilds. Re-marking on the walk that already fills the type cache
+    costs no extra RocksDB scan. The replay source is the existing
+    `EntityStore` materializer and its `cf_entity_actions` scan; #575 is
+    still deciding that index's shape, so this fix deliberately adds no
+    second reconcile source. The horizon is the row's `last_gsn`; #123
+    owns how far the log retains the deltas.
   - **Fail loud, never half-populated.** A raise during population
     propagates out of `init/1`; there is no rescue that turns a partial
     rebuild into a healthy-looking cache. The Writer then cannot serve
@@ -118,6 +133,10 @@ defmodule EbbServer.Storage.SystemCache do
   # again.
   @type_entities_backfill_marker "system_cache:type_entities_backfill"
   @type_entities_backfill_version "v1"
+
+  # Boot re-marking writes one mark per indexed entity, so the batches are
+  # bounded to keep a large index from ever being collected into one list.
+  @dirty_mark_chunk_size 1_000
 
   @empty_measurements %{
     entity_types: 0,
@@ -349,7 +368,13 @@ defmodule EbbServer.Storage.SystemCache do
 
     with {:ok, existing_keys, m1} <-
            phase(@empty_measurements, :entity_types, fn counter ->
-             populate_entity_types(rocks_name, tables.entity_types, not backfilled?, counter)
+             populate_entity_types(
+               rocks_name,
+               tables.entity_types,
+               not backfilled?,
+               dirty_set,
+               counter
+             )
            end),
          {:ok, _backfilled, m2} <-
            phase(m1, :backfilled, fn counter ->
@@ -358,6 +383,7 @@ defmodule EbbServer.Storage.SystemCache do
                rocks_name,
                tables.entity_types,
                existing_keys,
+               dirty_set,
                counter
              )
            end),
@@ -400,6 +426,7 @@ defmodule EbbServer.Storage.SystemCache do
          _rocks_name,
          _entity_types_table,
          _existing_keys,
+         _dirty_set,
          _counter
        ),
        do: :ok
@@ -409,9 +436,10 @@ defmodule EbbServer.Storage.SystemCache do
          rocks_name,
          entity_types_table,
          existing_keys,
+         dirty_set,
          counter
        ) do
-    count = backfill_type_entities(rocks_name, entity_types_table, existing_keys)
+    count = backfill_type_entities(rocks_name, entity_types_table, existing_keys, dirty_set)
     :atomics.add(counter, 1, count)
     mark_type_entities_backfilled(rocks_name)
     :ok
@@ -525,21 +553,43 @@ defmodule EbbServer.Storage.SystemCache do
   # the first write is authorized. When a full backfill is still pending
   # the same walk also collects the keys it must diff against, so the
   # migration pays for one `cf_type_entities` walk rather than two.
-  defp populate_entity_types(rocks_name, table, collect_existing?, counter) do
+  #
+  # The walk also re-marks every pair dirty: marks are ETS-only, so without
+  # this a restart leaves a row clean-but-stale or missing (#564). Eager types
+  # are marked too; their populators run next and clear the marks by
+  # materializing, so a surviving mark is a genuine repair candidate.
+  defp populate_entity_types(rocks_name, table, collect_existing?, dirty_set, counter) do
     rocks_name
     |> RocksDB.cf_type_entities()
     |> RocksDB.full_iterator(name: rocks_name)
-    |> Enum.reduce(if(collect_existing?, do: MapSet.new()), fn {key, _value}, existing_keys ->
+    |> Stream.chunk_every(@dirty_mark_chunk_size)
+    |> Enum.reduce(if(collect_existing?, do: MapSet.new()), fn chunk, existing_keys ->
+      {existing_keys, marks} = index_and_collect_marks(chunk, table, existing_keys, counter)
+      if marks != [], do: DirtyTracker.mark_dirty_batch(marks, dirty_set)
+      existing_keys
+    end)
+  end
+
+  defp index_and_collect_marks(chunk, table, existing_keys, counter) do
+    Enum.reduce(chunk, {existing_keys, []}, fn {key, _value}, {keys, marks} ->
       case :binary.split(key, <<0>>) do
         [type, entity_id] ->
           EntityTypeCache.put_type(entity_id, type, entity_types: table)
           :atomics.add(counter, 1, 1)
-          put_existing_key(existing_keys, key)
+          {put_existing_key(keys, key), [{entity_id, type} | marks]}
 
         _ ->
-          existing_keys
+          {keys, marks}
       end
     end)
+  end
+
+  # One generation per chunk. The boundary only bounds the batch built for a
+  # large backfill; the walk above is already chunked.
+  defp mark_dirty_in_chunks(marks, dirty_set) do
+    marks
+    |> Enum.chunk_every(@dirty_mark_chunk_size)
+    |> Enum.each(&DirtyTracker.mark_dirty_batch(&1, dirty_set))
   end
 
   defp put_existing_key(nil, _key), do: nil
@@ -550,11 +600,11 @@ defmodule EbbServer.Storage.SystemCache do
   # marker written on success makes later boots skip the O(all Updates)
   # scan. A raise here is deliberately not rescued — a half-backfilled
   # index must neither be marked complete nor served.
-  defp backfill_type_entities(rocks_name, entity_types_table, existing_keys) do
+  defp backfill_type_entities(rocks_name, entity_types_table, existing_keys, dirty_set) do
     cf_actions = RocksDB.cf_actions(rocks_name)
     cf_type_entities = RocksDB.cf_type_entities(rocks_name)
 
-    ops =
+    {marks, ops} =
       cf_actions
       |> RocksDB.range_iterator(
         <<0::unsigned-big-integer-size(64)>>,
@@ -582,8 +632,9 @@ defmodule EbbServer.Storage.SystemCache do
       |> Stream.uniq_by(fn {key, _, _} -> key end)
       |> Enum.map(fn {key, type, id} ->
         EntityTypeCache.put_type(id, type, entity_types: entity_types_table)
-        {:put, cf_type_entities, key, <<>>}
+        {{id, type}, {:put, cf_type_entities, key, <<>>}}
       end)
+      |> Enum.unzip()
 
     case ops do
       [] ->
@@ -593,8 +644,15 @@ defmodule EbbServer.Storage.SystemCache do
         Logger.info("Backfilling #{length(ops)} missing cf_type_entities entries")
 
         case RocksDB.write_batch(ops, name: rocks_name) do
-          :ok -> length(ops)
-          {:error, reason} -> raise "cf_type_entities backfill write failed: #{inspect(reason)}"
+          :ok ->
+            # The type walk above never saw these pairs, so without a mark the
+            # migration boot would re-index the entity but still serve it as
+            # missing until something wrote it again.
+            mark_dirty_in_chunks(marks, dirty_set)
+            length(ops)
+
+          {:error, reason} ->
+            raise "cf_type_entities backfill write failed: #{inspect(reason)}"
         end
     end
   end

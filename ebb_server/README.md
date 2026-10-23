@@ -76,6 +76,17 @@ A dual-store CQRS pattern:
   `EbbServer.Storage.EntityStore` when reads request dirty entities —
   never eagerly on every write.
 
+Dirty marks are in-memory, so a restart makes every not-yet-materialized
+row look clean. The boot rebuild repairs that: it re-marks every
+`cf_type_entities` row dirty, so the first `get` or per-type `query`
+replays that row's delta from RocksDB. The eagerly materialized system
+types (`groupMember`, `entityGroup`, `relationship`) clear their marks
+during boot; `group` and user types stay marked until first read
+([#564](https://github.com/ebbjs/ebbjs/issues/564)). The replay reads the
+entity's `cf_entity_actions` tail, so it repairs a row only while the log
+still retains the delta above that row's `last_gsn`; action-log retention
+is [#123](https://github.com/ebbjs/ebbjs/issues/123)'s horizon.
+
 `enable_pipelined_write: true` is set on the RocksDB instance. The
 historical ~108k Actions/sec figure is a 2-writer, raw-RocksDB primitive
 (see [#130](https://github.com/ebbjs/ebbjs/issues/130)); measured through
@@ -851,6 +862,10 @@ full generation algorithm.
 - **Entity Store**: Materialization failures (corrupt RocksDB data,
   merge errors) return `{:error, reason}` to the HTTP handler, which
   responds with `500`. The dirty bit is **not** cleared on failure.
+  Dirty marks do not survive a restart, but the boot rebuild re-marks
+  every indexed row dirty, so the first read or query replays its delta
+  instead of serving a clean-but-stale row, for as long as the action log
+  retains that delta (#123).
 - **HTTP API**: All endpoints return structured error responses —
   `{:error, :unauthorized}` → `401`, `{:error, :not_found}` → `404`,
   `{:error, :validation_failed, details}` → `422`,

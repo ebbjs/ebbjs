@@ -238,7 +238,7 @@ defmodule EbbServer.Storage.EntityStore do
 
     result =
       if entries == [] do
-        handle_empty_entries(entity_id, existing_row, observed_generation, dirty_set, sqlite_name)
+        handle_empty_entries(entity_id, existing_row, observed_generation, dirty_set)
       else
         apply_entries_and_persist(
           entity_id,
@@ -281,24 +281,18 @@ defmodule EbbServer.Storage.EntityStore do
     |> Enum.sort_by(fn {gsn, _} -> gsn end)
   end
 
-  defp handle_empty_entries(entity_id, nil, observed_generation, dirty_set, _sqlite_name) do
+  defp handle_empty_entries(entity_id, nil, observed_generation, dirty_set) do
     clear_settled(entity_id, observed_generation, dirty_set)
     :not_found
   end
 
-  defp handle_empty_entries(
-         entity_id,
-         _existing_row,
-         observed_generation,
-         dirty_set,
-         sqlite_name
-       ) do
+  # No action landed after the row's `last_gsn`, so the row fetched before the
+  # scan is already the snapshot this call promised. Re-reading SQLite would
+  # add a second SELECT + decode on the common boot/first-query path and still
+  # return that older snapshot when a concurrent materializer loses the race.
+  defp handle_empty_entries(entity_id, existing_row, observed_generation, dirty_set) do
     clear_settled(entity_id, observed_generation, dirty_set)
-
-    case SQLite.get_entity(entity_id, sqlite_name) do
-      {:ok, row} -> format_live_entity(row)
-      :not_found -> :not_found
-    end
+    format_live_entity(existing_row)
   end
 
   # A provisional mark means the Writer has a commit in flight: the entity is

@@ -11,7 +11,9 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
   alias EbbServer.Storage.{
     ActionFormat,
+    DirtyTracker,
     EntityGroupCache,
+    EntityStore,
     EntityTypeCache,
     RelationshipCache,
     RocksDB,
@@ -537,6 +539,61 @@ defmodule EbbServer.Storage.SystemCacheTest do
   end
 
   describe "type-entities backfill migration" do
+    # #564: the backfill can add index keys the earlier type walk never saw, so
+    # those pairs must be marked dirty too — otherwise the migration boot
+    # re-indexes the entity but still serves it as missing.
+    test "marks a backfill-added index key dirty so its row is served", ctx do
+      entity_id = "todo_backfill_#{System.unique_integer([:positive])}"
+      hlc = TestHelpers.generate_hlc()
+
+      action =
+        TestHelpers.validated_action(%{
+          updates: [
+            TestHelpers.validated_update(%{
+              subject_id: entity_id,
+              subject_type: "todo",
+              method: :put,
+              data: %{
+                "fields" => %{
+                  "title" => %{"type" => "lww", "value" => "Backfilled", "hlc" => hlc}
+                }
+              }
+            })
+          ]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], ctx.writer_name)
+
+      # Simulate an index entry the Writer never wrote: the type walk cannot see
+      # it, only the backfill can restore it.
+      :ok =
+        :rocksdb.delete(
+          RocksDB.db_ref(ctx.rocks_name),
+          RocksDB.cf_type_entities(ctx.rocks_name),
+          RocksDB.encode_type_entity_key("todo", entity_id),
+          []
+        )
+
+      DirtyTracker.reset(ctx.dirty_set)
+      refute DirtyTracker.dirty?(entity_id, ctx.dirty_set)
+      assert EntityStore.get(entity_id, "a_test", entity_store_opts(ctx)) == :not_found
+
+      assert :ok = SystemCache.populate_system_caches(populate_opts(ctx))
+
+      assert {:ok, <<>>} =
+               RocksDB.get(
+                 RocksDB.cf_type_entities(ctx.rocks_name),
+                 RocksDB.encode_type_entity_key("todo", entity_id),
+                 name: ctx.rocks_name
+               )
+
+      assert DirtyTracker.dirty?(entity_id, ctx.dirty_set)
+
+      assert {:ok, entity} = EntityStore.get(entity_id, "a_test", entity_store_opts(ctx))
+      assert entity.last_gsn == 1
+      assert entity.data["fields"]["title"]["value"] == "Backfilled"
+    end
+
     test "backfills from an Action stored in the new GSN-free wrapper", ctx do
       entity_id = "todo_wrapper_#{:erlang.unique_integer([:positive])}"
       action_id = "act_wrapper_#{:erlang.unique_integer([:positive])}"
@@ -628,6 +685,10 @@ defmodule EbbServer.Storage.SystemCacheTest do
         SystemCache.populate_system_caches(populate_opts(ctx))
       end
     end
+  end
+
+  defp entity_store_opts(ctx) do
+    [rocks_name: ctx.rocks_name, sqlite_name: ctx.sqlite_name, dirty_set: ctx.dirty_set]
   end
 
   defp entity_row(id, data) do
