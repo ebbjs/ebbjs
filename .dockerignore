@@ -1,0 +1,27 @@
+# Build context for `docker build -f ebb_server/Dockerfile .`
+#
+# Allow-list: everything is excluded, then the build inputs are added
+# back. A new top-level tree therefore stays out of the context without
+# anyone editing this file.
+*
+!ebb_server
+!scripts
+!scripts/setup-ebb-server.sh
+
+# Project parts the image never reads: test and bench are not compiled
+# under MIX_ENV=prod (`elixirc_paths(:prod)` is ["lib"]), and the host's
+# build output must never reach a layer. The builder fetches, compiles,
+# and assembles its own.
+ebb_server/_build
+ebb_server/deps
+ebb_server/test
+ebb_server/bench
+ebb_server/data
+ebb_server/erl_crash.dump
+ebb_server/*.md
+ebb_server/openapi.yaml
+ebb_server/.tool-versions
+
+# The other scripts are developer tooling, not build inputs.
+scripts/*
+!scripts/setup-ebb-server.sh
