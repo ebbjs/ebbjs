@@ -135,6 +135,65 @@ defmodule EbbServer.Bench.OptionsTest do
     end
   end
 
+  describe "writer coalescing options" do
+    test "defaults match the production Writer settings" do
+      assert {:ok, config} = Options.parse([])
+      assert config.batch_timeout_ms == 0
+      assert config.batch_max_size == 1000
+    end
+
+    test "parses both knobs" do
+      assert {:ok, config} =
+               Options.parse(["--batch-timeout-ms", "5", "--batch-max-size", "128"])
+
+      assert config.batch_timeout_ms == 5
+      assert config.batch_max_size == 128
+    end
+
+    test "describes the effective coalescing policy" do
+      assert {:ok, default} = Options.parse([])
+
+      values = Map.new(Options.describe(default))
+      assert values["Writer batch timeout"] =~ "0 ms"
+      assert values["Writer batch cap"] == "1000 Actions"
+
+      assert {:ok, tuned} =
+               Options.parse(["--batch-timeout-ms", "1", "--batch-max-size", "256"])
+
+      values = Map.new(Options.describe(tuned))
+      assert values["Writer batch timeout"] == "1 ms"
+      assert values["Writer batch cap"] == "256 Actions"
+    end
+
+    test "the reproduction command names both knobs" do
+      assert {:ok, config} = Options.parse([])
+      command = Options.command(config)
+
+      assert command =~ "--batch-timeout-ms 0"
+      assert command =~ "--batch-max-size 1000"
+    end
+
+    test "rejects a negative timeout" do
+      assert {:error, message} = Options.parse(["--batch-timeout-ms", "-1"])
+      assert message =~ "--batch-timeout-ms"
+    end
+
+    test "rejects a non-positive cap" do
+      for value <- ~w(0 -128) do
+        assert {:error, message} = Options.parse(["--batch-max-size", value])
+        assert message =~ "--batch-max-size"
+      end
+    end
+
+    test "rejects non-integer values" do
+      assert {:error, message} = Options.parse(["--batch-timeout-ms", "soon"])
+      assert message =~ "--batch-timeout-ms"
+
+      assert {:error, message} = Options.parse(["--batch-max-size", "big"])
+      assert message =~ "--batch-max-size"
+    end
+  end
+
   describe "--rate and tier t4" do
     test "t4 requires a positive --rate" do
       assert {:error, message} = Options.parse(["--tier", "t4"])
