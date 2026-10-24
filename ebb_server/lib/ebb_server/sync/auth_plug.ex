@@ -6,16 +6,23 @@ defmodule EbbServer.Sync.AuthPlug do
   - `:bypass` - reads actor_id from `x-ebb-actor-id` request header
   - `:external` - forwards auth headers to a configured auth URL
 
-  Configure via `Application.get_env(:ebb_server, :auth_mode)` and
-  `Application.get_env(:ebb_server, :auth_url)`.
+  The mode is resolved once at boot by `EbbServer.Application.runtime_auth/0`
+  from `EBB_AUTH_MODE` and `EBB_AUTH_URL`, which win over
+  `Application.get_env/2`, and written back to the application env. This
+  plug reads `:auth_mode` and `:auth_url` from that env unchanged.
+
+  There is no default mode. A node booted without `EBB_AUTH_MODE` (or a
+  compiled `:auth_mode`) refuses to start, and `:external` without a URL
+  fails at boot as well. The request-time `500` for a missing
+  `:auth_url` only covers configuration mutated after boot.
 
   ## Security warning
 
-  `:bypass` mode is intended for local dev and the demo only. Any actor
-  can claim any identity by sending `x-ebb-actor-id: <anything>` — there
-  is no signature, no session, no verification. Production deployments
-  MUST run in `:external` mode and point `:auth_url` at a real identity
-  service.
+  `:bypass` mode is intended for local dev and the demo only, and logs a
+  warning at boot. Any actor can claim any identity by sending
+  `x-ebb-actor-id: <anything>` — there is no signature, no session, no
+  verification. Production deployments MUST run in `:external` mode and
+  point `:auth_url` at a real identity service.
   """
 
   @behaviour Plug
@@ -33,8 +40,11 @@ defmodule EbbServer.Sync.AuthPlug do
     end
   end
 
+  # Boot always writes the resolved mode, so a missing value means the
+  # plug is running outside `EbbServer.Application`; fail loudly rather
+  # than picking a mode.
   defp auth_mode do
-    Application.get_env(:ebb_server, :auth_mode, :external)
+    Application.fetch_env!(:ebb_server, :auth_mode)
   end
 
   defp bypass_auth(conn) do

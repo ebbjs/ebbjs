@@ -24,8 +24,17 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const url = `http://localhost:${port}`;
 
   console.error("[harness] spawning server:", RELEASE_BIN);
+  // This harness is a dev/test tool, so it defaults the release to bypass
+  // auth; prod releases require real auth configuration. An explicit
+  // EBB_AUTH_MODE in `env` still overrides the default.
   const child = spawn(RELEASE_BIN, ["start"], {
-    env: { ...process.env, ...env, EBB_DATA_DIR: dataDir, EBB_PORT: String(port) },
+    env: {
+      ...process.env,
+      EBB_AUTH_MODE: "bypass",
+      ...env,
+      EBB_DATA_DIR: dataDir,
+      EBB_PORT: String(port),
+    },
     stdio: "pipe",
   });
   console.error("[harness] spawned process with pid:", child.pid);
