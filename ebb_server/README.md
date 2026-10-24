@@ -143,6 +143,7 @@ hot-path behavior. Read those before making non-trivial changes.
 
 | Method | Path                                             | Purpose                                                                |
 | ------ | ------------------------------------------------ | ---------------------------------------------------------------------- |
+| `GET`  | `/healthz`                                       | Readiness probe (`200` ready / `503` not ready), no auth required      |
 | `POST` | `/sync/handshake`                                | Actor identity + group membership (requires `x-ebb-actor-id` header)   |
 | `GET`  | `/sync/groups/:group_id?offset=N`                | Paginated catch-up (`stream-next-offset`, `stream-up-to-date` headers) |
 | `GET`  | `/sync/groups/:group_id/entities?cursor=&limit=` | Group state at a watermark, for cold bootstrap                         |

@@ -310,6 +310,20 @@ defmodule EbbServer.Storage.SQLite do
     GenServer.call(server, {:put_cursor, name, gsn})
   end
 
+  @health_timeout 500
+
+  @doc """
+  Verifies that the cache accepts and answers a trivial statement.
+
+  `EbbServer.Health` uses this to tell a live process from a usable one.
+  The call is bounded so a suspended or wedged cache reports not-ready
+  instead of blocking the readiness probe indefinitely.
+  """
+  @spec health(GenServer.server()) :: :ok | {:error, term()}
+  def health(server \\ __MODULE__) do
+    GenServer.call(server, :health, @health_timeout)
+  end
+
   # ---------------------------------------------------------------------------
   # GenServer callbacks
   # ---------------------------------------------------------------------------
@@ -349,6 +363,11 @@ defmodule EbbServer.Storage.SQLite do
     }
 
     {:ok, state}
+  end
+
+  @impl true
+  def handle_call(:health, _from, state) do
+    {:reply, Sqlite3.execute(state.db, "SELECT 1"), state}
   end
 
   @impl true
