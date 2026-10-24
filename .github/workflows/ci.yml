@@ -4,8 +4,10 @@ name: CI
 on:
   push:
     branches: [main]
+  # No base filter: stacked PRs target another feature branch, and a PR
+  # that is never checked because of where it points is worse than a CI
+  # run on a docs branch.
   pull_request:
-    branches: [main]
 
 jobs:
   # ─────────────────────────────────────────────────────────
