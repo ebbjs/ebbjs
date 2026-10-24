@@ -431,6 +431,52 @@
               "tags": ["Entities"],
             },
         },
+      "/healthz":
+        {
+          "get":
+            {
+              "description": "Reports whether the node can serve sync traffic. Requires no authentication and returns 200 only after the storage layer answers a cheap read.",
+              "operationId": "health",
+              "responses":
+                {
+                  "200":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties": { "status": { "enum": ["ok"], "type": "string" } },
+                                  "required": ["status"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Storage layer is ready",
+                    },
+                  "503":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    { "status": { "enum": ["unavailable"], "type": "string" } },
+                                  "required": ["status"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Application or storage layer is not ready; retry after it recovers",
+                    },
+                },
+              "summary": "Readiness probe",
+              "tags": ["Health"],
+            },
+        },
       "/sync/actions":
         {
           "post":

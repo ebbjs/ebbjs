@@ -83,6 +83,7 @@ defmodule Mix.Tasks.Openapi.Gen.Spec do
 
   defp routes do
     [
+      %{method: :get, path: "/healthz", operation_atom: :health},
       %{method: :post, path: "/sync/actions", operation_atom: :write_actions},
       %{method: :get, path: "/entities/:id", operation_atom: :get_entity},
       %{method: :post, path: "/entities/query", operation_atom: :query_entities},
