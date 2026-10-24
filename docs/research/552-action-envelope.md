@@ -117,8 +117,19 @@ Where each of the issue's read paths is priced:
 | export                                               | `export` read leg                                                                                                                               |
 | group listing                                        | the `materialize` read leg: it materializes each row through `EntityStore.materialize/2`                                                        |
 
-Flush size does not enter a read leg: the read paths decode one Action at a
-time and their cost does not depend on how many Actions shared the flush.
+Two things the issue's Measurement section names are covered differently, and
+deliberately:
+
+- **`t5` is the write leg.** `EbbServer.Bench.WriteBatch` _is_ the t5 recipe —
+  a raw `write_batch` with no Writer, cache, or watermark — so the write leg
+  runs it with the stored value under test and at both flush sizes. `t5
+--ablate build,encode` prices the payload build and ETF encode that #532
+  moved before the claim, which is upstream of the envelope and unchanged
+  here, so it is not the instrument for this question. The encode leg is.
+- **Flush size does not enter a read leg.** A read decodes one Action at a
+  time; its cost does not depend on how many Actions shared the flush that
+  committed it. The 100/152 axis is therefore priced where it exists — the
+  write leg and the operating point — and the read legs are per Action.
 
 Reproduce with:
 
@@ -240,38 +251,47 @@ p50 **30.09 → 30.43 ms** (+1.1%), `commit_latency_ms` p50 **1.873 → 1.859 ms
 (−0.8%). All three are inside the ±5–10% single-run spread this repo publishes
 for the ceiling; the write path is unchanged.
 
-The read side, `mix bench.materialize --sizes 1000 --runs 3 --reps 30` on the
+The read side, `mix bench.materialize --sizes 1000 --runs 5 --reps 50` on the
 [#515](515-materialization-profile.md) hot and spread scenarios, three
-alternating runs per arm, median p50 in µs:
+alternating runs per arm. Median p50 in µs, with the range of the three arm
+medians in parentheses:
 
-| Scenario             |       `origin/main` |       this branch |                    Δ |
-| -------------------- | ------------------: | ----------------: | -------------------: |
-| hot cold             |               8,574 |             8,525 |                −0.6% |
-| hot dirty            |               3,595 |             3,532 |                −1.8% |
-| hot clean            |               2,818 |             2,434 |               −13.6% |
-| spread cold          |                 629 |               564 |               −10.3% |
-| spread dirty         |                 598 |               539 |                −9.9% |
-| spread clean         |                  74 |                71 |                −4.1% |
-| query, K=1 / 10 / 50 | 568 / 1,013 / 4,878 | 545 / 950 / 4,260 | −4.0 / −6.2 / −12.7% |
+| Scenario     |       `origin/main` |          this branch |
+| ------------ | ------------------: | -------------------: |
+| hot cold     | 6,623 (6,519–9,426) | 9,111 (8,708–10,436) |
+| hot dirty    | 3,755 (3,621–3,864) |  3,508 (3,337–3,612) |
+| hot clean    | 2,433 (2,301–2,449) |  2,415 (2,348–2,508) |
+| spread cold  |       683 (601–790) |        574 (550–897) |
+| spread dirty |       653 (608–735) |        629 (565–668) |
+| spread clean |          76 (73–90) |           75 (75–87) |
+| query, K=1   |       570 (556–592) |        546 (529–569) |
+| query, K=10  | 1,116 (1,089–1,208) |    1,026 (983–1,035) |
+| query, K=50  | 4,452 (3,786–4,792) |  4,275 (3,782–4,882) |
 
-**Read that table as a noise floor, not as a win.** No cell regressed, but the
-clean paths (hot clean, spread clean) never read `cf_actions` at all and still
-moved 4–14%, and the branch ran second in each pair. That is the size of the
-end-to-end artefact here, and it is one to two orders of magnitude larger than
-the envelope's share: the `actions_load` phase, which is the `multi_get` plus
-decode the envelope lives in, moved **817 → 809 µs on cold and 19.5 → 17.9 µs
-on dirty** (median of three runs per arm). The per-path decision therefore
-rests on the envelope bench above; this section only shows there is no
-regression to hide behind it.
+**Read that table as a noise floor, not as a win or a regression.** No path is
+resolvable at this scale. Hot cold is the widest: it samples five cold reads
+per run, and its two arms' ranges are 6.5–9.4 ms against 8.7–10.4 ms; the
+cells that never read `cf_actions` at all (hot clean, spread clean) move by
+similar fractions; and the phase that _is_ the envelope — `actions_load`, the
+`multi_get` plus decode — goes 889 → 800 µs mean on cold and 23.1 → 19.1 µs on
+dirty. Even that phase cannot show the change on cold, because a cold
+materialize decodes a 1,000-key payload where the envelope's fixed ~0.4 µs is
+0.05% of the phase; on dirty, where the payload is a one-key patch, the same
+fixed cost is a few percent and shows. Anything the envelope does is invisible
+next to the JSON that is 81% of a dirty materialize. The per-path decision
+therefore rests on the envelope bench above; this section exists to show there
+is no regression to hide behind it.
 
 A second operating-point row worth naming, `--tier t2 --concurrency 8
 --batch-size 152` (three runs per arm), measured **26,668 → 24,282 Actions/s**
-(−8.9%) with ranges that overlap (`origin/main` 25,513–27,421, branch
-23,157–26,114) and a different coalesced flush shape (403 vs 412
-Actions/flush). The envelope cannot produce that: its whole encode share at
-152 Actions is 0.015 ms of a 7.6 ms commit. `t0 c=1` and `t2 c=8 b=100` above
-are the configurations where the flush shape is held constant, and they show
-parity. Do not read the b=152 medians as an envelope effect.
+(−8.9%) and `commit_latency_ms` p50 **7.00 → 7.61 ms**, i.e. ≈17.4 → ≈18.5 µs
+per Action. Ranges overlap (`origin/main` 25,513–27,421 Actions/s, branch
+23,157–26,114) and the coalesced flush shape differs between the arms (403 vs
+412 Actions/flush). The envelope cannot produce a 1.1 µs/Action move: its whole
+encode share at 152 Actions is 0.015 ms of a 7.6 ms commit. `t0 c=1` and `t2
+c=8 b=100` above are the configurations where the flush shape is held
+constant, and they show parity. Do not read the b=152 medians as an envelope
+effect.
 
 ## The decision
 
@@ -308,8 +328,10 @@ Byte 0 is the format version. `1` is this frame. `ActionFormat.decode/2` and
 | any other version byte                                   | rejected            | —                  |
 
 There is no writer for the two older shapes: `ActionFormat.frame/2` replaced
-`wrap/2`, so a build can no longer produce them. A test seeds all three shapes
-into `cf_actions` and drives the real readers — `ActionLog.read/3`,
+`wrap/2`, so a build can no longer produce them. `action_format_test.exs`
+pins every shape and every rejection at the unit level, and a second test
+seeds **the previous shape** (the pre-#552 wrapper) straight into
+`cf_actions` and drives the real readers — `ActionLog.read/3`,
 `CatchUp.catch_up_group/3`, the fan-out push, and `EntityStore.materialize/2`
 — which is the fan-out/catch-up read of a previous-shape value that #552 asks
 for. Corruption is separated from versioning: a truncated frame, an empty

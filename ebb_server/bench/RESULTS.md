@@ -2242,19 +2242,22 @@ on the durable write — the write leg cannot see an envelope that encodes in
 `frame` is the cheapest single-record shape on every path (2–8% on
 materialize, 2–5% on catch-up, 5–10% on export), the `companion` pays its
 second point read on both scope-reading paths (+53–72%) and is only level with
-the frame on materialize, and a version integer alone moves nothing.
+or slightly ahead of the frame on materialize, where its 6%-smaller value pays
+a `multi_get`-bound path; a version integer alone moves nothing.
 
 The chosen shape is the `frame`. The write path is unchanged at the operating
 point: `t0 c=1` `commit_latency_ms` p50 5.17→5.22 ms, and `t2 c=8` 25,388→25,110
 Actions/s with 30.09→30.43 ms client p50 (six alternating runs per arm,
 medians) — all inside the ±5–10% single-run spread this file publishes. The
-read-side `materialize` profile (`mix bench.materialize --sizes 1000`, three
-alternating runs per arm) regressed no path, and the `actions_load` phase — the
-`multi_get` plus decode the envelope lives in — moved 817→809 µs on cold and
-19.5→17.9 µs on dirty. That is smaller than the 4–14% that the _clean_ paths
-moved while reading no `cf_actions` at all, so end-to-end timing here cannot
-resolve the envelope; the per-path decision rests on the encode and read legs
-above.
+read-side `materialize` profile (`mix bench.materialize --sizes 1000 --runs 5
+--reps 50`, three alternating runs per arm) is a noise floor in both
+directions: the cells that never read `cf_actions` (the clean paths) move as
+much as the rest, and the `actions_load` phase — the `multi_get` plus decode
+the envelope lives in — goes 889→800 µs mean on cold and 23.1→19.1 µs on dirty.
+End-to-end timing on this host cannot resolve a 0.4 µs-per-Action change (see
+the noise-floor paragraph in the research note), so the per-path decision
+rests on the encode and read legs above, and the operating-point runs are there
+to show nothing regressed.
 
 ## Correctness under load
 
