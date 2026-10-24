@@ -51,7 +51,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: `rm -rf /tmp/ebb-playwright-data && mkdir -p /tmp/ebb-playwright-data && EBB_DATA_DIR=/tmp/ebb-playwright-data ${RELEASE_BIN_PATH} start`,
+      command: `rm -rf /tmp/ebb-playwright-data && mkdir -p /tmp/ebb-playwright-data && EBB_AUTH_MODE=bypass EBB_DATA_DIR=/tmp/ebb-playwright-data ${RELEASE_BIN_PATH} start`,
       url: "http://localhost:4000/sync/handshake",
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,

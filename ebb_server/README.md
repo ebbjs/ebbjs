@@ -51,10 +51,27 @@ mix openapi.gen.spec
 
 ## Configuration
 
-| Variable       | Default     | Description                     |
-| -------------- | ----------- | ------------------------------- |
-| `EBB_PORT`     | `4000`      | HTTP listen port                |
-| `EBB_DATA_DIR` | `/app/data` | RocksDB + SQLite data directory |
+| Variable        | Default           | Description                                                              |
+| --------------- | ----------------- | ------------------------------------------------------------------------ |
+| `EBB_PORT`      | `4000`            | HTTP listen port                                                         |
+| `EBB_DATA_DIR`  | `/app/data`       | RocksDB + SQLite data directory                                          |
+| `EBB_AUTH_MODE` | (none — required) | Auth mode: `bypass` or `external`. The node refuses to boot without one. |
+| `EBB_AUTH_URL`  | (none)            | Identity service URL. Required when `EBB_AUTH_MODE=external`.            |
+
+Auth is the one setting whose precedence is reversed: `EBB_AUTH_MODE` and
+`EBB_AUTH_URL` win over the compiled `:auth_mode` / `:auth_url` values,
+because the operator's runtime instruction must not be silently
+overridden by a release's baked-in config. There is deliberately no
+default mode — a bare `mix release` boot without auth configuration
+fails before any child starts rather than silently allowing every client
+to forge an actor identity. `:bypass` logs a warning at boot and must
+never be exposed publicly.
+
+`EBB_PORT` and `EBB_DATA_DIR` keep the opposite precedence: a compiled
+`:port` / `:data_dir` (what `MIX_ENV=test` uses) wins over the
+environment, so a test run cannot leak state into a deployment path or a
+port another service holds. `mix dev` and the release leave both unset,
+so the environment supplies them there.
 
 ## Architecture
 
@@ -453,19 +470,19 @@ not atoms.
 
 All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 
-| Key                          | Description                                                                                | Default     |
-| ---------------------------- | ------------------------------------------------------------------------------------------ | ----------- |
-| `:port`                      | HTTP listen port                                                                           | 4000        |
-| `:data_dir`                  | Directory for RocksDB + SQLite files                                                       | `./data`    |
-| `:auth_mode`                 | Auth mode (`:bypass` / `:external`)                                                        | `:external` |
-| `:auth_url`                  | Developer's auth endpoint URL                                                              | (required)  |
-| `:writer_batch_max_size`     | Buffered Actions before an immediate commit (`<= 0` = no trigger)                          | 1000        |
-| `:writer_batch_timeout_ms`   | Coalescing window (`0` = burst-drain, no timer)                                            | 0           |
-| `:writer_max_in_flight`      | Claimed ranges the pipeline may hold at once (1–4); higher overlap needs the overlay chain | 1           |
-| `:writer_prepare_pool_size`  | Prepare workers for payload build and ETF encode                                           | 2           |
-| `:writer_prepare_queue_max`  | In-flight prepare calls before the Writer rejects with `503 write_failed`                  | 1024        |
-| `:writer_prepare_timeout_ms` | Upper bound on one prepare job before it fails the call                                    | 2000        |
-| `:on_action`                 | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook))     | (unset)     |
+| Key                          | Description                                                                                | Default    |
+| ---------------------------- | ------------------------------------------------------------------------------------------ | ---------- |
+| `:port`                      | HTTP listen port                                                                           | 4000       |
+| `:data_dir`                  | Directory for RocksDB + SQLite files                                                       | `./data`   |
+| `:auth_mode`                 | Auth mode (`:bypass` / `:external`); `EBB_AUTH_MODE` overrides it                          | (none)     |
+| `:auth_url`                  | Developer's auth endpoint URL; `EBB_AUTH_URL` overrides it; required for `:external`       | (required) |
+| `:writer_batch_max_size`     | Buffered Actions before an immediate commit (`<= 0` = no trigger)                          | 1000       |
+| `:writer_batch_timeout_ms`   | Coalescing window (`0` = burst-drain, no timer)                                            | 0          |
+| `:writer_max_in_flight`      | Claimed ranges the pipeline may hold at once (1–4); higher overlap needs the overlay chain | 1          |
+| `:writer_prepare_pool_size`  | Prepare workers for payload build and ETF encode                                           | 2          |
+| `:writer_prepare_queue_max`  | In-flight prepare calls before the Writer rejects with `503 write_failed`                  | 1024       |
+| `:writer_prepare_timeout_ms` | Upper bound on one prepare job before it fails the call                                    | 2000       |
+| `:on_action`                 | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook))     | (unset)    |
 
 The periodic metric sampler is configured under its own key,
 `Application.get_env(:ebb_server, EbbServer.Telemetry.Sampler)`:
@@ -528,7 +545,6 @@ suffix marks a latency metric, not the raw unit. Reporters convert with
 | `ebb.writer.commit_failed`                | `count`                                                                                              | `gsn_start`, `gsn_end`, `reason`                                                                             | Counter                      | `writer`        |
 | `ebb.writer.in_flight_batches`            | `count`                                                                                              | —                                                                                                            | Gauge                        | `writer`        |
 | `ebb.writer.oldest_unreleased_gsn`        | `gsn`                                                                                                | —                                                                                                            | Gauge                        | `writer`        |
-| `ebb.writer.flush_phase_ms`               | one measurement per phase (`EbbServer.Telemetry.writer_flush_phases/0`)                              | `gsn_start`, `gsn_end`, `outcome` (`:ok` / `:abandoned`), `reason` (abandoned only)                          | Histogram                    | `writer`        |
 | `ebb.watermark.lag`                       | `lag` (GSNs; durability: max GSN − committed watermark)                                              | —                                                                                                            | Gauge                        | `watermark`     |
 | `ebb.dirty_set.size`                      | `size` (entries)                                                                                     | —                                                                                                            | Gauge                        | `dirty_set`     |
 | `ebb.writer.in_flight_action_ids`         | `size` (ids)                                                                                         | —                                                                                                            | Gauge                        | `writer`        |
@@ -558,17 +574,6 @@ frontier may cover a durable range before its apply, and the Router's
 `Plan` is the real notification gate.
 `ebb.writer.in_flight_action_ids` is bounded by the write-pipeline depth, not
 by history: ids leave the set when their batch commits or abandons.
-
-`ebb.writer.flush_phase_ms` fires once per claimed range and splits its
-wall time into `queue`, `prepare`, `resolve`, `commit_wait`, `apply`, and
-`notify` (see
-`EbbServer.Telemetry.writer_flush_phases/0` for the canonical order). The
-six phases sum to the range's lifetime from the oldest coalesced call's
-`write_actions/2` send to the end of its `notify` phase (the fan-out nudge
-and the caller replies), so a reporter can attribute client latency instead
-of treating everything outside `batch_latency_ms` as residual. A phase that
-did not run is `0`: an abandoned range keeps its `outcome: :abandoned` and
-`reason`, and reports the phases it never reached as zero.
 
 `ebb.fanout.push_latency_ms` is measured from the Writer's durable commit to
 the GroupServer dispatching the batch to the group's subscribers: one sample
@@ -947,10 +952,7 @@ mix bench.actions --tier t2 --duration 120 --warmup 5 --concurrency 8 \
 `t3` only), and the report adds a depth table with a t0 depth-1
 no-regression baseline row. The table pairs depth with `Actions/flush`:
 depth alone is not a pipeline-parallelism result, because the Writer
-coalesces the outstanding calls into shared flushes. The same section
-reports the Writer's own `ebb.writer.in_flight_batches` and
-`ebb.writer.oldest_unreleased_gsn` gauges, the flush queue depth, and the
-`ebb.writer.flush_phase_ms` breakdown (p50/p95 per phase) for each depth.
+coalesces the outstanding calls into shared flushes.
 
 A run fails (non-zero exit) if it loses GSNs, freezes its watermark, or
 reports rejected Actions or write/transport errors; `--no-guardrails` opts

@@ -324,6 +324,7 @@ jobs:
       - run: pnpm build
       - name: Start ebb_server
         env:
+          EBB_AUTH_MODE: bypass
           EBB_DATA_DIR: /tmp/ebb-integration-data
         run: |
           mkdir -p "$EBB_DATA_DIR"
