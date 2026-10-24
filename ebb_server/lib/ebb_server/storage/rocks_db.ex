@@ -242,6 +242,29 @@ defmodule EbbServer.Storage.RocksDB do
   # ---------------------------------------------------------------------------
 
   @doc """
+  Rows of the entity-actions index for `entity_id` whose GSN is at or after
+  `from_gsn`, in ascending GSN order.
+
+  The key is `<<entity_id::binary, gsn::64-big>>`, so this seeks straight to
+  the first row the caller still needs. A reader that has already applied
+  every GSN up to `last_gsn` passes `last_gsn + 1` and touches only its delta,
+  however long the entity's history is; `prefix_iterator/3` on the entity id
+  would walk the whole history and filter afterwards.
+
+  The upper bound is the entity id's prefix bound, so this inherits
+  `prefix_iterator/3`'s assumption that no entity id is a prefix of another.
+  """
+  @spec entity_gsn_iterator(cf_ref(), binary(), gsn(), keyword()) :: Enumerable.t()
+  def entity_gsn_iterator(cf_ref, entity_id, from_gsn, opts \\ []) when is_integer(from_gsn) do
+    range_iterator(
+      cf_ref,
+      encode_entity_gsn_key(entity_id, from_gsn),
+      prefix_upper_bound(entity_id),
+      opts
+    )
+  end
+
+  @doc """
   Returns the highest GSN stored in the `cf_actions` column family.
 
   Uses a RocksDB iterator to seek to the last key, then decodes it.
@@ -369,15 +392,18 @@ defmodule EbbServer.Storage.RocksDB do
 
   Uses RocksDB's `iterate_upper_bound` option for efficient bounded scanning.
   The bound check happens in RocksDB itself, not in Elixir, so this is as
-  efficient as `prefix_iterator` for large ranges.
+  efficient as `prefix_iterator` for large ranges. `to_key: :none` scans to
+  the end of the column family, which is only correct when `from_key` is the
+  last key the caller will ever read from it.
   """
-  @spec range_iterator(cf_ref(), binary(), binary(), keyword()) :: Enumerable.t()
+  @spec range_iterator(cf_ref(), binary(), binary() | :none, keyword()) :: Enumerable.t()
   def range_iterator(cf_ref, from_key, to_key, opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
+    iter_opts = if to_key == :none, do: [], else: [{:iterate_upper_bound, to_key}]
 
     Stream.resource(
       fn ->
-        {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, [{:iterate_upper_bound, to_key}])
+        {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, iter_opts)
         seek_result = :rocksdb.iterator_move(iter, {:seek, from_key})
         {iter, seek_result}
       end,

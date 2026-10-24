@@ -84,6 +84,44 @@ defmodule EbbServer.Bench.Materialize.Workload do
   end
 
   @doc """
+  The entity the history scenario seeds for `history` prior Updates.
+  """
+  @spec history_entity(non_neg_integer()) :: String.t()
+  def history_entity(history), do: "mz_hist_#{history}"
+
+  @doc """
+  Seeds one entity whose only variable is how many Update Actions precede it.
+
+  The create Action files it into the hot group so the hot actor can read it;
+  each of the `history` follow-up Actions is a one-key patch on the same
+  entity, which is one `cf_entity_actions` row per Update.
+  """
+  @spec seed_history(EbbServer.Bench.Materialize.Options.t(), non_neg_integer()) :: String.t()
+  def seed_history(%EbbServer.Bench.Materialize.Options{} = config, history) do
+    entity_id = history_entity(history)
+    content = content_map(1, config.run_value_bytes)
+
+    write_actions!([
+      entity_action(
+        entity_id,
+        "eg_hist_#{history}",
+        @actor_hot,
+        @group_hot,
+        content,
+        "history #{history}"
+      )
+    ])
+
+    1..history//1
+    |> Enum.chunk_every(100)
+    |> Enum.each(fn chunk ->
+      write_actions!(Enum.map(chunk, &patch_action(entity_id, @actor_hot, "run_1", "h#{&1}")))
+    end)
+
+    entity_id
+  end
+
+  @doc """
   The merged `data` map for a document with `n` run keys, as stored in
   SQLite. Used by the generated-column ablation to build the same blob.
   """

@@ -228,6 +228,39 @@ are ~90–96% of the upsert and are themselves superlinear in blob size
 (~8× from N=2000 to N=5000). Absolute times exclude WAL and file I/O, so
 read the delta, not the absolute.
 
+### Entity history vs dirty read (#630)
+
+[#630](https://github.com/ebbjs/ebbjs/issues/630) is a read-path fix, not a
+stored-shape change: the entity-actions index is keyed `(entity_id, gsn)` but
+the materializer read it with `prefix_iterator(entity_id)` and filtered
+`gsn > last_gsn` in Elixir, so a dirty read walked the entity's **whole
+history** to find its delta. The read now seeks to `(entity_id, last_gsn + 1)`.
+
+Measured **2026-10-24** on `recsy-vps`, same host as the rest of this file, via
+the new history axis (`--history-sizes`): one entity, one-key document,
+`--runs 2 --reps 20`, one patch Action per sample, so the only variable is how
+many prior Update Actions the entity has. p50 and the `entries_scan` phase
+(mean) in µs:
+
+```sh
+mix bench.materialize --sizes 1000 --runs 2 --reps 20 \
+  --history-sizes 0,100,1000,5000,20000 --scenarios dirty \
+  --distributions hot
+```
+
+| Prior Updates | before p50 | after p50 | before `entries_scan` | after `entries_scan` |
+| ------------: | ---------: | --------: | --------------------: | -------------------: |
+|             0 |        421 |       377 |                    93 |                   32 |
+|           100 |        676 |       336 |                   454 |                   27 |
+|         1,000 |      5,063 |       294 |                 3,670 |                   34 |
+|         5,000 |     24,122 |       300 |                27,350 |                   23 |
+|        20,000 |    115,057 |       343 |               181,645 |                   29 |
+
+The read is flat in history afterwards: **335× faster at 20k** and no worse
+at any shorter history. The index still costs what it costs to write, which is
+[#575](https://github.com/ebbjs/ebbjs/issues/575)'s question; nothing is pruned
+yet ([#123](https://github.com/ebbjs/ebbjs/issues/123) owns the horizon).
+
 ## Restart boot re-mark (#564)
 
 Dirty marks are ETS-only, so before #564 a restart left a patched-but-never-read
