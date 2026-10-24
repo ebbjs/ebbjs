@@ -150,4 +150,38 @@ defmodule EbbServer.Sync.RouterTest do
       assert conn.status == 422
     end
   end
+
+  describe "GET /healthz" do
+    test "200 with no auth headers at all" do
+      conn = conn(:get, "/healthz") |> Router.call([])
+
+      assert conn.status == 200
+      assert Jason.decode!(conn.resp_body) == %{"status" => "ok"}
+    end
+
+    test "503 with no internals when the storage tree is not answering" do
+      sqlite = Process.whereis(EbbServer.Storage.SQLite)
+      assert is_pid(sqlite)
+
+      :ok = :sys.suspend(sqlite)
+      on_exit(fn -> if Process.alive?(sqlite), do: :sys.resume(sqlite) end)
+
+      conn = conn(:get, "/healthz") |> Router.call([])
+
+      assert conn.status == 503
+      assert Jason.decode!(conn.resp_body) == %{"status" => "unavailable"}
+    end
+
+    test "requires no actor header while /sync/handshake still does" do
+      health = conn(:get, "/healthz") |> Router.call([])
+      assert health.status == 200
+
+      handshake =
+        conn(:post, "/sync/handshake", Jason.encode!(%{}))
+        |> put_req_header("content-type", "application/json")
+        |> Router.call([])
+
+      assert handshake.status == 401
+    end
+  end
 end
