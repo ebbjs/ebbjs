@@ -19,10 +19,10 @@ defmodule EbbServer.Storage.PreparedAction do
   - `updates` — the validated Updates, in order.
   - `payload_etf` — the pre-claim ETF of the GSN-free Action payload
     (`id`, `actor_id`, `hlc`, `updates`). `update_scopes` stay outside it
-    because they are cache-dependent; the Committer wraps the two at
+    because they are cache-dependent; the Committer frames the two at
     claim time without re-encoding the payload.
   - `update_scopes` — group ids per Update, index-aligned with `updates`.
-    Stored as the outer scopes of the `cf_actions` wrapper; it cannot be
+    Stored as the scopes half of the `cf_actions` frame; it cannot be
     re-derived after the commit, so it doubles as the fan-out delivery
     contract.
   - `groups` — the union of `update_scopes`; each group is indexed once

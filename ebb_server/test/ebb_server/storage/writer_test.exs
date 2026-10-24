@@ -298,12 +298,12 @@ defmodule EbbServer.Storage.WriterTest do
     end
   end
 
-  describe "stored value shape (#532)" do
-    test "writes the wrapper with a GSN-free, scopes-free payload", %{
+  describe "stored value shape (#532/#552)" do
+    test "writes a v1 frame whose payload carries no gsn or update_scopes", %{
       writer_name: writer_name,
       rocks_name: rocks_name
     } do
-      action = validated_action(%{updates: [validated_update(%{subject_id: "todo_wrapper"})]})
+      action = validated_action(%{updates: [validated_update(%{subject_id: "todo_frame"})]})
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
@@ -314,9 +314,10 @@ defmodule EbbServer.Storage.WriterTest do
           name: rocks_name
         )
 
-      assert {payload_etf, scopes} = :erlang.binary_to_term(value, [:safe])
-      assert is_binary(payload_etf)
-      assert scopes == [[]]
+      # The frame is a version byte, the payload's length, the payload ETF,
+      # and the scopes ETF — not one term, so the halves are read separately.
+      assert <<1, size::32, payload_etf::binary-size(size), scopes_etf::binary>> = value
+      assert :erlang.binary_to_term(scopes_etf, [:safe]) == [[]]
 
       payload = :erlang.binary_to_term(payload_etf, [:safe])
 

@@ -57,7 +57,7 @@ defmodule EbbServer.Storage.Writer do
   `EbbServer.Storage.PreparePool` owns the GSN-free, cache-free payload
   build and ETF encode, so that work runs as calls arrive without blocking
   the sequencer. The linked `EbbServer.Storage.CommitterPool` owns the
-  parts that only need immutable input: wrapper encode, `cf_*` op
+  parts that only need immutable input: frame encode, `cf_*` op
   assembly, and the durable `write_batch/2`.
 
   A call's payloads are prepared before it enters the pipeline. Arrival
@@ -155,8 +155,8 @@ defmodule EbbServer.Storage.Writer do
   while `cf_group_actions` is emitted once per Action from the union of
   resolved group ids.
 
-  Every resolved per-Update scope is also persisted as the outer scopes
-  of the stored `cf_actions` wrapper: one group list per Update,
+  Every resolved per-Update scope is also persisted as the scopes half of
+  the stored `cf_actions` frame: one group list per Update,
   index-aligned with the payload's Updates. Fan-out and catch-up filter
   an Action by those scopes so each Update is delivered only to the groups
   it belongs to. The scopes cannot be re-derived later (a
@@ -740,7 +740,7 @@ defmodule EbbServer.Storage.Writer do
      `update_scopes`), hands the batch to the Committer, and once the
      Committer reports the durable write builds a single WriteBatch across
      the written column families:
-     - cf_actions: GSN → ETF wrapper of the pre-encoded payload and its
+     - cf_actions: GSN → v1 frame of the pre-encoded payload and its
        per-Update group scopes
      - cf_action_dedup: action_id → GSN (duplicate detection)
      - cf_entity_actions: (subject_id, GSN) → action_id (materialization index)

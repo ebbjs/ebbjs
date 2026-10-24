@@ -33,7 +33,7 @@ defmodule EbbServer.Storage.ActionLogTest do
              )
   end
 
-  defp new_wrapper(gsn, update_scopes) do
+  defp new_frame(gsn, update_scopes) do
     payload =
       %{
         id: "act_new",
@@ -52,7 +52,7 @@ defmodule EbbServer.Storage.ActionLogTest do
       |> ActionFormat.build()
       |> ActionFormat.encode()
 
-    {gsn, ActionFormat.wrap(payload, update_scopes)}
+    {gsn, ActionFormat.frame(payload, update_scopes)}
   end
 
   describe "read/3" do
@@ -108,7 +108,7 @@ defmodule EbbServer.Storage.ActionLogTest do
       assert [] = ActionLog.read(5, 2, rocks_name: rocks_name)
     end
 
-    test "reads a database holding both a legacy map and a new wrapper", %{
+    test "reads a database holding both a legacy map and a v1 frame", %{
       rocks_name: rocks_name
     } do
       legacy = %{
@@ -121,8 +121,8 @@ defmodule EbbServer.Storage.ActionLogTest do
       }
 
       put_action(rocks_name, 1, legacy)
-      {new_gsn, wrapper} = new_wrapper(2, [["g_new"]])
-      put_value(rocks_name, RocksDB.encode_gsn_key(new_gsn), wrapper)
+      {new_gsn, frame} = new_frame(2, [["g_new"]])
+      put_value(rocks_name, RocksDB.encode_gsn_key(new_gsn), frame)
 
       assert [old, new] = ActionLog.read(1, 2, rocks_name: rocks_name)
 

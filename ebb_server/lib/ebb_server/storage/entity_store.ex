@@ -406,8 +406,10 @@ defmodule EbbServer.Storage.EntityStore do
     |> Enum.map(&decode_action/1)
   end
 
+  # Materialization replays Updates and never reads delivery scopes, so it
+  # decodes only the payload half of the frame.
   defp decode_action({{:ok, action_etf}, {gsn, _action_id}}) do
-    {gsn, ActionFormat.decode(action_etf, gsn)}
+    {gsn, ActionFormat.decode_payload(action_etf, gsn)}
   end
 
   defp decode_action({:not_found, {gsn, _action_id}}) do

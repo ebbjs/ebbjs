@@ -2,11 +2,21 @@ defmodule EbbServer.Sync.CatchUpTest do
   use ExUnit.Case, async: false
   use EbbServer.Integration.StorageCase
 
+  import EbbServer.SSEHelpers
   import EbbServer.TestHelpers
 
   alias EbbServer.Integration.ActionHelpers
-  alias EbbServer.Storage.{ActionFormat, GroupCache, RocksDB, WatermarkTracker}
-  alias EbbServer.Sync.CatchUp
+
+  alias EbbServer.Storage.{
+    ActionFormat,
+    ActionLog,
+    EntityStore,
+    GroupCache,
+    RocksDB,
+    WatermarkTracker
+  }
+
+  alias EbbServer.Sync.{CatchUp, FanOutRouter, SSEConnection}
 
   describe "catch_up_group/3" do
     test "happy path: returns actions sorted by GSN with up_to_date: true" do
@@ -160,17 +170,17 @@ defmodule EbbServer.Sync.CatchUpTest do
       assert length(returned["updates"]) == 1
     end
 
-    test "delivers an Action stored in the new GSN-free wrapper shape" do
-      actor_id = "a_wrapper_#{:erlang.unique_integer([:positive])}"
-      group_id = "g_wrapper_#{:erlang.unique_integer([:positive])}"
+    test "delivers an Action stored in a v1 frame" do
+      actor_id = "a_frame_#{:erlang.unique_integer([:positive])}"
+      group_id = "g_frame_#{:erlang.unique_integer([:positive])}"
 
       ActionHelpers.bootstrap_group(actor_id, group_id, ["todo.read", "todo.create"])
       Process.sleep(100)
 
       gsn = RocksDB.get_max_gsn() + 1
       hlc = generate_hlc()
-      action_id = "act_wrapper_#{:erlang.unique_integer([:positive])}"
-      update_id = "upd_wrapper_#{:erlang.unique_integer([:positive])}"
+      action_id = "act_frame_#{:erlang.unique_integer([:positive])}"
+      update_id = "upd_frame_#{:erlang.unique_integer([:positive])}"
 
       payload =
         %{
@@ -180,7 +190,7 @@ defmodule EbbServer.Sync.CatchUpTest do
           updates: [
             %{
               id: update_id,
-              subject_id: "todo_wrapper",
+              subject_id: "todo_frame",
               subject_type: "todo",
               method: :put,
               data: %{
@@ -200,12 +210,12 @@ defmodule EbbServer.Sync.CatchUpTest do
         |> ActionFormat.encode()
 
       # The second Update scopes to another group, so catch-up must use the
-      # wrapper's scopes and drop it.
-      wrapper = ActionFormat.wrap(payload, [[group_id], ["g_other"]])
+      # frame's scopes and drop it.
+      frame = ActionFormat.frame(payload, [[group_id], ["g_other"]])
 
       :ok =
         RocksDB.write_batch([
-          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn), wrapper},
+          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn), frame},
           {:put, RocksDB.cf_group_actions(), RocksDB.encode_group_action_key(group_id, gsn),
            action_id}
         ])
@@ -479,6 +489,130 @@ defmodule EbbServer.Sync.CatchUpTest do
     end
   end
 
+  describe "records written before #552" do
+    test "catch-up, fan-out, ActionLog, and materialization read a pre-#552 wrapper" do
+      actor_id = "a_552_#{:erlang.unique_integer([:positive])}"
+      group_id = "g_552_#{:erlang.unique_integer([:positive])}"
+      entity_id = "todo_552_#{:erlang.unique_integer([:positive])}"
+      other_entity_id = "todo_552_other_#{:erlang.unique_integer([:positive])}"
+
+      join_group(actor_id, group_id)
+
+      gsn1 = RocksDB.get_max_gsn() + 1
+      gsns = [gsn1, gsn1 + 1, gsn1 + 2]
+      # The second Update of every Action belongs to another group, so a
+      # reader that ignored the stored scopes would deliver it here too.
+      scopes = [[group_id], ["g_552_elsewhere"]]
+      titles = ["First", "Second", "Third"]
+
+      ids = %{
+        actor_id: actor_id,
+        group_id: group_id,
+        entity_id: entity_id,
+        other_entity_id: other_entity_id
+      }
+
+      :ok = RocksDB.write_batch(seed_pre_552_ops(gsns, titles, ids, scopes))
+
+      :ok = WatermarkTracker.mark_range_committed(gsn1, List.last(gsns))
+      WatermarkTracker.advance_watermark()
+
+      # ActionLog returns the records whole, in GSN order, scopes included.
+      logged = ActionLog.read(gsn1, List.last(gsns))
+
+      assert Enum.map(logged, & &1["gsn"]) == gsns
+      assert Enum.map(logged, & &1["id"]) == Enum.map(gsns, &"act_552_#{&1}")
+      assert Enum.all?(logged, &(&1["update_scopes"] == scopes))
+      assert Enum.all?(logged, &(length(&1["updates"]) == 2))
+
+      # Catch-up applies the scopes: one Update per Action for this group.
+      assert {:ok, caught_up, %{up_to_date: true}} =
+               CatchUp.catch_up_group(group_id, actor_id, gsn1 - 1)
+
+      assert Enum.map(caught_up, & &1["gsn"]) == gsns
+      assert Enum.all?(caught_up, &(subject_ids(&1) == [entity_id]))
+
+      # Fan-out pushes the same records, in GSN order, scoped the same way.
+      {:ok, sse_pid} = SSEConnection.start_link(self(), [group_id], %{group_id => 0})
+      :ok = FanOutRouter.subscribe([group_id], sse_pid, actor_id)
+
+      send(
+        FanOutRouter,
+        {:batch_committed, gsn1, List.last(gsns), Map.new(gsns, &{&1, [group_id]}),
+         System.monotonic_time()}
+      )
+
+      pushed = receive_data_payloads(length(gsns)) |> Enum.map(&Jason.decode!/1)
+
+      assert Enum.map(pushed, & &1["gsn"]) == gsns
+      assert Enum.map(pushed, & &1["id"]) == Enum.map(gsns, &"act_552_#{&1}")
+      assert Enum.all?(pushed, &(subject_ids(&1) == [entity_id]))
+
+      :ok = FanOutRouter.unsubscribe(sse_pid)
+
+      # Materialization replays each wrapper's payload half.
+      assert {:ok, entity} = EntityStore.materialize(entity_id)
+
+      assert entity.last_gsn == List.last(gsns)
+      assert entity.data["fields"]["title"]["value"] == "Third"
+    end
+  end
+
+  # The pre-#552 writer stored the payload and its scopes as one ETF tuple.
+  # No production code builds this shape any more, so the fixture does.
+  defp seed_pre_552_ops(gsns, titles, ids, scopes) do
+    gsns
+    |> Enum.zip(titles)
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {{gsn, title}, index} ->
+      action_id = "act_552_#{gsn}"
+      hlc = hlc_from(1_000 + index)
+
+      payload =
+        %{
+          id: action_id,
+          actor_id: ids.actor_id,
+          hlc: hlc,
+          updates: [
+            %{
+              id: "upd_552_#{gsn}",
+              subject_id: ids.entity_id,
+              subject_type: "todo",
+              method: :put,
+              data: %{
+                "fields" => %{"title" => %{"type" => "lww", "value" => title, "hlc" => hlc}}
+              }
+            },
+            %{
+              id: "upd_552_other_#{gsn}",
+              subject_id: ids.other_entity_id,
+              subject_type: "todo",
+              method: :put,
+              data: %{
+                "fields" => %{"title" => %{"type" => "lww", "value" => title, "hlc" => hlc}}
+              }
+            }
+          ]
+        }
+        |> ActionFormat.build()
+        |> ActionFormat.encode()
+
+      value = :erlang.term_to_binary({payload, scopes})
+
+      [
+        {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn), value},
+        {:put, RocksDB.cf_group_actions(), RocksDB.encode_group_action_key(ids.group_id, gsn),
+         action_id},
+        {:put, RocksDB.cf_entity_actions(), RocksDB.encode_entity_gsn_key(ids.entity_id, gsn),
+         action_id},
+        {:put, RocksDB.cf_entity_actions(),
+         RocksDB.encode_entity_gsn_key(ids.other_entity_id, gsn), action_id}
+      ]
+    end)
+  end
+
+  defp subject_ids(action), do: Enum.map(action["updates"], & &1["subject_id"])
+
   # Grants read access without writing an Action, for tests that seed the
   # group's rows directly and need the frontier left where they put it.
   defp join_group(actor_id, group_id) do
@@ -528,7 +662,7 @@ defmodule EbbServer.Sync.CatchUpTest do
     :ok
   end
 
-  # `:scopes` picks the stored shape: `:group` is a current record scoped to the
+  # `:scopes` picks the stored shape: `:group` is a v1 frame scoped to the
   # group, `:unscoped` is a pre-#473 record that any group's index row delivers
   # whole.
   defp seeded_action(actor_id, group_id, action_id, opts) do
@@ -555,7 +689,7 @@ defmodule EbbServer.Sync.CatchUpTest do
       |> ActionFormat.encode()
 
     case Keyword.get(opts, :scopes, :group) do
-      :group -> ActionFormat.wrap(payload, [[group_id]])
+      :group -> ActionFormat.frame(payload, [[group_id]])
       :unscoped -> payload
     end
   end

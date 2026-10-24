@@ -20,7 +20,7 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
   alias EbbServer.Sync.{FanOutFrontier, FanOutRouter, SSEConnection}
 
   describe "claim-order release (#534)" do
-    test "a mixed legacy record and wrapper release in claim order and both decode" do
+    test "a mixed legacy record and v1 frame release in claim order and both decode" do
       group_id = "g_534_mixed_#{:erlang.unique_integer([:positive])}"
       actor_id = "a_534_mixed_#{:erlang.unique_integer([:positive])}"
 
@@ -54,22 +54,22 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
         ]
       }
 
-      wrapper_id = "act_534_wrapper_#{:erlang.unique_integer([:positive])}"
-      wrapper_update_id = "upd_534_wrapper_#{:erlang.unique_integer([:positive])}"
+      framed_id = "act_534_frame_#{:erlang.unique_integer([:positive])}"
+      framed_update_id = "upd_534_frame_#{:erlang.unique_integer([:positive])}"
 
       payload =
         %{
-          id: wrapper_id,
+          id: framed_id,
           actor_id: actor_id,
           hlc: hlc,
           updates: [
             %{
-              id: wrapper_update_id,
-              subject_id: "todo_534_wrapper",
+              id: framed_update_id,
+              subject_id: "todo_534_frame",
               subject_type: "todo",
               method: :put,
               data: %{
-                "fields" => %{"title" => %{"type" => "lww", "value" => "wrapper", "hlc" => hlc}}
+                "fields" => %{"title" => %{"type" => "lww", "value" => "frame", "hlc" => hlc}}
               }
             }
           ]
@@ -77,7 +77,7 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
         |> ActionFormat.build()
         |> ActionFormat.encode()
 
-      wrapper = ActionFormat.wrap(payload, [[group_id]])
+      frame = ActionFormat.frame(payload, [[group_id]])
 
       :ok =
         RocksDB.write_batch([
@@ -85,9 +85,9 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
            :erlang.term_to_binary(legacy)},
           {:put, RocksDB.cf_group_actions(), RocksDB.encode_group_action_key(group_id, gsn1),
            legacy_id},
-          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn2), wrapper},
+          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn2), frame},
           {:put, RocksDB.cf_group_actions(), RocksDB.encode_group_action_key(group_id, gsn2),
-           wrapper_id}
+           framed_id}
         ])
 
       :ok = WatermarkTracker.mark_range_committed(gsn1, gsn2)
@@ -106,26 +106,26 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
 
       # Each released range is its own push, so flatten the chunks to assert
       # the stream order across them.
-      [legacy_pushed, wrapper_pushed] =
+      [legacy_pushed, framed_pushed] =
         receive_data_payloads(2) |> Enum.map(&Jason.decode!/1)
 
-      assert [legacy_pushed["gsn"], wrapper_pushed["gsn"]] == [gsn1, gsn2]
-      assert [legacy_pushed["id"], wrapper_pushed["id"]] == [legacy_id, wrapper_id]
+      assert [legacy_pushed["gsn"], framed_pushed["gsn"]] == [gsn1, gsn2]
+      assert [legacy_pushed["id"], framed_pushed["id"]] == [legacy_id, framed_id]
 
       assert [%{"id" => ^legacy_update_id}] = legacy_pushed["updates"]
-      assert [%{"id" => ^wrapper_update_id}] = wrapper_pushed["updates"]
+      assert [%{"id" => ^framed_update_id}] = framed_pushed["updates"]
 
       # Decoding the stored shapes is what keeps the push uniform: the
-      # legacy record keeps its own GSN and the wrapper takes the key's GSN
+      # legacy record keeps its own GSN and the v1 frame takes the key's GSN
       # plus its persisted scopes.
       {:ok, legacy_value} = RocksDB.get(RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn1))
       assert %{"gsn" => ^gsn1} = ActionFormat.decode(legacy_value, gsn1)
 
-      {:ok, wrapper_value} = RocksDB.get(RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn2))
-      decoded_wrapper = ActionFormat.decode(wrapper_value, gsn2)
+      {:ok, frame_value} = RocksDB.get(RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn2))
+      decoded_frame = ActionFormat.decode(frame_value, gsn2)
 
-      assert decoded_wrapper["gsn"] == gsn2
-      assert decoded_wrapper["update_scopes"] == [[group_id]]
+      assert decoded_frame["gsn"] == gsn2
+      assert decoded_frame["update_scopes"] == [[group_id]]
 
       sync_router()
       assert FanOutFrontier.get() == {:ok, gsn2}

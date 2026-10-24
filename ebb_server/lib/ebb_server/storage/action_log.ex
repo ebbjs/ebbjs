@@ -21,7 +21,8 @@ defmodule EbbServer.Storage.ActionLog do
   ## Values
 
   Each value is decoded with `EbbServer.Storage.ActionFormat.decode/2`,
-  which accepts both the current wrapper and the legacy plain map. A
+  which accepts the current v1 frame, the pre-#552 wrapper, and the
+  legacy plain map. A
   record that carries its own `"gsn"` keeps it; otherwise the GSN comes
   from the `cf_actions` key. Decoding uses `:erlang.binary_to_term/2`
   with `[:safe]`, so a corrupt or hostile record raises rather than

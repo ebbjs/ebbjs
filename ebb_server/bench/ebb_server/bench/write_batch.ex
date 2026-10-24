@@ -11,7 +11,7 @@ defmodule EbbServer.Bench.WriteBatch do
   watermark advance, and no fan-out; only the NIF call is measured.
 
   This uses `EbbServer.Storage.ActionFormat` for the `cf_actions` value so the
-  spike mirrors the production wrapper shape without changing the write
+  spike mirrors the production envelope without changing the write
   path. The tests pin the shape, so a format change has to update them.
 
   `--ablate` narrows the op set to the phases that name an op group —
@@ -117,7 +117,7 @@ defmodule EbbServer.Bench.WriteBatch do
     payload = action |> ActionFormat.build() |> ActionFormat.encode()
 
     [
-      {:put, RocksDB.cf_actions(), gsn_key, ActionFormat.wrap(payload, update_scopes)}
+      {:put, RocksDB.cf_actions(), gsn_key, ActionFormat.frame(payload, update_scopes)}
       | dedup_ops(action, gsn_key, ablate) ++
           group_ops(action, gsn, ablate) ++ entity_ops(action, gsn, ablate)
     ]

@@ -594,9 +594,9 @@ defmodule EbbServer.Storage.SystemCacheTest do
       assert entity.data["fields"]["title"]["value"] == "Backfilled"
     end
 
-    test "backfills from an Action stored in the new GSN-free wrapper", ctx do
-      entity_id = "todo_wrapper_#{:erlang.unique_integer([:positive])}"
-      action_id = "act_wrapper_#{:erlang.unique_integer([:positive])}"
+    test "backfills from an Action stored in a v1 frame", ctx do
+      entity_id = "todo_frame_#{:erlang.unique_integer([:positive])}"
+      action_id = "act_frame_#{:erlang.unique_integer([:positive])}"
 
       payload =
         %{
@@ -605,7 +605,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
           hlc: TestHelpers.generate_hlc(),
           updates: [
             %{
-              id: "upd_wrapper_#{:erlang.unique_integer([:positive])}",
+              id: "upd_frame_#{:erlang.unique_integer([:positive])}",
               subject_id: entity_id,
               subject_type: "todo",
               method: :put,
@@ -616,11 +616,11 @@ defmodule EbbServer.Storage.SystemCacheTest do
         |> ActionFormat.build()
         |> ActionFormat.encode()
 
-      wrapper = ActionFormat.wrap(payload, [[]])
+      frame = ActionFormat.frame(payload, [[]])
 
       :ok =
         RocksDB.write_batch(
-          [{:put, RocksDB.cf_actions(ctx.rocks_name), RocksDB.encode_gsn_key(1), wrapper}],
+          [{:put, RocksDB.cf_actions(ctx.rocks_name), RocksDB.encode_gsn_key(1), frame}],
           name: ctx.rocks_name
         )
 

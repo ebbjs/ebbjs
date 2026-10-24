@@ -30,7 +30,8 @@ defmodule EbbServer.Storage.RocksDB do
   ## Column families
 
     default           - RocksDB default; holds internal metadata (migration markers)
-    cf_actions        - GSN (64-bit big-endian) -> {payload_etf, update_scopes} (ETF wrapper)
+    cf_actions        - GSN (64-bit big-endian) -> v1 frame of {payload_etf,
+                        update_scopes} (see `EbbServer.Storage.ActionFormat`)
     cf_entity_actions - (entity_id, GSN) -> action_id binary
     cf_type_entities  - (type, 0x00, entity_id) -> <<>> (presence index)
     cf_action_dedup   - action_id -> GSN (duplicate detection)

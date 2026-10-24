@@ -612,7 +612,9 @@ defmodule EbbServer.Storage.SystemCache do
         name: rocks_name
       )
       |> Stream.map(fn {gsn_key, action_etf} ->
-        ActionFormat.decode(action_etf, RocksDB.decode_gsn_key(gsn_key))
+        # The backfill only needs each Update's subject, so it decodes the
+        # payload half of the frame and skips the delivery scopes.
+        ActionFormat.decode_payload(action_etf, RocksDB.decode_gsn_key(gsn_key))
       end)
       |> Stream.flat_map(fn action ->
         # Each update contributes at most one (type, entity_id) pair.

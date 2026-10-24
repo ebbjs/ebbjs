@@ -165,7 +165,7 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderE2ETest do
     :ok = FanOutRouter.unsubscribe(sse_pid)
   end
 
-  test "a depth-2 release decodes a legacy record and a wrapper in claim order" do
+  test "a depth-2 release decodes a legacy record and a v1 frame in claim order" do
     group_id = "g_534_mixed_#{:erlang.unique_integer([:positive])}"
     actor_id = "a_534_mixed_#{:erlang.unique_integer([:positive])}"
     [head_entity, successor_entity] = seed_group!(actor_id, group_id, 2)
@@ -203,18 +203,18 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderE2ETest do
     assert Enum.map(payloads, & &1["gsn"]) == [head_gsn, head_gsn + 1]
 
     # The pushed successor came from a legacy plain map; the head is still
-    # a #532 wrapper.
+    # a v1 frame.
     assert {:ok, legacy_value} =
              RocksDB.get(RocksDB.cf_actions(), RocksDB.encode_gsn_key(head_gsn + 1))
 
     assert %{"gsn" => gsn, "update_scopes" => [_ | _]} = :erlang.binary_to_term(legacy_value)
     assert gsn == head_gsn + 1
 
-    assert {:ok, wrapper_value} =
+    assert {:ok, frame_value} =
              RocksDB.get(RocksDB.cf_actions(), RocksDB.encode_gsn_key(head_gsn))
 
-    assert {payload_etf, _scopes} = :erlang.binary_to_term(wrapper_value)
-    assert is_binary(payload_etf)
+    assert <<1, size::32, payload_etf::binary-size(size), _scopes::binary>> = frame_value
+    assert <<131, _rest::binary>> = payload_etf
 
     :ok = FanOutRouter.unsubscribe(sse_pid)
   end
