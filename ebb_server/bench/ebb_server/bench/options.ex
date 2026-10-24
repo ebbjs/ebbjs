@@ -39,6 +39,15 @@ defmodule EbbServer.Bench.Options do
   flush and costs more per Action. Read the report's `Actions/flush` column,
   and compare depths only at the same flush shape — the control tables in
   `ebb_server/bench/RESULTS.md` are what separates the two.
+
+  ## Writer coalescing
+
+  `--batch-timeout-ms` and `--batch-max-size` pass the Writer's coalescing
+  policy straight through (`:batch_timeout_ms` and `:batch_max_size`, the
+  same options the application env keys `:writer_batch_timeout_ms` and
+  `:writer_batch_max_size` feed). The defaults here are the production
+  defaults: a 0 ms timeout burst-drains the mailbox, and a 1,000-Action cap
+  that only binds when a burst is deeper than the default flush shape.
   """
 
   @type tier :: :t0 | :t1 | :t2 | :t3 | :t4 | :t5
@@ -74,6 +83,8 @@ defmodule EbbServer.Bench.Options do
           updates_per_action: pos_integer(),
           subscribers: non_neg_integer(),
           rate: non_neg_integer(),
+          batch_timeout_ms: non_neg_integer(),
+          batch_max_size: pos_integer(),
           subscriber_lean: boolean(),
           ablate: [ablate_phase()],
           baseline: String.t() | nil,
@@ -96,6 +107,8 @@ defmodule EbbServer.Bench.Options do
             updates_per_action: 2,
             subscribers: 0,
             rate: 0,
+            batch_timeout_ms: 0,
+            batch_max_size: 1000,
             subscriber_lean: false,
             ablate: [],
             baseline: nil,
@@ -141,6 +154,8 @@ defmodule EbbServer.Bench.Options do
     updates_per_action: :integer,
     subscribers: :integer,
     rate: :integer,
+    batch_timeout_ms: :integer,
+    batch_max_size: :integer,
     subscriber_lean: :boolean,
     ablate: :string,
     baseline: :string,
@@ -187,6 +202,8 @@ defmodule EbbServer.Bench.Options do
       {"Preloaded entities", "#{config.entities}"},
       {"SSE subscribers", "#{config.subscribers}"},
       {"Target Actions/sec", target_rate(config.rate)},
+      {"Writer batch timeout", batch_timeout_description(config)},
+      {"Writer batch cap", "#{config.batch_max_size} Actions"},
       {"Writers", "#{config.writers}"},
       {"Ablated phases", ablated_description(config.ablate)},
       {"Guardrails", guardrails_description(config)},
@@ -222,6 +239,8 @@ defmodule EbbServer.Bench.Options do
       "--entities #{config.entities}",
       "--subscribers #{config.subscribers}",
       "--rate #{config.rate}",
+      "--batch-timeout-ms #{config.batch_timeout_ms}",
+      "--batch-max-size #{config.batch_max_size}",
       "--writers #{config.writers}",
       "--port #{config.port}",
       "--seed #{config.seed}"
@@ -367,6 +386,11 @@ defmodule EbbServer.Bench.Options do
   defp put_opt({:updates_per_action, value}, acc), do: %{acc | updates_per_action: value}
   defp put_opt({:subscribers, value}, acc), do: %{acc | subscribers: value}
   defp put_opt({:rate, value}, acc), do: %{acc | rate: value}
+
+  defp put_opt({:batch_timeout_ms, value}, acc),
+    do: %{acc | batch_timeout_ms: value}
+
+  defp put_opt({:batch_max_size, value}, acc), do: %{acc | batch_max_size: value}
   defp put_opt({:subscriber_lean, value}, acc), do: %{acc | subscriber_lean: value}
   defp put_opt({:ablate, value}, acc), do: %{acc | ablate: split_ablate(value)}
   defp put_opt({:baseline, value}, acc), do: %{acc | baseline: value}
@@ -491,7 +515,9 @@ defmodule EbbServer.Bench.Options do
          :ok <- check(config.batch_size > 0, "--batch-size must be at least 1"),
          :ok <- check(config.entities >= 0, "--entities must be zero or more"),
          :ok <- check(config.port in 1..65_535, "--port must be a valid TCP port"),
-         :ok <- check(config.subscribers >= 0, "--subscribers must be zero or more") do
+         :ok <- check(config.subscribers >= 0, "--subscribers must be zero or more"),
+         :ok <- check(config.batch_timeout_ms >= 0, "--batch-timeout-ms must be zero or more"),
+         :ok <- check(config.batch_max_size > 0, "--batch-max-size must be at least 1") do
       check(config.rate >= 0, "--rate must be zero or more Actions/sec")
     end
   end
@@ -600,4 +626,7 @@ defmodule EbbServer.Bench.Options do
 
   defp target_rate(0), do: "unpaced"
   defp target_rate(rate), do: "#{rate}"
+
+  defp batch_timeout_description(%{batch_timeout_ms: 0}), do: "0 ms (burst drain)"
+  defp batch_timeout_description(%{batch_timeout_ms: ms}), do: "#{ms} ms"
 end

@@ -3,7 +3,9 @@ defmodule EbbServer.Bench.PipelineDepthReportTest do
   Pins the pipeline-depth report: a sweep renders one row per depth (the t0
   no-regression baseline plus each requested depth), one detail block per run
   under its own heading, and states the harness-side coalescing limitation.
-  A single run keeps the pre-sweep report shape exactly.
+  A single run keeps the pre-sweep top-level shape but still carries the
+  Writer's own pipeline section, because a depth-1-only report is exactly
+  where a coalescing experiment needs `Actions/flush` and the phases.
   """
 
   use ExUnit.Case, async: true
@@ -142,7 +144,7 @@ defmodule EbbServer.Bench.PipelineDepthReportTest do
     assert report =~ "## Throughput"
   end
 
-  test "a single run keeps the existing top-level report shape" do
+  test "a single run keeps the top-level shape and carries the Writer pipeline" do
     {:ok, config} = Options.parse(["--tier", "t0", "--in-flight", "1"])
 
     report =
@@ -154,8 +156,11 @@ defmodule EbbServer.Bench.PipelineDepthReportTest do
     refute report =~ "## Pipeline depth"
     refute report =~ "## Run:"
     refute report =~ "max_in_flight"
-    refute report =~ "### Writer pipeline gauges"
-    refute report =~ "### Flush phases"
+
+    assert report =~ "## Writer pipeline"
+    assert report =~ "| Run | Actions/flush | Flush p50 (µs) |"
+    assert report =~ "### Writer pipeline gauges"
+    assert report =~ "### Flush phases"
 
     assert report =~ "## Throughput"
     assert report =~ "## Latency"

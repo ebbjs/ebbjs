@@ -83,10 +83,15 @@ defmodule EbbServer.Bench.Boot do
     # The Writer caps the overlay chain at four; a deeper harness workload
     # still drives that many calls, but the Writer cannot hold more ranges.
     [ablate: config.ablate, max_in_flight: min(Options.depth(config), 4)] ++
+      coalescing_opts(config) ++
       case config.durability do
         :async -> [commit_fn: &__MODULE__.async_commit/2]
         :sync -> []
       end
+  end
+
+  defp coalescing_opts(config) do
+    [batch_timeout_ms: config.batch_timeout_ms, batch_max_size: config.batch_max_size]
   end
 
   defp start_dependencies do

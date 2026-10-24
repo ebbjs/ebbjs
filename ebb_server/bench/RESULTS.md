@@ -1879,6 +1879,257 @@ three-run session on the same host measured −1.3% rate / +0.6% p50, so the
 sign is noise), so the per-range stamps and the extra telemetry samples per
 flush are not measurably visible at the ceiling.
 
+## Flush operating point (#576)
+
+[#576](https://github.com/ebbjs/ebbjs/issues/576) asks whether the
+production coalescing policy — `writer_batch_timeout_ms: 0` and
+`writer_batch_max_size: 1000` — should move to the ~150–250 Actions/flush
+the pre-Step-0 curve priced as ~20% faster. Current code already runs at
+~272 Actions/flush, so the question narrowed to whether any `(timeout,
+cap)` pair in the issue's grid beats that by **≥5% at no worse p50**.
+
+Measured **2026-10-24** on `recsy-vps` (AMD EPYC 7763, 4 schedulers,
+16 GiB, Elixir 1.17.3 / OTP 27), the same host and shape as the #537
+section: batch 100, 2-Update Actions, `hot`, `sync: true`, `--seed 1`,
+20 s window after a 3 s warmup. The host was otherwise idle (the bench
+was the only CPU consumer); port 4112 was used to stay clear of 4111,
+which other processes on this shared VM hold intermittently. Every
+run reported here has **0 GSN holes, 0 rejected Actions, 0
+write/transport errors**, and the runner's guardrails were enforced — a
+failing run exits non-zero, and none did.
+
+**Verdict: flat at the production shape.** No `(timeout, cap)` pair
+beats the current default by 5% when the offered burst is eight single
+calls. The cap is neutral between 182 and 279 Actions/flush, a positive
+timeout is a loss wherever it is tried, and the only screened cell that
+clears +5% changes the _caller split_ to 2 callers × 4 calls in flight —
+a shape whose 149 Actions/flush and +8% throughput are already there
+with the default knobs. Per AC2 this issue should close with this
+measurement instead of shipping a policy change.
+
+### Method
+
+The grid needs two knobs that were application-env only, so this branch
+adds `--batch-timeout-ms` and `--batch-max-size` to `mix bench.actions`
+(forwarded by `Bench.Boot.writer_opts/1` as `batch_timeout_ms:` /
+`batch_max_size:`, defaulting to the production `0` / `1000`). It also
+renders `Actions/flush`, the Writer gauges, and the
+`ebb.writer.flush_phase_ms` table in a single-depth report: the #537
+phase table was rendered only for depth sweeps, and this sweep measures
+one fixed shape per report.
+
+Screening ran all 48 cells (four caller splits × timeout {0, 1, 5} ×
+cap {128, 256, 512, 1000}) as one report per cell, in a shuffled order
+so host drift is not confounded with a knob, all at the same fixed
+offered burst of eight outstanding calls:
+
+```sh
+mix bench.actions --tier t2 --duration 20 --warmup 3 \
+  --concurrency <C> --in-flight <D> --batch-size 100 --updates-per-action 2 \
+  --distribution hot --seed 1 --port 4112 \
+  --batch-timeout-ms <0|1|5> --batch-max-size <128|256|512|1000>
+```
+
+A screening cell is a single draw (this VM's run-to-run spread is
+±5–10%), so the decision rows were re-measured with five reports each,
+interleaved round-robin so every row sees the same drift. One `8×1 (0, 128)` confirmation report hit
+a latency stall (p95 66.9 ms, p99 167 ms, 22,470 Actions/s against a
+26,155 median); it was re-run under the session protocol and the five
+clean reports are published — the stall is excluded, not averaged in.
+Raw reports are `bench/results/576-screen-*.md`, `576-confirm-*.md`, and
+`576-t0-*.md` (gitignored, as usual).
+
+### Screening: 48 cells at eight outstanding calls
+
+Sorted by Actions/s. `queue` and `commit_wait` are per-range p50 phase
+values from a single report, so read them as shape, not as tight
+numbers. The `8×1 (0, 1000)` row is this session's low draw (24,465
+against the 26,210 five-report median below); it is kept because it is
+the cell the confirmation replaces, not the decision row.
+
+| Split | Timeout (ms) |  Cap | Actions/flush | Actions/s | p50 (ms) | p99 (ms) | `queue` p50 (ms) | `commit_wait` p50 (ms) | `queue_depth` peak / mean |
+| ----- | -----------: | ---: | ------------: | --------: | -------: | -------: | ---------------: | ---------------------: | ------------------------: |
+| 2×4   |            1 |  128 |           159 |    29,835 |    25.22 |    37.19 |             2.22 |                  16.45 |                   2 / 1.6 |
+| 4×2   |            0 | 1000 |           249 |    28,925 |    25.97 |    39.13 |             4.45 |                  11.87 |                   6 / 2.5 |
+| 2×4   |            0 |  128 |           147 |    28,875 |    26.22 |    37.21 |             2.19 |                  17.16 |                   2 / 1.5 |
+| 1×8   |            1 |  128 |           159 |    28,760 |    26.33 |    36.70 |             2.27 |                  17.14 |                   2 / 1.6 |
+| 4×2   |            0 |  512 |           247 |    28,535 |    26.27 |    38.82 |             4.52 |                  11.96 |                   6 / 2.5 |
+| 1×8   |            1 | 1000 |           176 |    28,455 |    26.51 |    38.02 |             2.10 |                  17.10 |                   5 / 1.8 |
+| 4×2   |            1 | 1000 |           253 |    28,315 |    26.55 |    38.70 |             4.84 |                  12.29 |                   6 / 2.5 |
+| 2×4   |            0 |  512 |           150 |    28,000 |    27.13 |    36.77 |             1.98 |                  17.63 |                   4 / 1.5 |
+| 2×4   |            1 |  256 |           171 |    27,980 |    27.04 |    38.30 |             2.11 |                  17.64 |                   3 / 1.7 |
+| 4×2   |            1 |  512 |           252 |    27,930 |    26.96 |    40.45 |             5.01 |                  12.11 |                   6 / 2.5 |
+| 4×2   |            0 |  256 |           248 |    27,895 |    26.81 |    41.06 |             5.16 |                  13.01 |                   3 / 2.5 |
+| 1×8   |            0 |  256 |           150 |    27,885 |    27.15 |    39.41 |             1.91 |                  17.79 |                   3 / 1.5 |
+| 2×4   |            5 |  128 |           170 |    27,790 |    27.26 |    38.24 |             5.92 |                  15.02 |                   2 / 1.7 |
+| 2×4   |            0 | 1000 |           149 |    27,710 |    27.41 |    38.76 |             1.98 |                  17.84 |                   4 / 1.5 |
+| 1×8   |            0 |  128 |           147 |    27,525 |    27.50 |    38.83 |             2.35 |                  18.05 |                   2 / 1.5 |
+| 4×2   |            1 |  256 |           245 |    27,525 |    27.21 |    40.90 |             5.73 |                  12.67 |                   3 / 2.5 |
+| 1×8   |            1 |  512 |           175 |    27,515 |    27.53 |    38.57 |             2.18 |                  18.00 |                   5 / 1.8 |
+| 2×4   |            1 | 1000 |           173 |    27,475 |    27.47 |    40.40 |             2.13 |                  17.83 |                   5 / 1.7 |
+| 1×8   |            5 |  128 |           169 |    27,465 |    27.68 |    39.31 |             5.95 |                  15.18 |                   2 / 1.7 |
+| 1×8   |            1 |  256 |           169 |    27,380 |    27.72 |    38.25 |             2.15 |                  18.23 |                   3 / 1.7 |
+| 1×8   |            0 | 1000 |           150 |    27,195 |    27.84 |    39.58 |             2.02 |                  18.24 |                   4 / 1.5 |
+| 1×8   |            5 |  256 |           225 |    26,900 |    28.20 |    39.93 |             5.91 |                  14.29 |                   3 / 2.3 |
+| 4×2   |            5 |  128 |           179 |    26,665 |    28.56 |    39.47 |            11.44 |                  10.18 |                   2 / 1.8 |
+| 1×8   |            0 |  512 |           150 |    26,650 |    28.30 |    41.48 |             1.92 |                  18.61 |                   4 / 1.5 |
+| 1×8   |            5 |  512 |           383 |    26,615 |    28.12 |    41.41 |             5.77 |                  12.14 |                   6 / 3.8 |
+| 2×4   |            5 |  512 |           387 |    26,555 |    28.18 |    41.09 |             5.67 |                  12.18 |                   6 / 3.9 |
+| 2×4   |            5 |  256 |           228 |    26,380 |    28.71 |    41.21 |             6.01 |                  14.81 |                   3 / 2.3 |
+| 4×2   |            5 |  256 |           217 |    26,365 |    28.86 |    39.66 |             9.63 |                  11.58 |                   3 / 2.2 |
+| 2×4   |            1 |  512 |           170 |    26,330 |    28.67 |    42.19 |             2.26 |                  18.78 |                   4 / 1.7 |
+| 2×4   |            0 |  256 |           150 |    26,310 |    28.86 |    40.87 |             2.16 |                  18.83 |                   3 / 1.5 |
+| 4×2   |            1 |  128 |           197 |    26,285 |    28.96 |    39.35 |            10.43 |                  12.24 |                   2 / 2.0 |
+| 4×2   |            5 |  512 |           386 |    25,890 |    28.84 |    43.54 |             5.82 |                  12.56 |                   6 / 3.9 |
+| 8×1   |            0 |  128 |           185 |    25,735 |    29.92 |    39.35 |            10.65 |                   3.41 |                   2 / 1.9 |
+| 8×1   |            0 |  256 |           225 |    25,705 |    29.81 |    39.35 |             9.70 |                   4.41 |                   3 / 2.3 |
+| 1×8   |            5 | 1000 |           410 |    25,685 |    28.99 |    42.93 |             5.71 |                  12.84 |                   8 / 4.1 |
+| 8×1   |            0 |  512 |           279 |    25,665 |    29.73 |    39.92 |             7.33 |                   4.87 |                   6 / 2.8 |
+| 8×1   |            1 |  128 |           183 |    25,450 |    30.13 |    41.79 |            13.72 |                   3.36 |                   2 / 1.8 |
+| 4×2   |            0 |  128 |           197 |    25,335 |    29.99 |    41.65 |            10.98 |                  12.93 |                   2 / 2.0 |
+| 8×1   |            1 |  256 |           225 |    25,270 |    30.24 |    41.03 |            11.10 |                   4.50 |                   3 / 2.3 |
+| 8×1   |            5 |  256 |           258 |    24,885 |    30.55 |    45.19 |            14.86 |                   4.62 |                   3 / 2.6 |
+| 8×1   |            0 | 1000 |           274 |    24,465 |    31.06 |    45.54 |             7.90 |                   5.06 |                   8 / 2.7 |
+| 4×2   |            5 | 1000 |           449 |    24,250 |    31.01 |    43.62 |             5.89 |                  13.49 |                   8 / 4.5 |
+| 8×1   |            1 | 1000 |           342 |    24,195 |    31.37 |    46.63 |            10.04 |                   6.03 |                   8 / 3.4 |
+| 8×1   |            5 |  128 |           188 |    24,150 |    32.19 |    43.75 |            19.37 |                   3.42 |                   2 / 1.9 |
+| 8×1   |            5 |  512 |           391 |    22,925 |    33.59 |    50.07 |            14.09 |                   7.23 |                   6 / 3.9 |
+| 2×4   |            5 | 1000 |           477 |    22,880 |    32.77 |    51.24 |             6.23 |                  14.21 |                   8 / 4.8 |
+| 8×1   |            1 |  512 |           334 |    22,685 |    33.89 |    48.20 |            10.89 |                   6.17 |                   6 / 3.3 |
+| 8×1   |            5 | 1000 |           601 |    21,925 |    34.87 |    48.88 |             7.89 |                  10.39 |                   8 / 6.0 |
+
+Three things the grid shows before any confirmation:
+
+- **Within `8×1`, the cap does nothing.** 185, 225, 279, and 274
+  Actions/flush all land within 24.5–25.7k in this draw; the 24,465 row
+  is the low outlier that the confirmation re-measured at 26,210.
+- **A positive timeout is a loss at every split, worst at `8×1`.** With
+  `t=5, cap=1000` the burst widens to 601 Actions/flush and the rate
+  falls to 21,925 (-16.3% against the confirmed
+  default-knob row). `t=1` is already below `t=0` at every cap.
+- **The caller split dominates.** At the same eight outstanding calls,
+  `2×4` is the top of the screen (29,835) and the confirmation puts it
+  2.2k (8.3%) above `8×1` with the _default_ policy, while its flush is
+  already 147–253 Actions without a cap.
+
+### Confirmation: five reports per row
+
+`2×4 (0, 1000)` is included to separate the split from the knobs: it is
+the same split as the best cell with the production policy. Medians with
+min–max in parentheses.
+
+| Row                      | Reports | Actions/flush | Actions/s (median, min–max) |            p50 (ms) |            p95 (ms) |            p99 (ms) | `queue` p50 (ms) | `commit_wait` p50 (ms) | `queue_depth` peak / mean | fsyncs / 1k Actions |
+| ------------------------ | ------: | ------------: | --------------------------: | ------------------: | ------------------: | ------------------: | ---------------: | ---------------------: | ------------------------: | ------------------: |
+| baseline `8×1 (0, 1000)` |       5 |           272 |      26,210 (25,225–26,470) | 29.16 (28.91–30.30) | 36.45 (35.50–37.57) | 40.46 (39.92–42.21) |             7.07 |                   4.74 |                   7 / 2.7 |                3.67 |
+| `8×1 (0, 128)`           |       5 |           182 |      26,155 (25,440–26,960) | 29.43 (28.56–30.22) | 35.75 (34.69–36.62) | 39.32 (37.59–40.20) |            10.47 |                   3.32 |                   2 / 1.8 |                5.48 |
+| `2×4 (1, 128)`           |       5 |           158 |      28,885 (28,435–29,450) | 26.13 (25.60–26.64) | 32.53 (31.55–32.71) | 36.61 (35.48–38.55) |             2.25 |                  16.98 |                   2 / 1.6 |                6.29 |
+| `2×4 (0, 1000)`          |       5 |           149 |      28,380 (27,150–29,295) | 26.67 (25.82–27.92) | 33.53 (32.76–34.86) | 37.87 (36.99–39.64) |             1.92 |                  17.35 |                   4 / 1.5 |                6.68 |
+
+Deltas against the confirmed baseline:
+
+| Comparison                        | Actions/s |    p50 |
+| --------------------------------- | --------: | -----: |
+| `8×1 (0, 128)` vs baseline        |     -0.2% |  +0.9% |
+| `2×4 (1, 128)` vs baseline        |    +10.2% | -10.4% |
+| `2×4 (0, 1000)` vs baseline       |     +8.3% |  -8.5% |
+| `2×4 (1, 128)` vs `2×4 (0, 1000)` |     +1.8% |  -2.0% |
+
+At the production shape, capping the flush at 182 Actions is
+**-0.2%** throughput with p50 **+0.9%**; the confirmed baseline
+(26,210 Actions/s at 29.16 ms, 272 Actions/flush) is inside the issue's
+2026-10-23 reference of 25,585 at 29.93 ms, 271 Actions/flush. The
+`2×4` row clears the 5% bar, but holding the split fixed shows where it
+comes from: the default knobs already give **+8.3%** at
+149 Actions/flush, and the `(1, 128)` pair adds only
+**+1.8%** on top — inside run-to-run noise.
+
+### t0 control
+
+`t0 c=1 depth 1` offers one 100-Action call at a time, so a cap ≥ 128
+cannot bind; the control is the production policy, and the candidate is
+run both cap-only and with its 1 ms timer. Medians with min–max.
+
+| Row                    | Reports | Actions/flush | Actions/s (median, min–max) |         p50 (ms) |         p99 (ms) | `queue` p50 (ms) | `commit_wait` p50 (ms) |
+| ---------------------- | ------: | ------------: | --------------------------: | ---------------: | ---------------: | ---------------: | ---------------------: |
+| `(0, 1000)` control    |       3 |           100 |      25,560 (24,735–25,740) | 3.62 (3.60–3.69) | 5.11 (5.11–5.86) |             0.13 |                   2.05 |
+| `(0, 128)` cap only    |       3 |           100 |      26,410 (25,555–26,615) | 3.50 (3.49–3.61) | 5.11 (4.94–5.38) |             0.13 |                   1.99 |
+| `(1, 128)` timer + cap |       3 |           100 |      19,250 (19,210–19,610) | 4.89 (4.84–4.89) | 6.46 (6.19–6.88) |             1.75 |                   1.97 |
+
+The cap alone is safe at the ceiling: 26,410 Actions/s at 3.50 ms
+p50 against 25,560 at 3.62 ms, and Actions/flush is 100 on both
+sides of the comparison — one call is 100 Actions, which is below every
+cap in the grid, so the flush cannot fall further and the fsync
+amortization that AC3 guards is unchanged. The timer is not safe: `(1, 128)`
+costs **-24.7%** throughput and **+34.9%**
+p50, because on an uncontended Writer it replaces the burst-drain marker
+with a 1 ms wall-clock wait — `queue` goes from 0.13 ms to 1.75 ms while
+nothing else coalesces.
+
+### Where the flush size shows up
+
+The 2026-10-23 update to #576 says the verdict columns are `queue`,
+`commit_wait`, and `queue_depth`, not Actions/s alone. Medians of the
+confirmation reports:
+
+| Row                      | Actions/flush | Client p50 (ms) | `queue` | `prepare` | `resolve` | `commit_wait` | `apply` | `notify` | Phase sum p50 (ms) | `queue_depth` peak / mean |
+| ------------------------ | ------------: | --------------: | ------: | --------: | --------: | ------------: | ------: | -------: | -----------------: | ------------------------: |
+| baseline `8×1 (0, 1000)` |           272 |           29.16 |    7.07 |      9.23 |      3.79 |          4.74 |    0.20 |     0.05 |              25.96 |                   7 / 2.7 |
+| `8×1 (0, 128)`           |           182 |           29.43 |   10.47 |      9.73 |      2.07 |          3.32 |    0.14 |     0.04 |              26.84 |                   2 / 1.8 |
+| `2×4 (1, 128)`           |           158 |           26.13 |    2.25 |      0.79 |      1.62 |         16.98 |    0.22 |     0.03 |              22.89 |                   2 / 1.6 |
+| `2×4 (0, 1000)`          |           149 |           26.67 |    1.92 |      0.82 |      1.62 |         17.35 |    0.15 |     0.02 |              23.21 |                   4 / 1.5 |
+
+Read together, the four rows explain the flat curve:
+
+- **The cap moves time from `commit_wait` and `resolve` into `queue`.**
+  At `8×1 (0, 128)`, `resolve` falls 3.79 → 2.07 ms and `commit_wait`
+  4.74 → 3.32 ms, but `queue` rises 7.07 → 10.47 ms: the eight-call
+  burst now drains in four two-call flushes, and the calls that used to
+  share one flush wait in the Writer mailbox for the next. `apply` and
+  `notify` are unchanged (≤0.22 ms in every row). The saved commit time
+  is handed back as queueing, and p50 nets +0.9%.
+- **Flush size is a symptom of pipelining, not an independent lever.**
+  `2×4` reaches 149 Actions/flush with the _default_ cap because each
+  caller has four calls outstanding; its `queue` is 1.92 ms, not
+  10.47 ms, because no call is stranded behind a capped flush. Forcing
+  the same indicator at depth 1 does not reproduce the rate.
+- **`commit_wait` at `2×4` (17.0 ms) is the depth tax #537 documented**,
+  not a flush-size effect; the rate comes from overlapping four flushes
+  per caller, which is the #529 depth story rather than a coalescing
+  default.
+- **`queue_depth` follows the cap:** 7 / 2.7 calls per flush at the
+  default, 2 / 1.8 with the 128 cap, 4 / 1.5 at `2×4` with the default.
+
+### Verdict
+
+**Flat — no coalescing default changes.** The cells that clear the 5%
+bar are not adoptable policies:
+
+- At `8×1`, the production shape, `(0, 128)` is
+  **-0.2%** Actions/s at **+0.9%** p50; the
+  `8×1 (0, 256)` screening cell is the same band (25,705 against the
+  confirmed 26,210 baseline). Neither is a win, and a positive timeout is
+  strictly worse (-16.3% at `t=5, cap=1000`).
+- The best cell, `2×4 (1, 128)`, is **+10.2%** at p50
+  **-10.4%**, but **+8.3%** of that is the caller split
+  alone (`2×4` with default knobs) and the knobs contribute
+  **+1.8%**. Shipping `(1, 128)` as a production default would
+  not reproduce the win at `8×1`, and it fails the t0 gate
+  (**-24.7%** throughput, **+34.9%** p50 at `t0 c=1`).
+- A smaller flush costs fsyncs: 3.67 → 5.48 write_batches per 1,000
+  Actions at `8×1 (0, 128)` (+49%) and 6.29 at `2×4 (1, 128)` (+71%).
+  That is the fsync-fragility the issue predicted, and it is why a tie
+  would not justify the change either. #342 is not triggered, because
+  nothing is adopted.
+
+On current code the 150–250 Actions/flush window is not a throughput
+lever at the production shape: the default 272 and the capped 182–225
+measure the same rate within this VM's spread. The ~150 Actions/flush
+that does run faster is produced by pipelining callers (`2×4`), which is
+[#529](https://github.com/ebbjs/ebbjs/issues/529)'s depth lever, not a
+`writer_batch_*` default. Recommendation per AC2: **close #576 with this
+measurement.** If the `2×4` rate is wanted, the follow-up belongs in the
+depth/caller-split work, not here.
+
 ## Prepare stage (#553)
 
 > **Measured before Step 0 (2026-10-20).** Current numbers are in
@@ -2102,15 +2353,7 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
    [Step 0](#step-0-depth-1-parity-579-582-581) is the follow-up that closed
    most of it (−3.0%); re-read this gap against those two sections rather
    than the #551 session.
-8. **A single-depth run collects the flush phases but does not render them.**
-   [#537](https://github.com/ebbjs/ebbjs/issues/537)'s phase and gauge tables
-   live in the sweep-only pipeline-depth section, as the issue specified, so
-   the headline `t0`/`t2` single-depth reports still print only the client and
-   `batch_latency_ms`/`commit_latency_ms` views. Running the same config as
-   `--in-flight 1,2` (or reading the raw `flush_phase_ms` samples) is the
-   workaround; a per-run phase table is a follow-up if the accounting is
-   wanted on every report.
-9. **README drift corrected.** `:writer_count`, `:warmer_*`, and
+8. **README drift corrected.** `:writer_count`, `:warmer_*`, and
    `:replication_peers` are read by nothing; the server README states the
    actual single-Writer behavior. `:writer_batch_timeout_ms` and
    `:writer_batch_max_size` were read by nothing as of #328 and are now
