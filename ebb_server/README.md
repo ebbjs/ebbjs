@@ -73,6 +73,26 @@ environment, so a test run cannot leak state into a deployment path or a
 port another service holds. `mix dev` and the release leave both unset,
 so the environment supplies them there.
 
+## Self-hosting in Docker
+
+The image in `ebb_server/Dockerfile` assembles the release in a builder
+stage and runs it from `debian:bookworm-slim` as a non-root user, with
+`GET /healthz` backing the container healthcheck and `/app/data` as the
+volume. `EBB_AUTH_MODE` must be set explicitly; the container refuses to
+boot otherwise.
+
+```bash
+docker build -f ebb_server/Dockerfile -t ebb_server:local .   # repo root
+docker run -d -p 4000:4000 -v ebb-data:/app/data \
+  -e EBB_AUTH_MODE=external -e EBB_AUTH_URL=https://identity.example.com \
+  ebb_server:local
+```
+
+See [`docs/self-hosting.md`](../docs/self-hosting.md) for compose
+profiles, persistence, upgrades, and backups, and
+[`scripts/docker-smoke-test.sh`](../scripts/docker-smoke-test.sh) for the
+container acceptance checks CI runs on every pull request.
+
 ## Architecture
 
 The Elixir server is the system of record. It owns all persistent
