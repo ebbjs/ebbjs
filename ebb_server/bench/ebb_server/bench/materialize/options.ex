@@ -17,6 +17,7 @@ defmodule EbbServer.Bench.Materialize.Options do
           reps: pos_integer(),
           spread_entities: pos_integer(),
           query_ks: [pos_integer()],
+          history_sizes: [non_neg_integer()],
           scenarios: [scenario()],
           distributions: [distribution()],
           run_value_bytes: pos_integer(),
@@ -30,6 +31,7 @@ defmodule EbbServer.Bench.Materialize.Options do
             reps: 50,
             spread_entities: 50,
             query_ks: [1, 10, 50],
+            history_sizes: [],
             scenarios: [:cold, :dirty, :clean, :query],
             distributions: [:hot, :spread],
             run_value_bytes: 130,
@@ -46,6 +48,7 @@ defmodule EbbServer.Bench.Materialize.Options do
     reps: :integer,
     spread_entities: :integer,
     query_ks: :string,
+    history_sizes: :string,
     scenarios: :string,
     distributions: :string,
     run_value_bytes: :integer,
@@ -85,6 +88,7 @@ defmodule EbbServer.Bench.Materialize.Options do
       {"Repetitions per scenario", "#{config.reps}"},
       {"Spread entities per size", "#{config.spread_entities}"},
       {"Query result sizes", Enum.join(config.query_ks, ", ")},
+      {"Entity histories (prior Updates)", history_sizes(config)},
       {"Scenarios", Enum.map_join(config.scenarios, ", ", &Atom.to_string/1)},
       {"Distributions", Enum.map_join(config.distributions, ", ", &Atom.to_string/1)},
       {"Run value size", "#{config.run_value_bytes} B"},
@@ -106,6 +110,7 @@ defmodule EbbServer.Bench.Materialize.Options do
       "--reps #{config.reps}",
       "--spread-entities #{config.spread_entities}",
       "--query-ks #{Enum.join(config.query_ks, ",")}",
+      "--history-sizes #{Enum.join(config.history_sizes, ",")}",
       "--scenarios #{Enum.map_join(config.scenarios, ",", &Atom.to_string/1)}",
       "--distributions #{Enum.map_join(config.distributions, ",", &Atom.to_string/1)}",
       "--run-value-bytes #{config.run_value_bytes}",
@@ -128,6 +133,7 @@ defmodule EbbServer.Bench.Materialize.Options do
   defp put_opt({:reps, value}, acc), do: %{acc | reps: value}
   defp put_opt({:spread_entities, value}, acc), do: %{acc | spread_entities: value}
   defp put_opt({:query_ks, value}, acc), do: %{acc | query_ks: split_ints(value)}
+  defp put_opt({:history_sizes, value}, acc), do: %{acc | history_sizes: split_ints(value)}
   defp put_opt({:scenarios, value}, acc), do: %{acc | scenarios: split_atoms(value)}
   defp put_opt({:distributions, value}, acc), do: %{acc | distributions: split_atoms(value)}
   defp put_opt({:run_value_bytes, value}, acc), do: %{acc | run_value_bytes: value}
@@ -157,7 +163,7 @@ defmodule EbbServer.Bench.Materialize.Options do
          :ok <- check_positive(config.spread_entities, "--spread-entities must be at least 1"),
          :ok <- check_positive(config.run_value_bytes, "--run-value-bytes must be at least 1"),
          :ok <- check_non_empty(config.sizes, "--sizes must list at least one size"),
-         :ok <- check_non_empty(config.query_ks, "--query-ks must list at least one size"),
+         :ok <- check_history_sizes(config.history_sizes),
          :ok <- check_members(config.scenarios, @scenarios, "--scenarios"),
          :ok <- check_members(config.distributions, @distributions, "--distributions"),
          :ok <- check_all_positive(config.sizes, "--sizes"),
@@ -190,6 +196,25 @@ defmodule EbbServer.Bench.Materialize.Options do
       :ok
     else
       {:error, "#{flag} values must be positive integers"}
+    end
+  end
+
+  # Seeding a very long history is minutes of writes, so the ceiling is here
+  # to catch a typo rather than to bound a legitimate run.
+  @max_history 1_000_000
+
+  defp check_history_sizes(sizes) do
+    if Enum.all?(sizes, &(is_integer(&1) and &1 in 0..@max_history)) do
+      :ok
+    else
+      {:error, "--history-sizes values must be integers between 0 and #{@max_history}"}
+    end
+  end
+
+  defp history_sizes(config) do
+    case config.history_sizes do
+      [] -> "none (history axis off)"
+      sizes -> Enum.join(sizes, ", ")
     end
   end
 

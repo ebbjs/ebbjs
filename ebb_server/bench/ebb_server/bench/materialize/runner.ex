@@ -66,6 +66,35 @@ defmodule EbbServer.Bench.Materialize.Runner do
     dirty(config, ctx, collector)
     warm_spread(config, ctx)
     query(config, ctx, collector)
+    history(config, collector)
+  end
+
+  # The history axis holds the document size fixed and varies the number of
+  # Actions on one entity. Each sample is the same dirty read the point paths
+  # measure, so the difference between rows is the entity's index depth.
+  defp history(config, collector) do
+    for history <- config.history_sizes do
+      entity_id = Workload.seed_history(config, history)
+      actor = Workload.actor_hot()
+
+      # Bring the cache up to the seeded history off the clock, so every
+      # sample is a delta read rather than a replay.
+      EntityStore.get(entity_id, actor)
+
+      measure_history(config, collector, history, entity_id, actor)
+    end
+  end
+
+  defp measure_history(config, collector, history, entity_id, actor) do
+    for rep <- 1..config.reps do
+      Workload.write_actions!([
+        Workload.patch_action(entity_id, actor, "run_1", "h#{history}-#{rep}")
+      ])
+
+      Collector.measure(collector, scenario(history, :history, :dirty), fn ->
+        EntityStore.get(entity_id, actor)
+      end)
+    end
   end
 
   defp cold(config, ctx, collector) do
@@ -174,7 +203,12 @@ defmodule EbbServer.Bench.Materialize.Runner do
           :query in config.scenarios,
           do: scenario(n, :spread, :query, k)
 
-    point ++ queries
+    histories =
+      for history <- config.history_sizes,
+          :dirty in config.scenarios,
+          do: scenario(history, :history, :dirty)
+
+    point ++ queries ++ histories
   end
 
   defp key(%{size: n, dist: dist, path: path, k: k}), do: {n, dist, path, k}
