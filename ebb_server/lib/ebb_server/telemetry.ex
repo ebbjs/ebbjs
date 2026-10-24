@@ -53,7 +53,7 @@ defmodule EbbServer.Telemetry do
   through the post-commit bookkeeping (dirty settle, cache mutations, and the
   fan-out notification) and is measured on the Writer, which sequences the
   flush. `ebb.writer.commit_latency_ms` is the sub-span the Committer owns —
-  wrapper encode, `cf_*` op assembly, and the durable `write_batch/2` — so
+  frame encode, `cf_*` op assembly, and the durable `write_batch/2` — so
   the pair separates sequencer work from durable-write work for the same GSN
   range; the expensive payload build and ETF encode already happened on the
   sequencer before the claim. `commit_latency_ms` is emitted for every
@@ -68,6 +68,12 @@ defmodule EbbServer.Telemetry do
   sampled because the buffer only exists in its state. A reporter can
   graph the pair to see the pipeline depth and the GSN holding release
   back.
+
+  The `cf_actions` value those op lists carry is a frame (#552,
+  `EbbServer.Storage.ActionFormat`), chosen on a 5–10% cheaper export read for
+  0.05–0.10 µs/Action more encode — a share of a flush that sits below this
+  event's noise band. The shapes are priced per Action by `mix bench.envelope`
+  and in `docs/research/552-action-envelope.md`.
 
   `ebb.watermark.lag` is a **durability** lag, not a notification lag:
   the resolution frontier may cover a durable range before its apply.

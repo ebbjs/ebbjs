@@ -2189,6 +2189,80 @@ win is structural — prepare no longer runs on the Writer's call path and
 a slow or dead worker cannot hold a claimed GSN — not a throughput
 number.
 
+## Action envelope (#552)
+
+[#552](https://github.com/ebbjs/ebbjs/issues/552) prices the stored
+`cf_actions` value — the envelope around the pre-encoded payload — and picks
+one. The decision, the reasoning and the full per-path argument are in
+[`docs/research/552-action-envelope.md`](../../docs/research/552-action-envelope.md);
+this section publishes the numbers and the harness that produced them.
+
+Harness: `mix bench.envelope` (new). It compares four shapes **in one booted
+storage tree**, each in its own disjoint GSN window so all four share one WAL,
+compaction state and block cache, and it **rotates the shape order every
+round** so host drift lands on every shape equally. Three legs: an _encode
+leg_ (per-Action value construction, no RocksDB), a _write leg_ (one
+`write_batch(sync: true)` holding the full flush shape), and _read legs_
+(`materialize`, `catch_up`, `export` as path models that do the same gets and
+decode calls as the module they name).
+
+```sh
+mix bench.envelope --flush-sizes 100,152 --reads 1000 --runs 3
+```
+
+Measured **2026-10-24** on `recsy-vps`, same host and shape as the rest of
+this file. Two independent runs (A / B). Shapes: `wrapper` = what
+`origin/main` stores, `versioned_wrapper` = the same with a version integer,
+`companion` = scopes in a second record, `frame` = the shipped shape, the
+scopes beside the payload in one value. The version tag in
+`versioned_wrapper` was priced and then dropped: Ebb is greenfield, so a tag
+buys only a different error message, and the shipped reader accepts exactly
+one shape.
+
+µs/Action p50. Encode: 1,000 Actions per sample. Read: shape order rotated per
+pass, 1,000 samples per path.
+
+| Shape               |  encode (A / B) | `materialize` (A / B) | `catch_up` (A / B) | `export` (A / B) |   B/Action on disk |
+| :------------------ | --------------: | --------------------: | -----------------: | ---------------: | -----------------: |
+| `wrapper`           |     0.48 / 0.47 |           3.75 / 4.75 |        4.84 / 5.48 |     10.35 / 6.36 |                781 |
+| `versioned_wrapper` |     0.46 / 0.49 |           3.75 / 4.50 |        4.82 / 5.54 |     10.60 / 6.62 |                783 |
+| `companion`         | **0.38 / 0.37** |           3.69 / 4.38 |        8.00 / 8.15 |     16.19 / 8.79 | 807 + a second put |
+| `frame`             |     0.59 / 0.57 |       **3.69 / 4.38** |    **4.74 / 5.22** |  **9.41 / 5.75** |                779 |
+
+Write leg, ms/flush p50, 51 flushed samples per cell:
+
+| Shape               | 100 A/flush (A / B) | 152 A/flush (A / B) |
+| :------------------ | ------------------: | ------------------: |
+| `wrapper`           |         1.86 / 1.70 |         2.45 / 2.16 |
+| `versioned_wrapper` |         1.88 / 1.69 |         2.48 / 2.22 |
+| `companion`         |         2.11 / 1.86 |         2.72 / 2.54 |
+| `frame`             |         1.92 / 1.68 |         2.40 / 2.15 |
+
+**What it says.** The three single-record shapes are within ±3% of each other
+on the durable write — the write leg cannot see an envelope that encodes in
+0.5 µs/Action when the flush is bounded by op count and fsync — and the
+`companion`'s second durable put costs +8–13% of a flush. On the read side the
+`frame` is the cheapest single-record shape on every path (2–8% on
+materialize, 2–5% on catch-up, 5–10% on export), the `companion` pays its
+second point read on both scope-reading paths (+53–72%) and is only level with
+or slightly ahead of the frame on materialize, where its 6%-smaller value pays
+a `multi_get`-bound path; a version integer alone moves nothing, which is why
+the tag was dropped rather than carried.
+
+The chosen shape is the `frame`. The write path is unchanged at the operating
+point: `t0 c=1` `commit_latency_ms` p50 5.17→5.22 ms, and `t2 c=8` 25,388→25,110
+Actions/s with 30.09→30.43 ms client p50 (six alternating runs per arm,
+medians) — all inside the ±5–10% single-run spread this file publishes. The
+read-side `materialize` profile (`mix bench.materialize --sizes 1000 --runs 5
+--reps 50`, three alternating runs per arm) is a noise floor in both
+directions: the cells that never read `cf_actions` (the clean paths) move as
+much as the rest, and the `actions_load` phase — the `multi_get` plus decode
+the envelope lives in — goes 889→800 µs mean on cold and 23.1→19.1 µs on dirty.
+End-to-end timing on this host cannot resolve a 0.4 µs-per-Action change (see
+the noise-floor paragraph in the research note), so the per-path decision
+rests on the encode and read legs above, and the operating-point runs are there
+to show nothing regressed.
+
 ## Correctness under load
 
 Clean across every measured run above: **0 rejected Actions, 0

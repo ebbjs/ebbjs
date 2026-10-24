@@ -3,7 +3,7 @@ defmodule EbbServer.Storage.CommitterTest do
   Boundary tests for the Committer (ebbjs/ebbjs#531).
 
   The Committer owns the half of the flush that only needs immutable
-  input: wrapper encoding, `cf_*` op assembly, and the durable
+  input: frame encoding, `cf_*` op assembly, and the durable
   `write_batch`. These tests pin the ops it builds for a
   `PreparedAction` batch, the shape of the result it reports to the
   sequencer, and the `commit_latency_ms` sample that prices the seam.

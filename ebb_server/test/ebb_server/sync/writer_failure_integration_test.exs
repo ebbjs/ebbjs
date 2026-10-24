@@ -168,32 +168,35 @@ defmodule EbbServer.Sync.FanOutRouterRangeResolvedTest do
   use ExUnit.Case, async: false
   use EbbServer.Integration.StorageCase
 
-  alias EbbServer.Storage.{RocksDB, WatermarkTracker}
+  alias EbbServer.Storage.{ActionFormat, RocksDB, WatermarkTracker}
   alias EbbServer.Sync.FanOutRouter
   alias EbbServer.Sync.FanOutRouter.Plan
 
   test "re-reads the frontier and drains buffered ranges past a resolved hole" do
     group_id = "g_282_drain_#{:erlang.unique_integer([:positive])}"
 
-    action = %{
-      "id" => "act_282_drain",
-      "actor_id" => "a_282",
-      "hlc" => 1,
-      "gsn" => 2,
-      "updates" => [
-        %{
-          "id" => "upd_282_drain",
-          "subject_id" => "todo_282_drain",
-          "subject_type" => "todo",
-          "method" => "put",
-          "data" => %{}
-        }
-      ]
-    }
+    payload =
+      %{
+        id: "act_282_drain",
+        actor_id: "a_282",
+        hlc: 1,
+        updates: [
+          %{
+            id: "upd_282_drain",
+            subject_id: "todo_282_drain",
+            subject_type: "todo",
+            method: :put,
+            data: %{}
+          }
+        ]
+      }
+      |> ActionFormat.build()
+      |> ActionFormat.encode()
 
     :ok =
       RocksDB.write_batch([
-        {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(2), :erlang.term_to_binary(action)}
+        {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(2),
+         ActionFormat.frame(payload, [[group_id]])}
       ])
 
     :sys.replace_state(FanOutRouter, fn state ->

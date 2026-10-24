@@ -135,7 +135,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
   end
 
   describe "stored action shape (#532)" do
-    test "pushes an Action stored in the new GSN-free wrapper" do
+    test "pushes an Action stored in a frame" do
       group_id = "g_532_#{:erlang.unique_integer([:positive])}"
       actor_id = "a_532_#{:erlang.unique_integer([:positive])}"
 
@@ -169,11 +169,11 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
         |> ActionFormat.build()
         |> ActionFormat.encode()
 
-      wrapper = ActionFormat.wrap(payload, [[group_id]])
+      frame = ActionFormat.frame(payload, [[group_id]])
 
       :ok =
         RocksDB.write_batch([
-          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn), wrapper},
+          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn), frame},
           {:put, RocksDB.cf_group_actions(), RocksDB.encode_group_action_key(group_id, gsn),
            action_id}
         ])

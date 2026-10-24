@@ -142,16 +142,16 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert cached.type == "todo"
     end
 
-    test "materializes an Action stored in the new GSN-free wrapper", %{
+    test "materializes an Action stored in a frame", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
       dirty_set: dirty_set
     } do
-      entity_id = "todo_wrapper_#{:erlang.unique_integer([:positive])}"
+      entity_id = "todo_frame_#{:erlang.unique_integer([:positive])}"
       hlc = generate_hlc()
       gsn = 1
-      action_id = "act_wrapper_#{:erlang.unique_integer([:positive])}"
-      update_id = "upd_wrapper_#{:erlang.unique_integer([:positive])}"
+      action_id = "act_frame_#{:erlang.unique_integer([:positive])}"
+      update_id = "upd_frame_#{:erlang.unique_integer([:positive])}"
 
       payload =
         %{
@@ -165,7 +165,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
               subject_type: "todo",
               method: :put,
               data: %{
-                "fields" => %{"title" => %{"value" => "Wrapper", "hlc" => hlc}}
+                "fields" => %{"title" => %{"value" => "Framed", "hlc" => hlc}}
               }
             }
           ]
@@ -173,12 +173,12 @@ defmodule EbbServer.Storage.EntityStoreTest do
         |> ActionFormat.build()
         |> ActionFormat.encode()
 
-      wrapper = ActionFormat.wrap(payload, [[]])
+      frame = ActionFormat.frame(payload, [[]])
 
       :ok =
         RocksDB.write_batch(
           [
-            {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), wrapper},
+            {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), frame},
             {:put, RocksDB.cf_entity_actions(rocks_name),
              RocksDB.encode_entity_gsn_key(entity_id, gsn), action_id}
           ],
@@ -196,7 +196,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
 
       assert entity.id == entity_id
       assert entity.last_gsn == gsn
-      assert entity.data["fields"]["title"]["value"] == "Wrapper"
+      assert entity.data["fields"]["title"]["value"] == "Framed"
     end
 
     test "dirty bit is cleared after materialization", %{

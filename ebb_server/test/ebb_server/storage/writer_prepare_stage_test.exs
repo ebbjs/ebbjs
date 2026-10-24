@@ -444,7 +444,9 @@ defmodule EbbServer.Storage.WriterPrepareStageTest do
         name: rocks_name
       )
 
-    {payload_etf, _scopes} = :erlang.binary_to_term(binary, [:safe])
+    # Reads the payload half of the frame; the scopes never affect what
+    # the prepare workers decided to store.
+    <<size::32, payload_etf::binary-size(size), _scopes::binary>> = binary
     :erlang.binary_to_term(payload_etf, [:safe])
   end
 end

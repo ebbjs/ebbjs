@@ -25,7 +25,7 @@ defmodule EbbServer.Storage.Committer do
 
   Everything the Committer touches is immutable: op assembly reads only
   the `PreparedAction` fields, never a system cache, and the GSN range is
-  already claimed. That is what makes it safe to run the wrapper encode
+  already claimed. That is what makes it safe to run the frame encode
   and the durable write off the sequencer process.
 
   The Committer monitors its owner (the pool) and stops when it goes
@@ -35,7 +35,7 @@ defmodule EbbServer.Storage.Committer do
   Writer's restart reconcile treats that range as an orphaned hole and
   never reuses the GSN.
 
-  `[:ebb, :writer, :commit_latency_ms]` spans wrapper encode + op assembly
+  `[:ebb, :writer, :commit_latency_ms]` spans frame encode + op assembly
   + `write_batch` and is emitted on every outcome, including a raise, so
   the durable-write cost is separable from the sequencer's batch latency.
   The expensive payload build and ETF encode already happened in the
@@ -136,7 +136,7 @@ defmodule EbbServer.Storage.Committer do
   def handle_info(_message, state), do: {:noreply, state}
 
   # Assembly is inside the same catch as the write so a raise while
-  # wrapping or assembling ops reports like a raise out of `commit_fn` —
+  # framing or assembling ops reports like a raise out of `commit_fn` —
   # the sequencer cannot tell the two apart and neither can the caller.
   defp build_and_commit(prepared, gsn_start, state) do
     ops = build_ops(prepared, gsn_start, state)
@@ -170,7 +170,7 @@ defmodule EbbServer.Storage.Committer do
 
   defp build_action_ops(action, gsn, state) do
     rocks_name = state.rocks_name
-    action_etf = ActionFormat.wrap(action.payload_etf, action.update_scopes)
+    action_etf = ActionFormat.frame(action.payload_etf, action.update_scopes)
 
     ops =
       [{:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), action_etf}] ++

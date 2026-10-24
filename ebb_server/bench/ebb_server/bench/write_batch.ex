@@ -11,7 +11,7 @@ defmodule EbbServer.Bench.WriteBatch do
   watermark advance, and no fan-out; only the NIF call is measured.
 
   This uses `EbbServer.Storage.ActionFormat` for the `cf_actions` value so the
-  spike mirrors the production wrapper shape without changing the write
+  spike mirrors the production envelope without changing the write
   path. The tests pin the shape, so a format change has to update them.
 
   `--ablate` narrows the op set to the phases that name an op group —
@@ -46,9 +46,46 @@ defmodule EbbServer.Bench.WriteBatch do
   @spec build_ops(Options.t(), map(), pos_integer(), non_neg_integer()) :: [
           {:put, term(), binary(), binary()}
         ]
-  def build_ops(%Options{} = config, ctx, caller_id, seq) do
-    start = gsn_start(caller_id, seq)
+  def build_ops(%Options{} = config, ctx, caller_id, seq),
+    do: build_ops(config, ctx, caller_id, seq, gsn_start(caller_id, seq), &stored_frame/2)
 
+  @doc """
+  The production frame's `cf_actions` puts for one Action.
+
+  Every Update here resolves to the single bench group, so the stored scopes
+  are the same one-element list per Update.
+  """
+  @spec stored_frame(map(), non_neg_integer()) :: [{:put, term(), binary(), binary()}]
+  def stored_frame(action, gsn) do
+    update_scopes = Enum.map(action.updates, fn _ -> [Workbook.group_id()] end)
+    payload = action |> ActionFormat.build() |> ActionFormat.encode()
+
+    [
+      {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn),
+       ActionFormat.frame(payload, update_scopes)}
+    ]
+  end
+
+  @doc """
+  Builds the same op list for a flush at an explicit GSN start.
+
+  Two things vary between the write benchmarks that share this op shape: the
+  GSN window a flush lands in, and the stored `cf_actions` value. `gsn_start`
+  is therefore passed rather than derived, and `stored` is a function from
+  `(action, gsn)` to that Action's `cf_actions` puts — one for the production
+  production frame, one per candidate shape in `EbbServer.Bench.Envelope.Shapes`. The
+  rest of the batch is identical, which is what keeps the two benchmarks
+  pricing the same flush.
+  """
+  @spec build_ops(
+          Options.t(),
+          map(),
+          pos_integer(),
+          non_neg_integer(),
+          non_neg_integer(),
+          (map(), non_neg_integer() -> [{:put, term(), binary(), binary()}])
+        ) :: [{:put, term(), binary(), binary()}]
+  def build_ops(%Options{} = config, ctx, caller_id, seq, gsn_start, stored) do
     {action_ops, type_keys} =
       0..(config.batch_size - 1)
       |> Enum.map_reduce(MapSet.new(), fn offset, keys ->
@@ -57,7 +94,8 @@ defmodule EbbServer.Bench.WriteBatch do
           |> Workbook.build_action(ctx, caller_id, seq + offset)
           |> ActionValidator.to_validated_action()
 
-        ops = action_ops(action, start + offset, config.ablate)
+        gsn = gsn_start + offset
+        ops = stored.(action, gsn) ++ action_ops(action, gsn, config.ablate)
 
         keys =
           if :entity_index in config.ablate, do: keys, else: MapSet.union(keys, type_keys(action))
@@ -113,14 +151,9 @@ defmodule EbbServer.Bench.WriteBatch do
 
   defp action_ops(action, gsn, ablate) do
     gsn_key = RocksDB.encode_gsn_key(gsn)
-    update_scopes = Enum.map(action.updates, fn _ -> [Workbook.group_id()] end)
-    payload = action |> ActionFormat.build() |> ActionFormat.encode()
 
-    [
-      {:put, RocksDB.cf_actions(), gsn_key, ActionFormat.wrap(payload, update_scopes)}
-      | dedup_ops(action, gsn_key, ablate) ++
-          group_ops(action, gsn, ablate) ++ entity_ops(action, gsn, ablate)
-    ]
+    dedup_ops(action, gsn_key, ablate) ++
+      group_ops(action, gsn, ablate) ++ entity_ops(action, gsn, ablate)
   end
 
   defp dedup_ops(action, gsn_key, ablate) do

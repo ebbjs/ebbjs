@@ -81,8 +81,7 @@ defmodule EbbServer.Storage.WriterAblationTest do
 
       assert_receive {:captured_ops, ops}
 
-      {payload_etf, _scopes} = stored_value(ops, ctx.rocks_name)
-      assert :erlang.binary_to_term(payload_etf, [:safe]) == %{}
+      assert stored_payload(ops, ctx.rocks_name) == %{}
     end
 
     test ":encode stores a structurally valid empty payload", ctx do
@@ -92,10 +91,8 @@ defmodule EbbServer.Storage.WriterAblationTest do
 
       assert_receive {:captured_ops, ops}
 
-      {payload_etf, _scopes} = stored_value(ops, ctx.rocks_name)
-
       assert %{"id" => "ablated", "actor_id" => "ablated", "hlc" => 0, "updates" => []} =
-               :erlang.binary_to_term(payload_etf, [:safe])
+               stored_payload(ops, ctx.rocks_name)
     end
 
     test "`all` leaves exactly one cf_actions put per Action and nothing else", ctx do
@@ -224,17 +221,27 @@ defmodule EbbServer.Storage.WriterAblationTest do
   end
 
   defp stored_scopes(ops, rocks_name) do
-    {_payload_etf, scopes} = stored_value(ops, rocks_name)
-    scopes
+    <<size::32, _payload::binary-size(size), scopes_etf::binary>> =
+      stored_value(ops, rocks_name)
+
+    :erlang.binary_to_term(scopes_etf, [:safe])
   end
 
+  defp stored_payload(ops, rocks_name) do
+    <<size::32, payload_etf::binary-size(size), _scopes::binary>> =
+      stored_value(ops, rocks_name)
+
+    :erlang.binary_to_term(payload_etf, [:safe])
+  end
+
+  # The raw cf_actions value of the captured batch.
   defp stored_value(ops, rocks_name) do
     [value] =
       for {:put, cf, _key, value} <- ops, cf == RocksDB.cf_actions(rocks_name) do
         value
       end
 
-    :erlang.binary_to_term(value, [:safe])
+    value
   end
 
   defp grouped_action do

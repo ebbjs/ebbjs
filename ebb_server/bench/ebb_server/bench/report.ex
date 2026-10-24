@@ -542,7 +542,7 @@ defmodule EbbServer.Bench.Report do
           "`ebb.http.request_latency_ms` is measured inside the request process, so MessagePack " <>
           "encoding and transport are excluded; `ebb.writer.batch_latency_ms` covers one durable " <>
           "Writer flush, and `ebb.writer.commit_latency_ms` is the Committer's share of it " <>
-          "(wrapper encode + `cf_*` op assembly + `write_batch`); `ebb.fanout.push_latency_ms` is commit → broadcast complete per batch per group. " <>
+          "(frame encode + `cf_*` op assembly + `write_batch`); `ebb.fanout.push_latency_ms` is commit → broadcast complete per batch per group. " <>
           "`ebb.writer.batch_latency_ms` starts after the request is dequeued, so the wait a " <>
           "call spends in the Writer mailbox is not part of it: `ebb.writer.flush_phase_ms` " <>
           "reports that wait as `queue`, with `prepare` beside it, and a sweep renders the " <>
@@ -577,7 +577,7 @@ defmodule EbbServer.Bench.Report do
   defp latency_note(%{tier: :t0} = _config) do
     "Client-side values are wall time around `Writer.write_actions/1` in the bench worker; " <>
       "server-side `ebb.writer.batch_latency_ms` measures the same flush from inside the " <>
-      "Writer, and `ebb.writer.commit_latency_ms` covers only the wrapper encode, op " <>
+      "Writer, and `ebb.writer.commit_latency_ms` covers only the frame encode, op " <>
       "assembly, and `write_batch` after the payload was built and encoded before the " <>
       "claim. The difference is worker overhead plus the time the call spent in the Writer " <>
       "mailbox, which `ebb.writer.flush_phase_ms` reports as `queue` (with `prepare` measured " <>

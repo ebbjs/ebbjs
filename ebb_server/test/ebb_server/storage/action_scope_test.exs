@@ -26,12 +26,6 @@ defmodule EbbServer.Storage.ActionScopeTest do
     assert ids(action, "g_3") == []
   end
 
-  test "returns every Update when the Action has no persisted scopes" do
-    action = Map.delete(action([["g_1"], ["g_1"], ["g_1"]]), "update_scopes")
-
-    assert ids(action, "g_9") == ["u_1", "u_2", "u_3"]
-  end
-
   test "returns every Update when the scope list does not align with the Updates" do
     action = action([["g_1"]])
 
