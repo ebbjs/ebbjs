@@ -186,9 +186,9 @@ defmodule EbbServer.Bench.Report do
         "queue got, not a sampled mailbox length. The other two columns are the Writer's own " <>
         "`ebb.writer.in_flight_batches` and `ebb.writer.oldest_unreleased_gsn` gauges, emitted " <>
         "on every claim and release, so they describe the actual reorder buffer rather than the " <>
-        "harness-side `Observed` columns above. `in_flight_batches` counts every open claim, " <>
-        "including one applying; `oldest_unreleased_gsn` is the head of the claim order and `0` " <>
-        "when the buffer is empty, so its mean includes idle samples.",
+        "harness-side outstanding-call figures a depth sweep reports. `in_flight_batches` counts " <>
+        "every open claim, including one applying; `oldest_unreleased_gsn` is the head of the " <>
+        "claim order and `0` when the buffer is empty, so its mean includes idle samples.",
       ""
     ]
   end

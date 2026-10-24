@@ -2353,15 +2353,7 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
    [Step 0](#step-0-depth-1-parity-579-582-581) is the follow-up that closed
    most of it (−3.0%); re-read this gap against those two sections rather
    than the #551 session.
-8. **A single-depth run collects the flush phases but does not render them.**
-   [#537](https://github.com/ebbjs/ebbjs/issues/537)'s phase and gauge tables
-   live in the sweep-only pipeline-depth section, as the issue specified, so
-   the headline `t0`/`t2` single-depth reports still print only the client and
-   `batch_latency_ms`/`commit_latency_ms` views. Running the same config as
-   `--in-flight 1,2` (or reading the raw `flush_phase_ms` samples) is the
-   workaround; a per-run phase table is a follow-up if the accounting is
-   wanted on every report.
-9. **README drift corrected.** `:writer_count`, `:warmer_*`, and
+8. **README drift corrected.** `:writer_count`, `:warmer_*`, and
    `:replication_peers` are read by nothing; the server README states the
    actual single-Writer behavior. `:writer_batch_timeout_ms` and
    `:writer_batch_max_size` were read by nothing as of #328 and are now
