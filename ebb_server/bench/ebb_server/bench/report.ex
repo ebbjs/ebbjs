@@ -6,7 +6,9 @@ defmodule EbbServer.Bench.Report do
 
   A result is one entry per measured pass. A pipeline-depth sweep renders the
   cross-run comparison table first and then one detail block per run; a plain
-  single-depth run keeps the original top-level sections.
+  single-depth run keeps the original top-level sections plus the Writer's own
+  pipeline section (Actions/flush, gauges, and flush phases), which a sweep
+  carries inside its depth section instead.
   """
 
   alias EbbServer.Bench.{Options, RunSummary}
@@ -24,6 +26,7 @@ defmodule EbbServer.Bench.Report do
 
     (header(config) ++
        pipeline_depth_section(runs, sweep?) ++
+       writer_pipeline_section(config, runs, sweep?) ++
        List.flatten(run_sections(config, runs, length(runs) > 1)) ++
        failures_section(failures) ++
        guardrails_section(Map.get(result, :guardrails)) ++
@@ -107,21 +110,58 @@ defmodule EbbServer.Bench.Report do
       "make the load change visible."
   end
 
+  defp writer_pipeline_section(_config, _runs, true), do: []
+
+  # A single-depth run has no depth table to carry the Writer's own numbers,
+  # so the coalescing shape and phase attribution get their own section. Every
+  # sweep already renders these tables under `## Pipeline depth`.
+  defp writer_pipeline_section(config, runs, false) do
+    if Options.bypasses_writer?(config) do
+      []
+    else
+      [
+        "## Writer pipeline",
+        "",
+        table(
+          ["Run", "Actions/flush", "Flush p50 (µs)"],
+          Enum.map(runs, &writer_flow_row/1)
+        ),
+        "",
+        "`Actions/flush` and `Flush p50` come from `ebb.writer.batch_latency_ms`, so they " <>
+          "describe the coalesced flush this run actually produced rather than the requested " <>
+          "burst; the gauges and phases below are the same tables a sweep renders in its " <>
+          "pipeline-depth section.",
+        "",
+        writer_gauge_section(runs),
+        writer_phase_section(runs)
+      ]
+      |> List.flatten()
+    end
+  end
+
+  defp writer_flow_row(%{label: label, metrics: metrics}) do
+    [
+      label,
+      format_actions_per_flush(metrics.correctness.accepted, metrics.server.writer_batch),
+      format_flush_p50(metrics.server.writer_batch)
+    ]
+  end
+
   defp writer_gauge_section(runs) do
     rows =
       Enum.map(runs, fn run ->
-        queue = Map.fetch!(run.metrics.server, :queue_depth)
-        in_flight = Map.fetch!(run.metrics.server, :in_flight_batches)
-        oldest = Map.fetch!(run.metrics.server, :oldest_unreleased_gsn)
+        queue = Map.get(run.metrics.server, :queue_depth)
+        in_flight = Map.get(run.metrics.server, :in_flight_batches)
+        oldest = Map.get(run.metrics.server, :oldest_unreleased_gsn)
 
         [
           run.label,
-          format_value(queue.peak),
-          format_value(queue.mean),
-          format_value(in_flight.peak),
-          format_value(in_flight.mean),
-          format_value(oldest.peak),
-          format_value(oldest.mean)
+          gauge_value(queue, :peak),
+          gauge_value(queue, :mean),
+          gauge_value(in_flight, :peak),
+          gauge_value(in_flight, :mean),
+          gauge_value(oldest, :peak),
+          gauge_value(oldest, :mean)
         ]
       end)
 
@@ -189,8 +229,16 @@ defmodule EbbServer.Bench.Report do
     end
   end
 
+  # A synthetic report fixture can omit the writer gauges entirely; a real run
+  # always collects them.
+  defp gauge_value(nil, _key), do: "n/a"
+  defp gauge_value(gauge, key), do: format_value(Map.fetch!(gauge, key))
+
   defp no_flush_phases?(server, phases) do
-    Enum.all?(phases, &(overall(Map.fetch!(server.flush_phases, &1)).count == 0))
+    case Map.get(server, :flush_phases) do
+      nil -> true
+      samples -> Enum.all?(phases, &(overall(Map.fetch!(samples, &1)).count == 0))
+    end
   end
 
   defp flush_phase_cells(server, phases) do
