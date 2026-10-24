@@ -122,8 +122,8 @@ deliberately:
 
 - **`t5` is the write leg.** `EbbServer.Bench.WriteBatch` _is_ the t5 recipe —
   a raw `write_batch` with no Writer, cache, or watermark — so the write leg
-  runs it with the stored value under test and at both flush sizes. `t5
---ablate build,encode` prices the payload build and ETF encode that #532
+  runs it with the stored value under test and at both flush sizes.
+  `t5 --ablate build,encode` prices the payload build and ETF encode that #532
   moved before the claim, which is upstream of the envelope and unchanged
   here, so it is not the instrument for this question. The encode leg is.
 - **Flush size does not enter a read leg.** A read decodes one Action at a
