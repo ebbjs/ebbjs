@@ -7,6 +7,9 @@ defmodule EbbServer.Bench.MetricsTest do
   use ExUnit.Case, async: true
 
   alias EbbServer.Bench.{Metrics, Options}
+  alias EbbServer.Telemetry
+
+  @ctx %{entities: [], seeded_actions: 1}
 
   describe "fanout_series/3" do
     test "buckets push samples and reports nearest-rank percentiles" do
@@ -156,6 +159,57 @@ defmodule EbbServer.Bench.MetricsTest do
     end
   end
 
+  describe "writer flush phases and pipeline gauges" do
+    test "windows each phase, the accounting total, and both gauges" do
+      {:ok, config} = Options.parse(["--duration", "10"])
+
+      telemetry = %{
+        {:writer_flush_phase, :queue} => [{-1_000_000, 9_999}, {0, 1_000}, {2_000_000, 3_000}],
+        {:writer_flush_phase, :prepare} => [{0, 2_000}],
+        {:writer_flush_phase, :resolve} => [{0, 4_000}],
+        {:writer_flush_phase, :commit_wait} => [{0, 6_000}],
+        {:writer_flush_phase, :apply} => [{0, 8_000}],
+        {:writer_flush_phase, :notify} => [{0, 10_000}],
+        :writer_flush_total => [{0, 31_000}, {2_000_000, 35_000}],
+        :writer_queue_depth => [{0, 1}, {1_000_000, 3}],
+        :writer_in_flight => [{0, 3}, {1_000_000, 1}],
+        :writer_oldest_unreleased_gsn => [{0, 0}, {1_000_000, 8}]
+      }
+
+      server = Metrics.analyze(config, @ctx, [worker()], [], nil, telemetry).server
+
+      assert Enum.sort(Map.keys(server.flush_phases)) ==
+               Enum.sort(Telemetry.writer_flush_phases())
+
+      assert %{window: "overall", count: 2, p50: 1_000, p95: 3_000, p99: 3_000} =
+               overall(server.flush_phases.queue)
+
+      assert overall(server.flush_phases.prepare).count == 1
+      assert overall(server.flush_phases.prepare).p50 == 2_000
+      assert overall(server.flush_phases.notify).p50 == 10_000
+
+      assert %{count: 2, p50: 31_000} = overall(server.flush_total)
+      assert server.queue_depth == %{count: 2, mean: 2.0, peak: 3}
+      assert server.in_flight_batches == %{count: 2, mean: 2.0, peak: 3}
+      assert server.oldest_unreleased_gsn == %{count: 2, mean: 4.0, peak: 8}
+    end
+
+    test "an empty telemetry map leaves the phases and gauges unmeasured" do
+      {:ok, config} = Options.parse([])
+
+      server = Metrics.analyze(config, @ctx, [worker()], [], nil, %{}).server
+
+      for phase <- Telemetry.writer_flush_phases() do
+        assert overall(server.flush_phases[phase]).count == 0
+      end
+
+      assert overall(server.flush_total).count == 0
+      assert server.queue_depth == %{count: 0, mean: nil, peak: nil}
+      assert server.in_flight_batches == %{count: 0, mean: nil, peak: nil}
+      assert server.oldest_unreleased_gsn == %{count: 0, mean: nil, peak: nil}
+    end
+  end
+
   describe "gsn_hole_stats/1" do
     test "a contiguous log has no holes" do
       assert Metrics.gsn_hole_stats([1, 2, 3]) == %{count: 0, first_missing: nil}
@@ -173,6 +227,8 @@ defmodule EbbServer.Bench.MetricsTest do
       assert Metrics.gsn_hole_stats([]) == %{count: 0, first_missing: nil}
     end
   end
+
+  defp overall(windows), do: Enum.find(windows, &(&1.window == "overall"))
 
   defp worker(overrides \\ []) do
     Map.merge(

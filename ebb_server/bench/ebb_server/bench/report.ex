@@ -11,6 +11,7 @@ defmodule EbbServer.Bench.Report do
 
   alias EbbServer.Bench.{Options, RunSummary}
   alias EbbServer.Storage.RocksDB
+  alias EbbServer.Telemetry
 
   @doc """
   Renders the full Markdown report.
@@ -63,8 +64,6 @@ defmodule EbbServer.Bench.Report do
   defp pipeline_depth_section(_runs, false), do: []
 
   defp pipeline_depth_section(runs, true) do
-    rows = Enum.map(runs, &pipeline_depth_row/1)
-
     [
       "## Pipeline depth",
       "",
@@ -85,19 +84,122 @@ defmodule EbbServer.Bench.Report do
           "GSN holes",
           "Watermark lag high-water"
         ],
+        Enum.map(runs, &pipeline_depth_row/1)
+      ),
+      "",
+      pipeline_depth_note(),
+      "",
+      writer_gauge_section(runs),
+      writer_phase_section(runs)
+    ]
+    |> List.flatten()
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp pipeline_depth_note do
+    "Observed peak and mean count the harness's outstanding `write_actions/1` calls per " <>
+      "worker (`Callers × Calls in flight` calls are outstanding in total); the Writer's own " <>
+      "view is the gauge table below, not these columns. The `t0 baseline` row is the " <>
+      "no-regression check measured in this same report. Every depth runs against a fresh " <>
+      "booted and seeded DB. `Actions/flush` and `Flush p50` come from " <>
+      "`ebb.writer.batch_latency_ms`: the current Writer coalesces outstanding calls into " <>
+      "shared flushes, so a deeper workload also deepens the flush, and those two columns " <>
+      "make the load change visible."
+  end
+
+  defp writer_gauge_section(runs) do
+    rows =
+      Enum.map(runs, fn run ->
+        queue = Map.fetch!(run.metrics.server, :queue_depth)
+        in_flight = Map.fetch!(run.metrics.server, :in_flight_batches)
+        oldest = Map.fetch!(run.metrics.server, :oldest_unreleased_gsn)
+
+        [
+          run.label,
+          format_value(queue.peak),
+          format_value(queue.mean),
+          format_value(in_flight.peak),
+          format_value(in_flight.mean),
+          format_value(oldest.peak),
+          format_value(oldest.mean)
+        ]
+      end)
+
+    [
+      "### Writer pipeline gauges",
+      "",
+      table(
+        [
+          "Run",
+          "`queue_depth` peak",
+          "`queue_depth` mean",
+          "`in_flight_batches` peak",
+          "`in_flight_batches` mean",
+          "`oldest_unreleased_gsn` peak",
+          "`oldest_unreleased_gsn` mean"
+        ],
         rows
       ),
       "",
-      "Observed peak and mean count the harness's outstanding `write_actions/1` calls per " <>
-        "worker, not the Writer's in-flight batches (`Callers × Calls in flight` calls are " <>
-        "outstanding in total). The `t0 baseline` row is the no-regression check measured in " <>
-        "this same report. Every depth runs against a fresh booted and seeded DB. " <>
-        "`Actions/flush` and `Flush p50` come from `ebb.writer.batch_latency_ms`: the current " <>
-        "Writer coalesces outstanding calls into shared flushes, so a deeper workload also " <>
-        "deepens the flush, and those two columns make the load change visible.",
+      "`queue_depth` is the number of `write_actions/1` calls one flush drained, taken from " <>
+        "`ebb.writer.batch_size`'s `callers`, so its peak/mean describe how deep the coalescing " <>
+        "queue got, not a sampled mailbox length. The other two columns are the Writer's own " <>
+        "`ebb.writer.in_flight_batches` and `ebb.writer.oldest_unreleased_gsn` gauges, emitted " <>
+        "on every claim and release, so they describe the actual reorder buffer rather than the " <>
+        "harness-side `Observed` columns above. `in_flight_batches` counts every open claim, " <>
+        "including one applying; `oldest_unreleased_gsn` is the head of the claim order and `0` " <>
+        "when the buffer is empty, so its mean includes idle samples.",
       ""
     ]
   end
+
+  defp writer_phase_section(runs) do
+    phases = Telemetry.writer_flush_phases()
+    heading = ["### Flush phases (p50 / p95, µs)", ""]
+
+    if Enum.all?(runs, &no_flush_phases?(&1.metrics.server, phases)) do
+      heading ++
+        [
+          "Not captured: no `ebb.writer.flush_phase_ms` samples landed in the measured " <>
+            "window, so the Writer's phases cannot be attributed for these runs. The event is " <>
+            "emitted once per claimed range; a run from a build before it landed has no phase " <>
+            "data.",
+          ""
+        ]
+    else
+      rows =
+        Enum.map(runs, fn run ->
+          [run.label | flush_phase_cells(run.metrics.server, phases)]
+        end)
+
+      heading ++
+        [
+          table(["Run" | Enum.map(phases, &Atom.to_string/1)] ++ ["sum p50"], rows),
+          "",
+          "Each phase cell is `p50 / p95` in µs. The six phases sum to one claimed range's " <>
+            "lifetime, from the oldest coalesced call's send to the end of its `notify` phase, " <>
+            "so `sum p50` (the per-range sum the collector records as `flush_total`) is the " <>
+            "flush a caller waited on. `queue` and `prepare` are the terms " <>
+            "`ebb.writer.batch_latency_ms` cannot see, because its timer starts after the " <>
+            "request is dequeued and the payload is built. A phase that did " <>
+            "not run is `0`, not missing, so an abandoned range reports `0` for the phases it " <>
+            "never reached.",
+          ""
+        ]
+    end
+  end
+
+  defp no_flush_phases?(server, phases) do
+    Enum.all?(phases, &(overall(Map.fetch!(server.flush_phases, &1)).count == 0))
+  end
+
+  defp flush_phase_cells(server, phases) do
+    Enum.map(phases, fn phase -> phase_cell(overall(Map.fetch!(server.flush_phases, phase))) end) ++
+      [format_value(overall(server.flush_total).p50)]
+  end
+
+  defp phase_cell(%{count: 0}), do: "n/a"
+  defp phase_cell(window), do: "#{format_value(window.p50)} / #{format_value(window.p95)}"
 
   defp pipeline_depth_row(%{depth: depth, label: label, metrics: metrics}) do
     achieved = overall(metrics.throughput)
@@ -393,8 +495,10 @@ defmodule EbbServer.Bench.Report do
           "encoding and transport are excluded; `ebb.writer.batch_latency_ms` covers one durable " <>
           "Writer flush, and `ebb.writer.commit_latency_ms` is the Committer's share of it " <>
           "(wrapper encode + `cf_*` op assembly + `write_batch`); `ebb.fanout.push_latency_ms` is commit → broadcast complete per batch per group. " <>
-          "The Writer flush timer starts after the request is dequeued, so the wait a call spends " <>
-          "in the Writer mailbox is not instrumented and stays inside the client-side number. " <>
+          "`ebb.writer.batch_latency_ms` starts after the request is dequeued, so the wait a " <>
+          "call spends in the Writer mailbox is not part of it: `ebb.writer.flush_phase_ms` " <>
+          "reports that wait as `queue`, with `prepare` beside it, and a sweep renders the " <>
+          "phase table in the pipeline-depth section. " <>
           "Durations are converted from native time units to microseconds and windowed like the " <>
           "client-side samples.\n"
     end
@@ -428,7 +532,8 @@ defmodule EbbServer.Bench.Report do
       "Writer, and `ebb.writer.commit_latency_ms` covers only the wrapper encode, op " <>
       "assembly, and `write_batch` after the payload was built and encoded before the " <>
       "claim. The difference is worker overhead plus the time the call spent in the Writer " <>
-      "mailbox, which is not separately instrumented.\n"
+      "mailbox, which `ebb.writer.flush_phase_ms` reports as `queue` (with `prepare` measured " <>
+      "beside it); a sweep renders that phase table in the pipeline-depth section.\n"
   end
 
   defp latency_note(%{tier: :t5}) do
@@ -443,7 +548,9 @@ defmodule EbbServer.Bench.Report do
       "encoding, transport, and response parsing; server-side `ebb.http.request_latency_ms` " <>
       "measures the request inside the server, so the difference is client and transport " <>
       "overhead. `ebb.writer.batch_latency_ms` reports the durable flush separately; the wait " <>
-      "a request spends in the Writer mailbox sits between the two and is not instrumented.\n"
+      "a request spends in the Writer mailbox sits between the two and is reported by " <>
+      "`ebb.writer.flush_phase_ms` as `queue` (with `prepare` measured beside it), whose " <>
+      "phase table a sweep renders in the pipeline-depth section.\n"
   end
 
   defp fanout_section(%{tier: :t4}, _fanout, _server), do: nil
@@ -644,8 +751,10 @@ defmodule EbbServer.Bench.Report do
       "the headline batch/Action shape (Actions per call, Updates per Action, distribution, and " <>
       "durability). " <>
       baseline_note(baseline?) <>
-      "The observed peak and mean are harness-side outstanding calls, not the Writer's " <>
-      "in-flight batches (#537). The Writer is booted with `max_in_flight` = min(N, 4), so a " <>
+      "The observed peak and mean are harness-side outstanding calls; the Writer's own " <>
+      "`ebb.writer.in_flight_batches` and `ebb.writer.oldest_unreleased_gsn` gauges are " <>
+      "reported in a sweep's pipeline-depth section (#537). The Writer is booted with " <>
+      "`max_in_flight` = min(N, 4), so a " <>
       "successor can resolve against the predecessor's planned cache overlay while it " <>
       "commits; N outstanding calls can still coalesce into shared flushes, which is why " <>
       "`Actions/flush` is reported beside every depth row."
@@ -675,8 +784,8 @@ defmodule EbbServer.Bench.Report do
     "Client-side latency is timed in the bench worker (T0) or around `:httpc` (HTTP tiers); " <>
       "server-side latency is recorded by the server and read from the `ebb.*` telemetry " <>
       "events (`ebb.http.request_latency_ms`, `ebb.writer.batch_latency_ms`, " <>
-      "`ebb.fanout.push_latency_ms`) with handlers attached in the bench process, so " <>
-      "transport and server queueing are reported separately."
+      "`ebb.writer.flush_phase_ms`, `ebb.fanout.push_latency_ms`) with handlers attached in " <>
+      "the bench process, so transport and server queueing are reported separately."
   end
 
   defp write_batch_note(_config), do: ""

@@ -45,6 +45,72 @@ defmodule EbbServer.Bench.PipelineDepthReportTest do
     assert report =~ "headline batch/Action shape"
   end
 
+  test "a sweep renders the Writer's pipeline gauges and flush phases per run" do
+    {:ok, sweep} = Options.parse(["--tier", "t2", "--in-flight", "1,4", "--duration", "10"])
+
+    report =
+      Report.render(sweep, %{
+        runs: [
+          %{
+            depth: 1,
+            label: "t0 baseline",
+            metrics: analyze(sweep, worker(1), writer_telemetry())
+          },
+          %{depth: 4, label: "pipeline", metrics: analyze(sweep, worker(4), writer_telemetry())}
+        ],
+        sweep?: true
+      })
+
+    assert report =~ "### Writer pipeline gauges"
+
+    assert report =~
+             "| Run | `queue_depth` peak | `queue_depth` mean | " <>
+               "`in_flight_batches` peak | `in_flight_batches` mean | " <>
+               "`oldest_unreleased_gsn` peak | `oldest_unreleased_gsn` mean |"
+
+    assert report =~ "| t0 baseline | 2 | 1.5 | 2 | 1.5 | 3 | 1.5 |"
+    assert report =~ "| pipeline | 2 | 1.5 | 2 | 1.5 | 3 | 1.5 |"
+    assert report =~ "calls one flush drained"
+    assert report =~ "emitted on every claim and release"
+    assert report =~ "`0` when the buffer is empty, so its mean includes idle samples"
+
+    assert report =~ "### Flush phases (p50 / p95, µs)"
+
+    assert report =~
+             "| Run | queue | prepare | resolve | commit_wait | apply | notify | sum p50 |"
+
+    assert report =~
+             "| t0 baseline | 100 / 300 | 40 / 40 | 50 / 50 | 60 / 60 | 70 / 70 | 80 / 80 | 400 |"
+
+    assert report =~
+             "| pipeline | 100 / 300 | 40 / 40 | 50 / 50 | 60 / 60 | 70 / 70 | 80 / 80 | 400 |"
+
+    assert report =~
+             "`queue` and `prepare` are the terms `ebb.writer.batch_latency_ms` cannot see"
+
+    assert report =~ "reported in a sweep's pipeline-depth section (#537)"
+  end
+
+  test "a sweep with no phase samples reports the phases as not captured" do
+    {:ok, sweep} = Options.parse(["--tier", "t2", "--in-flight", "1,4", "--duration", "10"])
+
+    report =
+      Report.render(sweep, %{
+        runs: [
+          %{depth: 1, label: "t0 baseline", metrics: analyze(sweep, worker(1))},
+          %{depth: 4, label: "pipeline", metrics: analyze(sweep, worker(4))}
+        ],
+        sweep?: true
+      })
+
+    assert report =~ "### Flush phases (p50 / p95, µs)"
+    assert report =~ "Not captured"
+    refute report =~ "| Run | queue | prepare |"
+
+    assert report =~ "### Writer pipeline gauges"
+    assert report =~ "| t0 baseline | n/a | n/a | n/a | n/a | n/a | n/a |"
+  end
+
   test "a single pipelined run does not claim a baseline it never measured" do
     {:ok, config} = Options.parse(["--tier", "t0", "--in-flight", "2"])
 
@@ -88,6 +154,8 @@ defmodule EbbServer.Bench.PipelineDepthReportTest do
     refute report =~ "## Pipeline depth"
     refute report =~ "## Run:"
     refute report =~ "max_in_flight"
+    refute report =~ "### Writer pipeline gauges"
+    refute report =~ "### Flush phases"
 
     assert report =~ "## Throughput"
     assert report =~ "## Latency"
@@ -114,8 +182,23 @@ defmodule EbbServer.Bench.PipelineDepthReportTest do
     assert report =~ "## Run: depth 2 (t0)"
   end
 
-  defp analyze(config, worker) do
-    Metrics.analyze(config, @ctx, [worker], [], nil, %{writer_batch: [{0, 1_000}, {1_000, 2_000}]})
+  defp analyze(config, worker, telemetry \\ %{writer_batch: [{0, 1_000}, {1_000, 2_000}]}) do
+    Metrics.analyze(config, @ctx, [worker], [], nil, telemetry)
+  end
+
+  defp writer_telemetry do
+    %{
+      {:writer_flush_phase, :queue} => [{0, 100}, {0, 300}],
+      {:writer_flush_phase, :prepare} => [{0, 40}],
+      {:writer_flush_phase, :resolve} => [{0, 50}],
+      {:writer_flush_phase, :commit_wait} => [{0, 60}],
+      {:writer_flush_phase, :apply} => [{0, 70}],
+      {:writer_flush_phase, :notify} => [{0, 80}],
+      :writer_flush_total => [{0, 400}],
+      :writer_queue_depth => [{0, 1}, {1_000_000, 2}],
+      :writer_in_flight => [{0, 1}, {1_000_000, 2}],
+      :writer_oldest_unreleased_gsn => [{0, 0}, {1_000_000, 3}]
+    }
   end
 
   defp worker(depth) do

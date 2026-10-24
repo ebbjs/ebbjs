@@ -527,6 +527,7 @@ suffix marks a latency metric, not the raw unit. Reporters convert with
 | `ebb.writer.commit_failed`                | `count`                                                                                              | `gsn_start`, `gsn_end`, `reason`                                                                             | Counter                      | `writer`        |
 | `ebb.writer.in_flight_batches`            | `count`                                                                                              | —                                                                                                            | Gauge                        | `writer`        |
 | `ebb.writer.oldest_unreleased_gsn`        | `gsn`                                                                                                | —                                                                                                            | Gauge                        | `writer`        |
+| `ebb.writer.flush_phase_ms`               | one measurement per phase (`EbbServer.Telemetry.writer_flush_phases/0`)                              | `gsn_start`, `gsn_end`, `outcome` (`:ok` / `:abandoned`), `reason` (abandoned only)                          | Histogram                    | `writer`        |
 | `ebb.watermark.lag`                       | `lag` (GSNs; durability: max GSN − committed watermark)                                              | —                                                                                                            | Gauge                        | `watermark`     |
 | `ebb.dirty_set.size`                      | `size` (entries)                                                                                     | —                                                                                                            | Gauge                        | `dirty_set`     |
 | `ebb.writer.in_flight_action_ids`         | `size` (ids)                                                                                         | —                                                                                                            | Gauge                        | `writer`        |
@@ -556,6 +557,17 @@ frontier may cover a durable range before its apply, and the Router's
 `Plan` is the real notification gate.
 `ebb.writer.in_flight_action_ids` is bounded by the write-pipeline depth, not
 by history: ids leave the set when their batch commits or abandons.
+
+`ebb.writer.flush_phase_ms` fires once per claimed range and splits its
+wall time into `queue`, `prepare`, `resolve`, `commit_wait`, `apply`, and
+`notify` (see
+`EbbServer.Telemetry.writer_flush_phases/0` for the canonical order). The
+six phases sum to the range's lifetime from the oldest coalesced call's
+`write_actions/2` send to the end of its `notify` phase (the fan-out nudge
+and the caller replies), so a reporter can attribute client latency instead
+of treating everything outside `batch_latency_ms` as residual. A phase that
+did not run is `0`: an abandoned range keeps its `outcome: :abandoned` and
+`reason`, and reports the phases it never reached as zero.
 
 `ebb.fanout.push_latency_ms` is measured from the Writer's durable commit to
 the GroupServer dispatching the batch to the group's subscribers: one sample
@@ -934,7 +946,10 @@ mix bench.actions --tier t2 --duration 120 --warmup 5 --concurrency 8 \
 `t3` only), and the report adds a depth table with a t0 depth-1
 no-regression baseline row. The table pairs depth with `Actions/flush`:
 depth alone is not a pipeline-parallelism result, because the Writer
-coalesces the outstanding calls into shared flushes.
+coalesces the outstanding calls into shared flushes. The same section
+reports the Writer's own `ebb.writer.in_flight_batches` and
+`ebb.writer.oldest_unreleased_gsn` gauges, the flush queue depth, and the
+`ebb.writer.flush_phase_ms` breakdown (p50/p95 per phase) for each depth.
 
 A run fails (non-zero exit) if it loses GSNs, freezes its watermark, or
 reports rejected Actions or write/transport errors; `--no-guardrails` opts

@@ -34,6 +34,8 @@ defmodule EbbServer.Storage.WriterCommitterPoolTest do
       first = validated_action(%{id: "act_pool_first"})
       second = validated_action(%{id: "act_pool_second"})
 
+      ref = attach_telemetry([[:ebb, :writer, :flush_phase_ms]])
+
       %{name: writer_name, pid: writer_pid} =
         start_writer(pool_writer_opts(ctx, router, :block, nil))
 
@@ -77,6 +79,20 @@ defmodule EbbServer.Storage.WriterCommitterPoolTest do
 
       assert [%{"id" => "act_pool_first", "gsn" => 1}] =
                ActionLog.read(1, 2, rocks_name: ctx.rocks_name)
+
+      # Both outcomes emit one phase event: the crashed range abandons
+      # before apply, the healthy one completes.
+      crashed =
+        Enum.find(
+          telemetry_events(ref),
+          &match?({[:ebb, :writer, :flush_phase_ms], _, %{gsn_start: 2}}, &1)
+        )
+
+      assert {_event, measurements, %{outcome: :abandoned, reason: {:committer_crashed, :killed}}} =
+               crashed
+
+      assert measurements.apply == 0
+      assert measurements.notify == 0
 
       assert :not_found =
                RocksDB.get(

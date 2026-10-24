@@ -12,6 +12,7 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
   use ExUnit.Case, async: false
 
   alias EbbServer.Storage.Writer
+  alias EbbServer.Telemetry
 
   import EbbServer.TestHelpers
 
@@ -23,7 +24,8 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
     [:ebb, :writer, :range_resolved],
     [:ebb, :writer, :commit_failed],
     [:ebb, :writer, :in_flight_batches],
-    [:ebb, :writer, :oldest_unreleased_gsn]
+    [:ebb, :writer, :oldest_unreleased_gsn],
+    [:ebb, :writer, :flush_phase_ms]
   ]
 
   setup do
@@ -166,6 +168,181 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
                find_event(events, [:ebb, :writer, :commit_latency_ms])
 
       assert is_integer(duration)
+    end
+  end
+
+  describe "flush phase timings" do
+    test "a successful flush reports one event per range with every phase", ctx do
+      ref = attach_telemetry(@writer_events)
+      %{name: writer_name} = start_writer(writer_opts(ctx, %{}))
+
+      actions = [
+        validated_action(%{id: "act_phase_ok_1"}),
+        validated_action(%{id: "act_phase_ok_2"})
+      ]
+
+      started_at = System.monotonic_time()
+      assert {:ok, {1, 2}, []} = Writer.write_actions(actions, writer_name)
+      events = telemetry_events(ref)
+
+      # Read after the event lands, so the bound cannot race the Writer's
+      # last phase stamp.
+      elapsed = System.monotonic_time() - started_at
+
+      assert [{[:ebb, :writer, :flush_phase_ms], measurements, metadata}] =
+               flush_phase_events(events)
+
+      assert Enum.sort(Map.keys(measurements)) == Enum.sort(Telemetry.writer_flush_phases())
+
+      for phase <- Telemetry.writer_flush_phases() do
+        assert is_integer(measurements[phase]), "#{phase} is not an integer"
+        assert measurements[phase] >= 0, "#{phase} is negative"
+      end
+
+      assert metadata == %{gsn_start: 1, gsn_end: 2, outcome: :ok}
+
+      # Every phase is a slice of the range's lifetime, so the sum of the
+      # six is the wall time the test itself observed.
+      assert Enum.sum(Map.values(measurements)) > 0
+      assert Enum.sum(Map.values(measurements)) <= elapsed
+    end
+
+    test "coalesced calls report the oldest call's mailbox wait in queue", ctx do
+      ref = attach_telemetry(@writer_events)
+      %{name: writer_name, pid: writer_pid} = start_writer(writer_opts(ctx, %{}))
+
+      :ok = :sys.suspend(writer_name)
+
+      tasks =
+        for i <- 1..2 do
+          Task.async(fn ->
+            Writer.write_actions(
+              [validated_action(%{id: "act_phase_coalesced_#{i}"})],
+              writer_name
+            )
+          end)
+        end
+
+      assert wait_until(fn -> queue_len(writer_pid) >= 2 end)
+      :ok = :sys.resume(writer_name)
+
+      for task <- tasks, do: assert({:ok, {_, _}, []} = Task.await(task, 2_000))
+
+      assert [
+               {[:ebb, :writer, :flush_phase_ms], %{queue: queue},
+                %{gsn_start: 1, gsn_end: 2, outcome: :ok}}
+             ] = flush_phase_events(telemetry_events(ref))
+
+      assert queue > 0
+    end
+
+    test "a failed commit reports only the phases reached before the abandon", ctx do
+      ref = attach_telemetry(@writer_events)
+
+      commit_fn = fn _ops, _opts ->
+        Process.sleep(2)
+        {:error, :injected_rocksdb_failure}
+      end
+
+      %{name: writer_name} = start_writer(writer_opts(ctx, %{commit_fn: commit_fn}))
+
+      assert {:error, {:rocksdb_write_failed, :injected_rocksdb_failure}} =
+               Writer.write_actions([validated_action(%{id: "act_phase_fail"})], writer_name)
+
+      assert [{[:ebb, :writer, :flush_phase_ms], measurements, metadata}] =
+               flush_phase_events(telemetry_events(ref))
+
+      assert Enum.sort(Map.keys(measurements)) == Enum.sort(Telemetry.writer_flush_phases())
+
+      assert metadata == %{
+               gsn_start: 1,
+               gsn_end: 1,
+               outcome: :abandoned,
+               reason: :injected_rocksdb_failure
+             }
+
+      assert measurements.queue >= 0
+      assert measurements.prepare >= 0
+      assert measurements.resolve >= 0
+      assert measurements.commit_wait > 0
+      assert measurements.apply == 0
+      assert measurements.notify == 0
+    end
+
+    test "a raising commit reports the abandon reason and stops before apply", ctx do
+      ref = attach_telemetry(@writer_events)
+
+      commit_fn = fn _ops, _opts ->
+        Process.sleep(2)
+        raise "phase boom"
+      end
+
+      %{name: writer_name} = start_writer(writer_opts(ctx, %{commit_fn: commit_fn}))
+
+      assert {:error, {:rocksdb_write_failed, {:committer_raised, %RuntimeError{}}}} =
+               Writer.write_actions([validated_action(%{id: "act_phase_raise"})], writer_name)
+
+      events = telemetry_events(ref)
+
+      assert {_event, _measurements, %{reason: reason}} =
+               find_event(events, [:ebb, :writer, :range_resolved])
+
+      assert [{[:ebb, :writer, :flush_phase_ms], measurements, metadata}] =
+               flush_phase_events(events)
+
+      assert %{gsn_start: 1, gsn_end: 1, outcome: :abandoned, reason: ^reason} = metadata
+      assert reason == {:committer_raised, %RuntimeError{message: "phase boom"}}
+      assert measurements.commit_wait > 0
+      assert measurements.apply == 0
+      assert measurements.notify == 0
+    end
+
+    test "a failed cache apply reports the durable range as ok with the replies in notify", ctx do
+      ref = attach_telemetry(@writer_events)
+
+      %{name: writer_name} =
+        start_writer(writer_opts(ctx, %{entity_types: :ebb_537_missing_table}))
+
+      assert {:ok, {1, 1}, []} =
+               Writer.write_actions([validated_action(%{id: "act_phase_escalate"})], writer_name)
+
+      assert [{[:ebb, :writer, :flush_phase_ms], measurements, metadata}] =
+               flush_phase_events(telemetry_events(ref))
+
+      assert metadata == %{gsn_start: 1, gsn_end: 1, outcome: :ok}
+      assert measurements.apply > 0
+      assert measurements.notify > 0
+    end
+
+    test "a resolve-time abandon reports queue, prepare, and resolve only", ctx do
+      ref = attach_telemetry(@writer_events)
+
+      # `entity_groups` names a table that does not exist, so group
+      # resolution raises inside `dispatch/8` after the range is claimed.
+      %{name: writer_name, pid: writer_pid} =
+        start_writer(writer_opts(ctx, %{entity_groups: :ebb_537_missing_table}))
+
+      Process.unlink(writer_pid)
+
+      catch_exit(
+        Writer.write_actions([validated_action(%{id: "act_phase_resolve_fail"})], writer_name)
+      )
+
+      assert [{[:ebb, :writer, :flush_phase_ms], measurements, metadata}] =
+               flush_phase_events(telemetry_events(ref))
+
+      assert %{gsn_start: 1, gsn_end: 1, outcome: :abandoned, reason: reason} = metadata
+      assert %ArgumentError{} = reason
+      assert measurements.queue >= 0
+      assert measurements.prepare >= 0
+      assert measurements.resolve >= 0
+      assert measurements.commit_wait == 0
+      assert measurements.apply == 0
+      assert measurements.notify == 0
+    end
+
+    defp flush_phase_events(events) do
+      Enum.filter(events, &match?({[:ebb, :writer, :flush_phase_ms], _, _}, &1))
     end
   end
 

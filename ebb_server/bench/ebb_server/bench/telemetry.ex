@@ -8,6 +8,14 @@ defmodule EbbServer.Bench.Telemetry do
   a run report latency measured *inside* the server instead of inferring it
   from the client's wall clock.
 
+  `ebb.writer.flush_phase_ms` is split into one series per phase under
+  `{:writer_flush_phase, phase}` plus the range's accounting total under
+  `:writer_flush_total`, so a report can attribute one flush without
+  re-summing the phase rows. The Writer's two pipeline gauges are recorded
+  raw under `:writer_in_flight` and `:writer_oldest_unreleased_gsn`, and the
+  flush queue depth (the number of calls one flush drained, from
+  `ebb.writer.batch_size`'s `callers`) under `:writer_queue_depth`.
+
   Handlers run in whichever process emits the event — the Writer, a request
   process, a GroupServer — so samples land in a public ETS table an emitter
   can write without blocking on the collector. Each sample is stamped with
@@ -20,10 +28,14 @@ defmodule EbbServer.Bench.Telemetry do
   even when a worker crashes.
 
   Latency samples are returned as `%{tag => [{offset_us, duration_us}]}`.
-  The dispatched-Actions counter keeps the same row shape under
-  `:fanout_dispatched`, where each value is the deliveries enqueued by one
-  batch (`count * subscribers`); `stop/1` additionally reports the run-scoped
-  `%{total, samples}` under `:fanout_dispatched_summary`.
+  The flush phases use `{:writer_flush_phase, phase}` tags in
+  `EbbServer.Telemetry.writer_flush_phases/0` order and `:writer_flush_total`;
+  the gauges keep their level as the value under `:writer_in_flight` and
+  `:writer_oldest_unreleased_gsn`. The dispatched-Actions counter keeps the
+  same row shape under `:fanout_dispatched`, where each value is the
+  deliveries enqueued by one batch (`count * subscribers`); `stop/1`
+  additionally reports the run-scoped `%{total, samples}` under
+  `:fanout_dispatched_summary`.
   """
 
   @handler_id {__MODULE__, :bench}
@@ -33,8 +45,12 @@ defmodule EbbServer.Bench.Telemetry do
   @cap 2_000_000
 
   @events [
+    [:ebb, :writer, :batch_size],
     [:ebb, :writer, :batch_latency_ms],
     [:ebb, :writer, :commit_latency_ms],
+    [:ebb, :writer, :flush_phase_ms],
+    [:ebb, :writer, :in_flight_batches],
+    [:ebb, :writer, :oldest_unreleased_gsn],
     [:ebb, :http, :request_latency_ms],
     [:ebb, :fanout, :push_latency_ms],
     [:ebb, :fanout, :dispatched_actions]
@@ -61,7 +77,9 @@ defmodule EbbServer.Bench.Telemetry do
   Detaches the handlers, returns the samples, and drops the table.
 
   Samples are grouped by tag and returned oldest first as
-  `%{tag => [{offset_us, duration_us}]}`.
+  `%{tag => [{offset_us, value}]}`: duration tags carry microseconds, the
+  flush-phase total a summed duration, and the pipeline gauges their raw
+  level. Every row in one `ebb.writer.flush_phase_ms` event shares one offset.
   """
   @spec stop(t()) :: map()
   def stop(%{table: table, handler_id: handler_id}) do
@@ -90,6 +108,33 @@ defmodule EbbServer.Bench.Telemetry do
     record(config, :writer_commit, duration_us(measurements))
   end
 
+  def handle_event([:ebb, :writer, :batch_size], _measurements, %{callers: callers}, config) do
+    record(config, :writer_queue_depth, callers)
+  end
+
+  def handle_event([:ebb, :writer, :flush_phase_ms], measurements, _metadata, config) do
+    phases =
+      Enum.map(EbbServer.Telemetry.writer_flush_phases(), &{&1, duration_us(measurements, &1)})
+
+    # One offset for the whole range so every phase row and the total window
+    # identically.
+    offset = offset(config)
+
+    Enum.each(phases, fn {phase, us} ->
+      record_at(config, {:writer_flush_phase, phase}, offset, us)
+    end)
+
+    record_at(config, :writer_flush_total, offset, Enum.sum(Enum.map(phases, &elem(&1, 1))))
+  end
+
+  def handle_event([:ebb, :writer, :in_flight_batches], measurements, _metadata, config) do
+    record(config, :writer_in_flight, measurements.count)
+  end
+
+  def handle_event([:ebb, :writer, :oldest_unreleased_gsn], measurements, _metadata, config) do
+    record(config, :writer_oldest_unreleased_gsn, measurements.gsn)
+  end
+
   def handle_event([:ebb, :http, :request_latency_ms], measurements, _metadata, config) do
     record(config, :http_request, duration_us(measurements))
   end
@@ -103,12 +148,20 @@ defmodule EbbServer.Bench.Telemetry do
   end
 
   defp duration_us(measurements) do
-    System.convert_time_unit(measurements.duration, :native, :microsecond)
+    duration_us(measurements, :duration)
   end
 
-  defp record(%{table: table, measure_start: start}, tag, value) do
+  defp duration_us(measurements, key) do
+    System.convert_time_unit(Map.fetch!(measurements, key), :native, :microsecond)
+  end
+
+  defp record(config, tag, value), do: record_at(config, tag, offset(config), value)
+
+  defp offset(%{measure_start: start}), do: System.monotonic_time(:microsecond) - start
+
+  defp record_at(%{table: table}, tag, offset_us, value) do
     if :ets.info(table, :size) < @cap do
-      insert(table, tag, System.monotonic_time(:microsecond) - start, value)
+      insert(table, tag, offset_us, value)
     end
 
     :ok
