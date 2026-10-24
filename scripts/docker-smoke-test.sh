@@ -20,6 +20,8 @@ PORT="${EBB_SMOKE_PORT:-4000}"
 BUDGET_MB="${EBB_IMAGE_SIZE_BUDGET_MB:-250}"
 NAME="ebb-smoke-$$"
 VOLUME="ebb-smoke-data-$$"
+COMPOSE_PROJECT="ebb-smoke-$$"
+COMPOSE_SERVICE="ebb-dev"
 BASE_URL="http://localhost:${PORT}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -28,8 +30,19 @@ log() { printf '\n== %s\n' "$*"; }
 cleanup() {
   docker rm -f "$NAME" >/dev/null 2>&1 || true
   docker volume rm "$VOLUME" >/dev/null 2>&1 || true
+  if have_compose; then
+    compose --profile dev down -v >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
+
+have_compose() {
+  docker compose version >/dev/null 2>&1
+}
+
+compose() {
+  docker compose -p "$COMPOSE_PROJECT" -f "${REPO_ROOT}/compose.yaml" "$@"
+}
 
 status_of() {
   curl -s -o /dev/null -w '%{http_code}' "$@" || true
@@ -154,5 +167,43 @@ start_server
 
 log "read the earlier write back from the new container"
 node "${REPO_ROOT}/scripts/docker-persistence-check.mjs" verify "$BASE_URL"
+
+log "docker compose dev profile boots the same image with a named volume"
+if have_compose; then
+  # The direct container publishes the same host port, and the compose
+  # service name is the only way to start the profiled service alone
+  # (`--profile dev` would add the non-profiled production service).
+  docker rm -f "$NAME" >/dev/null
+  docker tag "$IMAGE" ebb-smoke-compose:test
+  EBB_IMAGE=ebb-smoke-compose:test EBB_HOST_PORT="$PORT" \
+    compose --profile dev up -d --no-build --wait --wait-timeout 90 "$COMPOSE_SERVICE"
+  curl -fsS "${BASE_URL}/healthz" >/dev/null
+  if [ "$(status_of -X POST "${BASE_URL}/sync/handshake" -H 'content-type: application/json' -H 'x-ebb-actor-id: compose-dev' -d '{}')" != "200" ]; then
+    echo "FAIL: compose dev profile did not authorize a bypass handshake"
+    exit 1
+  fi
+  echo "compose service ${COMPOSE_SERVICE} is healthy and authorizes bypass"
+  compose --profile dev down -v >/dev/null
+
+  # The default service is what docs/self-hosting.md tells operators to
+  # run. External auth only needs a non-empty URL at boot; the first
+  # request is what calls it.
+  log "docker compose default service with external auth"
+  EBB_IMAGE=ebb-smoke-compose:test EBB_HOST_PORT="$PORT" \
+    EBB_AUTH_URL=http://127.0.0.1:9/auth \
+    compose up -d --no-build --wait --wait-timeout 90 ebb
+  if [ "$(status_of "${BASE_URL}/healthz")" != "200" ]; then
+    echo "FAIL: compose default service is not healthy"
+    exit 1
+  fi
+  if [ "$(status_of -X POST "${BASE_URL}/sync/handshake" -H 'content-type: application/json' -d '{}')" != "401" ]; then
+    echo "FAIL: compose default service did not require auth"
+    exit 1
+  fi
+  echo "compose default service is healthy and requires auth"
+  compose down -v >/dev/null
+else
+  echo "SKIP: docker compose is not available in this environment"
+fi
 
 log "PASS: ${IMAGE}"
