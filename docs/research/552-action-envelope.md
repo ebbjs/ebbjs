@@ -105,6 +105,21 @@ the sample size: the runner measures at least 51 flushes per size and 1,000
 read samples per path, because a few-millisecond window on a shared host lets
 one scheduler hiccup decide a p50.
 
+Where each of the issue's read paths is priced:
+
+| Path                                                 | Priced by                                                                                                                                       |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `commit_latency_ms` split, 100 and 152 Actions/flush | encode leg + write leg (the encode leg is the missing piece of the split; `commit_latency_ms` still spans both)                                 |
+| cold materialize                                     | `materialize` read leg, plus the `actions_load` phase of `mix bench.materialize` at the operating point                                         |
+| dirty materialize                                    | same (the dirty path's `actions_load` is the same `multi_get` + decode)                                                                         |
+| query                                                | the `materialize` read leg: `query` materializes its dirty ids through the same function, and its own sample is SQLite + JSON, not the envelope |
+| catch-up                                             | `catch_up` read leg                                                                                                                             |
+| export                                               | `export` read leg                                                                                                                               |
+| group listing                                        | the `materialize` read leg: it materializes each row through `EntityStore.materialize/2`                                                        |
+
+Flush size does not enter a read leg: the read paths decode one Action at a
+time and their cost does not depend on how many Actions shared the flush.
+
 Reproduce with:
 
 ```sh
@@ -117,10 +132,10 @@ mix bench.envelope --flush-sizes 100,152 --reads 1000 --runs 3
 Host: `recsy-vps`, AMD EPYC 7763, 4 schedulers for the BEAM, Elixir 1.17.3 /
 OTP 27, temp DB, `sync: true` — the same host and shape as
 [the #515 profile](515-materialization-profile.md) and the #529 benches. Two
-independent runs (A and B) are tabulated; a third (C, not tabulated) reproduced
-the ordering exactly — `frame` cheapest on all three read paths, `companion`
-worst on both scope-reading paths, the three single-record shapes within
-0.03 ms/flush of each other. Every number below is **[measured]**.
+independent runs (A and B) are tabulated. Three further runs (C–E, after a
+harness refactor that shared the flush op list with the t5 spike) reproduced
+every ordering in them with one exception, noted below. Every number here is
+**[measured]**.
 
 ### Encode leg — the envelope's own write price
 
@@ -135,9 +150,9 @@ worst on both scope-reading paths, the three single-record shapes within
 
 The companion encodes cheapest because it encodes only the payload; the frame
 pays one small `term_to_binary` of the scopes plus the final copy, which is
-~0.1 µs/Action more than today's wrapper (0.09 / 0.10 / 0.08 µs across runs A,
-B and C). Per 100-Action flush that is 0.01 ms of a ~1.8 ms flush; per 152 it
-is 0.015 ms of ~2.4 ms.
+0.05–0.10 µs/Action more than today's wrapper across the five runs. Per
+100-Action flush that is 0.005–0.01 ms of a ~1.8 ms flush; per 152 it is
+0.008–0.015 ms of ~2.4 ms.
 
 ### Write leg — the durable flush is shape-blind
 
@@ -169,25 +184,29 @@ smaller (see the bytes table).
 | `export` (`ActionLog.read/3`)                 |      10.35 / 6.36 |                10.60 / 6.62 |        16.19 / 8.79 | **9.41 / 5.75** |
 
 - **`frame` is the cheapest single-record shape on every path**, by 2–8% on
-  `materialize`, 2–5% on `catch_up`, and 9–10% on `export` — and both runs
-  agree on the direction. `materialize` is where the win is smallest because
-  the `multi_get` dominates the decode there; it is also the path that matters
-  most, since query and group listing share it.
+  `materialize`, 2–5% on `catch_up`, and 5–10% on `export`, and every one of
+  the five runs agrees on the direction. `materialize` is where the win is
+  smallest because the `multi_get` dominates the decode there; it is also the
+  path that matters most, since query and group listing share it.
 - **Versioning alone changes nothing.** `versioned_wrapper` and `wrapper` are
-  indistinguishable on `materialize` and `catch_up`, and `versioned_wrapper`
-  is no better on `export` — the version integer costs nothing and buys
-  nothing at read time, because the payload is still inside the term that
-  carries the scopes. Only pulling the scopes out of that term does.
-- **`companion` is the wrong trade.** It wins nothing on `materialize`
-  (3.69 vs 3.69, 4.38 vs 4.38: the smaller value does not pay for the
-  separate record) and pays its second point read on both paths that need
-  scopes: **+69%/+56% on `catch_up` and +72%/+53% on `export`**, plus the
-  doubled durable put on the write leg.
+  within ±3% on all three paths (they do identical decode work) — the version
+  integer costs nothing and buys nothing at read time, because the payload is
+  still inside the term that carries the scopes. Only pulling the scopes out
+  of that term does.
+- **`companion` is the wrong trade.** On `materialize` it is a wash to 9%
+  ahead (equal in A and B; 4.81 vs 5.13 and 4.13 vs 4.56 µs in D and E) —
+  its value is 6% smaller and that path is `multi_get`-bound, which is the
+  one place the smaller value pays. Everywhere else it costs, and it is not
+  close: its second point read makes `catch_up` **+56–72%** and `export`
+  **+53–72%** (all five runs), and its second durable put adds **+8–13%** to
+  a flush. The path the win is on is the one that matters least to this
+  decision, because it is also the path with the most headroom (JSON, not the
+  envelope, is 81% of a dirty materialize).
 
 `export`'s absolute level differs between runs (10.35 vs 6.36 µs/Action for
 `wrapper`) because a 200-GSN range scan is the most allocation- and
 cache-sensitive model here. The comparison is within-run, interleaved, and
-consistent: `frame` is 9% and 10% cheaper than `wrapper`.
+consistent: `frame` is 5–10% cheaper than `wrapper` on it.
 
 ### Stored bytes per Action
 
@@ -216,29 +235,34 @@ The envelope is a sub-percent share of a flush, so the end-to-end runs are a
 | this branch   |   5.32 / 5.14 / 5.22 ms |
 
 At the production configuration, `--tier t2 --concurrency 8 --batch-size 100`
-(four runs per arm): rate **25,146 → 24,963 Actions/s** (−0.7%), client p50
-**30.48 → 30.61 ms** (+0.4%), `commit_latency_ms` p50 **1.87 → 1.84 ms**
-(−1.7%). All three are inside the ±5–10% single-run spread this repo publishes
+(six runs per arm, median): rate **25,388 → 25,110 Actions/s** (−1.1%), client
+p50 **30.09 → 30.43 ms** (+1.1%), `commit_latency_ms` p50 **1.873 → 1.859 ms**
+(−0.8%). All three are inside the ±5–10% single-run spread this repo publishes
 for the ceiling; the write path is unchanged.
 
 The read side, `mix bench.materialize --sizes 1000 --runs 3 --reps 30` on the
-[#515](515-materialization-profile.md) hot and spread scenarios (p50, µs):
+[#515](515-materialization-profile.md) hot and spread scenarios, three
+alternating runs per arm, median p50 in µs:
 
-| Scenario             |       `origin/main` |       this branch |
-| -------------------- | ------------------: | ----------------: |
-| hot cold             |               8,994 |             8,862 |
-| hot dirty            |               3,932 |             4,025 |
-| hot clean            |               2,552 |             2,562 |
-| spread cold          |                 684 |               633 |
-| spread dirty         |                 606 |               615 |
-| spread clean         |                  84 |                77 |
-| query, K=1 / 10 / 50 | 558 / 1,042 / 4,445 | 537 / 995 / 4,486 |
+| Scenario             |       `origin/main` |       this branch |                    Δ |
+| -------------------- | ------------------: | ----------------: | -------------------: |
+| hot cold             |               8,574 |             8,525 |                −0.6% |
+| hot dirty            |               3,595 |             3,532 |                −1.8% |
+| hot clean            |               2,818 |             2,434 |               −13.6% |
+| spread cold          |                 629 |               564 |               −10.3% |
+| spread dirty         |                 598 |               539 |                −9.9% |
+| spread clean         |                  74 |                71 |                −4.1% |
+| query, K=1 / 10 / 50 | 568 / 1,013 / 4,878 | 545 / 950 / 4,260 | −4.0 / −6.2 / −12.7% |
 
-The only cell that moved the wrong way is hot dirty (+2.4%), which is one
-one-key patch on a 1,000-key document where the `fetch_decode` phase is 81% of
-the read; its `actions_load` phase (the envelope's share) went **921 → 815 µs
-mean on cold and 25.2 → 19.6 µs on dirty**, so the envelope got cheaper and the
-JSON moved the total.
+**Read that table as a noise floor, not as a win.** No cell regressed, but the
+clean paths (hot clean, spread clean) never read `cf_actions` at all and still
+moved 4–14%, and the branch ran second in each pair. That is the size of the
+end-to-end artefact here, and it is one to two orders of magnitude larger than
+the envelope's share: the `actions_load` phase, which is the `multi_get` plus
+decode the envelope lives in, moved **817 → 809 µs on cold and 19.5 → 17.9 µs
+on dirty** (median of three runs per arm). The per-path decision therefore
+rests on the envelope bench above; this section only shows there is no
+regression to hide behind it.
 
 A second operating-point row worth naming, `--tier t2 --concurrency 8
 --batch-size 152` (three runs per arm), measured **26,668 → 24,282 Actions/s**
@@ -253,10 +277,11 @@ parity. Do not read the b=152 medians as an envelope effect.
 
 **Adopt the `frame` (v1), and reject the companion.**
 
-The number that decided it: **−9% on `export`, −2–5% on `catch_up`, and
-−2–8% on `materialize`, for +0.1 µs/Action of encode** — and the encode is
-0.6% of a flush, while the companion's alternative costs +8–13% of a flush in
-durable puts and +53–72% on every path that reads the scopes.
+The number that decided it: **5–10% off the `export` read, 2–5% off
+`catch_up`, and 2–8% off `materialize`, for 0.05–0.10 µs/Action more encode**
+— and the encode is under 1% of a flush, while the companion's alternative
+costs +8–13% of a flush in durable puts and +53–72% on every path that reads
+the scopes.
 
 If the read win were ambiguous, the tie-break would be the two properties
 only the frame has:

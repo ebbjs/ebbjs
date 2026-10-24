@@ -74,8 +74,7 @@ defmodule EbbServer.Bench.Envelope.Options do
       {"Shapes", Enum.map_join(config.shapes, ", ", &Atom.to_string/1)},
       {"Flush sizes (Actions)", Enum.join(config.flush_sizes, ", ")},
       {"Repetitions (--runs, a floor)",
-       "#{config.runs}; the runner repeats to at least 51 write rounds per size, " <>
-         "51 encode samples per shape, and 1,000 samples per read path"},
+       "#{config.runs}; the runner repeats each measurement to its own sample floor"},
       {"Seeded Actions for the read legs", "#{config.reads}"},
       {"Updates per Action", "#{config.updates_per_action}"},
       {"Port", "#{config.port}"},

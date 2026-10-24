@@ -74,7 +74,7 @@ defmodule EbbServer.Bench.Envelope.Runner do
   alias EbbServer.Bench.Envelope.{Options, Report, Shapes}
   alias EbbServer.Bench.Materialize.Stats
   alias EbbServer.Bench.Options, as: WriteOptions
-  alias EbbServer.Bench.Workbook
+  alias EbbServer.Bench.{Workbook, WriteBatch}
   alias EbbServer.Storage.{ActionFormat, ActionScope, ActionValidator, RocksDB}
 
   # Every shape owns a disjoint GSN window in the one bench DB, so a flush,
@@ -202,8 +202,6 @@ defmodule EbbServer.Bench.Envelope.Runner do
     end)
   end
 
-  # The pair the write path hands to `RocksDB.write_batch/2` for one Action:
-  # the `cf_actions` value plus the shape's extra rows.
   defp encoded(shape, input),
     do: {Shapes.cf_actions_value(shape, input), Shapes.extra_ops(shape, input)}
 
@@ -212,7 +210,7 @@ defmodule EbbServer.Bench.Envelope.Runner do
   defp encode_inputs(config) do
     for offset <- 0..(@encode_inputs - 1) do
       gsn = @encode_gsn_base + offset
-      shape_input(build_action(config, ctx(), gsn), gsn)
+      shape_input(build_action(config, gsn), gsn)
     end
   end
 
@@ -306,41 +304,28 @@ defmodule EbbServer.Bench.Envelope.Runner do
     }
   end
 
-  # Mirrors `EbbServer.Bench.WriteBatch.build_ops/4`: per Action a
-  # `cf_actions` record (in the shape under test) plus its dedup and
-  # group-index rows and one `cf_entity_actions` row per Update, then one
-  # `cf_type_entities` row per distinct subject across the flush.
+  # The flush op list is `EbbServer.Bench.WriteBatch`'s: the same dedup,
+  # group-index, entity-index and flush-scoped type-entity rows, with the
+  # `cf_actions` puts supplied by the shape under test.
   defp flush_ops(shape, config, flush_size, gsn_start) do
-    ctx = ctx()
+    stored = fn action, gsn ->
+      input = shape_input(action, gsn)
 
-    {action_ops, type_keys} =
-      Enum.map_reduce(0..(flush_size - 1), MapSet.new(), fn offset, keys ->
-        action = build_action(config, ctx, gsn_start + offset)
-        ops = action_ops(shape, action, gsn_start + offset)
-        {ops, MapSet.union(keys, type_keys(action))}
-      end)
+      [{:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn), value(shape, input)}] ++
+        Shapes.extra_ops(shape, input)
+    end
 
-    :lists.append(action_ops) ++ type_entity_ops(type_keys)
+    WriteBatch.build_ops(
+      %{write_options(config) | batch_size: flush_size},
+      ctx(),
+      1,
+      gsn_start,
+      gsn_start,
+      stored
+    )
   end
 
-  defp action_ops(shape, action, gsn) do
-    gsn_key = RocksDB.encode_gsn_key(gsn)
-    input = shape_input(action, gsn)
-
-    [
-      {:put, RocksDB.cf_actions(), gsn_key, Shapes.cf_actions_value(shape, input)}
-    ] ++
-      Shapes.extra_ops(shape, input) ++
-      [
-        {:put, RocksDB.cf_action_dedup(), action.id, gsn_key},
-        {:put, RocksDB.cf_group_actions(),
-         RocksDB.encode_group_action_key(Workbook.group_id(), gsn), action.id}
-      ] ++
-      Enum.map(action.updates, fn update ->
-        key = RocksDB.encode_entity_gsn_key(update.subject_id, gsn)
-        {:put, RocksDB.cf_entity_actions(), key, action.id}
-      end)
-  end
+  defp value(shape, input), do: Shapes.cf_actions_value(shape, input)
 
   defp shape_input(action, gsn) do
     %{
@@ -350,10 +335,12 @@ defmodule EbbServer.Bench.Envelope.Runner do
     }
   end
 
-  defp build_action(config, ctx, seq) do
+  # The encode leg times value construction only, so it builds the Actions
+  # itself rather than through the shared flush op list.
+  defp build_action(config, seq) do
     config
     |> write_options()
-    |> Workbook.build_action(ctx, 1, seq)
+    |> Workbook.build_action(ctx(), 1, seq)
     |> ActionValidator.to_validated_action()
   end
 
@@ -378,20 +365,9 @@ defmodule EbbServer.Bench.Envelope.Runner do
     }
   end
 
-  defp type_keys(action) do
-    action.updates
-    |> Enum.map(&RocksDB.encode_type_entity_key(&1.subject_type, &1.subject_id))
-    |> MapSet.new()
-  end
-
-  defp type_entity_ops(type_keys) do
-    type_keys
-    |> Enum.sort()
-    |> Enum.map(fn key -> {:put, RocksDB.cf_type_entities(), key, <<>>} end)
-  end
-
   defp stored_sizes(shape, config) do
-    input = shape_input(build_action(config, ctx(), 0), 0)
+    input = shape_input(build_action(config, 0), 0)
+
     %{value: value_bytes, extra: extra_bytes} = Shapes.stored_bytes(shape, input)
 
     %{
@@ -519,8 +495,6 @@ defmodule EbbServer.Bench.Envelope.Runner do
     end)
   end
 
-  # The companion shape's scopes live behind a second point read; the other
-  # shapes carry them inside the value they already fetched.
   defp stored(:companion, value, gsn),
     do: Shapes.stored(:companion, value, Shapes.read_scopes(gsn))
 
@@ -567,6 +541,5 @@ defmodule EbbServer.Bench.Envelope.Runner do
 
   defp div_ceil(numerator, denominator), do: div(numerator + denominator - 1, denominator)
 
-  defp to_ms(nil), do: nil
   defp to_ms(microseconds), do: microseconds / 1000
 end

@@ -234,10 +234,9 @@ defmodule EbbServer.Bench.Envelope.Report do
     [
       "One isolated boot for the whole run (`EbbServer.Bench.Boot`, a temp data dir, " <>
         "the `:ebb_server` application not started). Every shape lives in its own " <>
-        "disjoint GSN window of that one DB — write leg base " <>
-        "1,000,000,000 + shape_index × 100,000,000, read seed base " <>
-        "2,000,000,000 + shape_index × 100,000,000, consecutive flushes 10,000 GSNs " <>
-        "apart — so the shapes' records never touch while every sample is taken " <>
+        "disjoint GSN window of that one DB (the windows are fixed by " <>
+        "`EbbServer.Bench.Envelope.Runner`), so the shapes' records never touch " <>
+        "while every sample is taken " <>
         "against the same DB, WAL, and compaction state. A separate boot per shape " <>
         "would also have measured the host at a different moment, which is a larger " <>
         "effect than the envelope itself.",
@@ -292,10 +291,7 @@ defmodule EbbServer.Bench.Envelope.Report do
     |> Enum.join("\n\n")
   end
 
-  defp format_ms(nil), do: "n/a"
   defp format_ms(value), do: decimal(value, 2)
-
-  defp format_us(nil), do: "n/a"
   defp format_us(value), do: decimal(value, 2)
 
   defp run_spread(%{run_p50_min: min, run_p50_max: max}),

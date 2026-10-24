@@ -2239,17 +2239,22 @@ Write leg, ms/flush p50, 51 flushed samples per cell:
 on the durable write — the write leg cannot see an envelope that encodes in
 0.5 µs/Action when the flush is bounded by op count and fsync — and the
 `companion`'s second durable put costs +8–13% of a flush. On the read side the
-`frame` is the cheapest shape on every path (2–8% on materialize, 2–5% on
-catch-up, 9–10% on export), the `companion` pays its second point read on both
-scope-reading paths (+53–72%), and a version integer alone moves nothing.
+`frame` is the cheapest single-record shape on every path (2–8% on
+materialize, 2–5% on catch-up, 5–10% on export), the `companion` pays its
+second point read on both scope-reading paths (+53–72%) and is only level with
+the frame on materialize, and a version integer alone moves nothing.
 
 The chosen shape is the `frame`. The write path is unchanged at the operating
-point: `t0 c=1` `commit_latency_ms` p50 5.17→5.22 ms, `t2 c=8` 25,146→24,963
-Actions/s and 30.48→30.61 ms client p50 over alternating runs — all inside the
-±5–10% single-run spread this file publishes, and the read-side
-`materialize` profile (`mix bench.materialize --sizes 1000`) shows no path
-regression, with the `actions_load` phase (the envelope's own share) going
-921→815 µs mean on cold and 25.2→19.6 µs on dirty.
+point: `t0 c=1` `commit_latency_ms` p50 5.17→5.22 ms, and `t2 c=8` 25,388→25,110
+Actions/s with 30.09→30.43 ms client p50 (six alternating runs per arm,
+medians) — all inside the ±5–10% single-run spread this file publishes. The
+read-side `materialize` profile (`mix bench.materialize --sizes 1000`, three
+alternating runs per arm) regressed no path, and the `actions_load` phase — the
+`multi_get` plus decode the envelope lives in — moved 817→809 µs on cold and
+19.5→17.9 µs on dirty. That is smaller than the 4–14% that the _clean_ paths
+moved while reading no `cf_actions` at all, so end-to-end timing here cannot
+resolve the envelope; the per-path decision rests on the encode and read legs
+above.
 
 ## Correctness under load
 
