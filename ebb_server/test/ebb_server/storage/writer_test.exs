@@ -299,7 +299,7 @@ defmodule EbbServer.Storage.WriterTest do
   end
 
   describe "stored value shape (#532/#552)" do
-    test "writes a v1 frame whose payload carries no gsn or update_scopes", %{
+    test "writes a frame whose payload carries no gsn or update_scopes", %{
       writer_name: writer_name,
       rocks_name: rocks_name
     } do
@@ -316,7 +316,7 @@ defmodule EbbServer.Storage.WriterTest do
 
       # The frame is a version byte, the payload's length, the payload ETF,
       # and the scopes ETF — not one term, so the halves are read separately.
-      assert <<1, size::32, payload_etf::binary-size(size), scopes_etf::binary>> = value
+      assert <<size::32, payload_etf::binary-size(size), scopes_etf::binary>> = value
       assert :erlang.binary_to_term(scopes_etf, [:safe]) == [[]]
 
       payload = :erlang.binary_to_term(payload_etf, [:safe])

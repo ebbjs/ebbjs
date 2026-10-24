@@ -5,9 +5,7 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderE2ETest do
   Ranges are held in a depth-2 Writer and acked in reverse order. The
   Writer must still notify the real Router in claim order, the subscriber
   must receive the ranges in that order, and the persisted frontier must
-  not move past the head until the head is actually pushed. The last case
-  rewrites one durable record into its pre-#532 shape before the release,
-  so a mixed old/new log is decoded on the same ordered push path.
+  not move past the head until the head is actually pushed.
   """
 
   use ExUnit.Case, async: false
@@ -17,32 +15,25 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderE2ETest do
   import EbbServer.TestHelpers
 
   alias EbbServer.Integration.ActionHelpers
-  alias EbbServer.Storage.{ActionFormat, RocksDB, WatermarkTracker, Writer}
+  alias EbbServer.Storage.{RocksDB, WatermarkTracker, Writer}
   alias EbbServer.Sync.{FanOutFrontier, FanOutRouter, SSEConnection}
 
   @arm_table :ebb_534_claim_order_arm
-  @legacy_table :ebb_534_claim_order_legacy
 
   # The commit workers park only while the test has armed the gate, so the
-  # setup writes below still commit synchronously. `after_commit` rewrites
-  # the highest durable record into its legacy shape when the mixed-shape
-  # test arms it, before the release reads the log for fan-out.
+  # setup writes below still commit synchronously.
   def storage_writer_opts do
     test_pid = self()
     arm_table = @arm_table
-    legacy_table = @legacy_table
 
-    for table <- [arm_table, legacy_table] do
-      if :ets.whereis(table) == :undefined do
-        :ets.new(table, [:named_table, :public, :set])
-      end
+    if :ets.whereis(arm_table) == :undefined do
+      :ets.new(arm_table, [:named_table, :public, :set])
     end
 
     writer_opts = [
       max_in_flight: 2,
       committer_pool_size: 2,
-      batch_max_size: 1,
-      after_commit: fn -> rewrite_as_legacy(legacy_table) end
+      batch_max_size: 1
     ]
 
     Keyword.put(writer_opts, :commit_fn, fn ops, opts ->
@@ -62,13 +53,11 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderE2ETest do
   end
 
   setup do
-    for table <- [@arm_table, @legacy_table], do: :ets.delete_all_objects(table)
+    :ets.delete_all_objects(@arm_table)
     :ets.insert(@arm_table, {:armed, false})
 
     on_exit(fn ->
-      for table <- [@arm_table, @legacy_table] do
-        if :ets.whereis(table) != :undefined, do: :ets.delete(table)
-      end
+      if :ets.whereis(@arm_table) != :undefined, do: :ets.delete(@arm_table)
     end)
 
     :ok
@@ -163,79 +152,6 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderE2ETest do
     assert FanOutFrontier.get() == {:ok, head_gsn + 1}
 
     :ok = FanOutRouter.unsubscribe(sse_pid)
-  end
-
-  test "a depth-2 release decodes a legacy record and a v1 frame in claim order" do
-    group_id = "g_534_mixed_#{:erlang.unique_integer([:positive])}"
-    actor_id = "a_534_mixed_#{:erlang.unique_integer([:positive])}"
-    [head_entity, successor_entity] = seed_group!(actor_id, group_id, 2)
-
-    :sys.get_state(FanOutRouter)
-    head_gsn = RocksDB.get_max_gsn() + 1
-
-    {:ok, sse_pid} = SSEConnection.start_link(self(), [group_id], %{group_id => 0})
-    :ok = FanOutRouter.subscribe([group_id], sse_pid, actor_id)
-
-    :ets.insert(@arm_table, {:armed, true})
-
-    head_task = Task.async(fn -> post_todos!(actor_id, [head_entity], "head") end)
-    assert_receive {:commit_started, head_worker}, 5_000
-
-    successor_task = Task.async(fn -> post_todos!(actor_id, [successor_entity], "successor") end)
-    assert_receive {:commit_started, successor_worker}, 5_000
-
-    # The successor is durable first. Before the head releases, the head's
-    # `after_commit` rewrites the successor's record into the pre-#532
-    # plain-map shape, so the ordered push reads one record of each shape.
-    send(successor_worker, :release)
-
-    assert wait_until(fn ->
-             phases() == [:committing, :committed]
-           end)
-
-    :ets.insert(@legacy_table, {:rewrite, true})
-    send(head_worker, :release)
-
-    assert %{status: 200} = Task.await(head_task, 5_000)
-    assert %{status: 200} = Task.await(successor_task, 5_000)
-
-    payloads = receive_data_payloads(2) |> Enum.map(&Jason.decode!/1)
-    assert Enum.map(payloads, & &1["gsn"]) == [head_gsn, head_gsn + 1]
-
-    # The pushed successor came from a legacy plain map; the head is still
-    # a v1 frame.
-    assert {:ok, legacy_value} =
-             RocksDB.get(RocksDB.cf_actions(), RocksDB.encode_gsn_key(head_gsn + 1))
-
-    assert %{"gsn" => gsn, "update_scopes" => [_ | _]} = :erlang.binary_to_term(legacy_value)
-    assert gsn == head_gsn + 1
-
-    assert {:ok, frame_value} =
-             RocksDB.get(RocksDB.cf_actions(), RocksDB.encode_gsn_key(head_gsn))
-
-    assert <<1, size::32, payload_etf::binary-size(size), _scopes::binary>> = frame_value
-    assert <<131, _rest::binary>> = payload_etf
-
-    :ok = FanOutRouter.unsubscribe(sse_pid)
-  end
-
-  defp rewrite_as_legacy(table) do
-    if :ets.member(table, :rewrite) do
-      :ets.delete(table, :rewrite)
-      gsn = RocksDB.get_max_gsn()
-      key = RocksDB.encode_gsn_key(gsn)
-
-      case RocksDB.get(RocksDB.cf_actions(), key) do
-        {:ok, value} ->
-          legacy = value |> ActionFormat.decode(gsn) |> :erlang.term_to_binary()
-          :ok = RocksDB.write_batch([{:put, RocksDB.cf_actions(), key, legacy}])
-
-        :not_found ->
-          :ok
-      end
-    end
-
-    :ok
   end
 
   defp armed?(table) do

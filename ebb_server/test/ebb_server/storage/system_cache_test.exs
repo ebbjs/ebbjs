@@ -594,7 +594,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       assert entity.data["fields"]["title"]["value"] == "Backfilled"
     end
 
-    test "backfills from an Action stored in a v1 frame", ctx do
+    test "backfills from an Action stored in a frame", ctx do
       entity_id = "todo_frame_#{:erlang.unique_integer([:positive])}"
       action_id = "act_frame_#{:erlang.unique_integer([:positive])}"
 

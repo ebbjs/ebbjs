@@ -5,24 +5,27 @@ settled with numbers. This is a decision note plus the measurement harness that
 decides it (`mix bench.envelope`); the format change it lands is small and the
 measurement is the deliverable.
 
-Implements the decision in `EbbServer.Storage.ActionFormat`, and the version
-byte that makes the next stored-shape change (#575) a migration instead of
-another one-way door.
+Implements the decision in `EbbServer.Storage.ActionFormat`.
+
+**Scope note.** Ebb is greenfield — no production consumers, no stored Actions
+from another build to keep reading. So this note's numbers are the whole
+argument: there is no compatibility layer in the shipped reader, no version
+tag, and no rollback story. A value in any shape but the one below raises.
 
 ## What this decides
 
-1. Every stored value carries a format version, as byte 0.
-2. The per-Update `update_scopes` live **beside** the payload in the same value,
-   not inside the same decoded term and not in a second record:
+1. The per-Update `update_scopes` live **beside** the payload in the same
+   value, not inside the same decoded term and not in a second record:
 
    ```
-   <<1, payload_bytes::32, payload_etf::binary, scopes_etf::binary>>
+   <<payload_bytes::32, payload_etf::binary, scopes_etf::binary>>
    ```
 
-3. A reader who only needs Updates — materialization, query, group listing, the
+2. A reader who only needs Updates — materialization, query, group listing, the
    boot backfill — slices the payload out and never decodes the scopes.
-4. The dual-shape reader from #532 is extended once, to three shapes, and stays
-   the only way a `cf_actions` value is read.
+3. `ActionFormat` holds exactly one stored shape and raises on anything else.
+   No version tag: with nothing to migrate it is a byte and a branch that buy
+   only a different error message.
 
 ## Where this fits
 
@@ -34,25 +37,27 @@ milliseconds. It buys two other things.
 - **A cheaper read.** Every read of the log decodes the envelope. Today it
   decodes a tuple to reach the payload it wants, and materialization decodes the
   delivery scopes it never uses.
-- **The versioning prerequisite for #575.** [#575](https://github.com/ebbjs/ebbjs/issues/575)
-  decides what `cf_entity_actions` is for, and that is a schema change on the
-  same value. Landing it on the unversioned dual-shape reader would stack two
-  migrations on one heuristic. The version byte is what makes the second one a
-  normal migration.
+- **A cheaper #575.** [#575](https://github.com/ebbjs/ebbjs/issues/575)
+  decides what `cf_entity_actions` is for, and `decode_payload/2` is now the
+  single seam a payload-only reader goes through. Nothing about this change
+  sequences the two: with no stored data to preserve, #575 may change the
+  shape freely and does not inherit a compatibility contract.
 
 ## The four shapes compared
 
-| Shape               | `cf_actions` value                                | Version       | Terms decoded, full read | Terms decoded, payload-only read | Durable puts / Action |
-| ------------------- | ------------------------------------------------- | ------------- | -----------------------: | -------------------------------: | --------------------: |
-| `wrapper` (today)   | `term_to_binary({payload_etf, update_scopes})`    | none          |                        2 |                                2 |                     1 |
-| `versioned_wrapper` | `term_to_binary({1, payload_etf, update_scopes})` | tuple element |                        2 |                                2 |                     1 |
-| `companion`         | `payload_etf`, scopes under a second key          | none          |        1 (+1 point read) |                                1 |                     2 |
-| `frame` (chosen)    | `<<1, size::32, payload_etf, scopes_etf>>`        | byte 0        |                        2 |                            **1** |                     1 |
+| Shape               | `cf_actions` value                                | Terms decoded, full read | Terms decoded, payload-only read | Durable puts / Action |
+| ------------------- | ------------------------------------------------- | -----------------------: | -------------------------------: | --------------------: |
+| `wrapper` (before)  | `term_to_binary({payload_etf, update_scopes})`    |                        2 |                                2 |                     1 |
+| `versioned_wrapper` | `term_to_binary({1, payload_etf, update_scopes})` |                        2 |                                2 |                     1 |
+| `companion`         | `payload_etf`, scopes under a second key          |        1 (+1 point read) |                                1 |                     2 |
+| `frame` (chosen)    | `<<size::32, payload_etf, scopes_etf>>`           |                        2 |                            **1** |                     1 |
 
 `versioned_wrapper` is in the comparison because it is the smallest possible
-versioning change: if it were enough, the frame would not be worth the format
-change. `companion` is the alternative #532 proposed and never measured —
-"storing `update_scopes` beside the payload instead of inside the same term".
+change to the old format: a version integer and nothing else. It was measured
+and then dropped — free, and worth nothing at read time, because the payload is
+still inside the term that carries the scopes. `companion` is the alternative
+#532 proposed and never measured — "storing `update_scopes` beside the payload
+instead of inside the same term".
 
 The frame is the only shape that is both one durable put and one decode on the
 paths that do not need scopes. That is the whole argument, and the rest of this
@@ -226,11 +231,11 @@ consistent: `frame` is 5–10% cheaper than `wrapper` on it.
 | `wrapper`           |                    781 |                   0 |       781 |                     1 |
 | `versioned_wrapper` |                    783 |                   0 |       783 |                     1 |
 | `companion`         |                    731 |                  76 |   **807** |                     2 |
-| `frame`             |                **779** |                   0 |   **779** |                     1 |
+| `frame`             |                **778** |                   0 |   **778** |                     1 |
 
-The frame is the smallest single-record value: the version byte and the length
-prefix cost 3 B over the wrapper, and dropping the tuple header from around
-the payload pays 5 B back.
+The frame is the smallest single-record value: the length prefix costs 2 B over
+the wrapper and dropping the tuple header from around the payload pays 5 B
+back.
 
 ### At the operating point
 
@@ -295,7 +300,7 @@ effect.
 
 ## The decision
 
-**Adopt the `frame` (v1), and reject the companion.**
+**Adopt the `frame`, and reject the companion.**
 
 The number that decided it: **5–10% off the `export` read, 2–5% off
 `catch_up`, and 2–8% off `materialize`, for 0.05–0.10 µs/Action more encode**
@@ -303,53 +308,39 @@ The number that decided it: **5–10% off the `export` read, 2–5% off
 costs +8–13% of a flush in durable puts and +53–72% on every path that reads
 the scopes.
 
-If the read win were ambiguous, the tie-break would be the two properties
-only the frame has:
+If the read win were ambiguous, the tie-break would be the one property only
+the frame has: it is **one durable put and one decode** on the paths that do
+not need scopes. The wrapper needs two decodes; the companion needs two reads.
 
-1. It is the only shape that is **one durable put and one decode** on the
-   paths that do not need scopes. The wrapper needs two decodes; the
-   companion needs two reads.
-2. It carries a **version byte**, which the wrapper does not and the companion
-   would still need. A version integer bolted onto the wrapper
-   (`versioned_wrapper`) is measurably free and measurably useless: it does
-   not move a single read path, so it would buy the migration and none of the
-   read.
+A version tag was priced with the rest (`versioned_wrapper`: free to write, no
+read change) and then dropped. Ebb is greenfield, so a tag buys no migration
+and no rollback — only a different error message — and it costs a byte, a
+branch, and the temptation to write compatibility code nobody needs.
 
-## Versioning and the read-through
+## The stored shape, and what is not there
 
-Byte 0 is the format version. `1` is this frame. `ActionFormat.decode/2` and
-`decode_payload/2` accept, in order of cost:
+`ActionFormat.decode/2` and `decode_payload/2` accept exactly one shape:
 
-| Value                                                    | Shape               | Written by         |
-| -------------------------------------------------------- | ------------------- | ------------------ |
-| `<<1, size::32, payload_etf, scopes_etf>>`               | v1 frame            | this build         |
-| `term_to_binary({payload_etf, update_scopes})`           | pre-#552 wrapper    | builds before #552 |
-| `term_to_binary(%{"gsn" => …, "update_scopes" => …, …})` | pre-#532 legacy map | builds before #532 |
-| any other version byte                                   | rejected            | —                  |
+| Value                                   | Read by    |
+| --------------------------------------- | ---------- |
+| `<<size::32, payload_etf, scopes_etf>>` | this build |
+| anything else                           | raises     |
 
-There is no writer for the two older shapes: `ActionFormat.frame/2` replaced
-`wrap/2`, so a build can no longer produce them. `action_format_test.exs`
-pins every shape and every rejection at the unit level, and a second test
-seeds **the previous shape** (the pre-#552 wrapper) straight into
-`cf_actions` and drives the real readers — `ActionLog.read/3`,
-`CatchUp.catch_up_group/3`, the fan-out push, and `EntityStore.materialize/2`
-— which is the fan-out/catch-up read of a previous-shape value that #552 asks
-for. Corruption is separated from versioning: a truncated frame, an empty
-value, an unknown version, and a decoded term that is not an Action each raise
-their own `ArgumentError`, so a bad record is never reported as an unsupported
-version of itself.
-
-`#575` can now change the stored Action again: it bumps the version byte, the
-reader keeps `1` as a read-through case, and the two migrations do not stack
-on one heuristic.
+Everything that is not that frame raises `ArgumentError` — a value in the old
+wrapper shape, a plain map, an empty value, a length that runs past the value,
+or a payload that does not decode to an Action. The distinction the reader
+keeps is _corrupt_ versus _absent_, not _old_ versus _new_: there is no second
+shape to migrate, because nothing else ever wrote to a database this build
+reads. `action_format_test.exs` pins the frame, both readers, and every
+rejection, including a record in the shape the pre-#552 code wrote.
 
 ## What this does not settle
 
 - **Whether `cf_entity_actions` should exist.** That is
   [#575](https://github.com/ebbjs/ebbjs/issues/575), and this note only decides
-  the wrapper around the payload it may stop writing. The two changes are
-  sequenced so that one format change lands at a time: #575 now has a version
-  byte to migrate against.
+  the wrapper around the payload it may stop writing. There is no sequencing
+  constraint between the two: with nothing stored to preserve, #575 can change
+  the shape freely.
 - **What the scopes mean.** They are still the per-Update group lists captured
   at claim time, index-aligned with `updates`, and still the delivery
   contract. Nothing here changes `cf_group_actions` or the delivery rules.
@@ -360,27 +351,22 @@ on one heuristic.
   number at the cost of an event per Action per flush. Revisit if a future
   envelope change makes that share big enough to need monitoring.
 
-## Risks and rollback
+## Risks
 
 - **The frame is not one ETF term.** A tool that reads a `cf_actions` value
-  with a bare `:erlang.binary_to_term/1` fails on a v1 record. That is already
-  true of no other shape, and it is deliberate: the whole point is to decode
-  the payload without decoding the scopes. `ActionFormat` is the only reader
-  (`grep binary_to_term` over `ebb_server/lib`), and the format is pinned by
-  tests.
-- **Rolling back the binary.** A pre-#552 reader cannot read a v1 record: it
-  would `binary_to_term/2` the whole value and get a 2-tuple of binaries, then
-  fail decoding the second one as a map. As with #532, rolling back the server
-  binary after new writes requires the old records to be the only ones read —
-  the version byte makes that failure loud instead of silent.
-- **A corrupt v1 record** raises `ArgumentError` naming the frame, not a
-  misleading version complaint; a truncated frame, an empty value, and an
-  unknown version each raise their own message (pinned in
-  `action_format_test.exs`).
+  with a bare `:erlang.binary_to_term/1` fails on it. That is deliberate: the
+  whole point is to decode the payload without decoding the scopes.
+  `ActionFormat` is the only reader (`grep binary_to_term` over
+  `ebb_server/lib`), and the format is pinned by tests.
+- **Old values are expected to be thrown away.** This build cannot read a
+  value written before #552, and does not try. Rolling the binary back has the
+  same property in the other direction. In a greenfield project both are a
+  wiped data directory, not a migration.
 
 ## Follow-ups
 
-- **`#575`** decides the `cf_entity_actions` question against this format.
+- **`#575`** decides the `cf_entity_actions` question against this format, and
+  is free to change it.
 - **`#537`**'s flush phases now have a companion number: when `commit_wait`
   moves at the operating point, the encode leg says how much of the move can be
   the envelope. It is ~0.6 µs of a multi-millisecond flush, so normally none.

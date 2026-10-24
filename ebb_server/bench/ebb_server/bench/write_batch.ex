@@ -50,7 +50,7 @@ defmodule EbbServer.Bench.WriteBatch do
     do: build_ops(config, ctx, caller_id, seq, gsn_start(caller_id, seq), &stored_frame/2)
 
   @doc """
-  The production v1 frame's `cf_actions` puts for one Action.
+  The production frame's `cf_actions` puts for one Action.
 
   Every Update here resolves to the single bench group, so the stored scopes
   are the same one-element list per Update.
@@ -73,7 +73,7 @@ defmodule EbbServer.Bench.WriteBatch do
   GSN window a flush lands in, and the stored `cf_actions` value. `gsn_start`
   is therefore passed rather than derived, and `stored` is a function from
   `(action, gsn)` to that Action's `cf_actions` puts — one for the production
-  v1 frame, one per candidate shape in `EbbServer.Bench.Envelope.Shapes`. The
+  production frame, one per candidate shape in `EbbServer.Bench.Envelope.Shapes`. The
   rest of the batch is identical, which is what keeps the two benchmarks
   pricing the same flush.
   """

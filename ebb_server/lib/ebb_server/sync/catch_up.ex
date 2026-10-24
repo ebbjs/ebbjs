@@ -113,8 +113,8 @@ defmodule EbbServer.Sync.CatchUp do
 
   # A group id is a variable-length key prefix, so the scan range can also admit
   # rows of groups whose id merely extends this one. Those keys sort after every
-  # row of this group, and a legacy unscoped Action among them would be
-  # delivered whole to the wrong group. Stopping at the first foreign row keeps
+  # row of this group, and an Action there would be delivered to the wrong
+  # group. Stopping at the first foreign row keeps
   # the page group-local and `next_offset` an own GSN without giving up the
   # page's size bound.
   defp own_row?({key, _action_id}, group_id) do
@@ -133,8 +133,8 @@ defmodule EbbServer.Sync.CatchUp do
   defp upper_bound_gsn(watermark), do: min(watermark + 1, @max_gsn)
 
   # An Action with no Updates scoped to this group contributes nothing: the
-  # group's index entry implies at least one does, but a legacy or corrupt
-  # record could disagree, and pagination must not stall on it.
+  # group's index entry implies at least one does, but a corrupt record could
+  # disagree, and pagination must not stall on it.
   defp scope_action(action, group_id) do
     case ActionScope.updates_for_group(action, group_id) do
       [] -> nil

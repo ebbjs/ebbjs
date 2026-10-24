@@ -35,7 +35,9 @@ defmodule Mix.Tasks.Bench.Envelope do
   `origin/main` stores), `:versioned_wrapper` (the same tuple plus a version
   integer, `{1, payload_etf, update_scopes}`), `:companion` (bare
   `payload_etf` with the scopes in a second record), and `:frame`
-  (`ActionFormat.frame/2`, the versioned v1 value). Writes a Markdown report
+  (`ActionFormat.frame/2`, the shape this build stores). The version tag in
+  `:versioned_wrapper` was priced and then dropped: with nothing to migrate
+  it buys only a different error message. Writes a Markdown report
   to `bench/results/` and prints it. See
   `EbbServer.Bench.Envelope.Options` for the full option list and
   `EbbServer.Bench.Envelope.Shapes` for the shapes themselves.

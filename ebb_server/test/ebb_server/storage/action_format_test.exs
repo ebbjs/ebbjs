@@ -1,16 +1,13 @@
 defmodule EbbServer.Storage.ActionFormatTest do
   @moduledoc """
-  Pins the read-through contract of the stored `cf_actions` value.
+  Pins the one shape of the stored `cf_actions` value.
 
-  New writes are a v1 frame: a version byte, the payload ETF's length, the
-  GSN-free and scopes-free payload, then the scopes ETF. Two older shapes
-  still exist on disk and no longer have a writer: the pre-#552 wrapper of
-  `:erlang.term_to_binary({payload_etf, update_scopes})` and the legacy
-  plain map carrying its own `"gsn"` and `"update_scopes"`.
-
-  Every reader goes through `decode/2` (full Action) or `decode_payload/2`
-  (Updates only), so both must accept all three shapes. `"gsn"` comes from
-  the record when it carries one and from the `cf_actions` key otherwise.
+  A stored Action is a frame — a 32-bit payload length, the GSN-free and
+  scopes-free payload ETF, then the scopes ETF — and both readers
+  (`decode/2` for the full Action, `decode_payload/2` for Updates only) read
+  exactly that. Ebb is greenfield, so there is no second shape to keep
+  reading and anything else must raise rather than decode as something
+  plausible.
   """
 
   use ExUnit.Case, async: true
@@ -48,32 +45,7 @@ defmodule EbbServer.Storage.ActionFormatTest do
   end
 
   defp payload_etf, do: prepared_action() |> ActionFormat.build() |> ActionFormat.encode()
-
-  # The pre-#552 writer stored the payload and the scopes as one ETF tuple.
-  # No production code builds this shape any more, so the fixture does.
-  defp pre_552_wrapper(payload_etf, update_scopes) do
-    :erlang.term_to_binary({payload_etf, update_scopes})
-  end
-
-  defp legacy_map(extra) do
-    Map.merge(
-      %{
-        "id" => "act_legacy",
-        "actor_id" => "a_1",
-        "hlc" => 100,
-        "updates" => [
-          %{
-            "id" => "upd_legacy",
-            "subject_id" => "todo_1",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{"fields" => %{}}
-          }
-        ]
-      },
-      extra
-    )
-  end
+  defp scopes, do: [["g_1"], ["g_1", "g_2"]]
 
   defp expected_action(gsn) do
     %{
@@ -81,7 +53,7 @@ defmodule EbbServer.Storage.ActionFormatTest do
       "actor_id" => "a_1",
       "hlc" => 123,
       "gsn" => gsn,
-      "update_scopes" => [["g_1"], ["g_1", "g_2"]],
+      "update_scopes" => scopes(),
       "updates" => [
         %{
           "id" => "upd_1",
@@ -101,106 +73,80 @@ defmodule EbbServer.Storage.ActionFormatTest do
     }
   end
 
-  defp expected_legacy_action(gsn, update_scopes) do
-    legacy_map(%{"gsn" => gsn, "update_scopes" => update_scopes})
-  end
-
-  describe "decode/2 a v1 frame" do
-    test "reads the payload and the scopes, taking the gsn from the key" do
-      value = ActionFormat.frame(payload_etf(), [["g_1"], ["g_1", "g_2"]])
-
-      assert ActionFormat.decode(value, 42) == expected_action(42)
-    end
-
-    test "starts with the version byte" do
-      assert <<1, _rest::binary>> = ActionFormat.frame(payload_etf(), [[]])
-    end
-  end
-
-  describe "decode/2 the pre-#552 wrapper" do
-    test "reads the payload and the wrapper's scopes, taking the gsn from the key" do
-      value = pre_552_wrapper(payload_etf(), [["g_1"], ["g_1", "g_2"]])
-
-      assert ActionFormat.decode(value, 42) == expected_action(42)
-    end
-  end
-
-  describe "decode/2 a legacy map" do
-    test "trusts its own gsn and scopes" do
-      scopes = [["g_1"]]
-      value = :erlang.term_to_binary(expected_legacy_action(7, scopes))
-
-      assert ActionFormat.decode(value, 42) == expected_legacy_action(7, scopes)
-    end
-
-    test "injects the key gsn when it has none" do
-      scopes = [["g_1"]]
-      value = :erlang.term_to_binary(legacy_map(%{"update_scopes" => scopes}))
-
-      assert ActionFormat.decode(value, 42) == expected_legacy_action(42, scopes)
-    end
-  end
-
-  describe "decode/2 an unknown version" do
-    test "raises rather than falling through to the ETF term" do
-      assert_raise ArgumentError, ~r/unsupported format version 2/, fn ->
-        ActionFormat.decode(<<2, 0, 0, 0, 0>>, 1)
-      end
-    end
-  end
-
-  describe "decode/2 a corrupt record" do
-    test "reports a truncated v1 frame as truncated, not as version 1" do
+  describe "frame/2" do
+    test "lays out the payload length, the payload ETF, then the scopes ETF" do
       payload = payload_etf()
-      size = byte_size(payload) + 1
+      size = byte_size(payload)
+      value = ActionFormat.frame(payload, scopes())
 
-      assert_raise ArgumentError, ~r/truncated v1 frame/, fn ->
-        ActionFormat.decode(<<1, size::32, payload::binary>>, 1)
-      end
+      assert <<^size::32, ^payload::binary, scopes_etf::binary>> = value
+      assert :erlang.binary_to_term(scopes_etf) == scopes()
     end
 
-    test "rejects an empty value" do
-      assert_raise ArgumentError, ~r/is empty/, fn -> ActionFormat.decode(<<>>, 1) end
-    end
-
-    test "rejects an ETF term that is neither a wrapper nor a map" do
-      assert_raise ArgumentError, ~r/not an Action/, fn ->
-        ActionFormat.decode(:erlang.term_to_binary({:not_an_action, 1, 2}), 1)
-      end
-    end
-
-    test "frame/2 refuses a payload that is not ETF" do
+    test "refuses a payload that is not ETF" do
       assert_raise ArgumentError, ~r/holds an ETF payload/, fn ->
         ActionFormat.frame("not an ETF", [[]])
       end
     end
+
+    test "refuses scopes that are not a list of group lists" do
+      assert_raise ArgumentError, ~r/one group list per Update/, fn ->
+        ActionFormat.frame(payload_etf(), "g_1")
+      end
+    end
+  end
+
+  describe "decode/2" do
+    test "reads the payload and the scopes, taking the gsn from the key" do
+      value = ActionFormat.frame(payload_etf(), scopes())
+
+      assert ActionFormat.decode(value, 42) == expected_action(42)
+    end
   end
 
   describe "decode_payload/2" do
-    test "reads a v1 frame's payload without its scopes" do
-      value = ActionFormat.frame(payload_etf(), [["g_1"], ["g_1", "g_2"]])
+    test "reads the payload without decoding the scopes" do
+      value = ActionFormat.frame(payload_etf(), scopes())
 
       assert ActionFormat.decode_payload(value, 42) ==
-               Map.drop(expected_action(42), ["update_scopes"])
+               Map.delete(expected_action(42), "update_scopes")
+    end
+  end
+
+  describe "an unreadable value" do
+    test "rejects a record in the shape the pre-#552 code stored" do
+      # `{payload_etf, update_scopes}` was the old wrapper. There is nothing
+      # to migrate: this build never wrote it, and no build reads it.
+      old_shape = :erlang.term_to_binary({payload_etf(), scopes()})
+
+      assert_raise ArgumentError, ~r/not a stored Action frame/, fn ->
+        ActionFormat.decode(old_shape, 42)
+      end
     end
 
-    test "reads the pre-#552 wrapper's payload without its scopes" do
-      value = pre_552_wrapper(payload_etf(), [["g_1"], ["g_1", "g_2"]])
-
-      assert ActionFormat.decode_payload(value, 42) ==
-               Map.drop(expected_action(42), ["update_scopes"])
+    test "rejects a plain map" do
+      assert_raise ArgumentError, ~r/not a stored Action frame/, fn ->
+        ActionFormat.decode(:erlang.term_to_binary(%{"id" => "act_1"}), 42)
+      end
     end
 
-    test "drops a legacy map's own update_scopes and keeps its gsn" do
-      value = :erlang.term_to_binary(expected_legacy_action(7, [["g_1"]]))
-
-      assert ActionFormat.decode_payload(value, 42) ==
-               expected_legacy_action(7, [["g_1"]]) |> Map.delete("update_scopes")
+    test "rejects an empty value" do
+      assert_raise ArgumentError, ~r/not a stored Action frame/, fn ->
+        ActionFormat.decode(<<>>, 42)
+      end
     end
 
-    test "raises on an unknown version" do
-      assert_raise ArgumentError, ~r/unsupported format version 2/, fn ->
-        ActionFormat.decode_payload(<<2, 0, 0, 0, 0>>, 1)
+    test "rejects a frame whose length runs past the value" do
+      assert_raise ArgumentError, ~r/not a stored Action frame/, fn ->
+        ActionFormat.decode(<<4::32, "abc">>, 42)
+      end
+    end
+
+    test "rejects a payload that does not decode to an Action" do
+      value = ActionFormat.frame(:erlang.term_to_binary([1, 2, 3]), [[]])
+
+      assert_raise ArgumentError, ~r/does not hold an Action payload/, fn ->
+        ActionFormat.decode_payload(value, 42)
       end
     end
   end

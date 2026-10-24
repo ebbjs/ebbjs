@@ -221,14 +221,14 @@ defmodule EbbServer.Storage.WriterAblationTest do
   end
 
   defp stored_scopes(ops, rocks_name) do
-    <<1, size::32, _payload::binary-size(size), scopes_etf::binary>> =
+    <<size::32, _payload::binary-size(size), scopes_etf::binary>> =
       stored_value(ops, rocks_name)
 
     :erlang.binary_to_term(scopes_etf, [:safe])
   end
 
   defp stored_payload(ops, rocks_name) do
-    <<1, size::32, payload_etf::binary-size(size), _scopes::binary>> =
+    <<size::32, payload_etf::binary-size(size), _scopes::binary>> =
       stored_value(ops, rocks_name)
 
     :erlang.binary_to_term(payload_etf, [:safe])

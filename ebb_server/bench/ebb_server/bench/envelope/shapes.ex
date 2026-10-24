@@ -14,15 +14,16 @@ defmodule EbbServer.Bench.Envelope.Shapes do
   | `:wrapper` | `term_to_binary({payload_etf, update_scopes})` | inside the term |
   | `:versioned_wrapper` | `term_to_binary({1, payload_etf, update_scopes})` | inside the term |
   | `:companion` | `payload_etf` | second key, second durable put |
-  | `:frame` | `ActionFormat.frame/2` (v1: `<<1, size::32, payload_etf, scopes_etf>>`) | inside the frame |
+  | `:frame` | `ActionFormat.frame/2` (`<<size::32, payload_etf, scopes_etf>>`) | inside the frame |
 
-  `:wrapper` is what `origin/main` stored before #552: no version byte and a
-  `binary_to_term/2` of the outer tuple before a reader can reach the payload
-  it wants, which is the second decode per read. `:versioned_wrapper` is the
-  smallest possible fix to that format — a version integer in a 3-tuple,
-  everything else unchanged — so the comparison shows whether a version byte
-  alone is enough. `:frame` keeps the two terms independently encoded, so a
-  reader can slice out the payload and never parse the scopes. `:companion`
+  `:wrapper` is what `origin/main` stored before #552: a `binary_to_term/2`
+  of the outer tuple before a reader can reach the payload it wants, which is
+  the second decode per read. `:versioned_wrapper` is the smallest possible
+  change to that format — a version integer in a 3-tuple, everything else
+  unchanged — so the comparison shows whether a version tag alone is enough
+  (it is free, and it was dropped anyway: Ebb is greenfield, so a tag buys
+  only a different error message). `:frame` keeps the two terms independently
+  encoded, so a reader can slice out the payload and never parse the scopes. `:companion`
   is the never-measured alternative: the `cf_actions` value is exactly the
   payload ETF, and the scopes are a second record.
 

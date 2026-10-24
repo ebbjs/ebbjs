@@ -2213,8 +2213,11 @@ mix bench.envelope --flush-sizes 100,152 --reads 1000 --runs 3
 Measured **2026-10-24** on `recsy-vps`, same host and shape as the rest of
 this file. Two independent runs (A / B). Shapes: `wrapper` = what
 `origin/main` stores, `versioned_wrapper` = the same with a version integer,
-`companion` = scopes in a second record, `frame` = v1, the scopes beside the
-payload in one value.
+`companion` = scopes in a second record, `frame` = the shipped shape, the
+scopes beside the payload in one value. The version tag in
+`versioned_wrapper` was priced and then dropped: Ebb is greenfield, so a tag
+buys only a different error message, and the shipped reader accepts exactly
+one shape.
 
 µs/Action p50. Encode: 1,000 Actions per sample. Read: shape order rotated per
 pass, 1,000 samples per path.
@@ -2243,7 +2246,8 @@ on the durable write — the write leg cannot see an envelope that encodes in
 materialize, 2–5% on catch-up, 5–10% on export), the `companion` pays its
 second point read on both scope-reading paths (+53–72%) and is only level with
 or slightly ahead of the frame on materialize, where its 6%-smaller value pays
-a `multi_get`-bound path; a version integer alone moves nothing.
+a `multi_get`-bound path; a version integer alone moves nothing, which is why
+the tag was dropped rather than carried.
 
 The chosen shape is the `frame`. The write path is unchanged at the operating
 point: `t0 c=1` `commit_latency_ms` p50 5.17→5.22 ms, and `t2 c=8` 25,388→25,110

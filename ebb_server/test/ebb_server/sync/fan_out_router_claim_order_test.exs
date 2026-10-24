@@ -20,7 +20,7 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
   alias EbbServer.Sync.{FanOutFrontier, FanOutRouter, SSEConnection}
 
   describe "claim-order release (#534)" do
-    test "a mixed legacy record and v1 frame release in claim order and both decode" do
+    test "two committed ranges release in claim order" do
       group_id = "g_534_mixed_#{:erlang.unique_integer([:positive])}"
       actor_id = "a_534_mixed_#{:erlang.unique_integer([:positive])}"
 
@@ -29,65 +29,20 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
 
       gsn1 = RocksDB.get_max_gsn() + 1
       gsn2 = gsn1 + 1
-      hlc = generate_hlc()
 
-      legacy_id = "act_534_legacy_#{:erlang.unique_integer([:positive])}"
-      legacy_update_id = "upd_534_legacy_#{:erlang.unique_integer([:positive])}"
-
-      # A pre-#532 record: a plain map that carries its own GSN and scopes.
-      legacy = %{
-        "id" => legacy_id,
-        "actor_id" => actor_id,
-        "hlc" => hlc,
-        "gsn" => gsn1,
-        "update_scopes" => [[group_id]],
-        "updates" => [
-          %{
-            "id" => legacy_update_id,
-            "subject_id" => "todo_534_legacy",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{"title" => %{"type" => "lww", "value" => "legacy", "hlc" => hlc}}
-            }
-          }
-        ]
-      }
-
-      framed_id = "act_534_frame_#{:erlang.unique_integer([:positive])}"
-      framed_update_id = "upd_534_frame_#{:erlang.unique_integer([:positive])}"
-
-      payload =
-        %{
-          id: framed_id,
-          actor_id: actor_id,
-          hlc: hlc,
-          updates: [
-            %{
-              id: framed_update_id,
-              subject_id: "todo_534_frame",
-              subject_type: "todo",
-              method: :put,
-              data: %{
-                "fields" => %{"title" => %{"type" => "lww", "value" => "frame", "hlc" => hlc}}
-              }
-            }
-          ]
-        }
-        |> ActionFormat.build()
-        |> ActionFormat.encode()
-
-      frame = ActionFormat.frame(payload, [[group_id]])
+      first_id = "act_534_first_#{:erlang.unique_integer([:positive])}"
+      second_id = "act_534_second_#{:erlang.unique_integer([:positive])}"
 
       :ok =
         RocksDB.write_batch([
           {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn1),
-           :erlang.term_to_binary(legacy)},
+           framed(group_id, actor_id, first_id)},
           {:put, RocksDB.cf_group_actions(), RocksDB.encode_group_action_key(group_id, gsn1),
-           legacy_id},
-          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn2), frame},
+           first_id},
+          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn2),
+           framed(group_id, actor_id, second_id)},
           {:put, RocksDB.cf_group_actions(), RocksDB.encode_group_action_key(group_id, gsn2),
-           framed_id}
+           second_id}
         ])
 
       :ok = WatermarkTracker.mark_range_committed(gsn1, gsn2)
@@ -106,26 +61,21 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
 
       # Each released range is its own push, so flatten the chunks to assert
       # the stream order across them.
-      [legacy_pushed, framed_pushed] =
+      [first_pushed, second_pushed] =
         receive_data_payloads(2) |> Enum.map(&Jason.decode!/1)
 
-      assert [legacy_pushed["gsn"], framed_pushed["gsn"]] == [gsn1, gsn2]
-      assert [legacy_pushed["id"], framed_pushed["id"]] == [legacy_id, framed_id]
+      assert [first_pushed["gsn"], second_pushed["gsn"]] == [gsn1, gsn2]
+      assert [first_pushed["id"], second_pushed["id"]] == [first_id, second_id]
+      assert [%{"subject_id" => subject}] = first_pushed["updates"]
+      assert subject == "todo_#{first_id}"
 
-      assert [%{"id" => ^legacy_update_id}] = legacy_pushed["updates"]
-      assert [%{"id" => ^framed_update_id}] = framed_pushed["updates"]
-
-      # Decoding the stored shapes is what keeps the push uniform: the
-      # legacy record keeps its own GSN and the v1 frame takes the key's GSN
-      # plus its persisted scopes.
-      {:ok, legacy_value} = RocksDB.get(RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn1))
-      assert %{"gsn" => ^gsn1} = ActionFormat.decode(legacy_value, gsn1)
-
+      # Decoding the stored value is what keeps the push uniform: the key's
+      # GSN plus the persisted scopes, whichever range it came from.
       {:ok, frame_value} = RocksDB.get(RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn2))
-      decoded_frame = ActionFormat.decode(frame_value, gsn2)
+      decoded = ActionFormat.decode(frame_value, gsn2)
 
-      assert decoded_frame["gsn"] == gsn2
-      assert decoded_frame["update_scopes"] == [[group_id]]
+      assert decoded["gsn"] == gsn2
+      assert decoded["update_scopes"] == [[group_id]]
 
       sync_router()
       assert FanOutFrontier.get() == {:ok, gsn2}
@@ -253,4 +203,30 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
   # Blocks until the Router has finished handling the message that pushed the
   # range, so the persisted frontier reflects that push.
   defp sync_router, do: :sys.get_state(FanOutRouter)
+
+  defp framed(group_id, actor_id, action_id) do
+    hlc = generate_hlc()
+
+    payload =
+      %{
+        id: action_id,
+        actor_id: actor_id,
+        hlc: hlc,
+        updates: [
+          %{
+            id: "upd_#{action_id}",
+            subject_id: "todo_#{action_id}",
+            subject_type: "todo",
+            method: :put,
+            data: %{
+              "fields" => %{"title" => %{"type" => "lww", "value" => action_id, "hlc" => hlc}}
+            }
+          }
+        ]
+      }
+      |> ActionFormat.build()
+      |> ActionFormat.encode()
+
+    ActionFormat.frame(payload, [[group_id]])
+  end
 end

@@ -135,7 +135,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
   end
 
   describe "stored action shape (#532)" do
-    test "pushes an Action stored in a v1 frame" do
+    test "pushes an Action stored in a frame" do
       group_id = "g_532_#{:erlang.unique_integer([:positive])}"
       actor_id = "a_532_#{:erlang.unique_integer([:positive])}"
 

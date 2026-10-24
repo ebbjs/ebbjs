@@ -142,7 +142,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert cached.type == "todo"
     end
 
-    test "materializes an Action stored in a v1 frame", %{
+    test "materializes an Action stored in a frame", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
       dirty_set: dirty_set

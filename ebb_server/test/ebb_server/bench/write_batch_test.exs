@@ -152,15 +152,15 @@ defmodule EbbServer.Bench.WriteBatchTest do
                Enum.to_list(1_000_000_000..1_000_000_009)
     end
 
-    test "cf_actions stores the GSN-free v1 frame", context do
+    test "cf_actions stores the GSN-free frame", context do
       {:ok, config} = Options.parse(["--tier", "t5", "--batch-size", "1"])
       ops = WriteBatch.build_ops(config, context.ctx, 1, 0)
       [{_key, value}] = cf_ops(ops, RocksDB.cf_actions())
 
-      # The raw value is the v1 frame: a version byte, the payload's length,
-      # the payload ETF, and the scopes ETF. None of them carries the GSN,
-      # which lives only in the cf_actions key.
-      assert <<1, size::32, payload_etf::binary-size(size), scopes_etf::binary>> = value
+      # The raw value is the frame: the payload's length, the payload ETF,
+      # and the scopes ETF. None of them carries the GSN, which lives only in
+      # the cf_actions key.
+      assert <<size::32, payload_etf::binary-size(size), scopes_etf::binary>> = value
       assert :erlang.binary_to_term(scopes_etf) == [[Workbook.group_id()], [Workbook.group_id()]]
 
       payload = :erlang.binary_to_term(payload_etf)

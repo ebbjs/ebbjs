@@ -740,7 +740,7 @@ defmodule EbbServer.Storage.Writer do
      `update_scopes`), hands the batch to the Committer, and once the
      Committer reports the durable write builds a single WriteBatch across
      the written column families:
-     - cf_actions: GSN → v1 frame of the pre-encoded payload and its
+     - cf_actions: GSN → frame of the pre-encoded payload and its
        per-Update group scopes
      - cf_action_dedup: action_id → GSN (duplicate detection)
      - cf_entity_actions: (subject_id, GSN) → action_id (materialization index)
