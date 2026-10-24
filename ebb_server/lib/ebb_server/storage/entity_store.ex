@@ -74,6 +74,7 @@ defmodule EbbServer.Storage.EntityStore do
 
   alias EbbServer.Telemetry
 
+  @max_gsn 0xFFFFFFFFFFFFFFFF
   @default_rocks_name EbbServer.Storage.RocksDB
   @default_sqlite_name EbbServer.Storage.SQLite
   @default_dirty_set :ebb_dirty_set
@@ -270,16 +271,27 @@ defmodule EbbServer.Storage.EntityStore do
     end
   end
 
+  # The index key is `(entity_id, gsn)`, so the read starts at the first GSN
+  # this entity has not applied yet: a dirty entity walks only its delta,
+  # however long its history is, and the rows arrive in GSN order.
   defp fetch_relevant_entries(entity_id, rocks_name, last_gsn) do
-    RocksDB.prefix_iterator(RocksDB.cf_entity_actions(rocks_name), entity_id, name: rocks_name)
-    |> Stream.map(fn {key, action_id_binary} ->
+    RocksDB.entity_gsn_iterator(
+      RocksDB.cf_entity_actions(rocks_name),
+      entity_id,
+      first_unapplied_gsn(last_gsn),
+      name: rocks_name
+    )
+    |> Enum.map(fn {key, action_id_binary} ->
       {_eid, gsn} = RocksDB.decode_entity_gsn_key(key)
       {gsn, action_id_binary}
     end)
-    |> Stream.filter(fn {gsn, _} -> gsn > last_gsn end)
-    |> Enum.to_list()
-    |> Enum.sort_by(fn {gsn, _} -> gsn end)
   end
+
+  # A cold read has applied nothing. The clamp is what keeps `last_gsn + 1`
+  # encodable at the top of the GSN space rather than wrapping to 0 and
+  # silently re-reading the whole history.
+  defp first_unapplied_gsn(nil), do: 0
+  defp first_unapplied_gsn(last_gsn), do: min(last_gsn + 1, @max_gsn)
 
   defp handle_empty_entries(entity_id, nil, observed_generation, dirty_set) do
     clear_settled(entity_id, observed_generation, dirty_set)

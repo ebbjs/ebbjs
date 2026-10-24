@@ -111,6 +111,37 @@ defmodule EbbServer.Storage.RocksDBTest do
     end
   end
 
+  describe "entity gsn iterator" do
+    test "seeks past the applied GSNs and stays inside the entity", context do
+      %{name: name} = start_rocks(context)
+      cf = RocksDB.cf_entity_actions(name)
+
+      # Entity ids are the same length here, which is the invariant the
+      # prefix bound relies on: no id is a prefix of another.
+      ids = %{entity: "todo_aaaaaaaa", other: "todo_bbbbbbbb"}
+      gsns = [1, 2, 3, 4]
+
+      ops =
+        for {entity_id, gsn} <- Enum.map(gsns, &{ids.entity, &1}) ++ [{ids.other, 3}] do
+          {:put, cf, RocksDB.encode_entity_gsn_key(entity_id, gsn), "#{entity_id}@#{gsn}"}
+        end
+
+      :ok = RocksDB.write_batch(ops, name: name)
+
+      assert [2, 3, 4] = gsns_from(cf, ids.entity, 2, name)
+      # From 0 is the whole history, which a cold materialize needs.
+      assert [1, 2, 3, 4] = gsns_from(cf, ids.entity, 0, name)
+      # Nothing to read once the history is applied.
+      assert [] = gsns_from(cf, ids.entity, 5, name)
+    end
+  end
+
+  defp gsns_from(cf, entity_id, from_gsn, name) do
+    cf
+    |> RocksDB.entity_gsn_iterator(entity_id, from_gsn, name: name)
+    |> Enum.map(fn {key, _value} -> key |> RocksDB.decode_entity_gsn_key() |> elem(1) end)
+  end
+
   describe "range iterator" do
     test "returns correct key-value pairs within range", context do
       %{name: name} = start_rocks(context)
