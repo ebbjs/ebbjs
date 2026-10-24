@@ -69,13 +69,11 @@ defmodule EbbServer.Telemetry do
   graph the pair to see the pipeline depth and the GSN holding release
   back.
 
-  The `cf_actions` value those ops carry is a versioned frame (#552,
-  `EbbServer.Storage.ActionFormat`), chosen on a measured 9% cheaper export
-  read and 2–5% cheaper catch-up read for 0.1 µs/Action more encode — so no
-  `commit_latency_ms` change from a future envelope is expected to exceed the
-  noise band; the per-Action encode price is in
-  `docs/research/552-action-envelope.md` and the shapes are priced by
-  `mix bench.envelope`.
+  The `cf_actions` value those op lists carry is a versioned frame (#552,
+  `EbbServer.Storage.ActionFormat`), chosen on a 5–10% cheaper export read for
+  0.05–0.10 µs/Action more encode — a share of a flush that sits below this event's
+  noise band. The shapes are priced per Action by `mix bench.envelope` and in
+  `docs/research/552-action-envelope.md`.
 
   `ebb.watermark.lag` is a **durability** lag, not a notification lag:
   the resolution frontier may cover a durable range before its apply.
