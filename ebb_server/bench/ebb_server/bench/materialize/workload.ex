@@ -94,7 +94,8 @@ defmodule EbbServer.Bench.Materialize.Workload do
 
   The create Action files it into the hot group so the hot actor can read it;
   each of the `history` follow-up Actions is a one-key patch on the same
-  entity, which is one `cf_entity_actions` row per Update.
+  entity. Every write batch coalesces into one `cf_entity_actions` row per
+  subject, so the entity accumulates one row per flush rather than per Update.
   """
   @spec seed_history(EbbServer.Bench.Materialize.Options.t(), non_neg_integer()) :: String.t()
   def seed_history(%EbbServer.Bench.Materialize.Options{} = config, history) do
