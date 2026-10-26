@@ -318,16 +318,13 @@ defmodule EbbServer.Sync.Router do
 
         member_group_ids = PermissionChecker.member_group_ids(group_ids, actor_id)
 
-        cond do
-          group_ids == [] ->
-            send_json(conn, 404, %{"error" => "entity_not_found"})
-
-          member_group_ids == [] ->
-            send_json(conn, 403, %{"error" => "not_member"})
-
-          true ->
-            FanOutRouter.broadcast_presence(member_group_ids, entity_id, actor_id, data)
-            send_resp(conn, 204, "")
+        if member_group_ids != [] do
+          FanOutRouter.broadcast_presence(member_group_ids, entity_id, actor_id, data)
+          send_resp(conn, 204, "")
+        else
+          # A foreign entity and an unused id share one response: telling them
+          # apart would hand callers an existence oracle for entity ids.
+          send_json(conn, 404, %{"error" => "entity_not_found"})
         end
 
       {:ok, _} ->
@@ -628,8 +625,10 @@ defmodule EbbServer.Sync.Router do
         "204" => %OpenApiSpex.Response{
           description: "Presence broadcasted successfully"
         },
-        "403" => OperationSchema.error_response("Not a member of the entity's group"),
-        "404" => OperationSchema.error_response("Entity not found"),
+        "404" =>
+          OperationSchema.error_response(
+            "Entity not found, or the actor is not a member of any of its groups"
+          ),
         "422" => OperationSchema.error_response("Validation failed (missing/invalid entity_id)")
       }
     }

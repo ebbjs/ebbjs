@@ -74,7 +74,7 @@ defmodule EbbServer.Sync.RouterTest do
       assert response["error"] == "entity_not_found"
     end
 
-    test "403 for non-member - actor not in entity's group" do
+    test "404 for non-member - actor not in entity's group" do
       entity_id = "todo_xyz"
       group_id = "g_private"
       actor_id = "a_outsider"
@@ -91,9 +91,24 @@ defmodule EbbServer.Sync.RouterTest do
           actor_id
         )
 
-      assert conn.status == 403
+      assert conn.status == 404
       {:ok, response} = Jason.decode(conn.resp_body)
-      assert response["error"] == "not_member"
+      assert response["error"] == "entity_not_found"
+    end
+
+    test "a foreign entity and a missing entity are indistinguishable" do
+      foreign_id = "todo_foreign"
+      group_id = "g_someone_else"
+      actor_id = "a_outsider"
+      data = %{"data" => %{"cursor" => %{"line" => 5, "col" => 12}}}
+
+      setup_group_membership("a_member", group_id)
+      setup_entity_group(foreign_id, group_id)
+
+      foreign = post_presence(Map.put(data, "entity_id", foreign_id), actor_id)
+      missing = post_presence(Map.put(data, "entity_id", "todo_missing"), actor_id)
+
+      assert {foreign.status, foreign.resp_body} == {missing.status, missing.resp_body}
     end
 
     test "422 for missing entity_id" do
