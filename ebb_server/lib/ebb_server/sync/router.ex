@@ -135,8 +135,10 @@ defmodule EbbServer.Sync.Router do
       {:ok, %{"type" => type} = payload} when is_binary(type) and type != "" ->
         filter = payload["filter"]
         opts = []
-        opts = if payload["limit"], do: [{:limit, payload["limit"]} | opts], else: opts
-        opts = if payload["offset"], do: [{:offset, payload["offset"]} | opts], else: opts
+        opts = if is_nil(payload["limit"]), do: opts, else: [{:limit, payload["limit"]} | opts]
+
+        opts =
+          if is_nil(payload["offset"]), do: opts, else: [{:offset, payload["offset"]} | opts]
 
         case EntityStore.query(type, filter, actor_id, opts) do
           {:ok, entities} ->

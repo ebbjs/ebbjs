@@ -547,6 +547,27 @@ defmodule EbbServer.Storage.SQLite do
 
   @impl true
   def handle_call({:query_entities, query}, _from, state) do
+    case validate_window(query) do
+      :ok -> do_query_entities(query, state)
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  # A missing or non-positive limit is not a bound: SQLite reads both
+  # `LIMIT NULL` and a negative limit as "no limit", and a missing key would
+  # raise here and take the shared cache down. `EntityStore.query/4`
+  # normalizes the window, so this only guards direct callers.
+  defp validate_window(%{limit: limit} = query) when is_integer(limit) and limit > 0 do
+    case Map.get(query, :offset) do
+      nil -> :ok
+      offset when is_integer(offset) and offset >= 0 -> :ok
+      _offset -> {:error, :invalid_offset}
+    end
+  end
+
+  defp validate_window(_query), do: {:error, :invalid_limit}
+
+  defp do_query_entities(query, state) do
     %{db: db} = state
 
     {filter_sql, filter_params} = build_filter_clauses(query[:filter])

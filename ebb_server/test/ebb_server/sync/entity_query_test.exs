@@ -305,6 +305,20 @@ defmodule EbbServer.Sync.EntityQueryTest do
       assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_offset"}
     end
 
+    test "rejects a boolean window instead of treating it as omitted" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      assert %{"error" => "invalid_limit"} =
+               post_query(%{"type" => "todo", "limit" => false})
+               |> Map.get(:resp_body)
+               |> Jason.decode!()
+
+      assert %{"error" => "invalid_offset"} =
+               post_query(%{"type" => "todo", "offset" => false})
+               |> Map.get(:resp_body)
+               |> Jason.decode!()
+    end
+
     test "accepts the maximum limit" do
       Application.put_env(:ebb_server, :auth_mode, :bypass)
 
