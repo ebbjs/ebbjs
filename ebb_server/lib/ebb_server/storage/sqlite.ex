@@ -573,13 +573,14 @@ defmodule EbbServer.Storage.SQLite do
     # Offset pagination needs a total order, so `id` breaks `created_hlc` ties
     # within a millisecond. DISTINCT collapses the membership join's one row per
     # shared group.
-    sql = base_sql <> filter_sql <> " ORDER BY e.created_hlc, e.id"
+    # The page is always bounded: `LIMIT -1` is valid SQLite for "no limit", so
+    # a missing bound must never reach the SQL.
+    sql = base_sql <> filter_sql <> " ORDER BY e.created_hlc, e.id LIMIT ?"
 
     {sql, pagination_params} =
-      case {query[:limit], query[:offset]} do
-        {nil, _} -> {sql, []}
-        {limit, nil} -> {sql <> " LIMIT ?", [limit]}
-        {limit, offset} -> {sql <> " LIMIT ? OFFSET ?", [limit, offset]}
+      case query[:offset] do
+        nil -> {sql, [query.limit]}
+        offset -> {sql <> " OFFSET ?", [query.limit, offset]}
       end
 
     params = [query.actor_id, query.type] ++ filter_params ++ pagination_params
@@ -595,6 +596,9 @@ defmodule EbbServer.Storage.SQLite do
 
   @doc """
   Queries entities of a given type with permission JOINs and optional filters.
+
+  The query map must carry a `:limit`; `EbbServer.Storage.EntityStore.query/4`
+  normalizes and bounds it. `:offset` is optional.
 
   Returns `{:ok, [entity_maps]}`.
   """

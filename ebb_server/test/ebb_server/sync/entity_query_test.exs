@@ -283,4 +283,39 @@ defmodule EbbServer.Sync.EntityQueryTest do
       assert hd(response)["data"]["fields"]["completed"]["value"] == true
     end
   end
+
+  describe "POST /entities/query pagination" do
+    test "rejects a limit outside 1..1000, whatever its JSON type" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      for limit <- [0, -1, 1.5, "10", 1001] do
+        conn = post_query(%{"type" => "todo", "limit" => limit})
+
+        assert conn.status == 422, "expected #{inspect(limit)} to be rejected"
+        assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_limit"}
+      end
+    end
+
+    test "rejects a negative offset" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      conn = post_query(%{"type" => "todo", "offset" => -1})
+
+      assert conn.status == 422
+      assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_offset"}
+    end
+
+    test "accepts the maximum limit" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      bootstrap_group("a_limit_max", "g_limit_max", ["todo.*"])
+      write_todo("todo_limit_max", "g_limit_max", "a_limit_max")
+
+      conn = post_query(%{"type" => "todo", "limit" => 1000}, "a_limit_max")
+
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert Enum.map(response, & &1["id"]) == ["todo_limit_max"]
+    end
+  end
 end

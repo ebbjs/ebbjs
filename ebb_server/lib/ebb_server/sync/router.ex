@@ -144,6 +144,12 @@ defmodule EbbServer.Sync.Router do
 
             send_json(conn, 200, response)
 
+          {:error, :invalid_limit} ->
+            send_json(conn, 422, %{"error" => "invalid_limit"})
+
+          {:error, :invalid_offset} ->
+            send_json(conn, 422, %{"error" => "invalid_offset"})
+
           {:error, reason} ->
             send_json(conn, 503, %{"error" => "query_failed", "details" => inspect(reason)})
         end
@@ -424,12 +430,12 @@ defmodule EbbServer.Sync.Router do
                 limit: %OpenApiSpex.Schema{
                   type: :integer,
                   nullable: true,
-                  description: "Max results to return"
+                  description: "Max results to return (1-1000, default 200)"
                 },
                 offset: %OpenApiSpex.Schema{
                   type: :integer,
                   nullable: true,
-                  description: "Number of results to skip"
+                  description: "Number of results to skip (0 or more)"
                 }
               }
             }
@@ -438,7 +444,10 @@ defmodule EbbServer.Sync.Router do
       },
       responses: %{
         "200" => OperationSchema.entities_array_response(),
-        "422" => OperationSchema.error_response("Missing or invalid type, or invalid JSON"),
+        "422" =>
+          OperationSchema.error_response(
+            "Missing or invalid type, invalid JSON, or a limit/offset out of range"
+          ),
         "503" => OperationSchema.error_response("Query failed")
       }
     }

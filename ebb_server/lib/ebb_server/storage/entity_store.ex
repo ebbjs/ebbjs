@@ -79,6 +79,11 @@ defmodule EbbServer.Storage.EntityStore do
   @default_sqlite_name EbbServer.Storage.SQLite
   @default_dirty_set :ebb_dirty_set
 
+  # Same page window as `EbbServer.Sync.GroupListing`: a query is never
+  # unbounded, and a caller cannot ask for a page larger than a listing page.
+  @default_limit 200
+  @max_limit 1000
+
   @doc """
   Fetches an entity by ID, reading from SQLite cache or materializing on demand.
 
@@ -679,19 +684,58 @@ defmodule EbbServer.Storage.EntityStore do
   - `:rocks_name` - RocksDB server name (default: `EbbServer.Storage.RocksDB`)
   - `:sqlite_name` - SQLite server name (default: `EbbServer.Storage.SQLite`)
   - `:dirty_set` - ETS table name for dirty tracking (default: `:ebb_dirty_set`)
-  - `:limit` - Maximum results to return
-  - `:offset` - Number of results to skip
+  - `:limit` - Maximum results to return; defaults to #{@default_limit} and is
+    capped at #{@max_limit}. Validated before any materialization work.
+  - `:offset` - Number of results to skip; must not be negative
 
-  Returns `{:ok, [entity_maps]}` or `{:error, term()}`.
+  Returns `{:ok, [entity_maps]}`, `{:error, :invalid_limit}`,
+  `{:error, :invalid_offset}` or `{:error, term()}`.
   """
   @spec query(String.t(), map() | nil, String.t(), keyword()) ::
-          {:ok, [map()]} | {:error, term()}
+          {:ok, [map()]} | {:error, :invalid_limit | :invalid_offset | term()}
   def query(type, filter, actor_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit)
+    offset = Keyword.get(opts, :offset)
+
+    with {:ok, limit, offset} <- normalize_pagination(limit, offset) do
+      run_query(type, filter, actor_id, limit, offset, opts)
+    end
+  end
+
+  @doc """
+  Resolves a caller-supplied page window into the values a read applies.
+
+  An omitted limit becomes `#{@default_limit}`; an omitted offset stays `nil` so
+  the read skips nothing. A value that is not a positive integer no larger than
+  `#{@max_limit}` (or a non-negative offset) is rejected rather than clamped:
+  SQLite reads `LIMIT -1` as "no limit", and a caller whose page is impossible
+  should hear about it instead of silently getting another one.
+  """
+  @spec normalize_pagination(term(), term()) ::
+          {:ok, pos_integer(), non_neg_integer() | nil}
+          | {:error, :invalid_limit | :invalid_offset}
+  def normalize_pagination(limit, offset) do
+    with {:ok, limit} <- normalize_limit(limit),
+         {:ok, offset} <- normalize_offset(offset) do
+      {:ok, limit, offset}
+    end
+  end
+
+  defp normalize_limit(nil), do: {:ok, @default_limit}
+
+  defp normalize_limit(limit) when is_integer(limit) and limit > 0 and limit <= @max_limit,
+    do: {:ok, limit}
+
+  defp normalize_limit(_limit), do: {:error, :invalid_limit}
+
+  defp normalize_offset(nil), do: {:ok, nil}
+  defp normalize_offset(offset) when is_integer(offset) and offset >= 0, do: {:ok, offset}
+  defp normalize_offset(_offset), do: {:error, :invalid_offset}
+
+  defp run_query(type, filter, actor_id, limit, offset, opts) do
     rocks_name = Keyword.get(opts, :rocks_name, @default_rocks_name)
     sqlite_name = Keyword.get(opts, :sqlite_name, @default_sqlite_name)
     dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
-    limit = Keyword.get(opts, :limit)
-    offset = Keyword.get(opts, :offset)
 
     dirty_ids = DirtyTracker.dirty_entity_ids_for_type(type, dirty_set)
 
@@ -708,8 +752,7 @@ defmodule EbbServer.Storage.EntityStore do
       :query
     )
 
-    query_params = %{type: type, filter: filter, actor_id: actor_id}
-    query_params = if limit, do: Map.put(query_params, :limit, limit), else: query_params
+    query_params = %{type: type, filter: filter, actor_id: actor_id, limit: limit}
     query_params = if offset, do: Map.put(query_params, :offset, offset), else: query_params
 
     case SQLite.query_entities(query_params, sqlite_name) do
