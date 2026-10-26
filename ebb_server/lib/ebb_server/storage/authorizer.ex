@@ -64,8 +64,11 @@ defmodule EbbServer.Storage.Authorizer do
       `entityGroup.create` system permission. When the entity already
       has an owning group other than the target, filing it is also a
       membership change, so it additionally needs `<type>.update` in one
-      of the entity's current groups (#623). Membership mutations of
-      an existing entity are checked against cached memberships only —
+      of the entity's current groups (#623). Re-putting a membership row
+      may move it to another group but may not re-point it at a different
+      entity, and an entity the index knows but that owns no group is
+      refused rather than claimed. Membership mutations of an existing
+      entity are checked against cached memberships only —
       the bootstrap's declared permissions stand in only for the
       membership the same Action creates.
     - `entityGroup` delete → the entity's `<type>.update` in any group of
@@ -266,24 +269,34 @@ defmodule EbbServer.Storage.Authorizer do
 
   defp check_all_updates(updates, actor_id, authz) do
     Enum.reduce_while(updates, :ok, fn update, _acc ->
-      result =
-        if PermissionHelper.bootstrap_update?(
-             update,
-             actor_id,
-             authz.bootstrap,
-             authz.created_ids,
-             authz.bootstrap_membership_ids
-           ) do
-          :ok
-        else
-          authorize_update(update, actor_id, authz)
-        end
-
-      case result do
+      case check_update(update, actor_id, authz) do
         :ok -> {:cont, :ok}
         error -> {:halt, error}
       end
     end)
+  end
+
+  # Row identity is not a permission: the bootstrap exemption covers
+  # *creating* a membership, never re-pointing an existing row, so this
+  # check runs before the exemption (#623).
+  defp check_update(update, actor_id, authz) do
+    with :ok <- check_update_row_identity(update, authz) do
+      authorize_or_exempt(update, actor_id, authz)
+    end
+  end
+
+  defp authorize_or_exempt(update, actor_id, authz) do
+    if PermissionHelper.bootstrap_update?(
+         update,
+         actor_id,
+         authz.bootstrap,
+         authz.created_ids,
+         authz.bootstrap_membership_ids
+       ) do
+      :ok
+    else
+      authorize_update(update, actor_id, authz)
+    end
   end
 
   defp authorize_update(update, actor_id, authz) do
@@ -601,15 +614,45 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
-  # An entity the read model places in no group is new to it (created by
-  # this request, or never filed), and the target-group `create` is the
-  # whole gate. Otherwise the actor needs a write permission over the
+  defp check_update_row_identity(%{subject_type: "entityGroup", method: :put} = update, authz) do
+    check_membership_row_entity(update.subject_id, Fields.get(update.data, "entity_id"), authz)
+  end
+
+  defp check_update_row_identity(_update, _authz), do: :ok
+
+  # A membership row names one `(entity, group)` pair. A re-put may move
+  # the row to another group, but it must not re-point it at a different
+  # entity: the row's old owner would silently lose that membership
+  # without the last-membership guard seeing it, and an orphaned entity
+  # could then be claimed by anyone (#623).
+  defp check_membership_row_entity(membership_id, entity_id, authz) do
+    case EntityIndex.membership(membership_id, authz.opts) do
+      nil ->
+        :ok
+
+      {^entity_id, _group_id} ->
+        :ok
+
+      {_other_entity_id, _group_id} ->
+        {:error, "not_authorized", "a membership row cannot be re-pointed at another entity"}
+    end
+  end
+
+  # An entity the existence index does not know is new to the read model
+  # (created by this request), and the target-group `create` is the whole
+  # gate. An entity it knows but that resolves to no group is an orphan
+  # or a tombstone: fail closed rather than letting the first caller
+  # claim it. Otherwise the actor needs a write permission over the
   # entity where it already lives — cache-only, so a membership this
   # Action puts cannot stand in for ownership the entity does not have.
   defp check_existing_ownership(entity_id, target_group_ids, actor_id, type, authz) do
     case EntityIndex.source_groups(entity_id, authz.opts) do
       [] ->
-        :ok
+        if EntityIndex.exists?(entity_id, authz.opts) do
+          {:error, "not_authorized", "cannot file an entity that has no owning group"}
+        else
+          :ok
+        end
 
       group_ids ->
         if Enum.any?(target_group_ids, &(&1 in group_ids)) do

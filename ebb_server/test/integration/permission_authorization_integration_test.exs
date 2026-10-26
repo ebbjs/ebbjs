@@ -727,6 +727,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
 
       hlc = generate_hlc()
       secret_id = "todo_secret_#{Nanoid.generate()}"
+      secret_eg = "eg_#{Nanoid.generate()}"
 
       create = %{
         "id" => "act_secret_#{Nanoid.generate()}",
@@ -734,7 +735,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "hlc" => hlc,
         "updates" => [
           todo_put(secret_id, hlc),
-          entity_group_put("eg_#{Nanoid.generate()}", secret_id, "g_victim", hlc)
+          entity_group_put(secret_eg, secret_id, "g_victim", hlc)
         ]
       }
 
@@ -742,6 +743,35 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
 
       # The attacker owns this group and self-granted todo.create there.
       bootstrap_group("attacker", "g_atk", ["entityGroup.*", "todo.create", "todo.update"])
+
+      # Positive control: the attacker may file their own entity, so the
+      # rejections below are about ownership, not an inert membership.
+      own_id = "todo_own_#{Nanoid.generate()}"
+
+      own = %{
+        "id" => "act_own_#{Nanoid.generate()}",
+        "actor_id" => "attacker",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(own_id, hlc),
+          entity_group_put("eg_#{Nanoid.generate()}", own_id, "g_atk", hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = submit(own, "attacker")
+      assert get_entity(own_id, "attacker").status == 200
+
+      # Re-pointing the victim's membership row at the attacker's entity
+      # would orphan the victim's entity and then let the ordinary graft
+      # above through with an empty owner set.
+      repoint = %{
+        "id" => "act_repoint_#{Nanoid.generate()}",
+        "actor_id" => "attacker",
+        "hlc" => hlc,
+        "updates" => [entity_group_put(secret_eg, own_id, "g_atk", hlc)]
+      }
+
+      assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(repoint, "attacker")
 
       put_graft = %{
         "id" => "act_graft_put_#{Nanoid.generate()}",

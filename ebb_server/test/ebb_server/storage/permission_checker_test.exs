@@ -402,9 +402,12 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
 
-      put_group_member(tables, "g_a", ["todo.create"])
+      # `other_1` already lives in g_a, so filing it into g_b is also a
+      # write to it and the actor needs todo.update where it lives (#623).
+      put_group_member(tables, "g_a", ["todo.create", "todo.update"])
       put_group_member(tables, "g_b", ["todo.create"], "gm_b")
       put_entity_type(tables, "other_1", "todo")
+      put_membership(tables, "other_1", "g_a", "eg_other")
 
       action = %{
         "id" => "act_mixed",

@@ -1334,6 +1334,58 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert rejection.details =~ "patch"
     end
 
+    test "a bootstrap entityGroup put cannot re-point an existing membership row", %{ctx: ctx} do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_entity_group_by_id(tables, "eg_victim", "todo_victim", "g_victim")
+
+      action =
+        build_action([
+          group_put("g_new"),
+          group_member_put("gm_own", "a_1", "g_new", ["entityGroup.*", "todo.create"]),
+          entity_put("todo_new", "todo"),
+          entity_group_put("eg_victim", "todo_new", "g_new")
+        ])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "a put cannot re-point another entity's membership row", %{tables: tables, ctx: ctx} do
+      put_group_member(tables, "g_atk", ["todo.create"], "gm_atk")
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_attacker", "g_atk", "eg_attacker")
+      put_entity_group_by_id(tables, "eg_victim", "todo_victim", "g_victim")
+
+      action = build_action([entity_group_put("eg_victim", "todo_attacker", "g_atk")])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "a put may move a membership row it names to another group", %{tables: tables, ctx: ctx} do
+      put_group_member(tables, "g_2", ["todo.create"], "gm_2")
+      put_group_member(tables, "g_1", ["todo.update"], "gm_g1")
+      put_entity_type(tables, "todo_1", "todo")
+      put_membership(tables, "todo_1", "g_1", "eg_old")
+      put_entity_group_by_id(tables, "eg_old", "todo_1", "g_1")
+
+      action = build_action([entity_group_put("eg_old", "todo_1", "g_2")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "a put cannot claim an entity the index knows but no group owns", %{ctx: ctx} do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_atk", ["todo.create"])
+      put_entity_type(tables, "todo_orphan", "todo")
+
+      action = build_action([entity_group_put("eg_new", "todo_orphan", "g_atk")])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
     test "put is authorized by <type>.create in the target group and <type>.update where the entity lives",
          %{
            tables: tables,
