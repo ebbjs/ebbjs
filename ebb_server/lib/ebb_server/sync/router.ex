@@ -59,6 +59,7 @@ defmodule EbbServer.Sync.Router do
     EntityView,
     GroupCache,
     PermissionChecker,
+    QueryFilter,
     WatermarkTracker
   }
 
@@ -151,6 +152,9 @@ defmodule EbbServer.Sync.Router do
 
           {:error, :invalid_offset} ->
             send_json(conn, 422, %{"error" => "invalid_offset"})
+
+          {:error, :invalid_filter} ->
+            send_json(conn, 422, %{"error" => "invalid_filter"})
 
           {:error, reason} ->
             send_json(conn, 503, %{"error" => "query_failed", "details" => inspect(reason)})
@@ -427,7 +431,11 @@ defmodule EbbServer.Sync.Router do
                 filter: %OpenApiSpex.Schema{
                   type: :object,
                   nullable: true,
-                  description: "Field-value filter"
+                  maxProperties: QueryFilter.max_keys(),
+                  description:
+                    "Field-value filter: identifier-shaped keys mapped to JSON scalars " <>
+                      "(string, number, boolean or null), at most " <>
+                      "#{QueryFilter.max_keys()} keys"
                 },
                 limit: %OpenApiSpex.Schema{
                   type: :integer,
@@ -437,7 +445,7 @@ defmodule EbbServer.Sync.Router do
                 offset: %OpenApiSpex.Schema{
                   type: :integer,
                   nullable: true,
-                  description: "Number of results to skip (0 or more)"
+                  description: "Number of results to skip (a non-negative 64-bit integer)"
                 }
               }
             }
@@ -448,7 +456,8 @@ defmodule EbbServer.Sync.Router do
         "200" => OperationSchema.entities_array_response(),
         "422" =>
           OperationSchema.error_response(
-            "Missing or invalid type, invalid JSON, or a limit/offset out of range"
+            "Missing or invalid type, invalid JSON, a filter that is not identifier keys " <>
+              "mapped to JSON scalars, or a limit/offset out of range"
           ),
         "503" => OperationSchema.error_response("Query failed")
       }

@@ -48,13 +48,29 @@ defmodule EbbServer.Storage.SQLiteTest do
         assert {:error, :invalid_limit} = SQLite.query_entities(query, name)
       end
 
-      assert {:error, :invalid_offset} =
-               SQLite.query_entities(
-                 %{type: "todo", filter: nil, actor_id: "a_1", limit: 10, offset: -1},
-                 name
-               )
+      for offset <- [-1, 9_223_372_036_854_775_808] do
+        assert {:error, :invalid_offset} =
+                 SQLite.query_entities(
+                   %{type: "todo", filter: nil, actor_id: "a_1", limit: 10, offset: offset},
+                   name
+                 )
+      end
 
       assert Process.alive?(pid)
+    end
+  end
+
+  describe "query_entities filter validation" do
+    test "replies with invalid_filter and stays alive for every malformed shape", context do
+      dir = tmp_dir(context)
+      %{name: name, pid: pid} = start_sqlite(dir)
+
+      for filter <- malformed_query_filters() do
+        query = %{type: "todo", filter: filter, actor_id: "a_1", limit: 10}
+
+        assert {:error, :invalid_filter} = SQLite.query_entities(query, name)
+        assert Process.whereis(name) == pid
+      end
     end
   end
 

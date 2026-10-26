@@ -49,11 +49,16 @@ defmodule EbbServer.Storage.SQLite do
 
   use GenServer
 
+  alias EbbServer.Storage.QueryFilter
   alias Exqlite.Sqlite3
 
   # ---------------------------------------------------------------------------
   # SQL constants
   # ---------------------------------------------------------------------------
+
+  # SQLite binds a window as signed 64-bit integers; a larger offset raises in
+  # the NIF rather than returning an error a caller can handle.
+  @max_offset 0x7FFFFFFFFFFFFFFF
 
   @pragmas """
   PRAGMA journal_mode = WAL;
@@ -560,7 +565,7 @@ defmodule EbbServer.Storage.SQLite do
   defp validate_window(%{limit: limit} = query) when is_integer(limit) and limit > 0 do
     case Map.get(query, :offset) do
       nil -> :ok
-      offset when is_integer(offset) and offset >= 0 -> :ok
+      offset when is_integer(offset) and offset >= 0 and offset <= @max_offset -> :ok
       _offset -> {:error, :invalid_offset}
     end
   end
@@ -568,9 +573,17 @@ defmodule EbbServer.Storage.SQLite do
   defp validate_window(_query), do: {:error, :invalid_limit}
 
   defp do_query_entities(query, state) do
-    %{db: db} = state
+    case build_filter_clauses(query[:filter]) do
+      {:ok, filter_sql, filter_params} ->
+        run_query_entities(query, filter_sql, filter_params, state)
 
-    {filter_sql, filter_params} = build_filter_clauses(query[:filter])
+      {:error, :invalid_filter} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  defp run_query_entities(query, filter_sql, filter_params, state) do
+    %{db: db} = state
 
     # An empty permission list is how a membership is revoked
     # (`EbbServer.Storage.PermissionChecker` treats such a row as no
@@ -606,13 +619,39 @@ defmodule EbbServer.Storage.SQLite do
 
     params = [query.actor_id, query.type] ++ filter_params ++ pagination_params
 
-    {:ok, stmt} = Sqlite3.prepare(db, sql)
-    :ok = Sqlite3.bind(stmt, params)
+    case run_prepared(db, sql, params) do
+      {:ok, rows} -> {:reply, {:ok, rows}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
 
-    rows = collect_rows(db, stmt, [])
-    Sqlite3.release(db, stmt)
+  # Every failure on the read path becomes a reply: this process is shared by
+  # every tenant, so a statement SQLite refuses must not take it down.
+  defp run_prepared(db, sql, params) do
+    case Sqlite3.prepare(db, sql) do
+      {:ok, stmt} ->
+        try do
+          with :ok <- Sqlite3.bind(stmt, params) do
+            collect_query_rows(db, stmt, [])
+          end
+        rescue
+          error -> {:error, error}
+        after
+          Sqlite3.release(db, stmt)
+        end
 
-    {:reply, {:ok, rows}, state}
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp collect_query_rows(db, stmt, acc) do
+    case Sqlite3.step(db, stmt) do
+      {:row, row} -> collect_query_rows(db, stmt, [row_to_entity(row) | acc])
+      :done -> {:ok, Enum.reverse(acc)}
+      :busy -> {:error, :busy}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @doc """
@@ -621,10 +660,12 @@ defmodule EbbServer.Storage.SQLite do
   The query map must carry a `:limit`; `EbbServer.Storage.EntityStore.query/4`
   normalizes and bounds it. `:offset` is optional.
 
-  Returns `{:ok, [entity_maps]}`.
+  Returns `{:ok, [entity_maps]}`, `{:error, :invalid_filter}`,
+  `{:error, :invalid_limit}`, `{:error, :invalid_offset}` or
+  `{:error, reason}`.
   """
   @spec query_entities(map(), GenServer.server()) ::
-          {:ok, [map()]} | {:error, :invalid_limit | :invalid_offset}
+          {:ok, [map()]} | {:error, :invalid_filter | :invalid_limit | :invalid_offset | term()}
   def query_entities(query, server \\ __MODULE__) do
     GenServer.call(server, {:query_entities, query})
   end
@@ -643,28 +684,21 @@ defmodule EbbServer.Storage.SQLite do
   # Query helpers
   # ---------------------------------------------------------------------------
 
-  defp build_filter_clauses(nil), do: {"", []}
-  defp build_filter_clauses(filter) when filter == %{}, do: {"", []}
-
   defp build_filter_clauses(filter) do
-    Enum.reduce(filter, {[], []}, fn {field, value}, {clauses, params} ->
-      if safe_field_name?(field) do
-        clause = " AND json_extract(e.data, '$.fields.#{field}.value') = ?"
-        {[clause | clauses], [convert_filter_value(value) | params]}
-      else
-        raise "Unsafe field name: #{inspect(field)}"
-      end
-    end)
-    |> then(fn {clauses, params} -> {Enum.join(Enum.reverse(clauses)), Enum.reverse(params)} end)
+    with {:ok, normalized} <- QueryFilter.normalize(filter) do
+      {clauses, params} =
+        Enum.reduce(normalized || %{}, {[], []}, fn {field, value}, {clauses, params} ->
+          clause = " AND json_extract(e.data, '$.fields.#{field}.value') = ?"
+          {[clause | clauses], [convert_filter_value(value) | params]}
+        end)
+
+      {:ok, Enum.join(Enum.reverse(clauses)), Enum.reverse(params)}
+    end
   end
 
   defp convert_filter_value(true), do: 1
   defp convert_filter_value(false), do: 0
   defp convert_filter_value(value), do: value
-
-  defp safe_field_name?(name) when is_binary(name) do
-    Regex.match?(~r/^[a-zA-Z_][a-zA-Z0-9_]*$/, name)
-  end
 
   defp collect_rows(db, stmt, acc) do
     case Sqlite3.step(db, stmt) do

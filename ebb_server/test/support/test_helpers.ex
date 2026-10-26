@@ -19,6 +19,7 @@ defmodule EbbServer.TestHelpers do
   - `auth_opts/1` - Build auth context options from isolated tables
 
   **Data Fixtures**
+  - `malformed_query_filters/0` - Filter shapes every query boundary must reject
   - `generate_hlc/0` - Generate current HLC timestamp
   - `hlc_from/2` - Build HLC from explicit time and counter
   - `sample_action/1` - Create sample action with string keys
@@ -530,6 +531,29 @@ defmodule EbbServer.TestHelpers do
       entity_groups_by_id: tables.entity_groups_by_id,
       entity_types: tables.entity_types,
       relationships_by_id: tables.relationships_by_id
+    ]
+  end
+
+  @doc """
+  Filter shapes a query boundary must reject.
+
+  Covers unsafe field names, non-map filters, non-scalar values, an integer
+  SQLite cannot bind, and more keys than the filter cap allows.
+  """
+  def malformed_query_filters do
+    too_many_keys =
+      for i <- 1..(EbbServer.Storage.QueryFilter.max_keys() + 1),
+          into: %{},
+          do: {"field_#{i}", i}
+
+    [
+      %{"a b" => "x"},
+      [1, 2],
+      "zzz",
+      %{"title" => %{"n" => 1}},
+      %{"title" => [1, 2]},
+      %{"count" => 9_223_372_036_854_775_808},
+      too_many_keys
     ]
   end
 

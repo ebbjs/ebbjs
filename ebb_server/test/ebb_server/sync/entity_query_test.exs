@@ -284,6 +284,68 @@ defmodule EbbServer.Sync.EntityQueryTest do
     end
   end
 
+  describe "POST /entities/query filter validation" do
+    test "rejects every malformed shape and leaves the SQLite process alone" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      sqlite_pid = Process.whereis(EbbServer.Storage.SQLite)
+      assert is_pid(sqlite_pid)
+
+      for filter <- malformed_query_filters() do
+        conn = post_query(%{"type" => "todo", "filter" => filter})
+
+        assert conn.status == 422, "expected #{inspect(filter)} to be rejected"
+        assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_filter"}
+        assert Process.whereis(EbbServer.Storage.SQLite) == sqlite_pid
+      end
+    end
+
+    test "four repeated malformed filters do not restart the storage tree" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      sqlite_pid = Process.whereis(EbbServer.Storage.SQLite)
+      assert is_pid(sqlite_pid)
+
+      for _ <- 1..4 do
+        conn = post_query(%{"type" => "todo", "filter" => %{"a b" => "x"}})
+        assert conn.status == 422
+      end
+
+      assert Process.whereis(EbbServer.Storage.SQLite) == sqlite_pid
+    end
+
+    test "valid scalar filters and the empty filter keep their rows" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      bootstrap_group("a_scalar", "g_scalar", ["todo.*"])
+      write_todo("todo_done", "g_scalar", "a_scalar", completed: true, title: "Done task")
+      write_todo("todo_open", "g_scalar", "a_scalar", completed: false, title: "Not done")
+
+      cases = [
+        {%{"completed" => true}, ["todo_done"]},
+        {%{"completed" => false}, ["todo_open"]},
+        {%{"completed" => 1}, ["todo_done"]},
+        {%{"title" => "Done task"}, ["todo_done"]},
+        {%{"title" => nil}, []},
+        {%{}, ["todo_done", "todo_open"]}
+      ]
+
+      for {filter, expected_ids} <- cases do
+        conn = post_query(%{"type" => "todo", "filter" => filter}, "a_scalar")
+
+        assert conn.status == 200, "expected #{inspect(filter)} to be accepted"
+
+        ids =
+          conn.resp_body
+          |> Jason.decode!()
+          |> Enum.map(& &1["id"])
+          |> Enum.sort()
+
+        assert ids == Enum.sort(expected_ids)
+      end
+    end
+  end
+
   describe "POST /entities/query pagination" do
     test "rejects a limit outside 1..1000, whatever its JSON type" do
       Application.put_env(:ebb_server, :auth_mode, :bypass)
@@ -296,13 +358,19 @@ defmodule EbbServer.Sync.EntityQueryTest do
       end
     end
 
-    test "rejects a negative offset" do
+    test "rejects an offset SQLite cannot bind without restarting storage" do
       Application.put_env(:ebb_server, :auth_mode, :bypass)
 
-      conn = post_query(%{"type" => "todo", "offset" => -1})
+      sqlite_pid = Process.whereis(EbbServer.Storage.SQLite)
+      assert is_pid(sqlite_pid)
 
-      assert conn.status == 422
-      assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_offset"}
+      for offset <- [-1, 9_223_372_036_854_775_808] do
+        conn = post_query(%{"type" => "todo", "offset" => offset})
+
+        assert conn.status == 422
+        assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_offset"}
+        assert Process.whereis(EbbServer.Storage.SQLite) == sqlite_pid
+      end
     end
 
     test "rejects a boolean window instead of treating it as omitted" do

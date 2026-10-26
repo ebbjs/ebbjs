@@ -584,6 +584,22 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
     end
   end
 
+  describe "EntityStore.query/4 filter validation" do
+    test "returns the filter error instead of forwarding it", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      dirty_set: dirty_set
+    } do
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+      pid = Process.whereis(sqlite_name)
+
+      for filter <- malformed_query_filters() do
+        assert {:error, :invalid_filter} = EntityStore.query("todo", filter, "a_filter", opts)
+        assert Process.whereis(sqlite_name) == pid
+      end
+    end
+  end
+
   describe "EntityStore.query/4 pagination bounds" do
     test "an omitted window becomes the default page" do
       assert EntityStore.normalize_pagination(nil, nil) == {:ok, 200, nil}
@@ -600,8 +616,8 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       end
     end
 
-    test "a negative or non-integer offset is rejected" do
-      for offset <- [-1, 1.5, "0"] do
+    test "a negative, non-integer or unbindable offset is rejected" do
+      for offset <- [-1, 1.5, "0", 9_223_372_036_854_775_808] do
         assert EntityStore.normalize_pagination(nil, offset) == {:error, :invalid_offset},
                "expected #{inspect(offset)} to be rejected"
       end
