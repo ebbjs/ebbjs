@@ -61,7 +61,10 @@ defmodule EbbServer.Storage.Authorizer do
       exists, otherwise a type created by the same Action or by an
       earlier Action of the same request. An unresolvable type is
       refused (`not_authorized`) rather than falling back to the
-      `entityGroup.create` system permission. Membership mutations of
+      `entityGroup.create` system permission. When the entity already
+      has an owning group other than the target, filing it is also a
+      membership change, so it additionally needs `<type>.update` in one
+      of the entity's current groups (#623). Membership mutations of
       an existing entity are checked against cached memberships only —
       the bootstrap's declared permissions stand in only for the
       membership the same Action creates.
@@ -560,26 +563,67 @@ defmodule EbbServer.Storage.Authorizer do
   # entity-type index's when the entity already exists, otherwise a type
   # created by this Action or an earlier Action of the request; an
   # unresolvable type is a refusal (`entityGroup.create` would let any
-  # group member graft an entity whose type they may not create). The
-  # check is cache-only: the bootstrap's declared permissions stand in
-  # only for the membership the same Action creates, and this update is
-  # exempt only when the entity is created by that same Action (#289).
+  # group member graft an entity whose type they may not create).
+  #
+  # `create` in the target group alone is not enough for an entity that
+  # already has an owner: an actor can self-grant `<type>.create` in a
+  # group they bootstrapped, so otherwise they could file another
+  # tenant's entity into it and read or write it through the normal group
+  # resolution paths (#623). When the entity is already owned elsewhere,
+  # filing it is also a membership change, so it needs `<type>.update` in
+  # one of its current groups. Re-filing an entity into a group it is
+  # already in grants nothing new and stays allowed.
+  #
+  # Both checks are cache-only: the bootstrap's declared permissions
+  # stand in only for the membership the same Action creates, and this
+  # update is exempt only when the entity is created by that same Action
+  # (#289).
   defp authorize_entity_group_update(%{method: :put} = update, actor_id, authz) do
     entity_id = Fields.get(update.data, "entity_id")
+    target_group_ids = wire_group_ids(update)
 
     case entity_type(entity_id, authz) do
       nil ->
         {:error, "not_authorized", "cannot resolve the type of the entity being added to a group"}
 
       type ->
-        check_group_permission(
-          wire_group_ids(update),
-          actor_id,
-          type,
-          "create",
-          authz,
-          &cached_permissions/3
-        )
+        with :ok <-
+               check_group_permission(
+                 target_group_ids,
+                 actor_id,
+                 type,
+                 "create",
+                 authz,
+                 &cached_permissions/3
+               ) do
+          check_existing_ownership(entity_id, target_group_ids, actor_id, type, authz)
+        end
+    end
+  end
+
+  # An entity the read model places in no group is new to it (created by
+  # this request, or never filed), and the target-group `create` is the
+  # whole gate. Otherwise the actor needs a write permission over the
+  # entity where it already lives — cache-only, so a membership this
+  # Action puts cannot stand in for ownership the entity does not have.
+  defp check_existing_ownership(entity_id, target_group_ids, actor_id, type, authz) do
+    case EntityIndex.source_groups(entity_id, authz.opts) do
+      [] ->
+        :ok
+
+      group_ids ->
+        if Enum.any?(target_group_ids, &(&1 in group_ids)) do
+          :ok
+        else
+          check_group_permission(
+            group_ids,
+            actor_id,
+            type,
+            "update",
+            authz,
+            &cached_permissions/3
+          )
+        end
     end
   end
 
