@@ -88,6 +88,11 @@ _Avoid_: loading, cached, complete, error
 A row of one type, identified by an id, whose fields are merged independently.
 _Avoid_: document, record, object
 
+**Committed type**:
+The type an entity id is known by, set by its first write; a write's declared
+`subject_type` must equal it.
+_Avoid_: wire type, declared type, relabel, retype
+
 **Field**:
 A named value on an entity; either a leaf or a map of leaves.
 _Avoid_: column, property, attribute
