@@ -161,7 +161,8 @@
                                 {
                                   "filter":
                                     {
-                                      "description": "Field-value filter",
+                                      "description": "Field-value filter: identifier-shaped keys mapped to JSON scalars (string, number, boolean or null), at most 64 keys",
+                                      "maxProperties": 64,
                                       "nullable": true,
                                       "type": "object",
                                     },
@@ -173,7 +174,7 @@
                                     },
                                   "offset":
                                     {
-                                      "description": "Number of results to skip (0 or more)",
+                                      "description": "Number of results to skip (a non-negative 64-bit integer)",
                                       "nullable": true,
                                       "type": "integer",
                                     },
@@ -259,7 +260,7 @@
                                 },
                             },
                         },
-                      "description": "Missing or invalid type, invalid JSON, or a limit/offset out of range",
+                      "description": "Missing or invalid type, invalid JSON, a filter that is not identifier keys mapped to JSON scalars, or a limit/offset out of range",
                     },
                   "503":
                     {

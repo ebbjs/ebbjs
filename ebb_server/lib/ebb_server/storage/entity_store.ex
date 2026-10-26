@@ -68,6 +68,7 @@ defmodule EbbServer.Storage.EntityStore do
     DirtyTracker,
     FieldMerge,
     PermissionHelper,
+    QueryFilter,
     RocksDB,
     SQLite
   }
@@ -83,6 +84,10 @@ defmodule EbbServer.Storage.EntityStore do
   # unbounded, and a caller cannot ask for a page larger than a listing page.
   @default_limit 200
   @max_limit 1000
+
+  # SQLite binds an offset as a signed 64-bit integer; a larger value raises in
+  # the NIF rather than returning an error a caller can handle.
+  @max_offset 0x7FFFFFFFFFFFFFFF
 
   @doc """
   Fetches an entity by ID, reading from SQLite cache or materializing on demand.
@@ -693,18 +698,22 @@ defmodule EbbServer.Storage.EntityStore do
   - `:dirty_set` - ETS table name for dirty tracking (default: `:ebb_dirty_set`)
   - `:limit` - Maximum results to return; defaults to #{@default_limit} and is
     capped at #{@max_limit}. Validated before any materialization work.
-  - `:offset` - Number of results to skip; must not be negative
+  - `:offset` - Number of results to skip; must be non-negative and fit in a
+    signed 64-bit integer
 
   Returns `{:ok, [entity_maps]}`, `{:error, :invalid_limit}`,
-  `{:error, :invalid_offset}` or `{:error, term()}`.
+  `{:error, :invalid_offset}`, `{:error, :invalid_filter}` or
+  `{:error, term()}`.
   """
   @spec query(String.t(), map() | nil, String.t(), keyword()) ::
-          {:ok, [map()]} | {:error, :invalid_limit | :invalid_offset | term()}
+          {:ok, [map()]}
+          | {:error, :invalid_limit | :invalid_offset | :invalid_filter | term()}
   def query(type, filter, actor_id, opts \\ []) do
     limit = Keyword.get(opts, :limit)
     offset = Keyword.get(opts, :offset)
 
-    with {:ok, limit, offset} <- normalize_pagination(limit, offset) do
+    with {:ok, limit, offset} <- normalize_pagination(limit, offset),
+         {:ok, filter} <- QueryFilter.normalize(filter) do
       run_query(type, filter, actor_id, limit, offset, opts)
     end
   end
@@ -714,9 +723,10 @@ defmodule EbbServer.Storage.EntityStore do
 
   An omitted limit becomes `#{@default_limit}`; an omitted offset stays `nil` so
   the read skips nothing. A value that is not a positive integer no larger than
-  `#{@max_limit}` (or a non-negative offset) is rejected rather than clamped:
-  SQLite reads `LIMIT -1` as "no limit", and a caller whose page is impossible
-  should hear about it instead of silently getting another one.
+  `#{@max_limit}` (or a non-negative offset that fits in a signed 64-bit word)
+  is rejected rather than clamped: SQLite reads `LIMIT -1` as "no limit", and a
+  caller whose page is impossible should hear about it instead of silently
+  getting another one.
   """
   @spec normalize_pagination(term(), term()) ::
           {:ok, pos_integer(), non_neg_integer() | nil}
@@ -736,7 +746,11 @@ defmodule EbbServer.Storage.EntityStore do
   defp normalize_limit(_limit), do: {:error, :invalid_limit}
 
   defp normalize_offset(nil), do: {:ok, nil}
-  defp normalize_offset(offset) when is_integer(offset) and offset >= 0, do: {:ok, offset}
+
+  defp normalize_offset(offset)
+       when is_integer(offset) and offset >= 0 and offset <= @max_offset,
+       do: {:ok, offset}
+
   defp normalize_offset(_offset), do: {:error, :invalid_offset}
 
   defp run_query(type, filter, actor_id, limit, offset, opts) do
