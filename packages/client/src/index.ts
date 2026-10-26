@@ -40,9 +40,11 @@ export {
 
 export {
   PermissionError,
+  type MissingPermissionViolation,
   type PermissionViolation,
   type PermissionVerb,
   type PermissionQuery,
+  type TypeMismatchViolation,
   type CanResult,
   type CanSubject,
   type CanUnknownReason,

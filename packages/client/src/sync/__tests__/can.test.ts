@@ -138,6 +138,7 @@ describe("client.can — global form", () => {
     await expect(client.can("todo.create")).resolves.toEqual({
       kind: "denied",
       violation: {
+        kind: "missing-permission",
         subjectType: "todo",
         subjectId: "*",
         required: "todo.create",
@@ -189,6 +190,7 @@ describe("client.can — global form", () => {
     await expect(client.can("todo.update")).resolves.toEqual({
       kind: "denied",
       violation: {
+        kind: "missing-permission",
         subjectType: "todo",
         subjectId: "*",
         required: "todo.update",
@@ -234,6 +236,7 @@ describe("client.can — per-entity form", () => {
     await expect(client.can("todo_1", "delete")).resolves.toEqual({
       kind: "denied",
       violation: {
+        kind: "missing-permission",
         subjectType: "todo",
         subjectId: "todo_1",
         required: "todo.delete",

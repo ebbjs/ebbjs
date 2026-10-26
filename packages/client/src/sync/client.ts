@@ -872,12 +872,12 @@ export class SyncClient implements PermissionQuery {
    * The global form asks whether the actor holds the permission in any
    * of its groups. The per-entity form resolves the entity's group set
    * and union-matches it. The result is a discriminated union: `denied`
-   * carries the permission the actor lacks and the consulted groups in
-   * the same {@link PermissionViolation} shape the write path throws, and
-   * `unknown` (no handshake, an unresolvable entity, or an entity with no
-   * local owner) means the server remains the authority — it is never
-   * reported as `denied`. The query reflects committed state, so it does
-   * not see an Action's in-flight group bootstrap; the write path is the
+   * carries the same {@link PermissionViolation} the write path throws —
+   * the missing permission, plus the consulted groups — and `unknown`
+   * (no handshake, an unresolvable entity, or an entity with no local
+   * owner) means the server remains the authority — it is never reported
+   * as `denied`. The query reflects committed state, so it does not see
+   * an Action's in-flight group bootstrap; the write path is the
    * authority on that.
    */
   can(permission: string): Promise<CanResult>;

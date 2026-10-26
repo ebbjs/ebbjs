@@ -128,6 +128,7 @@ describe("collectPermissionViolations — user entities", () => {
     expect(error).toBeInstanceOf(PermissionError);
     expect((error as PermissionError).violations).toEqual([
       {
+        kind: "missing-permission",
         subjectType: "todo",
         subjectId: "todo_1",
         required: "todo.create",
@@ -188,6 +189,141 @@ describe("collectPermissionViolations — user entities", () => {
       client.write([action([update("todo", "unowned", "put", { title: "Ship" })])]),
     ).resolves.toEqual({ rejected: [] });
     expect(actionRequests(calls)).toHaveLength(1);
+  });
+
+  it.each(["put", "patch", "delete"] as const)(
+    "refuses a wire type that contradicts the committed type for a %s",
+    async (method) => {
+      const { client, calls } = await mkClient([["g_1", ["todo.*"]]]);
+      await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
+      await client.storage.entities.set(
+        mkEntity("eg_1", "entityGroup", { entity_id: "invoice_1", group_id: "g_1" }),
+      );
+
+      // The wire claims `todo`, which the actor holds; the entity is
+      // committed as an `invoice`, so the relabel is refused whatever the
+      // permission (#624).
+      const error = await client
+        .write([action([update("todo", "invoice_1", method, { amount: 999_999 })])])
+        .then(() => null)
+        .catch((err: unknown) => err);
+
+      expect(error).toBeInstanceOf(PermissionError);
+      expect((error as PermissionError).violations).toEqual([
+        {
+          kind: "type-mismatch",
+          subjectType: "todo",
+          subjectId: "invoice_1",
+          committedType: "invoice",
+          groupIds: ["g_1"],
+        },
+      ]);
+      expect(client.outbox.size()).toBe(0);
+      expect(actionRequests(calls)).toHaveLength(0);
+    },
+  );
+
+  it("refuses a forged wire type even when the actor holds the committed type's permission", async () => {
+    // The server rejects a wire type that contradicts the committed one
+    // outright, so holding `<committed>.<verb>` is no licence to relabel,
+    // and no missing permission is the reason (#624).
+    const { client } = await mkClient([["g_1", ["todo.*", "invoice.*"]]]);
+    await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "invoice_1", group_id: "g_1" }),
+    );
+
+    const error = await client
+      .write([action([update("todo", "invoice_1", "put", { amount: 999_999 })])])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(PermissionError);
+    expect((error as PermissionError).message).toContain(
+      'todo invoice_1: declared type "todo" but the entity is committed as "invoice"',
+    );
+    expect((error as PermissionError).message).not.toContain("missing");
+    expect(client.outbox.size()).toBe(0);
+  });
+
+  it("passes a write that declares the entity's committed type", async () => {
+    const { client } = await mkClient([["g_1", ["invoice.create"]]]);
+    await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "invoice_1", group_id: "g_1" }),
+    );
+
+    await expect(
+      client.write([action([update("invoice", "invoice_1", "put", { amount: 200 })])]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("uses the wire type for an id the local store does not know", async () => {
+    // A new entity has no committed type, so the wire type stands (#624)
+    // — for the grant that satisfies it and for the one that does not.
+    const allowed = await mkClient([["g_1", ["todo.create"]]]);
+    await allowed.client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+    await expect(
+      allowed.client.write([action([update("todo", "todo_1", "put", { title: "Ship" })])]),
+    ).resolves.toEqual({ rejected: [] });
+
+    const denied = await mkClient([["g_1", ["invoice.create"]]]);
+    await denied.client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+    const error = await denied.client
+      .write([action([update("todo", "todo_1", "put", { title: "Ship" })])])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(PermissionError);
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "missing-permission",
+        subjectType: "todo",
+        subjectId: "todo_1",
+        required: "todo.create",
+        groupIds: ["g_1"],
+      },
+    ]);
+  });
+
+  it("agrees with can() that a forged wire type is not a way in", async () => {
+    const { client } = await mkClient([["g_1", ["todo.*"]]]);
+    await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "invoice_1", group_id: "g_1" }),
+    );
+
+    // can() has no wire type to compare, so it reports the permission the
+    // committed type would need; write() refuses the relabel before it
+    // ever gets that far. Both refuse.
+    expect(await client.can("invoice_1", "create")).toEqual({
+      kind: "denied",
+      violation: {
+        kind: "missing-permission",
+        subjectType: "invoice",
+        subjectId: "invoice_1",
+        required: "invoice.create",
+        groupIds: ["g_1"],
+      },
+    });
+
+    const error = await client
+      .write([action([update("todo", "invoice_1", "put", { amount: 999_999 })])])
+      .then(() => null)
+      .catch((err: unknown) => err);
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "type-mismatch",
+        subjectType: "todo",
+        subjectId: "invoice_1",
+        committedType: "invoice",
+        groupIds: ["g_1"],
+      },
+    ]);
   });
 });
 
@@ -615,6 +751,7 @@ describe("PermissionError", () => {
   it("formats its message from the violations", () => {
     const error = new PermissionError([
       {
+        kind: "missing-permission",
         subjectType: "todo",
         subjectId: "todo_1",
         required: "todo.create",
@@ -624,9 +761,28 @@ describe("PermissionError", () => {
 
     expect(error.name).toBe("PermissionError");
     expect(error.violations).toHaveLength(1);
-    expect(error.message).toContain("PermissionError: 1 permission violation(s)");
+    expect(error.message).toContain("PermissionError: 1 violation(s)");
     expect(error.message).toContain("todo todo_1");
     expect(error.message).toContain("todo.create");
     expect(error.message).toContain("g_1");
+  });
+
+  it("names both types for a mismatch and no missing permission", () => {
+    const error = new PermissionError([
+      {
+        kind: "type-mismatch",
+        subjectType: "todo",
+        subjectId: "invoice_1",
+        committedType: "invoice",
+        groupIds: ["g_1"],
+      },
+    ]);
+
+    expect(error.message).toContain(
+      'todo invoice_1: declared type "todo" but the entity is committed as "invoice"',
+    );
+    expect(error.message).toContain("an entity's type cannot change");
+    expect(error.message).not.toContain("missing");
+    expect(error.message).not.toContain("todo.create");
   });
 });

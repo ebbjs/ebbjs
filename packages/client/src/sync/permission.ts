@@ -12,7 +12,7 @@
  * `can()` asks the same question as a query, so an app can decide what
  * to render *before* attempting a write. Both paths resolve a subject's
  * rule through {@link resolveRule} and decide it through
- * {@link ruleHolds}, so they cannot disagree on the rule table. The
+ * {@link decideRule}, so they cannot disagree on the rule table. The
  * write path additionally unions the Action's in-flight bootstrap grant
  * and in-flight `entityGroup` puts, which a query over committed state
  * cannot see; `can()` is correspondingly conservative and reports
@@ -24,6 +24,18 @@
  * group may grant it); membership mutations of an existing entity
  * consult cached permissions only, never the Action's declared
  * bootstrap grant.
+ *
+ * For a user-entity write, the permission type is the type the id was
+ * committed under, never the wire `subject_type`, which is forgeable
+ * (#624). A user-entity write that declares another type is refused here
+ * whatever permission the actor holds: the server refuses it
+ * structurally, so no grant could make it pass. That identity check
+ * covers user entities only — a `relationship` or `entityGroup` write
+ * whose subject id is committed as some other type passes this
+ * best-effort pass and is refused by the server. The server also binds an
+ * id's first type for the whole request, so an Action that relabels an id
+ * an earlier Action in the same batch created is refused there but not
+ * here; Actions are checked one at a time.
  */
 
 import type { Action, Entity, Update } from "@ebbjs/core";
@@ -35,12 +47,36 @@ import { readEntityMemberships, readMembership, type LiveMembership } from "./en
 export type PermissionVerb = "create" | "update" | "delete";
 
 /** One Update the local pass refused, and why. */
-export interface PermissionViolation {
+export type PermissionViolation = MissingPermissionViolation | TypeMismatchViolation;
+
+/**
+ * The actor holds no permission that would allow the write: no group in
+ * {@link groupIds} grants {@link required}.
+ */
+export interface MissingPermissionViolation {
+  readonly kind: "missing-permission";
   readonly subjectType: string;
   readonly subjectId: string;
   /** The permission the actor lacked, e.g. `"todo.create"`. */
   readonly required: string;
   /** The groups that were consulted; empty when none resolved. */
+  readonly groupIds: readonly string[];
+}
+
+/**
+ * The write cannot be authorized at any permission (#624): it declared a
+ * type other than the one the entity is committed under, which the
+ * server refuses structurally. There is deliberately no `required` — the
+ * actor may hold every grant for both types and the write still fails.
+ */
+export interface TypeMismatchViolation {
+  readonly kind: "type-mismatch";
+  /** The type the write declared, i.e. the wire `subject_type`. */
+  readonly subjectType: string;
+  readonly subjectId: string;
+  /** The type the entity is committed under locally. */
+  readonly committedType: string;
+  /** The entity's group set, which the committed type is checked against. */
   readonly groupIds: readonly string[];
 }
 
@@ -63,12 +99,28 @@ export class PermissionError extends Error {
 const formatViolations = (violations: readonly PermissionViolation[]): string => {
   if (violations.length === 0) return "PermissionError";
   const lines = violations.map((v) => `  - ${describeViolation(v)}`);
-  return `PermissionError: ${violations.length} permission violation(s)\n${lines.join("\n")}`;
+  return `PermissionError: ${violations.length} violation(s)\n${lines.join("\n")}`;
+};
+
+/** Compile-time exhaustiveness guard: a new variant must be handled, not guessed. */
+const assertNever = (value: never): never => {
+  throw new Error(`unhandled variant: ${JSON.stringify(value)}`);
 };
 
 const describeViolation = (violation: PermissionViolation): string => {
   const groups = violation.groupIds.length === 0 ? "no group" : violation.groupIds.join(", ");
-  return `${violation.subjectType} ${violation.subjectId}: missing "${violation.required}" (checked: ${groups})`;
+  switch (violation.kind) {
+    case "missing-permission":
+      return `${violation.subjectType} ${violation.subjectId}: missing "${violation.required}" (checked: ${groups})`;
+    case "type-mismatch":
+      return (
+        `${violation.subjectType} ${violation.subjectId}: declared type "${violation.subjectType}"` +
+        ` but the entity is committed as "${violation.committedType}"; an entity's type cannot` +
+        ` change (checked: ${groups})`
+      );
+    default:
+      return assertNever(violation);
+  }
 };
 
 /** The actor's cached groups plus the storage the group set is read from. */
@@ -137,7 +189,24 @@ export type CanUnknownReason = "no-handshake" | "entity-unknown" | "no-owner";
 
 type RuleResolution =
   | { readonly kind: "rule"; readonly rule: ResolvedRule }
+  /**
+   * The write contradicts state the server enforces structurally: it
+   * declared a type other than the one the entity is committed under, so
+   * no permission can allow it (#624). Carries only what the refusal
+   * reports — there is no rule to apply.
+   */
+  | {
+      readonly kind: "refused";
+      readonly committedType: string;
+      readonly groupIds: readonly string[];
+    }
   | { readonly kind: "unresolved"; readonly reason: CanUnknownReason };
+
+/** What a {@link RuleResolution} means for one subject. */
+type RuleDecision =
+  | { readonly kind: "allowed"; readonly groupIds: readonly string[] }
+  | { readonly kind: "denied"; readonly violation: PermissionViolation }
+  | { readonly kind: "unknown"; readonly reason: CanUnknownReason };
 
 /**
  * The lookups the rule table needs to resolve one subject. Both the
@@ -186,7 +255,12 @@ const asStringArray = (value: unknown): readonly string[] =>
  * defers to the server, and `can()` reports `unknown`.
  *
  * Rules mirror `EbbServer.Storage.PermissionHelper` and #319:
- * - user entity → `<type>.<verb>` over the entity's group set;
+ * - user entity → `<committed type>.<verb>` over the entity's group set,
+ *   where the committed type is the entity's local type, never the wire
+ *   `subject_type` (#624). An id the local store has never seen has no
+ *   committed type, so the wire type stands — and a declared type that
+ *   contradicts the committed one is refused outright with no permission
+ *   to report, as the server refuses it;
  * - `group` → `group.<verb>` in the group itself;
  * - `groupMember` → `groupMember.<verb>` in the membership's group;
  * - `entityGroup` put → `<entityType>.create` in the target group; filing
@@ -314,10 +388,18 @@ async function resolveRule(
       const groupIds = await inputs.groupSetFor(subjectId);
       // No owners is the server's `missing_ownership`, not ours.
       if (groupIds.length === 0) return { kind: "unresolved", reason: "no-owner" };
+      const committedType = await inputs.resolveType(subjectId);
+      // A type is identity: the server refuses a declared type other than
+      // the one the id is committed under rather than falling back to it,
+      // so neither may this pass allow it (#624).
+      if (committedType !== null && committedType !== subjectType) {
+        return { kind: "refused", committedType, groupIds };
+      }
+      const type = committedType ?? subjectType;
       return rule({
-        type: subjectType,
+        type,
         verb,
-        required: `${subjectType}.${verb}`,
+        required: `${type}.${verb}`,
         groupIds,
         cachedOnly: false,
       });
@@ -358,6 +440,57 @@ const ruleHolds = (
     const permissions = permissionsFor(groupId, rule.cachedOnly);
     return permissions !== null && grantsPermission(permissions, rule.type, rule.verb);
   });
+
+/** The subject a decision is about, in the violation's vocabulary. */
+interface DecisionSubject {
+  readonly subjectType: string;
+  readonly subjectId: string;
+}
+
+const missingPermission = (
+  subject: DecisionSubject,
+  rule: ResolvedRule,
+): MissingPermissionViolation => ({
+  kind: "missing-permission",
+  subjectType: subject.subjectType,
+  subjectId: subject.subjectId,
+  required: rule.required,
+  groupIds: rule.groupIds,
+});
+
+/**
+ * The single place a {@link RuleResolution} becomes a decision. Only an
+ * explicit `rule` the actor holds is an allow; every other variant denies
+ * or defers, and a variant added later fails to compile until it does one
+ * of those too.
+ */
+const decideRule = (
+  resolution: RuleResolution,
+  subject: DecisionSubject,
+  permissionsFor: (groupId: string, cachedOnly: boolean) => readonly string[] | null,
+): RuleDecision => {
+  switch (resolution.kind) {
+    case "rule":
+      return ruleHolds(resolution.rule, permissionsFor)
+        ? { kind: "allowed", groupIds: resolution.rule.groupIds }
+        : { kind: "denied", violation: missingPermission(subject, resolution.rule) };
+    case "refused":
+      return {
+        kind: "denied",
+        violation: {
+          kind: "type-mismatch",
+          subjectType: subject.subjectType,
+          subjectId: subject.subjectId,
+          committedType: resolution.committedType,
+          groupIds: resolution.groupIds,
+        },
+      };
+    case "unresolved":
+      return { kind: "unknown", reason: resolution.reason };
+    default:
+      return assertNever(resolution);
+  }
+};
 
 /**
  * Resolve the group a system entity (e.g. `groupMember`) belongs to: the
@@ -486,15 +619,20 @@ const collectActionViolations = async (
       resolveType,
       groupSetFor,
     });
-    if (resolution.kind === "unresolved") return null;
-    return ruleHolds(resolution.rule, permissionsFor)
-      ? null
-      : {
-          subjectType: update.subject_type,
-          subjectId: update.subject_id,
-          required: resolution.rule.required,
-          groupIds: resolution.rule.groupIds,
-        };
+    const decision = decideRule(
+      resolution,
+      { subjectType: update.subject_type, subjectId: update.subject_id },
+      permissionsFor,
+    );
+    switch (decision.kind) {
+      case "allowed":
+      case "unknown":
+        return null;
+      case "denied":
+        return decision.violation;
+      default:
+        return assertNever(decision);
+    }
   };
 
   const violations: PermissionViolation[] = [];
@@ -585,7 +723,13 @@ export async function queryActorPermission(
   return {
     kind: "denied",
     // The global form has no single subject; `"*"` marks "the actor".
-    violation: { subjectType: type, subjectId: "*", required: `${type}.${verb}`, groupIds },
+    violation: {
+      kind: "missing-permission",
+      subjectType: type,
+      subjectId: "*",
+      required: `${type}.${verb}`,
+      groupIds,
+    },
   };
 }
 
@@ -620,22 +764,17 @@ export async function queryEntityPermission(
     groupSetFor: async (entityId) =>
       (await readEntityMemberships(ctx.storage, entityId)).map((m) => m.groupId),
   });
-  if (resolution.kind === "unresolved") {
-    return { kind: "unknown", reason: resolution.reason };
+  const decision = decideRule(resolution, { subjectType: row.type, subjectId: id }, permissionsFor);
+  switch (decision.kind) {
+    case "allowed":
+      return { kind: "allowed", groupIds: decision.groupIds };
+    case "denied":
+      return { kind: "denied", violation: decision.violation };
+    case "unknown":
+      return { kind: "unknown", reason: decision.reason };
+    default:
+      return assertNever(decision);
   }
-  const { rule } = resolution;
-  if (ruleHolds(rule, permissionsFor)) {
-    return { kind: "allowed", groupIds: rule.groupIds };
-  }
-  return {
-    kind: "denied",
-    violation: {
-      subjectType: row.type,
-      subjectId: id,
-      required: rule.required,
-      groupIds: rule.groupIds,
-    },
-  };
 }
 
 /**
