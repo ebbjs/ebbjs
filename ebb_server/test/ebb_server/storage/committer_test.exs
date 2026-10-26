@@ -81,11 +81,11 @@ defmodule EbbServer.Storage.CommitterTest do
       entity_ops = for {:put, ^cf_entity, _key, _value} = op <- flush_ops, do: op
 
       assert entity_ops == [
-               {:put, cf_entity, RocksDB.encode_entity_gsn_key("todo_1", 5),
+               {:put, cf_entity, RocksDB.encode_entity_flush_key("todo_1", 5),
                 RocksDB.encode_gsn_list([5])},
-               {:put, cf_entity, RocksDB.encode_entity_gsn_key("todo_2", 6),
+               {:put, cf_entity, RocksDB.encode_entity_flush_key("todo_2", 6),
                 RocksDB.encode_gsn_list([6])},
-               {:put, cf_entity, RocksDB.encode_entity_gsn_key("todo_3", 6),
+               {:put, cf_entity, RocksDB.encode_entity_flush_key("todo_3", 6),
                 RocksDB.encode_gsn_list([6])}
              ]
 
@@ -518,7 +518,7 @@ defmodule EbbServer.Storage.CommitterTest do
 
   defp entity_rows(ops, rocks_name) do
     for {:put, cf, key, value} <- ops, cf == RocksDB.cf_entity_actions(rocks_name) do
-      {entity_id, max_gsn} = RocksDB.decode_entity_gsn_key(key)
+      {entity_id, max_gsn} = RocksDB.decode_entity_flush_key(key)
       {entity_id, max_gsn, RocksDB.decode_gsn_list(value)}
     end
   end

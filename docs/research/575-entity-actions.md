@@ -110,7 +110,7 @@ else is a bench mirror, a test seed, or a comment that names the shape.
 | `storage/committer.ex:205-214` `update_ops/3`                                                                                                                                                                       | write           | nothing; emits `(subject_id, gsn) → action.id` per Update                                                               | **replaced** by a flush-scoped emit                                                                                                      |
 | `storage/committer.ex:154-169` `build_ops/3`                                                                                                                                                                        | write           | already folds flush-scoped keys (`type_entity_keys`) through `map_reduce`                                               | **the seam**: accumulate `{subject_id, gsn}` here                                                                                        |
 | `storage/committer.ex:171-179` `build_action_ops/3`                                                                                                                                                                 | write           | returns `{ops, action.type_entity_keys}`                                                                                | also returns the action's `{subject_id, gsn}` pairs                                                                                      |
-| `storage/rocks_db.ex:148-158` `encode/decode_entity_gsn_key`                                                                                                                                                        | codec           | key is `(entity, gsn)` and ordered by gsn                                                                               | gsn component becomes the entity's _last_ GSN in the flush                                                                               |
+| `storage/rocks_db.ex:148-158` `encode/decode_entity_flush_key`                                                                                                                                                      | codec           | key is `(entity, gsn)` and ordered by gsn                                                                               | gsn component becomes the entity's _last_ GSN in the flush                                                                               |
 | `storage/rocks_db.ex:246-265` `entity_gsn_iterator/4`                                                                                                                                                               | seek            | rows for the entity at or after `from_gsn`, ascending                                                                   | seek unchanged; row count per delta falls                                                                                                |
 | `storage/entity_store.ex:277-288` `fetch_relevant_entries/3`                                                                                                                                                        | read            | **the GSNs only** — value list, filtered `> last_gsn`, ascending                                                        | **the reader change**                                                                                                                    |
 | `storage/entity_store.ex:413-421` `load_actions/2`                                                                                                                                                                  | read            | GSNs only (`encode_gsn_key/1` per entry)                                                                                | entry type loses the dead action_id                                                                                                      |
@@ -297,10 +297,9 @@ Write mechanics, all inside the Committer's flush assembly:
    `subject_id => [gsn]` across the whole flush (the same `map_reduce` that
    already accumulates the flush-scoped type keys). Duplicate `(subject, gsn)`
    pairs — one Action can carry several Updates to one subject — collapse.
-2. One `{:put, cf_entity_actions, encode_entity_gsn_key(subject, List.last(gsns)),
-encode_gsn_list(gsns)}` per subject, emitted after the per-Action ops and
-   sorted by key, exactly like `type_entity_ops/2`, so batches stay
-   reproducible.
+2. One `encode_entity_gsn_row(subject, gsns)` per subject, emitted after the
+   per-Action ops and sorted by key, exactly like `type_entity_ops/2`, so
+   batches stay reproducible.
 3. Cost: one pass over the flush's Updates (already happening) plus one
    `iodata`-built value per row, replacing one `batch_put` per Update. The put
    count is what the write path pays for (~0.8 µs serialized per put,
@@ -447,10 +446,11 @@ the `entity_index` phase drops out of the ladder as a meaningful cost
   becomes a read-modify-write of the row (or must drop the whole row). This note
   does not choose a horizon strategy, but it forecloses the "delete a row per
   GSN" one.
-- **The key's GSN component no longer means "an Action at this GSN".** The name
-  `encode_entity_gsn_key` stays, its meaning must be documented and pinned by a
-  test, and any future code that seeks `(entity, gsn)` for a specific Action is
-  wrong.
+- **The key's GSN component no longer means "an Action at this GSN".** The
+  codec is now `encode_entity_flush_key/2` (renamed from
+  `encode_entity_gsn_key/2` after this change), so the name says "flush" while
+  the key still orders by position; any future code that seeks `(entity, gsn)`
+  for a specific Action is wrong.
 - **A large flush writes one larger value.** At 200 GSNs one row is ~1.6 KB
   against a ~20 B per-Update value; total bytes fall, but a single `put` value
   grows by ~80×. It stays far below any RocksDB write-batch or block-size

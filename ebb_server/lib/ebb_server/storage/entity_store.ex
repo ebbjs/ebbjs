@@ -237,19 +237,19 @@ defmodule EbbServer.Storage.EntityStore do
 
     base_present? = existing_row != nil
 
-    entries =
+    gsns =
       timed(:entries_scan, fn -> fetch_relevant_gsns(entity_id, rocks_name, last_gsn) end)
 
     if after_scan, do: after_scan.()
 
     result =
-      if entries == [] do
-        handle_empty_entries(entity_id, existing_row, observed_generation, dirty_set)
+      if gsns == [] do
+        handle_empty_gsns(entity_id, existing_row, observed_generation, dirty_set)
       else
-        apply_entries_and_persist(
+        apply_gsns_and_persist(
           entity_id,
           current_data,
-          entries,
+          gsns,
           rocks_name,
           observed_generation,
           dirty_set,
@@ -305,7 +305,7 @@ defmodule EbbServer.Storage.EntityStore do
   defp first_unapplied_gsn(nil), do: 0
   defp first_unapplied_gsn(last_gsn), do: min(last_gsn + 1, @max_gsn)
 
-  defp handle_empty_entries(entity_id, nil, observed_generation, dirty_set) do
+  defp handle_empty_gsns(entity_id, nil, observed_generation, dirty_set) do
     clear_settled(entity_id, observed_generation, dirty_set)
     :not_found
   end
@@ -314,7 +314,7 @@ defmodule EbbServer.Storage.EntityStore do
   # scan is already the snapshot this call promised. Re-reading SQLite would
   # add a second SELECT + decode on the common boot/first-query path and still
   # return that older snapshot when a concurrent materializer loses the race.
-  defp handle_empty_entries(entity_id, existing_row, observed_generation, dirty_set) do
+  defp handle_empty_gsns(entity_id, existing_row, observed_generation, dirty_set) do
     clear_settled(entity_id, observed_generation, dirty_set)
     format_live_entity(existing_row)
   end
@@ -331,10 +331,10 @@ defmodule EbbServer.Storage.EntityStore do
     end
   end
 
-  defp apply_entries_and_persist(
+  defp apply_gsns_and_persist(
          entity_id,
          current_data,
-         entries,
+         gsns,
          rocks_name,
          observed_generation,
          dirty_set,
@@ -343,7 +343,7 @@ defmodule EbbServer.Storage.EntityStore do
        ) do
     materialized =
       try do
-        actions = timed(:actions_load, fn -> load_actions(entries, rocks_name) end)
+        actions = timed(:actions_load, fn -> load_actions(gsns, rocks_name) end)
         {:ok, timed(:merge, fn -> replay(current_data, actions, entity_id) end)}
       rescue
         e ->

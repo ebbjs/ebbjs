@@ -240,7 +240,7 @@ defmodule EbbServer.Bench.WriteBatchTest do
         ops
         |> cf_ops(RocksDB.cf_entity_actions())
         |> Enum.map(fn {key, value} ->
-          {subject_id, max_gsn} = RocksDB.decode_entity_gsn_key(key)
+          {subject_id, max_gsn} = RocksDB.decode_entity_flush_key(key)
           {subject_id, max_gsn, RocksDB.decode_gsn_list(value)}
         end)
 

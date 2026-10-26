@@ -23,7 +23,7 @@ defmodule EbbServer.Sync.Router.MaterializationErrorTest do
       entity_id = "todo_corrupted_#{:rand.uniform(10_000)}"
       gsn = 1
 
-      entity_gsn_key = RocksDB.encode_entity_gsn_key(entity_id, gsn)
+      entity_gsn_key = RocksDB.encode_entity_flush_key(entity_id, gsn)
 
       :ok =
         RocksDB.write_batch(
@@ -61,7 +61,7 @@ defmodule EbbServer.Sync.Router.MaterializationErrorTest do
           name: rocks_name
         )
 
-      entity_gsn_key = RocksDB.encode_entity_gsn_key(entity_id, gsn)
+      entity_gsn_key = RocksDB.encode_entity_flush_key(entity_id, gsn)
 
       :ok =
         RocksDB.write_batch(
@@ -91,7 +91,7 @@ defmodule EbbServer.Sync.Router.MaterializationErrorTest do
       entity_id = "todo_corrupted_#{:rand.uniform(10_000)}"
       gsn = 1
 
-      entity_gsn_key = RocksDB.encode_entity_gsn_key(entity_id, gsn)
+      entity_gsn_key = RocksDB.encode_entity_flush_key(entity_id, gsn)
 
       :ok =
         RocksDB.write_batch(
