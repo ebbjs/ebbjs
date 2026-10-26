@@ -167,13 +167,13 @@
                                     },
                                   "limit":
                                     {
-                                      "description": "Max results to return",
+                                      "description": "Max results to return (1-1000, default 200)",
                                       "nullable": true,
                                       "type": "integer",
                                     },
                                   "offset":
                                     {
-                                      "description": "Number of results to skip",
+                                      "description": "Number of results to skip (0 or more)",
                                       "nullable": true,
                                       "type": "integer",
                                     },
@@ -259,7 +259,7 @@
                                 },
                             },
                         },
-                      "description": "Missing or invalid type, or invalid JSON",
+                      "description": "Missing or invalid type, invalid JSON, or a limit/offset out of range",
                     },
                   "503":
                     {
@@ -1299,32 +1299,6 @@
               "responses":
                 {
                   "204": { "description": "Presence broadcasted successfully" },
-                  "403":
-                    {
-                      "content":
-                        {
-                          "application/json":
-                            {
-                              "schema":
-                                {
-                                  "properties":
-                                    {
-                                      "details":
-                                        {
-                                          "description": "Human-readable error details",
-                                          "nullable": true,
-                                          "type": "string",
-                                        },
-                                      "error":
-                                        { "description": "Error code string", "type": "string" },
-                                    },
-                                  "required": ["error"],
-                                  "type": "object",
-                                },
-                            },
-                        },
-                      "description": "Not a member of the entity's group",
-                    },
                   "404":
                     {
                       "content":
@@ -1349,7 +1323,7 @@
                                 },
                             },
                         },
-                      "description": "Entity not found",
+                      "description": "Entity not found, or the actor is not a member of any of its groups",
                     },
                   "422":
                     {

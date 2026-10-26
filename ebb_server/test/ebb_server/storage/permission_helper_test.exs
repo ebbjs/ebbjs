@@ -157,59 +157,163 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     end
   end
 
-  describe "bootstrap_update?/4" do
+  describe "bootstrap_membership_row_ids/3" do
+    test "collects the actor's own membership rows in the groups the action creates" do
+      updates = [
+        group_put("g_1"),
+        group_member_put("gm_1", "a_1", "g_1", ["group.read"]),
+        group_member_put("gm_2", "a_2", "g_1", ["group.read"])
+      ]
+
+      assert PermissionHelper.bootstrap_membership_row_ids(updates, "a_1", fn _ -> false end) ==
+               MapSet.new(["gm_1"])
+    end
+
+    test "drops a row id the existence predicate reports as existing" do
+      updates = [
+        group_put("g_1"),
+        group_member_put("gm_new", "a_1", "g_1", ["group.read"]),
+        group_member_put("gm_old", "a_1", "g_1", ["group.read"])
+      ]
+
+      assert PermissionHelper.bootstrap_membership_row_ids(updates, "a_1", &(&1 == "gm_old")) ==
+               MapSet.new(["gm_new"])
+    end
+
+    test "ignores a membership row in a group the action does not create" do
+      updates = [group_member_put("gm_1", "a_1", "g_1", ["group.read"])]
+
+      assert PermissionHelper.bootstrap_membership_row_ids(updates, "a_1", fn _ -> false end) ==
+               MapSet.new()
+    end
+  end
+
+  describe "bootstrap_update?/5" do
     setup do
       bootstrap = %{"g_1" => ["group.read", "todo.*"]}
       created = MapSet.new(["todo_1"])
-      %{bootstrap: bootstrap, created: created}
+      membership_rows = MapSet.new(["gm_1"])
+
+      %{bootstrap: bootstrap, created: created, membership_rows: membership_rows}
     end
 
-    test "exempts the group put", %{bootstrap: bootstrap, created: created} do
+    test "exempts the group put", %{
+      bootstrap: bootstrap,
+      created: created,
+      membership_rows: membership_rows
+    } do
       update = group_put("g_1")
-      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == true
+
+      assert PermissionHelper.bootstrap_update?(
+               update,
+               "a_1",
+               bootstrap,
+               created,
+               membership_rows
+             ) == true
     end
 
     test "exempts the acting actor's own groupMember put", %{
       bootstrap: bootstrap,
-      created: created
+      created: created,
+      membership_rows: membership_rows
     } do
       update = group_member_put("gm_1", "a_1", "g_1", ["group.read"])
-      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == true
+
+      assert PermissionHelper.bootstrap_update?(
+               update,
+               "a_1",
+               bootstrap,
+               created,
+               membership_rows
+             ) == true
+    end
+
+    test "does not exempt a row the action is not creating", %{
+      bootstrap: bootstrap,
+      created: created,
+      membership_rows: membership_rows
+    } do
+      update = group_member_put("gm_existing", "a_1", "g_1", ["group.read"])
+
+      assert PermissionHelper.bootstrap_update?(
+               update,
+               "a_1",
+               bootstrap,
+               created,
+               membership_rows
+             ) == false
     end
 
     test "does not exempt a third party's groupMember put", %{
       bootstrap: bootstrap,
-      created: created
+      created: created,
+      membership_rows: membership_rows
     } do
       update = group_member_put("gm_2", "a_2", "g_1", ["*"])
-      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == false
+
+      assert PermissionHelper.bootstrap_update?(
+               update,
+               "a_1",
+               bootstrap,
+               created,
+               membership_rows
+             ) == false
     end
 
     test "exempts an entityGroup put for an entity the action creates", %{
       bootstrap: bootstrap,
-      created: created
+      created: created,
+      membership_rows: membership_rows
     } do
       update = entity_group_put("eg_1", "todo_1", "g_1")
-      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == true
+
+      assert PermissionHelper.bootstrap_update?(
+               update,
+               "a_1",
+               bootstrap,
+               created,
+               membership_rows
+             ) == true
     end
 
     test "does not exempt an entityGroup put for an entity the action does not create", %{
       bootstrap: bootstrap,
-      created: created
+      created: created,
+      membership_rows: membership_rows
     } do
       update = entity_group_put("eg_1", "todo_other", "g_1")
-      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == false
+
+      assert PermissionHelper.bootstrap_update?(
+               update,
+               "a_1",
+               bootstrap,
+               created,
+               membership_rows
+             ) == false
     end
 
     test "does not exempt an entityGroup put in a different group", %{
       bootstrap: bootstrap,
-      created: created
+      created: created,
+      membership_rows: membership_rows
     } do
       update = entity_group_put("eg_1", "todo_1", "g_other")
-      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == false
+
+      assert PermissionHelper.bootstrap_update?(
+               update,
+               "a_1",
+               bootstrap,
+               created,
+               membership_rows
+             ) == false
     end
 
-    test "does not exempt a relationship put", %{bootstrap: bootstrap, created: created} do
+    test "does not exempt a relationship put", %{
+      bootstrap: bootstrap,
+      created: created,
+      membership_rows: membership_rows
+    } do
       update = %{
         "id" => "rel_1",
         "subject_id" => "rel_1",
@@ -218,10 +322,20 @@ defmodule EbbServer.Storage.PermissionHelperTest do
         "data" => %{"fields" => %{"source_id" => %{"value" => "todo_1"}}}
       }
 
-      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == false
+      assert PermissionHelper.bootstrap_update?(
+               update,
+               "a_1",
+               bootstrap,
+               created,
+               membership_rows
+             ) == false
     end
 
-    test "does not exempt a group patch", %{bootstrap: bootstrap, created: created} do
+    test "does not exempt a group patch", %{
+      bootstrap: bootstrap,
+      created: created,
+      membership_rows: membership_rows
+    } do
       update = %{
         "id" => "g_1",
         "subject_id" => "g_1",
@@ -230,7 +344,13 @@ defmodule EbbServer.Storage.PermissionHelperTest do
         "data" => %{"fields" => %{"name" => %{"value" => "Renamed"}}}
       }
 
-      assert PermissionHelper.bootstrap_update?(update, "a_1", bootstrap, created) == false
+      assert PermissionHelper.bootstrap_update?(
+               update,
+               "a_1",
+               bootstrap,
+               created,
+               membership_rows
+             ) == false
     end
   end
 

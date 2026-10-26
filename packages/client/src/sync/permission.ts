@@ -189,9 +189,11 @@ const asStringArray = (value: unknown): readonly string[] =>
  * - user entity → `<type>.<verb>` over the entity's group set;
  * - `group` → `group.<verb>` in the group itself;
  * - `groupMember` → `groupMember.<verb>` in the membership's group;
- * - `entityGroup` put → `<entityType>.create` in the target group;
- *   delete → `<entityType>.update` in the entity's current set;
- *   patch → `entityGroup.update` in the membership's group;
+ * - `entityGroup` put → `<entityType>.create` in the target group; filing
+ *   an existing entity is the share/invite primitive. The server also
+ *   refuses `patch` outright (#623), which this pass still models as a
+ *   permission rule, so a patch is only rejected when the server sees it;
+ * - `entityGroup` delete → `<entityType>.update` in the entity's current set;
  * - `relationship` put → `<sourceType>.update` over the source's set;
  *   patch/delete → `relationship.<verb>` over the source's set.
  */

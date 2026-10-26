@@ -547,10 +547,35 @@ defmodule EbbServer.Storage.SQLite do
 
   @impl true
   def handle_call({:query_entities, query}, _from, state) do
+    case validate_window(query) do
+      :ok -> do_query_entities(query, state)
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  # A missing or non-positive limit is not a bound: SQLite reads both
+  # `LIMIT NULL` and a negative limit as "no limit", and a missing key would
+  # raise here and take the shared cache down. `EntityStore.query/4`
+  # normalizes the window, so this only guards direct callers.
+  defp validate_window(%{limit: limit} = query) when is_integer(limit) and limit > 0 do
+    case Map.get(query, :offset) do
+      nil -> :ok
+      offset when is_integer(offset) and offset >= 0 -> :ok
+      _offset -> {:error, :invalid_offset}
+    end
+  end
+
+  defp validate_window(_query), do: {:error, :invalid_limit}
+
+  defp do_query_entities(query, state) do
     %{db: db} = state
 
     {filter_sql, filter_params} = build_filter_clauses(query[:filter])
 
+    # An empty permission list is how a membership is revoked
+    # (`EbbServer.Storage.PermissionChecker` treats such a row as no
+    # membership), so the join has to agree, or revocation would only cover
+    # single-entity reads.
     base_sql = """
     SELECT DISTINCT e.id, e.type, e.data, e.created_hlc, e.updated_hlc, e.deleted_hlc, e.deleted_by, e.last_gsn
     FROM entities e
@@ -561,6 +586,7 @@ defmodule EbbServer.Storage.SQLite do
       AND gm.group_id = m.group_id
       AND gm.actor_id = ?
       AND gm.deleted_hlc IS NULL
+      AND COALESCE(json_array_length(gm.permissions), 0) > 0
     WHERE e.type = ?
       AND e.deleted_hlc IS NULL
     """
@@ -568,13 +594,14 @@ defmodule EbbServer.Storage.SQLite do
     # Offset pagination needs a total order, so `id` breaks `created_hlc` ties
     # within a millisecond. DISTINCT collapses the membership join's one row per
     # shared group.
-    sql = base_sql <> filter_sql <> " ORDER BY e.created_hlc, e.id"
+    # The page is always bounded: `LIMIT -1` is valid SQLite for "no limit", so
+    # a missing bound must never reach the SQL.
+    sql = base_sql <> filter_sql <> " ORDER BY e.created_hlc, e.id LIMIT ?"
 
     {sql, pagination_params} =
-      case {query[:limit], query[:offset]} do
-        {nil, _} -> {sql, []}
-        {limit, nil} -> {sql <> " LIMIT ?", [limit]}
-        {limit, offset} -> {sql <> " LIMIT ? OFFSET ?", [limit, offset]}
+      case query[:offset] do
+        nil -> {sql, [query.limit]}
+        offset -> {sql <> " OFFSET ?", [query.limit, offset]}
       end
 
     params = [query.actor_id, query.type] ++ filter_params ++ pagination_params
@@ -591,9 +618,13 @@ defmodule EbbServer.Storage.SQLite do
   @doc """
   Queries entities of a given type with permission JOINs and optional filters.
 
+  The query map must carry a `:limit`; `EbbServer.Storage.EntityStore.query/4`
+  normalizes and bounds it. `:offset` is optional.
+
   Returns `{:ok, [entity_maps]}`.
   """
-  @spec query_entities(map(), GenServer.server()) :: {:ok, [map()]}
+  @spec query_entities(map(), GenServer.server()) ::
+          {:ok, [map()]} | {:error, :invalid_limit | :invalid_offset}
   def query_entities(query, server \\ __MODULE__) do
     GenServer.call(server, {:query_entities, query})
   end

@@ -10,7 +10,8 @@ defmodule EbbServer.Storage.PermissionHelper do
   **per Update**, never whole-Action:
 
     - the `group` put for the new group;
-    - the acting actor's own `groupMember` put in that group;
+    - the acting actor's own `groupMember` put in that group, for a row
+      the existence index does not already know;
     - an `entityGroup` put that files an entity the same Action `put`s
       into that group.
 
@@ -22,11 +23,12 @@ defmodule EbbServer.Storage.PermissionHelper do
 
   The exemption applies only to entities the Action is **creating**.
   A group qualifies only when the existence index does not already know
-  its id, and the `entityGroup` exemption covers only entities the
-  Action is actually creating. Re-`put`ting a committed group or
-  re-filing a committed entity therefore falls through to the
-  permission table, and the actor's declared permissions are never
-  unioned into the membership checks for existing entities.
+  its id, the `groupMember` exemption covers only row ids the index does
+  not know, and the `entityGroup` exemption covers only entities the
+  Action is actually creating. Re-`put`ting a committed group, a
+  committed membership row or a committed entity therefore falls through
+  to the permission table, and the actor's declared permissions are
+  never unioned into the membership checks for existing entities.
   """
 
   alias EbbServer.Storage.Fields
@@ -86,17 +88,20 @@ defmodule EbbServer.Storage.PermissionHelper do
   @spec bootstrap_group_permissions([map()], String.t(), (String.t() -> boolean())) ::
           %{String.t() => [String.t()]}
   def bootstrap_group_permissions(updates, actor_id, exists?) do
-    group_ids =
-      updates
-      |> group_put_ids()
-      |> Enum.reject(exists?)
-      |> MapSet.new()
+    group_ids = bootstrapped_group_ids(updates, exists?)
 
     updates
     |> Enum.filter(&own_group_member_put?(&1, actor_id, group_ids))
     |> Map.new(fn update ->
       {get_data_field(update, "group_id"), List.wrap(get_data_field(update, "permissions"))}
     end)
+  end
+
+  defp bootstrapped_group_ids(updates, exists?) do
+    updates
+    |> group_put_ids()
+    |> Enum.reject(exists?)
+    |> MapSet.new()
   end
 
   defp group_put_ids(updates) do
@@ -110,6 +115,29 @@ defmodule EbbServer.Storage.PermissionHelper do
     put_of?(update, "groupMember") and
       get_data_field(update, "actor_id") == actor_id and
       MapSet.member?(group_ids, get_data_field(update, "group_id"))
+  end
+
+  @doc """
+  Returns the ids of the `groupMember` rows the actor bootstraps in this
+  Action: the acting actor's own puts in a group the Action creates,
+  restricted to row ids the existence index does not already know.
+
+  Anchors the `groupMember` exemption to rows the Action is creating, so
+  an existing membership row cannot be re-filed into the new group by
+  naming it (#625). Re-`put`ting an existing row excludes it here; the
+  put is then authorized against the permission table, in the group the
+  row already belongs to.
+  """
+  @spec bootstrap_membership_row_ids([map()], String.t(), (String.t() -> boolean())) ::
+          MapSet.t(String.t())
+  def bootstrap_membership_row_ids(updates, actor_id, exists?) do
+    group_ids = bootstrapped_group_ids(updates, exists?)
+
+    updates
+    |> Enum.filter(&own_group_member_put?(&1, actor_id, group_ids))
+    |> Enum.map(&get_subject_id/1)
+    |> Enum.reject(exists?)
+    |> MapSet.new()
   end
 
   @doc """
@@ -157,18 +185,25 @@ defmodule EbbServer.Storage.PermissionHelper do
   The exemption covers exactly the bootstrap's own writes:
 
     - `group` puts for the groups the actor is creating and joining;
-    - the acting actor's own `groupMember` puts in those groups;
+    - the acting actor's own `groupMember` puts for rows
+      `bootstrap_membership_row_ids/3` reports, in those groups;
     - `entityGroup` puts targeting those groups whose entity the Action
       is creating.
 
-  Every other update — third-party memberships, link edges, group
-  patches, entity updates — is authorized normally.
+  Every other update — third-party memberships, re-`put`s of an existing
+  membership row, link edges, group patches, entity updates — is
+  authorized normally.
   """
-  @spec bootstrap_update?(map(), String.t(), %{String.t() => [String.t()]}, MapSet.t(String.t())) ::
-          boolean()
-  def bootstrap_update?(update, actor_id, bootstrap, created_ids) do
+  @spec bootstrap_update?(
+          map(),
+          String.t(),
+          %{String.t() => [String.t()]},
+          MapSet.t(String.t()),
+          MapSet.t(String.t())
+        ) :: boolean()
+  def bootstrap_update?(update, actor_id, bootstrap, created_ids, membership_row_ids) do
     group_bootstrap_update?(update, bootstrap) or
-      own_membership_bootstrap_update?(update, actor_id, bootstrap) or
+      own_membership_bootstrap_update?(update, actor_id, membership_row_ids) or
       entity_group_bootstrap_update?(update, bootstrap, created_ids)
   end
 
@@ -176,10 +211,10 @@ defmodule EbbServer.Storage.PermissionHelper do
     put_of?(update, "group") and Map.has_key?(bootstrap, get_subject_id(update))
   end
 
-  defp own_membership_bootstrap_update?(update, actor_id, bootstrap) do
+  defp own_membership_bootstrap_update?(update, actor_id, membership_row_ids) do
     put_of?(update, "groupMember") and
       get_data_field(update, "actor_id") == actor_id and
-      Map.has_key?(bootstrap, get_data_field(update, "group_id"))
+      MapSet.member?(membership_row_ids, get_subject_id(update))
   end
 
   defp entity_group_bootstrap_update?(update, bootstrap, created_ids) do

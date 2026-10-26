@@ -719,6 +719,94 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     |> Map.fetch!("subject_id")
   end
 
+  # #623: filing an existing entity into a group is the share/invite
+  # primitive (the target group's `<type>.create` is the gate); the row it
+  # is written through is not. These cover the row-identity vectors.
+  describe "cross-tenant entityGroup row identity (#623)" do
+    test "an outsider cannot re-point or patch a membership row" do
+      bootstrap_group("victim", "g_victim", ["todo.create", "todo.update", "todo.read"])
+
+      hlc = generate_hlc()
+      secret_id = "todo_secret_#{Nanoid.generate()}"
+      secret_eg = "eg_#{Nanoid.generate()}"
+
+      create = %{
+        "id" => "act_secret_#{Nanoid.generate()}",
+        "actor_id" => "victim",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(secret_id, hlc),
+          entity_group_put(secret_eg, secret_id, "g_victim", hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = submit(create, "victim")
+
+      # The attacker owns this group and self-granted todo.create there.
+      bootstrap_group("attacker", "g_atk", ["entityGroup.*", "todo.create", "todo.update"])
+
+      # Positive control: the attacker may file their own entity, so the
+      # rejections below are about the row, not an inert membership.
+      own_id = "todo_own_#{Nanoid.generate()}"
+
+      own = %{
+        "id" => "act_own_#{Nanoid.generate()}",
+        "actor_id" => "attacker",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(own_id, hlc),
+          entity_group_put("eg_#{Nanoid.generate()}", own_id, "g_atk", hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = submit(own, "attacker")
+      assert get_entity(own_id, "attacker").status == 200
+
+      # Re-pointing the victim's membership row at the attacker's entity
+      # would orphan the victim's entity and then let the ordinary graft
+      # above through with an empty owner set.
+      repoint = %{
+        "id" => "act_repoint_#{Nanoid.generate()}",
+        "actor_id" => "attacker",
+        "hlc" => hlc,
+        "updates" => [entity_group_put(secret_eg, own_id, "g_atk", hlc)]
+      }
+
+      assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(repoint, "attacker")
+
+      patch_graft = %{
+        "id" => "act_graft_patch_#{Nanoid.generate()}",
+        "actor_id" => "attacker",
+        "hlc" => hlc,
+        "updates" => [
+          %{
+            "id" => "upd_graft_patch_#{Nanoid.generate()}",
+            "subject_id" => "eg_#{Nanoid.generate()}",
+            "subject_type" => "entityGroup",
+            "method" => "patch",
+            "data" => %{
+              "fields" => %{
+                "entity_id" => %{"type" => "lww", "value" => secret_id, "hlc" => hlc},
+                "group_id" => %{"type" => "lww", "value" => "g_atk", "hlc" => hlc}
+              }
+            }
+          }
+        ]
+      }
+
+      assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(patch_graft, "attacker")
+
+      assert get_entity(secret_id, "attacker").status == 404
+      assert get_entity(secret_id, "victim").status == 200
+    end
+  end
+
+  defp submit(action, actor_id) do
+    conn = post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
+    assert conn.status == 200
+    Jason.decode!(conn.resp_body)
+  end
+
   defp post_membership_action(action) do
     conn = post_actions(msgpack_encode!(%{"actions" => [action]}), "actor_1")
     assert conn.status == 200

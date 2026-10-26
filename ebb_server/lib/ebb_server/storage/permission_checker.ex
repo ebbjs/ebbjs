@@ -164,8 +164,8 @@ defmodule EbbServer.Storage.PermissionChecker do
 
   Membership follows `GroupCache.get_permissions/3`, so a `groupMember`
   row whose permission list is empty does not grant read access. The
-  `query/3` SQL JOIN matches on row presence instead, so the two read
-  paths can still disagree for that edge case.
+  `query/3` SQL JOIN applies the same rule, so both read paths revoke
+  together.
   """
   @spec can_read?(String.t(), String.t(), keyword()) :: boolean()
   def can_read?(entity_id, actor_id, opts \\ []) do

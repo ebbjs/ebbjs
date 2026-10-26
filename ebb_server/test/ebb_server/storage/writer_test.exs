@@ -1131,11 +1131,11 @@ defmodule EbbServer.Storage.WriterTest do
       assert GroupCache.get_actor_groups("actor_1", gm_table) == []
     end
 
-    # `GroupCache.put_group_member/2` deletes the primary row by the
-    # *incoming* actor, so two different rows for one membership id in a
-    # single flush must both be applied: collapsing them would strand the
-    # first actor's row.
-    test "a same-flush groupMember actor change keeps both memberships", %{
+    # A membership id names one row with one actor. An actor change in a
+    # single flush re-keys that row: the last put wins, and the previous
+    # actor must not keep a primary entry for it (#625). Leaving the old
+    # entry behind would grant a membership the durable row no longer has.
+    test "a same-flush groupMember actor change leaves one row under the final actor", %{
       writer_name: writer_name,
       group_members: gm_table,
       group_members_by_id: gm_by_id
@@ -1150,8 +1150,7 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
-      assert [%{group_id: "group_1", permissions: ["todo.create"]}] =
-               GroupCache.get_actor_groups("actor_a", gm_table)
+      assert GroupCache.get_actor_groups("actor_a", gm_table) == []
 
       assert [%{group_id: "group_1", permissions: ["todo.read"]}] =
                GroupCache.get_actor_groups("actor_b", gm_table)

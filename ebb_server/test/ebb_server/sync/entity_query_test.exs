@@ -242,6 +242,32 @@ defmodule EbbServer.Sync.EntityQueryTest do
       assert response_a2 == []
     end
 
+    test "a membership with an empty permission list reads nothing" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      bootstrap_group("a_revoked", "g_revoked", [])
+      write_todo("todo_revoked", "g_revoked", "a_revoked")
+
+      conn = post_query(%{"type" => "todo"}, "a_revoked")
+
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert response == []
+    end
+
+    test "a membership with permissions still reads the row" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      bootstrap_group("a_kept", "g_kept", ["todo.read"])
+      write_todo("todo_kept", "g_kept", "a_kept")
+
+      conn = post_query(%{"type" => "todo"}, "a_kept")
+
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert Enum.map(response, & &1["id"]) == ["todo_kept"]
+    end
+
     test "query with filter" do
       Application.put_env(:ebb_server, :auth_mode, :bypass)
 
@@ -255,6 +281,55 @@ defmodule EbbServer.Sync.EntityQueryTest do
       {:ok, response} = Jason.decode(conn.resp_body)
       assert length(response) == 1
       assert hd(response)["data"]["fields"]["completed"]["value"] == true
+    end
+  end
+
+  describe "POST /entities/query pagination" do
+    test "rejects a limit outside 1..1000, whatever its JSON type" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      for limit <- [0, -1, 1.5, "10", 1001] do
+        conn = post_query(%{"type" => "todo", "limit" => limit})
+
+        assert conn.status == 422, "expected #{inspect(limit)} to be rejected"
+        assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_limit"}
+      end
+    end
+
+    test "rejects a negative offset" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      conn = post_query(%{"type" => "todo", "offset" => -1})
+
+      assert conn.status == 422
+      assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_offset"}
+    end
+
+    test "rejects a boolean window instead of treating it as omitted" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      assert %{"error" => "invalid_limit"} =
+               post_query(%{"type" => "todo", "limit" => false})
+               |> Map.get(:resp_body)
+               |> Jason.decode!()
+
+      assert %{"error" => "invalid_offset"} =
+               post_query(%{"type" => "todo", "offset" => false})
+               |> Map.get(:resp_body)
+               |> Jason.decode!()
+    end
+
+    test "accepts the maximum limit" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      bootstrap_group("a_limit_max", "g_limit_max", ["todo.*"])
+      write_todo("todo_limit_max", "g_limit_max", "a_limit_max")
+
+      conn = post_query(%{"type" => "todo", "limit" => 1000}, "a_limit_max")
+
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert Enum.map(response, & &1["id"]) == ["todo_limit_max"]
     end
   end
 end

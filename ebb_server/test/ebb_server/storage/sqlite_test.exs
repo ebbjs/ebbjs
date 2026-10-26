@@ -34,6 +34,30 @@ defmodule EbbServer.Storage.SQLiteTest do
     end
   end
 
+  describe "query_entities window validation" do
+    test "replies with an error instead of raising or rendering an unbounded query", context do
+      dir = tmp_dir(context)
+      %{name: name, pid: pid} = start_sqlite(dir)
+
+      for query <- [
+            %{type: "todo", filter: nil, actor_id: "a_1"},
+            %{type: "todo", filter: nil, actor_id: "a_1", limit: nil},
+            %{type: "todo", filter: nil, actor_id: "a_1", limit: -1},
+            %{type: "todo", filter: nil, actor_id: "a_1", limit: "10"}
+          ] do
+        assert {:error, :invalid_limit} = SQLite.query_entities(query, name)
+      end
+
+      assert {:error, :invalid_offset} =
+               SQLite.query_entities(
+                 %{type: "todo", filter: nil, actor_id: "a_1", limit: 10, offset: -1},
+                 name
+               )
+
+      assert Process.alive?(pid)
+    end
+  end
+
   describe "upsert and get round-trip" do
     test "upserts an entity and reads it back", context do
       dir = tmp_dir(context)

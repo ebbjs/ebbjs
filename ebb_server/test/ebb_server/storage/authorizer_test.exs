@@ -1172,14 +1172,300 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables: tables,
       ctx: ctx
     } do
-      # The actor authorizes the patch in the destination group, so the
-      # origin group has no other capable row to fall back on.
+      # The actor authorizes the patch in the destination group, but the
+      # row is bound to the origin group, where they hold nothing (#625).
       put_group_member(tables, "g_2", ["groupMember.update"], "gm_actor")
       put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
 
       action = build_action([group_member_patch("gm_1", "g_2", ["group.read"])])
 
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "moving the last capable membership is refused even when both groups authorize", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      # The actor may write both groups, so the move passes authorization;
+      # only the last-member guard stops the origin from being emptied.
+      put_group_member(tables, "g_1", ["groupMember.update"], "gm_actor")
+      put_group_member(tables, "g_2", ["groupMember.update"], "gm_actor_2")
+
+      action = build_action([group_member_patch("gm_actor", "g_2", ["groupMember.update"])])
+
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "last_group_member")
+    end
+  end
+
+  # #625: a `groupMember` mutation is bound to the group its row already
+  # belongs to. Authorizing against the group on the wire lets an actor
+  # with a self-granted `groupMember.*` in their own group re-key a row
+  # that lives in somebody else's.
+  describe "authorize/3 - groupMember rows are bound to their group" do
+    setup do
+      tables = create_isolated_tables()
+
+      # The victim's row in `g_victim`; the actor holds permission only in
+      # the group they bootstrapped. `gm_victim_2` keeps the group capable
+      # so the last-member guard is not what refuses the move.
+      put_group_member_by_id(tables, "gm_victim", "a_victim", "g_victim", ["group.read"])
+      put_group_member_by_id(tables, "gm_victim_2", "a_victim_2", "g_victim", ["group.read"])
+      put_group_member(tables, "g_attacker", ["groupMember.*"])
+
+      %{tables: tables, ctx: auth_context(tables)}
+    end
+
+    test "re-putting an existing row with permission only in the destination group is refused", %{
+      ctx: ctx
+    } do
+      action =
+        build_action([
+          group_member_put("gm_victim", "a_1", "g_attacker", ["group.read"])
+        ])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "patching an existing row with permission only in the destination group is refused", %{
+      ctx: ctx
+    } do
+      action = build_action([group_member_patch("gm_victim", "g_attacker", ["group.read"])])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    # The type index retains tombstones, so an id it knows but the by-id
+    # cache no longer places is not a fresh row: re-filing it would let a
+    # deleted membership id be reused as a bootstrap.
+    test "a row id known only to the type index is refused, not re-filed" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["groupMember.*"])
+      put_entity_type(tables, "gm_tombstone", "groupMember")
+
+      action = build_action([group_member_put("gm_tombstone", "a_1", "g_1", ["todo.read"])])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "a bootstrap that re-puts an existing row id is refused", %{ctx: ctx} do
+      action =
+        build_action([
+          group_put("g_new"),
+          group_member_put("gm_own", "a_1", "g_new", ["groupMember.*"]),
+          group_member_put("gm_victim", "a_1", "g_new", ["group.read"])
+        ])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+  end
+
+  describe "authorize/3 - groupMember changes authorized in the row's group" do
+    setup do
+      tables = create_isolated_tables()
+
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+      put_group_member(tables, "g_1", ["groupMember.*"], "gm_actor")
+
+      %{tables: tables, ctx: auth_context(tables)}
+    end
+
+    test "re-putting a row inside its own group is allowed", %{ctx: ctx} do
+      action = build_action([group_member_put("gm_1", "a_2", "g_1", ["group.read", "todo.*"])])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "patching a row inside its own group is allowed", %{ctx: ctx} do
+      action = build_action([group_member_patch("gm_1", "g_1", ["group.read"])])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "moving a row is allowed when the actor holds the permission in both groups", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_2", ["groupMember.update"], "gm_actor_2")
+
+      action = build_action([group_member_patch("gm_1", "g_2", ["group.read"])])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+  end
+
+  # #623: an `entityGroup` patch is authorized against the group named on
+  # the wire and writes a membership row when the row id is unknown, so it
+  # can file any entity id into the caller's group. The server refuses the
+  # method until it is bound to the row; put and delete are unchanged.
+  describe "authorize/3 - entityGroup patch" do
+    setup do
+      tables = create_isolated_tables()
+
+      put_group_member(tables, "g_atk", ["entityGroup.*"])
+
+      %{tables: tables, ctx: auth_context(tables)}
+    end
+
+    test "is rejected even when the actor holds entityGroup.update in the wire group", %{
+      ctx: ctx
+    } do
+      update = %{
+        id: "eg_fresh",
+        subject_id: "eg_fresh",
+        subject_type: "entityGroup",
+        method: :patch,
+        data: %{
+          "fields" => %{
+            "entity_id" => %{"value" => "todo_victim"},
+            "group_id" => %{"value" => "g_atk"}
+          }
+        }
+      }
+
+      rejection =
+        assert_rejected(
+          Authorizer.authorize([build_action([update])], "a_1", ctx),
+          "not_authorized"
+        )
+
+      assert rejection.details =~ "patch"
+    end
+
+    test "a bootstrap entityGroup put cannot re-point an existing membership row" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_entity_group_by_id(tables, "eg_victim", "todo_victim", "g_victim")
+
+      action =
+        build_action([
+          group_put("g_new"),
+          group_member_put("gm_own", "a_1", "g_new", ["entityGroup.*", "todo.create"]),
+          entity_put("todo_new", "todo"),
+          entity_group_put("eg_victim", "todo_new", "g_new")
+        ])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    # Two deletes can share an update id. Resolving deletes by that id
+    # collapses them, authorizing one against the other's entity and hiding
+    # the removal from the last-membership guard (#623).
+    test "duplicate update ids do not borrow another delete's authorization" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_atk", ["todo.update"])
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_attacker", "g_atk", "eg_attacker")
+      put_entity_group_by_id(tables, "eg_attacker", "todo_attacker", "g_atk")
+      put_entity_type(tables, "todo_victim", "todo")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_entity_group_by_id(tables, "eg_victim", "todo_victim", "g_victim")
+
+      duplicate = %{
+        id: "dup_update",
+        subject_type: "entityGroup",
+        method: :delete,
+        data: nil
+      }
+
+      action =
+        build_action([
+          Map.put(duplicate, :subject_id, "eg_victim"),
+          Map.put(duplicate, :subject_id, "eg_attacker")
+        ])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "a put cannot carry a non-string group id", %{tables: tables, ctx: ctx} do
+      put_group_member(tables, "g_atk", ["todo.create"])
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_attacker", "g_atk", "eg_attacker")
+
+      action = build_action([entity_group_put("eg_new", "todo_attacker", ["g_atk"])])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "a put cannot re-point another entity's membership row", %{tables: tables, ctx: ctx} do
+      put_group_member(tables, "g_atk", ["todo.create"], "gm_atk")
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_attacker", "g_atk", "eg_attacker")
+      put_entity_group_by_id(tables, "eg_victim", "todo_victim", "g_victim")
+
+      action = build_action([entity_group_put("eg_victim", "todo_attacker", "g_atk")])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "a put may move a membership row it names to another group", %{tables: tables, ctx: ctx} do
+      put_group_member(tables, "g_2", ["todo.create"], "gm_2")
+      put_group_member(tables, "g_1", ["todo.update"], "gm_g1")
+      put_entity_type(tables, "todo_1", "todo")
+      put_membership(tables, "todo_1", "g_1", "eg_old")
+      put_entity_group_by_id(tables, "eg_old", "todo_1", "g_1")
+
+      action = build_action([entity_group_put("eg_old", "todo_1", "g_2")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "a put cannot claim an entity the index knows but no group owns" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_atk", ["todo.create"])
+      put_entity_type(tables, "todo_orphan", "todo")
+
+      action = build_action([entity_group_put("eg_new", "todo_orphan", "g_atk")])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "put is authorized by <type>.create in the target group",
+         %{
+           tables: tables,
+           ctx: ctx
+         } do
+      put_group_member(tables, "g_2", ["todo.create"], "gm_2")
+      put_entity_type(tables, "todo_1", "todo")
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+
+      action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "put may re-file an entity into a group it already belongs to", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_2", ["todo.create"], "gm_2")
+      put_entity_type(tables, "todo_1", "todo")
+      put_membership(tables, "todo_1", "g_2", "eg_old")
+
+      action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "delete is still authorized by the entity's <type>.update in a current group", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_2", ["todo.update"], "gm_2")
+      put_entity_type(tables, "todo_1", "todo")
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_membership(tables, "todo_1", "g_2", "eg_2")
+      put_entity_group_by_id(tables, "eg_1", "todo_1", "g_1")
+
+      action = build_action([entity_group_delete("eg_1")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
   end
 
@@ -1256,6 +1542,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       put_entity_type(tables, "todo_1", "todo")
       put_group_member(tables, "g_2", ["todo.create"])
+      put_group_member(tables, "g_1", ["todo.update"], "gm_g1")
       put_membership(tables, "todo_1", "g_1", "eg_1")
 
       action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])

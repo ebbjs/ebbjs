@@ -584,6 +584,67 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
     end
   end
 
+  describe "EntityStore.query/4 pagination bounds" do
+    test "an omitted window becomes the default page" do
+      assert EntityStore.normalize_pagination(nil, nil) == {:ok, 200, nil}
+    end
+
+    test "the largest allowed page is kept as asked" do
+      assert EntityStore.normalize_pagination(1000, 0) == {:ok, 1000, 0}
+    end
+
+    test "a limit outside 1..1000 is rejected, whatever its type" do
+      for limit <- [0, -1, 1.5, "10", 1001, %{}, []] do
+        assert EntityStore.normalize_pagination(limit, nil) == {:error, :invalid_limit},
+               "expected #{inspect(limit)} to be rejected"
+      end
+    end
+
+    test "a negative or non-integer offset is rejected" do
+      for offset <- [-1, 1.5, "0"] do
+        assert EntityStore.normalize_pagination(nil, offset) == {:error, :invalid_offset},
+               "expected #{inspect(offset)} to be rejected"
+      end
+    end
+
+    test "query returns the window error instead of forwarding it", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      dirty_set: dirty_set
+    } do
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+
+      assert {:error, :invalid_limit} =
+               EntityStore.query("todo", nil, "a_window", [limit: -1] ++ opts)
+
+      assert {:error, :invalid_limit} =
+               EntityStore.query("todo", nil, "a_window", [limit: 0] ++ opts)
+
+      assert {:error, :invalid_offset} =
+               EntityStore.query("todo", nil, "a_window", [offset: -1] ++ opts)
+    end
+
+    test "a query without a limit returns at most the default page", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      dirty_set: dirty_set
+    } do
+      group_id = "g_default_page_#{System.unique_integer([:positive])}"
+      actor_id = "a_default_page_#{System.unique_integer([:positive])}"
+
+      seed_queryable_todos(group_id, actor_id, 205, sqlite_name)
+
+      {:ok, todos} =
+        EntityStore.query("todo", nil, actor_id,
+          rocks_name: rocks_name,
+          sqlite_name: sqlite_name,
+          dirty_set: dirty_set
+        )
+
+      assert Enum.map(todos, & &1.id) == Enum.map(1..200, &"todo_seed_#{&1}")
+    end
+  end
+
   defp write_relationship(rel_id, source_id, target_id, actor_id, writer_name) do
     hlc = generate_hlc()
 
@@ -689,4 +750,57 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
     {:ok, {gsn2, gsn2}, []} = Writer.write_actions([eg_action], writer_name)
     %{post_id: post_id, eg_id: eg_id, gsn: gsn2}
   end
+
+  # Seeds the read model directly so a page-bound test does not pay for one
+  # Action per row. Seeded rows are not dirty, so a query reads them as-is.
+  defp seed_queryable_todos(group_id, actor_id, count, sqlite_name) do
+    :ok =
+      SQLite.upsert_entity(
+        lww_row("gm_seed", "groupMember", %{
+          "actor_id" => actor_id,
+          "group_id" => group_id,
+          "permissions" => ["todo.read"]
+        }),
+        sqlite_name
+      )
+
+    for i <- 1..count do
+      todo_id = "todo_seed_#{i}"
+
+      :ok =
+        SQLite.upsert_entity(
+          lww_row(todo_id, "todo", %{"title" => "seed #{i}"}, 1000 + i),
+          sqlite_name
+        )
+
+      :ok =
+        SQLite.upsert_entity(
+          lww_row("eg_seed_#{i}", "entityGroup", %{
+            "entity_id" => todo_id,
+            "group_id" => group_id
+          }),
+          sqlite_name
+        )
+    end
+
+    :ok
+  end
+
+  defp lww_row(id, type, fields, created_hlc \\ 1000) do
+    %{
+      id: id,
+      type: type,
+      data:
+        Jason.encode!(%{
+          "fields" => Map.new(fields, fn {field, value} -> {field, lww(value)} end)
+        }),
+      created_hlc: created_hlc,
+      updated_hlc: created_hlc,
+      deleted_hlc: nil,
+      deleted_by: nil,
+      last_gsn: 1
+    }
+  end
+
+  defp lww(value), do: %{"type" => "lww", "value" => value, "hlc" => 1}
 end

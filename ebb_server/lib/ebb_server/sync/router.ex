@@ -135,14 +135,22 @@ defmodule EbbServer.Sync.Router do
       {:ok, %{"type" => type} = payload} when is_binary(type) and type != "" ->
         filter = payload["filter"]
         opts = []
-        opts = if payload["limit"], do: [{:limit, payload["limit"]} | opts], else: opts
-        opts = if payload["offset"], do: [{:offset, payload["offset"]} | opts], else: opts
+        opts = if is_nil(payload["limit"]), do: opts, else: [{:limit, payload["limit"]} | opts]
+
+        opts =
+          if is_nil(payload["offset"]), do: opts, else: [{:offset, payload["offset"]} | opts]
 
         case EntityStore.query(type, filter, actor_id, opts) do
           {:ok, entities} ->
             response = Enum.map(entities, &EntityView.json/1)
 
             send_json(conn, 200, response)
+
+          {:error, :invalid_limit} ->
+            send_json(conn, 422, %{"error" => "invalid_limit"})
+
+          {:error, :invalid_offset} ->
+            send_json(conn, 422, %{"error" => "invalid_offset"})
 
           {:error, reason} ->
             send_json(conn, 503, %{"error" => "query_failed", "details" => inspect(reason)})
@@ -318,16 +326,13 @@ defmodule EbbServer.Sync.Router do
 
         member_group_ids = PermissionChecker.member_group_ids(group_ids, actor_id)
 
-        cond do
-          group_ids == [] ->
-            send_json(conn, 404, %{"error" => "entity_not_found"})
-
-          member_group_ids == [] ->
-            send_json(conn, 403, %{"error" => "not_member"})
-
-          true ->
-            FanOutRouter.broadcast_presence(member_group_ids, entity_id, actor_id, data)
-            send_resp(conn, 204, "")
+        if member_group_ids != [] do
+          FanOutRouter.broadcast_presence(member_group_ids, entity_id, actor_id, data)
+          send_resp(conn, 204, "")
+        else
+          # A foreign entity and an unused id share one response: telling them
+          # apart would hand callers an existence oracle for entity ids.
+          send_json(conn, 404, %{"error" => "entity_not_found"})
         end
 
       {:ok, _} ->
@@ -427,12 +432,12 @@ defmodule EbbServer.Sync.Router do
                 limit: %OpenApiSpex.Schema{
                   type: :integer,
                   nullable: true,
-                  description: "Max results to return"
+                  description: "Max results to return (1-1000, default 200)"
                 },
                 offset: %OpenApiSpex.Schema{
                   type: :integer,
                   nullable: true,
-                  description: "Number of results to skip"
+                  description: "Number of results to skip (0 or more)"
                 }
               }
             }
@@ -441,7 +446,10 @@ defmodule EbbServer.Sync.Router do
       },
       responses: %{
         "200" => OperationSchema.entities_array_response(),
-        "422" => OperationSchema.error_response("Missing or invalid type, or invalid JSON"),
+        "422" =>
+          OperationSchema.error_response(
+            "Missing or invalid type, invalid JSON, or a limit/offset out of range"
+          ),
         "503" => OperationSchema.error_response("Query failed")
       }
     }
@@ -628,8 +636,10 @@ defmodule EbbServer.Sync.Router do
         "204" => %OpenApiSpex.Response{
           description: "Presence broadcasted successfully"
         },
-        "403" => OperationSchema.error_response("Not a member of the entity's group"),
-        "404" => OperationSchema.error_response("Entity not found"),
+        "404" =>
+          OperationSchema.error_response(
+            "Entity not found, or the actor is not a member of any of its groups"
+          ),
         "422" => OperationSchema.error_response("Validation failed (missing/invalid entity_id)")
       }
     }
