@@ -53,6 +53,26 @@ defmodule EbbServer.Storage.GroupCacheTest do
       assert {:error, :nil_values_not_allowed} =
                GroupCache.put_group_member(%{id: "gm_1", actor_id: nil, group_id: "g_1"}, table)
     end
+
+    test "a re-put that changes the actor drops the old primary entry" do
+      %{table: table} = with_isolated_cache()
+
+      :ok =
+        GroupCache.put_group_member(
+          %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
+          table
+        )
+
+      :ok =
+        GroupCache.put_group_member(
+          %{id: "gm_1", actor_id: "a_2", group_id: "g_1", permissions: ["todo.create"]},
+          table
+        )
+
+      assert GroupCache.get_actor_groups("a_1", table) == []
+      assert GroupCache.get_permissions("a_1", "g_1", table) == nil
+      assert GroupCache.get_permissions("a_2", "g_1", table) == ["todo.create"]
+    end
   end
 
   describe "get_actor_groups/2" do

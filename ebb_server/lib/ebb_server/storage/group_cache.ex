@@ -59,10 +59,19 @@ defmodule EbbServer.Storage.GroupCache do
         permissions: member[:permissions] || member["permissions"]
       }
 
-      # A re-put may move the row to another group, so the by-group entry
-      # the old row left behind has to go before the new one lands.
+      # A re-put may re-key the row to another group or actor, so both the
+      # stale by-group entry and the previous actor's primary row have to
+      # go before the new row lands. Deleting only under the new actor
+      # leaves the old `{actor, row}` behind, granting the old actor cached
+      # access to a row that is no longer theirs (#625).
+      previous_actor_id = stale_actor_id(entry_id, by_id_table)
       drop_stale_by_group(entry_id, by_id_table, by_group_table)
-      delete_group_member_by_id(entry.id, actor_id, table)
+
+      [actor_id, previous_actor_id]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Enum.each(&delete_from_primary(table, entry_id, &1))
+
       :ets.insert(table, {actor_id, entry})
       :ets.insert(by_id_table, {entry_id, entry})
       :ets.insert(by_group_table, {{group_id, entry_id}})
@@ -249,13 +258,16 @@ defmodule EbbServer.Storage.GroupCache do
     end
   end
 
+  defp stale_actor_id(member_id, by_id_table) do
+    case :ets.lookup(by_id_table, member_id) do
+      [{_, %{actor_id: actor_id}}] -> actor_id
+      [] -> nil
+    end
+  end
+
   defp resolve_table(nil), do: nil
   defp resolve_table(table) when table == [], do: nil
   defp resolve_table(table) when is_atom(table), do: table
-
-  defp delete_group_member_by_id(member_id, actor_id, table) do
-    delete_from_primary(table, member_id, actor_id)
-  end
 
   defp flat_map_permissions(entries, group_id) do
     Enum.flat_map(entries, fn {_actor_id, entry} ->

@@ -23,11 +23,13 @@ defmodule EbbServer.Storage.Authorizer do
 
   The exemption applies only to entities the Action is **creating**: a
   `group` put qualifies only when the entity-type index does not know
-  the id, and the `entityGroup` exemption covers only user entities the
-  Action actually creates. Re-`put`ting a committed group or filing a
-  committed entity falls through to the permission table like any other
-  write (#289), and the declared permissions are never unioned into the
-  membership checks for entities that already exist.
+  the id, the `groupMember` exemption only covers row ids the caches and
+  the index do not know, and the `entityGroup` exemption covers only
+  user entities the Action actually creates. Re-`put`ting a committed
+  group, a committed membership row or a committed entity falls through
+  to the permission table like any other write (#289, #625), and the
+  declared permissions are never unioned into the membership checks for
+  entities that already exist.
 
   This is deliberately per-Update rather than a whole-Action
   short-circuit (#246): a third-party `groupMember`, a link edge for an
@@ -46,7 +48,12 @@ defmodule EbbServer.Storage.Authorizer do
     - `groupMember` put/patch/delete → `groupMember.create` /
       `groupMember.update` / `groupMember.delete` in the target group.
       Adding an actor to a group is `groupMember.create` in that group;
-      the bootstrap covers only the acting actor's own membership.
+      the bootstrap covers only the acting actor's own membership row,
+      and only while that row is new. A mutation of an existing row is
+      bound to the group the row already belongs to (#625): a row that
+      moves groups needs the permission in both the group it leaves and
+      the group it enters, and a `groupMember` mutation never runs on the
+      Action's declared bootstrap permissions.
     - `entityGroup` put → the added entity's `<type>.create` in the
       target group: the group(s) the put files the entity into (#121's
       "Add Entity to Group" row), not the entity's whole group set. The
@@ -221,10 +228,21 @@ defmodule EbbServer.Storage.Authorizer do
     opts = ctx_to_opts(ctx)
     exists? = fn entity_id -> EntityIndex.exists?(entity_id, opts) end
 
+    # A membership row's existence must not depend on the type index alone:
+    # that index is repaired asynchronously and can lag the group cache, and
+    # a lagging index would re-open the bootstrap exemption for a row that
+    # already exists (#625).
+    member_exists? = fn member_id ->
+      exists?.(member_id) or
+        GroupCache.get_group_member(member_id, ctx.group_members_by_id_table) != nil
+    end
+
     authz = %{
       intra: intra,
       intra_opts: Keyword.put(opts, :intra_action, intra),
       bootstrap: PermissionHelper.bootstrap_group_permissions(updates, actor_id, exists?),
+      bootstrap_membership_ids:
+        PermissionHelper.bootstrap_membership_row_ids(updates, actor_id, member_exists?),
       created_ids: PermissionHelper.created_subject_ids(updates, exists?),
       created_types: Map.merge(sim.types, PermissionHelper.created_entity_types(updates)),
       deleted_memberships: resolve_deleted_memberships(updates, opts),
@@ -247,7 +265,8 @@ defmodule EbbServer.Storage.Authorizer do
              update,
              actor_id,
              authz.bootstrap,
-             authz.created_ids
+             authz.created_ids,
+             authz.bootstrap_membership_ids
            ) do
           :ok
         else
@@ -282,6 +301,19 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   defp authorize_group_member_update(update, actor_id, authz) do
+    case existing_group_member(update.subject_id, authz) do
+      :new ->
+        authorize_new_group_member_update(update, actor_id, authz)
+
+      :unresolved ->
+        {:error, "not_authorized", "cannot resolve the group of this groupMember row"}
+
+      {:existing, group_id} ->
+        authorize_existing_group_member_update(update, group_id, actor_id, authz)
+    end
+  end
+
+  defp authorize_new_group_member_update(update, actor_id, authz) do
     group_ids = system_entity_group_ids(update, "groupMember", authz)
 
     if group_ids == [] do
@@ -294,6 +326,36 @@ defmodule EbbServer.Storage.Authorizer do
         permission_for(update.method),
         authz
       )
+    end
+  end
+
+  # #625: an existing row stays bound to the group it belongs to. The
+  # cache is consulted without the bootstrap's declared permissions,
+  # which cover only the membership the same Action creates. A move is
+  # checked in both the group the row leaves and the one it enters.
+  defp authorize_existing_group_member_update(update, existing_group, actor_id, authz) do
+    group_ids = Enum.uniq([existing_group | wire_group_ids(update)])
+
+    check_every_group_permission(
+      group_ids,
+      actor_id,
+      "groupMember",
+      permission_for(update.method),
+      authz
+    )
+  end
+
+  # `:new` when nothing knows the id, `{:existing, group_id}` when the
+  # by-id index can place the row. `:unresolved` is an id the existence
+  # index still knows after the cache dropped it: a tombstone must not be
+  # re-filed as a fresh row.
+  defp existing_group_member(member_id, authz) do
+    case GroupCache.get_group_member(member_id, authz.ctx.group_members_by_id_table) do
+      nil ->
+        if EntityIndex.exists?(member_id, authz.opts), do: :unresolved, else: :new
+
+      row ->
+        {:existing, row.group_id}
     end
   end
 
@@ -655,6 +717,25 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
+  # Every group must grant the permission: a mutation that moves a row
+  # between groups needs it on both sides, so the union semantics of
+  # `check_group_permission/6` are not enough here.
+  defp check_every_group_permission(group_ids, actor_id, type, permission, authz) do
+    Enum.reduce_while(group_ids, :ok, fn group_id, :ok ->
+      case check_group_permission(
+             [group_id],
+             actor_id,
+             type,
+             permission,
+             authz,
+             &cached_permissions/3
+           ) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
   # Membership mutations of an **existing** entity require a real
   # membership holding `<type>.create` / `<type>.update` in the target
   # group. The bootstrap's declared permissions stand in only for the
@@ -691,7 +772,11 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
-  defp wire_group_ids(update), do: [Fields.get(update.data, "group_id")]
+  defp wire_group_ids(update) do
+    update.data
+    |> Fields.get("group_id")
+    |> List.wrap()
+  end
 
   defp relationship_group_ids(update, authz) do
     EntityIndex.relationship_groups(

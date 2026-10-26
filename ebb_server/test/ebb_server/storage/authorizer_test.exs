@@ -1172,14 +1172,111 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables: tables,
       ctx: ctx
     } do
-      # The actor authorizes the patch in the destination group, so the
-      # origin group has no other capable row to fall back on.
+      # The actor authorizes the patch in the destination group, but the
+      # row is bound to the origin group, where they hold nothing (#625).
       put_group_member(tables, "g_2", ["groupMember.update"], "gm_actor")
       put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
 
       action = build_action([group_member_patch("gm_1", "g_2", ["group.read"])])
 
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "moving the last capable membership is refused even when both groups authorize", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      # The actor may write both groups, so the move passes authorization;
+      # only the last-member guard stops the origin from being emptied.
+      put_group_member(tables, "g_1", ["groupMember.update"], "gm_actor")
+      put_group_member(tables, "g_2", ["groupMember.update"], "gm_actor_2")
+
+      action = build_action([group_member_patch("gm_actor", "g_2", ["groupMember.update"])])
+
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "last_group_member")
+    end
+  end
+
+  # #625: a `groupMember` mutation is bound to the group its row already
+  # belongs to. Authorizing against the group on the wire lets an actor
+  # with a self-granted `groupMember.*` in their own group re-key a row
+  # that lives in somebody else's.
+  describe "authorize/3 - groupMember rows are bound to their group" do
+    setup do
+      tables = create_isolated_tables()
+
+      # The victim's row in `g_victim`; the actor holds permission only in
+      # the group they bootstrapped. `gm_victim_2` keeps the group capable
+      # so the last-member guard is not what refuses the move.
+      put_group_member_by_id(tables, "gm_victim", "a_victim", "g_victim", ["group.read"])
+      put_group_member_by_id(tables, "gm_victim_2", "a_victim_2", "g_victim", ["group.read"])
+      put_group_member(tables, "g_attacker", ["groupMember.*"])
+
+      %{tables: tables, ctx: auth_context(tables)}
+    end
+
+    test "re-putting an existing row with permission only in the destination group is refused", %{
+      ctx: ctx
+    } do
+      action =
+        build_action([
+          group_member_put("gm_victim", "a_1", "g_attacker", ["group.read"])
+        ])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "patching an existing row with permission only in the destination group is refused", %{
+      ctx: ctx
+    } do
+      action = build_action([group_member_patch("gm_victim", "g_attacker", ["group.read"])])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "a bootstrap that re-puts an existing row id is refused", %{ctx: ctx} do
+      action =
+        build_action([
+          group_put("g_new"),
+          group_member_put("gm_own", "a_1", "g_new", ["groupMember.*"]),
+          group_member_put("gm_victim", "a_1", "g_new", ["group.read"])
+        ])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+  end
+
+  describe "authorize/3 - groupMember changes authorized in the row's group" do
+    setup do
+      tables = create_isolated_tables()
+
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+      put_group_member(tables, "g_1", ["groupMember.*"], "gm_actor")
+
+      %{tables: tables, ctx: auth_context(tables)}
+    end
+
+    test "re-putting a row inside its own group is allowed", %{ctx: ctx} do
+      action = build_action([group_member_put("gm_1", "a_2", "g_1", ["group.read", "todo.*"])])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "patching a row inside its own group is allowed", %{ctx: ctx} do
+      action = build_action([group_member_patch("gm_1", "g_1", ["group.read"])])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "moving a row is allowed when the actor holds the permission in both groups", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_2", ["groupMember.update"], "gm_actor_2")
+
+      action = build_action([group_member_patch("gm_1", "g_2", ["group.read"])])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
   end
 
