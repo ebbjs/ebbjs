@@ -38,6 +38,7 @@ defmodule EbbServer.Bench.Materialize.Report do
       read_section(config, result),
       phase_section(config, result),
       query_section(config, result),
+      history_section(config, result),
       ablation_section(result),
       "## Methodology and limitations",
       "",
@@ -177,6 +178,57 @@ defmodule EbbServer.Bench.Materialize.Report do
     |> Enum.sum()
   end
 
+  defp history_section(%{history_sizes: []}, _result), do: nil
+
+  defp history_section(config, result) do
+    rows =
+      for history <- config.history_sizes do
+        total = total(result, history, :history, :dirty)
+        phases = phases(result, history, :history, :dirty)
+
+        [
+          history,
+          total.samples,
+          format_us(total.p50),
+          format_us(total.p95),
+          format_us(phase_sum(result, history, :history, :dirty)),
+          format_us(phase_mean(phases, :entries_scan)),
+          format_us(phase_mean(phases, :actions_load)),
+          run_spread(total)
+        ]
+      end
+
+    "## Entity history vs dirty read\n\n" <>
+      Bench.Report.table(
+        [
+          "Prior Updates",
+          "Samples",
+          "p50 (µs)",
+          "p95 (µs)",
+          "Phase sum p50 (µs)",
+          "`entries_scan` mean (µs)",
+          "`actions_load` mean (µs)",
+          "Run p50 min–max (µs)"
+        ],
+        rows
+      ) <>
+      "\n\nOne entity, one-key document, one patch Action per sample; the only variable\n" <>
+      "is how many Update Actions precede the read, i.e. how many `cf_entity_actions`\n" <>
+      "rows the entity has accumulated. `entries_scan` is the index read for the\n" <>
+      "entity's delta and `actions_load` is the `multi_get` plus decode of it, so a\n" <>
+      "flat `entries_scan` means the reader seeks and a rising one means it scans the\n" <>
+      "entity's history. Nothing prunes these rows yet (#123 owns the log horizon).\n"
+  end
+
+  defp phases(result, n, dist, path, k \\ nil),
+    do: Map.fetch!(result.summary.phases, {n, dist, path, k})
+
+  defp phase_mean(phases, phase) do
+    case Map.fetch!(phases, phase) do
+      %{mean: mean} -> mean
+    end
+  end
+
   defp query_section(config, result) do
     if :query in config.scenarios do
       rows =
@@ -270,6 +322,10 @@ defmodule EbbServer.Bench.Materialize.Report do
         "so the sample is the decode pass, not a materialization.",
       "Phases and sizes come from the server's own `ebb.entity_store.*` telemetry via a\n" <>
         "handler attached in the bench process; the total is the bench's wall clock.",
+      "The history axis seeds one entity per configured size with that many prior\n" <>
+        "Update Actions (100 per write batch), materializes it off the clock, then\n" <>
+        "times the same dirty read; it holds the document fixed so the only variable\n" <>
+        "is the entity's index depth.",
       "The generated-column ablation uses a private in-memory SQLite database, so it\n" <>
         "isolates the `json_extract` recomputation from WAL and file I/O."
     ]
