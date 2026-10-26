@@ -242,6 +242,32 @@ defmodule EbbServer.Sync.EntityQueryTest do
       assert response_a2 == []
     end
 
+    test "a membership with an empty permission list reads nothing" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      bootstrap_group("a_revoked", "g_revoked", [])
+      write_todo("todo_revoked", "g_revoked", "a_revoked")
+
+      conn = post_query(%{"type" => "todo"}, "a_revoked")
+
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert response == []
+    end
+
+    test "a membership with permissions still reads the row" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+
+      bootstrap_group("a_kept", "g_kept", ["todo.read"])
+      write_todo("todo_kept", "g_kept", "a_kept")
+
+      conn = post_query(%{"type" => "todo"}, "a_kept")
+
+      assert conn.status == 200
+      {:ok, response} = Jason.decode(conn.resp_body)
+      assert Enum.map(response, & &1["id"]) == ["todo_kept"]
+    end
+
     test "query with filter" do
       Application.put_env(:ebb_server, :auth_mode, :bypass)
 

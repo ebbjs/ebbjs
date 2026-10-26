@@ -551,6 +551,10 @@ defmodule EbbServer.Storage.SQLite do
 
     {filter_sql, filter_params} = build_filter_clauses(query[:filter])
 
+    # An empty permission list is how a membership is revoked
+    # (`EbbServer.Storage.PermissionChecker` treats such a row as no
+    # membership), so the join has to agree, or revocation would only cover
+    # single-entity reads.
     base_sql = """
     SELECT DISTINCT e.id, e.type, e.data, e.created_hlc, e.updated_hlc, e.deleted_hlc, e.deleted_by, e.last_gsn
     FROM entities e
@@ -561,6 +565,7 @@ defmodule EbbServer.Storage.SQLite do
       AND gm.group_id = m.group_id
       AND gm.actor_id = ?
       AND gm.deleted_hlc IS NULL
+      AND COALESCE(json_array_length(gm.permissions), 0) > 0
     WHERE e.type = ?
       AND e.deleted_hlc IS NULL
     """
