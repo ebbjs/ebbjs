@@ -44,7 +44,10 @@
                                   "type": "string",
                                 },
                               "subject_type":
-                                { "description": "Type of the entity", "type": "string" },
+                                {
+                                  "description": "Type of the entity: the type an id nothing has committed yet is created under, and the type the entity was committed under for an existing id, which may not change",
+                                  "type": "string",
+                                },
                             },
                           "required": ["id", "subject_id", "subject_type", "method"],
                           "type": "object",
@@ -127,7 +130,11 @@
                     },
                   "subject_id":
                     { "description": "ID of the entity being updated", "type": "string" },
-                  "subject_type": { "description": "Type of the entity", "type": "string" },
+                  "subject_type":
+                    {
+                      "description": "Type of the entity: the type an id nothing has committed yet is created under, and the type the entity was committed under for an existing id, which may not change",
+                      "type": "string",
+                    },
                 },
               "required": ["id", "subject_id", "subject_type", "method"],
               "type": "object",
@@ -546,7 +553,7 @@
                                                             },
                                                           "subject_type":
                                                             {
-                                                              "description": "Type of the entity",
+                                                              "description": "Type of the entity: the type an id nothing has committed yet is created under, and the type the entity was committed under for an existing id, which may not change",
                                                               "type": "string",
                                                             },
                                                         },
@@ -754,7 +761,7 @@
                                                         },
                                                       "subject_type":
                                                         {
-                                                          "description": "Type of the entity",
+                                                          "description": "Type of the entity: the type an id nothing has committed yet is created under, and the type the entity was committed under for an existing id, which may not change",
                                                           "type": "string",
                                                         },
                                                     },

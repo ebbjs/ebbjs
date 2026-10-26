@@ -92,9 +92,14 @@ defmodule EbbServer.Storage.Authorizer do
   ## User entities
 
   User-entity writes require `<type>.<verb>` in at least one group of
-  the entity's group set (union/any-match). A write whose resolved set
-  is empty — an unowned entity, or an id that does not exist — is a
-  structural rejection (`missing_ownership`), not a permission failure.
+  the entity's group set (union/any-match), where `<type>` is the type
+  the id was **committed** under, not the wire `subject_type`: the wire
+  type is client input, and an existing id may not change type (#624). An
+  id that exists but whose type cannot be resolved — a membership row the
+  entity-type index has not caught up with — is refused rather than
+  written under the wire type. A write whose resolved set is empty — an
+  unowned entity, or an id that does not exist — is a structural
+  rejection (`missing_ownership`), not a permission failure.
 
   ## Last membership
 
@@ -143,10 +148,12 @@ defmodule EbbServer.Storage.Authorizer do
   """
 
   alias EbbServer.Storage.AuthorizationContext
+  alias EbbServer.Storage.EntityGroupCache
   alias EbbServer.Storage.EntityIndex
   alias EbbServer.Storage.Fields
   alias EbbServer.Storage.GroupCache
   alias EbbServer.Storage.PermissionHelper
+  alias EbbServer.Storage.RelationshipCache
 
   @typep validated_action :: %{
            id: String.t(),
@@ -254,7 +261,9 @@ defmodule EbbServer.Storage.Authorizer do
       bootstrap_membership_ids:
         PermissionHelper.bootstrap_membership_row_ids(updates, actor_id, member_exists?),
       created_ids: PermissionHelper.created_subject_ids(updates, exists?),
-      created_types: Map.merge(sim.types, PermissionHelper.created_entity_types(updates)),
+      # An id the request already typed keeps that type: a later Action may
+      # only type ids the simulation does not know.
+      created_types: Map.merge(PermissionHelper.created_entity_types(updates), sim.types),
       deleted_memberships: resolve_deleted_memberships(updates, opts),
       updates: updates,
       opts: opts,
@@ -279,9 +288,12 @@ defmodule EbbServer.Storage.Authorizer do
 
   # Row identity is not a permission: the bootstrap exemption covers
   # *creating* a membership, never re-pointing an existing row, so this
-  # check runs before the exemption (#623).
+  # check runs before the exemption (#623). An id's type is identity too:
+  # the wire `subject_type` is client input, so a relabel may not ride the
+  # bootstrap either (#624).
   defp check_update(update, actor_id, authz) do
-    with :ok <- check_update_row_identity(update, authz) do
+    with :ok <- check_update_row_identity(update, authz),
+         :ok <- check_update_type_identity(update, authz) do
       authorize_or_exempt(update, actor_id, authz)
     end
   end
@@ -664,6 +676,77 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   defp check_update_row_identity(_update, _authz), do: :ok
+
+  # The type an id was committed under is authoritative; the wire
+  # `subject_type` is client input. Every stage downstream — the
+  # permission lookup, the materialized row's type, the entity-type index
+  # — keys on the wire type, so a mismatch lets a permission on one type
+  # in the group rewrite, delete or relabel every other type's entities
+  # there (#624). Fail closed: the wire type stands only for an id nothing
+  # has committed yet, and the committed type is never echoed back.
+  defp check_update_type_identity(update, authz) do
+    id = update.subject_id
+
+    case committed_type(id, authz) do
+      nil -> check_unresolved_type(update, authz)
+      committed -> require_wire_type(committed, update)
+    end
+  end
+
+  # A committed id can reach here untyped: the type index is a projection
+  # that an ablation (`EBB_ABLATE=type_entities`) or an unfinished rebuild
+  # can omit an entry from. A membership row proves the id is not new and
+  # nothing types it, so the wire type cannot stand in for a committed one
+  # (#624). An id nothing records is new, and the type the request gave it —
+  # an earlier Action's create or this Action's own put — is the only type
+  # there is.
+  defp check_unresolved_type(update, authz) do
+    if EntityIndex.source_groups(update.subject_id, authz.opts) != [] do
+      {:error, "not_authorized", "cannot resolve the type this entity was committed under"}
+    else
+      case Map.get(authz.created_types, update.subject_id) do
+        nil -> :ok
+        request_type -> require_wire_type(request_type, update)
+      end
+    end
+  end
+
+  defp require_wire_type(type, %{subject_type: type}), do: :ok
+
+  defp require_wire_type(_committed, _update) do
+    {:error, "not_authorized",
+     "update subject_type does not match the type this entity was committed under"}
+  end
+
+  # The entity-type index wins whenever it has an entry; failing that, a by-id
+  # cache row carries its system type by construction.
+  defp committed_type(entity_id, authz) do
+    EntityIndex.subject_type(entity_id, authz.opts) || cached_system_type(entity_id, authz)
+  end
+
+  # A membership row only says some entity owns the id and types nothing.
+  defp cached_system_type(entity_id, authz) do
+    cond do
+      GroupCache.get_group_member(entity_id, Keyword.fetch!(authz.opts, :group_members_by_id)) !=
+          nil ->
+        "groupMember"
+
+      EntityGroupCache.get_entity_group(
+        entity_id,
+        Keyword.fetch!(authz.opts, :entity_groups_by_id)
+      ) != nil ->
+        "entityGroup"
+
+      RelationshipCache.get_relationship(
+        entity_id,
+        Keyword.fetch!(authz.opts, :relationships_by_id)
+      ) != nil ->
+        "relationship"
+
+      true ->
+        nil
+    end
+  end
 
   # A membership row names one `(entity, group)` pair. A re-put may move
   # the row to another group, but it must not re-point it at a different

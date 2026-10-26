@@ -797,7 +797,12 @@ defmodule EbbServer.Sync.Router.OperationSchema do
           type: :string,
           description: "ID of the entity being updated"
         },
-        subject_type: %OpenApiSpex.Schema{type: :string, description: "Type of the entity"},
+        subject_type: %OpenApiSpex.Schema{
+          type: :string,
+          description:
+            "Type of the entity: the type an id nothing has committed yet is created under, and " <>
+              "the type the entity was committed under for an existing id, which may not change"
+        },
         method: %OpenApiSpex.Schema{
           type: :string,
           enum: ["put", "patch", "delete"],

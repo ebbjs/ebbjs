@@ -315,7 +315,7 @@ sequenceDiagram
   C->>R: POST /sync/actions, msgpack batch
   R->>R: read_body + Msgpax.unpack
   R->>P: validate_and_authorize each Action
-  P->>E: ActionValidator + Authorizer group permissions
+  P->>E: ActionValidator + Authorizer committed type + group permissions
   R->>W: GenServer.call write_actions(validated)
 
   W->>E: claim action ids, idempotent-retry guard

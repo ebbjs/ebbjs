@@ -102,6 +102,20 @@ defmodule EbbServer.Storage.AuthorizerTest do
     %{id: id, subject_id: id, subject_type: type, method: :put, data: %{"fields" => %{}}}
   end
 
+  defp entity_patch(id, type) do
+    %{
+      id: "#{id}_patch",
+      subject_id: id,
+      subject_type: type,
+      method: :patch,
+      data: %{"fields" => %{}}
+    }
+  end
+
+  defp entity_delete(id, type) do
+    %{id: "#{id}_delete", subject_id: id, subject_type: type, method: :delete, data: nil}
+  end
+
   defp entity_group_put(id, entity_id, group_id) do
     %{
       id: id,
@@ -179,6 +193,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       put_group_member(tables, "g_1", ["todo.create", "todo.update"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
 
       action =
         build_action([
@@ -241,6 +256,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       put_group_member(tables, "g_1", ["todo.*"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
 
       action =
         build_action([
@@ -265,6 +281,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       put_membership(tables, "todo_1", "g_1", "eg_1")
       put_membership(tables, "todo_1", "g_2", "eg_2")
+      put_entity_type(tables, "todo_1", "todo")
 
       action =
         build_action([
@@ -710,6 +727,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       put_group_member(tables, "g_1", ["todo.create"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
 
       action = build_action([entity_put("todo_1", "todo")])
 
@@ -747,6 +765,264 @@ defmodule EbbServer.Storage.AuthorizerTest do
         Authorizer.authorize([build_action([delete])], "a_1", ctx),
         "missing_ownership"
       )
+    end
+  end
+
+  # #624: the wire `subject_type` is client input, while the type an id
+  # was committed under is authoritative. Without this check, a
+  # permission on any type in the group authorizes a relabel and a full
+  # overwrite of every other type's entities there.
+  describe "authorize/3 - writes use the committed type" do
+    test "rejects a put, patch and delete that relabel an existing entity" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.*"])
+      put_membership(tables, "invoice_1", "g_1", "eg_1")
+      put_entity_type(tables, "invoice_1", "invoice")
+
+      for update <- [
+            entity_put("invoice_1", "todo"),
+            entity_patch("invoice_1", "todo"),
+            entity_delete("invoice_1", "todo")
+          ] do
+        assert_rejected(
+          Authorizer.authorize([build_action([update])], "a_1", ctx),
+          "not_authorized"
+        )
+      end
+    end
+
+    test "rejects a system wire type naming an existing user entity id" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      # The relationship branch authorizes the wire source only, so the
+      # victim's id as the edge subject would overwrite a user entity.
+      put_group_member(tables, "g_1", ["todo.update"])
+      put_membership(tables, "todo_own", "g_1", "eg_own")
+      put_entity_type(tables, "todo_own", "todo")
+      put_entity_type(tables, "invoice_1", "invoice")
+
+      action = build_action([relationship_put("invoice_1", "todo_own", "col_1", "todo")])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "rejects a user wire type naming an existing system entity id" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.create"])
+      put_membership(tables, "group_1", "g_1", "eg_1")
+      put_entity_type(tables, "group_1", "group")
+
+      action = build_action([entity_put("group_1", "todo")])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "rejects a system wire type naming a committed row of another system type" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.update"])
+      put_membership(tables, "todo_own", "g_1", "eg_own")
+      put_entity_type(tables, "todo_own", "todo")
+      put_entity_type(tables, "eg_1", "entityGroup")
+
+      action = build_action([relationship_put("eg_1", "todo_own", "col_1", "todo")])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "authorizes a genuinely new id under its wire type" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.create"])
+
+      action =
+        build_action([
+          entity_put("todo_new", "todo"),
+          entity_group_put("eg_new", "todo_new", "g_1")
+        ])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "an id the same Action or request created keeps its own type" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.*"])
+
+      same_action =
+        build_action([
+          entity_put("todo_1", "todo"),
+          entity_group_put("eg_1", "todo_1", "g_1"),
+          entity_patch("todo_1", "todo")
+        ])
+
+      assert_accepted(Authorizer.authorize([same_action], "a_1", ctx))
+
+      # The index has not seen `todo_2` yet, so the later Action's type
+      # resolves from the request simulation.
+      earlier_action =
+        build_action([
+          entity_put("todo_2", "todo"),
+          entity_group_put("eg_2", "todo_2", "g_1")
+        ])
+
+      later_action = build_action([entity_group_put("eg_3", "todo_2", "g_1")])
+
+      assert_accepted(Authorizer.authorize([earlier_action, later_action], "a_1", ctx))
+    end
+
+    test "rejects a later Action that relabels an id an earlier Action created" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.*", "invoice.*"])
+
+      created =
+        build_action([
+          entity_put("x_1", "todo"),
+          entity_group_put("eg_x_1", "x_1", "g_1")
+        ])
+
+      relabel =
+        build_action([
+          entity_put("x_1", "invoice"),
+          entity_group_put("eg_x_1_again", "x_1", "g_1")
+        ])
+
+      assert {[accepted], [rejection]} = Authorizer.authorize([created, relabel], "a_1", ctx)
+      assert accepted == created
+      assert rejection.action == relabel
+      assert rejection.reason == "not_authorized"
+    end
+
+    test "a later Action still uses the type an earlier Action created" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["invoice.create", "todo.*"])
+
+      created =
+        build_action([
+          entity_put("x_1", "todo"),
+          entity_group_put("eg_x_1", "x_1", "g_1")
+        ])
+
+      # Filing the entity into another group resolves its type from the
+      # request simulation; a brand-new id still takes its wire type.
+      filed = build_action([entity_group_put("eg_2", "x_1", "g_1")])
+
+      fresh =
+        build_action([
+          entity_put("invoice_1", "invoice"),
+          entity_group_put("eg_3", "invoice_1", "g_1")
+        ])
+
+      assert {accepted, []} = Authorizer.authorize([created, filed, fresh], "a_1", ctx)
+      assert accepted == [created, filed, fresh]
+    end
+
+    test "refuses a write whose type is unresolvable but whose entity owns a group" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.*"])
+      put_membership(tables, "todo_own", "g_1", "eg_own")
+      put_entity_type(tables, "todo_own", "todo")
+
+      # The entity-type index lags the membership cache it is rebuilt from,
+      # leaving nothing that can type `invoice_1`, so no wire type can be
+      # checked against it. The relationship branch would otherwise let the
+      # edge overwrite a user entity here.
+      put_membership(tables, "invoice_1", "g_1", "eg_invoice")
+
+      for update <- [
+            entity_put("invoice_1", "todo"),
+            relationship_put("invoice_1", "todo_own", "col_1", "todo")
+          ] do
+        assert_rejected(
+          Authorizer.authorize([build_action([update])], "a_1", ctx),
+          "not_authorized"
+        )
+      end
+    end
+
+    test "a lagging type index still authorizes a system row its by-id cache types" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["groupMember.update"])
+      put_group_member_by_id(tables, "gm_2", "a_2", "g_1", ["*"])
+
+      action = build_action([group_member_patch("gm_2", "g_1", ["*"])])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "rejects an entityGroup put naming a committed user entity as its row" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.create"])
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
+
+      # The row is otherwise writable — it owns a group and is typed like any
+      # committed entity — so only the type identity stands in the way.
+      put_membership(tables, "todo_own", "g_2", "eg_own")
+      put_entity_type(tables, "todo_own", "todo")
+
+      action = build_action([entity_group_put("todo_1", "todo_own", "g_1")])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    # A deleted id keeps its entity-type entry but loses its rows, so only
+    # its own type may be committed again; a relabel stays refused (#624).
+    test "a tombstoned id may only be re-put under its own type" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["invoice.*", "todo.*"])
+      put_entity_type(tables, "invoice_1", "invoice")
+
+      assert_rejected(
+        Authorizer.authorize([build_action([entity_put("invoice_1", "todo")])], "a_1", ctx),
+        "not_authorized"
+      )
+
+      # Its own type is not a relabel: the write is refused later, by the
+      # missing ownership, not by the type identity.
+      assert_rejected(
+        Authorizer.authorize([build_action([entity_put("invoice_1", "invoice")])], "a_1", ctx),
+        "missing_ownership"
+      )
+    end
+
+    test "a rejected relabel leaves the committed type untouched" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.*", "invoice.update"])
+      put_membership(tables, "invoice_1", "g_1", "eg_1")
+      put_entity_type(tables, "invoice_1", "invoice")
+
+      relabel = build_action([entity_patch("invoice_1", "todo")])
+      same_type = build_action([entity_patch("invoice_1", "invoice")])
+
+      assert {[accepted], [rejection]} =
+               Authorizer.authorize([relabel, same_type], "a_1", ctx)
+
+      assert rejection.reason == "not_authorized"
+      assert accepted == same_type
+      assert [{_, "invoice"}] = :ets.lookup(tables.entity_types, "invoice_1")
     end
   end
 
@@ -1699,6 +1975,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
       put_group_member(tables, "g_1", ["todo.create"])
       put_membership(tables, "todo_ok", "g_1", "eg_ok")
       put_membership(tables, "todo_bad", "g_2", "eg_bad")
+      put_entity_type(tables, "todo_ok", "todo")
+      put_entity_type(tables, "todo_bad", "todo")
 
       bad = build_action([entity_put("todo_bad", "todo")]) |> Map.put(:id, "act_bad")
       ok = build_action([entity_put("todo_ok", "todo")]) |> Map.put(:id, "act_ok")

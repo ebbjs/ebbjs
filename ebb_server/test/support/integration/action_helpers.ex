@@ -6,6 +6,7 @@ defmodule EbbServer.Integration.ActionHelpers do
   - `post_actions/2` - POST action(s) to /sync/actions endpoint
   - `get_entity/2` - GET an entity by ID
   - `bootstrap_group/3` - Create a test group with permissions
+  - `add_group_member/4` - Grant an actor permissions in an existing group
   - `write_entity_in_group/5` - Write an entity to a group
   - `entity_group_update/3` - Build a same-Action `entityGroup` put
   - `msgpack_encode!/1` - Encode data as MessagePack binary
@@ -92,20 +93,44 @@ defmodule EbbServer.Integration.ActionHelpers do
             "fields" => %{"name" => %{"type" => "lww", "value" => "Test Group", "hlc" => hlc}}
           }
         },
-        %{
-          "id" => gm_id,
-          "subject_id" => gm_id,
-          "subject_type" => "groupMember",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-              "permissions" => %{"type" => "lww", "value" => permissions, "hlc" => hlc}
-            }
-          }
-        }
+        group_member_update(gm_id, actor_id, group_id, permissions, hlc)
       ]
+    }
+  end
+
+  @doc """
+  Adds `member_actor_id` to an existing `group_id` with `permissions`.
+
+  The row goes through the permission table, not the bootstrap exemption,
+  so `actor_id` must already hold `groupMember.create` there.
+  """
+  def add_group_member(actor_id, group_id, member_actor_id, permissions) do
+    hlc = TestHelpers.generate_hlc()
+    gm_id = "gm_" <> Nanoid.generate()
+
+    action = %{
+      "id" => "act_gm_" <> Nanoid.generate(),
+      "actor_id" => actor_id,
+      "hlc" => hlc,
+      "updates" => [group_member_update(gm_id, member_actor_id, group_id, permissions, hlc)]
+    }
+
+    post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
+  end
+
+  defp group_member_update(gm_id, member_actor_id, group_id, permissions, hlc) do
+    %{
+      "id" => gm_id,
+      "subject_id" => gm_id,
+      "subject_type" => "groupMember",
+      "method" => "put",
+      "data" => %{
+        "fields" => %{
+          "actor_id" => %{"type" => "lww", "value" => member_actor_id, "hlc" => hlc},
+          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
+          "permissions" => %{"type" => "lww", "value" => permissions, "hlc" => hlc}
+        }
+      }
     }
   end
 

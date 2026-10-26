@@ -801,6 +801,162 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     end
   end
 
+  # #624: a write is authorized under the type the entity was committed
+  # with, never the `subject_type` the client sends. Otherwise any
+  # `<type>.create` in a group becomes a full overwrite and relabel of
+  # every other type's entities there.
+  describe "committed-type authorization (#624)" do
+    test "an outsider cannot relabel or overwrite an entity through its wire type" do
+      bootstrap_group("victim", "g_1", ["invoice.*", "todo.*", "groupMember.create"])
+
+      hlc = generate_hlc()
+      invoice_id = "invoice_#{Nanoid.generate()}"
+
+      assert write_entity_in_group("victim", invoice_id, "invoice", "g_1", %{
+               "amount" => %{"type" => "lww", "value" => 100, "hlc" => hlc}
+             }).status == 200
+
+      member = add_group_member("victim", "g_1", "actor_2", ["todo.*"])
+      assert member.status == 200
+      assert Jason.decode!(member.resp_body) == %{"rejected" => []}
+
+      attack = %{
+        "id" => "act_attack_#{Nanoid.generate()}",
+        "actor_id" => "actor_2",
+        "hlc" => hlc,
+        "updates" => [
+          %{
+            "id" => "upd_attack_#{Nanoid.generate()}",
+            "subject_id" => invoice_id,
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{
+                "amount" => %{"type" => "lww", "value" => 999_999, "hlc" => hlc}
+              }
+            }
+          }
+        ]
+      }
+
+      assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(attack, "actor_2")
+
+      invoice = Jason.decode!(get_entity(invoice_id, "victim").resp_body)
+      assert invoice["type"] == "invoice"
+      assert invoice["data"]["fields"]["amount"]["value"] == 100
+
+      # Positive control: the same actor's same-type write in the same
+      # group still goes through. A new id has no committed type, so its
+      # wire type stands.
+      todo_id = "todo_own_#{Nanoid.generate()}"
+      legit_hlc = generate_hlc()
+
+      legit = %{
+        "id" => "act_legit_#{Nanoid.generate()}",
+        "actor_id" => "actor_2",
+        "hlc" => legit_hlc,
+        "updates" => [
+          todo_put(todo_id, legit_hlc),
+          entity_group_put("eg_#{Nanoid.generate()}", todo_id, "g_1", legit_hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = submit(legit, "actor_2")
+      assert Jason.decode!(get_entity(todo_id, "actor_2").resp_body)["type"] == "todo"
+    end
+
+    test "a refused patch or delete leaves the committed row untouched" do
+      bootstrap_group("victim", "g_1", ["invoice.*", "groupMember.create"])
+
+      member =
+        add_group_member("victim", "g_1", "actor_2", ["todo.create", "todo.update", "todo.delete"])
+
+      assert member.status == 200
+      assert Jason.decode!(member.resp_body) == %{"rejected" => []}
+
+      hlc = generate_hlc()
+      invoice_id = "invoice_#{Nanoid.generate()}"
+
+      assert write_entity_in_group("victim", invoice_id, "invoice", "g_1", %{
+               "amount" => %{"type" => "lww", "value" => 100, "hlc" => hlc}
+             }).status == 200
+
+      fields = %{"amount" => %{"type" => "lww", "value" => 999_999, "hlc" => hlc}}
+
+      for {method, data} <- [{"patch", %{"fields" => fields}}, {"delete", nil}] do
+        update = %{
+          "id" => "upd_#{method}_#{Nanoid.generate()}",
+          "subject_id" => invoice_id,
+          "subject_type" => "todo",
+          "method" => method,
+          "data" => data
+        }
+
+        attack = %{
+          "id" => "act_#{method}_#{Nanoid.generate()}",
+          "actor_id" => "actor_2",
+          "hlc" => hlc,
+          "updates" => [update]
+        }
+
+        assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(attack, "actor_2")
+
+        invoice = Jason.decode!(get_entity(invoice_id, "victim").resp_body)
+        assert invoice["type"] == "invoice"
+        assert invoice["data"]["fields"]["amount"]["value"] == 100
+      end
+    end
+
+    test "a later Action cannot relabel an id an earlier Action of the same request created" do
+      bootstrap_group("actor_2", "g_1", ["groupMember.create", "invoice.*", "todo.*"])
+
+      hlc = generate_hlc()
+      todo_id = "todo_#{Nanoid.generate()}"
+
+      create = %{
+        "id" => "act_create_#{Nanoid.generate()}",
+        "actor_id" => "actor_2",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(todo_id, hlc),
+          entity_group_put("eg_#{Nanoid.generate()}", todo_id, "g_1", hlc)
+        ]
+      }
+
+      # Nothing has committed `todo_id` yet when this Action is authorized, so
+      # only the request simulation knows it is a `todo`.
+      relabel = %{
+        "id" => "act_relabel_#{Nanoid.generate()}",
+        "actor_id" => "actor_2",
+        "hlc" => hlc,
+        "updates" => [
+          %{
+            "id" => "upd_relabel_#{Nanoid.generate()}",
+            "subject_id" => todo_id,
+            "subject_type" => "invoice",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{"amount" => %{"type" => "lww", "value" => 999_999, "hlc" => hlc}}
+            }
+          },
+          entity_group_put("eg_#{Nanoid.generate()}", todo_id, "g_1", hlc)
+        ]
+      }
+
+      conn = post_actions(msgpack_encode!(%{"actions" => [create, relabel]}), "actor_2")
+      assert conn.status == 200
+
+      assert %{"rejected" => [%{"id" => rejected_id, "reason" => "not_authorized"}]} =
+               Jason.decode!(conn.resp_body)
+
+      assert rejected_id == relabel["id"]
+
+      todo = Jason.decode!(get_entity(todo_id, "actor_2").resp_body)
+      assert todo["type"] == "todo"
+      refute Map.has_key?(todo["data"]["fields"], "amount")
+    end
+  end
+
   defp submit(action, actor_id) do
     conn = post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
     assert conn.status == 200

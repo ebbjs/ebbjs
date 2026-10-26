@@ -142,6 +142,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
 
       put_group_member(tables, "g_1", ["todo.create", "todo.update"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
 
       assert PermissionChecker.authorize_updates(user_action("todo_1"), "a_1", opts) == :ok
     end
@@ -151,6 +152,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       opts = auth_opts(tables)
 
       put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
 
       assert {:error, "not_authorized", _} =
                PermissionChecker.authorize_updates(user_action("todo_1"), "a_1", opts)
@@ -162,6 +164,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
 
       put_group_member(tables, "g_1", ["post.create"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
 
       assert {:error, "not_authorized", _} =
                PermissionChecker.authorize_updates(user_action("todo_1"), "a_1", opts)
@@ -173,6 +176,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
 
       put_group_member(tables, "g_1", ["todo.*"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
 
       assert PermissionChecker.authorize_updates(user_action("todo_1", "patch"), "a_1", opts) ==
                :ok
@@ -281,6 +285,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
 
       put_group_member(tables, "g_1", ["todo.create"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
 
       valid_action = %{
         "id" => "act_1",
@@ -490,6 +495,8 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       put_group_member(tables, "g_1", ["todo.create"])
       put_membership(tables, "todo_ok", "g_1", "eg_ok")
       put_membership(tables, "todo_bad", "g_2", "eg_bad")
+      put_entity_type(tables, "todo_ok", "todo")
+      put_entity_type(tables, "todo_bad", "todo")
 
       authorized =
         sample_action(%{

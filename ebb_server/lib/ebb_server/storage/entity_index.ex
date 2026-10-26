@@ -34,8 +34,9 @@ defmodule EbbServer.Storage.EntityIndex do
   caller's resolution path.
 
   Two auxiliary lookups live here as well: `subject_type/2` resolves an
-  existing entity's type from the entity-type index (used by the
-  authorizer to gate membership mutations, #264), `exists?/2` exposes
+  existing entity's type from the entity-type index (the authorizer uses
+  it to gate membership mutations #264 and every entity write, whose wire
+  `subject_type` must match the committed type #624), `exists?/2` exposes
   the same index as an existence signal (used by the authorizer to gate
   the bootstrap self-grant, #289), and `membership/2` resolves an
   `entityGroup` row id to its `{entity_id, group_id}` (the delete wire
@@ -189,8 +190,11 @@ defmodule EbbServer.Storage.EntityIndex do
   @doc """
   Resolves the type of an existing entity id from the entity-type index.
 
-  Returns `nil` when the id is unknown. Callers that gate a write on the
-  resolved type must treat `nil` as a refusal rather than a fallback.
+  Returns `nil` when the index has no entry for the id. That is not proof
+  of a new id: the index is rebuilt from the caches and can lag them, so a
+  caller that gates a write on the resolved type must weigh its other
+  existence signals before treating the id as new, and refuse when the id
+  exists but nothing types it.
   """
   @spec subject_type(subject_id(), keyword()) :: subject_type() | nil
   def subject_type(entity_id, opts) do
