@@ -147,38 +147,33 @@ defmodule EbbServer.Storage.Committer do
     kind, value -> {:raised, kind, value, __STACKTRACE__}
   end
 
-  # Source order is part of the batch: the log record, then the dedup
-  # index, then this Action's group index, then the per-Update entity
-  # index. The type index is flush-scoped (its key has no GSN component)
-  # and is appended once, sorted for a reproducible batch.
+  # Source order is part of the batch: each Action's log record, dedup row,
+  # and group index first; then the flush-scoped indexes. Both are sorted for
+  # a reproducible batch: the entity rows are one per subject keyed at that
+  # subject's highest GSN in the flush, and the type rows have no GSN
+  # component and are written once per unique key.
   defp build_ops(prepared, gsn_start, state) do
-    {action_ops, type_entity_keys} =
+    {action_ops, {type_entity_keys, subject_gsns}} =
       prepared
       |> Enum.with_index(gsn_start)
-      |> Enum.map_reduce(MapSet.new(), fn {action, gsn}, keys ->
-        {ops, action_keys} = build_action_ops(action, gsn, state)
-        {ops, MapSet.union(keys, MapSet.new(action_keys))}
+      |> Enum.map_reduce({MapSet.new(), %{}}, fn {action, gsn}, {keys, subject_gsns} ->
+        {build_action_ops(action, gsn, state),
+         {MapSet.union(keys, MapSet.new(action.type_entity_keys)),
+          add_subject_gsns(action, gsn, subject_gsns, state)}}
       end)
 
-    type_ops =
-      if ablate?(:entity_index, state),
-        do: [],
-        else: type_entity_ops(type_entity_keys, state.rocks_name)
-
-    :lists.append(action_ops) ++ type_ops
+    :lists.append(action_ops) ++
+      entity_ops(subject_gsns, state) ++
+      type_entity_ops(type_entity_keys, state)
   end
 
   defp build_action_ops(action, gsn, state) do
     rocks_name = state.rocks_name
     action_etf = ActionFormat.frame(action.payload_etf, action.update_scopes)
 
-    ops =
-      [{:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), action_etf}] ++
-        dedup_ops(action, gsn, state) ++
-        group_ops(action, gsn, state) ++
-        update_ops(action, gsn, state)
-
-    {ops, action.type_entity_keys}
+    [{:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), action_etf}] ++
+      dedup_ops(action, gsn, state) ++
+      group_ops(action, gsn, state)
   end
 
   # `cf_action_dedup` doubles as the commit marker for the sequencer's
@@ -202,22 +197,51 @@ defmodule EbbServer.Storage.Committer do
     end
   end
 
-  defp update_ops(action, gsn, state) do
-    if ablate?(:entity_index, state) do
+  # A subject's row is keyed at its last GSN in this flush, so the reader's
+  # seek from `last_gsn + 1` can only land past the row once every GSN it
+  # holds has been applied. The codec deduplicates and sorts the list, so a
+  # subject that appears in two Actions of the flush is one row carrying both
+  # GSNs.
+  defp entity_ops(subject_gsns, state) do
+    if entity_actions_ablated?(state) do
       []
     else
-      Enum.map(action.updates, fn update ->
-        {:put, RocksDB.cf_entity_actions(state.rocks_name),
-         RocksDB.encode_entity_gsn_key(update.subject_id, gsn), action.id}
+      subject_gsns
+      |> Enum.map(fn {subject_id, gsns} ->
+        {key, value} = RocksDB.encode_entity_gsn_row(subject_id, gsns)
+        {:put, RocksDB.cf_entity_actions(state.rocks_name), key, value}
+      end)
+      |> Enum.sort_by(fn {:put, _cf, key, _value} -> key end)
+    end
+  end
+
+  defp add_subject_gsns(action, gsn, acc, state) do
+    if entity_actions_ablated?(state) do
+      acc
+    else
+      Enum.reduce(action.updates, acc, fn update, acc ->
+        Map.update(acc, update.subject_id, [gsn], &[gsn | &1])
       end)
     end
   end
 
-  defp type_entity_ops(keys, rocks_name) do
-    keys
-    |> Enum.sort()
-    |> Enum.map(fn key -> {:put, RocksDB.cf_type_entities(rocks_name), key, <<>>} end)
+  defp type_entity_ops(keys, state) do
+    if type_entities_ablated?(state) do
+      []
+    else
+      keys
+      |> Enum.sort()
+      |> Enum.map(fn key ->
+        {:put, RocksDB.cf_type_entities(state.rocks_name), key, <<>>}
+      end)
+    end
   end
 
   defp ablate?(phase, state), do: phase in state.ablate
+
+  defp entity_actions_ablated?(state),
+    do: ablate?(:entity_actions, state) or ablate?(:entity_index, state)
+
+  defp type_entities_ablated?(state),
+    do: ablate?(:type_entities, state) or ablate?(:entity_index, state)
 end

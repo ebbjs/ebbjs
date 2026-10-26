@@ -28,7 +28,8 @@ defmodule EbbServer.Storage.PreparedAction do
   - `groups` — the union of `update_scopes`; each group is indexed once
     per Action in `cf_group_actions`.
   - `type_entity_keys` — `cf_type_entities` keys for the Action's
-    Updates, empty when the bench-only `:entity_index` phase is ablated.
+    Updates, empty when the bench-only `:type_entities` (or its combined
+    `:entity_index` alias) phase is ablated.
   - `affected_entities` — `{subject_id, subject_type}` pairs to mark
     dirty, deduplicated within the Action. The sequencer unions them
     across a batch for the provisional and settled marks.

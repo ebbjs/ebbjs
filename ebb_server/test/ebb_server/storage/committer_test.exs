@@ -56,33 +56,41 @@ defmodule EbbServer.Storage.CommitterTest do
       cf_entity = RocksDB.cf_entity_actions(ctx.rocks_name)
       cf_type = RocksDB.cf_type_entities(ctx.rocks_name)
 
-      assert [{:put, ^cf_actions, gsn_5, etf_1}, {:put, ^cf_dedup, "act_1", dedup_5} | rest] = ops
-      assert gsn_5 == RocksDB.encode_gsn_key(5)
-      assert dedup_5 == RocksDB.encode_gsn_key(5)
-
       assert [
+               {:put, ^cf_actions, gsn_5, etf_1},
+               {:put, ^cf_dedup, "act_1", dedup_5},
                {:put, ^cf_group, g_1_5, "act_1"},
                {:put, ^cf_group, g_2_5, "act_1"},
-               {:put, ^cf_entity, todo_1_5, "act_1"},
                {:put, ^cf_actions, gsn_6, etf_2},
                {:put, ^cf_dedup, "act_2", dedup_6},
-               {:put, ^cf_group, g_2_6, "act_2"},
-               {:put, ^cf_entity, todo_2_6, "act_2"},
-               {:put, ^cf_entity, todo_3_6, "act_2"}
-               | type_ops
-             ] = rest
+               {:put, ^cf_group, g_2_6, "act_2"}
+               | flush_ops
+             ] = ops
 
       assert g_1_5 == RocksDB.encode_group_action_key("g_1", 5)
       assert g_2_5 == RocksDB.encode_group_action_key("g_2", 5)
       assert g_2_6 == RocksDB.encode_group_action_key("g_2", 6)
-      assert todo_1_5 == RocksDB.encode_entity_gsn_key("todo_1", 5)
-      assert todo_2_6 == RocksDB.encode_entity_gsn_key("todo_2", 6)
-      assert todo_3_6 == RocksDB.encode_entity_gsn_key("todo_3", 6)
+      assert gsn_5 == RocksDB.encode_gsn_key(5)
       assert gsn_6 == RocksDB.encode_gsn_key(6)
+      assert dedup_5 == RocksDB.encode_gsn_key(5)
       assert dedup_6 == RocksDB.encode_gsn_key(6)
 
-      # The type keys are flush-scoped (no GSN component): one put each,
-      # sorted, appended after the per-Action ops.
+      # The entity and type keys are flush-scoped (no per-Action grouping):
+      # one coalesced entity row per subject, then one sorted type row per
+      # distinct key, both appended after the per-Action ops.
+      entity_ops = for {:put, ^cf_entity, _key, _value} = op <- flush_ops, do: op
+
+      assert entity_ops == [
+               {:put, cf_entity, RocksDB.encode_entity_gsn_key("todo_1", 5),
+                RocksDB.encode_gsn_list([5])},
+               {:put, cf_entity, RocksDB.encode_entity_gsn_key("todo_2", 6),
+                RocksDB.encode_gsn_list([6])},
+               {:put, cf_entity, RocksDB.encode_entity_gsn_key("todo_3", 6),
+                RocksDB.encode_gsn_list([6])}
+             ]
+
+      type_ops = for {:put, ^cf_type, _key, _value} = op <- flush_ops, do: op
+
       assert type_ops ==
                [
                  "todo_1",
@@ -92,6 +100,8 @@ defmodule EbbServer.Storage.CommitterTest do
                |> Enum.map(&RocksDB.encode_type_entity_key("todo", &1))
                |> Enum.sort()
                |> Enum.map(fn key -> {:put, cf_type, key, <<>>} end)
+
+      assert flush_ops == entity_ops ++ type_ops
 
       assert stored_action(etf_1, 5) == %{
                "id" => "act_1",
@@ -111,6 +121,93 @@ defmodule EbbServer.Storage.CommitterTest do
              }
 
       assert stored_action(etf_2, 6)["update_scopes"] == [["g_2"], ["g_2"]]
+    end
+
+    test "writes one cf_entity_actions row per subject in a flush", ctx do
+      test_pid = self()
+      ref = make_ref()
+
+      action =
+        prepared_action("act_two_subjects", [
+          update("upd_a", "todo_a"),
+          update("upd_b", "todo_b")
+        ])
+
+      committer =
+        start_committer(ctx, fn ops, _opts ->
+          send(test_pid, {:ops, ops})
+          :ok
+        end)
+
+      :ok = Committer.commit(committer, ref, [action], 9, 9)
+
+      assert_receive {:ops, ops}
+      assert_receive {:committer_result, ^ref, :ok}
+
+      assert entity_rows(ops, ctx.rocks_name) == [
+               {"todo_a", 9, [9]},
+               {"todo_b", 9, [9]}
+             ]
+    end
+
+    test "coalesces one subject across Actions in a flush into one row", ctx do
+      test_pid = self()
+      ref = make_ref()
+
+      action_1 =
+        prepared_action("act_1", [update("upd_1", "todo_shared")])
+
+      action_2 =
+        prepared_action("act_2", [
+          update("upd_2", "todo_shared"),
+          update("upd_3", "todo_shared")
+        ])
+
+      committer =
+        start_committer(ctx, fn ops, _opts ->
+          send(test_pid, {:ops, ops})
+          :ok
+        end)
+
+      :ok = Committer.commit(committer, ref, [action_1, action_2], 10, 11)
+
+      assert_receive {:ops, ops}
+      assert_receive {:committer_result, ^ref, :ok}
+
+      # The repeated update at GSN 11 is one GSN, not two, and the row's key
+      # is the subject's highest GSN in the flush.
+      assert entity_rows(ops, ctx.rocks_name) == [{"todo_shared", 11, [10, 11]}]
+    end
+
+    test "keys each subject by its own last GSN, not the flush maximum", ctx do
+      test_pid = self()
+      ref = make_ref()
+
+      action_1 =
+        prepared_action("act_1", [
+          update("upd_1a", "todo_a"),
+          update("upd_1b", "todo_b")
+        ])
+
+      action_2 = prepared_action("act_2", [update("upd_2", "todo_a")])
+
+      committer =
+        start_committer(ctx, fn ops, _opts ->
+          send(test_pid, {:ops, ops})
+          :ok
+        end)
+
+      :ok = Committer.commit(committer, ref, [action_1, action_2], 1, 2)
+
+      assert_receive {:ops, ops}
+      assert_receive {:committer_result, ^ref, :ok}
+
+      # `todo_a` appears in both Actions, so its row is keyed at 2; `todo_b`
+      # only appears in the first and stays keyed at 1.
+      assert entity_rows(ops, ctx.rocks_name) == [
+               {"todo_a", 2, [1, 2]},
+               {"todo_b", 1, [1]}
+             ]
     end
 
     test "stores the supplied payload_etf verbatim instead of rebuilding the Action", ctx do
@@ -418,6 +515,13 @@ defmodule EbbServer.Storage.CommitterTest do
   end
 
   defp affected_entity(update), do: {update.subject_id, update.subject_type}
+
+  defp entity_rows(ops, rocks_name) do
+    for {:put, cf, key, value} <- ops, cf == RocksDB.cf_entity_actions(rocks_name) do
+      {entity_id, max_gsn} = RocksDB.decode_entity_gsn_key(key)
+      {entity_id, max_gsn, RocksDB.decode_gsn_list(value)}
+    end
+  end
 
   defp stored_action(etf, gsn), do: ActionFormat.decode(etf, gsn)
 end

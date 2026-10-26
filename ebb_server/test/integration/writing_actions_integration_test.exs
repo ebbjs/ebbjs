@@ -23,7 +23,8 @@ defmodule EbbServer.WritingActionsIntegrationTest do
     logical time for causal ordering
   * Column Families: RocksDB organizes data into column families:
     - cf_actions: GSN → action mapping (primary store, includes Updates)
-    - cf_entity_actions: (entity_id, GSN) → action_id (index for materialization)
+    - cf_entity_actions: (entity_id, max GSN in flush) → sorted GSN list
+      (one coalesced index row per subject per flush, for materialization)
     - cf_type_entities: (type, entity_id) → presence (type index)
     - cf_action_dedup: action_id → GSN (duplicate detection)
   * Dirty Tracking: Entities modified by writes are marked dirty and will

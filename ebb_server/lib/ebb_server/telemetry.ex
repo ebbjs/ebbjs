@@ -129,7 +129,8 @@ defmodule EbbServer.Telemetry do
   walk of the decoded value, so the catalogue does not promise it; byte size is
   the size proxy. `ebb.entity_store.materialize_phase_ms` breaks one dirty
   materialize into `:fetch_decode` (SQLite SELECT + `Jason.decode!`),
-  `:entries_scan` (the `cf_entity_actions` prefix scan), `:actions_load` (RocksDB
+  `:entries_scan` (the `cf_entity_actions` seek plus GSN-list decode),
+  `:actions_load` (RocksDB
   `multi_get` + ETF decode), `:merge` (replay), and the `:encode` → `:upsert` →
   `:format` tail, so the JSON written back, the SQLite write, and the merge are
   separable. `:encode` is the JSON the write needs — the whole blob when the

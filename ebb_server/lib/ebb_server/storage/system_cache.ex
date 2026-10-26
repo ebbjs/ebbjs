@@ -72,9 +72,9 @@ defmodule EbbServer.Storage.SystemCache do
     add write amplification and wiping SQLite would lose the cache #421
     rebuilds. Re-marking on the walk that already fills the type cache
     costs no extra RocksDB scan. The replay source is the existing
-    `EntityStore` materializer and its `cf_entity_actions` scan; #575 is
-    still deciding that index's shape, so this fix deliberately adds no
-    second reconcile source. The horizon is the row's `last_gsn`; #123
+    `EntityStore` materializer and its coalesced `cf_entity_actions` rows;
+    this fix deliberately adds no second reconcile source. The horizon is the
+    row's `last_gsn`; #123
     owns how far the log retains the deltas.
   - **Fail loud, never half-populated.** A raise during population
     propagates out of `init/1`; there is no rescue that turns a partial

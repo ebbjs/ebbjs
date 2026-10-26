@@ -158,12 +158,12 @@ defmodule EbbServer.Storage.WriterTest do
 
       entity_gsn_key = RocksDB.encode_entity_gsn_key("todo_test_123", 1)
 
-      assert {:ok, action_id} =
+      assert {:ok, entity_gsns} =
                RocksDB.get(RocksDB.cf_entity_actions(rocks_name), entity_gsn_key,
                  name: rocks_name
                )
 
-      assert action_id == action.id
+      assert RocksDB.decode_gsn_list(entity_gsns) == [1]
 
       type_entity_key = RocksDB.encode_type_entity_key("todo", "todo_test_123")
 

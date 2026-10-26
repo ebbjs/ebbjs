@@ -151,9 +151,11 @@ defmodule EbbServer.Storage.Writer do
 
   Redundant index writes are dropped during op construction: the
   `cf_type_entities` key has no GSN component, so it is collected as a
-  per-flush set and written once per unique `(subject_type, subject_id)`,
-  while `cf_group_actions` is emitted once per Action from the union of
-  resolved group ids.
+  per-flush set and written once per unique `(subject_type, subject_id)`.
+  `cf_entity_actions` is coalesced per subject across the whole flush: one
+  row keyed at the subject's highest GSN, holding that subject's sorted GSN
+  list, however many Updates or Actions touched it. `cf_group_actions` is
+  emitted once per Action from the union of resolved group ids.
 
   Every resolved per-Update scope is also persisted as the scopes half of
   the stored `cf_actions` frame: one group list per Update,
@@ -274,11 +276,12 @@ defmodule EbbServer.Storage.Writer do
 
   A bench-only `:ablate` option (default `[]`) skips named phases of the
   write path — `:dedup`, `:group_resolution`, `:build`, `:encode`,
-  `:entity_index`, `:group_index`, `:dirty`, `:cache`, `:watermark`,
-  `:fanout` — so `mix bench.actions --ablate` can price each one. `:dedup`
-  also skips the in-flight claim, which is dedup work. It is never set in
-  production, and an empty list emits exactly the same ops as before.
-  See `EbbServer.Bench.Options`.
+  `:entity_actions`, `:type_entities`, `:group_index`, `:dirty`, `:cache`,
+  `:watermark`, `:fanout` — so `mix bench.actions --ablate` can price each
+  one. `:entity_index` remains the combined alias that drops both entity
+  index halves. `:dedup` also skips the in-flight claim, which is dedup work.
+  It is never set in production, and an empty list emits exactly the same ops
+  as before. See `EbbServer.Bench.Options`.
 
   ## cf_group_actions index and intra-action context
 
@@ -743,7 +746,8 @@ defmodule EbbServer.Storage.Writer do
      - cf_actions: GSN → frame of the pre-encoded payload and its
        per-Update group scopes
      - cf_action_dedup: action_id → GSN (duplicate detection)
-     - cf_entity_actions: (subject_id, GSN) → action_id (materialization index)
+     - cf_entity_actions: (subject_id, max GSN in this flush) → the
+       subject's sorted GSN list for the flush (materialization index)
      - cf_type_entities: (subject_type, subject_id) → <<>> (type index)
      - cf_group_actions: (group_id, GSN) → action_id (group catch-up index)
 
@@ -1861,7 +1865,7 @@ defmodule EbbServer.Storage.Writer do
           end
 
         key =
-          if ablate?(:entity_index, state),
+          if type_entities_ablated?(state),
             do: nil,
             else: RocksDB.encode_type_entity_key(update.subject_type, update.subject_id)
 
@@ -2184,6 +2188,10 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp ablate?(phase, state), do: phase in state.ablate
+
+  # `:entity_index` is the combined alias the published bench commands use.
+  defp type_entities_ablated?(state),
+    do: ablate?(:type_entities, state) or ablate?(:entity_index, state)
 
   defp group_ids_for_update(update, resolve_opts, memo) do
     case Keyword.get(resolve_opts, :entity_groups) do

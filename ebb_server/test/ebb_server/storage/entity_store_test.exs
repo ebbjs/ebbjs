@@ -66,6 +66,15 @@ defmodule EbbServer.Storage.EntityStoreTest do
   defp map_field(entries), do: %{"map" => entries}
   defp leaf(value, hlc), do: %{"value" => value, "hlc" => hlc}
 
+  defp stored_frame(action) do
+    scopes = Enum.map(action.updates, fn _update -> [] end)
+
+    action
+    |> ActionFormat.build()
+    |> ActionFormat.encode()
+    |> ActionFormat.frame(scopes)
+  end
+
   defp events_named(events, name) do
     Enum.filter(events, fn {event, _measurements, _metadata} -> event == name end)
   end
@@ -180,7 +189,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           [
             {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), frame},
             {:put, RocksDB.cf_entity_actions(rocks_name),
-             RocksDB.encode_entity_gsn_key(entity_id, gsn), action_id}
+             RocksDB.encode_entity_gsn_key(entity_id, gsn), RocksDB.encode_gsn_list([gsn])}
           ],
           name: rocks_name
         )
@@ -197,6 +206,209 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert entity.id == entity_id
       assert entity.last_gsn == gsn
       assert entity.data["fields"]["title"]["value"] == "Framed"
+    end
+
+    test "materializes every GSN in one coalesced index row", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_coalesced_row"
+      hlc_put = hlc_from(1_000)
+      hlc_patch = hlc_from(2_000)
+
+      put = put_action("act_put", entity_id, %{"title" => leaf("First", hlc_put)}, hlc_put)
+
+      patch =
+        patch_action(
+          "act_patch",
+          entity_id,
+          %{"description" => leaf("Added", hlc_patch)},
+          hlc_patch
+        )
+
+      assert {:ok, {1, 2}, []} = Writer.write_actions([put, patch], writer_name)
+
+      rows =
+        RocksDB.prefix_iterator(
+          RocksDB.cf_entity_actions(rocks_name),
+          entity_id,
+          name: rocks_name
+        )
+        |> Enum.to_list()
+
+      assert [{key, value}] = rows
+      assert {^entity_id, 2} = RocksDB.decode_entity_gsn_key(key)
+      assert RocksDB.decode_gsn_list(value) == [1, 2]
+
+      assert {:ok, entity} =
+               EntityStore.get(entity_id, "a_test",
+                 rocks_name: rocks_name,
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
+               )
+
+      assert entity.last_gsn == 2
+      assert entity.data["fields"]["title"]["value"] == "First"
+      assert entity.data["fields"]["description"]["value"] == "Added"
+    end
+
+    test "a dirty read applies only the delta from later flush rows", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_incremental_rows"
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+
+      hlc_1 = hlc_from(1_000)
+      hlc_2 = hlc_from(2_000)
+      hlc_3 = hlc_from(3_000)
+      hlc_4 = hlc_from(4_000)
+
+      put = put_action("act_put", entity_id, %{"title" => leaf("First", hlc_1)}, hlc_1)
+
+      patch_1 =
+        patch_action("act_patch_1", entity_id, %{"description" => leaf("One", hlc_2)}, hlc_2)
+
+      patch_2 =
+        patch_action("act_patch_2", entity_id, %{"priority" => leaf(1, hlc_3)}, hlc_3)
+
+      patch_3 =
+        patch_action("act_patch_3", entity_id, %{"status" => leaf("open", hlc_4)}, hlc_4)
+
+      assert {:ok, {1, 2}, []} = Writer.write_actions([put, patch_1], writer_name)
+      assert {:ok, first} = EntityStore.get(entity_id, "a_test", opts)
+      assert first.last_gsn == 2
+      assert first.data["fields"]["description"]["value"] == "One"
+
+      assert {:ok, {3, 4}, []} = Writer.write_actions([patch_2, patch_3], writer_name)
+      assert {:ok, second} = EntityStore.get(entity_id, "a_test", opts)
+
+      assert second.last_gsn == 4
+      assert second.data["fields"]["title"]["value"] == "First"
+      assert second.data["fields"]["description"]["value"] == "One"
+      assert second.data["fields"]["priority"]["value"] == 1
+      assert second.data["fields"]["status"]["value"] == "open"
+
+      rows =
+        RocksDB.prefix_iterator(
+          RocksDB.cf_entity_actions(rocks_name),
+          entity_id,
+          name: rocks_name
+        )
+        |> Enum.map(fn {key, value} ->
+          {_entity_id, max_gsn} = RocksDB.decode_entity_gsn_key(key)
+          {max_gsn, RocksDB.decode_gsn_list(value)}
+        end)
+
+      assert rows == [{2, [1, 2]}, {4, [3, 4]}]
+    end
+
+    test "applies the unapplied GSN when a row straddles last_gsn", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_straddle"
+      hlc_put = hlc_from(1_000)
+      hlc_patch = hlc_from(2_000)
+
+      put = put_action("act_put", entity_id, %{"title" => leaf("First", hlc_put)}, hlc_put)
+
+      patch =
+        patch_action(
+          "act_patch",
+          entity_id,
+          %{"description" => leaf("Added later", hlc_patch)},
+          hlc_patch
+        )
+
+      :ok =
+        RocksDB.write_batch(
+          [
+            {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(1), stored_frame(put)},
+            {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(2),
+             stored_frame(patch)},
+            {:put, RocksDB.cf_entity_actions(rocks_name),
+             RocksDB.encode_entity_gsn_key(entity_id, 2), RocksDB.encode_gsn_list([1, 2])}
+          ],
+          name: rocks_name
+        )
+
+      :ok =
+        SQLite.upsert_entity(
+          %{
+            id: entity_id,
+            type: "todo",
+            data: Jason.encode!(%{"fields" => %{"title" => leaf("First", hlc_put)}}),
+            created_hlc: hlc_put,
+            updated_hlc: hlc_put,
+            deleted_hlc: nil,
+            deleted_by: nil,
+            last_gsn: 1
+          },
+          sqlite_name
+        )
+
+      :ok = DirtyTracker.mark_dirty_batch([{entity_id, "todo"}], dirty_set)
+
+      assert {:ok, entity} =
+               EntityStore.get(entity_id, "a_test",
+                 rocks_name: rocks_name,
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
+               )
+
+      assert entity.last_gsn == 2
+      assert entity.data["fields"]["title"]["value"] == "First"
+      assert entity.data["fields"]["description"]["value"] == "Added later"
+    end
+
+    test "applies a coalesced row's GSNs in ascending order", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      dirty_set: dirty_set
+    } do
+      entity_id = "todo_row_order"
+      hlc_first = hlc_from(1_000)
+      hlc_second = hlc_from(2_000)
+
+      first =
+        put_action("act_first", entity_id, %{"title" => leaf("First", hlc_first)}, hlc_first)
+
+      second =
+        put_action("act_second", entity_id, %{"title" => leaf("Second", hlc_second)}, hlc_second)
+
+      # The stored value is out of order. The codec sorts on write, but the
+      # reader still sorts defensively so a malformed row cannot reorder LWW
+      # replay and hand the older put the win.
+      :ok =
+        RocksDB.write_batch(
+          [
+            {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(1),
+             stored_frame(first)},
+            {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(2),
+             stored_frame(second)},
+            {:put, RocksDB.cf_entity_actions(rocks_name),
+             RocksDB.encode_entity_gsn_key(entity_id, 2), <<2::64, 1::64>>}
+          ],
+          name: rocks_name
+        )
+
+      :ok = DirtyTracker.mark_dirty_batch([{entity_id, "todo"}], dirty_set)
+
+      assert {:ok, entity} =
+               EntityStore.get(entity_id, "a_test",
+                 rocks_name: rocks_name,
+                 sqlite_name: sqlite_name,
+                 dirty_set: dirty_set
+               )
+
+      assert entity.last_gsn == 2
+      assert entity.data["fields"]["title"]["value"] == "Second"
     end
 
     test "dirty bit is cleared after materialization", %{
