@@ -68,8 +68,11 @@ defmodule EbbServer.Storage.Authorizer do
     - `entityGroup` delete → the entity's `<type>.update` in any group of
       the entity's current set (union/any-match). The delete wire form
       drops the entity reference, so the row is resolved from the
-      membership index. `entityGroup` patch → `entityGroup.update` in the
-      membership's group.
+      membership index.
+    - `entityGroup` patch → refused. It is authorized against the group
+      named on the wire and mints a membership row when the row id is
+      unknown, so it can file an arbitrary entity into the caller's group
+      (#623). Express the same change as a delete plus a put.
     - `relationship` put (always a domain edge; membership is
       `entityGroup`) → the source entity's `<type>.update` in the
       source's group set, where `<type>` is the source entity's true
@@ -594,15 +597,13 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
-  defp authorize_entity_group_update(update, actor_id, authz) do
-    check_group_permission(
-      system_entity_group_ids(update, "entityGroup", authz),
-      actor_id,
-      "entityGroup",
-      permission_for(update.method),
-      authz,
-      &cached_permissions/3
-    )
+  # #623: a patch is authorized against the group named on the wire and
+  # writes a membership row when the row id is unknown, so it can file any
+  # entity into the caller's group. Refusing the method is the interim fix
+  # until the patch path is bound to the row it targets.
+  defp authorize_entity_group_update(update, _actor_id, _authz) do
+    {:error, "not_authorized",
+     "entityGroup #{update.method} is not supported: delete and re-put the membership instead"}
   end
 
   defp authorize_membership_delete(entity_id, actor_id, authz) do

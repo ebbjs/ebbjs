@@ -1280,6 +1280,73 @@ defmodule EbbServer.Storage.AuthorizerTest do
     end
   end
 
+  # #623: an `entityGroup` patch is authorized against the group named on
+  # the wire and writes a membership row when the row id is unknown, so it
+  # can file any entity id into the caller's group. The server refuses the
+  # method until it is bound to the row; put and delete are unchanged.
+  describe "authorize/3 - entityGroup patch" do
+    setup do
+      tables = create_isolated_tables()
+
+      put_group_member(tables, "g_atk", ["entityGroup.*"])
+
+      %{tables: tables, ctx: auth_context(tables)}
+    end
+
+    test "is rejected even when the actor holds entityGroup.update in the wire group", %{
+      ctx: ctx
+    } do
+      update = %{
+        id: "eg_fresh",
+        subject_id: "eg_fresh",
+        subject_type: "entityGroup",
+        method: :patch,
+        data: %{
+          "fields" => %{
+            "entity_id" => %{"value" => "todo_victim"},
+            "group_id" => %{"value" => "g_atk"}
+          }
+        }
+      }
+
+      rejection =
+        assert_rejected(
+          Authorizer.authorize([build_action([update])], "a_1", ctx),
+          "not_authorized"
+        )
+
+      assert rejection.details =~ "patch"
+    end
+
+    test "put is still authorized by the entity's <type>.create in the target group", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_2", ["todo.create"], "gm_2")
+      put_entity_type(tables, "todo_1", "todo")
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+
+      action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "delete is still authorized by the entity's <type>.update in a current group", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_2", ["todo.update"], "gm_2")
+      put_entity_type(tables, "todo_1", "todo")
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_membership(tables, "todo_1", "g_2", "eg_2")
+      put_entity_group_by_id(tables, "eg_1", "todo_1", "g_1")
+
+      action = build_action([entity_group_delete("eg_1")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+  end
+
   # #289: the bootstrap self-grant is gated on the entity actually being
   # created — a group id the entity-type index already knows, or an entity
   # the Action does not create, falls through to the permission table.
