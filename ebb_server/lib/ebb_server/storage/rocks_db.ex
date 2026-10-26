@@ -32,7 +32,9 @@ defmodule EbbServer.Storage.RocksDB do
     default           - RocksDB default; holds internal metadata (migration markers)
     cf_actions        - GSN (64-bit big-endian) -> frame of {payload_etf,
                         update_scopes} (see `EbbServer.Storage.ActionFormat`)
-    cf_entity_actions - (entity_id, GSN) -> action_id binary
+    cf_entity_actions - (entity_id, max_gsn_in_flush) -> the subject's GSNs
+                        in that flush, sorted ascending and unique, each as
+                        an 8-byte big-endian integer (see `encode_gsn_list/1`)
     cf_type_entities  - (type, 0x00, entity_id) -> <<>> (presence index)
     cf_action_dedup   - action_id -> GSN (duplicate detection)
     cf_group_actions  - (group_id, GSN) -> action_id binary
@@ -141,9 +143,15 @@ defmodule EbbServer.Storage.RocksDB do
   def decode_gsn_key(<<gsn::unsigned-big-integer-size(64)>>), do: gsn
 
   @doc """
-  Composite key for entity -> actions index.
-  Entity ID is variable-length prefix, GSN is fixed 8 bytes at the end.
-  Prefix scans on entity_id return all actions for that entity in GSN order.
+  Composite key for the entity -> actions index.
+
+  The entity ID is a variable-length prefix and the GSN is fixed 8 bytes at
+  the end. One row covers a `(subject, flush)` pair: the GSN component is the
+  subject's **highest** GSN in that flush, and the value is the sorted list of
+  every GSN the flush wrote for that subject (`encode_gsn_list/1`). Keying by
+  the maximum is what lets a reader seek from `last_gsn + 1`: a row whose max
+  is at or after the seek can never be skipped while it still holds an
+  unapplied GSN, even when `last_gsn` points inside the row's list.
   """
   @spec encode_entity_gsn_key(binary(), gsn()) :: binary()
   def encode_entity_gsn_key(entity_id, gsn) do
@@ -155,6 +163,61 @@ defmodule EbbServer.Storage.RocksDB do
     entity_size = byte_size(key) - 8
     <<entity_id::binary-size(entity_size), gsn::unsigned-big-integer-size(64)>> = key
     {entity_id, gsn}
+  end
+
+  @doc """
+  Encodes the `cf_entity_actions` row for one subject's GSNs in a flush.
+
+  Returns `{key, value}` with the key at the list's **highest** GSN and the
+  value holding the sorted, unique list. Normalization lives here so every
+  writer emits the same row whatever order the flush accumulated the GSNs in.
+  """
+  @spec encode_entity_gsn_row(binary(), [gsn()]) :: {binary(), binary()}
+  def encode_entity_gsn_row(entity_id, gsns) when is_list(gsns) and gsns != [] do
+    sorted = gsns |> Enum.uniq() |> Enum.sort()
+    {encode_entity_gsn_key(entity_id, List.last(sorted)), encode_sorted_gsns(sorted)}
+  end
+
+  @doc """
+  Encodes a non-empty GSN list as raw 8-byte big-endian integers, concatenated.
+
+  No count prefix is needed: `byte_size(value) / 8` is the number of GSNs.
+  The list is sorted and deduplicated here; the matching row key is the last
+  element of that normalized list (`encode_entity_gsn_row/2`).
+  """
+  @spec encode_gsn_list([gsn()]) :: binary()
+  def encode_gsn_list([_ | _] = gsns) do
+    gsns |> Enum.uniq() |> Enum.sort() |> encode_sorted_gsns()
+  end
+
+  def encode_gsn_list([]) do
+    raise ArgumentError, "cf_entity_actions GSN list cannot be empty"
+  end
+
+  defp encode_sorted_gsns(gsns) do
+    for gsn <- gsns, into: <<>>, do: <<gsn::unsigned-big-integer-size(64)>>
+  end
+
+  @doc """
+  Decodes a `cf_entity_actions` GSN list.
+
+  Raises on an empty value or one whose length is not a multiple of 8, as the
+  frame decoders do: a partial or missing GSN means the row is corrupt, not
+  empty.
+  """
+  @spec decode_gsn_list(binary()) :: [gsn()]
+  def decode_gsn_list(<<>>) do
+    raise ArgumentError, "cf_entity_actions GSN list cannot be empty"
+  end
+
+  def decode_gsn_list(value) when is_binary(value) and rem(byte_size(value), 8) == 0 do
+    for <<gsn::unsigned-big-integer-size(64) <- value>>, do: gsn
+  end
+
+  def decode_gsn_list(value) do
+    raise ArgumentError,
+          "cf_entity_actions GSN list must be a multiple of 8 bytes, got: " <>
+            inspect(value, limit: 4)
   end
 
   @doc """
@@ -242,14 +305,16 @@ defmodule EbbServer.Storage.RocksDB do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Rows of the entity-actions index for `entity_id` whose GSN is at or after
-  `from_gsn`, in ascending GSN order.
+  Rows of the entity-actions index for `entity_id` whose key GSN is at or
+  after `from_gsn`, in ascending key order.
 
-  The key is `<<entity_id::binary, gsn::64-big>>`, so this seeks straight to
-  the first row the caller still needs. A reader that has already applied
-  every GSN up to `last_gsn` passes `last_gsn + 1` and touches only its delta,
-  however long the entity's history is; `prefix_iterator/3` on the entity id
-  would walk the whole history and filter afterwards.
+  The key is `<<entity_id::binary, max_gsn_in_flush::64-big>>`, so this seeks
+  straight to the first flush the caller might still need. A reader that has
+  already applied every GSN up to `last_gsn` passes `last_gsn + 1` and touches
+  only its delta, however long the entity's history is; `prefix_iterator/3` on
+  the entity id would walk the whole history and filter afterwards. A row may
+  still contain GSNs at or below `last_gsn` when the seek lands inside it; the
+  reader decodes the list and filters those out.
 
   The upper bound is the entity id's prefix bound, so this inherits
   `prefix_iterator/3`'s assumption that no entity id is a prefix of another.

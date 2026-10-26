@@ -16,6 +16,8 @@ defmodule EbbServer.Bench.OptionsTest do
     :group_resolution,
     :build,
     :encode,
+    :entity_actions,
+    :type_entities,
     :entity_index,
     :group_index,
     :dirty,
@@ -354,6 +356,23 @@ defmodule EbbServer.Bench.OptionsTest do
                Options.parse(["--tier", "t5", "--ablate", "dedup,entity_index,group_index"])
 
       assert config.ablate == [:dedup, :entity_index, :group_index]
+    end
+
+    test "accepts the entity-index halves separately and keeps the combined alias" do
+      assert {:ok, split} =
+               Options.parse([
+                 "--tier",
+                 "t5",
+                 "--ablate",
+                 "dedup,entity_actions,type_entities,group_index"
+               ])
+
+      assert split.ablate == [:dedup, :entity_actions, :type_entities, :group_index]
+
+      assert {:ok, combined} =
+               Options.parse(["--tier", "t5", "--ablate", "entity_index"])
+
+      assert combined.ablate == [:entity_index]
     end
 
     test "rejects an ablation that names a Writer phase" do

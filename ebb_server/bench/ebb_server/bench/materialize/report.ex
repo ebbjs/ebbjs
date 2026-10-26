@@ -162,7 +162,7 @@ defmodule EbbServer.Bench.Materialize.Report do
       "in every phase, so summing the medians understates the total while summing the\n" <>
       "means reconciles with the mean wall clock. `fetch_decode` is the SQLite SELECT\n" <>
       "plus `Jason.decode!` of the existing blob; `entries_scan` is the RocksDB\n" <>
-      "`cf_entity_actions` prefix scan; `actions_load` is the RocksDB `multi_get` plus\n" <>
+      "`cf_entity_actions` seek plus GSN-list decode; `actions_load` is the RocksDB `multi_get` plus\n" <>
       "ETF decode; `merge` is the LWW replay; `encode` is the JSON the write needs\n" <>
       "(the whole blob on a replace, the touched keys on a patch); `upsert` is\n" <>
       "the SQLite write including the eight STORED `json_extract` generated columns;\n" <>
@@ -213,8 +213,9 @@ defmodule EbbServer.Bench.Materialize.Report do
         rows
       ) <>
       "\n\nOne entity, one-key document, one patch Action per sample; the only variable\n" <>
-      "is how many Update Actions precede the read, i.e. how many `cf_entity_actions`\n" <>
-      "rows the entity has accumulated. `entries_scan` is the index read for the\n" <>
+      "is how many Update Actions precede the read, i.e. how many flushes the entity\n" <>
+      "appears in, and so how many coalesced `cf_entity_actions` rows it has\n" <>
+      "accumulated. `entries_scan` is the index read for the\n" <>
       "entity's delta and `actions_load` is the `multi_get` plus decode of it, so a\n" <>
       "flat `entries_scan` means the reader seeks and a rising one means it scans the\n" <>
       "entity's history. Nothing prunes these rows yet (#123 owns the log horizon).\n"

@@ -261,6 +261,98 @@ at any shorter history. The index still costs what it costs to write, which is
 [#575](https://github.com/ebbjs/ebbjs/issues/575)'s question; nothing is pruned
 yet ([#123](https://github.com/ebbjs/ebbjs/issues/123) owns the horizon).
 
+## Coalesced entity index (#575)
+
+[#575](https://github.com/ebbjs/ebbjs/issues/575) decided what
+`cf_entity_actions` is for. It was one row per Update — 2 of the 5 `cf_*` puts
+an Action paid for, and the largest single piece of the stored shape. It is now
+**one row per (subject, flush)**, keyed at that subject's highest GSN in the
+flush and carrying the subject's sorted GSN list as raw 8-byte big-endian
+integers. The materializer still seeks to `(entity_id, last_gsn + 1)`, decodes
+each row's list, filters the GSNs it has already applied, and `multi_get`s the
+rest, so the read stays a seek plus its delta. Decision, option comparison and
+bounds: [`docs/research/575-entity-actions.md`](../../docs/research/575-entity-actions.md).
+
+Measured **2026-10-26** on `recsy-vps`, same host as the rest of this file, as a
+rotated A/B: five 20 s passes per side per tier, alternating which build ran
+first, medians across the five. Before is `origin/main` `357165e`; after is the
+change. `t5` is the raw commit leg; `t0`/`t2` are the Writer with one and eight
+callers at depth 1.
+
+```sh
+mix bench.actions --tier t5 --concurrency 8 --duration 20 --warmup 3 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --durability sync
+mix bench.actions --tier t0 --duration 20 --warmup 3 --concurrency 1 \
+  --batch-size 100 --updates-per-action 2 --distribution hot
+mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 8 \
+  --batch-size 100 --updates-per-action 2 --distribution hot
+```
+
+| Tier              | Before Actions/s | After Actions/s |          Δ | Before p50 | After p50 |
+| ----------------- | ---------------: | --------------: | ---------: | ---------: | --------: |
+| `t5` K=8, sync    |           88,525 |         102,775 | **+16.1%** |    7.14 ms |   6.25 ms |
+| `t0` c=1, depth 1 |           25,775 |          28,420 | **+10.3%** |    3.53 ms |   3.23 ms |
+| `t2` c=8, depth 1 |           25,090 |          27,840 | **+11.0%** |    30.5 ms |   27.1 ms |
+
+The win is the put count: at `hot` a 100-Action flush writes **2**
+`cf_entity_actions` rows instead of 200, so the full op set falls from **502 to
+304** puts. `spread` writes each new subject once, so there the row count does
+not move (200 → 200); the win is a function of how often a flush touches the
+same subject, and `hot` is where the index cost was measured.
+
+### The index split apart, after
+
+`cf_entity_actions` and `cf_type_entities` are separately ablatable now
+(`:entity_actions`, `:type_entities`; `:entity_index` remains the combined
+alias, so the published commands keep their meaning). Medians of three 20 s
+passes on the changed build:
+
+| `t5` K=8 op set         | puts / 100-Action batch | Actions/s | vs full |
+| ----------------------- | ----------------------: | --------: | ------: |
+| full                    |                     304 |   102,775 |       — |
+| − `entity_actions`      |                     302 |   102,305 |   −0.5% |
+| − `type_entities`       |                     302 |   105,560 |   +2.7% |
+| − both (`entity_index`) |                     300 |   106,595 |   +3.7% |
+
+The combined ablation's marginal cost was **+25.0%** before the change and
+**+3.7%** after it — inside the host's run-to-run spread, which is what "the
+phase drops out of the ladder" means. The `t0` ablations (three passes each)
+land both above and below the full-shape median (26,865 / 30,750 vs 28,420
+Actions/s), so neither half is resolvable against noise there either. The split
+matters because the issue priced its "+22%" against the combined `entity_index`
+atom, which also dropped the two flush-scoped type rows.
+
+### Read guard (#515 scenarios)
+
+`mix bench.materialize --sizes 1000 --runs 5 --reps 50` plus the history axis
+(`--runs 2 --reps 20 --history-sizes 0,1000,20000 --scenarios dirty
+--distributions hot`), p50 in µs, before → after:
+
+| Scenario                 | Before | After |       Δ |
+| ------------------------ | -----: | ----: | ------: |
+| hot cold                 |  5,884 | 6,214 |   +5.6% |
+| hot dirty                |  3,325 | 3,510 |   +5.6% |
+| hot clean                |  2,453 | 2,387 |   −2.7% |
+| spread cold              |    563 |   611 |   +8.5% |
+| spread dirty             |    629 |   539 |  −14.3% |
+| query K=1                |    548 |   574 |   +4.7% |
+| query K=10               |    988 | 1,013 |   +2.5% |
+| query K=50               |  3,738 | 3,705 |   −0.9% |
+| history, 0 prior Updates |    352 |   368 |   +4.5% |
+| history, 1,000 prior     |    316 |   382 | +20.9%† |
+| history, 20,000 prior    |    366 |   327 |  −10.7% |
+
+Every N=1000 cold/dirty/query path is inside the +10% p50 guard; the largest
+rise is `spread cold` (5 samples). †The 1,000-history row is 40 samples, and
+its `entries_scan` rose in the same samples, which this change cannot cause:
+at that shape 1,000 per-Update rows collapse to 10 per-flush rows, and the 20k
+row fell. That row is host noise, not a read regression. Catch-up and group
+listing read no row of this CF (catch-up goes through `cf_group_actions` +
+`cf_actions`; group listing materializes per page row, covered by the dirty
+rows). Boot reconcile is `N_dirty ×` a full dirty read — the #564 re-mark
+materializes each system entity — and coalescing moves only the non-empty
+delta's row count.
+
 ## Restart boot re-mark (#564)
 
 Dirty marks are ETS-only, so before #564 a restart left a patched-but-never-read
@@ -1227,8 +1319,9 @@ the flush critical path is the durable log append versus the
 **two-store-only** bookkeeping a collapsed materialized store would
 remove. The `--ablate <phases>` seam (#510) skips named
 phases of the write path — `dedup, group_resolution, build, encode,
-entity_index, group_index, dirty, cache, watermark, fanout`
-(comma-separated). `build` and `encode` were added by
+entity_actions, type_entities, entity_index, group_index, dirty, cache,
+watermark, fanout` (comma-separated; `entity_index` is the combined alias for
+`entity_actions` + `type_entities`). `build` and `encode` were added by
 [#532](https://github.com/ebbjs/ebbjs/issues/532) to price the pre-claim
 payload work; the tables below predate those phases and were measured
 before they existed.

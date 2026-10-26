@@ -18,10 +18,16 @@ defmodule EbbServer.Bench.Options do
   readers.
 
   `t5` runs no Writer, so it honours only the phases that name an op group:
-  `:dedup`, `:entity_index` and `:group_index`. Ablating those drops the
-  corresponding `cf_*` puts from the spike's batch, which is how the bench
-  prices the stored shape of an Action (`--ablate
-  dedup,entity_index,group_index` leaves a `cf_actions`-only batch).
+  `:dedup`, `:entity_actions`, `:type_entities` and `:group_index`. Ablating
+  those drops the corresponding `cf_*` puts from the spike's batch, which is
+  how the bench prices the stored shape of an Action (`--ablate
+  dedup,entity_actions,type_entities,group_index` leaves a
+  `cf_actions`-only batch).
+
+  `:entity_index` is kept as the combined alias for the two halves of the
+  entity index: it ablates both `cf_entity_actions` and `cf_type_entities`,
+  so the earlier published reproduction commands keep meaning what they did.
+  Use `:entity_actions` and `:type_entities` to price the halves apart.
 
   ## Pipeline depth
 
@@ -59,6 +65,8 @@ defmodule EbbServer.Bench.Options do
           | :group_resolution
           | :build
           | :encode
+          | :entity_actions
+          | :type_entities
           | :entity_index
           | :group_index
           | :dirty
@@ -125,6 +133,8 @@ defmodule EbbServer.Bench.Options do
     :group_resolution,
     :build,
     :encode,
+    :entity_actions,
+    :type_entities,
     :entity_index,
     :group_index,
     :dirty,
@@ -135,7 +145,7 @@ defmodule EbbServer.Bench.Options do
   @ablate_by_name Map.new(@ablate_phases, &{Atom.to_string(&1), &1})
   # `t5` commits an op list instead of running the Writer, so only the phases
   # that name an op group mean anything there.
-  @t5_op_phases [:dedup, :entity_index, :group_index]
+  @t5_op_phases [:dedup, :entity_actions, :type_entities, :entity_index, :group_index]
 
   @switches [
     tier: :string,

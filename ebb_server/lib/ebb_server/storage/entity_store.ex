@@ -189,7 +189,7 @@ defmodule EbbServer.Storage.EntityStore do
   Process:
   1. Read the dirty mark's generation
   2. Read current state from SQLite (or empty for new entities)
-  3. Scan RocksDB cf_entity_actions for actions after last_gsn
+  3. Seek cf_entity_actions from last_gsn + 1 and decode each row's GSN list
   4. Replay each action's updates in GSN order
   5. Write the materialized entity back to SQLite
   6. Compare-and-clear the dirty mark with the observed generation
@@ -238,7 +238,7 @@ defmodule EbbServer.Storage.EntityStore do
     base_present? = existing_row != nil
 
     entries =
-      timed(:entries_scan, fn -> fetch_relevant_entries(entity_id, rocks_name, last_gsn) end)
+      timed(:entries_scan, fn -> fetch_relevant_gsns(entity_id, rocks_name, last_gsn) end)
 
     if after_scan, do: after_scan.()
 
@@ -276,21 +276,28 @@ defmodule EbbServer.Storage.EntityStore do
     end
   end
 
-  # The index key is `(entity_id, gsn)`, so the read starts at the first GSN
-  # this entity has not applied yet: a dirty entity walks only its delta,
-  # however long its history is, and the rows arrive in GSN order.
-  defp fetch_relevant_entries(entity_id, rocks_name, last_gsn) do
+  # A row is keyed at the subject's highest GSN in the flush it covers, so the
+  # seek from `last_gsn + 1` can still land inside a row whose list holds GSNs
+  # this entity already applied. Decoding the list and filtering those out is
+  # what makes the read self-healing when `last_gsn` points into a row: the
+  # unapplied tail is still read, never skipped.
+  defp fetch_relevant_gsns(entity_id, rocks_name, last_gsn) do
     RocksDB.entity_gsn_iterator(
       RocksDB.cf_entity_actions(rocks_name),
       entity_id,
       first_unapplied_gsn(last_gsn),
       name: rocks_name
     )
-    |> Enum.map(fn {key, action_id_binary} ->
-      {_eid, gsn} = RocksDB.decode_entity_gsn_key(key)
-      {gsn, action_id_binary}
+    |> Enum.flat_map(fn {_key, value} ->
+      value
+      |> RocksDB.decode_gsn_list()
+      |> Enum.filter(&unapplied_gsn?(&1, last_gsn))
     end)
+    |> Enum.sort()
   end
+
+  defp unapplied_gsn?(_gsn, nil), do: true
+  defp unapplied_gsn?(gsn, last_gsn), do: gsn > last_gsn
 
   # A cold read has applied nothing. The clamp is what keeps `last_gsn + 1`
   # encodable at the top of the GSN space rather than wrapping to 0 and
@@ -415,21 +422,21 @@ defmodule EbbServer.Storage.EntityStore do
     timed(:format, fn -> format_live_entity(Map.put(entity_row, :data, merged_data)) end)
   end
 
-  defp load_actions(entries, rocks_name) do
-    keys = Enum.map(entries, fn {gsn, _action_id} -> RocksDB.encode_gsn_key(gsn) end)
+  defp load_actions(gsns, rocks_name) do
+    keys = Enum.map(gsns, &RocksDB.encode_gsn_key/1)
 
     RocksDB.multi_get(RocksDB.cf_actions(rocks_name), keys, name: rocks_name)
-    |> Enum.zip(entries)
+    |> Enum.zip(gsns)
     |> Enum.map(&decode_action/1)
   end
 
   # Materialization replays Updates and never reads delivery scopes, so it
   # decodes only the payload half of the frame.
-  defp decode_action({{:ok, action_etf}, {gsn, _action_id}}) do
+  defp decode_action({{:ok, action_etf}, gsn}) do
     {gsn, ActionFormat.decode_payload(action_etf, gsn)}
   end
 
-  defp decode_action({:not_found, {gsn, _action_id}}) do
+  defp decode_action({:not_found, gsn}) do
     raise "cf_actions has no action at gsn #{gsn}"
   end
 

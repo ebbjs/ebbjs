@@ -87,6 +87,30 @@ defmodule EbbServer.Bench.WriteBatchTest do
           "entity_index"
         ])
 
+      {:ok, no_entity_actions} =
+        Options.parse([
+          "--tier",
+          "t5",
+          "--batch-size",
+          "10",
+          "--distribution",
+          "hot",
+          "--ablate",
+          "entity_actions"
+        ])
+
+      {:ok, no_type_entities} =
+        Options.parse([
+          "--tier",
+          "t5",
+          "--batch-size",
+          "10",
+          "--distribution",
+          "hot",
+          "--ablate",
+          "type_entities"
+        ])
+
       {:ok, no_group_index} =
         Options.parse([
           "--tier",
@@ -107,29 +131,45 @@ defmodule EbbServer.Bench.WriteBatchTest do
 
       assert count.(full, RocksDB.cf_action_dedup()) == 10
       assert count.(no_dedup, RocksDB.cf_action_dedup()) == 0
-      assert count.(full, RocksDB.cf_entity_actions()) == 20
+
+      # The hot batch touches two subjects, so the coalesced entity index is
+      # two rows, not one per Update.
+      assert count.(full, RocksDB.cf_entity_actions()) == 2
+      assert count.(no_entity_actions, RocksDB.cf_entity_actions()) == 0
+      assert count.(no_entity_actions, RocksDB.cf_type_entities()) == 2
+      assert count.(no_type_entities, RocksDB.cf_type_entities()) == 0
+      assert count.(no_type_entities, RocksDB.cf_entity_actions()) == 2
       assert count.(no_entity_index, RocksDB.cf_entity_actions()) == 0
       assert count.(no_entity_index, RocksDB.cf_type_entities()) == 0
+
       assert count.(full, RocksDB.cf_group_actions()) == 10
       assert count.(no_group_index, RocksDB.cf_group_actions()) == 0
 
       # Every ablation keeps the log record itself.
-      for config <- [full, no_dedup, no_entity_index, no_group_index] do
+      for config <- [
+            full,
+            no_dedup,
+            no_entity_actions,
+            no_type_entities,
+            no_entity_index,
+            no_group_index
+          ] do
         assert count.(config, RocksDB.cf_actions()) == 10
       end
     end
   end
 
   describe "build_ops/4" do
-    test "a hot batch writes five rows per Action plus two shared type keys", context do
+    test "a hot batch writes three rows per Action plus the shared flush indexes", context do
       {:ok, config} =
         Options.parse(["--tier", "t5", "--batch-size", "100", "--distribution", "hot"])
 
       ops = WriteBatch.build_ops(config, context.ctx, 1, 0)
 
-      # 100 Actions x (cf_actions + dedup + group + 2 entity rows) = 500,
-      # plus the two type keys every hot Action shares.
-      assert length(ops) == 502
+      # 100 Actions x (cf_actions + dedup + group) = 300, plus one coalesced
+      # entity row for each of the two hot subjects and the two type keys
+      # every hot Action shares.
+      assert length(ops) == 304
     end
 
     test "a spread batch writes one type key per Update", context do
@@ -176,7 +216,7 @@ defmodule EbbServer.Bench.WriteBatchTest do
       assert Enum.all?(stored["updates"], &is_map_key(&1, "subject_type"))
     end
 
-    test "index rows point at the Action and its GSN", context do
+    test "group and dedup rows point at the Action and its GSN", context do
       {:ok, config} = Options.parse(["--tier", "t5", "--batch-size", "2"])
       ops = WriteBatch.build_ops(config, context.ctx, 1, 0)
 
@@ -188,27 +228,26 @@ defmodule EbbServer.Bench.WriteBatchTest do
 
       assert [{group_key, ^action_id}] = Enum.take(cf_ops(ops, RocksDB.cf_group_actions()), 1)
       assert RocksDB.decode_group_action_key(group_key) == {Workbook.group_id(), 1_000_000_000}
-
-      first_action_rows =
-        ops
-        |> cf_ops(RocksDB.cf_entity_actions())
-        |> Enum.filter(fn {key, _id} ->
-          RocksDB.decode_entity_gsn_key(key) |> elem(1) == 1_000_000_000
-        end)
-
-      assert length(first_action_rows) == 2
-      assert Enum.all?(first_action_rows, fn {_key, id} -> id == action_id end)
     end
 
-    test "entity index keys cover every Update subject and GSN", context do
-      {:ok, config} = Options.parse(["--tier", "t5", "--batch-size", "10"])
+    test "entity index coalesces one row per subject with the flush's GSN list", context do
+      {:ok, config} =
+        Options.parse(["--tier", "t5", "--batch-size", "10", "--distribution", "hot"])
+
       ops = WriteBatch.build_ops(config, context.ctx, 1, 0)
 
-      keys = ops |> cf_ops(RocksDB.cf_entity_actions()) |> Enum.map(&elem(&1, 0))
-      decoded = Enum.map(keys, &RocksDB.decode_entity_gsn_key/1)
+      rows =
+        ops
+        |> cf_ops(RocksDB.cf_entity_actions())
+        |> Enum.map(fn {key, value} ->
+          {subject_id, max_gsn} = RocksDB.decode_entity_gsn_key(key)
+          {subject_id, max_gsn, RocksDB.decode_gsn_list(value)}
+        end)
 
-      assert length(decoded) == 20
-      assert decoded |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> length() == 10
+      assert Enum.sort(rows) == [
+               {"eg_bench_hot", 1_000_000_009, Enum.to_list(1_000_000_000..1_000_000_009)},
+               {"todo_bench_hot", 1_000_000_009, Enum.to_list(1_000_000_000..1_000_000_009)}
+             ]
     end
 
     test "type entity keys are unique and one per distinct entity/type pair", context do

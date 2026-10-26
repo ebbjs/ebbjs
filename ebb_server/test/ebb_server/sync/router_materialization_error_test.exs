@@ -27,7 +27,10 @@ defmodule EbbServer.Sync.Router.MaterializationErrorTest do
 
       :ok =
         RocksDB.write_batch(
-          [{:put, RocksDB.cf_entity_actions(rocks_name), entity_gsn_key, "fake_action_id"}],
+          [
+            {:put, RocksDB.cf_entity_actions(rocks_name), entity_gsn_key,
+             RocksDB.encode_gsn_list([gsn])}
+          ],
           name: rocks_name
         )
 
@@ -62,7 +65,10 @@ defmodule EbbServer.Sync.Router.MaterializationErrorTest do
 
       :ok =
         RocksDB.write_batch(
-          [{:put, RocksDB.cf_entity_actions(rocks_name), entity_gsn_key, "fake_action_id"}],
+          [
+            {:put, RocksDB.cf_entity_actions(rocks_name), entity_gsn_key,
+             RocksDB.encode_gsn_list([gsn])}
+          ],
           name: rocks_name
         )
 
@@ -89,7 +95,10 @@ defmodule EbbServer.Sync.Router.MaterializationErrorTest do
 
       :ok =
         RocksDB.write_batch(
-          [{:put, RocksDB.cf_entity_actions(rocks_name), entity_gsn_key, "fake_action_id"}],
+          [
+            {:put, RocksDB.cf_entity_actions(rocks_name), entity_gsn_key,
+             RocksDB.encode_gsn_list([gsn])}
+          ],
           name: rocks_name
         )
 

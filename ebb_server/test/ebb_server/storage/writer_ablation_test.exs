@@ -42,6 +42,26 @@ defmodule EbbServer.Storage.WriterAblationTest do
       assert length(puts_to(ops, RocksDB.cf_actions(ctx.rocks_name))) == 1
     end
 
+    test ":entity_actions drops only cf_entity_actions", ctx do
+      writer = start_capturing_writer(ctx, [:entity_actions])
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer)
+
+      assert_receive {:captured_ops, ops}
+      assert puts_to(ops, RocksDB.cf_entity_actions(ctx.rocks_name)) == []
+      assert length(puts_to(ops, RocksDB.cf_type_entities(ctx.rocks_name))) == 1
+    end
+
+    test ":type_entities drops only cf_type_entities", ctx do
+      writer = start_capturing_writer(ctx, [:type_entities])
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer)
+
+      assert_receive {:captured_ops, ops}
+      assert puts_to(ops, RocksDB.cf_type_entities(ctx.rocks_name)) == []
+      assert length(puts_to(ops, RocksDB.cf_entity_actions(ctx.rocks_name))) == 1
+    end
+
     test ":entity_index drops cf_entity_actions and cf_type_entities", ctx do
       writer = start_capturing_writer(ctx, [:entity_index])
 
@@ -207,6 +227,8 @@ defmodule EbbServer.Storage.WriterAblationTest do
       :group_resolution,
       :build,
       :encode,
+      :entity_actions,
+      :type_entities,
       :entity_index,
       :group_index,
       :dirty,

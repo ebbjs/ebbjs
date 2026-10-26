@@ -134,6 +134,39 @@ defmodule EbbServer.Storage.RocksDBTest do
       # Nothing to read once the history is applied.
       assert [] = gsns_from(cf, ids.entity, 5, name)
     end
+
+    test "returns a row whose max GSN is at or after the seek, even when it straddles it",
+         context do
+      %{name: name} = start_rocks(context)
+      cf = RocksDB.cf_entity_actions(name)
+      entity_id = "todo_coalesced"
+
+      :ok =
+        RocksDB.write_batch(
+          [
+            {:put, cf, RocksDB.encode_entity_gsn_key(entity_id, 5),
+             RocksDB.encode_gsn_list([1, 5])},
+            {:put, cf, RocksDB.encode_entity_gsn_key(entity_id, 10),
+             RocksDB.encode_gsn_list([6, 10])}
+          ],
+          name: name
+        )
+
+      rows = fn from_gsn ->
+        cf
+        |> RocksDB.entity_gsn_iterator(entity_id, from_gsn, name: name)
+        |> Enum.map(fn {key, value} ->
+          {_entity_id, max_gsn} = RocksDB.decode_entity_gsn_key(key)
+          {max_gsn, RocksDB.decode_gsn_list(value)}
+        end)
+      end
+
+      # The seek lands inside the first row's list; its max still keeps it
+      # visible, so the reader can filter the applied GSN itself.
+      assert rows.(2) == [{5, [1, 5]}, {10, [6, 10]}]
+      assert rows.(6) == [{10, [6, 10]}]
+      assert rows.(11) == []
+    end
   end
 
   defp gsns_from(cf, entity_id, from_gsn, name) do
@@ -253,6 +286,40 @@ defmodule EbbServer.Storage.RocksDBTest do
 
       assert ret_key == key
       assert ret_value == value
+    end
+  end
+
+  describe "GSN list values" do
+    test "round-trips a sorted GSN list as raw big-endian integers" do
+      gsns = [1, 2, 255, 65_536, 1_000_000_000]
+
+      encoded = RocksDB.encode_gsn_list(gsns)
+
+      assert byte_size(encoded) == length(gsns) * 8
+      assert encoded == Enum.map_join(gsns, fn gsn -> <<gsn::unsigned-big-integer-size(64)>> end)
+      assert RocksDB.decode_gsn_list(encoded) == gsns
+    end
+
+    test "normalizes the list to ascending unique GSNs" do
+      assert RocksDB.encode_gsn_list([5, 1, 5, 2]) == RocksDB.encode_gsn_list([1, 2, 5])
+    end
+
+    test "builds a row keyed at the list's highest GSN" do
+      {key, value} = RocksDB.encode_entity_gsn_row("todo_row", [7, 3, 7, 5])
+
+      assert RocksDB.decode_entity_gsn_key(key) == {"todo_row", 7}
+      assert RocksDB.decode_gsn_list(value) == [3, 5, 7]
+    end
+
+    test "raises on an empty GSN list" do
+      assert_raise ArgumentError, ~r/cannot be empty/, fn -> RocksDB.encode_gsn_list([]) end
+      assert_raise ArgumentError, ~r/cannot be empty/, fn -> RocksDB.decode_gsn_list(<<>>) end
+    end
+
+    test "raises on a value whose length is not a multiple of eight" do
+      assert_raise ArgumentError, ~r/multiple of 8/, fn ->
+        RocksDB.decode_gsn_list(<<1, 2, 3>>)
+      end
     end
   end
 
