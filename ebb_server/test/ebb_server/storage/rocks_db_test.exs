@@ -80,9 +80,9 @@ defmodule EbbServer.Storage.RocksDBTest do
       %{name: name} = start_rocks(context)
       cf = RocksDB.cf_entity_actions(name)
 
-      key1 = RocksDB.encode_entity_gsn_key("todo_abc", 1)
-      key2 = RocksDB.encode_entity_gsn_key("todo_abc", 2)
-      key3 = RocksDB.encode_entity_gsn_key("todo_xyz", 1)
+      key1 = RocksDB.encode_entity_flush_key("todo_abc", 1)
+      key2 = RocksDB.encode_entity_flush_key("todo_abc", 2)
+      key3 = RocksDB.encode_entity_flush_key("todo_xyz", 1)
 
       :ok =
         RocksDB.write_batch(
@@ -105,8 +105,8 @@ defmodule EbbServer.Storage.RocksDBTest do
       assert rv2 == "v2"
 
       # Verify GSN order
-      {_, gsn1} = RocksDB.decode_entity_gsn_key(rk1)
-      {_, gsn2} = RocksDB.decode_entity_gsn_key(rk2)
+      {_, gsn1} = RocksDB.decode_entity_flush_key(rk1)
+      {_, gsn2} = RocksDB.decode_entity_flush_key(rk2)
       assert gsn1 < gsn2
     end
   end
@@ -123,7 +123,7 @@ defmodule EbbServer.Storage.RocksDBTest do
 
       ops =
         for {entity_id, gsn} <- Enum.map(gsns, &{ids.entity, &1}) ++ [{ids.other, 3}] do
-          {:put, cf, RocksDB.encode_entity_gsn_key(entity_id, gsn), "#{entity_id}@#{gsn}"}
+          {:put, cf, RocksDB.encode_entity_flush_key(entity_id, gsn), "#{entity_id}@#{gsn}"}
         end
 
       :ok = RocksDB.write_batch(ops, name: name)
@@ -144,9 +144,9 @@ defmodule EbbServer.Storage.RocksDBTest do
       :ok =
         RocksDB.write_batch(
           [
-            {:put, cf, RocksDB.encode_entity_gsn_key(entity_id, 5),
+            {:put, cf, RocksDB.encode_entity_flush_key(entity_id, 5),
              RocksDB.encode_gsn_list([1, 5])},
-            {:put, cf, RocksDB.encode_entity_gsn_key(entity_id, 10),
+            {:put, cf, RocksDB.encode_entity_flush_key(entity_id, 10),
              RocksDB.encode_gsn_list([6, 10])}
           ],
           name: name
@@ -156,7 +156,7 @@ defmodule EbbServer.Storage.RocksDBTest do
         cf
         |> RocksDB.entity_gsn_iterator(entity_id, from_gsn, name: name)
         |> Enum.map(fn {key, value} ->
-          {_entity_id, max_gsn} = RocksDB.decode_entity_gsn_key(key)
+          {_entity_id, max_gsn} = RocksDB.decode_entity_flush_key(key)
           {max_gsn, RocksDB.decode_gsn_list(value)}
         end)
       end
@@ -172,7 +172,7 @@ defmodule EbbServer.Storage.RocksDBTest do
   defp gsns_from(cf, entity_id, from_gsn, name) do
     cf
     |> RocksDB.entity_gsn_iterator(entity_id, from_gsn, name: name)
-    |> Enum.map(fn {key, _value} -> key |> RocksDB.decode_entity_gsn_key() |> elem(1) end)
+    |> Enum.map(fn {key, _value} -> key |> RocksDB.decode_entity_flush_key() |> elem(1) end)
   end
 
   describe "range iterator" do
@@ -307,7 +307,7 @@ defmodule EbbServer.Storage.RocksDBTest do
     test "builds a row keyed at the list's highest GSN" do
       {key, value} = RocksDB.encode_entity_gsn_row("todo_row", [7, 3, 7, 5])
 
-      assert RocksDB.decode_entity_gsn_key(key) == {"todo_row", 7}
+      assert RocksDB.decode_entity_flush_key(key) == {"todo_row", 7}
       assert RocksDB.decode_gsn_list(value) == [3, 5, 7]
     end
 

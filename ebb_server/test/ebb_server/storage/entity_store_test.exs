@@ -189,7 +189,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           [
             {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), frame},
             {:put, RocksDB.cf_entity_actions(rocks_name),
-             RocksDB.encode_entity_gsn_key(entity_id, gsn), RocksDB.encode_gsn_list([gsn])}
+             RocksDB.encode_entity_flush_key(entity_id, gsn), RocksDB.encode_gsn_list([gsn])}
           ],
           name: rocks_name
         )
@@ -239,7 +239,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
         |> Enum.to_list()
 
       assert [{key, value}] = rows
-      assert {^entity_id, 2} = RocksDB.decode_entity_gsn_key(key)
+      assert {^entity_id, 2} = RocksDB.decode_entity_flush_key(key)
       assert RocksDB.decode_gsn_list(value) == [1, 2]
 
       assert {:ok, entity} =
@@ -300,7 +300,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           name: rocks_name
         )
         |> Enum.map(fn {key, value} ->
-          {_entity_id, max_gsn} = RocksDB.decode_entity_gsn_key(key)
+          {_entity_id, max_gsn} = RocksDB.decode_entity_flush_key(key)
           {max_gsn, RocksDB.decode_gsn_list(value)}
         end)
 
@@ -333,7 +333,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
             {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(2),
              stored_frame(patch)},
             {:put, RocksDB.cf_entity_actions(rocks_name),
-             RocksDB.encode_entity_gsn_key(entity_id, 2), RocksDB.encode_gsn_list([1, 2])}
+             RocksDB.encode_entity_flush_key(entity_id, 2), RocksDB.encode_gsn_list([1, 2])}
           ],
           name: rocks_name
         )
@@ -393,7 +393,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
             {:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(2),
              stored_frame(second)},
             {:put, RocksDB.cf_entity_actions(rocks_name),
-             RocksDB.encode_entity_gsn_key(entity_id, 2), <<2::64, 1::64>>}
+             RocksDB.encode_entity_flush_key(entity_id, 2), <<2::64, 1::64>>}
           ],
           name: rocks_name
         )

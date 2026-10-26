@@ -143,7 +143,7 @@ defmodule EbbServer.Storage.RocksDB do
   def decode_gsn_key(<<gsn::unsigned-big-integer-size(64)>>), do: gsn
 
   @doc """
-  Composite key for the entity -> actions index.
+  Composite key for the entity -> flush index.
 
   The entity ID is a variable-length prefix and the GSN is fixed 8 bytes at
   the end. One row covers a `(subject, flush)` pair: the GSN component is the
@@ -153,16 +153,16 @@ defmodule EbbServer.Storage.RocksDB do
   is at or after the seek can never be skipped while it still holds an
   unapplied GSN, even when `last_gsn` points inside the row's list.
   """
-  @spec encode_entity_gsn_key(binary(), gsn()) :: binary()
-  def encode_entity_gsn_key(entity_id, gsn) do
-    <<entity_id::binary, gsn::unsigned-big-integer-size(64)>>
+  @spec encode_entity_flush_key(binary(), gsn()) :: binary()
+  def encode_entity_flush_key(entity_id, max_gsn) do
+    <<entity_id::binary, max_gsn::unsigned-big-integer-size(64)>>
   end
 
-  @spec decode_entity_gsn_key(binary()) :: {binary(), gsn()}
-  def decode_entity_gsn_key(key) do
+  @spec decode_entity_flush_key(binary()) :: {binary(), gsn()}
+  def decode_entity_flush_key(key) do
     entity_size = byte_size(key) - 8
-    <<entity_id::binary-size(entity_size), gsn::unsigned-big-integer-size(64)>> = key
-    {entity_id, gsn}
+    <<entity_id::binary-size(entity_size), max_gsn::unsigned-big-integer-size(64)>> = key
+    {entity_id, max_gsn}
   end
 
   @doc """
@@ -175,7 +175,7 @@ defmodule EbbServer.Storage.RocksDB do
   @spec encode_entity_gsn_row(binary(), [gsn()]) :: {binary(), binary()}
   def encode_entity_gsn_row(entity_id, gsns) when is_list(gsns) and gsns != [] do
     sorted = gsns |> Enum.uniq() |> Enum.sort()
-    {encode_entity_gsn_key(entity_id, List.last(sorted)), encode_sorted_gsns(sorted)}
+    {encode_entity_flush_key(entity_id, List.last(sorted)), encode_sorted_gsns(sorted)}
   end
 
   @doc """
@@ -323,7 +323,7 @@ defmodule EbbServer.Storage.RocksDB do
   def entity_gsn_iterator(cf_ref, entity_id, from_gsn, opts \\ []) when is_integer(from_gsn) do
     range_iterator(
       cf_ref,
-      encode_entity_gsn_key(entity_id, from_gsn),
+      encode_entity_flush_key(entity_id, from_gsn),
       prefix_upper_bound(entity_id),
       opts
     )

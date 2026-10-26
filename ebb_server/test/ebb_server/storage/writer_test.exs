@@ -156,7 +156,7 @@ defmodule EbbServer.Storage.WriterTest do
       assert [%{"id" => stored_update_id}] = decoded["updates"]
       assert stored_update_id == update.id
 
-      entity_gsn_key = RocksDB.encode_entity_gsn_key("todo_test_123", 1)
+      entity_gsn_key = RocksDB.encode_entity_flush_key("todo_test_123", 1)
 
       assert {:ok, entity_gsns} =
                RocksDB.get(RocksDB.cf_entity_actions(rocks_name), entity_gsn_key,
