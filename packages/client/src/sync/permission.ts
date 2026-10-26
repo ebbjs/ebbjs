@@ -29,13 +29,25 @@
  * committed under, never the wire `subject_type`, which is forgeable
  * (#624). A user-entity write that declares another type is refused here
  * whatever permission the actor holds: the server refuses it
- * structurally, so no grant could make it pass. That identity check
- * covers user entities only — a `relationship` or `entityGroup` write
- * whose subject id is committed as some other type passes this
- * best-effort pass and is refused by the server. The server also binds an
- * id's first type for the whole request, so an Action that relabels an id
- * an earlier Action in the same batch created is refused there but not
- * here; Actions are checked one at a time.
+ * structurally, so no grant could make it pass. That type check covers
+ * user entities only — a `relationship` or `entityGroup` write whose
+ * subject id is committed as some other type passes this best-effort
+ * pass and is refused by the server. A `relationship` row's source is
+ * likewise its identity: a put or patch that declares another
+ * `source_id` is refused here with no permission to report, mirroring
+ * the server's "a relationship row cannot be re-pointed at another
+ * source" (#624); moving an edge is delete + put, and a delete's wire
+ * source is ignored. A delete in the same `write()` batch releases the
+ * row's source binding for the Actions that follow it — as the server's
+ * request simulation does — so the delete + put that moves an edge is
+ * authorized here too; within one Action the release is order-independent,
+ * and a refused Action releases nothing. A delete still sitting in the
+ * Outbox — no echo yet — releases nothing either, so an edge moved across
+ * two `write()` calls is refused locally until the delete syncs; batch the
+ * delete and the re-put. The server also binds an id's first type for the
+ * whole request, so an Action that relabels an id an earlier Action in the
+ * same batch created is refused there but not here; Actions are otherwise
+ * checked one at a time.
  */
 
 import type { Action, Entity, Update } from "@ebbjs/core";
@@ -47,7 +59,10 @@ import { readEntityMemberships, readMembership, type LiveMembership } from "./en
 export type PermissionVerb = "create" | "update" | "delete";
 
 /** One Update the local pass refused, and why. */
-export type PermissionViolation = MissingPermissionViolation | TypeMismatchViolation;
+export type PermissionViolation =
+  | MissingPermissionViolation
+  | TypeMismatchViolation
+  | SourceMismatchViolation;
 
 /**
  * The actor holds no permission that would allow the write: no group in
@@ -77,6 +92,27 @@ export interface TypeMismatchViolation {
   /** The type the entity is committed under locally. */
   readonly committedType: string;
   /** The entity's group set, which the committed type is checked against. */
+  readonly groupIds: readonly string[];
+}
+
+/**
+ * The write cannot be authorized at any permission: a `relationship` put
+ * or patch declared a source other than the one the row is committed
+ * with, which the server refuses structurally (#624). A row's source is
+ * its identity, so moving an edge is expressed as delete + put, never as
+ * a re-point. There is deliberately no `required` — the actor may hold
+ * every `relationship` grant and the write still fails.
+ */
+export interface SourceMismatchViolation {
+  readonly kind: "source-mismatch";
+  /** The type the write declared, always `"relationship"`. */
+  readonly subjectType: string;
+  readonly subjectId: string;
+  /** The source the write declared, i.e. the wire `source_id`. */
+  readonly declaredSourceId: string;
+  /** The source the relationship row is committed with locally. */
+  readonly committedSourceId: string;
+  /** The committed source's group set. */
   readonly groupIds: readonly string[];
 }
 
@@ -117,6 +153,13 @@ const describeViolation = (violation: PermissionViolation): string => {
         `${violation.subjectType} ${violation.subjectId}: declared type "${violation.subjectType}"` +
         ` but the entity is committed as "${violation.committedType}"; an entity's type cannot` +
         ` change (checked: ${groups})`
+      );
+    case "source-mismatch":
+      return (
+        `${violation.subjectType} ${violation.subjectId}: declared source` +
+        ` "${violation.declaredSourceId}" but the row is committed with source` +
+        ` "${violation.committedSourceId}"; a relationship row cannot be re-pointed at another` +
+        ` source (checked: ${groups})`
       );
     default:
       return assertNever(violation);
@@ -187,19 +230,28 @@ interface ResolvedRule {
  */
 export type CanUnknownReason = "no-handshake" | "entity-unknown" | "no-owner";
 
+/** Which piece of row identity a structural refusal is about (#624). */
+type RefusalDetail =
+  | {
+      /** The write declared a type other than the committed one. */
+      readonly reason: "type-mismatch";
+      readonly committedType: string;
+    }
+  | {
+      /** The write declared a relationship source other than the row's own. */
+      readonly reason: "source-mismatch";
+      readonly declaredSourceId: string;
+      readonly committedSourceId: string;
+    };
+
 type RuleResolution =
   | { readonly kind: "rule"; readonly rule: ResolvedRule }
   /**
-   * The write contradicts state the server enforces structurally: it
-   * declared a type other than the one the entity is committed under, so
-   * no permission can allow it (#624). Carries only what the refusal
-   * reports — there is no rule to apply.
+   * The write contradicts state the server enforces structurally, so no
+   * permission can allow it. Carries only what the refusal reports —
+   * there is no rule to apply.
    */
-  | {
-      readonly kind: "refused";
-      readonly committedType: string;
-      readonly groupIds: readonly string[];
-    }
+  | ({ readonly kind: "refused"; readonly groupIds: readonly string[] } & RefusalDetail)
   | { readonly kind: "unresolved"; readonly reason: CanUnknownReason };
 
 /** What a {@link RuleResolution} means for one subject. */
@@ -249,6 +301,20 @@ const asStringArray = (value: unknown): readonly string[] =>
   Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 
 /**
+ * The source a relationship row is committed with, or `null` when the
+ * local store knows no such row (a new edge, or one whose row is
+ * tombstoned — the server's by-id row is gone too).
+ */
+const committedRelationshipSource = async (
+  subjectId: string,
+  inputs: RuleInputs,
+): Promise<string | null> => {
+  const row = await inputs.exists(subjectId);
+  if (row?.type !== "relationship" || row.deleted_hlc !== null) return null;
+  return asString(row.data?.fields?.["source_id"]?.value);
+};
+
+/**
  * The rule table: for a subject `(type, id, method)`, the permission it
  * requires and the groups to union-match. Returns `unresolved` when the
  * inputs the rule needs are not locally available — the write path then
@@ -269,13 +335,24 @@ const asStringArray = (value: unknown): readonly string[] =>
  *   permission rule, so a patch is only rejected when the server sees it;
  * - `entityGroup` delete → `<entityType>.update` in the entity's current set;
  * - `relationship` put → `<sourceType>.update` over the source's set;
- *   patch/delete → `relationship.<verb>` over the source's set.
+ *   patch/delete → `relationship.<verb>` over the source's set. A row's
+ *   source is its identity: a put or patch whose declared `source_id`
+ *   differs from the committed row's is refused outright (#624), since
+ *   the server will not re-point an edge. An id whose binding this batch
+ *   has released — its delete rides in this Action or an earlier one of
+ *   the same batch — reads as a new edge, authorized by the wire source,
+ *   which is how delete + put moves one. The delete and patch scopes still
+ *   come from the stored row, as the server scopes them. An id the local
+ *   store has no live relationship row for is a new edge too. A delete's
+ *   wire `source_id` is ignored — the server resolves the stored row — so
+ *   only the committed source can authorize it.
  */
 async function resolveRule(
   subjectType: string,
   subjectId: string,
   method: Update["method"],
   inputs: RuleInputs,
+  released: ReadonlySet<string>,
 ): Promise<RuleResolution> {
   const verb = METHOD_VERB[method];
   const rule = (r: ResolvedRule): RuleResolution => ({ kind: "rule", rule: r });
@@ -348,14 +425,38 @@ async function resolveRule(
     }
 
     case "relationship": {
+      const declaredSourceId = asString(inputs.fieldValue("source_id"));
+      const committedSourceId = await committedRelationshipSource(subjectId, inputs);
+      // A delete in this batch releases the binding, so the re-point check
+      // has nothing left to contradict.
+      const boundSourceId = released.has(subjectId) ? null : committedSourceId;
+      // A row's source is its identity: for a put or patch the server
+      // refuses a declared source other than the committed one rather than
+      // re-pointing the edge, so neither may this pass allow it. A delete
+      // carries a source the server never reads — it resolves the stored
+      // row — so a stale one there is ignored, not refused.
+      if (
+        method !== "delete" &&
+        declaredSourceId !== null &&
+        boundSourceId !== null &&
+        declaredSourceId !== boundSourceId
+      ) {
+        return {
+          kind: "refused",
+          reason: "source-mismatch",
+          declaredSourceId,
+          committedSourceId: boundSourceId,
+          groupIds: await inputs.groupSetFor(boundSourceId),
+        };
+      }
+
       if (method === "put") {
-        const sourceId = asString(inputs.fieldValue("source_id"));
-        if (sourceId === null) return { kind: "unresolved", reason: "entity-unknown" };
+        if (declaredSourceId === null) return { kind: "unresolved", reason: "entity-unknown" };
         // The permission type follows the source entity's true type,
         // never the wire `type` label, which is forgeable (#323).
-        const type = await inputs.resolveType(sourceId);
+        const type = await inputs.resolveType(declaredSourceId);
         if (type === null) return { kind: "unresolved", reason: "entity-unknown" };
-        const groupIds = await inputs.groupSetFor(sourceId);
+        const groupIds = await inputs.groupSetFor(declaredSourceId);
         if (groupIds.length === 0) return { kind: "unresolved", reason: "no-owner" };
         return rule({
           type,
@@ -365,13 +466,11 @@ async function resolveRule(
           cachedOnly: false,
         });
       }
-      // The wire `source_id` is authoritative when present (a patch can
-      // re-point the edge); only fall back to the local row.
-      const wireSourceId = asString(inputs.fieldValue("source_id"));
-      const row = wireSourceId === null ? await inputs.exists(subjectId) : null;
+      // A delete's groups come from the stored row; a patch may restate
+      // the source it keeps. Neither reads the batch release: the stored
+      // row scopes both.
       const sourceId =
-        wireSourceId ??
-        (row?.type === "relationship" ? asString(row.data?.fields?.["source_id"]?.value) : null);
+        method === "delete" ? committedSourceId : (declaredSourceId ?? committedSourceId);
       if (sourceId === null) return { kind: "unresolved", reason: "entity-unknown" };
       const groupIds = await inputs.groupSetFor(sourceId);
       if (groupIds.length === 0) return { kind: "unresolved", reason: "no-owner" };
@@ -393,7 +492,7 @@ async function resolveRule(
       // the one the id is committed under rather than falling back to it,
       // so neither may this pass allow it (#624).
       if (committedType !== null && committedType !== subjectType) {
-        return { kind: "refused", committedType, groupIds };
+        return { kind: "refused", reason: "type-mismatch", committedType, groupIds };
       }
       const type = committedType ?? subjectType;
       return rule({
@@ -458,6 +557,34 @@ const missingPermission = (
   groupIds: rule.groupIds,
 });
 
+/** The violation a structural refusal reports; each reason names its own cause. */
+const refusedViolation = (
+  resolution: Extract<RuleResolution, { kind: "refused" }>,
+  subject: DecisionSubject,
+): TypeMismatchViolation | SourceMismatchViolation => {
+  switch (resolution.reason) {
+    case "type-mismatch":
+      return {
+        kind: "type-mismatch",
+        subjectType: subject.subjectType,
+        subjectId: subject.subjectId,
+        committedType: resolution.committedType,
+        groupIds: resolution.groupIds,
+      };
+    case "source-mismatch":
+      return {
+        kind: "source-mismatch",
+        subjectType: subject.subjectType,
+        subjectId: subject.subjectId,
+        declaredSourceId: resolution.declaredSourceId,
+        committedSourceId: resolution.committedSourceId,
+        groupIds: resolution.groupIds,
+      };
+    default:
+      return assertNever(resolution);
+  }
+};
+
 /**
  * The single place a {@link RuleResolution} becomes a decision. Only an
  * explicit `rule` the actor holds is an allow; every other variant denies
@@ -475,16 +602,7 @@ const decideRule = (
         ? { kind: "allowed", groupIds: resolution.rule.groupIds }
         : { kind: "denied", violation: missingPermission(subject, resolution.rule) };
     case "refused":
-      return {
-        kind: "denied",
-        violation: {
-          kind: "type-mismatch",
-          subjectType: subject.subjectType,
-          subjectId: subject.subjectId,
-          committedType: resolution.committedType,
-          groupIds: resolution.groupIds,
-        },
-      };
+      return { kind: "denied", violation: refusedViolation(resolution, subject) };
     case "unresolved":
       return { kind: "unknown", reason: resolution.reason };
     default:
@@ -508,6 +626,36 @@ const resolveMembershipGroupIds = async (
   return groupId === null ? [] : [groupId];
 };
 
+/** No relationship id is released: the query path sees committed state only. */
+const NO_RELEASED: ReadonlySet<string> = new Set();
+
+/**
+ * A relationship id whose delete rides in this Action. The union is taken
+ * before any Update is checked, so inside one Action the delete's position
+ * does not matter — the server's simulation is built the same way.
+ */
+const releasedByDeletes = (
+  released: ReadonlySet<string>,
+  updates: readonly Update[],
+): ReadonlySet<string> => {
+  const ids = updates.flatMap((update) =>
+    update.subject_type === "relationship" && update.method === "delete" ? [update.subject_id] : [],
+  );
+  if (ids.length === 0) return released;
+  return new Set([...released, ...ids]);
+};
+
+/** What one Action contributes to the batch. */
+interface ActionViolations {
+  readonly violations: readonly PermissionViolation[];
+  /**
+   * The relationship ids this Action's deletes release. The caller adopts
+   * them only when the Action is accepted, so a refused Action releases
+   * nothing for the Actions after it.
+   */
+  readonly released: ReadonlySet<string>;
+}
+
 /**
  * Aggregate the permission violations for every Action in a batch.
  * Returns `[]` when the actor's groups are unknown — the pass is
@@ -520,8 +668,11 @@ export async function collectPermissionViolations(
   if (ctx.actorGroups.length === 0) return [];
 
   const violations: PermissionViolation[] = [];
+  let released: ReadonlySet<string> = NO_RELEASED;
   for (const action of actions) {
-    violations.push(...(await collectActionViolations(action, ctx)));
+    const result = await collectActionViolations(action, ctx, released);
+    violations.push(...result.violations);
+    if (result.violations.length === 0) released = result.released;
   }
   return violations;
 }
@@ -529,8 +680,10 @@ export async function collectPermissionViolations(
 const collectActionViolations = async (
   action: Action,
   ctx: PermissionContext,
-): Promise<readonly PermissionViolation[]> => {
+  releasedBefore: ReadonlySet<string>,
+): Promise<ActionViolations> => {
   const updates = action.updates;
+  const released = releasedByDeletes(releasedBefore, updates);
   const cached = new Map(ctx.actorGroups.map((g) => [g.id, g.permissions]));
   await mergeLocalMemberships(cached, ctx);
 
@@ -614,11 +767,17 @@ const collectActionViolations = async (
   };
 
   const check = async (update: Update): Promise<PermissionViolation | null> => {
-    const resolution = await resolveRule(update.subject_type, update.subject_id, update.method, {
-      ...storageInputs(ctx.storage, (name) => fieldValue(update, name)),
-      resolveType,
-      groupSetFor,
-    });
+    const resolution = await resolveRule(
+      update.subject_type,
+      update.subject_id,
+      update.method,
+      {
+        ...storageInputs(ctx.storage, (name) => fieldValue(update, name)),
+        resolveType,
+        groupSetFor,
+      },
+      released,
+    );
     const decision = decideRule(
       resolution,
       { subjectType: update.subject_type, subjectId: update.subject_id },
@@ -641,7 +800,7 @@ const collectActionViolations = async (
     const violation = await check(update);
     if (violation !== null) violations.push(violation);
   }
-  return violations;
+  return { violations, released };
 };
 
 /**
@@ -758,12 +917,18 @@ export async function queryEntityPermission(
   const permissionsFor = buildPermissionsFor(cached, NO_BOOTSTRAP);
 
   const inputs = storageInputs(ctx.storage, (name) => row.data?.fields?.[name]?.value);
-  const resolution = await resolveRule(row.type, id, METHOD_BY_VERB[verb], {
-    ...inputs,
-    resolveType: async (entityId) => (await inputs.exists(entityId))?.type ?? null,
-    groupSetFor: async (entityId) =>
-      (await readEntityMemberships(ctx.storage, entityId)).map((m) => m.groupId),
-  });
+  const resolution = await resolveRule(
+    row.type,
+    id,
+    METHOD_BY_VERB[verb],
+    {
+      ...inputs,
+      resolveType: async (entityId) => (await inputs.exists(entityId))?.type ?? null,
+      groupSetFor: async (entityId) =>
+        (await readEntityMemberships(ctx.storage, entityId)).map((m) => m.groupId),
+    },
+    NO_RELEASED,
+  );
   const decision = decideRule(resolution, { subjectType: row.type, subjectId: id }, permissionsFor);
   switch (decision.kind) {
     case "allowed":

@@ -392,4 +392,69 @@ describe("client.can — parity with the write-path pre-check", () => {
     ).resolves.toEqual({ rejected: [] });
     expect(actionRequests(calls)).toHaveLength(1);
   });
+
+  it("agrees with write() on an allowed relationship patch that keeps the row's source", async () => {
+    // can() supplies the row's own source, so the identity check cannot
+    // refuse it; the write restates that same source and passes too.
+    const { client } = await mkClient([["g_src", ["relationship.update"]]]);
+    await client.storage.entities.set(
+      mkEntity("rel_1", "relationship", {
+        source_id: "todo_1",
+        target_id: "list_1",
+        field: "list",
+        type: "todo",
+      }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_src" }),
+    );
+
+    expect(await client.can("rel_1", "update")).toEqual({
+      kind: "allowed",
+      groupIds: ["g_src"],
+    });
+    await expect(
+      client.write([
+        action([
+          update("relationship", "rel_1", "patch", { source_id: "todo_1", target_id: "list_2" }),
+        ]),
+      ]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("agrees with write() on a denied same-source relationship patch", async () => {
+    const { client } = await mkClient([["g_src", []]]);
+    await client.storage.entities.set(
+      mkEntity("rel_1", "relationship", {
+        source_id: "todo_1",
+        target_id: "list_1",
+        field: "list",
+        type: "todo",
+      }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_src" }),
+    );
+
+    const violation = {
+      kind: "missing-permission",
+      subjectType: "relationship",
+      subjectId: "rel_1",
+      required: "relationship.update",
+      groupIds: ["g_src"],
+    };
+    expect(await client.can("rel_1", "update")).toEqual({ kind: "denied", violation });
+
+    // A matching source is not a structural refusal, so the write is
+    // denied for the ordinary missing permission, not a re-point.
+    const error = await client
+      .write([
+        action([
+          update("relationship", "rel_1", "patch", { source_id: "todo_1", target_id: "list_2" }),
+        ]),
+      ])
+      .then(() => null)
+      .catch((err: unknown) => err);
+    expect((error as PermissionError).violations).toEqual([violation]);
+  });
 });
