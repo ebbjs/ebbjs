@@ -21,7 +21,9 @@ defmodule EbbServer.Storage.EntityIndex do
 
   A relationship resolves through its **source**, never its own
   `target_id`: an app may hold a domain link to a `group` entity, and
-  that link must not grant membership.
+  that link must not grant membership. Which source that is depends on
+  the Update: the stored row's for a delete, the wire `source_id` for a
+  put or patch. See `relationship_groups/4`.
 
   `source_groups/2` is the same resolution for a caller that already
   knows an entity id — for example a relationship being created in the
@@ -33,13 +35,16 @@ defmodule EbbServer.Storage.EntityIndex do
   back to globals, so a stale `:persistent_term` cannot reach a later
   caller's resolution path.
 
-  Two auxiliary lookups live here as well: `subject_type/2` resolves an
-  existing entity's type from the entity-type index (used by the
-  authorizer to gate membership mutations, #264), `exists?/2` exposes
-  the same index as an existence signal (used by the authorizer to gate
-  the bootstrap self-grant, #289), and `membership/2` resolves an
+  Auxiliary lookups live here as well: `subject_type/2` resolves an
+  existing entity's type from the entity-type index (the authorizer uses
+  it to gate membership mutations, #264, and every entity write, whose
+  wire `subject_type` must match the committed type, #624), `exists?/2`
+  exposes the same index as an existence signal (used by the authorizer to
+  gate the bootstrap self-grant, #289), `membership/2` resolves an
   `entityGroup` row id to its `{entity_id, group_id}` (the delete wire
-  form drops the entity reference).
+  form drops the entity reference), and `relationship_source/2` resolves
+  a relationship row id to the source it is bound to (the authorizer's
+  row-identity check, #624).
   """
 
   alias EbbServer.Storage.{
@@ -189,8 +194,11 @@ defmodule EbbServer.Storage.EntityIndex do
   @doc """
   Resolves the type of an existing entity id from the entity-type index.
 
-  Returns `nil` when the id is unknown. Callers that gate a write on the
-  resolved type must treat `nil` as a refusal rather than a fallback.
+  Returns `nil` when the index has no entry for the id. That is not proof
+  of a new id: the index is rebuilt from the caches and can lag them, so a
+  caller that gates a write on the resolved type must weigh its other
+  existence signals before treating the id as new, and refuse when the id
+  exists but nothing types it.
   """
   @spec subject_type(subject_id(), keyword()) :: subject_type() | nil
   def subject_type(entity_id, opts) do
@@ -231,35 +239,93 @@ defmodule EbbServer.Storage.EntityIndex do
   end
 
   @doc """
-  Returns the group set for a `relationship` update: the wire
-  `source_id`'s membership set when the Update carries it, otherwise
-  the by-id edge's source (the delete wire form drops the data
-  envelope).
+  Returns the source id a committed `relationship` row is bound to.
+
+  A relationship row's source is its identity: the row fans out to the
+  source's group set, so every scope decision follows the stored row
+  rather than the wire `source_id` (#624). Returns `nil` when the by-id
+  cache has no row — either a new edge or one the request itself deleted.
   """
-  @spec relationship_groups(String.t() | nil, subject_id(), keyword()) :: [String.t()]
-  def relationship_groups(nil, rel_id, opts), do: resolve_groups("relationship", rel_id, opts)
-  def relationship_groups(source_id, _rel_id, opts), do: source_groups(source_id, opts)
+  @spec relationship_source(subject_id(), keyword()) :: subject_id() | nil
+  def relationship_source(rel_id, opts) do
+    table = Keyword.fetch!(opts, :relationships_by_id)
+
+    case cached_row(opts, :relationships_by_id, rel_id, fn ->
+           RelationshipCache.get_relationship(rel_id, table)
+         end) do
+      nil -> nil
+      entry -> entry_source_id(entry)
+    end
+  end
+
+  @doc """
+  Returns the group set for a `relationship` update.
+
+  The row is scoped through the source it is **bound** to, not the source
+  the wire claims:
+
+    - `put` / `patch` follow the wire `source_id` (the authorizer refuses a
+      put or patch whose wire source differs from the stored row's, #624)
+      and fall back to the stored row when the wire drops the source.
+    - Every other method — notably `delete` — follows the stored row's
+      source, so a delete is scoped to the groups the row actually belongs
+      to. The wire `source_id` is used only when no committed row exists: a
+      row created earlier in the request, or one already tombstoned, has
+      nothing left to re-point, and the wire source is the only scope there
+      is (#624).
+
+  A `nil` source resolves the by-id row directly, which is the same answer
+  the fallbacks above produce.
+  """
+  @spec relationship_groups(atom() | String.t(), String.t() | nil, subject_id(), keyword()) :: [
+          String.t()
+        ]
+  def relationship_groups(method, source_id, rel_id, opts) do
+    case scope_source(method, source_id, rel_id, opts) do
+      nil -> resolve_groups("relationship", rel_id, opts)
+      source -> source_groups(source, opts)
+    end
+  end
+
+  # A put or patch is already bound to its stored source by the authorizer's
+  # row-identity check, so its wire source is the identity to resolve. Any
+  # other method has no such check and must not be able to pick its scope.
+  defp scope_source(method, wire_source, rel_id, opts) do
+    stored = relationship_source(rel_id, opts)
+
+    if put_or_patch?(method) do
+      wire_source || stored
+    else
+      stored || wire_source
+    end
+  end
+
+  defp put_or_patch?(method), do: to_string(method) in ["put", "patch"]
 
   @doc """
   Classifies how an Update's fan-out group set is resolved.
 
-  The Writer's `cf_group_actions` index and the `PermissionChecker`
-  group-scope check both consume this decision, so the "wire value wins
-  for a not-yet-cached row" rule lives here once.
+  The Writer's `cf_group_actions` index and `fan_out_groups/2` both
+  consume this decision, so the "wire value wins for a not-yet-cached
+  row" rule lives here once.
 
   Returns `{:wire, group_ids}` when the Update carries the group on the
-  wire, `{:source, entity_id}` when its scope follows a relationship
-  source, and `{:by_id, subject_type}` when the subject has to be
-  resolved from the caches.
+  wire, `{:source, entity_id}` when its scope follows a resolved
+  relationship source, and `{:by_id, subject_type}` when the subject has
+  to be resolved from the caches. A relationship's source is resolved by
+  method here — see `relationship_groups/4` — so fan-out cannot scope a
+  delete more widely than its authorization did (#624).
   """
-  @spec fan_out_preference(map()) ::
+  @spec fan_out_preference(map(), keyword()) ::
           {:wire, [String.t()]} | {:source, subject_id()} | {:by_id, subject_type()}
-  def fan_out_preference(update) do
+  def fan_out_preference(update, opts) do
     case update.subject_type do
       "relationship" ->
-        case Fields.get(update.data, "source_id") do
+        source_id = Fields.get(update.data, "source_id")
+
+        case scope_source(update.method, source_id, update.subject_id, opts) do
           nil -> {:by_id, "relationship"}
-          source_id -> {:source, source_id}
+          source -> {:source, source}
         end
 
       type when type in ["entityGroup", "groupMember"] ->
@@ -276,14 +342,14 @@ defmodule EbbServer.Storage.EntityIndex do
   @doc """
   Returns the group set an Update fans out to, before the Writer commits.
 
-  Resolves `fan_out_preference/1` against the caches unioned with the
+  Resolves `fan_out_preference/2` against the caches unioned with the
   Action's `:intra_action` membership. The brand-new `entityGroup` and
   `groupMember` rows of the Action are not in the by-id caches yet, so
   those Updates prefer the group on the wire.
   """
   @spec fan_out_groups(map(), keyword()) :: [String.t()]
   def fan_out_groups(update, opts) do
-    case fan_out_preference(update) do
+    case fan_out_preference(update, opts) do
       {:wire, group_ids} -> group_ids
       {:source, source_id} -> source_groups(source_id, opts)
       {:by_id, subject_type} -> resolve_groups(subject_type, update.subject_id, opts)

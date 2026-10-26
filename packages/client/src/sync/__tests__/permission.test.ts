@@ -128,6 +128,7 @@ describe("collectPermissionViolations — user entities", () => {
     expect(error).toBeInstanceOf(PermissionError);
     expect((error as PermissionError).violations).toEqual([
       {
+        kind: "missing-permission",
         subjectType: "todo",
         subjectId: "todo_1",
         required: "todo.create",
@@ -189,6 +190,141 @@ describe("collectPermissionViolations — user entities", () => {
     ).resolves.toEqual({ rejected: [] });
     expect(actionRequests(calls)).toHaveLength(1);
   });
+
+  it.each(["put", "patch", "delete"] as const)(
+    "refuses a wire type that contradicts the committed type for a %s",
+    async (method) => {
+      const { client, calls } = await mkClient([["g_1", ["todo.*"]]]);
+      await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
+      await client.storage.entities.set(
+        mkEntity("eg_1", "entityGroup", { entity_id: "invoice_1", group_id: "g_1" }),
+      );
+
+      // The wire claims `todo`, which the actor holds; the entity is
+      // committed as an `invoice`, so the relabel is refused whatever the
+      // permission (#624).
+      const error = await client
+        .write([action([update("todo", "invoice_1", method, { amount: 999_999 })])])
+        .then(() => null)
+        .catch((err: unknown) => err);
+
+      expect(error).toBeInstanceOf(PermissionError);
+      expect((error as PermissionError).violations).toEqual([
+        {
+          kind: "type-mismatch",
+          subjectType: "todo",
+          subjectId: "invoice_1",
+          committedType: "invoice",
+          groupIds: ["g_1"],
+        },
+      ]);
+      expect(client.outbox.size()).toBe(0);
+      expect(actionRequests(calls)).toHaveLength(0);
+    },
+  );
+
+  it("refuses a forged wire type even when the actor holds the committed type's permission", async () => {
+    // The server rejects a wire type that contradicts the committed one
+    // outright, so holding `<committed>.<verb>` is no licence to relabel,
+    // and no missing permission is the reason (#624).
+    const { client } = await mkClient([["g_1", ["todo.*", "invoice.*"]]]);
+    await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "invoice_1", group_id: "g_1" }),
+    );
+
+    const error = await client
+      .write([action([update("todo", "invoice_1", "put", { amount: 999_999 })])])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(PermissionError);
+    expect((error as PermissionError).message).toContain(
+      'todo invoice_1: declared type "todo" but the entity is committed as "invoice"',
+    );
+    expect((error as PermissionError).message).not.toContain("missing");
+    expect(client.outbox.size()).toBe(0);
+  });
+
+  it("passes a write that declares the entity's committed type", async () => {
+    const { client } = await mkClient([["g_1", ["invoice.create"]]]);
+    await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "invoice_1", group_id: "g_1" }),
+    );
+
+    await expect(
+      client.write([action([update("invoice", "invoice_1", "put", { amount: 200 })])]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("uses the wire type for an id the local store does not know", async () => {
+    // A new entity has no committed type, so the wire type stands (#624)
+    // — for the grant that satisfies it and for the one that does not.
+    const allowed = await mkClient([["g_1", ["todo.create"]]]);
+    await allowed.client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+    await expect(
+      allowed.client.write([action([update("todo", "todo_1", "put", { title: "Ship" })])]),
+    ).resolves.toEqual({ rejected: [] });
+
+    const denied = await mkClient([["g_1", ["invoice.create"]]]);
+    await denied.client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+    const error = await denied.client
+      .write([action([update("todo", "todo_1", "put", { title: "Ship" })])])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(PermissionError);
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "missing-permission",
+        subjectType: "todo",
+        subjectId: "todo_1",
+        required: "todo.create",
+        groupIds: ["g_1"],
+      },
+    ]);
+  });
+
+  it("agrees with can() that a forged wire type is not a way in", async () => {
+    const { client } = await mkClient([["g_1", ["todo.*"]]]);
+    await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "invoice_1", group_id: "g_1" }),
+    );
+
+    // can() has no wire type to compare, so it reports the permission the
+    // committed type would need; write() refuses the relabel before it
+    // ever gets that far. Both refuse.
+    expect(await client.can("invoice_1", "create")).toEqual({
+      kind: "denied",
+      violation: {
+        kind: "missing-permission",
+        subjectType: "invoice",
+        subjectId: "invoice_1",
+        required: "invoice.create",
+        groupIds: ["g_1"],
+      },
+    });
+
+    const error = await client
+      .write([action([update("todo", "invoice_1", "put", { amount: 999_999 })])])
+      .then(() => null)
+      .catch((err: unknown) => err);
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "type-mismatch",
+        subjectType: "todo",
+        subjectId: "invoice_1",
+        committedType: "invoice",
+        groupIds: ["g_1"],
+      },
+    ]);
+  });
 });
 
 describe("collectPermissionViolations — relationship edges", () => {
@@ -220,7 +356,9 @@ describe("collectPermissionViolations — relationship edges", () => {
     expect(actionRequests(calls)).toHaveLength(0);
   });
 
-  it("passes when the source's group set holds <type>.update", async () => {
+  it("authorizes a new edge by the wire source over the source's group set", async () => {
+    // No local row means no committed source to contradict: the wire
+    // source names the edge being created.
     const { client } = await mkClient([
       ["g_source", ["todo.update"]],
       ["g_target", ["list.*"]],
@@ -266,6 +404,49 @@ describe("collectPermissionViolations — relationship edges", () => {
     ).resolves.toEqual({ rejected: [] });
   });
 
+  it("passes a put that restates the row's own source", async () => {
+    const { client } = await mkClient([["g_src", ["todo.update"]]]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(
+      mkEntity("rel_1", "relationship", {
+        source_id: "todo_1",
+        target_id: "list_1",
+        field: "list",
+        type: "todo",
+      }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_src" }),
+    );
+
+    await expect(client.write([action([relUpdate("todo_1", "list_1", "todo")])])).resolves.toEqual({
+      rejected: [],
+    });
+  });
+
+  it("passes a patch that restates the row's own source", async () => {
+    const { client } = await mkClient([["g_src", ["relationship.update"]]]);
+    await client.storage.entities.set(
+      mkEntity("rel_1", "relationship", {
+        source_id: "todo_1",
+        target_id: "list_1",
+        field: "list",
+        type: "todo",
+      }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_src" }),
+    );
+
+    await expect(
+      client.write([
+        action([
+          update("relationship", "rel_1", "patch", { source_id: "todo_1", target_id: "list_2" }),
+        ]),
+      ]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
   it("skips a put that does not carry its source id", async () => {
     const { client } = await mkClient([["g_1", []]]);
 
@@ -274,10 +455,11 @@ describe("collectPermissionViolations — relationship edges", () => {
     ).resolves.toEqual({ rejected: [] });
   });
 
-  it("prefers a patch's wire source_id over the local row", async () => {
-    // A patch may re-point the edge; the server authorizes against the
-    // wire source, so the local pass must too.
-    const { client } = await mkClient([
+  it("refuses a patch that re-points the edge at another source", async () => {
+    // A relationship row's source is row identity: the server refuses a
+    // declared source other than the row's own, so no permission can
+    // re-point the edge here either. Moving an edge is delete + put.
+    const { client, calls } = await mkClient([
       ["g_grant", ["relationship.update"]],
       ["g_plain", []],
     ]);
@@ -296,9 +478,278 @@ describe("collectPermissionViolations — relationship edges", () => {
       mkEntity("eg_new", "entityGroup", { entity_id: "todo_new", group_id: "g_grant" }),
     );
 
+    const error = await client
+      .write([action([update("relationship", "rel_1", "patch", { source_id: "todo_new" })])])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(PermissionError);
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "source-mismatch",
+        subjectType: "relationship",
+        subjectId: "rel_1",
+        declaredSourceId: "todo_new",
+        committedSourceId: "todo_old",
+        groupIds: ["g_plain"],
+      },
+    ]);
+    expect(client.outbox.size()).toBe(0);
+    expect(actionRequests(calls)).toHaveLength(0);
+  });
+
+  it("accepts a re-put of a locally tombstoned edge that declares another source", async () => {
+    // The server's by-id row is gone, so it sees a new edge and authorizes
+    // the put by the declared source; a tombstoned local row is not a
+    // committed source either.
+    const { client } = await mkClient([["g_new", ["todo.update"]]]);
+    await client.storage.entities.set(
+      mkEntity(
+        "rel_1",
+        "relationship",
+        { source_id: "todo_old", target_id: "list_1", field: "list", type: "todo" },
+        "9",
+      ),
+    );
+    await client.storage.entities.set(mkEntity("todo_new", "todo", {}));
+    await client.storage.entities.set(
+      mkEntity("eg_new", "entityGroup", { entity_id: "todo_new", group_id: "g_new" }),
+    );
+
     await expect(
-      client.write([action([update("relationship", "rel_1", "patch", { source_id: "todo_new" })])]),
+      client.write([
+        action([
+          update("relationship", "rel_1", "put", {
+            source_id: "todo_new",
+            target_id: "list_2",
+            field: "list",
+            type: "todo",
+          }),
+        ]),
+      ]),
     ).resolves.toEqual({ rejected: [] });
+  });
+
+  // A source binding is released by a delete in the same request, exactly
+  // as the server's request simulation does; the actor holds
+  // `relationship.delete` over the stored source and `todo.update` over
+  // the new one, so delete + put is the move that re-points the edge.
+  const mkMovingEdgeClient = async () => {
+    const { client, calls } = await mkClient([
+      ["g_old", ["relationship.delete"]],
+      ["g_new", ["todo.update"]],
+    ]);
+    await client.storage.entities.set(
+      mkEntity("rel_1", "relationship", {
+        source_id: "todo_old",
+        target_id: "list_1",
+        field: "list",
+        type: "todo",
+      }),
+    );
+    await client.storage.entities.set(mkEntity("todo_old", "todo", {}));
+    await client.storage.entities.set(
+      mkEntity("eg_old", "entityGroup", { entity_id: "todo_old", group_id: "g_old" }),
+    );
+    await client.storage.entities.set(mkEntity("todo_new", "todo", {}));
+    await client.storage.entities.set(
+      mkEntity("eg_new", "entityGroup", { entity_id: "todo_new", group_id: "g_new" }),
+    );
+    return { client, calls };
+  };
+
+  it("accepts a delete and a re-put to another source in one Action", async () => {
+    const { client, calls } = await mkMovingEdgeClient();
+
+    await expect(
+      client.write([
+        action([
+          update("relationship", "rel_1", "delete"),
+          relUpdate("todo_new", "list_2", "todo"),
+        ]),
+      ]),
+    ).resolves.toEqual({ rejected: [] });
+    expect(client.outbox.size("acknowledged")).toBe(1);
+    expect(actionRequests(calls)).toHaveLength(1);
+  });
+
+  it("accepts a delete and a re-put to another source split across Actions", async () => {
+    const { client, calls } = await mkMovingEdgeClient();
+
+    await expect(
+      client.write([
+        action([update("relationship", "rel_1", "delete")]),
+        { ...action([relUpdate("todo_new", "list_2", "todo")]), id: "a_2" },
+      ]),
+    ).resolves.toEqual({ rejected: [] });
+    expect(actionRequests(calls)).toHaveLength(1);
+  });
+
+  it("refuses a put that re-points a committed edge with no delete in the batch", async () => {
+    const { client, calls } = await mkMovingEdgeClient();
+
+    const error = await client
+      .write([action([relUpdate("todo_new", "list_2", "todo")])])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "source-mismatch",
+        subjectType: "relationship",
+        subjectId: "rel_1",
+        declaredSourceId: "todo_new",
+        committedSourceId: "todo_old",
+        groupIds: ["g_old"],
+      },
+    ]);
+    expect(client.outbox.size()).toBe(0);
+    expect(actionRequests(calls)).toHaveLength(0);
+  });
+
+  it("refuses a put whose delete comes in a later Action of the same write()", async () => {
+    // The server advances its simulation only for Actions it has already
+    // accepted, so a delete that follows the put cannot release it.
+    const { client, calls } = await mkMovingEdgeClient();
+
+    const error = await client
+      .write([
+        action([relUpdate("todo_new", "list_2", "todo")]),
+        { ...action([update("relationship", "rel_1", "delete")]), id: "a_2" },
+      ])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "source-mismatch",
+        subjectType: "relationship",
+        subjectId: "rel_1",
+        declaredSourceId: "todo_new",
+        committedSourceId: "todo_old",
+        groupIds: ["g_old"],
+      },
+    ]);
+    expect(actionRequests(calls)).toHaveLength(0);
+  });
+
+  it("does not release a delete carried by an Action that is refused", async () => {
+    // Only an accepted Action advances the request simulation, so a
+    // sibling violation in the same Action must keep its delete from
+    // releasing the binding for the next Action.
+    const { client } = await mkMovingEdgeClient();
+    await client.storage.entities.set(
+      mkEntity("eg_denied", "entityGroup", { entity_id: "todo_1", group_id: "g_old" }),
+    );
+
+    const error = await client
+      .write([
+        action([
+          update("relationship", "rel_1", "delete"),
+          update("todo", "todo_1", "put", { title: "Ship" }),
+        ]),
+        { ...action([relUpdate("todo_new", "list_2", "todo")]), id: "a_2" },
+      ])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "missing-permission",
+        subjectType: "todo",
+        subjectId: "todo_1",
+        required: "todo.create",
+        groupIds: ["g_old"],
+      },
+      {
+        kind: "source-mismatch",
+        subjectType: "relationship",
+        subjectId: "rel_1",
+        declaredSourceId: "todo_new",
+        committedSourceId: "todo_old",
+        groupIds: ["g_old"],
+      },
+    ]);
+  });
+
+  it("ignores a delete's wire source and authorizes against the stored row", async () => {
+    // The server resolves a delete's groups from the stored row and never
+    // looks at a wire `source_id`, so a stale one may not refuse it here.
+    const { client } = await mkClient([
+      ["g_owner", ["relationship.delete"]],
+      ["g_foreign", []],
+    ]);
+    await client.storage.entities.set(
+      mkEntity("rel_1", "relationship", {
+        source_id: "todo_old",
+        target_id: "list_1",
+        field: "list",
+        type: "todo",
+      }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_owner", "entityGroup", { entity_id: "todo_old", group_id: "g_owner" }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_foreign", "entityGroup", { entity_id: "todo_new", group_id: "g_foreign" }),
+    );
+
+    await expect(
+      client.write([
+        action([
+          {
+            ...update("relationship", "rel_1", "delete"),
+            data: { fields: fields({ source_id: "todo_new" }) },
+          },
+        ]),
+      ]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("does not let a delete borrow the wire source's permission", async () => {
+    // `relationship.delete` is held for the source the wire names, not for
+    // the stored row's source: the stored row's set decides.
+    const { client } = await mkClient([
+      ["g_owner", []],
+      ["g_foreign", ["relationship.delete"]],
+    ]);
+    await client.storage.entities.set(
+      mkEntity("rel_1", "relationship", {
+        source_id: "todo_old",
+        target_id: "list_1",
+        field: "list",
+        type: "todo",
+      }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_owner", "entityGroup", { entity_id: "todo_old", group_id: "g_owner" }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_foreign", "entityGroup", { entity_id: "todo_new", group_id: "g_foreign" }),
+    );
+
+    const error = await client
+      .write([
+        action([
+          {
+            ...update("relationship", "rel_1", "delete"),
+            data: { fields: fields({ source_id: "todo_new" }) },
+          },
+        ]),
+      ])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(PermissionError);
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "missing-permission",
+        subjectType: "relationship",
+        subjectId: "rel_1",
+        required: "relationship.delete",
+        groupIds: ["g_owner"],
+      },
+    ]);
   });
 
   it("resolves a delete's source from the local relationship row", async () => {
@@ -615,6 +1066,7 @@ describe("PermissionError", () => {
   it("formats its message from the violations", () => {
     const error = new PermissionError([
       {
+        kind: "missing-permission",
         subjectType: "todo",
         subjectId: "todo_1",
         required: "todo.create",
@@ -624,9 +1076,48 @@ describe("PermissionError", () => {
 
     expect(error.name).toBe("PermissionError");
     expect(error.violations).toHaveLength(1);
-    expect(error.message).toContain("PermissionError: 1 permission violation(s)");
+    expect(error.message).toContain("PermissionError: 1 violation(s)");
     expect(error.message).toContain("todo todo_1");
     expect(error.message).toContain("todo.create");
     expect(error.message).toContain("g_1");
+  });
+
+  it("names both sources for a re-point and no missing permission", () => {
+    const error = new PermissionError([
+      {
+        kind: "source-mismatch",
+        subjectType: "relationship",
+        subjectId: "rel_1",
+        declaredSourceId: "todo_new",
+        committedSourceId: "todo_old",
+        groupIds: ["g_plain"],
+      },
+    ]);
+
+    expect(error.message).toContain(
+      'relationship rel_1: declared source "todo_new" but the row is committed with source "todo_old"',
+    );
+    expect(error.message).toContain("a relationship row cannot be re-pointed at another source");
+    expect(error.message).not.toContain("missing");
+    expect(error.message).not.toContain("relationship.update");
+  });
+
+  it("names both types for a mismatch and no missing permission", () => {
+    const error = new PermissionError([
+      {
+        kind: "type-mismatch",
+        subjectType: "todo",
+        subjectId: "invoice_1",
+        committedType: "invoice",
+        groupIds: ["g_1"],
+      },
+    ]);
+
+    expect(error.message).toContain(
+      'todo invoice_1: declared type "todo" but the entity is committed as "invoice"',
+    );
+    expect(error.message).toContain("an entity's type cannot change");
+    expect(error.message).not.toContain("missing");
+    expect(error.message).not.toContain("todo.create");
   });
 });

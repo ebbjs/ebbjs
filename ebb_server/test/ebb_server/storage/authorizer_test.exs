@@ -102,6 +102,20 @@ defmodule EbbServer.Storage.AuthorizerTest do
     %{id: id, subject_id: id, subject_type: type, method: :put, data: %{"fields" => %{}}}
   end
 
+  defp entity_patch(id, type) do
+    %{
+      id: "#{id}_patch",
+      subject_id: id,
+      subject_type: type,
+      method: :patch,
+      data: %{"fields" => %{}}
+    }
+  end
+
+  defp entity_delete(id, type) do
+    %{id: "#{id}_delete", subject_id: id, subject_type: type, method: :delete, data: nil}
+  end
+
   defp entity_group_put(id, entity_id, group_id) do
     %{
       id: id,
@@ -157,6 +171,36 @@ defmodule EbbServer.Storage.AuthorizerTest do
     }
   end
 
+  defp relationship_patch(id, source_id, target_id) do
+    %{
+      id: "#{id}_patch",
+      subject_id: id,
+      subject_type: "relationship",
+      method: :patch,
+      data: %{
+        "fields" => %{
+          "source_id" => %{"value" => source_id},
+          "target_id" => %{"value" => target_id}
+        }
+      }
+    }
+  end
+
+  defp relationship_delete(id, source_id \\ nil) do
+    data =
+      if source_id do
+        %{"fields" => %{"source_id" => %{"value" => source_id}}}
+      end
+
+    %{
+      id: "#{id}_delete",
+      subject_id: id,
+      subject_type: "relationship",
+      method: :delete,
+      data: data
+    }
+  end
+
   describe "authorize/3 - full authorization pipeline" do
     test "group bootstrap allowed without prior permissions" do
       tables = create_isolated_tables()
@@ -179,6 +223,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       put_group_member(tables, "g_1", ["todo.create", "todo.update"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
 
       action =
         build_action([
@@ -241,6 +286,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       put_group_member(tables, "g_1", ["todo.*"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
 
       action =
         build_action([
@@ -265,6 +311,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       put_membership(tables, "todo_1", "g_1", "eg_1")
       put_membership(tables, "todo_1", "g_2", "eg_2")
+      put_entity_type(tables, "todo_1", "todo")
 
       action =
         build_action([
@@ -710,6 +757,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       put_group_member(tables, "g_1", ["todo.create"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
 
       action = build_action([entity_put("todo_1", "todo")])
 
@@ -747,6 +795,547 @@ defmodule EbbServer.Storage.AuthorizerTest do
         Authorizer.authorize([build_action([delete])], "a_1", ctx),
         "missing_ownership"
       )
+    end
+  end
+
+  # #624: the wire `subject_type` is client input, while the type an id
+  # was committed under is authoritative. Without this check, a
+  # permission on any type in the group authorizes a relabel and a full
+  # overwrite of every other type's entities there.
+  describe "authorize/3 - writes use the committed type" do
+    test "rejects a put, patch and delete that relabel an existing entity" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.*"])
+      put_membership(tables, "invoice_1", "g_1", "eg_1")
+      put_entity_type(tables, "invoice_1", "invoice")
+
+      for update <- [
+            entity_put("invoice_1", "todo"),
+            entity_patch("invoice_1", "todo"),
+            entity_delete("invoice_1", "todo")
+          ] do
+        assert_rejected(
+          Authorizer.authorize([build_action([update])], "a_1", ctx),
+          "not_authorized"
+        )
+      end
+    end
+
+    test "rejects a system wire type naming an existing user entity id" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      # The relationship branch authorizes the wire source only, so the
+      # victim's id as the edge subject would overwrite a user entity.
+      put_group_member(tables, "g_1", ["todo.update"])
+      put_membership(tables, "todo_own", "g_1", "eg_own")
+      put_entity_type(tables, "todo_own", "todo")
+      put_entity_type(tables, "invoice_1", "invoice")
+
+      action = build_action([relationship_put("invoice_1", "todo_own", "col_1", "todo")])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "rejects a user wire type naming an existing system entity id" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.create"])
+      put_membership(tables, "group_1", "g_1", "eg_1")
+      put_entity_type(tables, "group_1", "group")
+
+      action = build_action([entity_put("group_1", "todo")])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "rejects a system wire type naming a committed row of another system type" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.update"])
+      put_membership(tables, "todo_own", "g_1", "eg_own")
+      put_entity_type(tables, "todo_own", "todo")
+      put_entity_type(tables, "eg_1", "entityGroup")
+
+      action = build_action([relationship_put("eg_1", "todo_own", "col_1", "todo")])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "authorizes a genuinely new id under its wire type" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.create"])
+
+      action =
+        build_action([
+          entity_put("todo_new", "todo"),
+          entity_group_put("eg_new", "todo_new", "g_1")
+        ])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "an id the same Action or request created keeps its own type" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.*"])
+
+      same_action =
+        build_action([
+          entity_put("todo_1", "todo"),
+          entity_group_put("eg_1", "todo_1", "g_1"),
+          entity_patch("todo_1", "todo")
+        ])
+
+      assert_accepted(Authorizer.authorize([same_action], "a_1", ctx))
+
+      # The index has not seen `todo_2` yet, so the later Action's type
+      # resolves from the request simulation.
+      earlier_action =
+        build_action([
+          entity_put("todo_2", "todo"),
+          entity_group_put("eg_2", "todo_2", "g_1")
+        ])
+
+      later_action = build_action([entity_group_put("eg_3", "todo_2", "g_1")])
+
+      assert_accepted(Authorizer.authorize([earlier_action, later_action], "a_1", ctx))
+    end
+
+    test "rejects a later Action that relabels an id an earlier Action created" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.*", "invoice.*"])
+
+      created =
+        build_action([
+          entity_put("x_1", "todo"),
+          entity_group_put("eg_x_1", "x_1", "g_1")
+        ])
+
+      relabel =
+        build_action([
+          entity_put("x_1", "invoice"),
+          entity_group_put("eg_x_1_again", "x_1", "g_1")
+        ])
+
+      assert {[accepted], [rejection]} = Authorizer.authorize([created, relabel], "a_1", ctx)
+      assert accepted == created
+      assert rejection.action == relabel
+      assert rejection.reason == "not_authorized"
+    end
+
+    test "a later Action still uses the type an earlier Action created" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["invoice.create", "todo.*"])
+
+      created =
+        build_action([
+          entity_put("x_1", "todo"),
+          entity_group_put("eg_x_1", "x_1", "g_1")
+        ])
+
+      # Filing the entity into another group resolves its type from the
+      # request simulation; a brand-new id still takes its wire type.
+      filed = build_action([entity_group_put("eg_2", "x_1", "g_1")])
+
+      fresh =
+        build_action([
+          entity_put("invoice_1", "invoice"),
+          entity_group_put("eg_3", "invoice_1", "g_1")
+        ])
+
+      assert {accepted, []} = Authorizer.authorize([created, filed, fresh], "a_1", ctx)
+      assert accepted == [created, filed, fresh]
+    end
+
+    test "refuses a write whose type is unresolvable but whose entity owns a group" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.*"])
+      put_membership(tables, "todo_own", "g_1", "eg_own")
+      put_entity_type(tables, "todo_own", "todo")
+
+      # The entity-type index lags the membership cache it is rebuilt from,
+      # leaving nothing that can type `invoice_1`, so no wire type can be
+      # checked against it. The relationship branch would otherwise let the
+      # edge overwrite a user entity here.
+      put_membership(tables, "invoice_1", "g_1", "eg_invoice")
+
+      for update <- [
+            entity_put("invoice_1", "todo"),
+            relationship_put("invoice_1", "todo_own", "col_1", "todo")
+          ] do
+        assert_rejected(
+          Authorizer.authorize([build_action([update])], "a_1", ctx),
+          "not_authorized"
+        )
+      end
+    end
+
+    test "a lagging type index still authorizes a system row its by-id cache types" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["groupMember.update"])
+      put_group_member_by_id(tables, "gm_2", "a_2", "g_1", ["*"])
+
+      action = build_action([group_member_patch("gm_2", "g_1", ["*"])])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "rejects an entityGroup put naming a committed user entity as its row" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.create"])
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
+
+      # The row is otherwise writable — it owns a group and is typed like any
+      # committed entity — so only the type identity stands in the way.
+      put_membership(tables, "todo_own", "g_2", "eg_own")
+      put_entity_type(tables, "todo_own", "todo")
+
+      action = build_action([entity_group_put("todo_1", "todo_own", "g_1")])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    # A deleted id keeps its entity-type entry but loses its rows, so only
+    # its own type may be committed again; a relabel stays refused (#624).
+    test "a tombstoned id may only be re-put under its own type" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["invoice.*", "todo.*"])
+      put_entity_type(tables, "invoice_1", "invoice")
+
+      assert_rejected(
+        Authorizer.authorize([build_action([entity_put("invoice_1", "todo")])], "a_1", ctx),
+        "not_authorized"
+      )
+
+      # Its own type is not a relabel: the write is refused later, by the
+      # missing ownership, not by the type identity.
+      assert_rejected(
+        Authorizer.authorize([build_action([entity_put("invoice_1", "invoice")])], "a_1", ctx),
+        "missing_ownership"
+      )
+    end
+
+    test "a rejected relabel leaves the committed type untouched" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.*", "invoice.update"])
+      put_membership(tables, "invoice_1", "g_1", "eg_1")
+      put_entity_type(tables, "invoice_1", "invoice")
+
+      relabel = build_action([entity_patch("invoice_1", "todo")])
+      same_type = build_action([entity_patch("invoice_1", "invoice")])
+
+      assert {[accepted], [rejection]} =
+               Authorizer.authorize([relabel, same_type], "a_1", ctx)
+
+      assert rejection.reason == "not_authorized"
+      assert accepted == same_type
+      assert [{_, "invoice"}] = :ets.lookup(tables.entity_types, "invoice_1")
+    end
+  end
+
+  # A relationship row fans out to its source's group set, so the source
+  # is row identity, like an `entityGroup` row's entity (#623). The wire
+  # `source_id` may not move an existing row to another source.
+  describe "authorize/3 - relationship rows are bound to their source (#624)" do
+    test "refuses a put that re-points a victim's edge at the attacker's entity" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      # The attacker holds every permission the wire source needs in their
+      # own group, so only the stored row's source stands in the way.
+      put_group_member(tables, "g_attacker", ["todo.*", "relationship.*"])
+      put_membership(tables, "todo_attacker", "g_attacker", "eg_attacker")
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_entity_type(tables, "todo_victim", "todo")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action = build_action([relationship_put("rel_victim", "todo_attacker", "col_x", "todo")])
+
+      rejection = assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+      assert rejection.details == "a relationship row cannot be re-pointed at another source"
+    end
+
+    test "refuses a patch that changes the source of an existing row" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_attacker", ["todo.*", "relationship.*"])
+      put_membership(tables, "todo_attacker", "g_attacker", "eg_attacker")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action = build_action([relationship_patch("rel_victim", "todo_attacker", "col_x")])
+
+      rejection = assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+      assert rejection.details == "a relationship row cannot be re-pointed at another source"
+    end
+
+    test "accepts a put that keeps the row's source and changes its target" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_victim", ["todo.*"])
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_entity_type(tables, "todo_victim", "todo")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action = build_action([relationship_put("rel_victim", "todo_victim", "col_y", "todo")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "accepts a patch that keeps the row's source" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_victim", ["relationship.update"])
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action = build_action([relationship_patch("rel_victim", "todo_victim", "col_y")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "accepts a brand-new relationship row" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_victim", ["todo.*"])
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_entity_type(tables, "todo_victim", "todo")
+
+      action = build_action([relationship_put("rel_new", "todo_victim", "col_x", "todo")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    # A patch that omits the source cannot be applied — the mutation
+    # planner drops it — so it is not a re-point and the stored row's
+    # groups authorize it as before.
+    test "a patch that omits the source is not a mismatch" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_attacker", ["relationship.update"])
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      sourceless_patch = %{
+        id: "rel_victim_patch",
+        subject_id: "rel_victim",
+        subject_type: "relationship",
+        method: :patch,
+        data: %{"fields" => %{"target_id" => %{"value" => "col_y"}}}
+      }
+
+      rejection =
+        assert_rejected(
+          Authorizer.authorize([build_action([sourceless_patch])], "a_1", ctx),
+          "not_authorized"
+        )
+
+      assert rejection.details == "missing required permission"
+
+      put_group_member(tables, "g_victim", ["relationship.update"], "gm_victim")
+
+      assert_accepted(Authorizer.authorize([build_action([sourceless_patch])], "a_1", ctx))
+    end
+
+    # The row check runs before the bootstrap exemption, so a bootstrap
+    # cannot carry a re-point any more than it can carry an `entityGroup`
+    # re-point (#623).
+    test "a bootstrap cannot re-point an existing edge" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action =
+        build_action([
+          group_put("g_1"),
+          group_member_put("gm_1", "a_1", "g_1", ["todo.*"]),
+          entity_put("todo_new", "todo"),
+          entity_group_put("eg_1", "todo_new", "g_1"),
+          relationship_put("rel_victim", "todo_new", "col_x", "todo")
+        ])
+
+      rejection = assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+      assert rejection.details == "a relationship row cannot be re-pointed at another source"
+    end
+
+    # A delete's group scope comes from the stored row, never from the wire
+    # `source_id`, so holding `relationship.*` in another group does not
+    # reach an edge that belongs to a source in somebody else's group.
+    test "refuses a delete that carries a foreign wire source" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_attacker", ["todo.*", "relationship.*"])
+      put_membership(tables, "todo_attacker", "g_attacker", "eg_attacker")
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action = build_action([relationship_delete("rel_victim", "todo_attacker")])
+
+      rejection = assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+      assert rejection.details == "missing required permission"
+    end
+
+    test "accepts the source owner's delete that carries no wire source" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_victim", ["relationship.delete"])
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      assert_accepted(
+        Authorizer.authorize([build_action([relationship_delete("rel_victim")])], "a_1", ctx)
+      )
+    end
+
+    # A delete of a row with no committed row has nothing to bind to: the
+    # row was either created earlier in the request or already tombstoned,
+    # and in both cases the wire source is the only scope there is. That is
+    # also why an absent by-id row is not treated as a refusal (#624).
+    test "resolves a delete from the wire source when no committed row exists" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_victim", ["relationship.*"])
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+
+      action = build_action([relationship_delete("rel_new", "todo_victim")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    # Moving an edge is a delete plus a put (#624's prescribed remedy). The
+    # request's own delete leaves the row with no committed source, so the
+    # put is a create in the new source's groups. The delete is still
+    # authorized against the stored row's groups, and the put against the
+    # new source's: two different group sets in one Action.
+    test "accepts a delete plus a put that moves an edge to another source" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_victim", ["relationship.*"], "gm_victim")
+      put_group_member(tables, "g_new", ["todo.*"], "gm_new")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_entity_type(tables, "todo_victim", "todo")
+      put_membership(tables, "todo_new", "g_new", "eg_new")
+      put_entity_type(tables, "todo_new", "todo")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action =
+        build_action([
+          relationship_delete("rel_victim"),
+          relationship_put("rel_victim", "todo_new", "col_x", "todo")
+        ])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "accepts a delete and a move-put in two Actions of one request" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_victim", ["relationship.*"], "gm_victim")
+      put_group_member(tables, "g_new", ["todo.*"], "gm_new")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_entity_type(tables, "todo_victim", "todo")
+      put_membership(tables, "todo_new", "g_new", "eg_new")
+      put_entity_type(tables, "todo_new", "todo")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      delete_action = %{build_action([relationship_delete("rel_victim")]) | id: "act_delete"}
+
+      put_action = %{
+        build_action([relationship_put("rel_victim", "todo_new", "col_x", "todo")])
+        | id: "act_put"
+      }
+
+      assert {[^delete_action, ^put_action], []} =
+               Authorizer.authorize([delete_action, put_action], "a_1", ctx)
+    end
+
+    # The prescribed remedy is not a way around the delete's own
+    # authorization: naming the row as deleted only releases the source
+    # binding, and the delete still has to pass against the stored row's
+    # groups. The put is accepted here, so the refusal comes from the
+    # delete — not from the re-point check.
+    test "refuses a put-then-delete re-point the actor may not delete" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_attacker", ["todo.*", "relationship.*"], "gm_attacker")
+      put_membership(tables, "todo_attacker", "g_attacker", "eg_attacker")
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action =
+        build_action([
+          relationship_put("rel_victim", "todo_attacker", "col_x", "todo"),
+          relationship_delete("rel_victim")
+        ])
+
+      rejection = assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+      assert rejection.details == "missing required permission"
+    end
+
+    # Only an **accepted** delete releases the binding: a refused delete
+    # leaves the row bound to its stored source, so the put in a later
+    # Action of the same request is still a re-point.
+    test "a refused delete in an earlier Action does not release the binding" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_attacker", ["todo.*", "relationship.*"], "gm_attacker")
+      put_membership(tables, "todo_attacker", "g_attacker", "eg_attacker")
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      delete_action = %{build_action([relationship_delete("rel_victim")]) | id: "act_delete"}
+
+      put_action = %{
+        build_action([relationship_put("rel_victim", "todo_attacker", "col_x", "todo")])
+        | id: "act_put"
+      }
+
+      assert {[], [delete_rejection, put_rejection]} =
+               Authorizer.authorize([delete_action, put_action], "a_1", ctx)
+
+      assert delete_rejection.details == "missing required permission"
+      assert put_rejection.details == "a relationship row cannot be re-pointed at another source"
     end
   end
 
@@ -1699,6 +2288,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
       put_group_member(tables, "g_1", ["todo.create"])
       put_membership(tables, "todo_ok", "g_1", "eg_ok")
       put_membership(tables, "todo_bad", "g_2", "eg_bad")
+      put_entity_type(tables, "todo_ok", "todo")
+      put_entity_type(tables, "todo_bad", "todo")
 
       bad = build_action([entity_put("todo_bad", "todo")]) |> Map.put(:id, "act_bad")
       ok = build_action([entity_put("todo_ok", "todo")]) |> Map.put(:id, "act_ok")

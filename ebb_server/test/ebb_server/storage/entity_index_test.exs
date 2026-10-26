@@ -280,7 +280,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
 
   describe "fan_out_groups/2" do
     test "prefers the wire group for a not-yet-cached membership row" do
-      _t = tables()
+      t = tables()
 
       update = %{
         subject_id: "eg_1",
@@ -289,8 +289,8 @@ defmodule EbbServer.Storage.EntityIndexTest do
         data: %{"fields" => %{"group_id" => %{"value" => "g_wire"}}}
       }
 
-      assert EntityIndex.fan_out_preference(update) == {:wire, ["g_wire"]}
-      assert EntityIndex.fan_out_groups(update, []) == ["g_wire"]
+      assert EntityIndex.fan_out_preference(update, opts(t)) == {:wire, ["g_wire"]}
+      assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_wire"]
     end
 
     test "resolves a membership row from the cache when the wire drops the group" do
@@ -299,7 +299,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
 
       update = %{subject_id: "eg_1", subject_type: "entityGroup", method: :delete, data: nil}
 
-      assert EntityIndex.fan_out_preference(update) == {:by_id, "entityGroup"}
+      assert EntityIndex.fan_out_preference(update, opts(t)) == {:by_id, "entityGroup"}
       assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_1"]
     end
 
@@ -314,19 +314,53 @@ defmodule EbbServer.Storage.EntityIndexTest do
         data: %{"fields" => %{"source_id" => %{"value" => "todo_1"}}}
       }
 
-      assert EntityIndex.fan_out_preference(update) == {:source, "todo_1"}
+      assert EntityIndex.fan_out_preference(update, opts(t)) == {:source, "todo_1"}
       assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_1"]
     end
 
-    test "falls back to the by-id edge's source on a relationship delete" do
+    test "resolves a relationship delete through its stored row's source" do
       t = tables()
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
       :ok = put_rel(t, link_rel("rel_1", "todo_1", "col_1"))
 
       update = %{subject_id: "rel_1", subject_type: "relationship", method: :delete, data: nil}
 
-      assert EntityIndex.fan_out_preference(update) == {:by_id, "relationship"}
+      assert EntityIndex.fan_out_preference(update, opts(t)) == {:source, "todo_1"}
       assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_1"]
+    end
+
+    # A relationship row's source is its identity, so a delete is scoped to
+    # the groups the stored row belongs to. The wire source cannot widen
+    # that scope (#624).
+    test "scopes a relationship delete by the stored row, not a foreign wire source" do
+      t = tables()
+      :ok = put_membership(t, "todo_victim", "g_victim", "eg_victim")
+      :ok = put_membership(t, "todo_attacker", "g_attacker", "eg_attacker")
+      :ok = put_rel(t, link_rel("rel_victim", "todo_victim", "col_1"))
+
+      update = %{
+        subject_id: "rel_victim",
+        subject_type: "relationship",
+        method: :delete,
+        data: %{"fields" => %{"source_id" => %{"value" => "todo_attacker"}}}
+      }
+
+      assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_victim"]
+    end
+
+    test "falls back to the stored row for a patch that omits the source" do
+      t = tables()
+      :ok = put_membership(t, "todo_victim", "g_victim", "eg_victim")
+      :ok = put_rel(t, link_rel("rel_victim", "todo_victim", "col_1"))
+
+      update = %{
+        subject_id: "rel_victim",
+        subject_type: "relationship",
+        method: :patch,
+        data: %{"fields" => %{"target_id" => %{"value" => "col_2"}}}
+      }
+
+      assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_victim"]
     end
 
     test "unions a user entity's cached membership with intra-action membership" do
@@ -335,7 +369,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
 
       update = %{subject_id: "todo_1", subject_type: "todo", method: :put, data: %{}}
 
-      assert EntityIndex.fan_out_preference(update) == {:by_id, "todo"}
+      assert EntityIndex.fan_out_preference(update, opts(t)) == {:by_id, "todo"}
 
       assert EntityIndex.fan_out_groups(update, opts(t) ++ [intra_action: %{"todo_1" => ["g_2"]}])
              |> Enum.sort() == ["g_1", "g_2"]
@@ -397,13 +431,13 @@ defmodule EbbServer.Storage.EntityIndexTest do
     end
   end
 
-  describe "relationship_groups/3" do
-    test "prefers the wire source_id when the Update carries it" do
+  describe "relationship_groups/4" do
+    test "prefers the wire source_id for a put on a not-yet-cached row" do
       t = tables()
 
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
-      assert EntityIndex.relationship_groups("todo_1", "rel_new", opts(t)) == ["g_1"]
+      assert EntityIndex.relationship_groups(:put, "todo_1", "rel_new", opts(t)) == ["g_1"]
     end
 
     test "falls back to the by-id edge's source on a delete (no wire source)" do
@@ -412,7 +446,27 @@ defmodule EbbServer.Storage.EntityIndexTest do
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
       :ok = put_rel(t, link_rel("rel_1", "todo_1", "col_1"))
 
-      assert EntityIndex.relationship_groups(nil, "rel_1", opts(t)) == ["g_1"]
+      assert EntityIndex.relationship_groups(:delete, nil, "rel_1", opts(t)) == ["g_1"]
+    end
+
+    test "resolves a delete from the stored row, whatever the wire source says" do
+      t = tables()
+
+      :ok = put_membership(t, "todo_victim", "g_victim", "eg_victim")
+      :ok = put_membership(t, "todo_attacker", "g_attacker", "eg_attacker")
+      :ok = put_rel(t, link_rel("rel_victim", "todo_victim", "col_1"))
+
+      assert EntityIndex.relationship_groups(:delete, "todo_attacker", "rel_victim", opts(t)) == [
+               "g_victim"
+             ]
+    end
+
+    test "uses the wire source for a delete when no committed row exists" do
+      t = tables()
+
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+
+      assert EntityIndex.relationship_groups(:delete, "todo_1", "rel_new", opts(t)) == ["g_1"]
     end
   end
 end

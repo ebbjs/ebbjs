@@ -11,7 +11,9 @@ defmodule EbbServer.Storage.PermissionChecker do
   1. **ActionValidator** — shape, actor, HLC bounds (logical time must be
      in `[now - 24h, now + 120s]`).
   2. **Authorizer** — for each Update, does the actor have the right
-     `<type>.<verb>` (or `<type>.*`) on the entity's group?
+     `<type>.<verb>` (or `<type>.*`) on the entity's group, where
+     `<type>` is the type the id was committed under rather than the
+     wire `subject_type` (#624)?
 
   Delivery scope is no longer a validation concern: the Writer persists
   each Update's own fan-out scope and the router delivers per Update

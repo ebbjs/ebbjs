@@ -2201,7 +2201,7 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp resolve_update_groups(update, resolve_opts, memo) do
-    case EntityIndex.fan_out_preference(update) do
+    case EntityIndex.fan_out_preference(update, resolve_opts) do
       {:wire, group_ids} ->
         {group_ids, memo}
 

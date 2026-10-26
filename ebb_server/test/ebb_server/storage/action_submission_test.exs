@@ -90,6 +90,8 @@ defmodule EbbServer.Storage.ActionSubmissionTest do
       {entity_id, %{id: "eg_1", entity_id: entity_id, group_id: group_id}}
     )
 
+    :ets.insert(cache.entity_types, {entity_id, "todo"})
+
     :ets.insert(
       cache.group_members,
       {actor_id, %{id: "gm_1", group_id: group_id, permissions: ["todo.*"]}}

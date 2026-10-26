@@ -801,6 +801,343 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     end
   end
 
+  # #624: a write is authorized under the type the entity was committed
+  # with, never the `subject_type` the client sends. Otherwise any
+  # `<type>.create` in a group becomes a full overwrite and relabel of
+  # every other type's entities there.
+  describe "committed-type authorization (#624)" do
+    test "an outsider cannot relabel or overwrite an entity through its wire type" do
+      bootstrap_group("victim", "g_1", ["invoice.*", "todo.*", "groupMember.create"])
+
+      hlc = generate_hlc()
+      invoice_id = "invoice_#{Nanoid.generate()}"
+
+      assert write_entity_in_group("victim", invoice_id, "invoice", "g_1", %{
+               "amount" => %{"type" => "lww", "value" => 100, "hlc" => hlc}
+             }).status == 200
+
+      member = add_group_member("victim", "g_1", "actor_2", ["todo.*"])
+      assert member.status == 200
+      assert Jason.decode!(member.resp_body) == %{"rejected" => []}
+
+      attack = %{
+        "id" => "act_attack_#{Nanoid.generate()}",
+        "actor_id" => "actor_2",
+        "hlc" => hlc,
+        "updates" => [
+          %{
+            "id" => "upd_attack_#{Nanoid.generate()}",
+            "subject_id" => invoice_id,
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{
+                "amount" => %{"type" => "lww", "value" => 999_999, "hlc" => hlc}
+              }
+            }
+          }
+        ]
+      }
+
+      assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(attack, "actor_2")
+
+      invoice = Jason.decode!(get_entity(invoice_id, "victim").resp_body)
+      assert invoice["type"] == "invoice"
+      assert invoice["data"]["fields"]["amount"]["value"] == 100
+
+      # Positive control: the same actor's same-type write in the same
+      # group still goes through. A new id has no committed type, so its
+      # wire type stands.
+      todo_id = "todo_own_#{Nanoid.generate()}"
+      legit_hlc = generate_hlc()
+
+      legit = %{
+        "id" => "act_legit_#{Nanoid.generate()}",
+        "actor_id" => "actor_2",
+        "hlc" => legit_hlc,
+        "updates" => [
+          todo_put(todo_id, legit_hlc),
+          entity_group_put("eg_#{Nanoid.generate()}", todo_id, "g_1", legit_hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = submit(legit, "actor_2")
+      assert Jason.decode!(get_entity(todo_id, "actor_2").resp_body)["type"] == "todo"
+    end
+
+    test "a refused patch or delete leaves the committed row untouched" do
+      bootstrap_group("victim", "g_1", ["invoice.*", "groupMember.create"])
+
+      member =
+        add_group_member("victim", "g_1", "actor_2", ["todo.create", "todo.update", "todo.delete"])
+
+      assert member.status == 200
+      assert Jason.decode!(member.resp_body) == %{"rejected" => []}
+
+      hlc = generate_hlc()
+      invoice_id = "invoice_#{Nanoid.generate()}"
+
+      assert write_entity_in_group("victim", invoice_id, "invoice", "g_1", %{
+               "amount" => %{"type" => "lww", "value" => 100, "hlc" => hlc}
+             }).status == 200
+
+      fields = %{"amount" => %{"type" => "lww", "value" => 999_999, "hlc" => hlc}}
+
+      for {method, data} <- [{"patch", %{"fields" => fields}}, {"delete", nil}] do
+        update = %{
+          "id" => "upd_#{method}_#{Nanoid.generate()}",
+          "subject_id" => invoice_id,
+          "subject_type" => "todo",
+          "method" => method,
+          "data" => data
+        }
+
+        attack = %{
+          "id" => "act_#{method}_#{Nanoid.generate()}",
+          "actor_id" => "actor_2",
+          "hlc" => hlc,
+          "updates" => [update]
+        }
+
+        assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(attack, "actor_2")
+
+        invoice = Jason.decode!(get_entity(invoice_id, "victim").resp_body)
+        assert invoice["type"] == "invoice"
+        assert invoice["data"]["fields"]["amount"]["value"] == 100
+      end
+    end
+
+    test "a later Action cannot relabel an id an earlier Action of the same request created" do
+      bootstrap_group("actor_2", "g_1", ["groupMember.create", "invoice.*", "todo.*"])
+
+      hlc = generate_hlc()
+      todo_id = "todo_#{Nanoid.generate()}"
+
+      create = %{
+        "id" => "act_create_#{Nanoid.generate()}",
+        "actor_id" => "actor_2",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(todo_id, hlc),
+          entity_group_put("eg_#{Nanoid.generate()}", todo_id, "g_1", hlc)
+        ]
+      }
+
+      # Nothing has committed `todo_id` yet when this Action is authorized, so
+      # only the request simulation knows it is a `todo`.
+      relabel = %{
+        "id" => "act_relabel_#{Nanoid.generate()}",
+        "actor_id" => "actor_2",
+        "hlc" => hlc,
+        "updates" => [
+          %{
+            "id" => "upd_relabel_#{Nanoid.generate()}",
+            "subject_id" => todo_id,
+            "subject_type" => "invoice",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{"amount" => %{"type" => "lww", "value" => 999_999, "hlc" => hlc}}
+            }
+          },
+          entity_group_put("eg_#{Nanoid.generate()}", todo_id, "g_1", hlc)
+        ]
+      }
+
+      conn = post_actions(msgpack_encode!(%{"actions" => [create, relabel]}), "actor_2")
+      assert conn.status == 200
+
+      assert %{"rejected" => [%{"id" => rejected_id, "reason" => "not_authorized"}]} =
+               Jason.decode!(conn.resp_body)
+
+      assert rejected_id == relabel["id"]
+
+      todo = Jason.decode!(get_entity(todo_id, "actor_2").resp_body)
+      assert todo["type"] == "todo"
+      refute Map.has_key?(todo["data"]["fields"], "amount")
+    end
+  end
+
+  # A relationship row fans out to its source's group set, so the wire
+  # `source_id` may not move an existing row to another source.
+  describe "relationship row identity (#624)" do
+    test "an outsider cannot re-point a victim's edge" do
+      bootstrap_group("victim", "g_victim", ["todo.*", "relationship.*"])
+      bootstrap_group("attacker", "g_attacker", ["todo.*", "relationship.*"])
+
+      hlc = generate_hlc()
+      victim_id = "todo_victim_#{Nanoid.generate()}"
+      victim_edge = "rel_victim_#{Nanoid.generate()}"
+
+      victim_create = %{
+        "id" => "act_victim_#{Nanoid.generate()}",
+        "actor_id" => "victim",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(victim_id, hlc),
+          entity_group_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
+          relationship_put(victim_edge, victim_id, "col_x", hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = submit(victim_create, "victim")
+      assert victim_edge in action_ids("g_victim", "victim")
+      refute victim_edge in action_ids("g_attacker", "attacker")
+
+      attacker_hlc = generate_hlc()
+      attacker_id = "todo_attacker_#{Nanoid.generate()}"
+      attacker_edge = "rel_attacker_#{Nanoid.generate()}"
+
+      # Positive control: the attacker can create their own edge.
+      attacker_create = %{
+        "id" => "act_attacker_#{Nanoid.generate()}",
+        "actor_id" => "attacker",
+        "hlc" => attacker_hlc,
+        "updates" => [
+          todo_put(attacker_id, attacker_hlc),
+          entity_group_put("eg_#{Nanoid.generate()}", attacker_id, "g_attacker", attacker_hlc),
+          relationship_put(attacker_edge, attacker_id, "col_x", attacker_hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = submit(attacker_create, "attacker")
+      assert attacker_edge in action_ids("g_attacker", "attacker")
+
+      repoint = %{
+        "id" => "act_repoint_#{Nanoid.generate()}",
+        "actor_id" => "attacker",
+        "hlc" => hlc,
+        "updates" => [relationship_put(victim_edge, attacker_id, "col_x", hlc)]
+      }
+
+      assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(repoint, "attacker")
+
+      # Nothing moved: the edge still fans out to the victim's group only,
+      # and the victim can still write it.
+      assert victim_edge in action_ids("g_victim", "victim")
+      refute victim_edge in action_ids("g_attacker", "attacker")
+
+      victim_write = %{
+        "id" => "act_victim_write_#{Nanoid.generate()}",
+        "actor_id" => "victim",
+        "hlc" => hlc,
+        "updates" => [relationship_patch(victim_edge, victim_id, "col_y", hlc)]
+      }
+
+      assert %{"rejected" => []} = submit(victim_write, "victim")
+    end
+
+    # The delete wire form may carry a `source_id`, but the row's source is
+    # its identity: the scope comes from the stored row, so an attacker
+    # cannot delete another group's edge by naming their own source.
+    test "an outsider cannot delete a victim's edge by naming their own source" do
+      bootstrap_group("victim", "g_victim", ["todo.*", "relationship.*"])
+      bootstrap_group("attacker", "g_attacker", ["todo.*", "relationship.*"])
+
+      hlc = generate_hlc()
+      victim_id = "todo_victim_#{Nanoid.generate()}"
+      victim_edge = "rel_victim_#{Nanoid.generate()}"
+
+      victim_create = %{
+        "id" => "act_victim_#{Nanoid.generate()}",
+        "actor_id" => "victim",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(victim_id, hlc),
+          entity_group_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
+          relationship_put(victim_edge, victim_id, "col_x", hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = submit(victim_create, "victim")
+      assert victim_edge in action_ids("g_victim", "victim")
+
+      attacker_hlc = generate_hlc()
+      attacker_id = "todo_attacker_#{Nanoid.generate()}"
+
+      attacker_create = %{
+        "id" => "act_attacker_#{Nanoid.generate()}",
+        "actor_id" => "attacker",
+        "hlc" => attacker_hlc,
+        "updates" => [
+          todo_put(attacker_id, attacker_hlc),
+          entity_group_put("eg_#{Nanoid.generate()}", attacker_id, "g_attacker", attacker_hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = submit(attacker_create, "attacker")
+
+      attack = %{
+        "id" => "act_attack_#{Nanoid.generate()}",
+        "actor_id" => "attacker",
+        "hlc" => hlc,
+        "updates" => [relationship_delete(victim_edge, attacker_id, hlc)]
+      }
+
+      assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(attack, "attacker")
+
+      # The edge survives and still belongs to the victim's group only.
+      assert victim_edge in action_ids("g_victim", "victim")
+      refute victim_edge in action_ids("g_attacker", "attacker")
+
+      victim_delete = %{
+        "id" => "act_victim_delete_#{Nanoid.generate()}",
+        "actor_id" => "victim",
+        "hlc" => hlc,
+        "updates" => [relationship_delete(victim_edge, nil, hlc)]
+      }
+
+      assert %{"rejected" => []} = submit(victim_delete, "victim")
+    end
+
+    # Moving an edge is a delete plus a put (#624). The delete is delivered
+    # to the groups the stored row belonged to, the put to the new source's,
+    # so neither group receives an Update it should not see.
+    test "delete plus put moves an edge to another source, one scope per group" do
+      bootstrap_group("owner", "g_victim", ["todo.*", "relationship.*"])
+      bootstrap_group("owner", "g_new", ["todo.*", "relationship.*"])
+
+      hlc = generate_hlc()
+      victim_id = "todo_victim_#{Nanoid.generate()}"
+      new_id = "todo_new_#{Nanoid.generate()}"
+      edge = "rel_victim_#{Nanoid.generate()}"
+
+      seed = %{
+        "id" => "act_seed_#{Nanoid.generate()}",
+        "actor_id" => "owner",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(victim_id, hlc),
+          entity_group_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
+          todo_put(new_id, hlc),
+          entity_group_put("eg_#{Nanoid.generate()}", new_id, "g_new", hlc),
+          relationship_put(edge, victim_id, "col_x", hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = submit(seed, "owner")
+
+      move_id = "act_move_#{Nanoid.generate()}"
+
+      move = %{
+        "id" => move_id,
+        "actor_id" => "owner",
+        "hlc" => hlc,
+        "updates" => [
+          relationship_delete(edge, nil, hlc),
+          relationship_put(edge, new_id, "col_x", hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = submit(move, "owner")
+
+      assert [%{"subject_id" => ^edge, "method" => "delete"}] =
+               action_updates("g_victim", "owner", move_id)
+
+      assert [%{"subject_id" => ^edge, "method" => "put"}] =
+               action_updates("g_new", "owner", move_id)
+    end
+  end
+
   defp submit(action, actor_id) do
     conn = post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
     assert conn.status == 200
@@ -840,6 +1177,58 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     }
   end
 
+  defp relationship_put(rel_id, source_id, target_id, hlc) do
+    %{
+      "id" => "upd_rel_#{Nanoid.generate()}",
+      "subject_id" => rel_id,
+      "subject_type" => "relationship",
+      "method" => "put",
+      "data" => %{
+        "fields" => %{
+          "source_id" => %{"type" => "lww", "value" => source_id, "hlc" => hlc},
+          "target_id" => %{"type" => "lww", "value" => target_id, "hlc" => hlc},
+          "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
+          "field" => %{"type" => "lww", "value" => "column", "hlc" => hlc}
+        }
+      }
+    }
+  end
+
+  defp relationship_patch(rel_id, source_id, target_id, hlc) do
+    %{
+      "id" => "upd_rel_patch_#{Nanoid.generate()}",
+      "subject_id" => rel_id,
+      "subject_type" => "relationship",
+      "method" => "patch",
+      "data" => %{
+        "fields" => %{
+          "source_id" => %{"type" => "lww", "value" => source_id, "hlc" => hlc},
+          "target_id" => %{"type" => "lww", "value" => target_id, "hlc" => hlc}
+        }
+      }
+    }
+  end
+
+  defp relationship_delete(rel_id, source_id, hlc) do
+    %{
+      "id" => "upd_rel_delete_#{Nanoid.generate()}",
+      "subject_id" => rel_id,
+      "subject_type" => "relationship",
+      "method" => "delete",
+      "data" => relationship_delete_data(source_id, hlc)
+    }
+  end
+
+  # The delete wire form normally drops the data envelope; a caller may
+  # still send fields, which is exactly the attack MF1 covers.
+  defp relationship_delete_data(nil, _hlc), do: nil
+
+  defp relationship_delete_data(source_id, hlc) do
+    %{
+      "fields" => %{"source_id" => %{"type" => "lww", "value" => source_id, "hlc" => hlc}}
+    }
+  end
+
   defp action_id_list(group_id, actor_id) do
     conn =
       conn(:get, "/sync/groups/#{group_id}")
@@ -847,6 +1236,20 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       |> Router.call([])
 
     conn.resp_body |> Jason.decode!() |> Enum.map(& &1["id"])
+  end
+
+  # The Updates a group's stream carries for one Action: catch-up scopes
+  # each Action to the Updates whose fan-out includes the group (#473).
+  defp action_updates(group_id, actor_id, action_id) do
+    conn =
+      conn(:get, "/sync/groups/#{group_id}")
+      |> put_req_header("x-ebb-actor-id", actor_id)
+      |> Router.call([])
+
+    case Enum.find(Jason.decode!(conn.resp_body), &(&1["id"] == action_id)) do
+      nil -> []
+      action -> action["updates"]
+    end
   end
 
   defp action_ids(group_id, actor_id) do

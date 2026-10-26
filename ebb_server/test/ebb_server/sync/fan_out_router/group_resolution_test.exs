@@ -185,6 +185,27 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
       assert GroupResolution.resolve_group_ids(action, opts(t)) == []
     end
 
+    # A delete is scoped by the row's stored source, so a wire `source_id`
+    # cannot widen its fan-out to a group the row never belonged to (#624).
+    test "a delete is scoped by the stored row's source, not a wire source_id", %{tables: t} do
+      :ok = put_membership(t, "todo_victim", "g_victim", "eg_victim")
+      :ok = put_membership(t, "todo_attacker", "g_attacker", "eg_attacker")
+      :ok = put_relationship(t, "rel_1", "todo_victim", "col_1")
+
+      action = %{
+        "updates" => [
+          %{
+            "subject_type" => "relationship",
+            "subject_id" => "rel_1",
+            "method" => "delete",
+            "data" => %{"fields" => %{"source_id" => %{"value" => "todo_attacker"}}}
+          }
+        ]
+      }
+
+      assert GroupResolution.resolve_group_ids(action, opts(t)) == ["g_victim"]
+    end
+
     test "routes a groupMember update to the member's group", %{tables: t} do
       :ok =
         GroupCache.put_group_member(
