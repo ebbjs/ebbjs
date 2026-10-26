@@ -562,11 +562,15 @@ defmodule EbbServer.Storage.Authorizer do
 
   # Resolve every `entityGroup` delete once; the delete authorization and
   # the last-membership delta both read the resolved pair from `authz`.
+  # Keyed by the membership row id, not the update id: two deletes with a
+  # duplicate update id name different rows, and collapsing them would
+  # authorize one against the other's entity and hide one removal from the
+  # last-membership guard (#623).
   defp resolve_deleted_memberships(updates, opts) do
     updates
     |> Enum.filter(&(&1.subject_type == "entityGroup" and &1.method == :delete))
     |> Map.new(fn update ->
-      {update.id, EntityIndex.membership(update.subject_id, opts)}
+      {update.subject_id, EntityIndex.membership(update.subject_id, opts)}
     end)
   end
 
@@ -592,9 +596,49 @@ defmodule EbbServer.Storage.Authorizer do
   # update is exempt only when the entity is created by that same Action
   # (#289).
   defp authorize_entity_group_update(%{method: :put} = update, actor_id, authz) do
-    entity_id = Fields.get(update.data, "entity_id")
-    target_group_ids = wire_group_ids(update)
+    with {:ok, entity_id, group_id} <- membership_identity(update) do
+      authorize_entity_group_put(entity_id, group_id, actor_id, authz)
+    end
+  end
 
+  # Removing membership is gated by the entity's `<type>.update` in any
+  # group of its current set (union semantics), not by `entityGroup.delete`
+  # in the removed group — the delete wire form drops the entity reference,
+  # so the row is resolved from the membership index.
+  defp authorize_entity_group_update(%{method: :delete} = update, actor_id, authz) do
+    case Map.get(authz.deleted_memberships, update.subject_id) do
+      nil ->
+        {:error, "not_authorized", "cannot resolve the entity for this membership"}
+
+      {entity_id, _group_id} ->
+        authorize_membership_delete(entity_id, actor_id, authz)
+    end
+  end
+
+  # #623: a patch is authorized against the group named on the wire and
+  # writes a membership row when the row id is unknown, so it can file any
+  # entity into the caller's group. Refusing the method is the interim fix
+  # until the patch path is bound to the row it targets.
+  defp authorize_entity_group_update(update, _actor_id, _authz) do
+    {:error, "not_authorized",
+     "entityGroup #{update.method} is not supported: delete and re-put the membership instead"}
+  end
+
+  # A list or map here would be stored verbatim by the mutation planner and
+  # corrupt the membership indices; a membership names one entity and one
+  # group.
+  defp membership_identity(update) do
+    entity_id = Fields.get(update.data, "entity_id")
+    group_id = Fields.get(update.data, "group_id")
+
+    if is_binary(entity_id) and entity_id != "" and is_binary(group_id) and group_id != "" do
+      {:ok, entity_id, group_id}
+    else
+      {:error, "not_authorized", "entityGroup put needs a string entity_id and group_id"}
+    end
+  end
+
+  defp authorize_entity_group_put(entity_id, group_id, actor_id, authz) do
     case entity_type(entity_id, authz) do
       nil ->
         {:error, "not_authorized", "cannot resolve the type of the entity being added to a group"}
@@ -602,14 +646,14 @@ defmodule EbbServer.Storage.Authorizer do
       type ->
         with :ok <-
                check_group_permission(
-                 target_group_ids,
+                 [group_id],
                  actor_id,
                  type,
                  "create",
                  authz,
                  &cached_permissions/3
                ) do
-          check_existing_ownership(entity_id, target_group_ids, actor_id, type, authz)
+          check_existing_ownership(entity_id, [group_id], actor_id, type, authz)
         end
     end
   end
@@ -668,29 +712,6 @@ defmodule EbbServer.Storage.Authorizer do
           )
         end
     end
-  end
-
-  # Removing membership is gated by the entity's `<type>.update` in any
-  # group of its current set (union semantics), not by `entityGroup.delete`
-  # in the removed group — the delete wire form drops the entity reference,
-  # so the row is resolved from the membership index.
-  defp authorize_entity_group_update(%{method: :delete} = update, actor_id, authz) do
-    case Map.get(authz.deleted_memberships, update.id) do
-      nil ->
-        {:error, "not_authorized", "cannot resolve the entity for this membership"}
-
-      {entity_id, _group_id} ->
-        authorize_membership_delete(entity_id, actor_id, authz)
-    end
-  end
-
-  # #623: a patch is authorized against the group named on the wire and
-  # writes a membership row when the row id is unknown, so it can file any
-  # entity into the caller's group. Refusing the method is the interim fix
-  # until the patch path is bound to the row it targets.
-  defp authorize_entity_group_update(update, _actor_id, _authz) do
-    {:error, "not_authorized",
-     "entityGroup #{update.method} is not supported: delete and re-put the membership instead"}
   end
 
   defp authorize_membership_delete(entity_id, actor_id, authz) do

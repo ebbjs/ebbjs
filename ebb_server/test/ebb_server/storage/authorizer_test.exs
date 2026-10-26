@@ -1238,7 +1238,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
     # The type index retains tombstones, so an id it knows but the by-id
     # cache no longer places is not a fresh row: re-filing it would let a
     # deleted membership id be reused as a bootstrap.
-    test "a row id known only to the type index is refused, not re-filed", %{ctx: ctx} do
+    test "a row id known only to the type index is refused, not re-filed" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
@@ -1334,7 +1334,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert rejection.details =~ "patch"
     end
 
-    test "a bootstrap entityGroup put cannot re-point an existing membership row", %{ctx: ctx} do
+    test "a bootstrap entityGroup put cannot re-point an existing membership row" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
@@ -1347,6 +1347,47 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_put("todo_new", "todo"),
           entity_group_put("eg_victim", "todo_new", "g_new")
         ])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    # Two deletes can share an update id. Resolving deletes by that id
+    # collapses them, authorizing one against the other's entity and hiding
+    # the removal from the last-membership guard (#623).
+    test "duplicate update ids do not borrow another delete's authorization" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_atk", ["todo.update"])
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_attacker", "g_atk", "eg_attacker")
+      put_entity_group_by_id(tables, "eg_attacker", "todo_attacker", "g_atk")
+      put_entity_type(tables, "todo_victim", "todo")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_entity_group_by_id(tables, "eg_victim", "todo_victim", "g_victim")
+
+      duplicate = %{
+        id: "dup_update",
+        subject_type: "entityGroup",
+        method: :delete,
+        data: nil
+      }
+
+      action =
+        build_action([
+          Map.put(duplicate, :subject_id, "eg_victim"),
+          Map.put(duplicate, :subject_id, "eg_attacker")
+        ])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "a put cannot carry a non-string group id", %{tables: tables, ctx: ctx} do
+      put_group_member(tables, "g_atk", ["todo.create"])
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_attacker", "g_atk", "eg_attacker")
+
+      action = build_action([entity_group_put("eg_new", "todo_attacker", ["g_atk"])])
 
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
@@ -1374,7 +1415,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
-    test "a put cannot claim an entity the index knows but no group owns", %{ctx: ctx} do
+    test "a put cannot claim an entity the index knows but no group owns" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
