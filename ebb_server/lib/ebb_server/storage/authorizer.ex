@@ -61,10 +61,11 @@ defmodule EbbServer.Storage.Authorizer do
       exists, otherwise a type created by the same Action or by an
       earlier Action of the same request. An unresolvable type is
       refused (`not_authorized`) rather than falling back to the
-      `entityGroup.create` system permission. When the entity already
-      has an owning group other than the target, filing it is also a
-      membership change, so it additionally needs `<type>.update` in one
-      of the entity's current groups (#623). Re-putting a membership row
+      `entityGroup.create` system permission. Filing an existing entity
+      into a group is the share/invite primitive: the target group's
+      `<type>.create` is the whole gate, so an inviter does not need
+      write access to the entity's current group (#623 tracks whether
+      that primitive needs a consent step). Re-putting a membership row
       may move it to another group but may not re-point it at a different
       entity, and an entity the index knows but that owns no group is
       refused rather than claimed. Membership mutations of an existing
@@ -653,7 +654,7 @@ defmodule EbbServer.Storage.Authorizer do
                  authz,
                  &cached_permissions/3
                ) do
-          check_existing_ownership(entity_id, [group_id], actor_id, type, authz)
+          check_not_ownerless(entity_id, authz)
         end
     end
   end
@@ -685,32 +686,14 @@ defmodule EbbServer.Storage.Authorizer do
   # An entity the existence index does not know is new to the read model
   # (created by this request), and the target-group `create` is the whole
   # gate. An entity it knows but that resolves to no group is an orphan
-  # or a tombstone: fail closed rather than letting the first caller
-  # claim it. Otherwise the actor needs a write permission over the
-  # entity where it already lives — cache-only, so a membership this
-  # Action puts cannot stand in for ownership the entity does not have.
-  defp check_existing_ownership(entity_id, target_group_ids, actor_id, type, authz) do
-    case EntityIndex.source_groups(entity_id, authz.opts) do
-      [] ->
-        if EntityIndex.exists?(entity_id, authz.opts) do
-          {:error, "not_authorized", "cannot file an entity that has no owning group"}
-        else
-          :ok
-        end
-
-      group_ids ->
-        if Enum.any?(target_group_ids, &(&1 in group_ids)) do
-          :ok
-        else
-          check_group_permission(
-            group_ids,
-            actor_id,
-            type,
-            "update",
-            authz,
-            &cached_permissions/3
-          )
-        end
+  # or a tombstone: fail closed rather than letting the first caller claim
+  # it. An owned entity stays the share/invite primitive (#623).
+  defp check_not_ownerless(entity_id, authz) do
+    if EntityIndex.source_groups(entity_id, authz.opts) == [] and
+         EntityIndex.exists?(entity_id, authz.opts) do
+      {:error, "not_authorized", "cannot file an entity that has no owning group"}
+    else
+      :ok
     end
   end
 

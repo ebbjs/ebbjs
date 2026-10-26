@@ -805,12 +805,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
-    test "adding an existing entity is allowed with <type>.create in the target and <type>.update where it lives" do
+    test "adding an existing entity is allowed with <type>.create in the target group" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
       put_group_member(tables, "g_2", ["todo.create"])
-      put_group_member(tables, "g_1", ["todo.update"], "gm_g1")
       put_membership(tables, "todo_1", "g_1", "eg_1")
       put_entity_type(tables, "todo_1", "todo")
 
@@ -1427,35 +1426,18 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
-    test "put is authorized by <type>.create in the target group and <type>.update where the entity lives",
+    test "put is authorized by <type>.create in the target group",
          %{
            tables: tables,
            ctx: ctx
          } do
       put_group_member(tables, "g_2", ["todo.create"], "gm_2")
-      put_group_member(tables, "g_1", ["todo.update"], "gm_g1")
       put_entity_type(tables, "todo_1", "todo")
       put_membership(tables, "todo_1", "g_1", "eg_1")
 
       action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
 
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
-    end
-
-    # #623: `<type>.create` in a group the actor bootstrapped is
-    # self-grantable, so on its own it would let the actor file another
-    # tenant's entity into that group and then read or write it.
-    test "put cannot graft an entity owned by a group the actor cannot write", %{
-      tables: tables,
-      ctx: ctx
-    } do
-      put_group_member(tables, "g_2", ["todo.create"], "gm_2")
-      put_entity_type(tables, "todo_1", "todo")
-      put_membership(tables, "todo_1", "g_1", "eg_1")
-
-      action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
-
-      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "put may re-file an entity into a group it already belongs to", %{

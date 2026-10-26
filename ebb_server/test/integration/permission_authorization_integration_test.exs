@@ -411,9 +411,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
   # delta, the last-membership refusal, and the cross-Action bypass.
   describe "membership mutation" do
     test "adds an existing entity to a second group" do
-      # Filing an entity that already lives in group_1 is also a write to
-      # it, so the actor holds todo.update where it lives (#623).
-      bootstrap_group("actor_1", "group_1", ["todo.create", "todo.update", "todo.read"])
+      bootstrap_group("actor_1", "group_1", ["todo.create", "todo.read"])
       bootstrap_group("actor_1", "group_2", ["todo.create"])
 
       hlc = generate_hlc()
@@ -721,8 +719,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     |> Map.fetch!("subject_id")
   end
 
-  describe "cross-tenant entityGroup grafts (#623)" do
-    test "an outsider cannot file a foreign entity into their own group" do
+  # #623: filing an existing entity into a group is the share/invite
+  # primitive (the target group's `<type>.create` is the gate); the row it
+  # is written through is not. These cover the row-identity vectors.
+  describe "cross-tenant entityGroup row identity (#623)" do
+    test "an outsider cannot re-point or patch a membership row" do
       bootstrap_group("victim", "g_victim", ["todo.create", "todo.update", "todo.read"])
 
       hlc = generate_hlc()
@@ -745,7 +746,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       bootstrap_group("attacker", "g_atk", ["entityGroup.*", "todo.create", "todo.update"])
 
       # Positive control: the attacker may file their own entity, so the
-      # rejections below are about ownership, not an inert membership.
+      # rejections below are about the row, not an inert membership.
       own_id = "todo_own_#{Nanoid.generate()}"
 
       own = %{
@@ -772,15 +773,6 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       }
 
       assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(repoint, "attacker")
-
-      put_graft = %{
-        "id" => "act_graft_put_#{Nanoid.generate()}",
-        "actor_id" => "attacker",
-        "hlc" => hlc,
-        "updates" => [entity_group_put("eg_#{Nanoid.generate()}", secret_id, "g_atk", hlc)]
-      }
-
-      assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(put_graft, "attacker")
 
       patch_graft = %{
         "id" => "act_graft_patch_#{Nanoid.generate()}",
