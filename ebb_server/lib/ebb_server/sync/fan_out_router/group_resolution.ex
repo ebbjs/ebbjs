@@ -37,8 +37,11 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolution do
   end
 
   # A relationship belongs to its source's groups, never its own target.
+  # The source follows the stored row for a delete, so a wire `source_id`
+  # cannot widen a delete's scope (#624).
   defp resolve_update_group_ids(%{"subject_type" => "relationship"} = update, opts) do
     EntityIndex.relationship_groups(
+      update["method"],
       Fields.get(update["data"], "source_id"),
       update["subject_id"],
       opts

@@ -171,6 +171,36 @@ defmodule EbbServer.Storage.AuthorizerTest do
     }
   end
 
+  defp relationship_patch(id, source_id, target_id) do
+    %{
+      id: "#{id}_patch",
+      subject_id: id,
+      subject_type: "relationship",
+      method: :patch,
+      data: %{
+        "fields" => %{
+          "source_id" => %{"value" => source_id},
+          "target_id" => %{"value" => target_id}
+        }
+      }
+    }
+  end
+
+  defp relationship_delete(id, source_id \\ nil) do
+    data =
+      if source_id do
+        %{"fields" => %{"source_id" => %{"value" => source_id}}}
+      end
+
+    %{
+      id: "#{id}_delete",
+      subject_id: id,
+      subject_type: "relationship",
+      method: :delete,
+      data: data
+    }
+  end
+
   describe "authorize/3 - full authorization pipeline" do
     test "group bootstrap allowed without prior permissions" do
       tables = create_isolated_tables()
@@ -1023,6 +1053,289 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert rejection.reason == "not_authorized"
       assert accepted == same_type
       assert [{_, "invoice"}] = :ets.lookup(tables.entity_types, "invoice_1")
+    end
+  end
+
+  # A relationship row fans out to its source's group set, so the source
+  # is row identity, like an `entityGroup` row's entity (#623). The wire
+  # `source_id` may not move an existing row to another source.
+  describe "authorize/3 - relationship rows are bound to their source (#624)" do
+    test "refuses a put that re-points a victim's edge at the attacker's entity" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      # The attacker holds every permission the wire source needs in their
+      # own group, so only the stored row's source stands in the way.
+      put_group_member(tables, "g_attacker", ["todo.*", "relationship.*"])
+      put_membership(tables, "todo_attacker", "g_attacker", "eg_attacker")
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_entity_type(tables, "todo_victim", "todo")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action = build_action([relationship_put("rel_victim", "todo_attacker", "col_x", "todo")])
+
+      rejection = assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+      assert rejection.details == "a relationship row cannot be re-pointed at another source"
+    end
+
+    test "refuses a patch that changes the source of an existing row" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_attacker", ["todo.*", "relationship.*"])
+      put_membership(tables, "todo_attacker", "g_attacker", "eg_attacker")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action = build_action([relationship_patch("rel_victim", "todo_attacker", "col_x")])
+
+      rejection = assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+      assert rejection.details == "a relationship row cannot be re-pointed at another source"
+    end
+
+    test "accepts a put that keeps the row's source and changes its target" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_victim", ["todo.*"])
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_entity_type(tables, "todo_victim", "todo")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action = build_action([relationship_put("rel_victim", "todo_victim", "col_y", "todo")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "accepts a patch that keeps the row's source" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_victim", ["relationship.update"])
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action = build_action([relationship_patch("rel_victim", "todo_victim", "col_y")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "accepts a brand-new relationship row" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_victim", ["todo.*"])
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_entity_type(tables, "todo_victim", "todo")
+
+      action = build_action([relationship_put("rel_new", "todo_victim", "col_x", "todo")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    # A patch that omits the source cannot be applied — the mutation
+    # planner drops it — so it is not a re-point and the stored row's
+    # groups authorize it as before.
+    test "a patch that omits the source is not a mismatch" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_attacker", ["relationship.update"])
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      sourceless_patch = %{
+        id: "rel_victim_patch",
+        subject_id: "rel_victim",
+        subject_type: "relationship",
+        method: :patch,
+        data: %{"fields" => %{"target_id" => %{"value" => "col_y"}}}
+      }
+
+      rejection =
+        assert_rejected(
+          Authorizer.authorize([build_action([sourceless_patch])], "a_1", ctx),
+          "not_authorized"
+        )
+
+      assert rejection.details == "missing required permission"
+
+      put_group_member(tables, "g_victim", ["relationship.update"], "gm_victim")
+
+      assert_accepted(Authorizer.authorize([build_action([sourceless_patch])], "a_1", ctx))
+    end
+
+    # The row check runs before the bootstrap exemption, so a bootstrap
+    # cannot carry a re-point any more than it can carry an `entityGroup`
+    # re-point (#623).
+    test "a bootstrap cannot re-point an existing edge" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action =
+        build_action([
+          group_put("g_1"),
+          group_member_put("gm_1", "a_1", "g_1", ["todo.*"]),
+          entity_put("todo_new", "todo"),
+          entity_group_put("eg_1", "todo_new", "g_1"),
+          relationship_put("rel_victim", "todo_new", "col_x", "todo")
+        ])
+
+      rejection = assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+      assert rejection.details == "a relationship row cannot be re-pointed at another source"
+    end
+
+    # A delete's group scope comes from the stored row, never from the wire
+    # `source_id`, so holding `relationship.*` in another group does not
+    # reach an edge that belongs to a source in somebody else's group.
+    test "refuses a delete that carries a foreign wire source" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_attacker", ["todo.*", "relationship.*"])
+      put_membership(tables, "todo_attacker", "g_attacker", "eg_attacker")
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action = build_action([relationship_delete("rel_victim", "todo_attacker")])
+
+      rejection = assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+      assert rejection.details == "missing required permission"
+    end
+
+    test "accepts the source owner's delete that carries no wire source" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_victim", ["relationship.delete"])
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      assert_accepted(
+        Authorizer.authorize([build_action([relationship_delete("rel_victim")])], "a_1", ctx)
+      )
+    end
+
+    # A delete of a row with no committed row has nothing to bind to: the
+    # row was either created earlier in the request or already tombstoned,
+    # and in both cases the wire source is the only scope there is. That is
+    # also why an absent by-id row is not treated as a refusal (#624).
+    test "resolves a delete from the wire source when no committed row exists" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_victim", ["relationship.*"])
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+
+      action = build_action([relationship_delete("rel_new", "todo_victim")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    # Moving an edge is a delete plus a put (#624's prescribed remedy). The
+    # request's own delete leaves the row with no committed source, so the
+    # put is a create in the new source's groups. The delete is still
+    # authorized against the stored row's groups, and the put against the
+    # new source's: two different group sets in one Action.
+    test "accepts a delete plus a put that moves an edge to another source" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_victim", ["relationship.*"], "gm_victim")
+      put_group_member(tables, "g_new", ["todo.*"], "gm_new")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_entity_type(tables, "todo_victim", "todo")
+      put_membership(tables, "todo_new", "g_new", "eg_new")
+      put_entity_type(tables, "todo_new", "todo")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action =
+        build_action([
+          relationship_delete("rel_victim"),
+          relationship_put("rel_victim", "todo_new", "col_x", "todo")
+        ])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "accepts a delete and a move-put in two Actions of one request" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_victim", ["relationship.*"], "gm_victim")
+      put_group_member(tables, "g_new", ["todo.*"], "gm_new")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_entity_type(tables, "todo_victim", "todo")
+      put_membership(tables, "todo_new", "g_new", "eg_new")
+      put_entity_type(tables, "todo_new", "todo")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      delete_action = %{build_action([relationship_delete("rel_victim")]) | id: "act_delete"}
+
+      put_action = %{
+        build_action([relationship_put("rel_victim", "todo_new", "col_x", "todo")])
+        | id: "act_put"
+      }
+
+      assert {[^delete_action, ^put_action], []} =
+               Authorizer.authorize([delete_action, put_action], "a_1", ctx)
+    end
+
+    # The prescribed remedy is not a way around the delete's own
+    # authorization: naming the row as deleted only releases the source
+    # binding, and the delete still has to pass against the stored row's
+    # groups. The put is accepted here, so the refusal comes from the
+    # delete — not from the re-point check.
+    test "refuses a put-then-delete re-point the actor may not delete" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_attacker", ["todo.*", "relationship.*"], "gm_attacker")
+      put_membership(tables, "todo_attacker", "g_attacker", "eg_attacker")
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      action =
+        build_action([
+          relationship_put("rel_victim", "todo_attacker", "col_x", "todo"),
+          relationship_delete("rel_victim")
+        ])
+
+      rejection = assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+      assert rejection.details == "missing required permission"
+    end
+
+    # Only an **accepted** delete releases the binding: a refused delete
+    # leaves the row bound to its stored source, so the put in a later
+    # Action of the same request is still a re-point.
+    test "a refused delete in an earlier Action does not release the binding" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_attacker", ["todo.*", "relationship.*"], "gm_attacker")
+      put_membership(tables, "todo_attacker", "g_attacker", "eg_attacker")
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_relationship_by_id(tables, "rel_victim", "todo_victim")
+
+      delete_action = %{build_action([relationship_delete("rel_victim")]) | id: "act_delete"}
+
+      put_action = %{
+        build_action([relationship_put("rel_victim", "todo_attacker", "col_x", "todo")])
+        | id: "act_put"
+      }
+
+      assert {[], [delete_rejection, put_rejection]} =
+               Authorizer.authorize([delete_action, put_action], "a_1", ctx)
+
+      assert delete_rejection.details == "missing required permission"
+      assert put_rejection.details == "a relationship row cannot be re-pointed at another source"
     end
   end
 
