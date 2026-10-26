@@ -623,7 +623,8 @@ defmodule EbbServer.Storage.SQLite do
 
   Returns `{:ok, [entity_maps]}`.
   """
-  @spec query_entities(map(), GenServer.server()) :: {:ok, [map()]}
+  @spec query_entities(map(), GenServer.server()) ::
+          {:ok, [map()]} | {:error, :invalid_limit | :invalid_offset}
   def query_entities(query, server \\ __MODULE__) do
     GenServer.call(server, {:query_entities, query})
   end
