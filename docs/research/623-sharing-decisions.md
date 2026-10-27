@@ -238,11 +238,11 @@ Files that change with the implementation: `CONTEXT.md`, the
 ```text
 entityGroup put(entity E, group G):
   E is new to the index            → <type>.create in G
+  the put names E's live row for G  → <type>.create in G          (no-op, nothing added)
   otherwise                        → <type>.create in G
                                      AND <type>.update in one of E's current groups
                                          [B: OR a live grant naming the caller for E]
-                                     AND (a second row for a live (E, G) is refused,
-                                          unless the put names E's live row for G)
+                                     AND (a second row for a live (E, G) is refused)
 patch                                 → refused, structurally, on both sides
 delete                                → unchanged: <type>.update over E's current groups
 ```
@@ -253,13 +253,23 @@ row identity pinned, ownerless refused, per-row deletes keyed by the stored row,
 string ids, no bootstrap grant for entities that already exist.
 
 The row-identity term is what D6 adds: minting a second row for a live pair is
-never allowed, whatever permission the caller holds, while a re-put naming the
-entity's own live row for that group is the idempotent case and clears the same
-two permission gates as any other put — only `E is new to the index` skips the
-source side, because no legitimate re-putter lacks `<type>.update` where the
-entity already lives. The checks run most-conclusive-first — target `create`,
-then the source-side `update`, then row identity — so a stranger learns nothing
-about an entity's memberships from the refusal.
+never allowed, whatever permission the caller holds.
+
+**The re-put line was wrong in the first draft, and implementation found it.** It
+read "a re-put names the live row → still clears both permission gates", on the
+theory that no legitimate re-putter lacks `<type>.update` where the entity
+lives. That is false for the retry path: `#285` makes a re-submitted Action a
+silent no-op, and an actor that created an entity with `create` authority and no
+`update` re-submits exactly that Action — put plus membership put — so the
+resubmit came back `not_authorized`. Post-action authority is not
+pre-action authority, and at-least-once retry cannot depend on it.
+
+So a put that names the pair's live row is a no-op for both gates: it adds
+nothing to the entity's group set and changes no field (row identity pins
+`entity_id` and `group_id`), so it can grant nothing. The checks run
+most-conclusive-first — target `create`, then row identity, then the source-side
+`update` — so a stranger learns nothing about an entity's memberships from the
+refusal.
 
 ## Consequence: the invite becomes two writes by two actors
 
@@ -285,11 +295,13 @@ Leaving already has the right shape — `leaveWorkspace` removes the profile
 membership with the _member's_ client, which is exactly the owner-side
 authorization A requires — so leave is unchanged.
 
-The demo's `SEED_PERMISSIONS` should also shrink to what a member needs
-(`issue.*`, `workspace.*`, `groupMember.*`, `relationship.*`): `profile.*`,
-`entityGroup.*` and `group.*` in the shared group are what make the graft
-reachable today. The owner-side rule is the framework fix; least privilege is
-the app-level one, and both belong in the slice.
+The demo's `SEED_PERMISSIONS` also shrinks to what a member needs
+(`issue.*`, `workspace.*`, `groupMember.*`, `relationship.*`, `profile.create`):
+`profile.update`, `entityGroup.*` and `group.*` in the shared group are what make
+the graft reachable today. `profile.create` stays — it is the _target_ gate for
+the invitee's own share, which is safe once the source side is checked. The
+owner-side rule is the framework fix; least privilege is the app-level one, and
+both belong in the slice.
 
 ## What this does not decide
 
