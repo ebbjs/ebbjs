@@ -167,7 +167,11 @@ jobs:
         run: mix deps.get
         working-directory: ebb_server
       - name: Test
-        run: mix test
+        # --cover costs about a second on this suite and gates the printed
+        # total, which counts production modules only (see test_coverage in
+        # ebb_server/mix.exs). Below the threshold the task exits 3, not 1;
+        # GitHub fails the step on any non-zero status.
+        run: mix test --cover
         working-directory: ebb_server
 
   # ─────────────────────────────────────────────────────────

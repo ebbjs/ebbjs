@@ -45,9 +45,11 @@ pre-push:
       # Always exits 0; see scripts/check-branch-name.sh.
       run: bash scripts/check-branch-name.sh
     elixir-test:
-      # Run on push (not commit) because the Elixir suite is slow.
+      # Run on push (not commit) because the Elixir suite is slow. --cover
+      # matches the CI Test job; below the threshold it exits 3.
       root: ebb_server
       glob:
         - "ebb_server/lib/**"
         - "ebb_server/test/**"
-      run: mix test
+        - "ebb_server/mix.exs"
+      run: mix test --cover

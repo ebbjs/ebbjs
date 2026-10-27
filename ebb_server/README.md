@@ -38,7 +38,15 @@ mix credo --strict
 
 # Run tests
 mix test
+
+# Run tests with coverage (CI gates the printed total)
+mix test --cover
 ```
+
+Coverage counts the server's own modules minus a short documented ignore
+list, and is gated at 89% — see
+[docs/tooling/ebb-server-coverage.md](../docs/tooling/ebb-server-coverage.md)
+for what is ignored and why.
 
 ## OpenAPI Spec
 

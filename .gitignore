@@ -10,6 +10,9 @@ tsconfig.tsbuildinfo
 erl_crash.dump
 ebb_server/data/
 
+# Coverage report output (mix test --cover)
+ebb_server/cover/
+
 # Benchmark raw output (see ebb_server/bench/RESULTS.md)
 ebb_server/bench/results/*.md
 
