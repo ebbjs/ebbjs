@@ -41,6 +41,23 @@ const wireSourceId = (update: Update): string | undefined => {
 const sortedUnique = (groups: readonly string[]): readonly string[] => [...new Set(groups)].sort();
 
 /**
+ * The `entityGroup` row id for an `(entity, group)` pair.
+ *
+ * One row per pair (#623): two devices that share the same entity into the
+ * same group before syncing must converge on one row, or an unshare
+ * deletes the row one device can see and silently leaves the entity shared.
+ * The id is derived rather than random so a re-share is idempotent.
+ *
+ * The encoding is length-prefixed, not `eg_<entity>_<group>`: ids are
+ * opaque client-chosen strings, so the readable form maps
+ * `("a_b", "c")` and `("a", "b_c")` to the same row. The row id was never
+ * a capability — deletes are authorized over the entity's groups and row
+ * identity is pinned — so a predictable id changes no authorization.
+ */
+export const entityGroupId = (entityId: string, groupId: string): string =>
+  `eg_${entityId.length}_${entityId}${groupId}`;
+
+/**
  * Resolve one Update's fan-out group set:
  *
  * - `group` → its own id (a group is its own group);

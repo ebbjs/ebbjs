@@ -788,7 +788,68 @@ describe("collectPermissionViolations — entityGroup membership", () => {
     expect(actionRequests(calls)).toHaveLength(0);
   });
 
-  it("passes a put when the target group holds <type>.create", async () => {
+  it("requires <type>.update where the entity lives, not only in the target", async () => {
+    // The graft: `todo.create` in the caller's own group, nothing where
+    // the entity lives (#623).
+    const { client, calls } = await mkClient([
+      ["g_1", []],
+      ["g_2", ["todo.create"]],
+    ]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+
+    await expect(
+      client.write([
+        action([update("entityGroup", "eg_2", "put", { entity_id: "todo_1", group_id: "g_2" })]),
+      ]),
+    ).rejects.toBeInstanceOf(PermissionError);
+    expect(actionRequests(calls)).toHaveLength(0);
+  });
+
+  it("passes a put holding create in the target and update where the entity lives", async () => {
+    const { client } = await mkClient([
+      ["g_1", ["todo.update"]],
+      ["g_2", ["todo.create"]],
+    ]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+
+    await expect(
+      client.write([
+        action([update("entityGroup", "eg_2", "put", { entity_id: "todo_1", group_id: "g_2" })]),
+      ]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("passes a put when any one of a multi-group entity's groups holds <type>.update", async () => {
+    const { client } = await mkClient([
+      ["g_1", []],
+      ["g_2", ["todo.update"]],
+      ["g_3", ["todo.create"]],
+    ]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+    await client.storage.entities.set(
+      mkEntity("eg_2", "entityGroup", { entity_id: "todo_1", group_id: "g_2" }),
+    );
+
+    await expect(
+      client.write([
+        action([update("entityGroup", "eg_3", "put", { entity_id: "todo_1", group_id: "g_3" })]),
+      ]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("passes a put for an entity with no locally-known group set on the target gate alone", async () => {
+    // The server's "new to the index" branch (#289/#623): an entity the
+    // store has never filed resolves no source group, so `create` stands
+    // alone rather than the pass inventing a refusal it cannot support.
     const { client } = await mkClient([["g_1", ["todo.create"]]]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
 
@@ -799,7 +860,9 @@ describe("collectPermissionViolations — entityGroup membership", () => {
     ).resolves.toEqual({ rejected: [] });
   });
 
-  it("skips a put whose entity type cannot be resolved", async () => {
+  it("refuses a put whose entity type cannot be resolved", async () => {
+    // `unknown` is not a denial on the write path: the server is the
+    // authority, so the write proceeds.
     const { client } = await mkClient([["g_1", []]]);
 
     await expect(
@@ -807,6 +870,23 @@ describe("collectPermissionViolations — entityGroup membership", () => {
         action([update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })]),
       ]),
     ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("refuses a patch structurally even when entityGroup.update is held", async () => {
+    // The server does not support the method, so no grant makes it pass: a
+    // membership is replaced by delete + put (#623).
+    const { client, calls } = await mkClient([["g_1", ["entityGroup.update", "entityGroup.*"]]]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+
+    await expect(
+      client.write([
+        action([update("entityGroup", "eg_1", "patch", { entity_id: "todo_1", group_id: "g_1" })]),
+      ]),
+    ).rejects.toThrow(/does not support `patch`/);
+    expect(actionRequests(calls)).toHaveLength(0);
   });
 
   it("requires <type>.update in the entity's current set for a delete", async () => {

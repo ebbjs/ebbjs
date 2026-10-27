@@ -904,7 +904,9 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_put("eg_2", "todo_2", "g_1")
         ])
 
-      later_action = build_action([entity_group_put("eg_3", "todo_2", "g_1")])
+      # Re-putting the row the earlier Action minted: the pair is already
+      # in the simulation, and naming that row keeps it one row.
+      later_action = build_action([entity_group_put("eg_2", "todo_2", "g_1")])
 
       assert_accepted(Authorizer.authorize([earlier_action, later_action], "a_1", ctx))
     end
@@ -945,9 +947,9 @@ defmodule EbbServer.Storage.AuthorizerTest do
           entity_group_put("eg_x_1", "x_1", "g_1")
         ])
 
-      # Filing the entity into another group resolves its type from the
-      # request simulation; a brand-new id still takes its wire type.
-      filed = build_action([entity_group_put("eg_2", "x_1", "g_1")])
+      # Filing the entity again resolves its type from the request
+      # simulation; a brand-new id still takes its wire type.
+      filed = build_action([entity_group_put("eg_x_1", "x_1", "g_1")])
 
       fresh =
         build_action([
@@ -1394,17 +1396,70 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
-    test "adding an existing entity is allowed with <type>.create in the target group" do
+    test "adding an existing entity needs <type>.update where it already lives, not only the target" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
+      # The graft: `create` in the caller's own group, no permission in
+      # the group the entity lives in. Filing it would hand the caller
+      # read *and* write over the entity (#623).
       put_group_member(tables, "g_2", ["todo.create"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
       put_entity_type(tables, "todo_1", "todo")
 
       action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
 
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "adding an existing entity is allowed with <type>.update in a current group and create in the target" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["todo.update"])
+      put_group_member(tables, "g_2", ["todo.create"], "gm_2")
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_entity_type(tables, "todo_1", "todo")
+
+      action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
+
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "a multi-group entity is shared by a write permission in any one of its groups" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_2", ["todo.update"])
+      put_group_member(tables, "g_3", ["todo.create"], "gm_3")
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_membership(tables, "todo_1", "g_2", "eg_2")
+      put_entity_type(tables, "todo_1", "todo")
+
+      action = build_action([entity_group_put("eg_new", "todo_1", "g_3")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "a bootstrapped actor cannot self-grant the source side" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_membership(tables, "todo_1", "g_victim", "eg_victim")
+      put_entity_type(tables, "todo_1", "todo")
+
+      # One Action mints a group, the caller's membership in it with
+      # every permission, and files the victim's entity into it. The
+      # declared permissions stand in for the membership this Action
+      # creates — never for ownership of an entity that already exists.
+      action =
+        build_action([
+          group_put("g_new"),
+          group_member_put("gm_new", "a_1", "g_new", ["todo.create", "todo.update"]),
+          entity_group_put("eg_new", "todo_1", "g_new")
+        ])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "a type an earlier Action of the request created resolves a later membership add" do
@@ -1600,20 +1655,31 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
-    test "re-putting the same group then deleting the old row across two Actions is allowed", %{
+    test "re-putting the same group then deleting the old row across two Actions is refused", %{
       tables: tables,
       ctx: ctx
     } do
       put_membership(tables, "todo_1", "g_1", "eg_1")
       put_entity_group_by_id(tables, "eg_1", "todo_1", "g_1")
       put_entity_type(tables, "todo_1", "todo")
+      put_group_member(tables, "g_1", ["todo.*"])
 
+      # One Action is the unit: the first Action on its own mints a second
+      # row for a pair that still has one, so the pair has two rows until
+      # the second Action lands.
       actions = [
         build_action([entity_group_put("eg_new", "todo_1", "g_1")]),
         build_action([entity_group_delete("eg_1")])
       ]
 
-      assert_accepted(Authorizer.authorize(actions, "a_1", ctx))
+      assert {[], rejected} = Authorizer.authorize(actions, "a_1", ctx)
+      assert [rejection | rest] = rejected
+      assert rejection.action == List.first(actions)
+      assert rejection.reason == "not_authorized"
+      assert rejection.details =~ "already filed"
+      # The delete then strands an entity with no owning group, so it is
+      # refused on its own terms rather than riding the failed put.
+      assert Enum.all?(rest, &(&1.reason == "last_membership"))
     end
 
     test "an unresolvable membership delete is not_authorized", %{ctx: ctx} do
@@ -2015,7 +2081,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
-    test "put is authorized by <type>.create in the target group",
+    test "put is refused with <type>.create in the target group alone",
          %{
            tables: tables,
            ctx: ctx
@@ -2026,20 +2092,76 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
 
-      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
-    test "put may re-file an entity into a group it already belongs to", %{
-      tables: tables,
-      ctx: ctx
-    } do
+    test "put is authorized by <type>.update where the entity lives plus create in the target",
+         %{
+           tables: tables,
+           ctx: ctx
+         } do
+      put_group_member(tables, "g_1", ["todo.update"], "gm_g1")
       put_group_member(tables, "g_2", ["todo.create"], "gm_2")
       put_entity_type(tables, "todo_1", "todo")
-      put_membership(tables, "todo_1", "g_2", "eg_old")
+      put_membership(tables, "todo_1", "g_1", "eg_1")
 
       action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
 
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    # Two devices sharing one entity into one group must converge on one
+    # row: a second row survives the unshare that deletes the first, so
+    # the owner's revocation silently fails (#623).
+    test "a put cannot mint a second row for a live (entity, group) pair", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_1", ["todo.update"], "gm_g1")
+      put_group_member(tables, "g_2", ["todo.create"], "gm_2")
+      put_entity_type(tables, "todo_1", "todo")
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_membership(tables, "todo_1", "g_2", "eg_old")
+
+      action = build_action([entity_group_put("eg_new", "todo_1", "g_2")])
+
+      rejection =
+        assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+
+      assert rejection.details =~ "already filed"
+    end
+
+    test "re-putting the pair's live row is idempotent", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_1", ["todo.update"], "gm_g1")
+      put_group_member(tables, "g_2", ["todo.create"], "gm_2")
+      put_entity_type(tables, "todo_1", "todo")
+      put_membership(tables, "todo_1", "g_1", "eg_1")
+      put_membership(tables, "todo_1", "g_2", "eg_old")
+
+      action = build_action([entity_group_put("eg_old", "todo_1", "g_2")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "a second row for a pair the same Action creates is refused", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_2", ["todo.create"], "gm_2")
+
+      # A bootstrap can file one entity into one group once; the caches
+      # cannot catch the second put, so the check reads the Action.
+      action =
+        build_action([
+          entity_put("todo_new", "todo"),
+          entity_group_put("eg_a", "todo_new", "g_2"),
+          entity_group_put("eg_b", "todo_new", "g_2")
+        ])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
     test "delete is still authorized by the entity's <type>.update in a current group", %{

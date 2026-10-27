@@ -136,7 +136,9 @@ await client.issue.delete(id);
   membership rows ship in the same Action as the entity.
 - `update(id, patch)`, `delete(id)`, `duplicate(id, opts?)`.
 - `link` / `unlink` / `setLinks` for relationships.
-- `addToGroup` / `removeFromGroup` / `setGroups` for membership.
+- `addToGroup` / `removeFromGroup` / `setGroups` for membership. A membership
+  row's id is derived from the `(entity, group)` pair, so a share is idempotent
+  across devices and an unshare removes the row every device is looking at.
 
 `create` accepts the entity's wire fields. To set a relationship in the same
 Action, create the row through `client.atomic` (below) and pass the target to
@@ -163,21 +165,36 @@ const issue = await client.atomic((drafts) => {
 `client.actions.<name>` when the client is created with `actions`:
 
 ```typescript
-const addToWorkspace = defineAction(
+const inviteMember = defineAction(
   schema,
-  ({ membership, profile }, params: { actorId: string; profileId: string; groupId: string }) => {
+  ({ membership }, params: { actorId: string; groupId: string; permissions: string[] }) => {
     membership.create({
       group_id: params.groupId,
       actor_id: params.actorId,
-      permissions: [],
+      permissions: params.permissions,
     });
-    profile.addToGroup(params.profileId, params.groupId);
   },
 );
 
-const client = createClient({ serverUrl, actorId, schema, actions: { addToWorkspace } });
-await client.actions.addToWorkspace({ actorId: personId, profileId, groupId });
+const client = createClient({ serverUrl, actorId, schema, actions: { inviteMember } });
+await client.actions.inviteMember({ actorId: personId, groupId, permissions: [] });
 ```
+
+**Sharing an entity is a write to it.** Filing an entity the server already
+places in a group needs `<type>.update` in one of the entity's current groups as
+well as `<type>.create` in the target, so an invitation cannot file the invitee's
+profile: the inviter has no permission where that profile lives. The invitee's own
+client shares it, after observing the membership:
+
+```typescript
+// run by a member of the group, through that member's client
+await memberClient.actions.inviteMember({ actorId: personId, groupId, permissions });
+await inviteeClient.handshake();
+await inviteeClient.profile.addToGroup(profileIdFor(personId), groupId); // the profile's owner
+```
+
+One Action carries one actor's authority, so the two cannot be batched. Between
+them the member exists and the profile does not — the `profile-pending` window.
 
 ### Not yet
 

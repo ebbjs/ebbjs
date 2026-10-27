@@ -46,6 +46,25 @@ export const SEED_PERMISSIONS = [
   "issue.*",
 ] as const;
 
+/**
+ * Permissions the workspace grants an invited member.
+ *
+ * Deliberately not {@link SEED_PERMISSIONS}: a member needs to read and
+ * write issues, drop their own `groupMember` row to leave, and file their
+ * own profile (`profile.create` in the target group). `profile.update`,
+ * `entityGroup.*` and `group.*` are what let a member file *another*
+ * actor's entity into the workspace before #623 closed it, and nothing in
+ * the demo needs them here: profile writes authorize over the union of the
+ * profile's groups, which includes the actor's personal group.
+ */
+export const MEMBER_PERMISSIONS = [
+  "groupMember.*",
+  "relationship.*",
+  "workspace.*",
+  "issue.*",
+  "profile.create",
+] as const;
+
 /** Shared workspace fixtures, fixed so every actor sees the same ids. */
 export const SHARED_GROUP_ID = "grp_shared";
 export const SHARED_MEMBER_ID = "gm_shared";

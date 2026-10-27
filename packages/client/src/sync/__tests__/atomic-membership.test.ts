@@ -126,6 +126,66 @@ describe("drafts — membership verbs (#464)", () => {
     expect(updates.map((u) => u.data?.fields?.["group_id"]?.value).sort()).toEqual(["g_1", "g_2"]);
   });
 
+  // One row per `(entity, group)` (#623): two devices that share the same
+  // entity into the same group before syncing must converge on one row, or
+  // an unshare deletes the row one device can see and the entity stays
+  // shared.
+  it("derives the membership row id from the pair, so re-shares are one row", async () => {
+    const first = await mkClient();
+    const second = await mkClient();
+
+    await first.client.atomic(({ todo: draft }) => {
+      draft.addToGroup("todo_1", "g_1");
+    });
+    await second.client.atomic(({ todo: draft }) => {
+      draft.addToGroup("todo_1", "g_1");
+    });
+
+    const [a] = updatesOf(first.actions);
+    const [b] = updatesOf(second.actions);
+    expect(a!.subject_id).toBe(b!.subject_id);
+    expect(a!.subject_id.startsWith("eg_")).toBe(true);
+  });
+
+  it("gives a multi-group entity one distinct row per group", async () => {
+    const { client, actions } = await mkClient();
+
+    await client.todo.create({ title: "both" }, { groups: ["g_1", "g_2"] });
+
+    const ids = updatesOf(actions)
+      .filter((u) => u.subject_type === "entityGroup")
+      .map((u) => u.subject_id);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it("re-shares after an unshare as one row again", async () => {
+    const { client, storage, actions } = await mkClient();
+    await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
+    await storage.entities.set(mkEntityGroup("eg_2", "todo_1", "g_2"));
+
+    await client.atomic(({ todo: draft }) => {
+      draft.removeFromGroup("todo_1", "g_1");
+    });
+    await client.atomic(({ todo: draft }) => {
+      draft.addToGroup("todo_1", "g_1");
+    });
+
+    const puts = updatesOf(actions).filter((u) => u.method === "put");
+    expect(puts).toHaveLength(1);
+    // Same pair, so the same derived row id the first share used: an
+    // unshare followed by a re-share cannot leave a second row behind.
+    const { entityGroupId } = await import("../membership");
+    expect(puts[0]!.subject_id).toBe(entityGroupId("todo_1", "g_1"));
+  });
+
+  it("keeps the derived id unambiguous when ids contain the separator", async () => {
+    const { entityGroupId } = await import("../membership");
+
+    // A readable `eg_<entity>_<group>` would collapse these two pairs.
+    expect(entityGroupId("a_b", "c")).not.toBe(entityGroupId("a", "b_c"));
+  });
+
   it("is a no-op when the local view already holds the membership", async () => {
     const { client, storage, actions } = await mkClient();
     await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
