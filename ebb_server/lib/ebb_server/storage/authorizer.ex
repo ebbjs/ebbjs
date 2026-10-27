@@ -65,9 +65,12 @@ defmodule EbbServer.Storage.Authorizer do
       already places in a group is a write to that entity — it adds the
       target group to the set that authorizes updates and deletes — so
       it also needs `<type>.update` in one of the entity's current
-      groups; a known id is not authority (#623). An entity new to the
-      index keeps the target gate alone, because the same Action is
-      creating it. Re-putting a membership row may move it to another
+      groups; a known id is not authority (#623). Two shapes keep the
+      target gate alone: an entity new to the index, because the same
+      Action is creating it, and a put naming the row the pair already
+      has, because a no-op adds nothing to the group set and a retried
+      Action (#285) was authored without the write permission it would
+      need. Re-putting a membership row may move it to another
       group but may not re-point it at a different entity, and an entity
       the index knows but that owns no group is refused rather than
       claimed. A put may re-put the pair's live row but never mint a
