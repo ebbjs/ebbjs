@@ -17,11 +17,17 @@
 
 import { useEffect, useState } from "react";
 import { useClient, useQuery, type QueryRoot } from "@ebbjs/react";
+import { useWorkspaceProfiles } from "./use-workspace-profiles";
 import type { BootstrapResult } from "./bootstrap";
 import type { Schema } from "./schema";
 import { MEMBER_PERMISSIONS, SHARED_GROUP_ID } from "./seed";
 import { useWrite } from "./use-write";
-import { inviteToWorkspace, leaveWorkspace, shareProfileToWorkspace } from "./workspace";
+import {
+  inviteToWorkspace,
+  leaveWorkspace,
+  profileIdForActor,
+  shareProfileToWorkspace,
+} from "./workspace";
 
 export function MembershipPanel({
   actorId,
@@ -37,6 +43,12 @@ export function MembershipPanel({
     [actorId],
   );
   const membership = members[0];
+  // The profiles visible in the workspace are exactly the members whose
+  // profile has been shared into it, so an absent own profile is the
+  // `profile-pending` state: the membership row exists, the profile does
+  // not (#623).
+  const profiles = useWorkspaceProfiles(SHARED_GROUP_ID);
+  const profileShared = profiles.some((row) => row.id === profileIdForActor(actorId));
   const { pending: busy, error, run } = useWrite();
   const [deniedFor, setDeniedFor] = useState<string | null>(null);
 
@@ -103,8 +115,16 @@ export function MembershipPanel({
           </button>
         )}
         {membership !== undefined && (
-          <span className="font-mono text-xs text-emerald-400" data-testid="membership-state">
-            member
+          <span
+            className={`font-mono text-xs ${profileShared ? "text-emerald-400" : "text-amber-400"}`}
+            data-testid="membership-state"
+            title={
+              profileShared
+                ? undefined
+                : "the membership exists and the profile is not shared into this group yet"
+            }
+          >
+            {profileShared ? "member" : "profile pending"}
           </span>
         )}
       </div>
