@@ -1,6 +1,6 @@
 {
   "name": "@ebbjs/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "TypeScript foundation for ebbjs: shared types, HLC, MessagePack wire codec, action creation, and ID generation.",
   "homepage": "https://ebbjs.com",

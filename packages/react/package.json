@@ -1,6 +1,6 @@
 {
   "name": "@ebbjs/react",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "React bindings for @ebbjs/client — provider, connection hook, and the plumbing later data hooks build on.",
   "homepage": "https://ebbjs.com",
