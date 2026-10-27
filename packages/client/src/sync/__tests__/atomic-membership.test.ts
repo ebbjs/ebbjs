@@ -150,7 +150,7 @@ describe("drafts — membership verbs (#464)", () => {
   it("gives a multi-group entity one distinct row per group", async () => {
     const { client, actions } = await mkClient();
 
-    await client.todo.create({ title: "both" }, { id: "todo_1", groups: ["g_1", "g_2"] });
+    await client.todo.create({ title: "both" }, { groups: ["g_1", "g_2"] });
 
     const ids = updatesOf(actions)
       .filter((u) => u.subject_type === "entityGroup")
