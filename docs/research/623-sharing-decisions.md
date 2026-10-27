@@ -6,6 +6,13 @@ mean. This note answers D1–D8 from [#623](https://github.com/ebbjs/ebbjs/issue
 and records the rejected options. Nothing here is implemented on top of this
 branch — Phase 1 is "decide", and the slices below are what follows.
 
+> **This file is not on `main`, and nothing assumes it will be.** It exists on
+> branch `docs/issue-623-sharing-decisions` as the rationale for the epic. Every
+> issue in the epic restates the rule it implements, so a reader of the issues
+> never needs this file. Where it ends up — merged as-is, folded into
+> `CONTEXT.md` and a shorter decision doc, or left here as history — is
+> [#647](https://github.com/ebbjs/ebbjs/issues/647)'s decision, not a premise.
+
 ## The hole, restated
 
 `entityGroup` put is authorized by the **target** group alone: the added
