@@ -181,7 +181,10 @@ third-party clients.
 **Note.** This narrows today's deliberate tolerance ("membership is per row, so
 a second row for a group the entity already belongs to keeps that group").
 `last_membership` still counts rows per group, and the put-then-delete
-cancellation it documents still holds under one row per pair.
+cancellation it documents still holds under one row per pair. The one shape the
+refusal must keep working is a request that deletes a pair's live row and puts
+its replacement: the delete is already off the index for that request, so the
+replacement cannot read as a duplicate.
 
 ### D7. Revocation is the existing delete, and the UI shows no new state
 
@@ -228,11 +231,11 @@ Files that change with the implementation: `CONTEXT.md`, the
 ```text
 entityGroup put(entity E, group G):
   E is new to the index            → <type>.create in G
-  the row is E's live row for G    → allow (idempotent re-put)
-  G is already in E's groups       → refuse (a second row for a live pair)
   otherwise                        → <type>.create in G
                                      AND <type>.update in one of E's current groups
                                          [B: OR a live grant naming the caller for E]
+                                     AND (a second row for a live (E, G) is refused,
+                                          unless the put names E's live row for G)
 patch                                 → refused, structurally, on both sides
 delete                                → unchanged: <type>.update over E's current groups
 ```
@@ -242,9 +245,14 @@ the id, so the same Action is creating it. Every #635 fail-closed rule stays —
 row identity pinned, ownerless refused, per-row deletes keyed by the stored row,
 string ids, no bootstrap grant for entities that already exist.
 
-The two refusals in the middle are what D6 adds: an idempotent re-put of the
-entity's own live row is a no-op, and minting a second row for a live pair is
-never allowed, whatever permission the caller holds.
+The row-identity term is what D6 adds: minting a second row for a live pair is
+never allowed, whatever permission the caller holds, while a re-put naming the
+entity's own live row for that group is the idempotent case and clears the same
+two permission gates as any other put — only `E is new to the index` skips the
+source side, because no legitimate re-putter lacks `<type>.update` where the
+entity already lives. The checks run most-conclusive-first — target `create`,
+then the source-side `update`, then row identity — so a stranger learns nothing
+about an entity's memberships from the refusal.
 
 ## Consequence: the invite becomes two writes by two actors
 
