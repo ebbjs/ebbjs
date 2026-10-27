@@ -62,7 +62,8 @@ export type PermissionVerb = "create" | "update" | "delete";
 export type PermissionViolation =
   | MissingPermissionViolation
   | TypeMismatchViolation
-  | SourceMismatchViolation;
+  | SourceMismatchViolation
+  | MethodUnsupportedViolation;
 
 /**
  * The actor holds no permission that would allow the write: no group in
@@ -117,6 +118,22 @@ export interface SourceMismatchViolation {
 }
 
 /**
+ * The write cannot be authorized at any permission: the server refuses the
+ * method outright, so there is no grant that would allow it (#623).
+ * `entityGroup` patch is the only member — a membership row is replaced by
+ * a delete plus a put, never edited in place.
+ */
+export interface MethodUnsupportedViolation {
+  readonly kind: "method-unsupported";
+  readonly subjectType: string;
+  readonly subjectId: string;
+  /** The method the write used, e.g. `"patch"`. */
+  readonly method: string;
+  /** The group whose row the write named; empty when none resolved. */
+  readonly groupIds: readonly string[];
+}
+
+/**
  * Aggregated refusal of a locally-authored batch. Mirrors
  * `EntityValidationError` / `AtomicActionError`: a named `Error`
  * subclass with structured readonly reasons and a message formatted
@@ -160,6 +177,12 @@ const describeViolation = (violation: PermissionViolation): string => {
         ` "${violation.declaredSourceId}" but the row is committed with source` +
         ` "${violation.committedSourceId}"; a relationship row cannot be re-pointed at another` +
         ` source (checked: ${groups})`
+      );
+    case "method-unsupported":
+      return (
+        `${violation.subjectType} ${violation.subjectId}: the server does not support` +
+        ` \`${violation.method}\` here; express the change as a delete plus a put` +
+        ` (checked: ${groups})`
       );
     default:
       return assertNever(violation);
@@ -242,10 +265,20 @@ type RefusalDetail =
       readonly reason: "source-mismatch";
       readonly declaredSourceId: string;
       readonly committedSourceId: string;
+    }
+  | {
+      /** The server refuses the method outright; no grant would allow it. */
+      readonly reason: "method-unsupported";
+      readonly method: string;
     };
 
 type RuleResolution =
   | { readonly kind: "rule"; readonly rule: ResolvedRule }
+  /**
+   * Every rule must hold: a shared entity needs the target group's
+   * `create` *and* a write permission where it already lives (#623).
+   */
+  | { readonly kind: "rules"; readonly rules: readonly ResolvedRule[] }
   /**
    * The write contradicts state the server enforces structurally, so no
    * permission can allow it. Carries only what the refusal reports —
@@ -273,6 +306,14 @@ interface RuleInputs {
   readonly resolveType: (id: string) => Promise<string | null>;
   /** The entity's group set (its `entityGroup` memberships). */
   readonly groupSetFor: (id: string) => Promise<readonly string[]>;
+  /**
+   * The entity's **committed** group set: its local `entityGroup` rows,
+   * never the puts riding in the same Action. The share rule reads this,
+   * because an entity the store has not filed yet is new to it and the
+   * target gate stands alone (#623) — the server reads its caches the same
+   * way.
+   */
+  readonly committedGroupSetFor: (id: string) => Promise<readonly string[]>;
   readonly readMembership: (membershipId: string) => Promise<LiveMembership | null>;
 }
 
@@ -280,13 +321,13 @@ interface RuleInputs {
  * The storage-backed half of {@link RuleInputs}, shared by the write path
  * and the query path so a subject's `exists` / `readMembership` lookups
  * have one implementation. Callers supply `fieldValue` and override
- * `resolveType` / `groupSetFor` with their own source (the Action's
- * in-flight context, or committed storage).
+ * `resolveType` / `groupSetFor` / `committedGroupSetFor` with their own
+ * source (the Action's in-flight context, or committed storage).
  */
 const storageInputs = (
   storage: StorageAdapter,
   fieldValue: (name: string) => unknown,
-): Omit<RuleInputs, "resolveType" | "groupSetFor"> => ({
+): Omit<RuleInputs, "resolveType" | "groupSetFor" | "committedGroupSetFor"> => ({
   fieldValue,
   exists: (id) => storage.entities.get(id),
   readMembership: (membershipId) => readMembership(storage, membershipId),
@@ -329,10 +370,16 @@ const committedRelationshipSource = async (
  *   to report, as the server refuses it;
  * - `group` → `group.<verb>` in the group itself;
  * - `groupMember` → `groupMember.<verb>` in the membership's group;
- * - `entityGroup` put → `<entityType>.create` in the target group; filing
- *   an existing entity is the share/invite primitive. The server also
- *   refuses `patch` outright (#623), which this pass still models as a
- *   permission rule, so a patch is only rejected when the server sees it;
+ * - `entityGroup` put → `<entityType>.create` in the target group **and**
+ *   `<entityType>.update` over the entity's current group set, because
+ *   filing an entity the store already places in a group is a write to it
+ *   (#623). An entity with no locally-known group set is the server's
+ *   "new to the index" branch, where `create` stands alone. The server
+ *   also refuses `patch` outright, so this pass reports it as a structural
+ *   refusal with no permission consulted;
+ * - the one duplicate-row refusal is not mirrored: our clients derive one
+ *   row id per `(entity, group)`, so they cannot express it, and the
+ *   server stays the authority;
  * - `entityGroup` delete → `<entityType>.update` in the entity's current set;
  * - `relationship` put → `<sourceType>.update` over the source's set;
  *   patch/delete → `relationship.<verb>` over the source's set. A row's
@@ -389,13 +436,32 @@ async function resolveRule(
         }
         const type = await inputs.resolveType(entityId);
         if (type === null) return { kind: "unresolved", reason: "entity-unknown" };
-        return rule({
-          type,
-          verb: "create",
-          required: `${type}.create`,
-          groupIds: [groupId],
-          cachedOnly: true,
-        });
+
+        // Filing an entity is a write to it: the target group's `create`
+        // is not enough where the entity already lives, so both rules must
+        // hold (#623). An entity with no locally-known group set is the
+        // server's "new to the index" branch, where `create` stands alone —
+        // deferring there rather than inventing a local refusal.
+        const rules: ResolvedRule[] = [
+          {
+            type,
+            verb: "create",
+            required: `${type}.create`,
+            groupIds: [groupId],
+            cachedOnly: true,
+          },
+        ];
+        const sourceGroups = await inputs.committedGroupSetFor(entityId);
+        if (sourceGroups.length > 0) {
+          rules.push({
+            type,
+            verb: "update",
+            required: `${type}.update`,
+            groupIds: sourceGroups,
+            cachedOnly: true,
+          });
+        }
+        return { kind: "rules", rules };
       }
       if (method === "delete") {
         const membership = await inputs.readMembership(subjectId);
@@ -411,17 +477,16 @@ async function resolveRule(
           cachedOnly: true,
         });
       }
-      // patch — the membership's own group, cached permissions only.
+      // patch — the server refuses the method outright, whatever the
+      // caller holds, so no permission rule can describe it (#623).
       const membership = await inputs.readMembership(subjectId);
       const groupId = asString(inputs.fieldValue("group_id")) ?? membership?.groupId ?? null;
-      if (groupId === null) return { kind: "unresolved", reason: "entity-unknown" };
-      return rule({
-        type: "entityGroup",
-        verb: "update",
-        required: "entityGroup.update",
-        groupIds: [groupId],
-        cachedOnly: true,
-      });
+      return {
+        kind: "refused",
+        reason: "method-unsupported",
+        method,
+        groupIds: groupId === null ? [] : [groupId],
+      };
     }
 
     case "relationship": {
@@ -561,7 +626,7 @@ const missingPermission = (
 const refusedViolation = (
   resolution: Extract<RuleResolution, { kind: "refused" }>,
   subject: DecisionSubject,
-): TypeMismatchViolation | SourceMismatchViolation => {
+): TypeMismatchViolation | SourceMismatchViolation | MethodUnsupportedViolation => {
   switch (resolution.reason) {
     case "type-mismatch":
       return {
@@ -569,6 +634,14 @@ const refusedViolation = (
         subjectType: subject.subjectType,
         subjectId: subject.subjectId,
         committedType: resolution.committedType,
+        groupIds: resolution.groupIds,
+      };
+    case "method-unsupported":
+      return {
+        kind: "method-unsupported",
+        subjectType: subject.subjectType,
+        subjectId: subject.subjectId,
+        method: resolution.method,
         groupIds: resolution.groupIds,
       };
     case "source-mismatch":
@@ -601,6 +674,18 @@ const decideRule = (
       return ruleHolds(resolution.rule, permissionsFor)
         ? { kind: "allowed", groupIds: resolution.rule.groupIds }
         : { kind: "denied", violation: missingPermission(subject, resolution.rule) };
+    case "rules": {
+      // Every rule must hold. The first one that does not is the one
+      // reported: it is the grant the caller has to go and get.
+      const missing = resolution.rules.find((rule) => !ruleHolds(rule, permissionsFor));
+      if (missing === undefined) {
+        return {
+          kind: "allowed",
+          groupIds: [...new Set(resolution.rules.flatMap((rule) => rule.groupIds))],
+        };
+      }
+      return { kind: "denied", violation: missingPermission(subject, missing) };
+    }
     case "refused":
       return { kind: "denied", violation: refusedViolation(resolution, subject) };
     case "unresolved":
@@ -775,6 +860,8 @@ const collectActionViolations = async (
         ...storageInputs(ctx.storage, (name) => fieldValue(update, name)),
         resolveType,
         groupSetFor,
+        committedGroupSetFor: async (entityId) =>
+          (await readEntityMemberships(ctx.storage, entityId)).map((m) => m.groupId),
       },
       released,
     );
@@ -924,7 +1011,10 @@ export async function queryEntityPermission(
     {
       ...inputs,
       resolveType: async (entityId) => (await inputs.exists(entityId))?.type ?? null,
+      // The query path sees committed state only, so both reads agree.
       groupSetFor: async (entityId) =>
+        (await readEntityMemberships(ctx.storage, entityId)).map((m) => m.groupId),
+      committedGroupSetFor: async (entityId) =>
         (await readEntityMemberships(ctx.storage, entityId)).map((m) => m.groupId),
     },
     NO_RELEASED,

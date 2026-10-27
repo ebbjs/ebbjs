@@ -71,6 +71,16 @@ defmodule EbbServer.Integration.ActionHelpers do
   end
 
   @doc """
+  The membership row id for an `(entity, group)` pair.
+
+  One row per pair (#623): the id is derived, as the client derives it, so
+  writing the same entity into the same group again re-puts its row instead of
+  minting a duplicate. A test that wants a second row for a live pair has to
+  name one.
+  """
+  def membership_row_id(entity_id, group_id), do: "eg_" <> entity_id <> "_" <> group_id
+
+  @doc """
   Builds the same-Action group + owner `groupMember` bootstrap that
   `bootstrap_group/3` posts, without sending it. Callers that need the wire
   body (for example to drive the real Router over HTTP) encode it themselves.
@@ -156,8 +166,8 @@ defmodule EbbServer.Integration.ActionHelpers do
     post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
   end
 
-  def entity_group_update(entity_id, group_id, hlc) do
-    eg_id = "eg_" <> Nanoid.generate()
+  def entity_group_update(entity_id, group_id, hlc, eg_id \\ nil) do
+    eg_id = eg_id || membership_row_id(entity_id, group_id)
 
     %{
       "id" => eg_id,

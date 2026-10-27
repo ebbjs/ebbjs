@@ -61,17 +61,21 @@ defmodule EbbServer.Storage.Authorizer do
       exists, otherwise a type created by the same Action or by an
       earlier Action of the same request. An unresolvable type is
       refused (`not_authorized`) rather than falling back to the
-      `entityGroup.create` system permission. Filing an existing entity
-      into a group is the share/invite primitive: the target group's
-      `<type>.create` is the whole gate, so an inviter does not need
-      write access to the entity's current group (#623 tracks whether
-      that primitive needs a consent step). Re-putting a membership row
-      may move it to another group but may not re-point it at a different
-      entity, and an entity the index knows but that owns no group is
-      refused rather than claimed. Membership mutations of an existing
-      entity are checked against cached memberships only —
-      the bootstrap's declared permissions stand in only for the
-      membership the same Action creates.
+      `entityGroup.create` system permission. Filing an entity the index
+      already places in a group is a write to that entity — it adds the
+      target group to the set that authorizes updates and deletes — so
+      it also needs `<type>.update` in one of the entity's current
+      groups; a known id is not authority (#623). An entity new to the
+      index keeps the target gate alone, because the same Action is
+      creating it. Re-putting a membership row may move it to another
+      group but may not re-point it at a different entity, and an entity
+      the index knows but that owns no group is refused rather than
+      claimed. A put may re-put the pair's live row but never mint a
+      second row for the same `(entity, group)`, whatever permission the
+      caller holds (#623). Membership mutations of an existing entity are
+      checked against cached memberships only — the bootstrap's declared
+      permissions stand in only for the membership the same Action
+      creates.
     - `entityGroup` delete → the entity's `<type>.update` in any group of
       the entity's current set (union/any-match). The delete wire form
       drops the entity reference, so the row is resolved from the
@@ -206,6 +210,8 @@ defmodule EbbServer.Storage.Authorizer do
            types: %{String.t() => String.t()},
            member_overlay: %{String.t() => group_member_row() | nil},
            members_by_group: members_by_group(),
+           membership_rows: %{{String.t(), String.t()} => String.t()},
+           removed_membership_ids: MapSet.t(String.t()),
            deleted_relationships: MapSet.t(String.t())
          }
 
@@ -256,6 +262,8 @@ defmodule EbbServer.Storage.Authorizer do
       types: %{},
       member_overlay: %{},
       members_by_group: %{},
+      membership_rows: %{},
+      removed_membership_ids: MapSet.new(),
       deleted_relationships: MapSet.new()
     }
 
@@ -293,6 +301,7 @@ defmodule EbbServer.Storage.Authorizer do
     }
 
     with :ok <- check_all_updates(updates, actor_id, authz),
+         {:ok, sim} <- check_membership_rows(authz, sim),
          {:ok, sim} <- check_last_membership(authz, sim),
          {:ok, sim} <- check_last_group_member(authz, sim) do
       {:ok,
@@ -435,8 +444,8 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   # A removed group is only subtracted when no put in the request re-adds
-  # it: membership is per row, so a new row for a group the entity still
-  # holds cancels the removal of the stale row.
+  # it: membership is per row, and a put replaces the pair's removed row
+  # rather than adding beside it (see `check_membership_rows/2`).
   defp resulting_groups(entity_id, additions, removals, opts) do
     cached = EntityIndex.source_groups(entity_id, opts)
     added = Map.get(additions, entity_id, [])
@@ -611,6 +620,79 @@ defmodule EbbServer.Storage.Authorizer do
     end)
   end
 
+  # One row per `(entity, group)` (#623): a put may re-put the pair's live
+  # row, never mint a second one, whatever permission the caller holds. A
+  # duplicate row outlives an unshare — the owner deletes the row it can
+  # resolve and the entity stays shared — so this is revocation
+  # correctness, not tidiness.
+  #
+  # It runs after the permission checks, so a caller without write access
+  # learns nothing about an entity's memberships from which check refused
+  # them. Deletes are read before puts because the Action is one unit: a
+  # delete plus a put of the same pair replaces the row, in either wire
+  # order — the shape the refused `entityGroup` patch documents. Puts and
+  # deletes are also read from the request, since the caches only advance
+  # once the Writer commits.
+  defp check_membership_rows(authz, sim) do
+    removed =
+      authz.deleted_memberships
+      |> Map.keys()
+      |> MapSet.new()
+      |> MapSet.union(sim.removed_membership_ids)
+
+    sim =
+      authz.deleted_memberships
+      |> Map.values()
+      |> Enum.reject(&is_nil/1)
+      |> Enum.reduce(%{sim | removed_membership_ids: removed}, fn {entity_id, group_id}, acc ->
+        %{acc | membership_rows: Map.delete(acc.membership_rows, {entity_id, group_id})}
+      end)
+
+    authz.updates
+    |> Enum.filter(&(&1.subject_type == "entityGroup" and &1.method == :put))
+    |> Enum.reduce_while({:ok, sim}, fn update, {:ok, acc} ->
+      case apply_membership_put(update, authz, acc) do
+        {:ok, next} -> {:cont, {:ok, next}}
+        refusal -> {:halt, refusal}
+      end
+    end)
+  end
+
+  defp apply_membership_put(update, authz, sim) do
+    entity_id = Fields.get(update.data, "entity_id")
+    group_id = Fields.get(update.data, "group_id")
+    row_id = update.subject_id
+
+    cond do
+      not (is_binary(entity_id) and is_binary(group_id)) ->
+        {:ok, sim}
+
+      Enum.any?(live_membership_row_ids(entity_id, group_id, authz, sim), &(&1 != row_id)) ->
+        {:error, "not_authorized",
+         "the entity is already filed in that group: delete its membership row instead of adding a second one"}
+
+      true ->
+        {:ok,
+         %{sim | membership_rows: Map.put(sim.membership_rows, {entity_id, group_id}, row_id)}}
+    end
+  end
+
+  # The row ids the request leaves live for one pair: the membership
+  # index, minus rows the request deletes, plus the row an earlier put in
+  # the request minted (the index cannot see it yet).
+  defp live_membership_row_ids(entity_id, group_id, authz, sim) do
+    cached =
+      entity_id
+      |> EntityGroupCache.entity_group_entries(Keyword.fetch!(authz.opts, :entity_groups))
+      |> Enum.filter(&(&1.group_id == group_id))
+      |> Enum.reject(&MapSet.member?(sim.removed_membership_ids, &1.id))
+      |> Enum.map(& &1.id)
+
+    pending = Map.get(sim.membership_rows, {entity_id, group_id})
+
+    Enum.uniq(cached ++ List.wrap(pending))
+  end
+
   # Adding an entity to a group is gated by the entity's own
   # `<type>.create` in the target group (#121 "Add Entity to Group"), not
   # by the entity's whole group set. The type is the committed
@@ -619,22 +701,22 @@ defmodule EbbServer.Storage.Authorizer do
   # unresolvable type is a refusal (`entityGroup.create` would let any
   # group member graft an entity whose type they may not create).
   #
-  # That `create` is the whole gate, including for an entity that already
-  # has an owner: filing it needs no permission where it lives today,
-  # which is what makes this same write the invite primitive. The source
-  # side is the open #623 residual — an actor holding `create` in a group
-  # they control can file a known entity id into it and then read, write
-  # or delete the entity through the normal group resolution paths. #644
-  # adds the owner-side term; this comment describes the rule until it
-  # lands.
+  # That `create` is not the whole gate when the put grows the entity's
+  # group set. Filing an entity the read model already places elsewhere
+  # adds the target group to the set that authorizes updates and deletes,
+  # so the target group's `create` alone would let an actor holding it
+  # read, overwrite or delete an entity they cannot write — a known id is
+  # not authority (#623). An entity new to the index, or a put that only
+  # re-files the pair the entity already holds, is filed by authority that
+  # already exists and keeps the target gate.
   #
-  # The check is cache-only: the bootstrap's declared permissions
+  # Both checks are cache-only: the bootstrap's declared permissions
   # stand in only for the membership the same Action creates, and this
   # update is exempt only when the entity is created by that same Action
   # (#289).
   defp authorize_entity_group_update(%{method: :put} = update, actor_id, authz) do
     with {:ok, entity_id, group_id} <- membership_identity(update) do
-      authorize_entity_group_put(entity_id, group_id, actor_id, authz)
+      authorize_entity_group_put(entity_id, group_id, update.subject_id, actor_id, authz)
     end
   end
 
@@ -675,7 +757,7 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
-  defp authorize_entity_group_put(entity_id, group_id, actor_id, authz) do
+  defp authorize_entity_group_put(entity_id, group_id, row_id, actor_id, authz) do
     case entity_type(entity_id, authz) do
       nil ->
         {:error, "not_authorized", "cannot resolve the type of the entity being added to a group"}
@@ -689,10 +771,55 @@ defmodule EbbServer.Storage.Authorizer do
                  "create",
                  authz,
                  &cached_permissions/3
-               ) do
+               ),
+             :ok <- check_existing_ownership(entity_id, group_id, row_id, actor_id, type, authz) do
           check_not_ownerless(entity_id, authz)
         end
     end
+  end
+
+  # The source side of a share. Filing an entity the read model already
+  # places in a group adds the target group to the set that authorizes
+  # updates and deletes, so it needs `<type>.update` where the entity
+  # lives — the target group's `create` alone would let an actor holding
+  # it read, overwrite or delete an entity they cannot write (#623).
+  #
+  # Two shapes keep the target gate on its own:
+  #
+  #   - an entity the read model places in no group is new to it (created
+  #     by this request, or never filed), and the same Action is the
+  #     authority that files it. `check_not_ownerless/2` still refuses a
+  #     committed entity that owns nothing;
+  #   - a put that names the row the pair already has adds nothing to the
+  #     entity's group set. That is the idempotent re-put a retried Action
+  #     (#285) and a second device send, and refusing it would need update
+  #     authority to repeat a no-op.
+  #
+  # Cache-only via `cached_permissions/3`: the Action's declared bootstrap
+  # permissions may stand in for the membership it creates, never for
+  # ownership of an entity that already exists (#289).
+  defp check_existing_ownership(entity_id, group_id, row_id, actor_id, type, authz) do
+    group_ids = EntityIndex.source_groups(entity_id, authz.opts)
+
+    cond do
+      group_ids == [] ->
+        :ok
+
+      holds_membership_row?(entity_id, group_id, row_id, authz) ->
+        :ok
+
+      true ->
+        check_group_permission(group_ids, actor_id, type, "update", authz, &cached_permissions/3)
+    end
+  end
+
+  defp holds_membership_row?(entity_id, group_id, row_id, authz) do
+    entity_id
+    |> EntityGroupCache.entity_group_entries(Keyword.fetch!(authz.opts, :entity_groups))
+    |> Enum.any?(fn entry ->
+      entry.group_id == group_id and entry.id == row_id and
+        not Map.has_key?(authz.deleted_memberships, row_id)
+    end)
   end
 
   defp check_update_row_identity(%{subject_type: "entityGroup", method: :put} = update, authz) do

@@ -2,22 +2,26 @@
  * Workspace membership controls for the shared workspace.
  *
  * Membership is the reserved `groupMember` store; this panel reads the
- * actor's own row out of it to decide what to show. Joining is an invite
- * run by the shared workspace's service actor (`demo-seeder`) because
- * groups are closed by default (#126); leaving is self-service.
+ * actor's own row out of it to decide what to show. Joining is two writes
+ * by two actors (#623): the workspace's service actor (`demo-seeder`)
+ * invites — groups are closed by default (#126) — and then this actor's
+ * own client shares its profile, which is the only client allowed to.
+ * Leaving is self-service.
  *
- * Either way the actor's client re-handshakes and re-subscribes through
- * `bootstrap.refresh()`, so the workspace's entities arrive without a
- * reload.
+ * The refresh between the writes is what makes the share legal: the
+ * invitee's client has to observe the membership (and the permissions it
+ * grants in the group) before it can file the profile into it. The
+ * intermediate state — member, no profile — is `profile-pending`, and it
+ * is real for an actor invited while away.
  */
 
 import { useEffect, useState } from "react";
 import { useClient, useQuery, type QueryRoot } from "@ebbjs/react";
 import type { BootstrapResult } from "./bootstrap";
 import type { Schema } from "./schema";
-import { SEED_PERMISSIONS, SHARED_GROUP_ID } from "./seed";
+import { MEMBER_PERMISSIONS, SHARED_GROUP_ID } from "./seed";
 import { useWrite } from "./use-write";
-import { inviteToWorkspace, leaveWorkspace } from "./workspace";
+import { inviteToWorkspace, leaveWorkspace, shareProfileToWorkspace } from "./workspace";
 
 export function MembershipPanel({
   actorId,
@@ -58,8 +62,10 @@ export function MembershipPanel({
         inviter: bootstrap.seeder,
         actorId,
         groupId: SHARED_GROUP_ID,
-        permissions: SEED_PERMISSIONS,
+        permissions: MEMBER_PERMISSIONS,
       });
+      await bootstrap.refresh();
+      await shareProfileToWorkspace({ client, actorId, groupId: SHARED_GROUP_ID });
       await bootstrap.refresh();
     });
   };

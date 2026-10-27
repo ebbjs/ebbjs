@@ -75,7 +75,9 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
 
       leaked_id = "todo_leak_#{Nanoid.generate()}"
       eg_leak = "eg_#{Nanoid.generate()}"
-      eg_other_2 = "eg_#{Nanoid.generate()}"
+      # The membership row the seed already minted for `other_id`: re-putting
+      # it is idempotent, a second row for a live pair is refused (#623).
+      eg_other_2 = eg_other
 
       action = %{
         "id" => "act_leak_#{Nanoid.generate()}",
@@ -411,7 +413,10 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
   # delta, the last-membership refusal, and the cross-Action bypass.
   describe "membership mutation" do
     test "adds an existing entity to a second group" do
-      bootstrap_group("actor_1", "group_1", ["todo.create", "todo.read"])
+      # Filing an entity the read model already places in a group is a write
+      # to that entity, so the owner needs `todo.update` where it lives
+      # (#623) as well as `todo.create` in the target.
+      bootstrap_group("actor_1", "group_1", ["todo.create", "todo.update", "todo.read"])
       bootstrap_group("actor_1", "group_2", ["todo.create"])
 
       hlc = generate_hlc()
@@ -723,6 +728,55 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
   # primitive (the target group's `<type>.create` is the gate); the row it
   # is written through is not. These cover the row-identity vectors.
   describe "cross-tenant entityGroup row identity (#623)" do
+    test "an outsider cannot file an entity in, and the owner's share lets them read it" do
+      bootstrap_group("victim", "g_victim", ["todo.create", "todo.update", "todo.read"])
+      bootstrap_group("attacker", "g_atk", ["todo.create", "todo.update", "groupMember.create"])
+
+      hlc = generate_hlc()
+      secret_id = "todo_secret_#{Nanoid.generate()}"
+
+      create = %{
+        "id" => "act_secret_#{Nanoid.generate()}",
+        "actor_id" => "victim",
+        "hlc" => hlc,
+        "updates" => [
+          todo_put(secret_id, hlc),
+          entity_group_put("eg_#{Nanoid.generate()}", secret_id, "g_victim", hlc)
+        ]
+      }
+
+      assert %{"rejected" => []} = submit(create, "victim")
+
+      # The attacker holds `todo.create` in their own group and nothing in
+      # the group the entity lives in. Before #623 this filed the entity in
+      # and handed over read *and* write.
+      graft = %{
+        "id" => "act_graft_#{Nanoid.generate()}",
+        "actor_id" => "attacker",
+        "hlc" => hlc,
+        "updates" => [entity_group_put("eg_#{Nanoid.generate()}", secret_id, "g_atk", hlc)]
+      }
+
+      assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(graft, "attacker")
+      assert get_entity(secret_id, "attacker").status == 404
+
+      # The owner shares it into the group they now both belong to: update
+      # where the entity lives, create in the target.
+      added = add_group_member("attacker", "g_atk", "victim", ["todo.create"])
+      assert Jason.decode!(added.resp_body) == %{"rejected" => []}
+
+      share = %{
+        "id" => "act_share_#{Nanoid.generate()}",
+        "actor_id" => "victim",
+        "hlc" => hlc,
+        "updates" => [entity_group_put("eg_#{Nanoid.generate()}", secret_id, "g_atk", hlc)]
+      }
+
+      assert %{"rejected" => []} = submit(share, "victim")
+      assert get_entity(secret_id, "attacker").status == 200
+      assert get_entity(secret_id, "victim").status == 200
+    end
+
     test "an outsider cannot re-point or patch a membership row" do
       bootstrap_group("victim", "g_victim", ["todo.create", "todo.update", "todo.read"])
 

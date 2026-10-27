@@ -249,7 +249,9 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
 
       leaked_id = "todo_473_rec_leak_#{:erlang.unique_integer([:positive])}"
       eg_leak = "eg_473_rec_leak_#{:erlang.unique_integer([:positive])}"
-      eg_other = "eg_473_rec_other_#{:erlang.unique_integer([:positive])}"
+      # The row the seed already minted for the pair: re-putting it is
+      # idempotent, a second row for a live pair is not (#623).
+      eg_other = ActionHelpers.membership_row_id(other_id, g2)
 
       action = %{
         "id" => "act_473_rec_span_#{:erlang.unique_integer([:positive])}",

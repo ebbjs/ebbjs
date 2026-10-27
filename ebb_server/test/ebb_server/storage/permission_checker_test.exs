@@ -407,10 +407,10 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
 
-      # `other_1` is an existing entity owned by g_a; filing it into g_b
-      # is the share primitive gated by todo.create in the target group
-      # (#623 tracks whether it should need a consent step).
-      put_group_member(tables, "g_a", ["todo.create"])
+      # `other_1` is an existing entity owned by g_a; filing it into g_b is
+      # a write to the entity, so it needs todo.update where it lives as
+      # well as todo.create in the target (#623).
+      put_group_member(tables, "g_a", ["todo.create", "todo.update"])
       put_group_member(tables, "g_b", ["todo.create"], "gm_b")
       put_entity_type(tables, "other_1", "todo")
       put_membership(tables, "other_1", "g_a", "eg_other")

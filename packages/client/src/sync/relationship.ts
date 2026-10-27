@@ -25,6 +25,7 @@ import {
   buildLazyQueryBuilder,
   normalizePointer,
 } from "./query-builder";
+import { entityGroupId } from "./membership";
 import { recordTraversalRows } from "./traversal-counter";
 
 /**
@@ -390,7 +391,7 @@ export function buildEntityGroupUpdates(
 ): import("@ebbjs/core").Update[] {
   return groupIds.map((groupId) =>
     buildEntityGroupUpdate({
-      membershipId: generateId("eg"),
+      membershipId: entityGroupId(entityId, groupId),
       entityId,
       groupId,
       updateId: generateUpdateId(),

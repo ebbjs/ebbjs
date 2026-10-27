@@ -1878,22 +1878,42 @@ export class SyncClient implements PermissionQuery {
   /**
    * Replace the durable rows in the `storage.entities` shim with the
    * replica's composed view, clearing the dirty flag so a later read does
-   * not replay the log over them. A subject with no composed row is left
-   * untouched — the shim cannot represent absence.
+   * not replay the log over them.
    *
    * An on-demand type has no composed replica row to mirror: the replica
    * drops it unless it is open. The store is that type's read source, so the
    * update is applied to the stored row directly. A later `open` then installs
    * and pins it, exactly as it would a row read back from the server.
+   *
+   * A subject the replica drops is normally left untouched — the shim
+   * cannot represent absence, and the echo corrects it. A `delete` is the
+   * exception: the shim *can* represent a tombstone, and leaving the row
+   * live keeps local membership checks seeing a row the server no longer
+   * has (a re-share then silently no-ops against a stale row, #623). A
+   * revert deliberately keeps the old behaviour: the row the revert
+   * converges on is the one the replica restored.
    */
-  private async mirrorReplicaRows(action: Action): Promise<void> {
+  private async mirrorReplicaRows(
+    action: Action,
+    options: { readonly revert?: boolean } = {},
+  ): Promise<void> {
     for (const update of action.updates) {
       let row = this.replica.get(update.subject_id);
       if (row === undefined && !this.replica.isHeld(update.subject_type)) {
         const base = await this.storage.entities.get(update.subject_id);
         row = applyUpdate(base, update, 0, action.hlc) ?? undefined;
       }
-      if (row === undefined) continue;
+      if (row === undefined) {
+        if (options.revert !== true && update.method === "delete") {
+          const base = await this.storage.entities.get(update.subject_id);
+          const tombstone = applyUpdate(base, update, 0, action.hlc);
+          if (tombstone !== null) {
+            await this.storage.dirtyTracker.clear(update.subject_id);
+            await this.storage.entities.set(tombstone);
+          }
+        }
+        continue;
+      }
       await this.storage.dirtyTracker.clear(update.subject_id);
       await this.storage.entities.set(row);
     }
@@ -1922,7 +1942,7 @@ export class SyncClient implements PermissionQuery {
    */
   private async reMaterializeFromLog(action: Action): Promise<void> {
     this.replica.discard(action.id);
-    await this.mirrorReplicaRows(action);
+    await this.mirrorReplicaRows(action, { revert: true });
   }
 
   /**

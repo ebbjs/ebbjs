@@ -11,9 +11,9 @@
  * Covers:
  * - a non-member never receives the shared group, its workspace, or its
  *   issues, and a self-join is refused;
- * - `addToWorkspace` files the actor's `groupMember` row and the
- *   actor's profile into the shared group in one Action, and the member
- *   then reads the shared issue;
+ * - the invite files the actor's `groupMember` row and leaves the profile
+ *   pending, and the invitee's own client then shares it (#623);
+ * - a member cannot file another actor's profile into the workspace;
  * - `client.can` on the shared issue is allowed for a member and the
  *   non-member's profile is not visible to assign;
  * - the `assignee` relationship writes and reads back through the
@@ -26,8 +26,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type NamespacedClient } from "@ebbjs/client";
 import { schema, type Schema } from "../schema";
 import {
+  MEMBER_PERMISSIONS,
   SAMPLE_ISSUE_ID,
-  SEED_PERMISSIONS,
   SEEDER_ACTOR_ID,
   SHARED_GROUP_ID,
   SHARED_WORKSPACE_ID,
@@ -38,6 +38,7 @@ import {
   inviteToWorkspace,
   leaveWorkspace,
   profileIdForActor,
+  shareProfileToWorkspace,
   workspaceActions,
 } from "../workspace";
 import { syncAllGroups } from "../sync-groups";
@@ -99,11 +100,10 @@ describe("integration: workspace membership", () => {
     await syncAllGroups(outsider);
 
     await expect(
-      outsider.actions.addToWorkspace({
+      outsider.actions.inviteMember({
         actorId: OUTSIDER_ID,
-        profileId: OUTSIDER_PROFILE_ID,
         groupId: SHARED_GROUP_ID,
-        permissions: SEED_PERMISSIONS,
+        permissions: MEMBER_PERMISSIONS,
       }),
     ).rejects.toThrow(/not allowed|missing/i);
 
@@ -112,14 +112,14 @@ describe("integration: workspace membership", () => {
     expect(groups).not.toContain(SHARED_GROUP_ID);
   });
 
-  it("inviting a member files the groupMember row and the profile's membership in one Action", async () => {
+  it("the invite files the member row and leaves the profile pending", async () => {
     if (!(await serverIsReachable())) return;
 
     const invited = await inviteToWorkspace({
       inviter: seeder,
       actorId: MEMBER_ID,
       groupId: SHARED_GROUP_ID,
-      permissions: SEED_PERMISSIONS,
+      permissions: MEMBER_PERMISSIONS,
     });
     expect(invited).toBe(true);
 
@@ -128,7 +128,7 @@ describe("integration: workspace membership", () => {
       inviter: seeder,
       actorId: MEMBER_ID,
       groupId: SHARED_GROUP_ID,
-      permissions: SEED_PERMISSIONS,
+      permissions: MEMBER_PERMISSIONS,
     });
     expect(again).toBe(false);
 
@@ -136,15 +136,53 @@ describe("integration: workspace membership", () => {
       (row) => row.actor_id === MEMBER_ID && row.group_id === SHARED_GROUP_ID,
     );
     expect(memberRow).toBeDefined();
-    expect(memberRow!.permissions).toEqual([...SEED_PERMISSIONS]);
+    expect(memberRow!.permissions).toEqual([...MEMBER_PERMISSIONS]);
 
-    // The profile membership is observable through the `groups` join.
     const groups = await syncAllGroups(member);
     expect(groups).toContain(SHARED_GROUP_ID);
+  });
 
-    const profile = findRow(await member.profile.query().with({ groups: true }), MEMBER_PROFILE_ID);
-    expect(profile).toBeDefined();
-    expect(profile!.groups.map((group) => group.id)).toContain(SHARED_GROUP_ID);
+  it("the invitee's own client shares its profile, and a repeat share is a no-op", async () => {
+    if (!(await serverIsReachable())) return;
+
+    // `profile-pending` before the share: the member exists, the profile
+    // is not filed in the workspace yet.
+    const pending = findRow(await member.profile.query().with({ groups: true }), MEMBER_PROFILE_ID);
+    expect(pending?.groups.map((group) => group.id) ?? []).not.toContain(SHARED_GROUP_ID);
+
+    expect(
+      await shareProfileToWorkspace({
+        client: member,
+        actorId: MEMBER_ID,
+        groupId: SHARED_GROUP_ID,
+      }),
+    ).toBe(true);
+
+    const shared = findRow(await member.profile.query().with({ groups: true }), MEMBER_PROFILE_ID);
+    expect(shared).toBeDefined();
+    expect(shared!.groups.map((group) => group.id)).toContain(SHARED_GROUP_ID);
+
+    // One row per (entity, group): sharing again writes nothing new.
+    await shareProfileToWorkspace({ client: member, actorId: MEMBER_ID, groupId: SHARED_GROUP_ID });
+    const sharedAgain = findRow(
+      await member.profile.query().with({ groups: true }),
+      MEMBER_PROFILE_ID,
+    );
+    expect(sharedAgain!.groups.filter((group) => group.id === SHARED_GROUP_ID)).toHaveLength(1);
+  });
+
+  it("a member cannot file another actor's profile into the workspace", async () => {
+    if (!(await serverIsReachable())) return;
+
+    // The #623 graft, from inside the group: `profile.create` in the
+    // workspace is not enough to file a profile that lives in someone
+    // else's personal group. The local pass cannot see the outsider's
+    // group set, so the server is the one that refuses.
+    const graft = await member.profile.addToGroup(OUTSIDER_PROFILE_ID, SHARED_GROUP_ID);
+    expect(graft.rejected.map((r) => r.reason)).toContain("not_authorized");
+
+    const visible = (await member.profile.query()).map((profile) => profile.id);
+    expect(visible).not.toContain(OUTSIDER_PROFILE_ID);
   });
 
   it("the member reads the shared issue; a non-member's profile is not visible to assign", async () => {
@@ -215,27 +253,45 @@ describe("integration: workspace membership", () => {
       inviter: seeder,
       actorId: MEMBER_ID,
       groupId: SHARED_GROUP_ID,
-      permissions: SEED_PERMISSIONS,
+      permissions: MEMBER_PERMISSIONS,
     });
     expect(rejoin).toBe(true);
 
     const groups = await syncAllGroups(member);
     expect(groups).toContain(SHARED_GROUP_ID);
     expect(findRow(await member.issue.query(), SAMPLE_ISSUE_ID)).toBeDefined();
+
+    // Re-joining shares the profile again, which the leave removed.
+    const reshare = await member.profile.addToGroup(MEMBER_PROFILE_ID, SHARED_GROUP_ID);
+    expect(reshare.rejected).toEqual([]);
+    const profile = findRow(await member.profile.query().with({ groups: true }), MEMBER_PROFILE_ID);
+    expect(profile!.groups.map((group) => group.id)).toContain(SHARED_GROUP_ID);
   });
 
   it("a fellow member backfills and reads the joined actor's profile content", async () => {
     if (!(await serverIsReachable())) return;
 
-    // The inviter catches up the profile's membership row; backfill then
-    // reads the content, which was written in the member's personal group.
-    await seeder.backfill();
-    const seen = findRow(await seeder.profile.query(), MEMBER_PROFILE_ID);
-    expect(seen).toBeDefined();
-    expect(seen!.actor_id).toBe(MEMBER_ID);
-    expect(seen!.display_name).toBe(MEMBER_ID);
+    // A fresh client for the fellow member. The share is authored by the
+    // invitee now, not by the seeder, so observing it is a catch-up plus a
+    // backfill: the membership row arrives through the group's Action
+    // stream and the content, which lives in the member's personal group,
+    // through the backfill.
+    const fellow = mkClient(SEEDER_ACTOR_ID);
+    try {
+      await syncAllGroups(fellow);
+      await fellow.backfill();
+
+      const seen = findRow(await fellow.profile.query(), MEMBER_PROFILE_ID);
+      expect(seen).toBeDefined();
+      expect(seen!.actor_id).toBe(MEMBER_ID);
+      expect(seen!.display_name).toBe(MEMBER_ID);
+    } finally {
+      fellow.close();
+    }
 
     // Visibility follows the membership: a non-member still reads nothing.
+    await syncAllGroups(outsider);
+    await outsider.backfill();
     expect(findRow(await outsider.profile.query(), MEMBER_PROFILE_ID)).toBeUndefined();
   });
 });
