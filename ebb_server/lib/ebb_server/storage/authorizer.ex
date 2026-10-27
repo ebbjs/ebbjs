@@ -619,16 +619,16 @@ defmodule EbbServer.Storage.Authorizer do
   # unresolvable type is a refusal (`entityGroup.create` would let any
   # group member graft an entity whose type they may not create).
   #
-  # `create` in the target group alone is not enough for an entity that
-  # already has an owner: an actor can self-grant `<type>.create` in a
-  # group they bootstrapped, so otherwise they could file another
-  # tenant's entity into it and read or write it through the normal group
-  # resolution paths (#623). When the entity is already owned elsewhere,
-  # filing it is also a membership change, so it needs `<type>.update` in
-  # one of its current groups. Re-filing an entity into a group it is
-  # already in grants nothing new and stays allowed.
+  # That `create` is the whole gate, including for an entity that already
+  # has an owner: filing it needs no permission where it lives today,
+  # which is what makes this same write the invite primitive. The source
+  # side is the open #623 residual — an actor holding `create` in a group
+  # they control can file a known entity id into it and then read, write
+  # or delete the entity through the normal group resolution paths. #644
+  # adds the owner-side term; this comment describes the rule until it
+  # lands.
   #
-  # Both checks are cache-only: the bootstrap's declared permissions
+  # The check is cache-only: the bootstrap's declared permissions
   # stand in only for the membership the same Action creates, and this
   # update is exempt only when the entity is created by that same Action
   # (#289).
