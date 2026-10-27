@@ -10,7 +10,8 @@ defmodule EbbServer.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      aliases: aliases()
+      aliases: aliases(),
+      test_coverage: test_coverage()
     ]
   end
 
@@ -24,6 +25,24 @@ defmodule EbbServer.MixProject do
   defp elixirc_paths(:test), do: ["lib", "bench", "test/support"]
   defp elixirc_paths(:prod), do: ["lib"]
   defp elixirc_paths(_), do: ["lib", "bench"]
+
+  # Coverage measures the code that ships: bench, mix-task and test-support
+  # scaffolding compiled into `:test` only dilutes the gate. The entries below
+  # and their reasoning live in docs/tooling/ebb-server-coverage.md; the
+  # threshold is the staging point #632 and #641 move up as their tests land.
+  defp test_coverage do
+    [
+      summary: [threshold: 89],
+      ignore_modules: [
+        ~r/^EbbServer\.Bench\./,
+        ~r/^Mix\.Tasks\./,
+        ~r/^EbbServer\.(TestHelpers|SSEHelpers|Integration\.)/,
+        ~r/^EbbServer\.Sync\.Router\.OperationSchema$/,
+        EbbServer.Storage.PreparedAction,
+        EbbServer.ActionExport.Supervisor
+      ]
+    ]
+  end
 
   defp aliases do
     # `mix dev` runs the server under MIX_ENV=dev. See Mix.Tasks.Dev for
