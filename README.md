@@ -63,14 +63,14 @@ Server figures are single-node, measured through the real server pipeline (not a
 
 Rough scale to expect on one box:
 
-| Shape                                               | Verdict                                             |
-| --------------------------------------------------- | --------------------------------------------------- |
-| Documents / rooms with dozens to hundreds of people | Comfortable                                         |
-| 1,000-person room, low write rate                   | Fine                                                |
-| 1,000-person room, many people editing at once      | Bandwidth-bound, not CPU-bound                      |
-| Hundreds of small rooms                             | Bounded by the shared ~21k Actions/sec write budget |
+| Shape                                               | Verdict                                                                                                                                     |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Documents / rooms with dozens to hundreds of people | Comfortable                                                                                                                                 |
+| 1,000-person room, low write rate                   | Fine                                                                                                                                        |
+| 1,000-person room, many people editing at once      | Fine through ~1,000 edits/sec (1M deliveries/sec): ~31 ms p50 at ~25% CPU. The per-subscriber dispatch loop is the first limit beyond that. |
+| Hundreds of small rooms                             | Bounded by the shared ~21k Actions/sec write budget                                                                                         |
 
-Presence and cursor updates ride the same fan-out path — throttle them. For very large audiences, reduce the bytes per delivery (deltas, smaller payloads) rather than adding servers.
+Presence and cursor updates ride the same fan-out path — throttle them. The measured server cost at a million deliveries/sec is the per-subscriber dispatch loop, not the bytes; reducing payload size helps the network leg but not that loop.
 
 > These are single-node, 4-scheduler figures, and the fan-out number uses in-process subscribers — real SSE sockets will be lower. Treat them as orders of magnitude, not guarantees.
 
