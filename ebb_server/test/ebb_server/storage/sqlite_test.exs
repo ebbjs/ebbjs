@@ -16,6 +16,35 @@ defmodule EbbServer.Storage.SQLiteTest do
     db
   end
 
+  defp open_writable(dir) do
+    path = Path.join(dir, "ebb.db")
+    {:ok, db} = Sqlite3.open(path)
+
+    on_exit(fn ->
+      Sqlite3.close(db)
+    end)
+
+    db
+  end
+
+  defp entity_row(id, type, fields, overrides \\ %{}) do
+    Map.merge(
+      %{
+        id: id,
+        type: type,
+        data: Jason.encode!(%{"fields" => fields}),
+        created_hlc: 1000,
+        updated_hlc: 1000,
+        deleted_hlc: nil,
+        deleted_by: nil,
+        last_gsn: 1
+      },
+      overrides
+    )
+  end
+
+  defp lww(value), do: %{"type" => "lww", "value" => value, "hlc" => 1}
+
   describe "DDL" do
     test "runs without error and creates the entities table", context do
       dir = tmp_dir(context)
@@ -71,6 +100,108 @@ defmodule EbbServer.Storage.SQLiteTest do
         assert {:error, :invalid_filter} = SQLite.query_entities(query, name)
         assert Process.whereis(name) == pid
       end
+    end
+  end
+
+  # Every tenant shares the one SQLite process, so a statement it refuses must
+  # come back as a reply. These tests inject the failures SQLite and its NIF
+  # actually produce — an unbinable parameter, a row it cannot evaluate, a
+  # schema that no longer answers — instead of stubbing the driver (#626).
+  describe "query path failure net (#626)" do
+    defp doc_query do
+      %{type: "doc", filter: nil, actor_id: "a_1", limit: 10}
+    end
+
+    # A document reachable through one shared group. The membership's
+    # `permissions` value is what the query evaluates with json_array_length/1.
+    defp seed_doc_graph(name, permissions_value, last_gsn) do
+      :ok = SQLite.upsert_entity(entity_row("doc_1", "doc", %{"title" => lww("doc")}), name)
+
+      :ok =
+        SQLite.upsert_entity(
+          entity_row("eg_1", "entityGroup", %{
+            "entity_id" => lww("doc_1"),
+            "group_id" => lww("g_1")
+          }),
+          name
+        )
+
+      :ok =
+        SQLite.upsert_entity(
+          entity_row(
+            "gm_1",
+            "groupMember",
+            %{
+              "actor_id" => lww("a_1"),
+              "group_id" => lww("g_1"),
+              "permissions" => lww(permissions_value)
+            },
+            %{last_gsn: last_gsn}
+          ),
+          name
+        )
+    end
+
+    test "a parameter the NIF cannot bind replies instead of taking the cache down", context do
+      dir = tmp_dir(context)
+      %{name: name, pid: pid} = start_sqlite(dir)
+
+      # A bignum has no SQLite representation: exqlite raises from the NIF while
+      # binding rather than returning an error tuple, so only the rescue in
+      # run_prepared/3 keeps this request from becoming a process exit.
+      assert {:error, %ArgumentError{}} =
+               SQLite.query_entities(
+                 %{doc_query() | actor_id: 9_223_372_036_854_775_808},
+                 name
+               )
+
+      assert Process.whereis(name) == pid
+      assert :ok = SQLite.health(name)
+    end
+
+    test "a row SQLite cannot evaluate replies, and the cache serves once it is repaired",
+         context do
+      dir = tmp_dir(context)
+      %{name: name, pid: pid} = start_sqlite(dir)
+
+      # A membership materialized with a bare string where the permission list
+      # belongs makes json_array_length/1 fail during step.
+      :ok = seed_doc_graph(name, "not-an-array", 1)
+
+      assert {:error, reason} = SQLite.query_entities(doc_query(), name)
+      assert reason =~ "malformed JSON"
+      assert Process.whereis(name) == pid
+
+      :ok = seed_doc_graph(name, ["read"], 2)
+
+      assert {:ok, [%{id: "doc_1"}]} = SQLite.query_entities(doc_query(), name)
+    end
+
+    test "a schema that no longer answers replies, and the cache serves once it returns",
+         context do
+      dir = tmp_dir(context)
+      %{name: name, pid: pid} = start_sqlite(dir)
+
+      :ok = seed_doc_graph(name, ["read"], 1)
+      assert {:ok, [%{id: "doc_1"}]} = SQLite.query_entities(doc_query(), name)
+
+      db = open_writable(dir)
+      :ok = Sqlite3.execute(db, "ALTER TABLE entities RENAME TO entities_gone")
+
+      # The statement compiles against the schema the process already has, so
+      # the missing table surfaces on step; that error expires the schema, which
+      # is what makes the following attempt fail in prepare.
+      assert {:error, step_reason} = SQLite.query_entities(doc_query(), name)
+      assert step_reason =~ "no such table"
+
+      assert {:error, prepare_reason} = SQLite.query_entities(doc_query(), name)
+      assert prepare_reason =~ "no such table"
+
+      assert Process.whereis(name) == pid
+
+      :ok = Sqlite3.execute(db, "ALTER TABLE entities_gone RENAME TO entities")
+
+      assert {:ok, [%{id: "doc_1"}]} = SQLite.query_entities(doc_query(), name)
     end
   end
 
@@ -511,24 +642,6 @@ defmodule EbbServer.Storage.SQLiteTest do
   end
 
   describe "group listing queries" do
-    defp entity_row(id, type, fields, overrides \\ %{}) do
-      Map.merge(
-        %{
-          id: id,
-          type: type,
-          data: Jason.encode!(%{"fields" => fields}),
-          created_hlc: 1000,
-          updated_hlc: 1000,
-          deleted_hlc: nil,
-          deleted_by: nil,
-          last_gsn: 1
-        },
-        overrides
-      )
-    end
-
-    defp lww(value), do: %{"type" => "lww", "value" => value, "hlc" => 1}
-
     test "lists group members in (actor_id, id) order and never skips a tie", context do
       dir = tmp_dir(context)
       %{name: name} = start_sqlite(dir)
