@@ -255,11 +255,12 @@ defmodule EbbServer.EntityCrudIntegrationTest do
 
     test "HLC as positive integer is accepted" do
       entity_id = "todo_hlc_int"
+      hlc = generate_hlc()
 
       action_body = %{
         "id" => "act_hlc_int",
         "actor_id" => "a_test",
-        "hlc" => generate_hlc(),
+        "hlc" => hlc,
         "updates" => [
           %{
             "id" => "upd_hlc_int",
@@ -268,11 +269,11 @@ defmodule EbbServer.EntityCrudIntegrationTest do
             "method" => "put",
             "data" => %{
               "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Integer HLC", "hlc" => generate_hlc()}
+                "title" => %{"type" => "lww", "value" => "Integer HLC", "hlc" => hlc}
               }
             }
           },
-          entity_group_update(entity_id, "g_test", generate_hlc())
+          entity_group_update(entity_id, "g_test", hlc)
         ]
       }
 
@@ -284,11 +285,12 @@ defmodule EbbServer.EntityCrudIntegrationTest do
 
     test "HLC as positive integer string is accepted" do
       entity_id = "todo_hlc_str"
+      hlc = generate_hlc()
 
       action_body = %{
         "id" => "act_hlc_str",
         "actor_id" => "a_test",
-        "hlc" => "#{generate_hlc()}",
+        "hlc" => "#{hlc}",
         "updates" => [
           %{
             "id" => "upd_hlc_str",
@@ -297,11 +299,11 @@ defmodule EbbServer.EntityCrudIntegrationTest do
             "method" => "put",
             "data" => %{
               "fields" => %{
-                "title" => %{"type" => "lww", "value" => "String HLC", "hlc" => generate_hlc()}
+                "title" => %{"type" => "lww", "value" => "String HLC", "hlc" => hlc}
               }
             }
           },
-          entity_group_update(entity_id, "g_test", generate_hlc())
+          entity_group_update(entity_id, "g_test", hlc)
         ]
       }
 

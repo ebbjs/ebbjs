@@ -35,7 +35,7 @@ defmodule EbbServer.Sync.CatchUpTest do
         "title" => %{
           "type" => "lww",
           "value" => "First Task",
-          "hlc" => "2024-01-01T00:00:00.000Z"
+          "hlc" => generate_hlc()
         }
       })
 
@@ -64,7 +64,7 @@ defmodule EbbServer.Sync.CatchUpTest do
             "title" => %{
               "type" => "lww",
               "value" => "Task #{i}",
-              "hlc" => "2024-01-0#{i}T00:00:00.000Z"
+              "hlc" => generate_hlc()
             }
           })
 
@@ -98,7 +98,7 @@ defmodule EbbServer.Sync.CatchUpTest do
             "title" => %{
               "type" => "lww",
               "value" => "Task #{i}",
-              "hlc" => "2024-01-#{month}T00:00:00.000Z"
+              "hlc" => generate_hlc()
             }
           })
 
@@ -369,7 +369,7 @@ defmodule EbbServer.Sync.CatchUpTest do
         "title" => %{
           "type" => "lww",
           "value" => "First Task",
-          "hlc" => "2024-01-01T00:00:00.000Z"
+          "hlc" => generate_hlc()
         }
       })
 
@@ -409,7 +409,7 @@ defmodule EbbServer.Sync.CatchUpTest do
           "title" => %{
             "type" => "lww",
             "value" => "Task #{i}",
-            "hlc" => "2024-01-0#{i}T00:00:00.000Z"
+            "hlc" => generate_hlc()
           }
         })
       end
