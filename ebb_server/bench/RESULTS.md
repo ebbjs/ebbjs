@@ -2770,15 +2770,16 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
 5. **Action-log compaction/retention**
    ([#123](https://github.com/ebbjs/ebbjs/issues/123)) — a longer-horizon
    lever this harness does not exercise.
-6. **The depth>1 scheduling path has no regression test.** The
+6. **The depth>1 scheduling path now has a regression test.** The
    `advance_pipeline/1` state-discard that dropped claimed GSN ranges above
    depth 1 (see
    [Depth > 1 lost claimed ranges](#depth--1-lost-claimed-ranges-until-the-553-scheduling-fix))
-   is covered only by the bench: no storage test drives a commit ack while a
-   cap-sized (`:writer_batch_max_size`) burst is pending, which is the shape
-   that fired it. A `Writer`-level test that claims at depth ≥ 2, leaves a
-   1000-Action burst pending, and asserts that a freed slot flushes it into a
-   second commit would pin it.
+   was covered only by the bench until
+   [#660](https://github.com/ebbjs/ebbjs/issues/660) added
+   `writer_depth_burst_test.exs`: it claims two held ranges at depth 2, leaves
+   a cap-sized (`:writer_batch_max_size`) burst pending behind them, releases
+   the head, and asserts the freed slot flushes the burst into its own commit
+   with every GSN durable exactly once.
 7. **t0 depth-1 may be ~9% slower than the #551 session.** 20,320/s here versus
    22,465/s then, with non-overlapping ranges on the same host and shape. The
    #551 rows predate #533/#534/#553, so this is plausibly the seam cost of the
