@@ -66,20 +66,35 @@ defmodule EbbServer.Storage.EntityGroupCache do
       {:error, :nil_values_not_allowed}
     else
       entry = %{id: entry_id, entity_id: entity_id, group_id: group_id}
+      previous = get_entity_group(entry_id, by_id_table)
 
-      # A re-put replaces the row for the same id. Leaving the previous
-      # row in the bags would let a stale group keep resolving.
-      delete_entity_group(entry_id,
-        entity_groups: table,
-        entity_groups_by_id: by_id_table,
-        entity_groups_by_group: by_group_table
-      )
-
-      :ets.insert(table, {entity_id, entry})
-      :ets.insert(by_id_table, {entry_id, entry})
-      :ets.insert(by_group_table, {{group_id, entity_id}})
-      :ok
+      # A delete-first re-put opens a window in which a concurrent reader
+      # sees the entity with no membership at all. Insert the replacement
+      # before removing the previous objects.
+      if previous == entry do
+        upsert_entry(entry, table, by_id_table, by_group_table)
+      else
+        upsert_then_delete_previous(previous, entry, table, by_id_table, by_group_table)
+      end
     end
+  end
+
+  defp upsert_entry(entry, table, by_id_table, by_group_table) do
+    :ets.insert(table, {entry.entity_id, entry})
+    :ets.insert(by_id_table, {entry.id, entry})
+    :ets.insert(by_group_table, {{entry.group_id, entry.entity_id}})
+    :ok
+  end
+
+  defp upsert_then_delete_previous(previous, entry, table, by_id_table, by_group_table) do
+    :ok = upsert_entry(entry, table, by_id_table, by_group_table)
+    if previous != nil, do: delete_objects(table, by_group_table, previous)
+    :ok
+  end
+
+  defp delete_objects(table, by_group_table, entry) do
+    :ets.delete_object(table, {entry.entity_id, entry})
+    :ets.delete(by_group_table, {entry.group_id, entry.entity_id})
   end
 
   @doc """
@@ -100,8 +115,7 @@ defmodule EbbServer.Storage.EntityGroupCache do
 
     case :ets.lookup(by_id_table, entry_id) do
       [{_, entry}] ->
-        :ets.delete_object(table, {entry.entity_id, entry})
-        :ets.delete(by_group_table, {entry.group_id, entry.entity_id})
+        delete_objects(table, by_group_table, entry)
         :ets.delete(by_id_table, entry_id)
         :ok
 

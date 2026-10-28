@@ -129,6 +129,35 @@ it as an upper reference until it is re-measured, not as a paired current
 number. The values sit inside this VM's ±5–10% run-to-run spread, which is why
 the baseline band is 10%/25% and not a tighter constant.
 
+## EntityGroup re-put atomicity (#670)
+
+Measured **2026-10-28** on `recsy-vps` (the Environment section below), with
+the same canonical shape. Before the fix, a membership re-put deleted the row
+and then inserted it, so a concurrent authz read could see a healthy entity as
+ownerless; the 2-Update shape re-puts the `entityGroup` row on every Action and
+rejected roughly 1 in 3,000–13,000 Actions. `put_entity_group/2` now inserts
+the replacement before removing the previous objects, and an identical re-put
+performs no delete at all.
+
+Raw reports: `bench/results/20261028T210513Z-recsy-vps.md` and
+`bench/results/20261028T210548Z-recsy-vps.md`.
+
+```sh
+mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 8 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --seed 1
+```
+
+| Run | Accepted | Accepted/sec | Rejected |      p50 |      p95 |      p99 |
+| --- | -------: | -----------: | -------: | -------: | -------: | -------: |
+| 1   |  484,800 |       24,240 |    **0** | 30.07 ms | 46.08 ms | 58.70 ms |
+| 2   |  515,900 |       25,795 |    **0** | 29.24 ms | 37.86 ms | 42.32 ms |
+
+Both runs reported 0 GSN holes, 0 write/transport errors, and a final
+watermark lag of 0, and both passed the #577 guardrails. Run 1's p50 sits
+0.57 ms above the canonical 29.5 ms median, inside this VM's spread; per the
+canonical-budget rule above, that is a candidate for a rotated A/B, not a
+regression.
+
 ## Environment
 
 | Field        | Value                                                                   |
