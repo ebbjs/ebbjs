@@ -16,6 +16,8 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
+  # Releasing dispatches `release-image.yml`; see the tag step.
+  actions: write
   # npm trusted publishing: the registry verifies this workflow's OIDC token
   # instead of receiving a long-lived token.
   id-token: write
@@ -84,12 +86,35 @@ jobs:
         run: |
           version=$(node -p "require('./packages/core/package.json').version")
           tag="v$version"
-          if ! npm view "@ebbjs/core@$version" version >/dev/null 2>&1; then
+
+          # The registry's read side replicates asynchronously: `npm view` answers
+          # 404 for a version the publish already accepted, for seconds to
+          # minutes. Poll before concluding nothing shipped, or a successful
+          # release finishes green with no tag and no release.
+          published=false
+          for attempt in $(seq 1 30); do
+            if npm view "@ebbjs/core@$version" version >/dev/null 2>&1; then
+              published=true
+              break
+            fi
+            echo "@ebbjs/core@$version not visible yet (attempt $attempt); retrying in 20s"
+            sleep 20
+          done
+          if [ "$published" != true ]; then
             echo "@ebbjs/core@$version is not published; nothing to tag"
             exit 0
           fi
+
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "$tag already released"
             exit 0
           fi
           gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes
+
+          # `release-image.yml` listens for `push` on `v*` tags, but this tag is
+          # created with GITHUB_TOKEN and GitHub suppresses workflow runs for
+          # events a GITHUB_TOKEN caused — the same rule that keeps CI off the
+          # version PR. Dispatch the build instead. Only on the run that creates
+          # the release, so a rerun does not rebuild a published image; a failed
+          # image build is re-dispatched by hand.
+          gh workflow run release-image.yml --ref "$GITHUB_REF_NAME" -f version="$version"

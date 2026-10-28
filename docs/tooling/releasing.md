@@ -40,6 +40,18 @@ next release would contain.
   changed packages, then tags `v<version>` and creates the GitHub release.
   Changesets' per-package `<name>@<version>` tags and releases are disabled: the
   five packages share a version, so `v<version>` names the release train.
+- **The tag step waits for the registry.** npm's read side replicates
+  asynchronously, so `npm view` can answer 404 for a version the publish already
+  accepted — seconds to a few minutes. The step polls for up to ten minutes
+  before concluding nothing shipped. The same lag delays the new version in
+  `npm view` and in `npm install` after the run goes green: it is replication,
+  not a failed publish, and the fix is to wait rather than to bump again.
+- **The image build is dispatched, not triggered.** `release-image.yml` listens
+  for `push` on `v*` tags, but the tag here is created with `GITHUB_TOKEN`, and
+  GitHub suppresses workflow runs for events a `GITHUB_TOKEN` caused. The tag
+  step calls `gh workflow run release-image.yml` itself (hence the
+  `actions: write` permission), only on the run that creates the release; a
+  failed image build is re-dispatched by hand with `-f version=<v>`.
 - **Re-running on an unchanged commit is a no-op.** Changesets reads the
   registry, skips versions that are already published, and exits successfully.
 
@@ -55,32 +67,54 @@ Nothing in this repository can create the npm side of trusted publishing; it is
 configured per package on npmjs.com by an owner:
 
 1. npm cannot attach a trusted publisher to a name that does not exist yet, so
-   `0.1.0` is bootstrapped once with a
-   [granular access token](https://docs.npmjs.com/creating-and-viewing-access-tokens),
-   from a checkout of `main`:
+   `0.1.0` is bootstrapped once from a checkout of `main`, with a
+   [granular access token](https://docs.npmjs.com/creating-and-viewing-access-tokens)
+   for an account that owns an npm organization named `ebbjs`. The token needs
+   read/write on `@ebbjs` and **2FA bypass enabled**; without the bypass npm
+   refuses the publish, telling you it requires two-factor authentication or a
+   granular access token with 2FA bypass.
+
+   The npm CLI resolves `_authToken` from `.npmrc`, so put it there instead of
+   relying on `NODE_AUTH_TOKEN` alone:
 
    ```bash
+   npm config set //registry.npmjs.org/:_authToken=<token> --location=user
+   npm whoami                # must print the account name, not ENEEDAUTH
+
    pnpm version-packages     # consumes .changeset/*.md, writes 0.1.0 + CHANGELOGs
-   git commit -am "chore(release): 0.1.0"
+   git add -A                # `commit -am` misses the new CHANGELOG.md files
+   git commit -m "chore(release): 0.1.0"
    pnpm build:packages
-   NODE_AUTH_TOKEN=<token> pnpm -r --filter "@ebbjs/*" \
-     --filter "!@ebbjs/server" --filter "!@ebbjs/www" publish \
-     --access public --no-git-checks
+   pnpm -r --filter "@ebbjs/*" --filter "!@ebbjs/server" \
+     --filter "!@ebbjs/www" publish --access public --no-git-checks
    git push                  # Release finds no changesets and does nothing
+
+   npm config delete //registry.npmjs.org/:_authToken --location=user
    ```
 
    This is the only publish that uses a token, and the only one without
-   provenance. Delete the token afterwards.
+   provenance. Revoke the token on npmjs.com afterwards. The registry answers
+   404 for each new package for a few minutes after the publish is accepted;
+   that is replication lag, not a failure.
 
 2. On each of the five packages: **Settings → Trusted publishing → GitHub
-   Actions**, with repository `ebbjs/ebbjs` and workflow filename `release.yml`.
-   No environment is used. A new trusted publisher must complete a publish
-   within two days or it expires.
+   Actions**, with repository `ebbjs/ebbjs`, workflow filename `release.yml`
+   (the filename alone, not a path) and no environment. Under **Allowed
+   actions** tick **Allow npm publish**: `npm stage publish` is always allowed,
+   direct `npm publish` is opt-in, and an unticked box fails the release with
+   `403 ... OIDC permission denied for this action`. Leave **Allow npm dist-tag**
+   unticked unless a release has to move a tag. A new trusted publisher must
+   complete a publish within two days or it expires.
 3. Confirm nothing in CI sets `NODE_AUTH_TOKEN` or `registry-url`: a configured
    registry token takes precedence over the OIDC exchange. Nothing in
    `release.yml` reads a token secret.
 4. In **Settings → Actions → General**, enable _Allow GitHub Actions to create
    and approve pull requests_, or the version PR cannot be opened.
+5. Once the first OIDC release is green, set each package's **Publishing
+   access** to _Require two-factor authentication and disallow bypass 2fa
+   tokens_. Trusted publishing is not a token, so it keeps working, and
+   token-based publishing — the bootstrap's only mechanism — stops being
+   possible.
 
 The workflow installs `npm@^11.5.1` on the runner because `pnpm publish` hands
 the upload to the npm CLI, and 11.5.1 is the first version that can exchange the
