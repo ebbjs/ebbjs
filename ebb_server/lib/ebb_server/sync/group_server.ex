@@ -7,6 +7,7 @@ defmodule EbbServer.Sync.GroupServer do
 
   use GenServer, restart: :transient
 
+  alias EbbServer.Sync.GroupRegistry
   alias EbbServer.Telemetry
 
   @type action :: %{
@@ -27,8 +28,7 @@ defmodule EbbServer.Sync.GroupServer do
 
   @spec start_link(String.t()) :: GenServer.on_start()
   def start_link(group_id) do
-    name = {:via, Registry, {EbbServer.Sync.GroupRegistry, group_id}}
-    GenServer.start_link(__MODULE__, group_id, name: name)
+    GenServer.start_link(__MODULE__, group_id, name: GroupRegistry.name(group_id))
   end
 
   @spec push_actions(pid(), [action()], integer() | nil) :: :ok
@@ -53,7 +53,7 @@ defmodule EbbServer.Sync.GroupServer do
 
   @impl true
   def init(group_id) do
-    Registry.register(EbbServer.Sync.GroupRegistry, group_id, :group_server)
+    Registry.register(GroupRegistry, group_id, :group_server)
     {:ok, %__MODULE__{group_id: group_id}}
   end
 
