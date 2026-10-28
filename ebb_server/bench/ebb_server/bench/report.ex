@@ -15,6 +15,10 @@ defmodule EbbServer.Bench.Report do
   alias EbbServer.Storage.RocksDB
   alias EbbServer.Telemetry
 
+  # `conn_deliver` is per subscriber and can outlive the push sample, so the
+  # push-side attribution is every hop except it.
+  @push_side_hops Enum.reject(Telemetry.fanout_hops(), &(&1 == :conn_deliver))
+
   @doc """
   Renders the full Markdown report.
   """
@@ -320,6 +324,7 @@ defmodule EbbServer.Bench.Report do
       server_latency_section(result.server),
       fanout_section(config, result.fanout, result.server),
       fixed_rate_section(config, result),
+      fanout_hop_section(config, result.server),
       write_batch_section(config, result),
       "## Correctness and resources",
       "",
@@ -542,7 +547,9 @@ defmodule EbbServer.Bench.Report do
           "`ebb.http.request_latency_ms` is measured inside the request process, so MessagePack " <>
           "encoding and transport are excluded; `ebb.writer.batch_latency_ms` covers one durable " <>
           "Writer flush, and `ebb.writer.commit_latency_ms` is the Committer's share of it " <>
-          "(frame encode + `cf_*` op assembly + `write_batch`); `ebb.fanout.push_latency_ms` is commit → broadcast complete per batch per group. " <>
+          "(frame encode + `cf_*` op assembly + `write_batch`); `ebb.fanout.push_latency_ms` " <>
+          "starts at the end of the post-commit apply (the fan-out notify send) and ends at " <>
+          "the end of the `GroupServer` cast, per batch per group. " <>
           "`ebb.writer.batch_latency_ms` starts after the request is dequeued, so the wait a " <>
           "call spends in the Writer mailbox is not part of it: `ebb.writer.flush_phase_ms` " <>
           "reports that wait as `queue`, with `prepare` beside it, and a sweep renders the " <>
@@ -626,8 +633,8 @@ defmodule EbbServer.Bench.Report do
       "\n\n" <>
       "Delivery lag is measured from a monotonic stamp embedded in each Action, so it spans " <>
       "client send → commit → dispatch → subscriber delivery and folds in client and transport " <>
-      "overhead. `ebb.fanout.push_latency_ms` (server commit → broadcast complete) reports server " <>
-      "queueing separately. Only every 50th delivery is decoded for the sample. Delivered " <>
+      "overhead. `ebb.fanout.push_latency_ms` (server post-apply → broadcast complete) reports " <>
+      "server queueing separately. Only every 50th delivery is decoded for the sample. Delivered " <>
       "counts cover the whole run (warmup plus measured window); the throughput table above is " <>
       "measured-window only.\n"
   end
@@ -661,6 +668,187 @@ defmodule EbbServer.Bench.Report do
   end
 
   defp fixed_rate_section(_config, _result), do: nil
+
+  defp fanout_hop_section(config, server) do
+    hops = Map.get(server, :fanout_hops) || %{}
+
+    if Enum.any?(Telemetry.fanout_hops(), &(hop_window(hops, &1).count > 0)) do
+      "## Fan-out latency breakdown\n\n" <>
+        hop_table(hops) <>
+        "\n\n" <>
+        hop_accounting_table(server, hops) <>
+        "\n\n" <>
+        hop_notes(config, server) <>
+        "\n"
+    end
+  end
+
+  defp hop_table(hops) do
+    rows =
+      Enum.map(Telemetry.fanout_hops(), fn hop ->
+        window = hop_window(hops, hop)
+
+        [
+          "`#{hop}`",
+          "#{window.count}",
+          format_value(window.p50),
+          format_value(window.p95),
+          format_value(window.p99)
+        ]
+      end)
+
+    table(["Hop", "Samples", "p50 (µs)", "p95 (µs)", "p99 (µs)"], rows)
+  end
+
+  defp hop_accounting_table(server, hops) do
+    push = overall_window(Map.get(server, :fanout_push, []))
+    sum = push_side_p50(hops)
+
+    rows =
+      [
+        [
+          "`ebb.fanout.push_latency_ms` (re-based)",
+          "#{push.count}",
+          format_value(push.p50),
+          format_value(push.p95),
+          format_value(push.p99),
+          "—",
+          "—"
+        ]
+      ] ++ notify_context_row(server) ++ [sum_row(push, sum)]
+
+    table(
+      [
+        "Measurement",
+        "Samples",
+        "p50 (µs)",
+        "p95 (µs)",
+        "p99 (µs)",
+        "Δ vs push p50 (µs)",
+        "Δ vs push p50"
+      ],
+      rows
+    )
+  end
+
+  # #537 already prices the Writer → Router hand-off as the `notify` phase,
+  # so it is context for the push sample rather than another hop in the sum.
+  defp notify_context_row(server) do
+    phases = Map.get(server, :flush_phases) || %{}
+
+    case overall_window(Map.get(phases, :notify, [])) do
+      %{count: 0} ->
+        []
+
+      window ->
+        [
+          [
+            "`writer_notify` (context: #537 `notify` phase)",
+            "#{window.count}",
+            format_value(window.p50),
+            format_value(window.p95),
+            format_value(window.p99),
+            "—",
+            "—"
+          ]
+        ]
+    end
+  end
+
+  defp sum_row(push, sum) do
+    [
+      "Sum of push-side hop p50s",
+      "—",
+      format_value(sum),
+      "—",
+      "—",
+      delta_absolute(push.p50, sum),
+      delta_percent(push.p50, sum)
+    ]
+  end
+
+  defp delta_absolute(nil, _sum), do: "n/a"
+  defp delta_absolute(_push, nil), do: "n/a"
+  defp delta_absolute(push, sum), do: format_signed(sum - push)
+
+  defp delta_percent(nil, _sum), do: "n/a"
+  defp delta_percent(_push, nil), do: "n/a"
+  defp delta_percent(0, _sum), do: "n/a"
+  defp delta_percent(push, sum), do: format_delta((sum - push) / push)
+
+  # A hop with no samples in the window contributes 0. That is the correct
+  # reading for `router_dwell` (emitted only when a range actually waits) and
+  # for a hop whose event never fired; the notes state the caveat.
+  defp push_side_p50(hops) do
+    @push_side_hops
+    |> Enum.map(fn hop -> hop_window(hops, hop).p50 || 0 end)
+    |> Enum.sum()
+  end
+
+  defp hop_window(hops, hop), do: overall_window(Map.get(hops, hop, []))
+
+  defp overall_window(nil), do: empty_window()
+
+  defp overall_window(windows) do
+    overall(windows) || empty_window()
+  end
+
+  defp empty_window, do: %{window: "overall", count: 0, p50: nil, p95: nil, p99: nil}
+
+  defp format_signed(value) when value >= 0, do: "+" <> format_value(value)
+  defp format_signed(value), do: format_value(value)
+
+  defp hop_notes(config, server) do
+    notify? =
+      overall_window(Map.get(Map.get(server, :flush_phases) || %{}, :notify, [])).count > 0
+
+    notify_note =
+      "`writer_notify` is #537's `notify` phase in `ebb.writer.flush_phase_ms` and is " <>
+        "immediately before the re-based push sample (plus the mailbox hand-off), so it is " <>
+        "shown as context" <>
+        if(notify?,
+          do: ", not as another hop in the sum.",
+          else: ". It had no samples in this window."
+        )
+
+    [
+      "Each hop is one `ebb.fanout.hop_ms` sample per range per hop (per range per group " <>
+        "for the group hops), emitted by the server on the same measured window as every " <>
+        "other `ebb.*` sample. `router_queue` runs from the Writer's notify send to the " <>
+        "Router's `handle_info/2`; `router_dwell` is the wait in `Plan` for the committed " <>
+        "watermark and is emitted only when a range actually waits, so an empty row means no " <>
+        "range was held; `router_decode` is the `range_iterator` plus decode and group split; " <>
+        "`group_queue` is the cast to the `GroupServer` entry; `group_encode` is the frame " <>
+        "build; `group_cast` is the directly measured span from the end of the encode to " <>
+        "the last subscriber cast being enqueued, not a residual.",
+      "`conn_deliver` " <>
+        conn_sample_note(config) <>
+        " Its sample count is therefore not " <>
+        "the delivery count, and its server-side end is the parent `send/2` returning rather " <>
+        "than the SSE handler's `chunk/2`, so a real socket is not measured.",
+      "The sum covers " <>
+        Enum.map_join(@push_side_hops, " + ", &"`#{&1}`") <>
+        ": the push-side hops that end inside the re-based `ebb.fanout.push_latency_ms`. " <>
+        "`conn_deliver` is excluded because it is per subscriber and can outlive the push. " <>
+        "A hop with no samples in the window contributes 0. The sum balances when one " <>
+        "group receives a range, the t4 shape; with several groups the group-scoped hops " <>
+        "repeat per group while the range-scoped hops do not.",
+      notify_note
+    ]
+    |> Enum.join("\n\n")
+  end
+
+  defp conn_sample_note(%{conn_sample_rate: 0}) do
+    "is off for this run (`--conn-sample-rate 0`), so every `conn_deliver` row is empty."
+  end
+
+  defp conn_sample_note(%{conn_sample_rate: 1}) do
+    "is sampled on every delivery (`--conn-sample-rate 1`)."
+  end
+
+  defp conn_sample_note(%{conn_sample_rate: rate}) do
+    "is sampled 1 delivery in #{rate} (`--conn-sample-rate #{rate}`)."
+  end
 
   defp write_batch_section(%{tier: :t5} = config, result) do
     achieved = overall(result.throughput)

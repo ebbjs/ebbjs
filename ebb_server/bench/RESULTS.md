@@ -988,8 +988,9 @@ r=1000 the server keeps up **100%** at 1,000,705 delivered/s on 24% CPU. The
    dispatch latency while ~100 subscribers sustained ~1000 Actions/s at
    ~45 ms — the mechanism behind the t3 cliff. **Coalesced delivery is now
    merged** (#509): with lean subscribers it is a **~6× delivered-throughput
-   win and up to ~6× less CPU**, and commit → broadcast complete p50 falls to
-   **~30 ms versus multi-second** (see
+   win and up to ~6× less CPU**, and the pre-#583 commit → broadcast complete p50
+   (timer started at the top of `apply_one/2`) falls to **~30 ms versus
+   multi-second** (see
    [Coalesced fan-out delivery](#coalesced-fan-out-delivery-485-merged-in-509)).
    The earlier "+2–22% delivered, ceiling not removed" was an artifact-capped
    comparison: the shared harness capped _both_ arms at ~140k, hiding the real
@@ -1053,7 +1054,9 @@ both arms.** The shared bench subscriber capped the pre-coalescing and
 coalesced arms at ~140k deliveries/s, hiding the real pre-coalescing cap
 (~175k/s, the `GroupServer`'s N×A loop) and the coalesced one (≥1M). With the
 artifact removed, coalescing is a **~6× delivered-throughput win and ~6× less
-CPU**, plus commit → broadcast complete p50 of **~30 ms versus multi-second**.
+CPU**, plus a pre-#583 commit → broadcast complete p50 of **~30 ms versus
+multi-second** (the re-based and attributed number is in
+[Fan-out latency breakdown](#fan-out-latency-breakdown-583)).
 
 New n=1000 keep-up (coalesced, lean):
 
@@ -1069,7 +1072,7 @@ r=1000 (keeps up) and r=3000 (54% of need).
 
 **Findings.**
 
-1. **Latency: commit → broadcast p50 falls from multi-second to ~30 ms.** With
+1. **Latency: pre-#583 commit → broadcast p50 falls from multi-second to ~30 ms.** With
    lean subscribers, coalesced p50 is 32,430/31,634/27,522 µs at r=300 and
    31,720/25,787/27,375 µs at r=1000, against 2,244,930/6,258,054/9,488,254 µs
    and 4,110,325/12,180,802/18,527,554 µs pre-coalescing. A real,
@@ -1161,6 +1164,147 @@ subscriber's shared counter and ETS lag table, fixed by `--subscriber-lean`
 (#510, see the harness-artifact table). The real ceiling (**~1.6M/s at
 ~40% CPU**) is still **non-CPU**, so the next step is a **lean-harness re-probe
 with profiling** of the single Router and the per-subscriber hop.
+
+## Fan-out latency breakdown (#583)
+
+[#583](https://github.com/ebbjs/ebbjs/issues/583) splits the fan-out sample
+into named hops so the number can be attributed and regressed. It also
+re-bases `ebb.fanout.push_latency_ms` from the end of the post-commit apply
+(the fan-out notify send) instead of the top of `apply_one/2`, so the
+write-side `apply` phase is no longer inside the fan-out sample. The
+write-side hand-off remains #537's `notify` phase in
+`ebb.writer.flush_phase_ms`; the hop table below shows it as context, not as
+part of the sum.
+
+Each `ebb.fanout.hop_ms` sample is one range per hop (one range per group for
+the group hops). `router_queue` is Writer send → Router entry;
+`router_dwell` is time held in `Plan` for the watermark and is emitted only
+when a range actually waits; `router_decode` is the RocksDB range read, ETF
+decode, and group split; `group_queue` is Router cast → GroupServer entry;
+`group_encode` is the frame build; `group_cast` is the GroupServer's
+per-subscriber cast loop; `conn_deliver` is one sampled subscriber's cast →
+SSEConnection → parent `send/2` return. The server-side end of
+`conn_deliver` is the parent send, not the SSE handler's `chunk/2`, so these
+are still in-process-subscriber numbers, not real-socket numbers.
+
+Measured **2026-10-28** on `recsy-vps` (the environment table above), t4 with
+the lean subscriber, batch 100, 2-Update Actions, `hot`, 25 s measured window
+after 5 s warmup. `--conn-sample-rate 100` samples 1 delivery in 100 for the
+per-subscriber hop; the other hops are not sampled.
+
+```sh
+mix bench.actions --tier t4 --rate R --subscribers N --duration 25 \
+  --warmup 5 --concurrency 1 --batch-size 100 --updates-per-action 2 \
+  --distribution hot --subscriber-lean --conn-sample-rate 100
+```
+
+|    N |     R |  push p50 / p95 | router_queue | router_dwell | router_decode | group_queue | group_encode | group_cast | conn_deliver (sampled) | sum p50 |      Δ |
+| ---: | ----: | --------------: | -----------: | -----------: | ------------: | ----------: | -----------: | ---------: | ---------------------: | ------: | -----: |
+|    1 |   100 |   3,232 / 4,819 |           45 |            0 |         1,227 |         269 |        1,356 |         18 |                     16 |   2,915 |  −9.8% |
+|    1 |  1000 |   2,727 / 4,058 |           43 |            0 |         1,211 |         247 |        1,102 |         17 |                     12 |   2,620 |  −3.9% |
+|    1 | 10000 |   2,663 / 3,908 |           37 |            0 |         1,183 |         230 |        1,051 |         13 |                     10 |   2,514 |  −5.6% |
+|   10 |  7000 |   2,933 / 4,968 |           37 |            0 |         1,398 |         236 |        1,067 |         30 |                     33 |   2,768 |  −5.6% |
+|  100 |  1000 |   4,015 / 6,038 |           42 |            0 |         1,173 |         243 |        1,312 |        676 |                    503 |   3,446 | −14.2% |
+| 1000 |  1000 | 31,068 / 43,261 |           42 |            0 |         1,365 |         224 |        1,318 |     27,569 |                  7,831 |  30,518 |  −1.8% |
+
+All values are µs. `Sum` is `router_queue + router_dwell + router_decode +
+group_queue + group_encode + group_cast`; `conn_deliver` is excluded because
+it is per subscriber and can outlive the push sample. The t4 n=1000 r=1000
+row is the acceptance target: its hops sum to the end-to-end p50 within
+**1.8%**. `group_cast` is a directly measured span (end of encode → the last
+subscriber cast being enqueued), not a remainder. The sum balances when one
+group receives a range, which is the t4 shape; with several groups the
+group-scoped hops repeat per group while the range-scoped hops do not. The
+n=100 row is −14.2% because a sum of per-hop p50s is not the p50 of the sum
+when the hop distributions differ; that row is still fully attributed, not
+residual.
+
+Headline hop tails at t4 n=1000 r=1000 (the same run as the last row):
+
+| Hop             | Samples |    p50 |    p95 |    p99 |
+| --------------- | ------: | -----: | -----: | -----: |
+| `router_queue`  |     250 |     42 |     72 |     82 |
+| `router_dwell`  |       0 |    n/a |    n/a |    n/a |
+| `router_decode` |     250 |  1,365 |  3,142 |  4,031 |
+| `group_queue`   |     250 |    224 |    381 |    472 |
+| `group_encode`  |     250 |  1,318 |  2,103 |  2,309 |
+| `group_cast`    |     250 | 27,569 | 39,805 | 43,497 |
+| `conn_deliver`  |   2,500 |  7,831 | 19,336 | 23,480 |
+
+### The floor and what the ~30 ms is made of
+
+The n=1 floor is **~2.7 ms** across r = 100, 1000, 10000, and it barely moves
+with write rate. The per-subscriber component at n=1000 is therefore bounded
+by subtraction: **~28.4 ms**, not assumed.
+
+At n=1000 the Router side is small and flat: `router_queue` 42 µs,
+`router_decode` 1.37 ms, `group_queue` 224 µs, `group_encode` 1.32 ms. The
+**`group_cast` hop is 27.6 ms of the 31.1 ms total (89%)** and accounts for
+97% of the n=1 → n=1000 increase. But that hop is wall time, and the
+in-process consumers run on the same four schedulers: when 1,000 subscribers
+each split and count a 100-frame chunk, they compete with the GroupServer
+for CPU. `group_cast` measures that scheduler time, not just the send call.
+
+Three controls at the same t4 n=1000 r=1000 shape separate the server from
+the consumer:
+
+| Consumer                                                           |         push p50 / p95 | `group_cast` p50 | `conn_deliver` p50 | scheduler util |
+| ------------------------------------------------------------------ | ---------------------: | ---------------: | -----------------: | -------------: |
+| normal lean (splits every chunk, samples 1/50 for lag)             |         31.1 / 43.3 ms |          27.6 ms |             7.8 ms |          24.6% |
+| `--subscriber-count-only` (counts frames with `:binary.matches/2`) | 8.6–9.5 / 12.9–13.6 ms |       5.2–6.3 ms |             1.6 ms |       5.2–5.3% |
+| temporary no-op consumer (one count per chunk, not committed)      |           4.9 / 6.9 ms |           1.9 ms |            0.03 ms |           1.3% |
+
+A raw loop of 1,000 `GenServer.cast` calls on this host is **1.3–1.6 ms**, so
+the 27.6 ms is mostly scheduler time shared with the consumer, not an
+intrinsically expensive send. With a cheap but realistic consumer the server
+path is **~9 ms**; with no per-frame work it is **~5 ms**. The 31 ms headline
+is a same-box worst case, not the server-only cost.
+
+That changes the next-step order:
+
+1. **Measure with the consumer off the server's schedulers.** `--subscriber-count-only`
+   is now a bench flag for this; a remote-socket run is the other half. This
+   issue publishes both bounds; do not optimise the GroupServer loop from the
+   31 ms number alone.
+2. **#584 (hand committed payloads to the Router).** With the consumer largely
+   removed, `router_decode` (1.3 ms) is ~15% of the ~9 ms server path, not 4%
+   of 31 ms.
+3. **Frame build.** `group_encode` is 1.4 ms (100 Actions, one group). The
+   JSON encode is the next server cost after decode; pre-encoding or a cheaper
+   wire framing is the candidate.
+4. **Dispatch.** Under count-only, `group_cast` is 5–6 ms of ~9 ms. The
+   remaining dispatch cost is worth profiling, but sharding/dispatch-pool work
+   should be re-measured with count-only consumers; the earlier sharding sweep
+   was masked by the shared subscriber.
+5. **Consumer work is the largest same-box cost.** Splitting/decoding 1,000
+   chunks × 100 frames takes the 31.1 ms run from ~9 ms to ~31 ms. Reducing
+   frames, decoding cost, or wire format is a client/network win; the server
+   already amortises one message per subscriber per committed range, not per
+   Action.
+
+`router_dwell` was **0 samples in every run**: the Writer notifies after the
+durable mark and t4 paces writes, so the Router never held a range for the
+watermark. It remains instrumented because a deeper or recovered shape can
+hold one; a claim-order test pins that path.
+
+### Measurement integrity
+
+The same t4 n=1000 r=1000 shape was run in three alternating pairs against
+the uninstrumented `main` build, each pass a fresh boot. Uninstrumented p50:
+**27,085 / 29,718 / 29,687 µs** (median 29,687); instrumented p50:
+**29,302 / 29,137 / 28,429 µs** (median 29,137, **−1.9%**). The uninstrumented
+p95s were 39,315 / 38,388 / 40,595 µs and the instrumented p95s 43,344 /
+41,799 / 42,110 µs, at the edge of this machine's pass-to-pass spread. With
+`--conn-sample-rate 0` the instrumented p50 was **28,798 / 29,573 µs**, so the
+hop timers themselves do not move the sample; the remaining tail is the
+sampled `conn_deliver` path. The uninstrumented timer starts earlier (at the
+top of `apply_one/2`, including the write-side apply), so the re-based p50
+should read slightly lower, not higher. The first harness version called `:rand.uniform/1` once per
+subscriber for the 1-in-K decision; that alone moved p50 by ~12 ms at
+n=1000. The final selector draws one offset per batch and then strides, so
+the measurement does not perturb the loop it measures. `conn_deliver`
+defaults to 1 delivery in 100 and `--conn-sample-rate 0` turns it off
+entirely. No hop adds a `GenServer.call` or a new message.
 
 ## Writer batch coalescing (#332)
 
@@ -2512,7 +2656,7 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
    limit. **Coalesced delivery is merged** (#509): one binary per group per
    batch, one cast per subscriber, one `chunk/2`, identical wire bytes; with
    lean subscribers it is a **~6× delivered-throughput win and up to ~6× less CPU**,
-   with commit → broadcast complete p50 **~30 ms versus multi-second**
+   with a pre-#583 commit → broadcast complete p50 **~30 ms versus multi-second**
    pre-coalescing. The earlier "+2–22%"/"ceiling not removed" figure was
    artifact-capped on both arms. **Sharding is ruled out**: sharding one
    group's fan-out across K `GroupServer` processes (an earlier prototype, not

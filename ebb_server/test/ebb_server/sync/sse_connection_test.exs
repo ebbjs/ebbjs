@@ -9,6 +9,7 @@ defmodule EbbServer.Sync.SSEConnectionTest do
   use ExUnit.Case, async: false
 
   import EbbServer.SSEHelpers
+  import EbbServer.TestHelpers
 
   alias EbbServer.Sync.SSEConnection
 
@@ -94,6 +95,37 @@ defmodule EbbServer.Sync.SSEConnectionTest do
 
       assert :ok = SSEConnection.push_data(pid, bytes)
       assert_receive {:sse_data, ^bytes}
+    end
+
+    test "push_data/3 emits the conn_deliver hop from the carry timestamp" do
+      {:ok, pid} = SSEConnection.start_link(self(), ["g1"], %{"g1" => 0})
+      ref = attach_telemetry([[:ebb, :fanout, :hop_ms]])
+      cast_at = System.monotonic_time()
+
+      assert :ok =
+               SSEConnection.push_data(pid, "event: data\ndata: {}\n\n", %{
+                 cast_at: cast_at,
+                 group_id: "g1"
+               })
+
+      assert_receive {:sse_data, _bytes}
+
+      assert [
+               {[:ebb, :fanout, :hop_ms], %{duration: duration},
+                %{hop: :conn_deliver, group_id: "g1"}}
+             ] = telemetry_events(ref)
+
+      assert is_integer(duration) and duration >= 0
+    end
+
+    test "push_data/2 emits no conn_deliver hop" do
+      {:ok, pid} = SSEConnection.start_link(self(), ["g1"], %{"g1" => 0})
+      ref = attach_telemetry([[:ebb, :fanout, :hop_ms]])
+
+      assert :ok = SSEConnection.push_data(pid, "event: data\ndata: {}\n\n")
+      assert_receive {:sse_data, _bytes}
+
+      assert telemetry_events(ref) == []
     end
 
     test "shares one binary across a coalesced batch without re-encoding" do

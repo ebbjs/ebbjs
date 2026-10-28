@@ -54,6 +54,21 @@ defmodule EbbServer.Bench.Options do
   `:writer_batch_max_size` feed). The defaults here are the production
   defaults: a 0 ms timeout burst-drains the mailbox, and a 1,000-Action cap
   that only binds when a burst is deeper than the default flush shape.
+
+  ## Fan-out connection sampling
+
+  `--conn-sample-rate` sets the server's per-subscriber `conn_deliver`
+  sample rate through the `:fanout_conn_sample_rate` application env in the
+  bench VM: `0` turns the hop off, `1` samples every delivery, and `K > 1`
+  samples 1 in `K`. The other fan-out hops are never sampled. It is legal on
+  every tier and has no effect on one without subscribers.
+
+  `--subscriber-count-only` is a fan-out measurement mode: the in-process
+  subscriber counts `event: data` occurrences with `:binary.matches/2` and
+  skips the per-frame split and lag decode. It keeps the delivery count
+  correct while removing the consumer's CPU from the same 4-scheduler box,
+  so a run can separate server fan-out cost from consumer cost. It is
+  allowed only on `t3`/`t4` and cannot be combined with `--subscriber-lean`.
   """
 
   @type tier :: :t0 | :t1 | :t2 | :t3 | :t4 | :t5
@@ -93,7 +108,9 @@ defmodule EbbServer.Bench.Options do
           rate: non_neg_integer(),
           batch_timeout_ms: non_neg_integer(),
           batch_max_size: pos_integer(),
+          conn_sample_rate: non_neg_integer(),
           subscriber_lean: boolean(),
+          subscriber_count_only: boolean(),
           ablate: [ablate_phase()],
           baseline: String.t() | nil,
           guardrails: boolean()
@@ -117,7 +134,9 @@ defmodule EbbServer.Bench.Options do
             rate: 0,
             batch_timeout_ms: 0,
             batch_max_size: 1000,
+            conn_sample_rate: 100,
             subscriber_lean: false,
+            subscriber_count_only: false,
             ablate: [],
             baseline: nil,
             guardrails: true
@@ -166,7 +185,9 @@ defmodule EbbServer.Bench.Options do
     rate: :integer,
     batch_timeout_ms: :integer,
     batch_max_size: :integer,
+    conn_sample_rate: :integer,
     subscriber_lean: :boolean,
+    subscriber_count_only: :boolean,
     ablate: :string,
     baseline: :string,
     guardrails: :boolean
@@ -211,6 +232,7 @@ defmodule EbbServer.Bench.Options do
       {"Durability", "#{config.durability}"},
       {"Preloaded entities", "#{config.entities}"},
       {"SSE subscribers", "#{config.subscribers}"},
+      {"Fan-out conn sample rate", conn_sample_rate_description(config.conn_sample_rate)},
       {"Target Actions/sec", target_rate(config.rate)},
       {"Writer batch timeout", batch_timeout_description(config)},
       {"Writer batch cap", "#{config.batch_max_size} Actions"},
@@ -222,6 +244,13 @@ defmodule EbbServer.Bench.Options do
       {"Seed", "#{config.seed}"},
       {"Output", config.out || "(default)"}
     ] ++ lean_description(config)
+  end
+
+  defp lean_description(%{subscriber_count_only: true}) do
+    [
+      {"Subscriber mode",
+       "count-only (frame count per chunk, no per-frame split or lag sampling)"}
+    ]
   end
 
   defp lean_description(%{subscriber_lean: true}) do
@@ -251,11 +280,13 @@ defmodule EbbServer.Bench.Options do
       "--rate #{config.rate}",
       "--batch-timeout-ms #{config.batch_timeout_ms}",
       "--batch-max-size #{config.batch_max_size}",
+      "--conn-sample-rate #{config.conn_sample_rate}",
       "--writers #{config.writers}",
       "--port #{config.port}",
       "--seed #{config.seed}"
     ]
 
+    base = if config.subscriber_count_only, do: base ++ ["--subscriber-count-only"], else: base
     base = if config.subscriber_lean, do: base ++ ["--subscriber-lean"], else: base
     base = if config.guardrails, do: base, else: base ++ ["--no-guardrails"]
 
@@ -297,6 +328,7 @@ defmodule EbbServer.Bench.Options do
       "entities" => config.entities,
       "subscribers" => config.subscribers,
       "subscriber_lean" => config.subscriber_lean,
+      "subscriber_count_only" => config.subscriber_count_only,
       "rate" => config.rate,
       "ablate" => Enum.map(config.ablate, &Atom.to_string/1)
     }
@@ -401,7 +433,12 @@ defmodule EbbServer.Bench.Options do
     do: %{acc | batch_timeout_ms: value}
 
   defp put_opt({:batch_max_size, value}, acc), do: %{acc | batch_max_size: value}
+
+  defp put_opt({:conn_sample_rate, value}, acc),
+    do: %{acc | conn_sample_rate: value}
+
   defp put_opt({:subscriber_lean, value}, acc), do: %{acc | subscriber_lean: value}
+  defp put_opt({:subscriber_count_only, value}, acc), do: %{acc | subscriber_count_only: value}
   defp put_opt({:ablate, value}, acc), do: %{acc | ablate: split_ablate(value)}
   defp put_opt({:baseline, value}, acc), do: %{acc | baseline: value}
   defp put_opt({:guardrails, value}, acc), do: %{acc | guardrails: value}
@@ -527,7 +564,8 @@ defmodule EbbServer.Bench.Options do
          :ok <- check(config.port in 1..65_535, "--port must be a valid TCP port"),
          :ok <- check(config.subscribers >= 0, "--subscribers must be zero or more"),
          :ok <- check(config.batch_timeout_ms >= 0, "--batch-timeout-ms must be zero or more"),
-         :ok <- check(config.batch_max_size > 0, "--batch-max-size must be at least 1") do
+         :ok <- check(config.batch_max_size > 0, "--batch-max-size must be at least 1"),
+         :ok <- check(config.conn_sample_rate >= 0, "--conn-sample-rate must be zero or more") do
       check(config.rate >= 0, "--rate must be zero or more Actions/sec")
     end
   end
@@ -537,7 +575,9 @@ defmodule EbbServer.Bench.Options do
          :ok <- validate_tier_concurrency(tier, config),
          :ok <- validate_subscribers(tier, config),
          :ok <- validate_tier_ablate(tier, config) do
-      validate_lean(tier, config)
+      with :ok <- validate_lean(tier, config) do
+        validate_count_only(tier, config)
+      end
     end
   end
 
@@ -595,6 +635,19 @@ defmodule EbbServer.Bench.Options do
   defp validate_lean(_tier, _config),
     do: {:error, "--subscriber-lean is only supported with --tier t3 or t4"}
 
+  defp validate_count_only(:t3, %{subscriber_count_only: true, subscriber_lean: true}),
+    do: {:error, "--subscriber-count-only cannot be combined with --subscriber-lean"}
+
+  defp validate_count_only(:t4, %{subscriber_count_only: true, subscriber_lean: true}),
+    do: {:error, "--subscriber-count-only cannot be combined with --subscriber-lean"}
+
+  defp validate_count_only(:t3, _config), do: :ok
+  defp validate_count_only(:t4, _config), do: :ok
+  defp validate_count_only(_tier, %{subscriber_count_only: false}), do: :ok
+
+  defp validate_count_only(_tier, _config),
+    do: {:error, "--subscriber-count-only is only supported with --tier t3 or t4"}
+
   # Ablation removes Writer phases from the flush critical path; t5 builds the
   # op list itself, so only the phases that name an op group apply.
   # Phase names arrive as strings here; `validate_ablate/1` normalises them to
@@ -633,6 +686,10 @@ defmodule EbbServer.Bench.Options do
 
   defp check(true, _message), do: :ok
   defp check(false, message), do: {:error, message}
+
+  defp conn_sample_rate_description(0), do: "off"
+  defp conn_sample_rate_description(1), do: "every delivery"
+  defp conn_sample_rate_description(rate), do: "1 in #{rate}"
 
   defp target_rate(0), do: "unpaced"
   defp target_rate(rate), do: "#{rate}"

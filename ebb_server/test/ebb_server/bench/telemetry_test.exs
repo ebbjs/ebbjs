@@ -62,6 +62,27 @@ defmodule EbbServer.Bench.TelemetryTest do
              ])
   end
 
+  test "records each fan-out hop under its own tag", %{config: config} do
+    Telemetry.handle_event(
+      [:ebb, :fanout, :hop_ms],
+      %{duration: native(7)},
+      %{hop: :router_queue, group_id: nil},
+      config
+    )
+
+    Telemetry.handle_event(
+      [:ebb, :fanout, :hop_ms],
+      %{duration: native(11)},
+      %{hop: :conn_deliver, group_id: "group-1"},
+      config
+    )
+
+    assert rows(config) == [
+             {{:fanout_hop, :conn_deliver}, 11},
+             {{:fanout_hop, :router_queue}, 7}
+           ]
+  end
+
   test "records the pipeline gauges at their raw level", %{config: config} do
     Telemetry.handle_event([:ebb, :writer, :in_flight_batches], %{count: 3}, %{}, config)
     Telemetry.handle_event([:ebb, :writer, :oldest_unreleased_gsn], %{gsn: 42}, %{}, config)

@@ -191,7 +191,11 @@ defmodule EbbServer.Bench.Runner do
 
     subscribers =
       if config.tier in [:t3, :t4],
-        do: Subscriber.start_all(config.subscribers, ctx, lean: config.subscriber_lean),
+        do:
+          Subscriber.start_all(config.subscribers, ctx,
+            lean: config.subscriber_lean,
+            count_only: config.subscriber_count_only
+          ),
         else: nil
 
     now = System.monotonic_time(:microsecond)

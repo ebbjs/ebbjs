@@ -145,6 +145,8 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
       buffered_gsn = hole_gsn + 1
       post_entity!(actor_id, group_id)
 
+      ref = attach_telemetry([[:ebb, :fanout, :hop_ms]])
+
       sync_router()
 
       assert :sys.get_state(FanOutRouter).plan.pending_notifications == [
@@ -164,6 +166,17 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
 
       assert second_bytes |> single_data_payload() |> Jason.decode!() |> Map.fetch!("gsn") ==
                buffered_gsn
+
+      assert [
+               {[:ebb, :fanout, :hop_ms], %{duration: dwell},
+                %{hop: :router_dwell, group_id: nil}}
+             ] =
+               Enum.filter(telemetry_events(ref), fn
+                 {_, _, %{hop: :router_dwell}} -> true
+                 _ -> false
+               end)
+
+      assert is_integer(dwell) and dwell > 0
 
       sync_router()
       assert FanOutFrontier.get() == {:ok, buffered_gsn}

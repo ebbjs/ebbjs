@@ -34,6 +34,8 @@ defmodule EbbServer.Sync.SSEConnection do
 
   use GenServer, restart: :temporary
 
+  alias EbbServer.Telemetry
+
   @type t :: %__MODULE__{
           parent_pid: pid(),
           group_ids: [String.t()],
@@ -64,6 +66,11 @@ defmodule EbbServer.Sync.SSEConnection do
   @spec push_data(pid(), iodata()) :: :ok
   def push_data(pid, bytes), do: GenServer.cast(pid, {:push_data, bytes})
 
+  # The sampled path only: the cast carries the GroupServer's send timestamp
+  # and group id so this process can close the `conn_deliver` hop.
+  @spec push_data(pid(), iodata(), map()) :: :ok
+  def push_data(pid, bytes, meta), do: GenServer.cast(pid, {:push_data, bytes, meta})
+
   @spec push_control(pid(), map()) :: :ok
   def push_control(pid, control), do: GenServer.cast(pid, {:push_control, control})
 
@@ -87,10 +94,8 @@ defmodule EbbServer.Sync.SSEConnection do
   end
 
   @impl true
-  def handle_cast({:push_data, bytes}, state) do
-    send(state.parent_pid, {:sse_data, bytes})
-    {:noreply, state}
-  end
+  def handle_cast({:push_data, bytes}, state), do: deliver_data(bytes, nil, state)
+  def handle_cast({:push_data, bytes, meta}, state), do: deliver_data(bytes, meta, state)
 
   def handle_cast({:push_control, control}, state) do
     payload = Jason.encode!(control)
@@ -103,6 +108,25 @@ defmodule EbbServer.Sync.SSEConnection do
     send(state.parent_pid, {:sse_chunk, "presence", payload})
     {:noreply, state}
   end
+
+  defp deliver_data(bytes, meta, state) do
+    send(state.parent_pid, {:sse_data, bytes})
+
+    # The server-side end of the chain is this send returning; `chunk/2` on
+    # a real socket is out of scope.
+    if is_map(meta) do
+      Telemetry.fanout_hop(
+        :conn_deliver,
+        span(Map.get(meta, :cast_at), System.monotonic_time()),
+        Map.get(meta, :group_id)
+      )
+    end
+
+    {:noreply, state}
+  end
+
+  defp span(from, to) when is_integer(from) and is_integer(to), do: max(to - from, 0)
+  defp span(_from, _to), do: nil
 
   @impl true
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) when pid == state.parent_pid do

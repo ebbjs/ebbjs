@@ -196,6 +196,45 @@ defmodule EbbServer.Bench.OptionsTest do
     end
   end
 
+  describe "--conn-sample-rate" do
+    test "defaults to 1 in 100 deliveries" do
+      assert {:ok, config} = Options.parse([])
+      assert config.conn_sample_rate == 100
+    end
+
+    test "parses the rate" do
+      assert {:ok, config} = Options.parse(["--conn-sample-rate", "25"])
+      assert config.conn_sample_rate == 25
+    end
+
+    test "describes off, every delivery, and 1 in K" do
+      for {value, expected} <- [{"0", "off"}, {"1", "every delivery"}, {"100", "1 in 100"}] do
+        assert {:ok, config} = Options.parse(["--conn-sample-rate", value])
+        assert Map.new(Options.describe(config))["Fan-out conn sample rate"] == expected
+      end
+    end
+
+    test "the reproduction command carries the rate" do
+      assert {:ok, default} = Options.parse([])
+      assert Options.command(default) =~ "--conn-sample-rate 100"
+
+      assert {:ok, config} = Options.parse(["--conn-sample-rate", "10"])
+      assert Options.command(config) =~ "--conn-sample-rate 10"
+    end
+
+    test "rejects a negative rate" do
+      assert {:error, message} = Options.parse(["--conn-sample-rate", "-1"])
+      assert message =~ "--conn-sample-rate"
+    end
+
+    test "is accepted on tiers without subscribers" do
+      for tier <- ~w(t0 t1 t2 t5) do
+        assert {:ok, config} = Options.parse(["--tier", tier, "--conn-sample-rate", "0"])
+        assert config.conn_sample_rate == 0
+      end
+    end
+  end
+
   describe "--rate and tier t4" do
     test "t4 requires a positive --rate" do
       assert {:error, message} = Options.parse(["--tier", "t4"])
@@ -291,6 +330,60 @@ defmodule EbbServer.Bench.OptionsTest do
                Options.parse(["--tier", "t3", "--subscribers", "10", "--subscriber-lean"])
 
       assert Options.command(config) =~ "--subscriber-lean"
+    end
+  end
+
+  describe "--subscriber-count-only" do
+    test "defaults off" do
+      assert {:ok, config} = Options.parse([])
+      refute config.subscriber_count_only
+    end
+
+    test "parses the flag on t3 and t4" do
+      assert {:ok, config} =
+               Options.parse([
+                 "--tier",
+                 "t4",
+                 "--rate",
+                 "100",
+                 "--subscribers",
+                 "10",
+                 "--subscriber-count-only"
+               ])
+
+      assert config.subscriber_count_only
+
+      assert {:ok, config} =
+               Options.parse(["--tier", "t3", "--subscribers", "10", "--subscriber-count-only"])
+
+      assert config.subscriber_count_only
+    end
+
+    test "rejects count-only mode on tiers without subscribers" do
+      assert {:error, message} = Options.parse(["--subscriber-count-only"])
+      assert message =~ "--subscriber-count-only"
+    end
+
+    test "rejects combining count-only with lean" do
+      assert {:error, message} =
+               Options.parse([
+                 "--tier",
+                 "t3",
+                 "--subscribers",
+                 "10",
+                 "--subscriber-count-only",
+                 "--subscriber-lean"
+               ])
+
+      assert message =~ "cannot be combined"
+    end
+
+    test "describe and command carry the count-only mode" do
+      assert {:ok, config} =
+               Options.parse(["--tier", "t3", "--subscribers", "10", "--subscriber-count-only"])
+
+      assert Map.new(Options.describe(config))["Subscriber mode"] =~ "count-only"
+      assert Options.command(config) =~ "--subscriber-count-only"
     end
   end
 
