@@ -4,6 +4,7 @@ defmodule EbbServer.Sync.RouterTest do
 
   import Plug.Test
   import Plug.Conn
+
   alias EbbServer.Storage.{
     CacheTables,
     DirtyTracker,
@@ -12,6 +13,7 @@ defmodule EbbServer.Sync.RouterTest do
     RocksDB,
     WatermarkTracker
   }
+
   alias EbbServer.Sync.Router
   alias Exqlite.Sqlite3
 
