@@ -179,6 +179,7 @@ defmodule EbbServer.Bench.Runner do
 
     try do
       ctx = Workbook.seed(config)
+      :ok = Boot.schedule_stall(config)
       measure(config, ctx)
     after
       Boot.stop(boot)

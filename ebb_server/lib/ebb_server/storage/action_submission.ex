@@ -12,6 +12,11 @@ defmodule EbbServer.Storage.ActionSubmission do
   `{:ok, {0, 0}, rejections}` means no GSN was assigned to this caller —
   every Action was rejected, already durable, or already in flight. It
   does not mean the Actions are durable; see `EbbServer.Storage.Writer`.
+
+  A Writer call that exits — including the 5 s `GenServer.call/2` timeout —
+  becomes `{:error, {:write_exit, reason}}` instead of escaping to the HTTP
+  request process. For a timeout the outcome is unknown, not failed: the
+  Writer may still commit, so the caller retries idempotently.
   """
 
   alias EbbServer.Storage.{PermissionChecker, Writer}
@@ -29,15 +34,20 @@ defmodule EbbServer.Storage.ActionSubmission do
       # validation, so no GSN belongs to this caller.
       {:ok, {0, 0}, format_rejections(permission_rejected)}
     else
-      case Writer.write_actions(accepted, Keyword.get(opts, :writer_name, Writer)) do
-        {:ok, gsn_range, writer_rejected} ->
-          rejections =
-            format_rejections(permission_rejected) ++ format_writer_rejections(writer_rejected)
+      # The Router owns HTTP mapping; this seam owns the shared exit contract.
+      try do
+        case Writer.write_actions(accepted, Keyword.get(opts, :writer_name, Writer)) do
+          {:ok, gsn_range, writer_rejected} ->
+            rejections =
+              format_rejections(permission_rejected) ++ format_writer_rejections(writer_rejected)
 
-          {:ok, gsn_range, rejections}
+            {:ok, gsn_range, rejections}
 
-        {:error, _reason} = error ->
-          error
+          {:error, _reason} = error ->
+            error
+        end
+      catch
+        :exit, reason -> {:error, {:write_exit, reason}}
       end
     end
   end

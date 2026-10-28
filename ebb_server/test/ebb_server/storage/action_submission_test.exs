@@ -1,3 +1,19 @@
+defmodule EbbServer.Storage.ActionSubmissionTest.StalledWriter do
+  @moduledoc false
+
+  # Accepts the write call and never replies, which is what the Writer looks
+  # like to a caller that hits the default `GenServer.call/2` timeout.
+  use GenServer
+
+  def start_link(name), do: GenServer.start_link(__MODULE__, nil, name: name)
+
+  @impl true
+  def init(_opts), do: {:ok, nil}
+
+  @impl true
+  def handle_call({:write_actions, _actions, _sent_at}, _from, state), do: {:noreply, state}
+end
+
 defmodule EbbServer.Storage.ActionSubmissionTest do
   use ExUnit.Case, async: false
 
@@ -54,6 +70,65 @@ defmodule EbbServer.Storage.ActionSubmissionTest do
       assert is_binary(rejection["reason"])
     end
 
+    test "reports an Action over 1 MiB without assigning a GSN or writing it", ctx do
+      put_membership(ctx.cache, "todo_big", "g_1", "a_1")
+      action = oversize_action("act_big", "todo_big", 1_100_000)
+      assert :erlang.external_size(action) > 1_048_576
+
+      assert {:ok, {0, 0}, [rejection]} = ActionSubmission.submit([action], "a_1", opts(ctx))
+      assert rejection["id"] == "act_big"
+      assert rejection["reason"] == "action_too_large"
+      assert :not_found = EntityStore.get("todo_big", "a_1", store_opts(ctx))
+    end
+
+    test "reports an Action with more than 1000 Updates without writing it", ctx do
+      put_membership(ctx.cache, "todo_many", "g_1", "a_1")
+      action = many_updates_action("act_many", "todo_many", 1_001)
+
+      assert {:ok, {0, 0}, [rejection]} = ActionSubmission.submit([action], "a_1", opts(ctx))
+      assert rejection["id"] == "act_many"
+      assert rejection["reason"] == "too_many_updates"
+      assert :not_found = EntityStore.get("todo_many", "a_1", store_opts(ctx))
+    end
+
+    test "a mixed batch writes the in-cap Action and rejects the over-cap one", ctx do
+      put_membership(ctx.cache, "todo_ok", "g_1", "a_1")
+      put_membership(ctx.cache, "todo_big", "g_1", "a_1")
+
+      valid = put_action("act_ok", "a_1", "todo_ok")
+      oversize = oversize_action("act_big", "todo_big", 1_100_000)
+
+      assert {:ok, {1, 1}, [rejection]} =
+               ActionSubmission.submit([valid, oversize], "a_1", opts(ctx))
+
+      assert {rejection["id"], rejection["reason"]} == {"act_big", "action_too_large"}
+      assert {:ok, _entity} = EntityStore.get("todo_ok", "a_1", store_opts(ctx))
+      assert :not_found = EntityStore.get("todo_big", "a_1", store_opts(ctx))
+    end
+
+    test "maps a Writer call exit to an error instead of crashing the caller", ctx do
+      put_membership(ctx.cache, "todo_exit", "g_1", "a_1")
+      action = put_action("act_exit", "a_1", "todo_exit")
+
+      opts = Keyword.put(opts(ctx), :writer_name, :ebb_missing_writer)
+
+      assert {:error, {:write_exit, _reason}} = ActionSubmission.submit([action], "a_1", opts)
+    end
+
+    test "maps the GenServer.call timeout to an error with an unknown outcome", ctx do
+      put_membership(ctx.cache, "todo_timeout", "g_1", "a_1")
+      action = put_action("act_timeout", "a_1", "todo_timeout")
+
+      name = :"stalled_writer_#{System.unique_integer([:positive])}"
+      {:ok, pid} = EbbServer.Storage.ActionSubmissionTest.StalledWriter.start_link(name)
+      on_exit(fn -> safe_stop(pid) end)
+
+      opts = Keyword.put(opts(ctx), :writer_name, name)
+
+      assert {:error, {:write_exit, {:timeout, {GenServer, :call, [^name, _msg, 5_000]}}}} =
+               ActionSubmission.submit([action], "a_1", opts)
+    end
+
     test "{0, 0} reports no GSN for a duplicate, not durability", ctx do
       put_membership(ctx.cache, "todo_dup", "g_1", "a_1")
       action = put_action("act_dup", "a_1", "todo_dup")
@@ -81,6 +156,39 @@ defmodule EbbServer.Storage.ActionSubmissionTest do
           }
         }
       ]
+    }
+  end
+
+  defp oversize_action(id, entity_id, payload_bytes) do
+    action = put_action(id, "a_1", entity_id)
+    [update] = action["updates"]
+
+    %{
+      action
+      | "updates" => [
+          %{
+            update
+            | "data" => %{
+                "fields" => %{
+                  "title" => %{
+                    "type" => "lww",
+                    "value" => String.duplicate("x", payload_bytes),
+                    "hlc" => update["data"]["fields"]["title"]["hlc"]
+                  }
+                }
+              }
+          }
+        ]
+    }
+  end
+
+  defp many_updates_action(id, entity_id, count) do
+    action = put_action(id, "a_1", entity_id)
+    template = hd(action["updates"])
+
+    %{
+      action
+      | "updates" => Enum.map(1..count, fn index -> %{template | "id" => "upd_#{index}"} end)
     }
   end
 

@@ -2653,6 +2653,60 @@ the noise-floor paragraph in the research note), so the per-path decision
 rests on the encode and read legs above, and the operating-point runs are there
 to show nothing regressed.
 
+## Hung committer: watchdog and late write (#538)
+
+The watchdog is tested by stalling real commits past their threshold, then
+letting the late durable write land. The stall is armed shortly after the
+measured window begins (`--stall-commits`), sleeps for
+`--commit-timeout-ms + 500 ms`, and then runs the real `write_batch`.
+
+```sh
+mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 8 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --seed 1 \
+  --stall-commits 1 --commit-timeout-ms 2000
+```
+
+| Metric                                  | Value                                                   |
+| --------------------------------------- | ------------------------------------------------------- |
+| Accepted Actions                        | 441 300 (22 065/s)                                      |
+| Rejected Actions                        | 0                                                       |
+| Write/transport errors                  | **400** (4 calls × 100 Actions)                         |
+| GSN holes                               | **0**                                                   |
+| First missing GSN                       | none                                                    |
+| Watermark lag high-water / final sample | 300 / 300                                               |
+| Client p50 / p95 / p99                  | 30.4 / 52.0 / 61.4 ms                                   |
+| Guardrails                              | passed (including the `stalled_commit_errors` envelope) |
+
+The stalled range was claimed ~0.25 s into the measured window, timed out at
+the 2 000 ms threshold, and its callers got `503 write_failed` — the 400
+errors above are exactly those calls. The pool retired the stuck worker and
+served later commits on the replacement; the late write landed ~0.5 s after
+the timeout and filled the abandoned range, so the run reports **0 holes**.
+The final 1 Hz sample still shows 300 GSNs behind because it was taken while
+the last in-flight range drained; the guardrail bounds that by the accepted
+count. Recovery is bounded by the watchdog threshold plus one 250 ms sweep;
+no subsequent call failed.
+
+The canonical 2-Update `hot` shape is clean now that
+[#670](https://github.com/ebbjs/ebbjs/issues/670) is merged: the run reports
+**0 rejected**, which is the AC6 assertion that was blocked before.
+
+### Cost of keeping depth-1 commits in the pool
+
+With the watchdog enabled the Writer commits in the Committer pool even at
+depth 1; otherwise a stuck NIF would freeze the process that has to time it
+out. A control pair (20 s, canonical t2 shape, no stall) prices that:
+
+| Arm                                                   | Accepted/sec | Client p50 |
+| ----------------------------------------------------- | -----------: | ---------: |
+| `--commit-timeout-ms 2000` (watchdog on, pool commit) |       26 050 |    29.1 ms |
+| `--commit-timeout-ms 0` (watchdog off, inline commit) |       27 470 |    27.8 ms |
+
+The ~5% throughput and ~1.3 ms p50 difference is within this host's
+single-run spread, but the direction is consistent with the removed mailbox
+hop. `:writer_commit_timeout_ms: 0` is the documented escape hatch for an
+operator who prefers the inline path, at the cost of the watchdog.
+
 ## Correctness under load
 
 Clean across every measured run above: **0 rejected Actions, 0

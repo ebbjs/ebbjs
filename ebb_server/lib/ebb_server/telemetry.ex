@@ -32,6 +32,8 @@ defmodule EbbServer.Telemetry do
   | `ebb.writer.actions_per_sec`              | `count`                               | —                                                   |
   | `ebb.writer.range_resolved`               | `count`                               | `gsn_start`, `gsn_end`, `reason`                    |
   | `ebb.writer.commit_failed`                | `count`                               | `gsn_start`, `gsn_end`, `reason`                    |
+  | `ebb.writer.commit_timeout`               | `count`                               | `gsn_start`, `gsn_end`, `reason`                    |
+  | `ebb.writer.admission_rejected`           | `count`                               | `max_pending_calls`                                 |
   | `ebb.writer.in_flight_batches`            | `count`                               | —                                                   |
   | `ebb.writer.oldest_unreleased_gsn`        | `gsn`                                 | —                                                   |
   | `ebb.writer.flush_phase_ms`               | one native measurement per phase (`writer_flush_phases/0`) | `gsn_start`, `gsn_end`, `outcome` (`:ok` / `:abandoned`), `reason` (abandoned only) |
@@ -85,6 +87,22 @@ defmodule EbbServer.Telemetry do
   0.05–0.10 µs/Action more encode — a share of a flush that sits below this
   event's noise band. The shapes are priced per Action by `mix bench.envelope`
   and in `docs/research/552-action-envelope.md`.
+
+  `ebb.writer.commit_timeout` is the subset of `commit_failed` caused by
+  the Committer pool's watchdog: the commit outlived
+  `:writer_commit_timeout_ms`, so the range is abandoned and its callers
+  are answered with the retryable
+  `{:error, {:rocksdb_write_failed, :commit_timeout}}`. `reason` is always
+  `:commit_timeout`, so a reporter can split "the durable write failed"
+  from "the durable write never answered" without parsing names. The same
+  range also emits `commit_failed` and `range_resolved`, so the totals
+  stay comparable with the other failed-commit paths.
+
+  `ebb.writer.admission_rejected` counts calls refused before the Writer's
+  mailbox by admission control, tagged with the configured
+  `:writer_max_pending_calls`. It is separate from `commit_failed` (the call
+  reached the Writer and its commit failed) and from `commit_timeout` (the
+  call was admitted and its commit outlived the watchdog threshold).
 
   `ebb.watermark.lag` is a **durability** lag, not a notification lag:
   the resolution frontier may cover a durable range before its apply.

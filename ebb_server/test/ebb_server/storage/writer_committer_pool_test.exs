@@ -103,6 +103,108 @@ defmodule EbbServer.Storage.WriterCommitterPoolTest do
     end
   end
 
+  describe "a hung commit" do
+    test "times out, resolves its range, and serves the next write from a replacement", ctx do
+      router = register_router()
+      hung = validated_action(%{id: "act_timeout_hung"})
+      after_timeout = validated_action(%{id: "act_timeout_after"})
+
+      test_pid = self()
+      attempts = :atomics.new(1, signed: false)
+
+      # The first commit never returns, like a `write_batch` NIF stuck on
+      # the storage device. Every later commit is a normal durable write.
+      commit_fn = fn ops, opts ->
+        send(test_pid, {:commit_started, self()})
+
+        if :atomics.add_get(attempts, 1, 1) == 1 do
+          Process.sleep(:infinity)
+        else
+          RocksDB.write_batch(ops, opts)
+        end
+      end
+
+      ref =
+        attach_telemetry([
+          [:ebb, :writer, :commit_timeout],
+          [:ebb, :writer, :commit_failed],
+          [:ebb, :writer, :range_resolved],
+          [:ebb, :writer, :flush_phase_ms]
+        ])
+
+      %{name: writer_name, pid: writer_pid} =
+        start_writer(
+          writer_opts(ctx, %{
+            max_in_flight: 1,
+            committer_pool_size: 1,
+            commit_timeout_ms: 50,
+            sweep_interval_ms: 10,
+            fan_out_router: router,
+            commit_fn: commit_fn
+          })
+        )
+
+      hung_task = Task.async(fn -> Writer.write_actions([hung], writer_name) end)
+      assert_receive {:commit_started, hung_worker}, 2_000
+
+      # Depth 1 with the watchdog enabled still commits outside the Writer:
+      # an inline NIF would freeze the process the watchdog needs to run in.
+      assert hung_worker != writer_pid
+
+      assert {:error, {:rocksdb_write_failed, :commit_timeout}} = Task.await(hung_task, 2_000)
+
+      # The Writer survives, the abandoned range resolves so the frontier
+      # advances, and nothing is left claimed.
+      assert Process.alive?(writer_pid)
+      assert_receive {:range_resolved, 1, 1}, 2_000
+      assert InFlightActions.size(ctx.in_flight_actions) == 0
+
+      assert wait_until(fn ->
+               pipeline = :sys.get_state(writer_name).pipeline
+               pipeline.claim_order == [] and pipeline.batches == %{}
+             end)
+
+      assert :not_found =
+               RocksDB.get(
+                 RocksDB.cf_actions(ctx.rocks_name),
+                 RocksDB.encode_gsn_key(1),
+                 name: ctx.rocks_name
+               )
+
+      events = telemetry_events(ref)
+
+      assert {[:ebb, :writer, :commit_timeout], %{count: 1},
+              %{gsn_start: 1, gsn_end: 1, reason: :commit_timeout}} =
+               find_event(events, [:ebb, :writer, :commit_timeout])
+
+      assert {[:ebb, :writer, :commit_failed], %{count: 1},
+              %{gsn_start: 1, gsn_end: 1, reason: :commit_timeout}} =
+               find_event(events, [:ebb, :writer, :commit_failed])
+
+      assert {_event, _measurements, %{gsn_start: 1, gsn_end: 1, reason: :commit_timeout}} =
+               find_event(events, [:ebb, :writer, :range_resolved])
+
+      assert {_event, _measurements,
+              %{gsn_start: 1, gsn_end: 1, outcome: :abandoned, reason: :commit_timeout}} =
+               find_event(events, [:ebb, :writer, :flush_phase_ms])
+
+      # The pool retired the stuck worker and restored its slot, so the
+      # next write commits on the replacement with a fresh GSN.
+      assert {:ok, {2, 2}, []} = Writer.write_actions([after_timeout], writer_name)
+      assert_receive {:commit_started, next_worker}, 2_000
+      assert next_worker != hung_worker
+
+      pool = :sys.get_state(writer_name).committer_pool
+      refute Map.has_key?(:sys.get_state(pool).workers, hung_worker)
+
+      assert RocksDB.get_max_gsn(ctx.rocks_name) == 2
+      assert WatermarkTracker.committed_watermark(ctx.watermark_tracker) == 2
+
+      assert [%{"id" => "act_timeout_after", "gsn" => 2}] =
+               ActionLog.read(1, 2, rocks_name: ctx.rocks_name)
+    end
+  end
+
   describe "an earlier failure releases the later committed range" do
     test "the range behind the hole commits after the failed range is abandoned", ctx do
       router = register_router()
@@ -346,5 +448,9 @@ defmodule EbbServer.Storage.WriterCommitterPoolTest do
     name = :"pool_router_#{System.unique_integer([:positive])}"
     true = Process.register(self(), name)
     name
+  end
+
+  defp find_event(events, name) do
+    Enum.find(events, fn {event, _measurements, _metadata} -> event == name end)
   end
 end

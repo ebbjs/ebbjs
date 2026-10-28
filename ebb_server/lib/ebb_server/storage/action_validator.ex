@@ -13,6 +13,13 @@ defmodule EbbServer.Storage.ActionValidator do
   copies a row's leaves verbatim, so a copy can carry a peer's slightly newer
   stamp; the future drift window is what bounds the pin.
 
+  Every Action is bounded before anything else reads it: at most 1 000
+  Updates and 1 MiB in external term format. An Action over either cap is
+  refused here, so it never reaches authorization, a prepare slot, or a
+  flush; the rejection travels back through `rejected[]` while its siblings
+  are still accepted. The Update count is checked first because counting is a
+  shallow walk, while the size check traverses the whole term.
+
   This module is stateless and focuses purely on validation and transformation.
   It does NOT perform authorization - that's handled by the Authorizer.
   """
@@ -48,11 +55,14 @@ defmodule EbbServer.Storage.ActionValidator do
   @method_atoms PermissionHelper.method_atoms()
 
   @future_drift_limit_ms 120_000
+  @max_action_bytes 1_048_576
+  @max_updates_per_action 1_000
 
   @doc """
   Validates a list of raw actions, returning validated actions and rejections.
 
   Each action is validated for:
+  - Caps (at most 1 000 Updates and 1 MiB in external term format)
   - Structure (valid fields, non-empty values)
   - Actor (actor_id matches the authenticated actor)
   - HLC (valid timestamp within future drift bounds)
@@ -82,11 +92,47 @@ defmodule EbbServer.Storage.ActionValidator do
   end
 
   defp run_validation(action, actor_id, now_ms) do
-    with :ok <- validate_structure(action),
+    with :ok <- validate_caps(action),
+         :ok <- validate_structure(action),
          :ok <- validate_actor(action, actor_id),
          :ok <- validate_hlc(action, now_ms),
          :ok <- validate_leaf_hlcs(action, now_ms) do
       {:ok, to_validated_action(action)}
+    end
+  end
+
+  # Runs before structure and authorization: an Action over the caps is
+  # refused here rather than after a walk over every Update, and long before
+  # it can occupy a prepare or flush slot.
+  defp validate_caps(action) do
+    with :ok <- validate_update_count(action["updates"]) do
+      validate_action_size(action)
+    end
+  end
+
+  # Count before size: counting is a shallow walk of the Update list, while
+  # the size check is a full ETF traversal of a term that may be megabytes.
+  defp validate_update_count(updates) when is_list(updates) do
+    count = length(updates)
+
+    if count > @max_updates_per_action do
+      {:error, "too_many_updates",
+       "action has #{count} updates; the limit is #{@max_updates_per_action}"}
+    else
+      :ok
+    end
+  end
+
+  defp validate_update_count(_updates), do: :ok
+
+  defp validate_action_size(action) do
+    size = :erlang.external_size(action)
+
+    if size > @max_action_bytes do
+      {:error, "action_too_large",
+       "action is #{size} bytes encoded; the limit is #{@max_action_bytes}"}
+    else
+      :ok
     end
   end
 
