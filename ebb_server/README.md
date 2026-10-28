@@ -339,7 +339,7 @@ sequenceDiagram
 
   W->>E: mark the range committed, resolution watermark
   W->>E: settle dirty marks, apply cache mutations
-  W->>F: batch_committed(from, to, groups_by_gsn, fanout_started_at)
+  W->>F: batch_committed(from, to, groups_by_gsn, fanout_started_at, payloads)
   W-->>R: ok, first and last GSN, rejected list
   R-->>C: 200
 ```
@@ -358,13 +358,18 @@ sequenceDiagram
   participant H as SSEHandler
   participant C as Client
 
-  W->>F: batch_committed(from, to, groups_by_gsn, committed_at)
+  W->>F: batch_committed(from, to, groups_by_gsn, committed_at, payloads)
   F->>WP: committed_watermark()
   WP-->>F: frontier
   Note over F: Plan buffers each range until the frontier covers it,<br/>then releases in claim order
-  F->>DB: range_iterator cf_actions
-  DB-->>F: payload ETF per Action
-  F->>F: ActionFormat.decode + ActionScope filter per group
+  alt live hand-off
+    F->>F: ActionFormat.decode_carried per Action (payload_etf + update_scopes)
+  else recovered range
+    F->>DB: range_iterator cf_actions
+    DB-->>F: payload ETF per Action
+    F->>F: ActionFormat.decode per Action
+  end
+  F->>F: ActionScope filter per group
   F->>GS: cast push_actions(actions, fanout meta: committed_at, cast_at, sample rate)
   GS->>GS: one data frame per Action, concatenated into one binary
   GS->>SC: cast push_data(bytes), one cast per subscriber (sampled conn_deliver meta)
@@ -468,9 +473,10 @@ frontier rather than a contiguous-commit one.
 - **Two serialization points, not one.** The Writer is the documented
   one. The `SQLite` GenServer is the other, and it sits on every entity
   read.
-- **The committed log is read back on three paths** — fan-out
+- **The committed log is read back on three paths** — fan-out recovery
   (`cf_actions`), dirty materialization (`cf_entity_actions`), and
-  catch-up or export (`cf_group_actions`, `cf_actions`).
+  catch-up or export (`cf_group_actions`, `cf_actions`). Live fan-out
+  decodes the payloads carried with the Writer's notify instead.
 - **Live SSE does not replay from the client cursor.** `SSEHandler`
   passes the cursor to `SSEConnection`, where it is stored but not used
   to replay; the router only rejects a cursor _ahead_ of the watermark.
@@ -612,7 +618,8 @@ a Router restart carry no commit time and are not sampled.
 `ebb.fanout.hop_ms` splits that span into named hops, one series per `hop`
 label. `router_queue` is Writer send → Router entry, `router_dwell` is time
 held in `Plan` for the watermark (emitted only when a range actually waits),
-`router_decode` is the range read plus decode and group split, `group_queue`
+`router_decode` is the carried decode plus group split on the live path, and
+the range read plus decode and split for a recovered range, `group_queue`
 is Router cast → GroupServer entry, `group_encode` is the frame build,
 `group_cast` is the GroupServer's per-subscriber cast loop (wall time, so it
 includes scheduler time shared with the consumers on the same box), and
