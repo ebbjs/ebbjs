@@ -45,6 +45,20 @@ defmodule EbbServer.TelemetryTest do
     end
   end
 
+  describe "fanout_hops/0" do
+    test "returns the documented hop vocabulary in pipeline order" do
+      assert Telemetry.fanout_hops() == [
+               :router_queue,
+               :router_dwell,
+               :router_decode,
+               :group_queue,
+               :group_encode,
+               :group_cast,
+               :conn_deliver
+             ]
+    end
+  end
+
   describe "span/3" do
     test "emits a start/stop pair, measures duration, and returns the result" do
       ref =

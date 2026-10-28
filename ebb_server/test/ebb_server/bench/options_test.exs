@@ -196,6 +196,45 @@ defmodule EbbServer.Bench.OptionsTest do
     end
   end
 
+  describe "--conn-sample-rate" do
+    test "defaults to 1 in 100 deliveries" do
+      assert {:ok, config} = Options.parse([])
+      assert config.conn_sample_rate == 100
+    end
+
+    test "parses the rate" do
+      assert {:ok, config} = Options.parse(["--conn-sample-rate", "25"])
+      assert config.conn_sample_rate == 25
+    end
+
+    test "describes off, every delivery, and 1 in K" do
+      for {value, expected} <- [{"0", "off"}, {"1", "every delivery"}, {"100", "1 in 100"}] do
+        assert {:ok, config} = Options.parse(["--conn-sample-rate", value])
+        assert Map.new(Options.describe(config))["Fan-out conn sample rate"] == expected
+      end
+    end
+
+    test "the reproduction command carries the rate" do
+      assert {:ok, default} = Options.parse([])
+      assert Options.command(default) =~ "--conn-sample-rate 100"
+
+      assert {:ok, config} = Options.parse(["--conn-sample-rate", "10"])
+      assert Options.command(config) =~ "--conn-sample-rate 10"
+    end
+
+    test "rejects a negative rate" do
+      assert {:error, message} = Options.parse(["--conn-sample-rate", "-1"])
+      assert message =~ "--conn-sample-rate"
+    end
+
+    test "is accepted on tiers without subscribers" do
+      for tier <- ~w(t0 t1 t2 t5) do
+        assert {:ok, config} = Options.parse(["--tier", tier, "--conn-sample-rate", "0"])
+        assert config.conn_sample_rate == 0
+      end
+    end
+  end
+
   describe "--rate and tier t4" do
     test "t4 requires a positive --rate" do
       assert {:error, message} = Options.parse(["--tier", "t4"])

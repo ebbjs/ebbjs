@@ -130,10 +130,11 @@ defmodule EbbServer.Storage.Writer do
   the durable write instead of queueing in the caller. Those calls are
   enqueued and their payloads built and ETF-encoded — work that needs no
   GSN, so it overlaps the in-flight commit. At the ack the sequencer
-  captures the commit time, runs the `:after_commit` seam, marks the range
-  committed, then drains every releasable range in claim order: settle the
-  dirty marks and cache mutations, notify `FanOutRouter`, reply to each
-  caller, and release. It then starts the next flush by the same rules as
+  runs the `:after_commit` seam, marks the range committed, then drains
+  every releasable range in claim order: settle the dirty marks and cache
+  mutations, stamp the commit time at the end of that apply, notify
+  `FanOutRouter`, reply to each caller, and release. It then starts the
+  next flush by the same rules as
   a fresh call.
 
   ## Hot path
@@ -1588,11 +1589,10 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp apply_one(batch, state) do
-    committed_at = System.monotonic_time()
     {:ok, _batch, pipeline} = CommitPipeline.applying(state.pipeline, batch.ref)
     state = %{state | pipeline: pipeline}
 
-    case settle_after_commit(batch, state, committed_at) do
+    case settle_after_commit(batch, state) do
       {:ok, state} ->
         {:ok, _batch, pipeline} = CommitPipeline.release(state.pipeline, batch.ref)
         state = %{state | pipeline: pipeline}
@@ -1629,7 +1629,7 @@ defmodule EbbServer.Storage.Writer do
   # for the restarted Writer to settle, so the batch is never reported as
   # abandoned. Latency is emitted before the re-raise so the sample is not
   # swallowed.
-  defp settle_after_commit(batch, state, committed_at) do
+  defp settle_after_commit(batch, state) do
     # credo:disable-for-next-line /Check\.Readability\.PreferImplicitTry/
     try do
       if state.after_commit, do: state.after_commit.()
@@ -1637,6 +1637,10 @@ defmodule EbbServer.Storage.Writer do
       case apply_post_commit(batch, state) do
         :ok ->
           state = mark_apply_done(state, batch.ref)
+
+          # The fan-out sample starts at the notify send boundary, after the
+          # write-side apply, so `router_queue` can be subtracted from it.
+          committed_at = System.monotonic_time()
 
           notify_fanout(
             state,

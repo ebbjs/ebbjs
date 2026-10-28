@@ -210,6 +210,41 @@ defmodule EbbServer.Bench.MetricsTest do
     end
   end
 
+  describe "fan-out hops" do
+    test "windows every hop and keeps hops with no samples" do
+      {:ok, config} = Options.parse(["--duration", "10"])
+
+      telemetry = %{
+        {:fanout_hop, :router_queue} => [{-1_000_000, 9_999}, {0, 100}, {2_000_000, 300}],
+        {:fanout_hop, :router_decode} => [{0, 500}],
+        {:fanout_hop, :conn_deliver} => [{1_000_000, 20}]
+      }
+
+      server = Metrics.analyze(config, @ctx, [worker()], [], nil, telemetry).server
+
+      assert Enum.sort(Map.keys(server.fanout_hops)) == Enum.sort(Telemetry.fanout_hops())
+
+      assert %{window: "overall", count: 2, p50: 100, p95: 300, p99: 300} =
+               overall(server.fanout_hops.router_queue)
+
+      assert overall(server.fanout_hops.router_decode).p50 == 500
+      assert overall(server.fanout_hops.conn_deliver).count == 1
+      assert overall(server.fanout_hops.router_dwell).count == 0
+      assert overall(server.fanout_hops.group_queue).count == 0
+      assert overall(server.fanout_hops.group_encode).count == 0
+    end
+
+    test "an empty telemetry map leaves every hop unmeasured, not missing" do
+      {:ok, config} = Options.parse([])
+
+      server = Metrics.analyze(config, @ctx, [worker()], [], nil, %{}).server
+
+      for hop <- Telemetry.fanout_hops() do
+        assert overall(server.fanout_hops[hop]).count == 0
+      end
+    end
+  end
+
   describe "gsn_hole_stats/1" do
     test "a contiguous log has no holes" do
       assert Metrics.gsn_hole_stats([1, 2, 3]) == %{count: 0, first_missing: nil}

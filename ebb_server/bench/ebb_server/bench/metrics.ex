@@ -56,7 +56,7 @@ defmodule EbbServer.Bench.Metrics do
   end
 
   @doc """
-  Per-bucket commit→broadcast-complete latency from
+  Per-bucket post-apply → broadcast-complete latency from
   `ebb.fanout.push_latency_ms` samples.
 
   The series is the load-bearing signal for the fixed-rate tier: a flat p50
@@ -447,14 +447,16 @@ defmodule EbbServer.Bench.Metrics do
   # `%{tag => [{offset_us, duration_us}]}`. `latency/2` windows them and
   # drops warmup samples (negative offset), like the client-side worker. The
   # flush phases come from `ebb.writer.flush_phase_ms`, one tagged series per
-  # phase plus the per-range accounting total; the gauges are the Writer's
-  # claim/release snapshots, not harness occupancy.
+  # phase plus the per-range accounting total; the fan-out hops come from
+  # `ebb.fanout.hop_ms`, one tagged series per hop; the gauges are the
+  # Writer's claim/release snapshots, not harness occupancy.
   defp server_summary(duration, telemetry) do
     %{
       writer_batch: latency(duration, samples(telemetry, :writer_batch)),
       writer_commit: latency(duration, samples(telemetry, :writer_commit)),
       http_request: latency(duration, samples(telemetry, :http_request)),
       fanout_push: latency(duration, samples(telemetry, :fanout_push)),
+      fanout_hops: fanout_hops(duration, telemetry),
       flush_phases: flush_phases(duration, telemetry),
       flush_total: latency(duration, samples(telemetry, :writer_flush_total)),
       queue_depth: gauge(duration, samples(telemetry, :writer_queue_depth)),
@@ -466,6 +468,16 @@ defmodule EbbServer.Bench.Metrics do
   defp flush_phases(duration, telemetry) do
     Map.new(Telemetry.writer_flush_phases(), fn phase ->
       {phase, latency(duration, samples(telemetry, {:writer_flush_phase, phase}))}
+    end)
+  end
+
+  # Every hop in the contract gets windows, empty when the run never reached
+  # it: a dropped hop would read as "not part of the pipeline" instead of
+  # "not measured here". `router_dwell` is emitted only when a range actually
+  # waits, so an empty series is a legitimate zero.
+  defp fanout_hops(duration, telemetry) do
+    Map.new(Telemetry.fanout_hops(), fn hop ->
+      {hop, latency(duration, samples(telemetry, {:fanout_hop, hop}))}
     end)
   end
 

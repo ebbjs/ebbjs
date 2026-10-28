@@ -1,6 +1,16 @@
 defmodule EbbServer.Telemetry do
   @writer_flush_phases [:queue, :prepare, :resolve, :commit_wait, :apply, :notify]
 
+  @fanout_hops [
+    :router_queue,
+    :router_dwell,
+    :router_decode,
+    :group_queue,
+    :group_encode,
+    :group_cast,
+    :conn_deliver
+  ]
+
   @moduledoc """
   Server-side telemetry: the single place that fixes event names and payload
   conventions for every `:telemetry` event Ebb emits.
@@ -34,6 +44,7 @@ defmodule EbbServer.Telemetry do
   | `ebb.entity_store.read_latency_ms`        | `duration` (native), `byte_size`, `row_count` | `path` (`:clean_hit` / `:query`), `subject_id`      |
   | `ebb.entity_store.cache_hit_rate`         | `count`                               | `result` (`:hit` / `:miss`), `path` (`:dirty_materialize` / `:clean_hit` / `:query`) |
   | `ebb.fanout.push_latency_ms`              | `duration` (native)                   | `group_id`                                          |
+  | `ebb.fanout.hop_ms`                       | `duration` (native)                   | `hop` (`fanout_hops/0`), `group_id`                 |
   | `ebb.fanout.dispatched_actions`           | `count`, `subscribers`                | `group_id`                                          |
   | `ebb.fanout.active_connections`           | `count`                               | —                                                   |
   | `ebb.fanout.active_groups`                | `count`                               | —                                                   |
@@ -119,6 +130,61 @@ defmodule EbbServer.Telemetry do
   the GroupServer dispatching the batch to the group's subscribers: one sample
   per dispatched batch per group. Ranges recovered after a Router restart
   carry no commit time and are not sampled.
+
+  `ebb.fanout.hop_ms` splits the same commit → broadcast span into named
+  hops, one sample per range per hop (or per range per group per hop where
+  the hop is group-scoped). It follows the `ebb.writer.flush_phase_ms`
+  conventions: every hop is its own measurement with a `hop` label, each
+  carries real work or real waiting rather than a residual, and the
+  vocabulary is `#{inspect(@fanout_hops)}` (also returned by
+  `fanout_hops/0`) so reporters and follow-up issues use the same terms.
+
+  The Writer-side `notify` phase is not a `hop_ms` sample: it is already the
+  `notify` measurement of `ebb.writer.flush_phase_ms` (#537), and
+  `router_queue` starts where that send leaves the Writer. Likewise the
+  re-based `push_latency_ms` starts at the end of the post-commit apply (the
+  fan-out notify send), not at the top of `apply_one/2`, so the write-side
+  `apply` phase is not inside the fan-out sample.
+
+  - `router_queue` — the Writer's fan-out send to the Router's
+    `handle_info/2` entry. One sample per notified GSN range; metadata
+    `group_id` is `nil`. A recovered range has no commit time and emits no
+    sample.
+  - `router_dwell` — how long a range sat buffered in `Plan` waiting for the
+    committed watermark. Emitted only for a range released by a later event
+    (a later commit or a resolved hole), never for a range the same
+    `handle_info/2` both received and released, and never for a `~0`
+    sample. Metadata `group_id` is `nil`.
+  - `router_decode` — `RocksDB.range_iterator` plus `ActionFormat.decode/2`
+    plus the group split in `push_gsn_range/4`. One sample per released
+    range, including a recovered one (the cost is real), with `group_id`
+    `nil`.
+  - `group_queue` — the Router's `GenServer.cast` send to the
+    `GroupServer.handle_cast/2` entry. One sample per (range, group), with
+    the group id.
+  - `group_encode` — `data_frame/1` per Action plus
+    `IO.iodata_to_binary/1` inside the `GroupServer` cast. One sample per
+    (range, group), with the group id.
+  - `group_cast` — the GroupServer's per-subscriber `push_data` cast loop,
+    measured from the end of `group_encode` until the last cast is enqueued.
+    One sample per (range, group), with the group id. This is the serial
+    O(subscribers) leg that closes the re-based `push_latency_ms`; without it
+    the end-to-end sample has an unattributed tail.
+  - `conn_deliver` — the `GroupServer`'s `SSEConnection.push_data/3` cast
+    send through the `SSEConnection.handle_cast/2` entry and the
+    `send(parent, {:sse_data, bytes})` completing. One sample per sampled
+    (range, group, subscriber) delivery, with the group id. The server-side
+    end of the chain is the parent send returning, not the SSE handler's
+    `chunk/2`: real-socket measurement is out of scope.
+
+  `conn_deliver` is the only per-subscriber hop, so it is sampled. The
+  Router reads `Application.get_env(:ebb_server, :fanout_conn_sample_rate,
+  100)` at boot and passes it with each push; the GroupServer draws one
+  offset per batch and strides, where `0` turns the hop off, `1` samples
+  every delivery, and `K > 1` samples 1 in `K`. Other hops are never
+  sampled. Unsampled deliveries keep the two-argument
+  `SSEConnection.push_data/2` cast, so a collector that only understands
+  that shape still sees them.
 
   `ebb.entity_store.*` attributes the read path by size and phase. `byte_size`
   is the JSON blob (`row.data`) before it is decoded: the pre-existing blob on
@@ -208,6 +274,29 @@ defmodule EbbServer.Telemetry do
   """
   @spec writer_flush_phases() :: [atom()]
   def writer_flush_phases, do: @writer_flush_phases
+
+  @doc """
+  The `hop` values `ebb.fanout.hop_ms` carries, in pipeline order.
+
+  Reports and follow-up issues reference this list instead of repeating the
+  hop names, so the published tables stay comparable between issues.
+  """
+  @spec fanout_hops() :: [atom()]
+  def fanout_hops, do: @fanout_hops
+
+  @doc """
+  Emits one `ebb.fanout.hop_ms` sample, or does nothing when `duration` is
+  `nil` (a recovered range with no timestamp to measure from).
+
+  Callers pass an already-computed native duration and the hop from
+  `fanout_hops/0`; `group_id` is `nil` for range-scoped hops.
+  """
+  @spec fanout_hop(atom(), integer() | nil, String.t() | nil) :: :ok
+  def fanout_hop(_hop, nil, _group_id), do: :ok
+
+  def fanout_hop(hop, duration, group_id) when is_integer(duration) and duration >= 0 do
+    execute([:fanout, :hop_ms], %{duration: duration}, %{hop: hop, group_id: group_id})
+  end
 
   @doc """
   Emits `[:ebb | event]` with `measurements` and `metadata`.

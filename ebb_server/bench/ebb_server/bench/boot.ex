@@ -24,6 +24,10 @@ defmodule EbbServer.Bench.Boot do
   """
   @spec start(Options.t()) :: t()
   def start(%Options{} = config) do
+    # Per-run in the bench VM: the GroupServer reads this once per batch, so
+    # it has to be set before the sync tree starts.
+    Application.put_env(:ebb_server, :fanout_conn_sample_rate, config.conn_sample_rate)
+
     start_dependencies()
     Application.put_env(:ebb_server, :auth_mode, :bypass)
 

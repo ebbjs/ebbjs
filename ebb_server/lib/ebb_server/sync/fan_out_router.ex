@@ -94,18 +94,28 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   alias EbbServer.Sync.{FanOutFrontier, GroupDynamicSupervisor, GroupRegistry, GroupServer}
   alias EbbServer.Sync.FanOutRouter.{GroupResolution, Plan, Recovery}
+  alias EbbServer.Telemetry
+
+  @default_conn_sample_rate 100
 
   @type t :: %__MODULE__{
           plan: Plan.t(),
           pending_groups: %{non_neg_integer() => [String.t()]},
-          batch_committed_at: %{{non_neg_integer(), non_neg_integer()} => integer()},
+          batch_meta: %{
+            {non_neg_integer(), non_neg_integer()} => %{
+              committed_at: integer() | nil,
+              received_at: integer() | nil
+            }
+          },
+          conn_sample_rate: non_neg_integer(),
           subscriptions: %{pid() => [String.t()]},
           monitors: %{pid() => reference()}
         }
 
   defstruct plan: %Plan{},
             pending_groups: %{},
-            batch_committed_at: %{},
+            batch_meta: %{},
+            conn_sample_rate: 1,
             subscriptions: %{},
             monitors: %{}
 
@@ -131,26 +141,33 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   @impl true
   def init(_opts) do
+    conn_sample_rate =
+      Application.get_env(:ebb_server, :fanout_conn_sample_rate, @default_conn_sample_rate)
+
     case FanOutFrontier.get() do
-      :empty -> {:ok, cold_start()}
-      {:ok, last_pushed_gsn} -> {:ok, resume(last_pushed_gsn)}
+      :empty -> {:ok, cold_start(conn_sample_rate)}
+      {:ok, last_pushed_gsn} -> {:ok, resume(last_pushed_gsn, conn_sample_rate)}
     end
   end
 
   # A cold boot must not replay the entire log to live subscribers:
   # connecting clients catch up on connect. Seeding the frontier with the
   # current watermark makes that explicit.
-  defp cold_start do
+  defp cold_start(conn_sample_rate) do
     last_pushed_gsn = committed_watermark()
     FanOutFrontier.put(last_pushed_gsn)
-    %__MODULE__{plan: Plan.new(last_pushed_gsn: last_pushed_gsn)}
+
+    %__MODULE__{
+      plan: Plan.new(last_pushed_gsn: last_pushed_gsn),
+      conn_sample_rate: conn_sample_rate
+    }
   end
 
   # Resume after a Router-only restart, or after a commit that landed while
   # the Router was down (the Writer's `Process.whereis/1` guard dropped its
   # `{:batch_committed, ...}`). The in-memory buffer is re-derived from the
   # durable log rather than persisted.
-  defp resume(last_pushed_gsn) do
+  defp resume(last_pushed_gsn, conn_sample_rate) do
     max_gsn = RocksDB.get_max_gsn()
 
     {pending_notifications, pending_groups} =
@@ -163,12 +180,13 @@ defmodule EbbServer.Sync.FanOutRouter do
 
     state = %__MODULE__{
       pending_groups: pending_groups,
+      conn_sample_rate: conn_sample_rate,
       plan:
         Plan.new(pending_notifications: pending_notifications, last_pushed_gsn: last_pushed_gsn)
     }
 
     {to_push, plan} = Plan.split_pushable(state.plan, committed_watermark())
-    push_and_update(%{state | plan: plan}, to_push)
+    push_and_update(%{state | plan: plan}, to_push, nil)
   end
 
   # Per-Action group resolution falls back to cache-based
@@ -194,13 +212,17 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   @impl true
   def handle_info({:batch_committed, from_gsn, to_gsn, groups_by_gsn, committed_at}, state) do
-    # Keep the Writer-provided group sets and commit time alongside the
-    # buffered ranges, so a range that waits for the watermark still
-    # dispatches from the commit snapshot and reports its true latency.
+    received_at = System.monotonic_time()
+    range = {from_gsn, to_gsn}
+
+    # Keep the Writer-provided group sets, commit time, and receive time
+    # alongside the buffered ranges, so a range that waits for the watermark
+    # still dispatches from the commit snapshot and reports its true latency.
     state = %{
       state
       | pending_groups: Map.merge(state.pending_groups, groups_by_gsn),
-        batch_committed_at: Map.put(state.batch_committed_at, {from_gsn, to_gsn}, committed_at)
+        batch_meta:
+          Map.put(state.batch_meta, range, %{committed_at: committed_at, received_at: received_at})
     }
 
     {to_push, plan} =
@@ -211,7 +233,7 @@ defmodule EbbServer.Sync.FanOutRouter do
         WatermarkTracker.committed_watermark()
       )
 
-    {:noreply, push_and_update(%{state | plan: plan}, to_push)}
+    {:noreply, push_and_update(%{state | plan: plan}, to_push, range)}
   end
 
   # A resolved hole is not a batch: do not buffer it, read it, or push it.
@@ -223,7 +245,7 @@ defmodule EbbServer.Sync.FanOutRouter do
       |> Plan.resolve({from_gsn, to_gsn})
       |> Plan.split_pushable(WatermarkTracker.committed_watermark())
 
-    {:noreply, push_and_update(%{state | plan: plan}, to_push)}
+    {:noreply, push_and_update(%{state | plan: plan}, to_push, nil)}
   end
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
@@ -288,17 +310,25 @@ defmodule EbbServer.Sync.FanOutRouter do
     {:noreply, state}
   end
 
-  defp push_and_update(state, to_push) do
+  defp push_and_update(state, to_push, just_received) do
     pushed_gsns = Enum.flat_map(to_push, fn {from, to} -> Enum.to_list(from..to) end)
+    released_at = System.monotonic_time()
 
-    for {from, to} <- to_push do
-      # Recovered ranges have no entry and pass `nil`, which suppresses
-      # the latency sample for historical pushes.
+    for {from, to} = range <- to_push do
+      meta = Map.get(state.batch_meta, range, %{})
+      committed_at = Map.get(meta, :committed_at)
+      received_at = Map.get(meta, :received_at)
+
+      # A recovered range has no commit time and no receive time, so it
+      # emits neither the queue nor the dwell hop.
+      Telemetry.fanout_hop(:router_queue, span(committed_at, received_at), nil)
+      emit_dwell(received_at, released_at, range, just_received)
+
       push_gsn_range(
         from,
         to,
         state.pending_groups,
-        Map.get(state.batch_committed_at, {from, to})
+        %{committed_at: committed_at, conn_sample_rate: state.conn_sample_rate}
       )
     end
 
@@ -309,9 +339,27 @@ defmodule EbbServer.Sync.FanOutRouter do
     %{
       state
       | pending_groups: Map.drop(state.pending_groups, pushed_gsns),
-        batch_committed_at: Map.drop(state.batch_committed_at, to_push)
+        batch_meta: Map.drop(state.batch_meta, to_push)
     }
   end
+
+  # The buffered wait is only real for a range released by a later event;
+  # the immediate path would report a ~0 sample for the same `handle_info`.
+  defp emit_dwell(received_at, released_at, range, just_received)
+       when range != just_received do
+    case span(received_at, released_at) do
+      duration when is_integer(duration) and duration > 0 ->
+        Telemetry.fanout_hop(:router_dwell, duration, nil)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp emit_dwell(_received_at, _released_at, _range, _just_received), do: :ok
+
+  defp span(from, to) when is_integer(from) and is_integer(to), do: max(to - from, 0)
+  defp span(_from, _to), do: nil
 
   # GroupServers monitor their own subscribers and drop them on exit, so
   # the router only has to forget the connection and its monitor ref.
@@ -323,7 +371,8 @@ defmodule EbbServer.Sync.FanOutRouter do
     %{state | subscriptions: Map.delete(state.subscriptions, pid), monitors: monitors}
   end
 
-  defp push_gsn_range(from_gsn, to_gsn, groups_by_gsn, committed_at) do
+  defp push_gsn_range(from_gsn, to_gsn, groups_by_gsn, %{} = meta) do
+    decode_started_at = System.monotonic_time()
     cf = RocksDB.cf_actions()
     from_key = RocksDB.encode_gsn_key(from_gsn)
     to_key = RocksDB.encode_gsn_key(to_gsn + 1)
@@ -335,11 +384,23 @@ defmodule EbbServer.Sync.FanOutRouter do
       group_members_by_id: CacheTables.group_members_by_id()
     ]
 
-    RocksDB.range_iterator(cf, from_key, to_key)
-    |> Stream.map(fn {key, value} -> ActionFormat.decode(value, RocksDB.decode_gsn_key(key)) end)
-    |> Stream.flat_map(&group_memberships(&1, groups_by_gsn, resolve_opts))
-    |> Enum.group_by(fn {group_id, _action} -> group_id end, fn {_group_id, action} -> action end)
-    |> Enum.each(fn {group_id, actions} -> push_to_group(group_id, actions, committed_at) end)
+    grouped =
+      RocksDB.range_iterator(cf, from_key, to_key)
+      |> Stream.map(fn {key, value} -> ActionFormat.decode(value, RocksDB.decode_gsn_key(key)) end)
+      |> Stream.flat_map(&group_memberships(&1, groups_by_gsn, resolve_opts))
+      |> Enum.group_by(fn {group_id, _action} -> group_id end, fn {_group_id, action} ->
+        action
+      end)
+
+    Telemetry.fanout_hop(:router_decode, System.monotonic_time() - decode_started_at, nil)
+
+    Enum.each(grouped, fn {group_id, actions} ->
+      push_to_group(group_id, actions, %{
+        committed_at: meta.committed_at,
+        cast_at: System.monotonic_time(),
+        conn_sample_rate: meta.conn_sample_rate
+      })
+    end)
   end
 
   # One push per group per committed range, so a batch that fans out to a
@@ -360,8 +421,8 @@ defmodule EbbServer.Sync.FanOutRouter do
     end)
   end
 
-  defp push_to_group(group_id, actions, committed_at) do
-    for_each_group([group_id], &GroupServer.push_actions(&1, actions, committed_at))
+  defp push_to_group(group_id, actions, meta) do
+    for_each_group([group_id], &GroupServer.push_actions(&1, actions, meta))
   end
 
   defp for_each_group(group_ids, fun) do

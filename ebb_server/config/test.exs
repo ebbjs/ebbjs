@@ -8,6 +8,8 @@ import Config
 config :ebb_server, port: 4001
 config :ebb_server, data_dir: Path.join(System.tmp_dir!(), "ebb_server_test_app_storage")
 config :ebb_server, auth_mode: :bypass
+# Tests assert a conn_deliver sample from one subscriber; keep every delivery.
+config :ebb_server, :fanout_conn_sample_rate, 1
 
 # The 1 Hz gauge sampler is off by default in tests so its emissions cannot
 # leak into other tests' telemetry assertions. Sampler tests start it directly.

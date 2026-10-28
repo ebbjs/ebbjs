@@ -197,7 +197,7 @@ defmodule EbbServer.Sync.GroupServerTest do
         "updates" => []
       }
 
-      :ok = GroupServer.push_actions(gs, [action], committed_at)
+      :ok = GroupServer.push_actions(gs, [action], %{committed_at: committed_at})
 
       # `get_state/1` is a call, so it is handled after the cast.
       _state = :sys.get_state(gs)
@@ -232,6 +232,58 @@ defmodule EbbServer.Sync.GroupServerTest do
              ] = telemetry_events(ref)
     end
 
+    test "emits group_queue and group_encode with the group id", %{
+      group_server: gs,
+      group_id: group_id
+    } do
+      subscriber = spawn(fn -> receive do: (_ -> :ok) end)
+      :ok = GroupServer.add_subscriber(gs, subscriber, "actor_1")
+
+      ref = attach_telemetry([[:ebb, :fanout, :hop_ms]])
+      committed_at = System.monotonic_time()
+      cast_at = System.monotonic_time()
+
+      :ok =
+        GroupServer.push_actions(gs, [action("act_hops", 1)], %{
+          committed_at: committed_at,
+          cast_at: cast_at,
+          conn_sample_rate: 0
+        })
+
+      _state = :sys.get_state(gs)
+
+      events = telemetry_events(ref)
+
+      assert [
+               {[:ebb, :fanout, :hop_ms], %{duration: queue_duration},
+                %{hop: :group_queue, group_id: ^group_id}},
+               {[:ebb, :fanout, :hop_ms], %{duration: encode_duration},
+                %{hop: :group_encode, group_id: ^group_id}},
+               {[:ebb, :fanout, :hop_ms], %{duration: cast_duration},
+                %{hop: :group_cast, group_id: ^group_id}}
+             ] = events
+
+      assert is_integer(queue_duration) and queue_duration >= 0
+      assert is_integer(encode_duration) and encode_duration >= 0
+      assert is_integer(cast_duration) and cast_duration >= 0
+    end
+
+    test "samples conn_deliver per delivery and honours the sample-rate control", %{
+      group_server: gs
+    } do
+      test_pid = self()
+      subscriber = start_meta_collector(test_pid)
+      :ok = GroupServer.add_subscriber(gs, subscriber, "actor_1")
+
+      :ok = GroupServer.push_actions(gs, [action("act_sampled", 1)], %{conn_sample_rate: 1})
+      assert_receive {:pushed_meta, ^subscriber, %{cast_at: cast_at, group_id: _}}, 1_000
+      assert is_integer(cast_at)
+
+      :ok = GroupServer.push_actions(gs, [action("act_unsampled", 2)], %{conn_sample_rate: 0})
+      assert_receive {:pushed_data, ^subscriber, _bytes}, 1_000
+      refute_receive {:pushed_meta, ^subscriber, _}, 100
+    end
+
     test "emits nothing for a recovered range without a commit time", %{
       group_server: gs
     } do
@@ -245,7 +297,7 @@ defmodule EbbServer.Sync.GroupServerTest do
         "updates" => []
       }
 
-      :ok = GroupServer.push_actions(gs, [action], nil)
+      :ok = GroupServer.push_actions(gs, [action], %{})
       _state = :sys.get_state(gs)
 
       assert telemetry_events(ref) == []
@@ -267,6 +319,27 @@ defmodule EbbServer.Sync.GroupServerTest do
       {:"$gen_cast", {:push_data, bytes}} ->
         send(test_pid, {:pushed_data, self(), bytes})
         collect_push_data(test_pid)
+
+      {:"$gen_cast", {:push_data, bytes, _meta}} ->
+        send(test_pid, {:pushed_data, self(), bytes})
+        collect_push_data(test_pid)
+    end
+  end
+
+  defp start_meta_collector(test_pid) do
+    spawn(fn -> collect_push_meta(test_pid) end)
+  end
+
+  defp collect_push_meta(test_pid) do
+    receive do
+      {:"$gen_cast", {:push_data, bytes}} ->
+        send(test_pid, {:pushed_data, self(), bytes})
+        collect_push_meta(test_pid)
+
+      {:"$gen_cast", {:push_data, bytes, meta}} ->
+        send(test_pid, {:pushed_meta, self(), meta})
+        send(test_pid, {:pushed_data, self(), bytes})
+        collect_push_meta(test_pid)
     end
   end
 

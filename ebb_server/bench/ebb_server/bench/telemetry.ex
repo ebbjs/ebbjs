@@ -3,18 +3,24 @@ defmodule EbbServer.Bench.Telemetry do
   Collects server-side `ebb.*` latency telemetry for one benchmark run.
 
   The server emits its own latency events — `ebb.writer.batch_latency_ms`,
-  `ebb.writer.commit_latency_ms`, `ebb.http.request_latency_ms`, and
-  `ebb.fanout.push_latency_ms`. Attaching a handler in the bench process lets
-  a run report latency measured *inside* the server instead of inferring it
-  from the client's wall clock.
+  `ebb.writer.commit_latency_ms`, `ebb.http.request_latency_ms`,
+  `ebb.fanout.push_latency_ms`, and `ebb.fanout.hop_ms`. Attaching a handler
+  in the bench process lets a run report latency measured *inside* the server
+  instead of inferring it from the client's wall clock.
 
   `ebb.writer.flush_phase_ms` is split into one series per phase under
   `{:writer_flush_phase, phase}` plus the range's accounting total under
   `:writer_flush_total`, so a report can attribute one flush without
-  re-summing the phase rows. The Writer's two pipeline gauges are recorded
-  raw under `:writer_in_flight` and `:writer_oldest_unreleased_gsn`, and the
-  flush queue depth (the number of calls one flush drained, from
-  `ebb.writer.batch_size`'s `callers`) under `:writer_queue_depth`.
+  re-summing the phase rows. `ebb.fanout.hop_ms` is split into one series
+  per hop under `{:fanout_hop, hop}` in `EbbServer.Telemetry.fanout_hops/0`
+  order, which is how a run explains the fan-out sample instead of reporting
+  a single number. Its `conn_deliver` hop is sampled server-side at
+  `Application.get_env(:ebb_server, :fanout_conn_sample_rate, 1)`, so its
+  sample count is a fraction of the deliveries, not the delivery count. The
+  Writer's two pipeline gauges are recorded raw under `:writer_in_flight`
+  and `:writer_oldest_unreleased_gsn`, and the flush queue depth (the number
+  of calls one flush drained, from `ebb.writer.batch_size`'s `callers`)
+  under `:writer_queue_depth`.
 
   Handlers run in whichever process emits the event — the Writer, a request
   process, a GroupServer — so samples land in a public ETS table an emitter
@@ -30,7 +36,9 @@ defmodule EbbServer.Bench.Telemetry do
   Latency samples are returned as `%{tag => [{offset_us, duration_us}]}`.
   The flush phases use `{:writer_flush_phase, phase}` tags in
   `EbbServer.Telemetry.writer_flush_phases/0` order and `:writer_flush_total`;
-  the gauges keep their level as the value under `:writer_in_flight` and
+  the fan-out hops use `{:fanout_hop, hop}` tags in
+  `EbbServer.Telemetry.fanout_hops/0` order; the gauges keep their level as
+  the value under `:writer_in_flight` and
   `:writer_oldest_unreleased_gsn`. The dispatched-Actions counter keeps the
   same row shape under `:fanout_dispatched`, where each value is the
   deliveries enqueued by one batch (`count * subscribers`); `stop/1`
@@ -53,6 +61,7 @@ defmodule EbbServer.Bench.Telemetry do
     [:ebb, :writer, :oldest_unreleased_gsn],
     [:ebb, :http, :request_latency_ms],
     [:ebb, :fanout, :push_latency_ms],
+    [:ebb, :fanout, :hop_ms],
     [:ebb, :fanout, :dispatched_actions]
   ]
 
@@ -141,6 +150,10 @@ defmodule EbbServer.Bench.Telemetry do
 
   def handle_event([:ebb, :fanout, :push_latency_ms], measurements, _metadata, config) do
     record(config, :fanout_push, duration_us(measurements))
+  end
+
+  def handle_event([:ebb, :fanout, :hop_ms], measurements, %{hop: hop}, config) do
+    record(config, {:fanout_hop, hop}, duration_us(measurements))
   end
 
   def handle_event([:ebb, :fanout, :dispatched_actions], measurements, _metadata, config) do

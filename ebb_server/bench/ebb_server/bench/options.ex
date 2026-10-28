@@ -54,6 +54,14 @@ defmodule EbbServer.Bench.Options do
   `:writer_batch_max_size` feed). The defaults here are the production
   defaults: a 0 ms timeout burst-drains the mailbox, and a 1,000-Action cap
   that only binds when a burst is deeper than the default flush shape.
+
+  ## Fan-out connection sampling
+
+  `--conn-sample-rate` sets the server's per-subscriber `conn_deliver`
+  sample rate through the `:fanout_conn_sample_rate` application env in the
+  bench VM: `0` turns the hop off, `1` samples every delivery, and `K > 1`
+  samples 1 in `K`. The other fan-out hops are never sampled. It is legal on
+  every tier and has no effect on one without subscribers.
   """
 
   @type tier :: :t0 | :t1 | :t2 | :t3 | :t4 | :t5
@@ -93,6 +101,7 @@ defmodule EbbServer.Bench.Options do
           rate: non_neg_integer(),
           batch_timeout_ms: non_neg_integer(),
           batch_max_size: pos_integer(),
+          conn_sample_rate: non_neg_integer(),
           subscriber_lean: boolean(),
           ablate: [ablate_phase()],
           baseline: String.t() | nil,
@@ -117,6 +126,7 @@ defmodule EbbServer.Bench.Options do
             rate: 0,
             batch_timeout_ms: 0,
             batch_max_size: 1000,
+            conn_sample_rate: 100,
             subscriber_lean: false,
             ablate: [],
             baseline: nil,
@@ -166,6 +176,7 @@ defmodule EbbServer.Bench.Options do
     rate: :integer,
     batch_timeout_ms: :integer,
     batch_max_size: :integer,
+    conn_sample_rate: :integer,
     subscriber_lean: :boolean,
     ablate: :string,
     baseline: :string,
@@ -211,6 +222,7 @@ defmodule EbbServer.Bench.Options do
       {"Durability", "#{config.durability}"},
       {"Preloaded entities", "#{config.entities}"},
       {"SSE subscribers", "#{config.subscribers}"},
+      {"Fan-out conn sample rate", conn_sample_rate_description(config.conn_sample_rate)},
       {"Target Actions/sec", target_rate(config.rate)},
       {"Writer batch timeout", batch_timeout_description(config)},
       {"Writer batch cap", "#{config.batch_max_size} Actions"},
@@ -251,6 +263,7 @@ defmodule EbbServer.Bench.Options do
       "--rate #{config.rate}",
       "--batch-timeout-ms #{config.batch_timeout_ms}",
       "--batch-max-size #{config.batch_max_size}",
+      "--conn-sample-rate #{config.conn_sample_rate}",
       "--writers #{config.writers}",
       "--port #{config.port}",
       "--seed #{config.seed}"
@@ -401,6 +414,10 @@ defmodule EbbServer.Bench.Options do
     do: %{acc | batch_timeout_ms: value}
 
   defp put_opt({:batch_max_size, value}, acc), do: %{acc | batch_max_size: value}
+
+  defp put_opt({:conn_sample_rate, value}, acc),
+    do: %{acc | conn_sample_rate: value}
+
   defp put_opt({:subscriber_lean, value}, acc), do: %{acc | subscriber_lean: value}
   defp put_opt({:ablate, value}, acc), do: %{acc | ablate: split_ablate(value)}
   defp put_opt({:baseline, value}, acc), do: %{acc | baseline: value}
@@ -527,7 +544,8 @@ defmodule EbbServer.Bench.Options do
          :ok <- check(config.port in 1..65_535, "--port must be a valid TCP port"),
          :ok <- check(config.subscribers >= 0, "--subscribers must be zero or more"),
          :ok <- check(config.batch_timeout_ms >= 0, "--batch-timeout-ms must be zero or more"),
-         :ok <- check(config.batch_max_size > 0, "--batch-max-size must be at least 1") do
+         :ok <- check(config.batch_max_size > 0, "--batch-max-size must be at least 1"),
+         :ok <- check(config.conn_sample_rate >= 0, "--conn-sample-rate must be zero or more") do
       check(config.rate >= 0, "--rate must be zero or more Actions/sec")
     end
   end
@@ -633,6 +651,10 @@ defmodule EbbServer.Bench.Options do
 
   defp check(true, _message), do: :ok
   defp check(false, message), do: {:error, message}
+
+  defp conn_sample_rate_description(0), do: "off"
+  defp conn_sample_rate_description(1), do: "every delivery"
+  defp conn_sample_rate_description(rate), do: "1 in #{rate}"
 
   defp target_rate(0), do: "unpaced"
   defp target_rate(rate), do: "#{rate}"

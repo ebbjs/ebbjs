@@ -286,6 +286,69 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
 
       :ok = FanOutRouter.unsubscribe(sse_pid)
     end
+
+    test "emits one hop sample per named hop for a live range" do
+      group_id = "g_583_hops_#{:erlang.unique_integer([:positive])}"
+      actor_id = "a_583_hops_#{:erlang.unique_integer([:positive])}"
+
+      conn = ActionHelpers.bootstrap_group(actor_id, group_id, ["todo.*"])
+      assert conn.status == 200
+
+      {:ok, sse_pid} =
+        EbbServer.Sync.SSEConnection.start_link(self(), [group_id], %{group_id => 0})
+
+      :ok = FanOutRouter.subscribe([group_id], sse_pid, actor_id)
+      ref = attach_telemetry([[:ebb, :fanout, :hop_ms]])
+
+      hlc = generate_hlc()
+      entity_id = "todo_583_hops_#{:erlang.unique_integer([:positive])}"
+
+      action = %{
+        "id" => "act_583_hops_#{:erlang.unique_integer([:positive])}",
+        "actor_id" => actor_id,
+        "hlc" => hlc,
+        "updates" => [
+          %{
+            "id" => "upd_583_hops_#{:erlang.unique_integer([:positive])}",
+            "subject_id" => entity_id,
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{
+              "fields" => %{
+                "title" => %{"type" => "lww", "value" => "Hops", "hlc" => hlc}
+              }
+            }
+          },
+          ActionHelpers.entity_group_update(entity_id, group_id, hlc)
+        ]
+      }
+
+      conn =
+        ActionHelpers.post_actions(
+          ActionHelpers.msgpack_encode!(%{"actions" => [action]}),
+          actor_id
+        )
+
+      assert conn.status == 200
+      assert conn.resp_body == ~s({"rejected":[]})
+      assert_receive {:sse_data, _bytes}, 5_000
+
+      durations =
+        Map.new(telemetry_events(ref), fn
+          {[:ebb, :fanout, :hop_ms], %{duration: duration}, %{hop: hop, group_id: gid}} ->
+            {{hop, gid}, duration}
+        end)
+
+      for hop <- [:router_queue, :router_decode], do: assert(is_integer(durations[{hop, nil}]))
+
+      for hop <- [:group_queue, :group_encode, :group_cast, :conn_deliver] do
+        assert is_integer(durations[{hop, group_id}])
+      end
+
+      refute Map.has_key?(durations, {:router_dwell, nil})
+
+      :ok = FanOutRouter.unsubscribe(sse_pid)
+    end
   end
 
   defp system_update(subject_type, subject_id, method, fields) do

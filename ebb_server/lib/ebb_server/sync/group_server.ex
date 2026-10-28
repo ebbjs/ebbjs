@@ -31,9 +31,11 @@ defmodule EbbServer.Sync.GroupServer do
     GenServer.start_link(__MODULE__, group_id, name: GroupRegistry.name(group_id))
   end
 
-  @spec push_actions(pid(), [action()], integer() | nil) :: :ok
-  def push_actions(pid, actions, committed_at \\ nil) do
-    GenServer.cast(pid, {:push_actions, actions, committed_at})
+  @default_conn_sample_rate 100
+
+  @spec push_actions(pid(), [action()], map()) :: :ok
+  def push_actions(pid, actions, meta \\ %{}) do
+    GenServer.cast(pid, {:push_actions, actions, meta})
   end
 
   @spec add_subscriber(pid(), pid(), String.t()) :: :ok
@@ -73,13 +75,47 @@ defmodule EbbServer.Sync.GroupServer do
   alias EbbServer.Sync.SSEConnection
 
   @impl true
-  def handle_cast({:push_actions, actions, committed_at}, state) do
+  def handle_cast({:push_actions, actions, meta}, state) do
+    received_at = System.monotonic_time()
+    cast_at = Map.get(meta, :cast_at)
+    committed_at = Map.get(meta, :committed_at)
+    sample_rate = Map.get(meta, :conn_sample_rate, @default_conn_sample_rate)
+
+    Telemetry.fanout_hop(:group_queue, span(cast_at, received_at), state.group_id)
+
     # The payload is identical for every subscriber of this group, so the
     # frames are encoded once per batch and the resulting binary is shared
     # with every subscriber instead of encoding N×A small maps.
-    bytes = actions |> Enum.map(&SSEConnection.data_frame/1) |> IO.iodata_to_binary()
+    encode_started_at = System.monotonic_time()
 
-    for subscriber <- state.subscribers, do: SSEConnection.push_data(subscriber, bytes)
+    bytes = actions |> Enum.map(&SSEConnection.data_frame/1) |> IO.iodata_to_binary()
+    encode_finished_at = System.monotonic_time()
+
+    Telemetry.fanout_hop(
+      :group_encode,
+      span(encode_started_at, encode_finished_at),
+      state.group_id
+    )
+
+    offset =
+      if is_integer(sample_rate) and sample_rate > 1, do: :rand.uniform(sample_rate) - 1, else: 0
+
+    Enum.each(Enum.with_index(state.subscribers), fn {subscriber, index} ->
+      if sample_delivery?(sample_rate, index, offset) do
+        SSEConnection.push_data(subscriber, bytes, %{
+          cast_at: System.monotonic_time(),
+          group_id: state.group_id
+        })
+      else
+        SSEConnection.push_data(subscriber, bytes)
+      end
+    end)
+
+    Telemetry.fanout_hop(
+      :group_cast,
+      span(encode_finished_at, System.monotonic_time()),
+      state.group_id
+    )
 
     # Observability counter, not a latency: deliveries enqueued for this
     # batch are `count` Actions × the group's subscriber fan-out.
@@ -148,4 +184,19 @@ defmodule EbbServer.Sync.GroupServer do
       {:noreply, %{state | subscribers: new_subscribers, actors: new_actors}}
     end
   end
+
+  # One random offset per batch, then a fixed stride: 0 samples nothing,
+  # 1 samples every delivery, `K > 1` samples 1 in `K`. Keeping the random
+  # draw out of the per-subscriber loop matters at large fan-out.
+  defp sample_delivery?(0, _index, _offset), do: false
+  defp sample_delivery?(1, _index, _offset), do: true
+
+  defp sample_delivery?(rate, index, offset) when is_integer(rate) and rate > 1 do
+    rem(index + offset, rate) == 0
+  end
+
+  defp sample_delivery?(_rate, _index, _offset), do: true
+
+  defp span(from, to) when is_integer(from) and is_integer(to), do: max(to - from, 0)
+  defp span(_from, _to), do: nil
 end
