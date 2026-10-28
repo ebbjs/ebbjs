@@ -1,6 +1,17 @@
 defmodule EbbServer.Storage.ActionValidator do
   @moduledoc """
-  Validates action structure, actor, and HLC timestamp.
+  Validates action structure, actor, and HLC timestamps.
+
+  A field leaf HLC may be arbitrarily old — such a leaf simply loses the
+  merge — but never further in the future than the Action's own HLC may be,
+  so a client cannot date one leaf far ahead of the clock and win that field
+  forever, past the point where it loses the right to write. Out-of-bounds
+  leaves are rejected rather than clamped, because the server and the client
+  materializers must apply the same merge rule to the same values.
+
+  A leaf is not held to its own Action's HLC. The client's `duplicate()`
+  copies a row's leaves verbatim, so a copy can carry a peer's slightly newer
+  stamp; the future drift window is what bounds the pin.
 
   This module is stateless and focuses purely on validation and transformation.
   It does NOT perform authorization - that's handled by the Authorizer.
@@ -45,6 +56,7 @@ defmodule EbbServer.Storage.ActionValidator do
   - Structure (valid fields, non-empty values)
   - Actor (actor_id matches the authenticated actor)
   - HLC (valid timestamp within future drift bounds)
+  - Field leaf HLCs (no leaf further in the future than the drift window)
 
   Note: HLC stale validation was removed because GSN provides total ordering
   and HLC is only used for conflict resolution during replica sync. The stale
@@ -72,7 +84,8 @@ defmodule EbbServer.Storage.ActionValidator do
   defp run_validation(action, actor_id, now_ms) do
     with :ok <- validate_structure(action),
          :ok <- validate_actor(action, actor_id),
-         :ok <- validate_hlc(action, now_ms) do
+         :ok <- validate_hlc(action, now_ms),
+         :ok <- validate_leaf_hlcs(action, now_ms) do
       {:ok, to_validated_action(action)}
     end
   end
@@ -238,16 +251,81 @@ defmodule EbbServer.Storage.ActionValidator do
       hlc <= 0 ->
         {:error, "invalid_hlc", "hlc must be a positive integer"}
 
-      true ->
-        logical_time_ms = hlc >>> 16
+      future_drift?(hlc, now_ms) ->
+        {:error, "hlc_future_drift", "logical time is more than 120s in the future"}
 
-        if logical_time_ms > now_ms + @future_drift_limit_ms do
-          {:error, "hlc_future_drift", "logical time is more than 120s in the future"}
+      true ->
+        :ok
+    end
+  end
+
+  # A leaf may be older than the clock — a write that loses the merge — but
+  # never past the window the Action's own HLC is held to. Leaves without an
+  # HLC merge as 0, which is the historical wire shape.
+  defp validate_leaf_hlcs(action, now_ms) do
+    first_error(action["updates"], &update_leaf_hlc_error(&1, now_ms))
+  end
+
+  # A delete drops its data on the wire. A system row is exempt from the
+  # `data` *shape* rules, not from the merge: its fields are materialized
+  # and read like any other row's, so its leaves are bounded too.
+  defp update_leaf_hlc_error(update, now_ms) do
+    fields = if is_map(update["data"]), do: Map.get(update["data"], "fields"), else: nil
+
+    if update["method"] in ["put", "patch"] and is_map(fields) do
+      first_error(fields, fn {key, value} ->
+        field_leaf_hlc_error(value, [key, "fields"], now_ms)
+      end)
+    else
+      :ok
+    end
+  end
+
+  # The `map` discriminant matches FieldMerge's, so the walk visits exactly
+  # the values the merge will treat as leaves. `path` is reversed: a leaf
+  # costs one cons cell, and the dotted path is built only for a rejection.
+  defp field_leaf_hlc_error(%{"map" => entries}, path, now_ms) when is_map(entries) do
+    first_error(entries, fn {key, value} ->
+      field_leaf_hlc_error(value, [key, "map" | path], now_ms)
+    end)
+  end
+
+  defp field_leaf_hlc_error(leaf, path, now_ms) when is_map(leaf) do
+    leaf_hlc_error(leaf["hlc"], path, now_ms)
+  end
+
+  defp field_leaf_hlc_error(_leaf, _path, _now_ms), do: :ok
+
+  defp leaf_hlc_error(nil, _path, _now_ms), do: :ok
+
+  defp leaf_hlc_error(raw_hlc, path, now_ms) do
+    case normalize_hlc(raw_hlc) do
+      leaf_hlc when is_nil(leaf_hlc) or leaf_hlc <= 0 ->
+        {:error, "invalid_field_hlc", "#{dotted(path)}.hlc must be a positive integer"}
+
+      leaf_hlc ->
+        if future_drift?(leaf_hlc, now_ms) do
+          {:error, "invalid_field_hlc", "#{dotted(path)}.hlc is more than 120s in the future"}
         else
           :ok
         end
     end
   end
+
+  defp dotted(path), do: path |> Enum.reverse() |> Enum.map_join(".", &to_string/1)
+
+  defp first_error(items, fun) do
+    Enum.reduce_while(items, :ok, fn item, :ok ->
+      case fun.(item) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp future_drift?(hlc, now_ms), do: logical_time_ms(hlc) > now_ms + @future_drift_limit_ms
+
+  defp logical_time_ms(hlc), do: hlc >>> 16
 
   @doc """
   Normalizes an HLC value to an integer.

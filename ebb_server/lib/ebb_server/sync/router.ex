@@ -808,7 +808,12 @@ defmodule EbbServer.Sync.Router.OperationSchema do
           enum: ["put", "patch", "delete"],
           description: "Update method"
         },
-        data: %OpenApiSpex.Schema{type: :object, nullable: true, description: "Update payload"}
+        data: %OpenApiSpex.Schema{
+          type: :object,
+          nullable: true,
+          description:
+            "Update payload. Each field leaf's `hlc` must sit at most 120s ahead of the server clock"
+        }
       }
     }
   end

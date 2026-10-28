@@ -380,6 +380,185 @@ defmodule EbbServer.Storage.ActionValidatorTest do
     end
   end
 
+  describe "validate/3 - field leaf HLC bounds" do
+    setup do
+      now = System.os_time(:millisecond)
+      %{now: now, action_hlc: hlc_from(now, 0)}
+    end
+
+    test "top-level leaf HLC beyond the drift window is rejected", %{
+      now: now,
+      action_hlc: action_hlc
+    } do
+      leaf_hlc = hlc_from(now + 1_000_000_000, 0)
+      action = field_action(action_hlc, %{"title" => %{"value" => "pwned", "hlc" => leaf_hlc}})
+
+      assert {[], [rejection]} = ActionValidator.validate([action], "a_test")
+      assert rejection.action_id == action["id"]
+      assert rejection.reason == "invalid_field_hlc"
+      assert rejection.details == "fields.title.hlc is more than 120s in the future"
+    end
+
+    test "a leaf at the drift boundary is accepted", %{now: now, action_hlc: action_hlc} do
+      boundary = hlc_from(now + 120_000, 0)
+      action = field_action(action_hlc, %{"title" => %{"value" => "edge", "hlc" => boundary}})
+
+      assert {[_], []} = ActionValidator.validate([action], "a_test", now_ms: now)
+    end
+
+    test "a leaf one millisecond past the drift boundary is rejected", %{
+      now: now,
+      action_hlc: action_hlc
+    } do
+      past = hlc_from(now + 120_001, 0)
+      action = field_action(action_hlc, %{"title" => %{"value" => "pwned", "hlc" => past}})
+
+      assert {[], [rejection]} = ActionValidator.validate([action], "a_test", now_ms: now)
+      assert rejection.reason == "invalid_field_hlc"
+    end
+
+    test "a leaf past the window is rejected even when the Action is current", %{
+      now: now,
+      action_hlc: action_hlc
+    } do
+      leaf_hlc = hlc_from(now + 121_000, 0)
+      action = field_action(action_hlc, %{"title" => %{"value" => "pwned", "hlc" => leaf_hlc}})
+
+      assert {[], [rejection]} = ActionValidator.validate([action], "a_test")
+      assert rejection.reason == "invalid_field_hlc"
+    end
+
+    test "a put with a far-future leaf HLC is rejected", %{now: now, action_hlc: action_hlc} do
+      leaf_hlc = hlc_from(now + 1_000_000_000, 0)
+
+      action =
+        field_action(action_hlc, %{"title" => %{"value" => "pwned", "hlc" => leaf_hlc}}, "put")
+
+      assert {[], [rejection]} = ActionValidator.validate([action], "a_test")
+      assert rejection.reason == "invalid_field_hlc"
+    end
+
+    test "nested map leaf HLC beyond the drift window is rejected", %{
+      now: now,
+      action_hlc: action_hlc
+    } do
+      leaf_hlc = hlc_from(now + 1_000_000_000, 0)
+
+      fields = %{
+        "content" => %{
+          "map" => %{
+            "run_1" => %{"value" => "pwned", "update_id" => "u_run_1", "hlc" => leaf_hlc}
+          }
+        }
+      }
+
+      assert {[], [rejection]} =
+               ActionValidator.validate([field_action(action_hlc, fields)], "a_test")
+
+      assert rejection.reason == "invalid_field_hlc"
+      assert rejection.details == "fields.content.map.run_1.hlc is more than 120s in the future"
+    end
+
+    test "leaf HLC newer than the Action but inside the window is accepted", %{
+      now: now,
+      action_hlc: action_hlc
+    } do
+      leaf_hlc = hlc_from(now + 1_000, 0)
+      action = field_action(action_hlc, %{"title" => %{"value" => "copy", "hlc" => leaf_hlc}})
+
+      assert {[_], []} = ActionValidator.validate([action], "a_test")
+    end
+
+    test "leaf HLC equal to the action HLC is accepted", %{action_hlc: action_hlc} do
+      action = field_action(action_hlc, %{"title" => %{"value" => "ok", "hlc" => action_hlc}})
+
+      assert {[_], []} = ActionValidator.validate([action], "a_test")
+    end
+
+    test "decimal-string leaf HLC equal to the action HLC is accepted", %{action_hlc: action_hlc} do
+      action =
+        field_action(action_hlc, %{"title" => %{"value" => "ok", "hlc" => "#{action_hlc}"}})
+
+      assert {[_], []} = ActionValidator.validate([action], "a_test")
+    end
+
+    test "leaf HLC older than the action HLC is accepted", %{now: now, action_hlc: action_hlc} do
+      leaf_hlc = hlc_from(now - 60_000, 0)
+      action = field_action(action_hlc, %{"title" => %{"value" => "stale", "hlc" => leaf_hlc}})
+
+      assert {[_], []} = ActionValidator.validate([action], "a_test")
+    end
+
+    test "leaf without an HLC is accepted", %{action_hlc: action_hlc} do
+      absent = field_action(action_hlc, %{"title" => %{"value" => "absent"}})
+
+      explicit_nil =
+        field_action(action_hlc, %{"title" => %{"value" => "nil", "hlc" => nil}})
+
+      assert {[_, _], []} = ActionValidator.validate([absent, explicit_nil], "a_test")
+    end
+
+    test "unparseable leaf HLC is rejected", %{action_hlc: action_hlc} do
+      action =
+        field_action(action_hlc, %{"title" => %{"value" => "bad", "hlc" => "not-a-number"}})
+
+      assert {[], [rejection]} = ActionValidator.validate([action], "a_test")
+      assert rejection.reason == "invalid_field_hlc"
+      assert rejection.details == "fields.title.hlc must be a positive integer"
+    end
+
+    test "non-positive leaf HLC is rejected", %{action_hlc: action_hlc} do
+      zero = field_action(action_hlc, %{"title" => %{"value" => "zero", "hlc" => 0}})
+      negative = field_action(action_hlc, %{"title" => %{"value" => "negative", "hlc" => -1}})
+
+      assert {[], rejections} = ActionValidator.validate([zero, negative], "a_test")
+      assert Enum.map(rejections, & &1.reason) == ["invalid_field_hlc", "invalid_field_hlc"]
+    end
+
+    test "system entity leaf HLC is validated", %{now: now, action_hlc: action_hlc} do
+      action =
+        sample_action(%{
+          "hlc" => action_hlc,
+          "updates" => [
+            %{
+              "id" => "gm_1",
+              "subject_id" => "gm_1",
+              "subject_type" => "groupMember",
+              "method" => "put",
+              "data" => %{
+                "fields" => %{
+                  "actor_id" => %{"value" => "a_test", "hlc" => hlc_from(now + 1_000_000_000, 0)}
+                }
+              }
+            }
+          ]
+        })
+
+      assert {[], [rejection]} = ActionValidator.validate([action], "a_test")
+      assert rejection.reason == "invalid_field_hlc"
+    end
+
+    test "delete leaf HLC is not validated", %{action_hlc: action_hlc} do
+      action =
+        sample_action(%{
+          "hlc" => action_hlc,
+          "updates" => [
+            %{
+              "id" => "upd_del",
+              "subject_id" => "todo_1",
+              "subject_type" => "todo",
+              "method" => "delete",
+              "data" => %{
+                "fields" => %{"title" => %{"value" => "gone", "hlc" => "garbage"}}
+              }
+            }
+          ]
+        })
+
+      assert {[_], []} = ActionValidator.validate([action], "a_test")
+    end
+  end
+
   describe "normalize_hlc/1" do
     test "integer passes through" do
       assert ActionValidator.normalize_hlc(1_700_000_000_000) == 1_700_000_000_000
@@ -427,5 +606,12 @@ defmodule EbbServer.Storage.ActionValidatorTest do
 
       assert is_atom(hd(validated.updates).method)
     end
+  end
+
+  defp field_action(action_hlc, fields, method \\ "patch") do
+    sample_action(%{
+      "hlc" => action_hlc,
+      "updates" => [sample_update(%{"method" => method, "data" => %{"fields" => fields}})]
+    })
   end
 end

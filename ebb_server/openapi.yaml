@@ -23,7 +23,7 @@
                             {
                               "data":
                                 {
-                                  "description": "Update payload",
+                                  "description": "Update payload. Each field leaf's `hlc` must sit at most 120s ahead of the server clock",
                                   "nullable": true,
                                   "type": "object",
                                 },
@@ -120,7 +120,12 @@
             {
               "properties":
                 {
-                  "data": { "description": "Update payload", "nullable": true, "type": "object" },
+                  "data":
+                    {
+                      "description": "Update payload. Each field leaf's `hlc` must sit at most 120s ahead of the server clock",
+                      "nullable": true,
+                      "type": "object",
+                    },
                   "id": { "description": "Unique update ID within the action", "type": "string" },
                   "method":
                     {
@@ -531,7 +536,7 @@
                                                         {
                                                           "data":
                                                             {
-                                                              "description": "Update payload",
+                                                              "description": "Update payload. Each field leaf's `hlc` must sit at most 120s ahead of the server clock",
                                                               "nullable": true,
                                                               "type": "object",
                                                             },
@@ -739,7 +744,7 @@
                                                     {
                                                       "data":
                                                         {
-                                                          "description": "Update payload",
+                                                          "description": "Update payload. Each field leaf's `hlc` must sit at most 120s ahead of the server clock",
                                                           "nullable": true,
                                                           "type": "object",
                                                         },
