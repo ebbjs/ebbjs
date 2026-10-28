@@ -20,6 +20,14 @@ defmodule EbbServer.Storage.RocksDB do
   mailbox is never used at runtime. This keeps the hot path free of
   serialized message passing.
 
+  Because the handles live in `:persistent_term`, they outlive this
+  process unless `terminate/2` erases them — and a surviving `db_ref`
+  keeps the RocksDB LOCK file held, so the replacement instance cannot
+  open the same directory. `init/1` therefore traps exits (so a
+  supervisor shutdown reaches `terminate/2`) and releases any handles
+  left by a dead predecessor before it opens, then retries a bounded
+  number of times while a lock is still being released.
+
   The DB opens with `enable_pipelined_write: true`, which lets multiple
   Writer batches commit concurrently without serializing through a single
   WAL. A 2-writer pipelined benchmark hit ~108k Actions/sec with full
@@ -79,6 +87,39 @@ defmodule EbbServer.Storage.RocksDB do
   # block cannot drift from what `open_database/2` actually opens.
   @tuning [max_background_jobs: 4, enable_pipelined_write: true]
 
+  # Every handle the database publishes, keyed by the accessor that reads it.
+  # One table drives publishing, releasing, and stale-handle cleanup so a new
+  # column family cannot be added to one path and forgotten in another.
+  @handle_keys %{
+    db: :ebb_rocksdb_db,
+    default: :ebb_cf_default,
+    actions: :ebb_cf_actions,
+    entity_actions: :ebb_cf_entity_actions,
+    type_entities: :ebb_cf_type_entities,
+    action_dedup: :ebb_cf_action_dedup,
+    group_actions: :ebb_cf_group_actions
+  }
+
+  # The process that published `@handle_keys`. A handle outlives the process
+  # that opened it when that process is killed without running `terminate/2`,
+  # and a surviving `db_ref` keeps the RocksDB LOCK file held.
+  @owner_key :ebb_rocksdb_owner
+
+  # Retrying only pays off against a handle that is still being released: a
+  # predecessor's `db_ref` copied by a reader outside the storage tree, or the
+  # lock file's last descriptor closing. Anything longer-lived than this is
+  # taken to be a second instance on the same `data_dir`, which must fail.
+  @open_retry_delays_ms [50, 100, 200, 400, 800, 1600]
+
+  # RocksDB renders a `LOCK` conflict as a plain IO error, so the state of the
+  # data is indistinguishable from the state of the lock by error tag alone.
+  @lock_contention_fragments [
+    "lock hold by current process",
+    "While lock file",
+    "No locks available",
+    "Resource temporarily unavailable"
+  ]
+
   @doc """
   Returns the RocksDB tuning options that ship.
   """
@@ -95,30 +136,34 @@ defmodule EbbServer.Storage.RocksDB do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
+  @doc false
+  @spec forget(name()) :: :ok
+  # Test and tooling hook: drop every handle published for `name` without
+  # touching the database. Cleans up after a database whose owner was killed
+  # before `terminate/2` could run.
+  def forget(name), do: erase_handles(name)
+
   # ---------------------------------------------------------------------------
   # Public API — persistent_term accessors
   # ---------------------------------------------------------------------------
 
   @spec db_ref(name()) :: :rocksdb.db_handle()
-  def db_ref(name \\ __MODULE__), do: :persistent_term.get({:ebb_rocksdb_db, name})
+  def db_ref(name \\ __MODULE__), do: handle(:db, name)
 
   @spec cf_actions(name()) :: cf_ref()
-  def cf_actions(name \\ __MODULE__), do: :persistent_term.get({:ebb_cf_actions, name})
+  def cf_actions(name \\ __MODULE__), do: handle(:actions, name)
 
   @spec cf_entity_actions(name()) :: cf_ref()
-  def cf_entity_actions(name \\ __MODULE__),
-    do: :persistent_term.get({:ebb_cf_entity_actions, name})
+  def cf_entity_actions(name \\ __MODULE__), do: handle(:entity_actions, name)
 
   @spec cf_type_entities(name()) :: cf_ref()
-  def cf_type_entities(name \\ __MODULE__),
-    do: :persistent_term.get({:ebb_cf_type_entities, name})
+  def cf_type_entities(name \\ __MODULE__), do: handle(:type_entities, name)
 
   @spec cf_action_dedup(name()) :: cf_ref()
-  def cf_action_dedup(name \\ __MODULE__), do: :persistent_term.get({:ebb_cf_action_dedup, name})
+  def cf_action_dedup(name \\ __MODULE__), do: handle(:action_dedup, name)
 
   @spec cf_group_actions(name()) :: cf_ref()
-  def cf_group_actions(name \\ __MODULE__),
-    do: :persistent_term.get({:ebb_cf_group_actions, name})
+  def cf_group_actions(name \\ __MODULE__), do: handle(:group_actions, name)
 
   @doc """
   The RocksDB default column family. Reserved for internal metadata:
@@ -126,7 +171,9 @@ defmodule EbbServer.Storage.RocksDB do
   costs nothing on the hot path and adds no column family to the schema.
   """
   @spec cf_default(name()) :: cf_ref()
-  def cf_default(name \\ __MODULE__), do: :persistent_term.get({:ebb_cf_default, name})
+  def cf_default(name \\ __MODULE__), do: handle(:default, name)
+
+  defp handle(key, name), do: :persistent_term.get({Map.fetch!(@handle_keys, key), name})
 
   # ---------------------------------------------------------------------------
   # Public API — key encoding / decoding
@@ -506,6 +553,12 @@ defmodule EbbServer.Storage.RocksDB do
 
   @impl true
   def init(opts) do
+    # Without this the supervisor's `:shutdown` signal kills this process
+    # outright: `terminate/2` never runs, the handles it published stay in
+    # `:persistent_term`, and the next instance on the same directory cannot
+    # take the LOCK file (ebbjs/ebbjs#632).
+    Process.flag(:trap_exit, true)
+
     data_dir = Keyword.fetch!(opts, :data_dir)
     name = Keyword.get(opts, :name, __MODULE__)
     path = Path.join(data_dir, "rocksdb")
@@ -519,14 +572,25 @@ defmodule EbbServer.Storage.RocksDB do
     end
   end
 
-  defp open_database(path, name, _opts) do
+  defp open_database(path, name, opts) do
+    # A predecessor killed before `terminate/2` left its handles behind, and a
+    # `db_ref` that is still referenced keeps the LOCK file held. Dropping the
+    # stale handles first is what lets the replacement open at all.
+    release_stale_handles(name)
+
     db_opts =
       [
         create_if_missing: true,
         create_missing_column_families: true
       ] ++ @tuning
 
-    case :rocksdb.open(String.to_charlist(path), db_opts, @cf_descriptors) do
+    retry_delays = Keyword.get(opts, :open_retry_delays_ms, @open_retry_delays_ms)
+
+    attempt_open(String.to_charlist(path), path, db_opts, name, retry_delays)
+  end
+
+  defp attempt_open(path_chars, path, db_opts, name, retry_delays) do
+    case :rocksdb.open(path_chars, db_opts, @cf_descriptors) do
       {:ok, db_ref,
        [
          default_cf,
@@ -536,97 +600,124 @@ defmodule EbbServer.Storage.RocksDB do
          cf_action_dedup,
          cf_group_actions
        ]} ->
-        store_persistent_terms(
-          db_ref,
-          default_cf,
-          cf_actions,
-          cf_entity_actions,
-          cf_type_entities,
-          cf_action_dedup,
-          cf_group_actions,
-          name
-        )
+        store_handles(name, %{
+          db: db_ref,
+          default: default_cf,
+          actions: cf_actions,
+          entity_actions: cf_entity_actions,
+          type_entities: cf_type_entities,
+          action_dedup: cf_action_dedup,
+          group_actions: cf_group_actions
+        })
 
         {:ok, %{db_ref: db_ref, name: name}}
 
       {:error, reason} ->
-        log_rocksdb_error(reason, path)
-        {:stop, {:rocksdb_open_failed, reason}}
+        retry_open(reason, path_chars, path, db_opts, name, retry_delays)
     end
   end
 
+  defp retry_open(reason, path_chars, path, db_opts, name, [delay | rest]) do
+    if lock_contention?(reason) do
+      Logger.warning(fn ->
+        "RocksDB open at #{path} is blocked by a held lock (#{safe_stringify(reason)}); " <>
+          "retrying in #{delay}ms"
+      end)
+
+      Process.sleep(delay)
+      attempt_open(path_chars, path, db_opts, name, rest)
+    else
+      fail_open(reason, path)
+    end
+  end
+
+  defp retry_open(reason, _path_chars, path, _db_opts, _name, []), do: fail_open(reason, path)
+
+  defp fail_open(reason, path) do
+    log_rocksdb_error(reason, path)
+    {:stop, {:rocksdb_open_failed, reason}}
+  end
+
+  # A lock conflict is a RocksDB IO error, not a tagged reason, so the message
+  # is the only place the two are distinguishable. Only the lock case is worth
+  # waiting on: a corrupt or otherwise unreadable database would just fail the
+  # same way after the retries.
+  defp lock_contention?({:db_open, message}) when is_list(message) do
+    message
+    |> List.to_string()
+    |> String.contains?(@lock_contention_fragments)
+  rescue
+    _ -> false
+  end
+
+  defp lock_contention?(_reason), do: false
+
+  # `mkdir_p` reports a concurrent opener as a creation failure even though the
+  # directory is there by the time it returns.
   defp safe_mkdir_p(path) do
     case File.mkdir_p(path) do
-      :ok ->
-        :ok
-
-      {:error, reason} when reason in [:eexist, :eperm] ->
-        if File.dir?(path), do: :ok, else: {:error, reason}
-
-      {:error, reason} ->
-        {:error, reason}
+      :ok -> :ok
+      {:error, reason} -> if File.dir?(path), do: :ok, else: {:error, reason}
     end
   end
 
-  defp store_persistent_terms(
-         db_ref,
-         default_cf,
-         cf_actions,
-         cf_entity_actions,
-         cf_type_entities,
-         cf_action_dedup,
-         cf_group_actions,
-         name
-       ) do
-    :persistent_term.put({:ebb_rocksdb_db, name}, db_ref)
-    :persistent_term.put({:ebb_cf_default, name}, default_cf)
-    :persistent_term.put({:ebb_cf_actions, name}, cf_actions)
-    :persistent_term.put({:ebb_cf_entity_actions, name}, cf_entity_actions)
-    :persistent_term.put({:ebb_cf_type_entities, name}, cf_type_entities)
-    :persistent_term.put({:ebb_cf_action_dedup, name}, cf_action_dedup)
-    :persistent_term.put({:ebb_cf_group_actions, name}, cf_group_actions)
+  defp store_handles(name, handles) do
+    # The owner goes first: it is what tells a competing opener that these
+    # handles belong to a live process rather than a dead predecessor's.
+    :persistent_term.put({@owner_key, name}, self())
+
+    Enum.each(@handle_keys, fn {key, term_key} ->
+      :persistent_term.put({term_key, name}, Map.fetch!(handles, key))
+    end)
+
+    :ok
+  end
+
+  # Only a live owner keeps its handles: a second instance on the same
+  # `data_dir` must fail loudly instead of silently detaching the running
+  # database from its accessors. No owner at all means the publisher was
+  # killed between opening and publishing, or predates the owner key.
+  defp release_stale_handles(name) do
+    case :persistent_term.get({@owner_key, name}, nil) do
+      owner when is_pid(owner) -> if Process.alive?(owner), do: :ok, else: erase_handles(name)
+      _no_owner -> erase_handles(name)
+    end
   end
 
   defp log_rocksdb_error(reason, path) do
-    safe_reason = safe_stringify(reason)
-    Logger.error(fn -> "RocksDB failed to open at #{path}: #{safe_reason}" end)
-  rescue
-    _ -> :logger.error("RocksDB open failed at #{path}: #{inspect(reason, printable_limit: 100)}")
+    Logger.error("RocksDB failed to open at #{path}: #{safe_stringify(reason)}")
   end
 
   defp safe_stringify(term) do
     term
     |> inspect(limit: 1000, printable_limit: 1000)
-    |> String.replace(~c"\t", "~t")
-    |> String.replace(~c"\n", "~n")
-    |> String.replace(~c"\r", "~r")
+    |> String.replace("\t", "~t")
+    |> String.replace("\n", "~n")
+    |> String.replace("\r", "~r")
   end
 
   @impl true
   def terminate(_reason, %{db_ref: db_ref, name: name}) do
-    erase_persistent_terms(name)
+    erase_handles(name)
     safe_close(db_ref)
   end
 
   def terminate(_reason, %{name: name}) do
-    erase_persistent_terms(name)
+    erase_handles(name)
   end
 
   def terminate(_reason, _state) do
     :ok
   end
 
-  defp erase_persistent_terms(name) do
-    :persistent_term.erase({:ebb_rocksdb_db, name})
-    :persistent_term.erase({:ebb_cf_actions, name})
-    :persistent_term.erase({:ebb_cf_entity_actions, name})
-    :persistent_term.erase({:ebb_cf_type_entities, name})
-    :persistent_term.erase({:ebb_cf_action_dedup, name})
-    :persistent_term.erase({:ebb_cf_group_actions, name})
-    :persistent_term.erase({:ebb_cf_default, name})
-  end
+  defp erase_handles(name) do
+    Enum.each(@handle_keys, fn {_key, term_key} ->
+      :persistent_term.erase({term_key, name})
+    end)
 
-  defp safe_close(nil), do: :ok
+    :persistent_term.erase({@owner_key, name})
+    :ok
+  end
 
   defp safe_close(db_ref) do
     :rocksdb.close(db_ref)

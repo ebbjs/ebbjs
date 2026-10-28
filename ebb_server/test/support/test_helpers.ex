@@ -291,13 +291,7 @@ defmodule EbbServer.TestHelpers do
 
     on_exit(fn ->
       safe_stop(pid)
-      :persistent_term.erase({:ebb_rocksdb_db, name})
-      :persistent_term.erase({:ebb_cf_actions, name})
-      :persistent_term.erase({:ebb_cf_entity_actions, name})
-      :persistent_term.erase({:ebb_cf_type_entities, name})
-      :persistent_term.erase({:ebb_cf_action_dedup, name})
-      :persistent_term.erase({:ebb_cf_group_actions, name})
-      :persistent_term.erase({:ebb_cf_default, name})
+      RocksDB.forget(name)
     end)
 
     %{name: name, pid: pid, dir: dir}

@@ -54,12 +54,15 @@ the gate about one line of headroom.
 
 ## The total
 
-With this filter the suite reports **89.5–89.6%** over 3387 production lines,
-351–355 missed, across runs. Unfiltered, the same suite prints 76.89% (5660
-lines, 1308 missed): the difference is entirely bench, mix-task and test-support
-lines. To see that view again, remove `test_coverage` from `mix.exs`; #640
-quotes 77.0%/1302 from a run whose ETS teardown happened to hit a few more
-lines.
+With this filter the suite reports **90.0–90.1%** across runs (measured after
+[#632](https://github.com/ebbjs/ebbjs/issues/632), which cleared the RocksDB
+open/close failure paths, the storage tree's own restart path, and the
+readiness probe's degraded-tree branch). Before that, the same suite reported
+89.5–89.7%.
+Unfiltered, the suite printed 76.89% (5660 lines, 1308 missed) before #632:
+the difference is entirely bench, mix-task and test-support lines. To see that
+view again, remove `test_coverage` from `mix.exs`; #640 quotes 77.0%/1302 from
+a run whose ETS teardown happened to hit a few more lines.
 
 The total moves by a few lines between runs: the ETS-lifecycle rescues across
 the cache modules only execute when a table is already gone, so whether a
@@ -68,16 +71,16 @@ of the threshold as noise, not as a regression signal.
 
 ## The threshold
 
-`summary: [threshold: 89]` in `ebb_server/mix.exs`. That leaves 17–21 lines
-of headroom over the measured total, several times the run-to-run noise.
+`summary: [threshold: 89]` in `ebb_server/mix.exs`. After #632 the suite sits
+about a point above that, several times the run-to-run noise.
 
-89 is the highest round number the suite clears today. The gap to 90 is
-deliberate and owned:
-
-- [#632](https://github.com/ebbjs/ebbjs/issues/632) covers the RocksDB
-  open/close lines and raises this threshold to 90 in the PR that closes it.
-- [#641](https://github.com/ebbjs/ebbjs/issues/641) owns the remaining slices,
-  ranked by risk rather than by distance to the number.
+The threshold stays at 89 rather than moving to 90 with #632: the measured
+total is close enough to 90 that a 90 gate would sit inside the noise band
+above, and a gate that fails one run in five is worse than no gate.
+[#641](https://github.com/ebbjs/ebbjs/issues/641) owns the bump, which lands
+with its first slice — the readiness probe's degraded states — where the total
+clears 90 with room to spare. Its slices are ranked by risk rather than by
+distance to the number.
 
 Raising the threshold without covering the lines behind it only turns a red
 build into noise, so the number moves with the tests, not ahead of them.
