@@ -196,4 +196,88 @@ defmodule EbbServer.Storage.EntityGroupCacheTest do
       assert :ok = EntityGroupCache.delete_entity_group("unknown", opts(cache))
     end
   end
+
+  # Cache mutations are applied by the single Writer GenServer, so the
+  # race under test is a reader against that writer, not two writers.
+  describe "re-put window" do
+    test "an identical re-put never exposes an empty membership set" do
+      cache = with_isolated_cache()
+      entry = membership("g_1")
+      :ok = EntityGroupCache.put_entity_group(entry, opts(cache))
+
+      assert_no_empty_membership_reads(cache, fn ->
+        EntityGroupCache.put_entity_group(entry, opts(cache))
+      end)
+    end
+
+    test "a moved re-put never exposes an empty membership set" do
+      cache = with_isolated_cache()
+
+      :ok = EntityGroupCache.put_entity_group(membership("g_1"), opts(cache))
+
+      assert_no_empty_membership_reads(cache, fn ->
+        for group_id <- ["g_1", "g_2"] do
+          EntityGroupCache.put_entity_group(membership(group_id), opts(cache))
+        end
+
+        :ok
+      end)
+    end
+  end
+
+  @reput_iterations 200_000
+
+  defp assert_no_empty_membership_reads(cache, reput) do
+    parent = self()
+    done = :atomics.new(1, [])
+
+    spawn(fn ->
+      send(parent, {:reader_ready, self()})
+      send(parent, {:reader_done, read_empties(cache, done, "todo_1", 0)})
+    end)
+
+    assert_receive {:reader_ready, reader}, 5_000
+
+    writer =
+      spawn(fn ->
+        for _ <- 1..@reput_iterations, do: reput.()
+        :atomics.put(done, 1, 1)
+      end)
+
+    try do
+      assert_receive {:reader_done, empties}, 10_000
+      assert empties == 0, "reader observed #{empties} empty membership reads"
+    after
+      stop(reader)
+      stop(writer)
+    end
+  end
+
+  defp stop(pid) do
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+    after
+      1_000 -> :ok
+    end
+  end
+
+  defp read_empties(cache, done, entity_id, empties) do
+    empties =
+      if EntityGroupCache.entity_groups(entity_id, cache.table) == [],
+        do: empties + 1,
+        else: empties
+
+    if :atomics.get(done, 1) == 0 do
+      read_empties(cache, done, entity_id, empties)
+    else
+      empties
+    end
+  end
+
+  defp membership(group_id) do
+    %{id: "eg_1", entity_id: "todo_1", group_id: group_id}
+  end
 end
