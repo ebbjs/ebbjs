@@ -140,10 +140,14 @@ the real server, the production single-Writer configuration sustains
 coalescing ([#332](https://github.com/ebbjs/ebbjs/issues/332)) leaves that
 batch-100 rate flat — it is per-Action-bound — and roughly triples batch-1
 direct-write throughput; see
-[`bench/RESULTS.md`](bench/RESULTS.md). Production runs a single Writer;
-multi-Writer pipelining is gated behind committed-watermark and
-ordered-fanout coordination that is not yet built
-([#287](https://github.com/ebbjs/ebbjs/issues/287)).
+[`bench/RESULTS.md`](bench/RESULTS.md). Production runs a single Writer,
+and a second claim owner is parked rather than scheduled: multi-Writer
+pipelining sits in [epic #529](https://github.com/ebbjs/ebbjs/issues/529),
+where [#287](https://github.com/ebbjs/ebbjs/issues/287) records the
+claim-ownership and orphan-vs-in-flight reconcile work it would need.
+`enable_pipelined_write: true` is dormant in production: at the default
+`:writer_max_in_flight` of 1 the Writer never issues two batches
+concurrently.
 
 ### Module map
 
@@ -168,7 +172,7 @@ ordered-fanout coordination that is not yet built
 | `EbbServer.Storage.WatermarkTracker`                                             | Resolution-frontier ETS + `:atomics` (SSE fan-out gating)                               |
 | `EbbServer.Storage.InFlightActions`                                              | In-flight action-id ETS (idempotent-retry concurrency guard)                            |
 | `EbbServer.Storage.{DirtyTracker,GroupCache,EntityGroupCache,RelationshipCache}` | In-memory state children of `SystemCache`                                               |
-| `EbbServer.Storage.GSNCounter`                                                   | Lock-free GSN claiming + restart reconcile (`:atomics`)                                 |
+| `EbbServer.Storage.GsnCounter`                                                   | Lock-free GSN claiming + restart reconcile (`:atomics`)                                 |
 | `EbbServer.Telemetry.Sampler`                                                    | Periodic watermark / dirty-set / in-flight / fan-out gauges                             |
 | `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass + external modes)                                     |
 | `EbbServer.Sync.Router`                                                          | HTTP plug router                                                                        |
@@ -179,7 +183,6 @@ ordered-fanout coordination that is not yet built
 | `EbbServer.Sync.FanOutFrontier`                                                  | Last-pushed GSN persisted across a Router restart                                       |
 | `EbbServer.Sync.GroupServer`                                                     | Per-group fan-out; holds subscribers' senders                                           |
 | `EbbServer.Sync.SSEConnection`                                                   | Per-live-subscription pid; receives pushes via its `GroupServer`                        |
-| `EbbServer.Storage.BackgroundWarmer` (optional)                                  | Pre-materializes dirty entities during idle periods                                     |
 
 Each module's `@moduledoc` documents the load-bearing decisions and the
 hot-path behavior. Read those before making non-trivial changes.
@@ -542,8 +545,12 @@ The HTTP request-metric translator is configured under its own key,
 Several keys that appeared in earlier docs — `:writer_count`, `:warmer_*`,
 and `:replication_peers` — are **read by nothing in `lib/` or `config/`**.
 Production runs a single `EbbServer.Storage.Writer` GenServer with batch
-coalescing controlled by the two `:writer_batch_*` knobs above; multi-Writer
-is gated on [#287](https://github.com/ebbjs/ebbjs/issues/287). Payload build
+coalescing controlled by the two `:writer_batch_*` knobs above; a second
+claim owner is parked, not scheduled
+([epic #529](https://github.com/ebbjs/ebbjs/issues/529),
+[#287](https://github.com/ebbjs/ebbjs/issues/287)), and
+`enable_pipelined_write: true` stays dormant until
+`:writer_max_in_flight` is raised past 1. Payload build
 and ETF encode run ahead of the Writer in the bounded
 `:writer_prepare_*` pool. Benchmarking the real write path is what forced
 the table above to describe what actually runs (see
@@ -902,12 +909,17 @@ format but does not generate entity IDs (except for server-function
 
 HLCs are 64-bit integers (upper 48 bits = logical time in ms, lower
 16 bits = counter) assigned by the originating node and preserved
-across replication. The server validates incoming client HLCs: reject
-if logical time > now + 120s (future drift) or < now - 24h (stale
-clock). The server does not generate or assign HLCs. HLCs are used for
-LWW conflict resolution during materialization, with lexicographic
-update ID comparison as a tiebreaker when HLCs are equal. Replicated
-Actions skip HLC validation (trust-and-apply). See the
+across replication. The server validates incoming client HLCs for
+future drift only: logical time > now + 120s is rejected. There is no
+stale bound, because GSN provides total ordering — the bound returns
+with the compaction watermark tracked by
+[#123](https://github.com/ebbjs/ebbjs/issues/123). The server does not
+generate or assign HLCs. HLCs are used for LWW conflict resolution
+during materialization, with lexicographic update ID comparison as a
+tiebreaker when HLCs are equal. Peer replication
+([epic #113](https://github.com/ebbjs/ebbjs/issues/113)) will submit
+through the local Writer with trust-and-apply semantics, skipping the
+permission check. See the
 [v1 HLC issue #120](https://github.com/ebbjs/ebbjs/issues/120) for the
 full generation algorithm.
 

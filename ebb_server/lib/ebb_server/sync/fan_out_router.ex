@@ -47,11 +47,13 @@ defmodule EbbServer.Sync.FanOutRouter do
   notifications. It never adds, reads, or pushes the hole itself — the
   abandoned GSNs have no durable Actions.
 
-  When multi-Writer pipelining ships (#287), the Router needs
-  ordered-fanout coordination so groups don't see one writer's GSN 5
-  before another's GSN 3. `EbbServer.Sync.FanOutRouter.Plan` owns that
-  release order; today, with one Writer, the watermark gating is trivially
-  satisfied.
+  Multi-Writer pipelining is parked: #287 records the claim-ownership and
+  orphan-vs-in-flight reconcile a second claim owner would need, and #529
+  keeps one claim owner as a fixed constraint. Should a second claim owner
+  land, the Router needs ordered-fanout coordination so groups don't see
+  one writer's GSN 5 before another's GSN 3.
+  `EbbServer.Sync.FanOutRouter.Plan` owns that release order; today, with
+  one Writer, the watermark gating is trivially satisfied.
 
   ## Restart resume
 

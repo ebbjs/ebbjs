@@ -230,7 +230,9 @@ defmodule EbbServer.Storage.ActionValidator do
   Checks that:
   - hlc is a positive integer
   - logical time is not more than 120s in the future
-  - logical time is not more than 24h in the past
+
+  There is no stale bound: GSN provides total ordering (see
+  `validate/3`). #123 reintroduces one with the compaction watermark.
   """
   @spec validate_hlc(raw_action(), keyword() | non_neg_integer()) ::
           :ok | {:error, String.t(), String.t()}
