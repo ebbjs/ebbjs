@@ -376,10 +376,13 @@ defmodule EbbServer.TestHelpers do
       |> put_if_present(:batch_timeout_ms, opts[:batch_timeout_ms])
       |> put_if_present(:max_in_flight, opts[:max_in_flight])
       |> put_if_present(:committer_pool_size, opts[:committer_pool_size])
+      |> put_if_present(:max_pending_calls, opts[:max_pending_calls])
       |> put_if_present(:prepare_pool_size, opts[:prepare_pool_size])
       |> put_if_present(:prepare_queue_max, opts[:prepare_queue_max])
       |> put_if_present(:prepare_timeout_ms, opts[:prepare_timeout_ms])
       |> put_if_present(:prepare_fn, opts[:prepare_fn])
+      |> put_if_present(:commit_timeout_ms, opts[:commit_timeout_ms])
+      |> put_if_present(:sweep_interval_ms, opts[:sweep_interval_ms])
       |> put_if_present(:ablate, opts[:ablate])
 
     {:ok, pid} = Writer.start_link(writer_opts)

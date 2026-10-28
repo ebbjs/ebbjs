@@ -100,9 +100,11 @@ defmodule EbbServer.Storage.Committer do
   @doc """
   Runs one commit in the calling process.
 
-  The pool uses it from a worker; the Writer uses it when it has a single
-  committer slot, where handing the batch to another process buys no overlap
-  and costs a copy and three message hops (#529 Step 0).
+  The pool uses it from a worker; the Writer uses it inline only when it has
+  a single committer slot *and* the commit watchdog is disabled, where
+  handing the batch to another process buys no overlap and costs a copy and
+  three message hops (#529 Step 0). With the watchdog enabled the commit
+  must run outside the Writer so a stuck NIF cannot freeze the frontier.
 
   Returns `:ok`, `{:error, reason}`, or `{:raised, kind, value, stacktrace}`,
   and emits `ebb.writer.commit_latency_ms` in either case so the commit's

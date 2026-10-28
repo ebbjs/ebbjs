@@ -63,6 +63,18 @@ defmodule EbbServer.Bench.Options do
   samples 1 in `K`. The other fan-out hops are never sampled. It is legal on
   every tier and has no effect on one without subscribers.
 
+  ## Commit watchdog injection
+
+  `--commit-timeout-ms` sets the Writer's commit watchdog threshold (production
+  default 2 000 ms; `0` disables it and keeps depth-1 commits inline).
+  `--stall-commits N` sleeps the first `N` commits after the
+  warmup window for that threshold plus 500 ms, then performs the real write.
+  The watchdog must abandon those ranges and reply `503` to their callers,
+  while the late durable writes fill the already-resolved holes. Runs with a
+  stall skip the `write_transport_errors` guardrail because the 503s are the
+  expected outcome; holes and rejected Actions are still enforced. A stall is
+  only meaningful for the Writer-driven tiers with sync durability.
+
   `--subscriber-count-only` is a fan-out measurement mode: the in-process
   subscriber counts `event: data` occurrences with `:binary.matches/2` and
   skips the per-frame split and lag decode. It keeps the delivery count
@@ -108,6 +120,8 @@ defmodule EbbServer.Bench.Options do
           rate: non_neg_integer(),
           batch_timeout_ms: non_neg_integer(),
           batch_max_size: pos_integer(),
+          commit_timeout_ms: pos_integer(),
+          stall_commits: non_neg_integer(),
           conn_sample_rate: non_neg_integer(),
           subscriber_lean: boolean(),
           subscriber_count_only: boolean(),
@@ -134,6 +148,8 @@ defmodule EbbServer.Bench.Options do
             rate: 0,
             batch_timeout_ms: 0,
             batch_max_size: 1000,
+            commit_timeout_ms: 2_000,
+            stall_commits: 0,
             conn_sample_rate: 100,
             subscriber_lean: false,
             subscriber_count_only: false,
@@ -185,6 +201,8 @@ defmodule EbbServer.Bench.Options do
     rate: :integer,
     batch_timeout_ms: :integer,
     batch_max_size: :integer,
+    commit_timeout_ms: :integer,
+    stall_commits: :integer,
     conn_sample_rate: :integer,
     subscriber_lean: :boolean,
     subscriber_count_only: :boolean,
@@ -236,6 +254,8 @@ defmodule EbbServer.Bench.Options do
       {"Target Actions/sec", target_rate(config.rate)},
       {"Writer batch timeout", batch_timeout_description(config)},
       {"Writer batch cap", "#{config.batch_max_size} Actions"},
+      {"Writer commit timeout", commit_timeout_description(config)},
+      {"Stalled commits", stall_description(config)},
       {"Writers", "#{config.writers}"},
       {"Ablated phases", ablated_description(config.ablate)},
       {"Guardrails", guardrails_description(config)},
@@ -280,18 +300,14 @@ defmodule EbbServer.Bench.Options do
       "--rate #{config.rate}",
       "--batch-timeout-ms #{config.batch_timeout_ms}",
       "--batch-max-size #{config.batch_max_size}",
+      "--commit-timeout-ms #{config.commit_timeout_ms}",
       "--conn-sample-rate #{config.conn_sample_rate}",
       "--writers #{config.writers}",
       "--port #{config.port}",
       "--seed #{config.seed}"
     ]
 
-    base = if config.subscriber_count_only, do: base ++ ["--subscriber-count-only"], else: base
-    base = if config.subscriber_lean, do: base ++ ["--subscriber-lean"], else: base
-    base = if config.guardrails, do: base, else: base ++ ["--no-guardrails"]
-
-    base =
-      if config.baseline, do: base ++ ["--baseline #{config.baseline}"], else: base
+    base = base ++ optional_command_args(config)
 
     base =
       case config.ablate do
@@ -303,6 +319,18 @@ defmodule EbbServer.Bench.Options do
       nil -> Enum.join(base, " ")
       out -> Enum.join(base ++ ["--out #{out}"], " ")
     end
+  end
+
+  defp optional_command_args(config) do
+    [
+      {config.stall_commits > 0, "--stall-commits #{config.stall_commits}"},
+      {config.subscriber_count_only, "--subscriber-count-only"},
+      {config.subscriber_lean, "--subscriber-lean"},
+      {not config.guardrails, "--no-guardrails"},
+      {config.baseline != nil, "--baseline #{config.baseline}"}
+    ]
+    |> Enum.filter(&elem(&1, 0))
+    |> Enum.map(&elem(&1, 1))
   end
 
   @doc """
@@ -434,6 +462,11 @@ defmodule EbbServer.Bench.Options do
 
   defp put_opt({:batch_max_size, value}, acc), do: %{acc | batch_max_size: value}
 
+  defp put_opt({:commit_timeout_ms, value}, acc),
+    do: %{acc | commit_timeout_ms: value}
+
+  defp put_opt({:stall_commits, value}, acc), do: %{acc | stall_commits: value}
+
   defp put_opt({:conn_sample_rate, value}, acc),
     do: %{acc | conn_sample_rate: value}
 
@@ -448,6 +481,7 @@ defmodule EbbServer.Bench.Options do
          {:ok, durability} <- map_value(config.durability, @durabilities, "durability"),
          {:ok, distribution} <- map_value(config.distribution, @distributions, "distribution"),
          {:ok, ablate} <- validate_ablate(config.ablate),
+         :ok <- validate_stall(tier, durability, config),
          :ok <- validate_in_flight(tier, config),
          :ok <- validate_ranges(config),
          :ok <- validate_tier(tier, config) do
@@ -565,10 +599,22 @@ defmodule EbbServer.Bench.Options do
          :ok <- check(config.subscribers >= 0, "--subscribers must be zero or more"),
          :ok <- check(config.batch_timeout_ms >= 0, "--batch-timeout-ms must be zero or more"),
          :ok <- check(config.batch_max_size > 0, "--batch-max-size must be at least 1"),
+         :ok <- check(config.commit_timeout_ms >= 0, "--commit-timeout-ms must be zero or more"),
+         :ok <- check(config.stall_commits >= 0, "--stall-commits must be zero or more"),
          :ok <- check(config.conn_sample_rate >= 0, "--conn-sample-rate must be zero or more") do
       check(config.rate >= 0, "--rate must be zero or more Actions/sec")
     end
   end
+
+  defp validate_stall(_tier, _durability, %{stall_commits: 0}), do: :ok
+
+  defp validate_stall(:t5, _durability, _config),
+    do: {:error, "--stall-commits is not supported with --tier t5; it bypasses the Writer"}
+
+  defp validate_stall(_tier, :async, _config),
+    do: {:error, "--stall-commits requires --durability sync"}
+
+  defp validate_stall(_tier, _durability, _config), do: :ok
 
   defp validate_tier(tier, config) do
     with :ok <- validate_rate(tier, config),
@@ -696,4 +742,10 @@ defmodule EbbServer.Bench.Options do
 
   defp batch_timeout_description(%{batch_timeout_ms: 0}), do: "0 ms (burst drain)"
   defp batch_timeout_description(%{batch_timeout_ms: ms}), do: "#{ms} ms"
+
+  defp commit_timeout_description(%{commit_timeout_ms: 0}), do: "0 ms (watchdog disabled)"
+  defp commit_timeout_description(%{commit_timeout_ms: ms}), do: "#{ms} ms"
+
+  defp stall_description(%{stall_commits: 0}), do: "none"
+  defp stall_description(%{stall_commits: n}), do: "#{n} (delayed past the commit timeout)"
 end

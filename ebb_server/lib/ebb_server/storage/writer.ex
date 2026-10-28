@@ -90,6 +90,12 @@ defmodule EbbServer.Storage.Writer do
   scopes reach a durable range. Fan-out still follows claim order at any
   depth because the release stage notifies only the committed prefix.
 
+  A commit that outlives `:commit_timeout_ms` is retired by the pool's
+  watchdog; `:writer_commit_timeout_ms` is the matching application env
+  key (default 2 000 ms) and `:sweep_interval_ms` sets how often the pool
+  checks (default 250 ms). A non-positive threshold disables the
+  watchdog.
+
   The pool is not shared across Writer restarts. The Prepare and
   Committer pools are linked to the Writer and monitor it, so a Writer
   death sends shutdown to both. That shutdown is best-effort: a worker
@@ -214,6 +220,17 @@ defmodule EbbServer.Storage.Writer do
   bench) or concurrent sub-batches (#536) land, where a failed owner would
   leave the duplicate already acked empty.
 
+  ## Admission control
+
+  A call is admitted before it enters the Writer's mailbox. The Writer
+  creates a shared `:atomics` counter in `init/1`; `write_actions/2`
+  increments it before `GenServer.call/2`, rejects with
+  `{:error, {:overloaded, retry_after_ms}}` when the count exceeds
+  `:writer_max_pending_calls` (default 256), and decrements it when the call
+  returns. Rejection costs one atomic read instead of a queued call, so a
+  saturated Writer cannot turn its mailbox into the queue. The counter is
+  reset on Writer restart, and a caller timeout still releases its slot.
+
   ## Failure and recovery policy
 
   A GSN range is claimed before the commit attempt, and a claim that is
@@ -267,9 +284,18 @@ defmodule EbbServer.Storage.Writer do
     entity re-materializes and, if nothing was committed, finds no new
     Action and clears.
 
-  A commit that never returns is not handled here: the pool contains
-  crashes and returned errors, but no commit watchdog. Admission control and
-  the hung-commit policy are tracked separately (#538).
+  A commit that never returns is handled by the Committer pool's
+  watchdog: a job older than `:commit_timeout_ms` (default 2 000 ms,
+  application env `:writer_commit_timeout_ms`) is retired, the range is
+  abandoned through the same failed-commit path, and the caller gets
+  `{:error, {:rocksdb_write_failed, :commit_timeout}}` (`503
+  write_failed`) while every other in-flight range keeps running. Killing
+  a worker is not enough: `commit_fn` is a NIF, so a process inside it
+  cannot die until the NIF returns. The pool therefore times out the job
+  and replaces the worker without waiting for it. The timed-out write may
+  still land later; GSNs are never reused, so it can only fill the hole
+  the abandon created. `ebb.writer.commit_timeout` reports every timeout
+  with its GSN range.
 
   The test seam is the optional `:commit_fn` (default
   `&RocksDB.write_batch/2`), used for both error injection and crash
@@ -365,6 +391,10 @@ defmodule EbbServer.Storage.Writer do
   @default_prepare_pool_size 2
   @default_prepare_queue_max 1_024
   @default_prepare_timeout_ms 2_000
+  @default_max_pending_calls 256
+  @default_overload_retry_after_ms 1_000
+  @default_commit_timeout_ms 2_000
+  @default_sweep_interval_ms 250
 
   # The overlay chain is bounded to keep its memory and rebuild cost small.
   @max_overlay_chain 4
@@ -375,6 +405,7 @@ defmodule EbbServer.Storage.Writer do
           {caller_idx :: non_neg_integer(), validated_action(), payload_etf :: binary()}
 
   @type t :: %__MODULE__{
+          name: GenServer.name(),
           rocks_name: GenServer.name(),
           dirty_set: atom(),
           gsn_counter: :atomics.atomics(),
@@ -403,13 +434,13 @@ defmodule EbbServer.Storage.Writer do
           after_commit: (-> any()) | nil,
           batch_max_size: integer(),
           batch_timeout_ms: non_neg_integer(),
-          ablate: [atom()],
           flush_timer_ref: reference() | nil,
           fan_out_router: GenServer.name() | nil,
           watermark_tracker: GenServer.name() | nil,
           in_flight_actions: GenServer.name() | nil
         }
   defstruct [
+    :name,
     :rocks_name,
     :dirty_set,
     :gsn_counter,
@@ -435,7 +466,6 @@ defmodule EbbServer.Storage.Writer do
     :after_commit,
     :batch_max_size,
     :batch_timeout_ms,
-    :ablate,
     :flush_timer_ref,
     :fan_out_router,
     :watermark_tracker,
@@ -471,7 +501,7 @@ defmodule EbbServer.Storage.Writer do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+    GenServer.start_link(__MODULE__, Keyword.put_new(opts, :name, name), name: name)
   end
 
   @type rejected_action :: %{action: validated_action(), reason: String.t()}
@@ -479,14 +509,78 @@ defmodule EbbServer.Storage.Writer do
 
   @spec write_actions([validated_action()], GenServer.name()) :: write_result() | {:error, term()}
   def write_actions(actions, name \\ __MODULE__) do
-    # The queue phase starts here, before the message reaches the mailbox.
-    sent_at = System.monotonic_time()
-    GenServer.call(name, {:write_actions, actions, sent_at})
+    case admit(name) do
+      {:ok, counter} ->
+        sent_at = System.monotonic_time()
+
+        try do
+          GenServer.call(name, {:write_actions, actions, sent_at})
+        after
+          release(counter)
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  # Admission control sits in front of the mailbox: a saturated Writer must
+  # not make callers queue inside it, where nothing can shed load. The shared
+  # counter is created by the Writer in `init/1`; a caller that races a
+  # restart keeps its reference to the old counter and decrements that one.
+  defp admit(name) do
+    case pending_calls(name) do
+      nil ->
+        {:ok, nil}
+
+      %{counter: counter, max: max} ->
+        if :atomics.add_get(counter, 1, 1) > max do
+          :atomics.sub_get(counter, 1, 1)
+
+          Telemetry.execute(
+            [:writer, :admission_rejected],
+            %{count: 1},
+            %{max_pending_calls: max}
+          )
+
+          {:error, {:overloaded, @default_overload_retry_after_ms}}
+        else
+          {:ok, counter}
+        end
+    end
+  end
+
+  defp release(nil), do: :ok
+  defp release(counter), do: :atomics.sub_get(counter, 1, 1)
+
+  defp pending_calls(name), do: :persistent_term.get(pending_calls_key(name), nil)
+  defp pending_calls_key(name), do: {__MODULE__, :pending_calls, name}
+
+  defp commit_timeout_ms(state), do: Keyword.get(state.commit_opts, :commit_timeout_ms, 0)
+
+  defp env_integer(name, default) do
+    case System.get_env(name) do
+      nil ->
+        default
+
+      "" ->
+        default
+
+      raw ->
+        case Integer.parse(raw) do
+          {value, ""} ->
+            value
+
+          _ ->
+            raise ArgumentError, "#{name} must be an integer, got: #{inspect(raw)}"
+        end
+    end
   end
 
   @impl true
   @spec init(keyword()) :: {:ok, t()}
   def init(opts) do
+    name = Keyword.get(opts, :name, __MODULE__)
     rocks_name = Keyword.get(opts, :rocks_name, EbbServer.Storage.RocksDB)
 
     dirty_set = Keyword.get(opts, :dirty_set, DirtyTracker.dirty_set_name())
@@ -625,6 +719,20 @@ defmodule EbbServer.Storage.Writer do
         )
       )
 
+    max_pending_calls =
+      Keyword.get(
+        opts,
+        :max_pending_calls,
+        Application.get_env(:ebb_server, :writer_max_pending_calls) ||
+          env_integer("EBB_WRITER_MAX_PENDING_CALLS", @default_max_pending_calls)
+      )
+
+    unless is_integer(max_pending_calls) and max_pending_calls > 0 do
+      raise ArgumentError,
+            "Writer max_pending_calls must be a positive integer, got: " <>
+              inspect(max_pending_calls)
+    end
+
     prepare_fn = Keyword.get(opts, :prepare_fn)
 
     validate_prepare_opts!(prepare_pool_size, prepare_queue_max, prepare_timeout_ms)
@@ -640,6 +748,19 @@ defmodule EbbServer.Storage.Writer do
         prepare_fn: prepare_fn
       )
 
+    # A commit that outlives this threshold is retired by the pool's
+    # watchdog: the range is abandoned and the caller retries, instead of
+    # the caller's `GenServer.call/2` timeout surfacing as a 500.
+    commit_timeout_ms =
+      Keyword.get(
+        opts,
+        :commit_timeout_ms,
+        Application.get_env(:ebb_server, :writer_commit_timeout_ms) ||
+          env_integer("EBB_WRITER_COMMIT_TIMEOUT_MS", @default_commit_timeout_ms)
+      )
+
+    sweep_interval_ms = Keyword.get(opts, :sweep_interval_ms, @default_sweep_interval_ms)
+
     # The pool is linked to the Writer and monitors it. An individual
     # Committer death is contained by the pool; a Writer death stops the
     # pool, and any claim still unresolved at the replacement's init is
@@ -650,10 +771,16 @@ defmodule EbbServer.Storage.Writer do
         size: pool_size,
         rocks_name: rocks_name,
         commit_fn: commit_fn,
-        ablate: ablate
+        ablate: ablate,
+        commit_timeout_ms: commit_timeout_ms,
+        sweep_interval_ms: sweep_interval_ms
       )
 
+    pending_calls = %{counter: :atomics.new(1, signed: false), max: max_pending_calls}
+    :persistent_term.put(pending_calls_key(name), pending_calls)
+
     state = %__MODULE__{
+      name: name,
       rocks_name: rocks_name,
       dirty_set: dirty_set,
       gsn_counter: gsn_counter,
@@ -679,12 +806,16 @@ defmodule EbbServer.Storage.Writer do
       preparing: %{},
       prepared: %{},
       committer_pool: committer_pool,
-      commit_opts: [rocks_name: rocks_name, commit_fn: commit_fn, ablate: ablate],
+      commit_opts: [
+        rocks_name: rocks_name,
+        commit_fn: commit_fn,
+        ablate: ablate,
+        commit_timeout_ms: commit_timeout_ms
+      ],
       pipeline: CommitPipeline.new(max_in_flight: max_in_flight),
       after_commit: after_commit,
       batch_max_size: batch_max_size,
       batch_timeout_ms: batch_timeout_ms,
-      ablate: ablate,
       flush_timer_ref: nil,
       fan_out_router: fan_out_router,
       watermark_tracker: watermark_tracker,
@@ -700,6 +831,12 @@ defmodule EbbServer.Storage.Writer do
     reconcile_resolution_frontier(state)
 
     {:ok, state}
+  end
+
+  @impl true
+  def terminate(_reason, %{name: name}) do
+    :persistent_term.erase(pending_calls_key(name))
+    :ok
   end
 
   # A Writer-only restart can leave the counter ahead of the durable log:
@@ -902,7 +1039,7 @@ defmodule EbbServer.Storage.Writer do
     payload_etfs =
       actions
       |> Enum.map(&prepare_input/1)
-      |> Preparer.build(prepare_fn: state.prepare.fn, ablate: state.ablate)
+      |> Preparer.build(prepare_fn: state.prepare.fn, ablate: ablate(state))
 
     ready_at = System.monotonic_time()
     state = %{state | next_call_seq: seq + 1}
@@ -1494,8 +1631,39 @@ defmodule EbbServer.Storage.Writer do
     fail_range(ref, reason, state)
   end
 
+  defp do_handle_commit_result({:crashed, :commit_timeout}, ref, state) do
+    handle_commit_timeout(ref, state)
+  end
+
   defp do_handle_commit_result({:crashed, reason}, ref, state) do
     fail_range(ref, {:committer_crashed, reason}, state)
+  end
+
+  # The pool's watchdog retired this commit: the write may still land, but
+  # the Writer cannot wait for it without stalling the frontier. Abandon
+  # exactly this range through the normal failed-commit path, so callers
+  # get a retryable error and every other in-flight range keeps running.
+  # `init/1`'s reconcile covers the late write: GSNs are never reused, so
+  # it can only fill a hole.
+  defp handle_commit_timeout(ref, state) do
+    case CommitPipeline.get(state.pipeline, ref) do
+      %Batch{} = batch ->
+        Logger.warning(
+          "Committer timed out for GSN range #{batch.gsn_start}..#{batch.gsn_end}; " <>
+            "abandoning the range"
+        )
+
+        Telemetry.execute(
+          [:writer, :commit_timeout],
+          %{count: 1},
+          %{gsn_start: batch.gsn_start, gsn_end: batch.gsn_end, reason: :commit_timeout}
+        )
+
+      nil ->
+        :ok
+    end
+
+    fail_range(ref, :commit_timeout, state)
   end
 
   defp fail_range(ref, reason, state) do
@@ -1546,8 +1714,11 @@ defmodule EbbServer.Storage.Writer do
         state = %{state | pipeline: pipeline}
 
         # One committer slot means no batch can overlap this one, so the
-        # hand-off buys nothing and costs a copy plus three hops.
-        if state.pipeline.max_in_flight == 1 do
+        # hand-off buys nothing and costs a copy plus three hops. It is only
+        # safe to skip when the watchdog is disabled: an inline commit runs
+        # in the Writer, where a stuck NIF would freeze the frontier with no
+        # process left to time it out.
+        if state.pipeline.max_in_flight == 1 and commit_timeout_ms(state) <= 0 do
           result = Committer.commit_now(prepared, gsn_start, gsn_end, state.commit_opts)
           handle_commit_result(result, ref, state)
         else
@@ -2201,7 +2372,9 @@ defmodule EbbServer.Storage.Writer do
     ]
   end
 
-  defp ablate?(phase, state), do: phase in state.ablate
+  defp ablate?(phase, state), do: phase in ablate(state)
+
+  defp ablate(state), do: Keyword.get(state.commit_opts, :ablate, [])
 
   # `:entity_index` is the combined alias the published bench commands use.
   defp type_entities_ablated?(state),

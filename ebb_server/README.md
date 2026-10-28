@@ -327,7 +327,7 @@ sequenceDiagram
   R->>R: read_body + Msgpax.unpack
   R->>P: validate_and_authorize each Action
   P->>E: ActionValidator + Authorizer committed type + group permissions
-  R->>W: GenServer.call write_actions(validated)
+  R->>W: admit (shared :atomics), then GenServer.call write_actions(validated)
 
   W->>E: claim action ids, idempotent-retry guard
   W->>DB: multi_get cf_action_dedup, drop duplicates
@@ -471,6 +471,30 @@ every earlier range is released or abandoned. Holes are permanent, because
 GSNs are never reused, which is why the watermark is a _resolution_
 frontier rather than a contiguous-commit one.
 
+A commit older than `:writer_commit_timeout_ms` is retired by the
+Committer-pool watchdog: the Writer abandons exactly that range, emits
+`ebb.writer.commit_timeout`, and callers receive
+`{:error, {:rocksdb_write_failed, :commit_timeout}}` → `503 write_failed`.
+The worker is retired and replaced without waiting for the stuck NIF, so the
+frontier and the other in-flight ranges keep moving. The late write may
+still land; GSNs are never reused, so it can only fill the already-resolved
+hole. Because the Writer must stay responsive for the watchdog to run, a
+Writer with the watchdog enabled commits in the pool even at depth 1; the
+inline commit path is used only when `:writer_commit_timeout_ms` is `0`.
+
+Calls are admitted before the Writer's mailbox. Above
+`:writer_max_pending_calls` (default 256) a new call is rejected with
+`{:error, {:overloaded, retry_after_ms}}` → `429` + `Retry-After`, so a
+saturated Writer cannot turn its mailbox into the queue. The first-party
+client's own backoff (1 s → 60 s) dominates `Retry-After`; the header is for
+third-party clients.
+
+Each Action is capped at 1 MiB encoded and 1 000 Updates before
+authorization and before it can claim a GSN. Over-cap Actions are returned in
+`rejected[]` (`action_too_large` / `too_many_updates`) on a `200`, not as a
+`4xx`: a non-2xx would be retried as `unreachable` by the client and would
+head-of-line block every other pending write in the same flush.
+
 **What these paths make visible.**
 
 - **Two serialization points, not one.** The Writer is the documented
@@ -507,19 +531,21 @@ not atoms.
 
 All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 
-| Key                          | Description                                                                                | Default    |
-| ---------------------------- | ------------------------------------------------------------------------------------------ | ---------- |
-| `:port`                      | HTTP listen port                                                                           | 4000       |
-| `:data_dir`                  | Directory for RocksDB + SQLite files                                                       | `./data`   |
-| `:auth_mode`                 | Auth mode (`:bypass` / `:external`); `EBB_AUTH_MODE` overrides it                          | (none)     |
-| `:auth_url`                  | Developer's auth endpoint URL; `EBB_AUTH_URL` overrides it; required for `:external`       | (required) |
-| `:writer_batch_max_size`     | Buffered Actions before an immediate commit (`<= 0` = no trigger)                          | 1000       |
-| `:writer_batch_timeout_ms`   | Coalescing window (`0` = burst-drain, no timer)                                            | 0          |
-| `:writer_max_in_flight`      | Claimed ranges the pipeline may hold at once (1–4); higher overlap needs the overlay chain | 1          |
-| `:writer_prepare_pool_size`  | Prepare workers for payload build and ETF encode                                           | 2          |
-| `:writer_prepare_queue_max`  | In-flight prepare calls before the Writer rejects with `503 write_failed`                  | 1024       |
-| `:writer_prepare_timeout_ms` | Upper bound on one prepare job before it fails the call                                    | 2000       |
-| `:on_action`                 | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook))     | (unset)    |
+| Key                          | Description                                                                                                    | Default    |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------- |
+| `:port`                      | HTTP listen port                                                                                               | 4000       |
+| `:data_dir`                  | Directory for RocksDB + SQLite files                                                                           | `./data`   |
+| `:auth_mode`                 | Auth mode (`:bypass` / `:external`); `EBB_AUTH_MODE` overrides it                                              | (none)     |
+| `:auth_url`                  | Developer's auth endpoint URL; `EBB_AUTH_URL` overrides it; required for `:external`                           | (required) |
+| `:writer_batch_max_size`     | Buffered Actions before an immediate commit (`<= 0` = no trigger)                                              | 1000       |
+| `:writer_batch_timeout_ms`   | Coalescing window (`0` = burst-drain, no timer)                                                                | 0          |
+| `:writer_max_in_flight`      | Claimed ranges the pipeline may hold at once (1–4); higher overlap needs the overlay chain                     | 1          |
+| `:writer_prepare_pool_size`  | Prepare workers for payload build and ETF encode                                                               | 2          |
+| `:writer_prepare_queue_max`  | In-flight prepare calls before the Writer rejects with `503 write_failed`                                      | 1024       |
+| `:writer_prepare_timeout_ms` | Upper bound on one prepare job before it fails the call                                                        | 2000       |
+| `:writer_commit_timeout_ms`  | A commit older than this is retired by the watchdog; `EBB_WRITER_COMMIT_TIMEOUT_MS` overrides when unset       | 2000       |
+| `:writer_max_pending_calls`  | Calls admitted before new calls get `429` + `Retry-After`; `EBB_WRITER_MAX_PENDING_CALLS` overrides when unset | 256        |
+| `:on_action`                 | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook))                         | (unset)    |
 
 The periodic metric sampler is configured under its own key,
 `Application.get_env(:ebb_server, EbbServer.Telemetry.Sampler)`:
@@ -584,6 +610,8 @@ suffix marks a latency metric, not the raw unit. Reporters convert with
 | `ebb.writer.actions_per_sec`              | `count`                                                                                              | —                                                                                                                                             | Counter                      | `writer`        |
 | `ebb.writer.range_resolved`               | `count`                                                                                              | `gsn_start`, `gsn_end`, `reason`                                                                                                              | Counter                      | `writer`        |
 | `ebb.writer.commit_failed`                | `count`                                                                                              | `gsn_start`, `gsn_end`, `reason`                                                                                                              | Counter                      | `writer`        |
+| `ebb.writer.commit_timeout`               | `count`                                                                                              | `gsn_start`, `gsn_end`, `reason` (`:commit_timeout`)                                                                                          | Counter                      | `writer`        |
+| `ebb.writer.admission_rejected`           | `count`                                                                                              | `max_pending_calls`                                                                                                                           | Counter                      | `writer`        |
 | `ebb.writer.in_flight_batches`            | `count`                                                                                              | —                                                                                                                                             | Gauge                        | `writer`        |
 | `ebb.writer.oldest_unreleased_gsn`        | `gsn`                                                                                                | —                                                                                                                                             | Gauge                        | `writer`        |
 | `ebb.watermark.lag`                       | `lag` (GSNs; durability: max GSN − committed watermark)                                              | —                                                                                                                                             | Gauge                        | `watermark`     |
@@ -933,11 +961,29 @@ full generation algorithm.
   `FanOutRouter` with `{:range_resolved, from, to}` so gated batches can
   drain, and replies `{:error, {:rocksdb_write_failed, reason}}`; the
   HTTP layer maps that to `503 {"error":"write_failed"}`. A Committer
-  raise or a real worker death is contained the same way and only abandons
+  raise, a real worker death, or a commit that outlives
+  `:writer_commit_timeout_ms` is contained the same way and only abandons
   that worker's range; the Writer and the other in-flight ranges keep
   running. The client outbox is the only retry, undurable data is never
   acked, and GSNs are never rewound or reused. Permanent GSN holes are
   acceptable.
+- **Unknown write outcome**: `Writer.write_actions/2` uses the default
+  5 s `GenServer.call/2` timeout. `ActionSubmission.submit/3` maps that
+  exit — and any other Writer call exit — to `{:error, {:write_exit,
+reason}}` → `503 write_failed` instead of letting it surface as a `500`.
+  A timeout means **unknown outcome**, not failed: the Writer may still
+  commit, so the client retries the same Action ids idempotently
+  (`cf_action_dedup` + `InFlightActions` make the retry a no-op).
+- **Admission control**: before `GenServer.call/2`, `write_actions/2`
+  increments a shared `:atomics` counter owned by the Writer. Above
+  `:writer_max_pending_calls` it returns `{:error, {:overloaded, ms}}` and
+  the Router answers `429 {"error":"overloaded"}` with `Retry-After`.
+  `ebb.writer.admission_rejected` distinguishes this from
+  `ebb.writer.commit_failed`. A caller timeout still releases its slot.
+- **Per-Action limits**: 1 MiB encoded and 1 000 Updates. They are checked
+  by `ActionValidator` before authorization and before a GSN claim, and
+  surface as `rejected[]` reasons `action_too_large` / `too_many_updates`,
+  never as a `4xx`.
 - **Writer startup reconcile**: `Writer.init/1` raises the GSN counter to
   `max(counter, RocksDB.get_max_gsn/1)` and resolves the remaining tail,
   healing a Writer-only restart that crashed between claim and resolve.
@@ -958,7 +1004,8 @@ full generation algorithm.
 - **HTTP API**: All endpoints return structured error responses —
   `{:error, :unauthorized}` → `401`, `{:error, :not_found}` → `404`,
   `{:error, :validation_failed, details}` → `422`,
-  `{:error, {:rocksdb_write_failed, reason}}` → `503`.
+  `{:error, {:rocksdb_write_failed, reason}}` → `503`,
+  `{:error, {:overloaded, retry_after_ms}}` → `429` + `Retry-After`.
 - **Fan-Out**: If a `GroupServer` crashes, it restarts (transient) and
   clients reconnect via SSE retry. No data loss — clients catch up from
   their last cursor.

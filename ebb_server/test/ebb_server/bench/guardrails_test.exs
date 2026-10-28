@@ -66,6 +66,29 @@ defmodule EbbServer.Bench.GuardrailsTest do
                [:rejected_actions, :write_transport_errors]
     end
 
+    test "an injected commit stall tolerates its 503s but not holes or rejections" do
+      {:ok, config} =
+        Options.parse(["--stall-commits", "1", "--concurrency", "8", "--batch-size", "100"])
+
+      assert %{violations: []} =
+               Guardrails.evaluate([run(config, correctness: %{errors: 400})], config)
+
+      assert %{violations: [%{invariant: :stalled_commit_errors}]} =
+               Guardrails.evaluate([run(config)], config)
+
+      assert %{violations: [%{invariant: :gsn_holes}]} =
+               Guardrails.evaluate(
+                 [run(config, correctness: %{errors: 400, gsn_holes: 1})],
+                 config
+               )
+
+      assert %{violations: [%{invariant: :rejected_actions}]} =
+               Guardrails.evaluate(
+                 [run(config, correctness: %{errors: 400, rejected: 1})],
+                 config
+               )
+    end
+
     test "an unmeasured frontier is not a hole or lag violation" do
       {:ok, config} = Options.parse(["--tier", "t5", "--concurrency", "2"])
 

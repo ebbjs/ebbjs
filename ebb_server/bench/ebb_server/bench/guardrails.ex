@@ -51,7 +51,7 @@ defmodule EbbServer.Bench.Guardrails do
   @spec evaluate([map()], Options.t(), Baseline.t() | nil) :: t()
   def evaluate(runs, %Options{} = config, baseline \\ nil) do
     summaries = Enum.map(runs, &RunSummary.from_run(&1, config))
-    correctness = Enum.flat_map(summaries, &correctness_violations/1)
+    correctness = Enum.flat_map(summaries, &correctness_violations(&1, config))
 
     {baseline_violations, comparisons} =
       case baseline do
@@ -93,7 +93,12 @@ defmodule EbbServer.Bench.Guardrails do
             "Re-run with --no-guardrails to keep an intentionally degraded run."
   end
 
-  defp correctness_violations(run) do
+  defp correctness_violations(run, config) do
+    # A stalled-commit run is expected to produce 503s; its guardrail is that
+    # the late durable write fills the abandoned range (no holes), nothing is
+    # rejected, and the 503 count stays inside the stalled callers' envelope.
+    expected_errors? = config.stall_commits > 0
+
     []
     |> add_violation_if(gsn_holes_violation(run), :gsn_holes, run, gsn_holes_detail(run))
     |> add_violation_if(lag_violation?(run), :watermark_lag, run, lag_detail(run))
@@ -104,10 +109,17 @@ defmodule EbbServer.Bench.Guardrails do
       "#{run.rejected} rejected Actions"
     )
     |> add_violation_if(
-      run.errors > 0,
+      not expected_errors? and run.errors > 0,
       :write_transport_errors,
       run,
       "#{run.errors} write/transport errors"
+    )
+    |> add_violation_if(
+      expected_errors? and not stalled_errors_within_envelope?(run, config),
+      :stalled_commit_errors,
+      run,
+      "#{run.errors} errors for #{config.stall_commits} stalled commit(s); expected " <>
+        "1..#{max_stalled_errors(config, run.depth)}"
     )
   end
 
@@ -115,6 +127,18 @@ defmodule EbbServer.Bench.Guardrails do
 
   defp add_violation_if(violations, true, invariant, run, detail) do
     violations ++ [violation(invariant, run, detail)]
+  end
+
+  defp stalled_errors_within_envelope?(run, config) do
+    is_integer(run.errors) and run.errors > 0 and
+      run.errors <= max_stalled_errors(config, run.depth)
+  end
+
+  # Every caller waiting on a stalled range gets one 503 and contributes its
+  # whole batch to the error count; that is the widest rate the injection can
+  # legitimately produce.
+  defp max_stalled_errors(config, depth) do
+    config.stall_commits * config.concurrency * max(depth || 1, 1) * config.batch_size
   end
 
   defp gsn_holes_violation(%{gsn_holes: holes}) when is_integer(holes), do: holes > 0

@@ -8,10 +8,10 @@ defmodule EbbServer.Storage.PermissionChecker do
 
   Two checks, in order:
 
-  1. **ActionValidator** — shape, actor, HLC future drift (logical time
-     must not be more than `now + 120s`). There is no stale bound: GSN
-     provides total ordering, and the bound returns with the compaction
-     watermark tracked by #123.
+  1. **ActionValidator** — per-Action caps (1 000 Updates, 1 MiB encoded),
+     then shape, actor, HLC future drift (logical time must not be more than
+     `now + 120s`). There is no stale bound: GSN provides total ordering, and
+     the bound returns with the compaction watermark tracked by #123.
   2. **Authorizer** — for each Update, does the actor have the right
      `<type>.<verb>` (or `<type>.*`) on the entity's group, where
      `<type>` is the type the id was committed under rather than the

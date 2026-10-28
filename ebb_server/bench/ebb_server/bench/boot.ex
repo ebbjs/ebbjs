@@ -16,6 +16,7 @@ defmodule EbbServer.Bench.Boot do
   alias EbbServer.Storage.RocksDB
 
   @supervisor EbbServer.Bench.Supervisor
+  @stall_key {__MODULE__, :stall}
 
   @type t :: %{supervisor: pid(), tmp_dir: String.t(), durability: Options.durability()}
 
@@ -24,6 +25,7 @@ defmodule EbbServer.Bench.Boot do
   """
   @spec start(Options.t()) :: t()
   def start(%Options{} = config) do
+    install_stall(config)
     # Per-run in the bench VM: the GroupServer reads this once per batch, so
     # it has to be set before the sync tree starts.
     Application.put_env(:ebb_server, :fanout_conn_sample_rate, config.conn_sample_rate)
@@ -59,7 +61,68 @@ defmodule EbbServer.Bench.Boot do
   @spec stop(t()) :: :ok
   def stop(%{supervisor: supervisor, tmp_dir: tmp_dir}) do
     stop_supervisor(supervisor)
+    :persistent_term.erase(@stall_key)
     File.rm_rf(tmp_dir)
+    :ok
+  end
+
+  @doc """
+  Arms the injected stall for the first `config.stall_commits` commits after
+  the warmup window.
+
+  Seeding and warmup must commit normally, so the counter starts at zero and
+  is raised once the measured window begins. A stalled commit sleeps past the
+  Writer's commit timeout; the watchdog abandons that range while the worker
+  is still inside the simulated durable write. The write then lands late,
+  filling the already-resolved hole, which is the behaviour the run records.
+  """
+  @spec schedule_stall(Options.t()) :: :ok
+  def schedule_stall(%Options{stall_commits: 0}), do: :ok
+
+  def schedule_stall(%Options{} = config) do
+    # Arm just inside the measured window: a commit already in flight when
+    # warmup ends would have its 503 attributed to the discarded window.
+    delay_ms = config.warmup * 1_000 + 250
+
+    spawn(fn ->
+      Process.sleep(delay_ms)
+      arm_stall(config)
+    end)
+
+    :ok
+  end
+
+  defp arm_stall(%Options{} = config) do
+    case :persistent_term.get(@stall_key, nil) do
+      nil -> :ok
+      %{counter: counter} -> :atomics.put(counter, 1, config.stall_commits)
+    end
+  end
+
+  # The Writer's commit_fn runs in a Committer. The stall is process-shared so
+  # seeding and warmup finish before the measured window arms it.
+  @doc false
+  @spec stall_commit(list(), keyword()) :: :ok | {:error, term()}
+  def stall_commit(operations, opts) do
+    stall = :persistent_term.get(@stall_key, nil)
+
+    # Unarmed commits drive the counter negative, so arming to N grants a
+    # ticket to exactly the next N commits (the resulting value is N-1..0).
+    if stall && :atomics.sub_get(stall.counter, 1, 1) >= 0 do
+      Process.sleep(stall.delay_ms)
+    end
+
+    RocksDB.write_batch(operations, opts)
+  end
+
+  defp install_stall(%Options{stall_commits: 0}), do: :ok
+
+  defp install_stall(%Options{} = config) do
+    :persistent_term.put(@stall_key, %{
+      counter: :atomics.new(1, signed: true),
+      delay_ms: config.commit_timeout_ms + 500
+    })
+
     :ok
   end
 
@@ -86,13 +149,20 @@ defmodule EbbServer.Bench.Boot do
   defp writer_opts(config) do
     # The Writer caps the overlay chain at four; a deeper harness workload
     # still drives that many calls, but the Writer cannot hold more ranges.
-    [ablate: config.ablate, max_in_flight: min(Options.depth(config), 4)] ++
+    [
+      ablate: config.ablate,
+      max_in_flight: min(Options.depth(config), 4),
+      commit_timeout_ms: config.commit_timeout_ms
+    ] ++
       coalescing_opts(config) ++
-      case config.durability do
-        :async -> [commit_fn: &__MODULE__.async_commit/2]
-        :sync -> []
-      end
+      commit_fn_opts(config)
   end
+
+  defp commit_fn_opts(%{stall_commits: n}) when n > 0,
+    do: [commit_fn: &__MODULE__.stall_commit/2]
+
+  defp commit_fn_opts(%{durability: :async}), do: [commit_fn: &__MODULE__.async_commit/2]
+  defp commit_fn_opts(_config), do: []
 
   defp coalescing_opts(config) do
     [batch_timeout_ms: config.batch_timeout_ms, batch_max_size: config.batch_max_size]

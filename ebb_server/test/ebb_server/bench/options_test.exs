@@ -588,4 +588,52 @@ defmodule EbbServer.Bench.OptionsTest do
       assert Options.workload(left)["tier"] == "t0"
     end
   end
+
+  describe "commit timeout and stalled-commit injection" do
+    test "the production commit timeout is the default and no stall is armed" do
+      assert {:ok, config} = Options.parse([])
+      assert config.commit_timeout_ms == 2_000
+      assert config.stall_commits == 0
+
+      values = Map.new(Options.describe(config))
+      assert values["Writer commit timeout"] == "2000 ms"
+      assert values["Stalled commits"] == "none"
+    end
+
+    test "parses --commit-timeout-ms and --stall-commits and prints them" do
+      assert {:ok, config} =
+               Options.parse(["--commit-timeout-ms", "50", "--stall-commits", "2"])
+
+      assert config.commit_timeout_ms == 50
+      assert config.stall_commits == 2
+
+      values = Map.new(Options.describe(config))
+      assert values["Writer commit timeout"] == "50 ms"
+      assert values["Stalled commits"] == "2 (delayed past the commit timeout)"
+      assert Options.command(config) =~ "--commit-timeout-ms 50"
+      assert Options.command(config) =~ "--stall-commits 2"
+    end
+
+    test "rejects stalls on the raw-NIF tier and with async durability" do
+      assert {:error, message} = Options.parse(["--tier", "t5", "--stall-commits", "1"])
+      assert message =~ "--stall-commits"
+
+      assert {:error, message} =
+               Options.parse(["--durability", "async", "--stall-commits", "1"])
+
+      assert message =~ "--durability sync"
+    end
+
+    test "zero disables the watchdog" do
+      assert {:ok, config} = Options.parse(["--commit-timeout-ms", "0"])
+
+      assert Map.new(Options.describe(config))["Writer commit timeout"] ==
+               "0 ms (watchdog disabled)"
+    end
+
+    test "rejects negative values" do
+      assert {:error, message} = Options.parse(["--stall-commits", "-1"])
+      assert message =~ "--stall-commits"
+    end
+  end
 end

@@ -8,6 +8,10 @@ import Config
 config :ebb_server, port: 4001
 config :ebb_server, data_dir: Path.join(System.tmp_dir!(), "ebb_server_test_app_storage")
 config :ebb_server, auth_mode: :bypass
+# The commit watchdog is disabled in the suite by default so the depth-1
+# Writer keeps its inline commit path, which most storage tests pin. Watchdog
+# tests pass an explicit `:commit_timeout_ms` through `start_writer/1`.
+config :ebb_server, writer_commit_timeout_ms: 0
 # Tests assert a conn_deliver sample from one subscriber; keep every delivery.
 config :ebb_server, :fanout_conn_sample_rate, 1
 

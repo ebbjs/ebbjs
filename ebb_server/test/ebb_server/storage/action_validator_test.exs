@@ -589,6 +589,71 @@ defmodule EbbServer.Storage.ActionValidatorTest do
     end
   end
 
+  describe "validate/3 - per-Action caps" do
+    test "an Action with more than 1000 Updates is rejected" do
+      action = action_with_updates(1_001)
+
+      assert {[], [rejection]} = ActionValidator.validate([action], "a_test")
+      assert rejection.action_id == action["id"]
+      assert rejection.reason == "too_many_updates"
+      assert rejection.details == "action has 1001 updates; the limit is 1000"
+    end
+
+    test "an Action with exactly 1000 Updates is accepted" do
+      action = action_with_updates(1_000)
+
+      assert {[accepted], []} = ActionValidator.validate([action], "a_test")
+      assert length(accepted.updates) == 1_000
+    end
+
+    test "an Action over 1 MiB encoded is rejected" do
+      action = action_with_bytes(1_100_000)
+      assert :erlang.external_size(action) > 1_048_576
+
+      assert {[], [rejection]} = ActionValidator.validate([action], "a_test")
+      assert rejection.action_id == action["id"]
+      assert rejection.reason == "action_too_large"
+      assert rejection.details =~ "bytes encoded; the limit is 1048576"
+    end
+
+    test "a near-cap 2-Update Action is accepted" do
+      action =
+        sample_action(%{"updates" => [sample_update(), padded_update(1_000_000)]})
+
+      size = :erlang.external_size(action)
+      assert size > 1_000_000 and size <= 1_048_576
+
+      assert {[accepted], []} = ActionValidator.validate([action], "a_test")
+      assert length(accepted.updates) == 2
+    end
+
+    test "a mixed batch keeps the in-cap Actions" do
+      valid = sample_action(%{"id" => "act_valid"})
+      too_many = %{action_with_updates(1_001) | "id" => "act_too_many"}
+      too_big = %{action_with_bytes(1_100_000) | "id" => "act_too_big"}
+
+      assert {[accepted], [first, second]} =
+               ActionValidator.validate([too_many, valid, too_big], "a_test")
+
+      assert accepted.id == "act_valid"
+      assert {first.action_id, first.reason} == {"act_too_many", "too_many_updates"}
+      assert {second.action_id, second.reason} == {"act_too_big", "action_too_large"}
+    end
+
+    test "the Update count is checked before the encoded size" do
+      action =
+        sample_action(%{
+          "updates" => [
+            padded_update(1_100_000) | Enum.map(1..1_000, fn _ -> sample_update() end)
+          ]
+        })
+
+      assert :erlang.external_size(action) > 1_048_576
+      assert {[], [rejection]} = ActionValidator.validate([action], "a_test")
+      assert rejection.reason == "too_many_updates"
+    end
+  end
+
   describe "to_validated_action/1" do
     test "converts raw action to validated format" do
       action = sample_action()
@@ -606,6 +671,30 @@ defmodule EbbServer.Storage.ActionValidatorTest do
 
       assert is_atom(hd(validated.updates).method)
     end
+  end
+
+  defp action_with_updates(count) do
+    sample_action(%{"updates" => Enum.map(1..count, fn _ -> sample_update() end)})
+  end
+
+  defp action_with_bytes(payload_bytes) do
+    sample_action(%{"updates" => [padded_update(payload_bytes)]})
+  end
+
+  defp padded_update(payload_bytes) do
+    hlc = generate_hlc()
+
+    sample_update(%{
+      "data" => %{
+        "fields" => %{
+          "title" => %{
+            "type" => "lww",
+            "value" => String.duplicate("x", payload_bytes),
+            "hlc" => hlc
+          }
+        }
+      }
+    })
   end
 
   defp field_action(action_hlc, fields, method \\ "patch") do

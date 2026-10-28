@@ -29,10 +29,13 @@ defmodule EbbServer.Sync.Router do
 
   All errors use the appropriate HTTP status code (`400` for malformed
   body, `401` for auth failures, `403` for permission denied,
-  `404` for unknown entity, `409` for HLC drift, `500`/`502`/`503` for
-  server errors and readiness failures). The Action-submission endpoint also returns per-Action
-  rejections in a `rejected` array so the client can roll back optimistic
-  applies.
+  `404` for unknown entity, `409` for HLC drift, `429` with `Retry-After`
+  when Writer admission control rejects a call, `500`/`502`/`503` for
+  server errors and readiness failures). The Action-submission endpoint also
+  returns per-Action rejections in a `rejected` array so the client can roll
+  back optimistic applies. A `503 write_failed` is a failed or abandoned
+  write; a `503` from a Writer call timeout means the outcome is unknown, so
+  the client retries the same Action ids idempotently.
 
   ## What this module is not
 
@@ -94,6 +97,11 @@ defmodule EbbServer.Sync.Router do
         case ActionSubmission.submit(actions, actor_id) do
           {:ok, _gsn_range, rejected} ->
             send_json(conn, 200, %{"rejected" => rejected})
+
+          {:error, {:overloaded, retry_after_ms}} ->
+            conn
+            |> maybe_put_resp_header("retry-after", retry_after_seconds(retry_after_ms))
+            |> send_json(429, %{"error" => "overloaded"})
 
           {:error, _reason} ->
             send_json(conn, 503, %{"error" => "write_failed"})
@@ -382,7 +390,10 @@ defmodule EbbServer.Sync.Router do
         "200" => OperationSchema.actions_response(),
         "422" =>
           OperationSchema.error_response("Invalid MessagePack or missing/invalid structure"),
-        "503" => OperationSchema.error_response("Write operation failed")
+        "429" =>
+          OperationSchema.error_response("Writer admission control is full; honour Retry-After"),
+        "503" =>
+          OperationSchema.error_response("Write failed or unknown outcome (retry idempotently)")
       }
     }
   end
@@ -734,6 +745,13 @@ defmodule EbbServer.Sync.Router do
 
   defp maybe_put_resp_header(conn, header, value) do
     Plug.Conn.put_resp_header(conn, header, to_string(value))
+  end
+
+  # `Retry-After` is in whole seconds, rounded up so a client that honours it
+  # cannot retry before the overload window has a chance to clear.
+  defp retry_after_seconds(retry_after_ms)
+       when is_integer(retry_after_ms) and retry_after_ms > 0 do
+    max(div(retry_after_ms + 999, 1000), 1)
   end
 
   defp send_json_actions(conn, status, actions) do
