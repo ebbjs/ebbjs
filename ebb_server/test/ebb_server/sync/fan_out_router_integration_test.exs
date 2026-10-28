@@ -181,9 +181,11 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       :ok = WatermarkTracker.mark_range_committed(gsn, gsn)
       WatermarkTracker.advance_watermark()
 
+      # The live hand-off carries the pre-encoded payload and scopes.
       send(
         FanOutRouter,
-        {:batch_committed, gsn, gsn, %{gsn => [group_id]}, System.monotonic_time()}
+        {:batch_committed, gsn, gsn, %{gsn => [group_id]}, System.monotonic_time(),
+         [{payload, [[group_id]]}]}
       )
 
       assert_receive {:sse_data, bytes}, 5_000

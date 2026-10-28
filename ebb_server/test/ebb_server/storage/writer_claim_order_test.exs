@@ -61,15 +61,15 @@ defmodule EbbServer.Storage.WriterClaimOrderTest do
       assert [%{phase: :committing}, %{phase: :committed}] = CommitPipeline.open_batches(pipeline)
       assert CommitPipeline.releasable(pipeline) == []
 
-      refute_receive {:batch_committed, _, _, _, _}, 200
+      refute_receive {:batch_committed, _, _, _, _, _}, 200
 
       send(first_worker, :release)
 
       assert {:ok, {1, 1}, []} = Task.await(first_task, 2_000)
       assert {:ok, {2, 2}, []} = Task.await(second_task, 2_000)
 
-      assert_receive {:batch_committed, 1, 1, _groups, _committed_at}, 2_000
-      assert_receive {:batch_committed, 2, 2, _groups, _committed_at}, 2_000
+      assert_receive {:batch_committed, 1, 1, _groups, _committed_at, _payloads}, 2_000
+      assert_receive {:batch_committed, 2, 2, _groups, _committed_at, _payloads}, 2_000
 
       assert WatermarkTracker.committed_watermark(ctx.watermark_tracker) == 2
       assert wait_until(fn -> pipeline_empty?(writer_name) end)
@@ -106,12 +106,12 @@ defmodule EbbServer.Storage.WriterClaimOrderTest do
       # The hole is resolved and nudged to the router before the successor,
       # which is still committing, may be notified.
       assert_receive {:range_resolved, 1, 1}, 2_000
-      refute_receive {:batch_committed, 2, 2, _, _}, 200
+      refute_receive {:batch_committed, 2, 2, _, _, _}, 200
 
       send(second_worker, :release)
 
       assert {:ok, {2, 2}, []} = Task.await(second_task, 2_000)
-      assert_receive {:batch_committed, 2, 2, _groups, _committed_at}, 2_000
+      assert_receive {:batch_committed, 2, 2, _groups, _committed_at, _payloads}, 2_000
 
       assert WatermarkTracker.committed_watermark(ctx.watermark_tracker) == 2
       assert RocksDB.get_max_gsn(ctx.rocks_name) == 2

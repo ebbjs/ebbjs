@@ -155,10 +155,13 @@ defmodule EbbServer.Telemetry do
     (a later commit or a resolved hole), never for a range the same
     `handle_info/2` both received and released, and never for a `~0`
     sample. Metadata `group_id` is `nil`.
-  - `router_decode` — `RocksDB.range_iterator` plus `ActionFormat.decode/2`
-    plus the group split in `push_gsn_range/4`. One sample per released
-    range, including a recovered one (the cost is real), with `group_id`
-    `nil`.
+  - `router_decode` — decoding the Actions for a released range plus the
+    group split in `push_gsn_range/4`. On the live path the Writer carries
+    the payloads with the commit notification, so this is carried decode
+    plus split and no range read; on recovery/resume (or a carried-count
+    mismatch) it is the `cf_actions` range read plus `ActionFormat.decode/2`
+    plus split. One sample per released range, including a recovered one
+    (the cost is real), with `group_id` `nil`.
   - `group_queue` — the Router's `GenServer.cast` send to the
     `GroupServer.handle_cast/2` entry. One sample per (range, group), with
     the group id.

@@ -66,7 +66,7 @@ defmodule EbbServer.Storage.WriterCommitterPoolTest do
       send(first_worker, :release)
 
       assert {:ok, {1, 1}, []} = Task.await(first_task, 2_000)
-      assert_receive {:batch_committed, 1, 1, _groups, _committed_at}, 2_000
+      assert_receive {:batch_committed, 1, 1, _groups, _committed_at, _payloads}, 2_000
 
       assert WatermarkTracker.committed_watermark(ctx.watermark_tracker) == 2
       assert RocksDB.get_max_gsn(ctx.rocks_name) == 1
@@ -125,12 +125,12 @@ defmodule EbbServer.Storage.WriterCommitterPoolTest do
 
       # The later range is still committing, so it must not be released
       # past the unresolved hole yet.
-      refute_receive {:batch_committed, _, _, _, _}, 100
+      refute_receive {:batch_committed, _, _, _, _, _}, 100
 
       send(second_worker, :release)
 
       assert {:ok, {2, 2}, []} = Task.await(second_task, 2_000)
-      assert_receive {:batch_committed, 2, 2, _groups, _committed_at}, 2_000
+      assert_receive {:batch_committed, 2, 2, _groups, _committed_at, _payloads}, 2_000
 
       assert WatermarkTracker.committed_watermark(ctx.watermark_tracker) == 2
       assert RocksDB.get_max_gsn(ctx.rocks_name) == 2

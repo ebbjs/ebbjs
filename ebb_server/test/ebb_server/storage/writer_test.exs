@@ -1404,7 +1404,7 @@ defmodule EbbServer.Storage.WriterTest do
 
       after_commit = System.monotonic_time()
 
-      assert_receive {:batch_committed, 1, 1, _groups, committed_at}
+      assert_receive {:batch_committed, 1, 1, _groups, committed_at, _payloads}
       assert is_integer(committed_at)
       assert committed_at >= before and committed_at <= after_commit
     end
@@ -1449,7 +1449,7 @@ defmodule EbbServer.Storage.WriterTest do
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([put], writer_name)
-      assert_receive {:batch_committed, 1, 1, %{1 => ["g_snapshot"]}, _committed_at}
+      assert_receive {:batch_committed, 1, 1, %{1 => ["g_snapshot"]}, _committed_at, _payloads}
 
       delete = %{
         id: "act_snapshot_delete",
@@ -1472,7 +1472,7 @@ defmodule EbbServer.Storage.WriterTest do
       # group set must come from the same pre-update pass that built
       # cf_group_actions — not from a later re-resolution.
       assert EntityGroupCache.entity_groups("todo_snapshot", entity_groups) == []
-      assert_receive {:batch_committed, 2, 2, %{2 => ["g_snapshot"]}, _committed_at}
+      assert_receive {:batch_committed, 2, 2, %{2 => ["g_snapshot"]}, _committed_at, _payloads}
     end
 
     test "a put+delete setGroups Action unions the old and new groups", %{
@@ -1517,7 +1517,7 @@ defmodule EbbServer.Storage.WriterTest do
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([seed], writer_name)
-      assert_receive {:batch_committed, 1, 1, %{1 => ["g_old"]}, _committed_at}
+      assert_receive {:batch_committed, 1, 1, %{1 => ["g_old"]}, _committed_at, _payloads}
 
       swap = %{
         id: "act_setgroups_swap",
@@ -1551,8 +1551,50 @@ defmodule EbbServer.Storage.WriterTest do
       assert {:ok, "act_setgroups_swap"} =
                RocksDB.get(cf, group_gsn_key("g_new", 2), name: rocks_name)
 
-      assert_receive {:batch_committed, 2, 2, %{2 => groups}, _committed_at}
+      assert_receive {:batch_committed, 2, 2, %{2 => groups}, _committed_at, _payloads}
       assert Enum.sort(groups) == ["g_new", "g_old"]
+    end
+
+    test "carries each Action's payload and scopes in GSN order", ctx do
+      router_name = :"fan_out_router_test_#{System.unique_integer([:positive])}"
+      true = Process.register(self(), router_name)
+
+      %{name: writer_name} =
+        start_writer(%{
+          rocks_name: ctx.rocks_name,
+          dirty_set: ctx.dirty_set,
+          gsn_counter: ctx.gsn_counter,
+          group_members: ctx.group_members,
+          group_members_by_id: ctx.group_members_by_id,
+          entity_groups: ctx.entity_groups,
+          entity_groups_by_id: ctx.entity_groups_by_id,
+          entity_groups_by_group: ctx.entity_groups_by_group,
+          relationships: ctx.relationships,
+          relationships_by_id: ctx.relationships_by_id,
+          fan_out_router: router_name
+        })
+
+      first = validated_action(%{id: "act_carried_first"})
+      second = validated_action(%{id: "act_carried_second"})
+
+      assert {:ok, {1, 2}, []} = Writer.write_actions([first, second], writer_name)
+
+      assert_receive {:batch_committed, 1, 2, _groups, _committed_at, payloads}
+      assert [{first_etf, _first_scopes}, {second_etf, _second_scopes}] = payloads
+
+      assert :erlang.binary_to_term(first_etf)["id"] == "act_carried_first"
+      assert :erlang.binary_to_term(second_etf)["id"] == "act_carried_second"
+
+      cf = RocksDB.cf_actions(ctx.rocks_name)
+
+      for {{payload_etf, scopes}, gsn} <- Enum.with_index(payloads, 1) do
+        assert {:ok, frame} =
+                 RocksDB.get(cf, RocksDB.encode_gsn_key(gsn), name: ctx.rocks_name)
+
+        carried = ActionFormat.decode_carried(payload_etf, scopes, gsn)
+        assert carried == ActionFormat.decode(frame, gsn)
+        assert carried["gsn"] == gsn
+      end
     end
   end
 

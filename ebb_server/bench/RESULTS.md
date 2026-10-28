@@ -1266,9 +1266,10 @@ That changes the next-step order:
    is now a bench flag for this; a remote-socket run is the other half. This
    issue publishes both bounds; do not optimise the GroupServer loop from the
    31 ms number alone.
-2. **#584 (hand committed payloads to the Router).** With the consumer largely
-   removed, `router_decode` (1.3 ms) is ~15% of the ~9 ms server path, not 4%
-   of 31 ms.
+2. **#584 (hand committed payloads to the Router).** Done: with the consumer
+   largely removed, `router_decode` (1.3 ms) was ~13% of the ~9 ms server path,
+   not 4% of 31 ms, and carrying the payloads with the notify halves it; see
+   [Carrying committed payloads](#carrying-committed-payloads-584).
 3. **Frame build.** `group_encode` is 1.4 ms (100 Actions, one group). The
    JSON encode is the next server cost after decode; pre-encoding or a cheaper
    wire framing is the candidate.
@@ -1305,6 +1306,96 @@ n=1000. The final selector draws one offset per batch and then strides, so
 the measurement does not perturb the loop it measures. `conn_deliver`
 defaults to 1 delivery in 100 and `--conn-sample-rate 0` turns it off
 entirely. No hop adds a `GenServer.call` or a new message.
+
+## Carrying committed payloads (#584)
+
+[#584](https://github.com/ebbjs/ebbjs/issues/584) removes the Router's
+`cf_actions` range read from the live path. The Writer already holds every
+committed Action's pre-encoded payload (`payload_etf`) and its pre-resolved
+`update_scopes` when it notifies, so `batch_committed` now carries them in
+claim order:
+
+    {:batch_committed, from, to, groups_by_gsn, committed_at, payloads}
+
+`payloads` is `[{payload_etf, update_scopes}]` with index 0 at `from`.
+Binaries above 64 bytes are refc-shared across processes, so the hand-off
+costs the list, not a payload copy. The Router decodes the carried halves
+with `ActionFormat.decode_carried/3` and never opens the range iterator on
+the live path. It still runs one `binary_to_term/2` per Action for the
+payload: the JSON frame is built from the decoded map, and the issue's
+option 1 keeps that decode by design. The scopes term is neither re-encoded
+nor re-decoded — the Writer sends the list it already resolved.
+
+Recovery is unchanged. A range re-derived after a Router restart, or a
+notification the Writer dropped while the Router was down, has no carried
+payloads and reads `cf_actions` exactly as before; that path is the
+correctness reference. `fan_out_router_carried_payload_test.exs` feeds one
+range through both paths and asserts byte-identical per-group frames. A
+carried list whose length does not match the range logs the range and both
+counts and falls back to the log, so a shifted list can never attach a GSN
+to the wrong payload. Carried payloads are dropped when the range is pushed
+and when a hole is resolved; the same test asserts `batch_meta` and
+`Plan.pending_notifications` return to empty across 250 released ranges.
+
+### Before and after
+
+Baseline is `main` at `7371774`; the feature arm is this branch. Both were
+built on this host, and the arms alternated base/feature three times per
+shape, each run a fresh boot.
+
+```sh
+mix bench.actions --tier t4 --rate R --subscribers 1000 --duration 25 \
+  --warmup 5 --concurrency 1 --batch-size 100 --updates-per-action 2 \
+  --distribution hot --subscriber-lean --conn-sample-rate 100
+```
+
+`--subscriber-count-only` replaces `--subscriber-lean` for the server-only
+shape. Medians of three runs; values in microseconds, and percentages are
+the feature median against the baseline median.
+
+| Shape                        | push p50 | push p95 | `router_decode` p50 | `router_decode` p95 | delivered/s (need) |  util |
+| ---------------------------- | -------: | -------: | ------------------: | ------------------: | -----------------: | ----: |
+| t4 lean r=300, before        |   29,066 |   50,423 |               1,187 |               2,968 |     301,771 (300k) |  8.1% |
+| t4 lean r=300, after         |   28,867 |   48,789 |                 605 |                 955 |     302,340 (300k) |  7.9% |
+| — change                     |    −0.7% |    −3.2% |              −49.0% |              −67.8% |              +0.2% | −2.5% |
+| t4 lean r=1000, before       |   31,617 |   48,066 |               1,347 |               3,150 |   1,000,380 (1.0M) | 25.3% |
+| t4 lean r=1000, after        |   30,607 |   44,422 |                 577 |                 895 |   1,001,444 (1.0M) | 25.1% |
+| — change                     |    −3.2% |    −7.6% |              −57.2% |              −71.6% |              +0.1% | −0.8% |
+| t4 count-only r=1000, before |    9,352 |   13,165 |               1,216 |               2,932 |   1,000,789 (1.0M) |  5.2% |
+| t4 count-only r=1000, after  |    8,959 |   13,120 |                 569 |                 924 |   1,000,495 (1.0M) |  5.5% |
+| — change                     |    −4.2% |    −0.3% |              −53.2% |              −68.5% |              −0.0% | +5.8% |
+
+All 18 runs: 0 rejected Actions, 0 GSN holes, 0 write/transport errors, all
+guardrails passed. Both latency medians improve on every shape; delivered/s
+and utilisation are flat. Individual pairs move with this host's spread: the
+worst feature run is `lean r=300` at 30,149 µs p50
+against a 27,404 µs baseline (+10%), and one baseline count-only run ended
+with a 395 ms p95 tail stall (left in the median). The count-only
+utilisation delta is the median of 5.2 / 5.2 / 6.3% against 5.1 / 5.5 /
+5.6%; the means are 5.57% and 5.40%.
+
+### The gate and what the saving is
+
+AC1 asked for `router_decode` above 10% of commit → broadcast p50 at
+n=1000, r=1000. It is met on the server path #583 introduced
+(`--subscriber-count-only`): the baseline hop is 13.0% of the 9.35 ms push
+p50 (13.0–13.4% across the three runs). On the same-box lean sample the same
+hop is 4.1–4.4% of ~31 ms, because the 1,000 in-process consumers dominate
+that sample. Reading the gate against the consumer-included denominator
+would fail it, which is why #583 re-based the question to the server path
+before this change was written; both numbers are reported here rather than
+picking one silently.
+
+The saving is the range read plus the scopes decode: at p50 the hop falls by
+582–770 µs (49–57%), and at p95 by ~2.0–2.3 ms (68–72%). End-to-end, the
+push sample moves −0.7% to −4.2% at p50 and −0.3% to −7.6% at p95; at
+r=1000 the leg is ~10 ranges/s × ~0.7 ms ≈ 7 ms of CPU per second, so no
+throughput change is expected and none appears. Delivered/s stays at 100% of
+need and utilisation is flat. The hop sum still balances against the push
+p50 (feature runs −0.1% to −2.3%). Wire bytes do not change: the coalesced
+single-binary assertions (`group_server_test.exs` “push_actions/2
+coalescing”, `sse_connection_test.exs` “shares one binary across a coalesced
+batch”) pass unmodified.
 
 ## Writer batch coalescing (#332)
 

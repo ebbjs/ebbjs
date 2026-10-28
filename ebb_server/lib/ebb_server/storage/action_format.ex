@@ -39,12 +39,22 @@ defmodule EbbServer.Storage.ActionFormat do
   plausible. Every decode uses `:erlang.binary_to_term/2` with `[:safe]`,
   so a corrupt or hostile record raises rather than constructing arbitrary
   terms.
+
+  ## Two readers, one decode
+
+  Log readers (`decode/2`, catch-up, materialization, export) join the two
+  halves out of the stored frame. Live fan-out does not read the frame: the
+  Writer hands the Router `payload_etf` and `update_scopes` beside the
+  commit notification, and `decode_carried/3` rejoins them from there. Both
+  readers share the same payload decode, so the live path and the log path
+  cannot drift.
   """
 
   @etf_magic 131
 
   @type payload :: map()
   @type action :: map()
+  @type carried_payload :: {payload_etf :: binary(), update_scopes :: [[String.t()]]}
 
   @doc """
   Builds the GSN-free, scopes-free storage map for an Action.
@@ -99,10 +109,22 @@ defmodule EbbServer.Storage.ActionFormat do
   @spec decode(binary(), non_neg_integer()) :: action()
   def decode(value, gsn) do
     {payload_etf, scopes_etf} = split(value)
+    decode_carried(payload_etf, decode_term(scopes_etf), gsn)
+  end
 
+  @doc """
+  Decodes an Action from the two halves live fan-out carries.
+
+  The Writer sends the already-encoded payload and its pre-resolved scopes
+  with the commit notification; the GSN comes from the range position.
+  This is the same map `decode/2` returns for the stored frame, without the
+  frame split or the scopes decode.
+  """
+  @spec decode_carried(binary(), [[String.t()]], non_neg_integer()) :: action()
+  def decode_carried(payload_etf, update_scopes, gsn) when is_list(update_scopes) do
     payload_etf
     |> decode_payload_term(gsn)
-    |> Map.put("update_scopes", decode_term(scopes_etf))
+    |> Map.put("update_scopes", update_scopes)
   end
 
   @doc """

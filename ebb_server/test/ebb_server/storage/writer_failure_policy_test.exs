@@ -62,7 +62,7 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
       second = validated_action(%{updates: [validated_update(%{subject_id: "todo_second"})]})
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([second], writer_name)
-      assert_receive {:batch_committed, 2, 2, _groups, _committed_at}
+      assert_receive {:batch_committed, 2, 2, _groups, _committed_at, _payloads}
       assert WatermarkTracker.committed_watermark(ctx.watermark_tracker) == 2
     end
   end
