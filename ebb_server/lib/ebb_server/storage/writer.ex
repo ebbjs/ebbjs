@@ -146,9 +146,12 @@ defmodule EbbServer.Storage.Writer do
   affected entities provisionally dirty, and hands the prepared batch to
   the Committer. Once the ack lands the sequencer
   settles the marks, advances the watermark, and notifies `FanOutRouter`.
-  The notification carries the per-Action group set this pass resolved, so
+  The notification carries the per-Action group set this pass resolved and
+  the batch's already-encoded payload plus scopes pairs in claim order, so
   live fan-out indexes the same snapshot `cf_group_actions` was built from
-  rather than re-deriving groups after the system caches have moved.
+  rather than re-deriving groups after the system caches have moved, and it
+  dispatches without re-reading `cf_actions`. The payload binaries are
+  refc-shared across processes, so the hand-off adds a list, not a copy.
 
   Redundant index writes are dropped during op construction: the
   `cf_type_entities` key has no GSN component, so it is collected as a
@@ -1642,13 +1645,7 @@ defmodule EbbServer.Storage.Writer do
           # write-side apply, so `router_queue` can be subtracted from it.
           committed_at = System.monotonic_time()
 
-          notify_fanout(
-            state,
-            batch.gsn_start,
-            batch.gsn_end,
-            batch.groups_by_gsn,
-            committed_at
-          )
+          notify_fanout(state, batch, committed_at)
 
           emit_batch_latency(batch)
           emit_actions_accepted(batch.batch_size)
@@ -2156,14 +2153,24 @@ defmodule EbbServer.Storage.Writer do
     :ok
   end
 
-  defp notify_fanout(state, gsn_start, gsn_end, groups_by_gsn, committed_at) do
+  defp notify_fanout(state, batch, committed_at) do
     unless ablate?(:fanout, state) do
-      notify_batch_committed(state, gsn_start, gsn_end, groups_by_gsn, committed_at)
+      notify_batch_committed(state, batch, committed_at)
     end
   end
 
-  defp notify_batch_committed(state, gsn_start, gsn_end, groups_by_gsn, committed_at) do
-    notify_router(state, {:batch_committed, gsn_start, gsn_end, groups_by_gsn, committed_at})
+  defp notify_batch_committed(state, batch, committed_at) do
+    notify_router(
+      state,
+      {:batch_committed, batch.gsn_start, batch.gsn_end, batch.groups_by_gsn, committed_at,
+       carried_payloads(batch.prepared)}
+    )
+  end
+
+  # The range supplies each GSN by position, so the list is in claim order:
+  # index 0 is `gsn_start`.
+  defp carried_payloads(prepared) do
+    Enum.map(prepared, &{&1.payload_etf, &1.update_scopes})
   end
 
   defp notify_range_resolved(state, gsn_start, gsn_end) do

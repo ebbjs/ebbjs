@@ -186,7 +186,7 @@ defmodule EbbServer.Storage.WriterAblationTest do
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer)
 
-      refute_receive {:batch_committed, _start, _end, _groups, _at}, 100
+      refute_receive {:batch_committed, _start, _end, _groups, _at, _payloads}, 100
     end
 
     test "without :fanout the router is notified", ctx do
@@ -195,7 +195,7 @@ defmodule EbbServer.Storage.WriterAblationTest do
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer)
 
-      assert_receive {:batch_committed, 1, 1, _groups, _at}
+      assert_receive {:batch_committed, 1, 1, _groups, _at, _payloads}
     end
   end
 

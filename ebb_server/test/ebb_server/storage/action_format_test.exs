@@ -113,6 +113,18 @@ defmodule EbbServer.Storage.ActionFormatTest do
     end
   end
 
+  describe "decode_carried/3" do
+    test "rejoins the payload and scopes carried beside the commit notification" do
+      assert ActionFormat.decode_carried(payload_etf(), scopes(), 42) == expected_action(42)
+    end
+
+    test "rejects a carried payload that is not an Action" do
+      assert_raise ArgumentError, ~r/does not hold an Action payload/, fn ->
+        ActionFormat.decode_carried(:erlang.term_to_binary([1, 2, 3]), [[]], 42)
+      end
+    end
+  end
+
   describe "an unreadable value" do
     test "rejects a record in the shape the pre-#552 code stored" do
       # `{payload_etf, update_scopes}` was the old wrapper. There is nothing

@@ -33,14 +33,15 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
       first_id = "act_534_first_#{:erlang.unique_integer([:positive])}"
       second_id = "act_534_second_#{:erlang.unique_integer([:positive])}"
 
+      {first_frame, first_payload} = framed(group_id, actor_id, first_id)
+      {second_frame, second_payload} = framed(group_id, actor_id, second_id)
+
       :ok =
         RocksDB.write_batch([
-          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn1),
-           framed(group_id, actor_id, first_id)},
+          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn1), first_frame},
           {:put, RocksDB.cf_group_actions(), RocksDB.encode_group_action_key(group_id, gsn1),
            first_id},
-          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn2),
-           framed(group_id, actor_id, second_id)},
+          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn2), second_frame},
           {:put, RocksDB.cf_group_actions(), RocksDB.encode_group_action_key(group_id, gsn2),
            second_id}
         ])
@@ -48,15 +49,18 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
       :ok = WatermarkTracker.mark_range_committed(gsn1, gsn2)
       WatermarkTracker.advance_watermark()
 
-      # The Writer notifies each committed range in claim order.
+      # The Writer notifies each committed range in claim order, carrying
+      # the payload it already holds for the live hand-off.
       send(
         FanOutRouter,
-        {:batch_committed, gsn1, gsn1, %{gsn1 => [group_id]}, System.monotonic_time()}
+        {:batch_committed, gsn1, gsn1, %{gsn1 => [group_id]}, System.monotonic_time(),
+         [first_payload]}
       )
 
       send(
         FanOutRouter,
-        {:batch_committed, gsn2, gsn2, %{gsn2 => [group_id]}, System.monotonic_time()}
+        {:batch_committed, gsn2, gsn2, %{gsn2 => [group_id]}, System.monotonic_time(),
+         [second_payload]}
       )
 
       # Each released range is its own push, so flatten the chunks to assert
@@ -219,8 +223,9 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
 
   defp framed(group_id, actor_id, action_id) do
     hlc = generate_hlc()
+    scopes = [[group_id]]
 
-    payload =
+    payload_etf =
       %{
         id: action_id,
         actor_id: actor_id,
@@ -240,6 +245,6 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
       |> ActionFormat.build()
       |> ActionFormat.encode()
 
-    ActionFormat.frame(payload, [[group_id]])
+    {ActionFormat.frame(payload_etf, scopes), {payload_etf, scopes}}
   end
 end

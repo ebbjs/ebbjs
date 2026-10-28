@@ -102,8 +102,9 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
       assert FanOutFrontier.get() == {:ok, 2}
 
       # A stale replay below the frontier must not lower it, in memory or
-      # on the persisted frontier.
-      send(FanOutRouter, {:batch_committed, 1, 1, %{}, nil})
+      # on the persisted frontier. It predates the payload hand-off, so the
+      # payloads are omitted intentionally and the Router takes the log path.
+      send(FanOutRouter, {:batch_committed, 1, 1, %{}, nil, nil})
       state = :sys.get_state(FanOutRouter)
 
       assert state.plan.last_pushed_gsn == 2

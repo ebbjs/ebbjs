@@ -10,7 +10,12 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   1. Waits until the committed watermark from `WatermarkTracker` is past
      the batch's end.
-  2. Reads the committed Actions from RocksDB.
+  2. Decodes the Actions carried with the commit. The Writer sends each
+     committed Action's pre-encoded payload and pre-resolved scopes in
+     claim order, so live fan-out neither reads `cf_actions` nor joins the
+     stored frame. A recovered range, which has no notification, still
+     reads the log; so does a carried list whose length does not match the
+     range.
   3. Takes each Action's group set from the Writer's commit snapshot,
      falling back to `GroupResolution.resolve_group_ids/2` (per-Action,
      via `EntityIndex`) only when the notifier did not annotate the GSN.
@@ -18,6 +23,11 @@ defmodule EbbServer.Sync.FanOutRouter do
      per-Update scope includes the recipient group, then dispatches the
      filtered copy to that GroupServer. An Update scoped to one group is
      never delivered to another group that the same Action also touches.
+
+  Carrying the payload binaries costs the hand-off a list, not a copy:
+  binaries above 64 bytes are refc-shared across processes. The list lives
+  in `batch_meta` beside the range and is dropped when the range is pushed
+  (or resolved as a hole).
 
   Using the Writer's snapshot keeps live fan-out in agreement with the
   `cf_group_actions` index catch-up reads: the cache has already moved
@@ -90,6 +100,8 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   use GenServer
 
+  require Logger
+
   alias EbbServer.Storage.{ActionFormat, ActionScope, CacheTables, RocksDB, WatermarkTracker}
 
   alias EbbServer.Sync.{FanOutFrontier, GroupDynamicSupervisor, GroupRegistry, GroupServer}
@@ -104,7 +116,8 @@ defmodule EbbServer.Sync.FanOutRouter do
           batch_meta: %{
             {non_neg_integer(), non_neg_integer()} => %{
               committed_at: integer() | nil,
-              received_at: integer() | nil
+              received_at: integer() | nil,
+              payloads: [ActionFormat.carried_payload()] | nil
             }
           },
           conn_sample_rate: non_neg_integer(),
@@ -211,18 +224,23 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   @impl true
-  def handle_info({:batch_committed, from_gsn, to_gsn, groups_by_gsn, committed_at}, state) do
+  def handle_info(
+        {:batch_committed, from_gsn, to_gsn, groups_by_gsn, committed_at, payloads},
+        state
+      ) do
     received_at = System.monotonic_time()
     range = {from_gsn, to_gsn}
 
-    # Keep the Writer-provided group sets, commit time, and receive time
-    # alongside the buffered ranges, so a range that waits for the watermark
-    # still dispatches from the commit snapshot and reports its true latency.
+    # Keep the Writer-provided group sets, carried payloads, commit time,
+    # and receive time alongside the buffered ranges, so a range that waits
+    # for the watermark still dispatches from the commit snapshot and
+    # reports its true latency.
+    meta = %{committed_at: committed_at, received_at: received_at, payloads: payloads}
+
     state = %{
       state
       | pending_groups: Map.merge(state.pending_groups, groups_by_gsn),
-        batch_meta:
-          Map.put(state.batch_meta, range, %{committed_at: committed_at, received_at: received_at})
+        batch_meta: Map.put(state.batch_meta, range, meta)
     }
 
     {to_push, plan} =
@@ -240,12 +258,24 @@ defmodule EbbServer.Sync.FanOutRouter do
   # Dropping its claim lets the next acknowledged range become releasable
   # once the watermark passes the hole.
   def handle_info({:range_resolved, from_gsn, to_gsn}, state) do
+    range = {from_gsn, to_gsn}
+
     {to_push, plan} =
       state.plan
-      |> Plan.resolve({from_gsn, to_gsn})
+      |> Plan.resolve(range)
       |> Plan.split_pushable(WatermarkTracker.committed_watermark())
 
-    {:noreply, push_and_update(%{state | plan: plan}, to_push, nil)}
+    # A resolved hole is never pushed, so this is only defensive: no
+    # payloads or group sets should outlive their claim. Dropping the group
+    # set too keeps a permanent hole from leaving a permanent entry.
+    state = %{
+      state
+      | plan: plan,
+        batch_meta: Map.drop(state.batch_meta, [range]),
+        pending_groups: drop_groups(state.pending_groups, range)
+    }
+
+    {:noreply, push_and_update(state, to_push, nil)}
   end
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
@@ -328,7 +358,11 @@ defmodule EbbServer.Sync.FanOutRouter do
         from,
         to,
         state.pending_groups,
-        %{committed_at: committed_at, conn_sample_rate: state.conn_sample_rate}
+        %{
+          committed_at: committed_at,
+          conn_sample_rate: state.conn_sample_rate,
+          payloads: Map.get(meta, :payloads)
+        }
       )
     end
 
@@ -361,6 +395,10 @@ defmodule EbbServer.Sync.FanOutRouter do
   defp span(from, to) when is_integer(from) and is_integer(to), do: max(to - from, 0)
   defp span(_from, _to), do: nil
 
+  defp drop_groups(pending_groups, {from_gsn, to_gsn}) do
+    Enum.reduce(from_gsn..to_gsn, pending_groups, &Map.delete(&2, &1))
+  end
+
   # GroupServers monitor their own subscribers and drop them on exit, so
   # the router only has to forget the connection and its monitor ref.
   defp forget_subscriber(state, pid) do
@@ -373,9 +411,6 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   defp push_gsn_range(from_gsn, to_gsn, groups_by_gsn, %{} = meta) do
     decode_started_at = System.monotonic_time()
-    cf = RocksDB.cf_actions()
-    from_key = RocksDB.encode_gsn_key(from_gsn)
-    to_key = RocksDB.encode_gsn_key(to_gsn + 1)
 
     resolve_opts = [
       entity_groups: CacheTables.entity_groups(),
@@ -384,9 +419,14 @@ defmodule EbbServer.Sync.FanOutRouter do
       group_members_by_id: CacheTables.group_members_by_id()
     ]
 
+    actions =
+      case carried_actions(meta, from_gsn, to_gsn) do
+        {:ok, actions} -> actions
+        :read_log -> read_log_actions(from_gsn, to_gsn)
+      end
+
     grouped =
-      RocksDB.range_iterator(cf, from_key, to_key)
-      |> Stream.map(fn {key, value} -> ActionFormat.decode(value, RocksDB.decode_gsn_key(key)) end)
+      actions
       |> Stream.flat_map(&group_memberships(&1, groups_by_gsn, resolve_opts))
       |> Enum.group_by(fn {group_id, _action} -> group_id end, fn {_group_id, action} ->
         action
@@ -401,6 +441,43 @@ defmodule EbbServer.Sync.FanOutRouter do
         conn_sample_rate: meta.conn_sample_rate
       })
     end)
+  end
+
+  # The Writer sends the payload and scopes for every GSN in the range, in
+  # claim order, so position supplies the key's GSN. A length mismatch means
+  # the notification is not a complete live hand-off: fall back to the log
+  # rather than let a shifted list attach a GSN to the wrong payload.
+  defp carried_actions(%{payloads: payloads}, from_gsn, to_gsn) when is_list(payloads) do
+    expected = to_gsn - from_gsn + 1
+
+    case length(payloads) do
+      ^expected ->
+        {:ok,
+         payloads
+         |> Enum.with_index(from_gsn)
+         |> Enum.map(fn {{payload_etf, update_scopes}, gsn} ->
+           ActionFormat.decode_carried(payload_etf, update_scopes, gsn)
+         end)}
+
+      actual ->
+        Logger.error(
+          "fan-out range #{from_gsn}..#{to_gsn} carried #{actual} payloads, " <>
+            "expected #{expected}; reading cf_actions"
+        )
+
+        :read_log
+    end
+  end
+
+  defp carried_actions(_meta, _from_gsn, _to_gsn), do: :read_log
+
+  defp read_log_actions(from_gsn, to_gsn) do
+    cf = RocksDB.cf_actions()
+    from_key = RocksDB.encode_gsn_key(from_gsn)
+    to_key = RocksDB.encode_gsn_key(to_gsn + 1)
+
+    RocksDB.range_iterator(cf, from_key, to_key)
+    |> Stream.map(fn {key, value} -> ActionFormat.decode(value, RocksDB.decode_gsn_key(key)) end)
   end
 
   # One push per group per committed range, so a batch that fans out to a
