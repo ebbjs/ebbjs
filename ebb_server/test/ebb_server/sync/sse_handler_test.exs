@@ -11,7 +11,7 @@ defmodule EbbServer.Sync.SSEHandlerTest do
   import Plug.Test
   import Plug.Conn
 
-  alias EbbServer.Storage.GroupCache
+  alias EbbServer.Storage.{GroupCache, WatermarkTracker}
   alias EbbServer.Sync.{Router, SSEHandler}
 
   # Records what `do_sse_loop/3` hands to `Plug.Conn.chunk/2`, so a test can
@@ -145,6 +145,36 @@ defmodule EbbServer.Sync.SSEHandlerTest do
       assert conn.status == 400
       {:ok, response} = Jason.decode(conn.resp_body)
       assert response == %{"error" => "invalid_params"}
+    end
+
+    test "a cursor ahead of the watermark sends one stale-cursor control event and halts" do
+      actor_id = "a_stale_#{:erlang.unique_integer([:positive])}"
+      group_id = "g_stale_#{:erlang.unique_integer([:positive])}"
+
+      GroupCache.put_group_member(%{
+        id: "gm_stale_#{:erlang.unique_integer([:positive])}",
+        actor_id: actor_id,
+        group_id: group_id,
+        permissions: ["read"]
+      })
+
+      watermark = WatermarkTracker.committed_watermark()
+
+      conn =
+        conn(:get, "/sync/live?groups=#{group_id}&cursor=#{watermark + 5}")
+        |> put_req_header("x-ebb-actor-id", actor_id)
+        |> Router.call([])
+
+      # The client resumes from the watermark, not from the cursor it claimed.
+      assert conn.status == 200
+      assert conn.state == :chunked
+      assert conn.halted
+
+      assert [frame] = String.split(conn.resp_body, "\n\n", trim: true)
+
+      assert frame ==
+               "event: control\ndata: " <>
+                 ~s({"reconnect":true,"reason":"behind_watermark","catchUpFrom":#{watermark + 1}})
     end
   end
 end
