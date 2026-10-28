@@ -345,11 +345,98 @@ defmodule EbbServer.Storage.RocksDBTest do
       name2 = :"rocks_durable_#{System.unique_integer([:positive])}"
       {:ok, pid2} = RocksDB.start_link(data_dir: dir, name: name2)
 
-      on_exit(fn ->
-        if Process.alive?(pid2), do: GenServer.stop(pid2)
-      end)
+      on_exit(fn -> safe_stop(pid2) end)
 
       assert {:ok, ^value} = RocksDB.get(RocksDB.cf_actions(name2), key, name: name2)
+    end
+  end
+
+  describe "restart after the owner dies" do
+    @describetag :capture_log
+
+    test "reopens the same data_dir after the owner is killed without terminate/2", context do
+      Process.flag(:trap_exit, true)
+      %{name: name, pid: pid, dir: dir} = start_rocks(context)
+
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+      assert_receive {:EXIT, ^pid, :killed}
+
+      # The killed process never reached `terminate/2`, so its handles are
+      # still published — and that `db_ref` is what holds the RocksDB LOCK
+      # file. The replacement has to release it before it can open.
+      assert :persistent_term.get({:ebb_rocksdb_db, name}, :absent) != :absent
+
+      assert {:ok, replacement} =
+               RocksDB.start_link(data_dir: dir, name: name, open_retry_delays_ms: [50, 100, 200])
+
+      on_exit(fn -> safe_stop(replacement) end)
+
+      key = RocksDB.encode_gsn_key(7)
+
+      assert :ok =
+               RocksDB.write_batch([{:put, RocksDB.cf_actions(name), key, "after"}], name: name)
+
+      assert {:ok, "after"} = RocksDB.get(RocksDB.cf_actions(name), key, name: name)
+    end
+
+    test "a live owner keeps its handles and the second open fails", context do
+      Process.flag(:trap_exit, true)
+      %{name: name, dir: dir} = start_rocks(context)
+
+      # A second instance on the same `data_dir` (a different name, so the
+      # registration does not reject it first) must fail on the lock.
+      other_name = :"rocks_second_#{System.unique_integer([:positive])}"
+
+      assert {:error, {:rocksdb_open_failed, {:db_open, message}}} =
+               RocksDB.start_link(data_dir: dir, name: other_name, open_retry_delays_ms: [])
+
+      assert to_string(message) =~ "lock hold by current process"
+
+      # Cleaning up after a dead owner must not detach a live one.
+      key = RocksDB.encode_gsn_key(1)
+
+      assert :ok =
+               RocksDB.write_batch([{:put, RocksDB.cf_actions(name), key, "live"}], name: name)
+
+      assert {:ok, "live"} = RocksDB.get(RocksDB.cf_actions(name), key, name: name)
+    end
+  end
+
+  describe "start failure" do
+    @describetag :capture_log
+
+    test "an unwritable parent directory stops the start instead of raising", context do
+      Process.flag(:trap_exit, true)
+      parent = tmp_dir(context)
+      File.chmod!(parent, 0o500)
+      on_exit(fn -> File.chmod(parent, 0o700) end)
+
+      name = :"rocks_unwritable_#{System.unique_integer([:positive])}"
+
+      assert {:error, {:data_dirCreation_failed, _reason}} =
+               RocksDB.start_link(data_dir: Path.join(parent, "nested"), name: name)
+    end
+  end
+
+  describe "terminate/2" do
+    test "releases the published handles when the state carries no db_ref" do
+      name = :"rocks_terminate_#{System.unique_integer([:positive])}"
+      :persistent_term.put({:ebb_rocksdb_db, name}, make_ref())
+
+      assert RocksDB.terminate(:shutdown, %{name: name}) == :ok
+      assert :persistent_term.get({:ebb_rocksdb_db, name}, :absent) == :absent
+    end
+
+    test "survives closing a handle the NIF rejects" do
+      name = :"rocks_terminate_#{System.unique_integer([:positive])}"
+
+      assert RocksDB.terminate(:shutdown, %{name: name, db_ref: make_ref()}) == :ok
+    end
+
+    test "releases handles for a state it does not recognise" do
+      assert RocksDB.terminate(:shutdown, :unexpected_state) == :ok
     end
   end
 end

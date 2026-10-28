@@ -455,11 +455,8 @@ defmodule EbbServer.Storage.WriterTest do
         )
 
       on_exit(fn ->
-        if pid = Process.whereis(writer_name2),
-          do: if(Process.alive?(pid), do: GenServer.stop(pid))
-
-        if pid = Process.whereis(rocks_name2),
-          do: if(Process.alive?(pid), do: GenServer.stop(pid))
+        if pid = Process.whereis(writer_name2), do: safe_stop(pid)
+        if pid = Process.whereis(rocks_name2), do: safe_stop(pid)
       end)
 
       gsn_key = RocksDB.encode_gsn_key(1)
