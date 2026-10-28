@@ -30,7 +30,9 @@ defmodule EbbServer.Storage.RocksDB do
 
   The DB opens with `enable_pipelined_write: true`, which lets multiple
   Writer batches commit concurrently without serializing through a single
-  WAL. A 2-writer pipelined benchmark hit ~108k Actions/sec with full
+  WAL. It is dormant while the Writer runs one batch at a time — see
+  `EbbServer.Storage.Writer` and #529, where a second claim owner is
+  parked. A 2-writer pipelined benchmark hit ~108k Actions/sec with full
   durability; production currently runs a single Writer. Throughput
   numbers are documented in GitHub issue #130 (see Epic #111 for the
   storage architecture).

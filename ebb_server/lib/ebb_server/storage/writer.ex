@@ -7,7 +7,7 @@ defmodule EbbServer.Storage.Writer do
   ## Why a single Writer
 
   The Writer serializes claims and keeps each Writer's GSNs monotonic.
-  GSN ranges are claimed atomically from `GSNCounter` via `:atomics`,
+  GSN ranges are claimed atomically from `GsnCounter` via `:atomics`,
   but the final commit only happens here, so the order the log is
   written and the order `FanOutRouter` is notified are the same.
 
@@ -15,9 +15,12 @@ defmodule EbbServer.Storage.Writer do
      range in one process, so concurrent writers cannot interleave
      claims and their fan-out in different orders.
   2. **Per-Writer GSN-monotonicity.** Multi-Writer pipelining is possible
-     (the benchmark hit ~108k/s — see #130) but requires committed-watermark
-     and ordered fan-out coordination not yet built. We keep one Writer in
-     production; the architecture supports more.
+     (the benchmark hit ~108k/s — see #130), but a second claim owner is
+     parked, not scheduled: #287 records the claim-ownership and
+     orphan-vs-in-flight reconcile it would need, and epic #529 keeps one
+     claim owner as a fixed constraint. At the default
+     `:writer_max_in_flight` of 1 the Writer never issues two batches
+     concurrently, so `enable_pipelined_write: true` is dormant.
 
   The on-disk Action log is **not** gap-free. The watermark is a
   *resolution frontier* — committed ∪ deliberately abandoned — so a

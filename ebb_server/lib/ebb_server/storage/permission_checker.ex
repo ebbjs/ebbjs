@@ -8,8 +8,10 @@ defmodule EbbServer.Storage.PermissionChecker do
 
   Two checks, in order:
 
-  1. **ActionValidator** — shape, actor, HLC bounds (logical time must be
-     in `[now - 24h, now + 120s]`).
+  1. **ActionValidator** — shape, actor, HLC future drift (logical time
+     must not be more than `now + 120s`). There is no stale bound: GSN
+     provides total ordering, and the bound returns with the compaction
+     watermark tracked by #123.
   2. **Authorizer** — for each Update, does the actor have the right
      `<type>.<verb>` (or `<type>.*`) on the entity's group, where
      `<type>` is the type the id was committed under rather than the
@@ -22,10 +24,9 @@ defmodule EbbServer.Storage.PermissionChecker do
   Both checks are per-Action: a rejected Action in a batch is reported
   in `rejected[]` while its siblings are still accepted (#469).
 
-  On success: returns the validated action to the Writer with the same
-  shape it came in with, but populates server-side denormalized fields
-  (`gsn`, `server_received_at_hlc`, etc.) so downstream code doesn't
-  re-derive them.
+  On success: returns the validated Actions to the Writer unchanged. No
+  server-side field is denormalized here; the Writer claims the GSN range
+  when it flushes the batch, before the commit attempt.
 
   ## Stateless by design
 
