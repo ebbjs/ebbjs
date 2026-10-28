@@ -58,21 +58,21 @@ Server figures are single-node, measured through the real server pipeline (not a
 
 - **Writes:** ~21,000 Actions/sec over HTTP (batch 100, `sync: true`) and ~26,000/sec calling the Writer directly. There is one Writer per server, so every room shares that budget.
 - **Batching dominates.** 100 Actions per request is the sweet spot; one Action per request is roughly an order of magnitude slower. The client outbox already debounces bursts.
-- **Fan-out:** post-apply → broadcast is **~31 ms at 1,000 subscribers** writing 1,000 Actions/sec, but only **~2.7 ms at one subscriber** — the measured cost is the per-subscriber dispatch loop, not the Router. The server dispatches on the order of **a million deliveries/sec** in-process. A _delivery_ is one Action reaching one subscriber, and it is the number that matters: `room load = edits/second × subscribers`.
+- **Fan-out:** post-apply → broadcast is **~31 ms at 1,000 subscribers** writing 1,000 Actions/sec when the 1,000 in-process consumers share the same 4-scheduler box. A count-only consumer measures the same server path at **~9 ms** (no-op consumer ~5 ms), and the floor is **~2.7 ms at one subscriber**. The server's per-range work is small; per-delivery consumer work dominates the same-box number. The server dispatches on the order of **a million deliveries/sec** in-process. A _delivery_ is one Action reaching one subscriber, and it is the number that matters: `room load = edits/second × subscribers`.
 - **Reads (client replica):** a 10,000-document workspace holds **~41 MB** of metadata on the client — 29 MB of row objects plus 12 MB of replica structures, 10 MB of which is the adjacency indices that earlier estimates left out — 13% of the 323 MB it would weigh with every document body resident; those bodies (306 MB) stay windowed and open in ~3.6 µs. A relationship or membership traversal reads its adjacency index in 0.5–0.9 µs with no type scan (rows examined stay at the row's degree); the public accessors built on it cost 1.5–12 µs. A full scan of all 10,000 held pages — the shape a search over resident pages would use — is 1.5–2.8 ms, against 42.5 ms per keystroke on the old async scan, and a one-pass projection build (hydrating the replica) is ~150–180 ms.
 
 Rough scale to expect on one box:
 
-| Shape                                               | Verdict                                                                                                                                     |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Documents / rooms with dozens to hundreds of people | Comfortable                                                                                                                                 |
-| 1,000-person room, low write rate                   | Fine                                                                                                                                        |
-| 1,000-person room, many people editing at once      | Fine through ~1,000 edits/sec (1M deliveries/sec): ~31 ms p50 at ~25% CPU. The per-subscriber dispatch loop is the first limit beyond that. |
-| Hundreds of small rooms                             | Bounded by the shared ~21k Actions/sec write budget                                                                                         |
+| Shape                                               | Verdict                                                                                                                                                                                           |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Documents / rooms with dozens to hundreds of people | Comfortable                                                                                                                                                                                       |
+| 1,000-person room, low write rate                   | Fine                                                                                                                                                                                              |
+| 1,000-person room, many people editing at once      | Fine through ~1,000 edits/sec (1M deliveries/sec): server path ~9 ms p50 with cheap consumers, ~31 ms when 1,000 consumers share the box. Per-delivery consumer work is the first same-box limit. |
+| Hundreds of small rooms                             | Bounded by the shared ~21k Actions/sec write budget                                                                                                                                               |
 
-Presence and cursor updates ride the same fan-out path — throttle them. The measured server cost at a million deliveries/sec is the per-subscriber dispatch loop, not the bytes; reducing payload size helps the network leg but not that loop.
+Presence and cursor updates ride the same fan-out path — throttle them. The server amortises one message per subscriber per committed range, so batching and consumer-side work matter more than the byte count; reducing payload size helps the network leg.
 
-> These are single-node, 4-scheduler figures, and the fan-out number uses in-process subscribers — real SSE sockets will be lower. Treat them as orders of magnitude, not guarantees.
+> These are single-node, 4-scheduler figures. The fan-out number includes 1,000 in-process consumers on the same cores; real remote clients move decode/apply off the server but add socket and network transit. Treat both as bounds, not guarantees.
 
 ## Packages
 

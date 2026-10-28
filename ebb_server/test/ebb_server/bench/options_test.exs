@@ -333,6 +333,60 @@ defmodule EbbServer.Bench.OptionsTest do
     end
   end
 
+  describe "--subscriber-count-only" do
+    test "defaults off" do
+      assert {:ok, config} = Options.parse([])
+      refute config.subscriber_count_only
+    end
+
+    test "parses the flag on t3 and t4" do
+      assert {:ok, config} =
+               Options.parse([
+                 "--tier",
+                 "t4",
+                 "--rate",
+                 "100",
+                 "--subscribers",
+                 "10",
+                 "--subscriber-count-only"
+               ])
+
+      assert config.subscriber_count_only
+
+      assert {:ok, config} =
+               Options.parse(["--tier", "t3", "--subscribers", "10", "--subscriber-count-only"])
+
+      assert config.subscriber_count_only
+    end
+
+    test "rejects count-only mode on tiers without subscribers" do
+      assert {:error, message} = Options.parse(["--subscriber-count-only"])
+      assert message =~ "--subscriber-count-only"
+    end
+
+    test "rejects combining count-only with lean" do
+      assert {:error, message} =
+               Options.parse([
+                 "--tier",
+                 "t3",
+                 "--subscribers",
+                 "10",
+                 "--subscriber-count-only",
+                 "--subscriber-lean"
+               ])
+
+      assert message =~ "cannot be combined"
+    end
+
+    test "describe and command carry the count-only mode" do
+      assert {:ok, config} =
+               Options.parse(["--tier", "t3", "--subscribers", "10", "--subscriber-count-only"])
+
+      assert Map.new(Options.describe(config))["Subscriber mode"] =~ "count-only"
+      assert Options.command(config) =~ "--subscriber-count-only"
+    end
+  end
+
   describe "--tier t5" do
     test "parses the canonical concurrent write_batch shape" do
       assert {:ok, config} =

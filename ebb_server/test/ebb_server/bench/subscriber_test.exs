@@ -35,6 +35,21 @@ defmodule EbbServer.Bench.SubscriberTest do
     assert stats.lags == []
   end
 
+  test "count-only mode counts frames without splitting them", %{ctx: ctx} do
+    subscribers = Subscriber.start_all(3, ctx, count_only: true)
+
+    for pid <- subscribers.pids, do: send(pid, {:sse_data, chunk(2)})
+    Process.sleep(50)
+
+    assert Subscriber.delivered(subscribers) == 6
+    assert subscribers.count_only
+
+    stats = Subscriber.stop_all(subscribers)
+
+    assert stats.delivered_total == 6
+    assert stats.lags == []
+  end
+
   test "the shared default aggregates deliveries through one counter", %{ctx: ctx} do
     subscribers = Subscriber.start_all(3, ctx)
 

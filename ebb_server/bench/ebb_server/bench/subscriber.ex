@@ -23,6 +23,12 @@ defmodule EbbServer.Bench.Subscriber do
   table is skipped, so a run can tell whether the shared counter/ETS in the
   harness is the fan-out ceiling. Lean runs report no lag samples; the
   non-lean default keeps the shared counter and lag sampling.
+
+  With `count_only: true` every subscriber also skips the per-frame split
+  and lag decode, counting `event: data` occurrences with `:binary.matches/2`
+  instead. The delivery count stays correct, while the consumer's CPU no
+  longer competes with the server on the same schedulers, which is how a run
+  separates server fan-out cost from consumer cost.
   """
 
   alias EbbServer.Sync.{FanOutRouter, SSEConnectionSupervisor}
@@ -38,7 +44,8 @@ defmodule EbbServer.Bench.Subscriber do
           counters: counters(),
           lags: :ets.tid() | nil,
           pids: [pid()],
-          lean: boolean()
+          lean: boolean(),
+          count_only: boolean()
         }
 
   @doc """
@@ -58,15 +65,22 @@ defmodule EbbServer.Bench.Subscriber do
   def start_all(0, _ctx, _opts), do: nil
 
   def start_all(count, ctx, opts) do
-    if Keyword.get(opts, :lean, false) do
-      counters = for _ <- 1..count, do: :counters.new(2, [:write_concurrency])
-      pids = Enum.map(counters, &start(ctx, &1, nil))
-      %{counters: counters, lags: nil, pids: pids, lean: true}
-    else
-      counters = :counters.new(2, [:write_concurrency])
-      lags = :ets.new(:bench_subscriber_lags, [:bag, :public])
-      pids = Enum.map(1..count, fn _ -> start(ctx, counters, lags) end)
-      %{counters: counters, lags: lags, pids: pids, lean: false}
+    cond do
+      Keyword.get(opts, :count_only, false) ->
+        counters = for _ <- 1..count, do: :counters.new(2, [:write_concurrency])
+        pids = Enum.map(counters, &start(ctx, &1, nil, true))
+        %{counters: counters, lags: nil, pids: pids, lean: true, count_only: true}
+
+      Keyword.get(opts, :lean, false) ->
+        counters = for _ <- 1..count, do: :counters.new(2, [:write_concurrency])
+        pids = Enum.map(counters, &start(ctx, &1, nil, false))
+        %{counters: counters, lags: nil, pids: pids, lean: true, count_only: false}
+
+      true ->
+        counters = :counters.new(2, [:write_concurrency])
+        lags = :ets.new(:bench_subscriber_lags, [:bag, :public])
+        pids = Enum.map(1..count, fn _ -> start(ctx, counters, lags, false) end)
+        %{counters: counters, lags: lags, pids: pids, lean: false, count_only: false}
     end
   end
 
@@ -117,9 +131,9 @@ defmodule EbbServer.Bench.Subscriber do
   defp lag_samples(nil), do: []
   defp lag_samples(table), do: table |> :ets.tab2list() |> Enum.map(&elem(&1, 1))
 
-  defp start(ctx, counters, lags) do
+  defp start(ctx, counters, lags, count_only?) do
     parent = self()
-    pid = spawn(fn -> init(parent, ctx, counters, lags) end)
+    pid = spawn(fn -> init(parent, ctx, counters, lags, count_only?) end)
 
     receive do
       {:subscriber_ready, ^pid} -> pid
@@ -128,16 +142,35 @@ defmodule EbbServer.Bench.Subscriber do
     end
   end
 
-  defp init(parent, ctx, counters, lags) do
+  defp init(parent, ctx, counters, lags, count_only?) do
     {:ok, sse_pid} =
       SSEConnectionSupervisor.start_child(self(), [ctx.group_id], %{ctx.group_id => 0})
 
     :ok = FanOutRouter.subscribe([ctx.group_id], sse_pid, ctx.actor_id)
     send(parent, {:subscriber_ready, self()})
-    loop(counters, lags, 0)
+    loop(counters, lags, 0, count_only?)
   end
 
-  defp loop(counters, lags, delivered) do
+  defp loop(counters, lags, delivered, true) do
+    receive do
+      # Count frames without splitting every chunk; this is the mode that
+      # keeps the consumer off the server's schedulers.
+      {:sse_data, bytes} ->
+        count = length(:binary.matches(bytes, "event: data"))
+        :counters.add(counters, 1, count)
+        loop(counters, lags, delivered + count, true)
+
+      {:sse_chunk, "data", _payload} ->
+        :counters.add(counters, 1, 1)
+        loop(counters, lags, delivered + 1, true)
+
+      {:sse_chunk, _kind, _payload} ->
+        :counters.add(counters, 2, 1)
+        loop(counters, lags, delivered, true)
+    end
+  end
+
+  defp loop(counters, lags, delivered, false) do
     receive do
       # One coalesced chunk per batch: it may carry several `data` frames.
       {:sse_data, bytes} ->
@@ -151,17 +184,17 @@ defmodule EbbServer.Bench.Subscriber do
             delivered
           end)
 
-        loop(counters, lags, delivered)
+        loop(counters, lags, delivered, false)
 
       {:sse_chunk, "data", payload} ->
         :counters.add(counters, 1, 1)
         delivered = delivered + 1
         if rem(delivered, @sample_every) == 0, do: maybe_record_lag(lags, payload)
-        loop(counters, lags, delivered)
+        loop(counters, lags, delivered, false)
 
       {:sse_chunk, _kind, _payload} ->
         :counters.add(counters, 2, 1)
-        loop(counters, lags, delivered)
+        loop(counters, lags, delivered, false)
     end
   end
 

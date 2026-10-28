@@ -169,7 +169,9 @@ defmodule EbbServer.Telemetry do
     measured from the end of `group_encode` until the last cast is enqueued.
     One sample per (range, group), with the group id. This is the serial
     O(subscribers) leg that closes the re-based `push_latency_ms`; without it
-    the end-to-end sample has an unattributed tail.
+    the end-to-end sample has an unattributed tail. It is wall time, so the
+    sample includes scheduler time shared with consumers running on the same
+    node; the bench's `--subscriber-count-only` mode isolates the server leg.
   - `conn_deliver` — the `GroupServer`'s `SSEConnection.push_data/3` cast
     send through the `SSEConnection.handle_cast/2` entry and the
     `send(parent, {:sse_data, bytes})` completing. One sample per sampled

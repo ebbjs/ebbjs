@@ -1240,25 +1240,52 @@ by subtraction: **~28.4 ms**, not assumed.
 At n=1000 the Router side is small and flat: `router_queue` 42 µs,
 `router_decode` 1.37 ms, `group_queue` 224 µs, `group_encode` 1.32 ms. The
 **`group_cast` hop is 27.6 ms of the 31.1 ms total (89%)** and accounts for
-97% of the n=1 → n=1000 increase. The serial per-subscriber cast loop, not
-the Router read/decode and not the frame build, is what the ~30 ms buys at
-this shape. That also makes #584 (Router read + decode) worth ~1.4 ms here,
-not the headline cost; its value is in the shapes where the Router has a
-backlog.
+97% of the n=1 → n=1000 increase. But that hop is wall time, and the
+in-process consumers run on the same four schedulers: when 1,000 subscribers
+each split and count a 100-frame chunk, they compete with the GroupServer
+for CPU. `group_cast` measures that scheduler time, not just the send call.
+
+Three controls at the same t4 n=1000 r=1000 shape separate the server from
+the consumer:
+
+| Consumer                                                           |         push p50 / p95 | `group_cast` p50 | `conn_deliver` p50 | scheduler util |
+| ------------------------------------------------------------------ | ---------------------: | ---------------: | -----------------: | -------------: |
+| normal lean (splits every chunk, samples 1/50 for lag)             |         31.1 / 43.3 ms |          27.6 ms |             7.8 ms |          24.6% |
+| `--subscriber-count-only` (counts frames with `:binary.matches/2`) | 8.6–9.5 / 12.9–13.6 ms |       5.2–6.3 ms |             1.6 ms |       5.2–5.3% |
+| temporary no-op consumer (one count per chunk, not committed)      |           4.9 / 6.9 ms |           1.9 ms |            0.03 ms |           1.3% |
+
+A raw loop of 1,000 `GenServer.cast` calls on this host is **1.3–1.6 ms**, so
+the 27.6 ms is mostly scheduler time shared with the consumer, not an
+intrinsically expensive send. With a cheap but realistic consumer the server
+path is **~9 ms**; with no per-frame work it is **~5 ms**. The 31 ms headline
+is a same-box worst case, not the server-only cost.
+
+That changes the next-step order:
+
+1. **Measure with the consumer off the server's schedulers.** `--subscriber-count-only`
+   is now a bench flag for this; a remote-socket run is the other half. This
+   issue publishes both bounds; do not optimise the GroupServer loop from the
+   31 ms number alone.
+2. **#584 (hand committed payloads to the Router).** With the consumer largely
+   removed, `router_decode` (1.3 ms) is ~15% of the ~9 ms server path, not 4%
+   of 31 ms.
+3. **Frame build.** `group_encode` is 1.4 ms (100 Actions, one group). The
+   JSON encode is the next server cost after decode; pre-encoding or a cheaper
+   wire framing is the candidate.
+4. **Dispatch.** Under count-only, `group_cast` is 5–6 ms of ~9 ms. The
+   remaining dispatch cost is worth profiling, but sharding/dispatch-pool work
+   should be re-measured with count-only consumers; the earlier sharding sweep
+   was masked by the shared subscriber.
+5. **Consumer work is the largest same-box cost.** Splitting/decoding 1,000
+   chunks × 100 frames takes the 31.1 ms run from ~9 ms to ~31 ms. Reducing
+   frames, decoding cost, or wire format is a client/network win; the server
+   already amortises one message per subscriber per committed range, not per
+   Action.
 
 `router_dwell` was **0 samples in every run**: the Writer notifies after the
 durable mark and t4 paces writes, so the Router never held a range for the
 watermark. It remains instrumented because a deeper or recovered shape can
 hold one; a claim-order test pins that path.
-
-**Next step for the dominant hop (stated, not taken here):** profile the
-`group_cast` loop directly at fixed deliveries/sec while varying N. The
-candidates are the cost of 1,000 separate sends of one shared binary per
-range (refcount and scheduler migration) and the single GroupServer process
-serialising them. Group sharding was measured before under the shared
-subscriber, whose ~140k/s cap hid any difference; re-test it with the lean
-subscriber before changing the dispatch design. This issue does not change
-fan-out behaviour.
 
 ### Measurement integrity
 
