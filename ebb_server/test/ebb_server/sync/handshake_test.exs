@@ -1,60 +1,14 @@
 defmodule EbbServer.Sync.HandshakeTest do
   use ExUnit.Case, async: false
+  # Every test drives the real Writer and fan-out, so it needs the sync
+  # tree's Registry alongside storage. Depending on one left behind by an
+  # earlier test is what made this module flaky (ebbjs/ebbjs#653).
+  use EbbServer.Integration.StorageCase, with_auth_mode: true
 
   import Plug.Test
   import Plug.Conn
   import EbbServer.TestHelpers
   alias EbbServer.Sync.Router
-
-  setup do
-    # Detach the application-managed Storage.Supervisor so it doesn't
-    # reopen the RocksDB directory mid-test (see ebbjs/ebbjs#56).
-    parent = Process.whereis(EbbServer.Supervisor)
-
-    if parent do
-      case Supervisor.terminate_child(parent, EbbServer.Storage.Supervisor) do
-        :ok -> :ok
-        {:error, :not_found} -> :ok
-      end
-    end
-
-    tmp_dir =
-      tmp_dir(%{module: __MODULE__, test: "handshake_#{:erlang.unique_integer([:positive])}"})
-
-    Application.put_env(:ebb_server, :data_dir, tmp_dir)
-
-    case EbbServer.Storage.Supervisor.start_link(data_dir: tmp_dir) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
-    case EbbServer.Sync.Supervisor.start_link([]) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
-    on_exit(fn ->
-      try do
-        if pid = Process.whereis(EbbServer.Sync.Supervisor) do
-          GenServer.stop(pid, :normal, 5000)
-        end
-      catch
-        _, _ -> :ok
-      end
-
-      try do
-        if pid = Process.whereis(EbbServer.Storage.Supervisor) do
-          :ok = GenServer.stop(pid, :normal, 5000)
-        end
-      catch
-        _, _ -> :ok
-      end
-
-      Application.delete_env(:ebb_server, :data_dir)
-    end)
-
-    %{tmp_dir: tmp_dir}
-  end
 
   defp post_handshake(body, actor_id \\ "a_test") do
     conn(:post, "/sync/handshake", Jason.encode!(body))
@@ -146,8 +100,6 @@ defmodule EbbServer.Sync.HandshakeTest do
 
   describe "POST /sync/handshake" do
     test "handshake with no groups returns empty list" do
-      Application.put_env(:ebb_server, :auth_mode, :bypass)
-
       conn = post_handshake(%{"cursors" => %{}, "schema_version" => 1}, "a_new")
 
       assert conn.status == 200
@@ -157,8 +109,6 @@ defmodule EbbServer.Sync.HandshakeTest do
     end
 
     test "handshake returns actor's groups after bootstrap" do
-      Application.put_env(:ebb_server, :auth_mode, :bypass)
-
       bootstrap_group("a_test", "g_1", ["todo.create", "todo.update"])
 
       conn = post_handshake(%{"cursors" => %{}, "schema_version" => 1}, "a_test")
@@ -176,8 +126,6 @@ defmodule EbbServer.Sync.HandshakeTest do
     end
 
     test "handshake with invalid JSON returns 422" do
-      Application.put_env(:ebb_server, :auth_mode, :bypass)
-
       conn =
         conn(:post, "/sync/handshake", "not json")
         |> put_req_header("content-type", "application/json")
@@ -190,8 +138,6 @@ defmodule EbbServer.Sync.HandshakeTest do
     end
 
     test "handshake without auth returns 401" do
-      Application.put_env(:ebb_server, :auth_mode, :bypass)
-
       conn =
         conn(:post, "/sync/handshake", Jason.encode!(%{}))
         |> put_req_header("content-type", "application/json")
@@ -201,16 +147,12 @@ defmodule EbbServer.Sync.HandshakeTest do
     end
 
     test "handshake accepts cursors (stub validation)" do
-      Application.put_env(:ebb_server, :auth_mode, :bypass)
-
       conn = post_handshake(%{"cursors" => %{"g_1" => 100}, "schema_version" => 1}, "a_test")
 
       assert conn.status == 200
     end
 
     test "valid cursor at or below watermark returns cursor_valid true" do
-      Application.put_env(:ebb_server, :auth_mode, :bypass)
-
       bootstrap_group("a_cursor_test", "g_valid", ["read"])
 
       conn =
@@ -228,8 +170,6 @@ defmodule EbbServer.Sync.HandshakeTest do
     end
 
     test "stale cursor above watermark returns cursor_valid false" do
-      Application.put_env(:ebb_server, :auth_mode, :bypass)
-
       bootstrap_group("a_stale_test", "g_stale", ["read"])
 
       conn =
@@ -248,8 +188,6 @@ defmodule EbbServer.Sync.HandshakeTest do
     end
 
     test "multiple groups with mixed cursor validity" do
-      Application.put_env(:ebb_server, :auth_mode, :bypass)
-
       bootstrap_group("a_multi_test", "g_1", ["read"])
       bootstrap_group("a_multi_test", "g_2", ["read"])
 
@@ -273,8 +211,6 @@ defmodule EbbServer.Sync.HandshakeTest do
     end
 
     test "missing cursors defaults to 0 for all groups" do
-      Application.put_env(:ebb_server, :auth_mode, :bypass)
-
       bootstrap_group("a_no_cursors", "g_default", ["read"])
 
       conn = post_handshake(%{}, "a_no_cursors")

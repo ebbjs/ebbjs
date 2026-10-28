@@ -75,6 +75,16 @@ defmodule EbbServer.Sync.FanOutRouter do
   - `EbbServer.Sync.SSEConnection` — one pid per live `GET /sync/live`
     subscription; receives pushes via its GroupServer.
 
+  ## Group registry outage
+
+  GroupServers are found through `EbbServer.Sync.GroupRegistry`, a sibling
+  of this tree. While the registry is unregistered a push has no
+  destination — no GroupServer can outlive the registry it registers in —
+  so the push is dropped. Crashing instead restarts this process into the
+  same push (`init/1` re-derives the un-pushed ranges), and that restart
+  loop consumes `Sync.Supervisor`'s restart intensity, which takes the tree
+  and any process linked to it down with it (#653).
+
   Started under `EbbServer.Sync.Supervisor`.
   """
 
@@ -82,7 +92,7 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   alias EbbServer.Storage.{ActionFormat, ActionScope, CacheTables, RocksDB, WatermarkTracker}
 
-  alias EbbServer.Sync.{FanOutFrontier, GroupDynamicSupervisor, GroupServer}
+  alias EbbServer.Sync.{FanOutFrontier, GroupDynamicSupervisor, GroupRegistry, GroupServer}
   alias EbbServer.Sync.FanOutRouter.{GroupResolution, Plan, Recovery}
 
   @type t :: %__MODULE__{
@@ -264,24 +274,16 @@ defmodule EbbServer.Sync.FanOutRouter do
   def handle_call({:unsubscribe, connection_pid}, _from, state) do
     group_ids = Map.get(state.subscriptions, connection_pid, [])
 
-    for group_id <- group_ids do
-      case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do
-        [{pid, _}] -> GroupServer.remove_subscriber(pid, connection_pid)
-        [] -> :ok
-      end
-    end
+    for_each_group(group_ids, &GroupServer.remove_subscriber(&1, connection_pid))
 
     {:reply, :ok, forget_subscriber(state, connection_pid)}
   end
 
   @impl true
   def handle_cast({:broadcast_presence, group_ids, entity_id, actor_id, data}, state) do
-    for group_id <- group_ids do
-      case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do
-        [{pid, _}] -> GroupServer.broadcast_presence(pid, entity_id, actor_id, data)
-        [] -> :ok
-      end
-    end
+    for_each_group(group_ids, fn pid ->
+      GroupServer.broadcast_presence(pid, entity_id, actor_id, data)
+    end)
 
     {:noreply, state}
   end
@@ -359,9 +361,15 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   defp push_to_group(group_id, actions, committed_at) do
-    case Registry.lookup(EbbServer.Sync.GroupRegistry, group_id) do
-      [{pid, _}] -> GroupServer.push_actions(pid, actions, committed_at)
-      [] -> :ok
-    end
+    for_each_group([group_id], &GroupServer.push_actions(&1, actions, committed_at))
+  end
+
+  defp for_each_group(group_ids, fun) do
+    Enum.each(group_ids, fn group_id ->
+      case GroupRegistry.lookup(group_id) do
+        nil -> :ok
+        pid -> fun.(pid)
+      end
+    end)
   end
 end
