@@ -4,7 +4,7 @@ defmodule EbbServer.Sync.RouterTest do
 
   import Plug.Test
   import Plug.Conn
-  alias EbbServer.Storage.{CacheTables, EntityGroupCache, GroupCache}
+  alias EbbServer.Storage.{CacheTables, EntityGroupCache, GroupCache, WatermarkTracker}
   alias EbbServer.Sync.Router
 
   defp post_presence(body, actor_id \\ "a_member") do
@@ -180,6 +180,32 @@ defmodule EbbServer.Sync.RouterTest do
 
       :ok = :sys.suspend(sqlite)
       on_exit(fn -> if Process.alive?(sqlite), do: :sys.resume(sqlite) end)
+
+      conn = conn(:get, "/healthz") |> Router.call([])
+
+      assert conn.status == 503
+      assert Jason.decode!(conn.resp_body) == %{"status" => "unavailable"}
+    end
+
+    test "503 with no internals when the probe reports a degraded state" do
+      gsn_ref = :persistent_term.get({WatermarkTracker, :gsn_ref})
+      invalid = :atomics.new(1, signed: true)
+      :atomics.put(invalid, 1, -1)
+
+      :persistent_term.put({WatermarkTracker, :gsn_ref}, invalid)
+      on_exit(fn -> :persistent_term.put({WatermarkTracker, :gsn_ref}, gsn_ref) end)
+
+      conn = conn(:get, "/healthz") |> Router.call([])
+
+      assert conn.status == 503
+      assert Jason.decode!(conn.resp_body) == %{"status" => "unavailable"}
+    end
+
+    test "503 with no internals when a probe raises" do
+      gsn_ref = :persistent_term.get({WatermarkTracker, :gsn_ref})
+
+      :persistent_term.put({WatermarkTracker, :gsn_ref}, :not_an_atomics)
+      on_exit(fn -> :persistent_term.put({WatermarkTracker, :gsn_ref}, gsn_ref) end)
 
       conn = conn(:get, "/healthz") |> Router.call([])
 
