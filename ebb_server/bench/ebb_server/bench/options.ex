@@ -288,7 +288,7 @@ defmodule EbbServer.Bench.Options do
       {"Port", "#{config.port}"},
       {"Seed", "#{config.seed}"},
       {"Output", config.out || "(default)"}
-    ] ++ lean_description(config) ++ socket_description(config)
+    ] ++ subscriber_mode_description(config) ++ socket_description(config)
   end
 
   defp socket_description(%{subscriber_socket: true} = config) do
@@ -297,7 +297,8 @@ defmodule EbbServer.Bench.Options do
     mode =
       if config.socket_processes > 0,
         do: "explicit",
-        else: "auto (1 process per 250 connections, capped at schedulers)"
+        else:
+          "auto (1 process per #{@socket_connections_per_process} connections, capped at schedulers)"
 
     [
       {"Socket subscriber connections",
@@ -320,22 +321,22 @@ defmodule EbbServer.Bench.Options do
 
   def tier_label(config), do: tier_description(config.tier)
 
-  defp lean_description(%{subscriber_socket: true}) do
+  defp subscriber_mode_description(%{subscriber_socket: true}) do
     [{"Subscriber mode", "socket (real SSE, consumed by separate OS processes)"}]
   end
 
-  defp lean_description(%{subscriber_count_only: true}) do
+  defp subscriber_mode_description(%{subscriber_count_only: true}) do
     [
       {"Subscriber mode",
        "count-only (frame count per chunk, no per-frame split or lag sampling)"}
     ]
   end
 
-  defp lean_description(%{subscriber_lean: true}) do
+  defp subscriber_mode_description(%{subscriber_lean: true}) do
     [{"Subscriber mode", "lean (per-subscriber counters, no lag sampling)"}]
   end
 
-  defp lean_description(_config), do: []
+  defp subscriber_mode_description(_config), do: []
 
   @doc """
   The exact command that reproduces the run, with every option explicit.

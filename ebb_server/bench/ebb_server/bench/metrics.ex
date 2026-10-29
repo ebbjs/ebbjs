@@ -161,12 +161,9 @@ defmodule EbbServer.Bench.Metrics do
     end
   end
 
-  @doc """
-  Deliveries the server enqueued in `[0, duration)`: the same window and rows
-  as `dispatched_rate/2`, un-divided. `nil` when nothing was captured.
-  """
-  @spec dispatched_total(map(), pos_integer()) :: non_neg_integer() | nil
-  def dispatched_total(telemetry, duration) when duration > 0 do
+  # Deliveries the server enqueued in `[0, duration)`: the same window and
+  # rows as `dispatched_rate/2`, un-divided. `nil` when nothing was captured.
+  defp dispatched_total(telemetry, duration) when duration > 0 do
     case Map.get(telemetry, :fanout_dispatched, []) do
       [] -> nil
       rows -> Enum.reduce(rows, 0, &add_in_window(&1, &2, duration))

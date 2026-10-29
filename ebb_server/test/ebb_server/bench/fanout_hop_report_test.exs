@@ -54,8 +54,8 @@ defmodule EbbServer.Bench.FanoutHopReportTest do
              "| `writer_notify` (context: #537 `notify` phase) | 1 | 60 | 60 | 60 | — | — |"
 
     # router_queue + router_dwell + router_decode + router_encode + group_queue
-    # + group_encode + group_cast, with conn_deliver (400) deliberately
-    # excluded — and conn_chunk alongside it once the server branch lands.
+    # + group_encode + group_cast; conn_deliver (400) is per subscriber and
+    # deliberately outside the push-side sum.
     assert report =~ "| Sum of push-side hop p50s | — | 6700 | — | — | +700 | +11.7% |"
   end
 
@@ -102,6 +102,7 @@ defmodule EbbServer.Bench.FanoutHopReportTest do
 
     # Same push-side sum as the in-process run: conn_deliver (400) and
     # conn_chunk (9000) are per-subscriber and deliberately outside it.
+    assert report =~ "| `conn_chunk` | 2 | 9000 | 9500 | 9500 |"
     assert report =~ "| Sum of push-side hop p50s | — | 6700 | — | — | +700 | +11.7% |"
   end
 

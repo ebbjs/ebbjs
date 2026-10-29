@@ -229,33 +229,28 @@ defmodule EbbServer.Bench.Runner do
   def subscriber_source(%Options{subscriber_socket: true}), do: SocketSubscribers
   def subscriber_source(%Options{}), do: Subscriber
 
-  @doc """
-  Starts the run's subscribers and returns them with the instant the warmup
-  window begins.
+  # The socket subscriber starts its OS processes and waits for every SSE
+  # connection to be up, so the warmup clock starts from readiness rather than
+  # from process spawn. The in-process subscribers keep their original timing.
+  defp start_fanout(nil, config, _ctx), do: {nil, warmup_start(config)}
 
-  The socket subscriber starts its OS processes and waits for every SSE
-  connection to be up, so the warmup clock starts from readiness rather than
-  from process spawn. The in-process subscribers keep their original timing.
-  """
-  @spec start_fanout(module() | nil, Options.t(), map()) :: {term(), integer()}
-  def start_fanout(nil, config, _ctx) do
-    {nil, System.monotonic_time(:microsecond) + config.warmup * 1_000_000}
-  end
-
-  def start_fanout(SocketSubscribers, config, ctx) do
+  defp start_fanout(SocketSubscribers, config, ctx) do
     subscribers = SocketSubscribers.start_all(config.subscribers, ctx, socket_opts(config))
     {subscribers, subscribers.measure_start}
   end
 
-  def start_fanout(Subscriber, config, ctx) do
+  defp start_fanout(Subscriber, config, ctx) do
     subscribers =
       Subscriber.start_all(config.subscribers, ctx,
         lean: config.subscriber_lean,
         count_only: config.subscriber_count_only
       )
 
-    {subscribers, System.monotonic_time(:microsecond) + config.warmup * 1_000_000}
+    {subscribers, warmup_start(config)}
   end
+
+  defp warmup_start(config),
+    do: System.monotonic_time(:microsecond) + config.warmup * 1_000_000
 
   @doc """
   The options `EbbServer.Bench.SocketSubscribers` needs from a run.
