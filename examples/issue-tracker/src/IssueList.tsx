@@ -6,14 +6,14 @@
  */
 
 import { statusLabel } from "./issue-options";
-import type { IssueRowView } from "./issue-view";
+import type { IssueRow } from "./issue-view";
 
 export function IssueList({
   issues,
   selectedId,
   onSelect,
 }: {
-  issues: readonly IssueRowView[];
+  issues: readonly IssueRow[];
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {

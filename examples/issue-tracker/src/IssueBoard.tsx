@@ -4,14 +4,14 @@
  * a card between columns without a second read or a reload.
  */
 
-import { groupIssuesByStatus, type IssueRowView } from "./issue-view";
+import { groupIssuesByStatus, type IssueRow } from "./issue-view";
 
 export function IssueBoard({
   issues,
   selectedId,
   onSelect,
 }: {
-  issues: readonly IssueRowView[];
+  issues: readonly IssueRow[];
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
