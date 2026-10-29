@@ -1,0 +1,83 @@
+{
+  "name": "get-then-commit",
+  "description": "read an entity, write one, commit at return",
+  "notes": "The commit payload is one core Action verbatim. actor_id is deliberately the wrong actor: the host replaces it with the invocation's subject actor.",
+  "steps": [
+    {
+      "send": {
+        "type": "ready",
+        "pid": 4242,
+        "runner_version": "0.0.0",
+        "protocol_version": 1
+      }
+    },
+    {
+      "expect": {
+        "type": "invoke",
+        "name": "proofreadDocument"
+      }
+    },
+    {
+      "send": {
+        "type": "call",
+        "call_id": "1",
+        "op": "get",
+        "payload": {
+          "id": "e_doc"
+        }
+      }
+    },
+    {
+      "expect": {
+        "type": "reply",
+        "call_id": "1",
+        "ok": true
+      }
+    },
+    {
+      "send": {
+        "type": "call",
+        "call_id": "2",
+        "op": "commit",
+        "payload": {
+          "id": "act_fixture_commit",
+          "actor_id": "a_impostor",
+          "hlc": "111690000000000000",
+          "updates": [
+            {
+              "id": "upd_fixture_commit",
+              "subject_id": "e_doc",
+              "subject_type": "doc",
+              "method": "patch",
+              "data": {
+                "fields": {
+                  "title": {
+                    "type": "lww",
+                    "value": "Proofread",
+                    "hlc": "111690000000000000"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "expect": {
+        "type": "reply",
+        "call_id": "2",
+        "ok": true
+      }
+    },
+    {
+      "send": {
+        "type": "result",
+        "ok": true,
+        "value": {
+          "ok": true
+        }
+      }
+    }
+  ]
+}

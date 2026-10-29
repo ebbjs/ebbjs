@@ -1,0 +1,32 @@
+{
+  "name": "handler-error",
+  "description": "a handler throws before returning and commits nothing",
+  "steps": [
+    {
+      "send": {
+        "type": "ready",
+        "pid": 4242,
+        "runner_version": "0.0.0",
+        "protocol_version": 1
+      }
+    },
+    { "expect": { "type": "invoke", "name": "throws" } },
+    {
+      "send": {
+        "type": "call",
+        "call_id": "1",
+        "op": "get",
+        "payload": { "id": "e_doc" }
+      }
+    },
+    { "expect": { "type": "reply", "call_id": "1", "ok": true } },
+    {
+      "send": {
+        "type": "result",
+        "ok": false,
+        "kind": "handler_error",
+        "message": "boom"
+      }
+    }
+  ]
+}

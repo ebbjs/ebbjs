@@ -1,0 +1,34 @@
+{
+  "name": "out-of-order-get",
+  "description": "two reads outstanding, replies matched by call_id rather than arrival order",
+  "steps": [
+    {
+      "send": {
+        "type": "ready",
+        "pid": 4242,
+        "runner_version": "0.0.0",
+        "protocol_version": 1
+      }
+    },
+    { "expect": { "type": "invoke", "name": "readTwo" } },
+    {
+      "send": {
+        "type": "call",
+        "call_id": "1",
+        "op": "get",
+        "payload": { "id": "e_slow" }
+      }
+    },
+    {
+      "send": {
+        "type": "call",
+        "call_id": "2",
+        "op": "get",
+        "payload": { "id": "e_fast" }
+      }
+    },
+    { "expect": { "type": "reply", "call_id": "2", "ok": true } },
+    { "expect": { "type": "reply", "call_id": "1", "ok": true } },
+    { "send": { "type": "result", "ok": true, "value": { "read": 2 } } }
+  ]
+}
