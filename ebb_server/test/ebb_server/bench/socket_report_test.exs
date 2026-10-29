@@ -33,7 +33,7 @@ defmodule EbbServer.Bench.SocketReportTest do
     assert report =~ "| Connections | 1000 |"
     assert report =~ "| Client processes | 4 |"
     assert report =~ "| Delivered frames | 1000 |"
-    assert report =~ "| Data chunks received | 20 |"
+    assert report =~ "| Reads yielding data frames | 20 |"
     assert report =~ "| Bytes received | 65536 |"
     assert report =~ "| Control events | 0 |"
     assert report =~ "| GSN holes (wire) | 0 |"
@@ -98,7 +98,7 @@ defmodule EbbServer.Bench.SocketReportTest do
     {:ok, config} = socket_config()
     report = render(config, analyze(config, socket_fanout(), %{}))
 
-    assert report =~ "consumers on real SSE sockets in separate OS processes"
+    assert report =~ "fixed-rate Writer.write_actions/1 plus real-socket SSE subscribers"
   end
 
   defp socket_config do

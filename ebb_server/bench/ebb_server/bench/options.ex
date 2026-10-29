@@ -264,7 +264,7 @@ defmodule EbbServer.Bench.Options do
   @spec describe(t()) :: [{String.t(), String.t()}]
   def describe(%__MODULE__{} = config) do
     [
-      {"Tier", "#{config.tier} (#{tier_description(config.tier)})"},
+      {"Tier", "#{config.tier} (#{tier_label(config)})"},
       {"Measured window", "#{config.duration}s"},
       {"Warmup", "#{config.warmup}s"},
       {"Concurrency", "#{config.concurrency}"},
@@ -300,12 +300,25 @@ defmodule EbbServer.Bench.Options do
         else: "auto (1 process per 250 connections, capped at schedulers)"
 
     [
-      {"Socket subscriber connections", "#{config.subscribers} real SSE streams"},
+      {"Socket subscriber connections",
+       "#{config.subscribers} real SSE #{if config.subscribers == 1, do: "stream", else: "streams"}"},
       {"Socket client processes", "#{resolved} — #{mode}"}
     ]
   end
 
   defp socket_description(_config), do: []
+
+  @doc """
+  The tier's description, named for the consumer a run actually uses.
+  """
+  @spec tier_label(t()) :: String.t()
+  def tier_label(%{subscriber_socket: true} = config) do
+    config.tier
+    |> tier_description()
+    |> String.replace("in-process SSE subscribers", "real-socket SSE subscribers")
+  end
+
+  def tier_label(config), do: tier_description(config.tier)
 
   defp lean_description(%{subscriber_socket: true}) do
     [{"Subscriber mode", "socket (real SSE, consumed by separate OS processes)"}]

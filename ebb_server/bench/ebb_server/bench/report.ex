@@ -671,12 +671,7 @@ defmodule EbbServer.Bench.Report do
 
   defp fixed_rate_section(_config, _result), do: nil
 
-  defp tier_label(%{subscriber_socket: true} = config) do
-    Options.tier_description(config.tier) <>
-      ", consumers on real SSE sockets in separate OS processes"
-  end
-
-  defp tier_label(config), do: Options.tier_description(config.tier)
+  defp tier_label(config), do: Options.tier_label(config)
 
   # The client half of a real-socket run: what the consumers themselves
   # counted, including their own receive → parse → count cost and whether they
@@ -695,7 +690,7 @@ defmodule EbbServer.Bench.Report do
       {"Connections", "#{socket.subscribers}"},
       {"Client processes", "#{socket.processes}"},
       {"Delivered frames", "#{socket.delivered_total}"},
-      {"Data chunks received", "#{socket.data_chunks}"},
+      {"Reads yielding data frames", "#{socket.data_chunks}"},
       {"Bytes received", "#{socket.bytes_total}"},
       {"Control events", "#{socket.control_total}"},
       {"GSN holes (wire)", "#{socket.holes}"},
