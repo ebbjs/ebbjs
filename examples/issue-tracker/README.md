@@ -1,6 +1,6 @@
 # Issue Tracker Demo
 
-A Vite + React 19 + Tailwind v4 app that renders a Linear-style issue tracker against a running ebb sync server. It is the v1 finish-line demo (epic [#348](https://github.com/ebbjs/ebbjs/issues/348)). Slice [#438](https://github.com/ebbjs/ebbjs/issues/438) stood up the shell; slice [#439](https://github.com/ebbjs/ebbjs/issues/439) adds the core write loop — create, edit, and delete issues with optimistic writes and a durable Outbox; slice [#441](https://github.com/ebbjs/ebbjs/issues/441) adds workspace membership and per-issue access — joining a shared workspace reveals its issues, `client.can(...)` gates affordances, and the issue→profile `assignee` link proves membership-scoped reach.
+A Vite + React 19 + Tailwind v4 app that renders a Linear-style issue tracker against a running ebb sync server. It is the v1 finish-line demo (epic [#348](https://github.com/ebbjs/ebbjs/issues/348)). Slice [#438](https://github.com/ebbjs/ebbjs/issues/438) stood up the shell; slice [#439](https://github.com/ebbjs/ebbjs/issues/439) adds the core write loop — create, edit, and delete issues with optimistic writes and a durable Outbox; slice [#440](https://github.com/ebbjs/ebbjs/issues/440) adds the read surface — one filtered `useQuery` behind both the issue list and the status board, live updates from another actor, and a concurrent-field-edit check; slice [#441](https://github.com/ebbjs/ebbjs/issues/441) adds workspace membership and per-issue access — joining a shared workspace reveals its issues, `client.can(...)` gates affordances, and the issue→profile `assignee` link proves membership-scoped reach.
 
 Entity declarations and every app read/write go through the documented public API (`@ebbjs/client` / `@ebbjs/react`). Seeding goes through the public `client.seed(SeedData)` path shared with `@ebbjs/server.seed()` ([#466](https://github.com/ebbjs/ebbjs/issues/466), [#452](https://github.com/ebbjs/ebbjs/issues/452)); no demo code hand-rolls a wire Action.
 
@@ -52,6 +52,16 @@ The list has a **new issue** control and selectable rows. Selecting a row opens 
 - **Delete** — a two-step confirmation, then `delete`; the row drops out of the list and the detail view reports the tombstone as gone.
 
 Every write goes through the documented public API — the typed namespace, `client.atomic`, and `link` / `unlink` — and the Outbox, so there are no hand-authored Actions and no bespoke optimistic layer.
+
+## Issue list, board, and live reads
+
+The list and the board are two renderings of **one** `useQuery`. `IssuesPanel` owns the filter selection, the page window, and the list/board toggle; `useIssues` builds the chain and `buildIssueQuery` is the same chain the integration tests exercise.
+
+- **Filters are predicates, not post-processing.** `status` and `priority` become field equality, and `assignee` filters through the `assignee` relationship (`.where("assignee", profileId)`). Changing a filter changes the query, so the replica returns only the matching rows.
+- **The board groups the same rows by status.** `groupIssuesByStatus` keeps the picker's column order, renders empty columns, and gives an unexpected status a trailing column instead of dropping the row.
+- **Live reads.** The chain is reactive: a live edit from another actor arrives through the subscription and re-runs the query store, so a card moves between board columns without a reload. The panel prints the query status (`live` / `syncing…`) from the cache rather than keeping a second loading flag.
+- **Pagination is a growing window.** The grammar has no cursor yet, so "show more" grows `limit` (`.orderBy("title", "asc")` plus the engine's id tiebreaker). The earlier rows stay a prefix, which is what keeps rows from duplicating or disappearing at the page boundary; the integration test pins that across a live reorder.
+- **Concurrent field edits.** `issue-crud.integration.test.ts` gates one actor's `fetchImpl` to simulate an offline edit: the write is applied optimistically and held in the Outbox, the other actor changes a different field, and reconnecting flushes the backlog. Both replicas converge on one row with both changes intact.
 
 ## The pinned data model
 
@@ -118,7 +128,13 @@ src/
 ├── WorkspaceSwitcher.tsx# useQuery list + groups join
 ├── ProfileCard.tsx      # Group-scoped profile row
 ├── MembershipPanel.tsx  # Join / leave the shared workspace
-├── IssueList.tsx        # Selectable list + new-issue control
+├── IssueList.tsx        # List projection of the issue query
+├── IssueBoard.tsx       # Status columns over the same rows
+├── IssuesPanel.tsx      # Filters, list/board toggle, one paged useQuery
+├── IssueFiltersBar.tsx  # Status / priority / assignee predicates
+├── issue-view.ts        # Pure filters, grouping, and pagination model
+├── use-issues.ts        # The shared issue query chain
+├── use-visible-profiles.ts # Assignee filter options
 ├── IssueCreateForm.tsx  # Atomic create with optional assignee
 ├── IssueDetail.tsx      # Edit, link / unlink assignee, delete
 └── index.css            # Tailwind v4 + dark theme
