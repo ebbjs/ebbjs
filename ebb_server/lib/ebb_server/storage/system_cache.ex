@@ -149,6 +149,8 @@ defmodule EbbServer.Storage.SystemCache do
   @populate_opt_keys [
     :rocks_name,
     :table,
+    :group_members_by_id,
+    :group_members_by_group,
     :relationships,
     :relationships_by_id,
     :entity_groups,
@@ -205,44 +207,37 @@ defmodule EbbServer.Storage.SystemCache do
   # `phase/3`; anything that raises out here is reported as zero progress.
   defp do_populate_system_caches(opts) do
     rocks_name = Keyword.get(opts, :rocks_name, EbbServer.Storage.RocksDB)
-    gm_table = Keyword.get(opts, :table) || CacheTables.group_members()
-
-    rel_table =
-      Keyword.get(opts, :relationships) || CacheTables.relationships()
-
-    rbi_table =
-      Keyword.get(opts, :relationships_by_id) || CacheTables.relationships_by_id()
-
-    eg_table =
-      Keyword.get(opts, :entity_groups) || CacheTables.entity_groups()
-
-    egbid_table =
-      Keyword.get(opts, :entity_groups_by_id) || CacheTables.entity_groups_by_id()
-
-    egbg_table =
-      Keyword.get(opts, :entity_groups_by_group) || CacheTables.entity_groups_by_group()
-
-    entity_types_table =
-      Keyword.get(opts, :entity_types) || CacheTables.entity_types()
-
     dirty_set = Keyword.get(opts, :dirty_set) || DirtyTracker.dirty_set_name()
 
-    tables = %{
-      group_members: gm_table,
-      relationships: rel_table,
-      relationships_by_id: rbi_table,
-      entity_groups: eg_table,
-      entity_groups_by_id: egbid_table,
-      entity_groups_by_group: egbg_table,
-      entity_types: entity_types_table
-    }
-
-    populate_caches_from_indexes(rocks_name, tables, dirty_set, opts)
+    populate_caches_from_indexes(rocks_name, populate_tables(opts), dirty_set, opts)
   rescue
     e -> {:error, @empty_measurements, :error, e, __STACKTRACE__}
   catch
     kind, reason -> {:error, @empty_measurements, kind, reason, __STACKTRACE__}
   end
+
+  # Resolve every table before the rebuild starts so one pass is pinned to a
+  # single cache set; a concurrent publish cannot split it across instances.
+  defp populate_tables(opts) do
+    %{
+      group_members: table_opt(opts, :table, CacheTables.group_members()),
+      group_members_by_id:
+        table_opt(opts, :group_members_by_id, CacheTables.group_members_by_id()),
+      group_members_by_group:
+        table_opt(opts, :group_members_by_group, CacheTables.group_members_by_group()),
+      relationships: table_opt(opts, :relationships, CacheTables.relationships()),
+      relationships_by_id:
+        table_opt(opts, :relationships_by_id, CacheTables.relationships_by_id()),
+      entity_groups: table_opt(opts, :entity_groups, CacheTables.entity_groups()),
+      entity_groups_by_id:
+        table_opt(opts, :entity_groups_by_id, CacheTables.entity_groups_by_id()),
+      entity_groups_by_group:
+        table_opt(opts, :entity_groups_by_group, CacheTables.entity_groups_by_group()),
+      entity_types: table_opt(opts, :entity_types, CacheTables.entity_types())
+    }
+  end
+
+  defp table_opt(opts, key, default), do: Keyword.get(opts, key) || default
 
   @impl true
   def init(opts) do
@@ -450,13 +445,13 @@ defmodule EbbServer.Storage.SystemCache do
       "groupMember",
       rocks_name,
       dirty_set,
-      &put_group_member(&1, tables.group_members),
+      &put_group_member(&1, tables),
       sqlite_opts,
       counter
     )
   end
 
-  defp put_group_member(entity_data, table) do
+  defp put_group_member(entity_data, tables) do
     data = entity_data.data || %{}
 
     member = %{
@@ -466,7 +461,11 @@ defmodule EbbServer.Storage.SystemCache do
       permissions: Fields.get(data, "permissions")
     }
 
-    GroupCache.put_group_member(member, table)
+    GroupCache.put_group_member(member,
+      group_members: tables.group_members,
+      group_members_by_id: tables.group_members_by_id,
+      group_members_by_group: tables.group_members_by_group
+    )
   end
 
   defp populate_entity_groups(rocks_name, tables, dirty_set, sqlite_opts, counter) do

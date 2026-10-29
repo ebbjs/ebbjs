@@ -59,7 +59,11 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
         relationships_by_id: rbi
       )
 
-      GroupCache.reset(gm)
+      GroupCache.reset(
+        group_members: gm,
+        group_members_by_id: gm_by_id,
+        group_members_by_group: gm_by_group
+      )
 
       EntityGroupCache.reset(
         entity_groups: eg,
@@ -81,6 +85,7 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
       relationships_by_id: rbi,
       group_members: gm,
       group_members_by_id: gm_by_id,
+      group_members_by_group: gm_by_group,
       entity_groups: eg,
       entity_groups_by_id: eg_by_id,
       entity_groups_by_group: eg_by_group
@@ -210,7 +215,9 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
       :ok =
         GroupCache.put_group_member(
           %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
-          t.group_members
+          group_members: t.group_members,
+          group_members_by_id: t.group_members_by_id,
+          group_members_by_group: t.group_members_by_group
         )
 
       action = %{"updates" => [%{"subject_type" => "groupMember", "subject_id" => "gm_1"}]}
