@@ -2,13 +2,41 @@ defmodule EbbServer.SSEHelpers do
   @moduledoc """
   Helpers for asserting on coalesced SSE byte streams.
 
-  The fan-out path delivers one `{:sse_data, bytes}` message per subscriber
-  per committed batch. `bytes` is the concatenation of one SSE event block
-  per Action, so tests split it back into the individual `data:` payloads
-  and assert on their content and order.
+  The fan-out path delivers one message per subscriber per committed batch:
+  `{:sse_data, bytes}`, or `{:sse_data, bytes, meta}` when the delivery was
+  sampled for the per-subscriber hops. `bytes` is the concatenation of one
+  SSE event block per Action, so tests split it back into the individual
+  `data:` payloads and assert on their content and order.
   """
 
   import ExUnit.Assertions
+
+  @doc """
+  Returns the bytes of the next data delivery, whether or not it carries
+  the sampled-hop meta.
+  """
+  @spec receive_sse_data(timeout()) :: binary()
+  def receive_sse_data(timeout \\ 5_000) do
+    receive do
+      {:sse_data, bytes} -> IO.iodata_to_binary(bytes)
+      {:sse_data, bytes, _meta} -> IO.iodata_to_binary(bytes)
+    after
+      timeout -> flunk("expected an :sse_data delivery within #{timeout}ms")
+    end
+  end
+
+  @doc """
+  Asserts no data delivery reaches the caller within `timeout`.
+  """
+  @spec refute_sse_data(timeout()) :: :ok
+  def refute_sse_data(timeout \\ 300) do
+    receive do
+      {:sse_data, _bytes} -> flunk("unexpected :sse_data delivery")
+      {:sse_data, _bytes, _meta} -> flunk("unexpected :sse_data delivery")
+    after
+      timeout -> :ok
+    end
+  end
 
   @doc """
   Splits a coalesced SSE byte stream into the JSON payload of each `data:` event.
@@ -50,7 +78,7 @@ defmodule EbbServer.SSEHelpers do
     if length(acc) >= count do
       acc
     else
-      assert_receive {:sse_data, bytes}, 5_000
+      bytes = receive_sse_data()
       receive_data_payloads(count, acc ++ data_payloads(bytes))
     end
   end

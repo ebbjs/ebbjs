@@ -117,7 +117,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       assert conn.status == 200
       assert conn.resp_body == ~s({"rejected":[]})
 
-      assert_receive {:sse_data, bytes}, 5_000
+      bytes = receive_sse_data()
       payload = bytes |> single_data_payload() |> Jason.decode!()
 
       subject_types =
@@ -188,7 +188,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
          [{payload, [[group_id]]}]}
       )
 
-      assert_receive {:sse_data, bytes}, 5_000
+      bytes = receive_sse_data()
 
       pushed = bytes |> single_data_payload() |> Jason.decode!()
 
@@ -217,7 +217,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       assert conn.status == 200
       assert conn.resp_body == ~s({"rejected":[]})
 
-      assert_receive {:sse_data, _bytes}, 5_000
+      _bytes = receive_sse_data()
 
       assert [{[:ebb, :fanout, :push_latency_ms], %{duration: duration}, %{group_id: ^group_id}}] =
                telemetry_events(ref)
@@ -278,7 +278,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
 
       # Both Actions reach the group as one dispatched batch, coalesced
       # into a single chunk carrying one frame per Action.
-      assert_receive {:sse_data, bytes}, 5_000
+      bytes = receive_sse_data()
       assert length(data_payloads(bytes)) == 2
 
       assert [{[:ebb, :fanout, :push_latency_ms], %{duration: duration}, %{group_id: ^group_id}}] =
@@ -333,7 +333,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
 
       assert conn.status == 200
       assert conn.resp_body == ~s({"rejected":[]})
-      assert_receive {:sse_data, _bytes}, 5_000
+      _bytes = receive_sse_data()
 
       durations =
         Map.new(telemetry_events(ref), fn
@@ -503,6 +503,9 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
   defp collect_chunks(test, tag) do
     receive do
       {:sse_data, bytes} ->
+        for payload <- data_payloads(bytes), do: send(test, {tag, payload})
+
+      {:sse_data, bytes, _meta} ->
         for payload <- data_payloads(bytes), do: send(test, {tag, payload})
 
       _other ->

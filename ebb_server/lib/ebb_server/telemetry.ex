@@ -9,7 +9,8 @@ defmodule EbbServer.Telemetry do
     :group_queue,
     :group_encode,
     :group_cast,
-    :conn_deliver
+    :conn_deliver,
+    :conn_chunk
   ]
 
   @moduledoc """
@@ -203,19 +204,32 @@ defmodule EbbServer.Telemetry do
     node; the bench's `--subscriber-count-only` mode isolates the server leg.
   - `conn_deliver` — the `GroupServer`'s `SSEConnection.push_data/3` cast
     send through the `SSEConnection.handle_cast/2` entry and the
-    `send(parent, {:sse_data, bytes})` completing. One sample per sampled
-    (range, group, subscriber) delivery, with the group id. The server-side
-    end of the chain is the parent send returning, not the SSE handler's
-    `chunk/2`: real-socket measurement is out of scope.
+    `send(parent, {:sse_data, bytes, meta})` completing. One sample per
+    sampled (range, group, subscriber) delivery, with the group id. This hop
+    still ends at the parent send, so it is the delivery reaching the
+    request process, not the socket accepting it.
+  - `conn_chunk` — the real-socket end of the same delivery: the commit time
+    the sampled meta carries (`committed_at`) through `Plug.Conn.chunk/2`
+    returning in the SSE handler's request process. One sample per sampled
+    (range, group, subscriber) delivery a socket accepted, with the group
+    id. A write the socket refused emits nothing, and so does a sampled
+    range recovered without a commit time. `conn_deliver` ends at the parent
+    send and `conn_chunk` is the production-shaped end: `conn_chunk` spans
+    the whole commit → chunk path for that subscriber, so it contains
+    `conn_deliver` rather than sitting beside it.
 
-  `conn_deliver` is the only per-subscriber hop, so it is sampled. The
-  Router reads `Application.get_env(:ebb_server, :fanout_conn_sample_rate,
-  100)` at boot and passes it with each push; the GroupServer draws one
-  offset per batch and strides, where `0` turns the hop off, `1` samples
-  every delivery, and `K > 1` samples 1 in `K`. Other hops are never
-  sampled. Unsampled deliveries keep the two-argument
-  `SSEConnection.push_data/2` cast, so a collector that only understands
-  that shape still sees them.
+  `conn_deliver` and `conn_chunk` are the per-subscriber hops, so both are
+  sampled. The Router reads `Application.get_env(:ebb_server,
+  :fanout_conn_sample_rate, 100)` at boot and passes it with each push; the
+  GroupServer draws one offset per batch and strides, where `0` turns both
+  hops off, `1` samples every delivery, and `K > 1` samples 1 in `K`. Other
+  hops are never sampled, and nothing else is sampled for the socket end:
+  `conn_chunk` rides the same strided decision as `conn_deliver`. Unsampled
+  deliveries keep the two-argument `SSEConnection.push_data/2` cast and the
+  `{:sse_data, bytes}` message, so a collector that only understands that
+  shape still sees them; a sampled delivery arrives as
+  `{:sse_data, bytes, meta}` carrying `cast_at`, `committed_at`, and
+  `group_id`.
 
   `ebb.entity_store.*` attributes the read path by size and phase. `byte_size`
   is the JSON blob (`row.data`) before it is decoded: the pre-existing blob on

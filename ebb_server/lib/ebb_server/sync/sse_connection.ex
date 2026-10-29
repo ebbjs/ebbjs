@@ -20,7 +20,8 @@ defmodule EbbServer.Sync.SSEConnection do
      `push_control` / `push_presence` messages from the `FanOutRouter`,
      formats control/presence as SSE, and forwards each chunk to the request
      process via a plain `send/2`. `push_data` carries a frame the
-     `GroupServer` already encoded once for the whole group.
+     `GroupServer` already encoded once for the whole group; a sampled
+     delivery also carries the hop meta.
   3. The request process writes the chunks (it's the conn owner).
   4. When the request process exits (e.g., on client disconnect), this
      GenServer monitors it and shuts down too, triggering FanOutRouter
@@ -66,8 +67,9 @@ defmodule EbbServer.Sync.SSEConnection do
   @spec push_data(pid(), iodata()) :: :ok
   def push_data(pid, bytes), do: GenServer.cast(pid, {:push_data, bytes})
 
-  # The sampled path only: the cast carries the GroupServer's send timestamp
-  # and group id so this process can close the `conn_deliver` hop.
+  # The sampled path only: the cast carries the GroupServer's send timestamp,
+  # the range's commit time, and the group id so this process can close
+  # `conn_deliver` and the request process can close `conn_chunk`.
   @spec push_data(pid(), iodata(), map()) :: :ok
   def push_data(pid, bytes, meta), do: GenServer.cast(pid, {:push_data, bytes, meta})
 
@@ -110,10 +112,10 @@ defmodule EbbServer.Sync.SSEConnection do
   end
 
   defp deliver_data(bytes, meta, state) do
-    send(state.parent_pid, {:sse_data, bytes})
+    send(state.parent_pid, data_message(bytes, meta))
 
-    # The server-side end of the chain is this send returning; `chunk/2` on
-    # a real socket is out of scope.
+    # The delivery reaches the request process here; the chunk write that
+    # ends the chain is `conn_chunk`, emitted by the SSE handler.
     if is_map(meta) do
       Telemetry.fanout_hop(
         :conn_deliver,
@@ -124,6 +126,11 @@ defmodule EbbServer.Sync.SSEConnection do
 
     {:noreply, state}
   end
+
+  # A sampled delivery carries the meta through to the request process, which
+  # needs the commit time to close `conn_chunk`.
+  defp data_message(bytes, meta) when is_map(meta), do: {:sse_data, bytes, meta}
+  defp data_message(bytes, _meta), do: {:sse_data, bytes}
 
   defp span(from, to) when is_integer(from) and is_integer(to), do: max(to - from, 0)
   defp span(_from, _to), do: nil

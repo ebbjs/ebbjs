@@ -17,7 +17,8 @@ defmodule EbbServer.Sync.SSEHandler do
   3. It enters a `receive` loop that handles these message types:
      - `:keepalive` (self-scheduled every 15s) — chunks a `: keepalive\\n\\n` comment.
      - `{:sse_data, bytes}` from the SSEConnection — chunks the coalesced
-       `data` frames for one committed batch.
+       `data` frames for one committed batch. A sampled delivery arrives as
+       `{:sse_data, bytes, meta}` and also closes the `conn_chunk` hop.
      - `{:sse_chunk, kind, payload}` from the SSEConnection — chunks the
        formatted SSE event.
   4. The loop exits when:
@@ -59,6 +60,7 @@ defmodule EbbServer.Sync.SSEHandler do
 
   alias EbbServer.Storage.PermissionChecker
   alias EbbServer.Sync.{FanOutRouter, SSEConnection, SSEConnectionSupervisor}
+  alias EbbServer.Telemetry
 
   @stale_cursor_event ~S(event: control
 data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
@@ -121,6 +123,16 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
           :closed -> :ok
         end
 
+      {:sse_data, bytes, meta} ->
+        case chunk(conn, bytes) do
+          :ok ->
+            emit_conn_chunk(meta)
+            do_sse_loop(conn, sse_pid, monitor_ref)
+
+          :closed ->
+            :ok
+        end
+
       {:sse_chunk, kind, payload} ->
         case chunk(conn, SSEConnection.format_sse_event(kind, payload)) do
           :ok -> do_sse_loop(conn, sse_pid, monitor_ref)
@@ -148,6 +160,16 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
       {:error, _reason} -> :closed
     end
   end
+
+  # The real-socket end of the chain: the sampled delivery's commit through
+  # the socket accepting the chunk. A failed write and a range recovered
+  # without a commit time have no sample to take.
+  defp emit_conn_chunk(%{committed_at: committed_at, group_id: group_id})
+       when is_integer(committed_at) do
+    Telemetry.fanout_hop(:conn_chunk, max(System.monotonic_time() - committed_at, 0), group_id)
+  end
+
+  defp emit_conn_chunk(_meta), do: :ok
 
   @doc """
   Writes a stale cursor control event to the chunked response and returns `:closed`.

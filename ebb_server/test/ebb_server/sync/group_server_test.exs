@@ -270,23 +270,40 @@ defmodule EbbServer.Sync.GroupServerTest do
       assert is_integer(cast_duration) and cast_duration >= 0
     end
 
-    test "samples conn_deliver per delivery and honours the sample-rate control", %{
-      group_server: gs
+    test "samples conn_deliver per delivery, carries the commit time, and honours the control", %{
+      group_server: gs,
+      group_id: group_id
     } do
       test_pid = self()
       subscriber = start_meta_collector(test_pid)
       :ok = GroupServer.add_subscriber(gs, subscriber, "actor_1")
 
+      committed_at = System.monotonic_time()
+
       :ok =
         GroupServer.push_actions(gs, build_frames([action("act_sampled", 1)]), %{
+          committed_at: committed_at,
           conn_sample_rate: 1
         })
 
-      assert_receive {:pushed_meta, ^subscriber, %{cast_at: cast_at, group_id: _}}, 1_000
+      assert_receive {:pushed_meta, ^subscriber,
+                      %{cast_at: cast_at, committed_at: ^committed_at, group_id: ^group_id}},
+                     1_000
+
       assert is_integer(cast_at)
 
+      # A recovered range has no commit time, so the sampled meta carries
+      # `nil` rather than a stale one.
       :ok =
-        GroupServer.push_actions(gs, build_frames([action("act_unsampled", 2)]), %{
+        GroupServer.push_actions(gs, build_frames([action("act_recovered", 2)]), %{
+          conn_sample_rate: 1
+        })
+
+      assert_receive {:pushed_meta, ^subscriber, %{committed_at: nil, group_id: ^group_id}},
+                     1_000
+
+      :ok =
+        GroupServer.push_actions(gs, build_frames([action("act_unsampled", 3)]), %{
           conn_sample_rate: 0
         })
 

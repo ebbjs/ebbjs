@@ -12,9 +12,11 @@ defmodule EbbServer.Bench.Subscriber do
   Delivery counters live in shared ETS rather than in the subscriber's
   mailbox, so a saturation run can be stopped by killing the subscribers
   instead of waiting for a stop message queued behind millions of
-  `{:sse_data, ...}` messages. Delivery lag is measured from a monotonic
-  stamp the workbook embeds in every Action; the stamp is client-side, so it
-  spans client send → commit → dispatch → subscriber delivery. The server's
+  `{:sse_data, ...}` messages. A sampled delivery arrives as
+  `{:sse_data, bytes, meta}` and counts the same as an unsampled one.
+  Delivery lag is measured from a monotonic stamp the workbook embeds in
+  every Action; the stamp is client-side, so it spans client send → commit →
+  dispatch → subscriber delivery. The server's
   own `ebb.fanout.push_latency_ms` (captured by `EbbServer.Bench.Telemetry`)
   reports commit → broadcast complete separately. Only every `@sample_every` delivery
   is decoded, to keep decoding off the hot path.
@@ -156,9 +158,12 @@ defmodule EbbServer.Bench.Subscriber do
       # Count frames without splitting every chunk; this is the mode that
       # keeps the consumer off the server's schedulers.
       {:sse_data, bytes} ->
-        count = length(:binary.matches(bytes, "event: data"))
-        :counters.add(counters, 1, count)
-        loop(counters, lags, delivered + count, true)
+        loop(counters, lags, count_only_chunk(counters, delivered, bytes), true)
+
+      # A sampled delivery carries the GroupServer's meta; the frame count is
+      # the same, so the bench ignores it.
+      {:sse_data, bytes, _meta} ->
+        loop(counters, lags, count_only_chunk(counters, delivered, bytes), true)
 
       {:sse_chunk, "data", _payload} ->
         :counters.add(counters, 1, 1)
@@ -174,17 +179,10 @@ defmodule EbbServer.Bench.Subscriber do
     receive do
       # One coalesced chunk per batch: it may carry several `data` frames.
       {:sse_data, bytes} ->
-        payloads = data_payloads(bytes)
-        :counters.add(counters, 1, length(payloads))
+        loop(counters, lags, count_chunk(counters, lags, delivered, bytes), false)
 
-        delivered =
-          Enum.reduce(payloads, delivered, fn payload, delivered ->
-            delivered = delivered + 1
-            if rem(delivered, @sample_every) == 0, do: maybe_record_lag(lags, payload)
-            delivered
-          end)
-
-        loop(counters, lags, delivered, false)
+      {:sse_data, bytes, _meta} ->
+        loop(counters, lags, count_chunk(counters, lags, delivered, bytes), false)
 
       {:sse_chunk, "data", payload} ->
         :counters.add(counters, 1, 1)
@@ -196,6 +194,23 @@ defmodule EbbServer.Bench.Subscriber do
         :counters.add(counters, 2, 1)
         loop(counters, lags, delivered, false)
     end
+  end
+
+  defp count_only_chunk(counters, delivered, bytes) do
+    count = length(:binary.matches(bytes, "event: data"))
+    :counters.add(counters, 1, count)
+    delivered + count
+  end
+
+  defp count_chunk(counters, lags, delivered, bytes) do
+    payloads = data_payloads(bytes)
+    :counters.add(counters, 1, length(payloads))
+
+    Enum.reduce(payloads, delivered, fn payload, delivered ->
+      delivered = delivered + 1
+      if rem(delivered, @sample_every) == 0, do: maybe_record_lag(lags, payload)
+      delivered
+    end)
   end
 
   # Splits a coalesced chunk into one JSON payload per `data` frame, the

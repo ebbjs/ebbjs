@@ -282,7 +282,7 @@ defmodule EbbServer.Sync.WriterFailureEndToEndTest do
     assert second.status == 200
     assert second.resp_body == ~s({"rejected":[]})
 
-    assert_receive {:sse_data, bytes}, 5_000
+    bytes = SSEHelpers.receive_sse_data()
     payload = bytes |> SSEHelpers.single_data_payload() |> Jason.decode!()
     assert payload["actor_id"] == actor_id
 
