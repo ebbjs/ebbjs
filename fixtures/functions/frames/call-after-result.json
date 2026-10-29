@@ -1,0 +1,24 @@
+{
+  "name": "call-after-result",
+  "description": "a call sent after result is discarded and never answered",
+  "steps": [
+    {
+      "send": {
+        "type": "ready",
+        "pid": 4242,
+        "runner_version": "0.0.0",
+        "protocol_version": 1
+      }
+    },
+    { "expect": { "type": "invoke", "name": "lateCall" } },
+    { "send": { "type": "result", "ok": true, "value": { "done": true } } },
+    {
+      "send": {
+        "type": "call",
+        "call_id": "late",
+        "op": "get",
+        "payload": { "id": "e_doc" }
+      }
+    }
+  ]
+}

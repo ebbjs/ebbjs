@@ -1,0 +1,59 @@
+{
+  "name": "frame-shapes",
+  "description": "one frame of each type round-trips through the codec",
+  "notes": "protocol-only",
+  "steps": [
+    {
+      "send": {
+        "type": "ready",
+        "pid": 4242,
+        "runner_version": "0.0.0",
+        "protocol_version": 1
+      }
+    },
+    {
+      "expect": {
+        "type": "invoke",
+        "name": "proofreadDocument",
+        "version": "1.0.0",
+        "digest": "sha256:fixture",
+        "bundle": "export const proofreadDocument = () => ({ ok: true });",
+        "entry": "proofreadDocument",
+        "input": {},
+        "subject_actor_id": "a_test",
+        "env": {},
+        "limits": {
+          "timeout_ms": 30000,
+          "max_host_calls": 1000
+        }
+      }
+    },
+    {
+      "send": {
+        "type": "call",
+        "call_id": "1",
+        "op": "get",
+        "payload": {
+          "id": "e_doc"
+        }
+      }
+    },
+    {
+      "expect": {
+        "type": "reply",
+        "call_id": "1",
+        "ok": true,
+        "value": null
+      }
+    },
+    {
+      "send": {
+        "type": "result",
+        "ok": true,
+        "value": {
+          "ok": true
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "crash",
+  "description": "a worker that dies without sending result ends the invocation",
+  "steps": [
+    {
+      "send": {
+        "type": "ready",
+        "pid": 4242,
+        "runner_version": "0.0.0",
+        "protocol_version": 1
+      }
+    },
+    { "expect": { "type": "invoke", "name": "crashes" } },
+    { "exit": "now" }
+  ]
+}

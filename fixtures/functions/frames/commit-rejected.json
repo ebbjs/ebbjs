@@ -1,0 +1,52 @@
+{
+  "name": "commit-rejected",
+  "description": "a rejected commit answers 422 and writes nothing",
+  "steps": [
+    {
+      "send": {
+        "type": "ready",
+        "pid": 4242,
+        "runner_version": "0.0.0",
+        "protocol_version": 1
+      }
+    },
+    { "expect": { "type": "invoke", "name": "writeElsewhere" } },
+    {
+      "send": {
+        "type": "call",
+        "call_id": "1",
+        "op": "commit",
+        "payload": {
+          "id": "act_fixture_rejected",
+          "actor_id": "a_impostor",
+          "hlc": "111690000000000000",
+          "updates": [
+            {
+              "id": "upd_fixture_rejected",
+              "subject_id": "e_other",
+              "subject_type": "doc",
+              "method": "patch",
+              "data": {
+                "fields": {
+                  "title": {
+                    "type": "lww",
+                    "value": "Rejected",
+                    "hlc": "111690000000000000"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "expect": {
+        "type": "reply",
+        "call_id": "1",
+        "ok": false,
+        "error": { "error": "rejected", "status": 422 }
+      }
+    }
+  ]
+}
