@@ -2838,6 +2838,126 @@ that does run faster is produced by pipelining callers (`2×4`), which is
 measurement.** If the `2×4` rate is wanted, the follow-up belongs in the
 depth/caller-split work, not here.
 
+## The durability contract and the fsync share (#342)
+
+[#342](https://github.com/ebbjs/ebbjs/issues/342) asks whether the per-commit
+`sync: true` should become a group commit, and what fsync costs at the flush
+sizes the pipeline actually produces. The decision, the reasoning, and the
+reopen triggers are in
+[`docs/research/342-durability-contract.md`](../../docs/research/342-durability-contract.md);
+this section publishes the numbers.
+
+Measured **2026-10-29** on `recsy-vps` (AMD EPYC 7763, 4 schedulers, 16 GiB,
+Elixir 1.17.3 / OTP 27), `main` @ `7877c7c`, temp DB, 20 s window after a 3 s
+warmup, batch 100, 2-Update Actions, `hot`, `--seed 1`, port 4112. Three
+reports per row for the depth-1 shapes, two for depth 2 and `2×4`, alternating
+`sync`/`async` within a pass. Every run: **0 GSN holes, 0 rejected Actions, 0
+write/transport errors**, guardrails enforced and passed.
+
+`--durability async` injects `EbbServer.Bench.Boot.async_commit/2` as the
+Writer's `:commit_fn`, so a `t0`/`t2` async row is the same pipeline with one
+line changed in the NIF call: the delta against the `sync` row of the same
+shape **is** the fdatasync. This is the ablation #342's AC4 asked to be made
+separable; `ebb.writer.commit_latency_ms` cannot be split internally, because
+RocksDB reports no per-write sync duration to the caller.
+
+```sh
+mix bench.actions --tier t0 --duration 20 --warmup 3 --concurrency 1 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --seed 1 --port 4112 \
+  --durability sync   # and: --durability async
+
+mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 8 --in-flight 1 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --seed 1 --port 4112 \
+  --durability sync   # and: --durability async
+
+mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 2 --in-flight 4 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --seed 1 --port 4112 \
+  --durability sync   # and: --durability async
+
+mix bench.actions --tier t5 --duration 20 --warmup 3 --concurrency 8 \
+  --batch-size 100 --updates-per-action 2 --distribution hot --durability sync
+  # and: --durability async
+```
+
+Medians of the per-report medians; min–max in parentheses where it moves.
+`commit p50` is `ebb.writer.commit_latency_ms` (frame encode + op assembly +
+`write_batch`), and on `t5` it is the `write_batch` call itself.
+
+| Shape       | Durability | Actions/flush |                 Actions/s | p50 (ms) | p99 (ms) |     commit p50 (µs) |
+| ----------- | ---------- | ------------: | ------------------------: | -------: | -------: | ------------------: |
+| `t0 c=1 d1` | `sync`     |           100 |    25,980 (25,085–26,340) |     3.50 |     5.18 | 1,616 (1,611–1,671) |
+| `t0 c=1 d1` | `async`    |           100 |    32,650 (31,725–32,945) |     2.73 |     4.16 |       812 (803–874) |
+| `t2 8×1 d1` | `sync`     |           397 |    25,755 (25,505–25,865) |    29.41 |    41.67 | 5,349 (5,223–5,584) |
+| `t2 8×1 d1` | `async`    |           392 |    27,800 (27,790–28,885) |    27.05 |    39.01 | 3,852 (3,777–3,911) |
+| `t2 2×4 d4` | `sync`     |           143 |    27,658 (27,560–27,755) |    27.34 |    39.59 | 2,743 (2,720–2,765) |
+| `t2 2×4 d4` | `async`    |           143 |    30,800 (30,385–31,215) |    24.29 |    35.87 | 1,518 (1,489–1,547) |
+| `t2 8×2 d2` | `sync`     |           516 |    28,990 (28,735–29,245) |    52.32 |    74.49 | 8,685 (8,622–8,747) |
+| `t2 8×2 d2` | `async`    |           493 |    29,645 (29,535–29,755) |    51.19 |    74.23 | 6,586 (6,562–6,611) |
+| `t5 K=8`    | `sync`     |  100 / commit | 102,725 (101,920–104,190) |     6.28 |    12.92 |               6,282 |
+| `t5 K=8`    | `async`    |  100 / commit | 150,560 (149,500–154,025) |     2.77 |    10.27 |               2,769 |
+
+### What removing the sync buys, and what the sync costs
+
+`fsync / commit` is the sync row's `commit p50` minus the async row's; the share
+is that against the shape's steady-state flush period
+(`Actions/flush ÷ Actions/s`).
+
+| Shape                           | Actions/flush | Δ Actions/s |  Δ p50 | fsync / commit | fsync / Action | share of flush period |
+| ------------------------------- | ------------: | ----------: | -----: | -------------: | -------------: | --------------------: |
+| `t0 c=1 d1`                     |           100 |  **+25.7%** | −21.9% |         804 µs |        8.04 µs |             **20.9%** |
+| `t2 2×4 d4`                     |           143 |  **+11.4%** | −11.2% |       1,225 µs |        8.53 µs |             **23.6%** |
+| `t2 8×1 d1`                     |           397 |   **+7.9%** |  −8.0% |       1,497 µs |        3.77 µs |              **9.7%** |
+| `t2 8×2 d2`                     |           516 |   **+2.3%** |  −2.2% |       2,099 µs |        4.07 µs |             **11.8%** |
+| `t5 K=8` (saturated, no Writer) |  100 / commit |  **+46.6%** | −55.9% |              — |              — |                     — |
+
+The cost is not a constant: it tracks the WAL bytes one commit writes, so a
+100-Action commit pays ~0.8 ms and a 397-Action commit pays ~1.5 ms, and the
+per-Action term is 8.0 / 8.5 / 3.8 µs at 100 / 143 / 397 Actions per flush. That is the
+amortisation #342 wanted, and the operating point already has it: the default
+`8×1` flush on this base coalesces **397** Actions — up from the 272 the #576
+sweep measured on 2026-10-24, at the same rate and p50 — so its per-Action sync
+cost is less than half the `t0` shape's and its share of wall is single-digit.
+
+### Depth 2 already is the group commit
+
+The two `8×` rows are the same offered load at depth 1 and depth 2. A second
+in-flight range lets two commits overlap, which is the only way a sync can be
+shared without delaying an ack for a range that has not been claimed yet.
+
+| Shape               | Δ Actions/s from removing the sync | Depth-2 sync vs depth-1 sync                                                    |
+| ------------------- | ---------------------------------: | ------------------------------------------------------------------------------- |
+| `8×1 d1` → `8×2 d2` |                  +7.9% → **+2.3%** | +12.6% Actions/s (**25,755 → 28,990**), +78% p50 (**29.4 → 52.3 ms**), +79% p99 |
+
+At depth 1 there is exactly one commit in flight — the Writer "never issues two
+batches concurrently" at the default — so removing the sync is worth 7.9% of
+rate. At depth 2 the committer pool has two workers and RocksDB merges the two
+sync writers into one write group with one fdatasync, so the same removal is
+worth 2.3%: the pipeline is latency-bound, not commit-bound (`commit_wait` goes
+from 8.5 ms to 21.5 ms p50). The whole benefit of that overlap over the current
+default is +12.6% rate for +78% p50, which is the depth trade
+[#529](https://github.com/ebbjs/ebbjs/issues/529) already retired on its
+latency goal.
+
+### The saturated ceiling
+
+At `t5` K=8 — no Writer, eight BEAM processes calling `write_batch` directly —
+removing the sync raises the ceiling by **46.6%** (102,725 → 150,560 Actions/s)
+and the `write_batch` p50 goes 6.28 → 2.77 ms. This is the largest number any
+durability relaxation can buy and the wrong denominator for #342: it is eight
+writers queueing behind the write thread's sync, not a production-shaped flush.
+
+### Verdict
+
+**Keep per-commit `sync: true`; do not build group commit.** The acked-loss
+window stays zero. The mechanism #342 proposes already exists where commits can
+overlap (depth ≥ 2, worth 2.3% of rate) and is structurally impossible where
+they cannot (the default depth 1, where the successor range is not claimed
+until the current ack). A bounded window would be a pure delay, and #576
+already measured a coalescing timeout at −16.3% (t2) / −24.7% (t0). The option
+that would capture the 8–25% of wall measured above is the one the epic struck:
+`sync: false` with a stated loss window, which is a retraction of #529's
+invariant 2 and a product decision — priced here so it is not made blind.
+
 ## Prepare stage (#553)
 
 > **Measured before Step 0 (2026-10-20).** Current numbers are in
