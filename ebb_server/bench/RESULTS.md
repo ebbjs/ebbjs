@@ -1212,9 +1212,11 @@ when a range actually waits; `router_decode` is the RocksDB range read, ETF
 decode, and group split; `group_queue` is Router cast → GroupServer entry;
 `group_encode` is the frame build; `group_cast` is the GroupServer's
 per-subscriber cast loop; `conn_deliver` is one sampled subscriber's cast →
-SSEConnection → parent `send/2` return. The server-side end of
-`conn_deliver` is the parent send, not the SSE handler's `chunk/2`, so these
-are still in-process-subscriber numbers, not real-socket numbers.
+SSEConnection → parent `send/2` return. Since
+[#658](#frame-build-658), `router_encode` carries the frame build and
+`group_encode` is the flatten of the frames the Router built. The server-side
+end of `conn_deliver` is the parent send, not the SSE handler's `chunk/2`, so
+these are still in-process-subscriber numbers, not real-socket numbers.
 
 Measured **2026-10-28** on `recsy-vps` (the environment table above), t4 with
 the lean subscriber, batch 100, 2-Update Actions, `hot`, 25 s measured window
@@ -1235,6 +1237,11 @@ mix bench.actions --tier t4 --rate R --subscribers N --duration 25 \
 |   10 |  7000 |   2,933 / 4,968 |           37 |            0 |         1,398 |         236 |        1,067 |         30 |                     33 |   2,768 |  −5.6% |
 |  100 |  1000 |   4,015 / 6,038 |           42 |            0 |         1,173 |         243 |        1,312 |        676 |                    503 |   3,446 | −14.2% |
 | 1000 |  1000 | 31,068 / 43,261 |           42 |            0 |         1,365 |         224 |        1,318 |     27,569 |                  7,831 |  30,518 |  −1.8% |
+
+These rows are #583's 2026-10-28 measurement and are not rewritten. The
+post-#658 re-run is in [Frame build](#frame-build-658), where the t4
+n=1000 r=1000 `group_encode` is **9 µs p50** (the flatten) and the new
+`router_encode` hop carries the **1,460 µs** build.
 
 All values are µs. `Sum` is `router_queue + router_dwell + router_decode +
 group_queue + group_encode + group_cast`; `conn_deliver` is excluded because
@@ -1299,9 +1306,11 @@ That changes the next-step order:
    largely removed, `router_decode` (1.3 ms) was ~13% of the ~9 ms server path,
    not 4% of 31 ms, and carrying the payloads with the notify halves it; see
    [Carrying committed payloads](#carrying-committed-payloads-584).
-3. **Frame build.** `group_encode` is 1.4 ms (100 Actions, one group). The
-   JSON encode is the next server cost after decode; pre-encoding or a cheaper
-   wire framing is the candidate.
+3. **Frame build.** Done in [#658](#frame-build-658): the Router now encodes
+   once per (Action, distinct Update subset), so `group_encode` is the flatten
+   (9 µs at t4 n=1000 r=1000) and the new `router_encode` hop carries the
+   encode. Multi-group encode CPU is flat in G (4.5× lower at G=4); the
+   remaining G=1 JSON pass is #664's wire-format decision.
 4. **Dispatch.** Under count-only, `group_cast` is 5–6 ms of ~9 ms. The
    remaining dispatch cost is worth profiling, but sharding/dispatch-pool work
    should be re-measured with count-only consumers; the earlier sharding sweep
@@ -1425,6 +1434,117 @@ p50 (feature runs −0.1% to −2.3%). Wire bytes do not change: the coalesced
 single-binary assertions (`group_server_test.exs` “push_actions/2
 coalescing”, `sse_connection_test.exs` “shares one binary across a coalesced
 batch”) pass unmodified.
+
+## Frame build (#658)
+
+[#658](https://github.com/ebbjs/ebbjs/issues/658) is the hop #583 named as
+next step 3. `group_encode` built the SSE JSON frame inside
+`GroupServer.handle_cast/2`, once per (range, group): an Action fanned to four
+groups was encoded four times even though each group's copy differs only in
+which Updates it carries.
+
+The build now happens in `FanOutRouter.push_gsn_range/4`.
+`FanOutRouter.Frames.build/1` takes the range's `{group_id, action_with_subset}`
+memberships and returns `%{group_id => [frame]}`. It encodes each (Action,
+distinct Update subset) once: a group whose subset equals the Action's first
+membership reuses that frame directly, and a strict subset is memoised on its
+Update ids, so an Update scoped to one group is never re-encoded for another
+group that shares its subset. The `GroupServer` now only does
+`IO.iodata_to_binary/1` and shares that binary with every subscriber. Frames
+are built only for groups with a live `GroupServer`: a group with no
+subscriber has nothing to receive the bytes, and the old path did not encode
+for it either. The new `router_encode` hop measures the build; `group_encode`
+keeps its name and becomes the flatten. The per-group frame bucketing this adds replaces the
+`Enum.group_by` that the old path ran inside `router_decode`, which is why
+neither hop is a one-for-one rename of the old `group_encode`.
+
+Wire bytes do not change. `frames_test.exs` compares each group's frames with
+`SSEConnection.data_frame/1` for the whole-set case, the strict-subset case,
+and a subset shared across groups; the #584 carried-vs-recovered parity test
+still compares the two paths byte for byte; and the `group_server_test.exs`
+coalescing assertions still pin one binary per batch per subscriber.
+
+### Before and after
+
+Baseline is `main` at `5effb1c` (#584 landed); the feature arm is this branch.
+The arms alternated three times, each run a fresh boot. Same command as
+[#583](#fan-out-latency-breakdown-583), t4 lean n=1000 r=1000; medians shown.
+
+| Hop                      | before p50 | before p95 | before p99 |  after p50 |  after p95 |  after p99 |
+| ------------------------ | ---------: | ---------: | ---------: | ---------: | ---------: | ---------: |
+| `router_queue`           |         69 |        108 |        131 |         80 |        193 |        162 |
+| `router_decode`          |        536 |        864 |      1,033 |        463 |      1,133 |      1,340 |
+| `router_encode`          |          — |          — |          — |      1,460 |      2,676 |      3,161 |
+| `group_queue`            |        259 |        469 |        603 |         35 |         60 |         75 |
+| `group_encode`           |      1,371 |      2,260 |      2,627 |          9 |         42 |         62 |
+| `group_cast`             |     31,244 |     41,507 |     46,494 |     24,097 |     38,495 |     43,924 |
+| **push p50 / p95 / p99** | **33,953** | **44,343** | **49,429** | **31,296** | **42,594** | **47,966** |
+
+All values are µs. `router_encode` does not exist on the baseline; the
+baseline `group_encode` is the JSON build, the feature `group_encode` is the
+flatten. `group_queue` falls with it because the preceding batch is no longer
+sitting in the GroupServer's own encode when the next cast arrives. The
+end-to-end push sample improves **−7.8% p50 / −3.9% p95**, `group_cast` does
+not regress (**−22.9%** p50), scheduler utilisation is flat (24.6% → 25.0%),
+and delivered/s stays at 1.0M. Three pass-to-pass pairs on this host spread
+±10% at n=1000, so the direction matters more than the third digit.
+
+Server-path control (`--subscriber-count-only`, #583's isolation of the
+server from the in-process consumers; two baseline runs, four feature runs,
+medians):
+
+| Shape  | push p50 | push p95 | `router_decode` | `router_encode` | `group_encode` | `group_cast` | util |
+| ------ | -------: | -------: | --------------: | --------------: | -------------: | -----------: | ---: |
+| before |    8,556 |   11,591 |             540 |               — |          1,354 |        6,269 | 5.2% |
+| after  |    8,695 |   11,752 |             442 |           1,449 |              8 |        5,864 | 5.2% |
+| change |    +1.6% |    +1.4% |          −18.1% |               — |         −99.4% |        −6.5% |    — |
+
+End-to-end p50/p95 move inside the pair spread (the lean pairs on the same
+machine move ±10%); `group_cast` is lower and utilisation is unchanged.
+
+### The multi-group shape
+
+The bench tiers deliver every Action to one group, so the per-group
+multiplication is priced separately by
+`ebb_server/bench/fanout_frames.exs`: the canonical 100-Action / 2-Update
+shape from `Workbook.build_action/4`, each Action fanned to G groups with the
+same Update subset per group, 300 iterations after 20 warmups. `before` is
+`data_frame/1` per (Action, group) plus the flatten (the old hop); `encode` is
+the `data_frame/1` calls the shipped code makes (one per Action); `after` is
+the full `Frames.build/1` plus the per-group flatten. Medians of three runs.
+
+```sh
+MIX_ENV=dev mix run --no-start bench/fanout_frames.exs
+```
+
+|   G | before p50 | encode p50 | after p50 | before / after | encode + flatten | encode ratio |
+| --: | ---------: | ---------: | --------: | -------------: | ---------------: | -----------: |
+|   1 |        805 |        806 |       799 |          1.01× |              808 |        1.00× |
+|   2 |      1,668 |        778 |       824 |          2.02× |              782 |        2.13× |
+|   4 |      3,506 |        769 |       892 |          3.93× |              777 |        4.51× |
+
+All values are µs. The JSON work — the `data_frame/1` calls plus the
+per-group flatten the old hop measured — is flat in G (806 / 778 / 769)
+where the old path is linear (805 / 1,668 / 3,506): **4.5× lower at G=4 and
+scaling as 1/G**, inside the issue's ≤821 µs target. The full shipped build
+(`Frames.build/1` plus the flatten, `after`) is 3.9× lower at G=4. The
+~115 µs between the two is the per-group frame bucketing that replaces the
+old `Enum.group_by` in `router_decode`, so it is new to this hop but not new
+to the range. Read as total CPU for the shipped frame stage, the change is
+3.9× at G=4 — a hair under the AC's ≥4× because that AC's model excluded the
+bucketing; read as frame-encode CPU it is 4.5×. The issue's reference run
+measured 3,272 → ≤821 µs on the same host; this run's absolute numbers differ
+with frame size and GC noise, but the shape is the same. At G=1 there is
+nothing to save: the encode moved from the GroupServer to the Router, which is
+the scheduling win the issue recorded, not a throughput win.
+
+### What it does not buy
+
+A G=1 CPU halving remains out of scope. One JSON serialization of the
+content — ~770–810 µs for this shape — is the floor, and #664's wire-format
+decision is the only route past it. `group_encode` at G=1 is now ≤5% of its
+former value (9 µs against 1,371 µs), which is the flatten, exactly as AC1
+restated it.
 
 ## Writer batch coalescing (#332)
 

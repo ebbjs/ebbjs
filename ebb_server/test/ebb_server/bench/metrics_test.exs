@@ -217,6 +217,7 @@ defmodule EbbServer.Bench.MetricsTest do
       telemetry = %{
         {:fanout_hop, :router_queue} => [{-1_000_000, 9_999}, {0, 100}, {2_000_000, 300}],
         {:fanout_hop, :router_decode} => [{0, 500}],
+        {:fanout_hop, :router_encode} => [{0, 700}],
         {:fanout_hop, :conn_deliver} => [{1_000_000, 20}]
       }
 
@@ -228,6 +229,7 @@ defmodule EbbServer.Bench.MetricsTest do
                overall(server.fanout_hops.router_queue)
 
       assert overall(server.fanout_hops.router_decode).p50 == 500
+      assert overall(server.fanout_hops.router_encode).p50 == 700
       assert overall(server.fanout_hops.conn_deliver).count == 1
       assert overall(server.fanout_hops.router_dwell).count == 0
       assert overall(server.fanout_hops.group_queue).count == 0
