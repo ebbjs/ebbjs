@@ -51,6 +51,11 @@ mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 8 \
   --in-flight 1,2,4 --batch-size 100 --updates-per-action 2 --distribution hot
 ```
 
+Real-socket fan-out rows use `--subscriber-socket` instead of
+`--subscriber-lean`; see
+[Real-socket fan-out on one host](#real-socket-fan-out-on-one-host-659) for that command and its
+sample stride.
+
 Tier meanings: `t0` = `Writer.write_actions/1` directly; `t1` = real
 `POST /sync/actions` at concurrency 1; `t2` = `POST /sync/actions` at the
 requested concurrency; `t3` = `t2` plus in-process SSE subscribers; `t4` =
@@ -1216,7 +1221,9 @@ SSEConnection → parent `send/2` return. Since
 [#658](#frame-build-658), `router_encode` carries the frame build and
 `group_encode` is the flatten of the frames the Router built. The server-side
 end of `conn_deliver` is the parent send, not the SSE handler's `chunk/2`, so
-these are still in-process-subscriber numbers, not real-socket numbers.
+these are still in-process-subscriber numbers, not real-socket numbers; the
+socket end is measured in
+[Real-socket fan-out on one host](#real-socket-fan-out-on-one-host-659).
 
 Measured **2026-10-28** on `recsy-vps` (the environment table above), t4 with
 the lean subscriber, batch 100, 2-Update Actions, `hot`, 25 s measured window
@@ -1294,7 +1301,9 @@ A raw loop of 1,000 `GenServer.cast` calls on this host is **1.3–1.6 ms**, so
 the 27.6 ms is mostly scheduler time shared with the consumer, not an
 intrinsically expensive send. With a cheap but realistic consumer the server
 path is **~9 ms**; with no per-frame work it is **~5 ms**. The 31 ms headline
-is a same-box worst case, not the server-only cost.
+is a same-box worst case, not the server-only cost. That inference now has a
+socket measurement: see [Real-socket fan-out on one host](#real-socket-fan-out-on-one-host-659), where
+commit → `chunk/2` at n=1000 is 59.6 ms p50 and the push sample is 26.3 ms.
 
 That changes the next-step order:
 
@@ -1545,6 +1554,195 @@ content — ~770–810 µs for this shape — is the floor, and #664's wire-form
 decision is the only route past it. `group_encode` at G=1 is now ≤5% of its
 former value (9 µs against 1,371 µs), which is the flatten, exactly as AC1
 restated it.
+
+## Real-socket fan-out on one host (#659)
+
+[#659](https://github.com/ebbjs/ebbjs/issues/659) takes the fan-out headline
+off the in-process harness. `--subscriber-socket` replaces the in-process
+subscribers with N real `GET /sync/live` streams over loopback TCP, each
+consumed by `EbbServer.Bench.SocketClient` in a separate OS process
+(`--socket-processes`; the default is one process per 250 connections capped
+at the scheduler count, which is 1/1/4 at n = 1/100/1000 here). The consumers
+run off the server's BEAM schedulers, so their CPU is no longer in the
+server's sample, but they still share this host's four vCPUs.
+
+**What these rows are, and are not.** They are a _same-host bound_: the
+consumers' CPU is outside the server's sample but not off the box, so the
+commit → `chunk/2` rows are not a production server cost, and the r=1000
+collapse does not establish a server ceiling. What they do establish is the
+shape of the chain: the push sample ends ~33 ms before `chunk/2` at
+n=1000/r=300, the socket-write leg is real, and the in-process dispatch span
+is indistinguishable from the socket one. The off-box number is tracked in
+[#682](https://github.com/ebbjs/ebbjs/issues/682).
+
+The server end of the chain moves from `conn_deliver` (the parent `send/2`
+returning) to the new `conn_chunk` hop: the range's commit → the SSE handler's
+`Plug.Conn.chunk/2` returning for that subscriber. Both hops ride the same
+`--conn-sample-rate` stride; `conn_chunk` spans the whole commit → chunk path,
+so it contains `conn_deliver` rather than sitting beside it, and both are
+excluded from the push-side hop sum. The stride is 1-in-1 at n=1, 1-in-10 at
+n=100 and 1-in-100 at n=1000, so the published rows carry 75 (n=1) and 750
+(n=100/1000) per-subscriber samples; the push sample is one per batch at every
+rate. The selector is still the strided one #583/#577 pinned.
+
+Run shape: t4, `hot`, batch 100, 2-Update Actions, 25 s measured window after
+5 s warmup, concurrency 1, `r=300` at every n. That is the keep-up rate: the
+r=1000 row below publishes what happens when the socket consumers cannot
+drain the stream. Medians of 3 runs per arm at n=1/100 and 5 in-process / 12
+socket runs at n=1000 (5 repeats plus the 7 instrumented arms of the integrity
+pairs, which are the same shape), measured **2026-10-29** on `recsy-vps`. Every
+published run had 0 rejected Actions, 0 GSN holes (server and wire) and 0
+client errors. All the r=300 runs passed the guardrails; the r=1000 socket
+row is published with `--no-guardrails` because the keep-up gate fires on it
+(below).
+
+The in-process arm is `--subscriber-lean` (per-subscriber counters, no shared
+lag table); the socket arm is `--subscriber-socket`. The per-subscriber hops
+use the strided `--conn-sample-rate R` with `R` = 1 / 10 / 100 at
+n = 1 / 100 / 1000, so the rows carry 75 / 750 / 750 samples; a fixed 1-in-100
+leaves the n=1 row with almost no samples. The push sample is one per batch
+and does not depend on `R`.
+
+```sh
+# real socket
+mix bench.actions --tier t4 --rate 300 --subscribers N --duration 25 \
+  --warmup 5 --concurrency 1 --batch-size 100 --updates-per-action 2 \
+  --distribution hot --subscriber-socket --conn-sample-rate R
+
+# in-process comparison
+mix bench.actions --tier t4 --rate 300 --subscribers N --duration 25 \
+  --warmup 5 --concurrency 1 --batch-size 100 --updates-per-action 2 \
+  --distribution hot --subscriber-lean --conn-sample-rate R
+```
+
+|    N | Consumer        |  push p50 / p95 | `conn_deliver` p50 | `conn_chunk` p50 / p95 | delivered/s (keep-up) | server util |
+| ---: | --------------- | --------------: | -----------------: | ---------------------: | --------------------: | ----------: |
+|    1 | in-process lean |   1,998 / 2,810 |                  9 |                      — |           304 (1.013) |        0.2% |
+|    1 | real socket     |   1,992 / 2,949 |                 10 |          2,130 / 2,970 |           300 (0.999) |        0.2% |
+|  100 | in-process lean |   2,309 / 3,145 |                288 |                      — |        30,379 (1.013) |        0.9% |
+|  100 | real socket     |   2,326 / 3,005 |                203 |          4,866 / 6,874 |        29,936 (0.998) |        0.7% |
+| 1000 | in-process lean | 32,297 / 44,816 |              8,708 |                      — |       303,057 (1.010) |        7.7% |
+| 1000 | real socket     | 26,257 / 61,448 |              8,297 |        59,552 / 90,860 |       298,539 (0.995) |       11.0% |
+
+All values are µs except the rates. `delivered/s` is the client-measured
+delivery rate over the measured window and `keep-up` is that rate divided by
+`ebb.fanout.dispatched_actions` for the same window; the in-process arm's
+ratios sit above 1 by the sampler's boundary error. `server util` is the
+server BEAM's scheduler utilisation, so it excludes the socket clients' CPU.
+
+### Per-subscriber component, by subtraction
+
+The n=1 → n=1000 increase is the per-subscriber component, measured as a
+difference of medians rather than inferred from a control arm. `push` is the
+same span on both arms (commit → the last subscriber cast enqueued);
+`conn_chunk` is the production-shaped span (commit → `chunk/2` returned).
+
+| Comparison (n=1000 − n=1, r=300) | Δ push p50 | Δ `conn_chunk` p50 | Δ after the push sample |
+| -------------------------------- | ---------: | -----------------: | ----------------------: |
+| in-process                       | +30,299 µs |                  — |                       — |
+| real socket                      | +24,265 µs |         +57,422 µs |              +33,157 µs |
+
+The in-process dispatch span is **30.3 ms**; the socket one is **24.3 ms**.
+That 6 ms gap is inside the socket p50s' own run-to-run spread, so it does not
+establish that the in-process consumers inflated the dispatch span; the
+subtraction's reliable term is the socket leg. The socket row's
+production-shaped per-subscriber component is **57.4 ms**: the socket write
+and the request process's scheduling/back-pressure add **33.2 ms after the
+push sample ends** (at n=1 the same leg is 0.14 ms). That leg is invisible to
+`push_latency_ms` and to `conn_deliver`; only `conn_chunk` contains it.
+
+At n=100 the same subtraction is +311 µs (in-process push) and +334 µs
+(socket push) / +2,736 µs (socket `conn_chunk`), so the socket leg grows as
+fan-out grows rather than tracking the cast loop.
+
+### The in-process figure against the socket one
+
+At n=1000 and the same r=300 shape, the in-process push p50 (32.3 ms) and the
+socket push p50 (26.3 ms) differ by 23%, but the socket p50s themselves range
+18.5–31.7 ms across the 12 runs, so the two dispatch spans are
+indistinguishable on this host. What is not a cross-run comparison is the
+within-run gap to the production end: `conn_chunk` (59.6 ms) is 2.3× the
+socket push p50 and 1.8× the in-process push p50, because the push sample
+stops when the casts are enqueued and the socket writes happen afterwards. So
+the in-process headline was not shown to be inflated for the span it measured;
+it is low by ~1.8× for commit → chunk, and the count-only ~9 ms figure is a
+server-only bound that assumes no socket write at all, not a bound on the
+production path.
+
+### The client half
+
+The consumer reports its own receive → parse → count time per transport read
+(`:gen_tcp.recv/3` returning → frames counted and the GSN watermark advanced),
+plus delivery lag from the `bench_sent_us` stamp in each Action.
+
+|    N | client p50 / p95 / p99 (µs per read) | delivery lag p50 / p99 | frames delivered | bytes received |
+| ---: | -----------------------------------: | ---------------------: | ---------------: | -------------: |
+|    1 |                         3 / 22 / 334 |      9,753 / 11,984 µs |            7,600 |         5.1 MB |
+|  100 |                          3 / 8 / 655 |     27,216 / 39,289 µs |          760,000 |         512 MB |
+| 1000 |                        3 / 8 / 1,613 |   165,148 / 246,424 µs |        7,600,000 |        5.12 GB |
+
+The parse-and-count itself is not the consumer cost: 3 µs per read, roughly
+8,000 reads/s (~38 frames per read) at n=1000, is a few percent of one core.
+The cost is the socket path around it. At n=1000 the server's `conn_chunk` p50
+is 59.6 ms and the client's delivery lag p50 is 165.1 ms, so the consumer adds
+~105 ms after the server's chunk write — that is where the same-box cost moved
+when it left the server's schedulers. `conn_chunk` includes the request
+process's share of that cost (the socket write returning) and the client lag
+includes the rest.
+
+### r=1000 at n=1000: the consumer ceiling
+
+The same 25 s shape at the existing headline rate, one run per arm:
+
+| Consumer        |  push p50 / p95 | `conn_chunk` p50 / p95 | delivered/s vs dispatched/s | client lag p50 |
+| --------------- | --------------: | ---------------------: | --------------------------: | -------------: |
+| in-process lean | 31,359 / 46,615 |                      — |       1,000,629 / 1,000,000 |              — |
+| real socket     | 12,441 / 32,039 | 5,556,109 / 12,599,349 |           408,696 / 992,000 |      7,544,558 |
+
+The in-process arm still delivers 1.0M frames/s with the server at 25.1%
+scheduler utilisation, so the 31 ms headline is unchanged for that span. The
+socket arm cannot: the 1,000 stream writes and the four client processes share
+four vCPUs, the clients keep only 41% of what is dispatched, the request
+processes block in `chunk/2` (5.6 s p50) and delivery lag reaches 7.5 s. That
+row is published with `--no-guardrails` as the consumer-side ceiling, not as a
+server fan-out number: the socket keep-up gate (below 90% of dispatched)
+records a violation on it by design, and it is why the comparison rows use
+r=300. Reaching 1,000 Actions/s at n=1000
+over real sockets needs more client CPU than this host has, not a faster
+GroupServer.
+
+### Measurement integrity
+
+The #583 procedure was repeated for the socket path: 7 alternating pairs of
+the r=300 n=1000 socket shape, one arm instrumented (`--conn-sample-rate 100`,
+the published configuration) and one with the hop timers off
+(`--conn-sample-rate 0`, which exercises none of the sampled path), each run a
+fresh boot. Paired p50 deltas (instrumented vs off) range −28.1% to +30.2%
+with a median of **−1.2%**; the medians of the seven runs are 26,613 µs
+instrumented against 25,884 µs off (+2.8%), inside this host's pass-to-pass
+spread (the published socket p50s themselves range 18.5–31.7 ms). The p95
+paired median is −15.6%. `conn_chunk` cannot exist in the off arm, so the
+end-to-end both arms can measure is the client's delivery lag p50 (the
+`bench_sent_us` stamp → the client counting the frame, with the identical
+client code in both arms): 164,967 µs instrumented against 166,684 µs off, a
+paired median of **−1.0%** (range −4.3% to +1.0%). All 14
+runs had 0 holes, 0 rejected Actions and 0 client errors, and both arms sat at
+10.8–11.3% server utilisation. This host cannot resolve an effect smaller than
+its ±30% pass-to-pass spread, so the reading is "within noise", not "zero":
+the sampled path adds one map field and one timer per sampled delivery (750
+samples over 7.6M deliveries), and no arm here separates above the noise. A
+tighter bound needs a quieter host. Within the resolution this host allows,
+the timers do not move the loop they measure.
+
+### What this leaves open
+
+The consumers are separate OS processes but not a separate host: they share
+the four vCPUs with the server, which is what produces the 33 ms socket leg
+and the r=1000 collapse. A remote-client run on a second host removes that CPU
+competition and adds network transit, so the two terms can be separated; the
+machine is available and the run is tracked in
+[#682](https://github.com/ebbjs/ebbjs/issues/682). The 10,000-subscriber shape
+still needs the dedicated load-test machine (gap 4).
 
 ## Writer batch coalescing (#332)
 
@@ -2966,8 +3164,13 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
    arm carries client-side work the baseline arm did not; the utilization
    figures are therefore not a perfectly clean server-only measurement, though
    the extra client work only makes the ~6× CPU win at r=300 conservative. The
-   production-shaped (real SSE socket) measurement remains outstanding — both
-   t3 and t4 use in-process subscribers.
+   production-shaped (real SSE socket) measurement landed in
+   [#659](#real-socket-fan-out-on-one-host-659): `--subscriber-socket` runs the consumers
+   in separate OS processes and the server hop closes at `Plug.Conn.chunk/2`.
+   The t3/t4 tables in this document remain the in-process rows; the socket
+   rows (and the r=1000 consumer ceiling) are in that section. The clients
+   still share this host's four vCPUs, so the off-box capacity run is tracked
+   in [#682](https://github.com/ebbjs/ebbjs/issues/682).
 4. **10k-subscriber fan-out** — needs a dedicated load-test machine and is
    out of scope here.
 5. **Action-log compaction/retention**

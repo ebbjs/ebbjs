@@ -51,14 +51,14 @@ defmodule EbbServer.Sync.FanOutRouterDefenceTest do
 
       # A frontier already level with the log must not replay, so there is
       # no un-pushed range to deliver.
-      refute_receive {:sse_data, _bytes}, 300
+      refute_sse_data(300)
 
       :ok = FanOutRouter.subscribe([second_group], sse, actor_id)
 
       second_gsn = post_bootstrap!(actor_id, second_group)
       assert second_gsn == first_gsn + 1
 
-      assert_receive {:sse_data, bytes}, 5_000
+      bytes = receive_sse_data()
       assert Jason.decode!(single_data_payload(bytes))["actor_id"] == actor_id
 
       sync_router()
@@ -185,9 +185,9 @@ defmodule EbbServer.Sync.FanOutRouterDefenceTest do
         {:batch_committed, gsn, gsn, groups_by_gsn, System.monotonic_time(), [carried]}
       )
 
-      assert_receive {:sse_data, bytes}, 5_000
+      bytes = receive_sse_data()
       assert [%{"id" => ^action_id}] = bytes |> data_payloads() |> Enum.map(&Jason.decode!/1)
-      refute_receive {:sse_data, _unscoped_bytes}, 300
+      refute_sse_data(300)
 
       sync_router()
       assert FanOutFrontier.get() == {:ok, gsn}

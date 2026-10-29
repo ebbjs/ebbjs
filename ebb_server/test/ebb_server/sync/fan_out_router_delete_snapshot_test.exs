@@ -90,20 +90,17 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
   defp await_action(deleted_id, deadline) do
     timeout = max(deadline - System.monotonic_time(:millisecond), 0)
 
-    receive do
-      {:sse_data, bytes} ->
-        payloads = Enum.map(SSEHelpers.data_payloads(bytes), &Jason.decode!/1)
+    payloads =
+      SSEHelpers.receive_sse_data(timeout)
+      |> SSEHelpers.data_payloads()
+      |> Enum.map(&Jason.decode!/1)
 
-        case Enum.find(
-               payloads,
-               &Enum.any?(&1["updates"], fn update -> delete_of?(update, deleted_id) end)
-             ) do
-          nil -> await_action(deleted_id, deadline)
-          payload -> payload
-        end
-    after
-      timeout ->
-        flunk("expected the delete of #{deleted_id} to fan out live")
+    case Enum.find(
+           payloads,
+           &Enum.any?(&1["updates"], fn update -> delete_of?(update, deleted_id) end)
+         ) do
+      nil -> await_action(deleted_id, deadline)
+      payload -> payload
     end
   end
 

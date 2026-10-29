@@ -60,6 +60,23 @@ defmodule EbbServer.Bench.SubscriberTest do
     assert Subscriber.stop_all(subscribers).delivered_total == 6
   end
 
+  test "a sampled 3-tuple delivery counts the same frames in both loop modes", %{ctx: ctx} do
+    for opts <- [[], [lean: true], [count_only: true]] do
+      subscribers = Subscriber.start_all(2, ctx, opts)
+      meta = %{cast_at: System.monotonic_time(), committed_at: nil, group_id: ctx.group_id}
+
+      for pid <- subscribers.pids do
+        send(pid, {:sse_data, chunk(2)})
+        send(pid, {:sse_data, chunk(2), meta})
+      end
+
+      Process.sleep(50)
+
+      assert Subscriber.delivered(subscribers) == 8
+      assert Subscriber.stop_all(subscribers).delivered_total == 8
+    end
+  end
+
   test "zero subscribers is nil", %{ctx: ctx} do
     assert Subscriber.start_all(0, ctx, lean: true) == nil
     assert Subscriber.delivered(nil) == nil

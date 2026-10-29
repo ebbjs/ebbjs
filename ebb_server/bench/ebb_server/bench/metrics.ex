@@ -155,9 +155,18 @@ defmodule EbbServer.Bench.Metrics do
   """
   @spec dispatched_rate(map(), pos_integer()) :: float() | nil
   def dispatched_rate(telemetry, duration) when duration > 0 do
+    case dispatched_total(telemetry, duration) do
+      nil -> nil
+      total -> total / duration
+    end
+  end
+
+  # Deliveries the server enqueued in `[0, duration)`: the same window and
+  # rows as `dispatched_rate/2`, un-divided. `nil` when nothing was captured.
+  defp dispatched_total(telemetry, duration) when duration > 0 do
     case Map.get(telemetry, :fanout_dispatched, []) do
       [] -> nil
-      rows -> Enum.reduce(rows, 0, &add_in_window(&1, &2, duration)) / duration
+      rows -> Enum.reduce(rows, 0, &add_in_window(&1, &2, duration))
     end
   end
 
@@ -428,6 +437,23 @@ defmodule EbbServer.Bench.Metrics do
   defp fanout_summary(nil), do: nil
   defp fanout_summary([]), do: nil
 
+  # A socket run reports the client's own view of the stream, so the summary
+  # carries it whole under `:socket` (see
+  # `EbbServer.Bench.SocketSubscribers.stop_all/1`) and the common rows are
+  # projected from the same numbers.
+  defp fanout_summary(%{processes: processes} = stats) when is_integer(processes) do
+    %{
+      subscribers: stats.subscribers,
+      delivered_total: stats.delivered_total,
+      delivered_avg: avg_delivered(stats.delivered_total, stats.subscribers),
+      control_total: stats.control_total,
+      lag_count: stats.lag_samples,
+      lag_p50: stats.lag_p50,
+      lag_p99: stats.lag_p99,
+      socket: stats
+    }
+  end
+
   defp fanout_summary(stats) do
     lags = stats.lags |> Enum.sort()
     subscribers = stats.subscribers
@@ -435,13 +461,17 @@ defmodule EbbServer.Bench.Metrics do
     %{
       subscribers: subscribers,
       delivered_total: stats.delivered_total,
-      delivered_avg: if(subscribers > 0, do: stats.delivered_total / subscribers, else: nil),
+      delivered_avg: avg_delivered(stats.delivered_total, subscribers),
       control_total: stats.control_total,
       lag_count: length(lags),
       lag_p50: percentile(lags, 50),
-      lag_p99: percentile(lags, 99)
+      lag_p99: percentile(lags, 99),
+      socket: nil
     }
   end
+
+  defp avg_delivered(_delivered, 0), do: nil
+  defp avg_delivered(delivered, subscribers), do: delivered / subscribers
 
   # Server-side samples come from `EbbServer.Bench.Telemetry` as
   # `%{tag => [{offset_us, duration_us}]}`. `latency/2` windows them and

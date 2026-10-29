@@ -12,7 +12,7 @@ defmodule EbbServer.Sync.FanOutRouterCarriedPayloadTest do
   use EbbServer.Integration.StorageCase
 
   import ExUnit.CaptureLog
-  import EbbServer.SSEHelpers, only: [data_payloads: 1]
+  import EbbServer.SSEHelpers, only: [data_payloads: 1, receive_sse_data: 0]
   import EbbServer.TestHelpers
 
   alias EbbServer.Storage.{ActionFormat, RocksDB, WatermarkTracker}
@@ -104,7 +104,7 @@ defmodule EbbServer.Sync.FanOutRouterCarriedPayloadTest do
              [first_payload]}
           )
 
-          assert_receive {:sse_data, bytes}, 5_000
+          bytes = receive_sse_data()
           payloads = bytes |> data_payloads() |> Enum.map(&Jason.decode!/1)
           assert Enum.map(payloads, & &1["gsn"]) == [first_gsn, last_gsn]
         end)
@@ -197,7 +197,7 @@ defmodule EbbServer.Sync.FanOutRouterCarriedPayloadTest do
   # group independently of arrival order.
   defp receive_group_frames(count) do
     Enum.reduce(1..count, %{}, fn _, acc ->
-      assert_receive {:sse_data, bytes}, 5_000
+      bytes = receive_sse_data()
       ids = bytes |> data_payloads() |> Enum.map(&Jason.decode!(&1)["id"])
       Map.put(acc, ids, bytes)
     end)

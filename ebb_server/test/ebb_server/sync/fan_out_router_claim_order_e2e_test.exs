@@ -93,7 +93,7 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderE2ETest do
              phases() == [:committing, :committed]
            end)
 
-    refute_receive {:sse_data, _bytes}, 200
+    refute_sse_data(200)
     assert FanOutFrontier.get() == {:ok, head_gsn - 1}
 
     send(head_worker, :release)
@@ -140,7 +140,7 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderE2ETest do
 
     assert WatermarkTracker.committed_watermark() == head_gsn
     assert FanOutFrontier.get() == {:ok, head_gsn - 1}
-    refute_receive {:sse_data, _bytes}, 200
+    refute_sse_data(200)
 
     send(successor_worker, :release)
     assert %{status: 200} = Task.await(successor_task, 5_000)

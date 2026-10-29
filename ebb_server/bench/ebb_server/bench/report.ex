@@ -15,9 +15,10 @@ defmodule EbbServer.Bench.Report do
   alias EbbServer.Storage.RocksDB
   alias EbbServer.Telemetry
 
-  # `conn_deliver` is per subscriber and can outlive the push sample, so the
-  # push-side attribution is every hop except it.
-  @push_side_hops Enum.reject(Telemetry.fanout_hops(), &(&1 == :conn_deliver))
+  # `conn_deliver` and `conn_chunk` are per subscriber and can outlive the
+  # push sample, so the push-side attribution is every hop except them.
+  @per_subscriber_hops [:conn_deliver, :conn_chunk]
+  @push_side_hops Enum.reject(Telemetry.fanout_hops(), &(&1 in @per_subscriber_hops))
 
   @doc """
   Renders the full Markdown report.
@@ -49,7 +50,7 @@ defmodule EbbServer.Bench.Report do
       "",
       "Generated #{timestamp()} on `#{hostname()}`.",
       "",
-      "**Tier #{config.tier}** — #{Options.tier_description(config.tier)}.",
+      "**Tier #{config.tier}** — #{Options.tier_label(config)}.",
       "",
       "## Environment",
       "",
@@ -323,6 +324,7 @@ defmodule EbbServer.Bench.Report do
       latency_note(config),
       server_latency_section(result.server),
       fanout_section(config, result.fanout, result.server),
+      socket_fanout_section(config, result.fanout, result.fanout_metrics),
       fixed_rate_section(config, result),
       fanout_hop_section(config, result.server),
       write_batch_section(config, result),
@@ -669,6 +671,84 @@ defmodule EbbServer.Bench.Report do
 
   defp fixed_rate_section(_config, _result), do: nil
 
+  # The client half of a real-socket run: what the consumers themselves
+  # counted, including their own receive → parse → count cost and whether they
+  # kept up with what the server dispatched.
+  defp socket_fanout_section(_config, %{socket: socket}, metrics) when is_map(socket) do
+    "## Socket fan-out client (real SSE)\n\n" <>
+      table(["Metric", "Value"], socket_rows(socket)) <>
+      "\n\n" <>
+      socket_notes(metrics)
+  end
+
+  defp socket_fanout_section(_config, _fanout, _metrics), do: nil
+
+  defp socket_rows(socket) do
+    [
+      {"Connections", "#{socket.subscribers}"},
+      {"Client processes", "#{socket.processes}"},
+      {"Delivered frames", "#{socket.delivered_total}"},
+      {"Reads yielding data frames", "#{socket.data_chunks}"},
+      {"Bytes received", "#{socket.bytes_total}"},
+      {"Control events", "#{socket.control_total}"},
+      {"GSN holes (wire)", "#{socket.holes}"},
+      {"Client errors", "#{socket.errors}"},
+      {"Client samples", "#{socket.client_samples}"},
+      {"Client receive→parse→count p50 (µs)", format_value(socket.client_p50)},
+      {"Client receive→parse→count p95 (µs)", format_value(socket.client_p95)},
+      {"Client receive→parse→count p99 (µs)", format_value(socket.client_p99)},
+      {"Delivery lag samples", "#{socket.lag_samples}"},
+      {"Delivery lag p50 (µs)", format_value(socket.lag_p50)},
+      {"Delivery lag p99 (µs)", format_value(socket.lag_p99)}
+    ]
+  end
+
+  defp socket_notes(metrics) do
+    [
+      "Every connection is a real `GET /sync/live` stream over loopback TCP, consumed by " <>
+        "`EbbServer.Bench.SocketClient` in a separate OS process, so no part of the consumer " <>
+        "runs on the server's schedulers. `Client receive→parse→count` is sampled per transport " <>
+        "read inside the client process: the span from `:gen_tcp.recv/3` returning to the frames " <>
+        "being counted and the GSN watermark advanced. Percentiles are nearest-rank over the raw " <>
+        "samples of every client process merged, not an average of per-process percentiles; each " <>
+        "connection keeps a bounded reservoir so a long run stays bounded.",
+      "`GSN holes (wire)` counts discontinuities in the GSN sequence each connection actually " <>
+        "received: a gap of more than one counts every missing GSN, and an out-of-order frame " <>
+        "counts one. Client errors count failed connections, protocol errors, and clients that " <>
+        "never finished. Either fails the run's guardrails.",
+      keep_up_note(metrics)
+    ]
+    |> Enum.join("\n\n")
+  end
+
+  # Both sides are rates over the measured window: the cumulative delivered
+  # count above includes warmup, and the server's dispatch series does not.
+  defp keep_up_note(%{delivered_per_sec: delivered, dispatched_per_sec: dispatched} = _metrics)
+       when is_number(delivered) and is_number(dispatched) and dispatched > 0 do
+    ratio = delivered / dispatched
+
+    "Delivered / server-dispatched rate over the measured window: #{format_delta_ratio(ratio)} " <>
+      "(#{format_rate(delivered)} vs #{format_rate(dispatched)} per second). " <>
+      keep_up_verdict(ratio)
+  end
+
+  defp keep_up_note(_metrics) do
+    "Delivered / server-dispatched rate: the server dispatch series or the delivered rate was " <>
+      "not captured for this run, so consumer keep-up is not stated."
+  end
+
+  # The two rates are 1 Hz sampler deltas, so a short window carries boundary
+  # error; the band only separates "kept up" from "the client is the limit".
+  defp keep_up_verdict(ratio) when ratio >= 0.90,
+    do: "The consumers kept up with the server (within the sampler's boundary error)."
+
+  defp keep_up_verdict(_ratio),
+    do:
+      "The consumers fell behind the server: delivered is below dispatched, so this row " <>
+        "measures the client, not the server's fan-out cost."
+
+  defp format_delta_ratio(ratio), do: :erlang.float_to_binary(ratio * 1.0, decimals: 3)
+
   defp fanout_hop_section(config, server) do
     hops = Map.get(server, :fanout_hops) || %{}
 
@@ -826,13 +906,16 @@ defmodule EbbServer.Bench.Report do
         "the last subscriber cast being enqueued, not a residual.",
       "`conn_deliver` " <>
         conn_sample_note(config) <>
-        " Its sample count is therefore not " <>
-        "the delivery count, and its server-side end is the parent `send/2` returning rather " <>
-        "than the SSE handler's `chunk/2`, so a real socket is not measured.",
+        " Its sample count is therefore not the delivery count, and its server-side end is " <>
+        "the parent `send/2` returning rather than the SSE handler's `chunk/2`. `conn_chunk` " <>
+        "is the other per-subscriber hop: commit → `Plug.Conn.chunk/2` returning, emitted only " <>
+        "for a sampled delivery that actually reached a socket, so a real-socket run gets it " <>
+        "and an in-process one has no `conn_chunk` samples.",
       "The sum covers " <>
         Enum.map_join(@push_side_hops, " + ", &"`#{&1}`") <>
         ": the push-side hops that end inside the re-based `ebb.fanout.push_latency_ms`. " <>
-        "`conn_deliver` is excluded because it is per subscriber and can outlive the push. " <>
+        "`conn_deliver` and `conn_chunk` are excluded because both are per subscriber and " <>
+        "can outlive the push. " <>
         "A hop with no samples in the window contributes 0. The sum balances when one " <>
         "group receives a range, the t4 shape; with several groups the group-scoped hops " <>
         "repeat per group while the range-scoped hops do not.",
@@ -1211,6 +1294,9 @@ defmodule EbbServer.Bench.Report do
         "errors" => summary.errors,
         "gsn_holes" => summary.gsn_holes,
         "gsn_first_hole" => summary.gsn_first_hole,
+        "socket_holes" => summary.socket_holes,
+        "socket_errors" => summary.socket_errors,
+        "socket_keep_up" => summary.socket_keep_up,
         "watermark_lag_high" => summary.watermark_lag_high,
         "watermark_lag_final" => summary.watermark_lag_final
       }

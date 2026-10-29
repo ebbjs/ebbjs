@@ -55,7 +55,8 @@ defmodule EbbServer.TelemetryTest do
                :group_queue,
                :group_encode,
                :group_cast,
-               :conn_deliver
+               :conn_deliver,
+               :conn_chunk
              ]
     end
   end

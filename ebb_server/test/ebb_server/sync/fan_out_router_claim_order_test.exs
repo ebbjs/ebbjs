@@ -96,7 +96,7 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
 
       post_bootstrap!(actor_id, group_id)
 
-      assert_receive {:sse_data, first_bytes}, 5_000
+      first_bytes = receive_sse_data()
       first = first_bytes |> single_data_payload() |> Jason.decode!()
       gsn = first["gsn"]
 
@@ -114,7 +114,7 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
 
       # At-least-once: the resumed Router re-pushes from the persisted
       # frontier. Duplicates are tolerated, not suppressed.
-      assert_receive {:sse_data, second_bytes}, 5_000
+      second_bytes = receive_sse_data()
       second = second_bytes |> single_data_payload() |> Jason.decode!()
 
       assert second["id"] == first["id"]
@@ -135,7 +135,7 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
 
       post_bootstrap!(actor_id, group_id)
 
-      assert_receive {:sse_data, _first_bytes}, 5_000
+      _first_bytes = receive_sse_data()
       pushed_gsn = RocksDB.get_max_gsn()
       sync_router()
       assert FanOutFrontier.get() == {:ok, pushed_gsn}
@@ -158,7 +158,7 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
              ]
 
       assert FanOutFrontier.get() == {:ok, pushed_gsn}
-      refute_receive {:sse_data, _}, 200
+      refute_sse_data(200)
 
       # Once the hole resolves, the watermark covers the buffered range and
       # only then does the frontier follow it.
@@ -166,7 +166,7 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
       WatermarkTracker.advance_watermark()
       send(FanOutRouter, {:range_resolved, hole_gsn, hole_gsn})
 
-      assert_receive {:sse_data, second_bytes}, 5_000
+      second_bytes = receive_sse_data()
 
       assert second_bytes |> single_data_payload() |> Jason.decode!() |> Map.fetch!("gsn") ==
                buffered_gsn

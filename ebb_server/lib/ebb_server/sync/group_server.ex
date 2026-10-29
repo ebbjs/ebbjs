@@ -98,6 +98,7 @@ defmodule EbbServer.Sync.GroupServer do
       if sample_delivery?(sample_rate, index, offset) do
         SSEConnection.push_data(subscriber, bytes, %{
           cast_at: System.monotonic_time(),
+          committed_at: committed_at,
           group_id: state.group_id
         })
       else

@@ -10,6 +10,7 @@ defmodule EbbServer.Sync.SSEHandlerTest do
 
   import Plug.Test
   import Plug.Conn
+  import EbbServer.TestHelpers, only: [attach_telemetry: 1, telemetry_events: 1]
 
   alias EbbServer.Storage.{GroupCache, WatermarkTracker}
   alias EbbServer.Sync.{GroupRegistry, Router, SSEConnectionSupervisor, SSEHandler}
@@ -70,6 +71,65 @@ defmodule EbbServer.Sync.SSEHandlerTest do
     end
   end
 
+  describe "do_sse_loop/3 conn_chunk hop" do
+    test "writes a sampled {:sse_data, bytes, meta} verbatim and closes the chunk hop" do
+      %{group_id: group_id, actor_id: actor_id} = put_member("sse_conn_chunk")
+
+      {task, loop_pid} = start_stream(actor_id, group_id, :infinity)
+      ref = attach_telemetry([[:ebb, :fanout, :hop_ms]])
+
+      committed_at = System.monotonic_time()
+      bytes = "event: data\ndata: {\"id\":\"act_chunk\"}\n\n"
+
+      send(
+        loop_pid,
+        {:sse_data, bytes,
+         %{committed_at: committed_at, cast_at: committed_at, group_id: group_id}}
+      )
+
+      assert_receive {:chunk_written, ^bytes}, @await_timeout_ms
+
+      assert [
+               {[:ebb, :fanout, :hop_ms], %{duration: duration},
+                %{hop: :conn_chunk, group_id: ^group_id}}
+             ] = telemetry_events(ref)
+
+      assert is_integer(duration) and duration >= 0
+
+      Task.shutdown(task, :brutal_kill)
+    end
+
+    test "a sampled delivery with no commit time emits no conn_chunk hop" do
+      %{group_id: group_id, actor_id: actor_id} = put_member("sse_conn_recovered")
+
+      {task, loop_pid} = start_stream(actor_id, group_id, :infinity)
+      ref = attach_telemetry([[:ebb, :fanout, :hop_ms]])
+
+      bytes = "event: data\ndata: {\"id\":\"act_recovered\"}\n\n"
+      send(loop_pid, {:sse_data, bytes, %{committed_at: nil, group_id: group_id}})
+
+      assert_receive {:chunk_written, ^bytes}, @await_timeout_ms
+      assert telemetry_events(ref) == []
+
+      Task.shutdown(task, :brutal_kill)
+    end
+
+    test "an unsampled {:sse_data, bytes} emits no conn_chunk hop" do
+      %{group_id: group_id, actor_id: actor_id} = put_member("sse_conn_unsampled")
+
+      {task, loop_pid} = start_stream(actor_id, group_id, :infinity)
+      ref = attach_telemetry([[:ebb, :fanout, :hop_ms]])
+
+      bytes = "event: data\ndata: {\"id\":\"act_unsampled\"}\n\n"
+      send(loop_pid, {:sse_data, bytes})
+
+      assert_receive {:chunk_written, ^bytes}, @await_timeout_ms
+      assert telemetry_events(ref) == []
+
+      Task.shutdown(task, :brutal_kill)
+    end
+  end
+
   describe "do_sse_loop/3 when the client goes away" do
     setup do
       put_member("sse_disconnect")
@@ -88,6 +148,27 @@ defmodule EbbServer.Sync.SSEHandlerTest do
       assert_receive {:chunk_written, ^bytes}, @await_timeout_ms
       assert Task.await(task, @await_timeout_ms) == :ok
       assert_subscriber_released(group_id, subscription)
+    end
+
+    test "a failed sampled write ends the stream and emits no conn_chunk hop", %{
+      group_id: group_id,
+      actor_id: actor_id
+    } do
+      {task, loop_pid} = start_stream(actor_id, group_id, 0)
+      subscription = watch_subscription(group_id)
+      ref = attach_telemetry([[:ebb, :fanout, :hop_ms]])
+
+      bytes = "event: data\ndata: {\"id\":\"act_closed_sampled\"}\n\n"
+
+      send(
+        loop_pid,
+        {:sse_data, bytes, %{committed_at: System.monotonic_time(), group_id: group_id}}
+      )
+
+      assert_receive {:chunk_written, ^bytes}, @await_timeout_ms
+      assert Task.await(task, @await_timeout_ms) == :ok
+      assert_subscriber_released(group_id, subscription)
+      assert telemetry_events(ref) == []
     end
 
     test "an :sse_chunk event the client accepts keeps the stream open until a write fails", %{

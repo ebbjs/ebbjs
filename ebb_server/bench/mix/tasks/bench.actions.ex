@@ -24,6 +24,32 @@ defmodule Mix.Tasks.Bench.Actions do
   `bench/results/`. See `EbbServer.Bench.Options` for the full option list
   and `ebb_server/bench/RESULTS.md` for published runs.
 
+  ## Real-socket fan-out
+
+  `--subscriber-socket` measures fan-out with the consumer off the server's
+  schedulers: every subscriber is a real `GET /sync/live` connection over
+  loopback TCP, consumed by `EbbServer.Bench.SocketClient` in a separate OS
+  process (`--socket-processes`, `0` = auto). The report then carries the
+  client's own receive → parse → count latency next to the server's
+  `conn_chunk` hop:
+
+      mix bench.actions --tier t4 --rate 300 --subscribers 1000 \
+        --subscriber-socket --socket-processes 8 --duration 25 --warmup 5 \
+        --concurrency 1 --batch-size 100 --updates-per-action 2 \
+        --distribution hot --conn-sample-rate 100
+
+  A client always fails the run when it reports connection/protocol errors
+  or GSN holes on the wire. The client is also runnable on its own against a
+  bench server that is already up (the numeric arguments are `port group_id
+  actor_id connections warmup_s duration_s`):
+
+      elixir -pa ebb_server/_build/dev/lib/ebb_server/ebin \
+        -e "EbbServer.Bench.SocketClient.main(System.argv())" \
+        4111 g_bench a_bench 100 5 25
+
+  That form times its own window and prints the summary it would otherwise
+  report over the control protocol.
+
   The run fails (non-zero exit) when a pass loses GSNs, ends with a frozen
   watermark, or reports rejected Actions or write/transport errors. Opt out
   with `--no-guardrails`; the report still records the violations. With
