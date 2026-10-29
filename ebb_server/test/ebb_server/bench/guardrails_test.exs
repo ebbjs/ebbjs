@@ -441,6 +441,15 @@ defmodule EbbServer.Bench.GuardrailsTest do
       assert violation.detail =~ "1 socket client connection/protocol error"
     end
 
+    test "consumers that fall behind fail the run as a client-limited shape" do
+      config = socket_config()
+      run = socket_run(config, holes: 0, errors: 0, keep_up: 0.407)
+
+      assert %{violations: [violation]} = Guardrails.evaluate([run], config)
+      assert violation.invariant == :socket_keep_up
+      assert violation.detail =~ "40.7%"
+    end
+
     test "the machine block round-trips the socket gate" do
       config = socket_config()
       run = socket_run(config, holes: 4, errors: 0)
@@ -473,7 +482,10 @@ defmodule EbbServer.Bench.GuardrailsTest do
     config
   end
 
-  defp socket_run(config, holes: holes, errors: errors) do
+  defp socket_run(config, opts) do
+    holes = Keyword.fetch!(opts, :holes)
+    errors = Keyword.fetch!(opts, :errors)
+    keep_up = Keyword.get(opts, :keep_up)
     run = run(config)
 
     socket = %{
@@ -494,6 +506,18 @@ defmodule EbbServer.Bench.GuardrailsTest do
       bytes_total: 0
     }
 
-    put_in(run, [:metrics, :fanout], %{socket: socket})
+    run = put_in(run, [:metrics, :fanout], %{socket: socket})
+
+    case keep_up do
+      nil ->
+        run
+
+      ratio ->
+        put_in(run, [:metrics, :fanout_metrics], %{
+          delivered_per_sec: ratio * 1_000,
+          delivered_per_subscriber_per_sec: ratio * 1_000,
+          dispatched_per_sec: 1_000
+        })
+    end
   end
 end

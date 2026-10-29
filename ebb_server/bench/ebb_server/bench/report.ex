@@ -50,7 +50,7 @@ defmodule EbbServer.Bench.Report do
       "",
       "Generated #{timestamp()} on `#{hostname()}`.",
       "",
-      "**Tier #{config.tier}** — #{tier_label(config)}.",
+      "**Tier #{config.tier}** — #{Options.tier_label(config)}.",
       "",
       "## Environment",
       "",
@@ -670,8 +670,6 @@ defmodule EbbServer.Bench.Report do
   end
 
   defp fixed_rate_section(_config, _result), do: nil
-
-  defp tier_label(config), do: Options.tier_label(config)
 
   # The client half of a real-socket run: what the consumers themselves
   # counted, including their own receive → parse → count cost and whether they
@@ -1298,6 +1296,7 @@ defmodule EbbServer.Bench.Report do
         "gsn_first_hole" => summary.gsn_first_hole,
         "socket_holes" => summary.socket_holes,
         "socket_errors" => summary.socket_errors,
+        "socket_keep_up" => summary.socket_keep_up,
         "watermark_lag_high" => summary.watermark_lag_high,
         "watermark_lag_final" => summary.watermark_lag_final
       }

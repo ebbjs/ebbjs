@@ -115,6 +115,13 @@ defmodule EbbServer.Bench.Guardrails do
       run,
       "#{run.socket_errors} socket client connection/protocol error(s)"
     )
+    |> add_violation_if(
+      keep_up_violation?(run),
+      :socket_keep_up,
+      run,
+      "socket consumers delivered #{keep_up_percent(run)} of the dispatched rate; " <>
+        "the consumer, not the server, is the limit at this shape"
+    )
     |> add_violation_if(lag_violation?(run), :watermark_lag, run, lag_detail(run))
     |> add_violation_if(
       run.rejected > 0,
@@ -163,6 +170,14 @@ defmodule EbbServer.Bench.Guardrails do
 
   defp socket_errors_violation?(%{socket_errors: errors}) when is_integer(errors), do: errors > 0
   defp socket_errors_violation?(_run), do: false
+
+  defp keep_up_violation?(%{socket_keep_up: ratio}) when is_number(ratio), do: ratio < 0.90
+  defp keep_up_violation?(_run), do: false
+
+  defp keep_up_percent(%{socket_keep_up: ratio}) when is_number(ratio),
+    do: "#{Float.round(ratio * 100, 1)}%"
+
+  defp keep_up_percent(_run), do: "n/a"
 
   defp gsn_holes_detail(run) do
     first =

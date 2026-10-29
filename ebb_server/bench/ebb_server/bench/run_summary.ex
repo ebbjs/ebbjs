@@ -29,6 +29,7 @@ defmodule EbbServer.Bench.RunSummary do
           gsn_first_hole: pos_integer() | nil,
           socket_holes: non_neg_integer() | nil,
           socket_errors: non_neg_integer() | nil,
+          socket_keep_up: float() | nil,
           watermark_lag_high: integer() | nil,
           watermark_lag_final: integer() | nil
         }
@@ -66,12 +67,24 @@ defmodule EbbServer.Bench.RunSummary do
   end
 
   # A real-socket run gates on what the clients saw on the wire, so their hole
-  # and error counts ride along with the server-side correctness fields.
-  defp socket_correctness(%{fanout: %{socket: socket}}) when is_map(socket) do
-    %{socket_holes: socket.holes, socket_errors: socket.errors}
+  # and error counts ride along with the server-side correctness fields. A run
+  # whose consumers fell behind measures the client, so its keep-up ratio is a
+  # gate too.
+  defp socket_correctness(%{fanout: %{socket: socket}} = metrics) when is_map(socket) do
+    %{
+      socket_holes: socket.holes,
+      socket_errors: socket.errors,
+      socket_keep_up: keep_up(metrics)
+    }
   end
 
   defp socket_correctness(_metrics), do: %{}
+
+  defp keep_up(%{fanout_metrics: %{delivered_per_sec: delivered, dispatched_per_sec: dispatched}})
+       when is_number(delivered) and is_number(dispatched) and dispatched > 0,
+       do: delivered / dispatched
+
+  defp keep_up(_metrics), do: nil
 
   @doc """
   The effective config for a pass, falling back to the metrics a test-only
@@ -115,6 +128,7 @@ defmodule EbbServer.Bench.RunSummary do
       gsn_first_hole: value(correctness, "gsn_first_hole", :gsn_first_hole),
       socket_holes: value(correctness, "socket_holes", :socket_holes),
       socket_errors: value(correctness, "socket_errors", :socket_errors),
+      socket_keep_up: value(correctness, "socket_keep_up", :socket_keep_up),
       watermark_lag_high: value(correctness, "watermark_lag_high", :watermark_lag_high),
       watermark_lag_final: value(correctness, "watermark_lag_final", :watermark_lag_final)
     }
