@@ -1038,7 +1038,10 @@ reason}}` → `503 write_failed` instead of letting it surface as a `500`.
 - **Elixir/OTP only** for the server. No custom NIFs; we use the
   `rocksdb` hex package (v2.5.0).
 - **Durability guarantee.** No Action is acknowledged to a client
-  until it is on disk (`sync: true` on every WriteBatch commit).
+  until it is on disk (`sync: true` on every WriteBatch commit, not a
+  configurable knob). The contract, the loss window it implies, and what
+  removing the per-commit sync would buy are decided in
+  [`docs/research/342-durability-contract.md`](../docs/research/342-durability-contract.md).
 - **Zero-staleness reads.** Server-function reads (`ctx.get`,
   `ctx.query`) always return fully materialized state — no eventual
   consistency window.
