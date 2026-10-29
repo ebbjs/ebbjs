@@ -655,6 +655,32 @@
                         },
                       "description": "Invalid MessagePack or missing/invalid structure",
                     },
+                  "429":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable error details",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Writer admission control is full; honour Retry-After",
+                    },
                   "503":
                     {
                       "content":
@@ -679,7 +705,7 @@
                                 },
                             },
                         },
-                      "description": "Write operation failed",
+                      "description": "Write failed or unknown outcome (retry idempotently)",
                     },
                 },
               "summary": "Write actions to the system",
