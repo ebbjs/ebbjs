@@ -8,22 +8,16 @@
  * a browser.
  */
 
-import type { EntityFields, JoinRecord, QueryRow } from "@ebbjs/client";
-import type { QueryRows } from "@ebbjs/react";
+import type { QueryRowOf } from "@ebbjs/client";
 import { ISSUE_STATUSES, statusLabel } from "./issue-options";
-import type { issue, Schema } from "./schema";
+import type { Schema } from "./schema";
 
 /**
- * The issue row the list and board render: the schema's issue fields, the
- * replica query row metadata, and the `assignee` join. Deriving it from the
- * schema means a field or relationship change is a compile error here, not a
- * silently stale view type.
+ * The issue row the list and board render: the schema's issue fields plus
+ * the `assignee` join. Renaming a field or the relationship is a compile
+ * error here, not a silently stale view type.
  */
-export type IssueRow = QueryRows<
-  EntityFields<typeof issue>,
-  Pick<JoinRecord<Schema["relationships"], "issue">, "assignee">,
-  QueryRow<EntityFields<typeof issue>>
->[number];
+export type IssueRow = QueryRowOf<Schema, "issue", "assignee">;
 
 /** The filter selections the toolbar exposes. Empty means "any". */
 export interface IssueFilters {
