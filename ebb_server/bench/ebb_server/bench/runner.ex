@@ -24,6 +24,7 @@ defmodule EbbServer.Bench.Runner do
     Options,
     Report,
     Sampler,
+    SocketSubscribers,
     Subscriber,
     Telemetry,
     Workbook,
@@ -156,7 +157,8 @@ defmodule EbbServer.Bench.Runner do
 
   defp baseline?(%Options{} = config) do
     Options.depth(config) == 1 and config.tier == :t0 and config.concurrency == 1 and
-      config.rate == 0 and config.subscribers == 0 and config.subscriber_lean == false
+      config.rate == 0 and config.subscribers == 0 and config.subscriber_lean == false and
+      config.subscriber_socket == false
   end
 
   # The baseline is the pre-pipeline headline shape: one serial t0 caller with
@@ -170,7 +172,9 @@ defmodule EbbServer.Bench.Runner do
         in_flight: [1],
         rate: 0,
         subscribers: 0,
-        subscriber_lean: false
+        subscriber_lean: false,
+        subscriber_socket: false,
+        socket_processes: 0
     }
   end
 
@@ -190,20 +194,11 @@ defmodule EbbServer.Bench.Runner do
     unless Options.bypasses_writer?(config),
       do: Http.setup(config.concurrency * Options.depth(config))
 
-    subscribers =
-      if config.tier in [:t3, :t4],
-        do:
-          Subscriber.start_all(config.subscribers, ctx,
-            lean: config.subscriber_lean,
-            count_only: config.subscriber_count_only
-          ),
-        else: nil
-
-    now = System.monotonic_time(:microsecond)
-    measure_start = now + config.warmup * 1_000_000
+    source = subscriber_source(config)
+    {subscribers, measure_start} = start_fanout(source, config, ctx)
     deadline = measure_start + config.duration * 1_000_000
 
-    sampler = Sampler.start(fn -> Subscriber.delivered(subscribers) end, measure_start)
+    sampler = Sampler.start(fn -> fanout_delivered(source, subscribers) end, measure_start)
     telemetry = Telemetry.start(measure_start)
 
     try do
@@ -215,7 +210,7 @@ defmodule EbbServer.Bench.Runner do
       timeout = (config.warmup + config.duration) * 1000 + @await_buffer_ms
       worker_stats = Enum.map(workers, &Task.await(&1, timeout))
       resource_samples = Sampler.stop(sampler)
-      fanout = Subscriber.stop_all(subscribers)
+      fanout = stop_fanout(source, subscribers)
       server = Telemetry.stop(telemetry)
 
       Metrics.analyze(config, ctx, worker_stats, resource_samples, fanout, server)
@@ -223,6 +218,74 @@ defmodule EbbServer.Bench.Runner do
       Telemetry.detach(telemetry)
     end
   end
+
+  @doc """
+  The fan-out subscriber implementation for a run: the real-socket clients
+  when `--subscriber-socket` is set, the in-process subscribers otherwise, and
+  `nil` on a tier with no subscribers.
+  """
+  @spec subscriber_source(Options.t()) :: module() | nil
+  def subscriber_source(%Options{tier: tier}) when tier not in [:t3, :t4], do: nil
+  def subscriber_source(%Options{subscriber_socket: true}), do: SocketSubscribers
+  def subscriber_source(%Options{}), do: Subscriber
+
+  @doc """
+  Starts the run's subscribers and returns them with the instant the warmup
+  window begins.
+
+  The socket subscriber starts its OS processes and waits for every SSE
+  connection to be up, so the warmup clock starts from readiness rather than
+  from process spawn. The in-process subscribers keep their original timing.
+  """
+  @spec start_fanout(module() | nil, Options.t(), map()) :: {term(), integer()}
+  def start_fanout(nil, config, _ctx) do
+    {nil, System.monotonic_time(:microsecond) + config.warmup * 1_000_000}
+  end
+
+  def start_fanout(SocketSubscribers, config, ctx) do
+    subscribers = SocketSubscribers.start_all(config.subscribers, ctx, socket_opts(config))
+    {subscribers, subscribers.measure_start}
+  end
+
+  def start_fanout(Subscriber, config, ctx) do
+    subscribers =
+      Subscriber.start_all(config.subscribers, ctx,
+        lean: config.subscriber_lean,
+        count_only: config.subscriber_count_only
+      )
+
+    {subscribers, System.monotonic_time(:microsecond) + config.warmup * 1_000_000}
+  end
+
+  @doc """
+  The options `EbbServer.Bench.SocketSubscribers` needs from a run.
+  """
+  @spec socket_opts(Options.t()) :: keyword()
+  def socket_opts(%Options{} = config) do
+    [
+      port: config.port,
+      processes: config.socket_processes,
+      warmup: config.warmup,
+      duration: config.duration
+    ]
+  end
+
+  @doc """
+  Cumulative deliveries for the sampler, or `nil` when the run has no
+  subscribers. Dispatches on the subscriber source so the sampler keeps one
+  shape for every fan-out mode.
+  """
+  @spec fanout_delivered(module() | nil, term()) :: non_neg_integer() | nil
+  def fanout_delivered(nil, _subscribers), do: nil
+  def fanout_delivered(source, subscribers), do: source.delivered(subscribers)
+
+  @doc """
+  Stops the run's subscribers and returns the fan-out summary the metrics,
+  report and guardrails read.
+  """
+  @spec stop_fanout(module() | nil, term()) :: map() | nil
+  def stop_fanout(nil, _subscribers), do: nil
+  def stop_fanout(source, subscribers), do: source.stop_all(subscribers)
 
   defp worker(id, config, ctx, measure_start, deadline) do
     :rand.seed(:exsss, {config.seed, id, 0})

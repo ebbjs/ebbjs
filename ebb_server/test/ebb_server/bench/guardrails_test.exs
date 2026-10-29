@@ -398,7 +398,11 @@ defmodule EbbServer.Bench.GuardrailsTest do
         scheduler_utilization: nil
       },
       fanout: nil,
-      fanout_metrics: nil,
+      fanout_metrics: %{
+        delivered_per_sec: nil,
+        delivered_per_subscriber_per_sec: nil,
+        dispatched_per_sec: nil
+      },
       fanout_series: [],
       server: %{writer_batch: [], writer_commit: [], http_request: [], fanout_push: []},
       in_flight: %{peak: 1, mean: 1.0},
@@ -409,5 +413,87 @@ defmodule EbbServer.Bench.GuardrailsTest do
         seeded_actions: 1
       }
     }
+  end
+
+  describe "real-socket runs" do
+    test "a clean socket run has no violations" do
+      config = socket_config()
+      run = socket_run(config, holes: 0, errors: 0)
+
+      assert %{violations: []} = Guardrails.evaluate([run], config)
+    end
+
+    test "a GSN hole on the wire fails like a #577 hole" do
+      config = socket_config()
+      run = socket_run(config, holes: 2, errors: 0)
+
+      assert %{violations: [violation]} = Guardrails.evaluate([run], config)
+      assert violation.invariant == :socket_gsn_holes
+      assert violation.detail =~ "2 GSN discontinuity"
+    end
+
+    test "a client connection or protocol error fails the run" do
+      config = socket_config()
+      run = socket_run(config, holes: 0, errors: 1)
+
+      assert %{violations: [violation]} = Guardrails.evaluate([run], config)
+      assert violation.invariant == :socket_client_errors
+      assert violation.detail =~ "1 socket client connection/protocol error"
+    end
+
+    test "the machine block round-trips the socket gate" do
+      config = socket_config()
+      run = socket_run(config, holes: 4, errors: 0)
+
+      report = Report.render(config, %{runs: [run], sweep?: false})
+      assert {:ok, baseline} = Baseline.decode(report)
+      assert [machine] = Baseline.runs(baseline)
+      assert machine["correctness"]["socket_holes"] == 4
+      assert machine["config"]["subscriber_socket"] == true
+
+      assert %{violations: [%{invariant: :socket_gsn_holes}]} =
+               Guardrails.evaluate([run], config, baseline)
+    end
+  end
+
+  defp socket_config do
+    {:ok, config} =
+      Options.parse([
+        "--tier",
+        "t4",
+        "--rate",
+        "1000",
+        "--subscribers",
+        "100",
+        "--subscriber-socket",
+        "--socket-processes",
+        "2"
+      ])
+
+    config
+  end
+
+  defp socket_run(config, holes: holes, errors: errors) do
+    run = run(config)
+
+    socket = %{
+      subscribers: config.subscribers,
+      processes: 2,
+      delivered_total: 0,
+      data_chunks: 0,
+      control_total: 0,
+      holes: holes,
+      errors: errors,
+      client_p50: nil,
+      client_p95: nil,
+      client_p99: nil,
+      client_samples: 0,
+      lag_p50: nil,
+      lag_p99: nil,
+      lag_samples: 0,
+      bytes_total: 0
+    }
+
+    put_in(run, [:metrics, :fanout], %{socket: socket})
   end
 end
