@@ -818,8 +818,11 @@ defmodule EbbServer.Bench.Report do
         "Router's `handle_info/2`; `router_dwell` is the wait in `Plan` for the committed " <>
         "watermark and is emitted only when a range actually waits, so an empty row means no " <>
         "range was held; `router_decode` is the `range_iterator` plus decode and group split; " <>
-        "`group_queue` is the cast to the `GroupServer` entry; `group_encode` is the frame " <>
-        "build; `group_cast` is the directly measured span from the end of the encode to " <>
+        "`router_encode` resolves the groups with a live `GroupServer` and builds their frames, " <>
+        "one encode per (Action, distinct Update subset) for the whole range; " <>
+        "`group_queue` is the cast to the `GroupServer` entry; " <>
+        "`group_encode` is the flatten of the frames the Router built, not a frame encode; " <>
+        "`group_cast` is the directly measured span from the end of that flatten to " <>
         "the last subscriber cast being enqueued, not a residual.",
       "`conn_deliver` " <>
         conn_sample_note(config) <>

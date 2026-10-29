@@ -341,7 +341,8 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
             {{hop, gid}, duration}
         end)
 
-      for hop <- [:router_queue, :router_decode], do: assert(is_integer(durations[{hop, nil}]))
+      for hop <- [:router_queue, :router_decode, :router_encode],
+          do: assert(is_integer(durations[{hop, nil}]))
 
       for hop <- [:group_queue, :group_encode, :group_cast, :conn_deliver] do
         assert is_integer(durations[{hop, group_id}])

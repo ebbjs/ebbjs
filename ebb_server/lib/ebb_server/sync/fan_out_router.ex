@@ -20,9 +20,16 @@ defmodule EbbServer.Sync.FanOutRouter do
      falling back to `GroupResolution.resolve_group_ids/2` (per-Action,
      via `EntityIndex`) only when the notifier did not annotate the GSN.
   4. Filters each Action's Updates to the ones whose persisted
-     per-Update scope includes the recipient group, then dispatches the
-     filtered copy to that GroupServer. An Update scoped to one group is
-     never delivered to another group that the same Action also touches.
+     per-Update scope includes the recipient group. An Update scoped to
+     one group is never delivered to another group that the same Action
+     also touches.
+  5. Encodes the range's frames once per (Action, distinct Update subset)
+     for the groups with a live GroupServer, via
+     `FanOutRouter.Frames.build/1`, then dispatches bytes. Groups that
+     receive the same subset share one encode; the GroupServer only
+     concatenates. A group with no live GroupServer has no subscriber to
+     receive the bytes, so its Actions are not encoded at all — the same
+     work the old GroupServer-local encode skipped.
 
   Carrying the payload binaries costs the hand-off a list, not a copy:
   binaries above 64 bytes are refc-shared across processes. The list lives
@@ -107,7 +114,7 @@ defmodule EbbServer.Sync.FanOutRouter do
   alias EbbServer.Storage.{ActionFormat, ActionScope, CacheTables, RocksDB, WatermarkTracker}
 
   alias EbbServer.Sync.{FanOutFrontier, GroupDynamicSupervisor, GroupRegistry, GroupServer}
-  alias EbbServer.Sync.FanOutRouter.{GroupResolution, Plan, Recovery}
+  alias EbbServer.Sync.FanOutRouter.{Frames, GroupResolution, Plan, Recovery}
   alias EbbServer.Telemetry
 
   @default_conn_sample_rate 100
@@ -427,21 +434,43 @@ defmodule EbbServer.Sync.FanOutRouter do
         :read_log -> read_log_actions(from_gsn, to_gsn)
       end
 
-    grouped =
+    memberships =
       actions
       |> Stream.flat_map(&group_memberships(&1, groups_by_gsn, resolve_opts))
-      |> Enum.group_by(fn {group_id, _action} -> group_id end, fn {_group_id, action} ->
-        action
-      end)
+      |> Enum.to_list()
 
     Telemetry.fanout_hop(:router_decode, System.monotonic_time() - decode_started_at, nil)
 
-    Enum.each(grouped, fn {group_id, actions} ->
-      push_to_group(group_id, actions, %{
+    encode_started_at = System.monotonic_time()
+    live_groups = live_group_pids(memberships)
+
+    live_memberships =
+      Enum.filter(memberships, fn {group_id, _action} -> Map.has_key?(live_groups, group_id) end)
+
+    frames_by_group = Frames.build(live_memberships)
+    Telemetry.fanout_hop(:router_encode, System.monotonic_time() - encode_started_at, nil)
+
+    Enum.each(frames_by_group, fn {group_id, frames} ->
+      GroupServer.push_actions(Map.fetch!(live_groups, group_id), frames, %{
         committed_at: meta.committed_at,
         cast_at: System.monotonic_time(),
         conn_sample_rate: meta.conn_sample_rate
       })
+    end)
+  end
+
+  # Only groups with a live GroupServer can receive a push. Resolving them
+  # before the encode keeps an unsubscribed group's Actions out of the frame
+  # build, as they were when the GroupServer itself encoded.
+  defp live_group_pids(memberships) do
+    memberships
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.uniq()
+    |> Enum.reduce(%{}, fn group_id, live ->
+      case GroupRegistry.lookup(group_id) do
+        nil -> live
+        pid -> Map.put(live, group_id, pid)
+      end
     end)
   end
 
@@ -498,10 +527,6 @@ defmodule EbbServer.Sync.FanOutRouter do
         updates -> [{group_id, Map.put(action, "updates", updates)}]
       end
     end)
-  end
-
-  defp push_to_group(group_id, actions, meta) do
-    for_each_group([group_id], &GroupServer.push_actions(&1, actions, meta))
   end
 
   defp for_each_group(group_ids, fun) do

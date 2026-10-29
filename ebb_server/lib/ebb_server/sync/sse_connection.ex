@@ -155,9 +155,10 @@ defmodule EbbServer.Sync.SSEConnection do
 
   Projects the Action to the five keys a subscriber consumes (`id`, `gsn`,
   `actor_id`, `hlc`, `updates`) and encodes them with `Jason.encode!/1`.
-  `GroupServer` concatenates a batch's frames into one binary and shares it
-  with every subscriber, so the stream is the concatenation of per-Action
-  `data` frames.
+  `FanOutRouter.Frames` calls this once per (Action, distinct Update
+  subset) for a released range; `GroupServer` only concatenates the
+  resulting frames, so the stream is the concatenation of per-Action `data`
+  frames.
   """
   @spec data_frame(map()) :: binary()
   def data_frame(action), do: format_sse_event("data", encode_action(action))

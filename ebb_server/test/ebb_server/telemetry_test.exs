@@ -51,6 +51,7 @@ defmodule EbbServer.TelemetryTest do
                :router_queue,
                :router_dwell,
                :router_decode,
+               :router_encode,
                :group_queue,
                :group_encode,
                :group_cast,

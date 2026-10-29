@@ -97,7 +97,7 @@ defmodule EbbServer.Sync.GroupServerTest do
   end
 
   describe "push_actions/2" do
-    test "pushes actions to all subscribers", %{group_server: gs} do
+    test "pushes frames to all subscribers", %{group_server: gs} do
       sub1 =
         spawn(fn ->
           receive do
@@ -115,11 +115,12 @@ defmodule EbbServer.Sync.GroupServerTest do
       GroupServer.add_subscriber(gs, sub1, "actor_1")
       GroupServer.add_subscriber(gs, sub2, "actor_2")
 
-      actions = [
+      frames = [
         %{"id" => "act_1", "actor_id" => "actor_1", "gsn" => 1, "hlc" => 1, "updates" => []}
+        |> SSEConnection.data_frame()
       ]
 
-      result = GroupServer.push_actions(gs, actions)
+      result = GroupServer.push_actions(gs, frames)
       assert result == :ok
 
       Process.exit(sub1, :kill)
@@ -128,7 +129,7 @@ defmodule EbbServer.Sync.GroupServerTest do
   end
 
   describe "push_actions/2 coalescing" do
-    test "sends one push_data per subscriber per batch, not per action", %{
+    test "sends one push_data per subscriber per batch, not per frame", %{
       group_server: gs
     } do
       test_pid = self()
@@ -138,8 +139,8 @@ defmodule EbbServer.Sync.GroupServerTest do
         :ok = GroupServer.add_subscriber(gs, subscriber, "actor_#{i}")
       end
 
-      actions = [action("act_1", 1), action("act_2", 2), action("act_3", 3), action("act_4", 4)]
-      :ok = GroupServer.push_actions(gs, actions)
+      frames = build_frames([action("act_1", 1), action("act_2", 2), action("act_3", 3)])
+      :ok = GroupServer.push_actions(gs, frames)
 
       received =
         for _ <- subscribers do
@@ -159,22 +160,23 @@ defmodule EbbServer.Sync.GroupServerTest do
       :ok = GroupServer.add_subscriber(gs, sub1, "actor_1")
       :ok = GroupServer.add_subscriber(gs, sub2, "actor_2")
 
-      :ok = GroupServer.push_actions(gs, [action("act_1", 1), action("act_2", 2)])
+      frames = build_frames([action("act_1", 1), action("act_2", 2)])
+      :ok = GroupServer.push_actions(gs, frames)
 
       assert_receive {:pushed_data, ^sub1, bytes1}, 1_000
       assert_receive {:pushed_data, ^sub2, bytes2}, 1_000
       assert bytes1 == bytes2
     end
 
-    test "the bytes are the frames of every Action in order", %{group_server: gs} do
+    test "the bytes are the frames concatenated in order", %{group_server: gs} do
       sub = start_push_collector(self())
       :ok = GroupServer.add_subscriber(gs, sub, "actor_1")
 
-      actions = [action("act_1", 1), action("act_2", 2)]
-      :ok = GroupServer.push_actions(gs, actions)
+      frames = build_frames([action("act_1", 1), action("act_2", 2)])
+      :ok = GroupServer.push_actions(gs, frames)
 
       assert_receive {:pushed_data, ^sub, bytes}, 1_000
-      assert bytes == Enum.map_join(actions, &SSEConnection.data_frame/1)
+      assert bytes == IO.iodata_to_binary(frames)
     end
   end
 
@@ -197,7 +199,7 @@ defmodule EbbServer.Sync.GroupServerTest do
         "updates" => []
       }
 
-      :ok = GroupServer.push_actions(gs, [action], %{committed_at: committed_at})
+      :ok = GroupServer.push_actions(gs, build_frames([action]), %{committed_at: committed_at})
 
       # `get_state/1` is a call, so it is handled after the cast.
       _state = :sys.get_state(gs)
@@ -219,9 +221,9 @@ defmodule EbbServer.Sync.GroupServerTest do
       end
 
       ref = attach_telemetry([[:ebb, :fanout, :dispatched_actions]])
-      actions = for gsn <- 1..4, do: action("act_#{gsn}", gsn)
+      frames = build_frames(for gsn <- 1..4, do: action("act_#{gsn}", gsn))
 
-      :ok = GroupServer.push_actions(gs, actions)
+      :ok = GroupServer.push_actions(gs, frames)
 
       # `get_state/1` is a call, so it is handled after the cast.
       _state = :sys.get_state(gs)
@@ -232,7 +234,7 @@ defmodule EbbServer.Sync.GroupServerTest do
              ] = telemetry_events(ref)
     end
 
-    test "emits group_queue and group_encode with the group id", %{
+    test "emits group_queue, the group_encode flatten and group_cast with the group id", %{
       group_server: gs,
       group_id: group_id
     } do
@@ -244,7 +246,7 @@ defmodule EbbServer.Sync.GroupServerTest do
       cast_at = System.monotonic_time()
 
       :ok =
-        GroupServer.push_actions(gs, [action("act_hops", 1)], %{
+        GroupServer.push_actions(gs, build_frames([action("act_hops", 1)]), %{
           committed_at: committed_at,
           cast_at: cast_at,
           conn_sample_rate: 0
@@ -275,11 +277,19 @@ defmodule EbbServer.Sync.GroupServerTest do
       subscriber = start_meta_collector(test_pid)
       :ok = GroupServer.add_subscriber(gs, subscriber, "actor_1")
 
-      :ok = GroupServer.push_actions(gs, [action("act_sampled", 1)], %{conn_sample_rate: 1})
+      :ok =
+        GroupServer.push_actions(gs, build_frames([action("act_sampled", 1)]), %{
+          conn_sample_rate: 1
+        })
+
       assert_receive {:pushed_meta, ^subscriber, %{cast_at: cast_at, group_id: _}}, 1_000
       assert is_integer(cast_at)
 
-      :ok = GroupServer.push_actions(gs, [action("act_unsampled", 2)], %{conn_sample_rate: 0})
+      :ok =
+        GroupServer.push_actions(gs, build_frames([action("act_unsampled", 2)]), %{
+          conn_sample_rate: 0
+        })
+
       assert_receive {:pushed_data, ^subscriber, _bytes}, 1_000
       refute_receive {:pushed_meta, ^subscriber, _}, 100
     end
@@ -297,7 +307,7 @@ defmodule EbbServer.Sync.GroupServerTest do
         "updates" => []
       }
 
-      :ok = GroupServer.push_actions(gs, [action], %{})
+      :ok = GroupServer.push_actions(gs, build_frames([action]), %{})
       _state = :sys.get_state(gs)
 
       assert telemetry_events(ref) == []
@@ -307,6 +317,9 @@ defmodule EbbServer.Sync.GroupServerTest do
   defp action(id, gsn) do
     %{"id" => id, "actor_id" => "actor_1", "gsn" => gsn, "hlc" => gsn, "updates" => []}
   end
+
+  # GroupServer receives frames the Router already encoded.
+  defp build_frames(actions), do: Enum.map(actions, &SSEConnection.data_frame/1)
 
   # A subscriber that reports the coalesced bytes GroupServer pushes to it,
   # so the test can count pushes per batch.

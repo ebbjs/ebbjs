@@ -15,6 +15,7 @@ defmodule EbbServer.Bench.FanoutHopReportTest do
   @hop_telemetry %{
     {:fanout_hop, :router_queue} => [{0, 1_000}, {1_000_000, 3_000}],
     {:fanout_hop, :router_decode} => [{0, 2_000}],
+    {:fanout_hop, :router_encode} => [{0, 700}],
     {:fanout_hop, :group_queue} => [{0, 500}],
     {:fanout_hop, :group_encode} => [{0, 1_500}],
     {:fanout_hop, :group_cast} => [{0, 1_000}],
@@ -40,6 +41,7 @@ defmodule EbbServer.Bench.FanoutHopReportTest do
     assert report =~ "| `router_queue` | 2 | 1000 | 3000 | 3000 |"
     assert report =~ "| `router_dwell` | 0 | n/a | n/a | n/a |"
     assert report =~ "| `router_decode` | 1 | 2000 | 2000 | 2000 |"
+    assert report =~ "| `router_encode` | 1 | 700 | 700 | 700 |"
     assert report =~ "| `group_queue` | 1 | 500 | 500 | 500 |"
     assert report =~ "| `group_encode` | 1 | 1500 | 1500 | 1500 |"
     assert report =~ "| `group_cast` | 1 | 1000 | 1000 | 1000 |"
@@ -51,9 +53,9 @@ defmodule EbbServer.Bench.FanoutHopReportTest do
     assert report =~
              "| `writer_notify` (context: #537 `notify` phase) | 1 | 60 | 60 | 60 | — | — |"
 
-    # router_queue + router_dwell + router_decode + group_queue + group_encode
-    # + group_cast, with conn_deliver (400) deliberately excluded.
-    assert report =~ "| Sum of push-side hop p50s | — | 6000 | — | — | +0 | +0.0% |"
+    # router_queue + router_dwell + router_decode + router_encode + group_queue
+    # + group_encode + group_cast, with conn_deliver (400) deliberately excluded.
+    assert report =~ "| Sum of push-side hop p50s | — | 6700 | — | — | +700 | +11.7% |"
   end
 
   test "states the sampling rate and both ends of the delivery chain" do

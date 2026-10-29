@@ -1,8 +1,9 @@
 defmodule EbbServer.Sync.GroupServer do
   @moduledoc """
   Per-Group GenServer that maintains SSE connection subscribers for a Group,
-  receives Action batches from the FanOutRouter, and pushes those Actions to
-  all subscribers. Self-stops when the last subscriber leaves.
+  receives already-encoded SSE frames from the FanOutRouter, and pushes them
+  to all subscribers as one concatenated binary. Self-stops when the last
+  subscriber leaves.
   """
 
   use GenServer, restart: :transient
@@ -10,13 +11,7 @@ defmodule EbbServer.Sync.GroupServer do
   alias EbbServer.Sync.GroupRegistry
   alias EbbServer.Telemetry
 
-  @type action :: %{
-          id: String.t(),
-          actor_id: String.t(),
-          hlc: non_neg_integer(),
-          gsn: non_neg_integer(),
-          updates: [map()]
-        }
+  @type frame_batch :: [binary()]
 
   @type t :: %__MODULE__{
           group_id: String.t(),
@@ -33,9 +28,9 @@ defmodule EbbServer.Sync.GroupServer do
 
   @default_conn_sample_rate 100
 
-  @spec push_actions(pid(), [action()], map()) :: :ok
-  def push_actions(pid, actions, meta \\ %{}) do
-    GenServer.cast(pid, {:push_actions, actions, meta})
+  @spec push_actions(pid(), frame_batch(), map()) :: :ok
+  def push_actions(pid, frames, meta \\ %{}) do
+    GenServer.cast(pid, {:push_actions, frames, meta})
   end
 
   @spec add_subscriber(pid(), pid(), String.t()) :: :ok
@@ -75,7 +70,7 @@ defmodule EbbServer.Sync.GroupServer do
   alias EbbServer.Sync.SSEConnection
 
   @impl true
-  def handle_cast({:push_actions, actions, meta}, state) do
+  def handle_cast({:push_actions, frames, meta}, state) do
     received_at = System.monotonic_time()
     cast_at = Map.get(meta, :cast_at)
     committed_at = Map.get(meta, :committed_at)
@@ -83,12 +78,11 @@ defmodule EbbServer.Sync.GroupServer do
 
     Telemetry.fanout_hop(:group_queue, span(cast_at, received_at), state.group_id)
 
-    # The payload is identical for every subscriber of this group, so the
-    # frames are encoded once per batch and the resulting binary is shared
-    # with every subscriber instead of encoding N×A small maps.
+    # One frame per Action, and every subscriber of this group gets the
+    # same bytes, so the batch is flattened once and that binary is shared.
     encode_started_at = System.monotonic_time()
 
-    bytes = actions |> Enum.map(&SSEConnection.data_frame/1) |> IO.iodata_to_binary()
+    bytes = IO.iodata_to_binary(frames)
     encode_finished_at = System.monotonic_time()
 
     Telemetry.fanout_hop(
@@ -121,7 +115,7 @@ defmodule EbbServer.Sync.GroupServer do
     # batch are `count` Actions × the group's subscriber fan-out.
     Telemetry.execute(
       [:fanout, :dispatched_actions],
-      %{count: length(actions), subscribers: MapSet.size(state.subscribers)},
+      %{count: length(frames), subscribers: MapSet.size(state.subscribers)},
       %{group_id: state.group_id}
     )
 

@@ -5,6 +5,7 @@ defmodule EbbServer.Telemetry do
     :router_queue,
     :router_dwell,
     :router_decode,
+    :router_encode,
     :group_queue,
     :group_encode,
     :group_cast,
@@ -180,11 +181,18 @@ defmodule EbbServer.Telemetry do
     mismatch) it is the `cf_actions` range read plus `ActionFormat.decode/2`
     plus split. One sample per released range, including a recovered one
     (the cost is real), with `group_id` `nil`.
+  - `router_encode` — resolving the range's groups with a live
+    `GroupServer` and building their SSE frames in `push_gsn_range/4`: one
+    `data_frame/1` per (Action, distinct Update subset), memoised across the
+    groups that receive the same subset. One sample per released range, with
+    `group_id` `nil`. At one group this is
+    the whole JSON encode the `GroupServer` used to do; at several it
+    replaces one encode per group with one per distinct subset.
   - `group_queue` — the Router's `GenServer.cast` send to the
     `GroupServer.handle_cast/2` entry. One sample per (range, group), with
     the group id.
-  - `group_encode` — `data_frame/1` per Action plus
-    `IO.iodata_to_binary/1` inside the `GroupServer` cast. One sample per
+  - `group_encode` — the `IO.iodata_to_binary/1` of the frames the Router
+    already encoded, inside the `GroupServer` cast. One sample per
     (range, group), with the group id.
   - `group_cast` — the GroupServer's per-subscriber `push_data` cast loop,
     measured from the end of `group_encode` until the last cast is enqueued.
