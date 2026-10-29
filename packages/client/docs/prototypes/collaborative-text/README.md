@@ -493,7 +493,7 @@ docs/prototypes/collaborative-text/                     # new — this design do
 
 These came up during design but don't block the prototype. Resolve during or after the work.
 
-1. **HLC skew handling.** Server validates client HLCs against 120s future / 24h past drift. If a client's clock is wrong, their actions get rejected. For the prototype, the demo runs locally so no clock drift. If shared across machines: document the requirement ("use NTP") or add a "discovery" endpoint that lets clients sync HLC state.
+1. **HLC skew handling.** Server rejects client HLCs more than 120s in the future. If a client's clock is wrong, their actions get rejected. For the prototype, the demo runs locally so no clock drift. If shared across machines: document the requirement ("use NTP") or add a "discovery" endpoint that lets clients sync HLC state.
 
 2. ~~Optimistic vs pessimistic local apply~~ **RESOLVED by POC.** The POC's `cm-bridge.ts` dispatches every local CM transaction to the `docReducer` synchronously (`cm-bridge.ts:182-303`). Optimistic apply is the POC's default — the design is correct. No further work needed.
 

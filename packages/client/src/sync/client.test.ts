@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createClient } from "./client";
 import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
 import { e } from "../schema/entity";
@@ -1441,5 +1441,49 @@ describe("SyncClient.status (#371)", () => {
     client.setState("live");
 
     expect(listener).not.toHaveBeenCalled();
+  });
+});
+
+describe("SyncClient._applyAction HLC drift (#663)", () => {
+  const now = 1_790_000_000_000;
+
+  const clockOf = (client: ReturnType<typeof createClient>) =>
+    (client as unknown as { clock: { l: bigint; c: bigint } }).clock;
+
+  const actionWithHlc = (hlc: string): Action => ({
+    id: `act_${hlc}`,
+    actor_id: "a_other",
+    hlc,
+    gsn: 1,
+    updates: [],
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not wedge the clock on a 30-day-old inbound Action", async () => {
+    const client = createClient({ serverUrl: "http://localhost:0", actorId: "a_test" });
+    const oldLogicalTime = BigInt(now - 30 * 86_400_000);
+
+    await callApplyAction(client, actionWithHlc(makeHlc(oldLogicalTime)), "grp_1");
+
+    expect(clockOf(client).l).toBe(oldLogicalTime);
+    expect(client.freshHlc()).toBe(makeHlc(now));
+  });
+
+  it("refuses to adopt an inbound HLC more than 120s ahead", async () => {
+    const client = createClient({ serverUrl: "http://localhost:0", actorId: "a_test" });
+
+    await callApplyAction(client, actionWithHlc(makeHlc(now + 6 * 3_600_000)), "grp_1");
+
+    // A rejected merge leaves neither field moved.
+    expect(clockOf(client)).toEqual({ l: 0n, c: 0n });
+    expect(client.freshHlc()).toBe(makeHlc(now));
   });
 });

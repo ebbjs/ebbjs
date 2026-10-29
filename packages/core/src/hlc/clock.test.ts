@@ -73,11 +73,14 @@ describe("localEvent", () => {
 });
 
 describe("receiveRemoteHLC", () => {
+  const NOW = 1_790_000_000_000n;
+
   beforeEach(() => {
     vi.useFakeTimers();
   });
 
   it("advances local clock when remote is ahead", () => {
+    vi.setSystemTime(1000);
     const clock = createClock();
     clock.l = 1000n;
     clock.c = 5n;
@@ -91,6 +94,7 @@ describe("receiveRemoteHLC", () => {
   });
 
   it("takes max counter when remote has same logical time but higher counter", () => {
+    vi.setSystemTime(1000);
     const clock = createClock();
     clock.l = 1000n;
     clock.c = 5n;
@@ -104,6 +108,7 @@ describe("receiveRemoteHLC", () => {
   });
 
   it("increments counter when local is ahead", () => {
+    vi.setSystemTime(1000);
     const clock = createClock();
     clock.l = 2000n;
     clock.c = 5n;
@@ -116,22 +121,46 @@ describe("receiveRemoteHLC", () => {
     expect(unpacked.counter).toBe(6n);
   });
 
-  it("throws when drift exceeds server bounds (future)", () => {
-    const clock = createClock();
-    vi.setSystemTime(200_000);
-    clock.l = 0n;
+  it("refuses a remote HLC more than 120s ahead and leaves the clock untouched", () => {
+    vi.setSystemTime(Number(NOW));
+    const clock = { l: 1000n, c: 7n };
 
-    const remoteHlc = format(pack(50_000n, 0n));
+    const remoteHlc = format(pack(NOW + 120_001n, 3n));
+
     expect(() => receiveRemoteHLC(clock, remoteHlc)).toThrow("HLC drift exceeds bounds");
+    // A rejected merge is a no-op: neither field moved.
+    expect(clock).toEqual({ l: 1000n, c: 7n });
   });
 
-  it("throws when drift exceeds server bounds (past)", () => {
+  it("accepts a remote HLC exactly at the +120s boundary", () => {
+    vi.setSystemTime(Number(NOW));
     const clock = createClock();
-    vi.setSystemTime(100_000_000);
 
-    clock.l = 1n;
+    const remoteHlc = format(pack(NOW + 120_000n, 3n));
+    const result = receiveRemoteHLC(clock, remoteHlc);
 
-    const remoteHlc = format(pack(clock.l, 0n));
-    expect(() => receiveRemoteHLC(clock, remoteHlc)).toThrow("HLC drift exceeds bounds");
+    expect(unpack(parse(result))).toEqual({ logicalTime: NOW + 120_000n, counter: 0n });
+  });
+
+  it("accepts a remote HLC arbitrarily in the past (catch-up replay)", () => {
+    vi.setSystemTime(Number(NOW));
+    const clock = createClock();
+    const oldLogicalTime = NOW - 30n * 86_400_000n;
+
+    const result = receiveRemoteHLC(clock, format(pack(oldLogicalTime, 2n)));
+
+    expect(unpack(parse(result))).toEqual({ logicalTime: oldLogicalTime, counter: 0n });
+    expect(clock.l).toBe(oldLogicalTime);
+  });
+
+  it("keeps the local clock when the remote HLC is older than state.l", () => {
+    vi.setSystemTime(Number(NOW));
+    const localLogicalTime = NOW + 60_000n;
+    const clock = { l: localLogicalTime, c: 4n };
+
+    const result = receiveRemoteHLC(clock, format(pack(NOW - 86_400_000n, 10n)));
+
+    expect(unpack(parse(result))).toEqual({ logicalTime: localLogicalTime, counter: 5n });
+    expect(clock).toEqual({ l: localLogicalTime, c: 5n });
   });
 });
