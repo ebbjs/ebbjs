@@ -936,9 +936,7 @@ export class SyncClient implements PermissionQuery {
    * HLC ordering: the Action's HLC is minted from the client's
    * internal clock. Remote HLCs received on the SSE stream merge
    * into the same clock via {@link receiveRemoteHLC} so subsequent
-   * local events stay monotonic. The clock is best-effort — a
-   * malformed or drift-exceeding remote HLC is logged and ignored
-   * rather than rejecting the inbound Action.
+   * local events stay monotonic.
    */
   async submitRelationshipUpdates(updates: readonly Update[]): Promise<WriteResponse> {
     if (updates.length === 0) {
@@ -979,8 +977,10 @@ export class SyncClient implements PermissionQuery {
    * Merge a remote HLC into the client's clock. Called from the
    * inbound-Action path so the next local event is guaranteed
    * monotonic against the server's authoritative HLC. Best-effort:
-   * a malformed or drift-exceeding HLC is swallowed so the storage
-   * materialization still happens.
+   * any failure (malformed, or more than 120s ahead) is swallowed so
+   * the storage materialization still happens. Only the Action HLC is
+   * merged; leaves come from this client's own clock (at or below the
+   * Action HLC) and `duplicate()` copies them verbatim.
    */
   private mergeRemoteHLC(remoteHlc: string): void {
     try {

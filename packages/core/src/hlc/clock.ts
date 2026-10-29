@@ -1,5 +1,5 @@
 import { HLCState } from "./types";
-import { COUNTER_MASK, MAX_FUTURE_DRIFT_MS, MAX_PAST_DRIFT_MS } from "./constants";
+import { COUNTER_MASK, MAX_FUTURE_DRIFT_MS } from "./constants";
 import { pack, unpack, parse, format } from "./pack";
 
 export function createClock(): HLCState {
@@ -26,6 +26,17 @@ export function receiveRemoteHLC(state: HLCState, remoteHlc: string): string {
   const remote = unpack(parse(remoteHlc));
   const now = BigInt(Date.now());
 
+  // Mirrors ebb_server's ActionValidator: refuse a remote HLC more than 120s
+  // ahead of the wall clock. Any past HLC is accepted — an old HLC only loses
+  // the merge, and rejecting it would break replay of old Actions. Only the
+  // top-level Action HLC is merged: client-built leaves come from this clock
+  // and are at or below the Action HLC, `duplicate()` copies a peer's leaves
+  // verbatim, and the server bounds leaves since #628.
+  const ahead = remote.logicalTime - now;
+  if (ahead > MAX_FUTURE_DRIFT_MS) {
+    throw new Error(`HLC drift exceeds bounds: ${ahead}ms ahead of the wall clock`);
+  }
+
   if (remote.logicalTime > state.l) {
     state.l = remote.logicalTime;
     state.c = 0n;
@@ -33,11 +44,6 @@ export function receiveRemoteHLC(state: HLCState, remoteHlc: string): string {
     state.c = remote.counter;
   } else {
     state.c = (state.c + 1n) & COUNTER_MASK;
-  }
-
-  const drift = now - state.l;
-  if (drift > MAX_FUTURE_DRIFT_MS || -drift > MAX_PAST_DRIFT_MS) {
-    throw new Error(`HLC drift exceeds bounds: ${drift}`);
   }
 
   return format(pack(state.l, state.c));

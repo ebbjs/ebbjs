@@ -69,10 +69,13 @@ so browser demos and the server test harness share one builder and one policy.
 
 HLCs are 64-bit integers packed with `(logical_time_ms << 16) | counter`.
 Internally core works with the integer form; on the wire (and in
-`Action.hlc`) the form is a decimal string. `packHlc/1` /
-`unpackHlc/1` convert; `compareHLC/2` does the correct lex ordering
-inside an HLC. The server's validation rule (reject if `logical_time`
-is more than 120s in the future or 24h in the past) is documented in
+`Action.hlc`) the form is a decimal string. `pack/1` /
+`unpack/1` convert; `compare/2` does the correct lex ordering
+inside an HLC. `receiveRemoteHLC/2` refuses a remote HLC more
+than 120s ahead of the wall clock and accepts any past HLC: an
+old HLC only loses the merge, and rejecting it would break
+replay of old Actions. The server applies the same one-sided
+bound (120s future, no past bound). See
 [#120](https://github.com/ebbjs/ebbjs/issues/120).
 
 ## Dependencies
