@@ -47,11 +47,12 @@ note is a proposal to land it.
    taking over the resource type by name and reading the package's private
    `struct Batch` layout and vendored RocksDB C++ ABI. That is a fork with
    extra coupling, not an alternative to one.
-6. **Upgrading does not solve it.** `rocksdb` 3.1.2 and upstream `master` both
-   expose only `batch_put/3,4`, still registered `ERL_NIF_REGULAR_BOUND`;
-   3.0.0 **removed** `write/3`, the only list-taking write API the package ever
-   had, and told callers to use the batch API. The direction of travel is the
-   per-op batch, not a bulk call.
+6. **Upgrading does not solve it, including the upgrade this repo is already
+   allowed to take.** `~> 2.5` permits 2.6.x, and 2.6.2 (2026-04-05, the last
+   2.x) has only `batch_put/3,4`; so do 3.1.2 and upstream `master`, all still
+   registered `ERL_NIF_REGULAR_BOUND`. 3.0.0 **removed** `write/3`, the only
+   list-taking write API the package ever had, and told callers to use the
+   batch API. The direction of travel is the per-op batch, not a bulk call.
 7. **AC2 is satisfiable and was satisfied in the prototype, but there is
    nothing to land.** One call per commit, and the resulting `WriteBatch` is
    byte-identical to today's at both canonical shapes (304 ops for 100 Actions,
@@ -88,9 +89,9 @@ submission, and what would it cost to own the NIF that removes part of it?"
 
 | Route                                | Shipped surface                                                                                                                      | What you own                                                                                                     | Land time here                                                   | Verdict                       |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ----------------------------- |
-| **fork/patch the `rocksdb` package** | 4 files, **+82 / −0** plus 60 lines of tests; 3 insertion points: NIF table, header, `rocksdb.erl` export + spec [M, this prototype] | the patch on every bump, and the upgrade decision forever (2.5.0 is the last 2.x; 3.x is the maintained line)    | immediate; ~30 min incremental rebuild, no new toolchain         | works; not worth it at +3.3%  |
+| **fork/patch the `rocksdb` package** | 4 files, **+82 / −0** plus 60 lines of tests; 3 insertion points: NIF table, header, `rocksdb.erl` export + spec [M, this prototype] | the patch on every bump, and the upgrade decision forever (no package line has this call)                        | immediate; ~30 min incremental rebuild, no new toolchain         | works; not worth it at +3.3%  |
 | **local NIF binding**                | would need the package's `WriteBatch` resource type **and** its private `struct Batch` layout **and** the vendored RocksDB C++ ABI   | everything above, against internals with no compatibility contract, plus a stated retraction of "No custom NIFs" | unknown; the layout dependency makes every package bump a review | not implementable as stated   |
-| **upstream it**                      | the same +82, plus tests (~60 lines)                                                                                                 | a PR, a review cycle, and a release; then nothing                                                                | one release cycle behind whatever we pin; only useful on 3.x     | the right door, if it reopens |
+| **upstream it**                      | the same +82, plus tests (~60 lines)                                                                                                 | a PR, a review cycle, and a release; then nothing                                                                | one release cycle behind whatever we pin                         | the right door, if it reopens |
 
 The fork's cost is not build tooling: this project already compiles RocksDB
 from source (`deps/rocksdb/_build/cmake`), so a patched dep adds no new
@@ -268,15 +269,18 @@ declarations, the `rocksdb.erl` export list). Conflicts would be textual and
 compile-time visible, not silent: the function is compiled inside `batch.cc`,
 so a `struct Batch` change breaks the build rather than the data.
 
-**Which line it has to track.** 2.5.0 (2026-01-07) is the last 2.x release.
-3.0.0 (2026-06-13) moved to vendored RocksDB 11.1.1 and removed `write/3`;
-3.1.0–3.1.2 followed through 2026-07-25, and 3.1.2 vendors RocksDB 11.1.2. A
-fork pinned at 2.5.0 sits on a closed line: every future fix (including
-`batch.cc` fixes) has to be carried by hand, and the first time this project
-wants a 3.x feature it pays the rebase _and_ the dep upgrade in the same PR.
-That is the real cost — not the patch, which is small, but that the patch
-converts a cheap dependency into a maintained one on a branch nobody else
-tests.
+**Which line it has to track.** The patch exists on no package line, so
+whichever one this repo sits on, the patch is re-applied by hand at every bump.
+The lines themselves: 2.6.2 (2026-04-05) is the last 2.x, vendoring RocksDB
+10.10.1; 3.0.0 (2026-06-13) moved to RocksDB 11.1.1 and removed `write/3`, and
+3.1.0–3.1.2 followed through 2026-07-25 with 3.1.2 on RocksDB 11.1.2. This
+repo's constraint (`~> 2.5`) already allows 2.6.x, and its lock is at 2.5.0, so
+there are two forks to choose between: stay on 2.x and re-apply at each 2.x
+bump, or move to 3.x — which is where the package's fixes now land, including
+3.1.0's iterator use-after-free — and pay the rebase _and_ the dependency
+upgrade in the same PR. That is the real cost: not the patch, which is small,
+but that it converts a cheap dependency into a maintained one on a line nobody
+else tests.
 
 **What a maintainer actually pays.** Per quarter, with the bump cadence this
 repo has shown (`rocksdb` last moved in January 2026 and is still 2.5.0):
@@ -295,8 +299,8 @@ operations support", and the package's README invites exactly this ("If a
 particular feature of RocksDB is important to you, please let me know by
 opening an issue"). The CHANGELOG convention has a `### New Features` heading
 for it. It is **not** opened by this evaluation: the win does not justify
-asking a maintainer to carry it, and the reachable upstream line is 3.x while
-this repo pins 2.5.0.
+asking a maintainer to carry it, and a release from upstream would still have
+to reach this repo through a dependency bump.
 
 ## What would change this decision
 
