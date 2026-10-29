@@ -28,16 +28,15 @@ The denominator is the server's own modules minus the ignore list below.
 `test_coverage` in `ebb_server/mix.exs` drops the code that only exists to
 exercise or demonstrate the server:
 
-| Ignored                                 | Why                                                      |
-| --------------------------------------- | -------------------------------------------------------- |
-| `EbbServer.Bench.*`                     | benchmark scaffolding, never shipped                     |
-| `Mix.Tasks.*`                           | dev/bench/openapi task entry points                      |
-| `EbbServer.TestHelpers`                 | test support, compiled into `:test` by `elixirc_paths/1` |
-| `EbbServer.SSEHelpers`                  | test support                                             |
-| `EbbServer.Integration.*`               | test support                                             |
-| `EbbServer.Sync.Router.OperationSchema` | schema data; no test executes it yet — see below         |
-| `EbbServer.Storage.PreparedAction`      | `defstruct` only                                         |
-| `EbbServer.ActionExport.Supervisor`     | opt-in feature no test starts                            |
+| Ignored                             | Why                                                      |
+| ----------------------------------- | -------------------------------------------------------- |
+| `EbbServer.Bench.*`                 | benchmark scaffolding, never shipped                     |
+| `Mix.Tasks.*`                       | dev/bench/openapi task entry points                      |
+| `EbbServer.TestHelpers`             | test support, compiled into `:test` by `elixirc_paths/1` |
+| `EbbServer.SSEHelpers`              | test support                                             |
+| `EbbServer.Integration.*`           | test support                                             |
+| `EbbServer.Storage.PreparedAction`  | `defstruct` only                                         |
+| `EbbServer.ActionExport.Supervisor` | opt-in feature no test starts                            |
 
 `lib/` alone is not the denominator: `test/support` is compiled into `:test`,
 so an unfiltered run charges the tests for their own helpers. The ignore list
@@ -46,19 +45,20 @@ takes the number down, which is the point of an honest measurement.
 `ignore_modules` accepts module atoms or `%Regex{}` — there are no globs, so
 module families are matched by prefix regex.
 
-`EbbServer.Sync.Router.OperationSchema` is ignored until a spec-generation test
-executes the schemas; that test is slice 9 of
-[#641](https://github.com/ebbjs/ebbjs/issues/641), and the ignore entry goes
-away with it. It is 19 lines of pure data at 0%, and keeping it in would leave
-the gate about one line of headroom.
+`EbbServer.Sync.Router.OperationSchema` is counted: `router_openapi_test.exs`
+drives the same operation builders `mix openapi.gen.spec` uses and asserts the
+shared schemas, so the schema data is exercised rather than ignored.
 
 ## The total
 
-With this filter the suite reports **90.0–90.1%** across runs (measured after
-[#632](https://github.com/ebbjs/ebbjs/issues/632), which cleared the RocksDB
-open/close failure paths, the storage tree's own restart path, and the
-readiness probe's degraded-tree branch). Before that, the same suite reported
-89.5–89.7%.
+With this filter the suite reports **93.0–93.1%** (3658 lines, 253 missed,
+measured after [#641](https://github.com/ebbjs/ebbjs/issues/641)'s
+recovery-path slices). Before #632 the same suite reported 89.5–89.7%; that
+issue cleared the RocksDB open/close and restart paths and the probe's
+child-not-running branch. #641 covered the remaining recovery paths: the
+probe's other degraded states, the router's error mappings, the memberships
+keyset, the SQLite query net, the patch/merge and cache-failure corners, and
+the queue/pool defence arms.
 Unfiltered, the suite printed 76.89% (5660 lines, 1308 missed) before #632:
 the difference is entirely bench, mix-task and test-support lines. To see that
 view again, remove `test_coverage` from `mix.exs`; #640 quotes 77.0%/1302 from
@@ -71,16 +71,14 @@ of the threshold as noise, not as a regression signal.
 
 ## The threshold
 
-`summary: [threshold: 89]` in `ebb_server/mix.exs`. After #632 the suite sits
-about a point above that, several times the run-to-run noise.
+`summary: [threshold: 90]` in `ebb_server/mix.exs`. After #632 the suite sat
+just barely above 90, inside the run-to-run noise band, so the gate stayed at
+89 until [#641](https://github.com/ebbjs/ebbjs/issues/641)'s recovery-path
+tests gave it roughly three points of headroom.
 
-The threshold stays at 89 rather than moving to 90 with #632: the measured
-total is close enough to 90 that a 90 gate would sit inside the noise band
-above, and a gate that fails one run in five is worse than no gate.
-[#641](https://github.com/ebbjs/ebbjs/issues/641) owns the bump, which lands
-with its first slice — the readiness probe's degraded states — where the total
-clears 90 with room to spare. Its slices are ranked by risk rather than by
-distance to the number.
+The threshold is a floor, not a target: the slices that moved it were ranked
+by risk removed — the code that only runs when something has already gone
+wrong — rather than by distance to the number.
 
 Raising the threshold without covering the lines behind it only turns a red
 build into noise, so the number moves with the tests, not ahead of them.

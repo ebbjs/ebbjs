@@ -154,6 +154,18 @@ defmodule EbbServer.Storage.AuthorizerTest do
     }
   end
 
+  # A patch's wire form carries only the fields it changes; `group_member_patch/3`
+  # above always names both.
+  defp group_member_patch_without_permissions(id, group_id) do
+    %{
+      id: "#{id}_patch",
+      subject_id: id,
+      subject_type: "groupMember",
+      method: :patch,
+      data: %{"fields" => %{"group_id" => %{"value" => group_id}}}
+    }
+  end
+
   defp relationship_put(id, source_id, target_id, source_type) do
     %{
       id: id,
@@ -491,6 +503,21 @@ defmodule EbbServer.Storage.AuthorizerTest do
         ])
 
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "groupMember delete without wire data is refused when the index cannot place the row" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_group_member(tables, "g_1", ["groupMember.delete"], "gm_actor")
+
+      # The delete wire form drops the data fields, so the group has to come
+      # from the index. Nothing places an unknown row, and authorizing the
+      # delete against no group at all would be no check.
+      action = build_action([group_member_delete("gm_ghost")])
+
+      rejection = assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+      assert rejection.details == "cannot resolve the group for this groupMember"
     end
 
     test "groupMember delete resolves group_id from cache after a put" do
@@ -1121,6 +1148,34 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action = build_action([relationship_patch("rel_victim", "todo_victim", "col_y")])
 
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "refuses a put that names no source" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      # The actor is a group member, so the refusal is not a plain
+      # permission miss.
+      put_group_member(tables, "g_1", ["relationship.*"])
+
+      # A put with no source has no group set to authorize against, and
+      # falling back to the row's own groups would authorize an edge nobody
+      # owns.
+      update = %{
+        id: "upd_rel",
+        subject_id: "rel_1",
+        subject_type: "relationship",
+        method: :put,
+        data: %{"fields" => %{"target_id" => %{"value" => "col_2"}}}
+      }
+
+      rejection =
+        assert_rejected(
+          Authorizer.authorize([build_action([update])], "a_1", ctx),
+          "not_authorized"
+        )
+
+      assert rejection.details == "relationship source type is unresolvable"
     end
 
     test "accepts a brand-new relationship row" do
@@ -1770,6 +1825,70 @@ defmodule EbbServer.Storage.AuthorizerTest do
       put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
 
       action = build_action([group_member_patch("gm_1", "g_1", [])])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "a patch that omits permissions keeps the row's permission list", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      # The actor's own row is the group's only capable membership and the
+      # patch does not mention permissions: dropping them would lock the
+      # group out, so a missing field has to mean "unchanged".
+      put_group_member(tables, "g_1", ["groupMember.update"], "gm_actor")
+
+      action = build_action([group_member_patch_without_permissions("gm_actor", "g_1")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "a patch to a row the same Action put resolves against the request", %{ctx: ctx} do
+      # The group, the capable row and the patch to it all ride one Action,
+      # so the row exists only in the request's own delta. Reading the empty
+      # cache instead would drop the permissions the put declared and refuse
+      # the Action as a lockout.
+      action =
+        build_action([
+          group_put("g_new"),
+          group_member_put("gm_own", "a_1", "g_new", ["groupMember.update"]),
+          group_member_patch_without_permissions("gm_own", "g_new")
+        ])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "deleting the same membership row twice in one Action counts once", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_1", ["groupMember.delete"], "gm_actor")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+
+      # The retried delete names a row the request has already removed, so
+      # the delta has nothing left to subtract and must not read the row as
+      # still present.
+      action =
+        build_action([
+          group_member_delete("gm_1"),
+          %{group_member_delete("gm_1") | id: "upd_gm_1_retry"}
+        ])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "a by-group entry whose row is no longer cached is not counted", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_group_member(tables, "g_1", ["groupMember.update"], "gm_actor")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+
+      # The by-group index can lag the by-id cache; an id it still lists but
+      # nothing resolves must be skipped rather than counted or crash.
+      :ets.insert(tables.group_members_by_group, {{"g_1", "gm_ghost"}})
+
+      action = build_action([group_member_patch_without_permissions("gm_1", "g_1")])
 
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end

@@ -29,15 +29,14 @@ defmodule EbbServer.MixProject do
   # Coverage measures the code that ships: bench, mix-task and test-support
   # scaffolding compiled into `:test` only dilutes the gate. The entries below
   # and their reasoning live in docs/tooling/ebb-server-coverage.md; the
-  # threshold is the staging point #632 and #641 move up as their tests land.
+  # threshold's headroom comes from the recovery-path tests in #641.
   defp test_coverage do
     [
-      summary: [threshold: 89],
+      summary: [threshold: 90],
       ignore_modules: [
         ~r/^EbbServer\.Bench\./,
         ~r/^Mix\.Tasks\./,
         ~r/^EbbServer\.(TestHelpers|SSEHelpers|Integration\.)/,
-        ~r/^EbbServer\.Sync\.Router\.OperationSchema$/,
         EbbServer.Storage.PreparedAction,
         EbbServer.ActionExport.Supervisor
       ]

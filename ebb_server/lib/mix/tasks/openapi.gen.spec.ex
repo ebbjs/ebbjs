@@ -81,7 +81,8 @@ defmodule Mix.Tasks.Openapi.Gen.Spec do
     Mix.shell().info("Written OpenAPI spec to #{spec_path}")
   end
 
-  defp routes do
+  @doc false
+  def routes do
     [
       %{method: :get, path: "/healthz", operation_atom: :health},
       %{method: :post, path: "/sync/actions", operation_atom: :write_actions},
