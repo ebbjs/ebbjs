@@ -670,7 +670,7 @@ once per range (per group for the group-scoped hops). Use
 per-frame work off the server's schedulers when measuring server cost, and
 `--subscriber-socket` to measure the real-socket end with the consumers in
 separate OS processes (see
-[`bench/RESULTS.md`](bench/RESULTS.md#real-socket-fan-out-659)). `conn_deliver`
+[`bench/RESULTS.md`](bench/RESULTS.md#real-socket-fan-out-on-one-host-659)). `conn_deliver`
 and `conn_chunk` are per subscriber and ride the same
 `:fanout_conn_sample_rate` stride (default 1-in-100; `0` off, `1` every
 delivery); the other hops are never sampled. Reports use

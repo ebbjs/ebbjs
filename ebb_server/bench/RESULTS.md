@@ -53,7 +53,7 @@ mix bench.actions --tier t2 --duration 20 --warmup 3 --concurrency 8 \
 
 Real-socket fan-out rows use `--subscriber-socket` instead of
 `--subscriber-lean`; see
-[Real-socket fan-out](#real-socket-fan-out-659) for that command and its
+[Real-socket fan-out on one host](#real-socket-fan-out-on-one-host-659) for that command and its
 sample stride.
 
 Tier meanings: `t0` = `Writer.write_actions/1` directly; `t1` = real
@@ -1223,7 +1223,7 @@ SSEConnection → parent `send/2` return. Since
 end of `conn_deliver` is the parent send, not the SSE handler's `chunk/2`, so
 these are still in-process-subscriber numbers, not real-socket numbers; the
 socket end is measured in
-[Real-socket fan-out](#real-socket-fan-out-659).
+[Real-socket fan-out on one host](#real-socket-fan-out-on-one-host-659).
 
 Measured **2026-10-28** on `recsy-vps` (the environment table above), t4 with
 the lean subscriber, batch 100, 2-Update Actions, `hot`, 25 s measured window
@@ -1302,7 +1302,7 @@ the 27.6 ms is mostly scheduler time shared with the consumer, not an
 intrinsically expensive send. With a cheap but realistic consumer the server
 path is **~9 ms**; with no per-frame work it is **~5 ms**. The 31 ms headline
 is a same-box worst case, not the server-only cost. That inference now has a
-socket measurement: see [Real-socket fan-out](#real-socket-fan-out-659), where
+socket measurement: see [Real-socket fan-out on one host](#real-socket-fan-out-on-one-host-659), where
 commit → `chunk/2` at n=1000 is 59.6 ms p50 and the push sample is 26.3 ms.
 
 That changes the next-step order:
@@ -1555,7 +1555,7 @@ decision is the only route past it. `group_encode` at G=1 is now ≤5% of its
 former value (9 µs against 1,371 µs), which is the flatten, exactly as AC1
 restated it.
 
-## Real-socket fan-out (#659)
+## Real-socket fan-out on one host (#659)
 
 [#659](https://github.com/ebbjs/ebbjs/issues/659) takes the fan-out headline
 off the in-process harness. `--subscriber-socket` replaces the in-process
@@ -1564,8 +1564,16 @@ consumed by `EbbServer.Bench.SocketClient` in a separate OS process
 (`--socket-processes`; the default is one process per 250 connections capped
 at the scheduler count, which is 1/1/4 at n = 1/100/1000 here). The consumers
 run off the server's BEAM schedulers, so their CPU is no longer in the
-server's sample, but they still share this host's four vCPUs: this is a
-same-host socket measurement, not a remote-client one.
+server's sample, but they still share this host's four vCPUs.
+
+**What these rows are, and are not.** They are a _same-host bound_: the
+consumers' CPU is outside the server's sample but not off the box, so the
+commit → `chunk/2` rows are not a production server cost, and the r=1000
+collapse does not establish a server ceiling. What they do establish is the
+shape of the chain: the push sample ends ~33 ms before `chunk/2` at
+n=1000/r=300, the socket-write leg is real, and the in-process dispatch span
+is indistinguishable from the socket one. The off-box number is tracked in
+[#682](https://github.com/ebbjs/ebbjs/issues/682).
 
 The server end of the chain moves from `conn_deliver` (the parent `send/2`
 returning) to the new `conn_chunk` hop: the range's commit → the SSE handler's
@@ -1730,10 +1738,11 @@ the timers do not move the loop they measure.
 
 The consumers are separate OS processes but not a separate host: they share
 the four vCPUs with the server, which is what produces the 33 ms socket leg
-and the r=1000 collapse. A remote-client run on a second host would remove
-that CPU competition and add network transit, so the two terms can be
-separated; that machine is not available here and remains the honest gap. The
-10,000-subscriber shape still needs the dedicated load-test machine (gap 4).
+and the r=1000 collapse. A remote-client run on a second host removes that CPU
+competition and adds network transit, so the two terms can be separated; the
+machine is available and the run is tracked in
+[#682](https://github.com/ebbjs/ebbjs/issues/682). The 10,000-subscriber shape
+still needs the dedicated load-test machine (gap 4).
 
 ## Writer batch coalescing (#332)
 
@@ -3156,11 +3165,12 @@ runs per side (hot, batch 100) gave medians of 26,670/s before and
    figures are therefore not a perfectly clean server-only measurement, though
    the extra client work only makes the ~6× CPU win at r=300 conservative. The
    production-shaped (real SSE socket) measurement landed in
-   [#659](#real-socket-fan-out-659): `--subscriber-socket` runs the consumers
+   [#659](#real-socket-fan-out-on-one-host-659): `--subscriber-socket` runs the consumers
    in separate OS processes and the server hop closes at `Plug.Conn.chunk/2`.
    The t3/t4 tables in this document remain the in-process rows; the socket
    rows (and the r=1000 consumer ceiling) are in that section. The clients
-   still share this host's four vCPUs, so a second host remains open.
+   still share this host's four vCPUs, so the off-box capacity run is tracked
+   in [#682](https://github.com/ebbjs/ebbjs/issues/682).
 4. **10k-subscriber fan-out** — needs a dedicated load-test machine and is
    out of scope here.
 5. **Action-log compaction/retention**
