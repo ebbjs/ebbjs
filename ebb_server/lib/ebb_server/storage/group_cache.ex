@@ -14,6 +14,8 @@ defmodule EbbServer.Storage.GroupCache do
 
   use GenServer
 
+  alias EbbServer.Storage.CacheTables
+
   @default_group_members :ebb_group_members
   @default_group_members_by_id :ebb_group_members_by_id
   @default_group_members_by_group :ebb_group_members_by_group
@@ -33,6 +35,11 @@ defmodule EbbServer.Storage.GroupCache do
   @doc """
   Stores a group membership entry.
 
+  `opts` carries the tables of the cache instance the row belongs to:
+  `:group_members`, `:group_members_by_id` and `:group_members_by_group`.
+  A caller holding a specific cache set must pass all three; any omitted
+  table falls back to the one published for the running cache.
+
   Accepts both atom keys (`:actor_id`) and string keys (`"actor_id"`).
 
   ## Examples
@@ -40,10 +47,14 @@ defmodule EbbServer.Storage.GroupCache do
       iex> GroupCache.put_group_member(%{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["read"]})
       :ok
   """
-  @spec put_group_member(map(), atom()) :: :ok | {:error, :nil_values_not_allowed}
-  def put_group_member(member, table \\ @default_group_members) do
-    by_id_table = by_id_table()
-    by_group_table = by_group_table()
+  @spec put_group_member(map(), keyword()) :: :ok | {:error, :nil_values_not_allowed}
+  def put_group_member(member, opts \\ []) do
+    %{
+      group_members: table,
+      group_members_by_id: by_id_table,
+      group_members_by_group: by_group_table
+    } =
+      resolve_tables(opts)
 
     actor_id = member[:actor_id] || member["actor_id"]
     group_id = member[:group_id] || member["group_id"]
@@ -82,15 +93,21 @@ defmodule EbbServer.Storage.GroupCache do
   @doc """
   Deletes a group membership entry by member ID.
 
+  `opts` names the cache instance's tables, as in `put_group_member/2`.
+
   ## Examples
 
       iex> GroupCache.delete_group_member("gm_1")
       :ok
   """
-  @spec delete_group_member(String.t(), atom()) :: :ok
-  def delete_group_member(member_id, table \\ @default_group_members) do
-    by_id_table = by_id_table()
-    by_group_table = by_group_table()
+  @spec delete_group_member(String.t(), keyword()) :: :ok
+  def delete_group_member(member_id, opts \\ []) do
+    %{
+      group_members: table,
+      group_members_by_id: by_id_table,
+      group_members_by_group: by_group_table
+    } =
+      resolve_tables(opts)
 
     case :ets.lookup(by_id_table, member_id) do
       [{_, %{actor_id: actor_id, group_id: group_id}}] ->
@@ -131,7 +148,7 @@ defmodule EbbServer.Storage.GroupCache do
       nil
   """
   @spec get_group_member(String.t(), atom()) :: map() | nil
-  def get_group_member(member_id, table \\ @default_group_members_by_id) do
+  def get_group_member(member_id, table \\ CacheTables.group_members_by_id()) do
     case :ets.lookup(table, member_id) do
       [{_, entry}] -> entry
       [] -> nil
@@ -155,7 +172,7 @@ defmodule EbbServer.Storage.GroupCache do
       []
   """
   @spec group_member_ids(String.t(), atom()) :: [String.t()]
-  def group_member_ids(group_id, table \\ @default_group_members_by_group) do
+  def group_member_ids(group_id, table \\ CacheTables.group_members_by_group()) do
     :ets.select(table, [{{{group_id, :"$1"}}, [], [:"$1"]}])
   end
 
@@ -213,17 +230,40 @@ defmodule EbbServer.Storage.GroupCache do
   @doc """
   Resets the group cache by clearing all entries.
 
+  `opts` names the cache instance's tables, as in `put_group_member/2`.
+
   ## Examples
 
       iex> GroupCache.reset()
       :ok
   """
-  @spec reset(atom()) :: :ok
-  def reset(table \\ @default_group_members) do
+  @spec reset(keyword()) :: :ok
+  def reset(opts \\ []) do
+    %{
+      group_members: table,
+      group_members_by_id: by_id_table,
+      group_members_by_group: by_group_table
+    } =
+      resolve_tables(opts)
+
     reset_table(table, :bag)
-    reset_table(by_id_table(), :set)
-    reset_table(by_group_table(), :ordered_set)
+    reset_table(by_id_table, :set)
+    reset_table(by_group_table, :ordered_set)
     :ok
+  end
+
+  # Resolve a call's table set once: explicit options win, and an omitted table
+  # falls back to the instance published for the running cache. Threading all
+  # three from the caller is what keeps one cache's write out of another's
+  # indexes (#424).
+  defp resolve_tables(opts) do
+    %{
+      group_members: Keyword.get(opts, :group_members) || CacheTables.group_members(),
+      group_members_by_id:
+        Keyword.get(opts, :group_members_by_id) || CacheTables.group_members_by_id(),
+      group_members_by_group:
+        Keyword.get(opts, :group_members_by_group) || CacheTables.group_members_by_group()
+    }
   end
 
   defp reset_table(table, type) do
@@ -238,17 +278,6 @@ defmodule EbbServer.Storage.GroupCache do
           ArgumentError -> :ets.new(table, [type, :public, :named_table])
         end
     end
-  end
-
-  # By-id and by-group table names are published by the supervisor at
-  # boot; the defaults here let unit tests run without standing the
-  # supervisor up.
-  defp by_id_table do
-    :persistent_term.get({__MODULE__, :group_members_by_id}, @default_group_members_by_id)
-  end
-
-  defp by_group_table do
-    :persistent_term.get({__MODULE__, :group_members_by_group}, @default_group_members_by_group)
   end
 
   defp drop_stale_by_group(member_id, by_id_table, by_group_table) do

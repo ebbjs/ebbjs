@@ -54,7 +54,11 @@ defmodule EbbServer.Storage.EntityIndexTest do
         relationships_by_id: rbi
       )
 
-      GroupCache.reset(gm)
+      GroupCache.reset(
+        group_members: gm,
+        group_members_by_id: gm_by_id,
+        group_members_by_group: gm_by_group
+      )
 
       EntityGroupCache.reset(
         entity_groups: eg,
@@ -145,7 +149,9 @@ defmodule EbbServer.Storage.EntityIndexTest do
       :ok =
         GroupCache.put_group_member(
           %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
-          t.group_members
+          group_members: t.group_members,
+          group_members_by_id: t.group_members_by_id,
+          group_members_by_group: t.group_members_by_group
         )
 
       assert EntityIndex.resolve_groups("groupMember", "gm_1", opts(t)) == ["g_1"]

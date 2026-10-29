@@ -411,6 +411,7 @@ defmodule EbbServer.Storage.Writer do
           gsn_counter: :atomics.atomics(),
           group_members: atom(),
           group_members_by_id: atom(),
+          group_members_by_group: atom(),
           entity_groups: atom(),
           entity_groups_by_id: atom(),
           entity_groups_by_group: atom(),
@@ -439,6 +440,10 @@ defmodule EbbServer.Storage.Writer do
           watermark_tracker: GenServer.name() | nil,
           in_flight_actions: GenServer.name() | nil
         }
+  # The Writer holds the full group-cache table set so a cache write never
+  # resolves a table globally (#424). #196's bundled table set will bring this
+  # back under the field cap; until then the extra field is deliberate.
+  # credo:disable-for-next-line /Check\.Warning\.StructFieldAmount/
   defstruct [
     :name,
     :rocks_name,
@@ -446,6 +451,7 @@ defmodule EbbServer.Storage.Writer do
     :gsn_counter,
     :group_members,
     :group_members_by_id,
+    :group_members_by_group,
     :entity_groups,
     :entity_groups_by_id,
     :entity_groups_by_group,
@@ -599,6 +605,13 @@ defmodule EbbServer.Storage.Writer do
         opts,
         :group_members_by_id,
         CacheTables.group_members_by_id()
+      )
+
+    group_members_by_group =
+      Keyword.get(
+        opts,
+        :group_members_by_group,
+        CacheTables.group_members_by_group()
       )
 
     entity_groups =
@@ -786,6 +799,7 @@ defmodule EbbServer.Storage.Writer do
       gsn_counter: gsn_counter,
       group_members: group_members,
       group_members_by_id: group_members_by_id,
+      group_members_by_group: group_members_by_group,
       entity_groups: entity_groups,
       entity_groups_by_id: entity_groups_by_id,
       entity_groups_by_group: entity_groups_by_group,
@@ -2126,11 +2140,11 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp apply_cache_mutation({:group_member_put, row}, state) do
-    GroupCache.put_group_member(row, state.group_members)
+    GroupCache.put_group_member(row, group_cache_opts(state))
   end
 
   defp apply_cache_mutation({:group_member_delete, id}, state) do
-    GroupCache.delete_group_member(id, state.group_members)
+    GroupCache.delete_group_member(id, group_cache_opts(state))
   end
 
   defp apply_cache_mutation({:entity_group_put, row}, state) do
@@ -2360,6 +2374,14 @@ defmodule EbbServer.Storage.Writer do
     end
 
     :ok
+  end
+
+  defp group_cache_opts(state) do
+    [
+      group_members: state.group_members,
+      group_members_by_id: state.group_members_by_id,
+      group_members_by_group: state.group_members_by_group
+    ]
   end
 
   defp resolve_cache_opts(state) do
