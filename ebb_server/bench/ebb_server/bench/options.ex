@@ -81,6 +81,22 @@ defmodule EbbServer.Bench.Options do
   correct while removing the consumer's CPU from the same 4-scheduler box,
   so a run can separate server fan-out cost from consumer cost. It is
   allowed only on `t3`/`t4` and cannot be combined with `--subscriber-lean`.
+
+  ## Real-socket subscribers
+
+  `--subscriber-socket` replaces the in-process subscribers with real SSE
+  connections served over loopback TCP and consumed by separate OS processes
+  (`EbbServer.Bench.SocketSubscribers`), so the consumer no longer shares the
+  server's schedulers. It is allowed only on `t3`/`t4`, requires
+  `--subscribers > 0`, and cannot be combined with `--subscriber-lean` or
+  `--subscriber-count-only`.
+
+  `--socket-processes` sets how many OS processes those connections are
+  spread over, `1 <= K <= subscribers`; `0` (the default) picks the auto rule:
+  one process per 250 connections, at least one, and no more than
+  `min(subscribers, schedulers_online())` so the clients fan out across the
+  host's cores without opening a VM per socket. The resolved count is what the
+  report prints, because it is part of the measurement shape.
   """
 
   @type tier :: :t0 | :t1 | :t2 | :t3 | :t4 | :t5
@@ -125,6 +141,8 @@ defmodule EbbServer.Bench.Options do
           conn_sample_rate: non_neg_integer(),
           subscriber_lean: boolean(),
           subscriber_count_only: boolean(),
+          subscriber_socket: boolean(),
+          socket_processes: non_neg_integer(),
           ablate: [ablate_phase()],
           baseline: String.t() | nil,
           guardrails: boolean()
@@ -153,6 +171,8 @@ defmodule EbbServer.Bench.Options do
             conn_sample_rate: 100,
             subscriber_lean: false,
             subscriber_count_only: false,
+            subscriber_socket: false,
+            socket_processes: 0,
             ablate: [],
             baseline: nil,
             guardrails: true
@@ -160,6 +180,9 @@ defmodule EbbServer.Bench.Options do
   @tiers %{"t0" => :t0, "t1" => :t1, "t2" => :t2, "t3" => :t3, "t4" => :t4, "t5" => :t5}
   @durabilities %{"sync" => :sync, "async" => :async}
   @distributions %{"spread" => :spread, "hot" => :hot}
+  # One client OS process per this many connections keeps a single BEAM's
+  # parse cost off the critical path; the cap keeps the clients on one host.
+  @socket_connections_per_process 250
   @updates_per_action [1, 2, 10]
 
   # Canonical order for the parsed list and the printed command.
@@ -206,6 +229,8 @@ defmodule EbbServer.Bench.Options do
     conn_sample_rate: :integer,
     subscriber_lean: :boolean,
     subscriber_count_only: :boolean,
+    subscriber_socket: :boolean,
+    socket_processes: :integer,
     ablate: :string,
     baseline: :string,
     guardrails: :boolean
@@ -263,7 +288,27 @@ defmodule EbbServer.Bench.Options do
       {"Port", "#{config.port}"},
       {"Seed", "#{config.seed}"},
       {"Output", config.out || "(default)"}
-    ] ++ lean_description(config)
+    ] ++ lean_description(config) ++ socket_description(config)
+  end
+
+  defp socket_description(%{subscriber_socket: true} = config) do
+    resolved = socket_processes(config)
+
+    mode =
+      if config.socket_processes > 0,
+        do: "explicit",
+        else: "auto (1 process per 250 connections, capped at schedulers)"
+
+    [
+      {"Socket subscriber connections", "#{config.subscribers} real SSE streams"},
+      {"Socket client processes", "#{resolved} — #{mode}"}
+    ]
+  end
+
+  defp socket_description(_config), do: []
+
+  defp lean_description(%{subscriber_socket: true}) do
+    [{"Subscriber mode", "socket (real SSE, consumed by separate OS processes)"}]
   end
 
   defp lean_description(%{subscriber_count_only: true}) do
@@ -324,6 +369,8 @@ defmodule EbbServer.Bench.Options do
   defp optional_command_args(config) do
     [
       {config.stall_commits > 0, "--stall-commits #{config.stall_commits}"},
+      {config.subscriber_socket, "--subscriber-socket"},
+      {config.subscriber_socket, "--socket-processes #{socket_processes(config)}"},
       {config.subscriber_count_only, "--subscriber-count-only"},
       {config.subscriber_lean, "--subscriber-lean"},
       {not config.guardrails, "--no-guardrails"},
@@ -357,6 +404,8 @@ defmodule EbbServer.Bench.Options do
       "subscribers" => config.subscribers,
       "subscriber_lean" => config.subscriber_lean,
       "subscriber_count_only" => config.subscriber_count_only,
+      "subscriber_socket" => config.subscriber_socket,
+      "socket_processes" => socket_processes(config) || 0,
       "rate" => config.rate,
       "ablate" => Enum.map(config.ablate, &Atom.to_string/1)
     }
@@ -436,6 +485,39 @@ defmodule EbbServer.Bench.Options do
     max(div(batch_size * 1_000_000, rate), 1)
   end
 
+  @doc """
+  Resolved number of client OS processes for a socket run, or `nil` when the
+  run does not use the socket subscriber.
+
+  `--socket-processes K` is used as given; `0` means the auto rule:
+  `auto_socket_processes/2`.
+  """
+  @spec socket_processes(t()) :: pos_integer() | nil
+  def socket_processes(%__MODULE__{subscriber_socket: false}), do: nil
+  def socket_processes(%__MODULE__{socket_processes: processes}) when processes > 0, do: processes
+
+  def socket_processes(%__MODULE__{subscribers: subscribers}),
+    do: auto_socket_processes(subscribers)
+
+  @doc """
+  The auto rule for the number of socket client processes.
+
+  One process per #{@socket_connections_per_process} connections, at least
+  one, capped at `min(subscribers, schedulers)` so the clients spread over the
+  host's cores but never outnumber the connections they carry.
+  """
+  @spec auto_socket_processes(non_neg_integer(), pos_integer()) :: non_neg_integer()
+  def auto_socket_processes(subscribers, schedulers \\ System.schedulers_online())
+
+  def auto_socket_processes(0, _schedulers), do: 0
+
+  def auto_socket_processes(subscribers, schedulers) do
+    per_process =
+      div(subscribers + @socket_connections_per_process - 1, @socket_connections_per_process)
+
+    min(max(per_process, 1), min(subscribers, max(schedulers, 1)))
+  end
+
   defp apply_opts(opts, config) do
     Enum.reduce(opts, config, &put_opt/2)
   end
@@ -472,6 +554,8 @@ defmodule EbbServer.Bench.Options do
 
   defp put_opt({:subscriber_lean, value}, acc), do: %{acc | subscriber_lean: value}
   defp put_opt({:subscriber_count_only, value}, acc), do: %{acc | subscriber_count_only: value}
+  defp put_opt({:subscriber_socket, value}, acc), do: %{acc | subscriber_socket: value}
+  defp put_opt({:socket_processes, value}, acc), do: %{acc | socket_processes: value}
   defp put_opt({:ablate, value}, acc), do: %{acc | ablate: split_ablate(value)}
   defp put_opt({:baseline, value}, acc), do: %{acc | baseline: value}
   defp put_opt({:guardrails, value}, acc), do: %{acc | guardrails: value}
@@ -601,7 +685,8 @@ defmodule EbbServer.Bench.Options do
          :ok <- check(config.batch_max_size > 0, "--batch-max-size must be at least 1"),
          :ok <- check(config.commit_timeout_ms >= 0, "--commit-timeout-ms must be zero or more"),
          :ok <- check(config.stall_commits >= 0, "--stall-commits must be zero or more"),
-         :ok <- check(config.conn_sample_rate >= 0, "--conn-sample-rate must be zero or more") do
+         :ok <- check(config.conn_sample_rate >= 0, "--conn-sample-rate must be zero or more"),
+         :ok <- check(config.socket_processes >= 0, "--socket-processes must be zero or more") do
       check(config.rate >= 0, "--rate must be zero or more Actions/sec")
     end
   end
@@ -621,8 +706,9 @@ defmodule EbbServer.Bench.Options do
          :ok <- validate_tier_concurrency(tier, config),
          :ok <- validate_subscribers(tier, config),
          :ok <- validate_tier_ablate(tier, config) do
-      with :ok <- validate_lean(tier, config) do
-        validate_count_only(tier, config)
+      with :ok <- validate_lean(tier, config),
+           :ok <- validate_count_only(tier, config) do
+        validate_socket(tier, config)
       end
     end
   end
@@ -693,6 +779,50 @@ defmodule EbbServer.Bench.Options do
 
   defp validate_count_only(_tier, _config),
     do: {:error, "--subscriber-count-only is only supported with --tier t3 or t4"}
+
+  # A socket run replaces the in-process consumer entirely, so the two
+  # consumer-side modes are mutually exclusive with it and it needs somewhere
+  # to connect.
+  defp validate_socket(tier, config) do
+    with :ok <- validate_socket_tier(tier, config),
+         :ok <- validate_socket_subscribers(config),
+         :ok <- validate_socket_modes(config) do
+      validate_socket_processes(config)
+    end
+  end
+
+  defp validate_socket_tier(_tier, %{subscriber_socket: false}), do: :ok
+  defp validate_socket_tier(tier, _config) when tier in [:t3, :t4], do: :ok
+
+  defp validate_socket_tier(_tier, _config),
+    do: {:error, "--subscriber-socket is only supported with --tier t3 or t4"}
+
+  defp validate_socket_subscribers(%{subscriber_socket: true, subscribers: 0}),
+    do: {:error, "--subscriber-socket requires --subscribers > 0"}
+
+  defp validate_socket_subscribers(_config), do: :ok
+
+  defp validate_socket_modes(%{subscriber_socket: true, subscriber_lean: true}),
+    do: {:error, "--subscriber-socket cannot be combined with --subscriber-lean"}
+
+  defp validate_socket_modes(%{subscriber_socket: true, subscriber_count_only: true}),
+    do: {:error, "--subscriber-socket cannot be combined with --subscriber-count-only"}
+
+  defp validate_socket_modes(_config), do: :ok
+
+  defp validate_socket_processes(%{socket_processes: 0}), do: :ok
+
+  defp validate_socket_processes(%{subscriber_socket: false}),
+    do: {:error, "--socket-processes requires --subscriber-socket"}
+
+  defp validate_socket_processes(%{socket_processes: processes, subscribers: subscribers})
+       when processes >= 1 and processes <= subscribers,
+       do: :ok
+
+  defp validate_socket_processes(%{socket_processes: processes, subscribers: subscribers}),
+    do:
+      {:error,
+       "--socket-processes must be between 1 and --subscribers (#{subscribers}), got #{processes}"}
 
   # Ablation removes Writer phases from the flush critical path; t5 builds the
   # op list itself, so only the phases that name an op group apply.

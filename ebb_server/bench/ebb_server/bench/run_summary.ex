@@ -27,6 +27,8 @@ defmodule EbbServer.Bench.RunSummary do
           errors: non_neg_integer() | nil,
           gsn_holes: non_neg_integer() | nil,
           gsn_first_hole: pos_integer() | nil,
+          socket_holes: non_neg_integer() | nil,
+          socket_errors: non_neg_integer() | nil,
           watermark_lag_high: integer() | nil,
           watermark_lag_final: integer() | nil
         }
@@ -42,7 +44,7 @@ defmodule EbbServer.Bench.RunSummary do
       Options.workload(run_config(run, config)),
       overall(run.metrics.throughput) || %{},
       overall(run.metrics.latency) || %{},
-      run.metrics.correctness
+      Map.merge(run.metrics.correctness, socket_correctness(run.metrics))
     )
   end
 
@@ -54,12 +56,22 @@ defmodule EbbServer.Bench.RunSummary do
     build(
       run["label"],
       run["depth"],
-      run["config"],
+      # Defaults fill any option a report predates, so an older baseline still
+      # matches on the workload fields it does carry.
+      Map.merge(Options.workload(%Options{}), run["config"] || %{}),
       run["throughput"] || %{},
       run["latency"] || %{},
       run["correctness"] || %{}
     )
   end
+
+  # A real-socket run gates on what the clients saw on the wire, so their hole
+  # and error counts ride along with the server-side correctness fields.
+  defp socket_correctness(%{fanout: %{socket: socket}}) when is_map(socket) do
+    %{socket_holes: socket.holes, socket_errors: socket.errors}
+  end
+
+  defp socket_correctness(_metrics), do: %{}
 
   @doc """
   The effective config for a pass, falling back to the metrics a test-only
@@ -101,6 +113,8 @@ defmodule EbbServer.Bench.RunSummary do
       errors: value(correctness, "errors", :errors),
       gsn_holes: value(correctness, "gsn_holes", :gsn_holes),
       gsn_first_hole: value(correctness, "gsn_first_hole", :gsn_first_hole),
+      socket_holes: value(correctness, "socket_holes", :socket_holes),
+      socket_errors: value(correctness, "socket_errors", :socket_errors),
       watermark_lag_high: value(correctness, "watermark_lag_high", :watermark_lag_high),
       watermark_lag_final: value(correctness, "watermark_lag_final", :watermark_lag_final)
     }

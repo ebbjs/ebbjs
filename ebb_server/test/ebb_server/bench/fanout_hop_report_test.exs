@@ -54,7 +54,8 @@ defmodule EbbServer.Bench.FanoutHopReportTest do
              "| `writer_notify` (context: #537 `notify` phase) | 1 | 60 | 60 | 60 | — | — |"
 
     # router_queue + router_dwell + router_decode + router_encode + group_queue
-    # + group_encode + group_cast, with conn_deliver (400) deliberately excluded.
+    # + group_encode + group_cast, with conn_deliver (400) deliberately
+    # excluded — and conn_chunk alongside it once the server branch lands.
     assert report =~ "| Sum of push-side hop p50s | — | 6700 | — | — | +700 | +11.7% |"
   end
 
@@ -65,7 +66,11 @@ defmodule EbbServer.Bench.FanoutHopReportTest do
     assert report =~ "sampled 1 delivery in 100 (`--conn-sample-rate 100`)"
     assert report =~ "Its sample count is therefore not the delivery count"
     assert report =~ "parent `send/2` returning rather than the SSE handler's `chunk/2`"
-    assert report =~ "`conn_deliver` is excluded because it is per subscriber"
+
+    assert report =~
+             "`conn_deliver` and `conn_chunk` are excluded because both are per subscriber"
+
+    assert report =~ "`conn_chunk` is the other per-subscriber hop"
     assert report =~ "A hop with no samples in the window contributes 0"
     assert report =~ "#537's `notify` phase in `ebb.writer.flush_phase_ms`"
     assert report =~ "immediately before the re-based push sample"
@@ -83,6 +88,21 @@ defmodule EbbServer.Bench.FanoutHopReportTest do
 
       assert report =~ expected
     end
+  end
+
+  test "conn_chunk is reported per subscriber and kept out of the push-side sum" do
+    {:ok, config} = Options.parse(["--duration", "20"])
+
+    telemetry =
+      Map.merge(@hop_telemetry, %{
+        {:fanout_hop, :conn_chunk} => [{0, 9_000}, {1_000_000, 9_500}]
+      })
+
+    report = render(config, analyze(config, telemetry))
+
+    # Same push-side sum as the in-process run: conn_deliver (400) and
+    # conn_chunk (9000) are per-subscriber and deliberately outside it.
+    assert report =~ "| Sum of push-side hop p50s | — | 6700 | — | — | +700 | +11.7% |"
   end
 
   test "is skipped when no hop has a sample" do

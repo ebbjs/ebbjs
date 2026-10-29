@@ -206,4 +206,116 @@ defmodule EbbServer.Bench.RunnerTest do
       end
     end
   end
+
+  describe "real-socket fan-out wiring" do
+    defmodule FakeSocketSubscribers do
+      @moduledoc false
+      def delivered(:handle), do: 4_096
+      def stop_all(:handle), do: %{subscribers: 1, processes: 1, holes: 0, errors: 0}
+    end
+
+    test "a socket run starts the socket subscriber, not the in-process one" do
+      config = socket_config()
+      assert Runner.subscriber_source(config) == EbbServer.Bench.SocketSubscribers
+
+      {:ok, in_process} = Options.parse(["--tier", "t3", "--subscribers", "10"])
+      assert Runner.subscriber_source(in_process) == EbbServer.Bench.Subscriber
+
+      {:ok, none} = Options.parse(["--tier", "t0"])
+      assert Runner.subscriber_source(none) == nil
+    end
+
+    test "a t4 or t3 run without the flag keeps the in-process subscriber" do
+      for tier <- ~w(t3 t4) do
+        args = ["--tier", tier, "--subscribers", "10"]
+        args = if tier == "t4", do: args ++ ["--rate", "100"], else: args
+
+        {:ok, config} = Options.parse(args)
+        assert Runner.subscriber_source(config) == EbbServer.Bench.Subscriber
+      end
+    end
+
+    test "the socket client gets the run's port, process count, warmup and duration" do
+      {:ok, config} =
+        Options.parse([
+          "--tier",
+          "t4",
+          "--rate",
+          "300",
+          "--subscribers",
+          "1000",
+          "--subscriber-socket",
+          "--socket-processes",
+          "4",
+          "--warmup",
+          "5",
+          "--duration",
+          "25",
+          "--port",
+          "4222"
+        ])
+
+      assert Runner.socket_opts(config) == [
+               port: 4222,
+               processes: 4,
+               warmup: 5,
+               duration: 25
+             ]
+    end
+
+    test "the sampler and the report read the subscriber source's counters" do
+      config = socket_config()
+      source = Runner.subscriber_source(config)
+
+      # A fake module stands in for the OS clients so the dispatch is testable
+      # without opening 1000 sockets.
+      assert Runner.fanout_delivered(FakeSocketSubscribers, :handle) == 4_096
+
+      assert Runner.stop_fanout(FakeSocketSubscribers, :handle) == %{
+               subscribers: 1,
+               processes: 1,
+               holes: 0,
+               errors: 0
+             }
+
+      assert Runner.fanout_delivered(nil, nil) == nil
+      assert Runner.stop_fanout(nil, nil) == nil
+      assert source == EbbServer.Bench.SocketSubscribers
+    end
+
+    test "the baseline pass of a socket sweep is a plain t0 run" do
+      {:ok, config} =
+        Options.parse([
+          "--tier",
+          "t3",
+          "--subscribers",
+          "10",
+          "--subscriber-socket",
+          "--in-flight",
+          "1,2"
+        ])
+
+      assert [%{label: "t0 baseline", config: baseline} | _rest] = Runner.passes(config)
+      assert baseline.tier == :t0
+      refute baseline.subscriber_socket
+      assert baseline.socket_processes == 0
+    end
+
+    defp socket_config do
+      {:ok, config} =
+        Options.parse([
+          "--tier",
+          "t4",
+          "--rate",
+          "300",
+          "--subscribers",
+          "10",
+          "--subscriber-socket",
+          "--socket-processes",
+          "2"
+        ])
+
+      config
+    end
+  end
 end

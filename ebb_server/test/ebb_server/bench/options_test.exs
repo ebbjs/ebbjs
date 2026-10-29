@@ -636,4 +636,128 @@ defmodule EbbServer.Bench.OptionsTest do
       assert message =~ "--stall-commits"
     end
   end
+
+  describe "--subscriber-socket" do
+    test "defaults off, with the auto client-process rule" do
+      assert {:ok, config} = Options.parse([])
+      refute config.subscriber_socket
+      assert config.socket_processes == 0
+      assert Options.socket_processes(config) == nil
+    end
+
+    test "parses on t3 and t4 with a connection count" do
+      for tier <- ~w(t3 t4) do
+        args = ["--tier", tier, "--subscribers", "100", "--subscriber-socket"]
+        args = if tier == "t4", do: args ++ ["--rate", "100"], else: args
+
+        assert {:ok, config} = Options.parse(args)
+        assert config.subscriber_socket
+      end
+    end
+
+    test "is rejected on tiers with no subscriber support" do
+      for tier <- ~w(t0 t1 t2 t5) do
+        assert {:error, message} =
+                 Options.parse(["--tier", tier, "--subscribers", "10", "--subscriber-socket"])
+
+        assert message =~ "t3 or t4"
+      end
+    end
+
+    test "requires subscribers" do
+      assert {:error, message} =
+               Options.parse(["--tier", "t3", "--subscriber-socket"])
+
+      assert message =~ "--subscribers > 0"
+    end
+
+    test "cannot be combined with the in-process consumer modes" do
+      assert {:error, lean} =
+               Options.parse([
+                 "--tier",
+                 "t3",
+                 "--subscribers",
+                 "10",
+                 "--subscriber-socket",
+                 "--subscriber-lean"
+               ])
+
+      assert lean =~ "--subscriber-lean"
+
+      assert {:error, count_only} =
+               Options.parse([
+                 "--tier",
+                 "t3",
+                 "--subscribers",
+                 "10",
+                 "--subscriber-socket",
+                 "--subscriber-count-only"
+               ])
+
+      assert count_only =~ "--subscriber-count-only"
+    end
+
+    test "socket processes must stay between one and the subscriber count" do
+      base = ["--tier", "t3", "--subscribers", "10", "--subscriber-socket"]
+
+      assert {:ok, config} = Options.parse(base ++ ["--socket-processes", "4"])
+      assert config.socket_processes == 4
+      assert Options.socket_processes(config) == 4
+
+      assert {:ok, _config} = Options.parse(base ++ ["--socket-processes", "10"])
+
+      for invalid <- ["11", "-1"] do
+        assert {:error, message} = Options.parse(base ++ ["--socket-processes", invalid])
+        assert message =~ "--socket-processes"
+      end
+    end
+
+    test "socket processes without the socket subscriber is an error" do
+      assert {:error, message} =
+               Options.parse(["--tier", "t3", "--subscribers", "10", "--socket-processes", "2"])
+
+      assert message =~ "--socket-processes requires --subscriber-socket"
+    end
+
+    test "the auto rule spreads connections over schedulers, never one VM per socket" do
+      assert Options.auto_socket_processes(0, 8) == 0
+      assert Options.auto_socket_processes(1, 8) == 1
+      assert Options.auto_socket_processes(100, 8) == 1
+      assert Options.auto_socket_processes(100, 1) == 1
+      assert Options.auto_socket_processes(1_000, 32) == 4
+      assert Options.auto_socket_processes(1_000, 2) == 2
+      assert Options.auto_socket_processes(10, 32) == 1
+    end
+
+    test "describe and the reproduction command carry the resolved shape" do
+      args = ["--tier", "t3", "--subscribers", "10", "--subscriber-socket"]
+      {:ok, config} = Options.parse(args ++ ["--socket-processes", "3"])
+      values = Map.new(Options.describe(config))
+
+      assert values["Subscriber mode"] =~ "socket"
+      assert values["Socket subscriber connections"] == "10 real SSE streams"
+      assert values["Socket client processes"] =~ "3 — explicit"
+
+      command = Options.command(config)
+      assert command =~ "--subscriber-socket"
+      assert command =~ "--socket-processes 3"
+
+      {:ok, auto} = Options.parse(args)
+      assert Map.new(Options.describe(auto))["Socket client processes"] =~ "auto"
+      assert Options.command(auto) =~ "--socket-processes #{Options.auto_socket_processes(10)}"
+    end
+
+    test "the workload carries both options for baseline matching" do
+      {:ok, config} =
+        Options.parse(["--tier", "t3", "--subscribers", "10", "--subscriber-socket"])
+
+      workload = Options.workload(config)
+      assert workload["subscriber_socket"] == true
+      assert workload["socket_processes"] == Options.auto_socket_processes(10)
+
+      {:ok, plain} = Options.parse([])
+      assert Options.workload(plain)["subscriber_socket"] == false
+      assert Options.workload(plain)["socket_processes"] == 0
+    end
+  end
 end
