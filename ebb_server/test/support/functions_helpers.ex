@@ -309,3 +309,52 @@ defmodule EbbServer.TestFunctions.Bundles do
     |> then(fn t -> {{t.year, t.month, t.day}, {t.hour, t.minute, t.second}} end)
   end
 end
+
+defmodule EbbServer.TestFunctions.InputScriptedWorker do
+  @moduledoc """
+  A transport that answers from the `invoke` frame's `input`.
+
+  `%{"hang" => true}` never answers, so the invocation runs into its deadline;
+  anything else answers `%{"echo" => input}` at once. One configured transport
+  can therefore serve a timeout and then a success on the same router, which is
+  how the endpoint proves a deadline did not take the server down.
+
+  A `:notify` pid receives `:functions_worker_started` once per worker, so a
+  request refused before checkout can assert it spawned none.
+  """
+
+  @behaviour EbbServer.Functions.Worker
+
+  @impl true
+  def start(opts) do
+    if notify = Keyword.get(opts, :notify) do
+      send(notify, :functions_worker_started)
+    end
+
+    {:ok, %{owner: Keyword.get(opts, :owner, self())}}
+  end
+
+  @impl true
+  def send_frame(%{owner: owner}, %{"type" => "invoke"} = frame) do
+    case frame["input"] do
+      %{"hang" => true} ->
+        :ok
+
+      input ->
+        result = %{"type" => "result", "ok" => true, "value" => %{"echo" => input}}
+        send(owner, {:functions_worker_frame, result})
+        :ok
+    end
+  end
+
+  def send_frame(_handle, _frame), do: :ok
+
+  @impl true
+  def close(_handle), do: :ok
+
+  @impl true
+  def os_pid(_handle), do: nil
+
+  @impl true
+  def alive?(_handle), do: true
+end

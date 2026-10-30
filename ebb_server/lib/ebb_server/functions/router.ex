@@ -1,0 +1,295 @@
+defmodule EbbServer.Functions.Router do
+  @moduledoc """
+  `POST /functions/:name` — invoke one function.
+
+  The route is mounted by `EbbServer.Sync.Router` only when
+  `EbbServer.Functions.enabled?/0` is true. When it is false the parent router
+  never calls this module, so the path falls through to its ordinary
+  catch-all: absent, not "disabled". That is deliberate — a flag that produced
+  a `503 disabled` would tell a caller that the feature exists on this node,
+  and it would look like a kill switch that a release, which cannot reload
+  config, can never actually operate. The flag is boot-time; see
+  `EbbServer.Functions`.
+
+  ## One invocation id, always
+
+  An `invocation_id` is minted before anything is looked up, so every response
+  — success, unknown function, denied, malformed body, timeout — carries one in
+  the body and in `x-ebb-invocation-id`. It is `"inv_" <> nanoid(16)` over the
+  same `[0-9a-z]` alphabet as `generateId("inv")`, so it belongs to the one id
+  space the storage layer indexes.
+
+  ## Order of work
+
+  1. Read the body within a size limit.
+  2. Resolve the active bundle through `EbbServer.Functions.BundleCache`.
+  3. Authorize with `EbbServer.Functions.Access` — before any worker is
+     spawned, so a denied request costs nothing.
+  4. Build the `invoke` frame and hand it to
+     `EbbServer.Functions.Invocation.run/1`.
+
+  A tampered or broken bundle is a `500`, never a `404`: a digest mismatch is
+  not a typo in the URL, and answering `not_found` for a bundle that exists but
+  fails verification would hide a bad deploy.
+
+  ## Size limit
+
+  The request body is read with `#{EbbServer.Functions.Protocol.max_frame_bytes()}`
+  bytes — 1 MiB, i.e. the protocol frame bound — as its limit, in 64 KiB
+  chunks, so an oversize body is refused without being buffered whole. That is
+  this slice's derived limit rather than a separate number: the body becomes
+  the `input` field of the `invoke` frame, so a body bigger than the frame
+  bound can never fit, and a smaller one still might not once the bundle's code
+  is added. The assembled frame is therefore measured before it is sent, and
+  either case answers `413 payload_too_large` through
+  `EbbServer.Functions.Response`.
+
+  ## Options
+
+  Router options exist so tests can avoid the registered process and the
+  application's ETS tables. They are read from the assign
+  `copy_opts_to_assign` gives them, because `Plug.Router` compiles function
+  plugs with their options at build time:
+
+    * `:cache` — the `EbbServer.Functions.BundleCache` to ask (default
+      `EbbServer.Functions.BundleCache`)
+    * `:group_members_table` — the ETS table holding grants (default
+      `EbbServer.Storage.CacheTables.group_members/0`)
+
+  Everything else (the worker transport, its options, and the bundle
+  directory) comes from `EbbServer.Functions` config, because it describes the
+  node rather than the request.
+  """
+
+  use Plug.Router, copy_opts_to_assign: :functions_opts
+
+  alias EbbServer.Functions
+  alias EbbServer.Functions.{Access, BundleCache, Invocation, Protocol, Response}
+  alias EbbServer.Storage.CacheTables
+
+  # The body of an `invoke` frame is the bundle's code plus this request's
+  # input; a request body can never usefully be larger than a whole frame.
+  @max_body_bytes Protocol.max_frame_bytes()
+  @read_chunk_bytes 64 * 1024
+  # v1's only host ops are one pure read and one commit, so this is a
+  # runaway-loop guard rather than a budget anyone is expected to hit.
+  @max_host_calls 1000
+
+  plug(:match)
+  plug(:dispatch)
+
+  post "/:name" do
+    invocation_id = new_invocation_id()
+    name = conn.path_params["name"]
+
+    case conn.assigns[:actor_id] do
+      nil -> respond(conn, Response.failure(401, invocation_id: invocation_id))
+      actor_id -> invoke(conn, name, actor_id, invocation_id)
+    end
+  end
+
+  # `Plug.Router` requires a catch-all. The parent only forwards
+  # `["functions", name]`, so this answers a wrong method exactly as the
+  # parent's own catch-all would.
+  match _ do
+    conn |> Plug.Conn.send_resp(404, "") |> Plug.Conn.halt()
+  end
+
+  defp cache(conn) do
+    Keyword.get(conn.assigns.functions_opts, :cache, BundleCache)
+  end
+
+  defp group_members_table(conn) do
+    Keyword.get(
+      conn.assigns.functions_opts,
+      :group_members_table,
+      CacheTables.group_members()
+    )
+  end
+
+  defp new_invocation_id do
+    "inv_" <> Nanoid.generate(16, "abcdefghijklmnopqrstuvwxyz0123456789")
+  end
+
+  defp invoke(conn, name, actor_id, invocation_id) do
+    case read_input(conn) do
+      {:ok, input, conn} ->
+        run(conn, name, actor_id, invocation_id, input)
+
+      {:error, status, details, conn} ->
+        respond(conn, Response.failure(status, invocation_id: invocation_id, details: details))
+    end
+  end
+
+  # An empty body is no parameters; a JSON body must be an object because the
+  # frame's `input` is the function's argument map.
+  defp read_input(conn) do
+    case Plug.Conn.read_body(conn, length: @max_body_bytes, read_length: @read_chunk_bytes) do
+      {:ok, "", conn} ->
+        {:ok, %{}, conn}
+
+      {:ok, body, conn} ->
+        decode_input(body, conn)
+
+      {:more, _partial, conn} ->
+        {:error, 413, "request body exceeds #{@max_body_bytes} bytes", conn}
+
+      {:error, _reason} ->
+        {:error, 400, "request body could not be read", conn}
+    end
+  end
+
+  defp decode_input(body, conn) do
+    case Jason.decode(body) do
+      {:ok, %{} = input} -> {:ok, input, conn}
+      {:ok, _other} -> {:error, 400, "request body must be a JSON object", conn}
+      {:error, _reason} -> {:error, 400, "request body is not valid JSON", conn}
+    end
+  end
+
+  defp run(conn, name, actor_id, invocation_id, input) do
+    case active_bundle(conn, name, invocation_id) do
+      {:ok, bundle} ->
+        authorize_and_run(conn, bundle, actor_id, invocation_id, input)
+
+      {:error, response} ->
+        respond(conn, response)
+    end
+  end
+
+  # A cache that is not running while the flag says enabled is a broken boot,
+  # not a client error; answer in the envelope rather than raising out of the
+  # request process.
+  defp active_bundle(conn, name, invocation_id) do
+    case BundleCache.active(name, cache(conn)) do
+      {:ok, bundle} ->
+        {:ok, bundle}
+
+      {:error, :unknown_function} ->
+        {:error, Response.failure(404, invocation_id: invocation_id)}
+
+      {:error, reason} ->
+        {:error,
+         Response.failure(500, invocation_id: invocation_id, details: lookup_details(reason))}
+    end
+  catch
+    :exit, _reason ->
+      {:error,
+       Response.failure(500,
+         invocation_id: invocation_id,
+         details: "bundle cache is unavailable"
+       )}
+  end
+
+  # A caller that may not invoke this function never reaches the transport, so
+  # a denied request spawns nothing.
+  defp authorize_and_run(conn, bundle, actor_id, invocation_id, input) do
+    table = group_members_table(conn)
+
+    case Access.authorize(bundle.access, actor_id, bundle.name, table: table) do
+      :ok ->
+        respond(conn, execute(bundle, actor_id, invocation_id, input))
+
+      {:error, :denied} ->
+        respond(
+          conn,
+          Response.failure(403, invocation_id: invocation_id, version: bundle.version)
+        )
+    end
+  end
+
+  defp execute(bundle, actor_id, invocation_id, input) do
+    frame = invoke_frame(bundle, actor_id, invocation_id, input)
+
+    if frame_too_large?(frame) do
+      Response.failure(413,
+        invocation_id: invocation_id,
+        version: bundle.version,
+        details: "invoke frame exceeds #{Protocol.max_frame_bytes()} bytes"
+      )
+    else
+      bundle
+      |> run_invocation(frame)
+      |> to_response(invocation_id, bundle.version)
+    end
+  end
+
+  defp invoke_frame(bundle, actor_id, invocation_id, input) do
+    Protocol.invoke(%{
+      "invocation_id" => invocation_id,
+      "name" => bundle.name,
+      "version" => bundle.version,
+      "digest" => bundle.digest,
+      "bundle" => bundle.code,
+      "entry" => bundle.entry,
+      "input" => input,
+      "subject_actor_id" => actor_id,
+      # Secrets are #597; v1 hands a function no environment.
+      "env" => %{},
+      "limits" => %{"timeout_ms" => bundle.timeout_ms, "max_host_calls" => @max_host_calls}
+    })
+  end
+
+  defp frame_too_large?(frame) do
+    IO.iodata_length(Jason.encode_to_iodata!(frame)) > Protocol.max_frame_bytes()
+  end
+
+  defp run_invocation(bundle, frame) do
+    Invocation.run(
+      transport: Functions.transport(),
+      invoke: frame,
+      worker_opts: Functions.worker_opts(),
+      deadline_ms: bundle.timeout_ms
+    )
+  end
+
+  defp to_response({:ok, value}, invocation_id, version) do
+    Response.success(value, invocation_id: invocation_id, version: version)
+  end
+
+  defp to_response({:error, status, details}, invocation_id, version) do
+    Response.failure(status, invocation_id: invocation_id, version: version, details: details)
+  end
+
+  # Loader failures are described for an operator without echoing internals or
+  # a stack: the status is the classification, the detail is a reason a person
+  # can act on.
+  defp lookup_details(:digest_mismatch), do: "bundle digest does not match its code"
+
+  defp lookup_details({:duplicate_active_version, {_name, version}}),
+    do: "more than one bundle is deployed as version #{version}"
+
+  defp lookup_details({:invalid_bundle, _reason}), do: "the active bundle is invalid"
+  defp lookup_details({:loader_failed, _reason}), do: "the bundle could not be loaded"
+
+  # Every body and header is built by `Response`; this is the only place that
+  # writes them to the conn.
+  defp respond(conn, {status, body, headers} = response) do
+    case Jason.encode(body) do
+      {:ok, json} -> send_body(conn, status, json, headers)
+      {:error, _reason} -> respond(conn, unencodable(response))
+    end
+  end
+
+  defp unencodable({_status, body, _headers}) do
+    Response.failure(500,
+      invocation_id: body["invocation_id"],
+      version: body["version"],
+      details: "response could not be encoded"
+    )
+  end
+
+  defp send_body(conn, status, json, headers) do
+    conn
+    |> Plug.Conn.put_resp_content_type("application/json")
+    |> put_headers(headers)
+    |> Plug.Conn.send_resp(status, json)
+    |> Plug.Conn.halt()
+  end
+
+  defp put_headers(conn, headers) do
+    Enum.reduce(headers, conn, fn {name, value}, conn ->
+      Plug.Conn.put_resp_header(conn, name, value)
+    end)
+  end
+end
