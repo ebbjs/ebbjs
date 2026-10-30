@@ -184,3 +184,128 @@ defmodule EbbServer.TestFunctions.NoMonitorWorker do
   @impl true
   def alive?(%{pid: pid}), do: Process.alive?(pid)
 end
+
+defmodule EbbServer.TestFunctions.Bundles do
+  @moduledoc """
+  Temp bundle directories for the bundle, loader, and cache tests.
+
+  Every test writes its own `<name>@<version>.envelope.json` + `<name>@<version>.js`
+  pair into a fresh directory, so a test can replace, corrupt, or remove a file
+  without leaving anything behind for the next test or in the repo.
+  """
+
+  alias EbbServer.Functions.Bundle
+
+  @default_code "export const proofreadDocument = () => ({ ok: true });"
+
+  @doc """
+  The code every helper-written bundle carries unless the test supplies its own.
+  """
+  @spec code() :: String.t()
+  def code, do: @default_code
+
+  @doc """
+  Creates a temp bundle directory for the calling test and removes it on exit.
+  """
+  @spec tmp_bundle_dir() :: String.t()
+  def tmp_bundle_dir do
+    dir =
+      Path.join([
+        System.tmp_dir!(),
+        "ebb_server_bundles",
+        "#{System.unique_integer([:positive])}_#{System.os_time(:nanosecond)}"
+      ])
+
+    File.mkdir_p!(dir)
+    ExUnit.Callbacks.on_exit(fn -> File.rm_rf(dir) end)
+    dir
+  end
+
+  @doc """
+  A valid envelope for `name`, with `overrides` merged over the defaults.
+
+  The default digest is the digest of `code/0`, so a test that writes its own
+  code passes `%{"digest" => Bundle.digest_for(code)}` instead.
+  """
+  @spec envelope(String.t(), map()) :: map()
+  def envelope(name, overrides \\ %{}) do
+    Map.merge(
+      %{
+        "name" => name,
+        "version" => "1.0.0",
+        "digest" => Bundle.digest_for(@default_code),
+        "runtime" => "bun",
+        "contract" => 1,
+        "access" => "granted",
+        "timeoutMs" => 30_000,
+        "memoryBytes" => 268_435_456,
+        "entry" => name
+      },
+      overrides
+    )
+  end
+
+  @doc """
+  Writes an envelope and its code into `dir` under `name@version`.
+
+  `:filename_version` writes the pair under a different version than the
+  envelope claims, which is how the loader's disagreement paths are tested.
+  """
+  @spec write_bundle!(String.t(), map(), String.t(), keyword()) :: map()
+  def write_bundle!(dir, envelope, code \\ @default_code, opts \\ []) do
+    envelope = Map.put_new(envelope, "digest", Bundle.digest_for(code))
+    version = Keyword.get(opts, :filename_version, envelope["version"])
+    write_envelope!(dir, envelope, version)
+    write_code!(dir, envelope["name"], version, code)
+    envelope
+  end
+
+  @doc """
+  Writes just an envelope, JSON-encoded, and returns its path.
+  """
+  @spec write_envelope!(String.t(), map(), String.t() | nil) :: String.t()
+  def write_envelope!(dir, envelope, version \\ nil) do
+    version = version || envelope["version"]
+    path = Path.join(dir, "#{envelope["name"]}@#{version}.envelope.json")
+    File.mkdir_p!(dir)
+    File.write!(path, Jason.encode!(envelope))
+    path
+  end
+
+  @doc """
+  Writes just a code file and returns its path.
+  """
+  @spec write_code!(String.t(), String.t(), String.t(), String.t()) :: String.t()
+  def write_code!(dir, name, version, code \\ @default_code) do
+    path = Path.join(dir, "#{name}@#{version}.js")
+    File.mkdir_p!(dir)
+    File.write!(path, code)
+    path
+  end
+
+  @doc """
+  Writes raw bytes to `basename` inside `dir`, for malformed-file tests.
+  """
+  @spec write_raw!(String.t(), String.t(), binary()) :: String.t()
+  def write_raw!(dir, basename, bytes) do
+    path = Path.join(dir, basename)
+    File.mkdir_p!(dir)
+    File.write!(path, bytes)
+    path
+  end
+
+  @doc """
+  Sets `path`'s mtime to a fixed instant, so ordering tests never sleep.
+  """
+  @spec set_mtime!(String.t(), non_neg_integer()) :: :ok
+  def set_mtime!(path, unix_seconds) do
+    File.touch!(path, erl_datetime(unix_seconds))
+  end
+
+  defp erl_datetime(unix_seconds) do
+    ~U[1970-01-01 00:00:00Z]
+    |> DateTime.add(unix_seconds, :second)
+    |> Map.take([:year, :month, :day, :hour, :minute, :second])
+    |> then(fn t -> {{t.year, t.month, t.day}, {t.hour, t.minute, t.second}} end)
+  end
+end
