@@ -8,7 +8,9 @@
  * - create with an `assignee` relationship in one atomic Action and read
  *   it back through the `assignee` join;
  * - update, relationship filter, unlink, and soft delete;
- * - two actors in one shared group converge on the same issue state.
+ * - two actors in one shared group converge on the same issue state;
+ * - an offline actor's queued field edit merges with the other actor's
+ *   live edit instead of overwriting it.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -72,6 +74,32 @@ async function seedSharedGroup(seeder: Client): Promise<void> {
 let alice: Client | null = null;
 let bob: Client | null = null;
 let seeder: Client | null = null;
+
+/**
+ * A fetch gate that makes a client's network unreachable on demand, so a
+ * write is enqueued in the Outbox and applied locally while the client is
+ * "offline". Reopening the gate lets the scheduler retry the backlog.
+ */
+function gatedFetch(): { readonly fetchImpl: typeof fetch; setOffline(offline: boolean): void } {
+  let offline = false;
+  return {
+    fetchImpl: (input, init) =>
+      offline ? Promise.reject(new TypeError("offline")) : fetch(input, init),
+    setOffline(next: boolean) {
+      offline = next;
+    },
+  };
+}
+
+/** Poll the public outbox observable until the backlog has been accepted. */
+async function waitForOutboxDrain(client: Client, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (client.sync.outbox.get().pending === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("outbox: pending writes did not drain");
+}
 
 beforeAll(async () => {
   if (!(await serverIsReachable())) {
@@ -172,6 +200,60 @@ describe("integration: issue CRUD", () => {
     for (const row of [aliceFinal, bobFinal]) {
       expect(row?.status).toBe("done");
       expect(row?.priority).toBe("urgent");
+    }
+  });
+
+  it("merges an offline actor's queued field edit with the other actor's live edit", async () => {
+    if (!(await serverIsReachable())) return;
+
+    const created = await alice!.issue.create(
+      { title: `Offline merge ${Date.now().toString(36)}`, status: "todo", priority: "low" },
+      { groups: [SHARED_GROUP_ID] },
+    );
+    await catchUpGroup(bob!, SHARED_GROUP_ID);
+
+    const gate = gatedFetch();
+    const offlineAlice = createClient({
+      serverUrl: SERVER_URL,
+      actorId: ALICE,
+      schema,
+      fetchImpl: gate.fetchImpl,
+      reconnectInitialMs: 50,
+      reconnectMaxMs: 200,
+    });
+
+    try {
+      await offlineAlice.handshake();
+      await catchUpGroup(offlineAlice, SHARED_GROUP_ID);
+
+      // Alice edits while her network is down: the write is applied to her
+      // replica and held in the Outbox, but never reaches the server.
+      gate.setOffline(true);
+      await expect(offlineAlice.issue.update(created.id, { priority: "urgent" })).rejects.toThrow();
+      const offlineRow = findRow(await offlineAlice.issue.query(), created.id);
+      expect(offlineRow?.priority).toBe("urgent");
+      expect(offlineRow?.status).toBe("todo");
+
+      // Bob changes a different field while she is away.
+      await bob!.issue.update(created.id, { status: "done" });
+      await catchUpGroup(bob!, SHARED_GROUP_ID);
+
+      // Reconnect: the scheduler retries the queued Action, then both
+      // replicas catch up on each other's field.
+      gate.setOffline(false);
+      await waitForOutboxDrain(offlineAlice);
+      await catchUpGroup(offlineAlice, SHARED_GROUP_ID);
+      await catchUpGroup(bob!, SHARED_GROUP_ID);
+
+      for (const client of [offlineAlice, bob!]) {
+        const rows = await client.issue.query();
+        const matches = rows.filter((candidate) => candidate.id === created.id);
+        expect(matches).toHaveLength(1);
+        expect(matches[0]?.status).toBe("done");
+        expect(matches[0]?.priority).toBe("urgent");
+      }
+    } finally {
+      offlineAlice.close();
     }
   });
 });

@@ -8,8 +8,8 @@
  *
  * Ready state is wrapped in `EbbProvider`, so the header's
  * `useConnection()` badge, the workspace switcher, the membership
- * panel, the profile card, and the issue list all read the typed client
- * from context.
+ * panel, the profile card, and the issue list/board all read the typed
+ * client from context.
  */
 
 import { useEffect, useState } from "react";
@@ -18,7 +18,7 @@ import { ActorPicker, type ActorId } from "./ActorPicker";
 import { ConnectionBadge } from "./ConnectionBadge";
 import { IssueCreateForm } from "./IssueCreateForm";
 import { IssueDetail } from "./IssueDetail";
-import { IssueList } from "./IssueList";
+import { IssuesPanel } from "./IssuesPanel";
 import { MembershipPanel } from "./MembershipPanel";
 import { ProfileCard } from "./ProfileCard";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
@@ -137,7 +137,7 @@ function AppShell({
         <ProfileCard actorId={actorId} />
         <MembershipPanel actorId={actorId} bootstrap={bootstrap} />
         <div className="grid gap-4 xl:grid-cols-2">
-          <IssueList
+          <IssuesPanel
             selectedId={selectedId}
             onSelect={(id) => {
               setCreating(false);

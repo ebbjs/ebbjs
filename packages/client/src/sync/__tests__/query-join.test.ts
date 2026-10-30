@@ -18,6 +18,7 @@ import { defineRelationship } from "../../schema/relationship";
 import { defineSchema } from "../../schema/schema";
 import type { GroupFields } from "../../schema/system-entities";
 import { createClient } from "../client";
+import type { QueryRowOf } from "../../index";
 import type { EntityFields } from "../namespace";
 import { planQuery } from "../query-plan";
 import type { ProjectedRow, QueryRow } from "../query-builder";
@@ -265,6 +266,24 @@ describe("with(...) — typing", () => {
       // @ts-expect-error tags was not selected
       void narrow.tags;
     }
+  });
+
+  it("exposes the same row type through QueryRowOf", () => {
+    const base = {} as QueryRowOf<typeof schema, "issue">;
+    expectTypeOf(base.groupIds).toEqualTypeOf<readonly string[]>();
+    expectTypeOf(base.title).toEqualTypeOf<string>();
+
+    const row = {} as QueryRowOf<typeof schema, "issue", "assignee" | "groups">;
+    expectTypeOf(row.assignee).toEqualTypeOf<UserRow | null>();
+    expectTypeOf(row.groups).toEqualTypeOf<readonly GroupRow[]>();
+    expectTypeOf(row.groupIds).toEqualTypeOf<readonly string[]>();
+    expectTypeOf(row.title).toEqualTypeOf<string>();
+    // @ts-expect-error tags was not selected
+    void row.tags;
+
+    // @ts-expect-error "nope" is not a join on issue
+    const invalid: QueryRowOf<typeof schema, "issue", "nope"> = {} as never;
+    void invalid;
   });
 
   it("rejects nested and unknown selectors at the type level", () => {

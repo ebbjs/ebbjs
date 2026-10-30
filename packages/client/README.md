@@ -87,6 +87,15 @@ fires on change) and the chain's own `.subscribe(listener)` is the shorthand.
 Two chains that lower to the same query share one cached result, so a remount
 reads it back instead of re-running. In React, `useQuery` wraps this surface.
 
+Name the row a query returns with `QueryRowOf`, passing the schema and the
+`with(...)` join keys you selected. It derives the same projection the query
+returns, so a view type cannot drift from the schema:
+
+```typescript
+type IssueRow = QueryRowOf<typeof schema, "issue", "assignee">;
+const issues: readonly IssueRow[] = await client.issue.query().with({ assignee: true });
+```
+
 ### Materialization
 
 An entity type is `held` (the replica materializes every row) or `on-demand`

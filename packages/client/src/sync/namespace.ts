@@ -48,6 +48,7 @@ import {
   projectFieldValue,
   projectRow,
   type JoinRecord,
+  type JoinedRow,
   type MembershipJoin,
   type NoJoins,
   type PointerValue,
@@ -572,6 +573,46 @@ export type QueryRoot<S> = {
     ? { readonly query: TQuery }
     : never;
 };
+
+/** The schema's entity map; `never` for a value that is not a schema. */
+type SchemaEntities<S> = S extends Schema<infer TEntities, infer _TRels> ? TEntities : never;
+
+/** The schema's relationship map, or `undefined` when it declares none. */
+type SchemaRelationships<S> = S extends Schema<infer _TEntities, infer TRels> ? TRels : undefined;
+
+/** The wire fields of the schema entity named `TName`. */
+type FieldsFor<S, TName extends keyof SchemaEntities<S> & string> = WireFields<
+  EntityFields<SchemaEntities<S>[TName]>
+>;
+
+/** The joins a query over `TName` exposes: its relationships plus `groups`. */
+type JoinsFor<S, TName extends string> = JoinRecord<SchemaRelationships<S>, TName> & MembershipJoin;
+
+/**
+ * The row a replica-backed query over one schema entity resolves to.
+ *
+ * `TJoinKeys` names the `with(...)` joins to project, so a view can share
+ * the exact row shape its query returns without restating the query
+ * builder's type arguments:
+ *
+ * ```ts
+ * type IssueRow = QueryRowOf<Schema, "issue", "assignee">;
+ * const issues = await client.issue.query().with({ assignee: true });
+ * ```
+ *
+ * A join key comes from the schema's relationship map (or the built-in
+ * `groups` join); selecting a key the entity does not expose is a
+ * compile error.
+ */
+export type QueryRowOf<
+  S,
+  TName extends keyof SchemaEntities<S> & string,
+  TJoinKeys extends keyof JoinsFor<S, TName> & string = never,
+> = JoinedRow<
+  FieldsFor<S, TName>,
+  Pick<JoinsFor<S, TName>, TJoinKeys>,
+  QueryRow<FieldsFor<S, TName>>
+>;
 
 /**
  * Resolve a collaborative-text body: follow the generated edge to the
