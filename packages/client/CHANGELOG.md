@@ -1,5 +1,18 @@
 # @ebbjs/client
 
+## 0.3.0
+
+### Minor Changes
+
+- fa0b984: Add `QueryRowOf<Schema, EntityName, JoinKeys>` to name the projected row a
+  query returns after `with(...)` joins, without restating the query builder's
+  type arguments.
+
+### Patch Changes
+
+- @ebbjs/core@0.3.0
+  - @ebbjs/storage@0.3.0
+
 ## 0.2.0
 
 ### Minor Changes
