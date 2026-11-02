@@ -21,15 +21,26 @@
  * IndexedDB fall back to the in-memory adapter.
  */
 
-import { createClient, type NamespacedClient } from "@ebbjs/client";
+import { createClient } from "@ebbjs/client";
 import type { StorageAdapter } from "@ebbjs/storage/types";
-import { demoActions, type DemoActions } from "./actions";
-import { schema, type Schema } from "./schema";
+import { demoActions } from "./actions";
+import { schema } from "./schema";
 import { SEEDER_ACTOR_ID, buildActorSeed, buildSharedSeed, deriveActorSeedIds } from "./seed";
 import { handshakeGroupIds, syncAllGroups } from "./sync-groups";
 
-/** The demo's client type: the schema it was built on and the actions it mounts. */
-export type IssueTrackerClient = NamespacedClient<Schema, DemoActions>;
+/**
+ * The demo's client factory: one place that knows the schema, the action
+ * map, and therefore the client type. Nothing else has to import a client
+ * type from the library.
+ */
+export const createIssueTrackerClient = (opts: {
+  serverUrl: string;
+  actorId: string;
+  storage?: StorageAdapter;
+}) => createClient({ ...opts, schema, actions: demoActions });
+
+/** The client type, read off the factory's return value rather than restated. */
+export type IssueTrackerClient = ReturnType<typeof createIssueTrackerClient>;
 
 /**
  * Durable per-actor storage, falling back to memory off the browser.
@@ -65,17 +76,12 @@ export async function bootstrap(opts: {
 }): Promise<BootstrapResult> {
   const { serverUrl, actorId } = opts;
   const storage = await createAppStorage(actorId);
-  const client = createClient({ serverUrl, actorId, schema, storage, actions: demoActions });
+  const client = createIssueTrackerClient({ serverUrl, actorId, storage });
   let seeder: IssueTrackerClient | null = null;
   try {
     await client.seed(buildActorSeed(actorId));
 
-    seeder = createClient({
-      serverUrl,
-      actorId: SEEDER_ACTOR_ID,
-      schema,
-      actions: demoActions,
-    });
+    seeder = createIssueTrackerClient({ serverUrl, actorId: SEEDER_ACTOR_ID });
     await seeder.seed(buildSharedSeed());
     await syncAllGroups(seeder);
 

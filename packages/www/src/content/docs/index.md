@@ -167,7 +167,7 @@ await server.kill();
 React bindings for `@ebbjs/client` — a provider, a connection hook, and the query hooks, plus `useClient` for actions. Ships `EbbProvider`, `useClient`, `useConnection`, and `useQuery`. `useQuery` is the read root; `useClient` exposes `client.actions`.
 
 ```tsx
-import { defineAction, type NamespacedClient } from "@ebbjs/client";
+import { createClient, defineAction } from "@ebbjs/client";
 import { EbbProvider, useClient, useQuery, type QueryRoot } from "@ebbjs/react";
 
 // Writes are actions: declared once at module scope, mounted on the client.
@@ -179,9 +179,11 @@ const removeTodo = defineAction(schema, ({ todo }, params: { id: string }) =>
 );
 const todoActions = { toggleTodo, removeTodo };
 
-// The client type names reads and actions together, so `useClient` takes one
-// generic and adding an action does not touch a call site.
-type TodoClient = NamespacedClient<Schema, typeof todoActions>;
+const client = createClient({ serverUrl, actorId, schema, actions: todoActions });
+
+// The client's own type, reads and actions together — no library types to
+// import. Wrap `useClient` in an app-local hook to drop the generic entirely.
+type TodoClient = typeof client;
 
 function OpenTodos() {
   const { data, status, loading, error } = useQuery((q: QueryRoot<Schema>) =>

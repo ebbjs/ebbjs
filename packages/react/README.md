@@ -195,8 +195,11 @@ function NewIssue({ groupId }: { groupId: string }) {
 }
 ```
 
-Naming the client once also lets a component stop carrying a generic at all —
-one module owns the type, every call site reads the same:
+Nothing above imports a type from the library: the client type is simply what
+`createClient` returned, so `defineAction`, `EntityValues` and `typeof client`
+are the whole vocabulary. Naming the client once also lets a component stop
+carrying a generic at all — one module owns the type, every call site reads the
+same:
 
 ```tsx
 // app-client.ts — the only place that knows the client's shape.

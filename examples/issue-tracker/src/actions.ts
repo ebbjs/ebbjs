@@ -134,5 +134,3 @@ export const demoActions = {
   shareProfile,
   leaveWorkspace,
 } as const;
-
-export type DemoActions = typeof demoActions;
