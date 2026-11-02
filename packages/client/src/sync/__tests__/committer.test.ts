@@ -16,7 +16,7 @@ import { defineEntity, e } from "../../schema/entity";
 import { EntityRegistry } from "../../schema/entity-registry";
 import { defineRelationship } from "../../schema/relationship";
 import {
-  AtomicActionError,
+  ActionRejectedError,
   call,
   changeGroups,
   createEntity,
@@ -239,9 +239,9 @@ describe("commit — per-Update scope (#473)", () => {
         ],
         cap,
       ),
-    )) as AtomicActionError;
+    )) as ActionRejectedError;
 
-    expect(error).toBeInstanceOf(AtomicActionError);
+    expect(error).toBeInstanceOf(ActionRejectedError);
     expect(error.rejections.map((r) => r.reason)).toEqual(["last_membership"]);
     expect(submitted).toHaveLength(0);
   });

@@ -22,8 +22,8 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createClient, type NamespacedClient } from "@ebbjs/client";
-import { schema, type Schema } from "../schema";
+import { createClient } from "@ebbjs/client";
+import { schema } from "../schema";
 import {
   SAMPLE_ISSUE_ID,
   SEED_PERMISSIONS,
@@ -43,7 +43,10 @@ const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2,
 const ACTOR_ID = `seed_it_${RUN_ID}`;
 const IDS = deriveActorSeedIds(ACTOR_ID);
 
-type Client = NamespacedClient<Schema>;
+/** This suite mounts no actions, so it builds its own bare client. */
+const createSeedClient = (actorId: string) =>
+  createClient({ serverUrl: SERVER_URL, actorId, schema });
+type Client = ReturnType<typeof createSeedClient>;
 
 let actor: Client | null = null;
 let seeder: Client | null = null;
@@ -55,10 +58,10 @@ beforeAll(async () => {
     return;
   }
 
-  actor = createClient({ serverUrl: SERVER_URL, actorId: ACTOR_ID, schema });
+  actor = createSeedClient(ACTOR_ID);
   await actor.seed(buildActorSeed(ACTOR_ID));
 
-  seeder = createClient({ serverUrl: SERVER_URL, actorId: SEEDER_ACTOR_ID, schema });
+  seeder = createSeedClient(SEEDER_ACTOR_ID);
   await seeder.seed(buildSharedSeed());
 
   actorGroupIds = await syncAllGroups(actor);

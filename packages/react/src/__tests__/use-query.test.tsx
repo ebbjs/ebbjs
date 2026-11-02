@@ -213,7 +213,7 @@ describe("useQuery", () => {
     const queryFns: Array<[unknown, unknown]> = [];
 
     function Probe() {
-      const bound = useClient<Schema>();
+      const bound = useClient<Client>();
       useQuery((q: QueryRoot<Schema>) => {
         roots.push(q);
         queryFns.push([q.todo.query, bound.todo.query]);

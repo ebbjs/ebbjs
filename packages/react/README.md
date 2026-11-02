@@ -1,16 +1,17 @@
 # `@ebbjs/react`
 
-React bindings for [`@ebbjs/client`](https://github.com/ebbjs/ebbjs/tree/main/packages/client). A thin adapter over the client's namespace and reactivity primitives — no state-management library, no `define*` symbols.
+React bindings for [`@ebbjs/client`](https://github.com/ebbjs/ebbjs/tree/main/packages/client). A thin adapter over the client's read namespaces and reactivity primitives — no state-management library, no `define*` symbols.
 
 This package ships the client plumbing plus the data hooks:
 
-- `EbbProvider` — context carrying a `NamespacedClient<S, TActions>`.
-- `useClient<S>()` — read the client, typed by the caller's schema, for writes
-  and imperative actions (`client.actions`, `client.atomic`, the namespace
-  verbs). Reads go through `useQuery`.
+- `EbbProvider` — context carrying the app's client.
+- `useClient<C>()` — read that client, typed by the _client type_ rather than
+  a schema-plus-actions pair, so one generic covers reads and `client.actions`
+  together. Reads go through `useQuery`.
 - `useConnection()` — `useSyncExternalStore` over `client.onStateChange`, returning the `ConnectionState`.
 - `useQuery()` — the reactive read root: build a query through the typed namespaces and subscribe to its cached result.
-- `useEntityMutations()` — stable `create` / `update` / `delete` pass-throughs for one namespace.
+- `createEbbHooks<C>()` — bind `useClient` and `useQuery` to your client type
+  once, so components need neither a generic nor a callback annotation.
 
 SSR / Suspense are out of scope for now.
 
@@ -29,7 +30,7 @@ import { EbbProvider, useClient, useConnection, useQuery } from "@ebbjs/react";
 ## Usage
 
 ```tsx
-import { createClient, defineEntity, defineSchema, e } from "@ebbjs/client";
+import { createClient, defineAction, defineEntity, defineSchema, e } from "@ebbjs/client";
 import { EbbProvider, useClient, useConnection, useQuery, type QueryRoot } from "@ebbjs/react";
 
 const todo = defineEntity("todo", { title: e.string(), completed: e.boolean() });
@@ -64,7 +65,7 @@ function OpenTodos() {
 
 function ConnectionBadge() {
   const state = useConnection();
-  const { actorId } = useClient<Schema>();
+  const { actorId } = useClient<typeof client>();
   return <span>{`${actorId}: ${state}`}</span>;
 }
 
@@ -172,46 +173,83 @@ internal / undocumented; `useEntity` was removed in #501.
 
 ## `useClient` and writes
 
-`useClient<Schema, TActions>()` returns the provider's client typed by the
-caller's schema and action map. It is the write surface, not a read surface:
-reads go through `useQuery`. Single-entity verbs live on the typed namespace
-(`client.issue.update`, `client.issue.link`), and multi-entity writes go
-through `client.atomic` or a `defineAction` bound to `client.actions`.
+`useClient<C>()` returns the provider's client typed by the client type
+itself. One generic covers the schema (reads) and the action map
+(`client.actions`) together, so adding an action never changes a call site.
+It is the write surface, not a read surface: reads go through `useQuery`.
+Every write is an Action: declare it once at module scope with `defineAction`,
+mount it on the client, and call it as `client.actions.<name>`.
 
 ```tsx
+// Module scope, beside the client that mounts it.
+const createIssue = defineAction(schema, ({ issue }, params: { title: string; groupId: string }) =>
+  issue.create({ title: params.title, status: "todo" }, { groups: [params.groupId] }),
+);
+
+const client = createClient({ serverUrl, actorId, schema, actions: { createIssue } });
+
+type AppClient = typeof client;
+
 function NewIssue({ groupId }: { groupId: string }) {
-  const client = useClient<Schema>();
-  const create = () =>
-    client.issue.create({ title: "Buy milk", status: "todo" }, { groups: [groupId] });
+  const client = useClient<AppClient>();
+  const create = () => client.actions.createIssue({ title: "Buy milk", groupId });
   return <button onClick={() => void create()}>new issue</button>;
 }
 ```
 
-A `defineAction` is declared once and called through the action map:
+Nothing above imports a type from the library: the client type is simply what
+`createClient` returned, so `defineAction`, `EntityValues` and `typeof client`
+are the whole vocabulary.
+
+Naming the client once also lets a component stop carrying a generic — and
+gives `useQuery` a typed `q` without the `QueryRoot<Schema>` annotation
+(TypeScript does not partially infer type arguments, so a schema type argument
+would drop the row types; binding the client is the way out):
 
 ```tsx
-const client = useClient<Schema, typeof workspaceActions>();
-await client.actions.addToWorkspace({ actorId, profileId, groupId, permissions });
+// use-ebb.ts — bind both hooks to the client type once, at module scope.
+export type AppClient = typeof client;
+export const { useClient: useEbb, useQuery } = createEbbHooks<AppClient>();
+
+// anywhere below the provider: no generics, no annotations
+const client = useEbb();
+await client.actions.createIssue({ title: "Buy milk", groupId });
+
+const { data } = useQuery((q) => q.issue.query().with({ assignee: true }));
 ```
 
-`useEntityMutations(client.todo)` returns referentially stable
-`create` / `update` / `delete` functions that forward to the namespace
-unchanged — a convenience when a component only needs those three.
+`q` is the client's **read root** — every namespace narrowed to `query()` — so
+a write stays a compile error there. Call `createEbbHooks` at module scope:
+each call makes new hook functions, and a per-render call would hand React a new
+hook identity on every render.
+
+One call is one Action, and a rejection throws `ActionRejectedError`. The
+action callback is synchronous and cannot live inside a component, so a
+component only calls the mounted action.
+
+A multi-entity action reads the same way — everything its callback drafts is
+one Action, or none of it commits. The issue-tracker demo's `leaveWorkspace`
+drafts two writes (a profile leaving a group, its `groupMember` row going with
+it) and still costs one call:
+
+```tsx
+await client.actions.leaveWorkspace({ profileId, groupId, memberId });
+```
 
 ## API
 
-| Export                          | What                                                                           |
-| ------------------------------- | ------------------------------------------------------------------------------ |
-| `EbbProvider`                   | Makes a `NamespacedClient<S, TActions>` available to hooks below it.           |
-| `useClient<S, TActions>()`      | Returns the nearest provider's client typed by `S`; throws outside a provider. |
-| `useConnection()`               | Subscribes to connection state and re-renders on transitions.                  |
-| `useQuery(build, deps?)`        | Subscribes to a cached query result; `{ data, status, loading, error }`.       |
-| `useEntityMutations(namespace)` | Stable `{ create, update, delete }` pass-throughs.                             |
-| `EbbProviderProps`              | The provider's prop type.                                                      |
-| `UseQueryResult`                | The `useQuery` result type.                                                    |
-| `UseEntityMutationsResult`      | The `useEntityMutations` result type.                                          |
-| `QueryRows`                     | The projected row-list type a `QueryBuilder` resolves to.                      |
-| `ConnectionState`               | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.     |
+| Export                   | What                                                                             |
+| ------------------------ | -------------------------------------------------------------------------------- |
+| `EbbProvider`            | Makes the app's client available to hooks below it.                              |
+| `useClient<C>()`         | Returns the nearest provider's client typed as `C`; throws outside a provider.   |
+| `useConnection()`        | Subscribes to connection state and re-renders on transitions.                    |
+| `useQuery(build, deps?)` | Subscribes to a cached query result; `{ data, status, loading, error }`.         |
+| `createEbbHooks<C>()`    | Binds `useClient` and `useQuery` to one client type; call once, at module scope. |
+| `QueryRootOf<C>`         | The read root of a client type — what a bound `useQuery`'s `q` is.               |
+| `EbbProviderProps`       | The provider's prop type.                                                        |
+| `UseQueryResult`         | The `useQuery` result type.                                                      |
+| `QueryRows`              | The projected row-list type a `QueryBuilder` resolves to.                        |
+| `ConnectionState`        | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.       |
 
 ## Peer dependencies
 

@@ -1,6 +1,6 @@
 /**
  * Filter controls for the issue query. Every selection is a predicate the
- * panel passes to `buildIssueQuery`, so filtering happens in the replica
+ * panel passes to `issueQuery`, so filtering happens in the replica
  * rather than by hiding rows after the read.
  */
 

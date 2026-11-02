@@ -1,42 +1,25 @@
 /**
- * `defineAction` — a schema-bound, reusable cross-entity Action.
+ * `defineAction` — a schema-bound, reusable cross-entity Action, and the only
+ * way to write.
  *
- * A definition pairs a `Schema` with the same resolver callback the
- * `client.atomic(...)` form accepts. The result is a frozen,
- * non-callable descriptor: a client built on the same schema is the
- * only way to execute it. Definition is pure — no ids, no writes, no
- * I/O — so the descriptor is safe to build at module load and mount
- * on several clients (under different names).
- *
- * `client.actions.<name>(params)` runs the callback through the
- * resolver in `../sync/atomic`, so a defined action and the
- * equivalent `client.atomic(...)` callback compose the same single
- * Action.
+ * A definition is pure (no ids, no writes, no I/O), so it builds at module load
+ * and mounts on several clients under different names. Executing one is
+ * `client.actions.<name>(params)`, which runs the callback through the runtime
+ * in `../sync/drafts` and commits everything it drafts as one Action.
  */
 
-import type { AtomicDrafts } from "../sync/atomic";
+import type { ActionDrafts } from "../sync/drafts";
 
-/**
- * Symbol under which a definition keeps its resolver callback. The
- * client reads it when mounting; nothing else should.
- */
+/** Where a definition keeps its callback. The client reads it; nothing else should. */
 export const RUN: unique symbol = Symbol.for("@ebbjs/action-run");
 
-/**
- * A frozen Action descriptor. `S` is the schema the Action is bound
- * to, `Params` the callback's second argument, `Result` its return
- * value.
- */
+/** A frozen Action descriptor: bound schema, callback params, and its result. */
 export interface ActionDef<S, Params, Result> {
   readonly schema: S;
-  readonly [RUN]: (drafts: AtomicDrafts<S>, params: Params) => Result;
+  readonly [RUN]: (drafts: ActionDrafts<S>, params: Params) => Result;
 }
 
-/**
- * Erased view of a definition, as held by an `actions` map. Any
- * concrete `ActionDef` is assignable; the per-key `Params` / `Result`
- * are restored on `client.actions`.
- */
+/** Erased definition, as an `actions` map holds it; `client.actions` restores the rest. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyActionDef = ActionDef<any, never, unknown>;
 
@@ -71,22 +54,15 @@ const formatViolations = (violations: readonly ActionDefinitionViolation[]): str
   return `ActionDefinitionError: ${violations.length} violation(s)\n${lines.join("\n")}`;
 };
 
-/**
- * Declare a reusable Action against `schema`. The returned descriptor
- * is frozen and allocates nothing; `Params` defaults to `void` when
- * the callback declares none.
- */
+/** Declare an Action against `schema`; `Params` defaults to `void`. */
 export function defineAction<S, Params = void, Result = unknown>(
   schema: S,
-  run: (drafts: AtomicDrafts<S>, params: Params) => Result,
+  run: (drafts: ActionDrafts<S>, params: Params) => Result,
 ): ActionDef<S, Params, Result> {
   return Object.freeze({ schema, [RUN]: run });
 }
 
-/**
- * The callable a client mounts for one definition: `Promise<Result>`,
- * zero-arg when the definition declares no params.
- */
+/** What a client mounts: `Promise<Result>`, zero-arg when there are no params. */
 export type Action<_S, Params, Result> = Params extends void
   ? () => Promise<Result>
   : (params: Params) => Promise<Result>;

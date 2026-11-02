@@ -5,19 +5,19 @@ description: "How to move from entity accessors and useEntity to the query read 
 
 > **Shipped.** This page tracks the docs and examples migration in [#502](https://github.com/ebbjs/ebbjs/issues/502), part of the [local query engine epic](https://github.com/ebbjs/ebbjs/issues/495). The React surface landed in [#501](https://github.com/ebbjs/ebbjs/issues/501); the engine, namespace split, and replica lifecycle ([#499](https://github.com/ebbjs/ebbjs/issues/499)) landed before it. [#500](https://github.com/ebbjs/ebbjs/issues/500) remains open.
 
-Queries are now the only public read path. The entity namespace stays — it is still the schema-bound API — but it splits by verb: `query()` reads, the mutation verbs write, and the engine's single-row helpers became internal.
+Queries are now the only public read path. The entity namespace stays — it is still the schema-bound API — but it is read-only: `query()` reads, and every write is an Action mounted as `client.actions.<name>` ([#692](https://github.com/ebbjs/ebbjs/issues/692)). The engine's single-row helpers became internal.
 
 ## What changed
 
-| Before                                       | After                                                                       |
-| -------------------------------------------- | --------------------------------------------------------------------------- |
-| `client.<entity>.get(id)` plus row accessors | `client.<entity>.query()`, narrowed by `where` / `or` / `orderBy` / `limit` |
-| `await row.assignee`, `await row.comments`   | `.with({ assignee: true, comments: true })` on the chain                    |
-| `await row.groups`                           | `.with({ groups: true })`, or `row.groupIds` for the ids alone              |
-| `client.<entity>.subscribe(filter, cb)`      | `useQuery` in React, `query().result()` / `query().subscribe(cb)` otherwise |
-| `useEntity(build, deps)`                     | `useQuery((q: QueryRoot<Schema>) => ...)`                                   |
-| Single row by id                             | Query the collection and select the row with `find`                         |
-| Writes                                       | Unchanged: namespace verbs, `client.atomic`, `defineAction`                 |
+| Before                                       | After                                                                                                            |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `client.<entity>.get(id)` plus row accessors | `client.<entity>.query()`, narrowed by `where` / `or` / `orderBy` / `limit`                                      |
+| `await row.assignee`, `await row.comments`   | `.with({ assignee: true, comments: true })` on the chain                                                         |
+| `await row.groups`                           | `.with({ groups: true })`, or `row.groupIds` for the ids alone                                                   |
+| `client.<entity>.subscribe(filter, cb)`      | `useQuery` in React, `query().result()` / `query().subscribe(cb)` otherwise                                      |
+| `useEntity(build, deps)`                     | `useQuery((q: QueryRoot<Schema>) => ...)`                                                                        |
+| Single row by id                             | Query the collection and select the row with `find`                                                              |
+| Writes                                       | One path: `defineAction`, mounted as `client.actions.<name>` ([#692](https://github.com/ebbjs/ebbjs/issues/692)) |
 
 ## Reads: compose a query, not accessors
 
@@ -67,18 +67,36 @@ Every query row also carries `groupIds`, its live group ids, read from the same 
 
 ## `get()`, accessors, and `subscribe` are internal
 
-`client.<entity>.get(id)`, the async row accessors it attached, and the collection `subscribe(filter, cb)` are marked `@internal`. The engine keeps them for its own callers; applications should not build on them. Projected query rows carry the entity `id` as an addressing key, so the id you need for `update(id, ...)` comes from the row itself.
+`client.<entity>.get(id)`, the async row accessors it attached, and the collection `subscribe(filter, cb)` are marked `@internal`. The engine keeps them for its own callers; applications should not build on them. Projected query rows carry the entity `id` as an addressing key, so the id an action needs (`client.actions.<name>({ id, ... })`) comes from the row itself.
 
 `.toRaw()` remains the untyped escape hatch on a chain when you need the wire envelope rather than the projected row.
 
-## Writes did not move
+## Writes: one path
 
-The write path is the same split it was:
+Writes converge on actions ([#692](https://github.com/ebbjs/ebbjs/issues/692)).
+`defineAction(schema, (drafts, params) => ...)` is the only write declaration,
+mounted at `createClient` and called as `client.actions.<name>(params)`:
 
-- **Single entity** — the namespace verbs: `create` / `update` / `delete` / `duplicate`, `link` / `unlink` / `setLinks`, and the membership verbs. `create` still requires `groups`.
-- **Multi-entity** — `client.atomic((drafts) => ...)` or a `defineAction` mounted as `client.actions.<name>`. Both commit exactly one Action through the same planner.
+```ts
+export const renameIssue = defineAction(
+  schema,
+  ({ issue }, params: { id: string; title: string }) =>
+    issue.update(params.id, { title: params.title }),
+);
 
-`useEntityMutations(client.todo)` is a write pass-through and is unchanged. There is no `useAction` or optimistic-update hook yet; mutations stay imperative.
+await client.actions.renameIssue({ id: issue.id, title });
+```
+
+The drafts reach every write the removed namespace verbs reached — `create` /
+`update` / `delete` / `duplicate`, `link` / `unlink` / `setLinks`, and the
+membership verbs, plus the system `group` / `membership` namespaces. `create`
+still requires `groups`. One callback is one Action, however many entities and
+groups it touches, and a rejection throws `ActionRejectedError`.
+
+`client.<entity>` is read-only, `client.atomic` is gone, and
+`useEntityMutations` is removed from `@ebbjs/react`. Components call
+`client.actions.<name>` through `useClient`. There is no `useAction` or
+optimistic-update hook yet; actions stay imperative.
 
 ## `status` replaced ad-hoc loading flags
 

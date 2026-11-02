@@ -26,17 +26,20 @@ export {
 } from "./sync/client";
 
 export {
-  AtomicActionError,
-  AtomicResolutionError,
-  type AtomicClient,
-  type AtomicCreateInput,
-  type AtomicCreateOptions,
-  type AtomicDraftNamespace,
-  type AtomicDrafts,
-  type AtomicRejection,
-  type AtomicSystemDraftNamespace,
+  ActionRejectedError,
+  ActionResolutionError,
+  type ActionDrafts,
+  type ActionRejection,
   type CreatedEntity,
-} from "./sync/atomic";
+  type DraftCreateOptions,
+  type DraftDuplicateOptions,
+  type DraftNamespace,
+  type DuplicateAt,
+  type EntityWriteOptions,
+  type GroupRef,
+  type MembershipDraftNamespace,
+  type SystemDraftNamespace,
+} from "./sync/drafts";
 
 export {
   PermissionError,
@@ -97,6 +100,7 @@ export {
 } from "./sync/query-cache";
 
 export type { ReplicaSignal } from "./sync/replica-signal";
+export type { ManyPointerValue } from "./sync/relationship";
 export type { ReplicaStats } from "@ebbjs/storage/replica";
 
 export {
@@ -111,6 +115,7 @@ export { traversalCounter } from "./sync/traversal-counter";
 export {
   type EntityNamespace,
   type EntityFields,
+  type EntityValues,
   type EntityNamespaces,
   type EntityRow,
   type EntitySnapshot,
@@ -121,12 +126,6 @@ export {
   type QueryRoot,
   type QueryRowOf,
   type RowAccessor,
-  type CreateOptions,
-  type CreateResult,
-  type DuplicateAt,
-  type DuplicateOptions,
-  type EntityWriteOptions,
-  type GroupRef,
   createEntityNamespace,
   buildEntityNamespaces,
   type ReplicaAccess,

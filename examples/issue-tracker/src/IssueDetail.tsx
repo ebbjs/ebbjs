@@ -6,17 +6,17 @@
  * `useQuery`, so a link / unlink re-runs the query and the projection
  * follows without a manual revision bump. The assignee options are the
  * profiles of the issue's own group, read through the built-in `groups`
- * join — not the workspace new issues are filed into. Mutations go
- * straight through the client's issue namespace; each write applies
- * optimistically through the Outbox and reconciles when the server
- * acknowledges it.
+ * join — not the workspace new issues are filed into. Every edit is a call
+ * to one of the demo's declared Actions (`updateIssue`,
+ * `setIssueAssignee`, `deleteIssue`); each applies optimistically through
+ * the Outbox and reconciles when the server acknowledges it.
  */
 
 import { useState } from "react";
-import { useClient, useQuery, type QueryRoot } from "@ebbjs/react";
+import { useQuery } from "./use-ebb";
 import { PRIORITY_OPTIONS, STATUS_OPTIONS, assigneeOptions } from "./issue-options";
 import { SelectField } from "./SelectField";
-import type { Schema } from "./schema";
+import { useEbb } from "./use-ebb";
 import { useWorkspaceProfiles } from "./use-workspace-profiles";
 import { useWrite } from "./use-write";
 
@@ -29,12 +29,12 @@ export function IssueDetail({
   onClose: () => void;
   onDeleted: () => void;
 }) {
-  const client = useClient<Schema>();
+  const client = useEbb();
   const {
     data: issues,
     status,
     error: queryError,
-  } = useQuery((q: QueryRoot<Schema>) => q.issue.query().with({ assignee: true, groups: true }));
+  } = useQuery((q) => q.issue.query().with({ assignee: true, groups: true }));
   const issue = issues?.find((row) => row.id === issueId) ?? null;
   const issueGroupId = issue?.groups[0]?.id;
   const profiles = useWorkspaceProfiles(issueGroupId);
@@ -81,30 +81,31 @@ export function IssueDetail({
       return;
     }
     void run(async () => {
-      await client.issue.update(issue.id, { title: next });
+      await client.actions.updateIssue({ id: issue.id, patch: { title: next } });
       setTitleDraft(null);
     });
   };
 
   const changeStatus = (next: string): void => {
-    void run(() => client.issue.update(issue.id, { status: next }));
+    void run(() => client.actions.updateIssue({ id: issue.id, patch: { status: next } }));
   };
 
   const changePriority = (next: string): void => {
-    void run(() => client.issue.update(issue.id, { priority: next }));
+    void run(() => client.actions.updateIssue({ id: issue.id, patch: { priority: next } }));
   };
 
   const changeAssignee = (next: string): void => {
     void run(() =>
-      next === ""
-        ? client.issue.unlink(issue.id, "assignee")
-        : client.issue.link(issue.id, "assignee", next),
+      client.actions.setIssueAssignee({
+        id: issue.id,
+        assigneeId: next === "" ? null : next,
+      }),
     );
   };
 
   const confirmDelete = (): void => {
     void run(async () => {
-      await client.issue.delete(issue.id);
+      await client.actions.deleteIssue({ id: issue.id });
       onDeleted();
     });
   };

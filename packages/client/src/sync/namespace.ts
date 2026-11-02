@@ -14,22 +14,18 @@
  * primitives in ./relationship.
  */
 
-import type { Entity, FieldValue, Update } from "@ebbjs/core";
-import { generateId, isFieldMap } from "@ebbjs/core";
-import type { WriteResponse } from "./types";
+import type { Entity } from "@ebbjs/core";
 import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
 import type {
   EntityDef,
   DerivedAccessors,
-  DerivedFieldDef,
   DerivedKeys,
   ShapeFields,
   WireFields,
 } from "../schema/entity";
 import type { AccessorKeyOf, AnyRelationshipDef, EntityNameOf, FieldsOf } from "./definition-types";
-import { EntityValidationError, validatePayload } from "../schema/entity-registry";
 import type { EntityRegistry } from "../schema/entity-registry";
 import type { RelationshipDef } from "../schema/relationship";
 import type { Schema } from "../schema/schema";
@@ -43,15 +39,12 @@ import { DOC_CONTENT_FIELD, isCollaborativeText } from "../fields/collaborative-
 import type { TextDocument, TextDocumentSubmit } from "../fields/collaborative-text/text-document";
 import {
   buildReplicaQueryBuilder,
-  normalizePointer,
   projectEntity,
-  projectFieldValue,
   projectRow,
   type JoinRecord,
   type JoinedRow,
   type MembershipJoin,
   type NoJoins,
-  type PointerValue,
   type QueryBuilder,
   type QueryRow,
 } from "./query-builder";
@@ -62,33 +55,11 @@ import type { QueryCache } from "./query-cache";
 import { createEntityWatcher, type EntityWatcher, type ReplicaSignal } from "./replica-signal";
 import {
   type AdjacencyReader,
-  buildEntityGroupUpdates,
   forwardMany,
   forwardOne,
   membershipGroups,
-  type ManyPointerValue,
   reverse as reverseTraversal,
 } from "./relationship";
-import { readEntityMemberships, type LiveMembership } from "./entity-group";
-import { readGeneratedParts } from "./generated-parts";
-import {
-  lastGroupMemberViolation,
-  type GroupMemberDelta,
-  type LiveGroupMember,
-} from "./membership";
-import {
-  call,
-  changeGroups,
-  createEntity,
-  createSystemEntity,
-  deleteEntity,
-  groupBootstrap,
-  patchEntity,
-  writeRelationship,
-  AtomicActionError,
-  type RelationshipPointer,
-} from "./operations";
-import { commit } from "./committer";
 
 /**
  * Runtime shape of a single relationship accessor on a row. The
@@ -187,6 +158,18 @@ export type WireStatic<TFields extends Record<string, TSchema>> = Static<
 export type DerivedInputs<TFields extends Record<string, TSchema>> = {
   readonly [K in DerivedKeys<TFields>]?: string;
 };
+
+/**
+ * The value shape of an entity's wire fields: what a draft `create`
+ * takes (before pointers and derived bodies) and what `update`
+ * patches, keyed by field name. Names the type an app's patch object
+ * would otherwise restate by hand, so a schema change flows through:
+ *
+ * ```ts
+ * type IssuePatch = Partial<EntityValues<typeof issue>>;
+ * ```
+ */
+export type EntityValues<TEntityDef> = WireStatic<EntityFields<TEntityDef>>;
 
 /**
  * Row with attached relationship accessors. The projected TypeBox
@@ -320,10 +303,8 @@ export type CollectionSnapshot<TFields extends Record<string, TSchema>> = {
  * already matches is not a collection change. Each fire carries a
  * typed `CollectionSnapshot` of the current matching set.
  *
- * `link` / `unlink` / `setLinks` build the wire Update(s) and
- * submit via the client's write path. Users never see wire-level
- * Update arrays; the runtime wraps them in `createAction` and
- * hands them to `client.submitRelationshipUpdates`.
+ * `client.<entity>` is read-only: every write goes through
+ * `defineAction` and the draft surface in `./drafts`.
  *
  * `TAccessors` is the per-`as` accessor record derived from the
  * schema's relationship map (see {@link RowAccessorRecord}). It is
@@ -359,142 +340,6 @@ export interface EntityNamespace<
     filter: QueryFilter<TFields>,
     cb: (snapshot: CollectionSnapshot<TFields>) => void,
   ): () => void;
-  /**
-   * Create a new entity row. Non-conforming inputs throw
-   * `EntityValidationError` before any network call. `subject_id`
-   * is minted client-side; the wire Update is a `put`.
-   *
-   * `opts.groups` is required and non-empty: one `entityGroup`
-   * membership row is emitted per group in the same Action as the
-   * entity, so the row is indexed into each group atomically.
-   *
-   * A derived body passed as a string is created as a separate
-   * document entity and linked in the same Action; the promise
-   * resolves to the new entity's `id` alongside the wire response.
-   */
-  create(
-    input: WireStatic<TFields> & DerivedInputs<TFields>,
-    opts: CreateOptions,
-  ): Promise<CreateResult>;
-  /**
-   * Copy an existing row to a fresh id, carrying its field values
-   * verbatim — nested `update_id` / `hlc` stamps included, so a
-   * collaborative-text `content` map survives as a reference snapshot
-   * that later document edits re-mint. `opts.at` picks the live row
-   * (`"current"`, the default) or, for `"preSync"`, the entity's
-   * earliest unresolved conflict's `before` row (#395). The copy lands in
-   * `opts.groups`, or the source's live groups when omitted, and is
-   * validated against the schema like `create`. A soft-deleted source
-   * row is copied like any other; the copy is live.
-   *
-   * `at: "preSync"` requires an unresolved conflict referencing the
-   * entity and throws `no unresolved conflict for "<id>"` when there is
-   * none.
-   *
-   * Only this row's own wire fields are copied. A derived
-   * collaborative-text body lives on its own generated document
-   * entity, so back one up through that entity's namespace.
-   */
-  duplicate(id: string, opts?: DuplicateOptions): Promise<CreateResult>;
-  /**
-   * Patch an existing entity row, validated the same way as
-   * `create`'s input. The wire Update is a `patch`.
-   */
-  update(
-    id: string,
-    patch: Partial<WireStatic<TFields>>,
-    opts?: EntityWriteOptions,
-  ): Promise<WriteResponse>;
-  /**
-   * Soft-delete an entity row. Ships a single `method: "delete"`
-   * Update whose `data` is `null` — the server tombstones the row
-   * rather than rewriting its fields. There's no payload to
-   * validate, so this takes no `EntityWriteOptions`.
-   */
-  delete(id: string): Promise<WriteResponse>;
-  /**
-   * One-cardinality link. Emits a single Relationship Update and
-   * submits. Throws `EntityValidationError` when `as` is not a
-   * declared relationship on the entity or when the actor lacks
-   * `<source_type>.update`.
-   */
-  link(id: string, as: string, targetId: PointerValue): Promise<WriteResponse>;
-  /**
-   * One-cardinality unlink. Emits a single Relationship Delete
-   * Update and submits.
-   */
-  unlink(id: string, as: string): Promise<WriteResponse>;
-  /**
-   * Many-cardinality set. Emits one entity Update + N Relationship
-   * Updates and submits. The canonical FK set lives on the source
-   * entity's data field.
-   */
-  setLinks(id: string, as: string, patch: ManyPointerValue): Promise<WriteResponse>;
-  /**
-   * Add an existing entity to `groupId`. Emits one `entityGroup` put
-   * in one Action; idempotent when a live local membership already
-   * exists (no network call). Throws `EntityValidationError` only for
-   * a malformed group ref. Offline-legal: the normal outbox path.
-   */
-  addToGroup(id: string, groupId: GroupRef): Promise<WriteResponse>;
-  /**
-   * Remove a non-last membership. Emits one `entityGroup` delete in
-   * one Action. Throws `EntityValidationError` when no live local
-   * membership row matches `(id, groupId)`. When the local view shows
-   * the removal would leave the entity unowned, the committer refuses
-   * it with `last_membership` before any network call; an empty local
-   * view defers to the server's authoritative check.
-   */
-  removeFromGroup(id: string, groupId: GroupRef): Promise<WriteResponse>;
-  /**
-   * Replace the entity's membership set: `target − current` puts and
-   * `current − target` deletes in ONE Action. Throws
-   * `EntityValidationError` for an empty `groupIds` or a malformed
-   * ref, before any network call. When the local view shows the delta
-   * would leave the entity unowned, the committer refuses it with
-   * `last_membership` before any network call.
-   */
-  setGroups(id: string, groupIds: readonly GroupRef[]): Promise<WriteResponse>;
-}
-
-/**
- * Per-write options. `validate: false` skips the local `Value.Check`
- * pass — useful for tests / pre-validated upstream callers. The
- * registry's name-membership check at `client.write()` still runs.
- */
-export interface EntityWriteOptions {
-  validate?: boolean;
-}
-
-/** A group reference accepted by `create`: a group id or an entity-shape handle. */
-export type GroupRef = string | { readonly id: string };
-
-/**
- * Options for `client.<entity>.create(input, opts)`. `groups` is the
- * required, non-empty membership set; one `entityGroup` row is
- * emitted per group in the same Action as the entity.
- */
-export interface CreateOptions extends EntityWriteOptions {
-  readonly groups: readonly GroupRef[];
-}
-
-/**
- * Result of `client.<entity>.create(...)`: the wire response plus the
- * minted entity id, so the created row is immediately addressable.
- */
-export type CreateResult = WriteResponse & { readonly id: string };
-
-/** Point in time a `duplicate` copies from. */
-export type DuplicateAt = "current" | "preSync";
-
-/**
- * Options for `client.<entity>.duplicate(id, opts)`.
- */
-export interface DuplicateOptions extends EntityWriteOptions {
-  /** Source of the copy: the live row (`"current"`, default) or the entity's earliest unresolved conflict's `before` row (`"preSync"`). */
-  readonly at?: DuplicateAt;
-  /** Membership set for the copy; defaults to the source's live groups. */
-  readonly groups?: readonly GroupRef[];
 }
 
 /**
@@ -503,29 +348,11 @@ export interface DuplicateOptions extends EntityWriteOptions {
  */
 export type EntityFields<D> = FieldsOf<D>;
 
-/**
- * `client.group`: the generic namespace with a bootstrap `create` that
- * commits the group put and the acting actor's own membership in one
- * Action. Membership verbs are not part of the surface.
- */
-export type GroupNamespace = Omit<
-  EntityNamespace<GroupFields, MembershipAccessors>,
-  "create" | "addToGroup" | "removeFromGroup" | "setGroups"
-> & {
-  create(input: WireStatic<GroupFields>, opts?: EntityWriteOptions): Promise<CreateResult>;
-};
+/** `client.group`: the read-only namespace over the `group` system entity. */
+export type GroupNamespace = EntityNamespace<GroupFields, MembershipAccessors>;
 
-/**
- * `client.membership`: the generic namespace over the `groupMember`
- * system entity, with a plain system put and no membership verbs — an
- * `entityGroup` row for a member is meaningless.
- */
-export type MembershipNamespace = Omit<
-  EntityNamespace<GroupMemberFields, MembershipAccessors>,
-  "create" | "addToGroup" | "removeFromGroup" | "setGroups"
-> & {
-  create(input: WireStatic<GroupMemberFields>, opts?: EntityWriteOptions): Promise<CreateResult>;
-};
+/** `client.membership`: the read-only namespace over the `groupMember` system entity. */
+export type MembershipNamespace = EntityNamespace<GroupMemberFields, MembershipAccessors>;
 
 /** The system-entity namespaces every schema-bound client carries. */
 export type SystemNamespaces = {
@@ -695,7 +522,7 @@ function buildRowAccessors(
   sourceId: string,
   storage: StorageAdapter,
   registry: EntityRegistry,
-  write: WriteCapability,
+  read: ReadCapability,
   replica?: ReplicaAccess,
 ): Record<string, RowAccessor> {
   const out: Record<string, RowAccessor> = {};
@@ -733,7 +560,7 @@ function buildRowAccessors(
         entityName,
         field,
         relType,
-        write.openTextDocument,
+        read.openTextDocument,
       );
       continue;
     }
@@ -858,36 +685,18 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
 };
 
 /**
- * Capabilities the namespace consults. The client supplies this at
+ * Capabilities the read path consults. The client supplies this at
  * construction time so the namespace stays free of the cyclic
- * `client → namespace → client` reference; the namespace delegates
- * Action submission, HLC and clock management, document opening, and
- * the conflict read that backs `duplicate({ at: "preSync" })`.
+ * `client → namespace → client` reference. Writes do not run through
+ * here: they live on the action runtime's own capability in `./drafts`.
  */
-export interface WriteCapability {
+export interface ReadCapability {
   readonly registry: EntityRegistry;
-  submitRelationshipUpdates(
-    updates: readonly import("@ebbjs/core").Update[],
-  ): Promise<WriteResponse>;
-  /** Mint a fresh local HLC and return the timestamp string. */
-  freshHlc(): string;
-  /** Mint a fresh Update id. */
-  generateUpdateId(): string;
-  /** Local actor id; collaborative-text run ids embed it. */
-  readonly actorId: string;
   /**
    * Open (or get) the `TextDocument` for a linked document entity. The
    * client binds it to the write path so local edits self-flush.
    */
   openTextDocument(docId: string, docType: string): TextDocument;
-  /**
-   * Read the `before` row of the entity's earliest unresolved conflict,
-   * or `null` when no unresolved conflict references it. Backs
-   * `duplicate({ at: "preSync" })`.
-   */
-  readPreSyncRow(entityId: string): Promise<Entity | null>;
-  /** Live `entityGroup` rows for an entity id, from the local cache. */
-  readMemberships(entityId: string): Promise<readonly LiveMembership[]>;
 }
 
 /** Write path bound to a document for self-flushing locally-authored edits. */
@@ -901,9 +710,9 @@ export type { TextDocumentSubmit };
  *
  * `shape` is the entity's TypeBox object schema (the projection
  * source); the builder reads it at materialization time to drive
- * the per-field lookup. `registry` and `write` supply the runtime
- * pieces the relationship-write surface (`link` / `unlink` /
- * `setLinks`) consults.
+ * the per-field lookup. `read` supplies the registry the row's
+ * relationship accessors resolve against and the document opener the
+ * collaborative-text accessor hydrates through.
  */
 export function createEntityNamespace<
   TFields extends Record<string, TSchema>,
@@ -913,11 +722,10 @@ export function createEntityNamespace<
   entityName: string,
   shape: TObject<WireFields<TFields>>,
   storage: StorageAdapter,
-  write: WriteCapability,
-  derived: Record<string, DerivedFieldDef> = {},
+  read: ReadCapability,
   replica?: ReplicaAccess,
 ): EntityNamespace<TFields, TAccessors, TJoins> {
-  const registry = write.registry;
+  const registry = read.registry;
   const watcher =
     replica === undefined ? null : createEntityWatcher(replica.replica, replica.signal);
 
@@ -927,7 +735,7 @@ export function createEntityNamespace<
     // alongside unknown ids. Callers don't distinguish — a missing
     // row and a wrong-type row are both "no row here".
     if (entity.type !== entityName) return null;
-    const accessors = buildRowAccessors(entityName, entity.id, storage, registry, write, replica);
+    const accessors = buildRowAccessors(entityName, entity.id, storage, registry, read, replica);
     const subscribe = (cb: (snapshot: EntitySnapshot<TFields>) => void): (() => void) =>
       subscribeToEntity(watcher, entityName, entity.id, shape, cb);
     const subscribeAccessors = (cb: () => void): (() => void) =>
@@ -1026,614 +834,37 @@ export function createEntityNamespace<
         { initial: false },
       );
     },
-    async create(
-      input: WireStatic<TFields> & DerivedInputs<TFields>,
-      opts: CreateOptions,
-    ): Promise<CreateResult> {
-      const id = generateId("e");
-      const groups = resolveGroupIds(opts?.groups, entityName);
-      const { wire, bodies } = splitDerivedInputs(
-        entityName,
-        input as Record<string, unknown>,
-        derived,
-      );
-      const { response } = await commit(
-        [
-          call(createEntity, {
-            entity: entityName,
-            id,
-            fields: wire,
-            bodies,
-            groups,
-            validate: opts?.validate,
-          }),
-        ],
-        write,
-      );
-      return { id, ...response };
-    },
-    async duplicate(id: string, opts?: DuplicateOptions): Promise<CreateResult> {
-      const at = opts?.at ?? "current";
-      const source = await readDuplicateSource(storage, write, entityName, id, at);
-      const groupIds =
-        opts?.groups !== undefined
-          ? resolveGroupIds(opts.groups, entityName, "duplicate")
-          : resolveGroupIds(
-              (await readEntityMemberships(storage, id)).map((membership) => membership.groupId),
-              entityName,
-              "duplicate",
-            );
-      const subjectId = generateId("e");
-      const entityUpdate = buildDuplicateUpdate(write, entityName, shape, {
-        subjectId,
-        source,
-        validate: opts?.validate,
-      });
-      const updates: Update[] = [
-        entityUpdate,
-        ...buildEntityGroupUpdates(subjectId, groupIds, () => write.generateUpdateId()),
-      ];
-      const response = await write.submitRelationshipUpdates(updates);
-      return { id: subjectId, ...response };
-    },
-    async update(
-      id: string,
-      patch: Partial<WireStatic<TFields>>,
-      opts?: EntityWriteOptions,
-    ): Promise<WriteResponse> {
-      const groups = await readLiveGroupIds(storage, id);
-      const { response } = await commit(
-        [
-          call(patchEntity, {
-            entity: entityName,
-            id,
-            payload: patch,
-            groups,
-            validate: opts?.validate,
-          }),
-        ],
-        write,
-      );
-      return response;
-    },
-    async delete(id: string): Promise<WriteResponse> {
-      const groups = await readLiveGroupIds(storage, id);
-      const { response } = await commit(
-        [call(deleteEntity, { entity: entityName, id, groups })],
-        write,
-      );
-      return response;
-    },
-    async link(id: string, as: string, targetId: PointerValue): Promise<WriteResponse> {
-      return submitRelationshipWrite(write, storage, entityName, id, as, { targetId });
-    },
-    async unlink(id: string, as: string): Promise<WriteResponse> {
-      return submitRelationshipWrite(write, storage, entityName, id, as, { targetId: null });
-    },
-    async setLinks(id: string, as: string, patch: ManyPointerValue): Promise<WriteResponse> {
-      return submitRelationshipWrite(write, storage, entityName, id, as, { targetIds: patch });
-    },
-    // Membership mutations are offline-legal (#126) and go through the
-    // normal outbox path as one `changeGroups` operation. Its Updates
-    // span the pre- and post-Action group sets; the server delivers each
-    // by its own scope (#473).
-    async addToGroup(id: string, groupId: GroupRef): Promise<WriteResponse> {
-      const target = resolveSingleGroupId(groupId, entityName, "addToGroup");
-      const current = await readEntityMemberships(storage, id);
-      const currentGroups = current.map((membership) => membership.groupId);
-      if (currentGroups.includes(target)) {
-        return { rejected: [] };
-      }
-      const generated = await readGeneratedParts(storage, registry, entityName, id);
-      const { response } = await commit(
-        [
-          call(changeGroups, {
-            entity: entityName,
-            entityId: id,
-            puts: [target],
-            currentGroups,
-            generated,
-          }),
-        ],
-        write,
-      );
-      return response;
-    },
-    async removeFromGroup(id: string, groupId: GroupRef): Promise<WriteResponse> {
-      const target = resolveSingleGroupId(groupId, entityName, "removeFromGroup");
-      const current = await readEntityMemberships(storage, id);
-      const row = current.find((membership) => membership.groupId === target);
-      if (row === undefined) {
-        throw new EntityValidationError([
-          {
-            entityName,
-            message: `removeFromGroup: no entityGroup membership row for "${id}" in group "${target}"`,
-          },
-        ]);
-      }
-      const generated = await readGeneratedParts(storage, registry, entityName, id);
-      const { response } = await commit(
-        [
-          call(changeGroups, {
-            entity: entityName,
-            entityId: id,
-            removes: [{ membershipId: row.membershipId, groupId: target }],
-            currentGroups: current.map((membership) => membership.groupId),
-            generated,
-          }),
-        ],
-        write,
-      );
-      return response;
-    },
-    async setGroups(id: string, groupIds: readonly GroupRef[]): Promise<WriteResponse> {
-      const target = resolveGroupIds(groupIds, entityName, "setGroups", "groupIds");
-      const current = await readEntityMemberships(storage, id);
-      const currentIds = new Set(current.map((membership) => membership.groupId));
-      const targetIds = new Set(target);
-      const puts = target.filter((groupId) => !currentIds.has(groupId));
-      const removes = current
-        .filter((membership) => !targetIds.has(membership.groupId))
-        .map((membership) => ({
-          membershipId: membership.membershipId,
-          groupId: membership.groupId,
-        }));
-      const generated = await readGeneratedParts(storage, registry, entityName, id);
-      // Adds precede removes so an incremental observer never sees the
-      // entity with an empty membership set mid-Action.
-      const { response } = await commit(
-        [
-          call(changeGroups, {
-            entity: entityName,
-            entityId: id,
-            puts,
-            removes,
-            currentGroups: current.map((membership) => membership.groupId),
-            generated,
-          }),
-        ],
-        write,
-      );
-      return response;
-    },
   };
 }
 
-/**
- * The entity's live membership group ids, read from the local
- * `entityGroup` rows. `create` asks for groups explicitly; `update` /
- * `delete` / relationship writes carry whatever the local view knows,
- * which may be empty when the row predates this client's cache.
- */
-async function readLiveGroupIds(storage: StorageAdapter, entityId: string): Promise<string[]> {
-  const memberships = await readEntityMemberships(storage, entityId);
-  return memberships.map((membership) => membership.groupId);
-}
-
-/**
- * Read the row a `duplicate` copies from: the live cache row, or the
- * `before` row of the entity's earliest unresolved conflict when `at` is
- * `"preSync"`. A missing (or wrong-type) source throws, because there
- * is nothing to copy.
- */
-async function readDuplicateSource(
-  storage: StorageAdapter,
-  write: WriteCapability,
-  entityName: string,
-  id: string,
-  at: DuplicateAt,
-): Promise<Entity> {
-  const source = at === "preSync" ? await write.readPreSyncRow(id) : await storage.entities.get(id);
-  if (source === null || source.type !== entityName) {
-    throw new EntityValidationError([
-      {
-        entityName,
-        message:
-          at === "preSync"
-            ? `duplicate: no unresolved conflict for "${id}"`
-            : `duplicate: no ${entityName} row for id "${id}"`,
-      },
-    ]);
-  }
-  return source;
-}
-
-/** Options for {@link buildDuplicateUpdate}. */
-interface DuplicateWriteInput {
-  subjectId: string;
-  source: Entity;
-  validate: boolean | undefined;
-}
-
-/**
- * Validate a source row's field values and build the single `put`
- * Update that copies them. The field map is cloned verbatim — leaf and
- * nested `update_id` / `hlc` stamps included — so the copy is a
- * reference snapshot of the source's merge state, not a re-stamped
- * write. The new entity id and the enclosing Action are fresh.
- */
-function buildDuplicateUpdate<TFields extends Record<string, TSchema>>(
-  write: WriteCapability,
-  entityName: string,
-  shape: TObject<TFields>,
-  input: DuplicateWriteInput,
-): Update {
-  const fields = input.source.data?.fields ?? {};
-  if (input.validate !== false) {
-    const violations = validatePayload(shape, projectFieldValues(fields), entityName, false);
-    if (violations.length > 0) {
-      throw new EntityValidationError(violations);
-    }
-  }
-  return {
-    id: write.generateUpdateId(),
-    subject_id: input.subjectId,
-    subject_type: entityName,
-    method: "put",
-    data: { fields: cloneFields(fields) },
-  };
-}
-
-/** Project a wire field map to the plain values the schema validator checks. */
-const projectFieldValues = (fields: Record<string, FieldValue>): Record<string, unknown> => {
-  const out: Record<string, unknown> = {};
-  for (const [key, field] of Object.entries(fields)) {
-    out[key] = projectFieldValue(field);
-  }
-  return out;
-};
-
-/** Deep-clone a wire field value so the copy never aliases the source's objects. */
-const cloneValue = (value: unknown): unknown => {
-  if (value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(cloneValue);
-  const out: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value)) out[key] = cloneValue(entry);
-  return out;
-};
-
-const cloneFieldValue = (field: FieldValue): FieldValue =>
-  isFieldMap(field)
-    ? {
-        map: Object.fromEntries(Object.entries(field.map).map(([k, v]) => [k, cloneFieldValue(v)])),
-      }
-    : { ...field, value: cloneValue(field.value) };
-
-const cloneFields = (fields: Record<string, FieldValue>): Record<string, FieldValue> =>
-  Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, cloneFieldValue(v)]));
-
-/**
- * Partition a create input into wire fields and derived bodies. A
- * derived key with a non-empty string becomes a document to create; a
- * missing / `null` / empty value leaves the body unlinked
- * (`row.<body>` resolves to `null`). A present-but-non-string value is
- * a programming error and is refused.
- */
-function splitDerivedInputs(
-  entityName: string,
-  input: Record<string, unknown>,
-  derived: Record<string, DerivedFieldDef>,
-): { wire: Record<string, unknown>; bodies: Record<string, string> } {
-  const derivedKeys = new Set(Object.keys(derived));
-  if (derivedKeys.size === 0) return { wire: input, bodies: {} };
-  const wire: Record<string, unknown> = {};
-  const bodies: Record<string, string> = {};
-  for (const [key, value] of Object.entries(input)) {
-    if (!derivedKeys.has(key)) {
-      wire[key] = value;
-      continue;
-    }
-    if (value === undefined || value === null) continue;
-    if (typeof value !== "string") {
-      throw new EntityValidationError([
-        {
-          entityName,
-          field: key,
-          message: `create: derived field "${key}" must be a string body`,
-        },
-      ]);
-    }
-    if (value.length > 0) bodies[key] = value;
-  }
-  return { wire, bodies };
-}
-
-/**
- * Normalize the `{ groups }` option into a de-duplicated, non-empty
- * id list. Throws `EntityValidationError` when the option is missing,
- * empty, or carries a malformed pointer. `operation`/`label` name the
- * caller in the message so `create` and `setGroups` read distinctly.
- */
-export const resolveGroupIds = (
-  groups: readonly GroupRef[] | undefined,
-  entityName: string,
-  operation = "create",
-  label = "groups",
-): readonly string[] => {
-  const groupsRequired = (): EntityValidationError =>
-    new EntityValidationError([
-      {
-        entityName,
-        message: `${operation}: "${label}" is required and must contain at least one group id`,
-      },
-    ]);
-  if (groups === undefined || groups.length === 0) {
-    throw groupsRequired();
-  }
-  const ids: string[] = [];
-  const seen = new Set<string>();
-  for (const group of groups) {
-    let id: string | null;
-    try {
-      id = normalizePointer(group, `${label} for "${entityName}"`);
-    } catch (err) {
-      throw new EntityValidationError([
-        { entityName, message: err instanceof Error ? err.message : String(err) },
-      ]);
-    }
-    if (id === null || seen.has(id)) continue;
-    seen.add(id);
-    ids.push(id);
-  }
-  if (ids.length === 0) {
-    throw groupsRequired();
-  }
-  return ids;
-};
-
-/**
- * Normalize a single group ref for `addToGroup` / `removeFromGroup`.
- * A malformed ref throws `EntityValidationError` naming the operation.
- */
-export const resolveSingleGroupId = (
-  group: GroupRef,
-  entityName: string,
-  operation: string,
-): string => {
-  let id: string | null;
-  try {
-    id = normalizePointer(group, `group for "${entityName}"`);
-  } catch (err) {
-    throw new EntityValidationError([
-      {
-        entityName,
-        message: `${operation}: ${err instanceof Error ? err.message : String(err)}`,
-      },
-    ]);
-  }
-  if (id === null) {
-    throw new EntityValidationError([
-      { entityName, message: `${operation}: group ref is missing an id` },
-    ]);
-  }
-  return id;
-};
-
-/**
- * Resolve the write's target and commit the `writeRelationship`
- * operation. A one-cardinality unlink whose edge is already gone —
- * never linked, or locally tombstoned — is a no-op: there is no row id
- * for the wire delete to name. The operation itself owns the
- * GROUPS_ACCESSOR and undeclared-relationship refusals.
- */
-async function submitRelationshipWrite(
-  write: WriteCapability,
-  storage: StorageAdapter,
-  entityName: string,
-  sourceId: string,
-  as: string,
-  pointer: RelationshipPointer,
-): Promise<WriteResponse> {
-  const target = await resolveUnlinkTarget(write, storage, entityName, sourceId, as, pointer);
-  if (target.kind === "unlinked") return { rejected: [] };
-  const relationshipSubjectId = target.kind === "existing" ? target.relationshipId : undefined;
-  const groups = await readLiveGroupIds(storage, sourceId);
-  const { response } = await commit(
-    [
-      call(writeRelationship, {
-        entity: entityName,
-        sourceId,
-        as,
-        pointer,
-        relationshipSubjectId,
-        groups,
-      }),
-    ],
-    write,
-  );
-  return response;
-}
-
-/**
- * The one-cardinality unlink's live relationship row, or the reason it
- * has none. The wire delete must name the row's id so the server's
- * authorizer can recover its group, so a live edge yields `existing`.
- * Anything that needs no lookup — link / setLinks, or a refusal the
- * operation owns (the built-in membership accessor, an undeclared or
- * many-cardinality relationship) — is `not-applicable`. A one-cardinality
- * unlink with no live edge (never linked, or locally tombstoned) is
- * `unlinked`, which the caller treats as a no-op.
- */
-type UnlinkTarget =
-  | { readonly kind: "not-applicable" }
-  | { readonly kind: "unlinked" }
-  | { readonly kind: "existing"; readonly relationshipId: string };
-
-async function resolveUnlinkTarget(
-  write: WriteCapability,
-  storage: StorageAdapter,
-  entityName: string,
-  sourceId: string,
-  as: string,
-  pointer: RelationshipPointer,
-): Promise<UnlinkTarget> {
-  if (pointer.targetId !== null || pointer.targetIds !== undefined) {
-    return { kind: "not-applicable" };
-  }
-  if (as === GROUPS_ACCESSOR) return { kind: "not-applicable" };
-  const rel = write.registry.getRelationship(entityName, as);
-  if (rel === undefined || rel.sourceCardinality !== "one") {
-    return { kind: "not-applicable" };
-  }
-  const wireType = rel.type ?? entityName;
-  const [link] = await storage.entities.queryByRelationshipSource({
-    as,
-    type: wireType,
-    sourceId,
-  });
-  return link === undefined
-    ? { kind: "unlinked" }
-    : { kind: "existing", relationshipId: link.relationshipId };
-}
-
-/**
- * The `last_group_member` refusal for a `groupMember` delta, read from
- * the local cache. `undefined` when the target row is absent, not a
- * `groupMember`, tombstoned, or malformed, or when the group's local
- * member view is empty — the caller then defers to the server's
- * authoritative check.
- */
-async function lastGroupMemberRefusal(
-  storage: StorageAdapter,
-  id: string,
-  delta: GroupMemberDelta,
-): Promise<string | undefined> {
-  const row = await storage.entities.get(id);
-  if (row === null || row.type !== "groupMember" || row.deleted_hlc !== null) return undefined;
-  const groupId = row.data?.fields?.["group_id"]?.value;
-  if (typeof groupId !== "string") return undefined;
-  const members = (await storage.entities.query("groupMember")).flatMap((candidate) => {
-    const member = liveGroupMember(candidate);
-    return member === null || member.groupId !== groupId ? [] : [member];
-  });
-  return lastGroupMemberViolation(members, delta);
-}
-
-/**
- * Reduce a `groupMember` row to the guard's inputs. A tombstoned or
- * malformed row (missing / non-array permission list) is `null`, so
- * the caller defers rather than reading it as "no permissions".
- */
-const liveGroupMember = (row: Entity): LiveGroupMember | null => {
-  if (row.deleted_hlc !== null) return null;
-  const groupId = row.data?.fields?.["group_id"]?.value;
-  const permissions = row.data?.fields?.["permissions"]?.value;
-  if (typeof groupId !== "string" || !isStringArray(permissions)) return null;
-  return { id: row.id, groupId, permissions };
-};
-
-const isStringArray = (value: unknown): value is readonly string[] =>
-  Array.isArray(value) && value.every((entry) => typeof entry === "string");
-
-const lastGroupMemberError = (id: string, details: string): AtomicActionError =>
-  new AtomicActionError([{ id, subjectType: "groupMember", reason: "last_group_member", details }]);
-
-/**
- * `client.group`: the generic read/write surface with the bootstrap
- * `create`. Membership verbs are dropped — a group is its own group,
- * and `entityGroup` rows stay internal.
- */
+/** `client.group`: the read-only namespace over the `group` system entity. */
 function createGroupNamespace(
   storage: StorageAdapter,
-  write: WriteCapability,
+  read: ReadCapability,
   replica?: ReplicaAccess,
 ): GroupNamespace {
-  const base = createEntityNamespace<GroupFields, MembershipAccessors>(
+  return createEntityNamespace<GroupFields, MembershipAccessors>(
     "group",
     groupSystemEntity.shape,
     storage,
-    write,
-    {},
+    read,
     replica,
   );
-  return {
-    query: base.query,
-    get: base.get,
-    subscribe: base.subscribe,
-    duplicate: base.duplicate,
-    update: base.update,
-    delete: base.delete,
-    link: base.link,
-    unlink: base.unlink,
-    setLinks: base.setLinks,
-    async create(input, opts) {
-      const bootstrap = groupBootstrap(write.registry, input.name, opts?.validate);
-      const { response } = await commit([bootstrap.call], write);
-      return { id: bootstrap.groupId, ...response };
-    },
-  };
 }
 
-/**
- * `client.membership`: the generic read/write surface over the
- * `groupMember` system entity, with a plain system put. Membership verbs
- * are dropped — a member's scope is its own `group_id`, so an
- * `entityGroup` row for it has no meaning.
- */
+/** `client.membership`: the read-only namespace over the `groupMember` system entity. */
 function createMembershipNamespace(
   storage: StorageAdapter,
-  write: WriteCapability,
+  read: ReadCapability,
   replica?: ReplicaAccess,
 ): MembershipNamespace {
-  const base = createEntityNamespace<GroupMemberFields, MembershipAccessors>(
+  return createEntityNamespace<GroupMemberFields, MembershipAccessors>(
     "groupMember",
     groupMemberSystemEntity.shape,
     storage,
-    write,
-    {},
+    read,
     replica,
   );
-  return {
-    query: base.query,
-    get: base.get,
-    subscribe: base.subscribe,
-    duplicate: base.duplicate,
-    async update(
-      id: string,
-      patch: Partial<WireStatic<GroupMemberFields>>,
-      opts?: EntityWriteOptions,
-    ): Promise<WriteResponse> {
-      // Only a permission-only patch is locally provable. A patch that
-      // moves the member to another group changes which group is at
-      // risk, so leave it to the server; a patch that does not touch
-      // `permissions` cannot empty a list either. Changing `actor_id`
-      // keeps the same group, so it stays provable.
-      if (patch.permissions !== undefined && patch.group_id === undefined) {
-        const details = await lastGroupMemberRefusal(storage, id, {
-          removedIds: [],
-          upserts: [{ id, permissions: patch.permissions }],
-        });
-        if (details !== undefined) throw lastGroupMemberError(id, details);
-      }
-      return base.update(id, patch, opts);
-    },
-    async delete(id: string): Promise<WriteResponse> {
-      const details = await lastGroupMemberRefusal(storage, id, {
-        removedIds: [id],
-        upserts: [],
-      });
-      if (details !== undefined) throw lastGroupMemberError(id, details);
-      return base.delete(id);
-    },
-    link: base.link,
-    unlink: base.unlink,
-    setLinks: base.setLinks,
-    async create(input, opts) {
-      const id = generateId("e");
-      const { response } = await commit(
-        [
-          call(createSystemEntity, {
-            entity: "groupMember",
-            id,
-            fields: input as Record<string, unknown>,
-            validate: opts?.validate,
-          }),
-        ],
-        write,
-      );
-      return { id, ...response };
-    },
-  };
 }
 
 /**
@@ -1648,7 +879,7 @@ export function buildEntityNamespaces<
 >(
   schema: S,
   storage: StorageAdapter,
-  write: WriteCapability,
+  read: ReadCapability,
   replica?: ReplicaAccess,
 ): EntityNamespaces<S> {
   const out: Record<string, EntityNamespace<Record<string, TSchema>>> = {};
@@ -1656,14 +887,14 @@ export function buildEntityNamespaces<
     // The static accessor record is derived by `EntityNamespaces<S>`
     // from the schema's relationship map; the registry is the runtime
     // authority for which accessors actually attach.
-    out[name] = createEntityNamespace(def.name, def.shape, storage, write, def.derived, replica);
+    out[name] = createEntityNamespace(def.name, def.shape, storage, read, replica);
   }
-  out["group"] = createGroupNamespace(storage, write, replica) as unknown as EntityNamespace<
+  out["group"] = createGroupNamespace(storage, read, replica) as unknown as EntityNamespace<
     Record<string, TSchema>
   >;
   out["membership"] = createMembershipNamespace(
     storage,
-    write,
+    read,
     replica,
   ) as unknown as EntityNamespace<Record<string, TSchema>>;
   return out as EntityNamespaces<S>;
