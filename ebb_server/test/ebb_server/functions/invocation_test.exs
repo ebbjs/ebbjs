@@ -50,7 +50,7 @@ defmodule EbbServer.Functions.InvocationTest do
     test "a handler that throws returns 422 and commits nothing" do
       before = WatermarkTracker.committed_watermark()
 
-      assert {:error, 422, "boom"} = run_fixture("handler-error")
+      assert {:error, 422, "handler_error", "boom"} = run_fixture("handler-error")
 
       assert WatermarkTracker.committed_watermark() == before
       assert ActionLog.read(before + 1, before + 10) == []
@@ -59,7 +59,7 @@ defmodule EbbServer.Functions.InvocationTest do
     test "a rejected commit answers the call with 422 and writes nothing" do
       before = WatermarkTracker.committed_watermark()
 
-      assert {:error, 422, details} = run_fixture("commit-rejected")
+      assert {:error, 422, "rejected", details} = run_fixture("commit-rejected")
       assert details =~ "not_authorized"
 
       assert WatermarkTracker.committed_watermark() == before
@@ -106,13 +106,13 @@ defmodule EbbServer.Functions.InvocationTest do
     end
 
     test "a worker that dies without a result ends the invocation" do
-      assert {:error, 503, message} = run_fixture("crash")
+      assert {:error, 503, "unavailable", message} = run_fixture("crash")
       assert message =~ "worker exited"
       assert_received :functions_worker_closed
     end
 
     test "a fake that never replies hits the deadline and is closed once" do
-      assert {:error, 408, "deadline exceeded"} =
+      assert {:error, 408, "timeout", "deadline exceeded"} =
                run_script([], deadline_ms: 50)
 
       assert_received :functions_worker_closed
@@ -124,7 +124,7 @@ defmodule EbbServer.Functions.InvocationTest do
     test "a mismatched protocol version fails the invocation" do
       ready = Protocol.ready(1, "9.9.9", 99)
 
-      assert {:error, 500, message} = run_script([%{"send" => ready}])
+      assert {:error, 500, "protocol_error", message} = run_script([%{"send" => ready}])
       assert message =~ "protocol version"
       assert_received :functions_worker_closed
     end
@@ -150,14 +150,16 @@ defmodule EbbServer.Functions.InvocationTest do
     end
 
     test "an unexpected frame type fails the invocation" do
-      assert {:error, 500, message} = run_script([%{"send" => %{"type" => "mystery"}}])
+      assert {:error, 500, "protocol_error", message} =
+               run_script([%{"send" => %{"type" => "mystery"}}])
+
       assert message =~ "unexpected frame"
     end
 
     test "a malformed call frame fails the invocation" do
       script = [%{"send" => %{"type" => "call", "call_id" => "1"}}]
 
-      assert {:error, 500, message} = run_script(script)
+      assert {:error, 500, "protocol_error", message} = run_script(script)
       assert message =~ "malformed call"
     end
 
@@ -174,7 +176,7 @@ defmodule EbbServer.Functions.InvocationTest do
         }
       ]
 
-      assert {:error, 500, message} = run_script(script)
+      assert {:error, 500, "protocol_error", message} = run_script(script)
       assert message =~ "unsupported host op"
     end
 
@@ -182,7 +184,7 @@ defmodule EbbServer.Functions.InvocationTest do
       script = [%{"send" => Protocol.call("1", "get", %{"id" => "e_doc"})}]
 
       capture_log(fn ->
-        assert {:error, 500, message} = run_script(script, host: RaisingHost)
+        assert {:error, 500, "host_call_failed", message} = run_script(script, host: RaisingHost)
         assert message =~ "host call failed"
       end)
     end
@@ -190,24 +192,24 @@ defmodule EbbServer.Functions.InvocationTest do
     test "a host call that returns an invalid result fails the invocation" do
       script = [%{"send" => Protocol.call("1", "get", %{"id" => "e_doc"})}]
 
-      assert {:error, 500, message} = run_script(script, host: BadHost)
+      assert {:error, 500, "host_call_failed", message} = run_script(script, host: BadHost)
       assert message =~ "invalid result"
     end
   end
 
   describe "worker start and send failures" do
     test "a transport that cannot start returns 503" do
-      assert {:error, 503, message} = run_script([], transport: FailingWorker)
+      assert {:error, 503, "unavailable", message} = run_script([], transport: FailingWorker)
       assert message =~ "worker unavailable"
     end
 
     test "a transport that cannot accept invoke returns 503" do
-      assert {:error, 503, message} = run_script([], transport: ClosedWorker)
+      assert {:error, 503, "unavailable", message} = run_script([], transport: ClosedWorker)
       assert message =~ "worker unavailable"
     end
 
     test "a transport without a monitor is polled for liveness" do
-      assert {:error, 503, message} = run_script([], transport: NoMonitorWorker)
+      assert {:error, 503, "unavailable", message} = run_script([], transport: NoMonitorWorker)
       assert message =~ "worker exited"
     end
   end

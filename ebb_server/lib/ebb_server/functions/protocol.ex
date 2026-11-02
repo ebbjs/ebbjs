@@ -85,6 +85,18 @@ defmodule EbbServer.Functions.Protocol do
   end
 
   @doc """
+  Whether `frame` fits the frame bound once encoded.
+
+  The router asks this before sending an `invoke` whose `bundle` may be large.
+  Encoding to measure is `Protocol`'s job, not a call site's: the payload has
+  exactly one encoder, which is what keeps the wire shape from drifting.
+  """
+  @spec fits?(frame()) :: boolean()
+  def fits?(frame) do
+    IO.iodata_length(encode_frame(frame)) <= @max_frame_bytes
+  end
+
+  @doc """
   Builds an `invoke` frame. Fields the caller omits stay omitted; the worker
   reads the ones it understands.
   """

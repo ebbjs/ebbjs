@@ -6,7 +6,7 @@ defmodule EbbServer.Sync.Router do
 
   ## What this module is
 
-  A `Plug.Router` with nine endpoints and one catch-all 404:
+  A `Plug.Router` with ten endpoints and one catch-all 404:
 
     - `GET /healthz` — unauthenticated readiness probe backed by
       `EbbServer.Health`; `200` once the storage layer answers, `503`
@@ -24,6 +24,10 @@ defmodule EbbServer.Sync.Router do
       a non-member gets `404`, same as a missing entity).
     - `POST /entities/query` — query entities by type with `json_extract`
       filter and permission JOINs (used by `ctx.query()`).
+    - `POST /functions/:name` — invoke a deployed function. The path exists
+      only while the boot-time functions flag is on, in which case
+      `EbbServer.Functions.Router` answers it; when it is off the path falls
+      through to the catch-all like any unknown path.
 
   ## Status codes
 
@@ -76,8 +80,35 @@ defmodule EbbServer.Sync.Router do
   plug(:health_check)
 
   plug(EbbServer.Sync.AuthPlug)
+  plug(:functions)
   plug(:match)
   plug(:dispatch)
+
+  # `POST /functions/:name` is delegated rather than forwarded. A `forward`
+  # would be compiled into the route table, so the path would resolve even
+  # with the feature off and would need a functions-shaped 404 to say so.
+  # Delegating from a plug leaves the conn untouched when the flag is off, so
+  # the path falls through to the catch-all below exactly as any unknown path
+  # does. The flag is resolved once at boot (`EbbServer.Functions`); this check
+  # only reads that resolved value. `AuthPlug` stays in front of both, so an
+  # anonymous request gets the shared `401` before the route matters.
+  #
+  # `Plug.forward/4` splits `/functions` off the path for the child router and
+  # puts it back afterwards, so `Functions.Router` only ever sees `/:name`.
+  defp functions(%Plug.Conn{path_info: ["functions", _name]} = conn, _opts) do
+    if EbbServer.Functions.enabled?() do
+      Plug.forward(
+        conn,
+        ["functions"],
+        EbbServer.Functions.Router,
+        EbbServer.Functions.Router.init([])
+      )
+    else
+      conn
+    end
+  end
+
+  defp functions(conn, _opts), do: conn
 
   defp health_check(%Plug.Conn{method: "GET", path_info: ["healthz"]} = conn, _opts) do
     case EbbServer.Health.status() do

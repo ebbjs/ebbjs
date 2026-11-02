@@ -14,6 +14,10 @@ defmodule EbbServer.Application do
     Application.put_env(:ebb_server, :auth_mode, auth_mode)
     Application.put_env(:ebb_server, :auth_url, auth_url)
 
+    # Resolved once, before `children/0` reads it and before Bandit can serve
+    # the route: `enabled?/0` must not consult the environment per request.
+    resolve_functions!()
+
     if auth_mode == :bypass do
       Logger.warning(
         "auth mode :bypass is active: any client can claim any actor identity via the " <>
@@ -24,14 +28,17 @@ defmodule EbbServer.Application do
 
     children =
       [
-        {EbbServer.Storage.Supervisor, [data_dir: data_dir]},
-        EbbServer.Telemetry.Sampler,
-        {Registry, keys: :unique, name: EbbServer.Sync.GroupRegistry},
-        EbbServer.Sync.Supervisor,
-        # Attached before Bandit so every request Bandit accepts is sampled.
-        EbbServer.Telemetry.HTTP,
-        {Bandit, plug: EbbServer.Sync.Router, port: port}
-      ] ++ action_export_children()
+        {EbbServer.Storage.Supervisor, [data_dir: data_dir]}
+      ] ++
+        functions_children() ++
+        [
+          EbbServer.Telemetry.Sampler,
+          {Registry, keys: :unique, name: EbbServer.Sync.GroupRegistry},
+          EbbServer.Sync.Supervisor,
+          # Attached before Bandit so every request Bandit accepts is sampled.
+          EbbServer.Telemetry.HTTP,
+          {Bandit, plug: EbbServer.Sync.Router, port: port}
+        ] ++ action_export_children()
 
     opts = [strategy: :one_for_one, name: EbbServer.Supervisor]
     Supervisor.start_link(children, opts)
@@ -47,6 +54,25 @@ defmodule EbbServer.Application do
     else
       []
     end
+  end
+
+  # The functions bundle cache is opt-in and, like the auth resolution below,
+  # may refuse to boot: enabling functions without a `:bundle_dir` is a
+  # deployment mistake that must not read as "no bundles deployed".
+  defp functions_children do
+    EbbServer.Functions.children()
+  rescue
+    error in RuntimeError ->
+      IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")
+      reraise error, __STACKTRACE__
+  end
+
+  defp resolve_functions! do
+    EbbServer.Functions.resolve!()
+  rescue
+    error in RuntimeError ->
+      IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")
+      reraise error, __STACKTRACE__
   end
 
   # Resolution order for the storage data directory:
