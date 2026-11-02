@@ -1,21 +1,16 @@
 /**
- * Every write the issue-tracker demo performs, declared once at module
- * scope and mounted on each client `bootstrap` builds.
- *
- * An action callback is synchronous and runs before the Action is
- * submitted, so it cannot live inside a component: components call
- * `client.actions.<name>(params)`, and everything one call drafts commits
- * as one Action or not at all. A refusal from the server throws
- * `ActionRejectedError`.
+ * Every write the demo performs, declared once at module scope and mounted on
+ * each client `bootstrap` builds. A callback cannot live inside a component, so
+ * components call `client.actions.<name>(params)`; everything one call drafts
+ * commits as one Action, and a refusal throws `ActionRejectedError`.
  */
 
 import { defineAction, type EntityValues } from "@ebbjs/client";
 import { issue, schema } from "./schema";
 
 /**
- * Create an issue and, when an assignee is picked, its `assignee` link in
- * the same Action, so the row is never briefly visible without its link.
- * Returns the handle so the form can select the row it just created.
+ * Create an issue and, when an assignee is picked, its `assignee` link in the
+ * same Action, so the row is never briefly visible without its link.
  */
 export const createIssue = defineAction(
   schema,
@@ -67,10 +62,8 @@ export const deleteIssue = defineAction(schema, ({ issue }, params: { id: string
 });
 
 /**
- * Put the joining actor's `groupMember` row for a workspace group. Groups
- * are closed by default (#126), so the demo's service actor runs this to
- * invite; a non-member's attempt is refused by the local permission pass
- * and, if it reached the wire, by the server.
+ * Put the joining actor's `groupMember` row for a workspace group. Groups are
+ * closed by default (#126), so the demo's service actor runs this to invite.
  */
 export const inviteMember = defineAction(
   schema,
@@ -91,10 +84,9 @@ export const inviteMember = defineAction(
 );
 
 /**
- * File the actor's own profile into a workspace group. Only the profile's
- * owner holds the authority: the write authorizes over the profile's
- * groups, which include that actor's personal group (#623). A profile
- * already filed in the group is a no-op, which keeps a retry safe.
+ * File the actor's own profile into a workspace group. Only the owner holds the
+ * authority: the write authorizes over the profile's groups, which include that
+ * actor's personal group (#623). Filing twice is a no-op.
  */
 export const shareProfile = defineAction(
   schema,
@@ -104,10 +96,9 @@ export const shareProfile = defineAction(
 );
 
 /**
- * Leave a workspace: drop the profile's membership and the actor's
- * `groupMember` row in one Action. Both are the member's own rows, and the
- * profile write is authorized by the actor's `profile.*` permission in its
- * personal group, which survives the `groupMember` deletion.
+ * Leave a workspace: the profile's membership and the actor's `groupMember` row
+ * in one Action. Both are the member's own rows, and the profile write is
+ * authorized in the personal group, which survives the `groupMember` deletion.
  */
 export const leaveWorkspace = defineAction(
   schema,

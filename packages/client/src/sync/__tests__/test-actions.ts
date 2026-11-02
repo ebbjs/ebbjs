@@ -1,22 +1,13 @@
 /**
  * TEST HARNESS — not public API, not shipped.
  *
- * `testActions(schema)` builds an actions map a test mounts on
- * `createClient({ schema, actions })`, so every write goes through the
- * one write path (`client.actions.<name>`) exactly as application code
- * does. Two kinds of entry point:
- *
- * - one action per draft verb, addressing the entity by name
- *   (`{ entity: "todo", id, patch }`), for tests whose write is setup
- *   for the read under test;
- * - `run`, which executes an arbitrary callback over the typed drafts
- *   and resolves to its return value — the replacement for the removed
- *   `client.atomic(...)`.
- *
- * A test whose subject is the write itself should declare typed actions
- * against its own schema instead, so it pins the typed draft surface.
- * The casts that let the name-addressed verbs stay cast-free at the call
- * site live in this module only.
+ * `testActions(schema)` builds an actions map mounted on a client, so a test
+ * writes through `client.actions.<name>` exactly as application code does.
+ * Verbs are addressed by entity name (`{ entity: "todo", id, patch }`) for
+ * tests where the write is setup; `run` executes an arbitrary callback over the
+ * typed drafts. A test whose subject *is* the write should declare typed
+ * actions instead, so it pins the draft surface. The casts that keep call sites
+ * clean live here only.
  */
 
 import { defineAction } from "../../schema/action";

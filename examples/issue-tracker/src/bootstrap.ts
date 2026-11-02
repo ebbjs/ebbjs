@@ -1,24 +1,13 @@
 /**
- * Bootstrap: create the typed client, seed the actor's workspace and the
- * shared fixtures, run the handshake, then open the SSE subscription.
+ * Bootstrap: create the clients, seed the actor's workspace and the shared
+ * fixtures, handshake, then subscribe.
  *
- * Returns the actor's client, the shared workspace's service client, and
- * a `refresh` that re-handshakes and re-subscribes. A membership change
- * needs the refresh: the actor's group set has changed, so the
- * subscription must span the new workspace before its entities arrive
- * without a reload.
- *
- * The seed is submitted through `client.seed()` — one Action built from
- * the plain `SeedData` in `./seed`, going through the same write path as
- * any other client write. The shared fixtures are attributed to the
- * `demo-seeder` service actor, whose client stays open for the session so
- * it can invite actors into the shared workspace (groups are closed by
- * default, #126).
- *
- * The signed-in client persists to IndexedDB (one database per actor) so
- * the Outbox survives a page reload: an unacknowledged write is rehydrated
- * and flushed once the subscription reconnects. Runtimes without
- * IndexedDB fall back to the in-memory adapter.
+ * `refresh` re-handshakes and re-subscribes, which a membership change needs:
+ * the actor's group set moved, so the subscription must span the new workspace
+ * before its entities arrive without a reload. The seeder's client stays open
+ * for the session because it invites actors into a closed group (#126). The
+ * signed-in client persists to IndexedDB (one database per actor) so the Outbox
+ * survives a reload, falling back to memory off the browser.
  */
 
 import { createClient } from "@ebbjs/client";
@@ -29,9 +18,8 @@ import { SEEDER_ACTOR_ID, buildActorSeed, buildSharedSeed, deriveActorSeedIds } 
 import { handshakeGroupIds, syncAllGroups } from "./sync-groups";
 
 /**
- * The demo's client factory: one place that knows the schema, the action
- * map, and therefore the client type. Nothing else has to import a client
- * type from the library.
+ * The demo's client factory: the one place that knows the schema and the action
+ * map, and therefore the client type.
  */
 export const createIssueTrackerClient = (opts: {
   serverUrl: string;

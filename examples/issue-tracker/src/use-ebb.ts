@@ -1,11 +1,6 @@
 /**
- * The app's hooks, bound to its client type once.
- *
- * React context erases types, so `useClient` has to be told the client type
- * and `useQuery` cannot take a schema as a type argument (TypeScript does not
- * partially infer type arguments, so the rows would lose their fields).
- * Binding both here means components write plain hooks: `useEbb()` returns the
- * app's client and `useQuery((q) => …)` types `q` for them.
+ * The app's hooks, bound to its client type once: components call `useEbb()`
+ * and `useQuery((q) => …)` with no generic and no annotation.
  */
 
 import { createEbbHooks, type QueryRootOf } from "@ebbjs/react";

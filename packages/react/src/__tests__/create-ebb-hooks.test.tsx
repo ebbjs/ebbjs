@@ -1,11 +1,6 @@
 /**
- * Tests for `createEbbHooks` — `useClient` and `useQuery` bound to one client
+ * Tests for `createEbbHooks`: `useClient` and `useQuery` bound to one client
  * type, so a component needs no generic and no callback annotation.
- *
- * The binding is the point: React context erases types, and TypeScript does
- * not partially infer type arguments, so `useQuery` cannot take the schema as
- * a type argument without dropping the row types. Binding `q` once is what
- * makes both call sites plain.
  */
 
 import { afterEach, describe, expect, it } from "vitest";

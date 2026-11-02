@@ -1,26 +1,20 @@
 /**
- * `createEbbHooks<C>()` — bind the hooks to your client type once, then use
- * them without a generic or an annotation.
+ * Bind `useClient` and `useQuery` to one client type.
  *
- * React context erases types: `useClient` cannot learn the provider's client
- * type, so it has to be told. Naming it at every call site is noise, and
- * `useQuery` cannot take the schema as a type argument either (TypeScript does
- * not partially infer type arguments, so the row types would fall back to
- * their defaults). Binding once, at module scope, is the way out:
+ * React context erases types, so `useClient` must be told the client type at
+ * every call site; and `useQuery` cannot take the schema as a type argument
+ * instead (TypeScript does not partially infer type arguments, so the rows
+ * would fall back to their defaults). Binding once removes both:
  *
  * ```tsx
- * // use-ebb.ts
  * export const { useClient: useEbb, useQuery } = createEbbHooks<AppClient>();
  *
- * // in a component
  * const client = useEbb();
  * const { data } = useQuery((q) => q.issue.query().with({ assignee: true }));
  * ```
  *
- * `q` is the client's read root: every namespace narrowed to `query()`, so a
- * write stays a compile error there. Call the factory at module scope — each
- * call makes new hook functions, and a per-render call would hand React a new
- * hook identity on every render.
+ * Call it at module scope: each call makes new hook functions, and a
+ * per-render call would hand React a new hook identity on every render.
  */
 
 import type { ProjectedRow, QueryBuilder, SyncClient, TSchema } from "@ebbjs/client";
@@ -29,10 +23,8 @@ import { useClient } from "./context";
 import { useQueryRoot, type UseQueryResult } from "./use-query";
 
 /**
- * The read root of a client type: every namespace that exposes `query()`,
- * narrowed to just `query()`. {@link QueryRoot} says the same for a schema;
- * deriving it from the client is what lets a bound hook type `q` without the
- * caller naming anything.
+ * The read root of a client type: its namespaces narrowed to `query()`, so a
+ * write is not on it. {@link QueryRoot} says the same for a schema.
  */
 export type QueryRootOf<C> = {
   [K in keyof C as C[K] extends { query: (...args: never[]) => unknown } ? K : never]: {
@@ -44,10 +36,7 @@ export type QueryRootOf<C> = {
 export interface EbbHooks<C extends SyncClient> {
   /** The provider's client, typed as `C` — no generic at the call site. */
   useClient(): C;
-  /**
-   * {@link useQuery} bound to `C`: `build`'s `q` is the client's read root,
-   * so neither the callback nor the call needs a type.
-   */
+  /** {@link useQuery} bound to `C`: `q` is the read root, so nothing needs a type. */
   useQuery<
     TFields extends Record<string, TSchema>,
     TJoins extends object,

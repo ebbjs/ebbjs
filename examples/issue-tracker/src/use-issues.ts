@@ -1,10 +1,6 @@
 /**
- * The one query behind the issue list and the board.
- *
- * Filters become predicates on the replica query — status and priority as
- * field equality, assignee through the `assignee` relationship — so the
- * result is already narrowed when the board or the list projects it. The
- * chain is ordered by title with the engine's id tiebreaker, which is what
+ * The one query behind the issue list and the board. Filters become replica
+ * predicates, and the title ordering (with the engine's id tiebreaker) is what
  * makes a grown `limit` a stable next page.
  */
 
@@ -12,10 +8,9 @@ import { useQuery, type IssueReadRoot } from "./use-ebb";
 import type { IssueFilters } from "./issue-view";
 
 /**
- * The issues query for one filter selection and window size, as a function of
- * a read root. The hook runs it against the provider's client; a test runs it
- * against a client it built, so the query a test asserts and the query the UI
- * renders are the same value rather than two copies.
+ * The issues query for one filter selection and window size. The hook runs it
+ * against the provider's client and a test against its own, so both share one
+ * chain instead of keeping two copies in sync.
  */
 export function issueQuery(filters: IssueFilters, limit: number) {
   return (q: IssueReadRoot) => {

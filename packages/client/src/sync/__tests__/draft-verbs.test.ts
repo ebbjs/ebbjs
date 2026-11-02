@@ -1,14 +1,10 @@
 /**
- * The draft verbs a mounted Action reaches (#692): the entity namespace's
- * `update` / `delete` / `duplicate` / `link` / `unlink` / `setLinks` /
- * `addToGroup` / `removeFromGroup` / `setGroups`, plus the system
- * `membership.update` / `delete` pair.
+ * The draft verbs a mounted Action reaches (#692): the entity verbs plus the
+ * system `membership.update` / `delete` pair.
  *
- * Every test drives `client.actions.<name>`, so the definition callback,
- * the ordered planner, the committer, and the wire shape are exercised
- * as one path. The stub `fetch` records each request so a test can decode
- * the submitted Action and assert its Updates, their order, and the group
- * rows they carry.
+ * Every test drives `client.actions.<name>`, so the callback, the ordered
+ * planner, the committer and the wire shape run as one path; the stub `fetch`
+ * records the submitted Action so a test can assert its Updates and their order.
  */
 
 import { describe, expect, it, vi } from "vitest";

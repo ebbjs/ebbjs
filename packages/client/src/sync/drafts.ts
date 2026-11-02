@@ -1,40 +1,16 @@
 /**
- * The draft surface and its planner: every synchronous write verb an
- * Action callback records work through, and the resolver that turns
- * that work into exactly one wire Action.
+ * The draft surface and its planner: the synchronous write verbs an
+ * `defineAction` callback records work through, and the resolver that turns
+ * that work into one wire Action.
  *
- * A `defineAction` callback receives one {@link DraftNamespace} per
- * schema entity plus the system `group` / `membership` namespaces.
- * Every verb is synchronous: it records either a ready
- * {@link OperationCall} or a pending intent against the collector, and
- * the Action is submitted once the callback returns. `create` /
- * `duplicate` return a handle carrying the minted id, so a later verb
- * in the same callback can point at it.
- *
- * ### Ordered resolution
- *
- * The collector keeps one ordered list of steps. `create` mints its ids
- * eagerly, so its call is ready; every verb that must read the local
- * view before it can build its Updates records an intent. After the
- * callback the resolver walks the list in order and splices each
- * intent's calls into its own position, so call order is what the
- * server sees: the `put` for a created entity precedes a later patch of
- * it, and its membership rows precede a later share.
- *
- * ### The batch overlay
- *
- * A read falls through to the {@link ActionCapability} when the batch
- * knows nothing about the entity id, and consults {@link BatchEntity}
- * first when it does. `create` / `duplicate` seed it and the membership
- * verbs keep it current, so a later verb in the callback sees the
- * batch's own (not yet materialized) membership state and the derived
- * parts the batch minted.
- *
- * ### Per-Update delivery (#473)
- *
- * The server delivers each Update by its own group scope, so one batch
- * may span groups: a content write and a membership delta into
- * different groups compose into one Action without a client gate.
+ * Two invariants shape the resolver. **Call order is the wire order**: a ready
+ * call is pushed as-is, a verb that must read local state first records an
+ * intent, and the resolver splices each intent's calls back into its own
+ * position — so a created row's `put` precedes a later patch of it. **The batch
+ * overlay outranks the capability**: `create` / `duplicate` seed the entity's
+ * groups and parts, membership verbs keep them current, and a read consults the
+ * overlay before the live store so a later verb sees what the batch did rather
+ * than what is materialized.
  */
 
 import { generateId, type Entity, type FieldValue } from "@ebbjs/core";
@@ -150,14 +126,8 @@ export type GroupRef = string | { readonly id: string };
 export type DuplicateAt = "current" | "preSync";
 
 /**
- * The one-cardinality unlink's live relationship row, or the reason it
- * has none. The wire delete must name the row's id so the server's
- * authorizer can recover its group, so a live edge yields `existing`.
- * Anything that needs no lookup — link / setLinks, or a refusal the
- * operation owns (the built-in membership accessor, an undeclared or
- * many-cardinality relationship) — is `not-applicable`. A one-cardinality
- * unlink with no live edge (never linked, or locally tombstoned) is
- * `unlinked`, which the caller treats as a no-op.
+ * What a one-cardinality unlink's delete must name: the live edge's row id, or
+ * the reason there is none.
  */
 type UnlinkTarget =
   | { readonly kind: "not-applicable" }
@@ -232,11 +202,9 @@ const resolveSingleGroupId = (group: GroupRef, entityName: string, operation: st
 };
 
 /**
- * Resolve the write's target before the planner emits the
- * `writeRelationship` operation. A one-cardinality unlink whose edge is
- * already gone — never linked, or locally tombstoned — is a no-op:
- * there is no row id for the wire delete to name. The operation itself
- * owns the GROUPS_ACCESSOR and undeclared-relationship refusals.
+ * Resolve an unlink's target before the planner emits `writeRelationship`.
+ * The operation owns the accessor and declared-relationship refusals; this only
+ * supplies the row id, or reports that there is nothing to delete.
  */
 async function resolveUnlinkTarget(
   registry: EntityRegistry,
@@ -283,12 +251,9 @@ export interface DraftDuplicateOptions extends EntityWriteOptions {
 }
 
 /**
- * The local state an action's verbs resolve against after the callback
- * returns — every read a draft verb needs before it can build its
- * Updates. Kept apart from {@link CommitCapability} so the two can be
- * supplied separately: a test can seed this half and capture the
- * commit half, and the runtime body never confuses a read with an
- * effect.
+ * The local state a draft verb reads before it can build its Updates. Kept
+ * apart from {@link CommitCapability} so the halves can be supplied
+ * separately — a test seeds this one and captures the other.
  */
 export interface ActionReads {
   /** Live `entityGroup` rows for an entity id. */
@@ -309,19 +274,12 @@ export interface ActionReads {
   groupMembers(groupId: string): Promise<readonly LiveGroupMember[]>;
 }
 
-/**
- * What the action runtime needs: the committer, plus the local reads the
- * planner resolves an intent against. The client binds both halves to
- * the same storage the namespaces read.
- */
+/** The committer plus the local reads the planner resolves an intent against. */
 export interface ActionCapability extends CommitCapability {
   readonly read: ActionReads;
 }
 
-/**
- * What the batch knows about one entity id before any of it is
- * materialized. A membership read consults this before the capability.
- */
+/** What the batch knows about one entity id before any of it is materialized. */
 interface BatchEntity {
   /** Groups the batch has filed the entity into. */
   groups: Set<string>;
@@ -423,9 +381,8 @@ type DraftCreateInput<TFields extends Record<string, TSchema>, TCreateExtras ext
   TCreateExtras;
 
 /**
- * Per-entity draft surface. Every verb records work for the enclosing
- * Action; `create` / `duplicate` return the minted id, the rest return
- * `void`.
+ * Per-entity draft surface. `create` / `duplicate` return the minted id; the
+ * rest record work for the enclosing Action and return nothing.
  */
 export interface DraftNamespace<
   TFields extends Record<string, TSchema>,
@@ -463,10 +420,8 @@ export interface DraftNamespace<
 }
 
 /**
- * A draft system namespace: `create` plus whatever the entity's own
- * write semantics allow. An `entityGroup` row scoping a `group` or
- * `groupMember` is meaningless, so the membership verbs the content
- * draft surface carries are absent.
+ * A draft system namespace: the content verbs minus the membership ones, since
+ * an `entityGroup` row for a group or a member has no meaning.
  */
 export type SystemDraftNamespace<TFields extends Record<string, TSchema>> = Omit<
   DraftNamespace<TFields>,
@@ -515,11 +470,9 @@ export type ActionDrafts<S> =
     : Record<string, never>;
 
 /**
- * Resolve a field value into wire-safe data: draft handles collapse to
- * their id, arrays and plain objects are walked, everything else passes
- * through. `seen` is the current path, so a value that contains itself
- * is rejected instead of recursing forever. A shared (DAG) reference is
- * fine — only a back-edge is a cycle.
+ * Resolve a field value into wire-safe data, collapsing draft handles to their
+ * id. `seen` tracks the current path, so a back-edge is rejected while a shared
+ * (DAG) reference is fine.
  */
 export function resolveReferences(
   value: unknown,
@@ -541,9 +494,8 @@ export function resolveReferences(
 }
 
 /**
- * Normalize a relationship pointer value into a list of target ids.
- * Accepts a handle, a string id, anything with a string `.id`, or an
- * array of those; `null`/`undefined` drop out (clear semantics).
+ * Normalize a relationship pointer into target ids: a handle, an id, anything
+ * with a string `.id`, or an array of those. `null` / `undefined` drop out.
  */
 const resolvePointerTargets = (
   value: unknown,
@@ -577,8 +529,7 @@ const recordIntent = (collector: DraftCollector, intent: DraftIntent): void => {
 
 /**
  * Resolve one draft `create` into an operation call. The id is minted here
- * because the callback needs it before commit; the derived bodies go
- * through the same document-expansion path the schema declares.
+ * because the callback needs it before commit.
  */
 const createDraftNamespace = <
   TFields extends Record<string, TSchema>,
@@ -775,11 +726,6 @@ const createDraftNamespace = <
   },
 });
 
-/**
- * The verbs a system draft namespace shares with the content surface: an
- * `entityGroup` row scoping a group or a member is meaningless, so the
- * membership verbs are dropped.
- */
 const sharedSystemVerbs = <TFields extends Record<string, TSchema>>(
   namespace: DraftNamespace<TFields>,
 ): Omit<SystemDraftNamespace<TFields>, "create"> => ({
@@ -792,11 +738,9 @@ const sharedSystemVerbs = <TFields extends Record<string, TSchema>>(
 });
 
 /**
- * The system draft namespaces. `group.create` records the group
- * bootstrap (the group row plus the acting actor's membership);
- * `membership.create` records a single `groupMember` put;
- * `membership.update` / `delete` keep the local `last_group_member`
- * guard. None emits an `entityGroup` row.
+ * The system draft namespaces. Only `create` differs from the content surface:
+ * `group.create` bootstraps the group row plus the actor's membership, and
+ * `membership.create` is a single `groupMember` put.
  */
 const createSystemDrafts = (
   cap: ActionCapability,
@@ -880,23 +824,14 @@ const groupMemberView = (cap: ActionCapability): GroupMemberView => ({
   groupMembers: (groupId) => cap.read.groupMembers(groupId),
 });
 
-/**
- * The entity's group set as the batch knows it: the overlay first (which
- * a batch-local create seeds and the membership verbs keep current), the
- * capability's live read otherwise.
- */
+/** The entity's group set: the overlay when the batch touched it, else a live read. */
 const readGroups = async (ctx: ResolveContext, id: string): Promise<readonly string[]> => {
   const batch = ctx.batching.get(id);
   if (batch !== undefined) return [...batch.groups];
   return (await ctx.cap.read.memberships(id)).map((membership) => membership.groupId);
 };
 
-/**
- * The entity's membership state, seeding the batch overlay from the
- * local view the first time a verb needs row ids. A seeded entry is what
- * keeps a later verb in the same Action honest: it sees the deltas
- * before the wire does.
- */
+/** The entity's membership state, seeding the overlay from the live view once. */
 const readMembershipState = async (ctx: ResolveContext, id: string): Promise<BatchEntity> => {
   const existing = ctx.batching.get(id);
   if (existing !== undefined) return existing;
@@ -1176,11 +1111,7 @@ const resolveIntent = async (
   }
 };
 
-/**
- * Walk the recorded steps in call order, splicing each intent's calls
- * into its own position, so the batch the server receives follows the
- * callback's order.
- */
+/** Resolve each recorded step in call order, splicing intents into place. */
 const resolveSteps = async (
   collector: DraftCollector,
   cap: ActionCapability,

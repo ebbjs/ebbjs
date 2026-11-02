@@ -43,10 +43,8 @@ export interface UseQueryResult<
 }
 
 /**
- * The engine work behind every query hook: subscribe to the cached result
- * `build` lowers to, against `root`. Internal — the public entry points are
- * {@link useQuery} (schema-annotated) and the hook
- * `createEbbHooks` returns (client-bound, no annotation).
+ * The engine behind both query hooks: subscribe to the cached result `build`
+ * lowers to, against `root`.
  */
 export function useQueryRoot<
   TRoot,
@@ -77,28 +75,18 @@ export function useQueryRoot<
 /**
  * Subscribe a component to the engine's cached query result.
  *
- * `build` receives `q` — the provider's client narrowed to each entity
- * namespace's `query()` — so `q.todo.query` is the same method as
- * `client.todo.query`. Annotate `q` with the caller's schema
- * (`(q: QueryRoot<Schema>) => q.todo.query()`) and let every type argument
- * infer: `q` is checked against the schema and `data` follows the chain,
- * joins included. Supplying a type argument instead would pin the row types
- * to their defaults, because TypeScript does not partially infer type
- * arguments — which is why `createEbbHooks` exists: it types `q` from the
- * client, so its `useQuery` needs neither the annotation nor a type argument.
+ * `build` receives `q` — the client narrowed to each namespace's `query()` —
+ * so `q.todo.query` is `client.todo.query`. Annotate `q` with the schema
+ * (`(q: QueryRoot<Schema>) => …`) and let every type argument infer; a type
+ * argument instead would pin the rows to their defaults. To skip the
+ * annotation, use the bound hook from {@link createEbbHooks}.
  *
  * `build` runs once per `deps` change and per client swap (keep `deps` a
  * stable-length list). The store is keyed by the lowered query, so two
- * components building the same chain share one cached result, and a remount
- * reads it back with `status: "stale" | "current"` instead of starting over.
- * The snapshot reference stays stable until the result actually changes, so an
- * invalidation that re-runs to an equal result does not re-render.
- *
- * A held result renders synchronously on first mount: `status` starts at
- * `current`, not `unloaded`, so there is no loading flash for cached rows.
- * `stale` marks a usable result at an older replica revision while the re-run
- * is pending, `failed` is sticky until a run succeeds, and `unloaded` is never
- * rendered as an empty list.
+ * components building the same chain share one result, and a remount reads it
+ * back as `stale` / `current` rather than restarting. A held result renders
+ * synchronously, so there is no loading flash; `failed` is sticky until a run
+ * succeeds, and `unloaded` is never rendered as an empty list.
  */
 export function useQuery<
   S,

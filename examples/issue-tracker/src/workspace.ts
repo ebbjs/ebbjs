@@ -1,40 +1,26 @@
 /**
  * Workspace membership for the issue-tracker demo.
  *
- * A workspace is a Group; an actor joins it through a `groupMember` row,
- * and the actor's group-scoped `profile` is made visible to the workspace
- * by an `entityGroup` row. The two writes belong to different actors and
- * cannot share an Action:
+ * A workspace is a Group; an actor joins through a `groupMember` row, and their
+ * group-scoped `profile` is made visible by an `entityGroup` row. Those two
+ * writes belong to different actors, so they cannot share an Action:
  *
- * 1. **Invite** — a member of the workspace puts the invitee's
- *    `groupMember` row (the `inviteMember` Action, in that group). Groups
- *    are closed by default (#126), so the demo invites through the shared
- *    workspace's service actor (`demo-seeder`).
- * 2. **Share** — the invitee's *own* client files their profile into the
- *    group (the `shareProfile` Action). Filing an entity the server
- *    already places in a group is a write to that entity, so it needs
- *    `<type>.update` where the profile lives (the actor's personal group)
- *    as well as `<type>.create` in the target (#623). Only the profile's
- *    owner holds the first.
+ * 1. **Invite** — a workspace member puts the invitee's `groupMember` row
+ *    (`inviteMember`, run by the `demo-seeder` service actor since groups are
+ *    closed by default, #126).
+ * 2. **Share** — the invitee's own client files their profile
+ *    (`shareProfile`). Filing an entity the server already places in a group is
+ *    a write to it, so it needs `<type>.update` where the profile lives (the
+ *    actor's personal group) as well as `<type>.create` in the target (#623) —
+ *    and only the owner holds the first.
  *
- * One Action carries one actor's authority, so the invite and the share
- * are two Actions by two clients. Between them the member exists and the
- * profile does not: that is the `profile-pending` window, and it closes
- * when the invitee's own client runs `shareProfile` — joining is the only
- * path in this demo that shares a profile, so an actor invited while away
- * stays pending until they join.
+ * Between the two Actions the member exists and the profile does not: the
+ * `profile-pending` window. Leaving is self-service with the same owner-side
+ * authority, and one `leaveWorkspace` Action, drafted profile first — that write
+ * is authorized in the personal group, which survives the `groupMember` delete.
  *
- * Leaving is self-service: the invite grants the new member the
- * permissions to drop its own rows again, and the profile membership plus
- * the `groupMember` row are removed by the member's own client — the same
- * owner-side authority the share needs. The drafts reach a `groupMember`
- * delete, so leaving is one `leaveWorkspace` Action; the profile
- * membership is drafted first, authorized by the actor's `profile.*`
- * permission in its personal group, which survives the `groupMember`
- * deletion.
- *
- * The helpers here sequence reads and Actions; the Actions themselves are
- * declared once in `./actions`.
+ * The helpers here sequence reads and Actions; the Actions themselves live in
+ * `./actions`.
  */
 
 import type { IssueTrackerClient } from "./bootstrap";
@@ -54,13 +40,10 @@ export interface InviteToWorkspaceInput {
 }
 
 /**
- * Invite `actorId` into `groupId` unless a live `groupMember` row already
- * names them. Returns whether an invite was submitted.
- *
- * The inviter catches up `groupId` first: it is not subscribed to the
- * group's live stream, so a membership removed since its last read stays
- * in its local cache until a catch-up observes the delete. Without this a
- * leave-then-rejoin within one session looks like a duplicate invite.
+ * Invite `actorId` into `groupId` unless a live `groupMember` row already names
+ * them. Catching up first matters: a membership removed since the inviter's last
+ * read otherwise looks like a live one, and a leave-then-rejoin becomes a
+ * duplicate invite.
  */
 export async function inviteToWorkspace(input: InviteToWorkspaceInput): Promise<boolean> {
   const { inviter, actorId, groupId, permissions } = input;
@@ -81,13 +64,10 @@ export interface ShareProfileToWorkspaceInput {
 }
 
 /**
- * File `actorId`'s profile into `groupId` with the profile's own client.
- * A client that is not a member of the group files nothing — the profile
- * would be visible nowhere. The write itself is idempotent: a profile
- * already filed in the group is left alone, which is what makes a retry
- * or a second device safe — one row per `(entity, group)`.
- *
- * Returns whether a share was submitted.
+ * File `actorId`'s profile into `groupId` with the profile's own client — a
+ * client that is not a member files nothing, since the profile would be visible
+ * nowhere. The write is idempotent (one row per `(entity, group)`), so a retry
+ * or a second device is safe.
  */
 export async function shareProfileToWorkspace(
   input: ShareProfileToWorkspaceInput,
@@ -110,8 +90,7 @@ export interface LeaveWorkspaceInput {
 
 /**
  * Drop the actor's `groupMember` row and their profile's membership in
- * `groupId`, as one Action. Returns whether a membership was found and
- * removed.
+ * `groupId` as one Action.
  */
 export async function leaveWorkspace(input: LeaveWorkspaceInput): Promise<boolean> {
   const { client, actorId, groupId } = input;
