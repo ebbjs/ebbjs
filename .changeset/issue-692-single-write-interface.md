@@ -32,5 +32,9 @@ are now `DraftCreateOptions` / `DraftDuplicateOptions`, and a draft `create` /
 fields (plus derived-body strings and relationship pointers), the way the
 removed namespace `create` did.
 
+New: `EntityValues<typeof entity>` names the value shape of an entity's wire
+fields, so an action's patch parameter follows the schema instead of
+restating it (`Partial<EntityValues<typeof issue>>`).
+
 `client.seed(...)` and the low-level `client.write(actions)` are unchanged, as
 are reads, collaborative text, conflicts, and presence.

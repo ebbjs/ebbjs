@@ -9,15 +9,8 @@
  * `ActionRejectedError`.
  */
 
-import { defineAction, type NamespacedClient } from "@ebbjs/client";
-import { schema, type Schema } from "./schema";
-
-/** The issue fields an edit may patch. */
-export interface IssuePatch {
-  readonly title?: string;
-  readonly status?: string;
-  readonly priority?: string;
-}
+import { defineAction, type EntityValues, type NamespacedClient } from "@ebbjs/client";
+import { issue, schema, type Schema } from "./schema";
 
 /**
  * Create an issue and, when an assignee is picked, its `assignee` link in
@@ -29,12 +22,12 @@ export const createIssue = defineAction(
   (
     { issue },
     params: {
-      readonly title: string;
-      readonly status: string;
-      readonly priority: string;
+      title: string;
+      status: string;
+      priority: string;
       /** The profile to link as assignee; `null` creates the row unassigned. */
-      readonly assigneeId: string | null;
-      readonly groupId: string;
+      assigneeId: string | null;
+      groupId: string;
     },
   ) =>
     issue.create(
@@ -51,15 +44,15 @@ export const createIssue = defineAction(
 /** Patch the issue's editable fields. Untouched fields keep their value. */
 export const updateIssue = defineAction(
   schema,
-  ({ issue }, params: { readonly id: string; readonly patch: IssuePatch }) => {
-    issue.update(params.id, params.patch);
+  ({ issue: issues }, params: { id: string; patch: Partial<EntityValues<typeof issue>> }) => {
+    issues.update(params.id, params.patch);
   },
 );
 
 /** Point the issue's `assignee` at a profile, or clear it with `null`. */
 export const setIssueAssignee = defineAction(
   schema,
-  ({ issue }, params: { readonly id: string; readonly assigneeId: string | null }) => {
+  ({ issue }, params: { id: string; assigneeId: string | null }) => {
     if (params.assigneeId === null) {
       issue.unlink(params.id, "assignee");
       return;
@@ -69,7 +62,7 @@ export const setIssueAssignee = defineAction(
 );
 
 /** Soft-delete the issue: the row's tombstone drops out of every query. */
-export const deleteIssue = defineAction(schema, ({ issue }, params: { readonly id: string }) => {
+export const deleteIssue = defineAction(schema, ({ issue }, params: { id: string }) => {
   issue.delete(params.id);
 });
 
@@ -84,9 +77,9 @@ export const inviteMember = defineAction(
   (
     { membership },
     params: {
-      readonly actorId: string;
-      readonly groupId: string;
-      readonly permissions: readonly string[];
+      actorId: string;
+      groupId: string;
+      permissions: readonly string[];
     },
   ): void => {
     membership.create({
@@ -105,7 +98,7 @@ export const inviteMember = defineAction(
  */
 export const shareProfile = defineAction(
   schema,
-  ({ profile }, params: { readonly profileId: string; readonly groupId: string }) => {
+  ({ profile }, params: { profileId: string; groupId: string }) => {
     profile.addToGroup(params.profileId, params.groupId);
   },
 );
@@ -121,9 +114,9 @@ export const leaveWorkspace = defineAction(
   (
     { profile, membership },
     params: {
-      readonly profileId: string;
-      readonly groupId: string;
-      readonly memberId: string;
+      profileId: string;
+      groupId: string;
+      memberId: string;
     },
   ) => {
     profile.removeFromGroup(params.profileId, params.groupId);

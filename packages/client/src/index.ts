@@ -115,6 +115,7 @@ export { traversalCounter } from "./sync/traversal-counter";
 export {
   type EntityNamespace,
   type EntityFields,
+  type EntityValues,
   type EntityNamespaces,
   type EntityRow,
   type EntitySnapshot,

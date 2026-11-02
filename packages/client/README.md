@@ -133,7 +133,14 @@ the schema with a callback over that schema's draft namespaces; a client
 created with `actions` mounts it as `client.actions.<name>(params)`.
 
 ```typescript
-import { createClient, defineAction, defineEntity, defineSchema, e } from "@ebbjs/client";
+import {
+  createClient,
+  defineAction,
+  defineEntity,
+  defineSchema,
+  e,
+  type EntityValues,
+} from "@ebbjs/client";
 
 const issue = defineEntity("issue", { title: e.string(), status: e.string() });
 const schema = defineSchema({ entities: { issue }, version: 1 });
@@ -155,8 +162,12 @@ definitions it mounts, so declare them at module scope. An update is the same
 shape — an action is a plain function of its params:
 
 ```typescript
-const updateIssue = defineAction(schema, ({ issue }, params: { id: string; status: string }) =>
-  issue.update(params.id, { status: params.status }),
+// `EntityValues<typeof issue>` is the value shape of the entity's wire
+// fields, so a patch type follows the schema instead of restating it.
+const updateIssue = defineAction(
+  schema,
+  ({ issue: issues }, params: { id: string; patch: Partial<EntityValues<typeof issue>> }) =>
+    issues.update(params.id, params.patch),
 );
 ```
 

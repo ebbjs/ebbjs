@@ -160,6 +160,18 @@ export type DerivedInputs<TFields extends Record<string, TSchema>> = {
 };
 
 /**
+ * The value shape of an entity's wire fields: what a draft `create`
+ * takes (before pointers and derived bodies) and what `update`
+ * patches, keyed by field name. Names the type an app's patch object
+ * would otherwise restate by hand, so a schema change flows through:
+ *
+ * ```ts
+ * type IssuePatch = Partial<EntityValues<typeof issue>>;
+ * ```
+ */
+export type EntityValues<TEntityDef> = WireStatic<EntityFields<TEntityDef>>;
+
+/**
  * Row with attached relationship accessors. The projected TypeBox
  * shape (the entity's field map) is the base; the per-`as` accessor
  * record derived from the schema's relationship map is intersected
