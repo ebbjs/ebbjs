@@ -14,6 +14,10 @@ defmodule EbbServer.Application do
     Application.put_env(:ebb_server, :auth_mode, auth_mode)
     Application.put_env(:ebb_server, :auth_url, auth_url)
 
+    # Resolved once, before `children/0` reads it and before Bandit can serve
+    # the route: `enabled?/0` must not consult the environment per request.
+    resolve_functions!()
+
     if auth_mode == :bypass do
       Logger.warning(
         "auth mode :bypass is active: any client can claim any actor identity via the " <>
@@ -57,6 +61,14 @@ defmodule EbbServer.Application do
   # deployment mistake that must not read as "no bundles deployed".
   defp functions_children do
     EbbServer.Functions.children()
+  rescue
+    error in RuntimeError ->
+      IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")
+      reraise error, __STACKTRACE__
+  end
+
+  defp resolve_functions! do
+    EbbServer.Functions.resolve!()
   rescue
     error in RuntimeError ->
       IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")

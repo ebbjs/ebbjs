@@ -59,12 +59,13 @@ mix openapi.gen.spec
 
 ## Configuration
 
-| Variable        | Default           | Description                                                              |
-| --------------- | ----------------- | ------------------------------------------------------------------------ |
-| `EBB_PORT`      | `4000`            | HTTP listen port                                                         |
-| `EBB_DATA_DIR`  | `/app/data`       | RocksDB + SQLite data directory                                          |
-| `EBB_AUTH_MODE` | (none — required) | Auth mode: `bypass` or `external`. The node refuses to boot without one. |
-| `EBB_AUTH_URL`  | (none)            | Identity service URL. Required when `EBB_AUTH_MODE=external`.            |
+| Variable                | Default                        | Description                                                                              |
+| ----------------------- | ------------------------------ | ---------------------------------------------------------------------------------------- |
+| `EBB_PORT`              | `4000`                         | HTTP listen port                                                                         |
+| `EBB_DATA_DIR`          | `/app/data`                    | RocksDB + SQLite data directory                                                          |
+| `EBB_AUTH_MODE`         | (none — required)              | Auth mode: `bypass` or `external`. The node refuses to boot without one.                 |
+| `EBB_AUTH_URL`          | (none)                         | Identity service URL. Required when `EBB_AUTH_MODE=external`.                            |
+| `EBB_FUNCTIONS_ENABLED` | compiled `:functions, enabled` | Enable the functions bundle cache and `POST /functions/:name` (`true`/`false`, `1`/`0`). |
 
 Auth is the one setting whose precedence is reversed: `EBB_AUTH_MODE` and
 `EBB_AUTH_URL` win over the compiled `:auth_mode` / `:auth_url` values,
@@ -80,6 +81,14 @@ never be exposed publicly.
 environment, so a test run cannot leak state into a deployment path or a
 port another service holds. `mix dev` and the release leave both unset,
 so the environment supplies them there.
+
+`EBB_FUNCTIONS_ENABLED` follows `EBB_AUTH_MODE`: the environment wins, and
+the winner is resolved **once at boot** and written back into
+`config :ebb_server, :functions, enabled:`. A booted node never re-reads the
+variable, so the flag cannot half-apply: the route and the bundle cache either
+both exist or neither does. With functions disabled — the default — the route
+is absent (`404`), not a `503`. Enabling requires `:bundle_dir`; see
+`EbbServer.Functions`.
 
 ## Self-hosting in Docker
 
@@ -189,17 +198,18 @@ hot-path behavior. Read those before making non-trivial changes.
 
 ### HTTP endpoint table
 
-| Method | Path                                             | Purpose                                                                |
-| ------ | ------------------------------------------------ | ---------------------------------------------------------------------- |
-| `GET`  | `/healthz`                                       | Readiness probe (`200` ready / `503` not ready), no auth required      |
-| `POST` | `/sync/handshake`                                | Actor identity + group membership (requires `x-ebb-actor-id` header)   |
-| `GET`  | `/sync/groups/:group_id?offset=N`                | Paginated catch-up (`stream-next-offset`, `stream-up-to-date` headers) |
-| `GET`  | `/sync/groups/:group_id/entities?cursor=&limit=` | Group state at a watermark, for cold bootstrap                         |
-| `GET`  | `/sync/live?groups=...&cursor=N`                 | SSE stream of new actions                                              |
-| `POST` | `/sync/actions`                                  | Write actions (MessagePack body)                                       |
-| `POST` | `/sync/presence`                                 | Broadcast ephemeral presence data on an entity                         |
-| `GET`  | `/entities/:id`                                  | Materialized entity (requires `actor_id` query param or header)        |
-| `POST` | `/entities/query`                                | Query entities by type with optional filter/limit/offset               |
+| Method | Path                                             | Purpose                                                                      |
+| ------ | ------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `GET`  | `/healthz`                                       | Readiness probe (`200` ready / `503` not ready), no auth required            |
+| `POST` | `/sync/handshake`                                | Actor identity + group membership (requires `x-ebb-actor-id` header)         |
+| `GET`  | `/sync/groups/:group_id?offset=N`                | Paginated catch-up (`stream-next-offset`, `stream-up-to-date` headers)       |
+| `GET`  | `/sync/groups/:group_id/entities?cursor=&limit=` | Group state at a watermark, for cold bootstrap                               |
+| `GET`  | `/sync/live?groups=...&cursor=N`                 | SSE stream of new actions                                                    |
+| `POST` | `/sync/actions`                                  | Write actions (MessagePack body)                                             |
+| `POST` | `/sync/presence`                                 | Broadcast ephemeral presence data on an entity                               |
+| `GET`  | `/entities/:id`                                  | Materialized entity (requires `actor_id` query param or header)              |
+| `POST` | `/entities/query`                                | Query entities by type with optional filter/limit/offset                     |
+| `POST` | `/functions/:name`                               | Invoke a deployed function (JSON params); absent when functions are disabled |
 
 The OpenAPI 3.1 spec is generated from router annotations via
 `mix openapi.gen.spec` and lives at `ebb_server/openapi.yaml`.
@@ -227,6 +237,7 @@ EbbServer.Supervisor (one_for_one)
 │       └── Storage.CommitterPool           — supervised workers; contains a worker death per range
 │           ├── DynamicSupervisor
 │           └── Storage.Committer × N       — wrapper encode + op assembly + durable write
+├── Functions.BundleCache                  — opt-in; active bundle per function name
 ├── Telemetry.Sampler                      — 1 Hz watermark / dirty-set / in-flight / fan-out gauges
 ├── Sync Supervisor (one_for_one)
 │   ├── Sync.FanOutFrontier                — persisted last-pushed frontier
@@ -532,21 +543,22 @@ not atoms.
 
 All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 
-| Key                          | Description                                                                                                    | Default    |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------- |
-| `:port`                      | HTTP listen port                                                                                               | 4000       |
-| `:data_dir`                  | Directory for RocksDB + SQLite files                                                                           | `./data`   |
-| `:auth_mode`                 | Auth mode (`:bypass` / `:external`); `EBB_AUTH_MODE` overrides it                                              | (none)     |
-| `:auth_url`                  | Developer's auth endpoint URL; `EBB_AUTH_URL` overrides it; required for `:external`                           | (required) |
-| `:writer_batch_max_size`     | Buffered Actions before an immediate commit (`<= 0` = no trigger)                                              | 1000       |
-| `:writer_batch_timeout_ms`   | Coalescing window (`0` = burst-drain, no timer)                                                                | 0          |
-| `:writer_max_in_flight`      | Claimed ranges the pipeline may hold at once (1–4); higher overlap needs the overlay chain                     | 1          |
-| `:writer_prepare_pool_size`  | Prepare workers for payload build and ETF encode                                                               | 2          |
-| `:writer_prepare_queue_max`  | In-flight prepare calls before the Writer rejects with `503 write_failed`                                      | 1024       |
-| `:writer_prepare_timeout_ms` | Upper bound on one prepare job before it fails the call                                                        | 2000       |
-| `:writer_commit_timeout_ms`  | A commit older than this is retired by the watchdog; `EBB_WRITER_COMMIT_TIMEOUT_MS` overrides when unset       | 2000       |
-| `:writer_max_pending_calls`  | Calls admitted before new calls get `429` + `Retry-After`; `EBB_WRITER_MAX_PENDING_CALLS` overrides when unset | 256        |
-| `:on_action`                 | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook))                         | (unset)    |
+| Key                          | Description                                                                                                    | Default          |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------- |
+| `:port`                      | HTTP listen port                                                                                               | 4000             |
+| `:data_dir`                  | Directory for RocksDB + SQLite files                                                                           | `./data`         |
+| `:auth_mode`                 | Auth mode (`:bypass` / `:external`); `EBB_AUTH_MODE` overrides it                                              | (none)           |
+| `:auth_url`                  | Developer's auth endpoint URL; `EBB_AUTH_URL` overrides it; required for `:external`                           | (required)       |
+| `:writer_batch_max_size`     | Buffered Actions before an immediate commit (`<= 0` = no trigger)                                              | 1000             |
+| `:writer_batch_timeout_ms`   | Coalescing window (`0` = burst-drain, no timer)                                                                | 0                |
+| `:writer_max_in_flight`      | Claimed ranges the pipeline may hold at once (1–4); higher overlap needs the overlay chain                     | 1                |
+| `:writer_prepare_pool_size`  | Prepare workers for payload build and ETF encode                                                               | 2                |
+| `:writer_prepare_queue_max`  | In-flight prepare calls before the Writer rejects with `503 write_failed`                                      | 1024             |
+| `:writer_prepare_timeout_ms` | Upper bound on one prepare job before it fails the call                                                        | 2000             |
+| `:writer_commit_timeout_ms`  | A commit older than this is retired by the watchdog; `EBB_WRITER_COMMIT_TIMEOUT_MS` overrides when unset       | 2000             |
+| `:writer_max_pending_calls`  | Calls admitted before new calls get `429` + `Retry-After`; `EBB_WRITER_MAX_PENDING_CALLS` overrides when unset | 256              |
+| `:on_action`                 | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook))                         | (unset)          |
+| `:functions`                 | Nested functions key: `enabled`, `bundle_dir`, `transport`, `worker_opts` (see `EbbServer.Functions`)          | `enabled: false` |
 
 The periodic metric sampler is configured under its own key,
 `Application.get_env(:ebb_server, EbbServer.Telemetry.Sampler)`:

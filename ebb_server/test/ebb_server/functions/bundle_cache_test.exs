@@ -243,6 +243,23 @@ defmodule EbbServer.Functions.BundleCacheTest do
       assert_received {:loaded, "proofreadDocument"}
     end
 
+    test "picks up an envelope change that keeps the code and digest", %{dir: dir} do
+      envelope = Bundles.envelope("proofreadDocument")
+      Bundles.write_bundle!(dir, envelope)
+      cache = start_cache(dir)
+
+      assert {:ok, %Bundle{timeout_ms: 30_000}} =
+               BundleCache.active("proofreadDocument", cache)
+
+      # Same code and digest, new access and timeout: the fingerprint covers
+      # every field that reaches the struct, so the cache cannot keep serving
+      # the old policy for unchanged bytes.
+      Bundles.write_bundle!(dir, %{envelope | "timeoutMs" => 1_000, "access" => "authenticated"})
+
+      assert {:ok, %Bundle{timeout_ms: 1_000, access: "authenticated"}} =
+               BundleCache.active("proofreadDocument", cache)
+    end
+
     test "keeps serving a good name after another name fails", %{dir: dir} do
       Bundles.write_bundle!(dir, Bundles.envelope("goodFunction"))
       Bundles.write_envelope!(dir, Bundles.envelope("badFunction"))

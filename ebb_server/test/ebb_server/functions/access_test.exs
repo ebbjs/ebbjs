@@ -145,15 +145,16 @@ defmodule EbbServer.Functions.AccessTest do
       assert :ok = Access.authorize("granted", "a_test", name, table: table)
     end
 
-    test "underscores are part of the identifier grammar", %{table: table} do
+    test "underscores and hyphens are part of the name grammar", %{table: table} do
       grant(table, "a_test", "g_1", ["function.*"])
 
       assert :ok = Access.authorize("granted", "a_test", "under_score", table: table)
+      assert :ok = Access.authorize("granted", "a_test", "with-hyphen", table: table)
     end
 
     for name <- [
           "",
-          "with-hyphen",
+          "_leading",
           "with.dot",
           "with space",
           "1leading",

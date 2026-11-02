@@ -5,11 +5,13 @@ defmodule EbbServer.Functions.Router do
   The route is mounted by `EbbServer.Sync.Router` only when
   `EbbServer.Functions.enabled?/0` is true. When it is false the parent router
   never calls this module, so the path falls through to its ordinary
-  catch-all: absent, not "disabled". That is deliberate — a flag that produced
-  a `503 disabled` would tell a caller that the feature exists on this node,
-  and it would look like a kill switch that a release, which cannot reload
-  config, can never actually operate. The flag is boot-time; see
-  `EbbServer.Functions`.
+  catch-all: absent, not "disabled". See `EbbServer.Functions` for why the flag
+  is resolved once at boot.
+
+  `AuthPlug` runs before the route, so a request without an identity is
+  refused by that shared plug with its usual `401 unauthorized` body. The
+  branch below is the same answer for a caller that reached this router
+  directly, with the functions envelope attached.
 
   ## One invocation id, always
 
@@ -71,8 +73,9 @@ defmodule EbbServer.Functions.Router do
   # input; a request body can never usefully be larger than a whole frame.
   @max_body_bytes Protocol.max_frame_bytes()
   @read_chunk_bytes 64 * 1024
-  # v1's only host ops are one pure read and one commit, so this is a
-  # runaway-loop guard rather than a budget anyone is expected to hit.
+  # Handed to the runner in the invoke frame. The runner is what counts calls
+  # (plan §2.12); v1's only ops are one pure read and one commit, so the server
+  # has nothing to count here yet.
   @max_host_calls 1000
 
   plug(:match)
@@ -112,12 +115,12 @@ defmodule EbbServer.Functions.Router do
   end
 
   defp invoke(conn, name, actor_id, invocation_id) do
-    case read_input(conn) do
-      {:ok, input, conn} ->
-        run(conn, name, actor_id, invocation_id, input)
+    case active_bundle(conn, name, invocation_id) do
+      {:ok, bundle} ->
+        authorize(conn, bundle, actor_id, invocation_id)
 
-      {:error, status, details, conn} ->
-        respond(conn, Response.failure(status, invocation_id: invocation_id, details: details))
+      {:error, response} ->
+        respond(conn, response)
     end
   end
 
@@ -147,16 +150,6 @@ defmodule EbbServer.Functions.Router do
     end
   end
 
-  defp run(conn, name, actor_id, invocation_id, input) do
-    case active_bundle(conn, name, invocation_id) do
-      {:ok, bundle} ->
-        authorize_and_run(conn, bundle, actor_id, invocation_id, input)
-
-      {:error, response} ->
-        respond(conn, response)
-    end
-  end
-
   # A cache that is not running while the flag says enabled is a broken boot,
   # not a client error; answer in the envelope rather than raising out of the
   # request process.
@@ -182,13 +175,15 @@ defmodule EbbServer.Functions.Router do
   end
 
   # A caller that may not invoke this function never reaches the transport, so
-  # a denied request spawns nothing.
-  defp authorize_and_run(conn, bundle, actor_id, invocation_id, input) do
+  # a denied request spawns nothing. Authorization also precedes the body read:
+  # params are #595's to validate, and a denied caller should not be able to
+  # make the server read a megabyte first.
+  defp authorize(conn, bundle, actor_id, invocation_id) do
     table = group_members_table(conn)
 
     case Access.authorize(bundle.access, actor_id, bundle.name, table: table) do
       :ok ->
-        respond(conn, execute(bundle, actor_id, invocation_id, input))
+        read_and_execute(conn, bundle, actor_id, invocation_id)
 
       {:error, :denied} ->
         respond(
@@ -198,19 +193,36 @@ defmodule EbbServer.Functions.Router do
     end
   end
 
+  defp read_and_execute(conn, bundle, actor_id, invocation_id) do
+    case read_input(conn) do
+      {:ok, input, conn} ->
+        respond(conn, execute(bundle, actor_id, invocation_id, input))
+
+      {:error, status, details, conn} ->
+        respond(
+          conn,
+          Response.failure(status,
+            invocation_id: invocation_id,
+            version: bundle.version,
+            details: details
+          )
+        )
+    end
+  end
+
   defp execute(bundle, actor_id, invocation_id, input) do
     frame = invoke_frame(bundle, actor_id, invocation_id, input)
 
-    if frame_too_large?(frame) do
+    if Protocol.fits?(frame) do
+      bundle
+      |> run_invocation(frame)
+      |> to_response(invocation_id, bundle.version)
+    else
       Response.failure(413,
         invocation_id: invocation_id,
         version: bundle.version,
         details: "invoke frame exceeds #{Protocol.max_frame_bytes()} bytes"
       )
-    else
-      bundle
-      |> run_invocation(frame)
-      |> to_response(invocation_id, bundle.version)
     end
   end
 
@@ -230,10 +242,6 @@ defmodule EbbServer.Functions.Router do
     })
   end
 
-  defp frame_too_large?(frame) do
-    IO.iodata_length(Jason.encode_to_iodata!(frame)) > Protocol.max_frame_bytes()
-  end
-
   defp run_invocation(bundle, frame) do
     Invocation.run(
       transport: Functions.transport(),
@@ -247,8 +255,13 @@ defmodule EbbServer.Functions.Router do
     Response.success(value, invocation_id: invocation_id, version: version)
   end
 
-  defp to_response({:error, status, details}, invocation_id, version) do
-    Response.failure(status, invocation_id: invocation_id, version: version, details: details)
+  defp to_response({:error, status, code, details}, invocation_id, version) do
+    Response.failure(status,
+      invocation_id: invocation_id,
+      version: version,
+      code: code,
+      details: details
+    )
   end
 
   # Loader failures are described for an operator without echoing internals or
@@ -261,6 +274,7 @@ defmodule EbbServer.Functions.Router do
 
   defp lookup_details({:invalid_bundle, _reason}), do: "the active bundle is invalid"
   defp lookup_details({:loader_failed, _reason}), do: "the bundle could not be loaded"
+  defp lookup_details(_reason), do: "the bundle could not be loaded"
 
   # Every body and header is built by `Response`; this is the only place that
   # writes them to the conn.

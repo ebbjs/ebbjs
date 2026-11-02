@@ -72,6 +72,18 @@ defmodule EbbServer.Functions.ProtocolTest do
     end
   end
 
+  describe "fits?/1" do
+    test "accepts a small frame and refuses one past the bound" do
+      small = Protocol.result({:ok, "x"})
+      assert Protocol.fits?(small)
+
+      # The length prefix carries the JSON payload's size, so a payload of
+      # exactly the bound fits and one byte more does not.
+      at_bound = Protocol.result({:ok, String.duplicate("a", Protocol.max_frame_bytes())})
+      refute Protocol.fits?(at_bound)
+    end
+  end
+
   describe "constructors" do
     test "builds the host-to-worker frames" do
       assert Protocol.invoke(name: "proofreadDocument", subject_actor_id: "a_test") == %{

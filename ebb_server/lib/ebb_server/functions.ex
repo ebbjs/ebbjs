@@ -11,26 +11,29 @@ defmodule EbbServer.Functions do
         transport: EbbServer.Functions.Worker.Fake,
         worker_opts: []
 
-  ## The flag is boot-time
+  ## The flag is resolved once, at boot
 
-  `enabled?/0` decides whether `children/0` starts the bundle cache at all.
   `EBB_FUNCTIONS_ENABLED` overlays the compiled value — the environment wins,
   then `:enabled`, then `false` — in the order
   `EbbServer.Application.runtime_auth/0` uses for security-sensitive settings,
   so an operator's runtime instruction is not overridden by a value baked into
-  a release. Blank env values count as unset, so an unfilled container
-  variable cannot enable a feature by accident.
+  a release. `EbbServer.Application` calls `resolve!/0` once, which writes the
+  winner back into `:enabled`; after that `enabled?/0` reads only the resolved
+  application value and never the environment.
+
+  That single resolution is what makes the flag boot-time rather than a kill
+  switch. A release cannot reload its config, so a value read per request
+  would look flippable without being able to start or stop the bundle cache,
+  and the route and the cache could disagree: a route that answers while no
+  cache exists is a `500` for every caller. Resolving once keeps both readers
+  on the same bool for the life of the node. The real per-function kill switch
+  is #595's disable, not this flag.
 
   Only `true`, `false`, `"true"`, `"false"`, `"1"` and `"0"` are understood.
   Anything else raises at boot: a typo in a deployment must not read as
   "disabled", because a feature that silently never starts is harder to
-  diagnose than a node that refuses to boot.
-
-  This is not a runtime kill switch. A release cannot reload its config, so
-  the flag is fixed for the life of the node; the request-time check in
-  `EbbServer.Sync.Router` exists only so a test or a dev node can mount the
-  route without a release, and it never makes the route appear and disappear
-  under load. The per-function kill switch is #595's disable, not this flag.
+  diagnose than a node that refuses to boot. Blank env values count as unset,
+  so an unfilled container variable cannot enable a feature by accident.
 
   ## Injection seams
 
@@ -58,16 +61,44 @@ defmodule EbbServer.Functions do
   @doc """
   Whether functions are enabled on this node.
 
-  Reads the environment first, then `config :ebb_server, :functions, enabled`,
-  then `false`. Raises on a value outside the accepted set.
+  Reads the value `resolve!/0` wrote at boot, defaulting to `false`. Raises on
+  a value outside the accepted set, which can only come from a hand-edited
+  application env after boot.
   """
   @spec enabled?() :: boolean()
   def enabled? do
-    case enabled_source() do
-      {:env, raw} -> parse_enabled!(raw, @enabled_env)
-      {:app, raw} -> parse_enabled!(raw, @enabled_key)
-      :unset -> false
+    case Keyword.fetch(config(), :enabled) do
+      {:ok, nil} -> false
+      {:ok, raw} -> parse_enabled!(raw, @enabled_key)
+      :error -> false
     end
+  end
+
+  @doc """
+  The flag the environment asks for, falling back to the compiled value.
+
+  `EbbServer.Application` calls this once through `resolve!/0`; tests call it
+  directly to prove the precedence without restarting the application.
+  """
+  @spec resolve() :: boolean()
+  def resolve do
+    case env_enabled() do
+      nil -> enabled?()
+      raw -> parse_enabled!(raw, @enabled_env)
+    end
+  end
+
+  @doc """
+  Resolves the flag once and writes it back into `:ebb_server, :functions`.
+
+  Called by `EbbServer.Application.start/2` before `children/0`, the same way
+  the auth mode is resolved and written back before `AuthPlug` reads it. A
+  booted node never consults the environment again.
+  """
+  @spec resolve!() :: :ok
+  def resolve! do
+    Application.put_env(:ebb_server, @config_key, Keyword.put(config(), :enabled, resolve()))
+    :ok
   end
 
   @doc """
@@ -122,20 +153,7 @@ defmodule EbbServer.Functions do
 
   defp config(key), do: Keyword.get(config(), key)
 
-  # Env wins over app config; a blank env value is unset.
-  defp enabled_source do
-    case env_enabled() do
-      nil ->
-        case Keyword.fetch(config(), :enabled) do
-          {:ok, nil} -> :unset
-          {:ok, raw} -> {:app, raw}
-          :error -> :unset
-        end
-
-      raw ->
-        {:env, raw}
-    end
-  end
+  # A blank env value is unset, not false.
 
   defp env_enabled do
     case System.get_env(@enabled_env) do

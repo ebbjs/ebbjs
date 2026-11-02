@@ -97,18 +97,18 @@ defmodule EbbServer.Functions.BundleTest do
   end
 
   describe "the name grammar" do
-    test "accepts a JavaScript identifier up to 64 characters" do
-      for name <- ["a", "_x", "A1_b2", "proofreadDocument", String.duplicate("a", 64)] do
+    test "accepts a function name up to 64 characters" do
+      for name <- ["a", "A1_b2", "proofreadDocument", "create-todo", String.duplicate("a", 64)] do
         assert {:ok, %Bundle{name: ^name}} =
                  Bundles.envelope(name, %{"entry" => name}) |> Bundle.new(@code)
       end
     end
 
-    test "refuses anything that is not a JavaScript identifier" do
+    test "refuses anything outside the name grammar" do
       for name <- [
             "",
+            "_x",
             "1abc",
-            "a-b",
             "a.b",
             "a b",
             "a/b",
@@ -143,6 +143,16 @@ defmodule EbbServer.Functions.BundleTest do
         assert {:error, {:missing_field, ^field}} = Bundle.new(envelope(%{field => nil}), @code)
         assert {:error, {:invalid_field, ^field}} = Bundle.new(envelope(%{field => value}), @code)
       end
+    end
+  end
+
+  describe "the wall-clock limit" do
+    test "accepts the documented maximum and refuses more" do
+      assert {:ok, %Bundle{timeout_ms: 60_000}} =
+               envelope(%{"timeoutMs" => 60_000}) |> Bundle.new(@code)
+
+      assert {:error, {:invalid_field, "timeoutMs"}} =
+               Bundle.new(envelope(%{"timeoutMs" => 60_001}), @code)
     end
   end
 

@@ -31,16 +31,19 @@ defmodule EbbServer.Functions.Bundle do
 
   ## Name
 
-  The name is a JavaScript identifier: `^[A-Za-z_][A-Za-z0-9_]*$`, at most 64
-  bytes, and not `default`. It is the binding name, the `:name` route segment,
-  and the `function.<name>` grant suffix with no normalization and no case
-  folding, so `.` stays out of the grammar and a grant cannot be parsed two
-  ways. This is validated here as well as in the CLI because the CLI is not the
-  only writer of a bundle directory.
+  The name matches `^[A-Za-z][A-Za-z0-9_-]*$`, is at most 64 bytes, and is not
+  `default`. It is the `:name` route segment and the `function.<name>` grant
+  suffix (the exported binding is `entry`, which may differ) with no
+  normalization and no case folding, so `.` stays out of the grammar and a
+  grant cannot be parsed two ways. This is validated here as well as in the CLI
+  because the CLI is not the only writer of a bundle directory.
   """
 
   @max_name_bytes 64
-  @name_pattern ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/
+  # Plan §2.12 caps wall clock at 60 s. A bundle asking for longer is refused
+  # rather than allowed to run past the limit the platform documents.
+  @max_timeout_ms 60_000
+  @name_pattern ~r/\A[A-Za-z][A-Za-z0-9_-]*\z/
   @reserved_names ["default"]
   @access_values ["granted", "authenticated"]
   @digest_pattern ~r/\Asha256:[0-9a-f]{64}\z/
@@ -136,7 +139,7 @@ defmodule EbbServer.Functions.Bundle do
          {:ok, entry} <- string_field(envelope, "entry"),
          {:ok, access} <- access_field(envelope["access"]),
          {:ok, contract} <- contract_field(envelope["contract"]),
-         {:ok, timeout_ms} <- limit_field(envelope, "timeoutMs"),
+         {:ok, timeout_ms} <- timeout_field(envelope),
          {:ok, memory_bytes} <- limit_field(envelope, "memoryBytes"),
          {:ok, digest} <- verify_digest(envelope["digest"], code) do
       {:ok,
@@ -187,6 +190,13 @@ defmodule EbbServer.Functions.Bundle do
   end
 
   defp contract_field(_contract), do: {:error, {:invalid_field, "contract"}}
+
+  defp timeout_field(envelope) do
+    case envelope["timeoutMs"] do
+      value when is_integer(value) and value > 0 and value <= @max_timeout_ms -> {:ok, value}
+      _value -> {:error, {:invalid_field, "timeoutMs"}}
+    end
+  end
 
   defp limit_field(envelope, field) do
     case envelope[field] do

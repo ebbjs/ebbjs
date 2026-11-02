@@ -16,10 +16,13 @@ defmodule EbbServer.Functions.Invocation do
   invocation: a read is v1's only pure op and a commit is fail-whole, so there
   is no state in which continuing could produce a correct result.
 
-  Results are `{:ok, value}` or `{:error, status, details}`. A `handler_error`
-  result is `422`; every other result kind is `500`. The taxonomy is open, so
-  the mapping is one exhaustive function here rather than a case at each call
-  site. The HTTP envelope that carries these codes is #680's.
+  Results are `{:ok, value}` or `{:error, status, code, details}`. A
+  `handler_error` result is `422 handler_error`; every other result kind is
+  `500 runner_error`. A host call's own code survives the boundary — a rejected
+  commit is `422 rejected`, a failed read `500 read_failed` — so the endpoint
+  can put it in the response envelope unchanged. The taxonomy is open, so the
+  mapping is one exhaustive function here rather than a case at each call site.
+  The HTTP envelope that carries these codes is #680's.
   """
 
   alias EbbServer.Functions.{Host, Protocol, Worker}
@@ -28,7 +31,7 @@ defmodule EbbServer.Functions.Invocation do
   @default_deadline_ms 30_000
   @liveness_poll_ms 100
 
-  @type result :: {:ok, term()} | {:error, pos_integer(), String.t()}
+  @type result :: {:ok, term()} | {:error, pos_integer(), String.t(), String.t()}
   @type context :: %{required(:actor_id) => term(), required(:invocation_id) => term()}
 
   @doc """
@@ -108,7 +111,7 @@ defmodule EbbServer.Functions.Invocation do
         if Worker.alive?(state.worker) do
           loop(state)
         else
-          finish(state, {:error, 503, "worker exited before result"})
+          finish(state, {:error, 503, "unavailable", "worker exited before result"})
         end
     end
   end
@@ -141,7 +144,7 @@ defmodule EbbServer.Functions.Invocation do
 
   defp handle_frame(%{"type" => "result", "ok" => false} = frame, state) do
     message = frame["message"] || "handler failed"
-    finish(state, {:error, result_status(frame["kind"]), message})
+    finish(state, result_error(frame["kind"], message))
   end
 
   # `log` and `fetch_audit` are part of the wire contract but not of v1. They are
@@ -206,7 +209,7 @@ defmodule EbbServer.Functions.Invocation do
 
   defp reply_and_continue(call_id, {:error, error}, state) do
     _ = Worker.send_frame(state.worker, Protocol.reply(call_id, {:error, error}))
-    finish(state, {:error, error_status(error), error_details(error)})
+    finish(state, host_error(error))
   end
 
   defp reply_and_continue(call_id, _other, state) do
@@ -217,7 +220,7 @@ defmodule EbbServer.Functions.Invocation do
     }
 
     _ = Worker.send_frame(state.worker, Protocol.reply(call_id, {:error, error}))
-    finish(state, {:error, 500, error["details"]})
+    finish(state, {:error, 500, "host_call_failed", error["details"]})
   end
 
   defp fill_slots(state) do
@@ -232,7 +235,7 @@ defmodule EbbServer.Functions.Invocation do
   end
 
   defp handle_down(ref, reason, %{monitor: ref} = state) do
-    finish(state, {:error, 503, "worker exited before result: #{inspect(reason)}"})
+    finish(state, {:error, 503, "unavailable", "worker exited before result: #{inspect(reason)}"})
   end
 
   defp handle_down(ref, _reason, state) do
@@ -251,7 +254,7 @@ defmodule EbbServer.Functions.Invocation do
 
         finish(
           %{state | in_flight: Map.delete(state.in_flight, pid)},
-          {:error, 500, error["details"]}
+          {:error, 500, "host_call_failed", error["details"]}
         )
     end
   end
@@ -261,7 +264,7 @@ defmodule EbbServer.Functions.Invocation do
   end
 
   defp handle_deadline(ref, %{deadline_ref: ref} = state) do
-    finish(state, {:error, 408, "deadline exceeded"})
+    finish(state, {:error, 408, "timeout", "deadline exceeded"})
   end
 
   defp handle_deadline(_ref, state), do: loop(state)
@@ -291,17 +294,28 @@ defmodule EbbServer.Functions.Invocation do
     end
   end
 
-  defp result_status("handler_error"), do: 422
-  defp result_status(_kind), do: 500
+  defp result_error("handler_error", message), do: {:error, 422, "handler_error", message}
+  defp result_error(_kind, message), do: {:error, 500, "runner_error", message}
 
-  defp error_status(%{"status" => status}) when is_integer(status), do: status
-  defp error_status(_error), do: 500
+  # A host call answers in the envelope's vocabulary already: `Host` builds
+  # `%{"error" => code, "status" => status, "details" => text}`. Carrying that
+  # code through keeps a rejected commit (`rejected`) distinct from a thrown
+  # handler (`handler_error`) instead of flattening both into one 422.
+  defp host_error(%{"status" => status, "error" => code} = error)
+       when is_integer(status) and is_binary(code) do
+    details =
+      case error["details"] do
+        text when is_binary(text) and text != "" -> text
+        _ -> code
+      end
 
-  defp error_details(%{"details" => details}) when is_binary(details), do: details
-  defp error_details(%{"error" => code}), do: to_string(code)
-  defp error_details(_error), do: "host call failed"
+    {:error, status, code, details}
+  end
 
-  defp protocol_error(message), do: {:error, 500, message}
+  defp host_error(_error), do: {:error, 500, "host_call_failed", "host call failed"}
 
-  defp unavailable(reason), do: {:error, 503, "worker unavailable: #{inspect(reason)}"}
+  defp protocol_error(message), do: {:error, 500, "protocol_error", message}
+
+  defp unavailable(reason),
+    do: {:error, 503, "unavailable", "worker unavailable: #{inspect(reason)}"}
 end

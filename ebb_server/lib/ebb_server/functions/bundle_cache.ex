@@ -8,9 +8,13 @@ defmodule EbbServer.Functions.BundleCache do
   a bundle replaced on disk is visible on the next invocation without a restart
   and a digest is never carried over from an earlier read.
 
-  Refreshing in one process is what keeps the index consistent: two invocations
-  cannot interleave one load with another's, and a failed refresh leaves the
-  previous entry alone rather than serving a half-loaded or unverified version.
+  The loader still re-reads, so the index is keyed by a fingerprint of the
+  answer — the envelope fields that decide the bundle plus a hash of the code.
+  An unchanged answer is served from the index instead of being validated
+  again; a changed one replaces it. Refreshing in one process is what keeps the
+  index consistent: two invocations cannot interleave one load with another's,
+  and a failed refresh leaves the previous entry alone rather than serving a
+  half-loaded or unverified version.
 
   Answers are deliberately distinguishable. An unknown name is not a broken
   bundle, a digest mismatch is not a missing one, and a duplicated version is
@@ -35,10 +39,11 @@ defmodule EbbServer.Functions.BundleCache do
           | {:duplicate_active_version, {String.t(), String.t()}}
           | {:loader_failed, term()}
 
+  @type fingerprint :: tuple()
   @type state :: %{
           loader: module(),
           loader_opts: keyword(),
-          index: %{optional(String.t()) => Bundle.t()}
+          index: %{optional(String.t()) => {fingerprint(), Bundle.t()}}
         }
 
   @doc """
@@ -82,8 +87,9 @@ defmodule EbbServer.Functions.BundleCache do
   @impl true
   def handle_call({:active, name}, _from, state) do
     case resolve(name, state) do
-      {:ok, bundle} = ok ->
-        {:reply, ok, %{state | index: Map.put(state.index, name, bundle)}}
+      {:ok, fingerprint, bundle} ->
+        index = Map.put(state.index, name, {fingerprint, bundle})
+        {:reply, {:ok, bundle}, %{state | index: index}}
 
       {:error, _reason} = error ->
         {:reply, error, state}
@@ -92,7 +98,7 @@ defmodule EbbServer.Functions.BundleCache do
 
   defp resolve(name, state) do
     case safe_load(state.loader, name, state.loader_opts) do
-      {:ok, envelope, code} -> bundle(envelope, code)
+      {:ok, envelope, code} -> bundle(name, envelope, code, state.index)
       :not_found -> {:error, :unknown_function}
       {:error, {:duplicate_active_version, version}} -> {:error, duplicate(name, version)}
       {:error, reason} -> {:error, {:loader_failed, reason}}
@@ -100,9 +106,35 @@ defmodule EbbServer.Functions.BundleCache do
     end
   end
 
-  defp bundle(envelope, code) do
+  # Every field that reaches the struct is part of the fingerprint, so an
+  # access or timeout edit with the same code and digest is still picked up.
+  defp fingerprint(envelope, code) do
+    {
+      envelope["version"],
+      envelope["digest"],
+      envelope["access"],
+      envelope["timeoutMs"],
+      envelope["memoryBytes"],
+      envelope["entry"],
+      :erlang.phash2(code)
+    }
+  end
+
+  defp bundle(name, envelope, code, index) do
+    fingerprint = fingerprint(envelope, code)
+
+    case Map.get(index, name) do
+      {^fingerprint, bundle} ->
+        {:ok, fingerprint, bundle}
+
+      _changed ->
+        build(envelope, code, fingerprint)
+    end
+  end
+
+  defp build(envelope, code, fingerprint) do
     case Bundle.new(envelope, code) do
-      {:ok, bundle} -> {:ok, bundle}
+      {:ok, bundle} -> {:ok, fingerprint, bundle}
       {:error, :digest_mismatch} -> {:error, :digest_mismatch}
       {:error, reason} -> {:error, {:invalid_bundle, reason}}
     end

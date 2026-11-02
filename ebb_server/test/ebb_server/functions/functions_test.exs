@@ -30,18 +30,46 @@ defmodule EbbServer.FunctionsTest do
   defp configure(config), do: Application.put_env(:ebb_server, :functions, config)
 
   describe "enabled?/0" do
-    test "is false when neither source says anything" do
+    test "is false when nothing is configured" do
       Application.delete_env(:ebb_server, :functions)
-      System.delete_env(@env_key)
 
       refute Functions.enabled?()
     end
 
+    test "reads the value resolved at boot" do
+      configure(enabled: true)
+
+      assert Functions.enabled?()
+    end
+
+    test "a nil value is unset, not a value to parse" do
+      configure(enabled: nil)
+
+      refute Functions.enabled?()
+    end
+
+    test "an unrecognized compiled value raises and names the key" do
+      configure(enabled: "maybe")
+
+      error = assert_raise(RuntimeError, fn -> Functions.enabled?() end)
+      assert error.message =~ ":ebb_server, :functions, enabled"
+      assert error.message =~ ~s("maybe")
+    end
+
+    test "ignores the environment after boot" do
+      configure(enabled: false)
+      System.put_env(@env_key, "true")
+
+      refute Functions.enabled?()
+    end
+  end
+
+  describe "resolve/0" do
     test "reads the compiled value when the environment is silent" do
       configure(enabled: true)
       System.delete_env(@env_key)
 
-      assert Functions.enabled?()
+      assert Functions.resolve()
     end
 
     test "accepts the string forms the environment can carry" do
@@ -49,50 +77,50 @@ defmodule EbbServer.FunctionsTest do
 
       for {raw, expected} <- [{"true", true}, {"false", false}, {"1", true}, {"0", false}] do
         System.put_env(@env_key, raw)
-        assert Functions.enabled?() == expected
+        assert Functions.resolve() == expected
       end
-    end
-
-    test "a nil compiled value is unset, not a value to parse" do
-      configure(enabled: nil)
-      System.delete_env(@env_key)
-
-      refute Functions.enabled?()
     end
 
     test "the environment wins over the compiled value both ways" do
       configure(enabled: false)
       System.put_env(@env_key, "true")
-      assert Functions.enabled?()
+      assert Functions.resolve()
 
       configure(enabled: true)
       System.put_env(@env_key, "false")
-      refute Functions.enabled?()
+      refute Functions.resolve()
     end
 
     test "a blank environment value is unset, not false" do
       configure(enabled: true)
       System.put_env(@env_key, "  ")
 
-      assert Functions.enabled?()
+      assert Functions.resolve()
     end
 
     test "an unrecognized environment value raises instead of disabling" do
       configure(enabled: false)
       System.put_env(@env_key, "yes")
 
-      error = assert_raise(RuntimeError, fn -> Functions.enabled?() end)
+      error = assert_raise(RuntimeError, fn -> Functions.resolve() end)
       assert error.message =~ "EBB_FUNCTIONS_ENABLED must be true or false"
       assert error.message =~ ~s("yes")
     end
+  end
 
-    test "an unrecognized compiled value raises and names the key" do
-      configure(enabled: "maybe")
-      System.delete_env(@env_key)
+  describe "resolve!/0" do
+    test "writes the resolved environment value back into the nested key" do
+      configure(enabled: false, bundle_dir: "/srv/functions/bundles")
+      System.put_env(@env_key, "true")
 
-      error = assert_raise(RuntimeError, fn -> Functions.enabled?() end)
-      assert error.message =~ ":ebb_server, :functions, enabled"
-      assert error.message =~ ~s("maybe")
+      assert :ok = Functions.resolve!()
+      assert Application.get_env(:ebb_server, :functions)[:enabled] == true
+      assert Functions.enabled?()
+
+      # The environment is read once: flipping it later cannot change a booted
+      # node's answer, so the route and the cache cannot disagree.
+      System.put_env(@env_key, "false")
+      assert Functions.enabled?()
     end
   end
 

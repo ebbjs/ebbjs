@@ -206,6 +206,58 @@ defmodule EbbServer.Functions.RouterTest do
     end
   end
 
+  describe "a failure the worker reports" do
+    test "a thrown handler is 422 handler_error with its message", ctx do
+      name = "throwingFunction"
+      Bundles.write_bundle!(ctx.dir, Bundles.envelope(name))
+      grant(ctx.tables, @actor, ["function.*"])
+
+      configure_boot(
+        bundle_dir: ctx.dir,
+        transport: Fake,
+        worker_opts: [
+          script: [
+            %{"expect" => %{"type" => "invoke"}},
+            %{"send" => Protocol.result({:error, "handler_error", "boom"})}
+          ]
+        ]
+      )
+
+      conn = post_function(ctx, name, "{}")
+
+      assert conn.status == 422
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"] == "handler_error"
+      assert body["details"] == "boom"
+      assert body["version"] == "1.0.0"
+      refute Map.has_key?(body, "retryable")
+    end
+
+    test "an unrecognized result kind is 500 runner_error", ctx do
+      name = "oddFunction"
+      Bundles.write_bundle!(ctx.dir, Bundles.envelope(name))
+      grant(ctx.tables, @actor, ["function.*"])
+
+      configure_boot(
+        bundle_dir: ctx.dir,
+        transport: Fake,
+        worker_opts: [
+          script: [
+            %{"expect" => %{"type" => "invoke"}},
+            %{"send" => Protocol.result({:error, "out_of_memory", "killed"})}
+          ]
+        ]
+      )
+
+      conn = post_function(ctx, name, "{}")
+
+      assert conn.status == 500
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"] == "runner_error"
+      assert body["details"] == "killed"
+    end
+  end
+
   describe "refusals before a worker exists" do
     test "an unknown function is a 404 that still names the invocation", ctx do
       configure_boot(bundle_dir: ctx.dir, transport: InputScriptedWorker)
@@ -250,7 +302,7 @@ defmodule EbbServer.Functions.RouterTest do
       conn = post_function(ctx, name, ~s({"text":))
 
       assert conn.status == 400
-      assert Jason.decode!(conn.resp_body)["error"] == "invalid_input"
+      assert Jason.decode!(conn.resp_body)["error"] == "invalid_json"
     end
 
     test "a body that is not a JSON object is a 400", ctx do
@@ -262,7 +314,20 @@ defmodule EbbServer.Functions.RouterTest do
       conn = post_function(ctx, name, "[1,2,3]")
 
       assert conn.status == 400
-      assert Jason.decode!(conn.resp_body)["error"] == "invalid_input"
+      assert Jason.decode!(conn.resp_body)["error"] == "invalid_json"
+    end
+
+    test "through the parent router an anonymous request gets AuthPlug's 401", ctx do
+      configure_boot(bundle_dir: ctx.dir, transport: InputScriptedWorker)
+
+      conn = conn(:post, "/functions/anything", "{}") |> SyncRouter.call([])
+
+      assert conn.status == 401
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"] == "unauthorized"
+      assert body["details"] == "missing x-ebb-actor-id header"
+      assert get_resp_header(conn, "x-ebb-invocation-id") == []
+      assert get_resp_header(conn, "x-ebb-function-version") == []
     end
 
     test "a missing actor is a 401 in the shared envelope", ctx do

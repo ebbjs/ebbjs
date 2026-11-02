@@ -23,17 +23,15 @@ defmodule EbbServer.Functions.Access do
   an actor that may publish a bundle still needs a grant to call it.
   """
 
+  alias EbbServer.Functions.Bundle
   alias EbbServer.Storage.{CacheTables, GroupCache}
 
   @type access :: String.t() | nil
   @type error :: {:error, :denied}
 
-  # A name is a JavaScript identifier: the same string is the binding name,
-  # the route segment, and the permission suffix. The reserved `default`
-  # cannot be a named export, and a longer identifier would not be addressable.
-  @name_pattern ~r/\A[A-Za-z_][A-Za-z0-9_]{0,63}\z/
-  @reserved_name "default"
-
+  # The same string is the route segment and the permission suffix. The grammar
+  # lives in `Bundle` because that is where an envelope is validated; repeating
+  # it here would let the two definitions drift.
   @doc """
   Authorizes `actor_id` to invoke `name`.
 
@@ -65,10 +63,7 @@ defmodule EbbServer.Functions.Access do
 
   defp resolved_actor?(actor_id), do: is_binary(actor_id) and actor_id != ""
 
-  defp valid_name?(name) when is_binary(name) and name != @reserved_name do
-    Regex.match?(@name_pattern, name)
-  end
-
+  defp valid_name?(name) when is_binary(name), do: Bundle.valid_name?(name)
   defp valid_name?(_name), do: false
 
   defp granted?(actor_id, name, table) do

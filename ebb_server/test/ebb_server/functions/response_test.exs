@@ -82,6 +82,30 @@ defmodule EbbServer.Functions.ResponseTest do
       end
     end
 
+    test "drops stack frames from details" do
+      {422, body, _headers} =
+        Response.failure(422,
+          invocation_id: @invocation_id,
+          version: @version,
+          code: "handler_error",
+          details:
+            "Error: boom\n    at handler (/app/fn.ts:1:1)\n    at runner (/app/runner.js:2:2)"
+        )
+
+      assert body["details"] == "Error: boom"
+    end
+
+    test "caps very long details" do
+      {500, body, _headers} =
+        Response.failure(500,
+          invocation_id: @invocation_id,
+          version: @version,
+          details: String.duplicate("a", 2_000)
+        )
+
+      assert byte_size(body["details"]) == 1_024
+    end
+
     test "carries no message key" do
       {500, body, _headers} =
         Response.failure(500, invocation_id: @invocation_id, version: @version, details: "boom")
@@ -105,6 +129,19 @@ defmodule EbbServer.Functions.ResponseTest do
       end
     end
 
+    test "a caller-supplied code wins over the status default" do
+      assert {422, body, _headers} =
+               Response.failure(422,
+                 invocation_id: @invocation_id,
+                 version: @version,
+                 code: "handler_error",
+                 details: "boom"
+               )
+
+      assert body["error"] == "handler_error"
+      assert body["details"] == "boom"
+    end
+
     test "an unknown function carries a null version and no version header" do
       assert {404, body, headers} = Response.failure(404, invocation_id: @invocation_id)
 
@@ -116,7 +153,7 @@ defmodule EbbServer.Functions.ResponseTest do
   describe "code_for_status/1" do
     test "maps every status this slice can produce" do
       assert %{
-               400 => "invalid_input",
+               400 => "invalid_json",
                401 => "unauthorized",
                403 => "denied",
                404 => "not_found",

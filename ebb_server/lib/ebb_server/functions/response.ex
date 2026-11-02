@@ -19,11 +19,20 @@ defmodule EbbServer.Functions.Response do
   its value is absent, which is why an unknown function (`404`) carries no
   version header: there is no active version to name.
 
-  The code is derived from the status because `Functions.Invocation` reports
-  only `{:error, status, details}`; the worker-facing error name does not
-  survive the boundary. `code_for_status/1` is therefore the mapping, and a
-  status outside it falls back to `internal_error` rather than inventing a
-  vocabulary.
+  A failure whose cause already produced a code — anything `Invocation`
+  reports, such as `handler_error`, `rejected`, or `protocol_error` — passes it
+  as `:code`. Without one, `code_for_status/1` supplies the code for the
+  statuses this endpoint produces itself (a malformed body, an absent route, a
+  bundle that failed verification). The map is the fallback, not a second
+  vocabulary: both paths end in the same `"error"` field.
+
+  ## No stacks
+
+  `details` is text for a person, never a stack. A runner that reports a
+  handler failure from its runtime can carry `error.stack`; the envelope drops
+  lines shaped like stack frames and caps the rest, so an implementation detail
+  of the worker cannot leak through the API. `#595` adds structured `issues`
+  for validation, which is a different field.
 
   Structured `issues: [{"path", "message"}]` is deliberately not built here.
   `#595` adds it, and only for `invalid_input`/`invalid_output`; offering a
@@ -35,9 +44,11 @@ defmodule EbbServer.Functions.Response do
   @type response :: {pos_integer(), map(), headers()}
 
   @retryable_statuses [408, 429, 503]
+  @max_details_bytes 1024
+  @stack_frame ~r/^\s+at\s/
 
   @status_codes %{
-    400 => "invalid_input",
+    400 => "invalid_json",
     401 => "unauthorized",
     403 => "denied",
     404 => "not_found",
@@ -76,13 +87,14 @@ defmodule EbbServer.Functions.Response do
 
     * `:invocation_id` — required id of this invocation
     * `:version` — the invoked function's active version; `nil` when unknown
+    * `:code` — the error code, when the cause already named one
     * `:details` — optional human-readable reason; omitted when nil or empty
   """
   @spec failure(pos_integer(), keyword()) :: response()
   def failure(status, opts) do
     body =
       %{
-        "error" => code_for_status(status),
+        "error" => Keyword.get(opts, :code, code_for_status(status)),
         "invocation_id" => invocation_id(opts),
         "version" => version(opts)
       }
@@ -113,11 +125,22 @@ defmodule EbbServer.Functions.Response do
   defp header(name, value) when is_binary(value) and value != "", do: {name, value}
   defp header(_name, _value), do: nil
 
-  defp put_details(body, details) when is_binary(details) and details != "" do
-    Map.put(body, "details", details)
+  defp put_details(body, details) when is_binary(details) do
+    case scrub(details) do
+      "" -> body
+      text -> Map.put(body, "details", String.slice(text, 0, @max_details_bytes))
+    end
   end
 
   defp put_details(body, _details), do: body
+
+  defp scrub(details) do
+    details
+    |> String.split("\n")
+    |> Enum.reject(&Regex.match?(@stack_frame, &1))
+    |> Enum.join("\n")
+    |> String.trim()
+  end
 
   defp put_retryable(body, status) when status in @retryable_statuses do
     Map.put(body, "retryable", true)

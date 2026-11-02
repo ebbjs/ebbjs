@@ -26,7 +26,7 @@ defmodule EbbServer.Functions.AcceptanceTest do
   alias EbbServer.Functions.Worker.Fake
   alias EbbServer.Sync.{GroupRegistry, Router}
 
-  alias EbbServer.TestFunctions.{Bundles, InputScriptedWorker}
+  alias EbbServer.TestFunctions.{Bundles, InputScriptedWorker, RecordingWorker}
 
   @enabled_env "EBB_FUNCTIONS_ENABLED"
   @await_timeout_ms 5_000
@@ -187,7 +187,15 @@ defmodule EbbServer.Functions.AcceptanceTest do
       deploy!(dir, slow, envelope: %{"timeoutMs" => 50})
       deploy!(dir, after_timeout)
 
-      configure_boot(bundle_dir: dir, transport: InputScriptedWorker)
+      configure_boot(
+        bundle_dir: dir,
+        transport: RecordingWorker,
+        worker_opts: [
+          notify: self(),
+          script: [%{"script" => "by_input"}],
+          scripts: %{"by_input" => &echo_or_hang/1}
+        ]
+      )
 
       timed_out = post_function(slow, ~s({"hang":true}), actor_id)
 
@@ -196,6 +204,9 @@ defmodule EbbServer.Functions.AcceptanceTest do
       assert body["error"] == "timeout"
       assert body["retryable"] == true
       assert body["version"] == "1.0.0"
+
+      # The deadline tears the worker down; it does not merely stop waiting.
+      assert_receive :functions_worker_closed, 500
 
       # Same router, same cache, same transport: the deadline took down one
       # invocation, not the endpoint.
@@ -275,6 +286,54 @@ defmodule EbbServer.Functions.AcceptanceTest do
       assert Process.whereis(BundleCache) == cache_pid
     end
 
+    test "a rejected commit is 422 rejected rather than handler_error", %{dir: dir} do
+      name = "rejectNote"
+      actor_id = unique("a")
+      group_id = unique("g")
+      owner_id = unique("a")
+      other_group = unique("g")
+
+      seed_member(actor_id, group_id, ["function." <> name])
+      seed_member(owner_id, other_group, ["todo.create", "todo.update", "groupMember.create"])
+
+      foreign_id = unique("todo_other")
+
+      assert write_entity_in_group(owner_id, foreign_id, "todo", other_group, fields("not yours")).status ==
+               200
+
+      deploy!(dir, name)
+
+      action = create_todo_action(foreign_id, other_group, "overwritten")
+
+      configure_boot(
+        bundle_dir: dir,
+        transport: Fake,
+        worker_opts: [
+          script: [
+            %{"send" => Protocol.ready(nil, "fake-1.0.0")},
+            %{"script" => "commit_only"}
+          ],
+          scripts: %{"commit_only" => commit_only_script(action)}
+        ]
+      )
+
+      response = post_function(name, "{}", actor_id)
+
+      assert response.status == 422
+      body = Jason.decode!(response.resp_body)
+      assert body["error"] == "rejected"
+      assert body["details"] =~ "not_authorized"
+      assert body["version"] == "1.0.0"
+      refute Map.has_key?(body, "retryable")
+
+      assert_receive {:functions_commit_reply, %{"ok" => false}}, @await_timeout_ms
+
+      # Nothing was written: the foreign entity still holds its own title.
+      read = get_entity(foreign_id, owner_id)
+      assert read.status == 200
+      assert Jason.decode!(read.resp_body)["data"]["fields"]["title"]["value"] == "not yours"
+    end
+
     test "a digest mismatch is refused rather than served", %{dir: dir} do
       name = "tamperedNote"
       actor_id = unique("a")
@@ -339,6 +398,15 @@ defmodule EbbServer.Functions.AcceptanceTest do
         entity_group_update(entity_id, group_id, hlc)
       ]
     }
+  end
+
+  defp commit_only_script(action) do
+    fn api ->
+      api.expect.(%{"type" => "invoke"})
+      api.send.(Protocol.call("call_commit", "commit", action))
+      reply = api.expect.(%{"type" => "reply", "call_id" => "call_commit"})
+      send(api.owner, {:functions_commit_reply, reply})
+    end
   end
 
   defp deploy!(dir, name, opts \\ []) do
@@ -453,6 +521,17 @@ defmodule EbbServer.Functions.AcceptanceTest do
   end
 
   # --- worker script -------------------------------------------------------
+
+  # One transport answers two functions differently: `hang` idles until the
+  # invocation deadline closes it, anything else echoes its input.
+  defp echo_or_hang(api) do
+    invoke = api.expect.(%{"type" => "invoke"})
+
+    case invoke["input"] do
+      %{"hang" => true} -> :ok
+      input -> api.send.(Protocol.result({:ok, %{"echo" => input}}))
+    end
+  end
 
   # The fake's function-script escape hatch: the scenario needs the reply to
   # the read delivered back to the test, which a data-only step list cannot do.

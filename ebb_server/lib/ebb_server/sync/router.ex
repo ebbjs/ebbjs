@@ -6,7 +6,7 @@ defmodule EbbServer.Sync.Router do
 
   ## What this module is
 
-  A `Plug.Router` with nine endpoints and one catch-all 404:
+  A `Plug.Router` with ten endpoints and one catch-all 404:
 
     - `GET /healthz` — unauthenticated readiness probe backed by
       `EbbServer.Health`; `200` once the storage layer answers, `503`
@@ -89,13 +89,9 @@ defmodule EbbServer.Sync.Router do
   # with the feature off and would need a functions-shaped 404 to say so.
   # Delegating from a plug leaves the conn untouched when the flag is off, so
   # the path falls through to the catch-all below exactly as any unknown path
-  # does. `AuthPlug` stays in front of both, so functions inherit `401`.
-  #
-  # Functions are boot-time: `Functions.children/0` either starts the bundle
-  # cache or the route is absent for the life of the node. A release cannot
-  # reload config, so a per-request gate would look like a kill switch without
-  # being one; the check here only lets a test or a dev node mount the route
-  # without a release.
+  # does. The flag is resolved once at boot (`EbbServer.Functions`); this check
+  # only reads that resolved value. `AuthPlug` stays in front of both, so an
+  # anonymous request gets the shared `401` before the route matters.
   #
   # `Plug.forward/4` splits `/functions` off the path for the child router and
   # puts it back afterwards, so `Functions.Router` only ever sees `/:name`.
