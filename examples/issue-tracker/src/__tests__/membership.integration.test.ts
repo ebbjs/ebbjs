@@ -24,7 +24,8 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ActionRejectedError, createClient } from "@ebbjs/client";
-import { demoActions, type DemoClient } from "../actions";
+import { demoActions } from "../actions";
+import type { IssueTrackerClient } from "../bootstrap";
 import { schema } from "../schema";
 import {
   MEMBER_PERMISSIONS,
@@ -50,7 +51,7 @@ const OUTSIDER_ID = `out_it_${RUN_ID}`;
 const MEMBER_PROFILE_ID = profileIdForActor(MEMBER_ID);
 const OUTSIDER_PROFILE_ID = profileIdForActor(OUTSIDER_ID);
 
-type Client = DemoClient;
+type Client = IssueTrackerClient;
 
 const mkClient = (actorId: string): Client =>
   createClient({ serverUrl: SERVER_URL, actorId, schema, actions: demoActions });

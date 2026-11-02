@@ -16,7 +16,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient } from "@ebbjs/client";
 import type { SeedData } from "@ebbjs/core/seed";
-import { demoActions, type DemoClient } from "../actions";
+import { demoActions } from "../actions";
+import type { IssueTrackerClient } from "../bootstrap";
 import { schema } from "../schema";
 import { SEED_PERMISSIONS, SEEDER_ACTOR_ID, buildActorSeed, deriveActorSeedIds } from "../seed";
 import { catchUpGroup, syncAllGroups } from "../sync-groups";
@@ -28,7 +29,7 @@ const BOB = `crud_bob_${RUN_ID}`;
 const SHARED_GROUP_ID = `grp_crud_${RUN_ID}`;
 const ALICE_IDS = deriveActorSeedIds(ALICE);
 
-type Client = DemoClient;
+type Client = IssueTrackerClient;
 
 /**
  * A shared group the two test actors both belong to. The seeder

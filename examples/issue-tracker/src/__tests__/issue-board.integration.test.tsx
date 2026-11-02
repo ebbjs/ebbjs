@@ -16,7 +16,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { createClient } from "@ebbjs/client";
 import type { SeedData } from "@ebbjs/core/seed";
 import { EbbProvider } from "@ebbjs/react";
-import { demoActions, type DemoClient } from "../actions";
+import { demoActions } from "../actions";
+import type { IssueTrackerClient } from "../bootstrap";
 import { IssuesPanel } from "../IssuesPanel";
 import { schema } from "../schema";
 import { SEED_PERMISSIONS, SEEDER_ACTOR_ID, buildActorSeed, deriveActorSeedIds } from "../seed";
@@ -31,7 +32,7 @@ const BOB = `board_bob_${RUN_ID}`;
 const SHARED_GROUP_ID = `grp_board_${RUN_ID}`;
 const ALICE_IDS = deriveActorSeedIds(ALICE);
 
-type Client = DemoClient;
+type Client = IssueTrackerClient;
 
 const filters = (patch: Partial<IssueFilters> = {}): IssueFilters => ({
   ...NO_ISSUE_FILTERS,

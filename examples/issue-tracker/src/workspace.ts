@@ -37,7 +37,7 @@
  * declared once in `./actions`.
  */
 
-import type { DemoClient } from "./actions";
+import type { IssueTrackerClient } from "./bootstrap";
 import { deriveActorSeedIds } from "./seed";
 
 /** The profile entity id the seed derives for an actor. */
@@ -47,7 +47,7 @@ export function profileIdForActor(actorId: string): string {
 
 export interface InviteToWorkspaceInput {
   /** A client for a group member allowed to invite — the demo's service actor. */
-  readonly inviter: DemoClient;
+  readonly inviter: IssueTrackerClient;
   readonly actorId: string;
   readonly groupId: string;
   readonly permissions: readonly string[];
@@ -75,7 +75,7 @@ export async function inviteToWorkspace(input: InviteToWorkspaceInput): Promise<
 
 export interface ShareProfileToWorkspaceInput {
   /** The invitee's own client: only the profile's owner may share it. */
-  readonly client: DemoClient;
+  readonly client: IssueTrackerClient;
   readonly actorId: string;
   readonly groupId: string;
 }
@@ -103,7 +103,7 @@ export async function shareProfileToWorkspace(
 
 export interface LeaveWorkspaceInput {
   /** The leaving actor's own client; only its own rows may be dropped. */
-  readonly client: DemoClient;
+  readonly client: IssueTrackerClient;
   readonly actorId: string;
   readonly groupId: string;
 }

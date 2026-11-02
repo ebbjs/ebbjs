@@ -9,8 +9,8 @@
  * `ActionRejectedError`.
  */
 
-import { defineAction, type EntityValues, type NamespacedClient } from "@ebbjs/client";
-import { issue, schema, type Schema } from "./schema";
+import { defineAction, type EntityValues } from "@ebbjs/client";
+import { issue, schema } from "./schema";
 
 /**
  * Create an issue and, when an assignee is picked, its `assignee` link in
@@ -136,6 +136,3 @@ export const demoActions = {
 } as const;
 
 export type DemoActions = typeof demoActions;
-
-/** The typed client the demo passes around: schema-bound with its Actions. */
-export type DemoClient = NamespacedClient<Schema, DemoActions>;

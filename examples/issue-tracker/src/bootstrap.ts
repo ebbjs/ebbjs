@@ -21,15 +21,15 @@
  * IndexedDB fall back to the in-memory adapter.
  */
 
-import { createClient } from "@ebbjs/client";
+import { createClient, type NamespacedClient } from "@ebbjs/client";
 import type { StorageAdapter } from "@ebbjs/storage/types";
-import { demoActions, type DemoClient } from "./actions";
-import { schema } from "./schema";
+import { demoActions, type DemoActions } from "./actions";
+import { schema, type Schema } from "./schema";
 import { SEEDER_ACTOR_ID, buildActorSeed, buildSharedSeed, deriveActorSeedIds } from "./seed";
 import { handshakeGroupIds, syncAllGroups } from "./sync-groups";
 
-/** The typed client the demo passes around: schema-bound with its Actions. */
-export type IssueTrackerClient = DemoClient;
+/** The demo's client type: the schema it was built on and the actions it mounts. */
+export type IssueTrackerClient = NamespacedClient<Schema, DemoActions>;
 
 /**
  * Durable per-actor storage, falling back to memory off the browser.
