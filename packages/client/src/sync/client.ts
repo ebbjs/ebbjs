@@ -2227,43 +2227,44 @@ export function createClient<
     // `client → namespace → client` import cycle.
     hydrate: () => client.hydrateReplica(),
   });
-  // The action runtime's capability: the committer plus every local read
-  // the draft planner resolves an intent against after the callback
-  // returns.
+  // The action runtime's two halves: what it commits through, and the
+  // local state its verbs resolve against after the callback returns.
   const actionCap: ActionCapability = {
     registry: client.registry,
     submitRelationshipUpdates: client.submitRelationshipUpdates.bind(client),
     freshHlc: () => client.freshHlc(),
     generateUpdateId: () => client.generateUpdateId(),
     actorId: client.actorId,
-    // `findPreSyncRow` reads the entity's earliest unresolved conflict's
-    // `before` row (the conflicts view owns the detection-HLC ordering).
-    readPreSyncRow: (entityId: string) => findPreSyncRow(client.conflicts, entityId),
-    // The draft membership verbs resolve against the local cache after
-    // the synchronous callback returns.
-    readMemberships: (entityId: string) => readEntityMemberships(client.storage, entityId),
-    // A membership change carries the entity's generated documents and
-    // their edges, resolved from the local cache after the callback.
-    readGeneratedParts: (entityType: string, entityId: string) =>
-      readGeneratedParts(client.storage, client.registry, entityType, entityId),
-    // A `duplicate` copy source, and the groupMember the membership
-    // guard reads. A wrong-type row reads as absent, like a missing one.
-    readEntity: async (entityType: string, entityId: string) => {
-      const row = await client.storage.entities.get(entityId);
-      return row === null || row.type !== entityType ? null : row;
+    read: {
+      // `findPreSyncRow` reads the entity's earliest unresolved conflict's
+      // `before` row (the conflicts view owns the detection-HLC ordering).
+      preSyncRow: (entityId: string) => findPreSyncRow(client.conflicts, entityId),
+      // The draft membership verbs resolve against the local cache after
+      // the synchronous callback returns.
+      memberships: (entityId: string) => readEntityMemberships(client.storage, entityId),
+      // A membership change carries the entity's generated documents and
+      // their edges, resolved from the local cache after the callback.
+      generatedParts: (entityType: string, entityId: string) =>
+        readGeneratedParts(client.storage, client.registry, entityType, entityId),
+      // A `duplicate` copy source, and the groupMember the membership
+      // guard reads. A wrong-type row reads as absent, like a missing one.
+      entity: async (entityType: string, entityId: string) => {
+        const row = await client.storage.entities.get(entityId);
+        return row === null || row.type !== entityType ? null : row;
+      },
+      // A one-cardinality unlink must name the live edge's row id.
+      relationshipLink: async (as: string, type: string, sourceId: string) => {
+        const [link] = await client.storage.entities.queryByRelationshipSource({
+          as,
+          type,
+          sourceId,
+        });
+        return link === undefined ? undefined : { relationshipId: link.relationshipId };
+      },
+      // The `last_group_member` guard reads the group's local member view.
+      groupMembers: async (groupId: string) =>
+        groupMembersOf(await client.storage.entities.query("groupMember"), groupId),
     },
-    // A one-cardinality unlink must name the live edge's row id.
-    readRelationshipLink: async (as: string, type: string, sourceId: string) => {
-      const [link] = await client.storage.entities.queryByRelationshipSource({
-        as,
-        type,
-        sourceId,
-      });
-      return link === undefined ? undefined : { relationshipId: link.relationshipId };
-    },
-    // The `last_group_member` guard reads the group's local member view.
-    readGroupMembers: async (groupId: string) =>
-      groupMembersOf(await client.storage.entities.query("groupMember"), groupId),
   };
   const actionRuntime = createActionRuntime(opts.schema, actionCap);
   // Each action mounts as a fresh wrapper so one definition can be

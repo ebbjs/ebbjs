@@ -244,7 +244,7 @@ async function resolveUnlinkTarget(
   sourceId: string,
   as: string,
   pointer: RelationshipPointer,
-  readLink: ActionCapability["readRelationshipLink"],
+  readLink: ActionReads["relationshipLink"],
 ): Promise<UnlinkTarget> {
   if (pointer.targetId !== null || pointer.targetIds !== undefined) {
     return { kind: "not-applicable" };
@@ -283,28 +283,39 @@ export interface DraftDuplicateOptions extends EntityWriteOptions {
 }
 
 /**
- * The committer capability plus the local reads the planner needs. Every
- * verb that cannot build its Updates from the callback's arguments alone
- * names what it reads here; the client binds these to the same storage
- * the namespaces read.
+ * The local state an action's verbs resolve against after the callback
+ * returns — every read a draft verb needs before it can build its
+ * Updates. Kept apart from {@link CommitCapability} so the two can be
+ * supplied separately: a test can seed this half and capture the
+ * commit half, and the runtime body never confuses a read with an
+ * effect.
  */
-export interface ActionCapability extends CommitCapability {
+export interface ActionReads {
   /** Live `entityGroup` rows for an entity id. */
-  readMemberships(entityId: string): Promise<readonly LiveMembership[]>;
+  memberships(entityId: string): Promise<readonly LiveMembership[]>;
   /** The entity's live generated parts, carried on a membership change. */
-  readGeneratedParts(entityType: string, entityId: string): Promise<GeneratedParts>;
+  generatedParts(entityType: string, entityId: string): Promise<GeneratedParts>;
   /** The live row of `entityType`, or `null` when it is absent or another type. */
-  readEntity(entityType: string, entityId: string): Promise<Entity | null>;
+  entity(entityType: string, entityId: string): Promise<Entity | null>;
   /** The `before` row of the entity's earliest unresolved conflict. */
-  readPreSyncRow(entityId: string): Promise<Entity | null>;
+  preSyncRow(entityId: string): Promise<Entity | null>;
   /** The live edge a one-cardinality unlink's delete must name. */
-  readRelationshipLink(
+  relationshipLink(
     as: string,
     type: string,
     sourceId: string,
   ): Promise<{ readonly relationshipId: string } | undefined>;
   /** Live `groupMember` rows of a group, for the `last_group_member` guard. */
-  readGroupMembers(groupId: string): Promise<readonly LiveGroupMember[]>;
+  groupMembers(groupId: string): Promise<readonly LiveGroupMember[]>;
+}
+
+/**
+ * What the action runtime needs: the committer, plus the local reads the
+ * planner resolves an intent against. The client binds both halves to
+ * the same storage the namespaces read.
+ */
+export interface ActionCapability extends CommitCapability {
+  readonly read: ActionReads;
 }
 
 /**
@@ -865,8 +876,8 @@ const buildDrafts = (
  * draft verbs refuse exactly what the imperative membership verbs do.
  */
 const groupMemberView = (cap: ActionCapability): GroupMemberView => ({
-  row: (id) => cap.readEntity("groupMember", id),
-  groupMembers: (groupId) => cap.readGroupMembers(groupId),
+  row: (id) => cap.read.entity("groupMember", id),
+  groupMembers: (groupId) => cap.read.groupMembers(groupId),
 });
 
 /**
@@ -877,7 +888,7 @@ const groupMemberView = (cap: ActionCapability): GroupMemberView => ({
 const readGroups = async (ctx: ResolveContext, id: string): Promise<readonly string[]> => {
   const batch = ctx.batching.get(id);
   if (batch !== undefined) return [...batch.groups];
-  return (await ctx.cap.readMemberships(id)).map((membership) => membership.groupId);
+  return (await ctx.cap.read.memberships(id)).map((membership) => membership.groupId);
 };
 
 /**
@@ -889,7 +900,7 @@ const readGroups = async (ctx: ResolveContext, id: string): Promise<readonly str
 const readMembershipState = async (ctx: ResolveContext, id: string): Promise<BatchEntity> => {
   const existing = ctx.batching.get(id);
   if (existing !== undefined) return existing;
-  const live = await ctx.cap.readMemberships(id);
+  const live = await ctx.cap.read.memberships(id);
   const entry: BatchEntity = {
     groups: new Set(live.map((membership) => membership.groupId)),
     membershipIds: new Map(live.map((membership) => [membership.groupId, membership.membershipId])),
@@ -904,7 +915,7 @@ const readParts = async (
   entity: string,
   id: string,
 ): Promise<GeneratedParts> =>
-  mergeGeneratedParts(await ctx.cap.readGeneratedParts(entity, id), ctx.batching.get(id)?.parts);
+  mergeGeneratedParts(await ctx.cap.read.generatedParts(entity, id), ctx.batching.get(id)?.parts);
 
 /**
  * Merge what a batch-local `create` minted into the parts read from the
@@ -1002,8 +1013,8 @@ const resolveDuplicate = async (
 ): Promise<readonly OperationCall[]> => {
   const source =
     intent.at === "preSync"
-      ? await ctx.cap.readPreSyncRow(intent.sourceId)
-      : await ctx.cap.readEntity(intent.entity, intent.sourceId);
+      ? await ctx.cap.read.preSyncRow(intent.sourceId)
+      : await ctx.cap.read.entity(intent.entity, intent.sourceId);
   if (source === null || source.type !== intent.entity) {
     throw new EntityValidationError([
       {
@@ -1055,7 +1066,7 @@ const resolveRelationship = async (
     intent.sourceId,
     intent.as,
     intent.pointer,
-    ctx.cap.readRelationshipLink,
+    ctx.cap.read.relationshipLink,
   );
   if (target.kind === "unlinked") return [];
   return [

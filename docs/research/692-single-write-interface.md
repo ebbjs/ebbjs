@@ -209,6 +209,10 @@ that is what the overlay held when it resolved.
   cannot call it with a fake draft object. Testing an action today means driving
   it through a client, which is what
   `packages/client/src/sync/__tests__/draft-verbs.test.ts` does. A public pattern
-  is a follow-up; claiming it is done here would be wrong.
+  is a follow-up; claiming it is done here would be wrong. The seam it needs is
+  prepared: `ActionCapability` keeps its commit members flat and nests the local
+  reads under `read`, so a harness can seed the read half and capture the commit
+  half without reimplementing either, and the runtime body stops mixing a read
+  with an effect.
 - **Migration / deprecation.** Out of scope: the old surface is deleted, not
   aliased, and the changeset is a major for `@ebbjs/client` and `@ebbjs/react`.
