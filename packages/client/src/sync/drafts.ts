@@ -16,7 +16,7 @@
 import { generateId, type Entity, type FieldValue } from "@ebbjs/core";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
-import { generatedDocEntityName } from "../fields/collaborative-text/schema";
+import { derivedBodyIds } from "../fields/collaborative-text/derived-ids";
 import type { EntityDef, ShapeFields } from "../schema/entity";
 import { EntityValidationError } from "../schema/entity-registry";
 import type { EntityRegistry } from "../schema/entity-registry";
@@ -546,7 +546,6 @@ const createDraftNamespace = <
     const fields: Record<string, unknown> = {};
     const pointers: ResolvedPointer[] = [];
     const bodies: Record<string, string> = {};
-    const generatedIds: Record<string, { documentId: string; relationshipId: string }> = {};
     const createdDocuments: GeneratedDocument[] = [];
     const createdEdges: GeneratedEdge[] = [];
     const handle: Record<string, unknown> = { id };
@@ -570,23 +569,24 @@ const createDraftNamespace = <
         }
         handle[key] = value;
         if (value.length > 0) {
-          // Mint the generated part ids here so a membership verb later
-          // in the batch can carry parts the local store cannot see yet.
+          // The same derivation the create operation runs, so the overlay
+          // this batch reads back names the rows the wire will name.
           bodies[key] = value;
-          const documentId = generateId("e");
-          const relationshipId = generateId("rel");
-          generatedIds[key] = { documentId, relationshipId };
+          const part = derivedBodyIds({
+            registry: cap.registry,
+            entityName,
+            parentId: id,
+            field: key,
+          });
           createdDocuments.push({
-            id: documentId,
-            type:
-              cap.registry.getRelationship(entityName, key)?.target.name ??
-              generatedDocEntityName(entityName, key),
+            id: part.documentId,
+            type: part.documentType,
             memberships: [],
           });
           createdEdges.push({
-            relationshipId,
+            relationshipId: part.relationshipId,
             sourceId: id,
-            targetId: documentId,
+            targetId: part.documentId,
             field: key,
             type: entityName,
           });
@@ -641,7 +641,6 @@ const createDraftNamespace = <
         fields,
         pointers,
         bodies,
-        generatedIds,
         groups,
         validate: opts?.validate,
       }),
