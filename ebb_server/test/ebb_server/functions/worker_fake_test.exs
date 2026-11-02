@@ -17,17 +17,19 @@ defmodule EbbServer.Functions.WorkerFakeTest do
       ]
 
       {:ok, worker} = Worker.start(Fake, script: script, owner: self())
+      ref = Worker.monitor(worker)
+      assert is_reference(ref)
       assert_receive {:functions_worker_frame, ^ready}
 
       assert Worker.alive?(worker)
       assert Worker.os_pid(worker) == nil
-      assert is_reference(Worker.monitor(worker))
 
       invoke = Protocol.invoke(%{"name" => "proofreadDocument", "input" => %{}})
       assert :ok = Worker.send_frame(worker, invoke)
       assert_receive {:functions_worker_frame, ^result}
 
       assert :ok = Worker.close(worker)
+      assert_receive {:DOWN, ^ref, :process, _pid, :normal}
       refute Worker.alive?(worker)
     end
 
@@ -108,38 +110,41 @@ defmodule EbbServer.Functions.WorkerFakeTest do
 
     test "an exit step dies without a result" do
       script = [%{"send" => Protocol.ready(1, "0.0.0")}, %{"exit" => "now"}]
-      {:ok, worker} = Worker.start(Fake, script: script, owner: self())
-      ref = Worker.monitor(worker)
+      ref = start_gated(script)
 
       assert_receive {:functions_worker_frame, %{"type" => "ready"}}
       assert_receive {:DOWN, ^ref, :process, _pid, :worker_exit}
     end
 
     test "a malformed step fails the fake" do
-      {:ok, worker} = Worker.start(Fake, script: [%{"nonsense" => true}], owner: self())
-      ref = Worker.monitor(worker)
+      ref = start_gated([%{"nonsense" => true}])
 
       assert_receive {:DOWN, ^ref, :process, _pid, {:invalid_step, %{"nonsense" => true}}}
     end
 
     test "an unknown function script fails the fake" do
-      {:ok, worker} = Worker.start(Fake, script: [%{"script" => "missing"}], owner: self())
-      ref = Worker.monitor(worker)
+      ref = start_gated([%{"script" => "missing"}])
 
       assert_receive {:DOWN, ^ref, :process, _pid, {:unknown_script, "missing"}}
     end
 
     test "expecting a frame that never arrives times out" do
+      # A deadline that ends the fake bounds how long the test has to attach a
+      # monitor, so it is set well above a scheduler hand-off and the assertion
+      # below waits longer still. The bound is not a proof: this is the one test
+      # whose exit the test cannot gate.
       {:ok, worker} =
         Worker.start(Fake,
           script: [%{"expect" => %{"type" => "invoke"}}],
           owner: self(),
-          expect_timeout: 10
+          expect_timeout: 200
         )
 
       ref = Worker.monitor(worker)
+      assert is_reference(ref)
 
-      assert_receive {:DOWN, ^ref, :process, _pid, {:expect_timeout, %{"type" => "invoke"}}}
+      assert_receive {:DOWN, ^ref, :process, _pid, {:expect_timeout, %{"type" => "invoke"}}},
+                     1_000
     end
 
     test "close ends a fake that is waiting for a frame" do
@@ -164,9 +169,10 @@ defmodule EbbServer.Functions.WorkerFakeTest do
 
     test "sending to a closed fake reports that it is closed" do
       {:ok, worker} = Worker.start(Fake, script: [], owner: self())
-      Worker.close(worker)
+      ref = Worker.monitor(worker)
+      assert :ok = Worker.close(worker)
+      assert_receive {:DOWN, ^ref, :process, _pid, :normal}
 
-      wait_until(fn -> not Worker.alive?(worker) end)
       assert {:error, :closed} = Worker.send_frame(worker, Protocol.result({:ok, nil}))
       assert :ok = Worker.close(worker)
     end
@@ -187,11 +193,18 @@ defmodule EbbServer.Functions.WorkerFakeTest do
     end
   end
 
-  defp wait_until(fun, attempts \\ 50) do
-    cond do
-      fun.() -> :ok
-      attempts == 0 -> flunk("condition never became true")
-      true -> Process.sleep(2) && wait_until(fun, attempts - 1)
-    end
+  # The fake runs its script in its own process, so a step that ends it can do
+  # so before the test has a monitor to observe it — and a monitor attached to
+  # an already dead process reports `:noproc` instead of the real reason. Gating
+  # the script behind a frame the test sends only after monitoring makes the
+  # attachment provable, so a `:DOWN` reason is the one the script exits with.
+  defp start_gated(script) do
+    gate = %{"expect" => %{"type" => "invoke"}}
+    {:ok, worker} = Worker.start(Fake, script: [gate | script], owner: self())
+
+    ref = Worker.monitor(worker)
+    assert :ok = Worker.send_frame(worker, Protocol.invoke(%{"name" => "gated"}))
+
+    ref
   end
 end
