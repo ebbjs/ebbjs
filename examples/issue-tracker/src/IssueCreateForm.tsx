@@ -10,7 +10,7 @@
 import { useState } from "react";
 import { PRIORITY_OPTIONS, STATUS_OPTIONS, assigneeOptions } from "./issue-options";
 import { SelectField } from "./SelectField";
-import { useAppClient } from "./use-app-client";
+import { useEbb } from "./use-ebb";
 import { useWorkspaceProfiles } from "./use-workspace-profiles";
 import { useWrite } from "./use-write";
 
@@ -23,7 +23,7 @@ export function IssueCreateForm({
   onCreated: (id: string) => void;
   onCancel: () => void;
 }) {
-  const client = useAppClient();
+  const client = useEbb();
   const profiles = useWorkspaceProfiles(groupId);
   const [title, setTitle] = useState("");
   const [status, setStatus] = useState<string>("todo");

@@ -44,7 +44,7 @@ export function EbbProvider<C extends SyncClient = SyncClient>({
  * Naming the client once (rather than a schema and an action map here)
  * keeps the call site stable when a client grows: entities, actions, and
  * anything added beside them stay in one type. An app can also wrap this
- * in its own `useAppClient()` so components carry no generic at all.
+ * in its own `useEbb()` so components carry no generic at all.
  */
 export function useClient<C extends SyncClient = SyncClient>(): C {
   const client = useContext(EbbClientContext);

@@ -202,12 +202,12 @@ carrying a generic at all — one module owns the type, every call site reads th
 same:
 
 ```tsx
-// app-client.ts — the only place that knows the client's shape.
+// use-ebb.ts — the only place that knows the client's shape.
 export type AppClient = typeof client;
-export const useAppClient = (): AppClient => useClient<AppClient>();
+export const useEbb = (): AppClient => useClient<AppClient>();
 
 // anywhere below the provider
-const client = useAppClient();
+const client = useEbb();
 await client.actions.createIssue({ title: "Buy milk", groupId });
 ```
 
