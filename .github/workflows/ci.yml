@@ -15,7 +15,7 @@ jobs:
   # ─────────────────────────────────────────────────────────
 
   elixir-format:
-    name: Format Check
+    name: Format Check (Elixir)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -119,7 +119,7 @@ jobs:
         working-directory: ebb_server
 
   elixir-test:
-    name: Test
+    name: Test (Elixir)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -269,7 +269,7 @@ jobs:
       - run: pnpm lint
 
   typescript-format:
-    name: Format Check
+    name: Format Check (TypeScript)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -282,7 +282,7 @@ jobs:
       - run: pnpm fmt:check
 
   typescript-test:
-    name: Test
+    name: Test (TypeScript)
     runs-on: ubuntu-latest
     needs: elixir-release
     steps:
