@@ -79,10 +79,11 @@ import {
 } from "./relationship";
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { readEntityMemberships } from "./entity-group";
+import { groupMembersOf } from "./membership";
 import { readGeneratedParts } from "./generated-parts";
 import { createBackfill, type Backfill } from "./backfill";
 import { createGroupListing, LISTING_SEED_ACTOR_ID, type GroupListing } from "./group-listing";
-import { createAtomicRuntime, type AtomicClient } from "./atomic";
+import { createActionRuntime, type ActionCapability } from "./drafts";
 import {
   PermissionError,
   collectPermissionViolations,
@@ -2178,12 +2179,13 @@ export type ActionNamespaces<
 
 /**
  * Returned by {@link createClient}: the standard `SyncClient` surface
- * plus typed entity namespaces, `atomic(...)`, and `actions`.
+ * plus typed entity namespaces and `actions`. Entity namespaces are
+ * read-only; `client.actions.<name>` is the one write path.
  */
 export type NamespacedClient<
   S,
   TActions extends Record<string, AnyActionDef> = Record<string, never>,
-> = SyncClient & EntityNamespaces<S> & AtomicClient<S> & ActionNamespaces<S, TActions>;
+> = SyncClient & EntityNamespaces<S> & ActionNamespaces<S, TActions>;
 
 /**
  * Factory for {@link SyncClient}. Prefer this over `new SyncClient(...)`
@@ -2191,8 +2193,9 @@ export type NamespacedClient<
  *
  * When `opts.schema` is a `Schema`, the returned client is a Proxy
  * that exposes `client.<entityName>.query()` — the typed thenable
- * chain — for every entity declared on the schema, plus `client.atomic`
- * and `client.actions`. The Proxy binds every method to the underlying
+ * chain — for every entity declared on the schema, plus
+ * `client.actions`. The namespaces are read-only; every write is an
+ * Action. The Proxy binds every method to the underlying
  * `SyncClient` so private-field access inside the SDK still resolves
  * correctly.
  */
@@ -2207,29 +2210,15 @@ export function createClient<
   if (opts.schema === undefined) {
     return client as NamespacedClient<S, TActions>;
   }
-  // Narrow capability the namespace consults for write-side
-  // operations. Keeps the namespace free of the cyclic
-  // `client → namespace → client` reference.
-  const writeCap = {
+  // The read path's capability: the registry its accessors resolve
+  // against and the document opener a collaborative-text body hydrates
+  // through. Writes do not run through here.
+  const readCap = {
     registry: client.registry,
-    submitRelationshipUpdates: client.submitRelationshipUpdates.bind(client),
-    freshHlc: () => client.freshHlc(),
-    generateUpdateId: () => client.generateUpdateId(),
-    actorId: client.actorId,
     openTextDocument: (docId: string, docType: string) =>
       client.openDerivedTextDocument(docId, docType),
-    // `findPreSyncRow` reads the entity's earliest unresolved conflict's
-    // `before` row (the conflicts view owns the detection-HLC ordering).
-    readPreSyncRow: (entityId: string) => findPreSyncRow(client.conflicts, entityId),
-    // The atomic membership drafts resolve a removal against the local
-    // cache after the synchronous callback returns.
-    readMemberships: (entityId: string) => readEntityMemberships(client.storage, entityId),
-    // A membership change carries the entity's generated documents and
-    // their edges, resolved from the local cache after the callback.
-    readGeneratedParts: (entityType: string, entityId: string) =>
-      readGeneratedParts(client.storage, client.registry, entityType, entityId),
   };
-  const namespaces = buildEntityNamespaces(opts.schema, client.storage, writeCap, {
+  const namespaces = buildEntityNamespaces(opts.schema, client.storage, readCap, {
     replica: client.replica,
     queries: client.queries,
     signal: client.replicaSignal,
@@ -2238,16 +2227,45 @@ export function createClient<
     // `client → namespace → client` import cycle.
     hydrate: () => client.hydrateReplica(),
   });
-  // `client.atomic` needs the same write capability the namespace
-  // uses. Defining it on the instance keeps the typed surface on
-  // `NamespacedClient` while leaving bare `SyncClient` without it
-  // (the resolver requires a schema).
-  const atomicRuntime = createAtomicRuntime(opts.schema, writeCap);
-  Object.defineProperty(client, "atomic", {
-    value: atomicRuntime,
-    enumerable: false,
-    configurable: true,
-  });
+  // The action runtime's capability: the committer plus every local read
+  // the draft planner resolves an intent against after the callback
+  // returns.
+  const actionCap: ActionCapability = {
+    registry: client.registry,
+    submitRelationshipUpdates: client.submitRelationshipUpdates.bind(client),
+    freshHlc: () => client.freshHlc(),
+    generateUpdateId: () => client.generateUpdateId(),
+    actorId: client.actorId,
+    // `findPreSyncRow` reads the entity's earliest unresolved conflict's
+    // `before` row (the conflicts view owns the detection-HLC ordering).
+    readPreSyncRow: (entityId: string) => findPreSyncRow(client.conflicts, entityId),
+    // The draft membership verbs resolve against the local cache after
+    // the synchronous callback returns.
+    readMemberships: (entityId: string) => readEntityMemberships(client.storage, entityId),
+    // A membership change carries the entity's generated documents and
+    // their edges, resolved from the local cache after the callback.
+    readGeneratedParts: (entityType: string, entityId: string) =>
+      readGeneratedParts(client.storage, client.registry, entityType, entityId),
+    // A `duplicate` copy source, and the groupMember the membership
+    // guard reads. A wrong-type row reads as absent, like a missing one.
+    readEntity: async (entityType: string, entityId: string) => {
+      const row = await client.storage.entities.get(entityId);
+      return row === null || row.type !== entityType ? null : row;
+    },
+    // A one-cardinality unlink must name the live edge's row id.
+    readRelationshipLink: async (as: string, type: string, sourceId: string) => {
+      const [link] = await client.storage.entities.queryByRelationshipSource({
+        as,
+        type,
+        sourceId,
+      });
+      return link === undefined ? undefined : { relationshipId: link.relationshipId };
+    },
+    // The `last_group_member` guard reads the group's local member view.
+    readGroupMembers: async (groupId: string) =>
+      groupMembersOf(await client.storage.entities.query("groupMember"), groupId),
+  };
+  const actionRuntime = createActionRuntime(opts.schema, actionCap);
   // Each action mounts as a fresh wrapper so one definition can be
   // reused across clients; `.name` carries the map key.
   const actionNamespaces: Record<string, unknown> = {};
@@ -2263,7 +2281,7 @@ export function createClient<
       raw as unknown as { readonly [RUN]: (drafts: unknown, params: unknown) => unknown }
     )[RUN];
     const wrapper = (params: unknown): Promise<unknown> =>
-      atomicRuntime((drafts) => run(drafts, params));
+      actionRuntime((drafts) => run(drafts, params));
     Object.defineProperty(wrapper, "name", { value: key, configurable: true });
     actionNamespaces[key] = wrapper;
   }

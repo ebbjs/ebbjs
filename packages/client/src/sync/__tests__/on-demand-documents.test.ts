@@ -22,6 +22,7 @@ import { createClient } from "../client";
 import { OnDemandQueryError } from "../query-builder";
 import type { SyncClientOptions } from "../types";
 import { callApplyAction, jsonResponse, waitFor } from "../test-utils";
+import { testActions } from "./test-actions";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
@@ -29,6 +30,9 @@ type AnySchema = Schema<
   Record<string, AnyEntityDef>,
   Record<string, AnyRelationshipDef> | undefined
 >;
+
+/** A client mounted with the harness's actions, so `client.actions` is typed. */
+type MountedClient<S extends AnySchema> = ReturnType<typeof harness<S>>["client"];
 
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -39,11 +43,7 @@ const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 
 function harness<S extends AnySchema>(
   activeSchema: S,
   opts: Omit<SyncClientOptions, "serverUrl" | "actorId" | "schema"> = {},
-): {
-  client: ReturnType<typeof createClient<S>>;
-  storage: ReturnType<typeof createMemoryAdapter>;
-  written: Action[];
-} {
+) {
   const storage = createMemoryAdapter();
   const written: Action[] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -62,6 +62,7 @@ function harness<S extends AnySchema>(
     actorId: "actor_1",
     storage,
     schema: activeSchema,
+    actions: testActions(activeSchema),
     fetchImpl,
     ...opts,
   });
@@ -74,13 +75,13 @@ const bodyDocType = generatedDocEntityName("page", "body");
 
 /** Create a page with a body, optionally folding its echo so it is durable. */
 const createPage = async (
-  client: ReturnType<typeof createClient<typeof pageSchema>>,
+  client: MountedClient<typeof pageSchema>,
   written: readonly Action[],
   input: { title: string; body: string },
   gsn?: number,
 ): Promise<{ pageId: string; docId: string }> => {
   const before = written.length;
-  const { id } = await client.page.create(input, { groups: ["g_1"] });
+  const { id } = await client.actions.create({ entity: "page", input, groups: ["g_1"] });
   const created = written.slice(before);
   if (gsn !== undefined) {
     for (const action of created) await callApplyAction(client, { ...action, gsn });
@@ -267,7 +268,7 @@ describe("held source with an on-demand join", () => {
     version: 1,
   });
 
-  const seed = async (client: ReturnType<typeof createClient<typeof joinSchema>>) => {
+  const seed = async (client: MountedClient<typeof joinSchema>) => {
     await callApplyAction(client, put(1, "page_content_1", "page_content", { text: "body" }));
     await callApplyAction(client, put(2, "page_1", "page", { title: "One" }));
     await callApplyAction(

@@ -11,8 +11,9 @@
  *
  * The assignee is an entity link, not a scalar. `assignee_id` would be a
  * denormalized reference the engine cannot keep consistent;
- * `defineRelationship` gives the `assignee` join,
- * `.where("assignee", profileId)`, and the `link` / `unlink` write path.
+ * `defineRelationship` gives the `assignee` join and
+ * `.where("assignee", profileId)`, and the demo writes it through the
+ * `createIssue` / `setIssueAssignee` Actions (`./actions`).
  * See #441 for the membership side.
  */
 

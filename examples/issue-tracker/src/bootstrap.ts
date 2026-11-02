@@ -23,13 +23,13 @@
 
 import { createClient } from "@ebbjs/client";
 import type { StorageAdapter } from "@ebbjs/storage/types";
+import { demoActions, type DemoClient } from "./actions";
 import { schema } from "./schema";
 import { SEEDER_ACTOR_ID, buildActorSeed, buildSharedSeed, deriveActorSeedIds } from "./seed";
 import { handshakeGroupIds, syncAllGroups } from "./sync-groups";
-import { workspaceActions, type WorkspaceClient } from "./workspace";
 
-/** The typed client the demo passes around: schema-bound with the workspace Actions. */
-export type IssueTrackerClient = WorkspaceClient;
+/** The typed client the demo passes around: schema-bound with its Actions. */
+export type IssueTrackerClient = DemoClient;
 
 /**
  * Durable per-actor storage, falling back to memory off the browser.
@@ -65,7 +65,7 @@ export async function bootstrap(opts: {
 }): Promise<BootstrapResult> {
   const { serverUrl, actorId } = opts;
   const storage = await createAppStorage(actorId);
-  const client = createClient({ serverUrl, actorId, schema, storage, actions: workspaceActions });
+  const client = createClient({ serverUrl, actorId, schema, storage, actions: demoActions });
   let seeder: IssueTrackerClient | null = null;
   try {
     await client.seed(buildActorSeed(actorId));
@@ -74,7 +74,7 @@ export async function bootstrap(opts: {
       serverUrl,
       actorId: SEEDER_ACTOR_ID,
       schema,
-      actions: workspaceActions,
+      actions: demoActions,
     });
     await seeder.seed(buildSharedSeed());
     await syncAllGroups(seeder);

@@ -1,20 +1,18 @@
 /**
  * `defineAction` — a schema-bound, reusable cross-entity Action.
  *
- * A definition pairs a `Schema` with the same resolver callback the
- * `client.atomic(...)` form accepts. The result is a frozen,
- * non-callable descriptor: a client built on the same schema is the
- * only way to execute it. Definition is pure — no ids, no writes, no
- * I/O — so the descriptor is safe to build at module load and mount
- * on several clients (under different names).
+ * A definition pairs a `Schema` with a resolver callback over that
+ * schema's draft namespaces. The result is a frozen, non-callable
+ * descriptor: a client built on the same schema is the only way to
+ * execute it. Definition is pure — no ids, no writes, no I/O — so the
+ * descriptor is safe to build at module load and mount on several
+ * clients (under different names).
  *
- * `client.actions.<name>(params)` runs the callback through the
- * resolver in `../sync/atomic`, so a defined action and the
- * equivalent `client.atomic(...)` callback compose the same single
- * Action.
+ * `client.actions.<name>(params)` runs the callback through the runtime
+ * in `../sync/drafts`, which commits the whole callback as one Action.
  */
 
-import type { AtomicDrafts } from "../sync/atomic";
+import type { ActionDrafts } from "../sync/drafts";
 
 /**
  * Symbol under which a definition keeps its resolver callback. The
@@ -29,7 +27,7 @@ export const RUN: unique symbol = Symbol.for("@ebbjs/action-run");
  */
 export interface ActionDef<S, Params, Result> {
   readonly schema: S;
-  readonly [RUN]: (drafts: AtomicDrafts<S>, params: Params) => Result;
+  readonly [RUN]: (drafts: ActionDrafts<S>, params: Params) => Result;
 }
 
 /**
@@ -78,7 +76,7 @@ const formatViolations = (violations: readonly ActionDefinitionViolation[]): str
  */
 export function defineAction<S, Params = void, Result = unknown>(
   schema: S,
-  run: (drafts: AtomicDrafts<S>, params: Params) => Result,
+  run: (drafts: ActionDrafts<S>, params: Params) => Result,
 ): ActionDef<S, Params, Result> {
   return Object.freeze({ schema, [RUN]: run });
 }

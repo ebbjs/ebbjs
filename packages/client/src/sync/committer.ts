@@ -9,10 +9,10 @@
  * `groups` is the sorted union of every operation's scope, for callers
  * that report the batch's visibility.
  *
- * Server rejections are *not* thrown here: an imperative caller reads
- * `response.rejected` so it can decide what to do. Only
- * `client.atomic` / `defineAction` promote a rejection to
- * {@link AtomicActionError}.
+ * Server rejections are *not* thrown here: the raw response carries
+ * `rejected` so the committer's caller decides. `defineAction`'s
+ * runtime is the caller that promotes a rejection to
+ * {@link ActionRejectedError}.
  */
 
 import { generateId, type Update } from "@ebbjs/core";

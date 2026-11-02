@@ -1,13 +1,13 @@
 /**
  * Unit tests for the `changeGroups` operation — the pure membership
- * delta both the imperative verbs and the atomic drafts build.
+ * delta every draft membership verb builds.
  */
 
 import { describe, expect, it } from "vitest";
 
 import { EntityRegistry } from "../../schema/entity-registry";
 import type { GeneratedParts } from "../generated-parts";
-import { AtomicActionError, call, changeGroups, type OpContext } from "../operations";
+import { ActionRejectedError, call, changeGroups, type OpContext } from "../operations";
 import { commit, type CommitCapability } from "../committer";
 
 const mkCtx = (): OpContext => ({
@@ -65,7 +65,7 @@ describe("changeGroups", () => {
         removes: [{ membershipId: "eg_1", groupId: "g_1" }],
         currentGroups: ["g_1"],
       }),
-    ).toThrowError(AtomicActionError);
+    ).toThrowError(ActionRejectedError);
   });
 
   it("refuses a membership write whose fan-out scope cannot be resolved", () => {
@@ -75,7 +75,7 @@ describe("changeGroups", () => {
         entityId: "todo_1",
         removes: [{ membershipId: "eg_1", groupId: "" }],
       }),
-    ).toThrowError(AtomicActionError);
+    ).toThrowError(ActionRejectedError);
   });
 
   it("carries a generated document and re-emits its edge on an add", () => {

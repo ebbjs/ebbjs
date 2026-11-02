@@ -273,7 +273,7 @@ export function defineSchema<
  * Expand each entity's derived fields into a document entity plus a
  * `collaborative-text` relationship. The generated document entity is
  * merged into the returned entity map so it is a first-class registered
- * entity (a `client.<doc>` namespace and an atomic draft), which is
+ * entity (a `client.<doc>` namespace and a draft namespace), which is
  * also what lets `defineSchema`'s endpoint assertion accept the
  * generated relationship.
  */

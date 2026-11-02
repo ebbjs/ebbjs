@@ -22,6 +22,7 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { createClient } from "../client";
 import { callApplyAction, jsonResponse, waitFor } from "../test-utils";
+import { testActions } from "./test-actions";
 import { defineEntity, e } from "../../schema/entity";
 import { defineSchema } from "../../schema/schema";
 
@@ -503,7 +504,7 @@ describe("client.outbox", () => {
   });
 });
 
-describe("client.<entity> writes through the outbox", () => {
+describe("client.actions writes through the outbox", () => {
   const mkSchemaClient = () => {
     const storage = createMemoryAdapter();
     const stub = mkStubFetch();
@@ -512,6 +513,7 @@ describe("client.<entity> writes through the outbox", () => {
       actorId: ACTOR_ID,
       storage,
       schema,
+      actions: testActions(schema),
       fetchImpl: stub.fn,
     });
     return { client, storage, ...stub };
@@ -520,7 +522,11 @@ describe("client.<entity> writes through the outbox", () => {
   it("create() is visible to a local read before the echo", async () => {
     const { client } = mkSchemaClient();
 
-    await client.todo.create({ title: "Ship", completed: false }, { groups: ["g_1"] });
+    await client.actions.create({
+      entity: "todo",
+      input: { title: "Ship", completed: false },
+      groups: ["g_1"],
+    });
 
     const rows = await client.todo.query();
     expect(rows).toHaveLength(1);
@@ -530,10 +536,14 @@ describe("client.<entity> writes through the outbox", () => {
 
   it("update() optimistically patches the local row", async () => {
     const { client, storage } = mkSchemaClient();
-    await client.todo.create({ title: "Ship", completed: false }, { groups: ["g_1"] });
+    await client.actions.create({
+      entity: "todo",
+      input: { title: "Ship", completed: false },
+      groups: ["g_1"],
+    });
     const id = (await storage.entities.query("todo"))[0]!.id;
 
-    await client.todo.update(id, { completed: true });
+    await client.actions.update({ entity: "todo", id, patch: { completed: true } });
 
     const row = await client.readLocalEntity(id);
     expect(row?.data.fields.completed.value).toBe(true);
@@ -542,10 +552,14 @@ describe("client.<entity> writes through the outbox", () => {
 
   it("delete() optimistically tombstones the local row", async () => {
     const { client, storage } = mkSchemaClient();
-    await client.todo.create({ title: "Ship", completed: false }, { groups: ["g_1"] });
+    await client.actions.create({
+      entity: "todo",
+      input: { title: "Ship", completed: false },
+      groups: ["g_1"],
+    });
     const id = (await storage.entities.query("todo"))[0]!.id;
 
-    await client.todo.delete(id);
+    await client.actions.delete({ entity: "todo", id });
 
     const row = await client.readLocalEntity(id);
     expect(row?.deleted_hlc).not.toBeNull();

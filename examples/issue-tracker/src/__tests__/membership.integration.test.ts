@@ -23,8 +23,9 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createClient, type NamespacedClient } from "@ebbjs/client";
-import { schema, type Schema } from "../schema";
+import { ActionRejectedError, createClient } from "@ebbjs/client";
+import { demoActions, type DemoClient } from "../actions";
+import { schema } from "../schema";
 import {
   MEMBER_PERMISSIONS,
   SAMPLE_ISSUE_ID,
@@ -39,7 +40,6 @@ import {
   leaveWorkspace,
   profileIdForActor,
   shareProfileToWorkspace,
-  workspaceActions,
 } from "../workspace";
 import { syncAllGroups } from "../sync-groups";
 import { SERVER_URL, findRow, serverIsReachable } from "./integration-support";
@@ -50,10 +50,10 @@ const OUTSIDER_ID = `out_it_${RUN_ID}`;
 const MEMBER_PROFILE_ID = profileIdForActor(MEMBER_ID);
 const OUTSIDER_PROFILE_ID = profileIdForActor(OUTSIDER_ID);
 
-type Client = NamespacedClient<Schema, typeof workspaceActions>;
+type Client = DemoClient;
 
 const mkClient = (actorId: string): Client =>
-  createClient({ serverUrl: SERVER_URL, actorId, schema, actions: workspaceActions });
+  createClient({ serverUrl: SERVER_URL, actorId, schema, actions: demoActions });
 
 let member: Client;
 let outsider: Client;
@@ -178,8 +178,13 @@ describe("integration: workspace membership", () => {
     // workspace is not enough to file a profile that lives in someone
     // else's personal group. The local pass cannot see the outsider's
     // group set, so the server is the one that refuses.
-    const graft = await member.profile.addToGroup(OUTSIDER_PROFILE_ID, SHARED_GROUP_ID);
-    expect(graft.rejected.map((r) => r.reason)).toContain("not_authorized");
+    const graft = await member.actions
+      .shareProfile({ profileId: OUTSIDER_PROFILE_ID, groupId: SHARED_GROUP_ID })
+      .catch((error: unknown) => error);
+    expect(graft).toBeInstanceOf(ActionRejectedError);
+    expect((graft as ActionRejectedError).rejections.map((r) => r.reason)).toContain(
+      "not_authorized",
+    );
 
     const visible = (await member.profile.query()).map((profile) => profile.id);
     expect(visible).not.toContain(OUTSIDER_PROFILE_ID);
@@ -208,18 +213,21 @@ describe("integration: workspace membership", () => {
 
     // A fresh issue per run: `issue_sample` is shared, and a repeated run
     // would otherwise leave assignee edges from earlier runs in the group.
-    const created = await member.issue.create(
-      { title: `assignee probe ${RUN_ID}`, status: "todo", priority: "low" },
-      { groups: [SHARED_GROUP_ID] },
-    );
+    const created = await member.actions.createIssue({
+      title: `assignee probe ${RUN_ID}`,
+      status: "todo",
+      priority: "low",
+      assigneeId: null,
+      groupId: SHARED_GROUP_ID,
+    });
 
-    await member.issue.link(created.id, "assignee", MEMBER_PROFILE_ID);
+    await member.actions.setIssueAssignee({ id: created.id, assigneeId: MEMBER_PROFILE_ID });
 
     const issue = findRow(await member.issue.query().with({ assignee: true }), created.id);
     expect(issue).toBeDefined();
     expect(issue!.assignee?.id).toBe(MEMBER_PROFILE_ID);
 
-    await member.issue.unlink(created.id, "assignee");
+    await member.actions.setIssueAssignee({ id: created.id, assigneeId: null });
     const cleared = findRow(await member.issue.query().with({ assignee: true }), created.id);
     expect(cleared!.assignee).toBeNull();
   });
@@ -262,8 +270,10 @@ describe("integration: workspace membership", () => {
     expect(findRow(await member.issue.query(), SAMPLE_ISSUE_ID)).toBeDefined();
 
     // Re-joining shares the profile again, which the leave removed.
-    const reshare = await member.profile.addToGroup(MEMBER_PROFILE_ID, SHARED_GROUP_ID);
-    expect(reshare.rejected).toEqual([]);
+    // A share that is not refused resolves without a value.
+    await expect(
+      member.actions.shareProfile({ profileId: MEMBER_PROFILE_ID, groupId: SHARED_GROUP_ID }),
+    ).resolves.toBeUndefined();
     const profile = findRow(await member.profile.query().with({ groups: true }), MEMBER_PROFILE_ID);
     expect(profile!.groups.map((group) => group.id)).toContain(SHARED_GROUP_ID);
   });

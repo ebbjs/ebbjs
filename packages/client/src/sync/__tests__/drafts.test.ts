@@ -1,10 +1,14 @@
 /**
- * Unit tests for `client.atomic(...)` — the forward-reference resolver.
+ * Unit tests for the draft planner's forward-reference resolver: an
+ * Action callback's drafts mint ids synchronously, so a later draft can
+ * point at an entity created earlier in the same callback.
  *
+ * Every test drives a mounted `run` action, so the callback, the ordered
+ * resolver, the committer, and the wire shape are exercised as one path.
  * The stub `fetch` records every request so the tests can decode the
- * submitted Action and assert the wire shape (one entity `put` per
- * created entity plus one `Relationship` `put` per resolved pointer),
- * all inside exactly one `POST /sync/actions`.
+ * submitted Action and assert its Updates (one entity `put` per created
+ * entity plus one `Relationship` `put` per resolved pointer), all inside
+ * exactly one `POST /sync/actions`.
  */
 
 import { describe, expect, it } from "vitest";
@@ -19,9 +23,10 @@ import type { RelationshipDef } from "../../schema/relationship";
 import { defineSchema } from "../../schema/schema";
 import type { Schema } from "../../schema/schema";
 import { EntityValidationError } from "../../schema/entity-registry";
-import { AtomicActionError, AtomicResolutionError, resolveReferences } from "../atomic";
+import { ActionRejectedError, ActionResolutionError, resolveReferences } from "../drafts";
 import type { Rejection } from "../types";
 import { createClient } from "../client";
+import { testActions } from "./test-actions";
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
@@ -104,15 +109,13 @@ const schema = defineSchema({
 const mkClient = <S extends AnySchema>(
   schemaOverride: S = schema as unknown as S,
   writeOpts: StubWriteOptions = {},
-): {
-  client: ReturnType<typeof createClient<S>>;
-  seen: RecordedRequest[];
-} => {
+) => {
   const seen: RecordedRequest[] = [];
   const client = createClient({
     serverUrl: "http://localhost:4000",
     actorId: "actor_1",
     schema: schemaOverride,
+    actions: testActions(schemaOverride),
     fetchImpl: mkRecordingFetch(seen, writeOpts),
   });
   return { client, seen };
@@ -124,7 +127,7 @@ const actionCalls = (seen: readonly RecordedRequest[]): RecordedRequest[] =>
 const decodeActions = (request: RecordedRequest): readonly Action[] =>
   decodeSync<{ actions: Action[] }>(request.body!).actions;
 
-describe("client.atomic — one Action, forward references", () => {
+describe("drafts — one Action, forward references", () => {
   /** Membership option every `create` in this block carries (#244). */
   const groups = { groups: ["g_1"] } as const;
 
@@ -132,7 +135,7 @@ describe("client.atomic — one Action, forward references", () => {
     const { client, seen } = mkClient();
     await client.handshake();
 
-    const created = await client.atomic(({ todo, list }) => {
+    const created = await client.actions.run(({ todo, list }) => {
       const today = list.create({ name: "Today" }, groups);
       const item = todo.create({ title: "Ship it", list: today }, groups);
       return { todo: item, list: today };
@@ -183,7 +186,7 @@ describe("client.atomic — one Action, forward references", () => {
     const { client, seen } = mkClient();
     await client.handshake();
 
-    const created = await client.atomic(({ todo }) =>
+    const created = await client.actions.run(({ todo }) =>
       todo.create({ title: "Ship" }, { groups: ["g_1", "g_2"] }),
     );
 
@@ -208,7 +211,7 @@ describe("client.atomic — one Action, forward references", () => {
     const before = seen.length;
 
     await expect(
-      client.atomic(({ todo }) => todo.create({ title: "Ship" }, undefined as never)),
+      client.actions.run(({ todo }) => todo.create({ title: "Ship" }, undefined as never)),
     ).rejects.toBeInstanceOf(EntityValidationError);
     expect(seen.length).toBe(before);
   });
@@ -217,7 +220,7 @@ describe("client.atomic — one Action, forward references", () => {
     const { client } = mkClient();
     await client.handshake();
 
-    const created = await client.atomic(({ todo, list }) => {
+    const created = await client.actions.run(({ todo, list }) => {
       const today = list.create({ name: "Today" }, groups);
       return { todo: todo.create({ title: "Ship it", list: today }, groups), list: today };
     });
@@ -245,7 +248,7 @@ describe("client.atomic — one Action, forward references", () => {
     const { client, seen } = mkClient(deepSchema);
     await client.handshake();
 
-    const created = await client.atomic(({ a, b, c }) => {
+    const created = await client.actions.run(({ a, b, c }) => {
       const aHandle = a.create({ name: "a" }, groups);
       const bHandle = b.create({ label: "b", a: aHandle }, groups);
       const cHandle = c.create({ tag: "c", b: bHandle }, groups);
@@ -271,7 +274,7 @@ describe("client.atomic — one Action, forward references", () => {
     const { client, seen } = mkClient();
     await client.handshake();
 
-    const created = await client.atomic(({ todo }) => ({
+    const created = await client.actions.run(({ todo }) => ({
       todo: todo.create({ title: "Existing list", list: "list_existing" }, groups),
     }));
 
@@ -306,7 +309,7 @@ describe("client.atomic — one Action, forward references", () => {
     const { client, seen } = mkClient(manySchema);
     await client.handshake();
 
-    const created = await client.atomic(({ todo, label }) => {
+    const created = await client.actions.run(({ todo, label }) => {
       const a = label.create({ name: "a" }, groups);
       const b = label.create({ name: "b" }, groups);
       return { todo: todo.create({ title: "Tagged", tags: [a, b] }, groups), a, b };
@@ -325,19 +328,19 @@ describe("client.atomic — one Action, forward references", () => {
     await client.handshake();
 
     await expect(
-      client.atomic(({ todo, list }) => {
+      client.actions.run(({ todo, list }) => {
         const a = list.create({ name: "a" }, groups);
         const b = list.create({ name: "b" }, groups);
         return { todo: todo.create({ title: "Ship", list: [a, b] }, groups) };
       }),
-    ).rejects.toBeInstanceOf(AtomicResolutionError);
+    ).rejects.toBeInstanceOf(ActionResolutionError);
   });
 
   it("creates every write collected during the callback, even when not returned", async () => {
     const { client, seen } = mkClient();
     await client.handshake();
 
-    await client.atomic(({ todo, list }) => {
+    await client.actions.run(({ todo, list }) => {
       list.create({ name: "Orphan" }, groups);
       return { todo: todo.create({ title: "Returned" }, groups) };
     });
@@ -355,7 +358,7 @@ describe("client.atomic — one Action, forward references", () => {
     const before = seen.length;
 
     await expect(
-      client.atomic(({ todo }) => ({
+      client.actions.run(({ todo }) => ({
         todo: todo.create({ title: "Ship", bogus: 1 } as never, groups),
       })),
     ).rejects.toBeInstanceOf(EntityValidationError);
@@ -364,7 +367,7 @@ describe("client.atomic — one Action, forward references", () => {
   });
 });
 
-describe("client.atomic — per-Update delivery (#473)", () => {
+describe("drafts — per-Update delivery (#473)", () => {
   // Group sets come from the required per-create `groups` option (#244),
   // which also emits the `entityGroup` rows.
   const deliveryTodo = defineEntity("todo", { title: e.string() });
@@ -378,7 +381,7 @@ describe("client.atomic — per-Update delivery (#473)", () => {
     const { client, seen } = mkClient(deliverySchema);
     await client.handshake();
 
-    const created = await client.atomic(({ todo, list }) => {
+    const created = await client.actions.run(({ todo, list }) => {
       const today = list.create({ name: "Today" }, { groups: ["g_1"] });
       return { todo: todo.create({ title: "Ship it" }, { groups: ["g_1"] }), list: today };
     });
@@ -398,7 +401,7 @@ describe("client.atomic — per-Update delivery (#473)", () => {
     const { client, seen } = mkClient(deliverySchema);
     await client.handshake();
 
-    await client.atomic(({ todo, list }) => ({
+    await client.actions.run(({ todo, list }) => ({
       todo: todo.create({ title: "Ship it" }, { groups: ["g_2", "g_1"] }),
       list: list.create({ name: "Today" }, { groups: ["g_1", "g_2"] }),
     }));
@@ -412,7 +415,7 @@ describe("client.atomic — per-Update delivery (#473)", () => {
     const { client, seen } = mkClient(deliverySchema);
     await client.handshake();
 
-    await client.atomic(({ todo, list }) => ({
+    await client.actions.run(({ todo, list }) => ({
       list: list.create({ name: "Today" }, { groups: ["g_1"] }),
       todo: todo.create({ title: "Ship it" }, { groups: ["g_2"] }),
     }));
@@ -432,7 +435,7 @@ describe("client.atomic — per-Update delivery (#473)", () => {
     await client.handshake();
 
     let handles: Record<string, { id: string }> = {};
-    await client.atomic(({ todo, list }) => {
+    await client.actions.run(({ todo, list }) => {
       handles = {
         todo: todo.create({ title: "Ship it" }, { groups: ["g_1"] }),
         list: list.create({ name: "Today" }, { groups: ["g_2"] }),
@@ -459,7 +462,7 @@ describe("client.atomic — per-Update delivery (#473)", () => {
     await client.handshake();
 
     let handles: Record<string, { id: string }> = {};
-    await client.atomic(({ todo, list }) => {
+    await client.actions.run(({ todo, list }) => {
       handles = {
         todo: todo.create({ title: "Ship it" }, { groups: ["g_1", "g_2"] }),
         list: list.create({ name: "Today" }, { groups: ["g_1"] }),
@@ -482,7 +485,7 @@ describe("client.atomic — per-Update delivery (#473)", () => {
     expect(rowsFor(handles.list!.id)).toEqual(["g_1"]);
   });
 
-  it("raises AtomicActionError populated from the server's rejected[] for the submitted Action", async () => {
+  it("raises ActionRejectedError populated from the server's rejected[] for the submitted Action", async () => {
     const { client, seen } = mkClient(deliverySchema, {
       rejectFor: (actions) => [
         {
@@ -494,15 +497,15 @@ describe("client.atomic — per-Update delivery (#473)", () => {
     });
     await client.handshake();
 
-    const error = (await client
-      .atomic(({ todo }) => ({
+    const error = (await client.actions
+      .run(({ todo }) => ({
         todo: todo.create({ title: "Ship it" }, { groups: ["g_1"] }),
       }))
-      .catch((err: unknown) => err)) as AtomicActionError;
+      .catch((err: unknown) => err)) as ActionRejectedError;
 
     expect(actionCalls(seen)).toHaveLength(1);
     const submitted = decodeActions(actionCalls(seen)[0]!)[0]!;
-    expect(error).toBeInstanceOf(AtomicActionError);
+    expect(error).toBeInstanceOf(ActionRejectedError);
     expect(error.rejections).toEqual([
       {
         id: submitted.id,
@@ -520,7 +523,7 @@ describe("client.atomic — per-Update delivery (#473)", () => {
     });
     await client.handshake();
 
-    const created = await client.atomic(({ todo }) => ({
+    const created = await client.actions.run(({ todo }) => ({
       todo: todo.create({ title: "Ship it" }, { groups: ["g_1"] }),
     }));
 
@@ -537,11 +540,11 @@ describe("client.atomic — per-Update delivery (#473)", () => {
     });
     await client.handshake();
 
-    const error = (await client
-      .atomic(({ todo }) => ({
+    const error = (await client.actions
+      .run(({ todo }) => ({
         todo: todo.create({ title: "Ship it" }, { groups: ["g_1"] }),
       }))
-      .catch((err: unknown) => err)) as AtomicActionError;
+      .catch((err: unknown) => err)) as ActionRejectedError;
 
     const submitted = decodeActions(actionCalls(seen)[0]!)[0]!;
     expect(error.rejections).toEqual([{ id: submitted.id, reason: "permission_denied" }]);
@@ -557,19 +560,19 @@ describe("resolveReferences", () => {
   it("rejects a self-referential object", () => {
     const cyclic: Record<string, unknown> = {};
     cyclic["self"] = cyclic;
-    expect(() => resolveReferences(cyclic)).toThrow(AtomicResolutionError);
+    expect(() => resolveReferences(cyclic)).toThrow(ActionResolutionError);
   });
 
   it("rejects a cycle reached through an array", () => {
     const cyclic: Record<string, unknown> = { items: [] };
     (cyclic["items"] as unknown[]).push({ back: cyclic });
-    expect(() => resolveReferences(cyclic)).toThrow(AtomicResolutionError);
+    expect(() => resolveReferences(cyclic)).toThrow(ActionResolutionError);
   });
 
   it("rejects a self-referential array", () => {
     const cyclic: unknown[] = [];
     cyclic.push(cyclic);
-    expect(() => resolveReferences(cyclic)).toThrow(AtomicResolutionError);
+    expect(() => resolveReferences(cyclic)).toThrow(ActionResolutionError);
   });
 
   it("allows a shared (non-cyclic) reference", () => {

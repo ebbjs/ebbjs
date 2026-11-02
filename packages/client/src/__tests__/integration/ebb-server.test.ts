@@ -52,6 +52,7 @@ import { defineRelationship } from "../../schema/relationship";
 import { EntityRegistry, EntityValidationError } from "../../schema/entity-registry";
 import { defineSchema } from "../../schema/schema";
 import { groupSystemEntity } from "../../schema/system-entities";
+import { testActions } from "../../sync/__tests__/test-actions";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
 
@@ -801,7 +802,7 @@ describe("integration: defineEntity + EntityRegistry (#143)", () => {
 // ---------------------------------------------------------------------------
 
 /**
- * `client.<entity>.link` / `unlink` exercise the one-cardinality
+ * The draft `link` / `unlink` verbs exercise the one-cardinality
  * relationship write primitive on a domain edge. Membership is set up
  * with the canonical `create(input, { groups })` and read back through
  * `doc.groups`; the domain edge itself targets a synthetic wire id
@@ -835,7 +836,7 @@ const buildLinkTestSchema = () => {
   });
 };
 
-describe("integration: client.<entity>.create membership", () => {
+describe("integration: draft create membership", () => {
   it("writes one entityGroup row per group in the same Action", async () => {
     if (!(await shouldRun())) return;
     const actor = `membership_${RUN_ID}`;
@@ -845,18 +846,25 @@ describe("integration: client.<entity>.create membership", () => {
       completed: e.boolean(),
     });
     const schema = defineSchema({ entities: { todo }, version: 1 });
-    const client = createClient({ serverUrl: SERVER_URL, actorId: actor, schema });
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: actor,
+      schema,
+      actions: testActions(schema),
+    });
     const { groups } = await client.handshake();
     expect(groups.find((g) => g.id === TEST_GROUP_ID)).toBeDefined();
     client.setState("live");
 
     try {
       const title = `Membership ${RUN_ID}`;
-      const response = await client.todo.create(
-        { title, completed: false },
-        { groups: [TEST_GROUP_ID] },
-      );
-      expect(response.rejected).toEqual([]);
+      await expect(
+        client.actions.create({
+          entity: "todo",
+          input: { title, completed: false },
+          groups: [TEST_GROUP_ID],
+        }),
+      ).resolves.toBeDefined();
       const todoId = await findTodoByTitle(client, title);
 
       await catchUpUntilCurrent(client, TEST_GROUP_ID);
@@ -877,15 +885,17 @@ describe("integration: client.<entity>.create membership", () => {
   });
 });
 
-describe("integration: client.<entity>.link / unlink", () => {
+describe("integration: draft link / unlink", () => {
   it("links a domain edge and resolves membership via doc.groups", async () => {
     if (!(await shouldRun())) return;
     const actor = `rel_roundtrip_${RUN_ID}`;
     await addMemberWithTodoPerms(actor);
+    const relSchema = buildLinkTestSchema();
     const client = createClient({
       serverUrl: SERVER_URL,
       actorId: actor,
-      schema: buildLinkTestSchema(),
+      schema: relSchema,
+      actions: testActions(relSchema),
     });
     const { groups } = await client.handshake();
     const ourGroup = groups.find((g) => g.id === TEST_GROUP_ID);
@@ -894,13 +904,13 @@ describe("integration: client.<entity>.link / unlink", () => {
 
     try {
       const title = `Link ${RUN_ID}`;
-      const createResult = await client.todo.create(
-        { title, completed: false },
-        {
+      await expect(
+        client.actions.create({
+          entity: "todo",
+          input: { title, completed: false },
           groups: [TEST_GROUP_ID],
-        },
-      );
-      expect(createResult.rejected).toEqual([]);
+        }),
+      ).resolves.toBeDefined();
       const todoId = await findTodoByTitle(client, title);
 
       // The canonical create() membership row resolves through doc.groups.
@@ -909,8 +919,14 @@ describe("integration: client.<entity>.link / unlink", () => {
       const membership = await row.groups.toRaw();
       expect(membership.map((g) => g.id)).toContain(TEST_GROUP_ID);
 
-      const linkResult = await client.todo.link(todoId, "list", "list_target_1");
-      expect(linkResult.rejected).toEqual([]);
+      await expect(
+        client.actions.link({
+          entity: "todo",
+          id: todoId,
+          as: "list",
+          target: "list_target_1",
+        }),
+      ).resolves.toBeDefined();
 
       await catchUpUntilCurrent(client, TEST_GROUP_ID);
       const links = await client.storage.entities.query("relationship");
@@ -931,10 +947,12 @@ describe("integration: client.<entity>.link / unlink", () => {
     if (!(await shouldRun())) return;
     const actor = `rel_unlink_${RUN_ID}`;
     await addMemberWithTodoPerms(actor);
+    const relSchema = buildLinkTestSchema();
     const client = createClient({
       serverUrl: SERVER_URL,
       actorId: actor,
-      schema: buildLinkTestSchema(),
+      schema: relSchema,
+      actions: testActions(relSchema),
     });
     const { groups } = await client.handshake();
     expect(groups.find((g) => g.id === TEST_GROUP_ID)).toBeDefined();
@@ -942,9 +960,18 @@ describe("integration: client.<entity>.link / unlink", () => {
 
     try {
       const title = `Unlink ${RUN_ID}`;
-      await client.todo.create({ title, completed: false }, { groups: [TEST_GROUP_ID] });
+      await client.actions.create({
+        entity: "todo",
+        input: { title, completed: false },
+        groups: [TEST_GROUP_ID],
+      });
       const todoId = await findTodoByTitle(client, title);
-      await client.todo.link(todoId, "list", "list_target_2");
+      await client.actions.link({
+        entity: "todo",
+        id: todoId,
+        as: "list",
+        target: "list_target_2",
+      });
       await catchUpUntilCurrent(client, TEST_GROUP_ID);
 
       let links = await client.storage.entities.query("relationship");
@@ -956,8 +983,9 @@ describe("integration: client.<entity>.link / unlink", () => {
       expect(materializedLink).toBeDefined();
       const relationshipSubjectId = materializedLink!.id;
 
-      const unlinkResult = await client.todo.unlink(todoId, "list");
-      expect(unlinkResult.rejected).toEqual([]);
+      await expect(
+        client.actions.unlink({ entity: "todo", id: todoId, as: "list" }),
+      ).resolves.toBeDefined();
 
       await catchUpUntilCurrent(client, TEST_GROUP_ID);
       links = await client.storage.entities.query("relationship");
@@ -1058,7 +1086,7 @@ describe("integration: defineSchema", () => {
  * validator must throw before any HTTP call, so the wire stub
  * never needs to round-trip a real response.
  */
-describe("integration: client.<entity>.create() runtime validation (#172)", () => {
+describe("integration: draft create() runtime validation (#172)", () => {
   /** Records every URL it sees so tests can assert the wire was reached (or wasn't). */
   const mkRecordingFetch = (seen: string[]): typeof fetch => {
     return (async (url: string, _init: RequestInit): Promise<Response> => {
@@ -1081,11 +1109,16 @@ describe("integration: client.<entity>.create() runtime validation (#172)", () =
       actorId: "validation_actor",
       storage,
       schema,
+      actions: testActions(schema),
       fetchImpl: mkRecordingFetch(seen),
     });
     try {
       await expect(
-        client.todo.create({ title: 42, completed: false } as never, { groups: ["g_1"] }),
+        client.actions.create({
+          entity: "todo",
+          input: { title: 42, completed: false },
+          groups: ["g_1"],
+        }),
       ).rejects.toBeInstanceOf(EntityValidationError);
       expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
     } finally {
@@ -1107,11 +1140,14 @@ describe("integration: client.<entity>.create() runtime validation (#172)", () =
       actorId: "validation_actor",
       storage,
       schema,
+      actions: testActions(schema),
       fetchImpl: mkRecordingFetch(seen),
     });
     try {
       await expect(
-        client.todo.create({ title: "Ship", completed: false, bogus: "x" } as never, {
+        client.actions.create({
+          entity: "todo",
+          input: { title: "Ship", completed: false, bogus: "x" },
           groups: ["g_1"],
         }),
       ).rejects.toBeInstanceOf(EntityValidationError);
@@ -1135,12 +1171,13 @@ describe("integration: client.<entity>.create() runtime validation (#172)", () =
       actorId: "validation_actor",
       storage,
       schema,
+      actions: testActions(schema),
       fetchImpl: mkRecordingFetch(seen),
     });
     try {
-      await expect(client.todo.update("todo_1", { title: 99 } as never)).rejects.toBeInstanceOf(
-        EntityValidationError,
-      );
+      await expect(
+        client.actions.update({ entity: "todo", id: "todo_1", patch: { title: 99 } }),
+      ).rejects.toBeInstanceOf(EntityValidationError);
       expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
     } finally {
       client.close();
@@ -1160,20 +1197,20 @@ describe("integration: client.<entity>.create() runtime validation (#172)", () =
       serverUrl: SERVER_URL,
       actorId: actor,
       schema,
+      actions: testActions(schema),
     });
     try {
       const { groups } = await client.handshake();
       expect(groups.find((g) => g.id === TEST_GROUP_ID)).toBeDefined();
       client.setState("live");
 
-      const response = await client.todo.create(
-        {
-          title: "Hello",
-          completed: false,
-        },
-        { groups: [TEST_GROUP_ID] },
-      );
-      expect(response.rejected).toEqual([]);
+      await expect(
+        client.actions.create({
+          entity: "todo",
+          input: { title: "Hello", completed: false },
+          groups: [TEST_GROUP_ID],
+        }),
+      ).resolves.toBeDefined();
       const createdId = await findCreatedTodoId(client);
       const stored = await client.getEntity(createdId);
       expect(stored).not.toBeNull();
@@ -1184,7 +1221,7 @@ describe("integration: client.<entity>.create() runtime validation (#172)", () =
   });
 });
 
-describe("integration: client.<entity>.delete", () => {
+describe("integration: draft delete", () => {
   it("tombstones a todo over the wire via the public delete() API", async () => {
     if (!(await shouldRun())) return;
     const actor = `delete_roundtrip_${RUN_ID}`;
@@ -1195,25 +1232,31 @@ describe("integration: client.<entity>.delete", () => {
       completed: e.boolean(),
     });
     const schema = defineSchema({ entities: { todo }, version: 1 });
-    const client = createClient({ serverUrl: SERVER_URL, actorId: actor, schema });
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: actor,
+      schema,
+      actions: testActions(schema),
+    });
     const { groups } = await client.handshake();
     expect(groups.find((g) => g.id === TEST_GROUP_ID)).toBeDefined();
     client.setState("live");
 
     try {
       const title = `Delete ${RUN_ID}`;
-      const createResult = await client.todo.create(
-        { title, completed: false },
-        { groups: [TEST_GROUP_ID] },
-      );
-      expect(createResult.rejected).toEqual([]);
+      await expect(
+        client.actions.create({
+          entity: "todo",
+          input: { title, completed: false },
+          groups: [TEST_GROUP_ID],
+        }),
+      ).resolves.toBeDefined();
       const todoId = await findTodoByTitle(client, title);
 
       const before = await client.storage.entities.query("todo");
       expect(before.map((e) => e.id)).toContain(todoId);
 
-      const deleteResult = await client.todo.delete(todoId);
-      expect(deleteResult.rejected).toEqual([]);
+      await expect(client.actions.delete({ entity: "todo", id: todoId })).resolves.toBeUndefined();
 
       // The server tombstones the row rather than erasing it, so the
       // materialized entity survives with a non-null `deleted_hlc`.
@@ -1243,11 +1286,11 @@ async function findCreatedTodoId(client: import("../..").SyncClient): Promise<st
 }
 
 // ---------------------------------------------------------------------------
-// Integration: client.atomic (multi-entity Action)
+// Integration: one Action over several entities
 // ---------------------------------------------------------------------------
 
 /**
- * `client.atomic(...)` creates several entities plus their group
+ * A mounted action's callback creates several entities plus their group
  * memberships in one wire Action. The server commits the Action
  * atomically and materializes every Update, so a multi-entity create
  * round-trips as one unit.
@@ -1255,7 +1298,7 @@ async function findCreatedTodoId(client: import("../..").SyncClient): Promise<st
  * Each draft's `{ groups }` option emits an `entityGroup` row into the
  * same Action, so the entities are indexed into their group atomically.
  */
-describe("integration: client.atomic", () => {
+describe("integration: multi-entity Action", () => {
   const atomicTodo = defineEntity("todo", { title: e.string() });
   const atomicList = defineEntity("list", { name: e.string() });
   const atomicSchema = defineSchema({
@@ -1267,13 +1310,18 @@ describe("integration: client.atomic", () => {
     if (!(await shouldRun())) return;
     const actor = `atomic_${RUN_ID}`;
     await addMemberWithTodoAndListPerms(actor);
-    const client = createClient({ serverUrl: SERVER_URL, actorId: actor, schema: atomicSchema });
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: actor,
+      schema: atomicSchema,
+      actions: testActions(atomicSchema),
+    });
     const { groups } = await client.handshake();
     expect(groups.find((g) => g.id === TEST_GROUP_ID)).toBeDefined();
     client.setState("live");
 
     try {
-      const created = await client.atomic(({ todo, list }) => {
+      const created = await client.actions.run(({ todo, list }) => {
         const today = list.create({ name: "Today" }, { groups: [TEST_GROUP_ID] });
         return {
           todo: todo.create({ title: "Ship it" }, { groups: [TEST_GROUP_ID] }),

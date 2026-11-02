@@ -13,11 +13,12 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { createClient, type NamespacedClient } from "@ebbjs/client";
+import { createClient } from "@ebbjs/client";
 import type { SeedData } from "@ebbjs/core/seed";
 import { EbbProvider } from "@ebbjs/react";
+import { demoActions, type DemoClient } from "../actions";
 import { IssuesPanel } from "../IssuesPanel";
-import { schema, type Schema } from "../schema";
+import { schema } from "../schema";
 import { SEED_PERMISSIONS, SEEDER_ACTOR_ID, buildActorSeed, deriveActorSeedIds } from "../seed";
 import { catchUpGroup, syncAllGroups } from "../sync-groups";
 import { buildIssueQuery } from "../use-issues";
@@ -30,7 +31,7 @@ const BOB = `board_bob_${RUN_ID}`;
 const SHARED_GROUP_ID = `grp_board_${RUN_ID}`;
 const ALICE_IDS = deriveActorSeedIds(ALICE);
 
-type Client = NamespacedClient<Schema>;
+type Client = DemoClient;
 
 const filters = (patch: Partial<IssueFilters> = {}): IssueFilters => ({
   ...NO_ISSUE_FILTERS,
@@ -85,13 +86,18 @@ beforeAll(async () => {
     return;
   }
 
-  alice = createClient({ serverUrl: SERVER_URL, actorId: ALICE, schema });
+  alice = createClient({ serverUrl: SERVER_URL, actorId: ALICE, schema, actions: demoActions });
   await alice.seed(buildActorSeed(ALICE));
 
-  bob = createClient({ serverUrl: SERVER_URL, actorId: BOB, schema });
+  bob = createClient({ serverUrl: SERVER_URL, actorId: BOB, schema, actions: demoActions });
   await bob.seed(buildActorSeed(BOB));
 
-  seeder = createClient({ serverUrl: SERVER_URL, actorId: SEEDER_ACTOR_ID, schema });
+  seeder = createClient({
+    serverUrl: SERVER_URL,
+    actorId: SEEDER_ACTOR_ID,
+    schema,
+    actions: demoActions,
+  });
   await seedSharedGroup(seeder);
 
   for (const client of [alice, bob]) {
@@ -114,15 +120,21 @@ describe("integration: issue list and board", () => {
   it("filters by status, priority, and the assignee relationship", async () => {
     if (!(await serverIsReachable())) return;
 
-    const todo = await alice!.issue.create(
-      { title: `aaa filter todo ${RUN_ID}`, status: "todo", priority: "low" },
-      { groups: [SHARED_GROUP_ID] },
-    );
-    const doing = await alice!.issue.create(
-      { title: `aaa filter doing ${RUN_ID}`, status: "in_progress", priority: "high" },
-      { groups: [SHARED_GROUP_ID] },
-    );
-    await alice!.issue.link(doing.id, "assignee", ALICE_IDS.profileId);
+    const todo = await alice!.actions.createIssue({
+      title: `aaa filter todo ${RUN_ID}`,
+      status: "todo",
+      priority: "low",
+      assigneeId: null,
+      groupId: SHARED_GROUP_ID,
+    });
+    const doing = await alice!.actions.createIssue({
+      title: `aaa filter doing ${RUN_ID}`,
+      status: "in_progress",
+      priority: "high",
+      assigneeId: null,
+      groupId: SHARED_GROUP_ID,
+    });
+    await alice!.actions.setIssueAssignee({ id: doing.id, assigneeId: ALICE_IDS.profileId });
     await catchUpGroup(alice!, SHARED_GROUP_ID);
 
     const statusRows = await buildIssueQuery(alice!, filters({ status: "todo" }), 100);
@@ -156,14 +168,13 @@ describe("integration: issue list and board", () => {
 
     const created: string[] = [];
     for (let index = 0; index < ISSUE_PAGE_SIZE + 5; index++) {
-      const row = await alice!.issue.create(
-        {
-          title: `page ${String(index).padStart(3, "0")} ${RUN_ID}`,
-          status: "todo",
-          priority: "urgent",
-        },
-        { groups: [SHARED_GROUP_ID] },
-      );
+      const row = await alice!.actions.createIssue({
+        title: `page ${String(index).padStart(3, "0")} ${RUN_ID}`,
+        status: "todo",
+        priority: "urgent",
+        assigneeId: null,
+        groupId: SHARED_GROUP_ID,
+      });
       created.push(row.id);
     }
     await catchUpGroup(alice!, SHARED_GROUP_ID);
@@ -184,7 +195,10 @@ describe("integration: issue list and board", () => {
     // A live edit to the ordering field reorders the collection; the
     // grown window is still a stable prefix of the same query.
     const moved = created[created.length - 1]!;
-    await bob!.issue.update(moved, { title: `page 0000 moved ${RUN_ID}` });
+    await bob!.actions.updateIssue({
+      id: moved,
+      patch: { title: `page 0000 moved ${RUN_ID}` },
+    });
     await catchUpGroup(alice!, SHARED_GROUP_ID);
 
     const firstAfter = await buildIssueQuery(alice!, scoped, ISSUE_PAGE_SIZE);
@@ -199,10 +213,13 @@ describe("integration: issue list and board", () => {
   it("renders the list and the board from one query and follows a remote edit live", async () => {
     if (!(await serverIsReachable())) return;
 
-    const issue = await alice!.issue.create(
-      { title: `000 live issue ${RUN_ID}`, status: "todo", priority: "medium" },
-      { groups: [SHARED_GROUP_ID] },
-    );
+    const issue = await alice!.actions.createIssue({
+      title: `000 live issue ${RUN_ID}`,
+      status: "todo",
+      priority: "medium",
+      assigneeId: null,
+      groupId: SHARED_GROUP_ID,
+    });
     await catchUpGroup(alice!, SHARED_GROUP_ID);
 
     // Open the same live stream the app's bootstrap opens, and wait for the
@@ -235,7 +252,10 @@ describe("integration: issue list and board", () => {
     );
 
     const renamed = `000 live issue renamed ${RUN_ID}`;
-    await bob!.issue.update(issue.id, { title: renamed, status: "done" });
+    await bob!.actions.updateIssue({
+      id: issue.id,
+      patch: { title: renamed, status: "done" },
+    });
 
     await waitFor(
       () => {

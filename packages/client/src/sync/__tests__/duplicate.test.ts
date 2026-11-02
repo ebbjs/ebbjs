@@ -1,8 +1,9 @@
 /**
- * Tests for `client.<entity>.duplicate(id, opts)` — the user-facing
- * backup operation (#397). A duplicate is a new row of the same type
- * carrying the source's field values verbatim, written through the
- * normal entity path as one `put` plus the caller's membership rows.
+ * Tests for the draft `duplicate(id, opts)` verb — the user-facing
+ * backup operation (#397), reached through a mounted action. A duplicate
+ * is a new row of the same type carrying the source's field values
+ * verbatim, written through the normal entity path as one `put` plus the
+ * caller's membership rows.
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -13,6 +14,8 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { defineEntity, e } from "../../schema/entity";
 import { defineSchema } from "../../schema/schema";
 import { EntityValidationError } from "../../schema/entity-registry";
+import { defineAction } from "../../schema/action";
+import type { DuplicateAt } from "../drafts";
 import { createClient } from "../client";
 import type { Conflict } from "../conflicts";
 import { jsonResponse, openSseResponse } from "../test-utils";
@@ -28,6 +31,22 @@ const doc = defineEntity("doc", {
 });
 
 const duplicateSchema = defineSchema({ entities: { todo, doc }, version: 1 });
+
+/** The definitions under test: one duplicate per entity, so the call site is typed. */
+const duplicateTodo = defineAction(
+  duplicateSchema,
+  (
+    { todo: todos },
+    params: { id: string; at?: DuplicateAt; groups?: readonly string[]; validate?: boolean },
+  ) =>
+    todos.duplicate(params.id, { at: params.at, groups: params.groups, validate: params.validate }),
+);
+
+const duplicateDoc = defineAction(duplicateSchema, ({ doc: docs }, params: { id: string }) =>
+  docs.duplicate(params.id),
+);
+
+const actions = { duplicateTodo, duplicateDoc };
 
 interface RecordedRequest {
   readonly url: string;
@@ -98,11 +117,7 @@ const mkMembership = (id: string, entityId: string, groupId: string): Entity =>
 
 const storageOf = () => createMemoryAdapter();
 
-const mkClient = async (): Promise<{
-  client: ReturnType<typeof createClient<typeof duplicateSchema>>;
-  storage: ReturnType<typeof storageOf>;
-  seen: RecordedRequest[];
-}> => {
+const mkClient = async () => {
   const storage = storageOf();
   const seen: RecordedRequest[] = [];
   const client = createClient({
@@ -110,6 +125,7 @@ const mkClient = async (): Promise<{
     actorId: "actor_1",
     storage,
     schema: duplicateSchema,
+    actions,
     fetchImpl: mkFetch(seen),
   });
   await client.handshake();
@@ -135,12 +151,12 @@ const actionRequests = (seen: readonly RecordedRequest[]): RecordedRequest[] =>
 const decodeFirstAction = (request: RecordedRequest): Action =>
   decodeSync<{ actions: Action[] }>(request.body!).actions[0]!;
 
-describe("client.<entity>.duplicate — field copy", () => {
+describe("duplicate — field copy", () => {
   it("creates a new row with the same field values and leaves the original untouched", async () => {
     const { client, storage, seen } = await mkClient();
     await seedTodo(storage, "t_1", { title: "Ship", completed: false });
 
-    const { id } = await client.todo.duplicate("t_1");
+    const { id } = await client.actions.duplicateTodo({ id: "t_1" });
 
     expect(id).not.toBe("t_1");
     const put = decodeFirstAction(actionRequests(seen)[0]!).updates.find(
@@ -171,7 +187,7 @@ describe("client.<entity>.duplicate — field copy", () => {
     });
     await storage.entities.set(mkMembership("eg_1", "doc_1", "g_1"));
 
-    const { id } = await client.doc.duplicate("doc_1");
+    const { id } = await client.actions.duplicateDoc({ id: "doc_1" });
 
     const put = decodeFirstAction(actionRequests(seen)[0]!).updates.find(
       (u) => u.subject_type === "doc",
@@ -199,7 +215,7 @@ describe("client.<entity>.duplicate — field copy", () => {
       deleted_hlc: makeHlc(7),
     });
 
-    const { id } = await client.todo.duplicate("t_1");
+    const { id } = await client.actions.duplicateTodo({ id: "t_1" });
 
     const copy = await storage.entities.get(id);
     expect(copy?.data?.fields?.["title"]?.value).toBe("gone");
@@ -209,44 +225,52 @@ describe("client.<entity>.duplicate — field copy", () => {
   it("throws when the source id names another entity type", async () => {
     const { client, storage, seen } = await mkClient();
     await storage.entities.set(mkEntity("d_1", "doc", {}));
-    await expect(client.todo.duplicate("d_1")).rejects.toBeInstanceOf(EntityValidationError);
+    await expect(client.actions.duplicateTodo({ id: "d_1" })).rejects.toBeInstanceOf(
+      EntityValidationError,
+    );
     expect(actionRequests(seen)).toHaveLength(0);
   });
 
   it("throws for an unknown id before any network call", async () => {
     const { client, seen } = await mkClient();
-    await expect(client.todo.duplicate("missing")).rejects.toBeInstanceOf(EntityValidationError);
+    await expect(client.actions.duplicateTodo({ id: "missing" })).rejects.toBeInstanceOf(
+      EntityValidationError,
+    );
     expect(actionRequests(seen)).toHaveLength(0);
   });
 
   it("validates the copied row like create and refuses a non-conforming source", async () => {
     const { client, storage, seen } = await mkClient();
     await storage.entities.set(mkEntity("t_1", "todo", { title: 42, completed: false }));
-    await expect(client.todo.duplicate("t_1")).rejects.toBeInstanceOf(EntityValidationError);
+    await expect(client.actions.duplicateTodo({ id: "t_1" })).rejects.toBeInstanceOf(
+      EntityValidationError,
+    );
     expect(actionRequests(seen)).toHaveLength(0);
   });
 
   it("refuses an undeclared field on the source", async () => {
     const { client, storage, seen } = await mkClient();
     await storage.entities.set(mkEntity("t_1", "todo", { title: "T", completed: false, bogus: 1 }));
-    await expect(client.todo.duplicate("t_1")).rejects.toBeInstanceOf(EntityValidationError);
+    await expect(client.actions.duplicateTodo({ id: "t_1" })).rejects.toBeInstanceOf(
+      EntityValidationError,
+    );
     expect(actionRequests(seen)).toHaveLength(0);
   });
 
   it("duplicate({ validate: false }) skips validation and submits", async () => {
     const { client, storage, seen } = await mkClient();
     await seedTodo(storage, "t_1", { title: 42, completed: false });
-    await client.todo.duplicate("t_1", { validate: false });
+    await client.actions.duplicateTodo({ id: "t_1", validate: false });
     expect(actionRequests(seen)).toHaveLength(1);
   });
 });
 
-describe("client.<entity>.duplicate — memberships", () => {
+describe("duplicate — memberships", () => {
   it("defaults to the source's live groups", async () => {
     const { client, storage, seen } = await mkClient();
     await seedTodo(storage, "t_1", { title: "T", completed: false }, ["g_1", "g_2"]);
 
-    const { id } = await client.todo.duplicate("t_1");
+    const { id } = await client.actions.duplicateTodo({ id: "t_1" });
 
     const memberships = decodeFirstAction(actionRequests(seen)[0]!).updates.filter(
       (u) => u.subject_type === "entityGroup",
@@ -265,7 +289,7 @@ describe("client.<entity>.duplicate — memberships", () => {
     const { client, storage, seen } = await mkClient();
     await seedTodo(storage, "t_1", { title: "T", completed: false });
 
-    await client.todo.duplicate("t_1", { groups: ["g_2"] });
+    await client.actions.duplicateTodo({ id: "t_1", groups: ["g_2"] });
 
     const memberships = decodeFirstAction(actionRequests(seen)[0]!).updates.filter(
       (u) => u.subject_type === "entityGroup",
@@ -275,7 +299,7 @@ describe("client.<entity>.duplicate — memberships", () => {
 
   it("refuses an empty groups option before any network call", async () => {
     const { client, seen } = await mkClient();
-    await expect(client.todo.duplicate("t_1", { groups: [] })).rejects.toBeInstanceOf(
+    await expect(client.actions.duplicateTodo({ id: "t_1", groups: [] })).rejects.toBeInstanceOf(
       EntityValidationError,
     );
     expect(actionRequests(seen)).toHaveLength(0);
@@ -284,7 +308,9 @@ describe("client.<entity>.duplicate — memberships", () => {
   it("throws when the source has no live groups and none are given", async () => {
     const { client, storage, seen } = await mkClient();
     await storage.entities.set(mkEntity("t_1", "todo", { title: "T", completed: false }));
-    await expect(client.todo.duplicate("t_1")).rejects.toBeInstanceOf(EntityValidationError);
+    await expect(client.actions.duplicateTodo({ id: "t_1" })).rejects.toBeInstanceOf(
+      EntityValidationError,
+    );
     expect(actionRequests(seen)).toHaveLength(0);
   });
 });
@@ -306,7 +332,7 @@ const mkConflict = (before: Entity): Conflict => ({
   remoteWins: () => true,
 });
 
-describe("client.<entity>.duplicate — at: preSync", () => {
+describe("duplicate — at: preSync", () => {
   it("copies the unresolved conflict's before row instead of the live row", async () => {
     const { client, storage, seen } = await mkClient();
     await seedTodo(storage, "t_1", { title: "merged", completed: false });
@@ -314,7 +340,7 @@ describe("client.<entity>.duplicate — at: preSync", () => {
     const before = mkEntity("t_1", "todo", { title: "mine", completed: true });
     vi.spyOn(client.conflicts, "list").mockResolvedValue([mkConflict(before)]);
 
-    const { id } = await client.todo.duplicate("t_1", { at: "preSync" });
+    const { id } = await client.actions.duplicateTodo({ id: "t_1", at: "preSync" });
 
     const put = decodeFirstAction(actionRequests(seen)[0]!).updates.find(
       (u) => u.subject_type === "todo",
@@ -327,21 +353,20 @@ describe("client.<entity>.duplicate — at: preSync", () => {
   it("throws when no unresolved conflict references the id", async () => {
     const { client, storage, seen } = await mkClient();
     await seedTodo(storage, "t_1", { title: "merged", completed: false });
-    await expect(client.todo.duplicate("t_1", { at: "preSync" })).rejects.toThrow(
+    await expect(client.actions.duplicateTodo({ id: "t_1", at: "preSync" })).rejects.toThrow(
       'duplicate: no unresolved conflict for "t_1"',
     );
     expect(actionRequests(seen)).toHaveLength(0);
   });
 
-  it("returns the new id, typed as a create-like result", async () => {
+  it("returns the created handle, whose id is a string", async () => {
     const { client, storage } = await mkClient();
     await seedTodo(storage, "t_1", { title: "T", completed: false });
-    const typecheck: () => Promise<void> = async () => {
-      const result: { readonly id: string; readonly rejected: readonly unknown[] } =
-        await client.todo.duplicate("t_1");
-      void result.id;
+    const typecheck: () => Promise<string> = async () => {
+      const { id }: { readonly id: string } = await client.actions.duplicateTodo({ id: "t_1" });
+      return id;
     };
-    await typecheck();
+    await expect(typecheck()).resolves.toBeTypeOf("string");
   });
 });
 
@@ -407,6 +432,7 @@ describe("duplicate({ at: preSync }) after an offline merge (#397)", () => {
       serverUrl: "http://localhost:4000",
       actorId: "a_self",
       schema: duplicateSchema,
+      actions,
       fetchImpl,
     });
     await client.outbox.enqueue(local);
@@ -415,7 +441,11 @@ describe("duplicate({ at: preSync }) after an offline merge (#397)", () => {
     await waitFor(async () => (await client.conflicts.list()).length > 0);
     await waitFor(async () => (await client.storage.entities.get("todo_1")) !== null);
 
-    const { id } = await client.todo.duplicate("todo_1", { at: "preSync", groups: ["grp_1"] });
+    const { id } = await client.actions.duplicateTodo({
+      id: "todo_1",
+      at: "preSync",
+      groups: ["grp_1"],
+    });
     expect(id).not.toBe("todo_1");
     expect((await client.todo.get(id))?.title).toBe("Local edit");
     // The merged source stays merged — the backup never rewrites it.

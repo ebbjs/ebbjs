@@ -19,8 +19,9 @@ import { defineRelationship, type RelationshipDef } from "../schema/relationship
 import { defineSchema, type Schema } from "../schema/schema";
 import { ConflictScopeMismatchError, DerivedDocNameCollisionError } from "../schema/schema";
 import { generatedDocEntityName, RunFieldValueSchema } from "../fields/collaborative-text/schema";
-import { createClient, type NamespacedClient } from "../sync/client";
+import { createClient } from "../sync/client";
 import { callApplyAction, jsonResponse } from "../sync/test-utils";
+import { testActions } from "../sync/__tests__/test-actions";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -59,10 +60,7 @@ type AnySchema = Schema<
   Record<string, AnyRelationshipDef> | undefined
 >;
 
-function harness<S extends AnySchema>(
-  activeSchema: S,
-  actorId = "actor_1",
-): { client: NamespacedClient<S>; written: Action[] } {
+function harness<S extends AnySchema>(activeSchema: S, actorId = "actor_1") {
   const storage = createMemoryAdapter();
   const written: Action[] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -82,6 +80,7 @@ function harness<S extends AnySchema>(
     actorId,
     storage,
     schema: activeSchema,
+    actions: testActions(activeSchema),
     fetchImpl,
   });
   return { client, written };
@@ -236,12 +235,12 @@ describe("create() with a derived body", () => {
     const { client, written } = harness(schema);
     await client.handshake();
 
-    const { id, rejected } = await client.blogPost.create(
-      { title: "Hello", published: false, body: "world" },
-      { groups: ["g_1"] },
-    );
+    const { id } = await client.actions.create({
+      entity: "blogPost",
+      input: { title: "Hello", published: false, body: "world" },
+      groups: ["g_1"],
+    });
 
-    expect(rejected).toEqual([]);
     expect(id).toMatch(/^e_/);
     expect(written).toHaveLength(1);
 
@@ -266,10 +265,11 @@ describe("create() with a derived body", () => {
   it("leaves the body unlinked when the derived value is omitted", async () => {
     const { client } = harness(schema);
     await client.handshake();
-    const { id } = await client.blogPost.create(
-      { title: "No body", published: false },
-      { groups: ["g_1"] },
-    );
+    const { id } = await client.actions.create({
+      entity: "blogPost",
+      input: { title: "No body", published: false },
+      groups: ["g_1"],
+    });
     const row = await client.blogPost.get(id);
     expect(row).not.toBeNull();
     expect(row!.title).toBe("No body");
@@ -280,20 +280,22 @@ describe("create() with a derived body", () => {
     const { client } = harness(schema);
     await client.handshake();
     await expect(
-      client.blogPost.create({ title: "T", published: false, body: 42 } as never, {
+      client.actions.create({
+        entity: "blogPost",
+        input: { title: "T", published: false, body: 42 },
         groups: ["g_1"],
       }),
     ).rejects.toBeInstanceOf(EntityValidationError);
   });
 });
 
-describe("atomic", () => {
-  it("expands a derived body through the same create operation as the imperative path", async () => {
+describe("drafts through a mounted action", () => {
+  it("expands a derived body through the same create operation as the named-action path", async () => {
     const { client, written } = harness(schema);
     await client.handshake();
 
-    const created = await client.atomic(({ blogPost }) =>
-      blogPost.create({ title: "T", body: "x" }, { groups: ["g_1"] }),
+    const created = await client.actions.run(({ blogPost }) =>
+      blogPost.create({ title: "T", published: false, body: "x" }, { groups: ["g_1"] }),
     );
 
     expect(created.id).toMatch(/^e_/);
@@ -316,14 +318,15 @@ describe("atomic", () => {
     expect((content.map[runIds[0]!] as { value: { text: string } }).value.text).toBe("x");
   });
 
-  it("produces the same Action as the equivalent imperative create", async () => {
+  it("composes a structurally identical Action on every run, with fresh ids", async () => {
     const { client, written } = harness(schema);
     await client.handshake();
 
-    await client.blogPost.create({ title: "T", published: false, body: "x" }, { groups: ["g_1"] });
-    await client.atomic(({ blogPost }) =>
-      blogPost.create({ title: "T", published: false, body: "x" }, { groups: ["g_1"] }),
-    );
+    const input = { title: "T", published: false, body: "x" };
+    const first = await client.actions.create({ entity: "blogPost", input, groups: ["g_1"] });
+    const second = await client.actions.create({ entity: "blogPost", input, groups: ["g_1"] });
+
+    expect(first.id).not.toBe(second.id);
 
     expect(written).toHaveLength(2);
     expect(canonicalize(written[0]!)).toEqual(canonicalize(written[1]!));
@@ -334,16 +337,20 @@ describe("duplicate() backs up a derived body", () => {
   it("copies the generated document entity's content map through its namespace", async () => {
     const { client, written } = harness(schema);
     await client.handshake();
-    await client.blogPost.create(
-      { title: "Hello", published: false, body: "world" },
-      { groups: ["g_1"] },
-    );
+    await client.actions.create({
+      entity: "blogPost",
+      input: { title: "Hello", published: false, body: "world" },
+      groups: ["g_1"],
+    });
 
     const docName = generatedDocEntityName("blog_post", "body");
     const docId = written[0]!.updates.find((u) => u.subject_type === docName)!.subject_id;
     const docNamespace = client["text_document__blog_post__body"];
 
-    const { id: backupId } = await docNamespace.duplicate(docId);
+    const { id: backupId } = await client.actions.duplicate({
+      entity: "text_document__blog_post__body",
+      id: docId,
+    });
 
     type DocRow = { content: Record<string, unknown> };
     const original = (await docNamespace.get(docId)) as unknown as DocRow;
@@ -363,10 +370,11 @@ describe("row.<body> hydration", () => {
   it("resolves a hydrated TextDocument with the created text", async () => {
     const { client } = harness(schema);
     await client.handshake();
-    const { id } = await client.blogPost.create(
-      { title: "Hello", published: false, body: "world" },
-      { groups: ["g_1"] },
-    );
+    const { id } = await client.actions.create({
+      entity: "blogPost",
+      input: { title: "Hello", published: false, body: "world" },
+      groups: ["g_1"],
+    });
 
     const row = await client.blogPost.get(id);
     expect(row!.title).toBe("Hello");
@@ -380,14 +388,16 @@ describe("row.<body> hydration", () => {
   it("keeps document data off the query row", async () => {
     const { client } = harness(schema);
     await client.handshake();
-    await client.blogPost.create(
-      { title: "A", published: false, body: "one" },
-      { groups: ["g_1"] },
-    );
-    await client.blogPost.create(
-      { title: "B", published: false, body: "two" },
-      { groups: ["g_1"] },
-    );
+    await client.actions.create({
+      entity: "blogPost",
+      input: { title: "A", published: false, body: "one" },
+      groups: ["g_1"],
+    });
+    await client.actions.create({
+      entity: "blogPost",
+      input: { title: "B", published: false, body: "two" },
+      groups: ["g_1"],
+    });
 
     const rows = await client.blogPost.query();
     expect(rows.map((r) => r.title).sort()).toEqual(["A", "B"]);
@@ -411,10 +421,11 @@ describe("multiple bodies and custom document entities", () => {
     const { client } = harness(twoSchema);
     await client.handshake();
 
-    const { id } = await client.article.create(
-      { title: "T", body: "main", subtitle: "sub" },
-      { groups: ["g_1"] },
-    );
+    const { id } = await client.actions.create({
+      entity: "article",
+      input: { title: "T", body: "main", subtitle: "sub" },
+      groups: ["g_1"],
+    });
     const row = await client.article.get(id);
     expect((await row!.body)!.text).toBe("main");
     expect((await row!.subtitle)!.text).toBe("sub");
@@ -429,7 +440,11 @@ describe("multiple bodies and custom document entities", () => {
     const { client, written } = harness(customSchema);
     await client.handshake();
 
-    const { id } = await client.post.create({ title: "T", body: "hello" }, { groups: ["g_1"] });
+    const { id } = await client.actions.create({
+      entity: "post",
+      input: { title: "T", body: "hello" },
+      groups: ["g_1"],
+    });
 
     const action = written[0]!;
     const docUpdate = action.updates.find((u) => u.subject_type === "article_body");
@@ -463,7 +478,11 @@ describe("generated document entities", () => {
 
     const { client, written } = harness(twoSchema);
     await client.handshake();
-    await client.article.create({ title: "T", body: "main", subtitle: "sub" }, { groups: ["g_1"] });
+    await client.actions.create({
+      entity: "article",
+      input: { title: "T", body: "main", subtitle: "sub" },
+      groups: ["g_1"],
+    });
 
     const subjectTypes = written[0]!.updates.map((u) => u.subject_type);
     expect(subjectTypes).toContain(bodyDoc);
@@ -585,7 +604,11 @@ describe("generated document entities", () => {
 
     const { client, written } = harness(sharedSchema);
     await client.handshake();
-    await client.note.create({ body: "main", subtitle: "sub" }, { groups: ["g_1"] });
+    await client.actions.create({
+      entity: "note",
+      input: { body: "main", subtitle: "sub" },
+      groups: ["g_1"],
+    });
     const docUpdates = written[0]!.updates.filter((u) => u.subject_type === "shared_body");
     expect(docUpdates).toHaveLength(2);
   });
@@ -612,10 +635,11 @@ describe("local edits through the derived accessor", () => {
     await a.handshake();
     await b.handshake();
 
-    const { id } = await a.blogPost.create(
-      { title: "Hello", published: false, body: "world" },
-      { groups: ["g_1"] },
-    );
+    const { id } = await a.actions.create({
+      entity: "blogPost",
+      input: { title: "Hello", published: false, body: "world" },
+      groups: ["g_1"],
+    });
 
     // Seed the peer with the create Action.
     for (const action of written) await callApplyAction(b, action, "g_1");
@@ -645,10 +669,11 @@ describe("conflicts through client.conflicts", () => {
   it("surfaces a same-run race after the local edit has been flushed", async () => {
     const { client, written } = harness(schema);
     await client.handshake();
-    const { id } = await client.blogPost.create(
-      { title: "T", published: false, body: "hello" },
-      { groups: ["g_1"] },
-    );
+    const { id } = await client.actions.create({
+      entity: "blogPost",
+      input: { title: "T", published: false, body: "hello" },
+      groups: ["g_1"],
+    });
     const createAction = written[0]!;
     // Simulate the create Action's echo so it leaves the outbox; only
     // the extend should be a buffered loss.
@@ -725,10 +750,11 @@ describe("conflicts through client.conflicts", () => {
   it("does not surface a write to a different run", async () => {
     const { client, written } = harness(schema);
     await client.handshake();
-    const { id } = await client.blogPost.create(
-      { title: "T", published: false, body: "hello" },
-      { groups: ["g_1"] },
-    );
+    const { id } = await client.actions.create({
+      entity: "blogPost",
+      input: { title: "T", published: false, body: "hello" },
+      groups: ["g_1"],
+    });
 
     const doc = await (await client.blogPost.get(id))!.body;
     const runId = [...doc!.docState.nodes.keys()].find((key) => key !== "ROOT")!;
@@ -788,10 +814,11 @@ describe("conflicts through client.conflicts", () => {
     async ({ offset, remoteWins }) => {
       const { client, written } = harness(schema);
       await client.handshake();
-      const { id } = await client.blogPost.create(
-        { title: "Colour", published: false, body: "Red Magic" },
-        { groups: ["g_1"] },
-      );
+      const { id } = await client.actions.create({
+        entity: "blogPost",
+        input: { title: "Colour", published: false, body: "Red Magic" },
+        groups: ["g_1"],
+      });
       const createAction = written[0]!;
       // Retire the create so only the offline extend is a buffered loss.
       await callApplyAction(client, { ...createAction, gsn: 1 }, "g_1");
@@ -851,10 +878,11 @@ describe("conflicts through client.conflicts", () => {
   it("surfaces a different-run edit at entity scope, with no overlapping slots", async () => {
     const { client, written } = harness(entitySchema);
     await client.handshake();
-    const { id } = await client.entityPost.create(
-      { title: "T", published: false, body: "hello" },
-      { groups: ["g_1"] },
-    );
+    const { id } = await client.actions.create({
+      entity: "entityPost",
+      input: { title: "T", published: false, body: "hello" },
+      groups: ["g_1"],
+    });
     const createAction = written[0]!;
     await callApplyAction(client, { ...createAction, gsn: 1 }, "g_1");
 

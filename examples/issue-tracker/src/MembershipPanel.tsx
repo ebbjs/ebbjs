@@ -17,6 +17,7 @@
 
 import { useEffect, useState } from "react";
 import { useClient, useQuery, type QueryRoot } from "@ebbjs/react";
+import type { DemoActions } from "./actions";
 import { useWorkspaceProfiles } from "./use-workspace-profiles";
 import type { BootstrapResult } from "./bootstrap";
 import type { Schema } from "./schema";
@@ -36,7 +37,7 @@ export function MembershipPanel({
   actorId: string;
   bootstrap: BootstrapResult;
 }) {
-  const client = useClient<Schema>();
+  const client = useClient<Schema, DemoActions>();
   const { data: members = [] } = useQuery(
     (q: QueryRoot<Schema>) =>
       q.membership.query().where("group_id", SHARED_GROUP_ID).where("actor_id", actorId),

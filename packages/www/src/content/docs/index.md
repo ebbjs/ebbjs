@@ -95,18 +95,29 @@ The root `@ebbjs/storage` entry is types-only; adapter constructors live on per-
 
 ### `@ebbjs/client`
 
-Local-first sync SDK — handshake, catch-up, live SSE, and a local query engine over a materialized replica. Reads are typed queries through `client.<entity>.query()`; writes go through the schema-bound entity namespaces. 1119 unit tests pass, plus integration tests that round-trip against a live `ebb_server`.
+Local-first sync SDK — handshake, catch-up, live SSE, and a local query engine over a materialized replica. Reads are typed queries through `client.<entity>.query()`; writes are actions mounted as `client.actions.<name>`. 1119 unit tests pass, plus integration tests that round-trip against a live `ebb_server`.
 
 ```ts
-import { createClient, defineEntity, defineSchema, e } from "@ebbjs/client";
+import { createClient, defineAction, defineEntity, defineSchema, e } from "@ebbjs/client";
 
 const todo = defineEntity("todo", { title: e.string(), completed: e.boolean() });
 const schema = defineSchema({ entities: { todo }, version: 1 });
+
+// Declared at module scope; the client mounts it as `client.actions.*`.
+const createTodo = defineAction(
+  schema,
+  ({ todo }, params: { title: string; groups: readonly string[] }) =>
+    todo.create({ title: params.title, completed: false }, { groups: params.groups }),
+);
+const completeTodo = defineAction(schema, ({ todo }, params: { id: string }) =>
+  todo.update(params.id, { completed: true }),
+);
 
 const client = createClient({
   serverUrl: "http://localhost:4000",
   actorId: "user_123",
   schema,
+  actions: { createTodo, completeTodo },
 });
 
 const { groups } = await client.handshake();
@@ -121,19 +132,16 @@ client.subscribe(groupIds, () => {});
 // carries the entity `id` and its live `groupIds`.
 const open = await client.todo.query().where("completed", false);
 
-// Writes: namespace verbs. `groups` files the row into its groups in the
-// same Action, and the created id is addressable immediately.
-const { id } = await client.todo.create(
-  { title: "Buy milk", completed: false },
-  { groups: groupIds },
-);
-await client.todo.update(id, { completed: true });
+// Writes: an action. One call is one Action, `groups` files the row into its
+// groups in that same Action, and the returned handle carries the minted id.
+const { id } = await client.actions.createTodo({ title: "Buy milk", groups: groupIds });
+await client.actions.completeTodo({ id });
 ```
 
 Shipped primitives:
 
 - **Query engine** — `client.<entity>.query()` with `where` / `or` / `orderBy` / `limit` and one-level `with` joins. A chain lowers to a serializable query, so an identical chain shares one cached result; `status` is `unloaded` / `stale` / `current` / `failed`. In React, `useQuery` wraps this surface.
-- **Schema-bound entity namespaces** — `client.<entity>` is the public API: `query()` for reads, the write verbs (`create` / `update` / `delete` / `duplicate` / `link` / `unlink` / `setLinks` / membership) for single-entity writes, and `client.atomic` / `defineAction` (`client.actions.<name>`) for multi-entity writes in one Action. `get()`, the async row accessors, and `subscribe(filter, cb)` are internal.
+- **Schema-bound entity namespaces** — `client.<entity>` is the read API: `query()` for typed reads over the replica. Every write is a `defineAction` declared at module scope and mounted as `client.actions.<name>`; one call commits one Action spanning any number of entities and groups, and a rejection throws `ActionRejectedError`. `get()`, the async row accessors, and `subscribe(filter, cb)` are internal.
 - **Reactive subscribe** — `client.onStateChange(cb)` tracks the connection state machine; live sync runs through `client.subscribe(groupIds, onEvent)`.
 - **Presence** — `client.presence` broadcasts and reads ephemeral cursors and selections.
 - **Collaborative text** — `client.textDocument(docId)` opens a causal-tree document with a local edit API; `@ebbjs/codemirror` bridges it to a CodeMirror 6 view. Writes that race while offline surface through [`client.conflicts`](/docs/conflicts).
@@ -156,10 +164,20 @@ await server.kill();
 
 ### `@ebbjs/react`
 
-React bindings for `@ebbjs/client` — a provider, a connection hook, and the query + mutation hooks. Ships `EbbProvider`, `useClient`, `useConnection`, `useQuery`, and `useEntityMutations`. `useQuery` is the read root; `useClient` exposes the writes and actions.
+React bindings for `@ebbjs/client` — a provider, a connection hook, and the query hooks, plus `useClient` for actions. Ships `EbbProvider`, `useClient`, `useConnection`, and `useQuery`. `useQuery` is the read root; `useClient` exposes `client.actions`.
 
 ```tsx
-import { EbbProvider, useClient, useEntityMutations, useQuery, type QueryRoot } from "@ebbjs/react";
+import { defineAction } from "@ebbjs/client";
+import { EbbProvider, useClient, useQuery, type QueryRoot } from "@ebbjs/react";
+
+// Writes are actions: declared once at module scope, mounted on the client.
+const toggleTodo = defineAction(schema, ({ todo }, params: { id: string; completed: boolean }) =>
+  todo.update(params.id, { completed: params.completed }),
+);
+const removeTodo = defineAction(schema, ({ todo }, params: { id: string }) =>
+  todo.delete(params.id),
+);
+const todoActions = { toggleTodo, removeTodo };
 
 function OpenTodos() {
   const { data, status, loading, error } = useQuery((q: QueryRoot<Schema>) =>
@@ -178,17 +196,18 @@ function OpenTodos() {
 }
 
 function TodoRow({ id }: { id: string }) {
-  const client = useClient<Schema>();
+  const client = useClient<Schema, typeof todoActions>();
   const { data: todos, status } = useQuery((q: QueryRoot<Schema>) => q.todo.query());
   const todo = todos?.find((row) => row.id === id);
-  const { update, delete: remove } = useEntityMutations(client.todo);
 
   if (status === "unloaded") return <span>loading…</span>;
   if (todo === undefined) return <span>missing</span>;
   return (
     <div>
-      <button onClick={() => void update(id, { completed: !todo.completed })}>{todo.title}</button>
-      <button onClick={() => void remove(id)}>delete</button>
+      <button onClick={() => void client.actions.toggleTodo({ id, completed: !todo.completed })}>
+        {todo.title}
+      </button>
+      <button onClick={() => void client.actions.removeTodo({ id })}>delete</button>
     </div>
   );
 }

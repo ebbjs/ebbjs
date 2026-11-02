@@ -6,12 +6,12 @@
  * with the group set those Updates fan out to.
  *
  * Keeping the mutation as a value (rather than a method that submits)
- * is what lets the imperative namespaces and `client.atomic` /
- * `defineAction` share one planner, and what lets the committer wrap
- * a batch in a single Action.
+ * is what lets the draft planner, `defineAction`, and the seed path
+ * share one write path, and what lets the committer wrap a batch in a
+ * single Action.
  */
 
-import { generateId, type Update } from "@ebbjs/core";
+import { generateId, isFieldMap, type Entity, type FieldValue, type Update } from "@ebbjs/core";
 
 import type { EntityRegistry } from "../schema/entity-registry";
 import { EntityValidationError, validatePayload } from "../schema/entity-registry";
@@ -19,6 +19,7 @@ import { GROUPS_ACCESSOR } from "../schema/system-entities";
 import { buildInitialContentField } from "../fields/collaborative-text/wire";
 import { DOC_CONTENT_FIELD, generatedDocEntityName } from "../fields/collaborative-text/schema";
 import type { GeneratedParts } from "./generated-parts";
+import { projectFieldValue } from "./query-builder";
 import type { Rejection } from "./types";
 import {
   buildEntityGroupDelete,
@@ -33,39 +34,51 @@ import {
 import { lastMembershipViolation, membershipScope, type MembershipView } from "./membership";
 
 /**
- * Refusal of an atomic call: a client-side membership failure
- * (`last_membership` / `missing_ownership`), or the server's
- * `rejected[]` for the submitted Action. Extends the wire `Rejection`
- * with the per-Update `subjectType` the client-side checks can
- * attribute, which the server's per-Action report does not carry today.
+ * Refusal of an Action: a client-side membership failure
+ * (`last_membership` / `missing_ownership` / `last_group_member`), or the
+ * server's `rejected[]` for the submitted Action. Extends the wire
+ * `Rejection` with the per-Update `subjectType` the client-side checks
+ * can attribute, which the server's per-Action report does not carry
+ * today.
  */
-export type AtomicRejection = Rejection & { readonly subjectType?: string };
+export type ActionRejection = Rejection & { readonly subjectType?: string };
 
 /**
- * Aggregated refusal of an atomic call. Mirrors
- * `EntityValidationError` — same `Error` shape, named subclass,
- * structured readonly reasons, message formatted from them.
+ * Aggregated refusal of an Action. Mirrors `EntityValidationError` —
+ * same `Error` shape, named subclass, structured readonly reasons,
+ * message formatted from them.
  *
  * Thrown before submission for a client-side membership failure, so no
- * Action reaches the outbox.
+ * Action reaches the outbox, and after submission for a server
+ * rejection so every action surface fails the one way.
  */
-export class AtomicActionError extends Error {
-  readonly rejections: readonly AtomicRejection[];
+export class ActionRejectedError extends Error {
+  readonly rejections: readonly ActionRejection[];
 
-  constructor(rejections: readonly AtomicRejection[]) {
+  constructor(rejections: readonly ActionRejection[]) {
     super(formatRejections(rejections));
-    this.name = "AtomicActionError";
+    this.name = "ActionRejectedError";
     this.rejections = rejections;
   }
 }
 
-const formatRejections = (rejections: readonly AtomicRejection[]): string => {
-  if (rejections.length === 0) return "AtomicActionError";
+/**
+ * The client-provable `last_group_member` refusal: a `groupMember`
+ * delta that would leave its group with no member holding a non-empty
+ * permission list.
+ */
+export const lastGroupMemberError = (id: string, details: string): ActionRejectedError =>
+  new ActionRejectedError([
+    { id, subjectType: "groupMember", reason: "last_group_member", details },
+  ]);
+
+const formatRejections = (rejections: readonly ActionRejection[]): string => {
+  if (rejections.length === 0) return "ActionRejectedError";
   const lines = rejections.map((rejection) => `  - ${describeRejection(rejection)}`);
-  return `AtomicActionError: ${rejections.length} rejected update(s)\n${lines.join("\n")}`;
+  return `ActionRejectedError: ${rejections.length} rejected update(s)\n${lines.join("\n")}`;
 };
 
-const describeRejection = (rejection: AtomicRejection): string => {
+const describeRejection = (rejection: ActionRejection): string => {
   const subject =
     rejection.subjectType === undefined ? rejection.id : `${rejection.subjectType} ${rejection.id}`;
   const details =
@@ -87,7 +100,7 @@ export interface OperationIds {
  * What an operation may consult. Pure values only — no storage, no
  * network: an operation that needs a read is a planner concern that
  * hands the resolved value to a pure operation. Draft handles are not
- * here: the atomic planner mints and resolves them before an operation
+ * here: the draft planner mints and resolves them before an operation
  * runs.
  */
 export interface OpContext {
@@ -157,7 +170,7 @@ export interface CreateEntityInput {
   /**
    * Pre-minted ids for a derived field's document and edge, keyed by
    * field. A caller that must reference the parts before this operation
-   * runs (the atomic resolver carrying them on a later membership verb)
+   * runs (the draft planner carrying them on a later membership verb)
    * supplies them; otherwise the operation mints its own.
    */
   readonly generatedIds?: Readonly<
@@ -351,8 +364,9 @@ export interface GroupBootstrap {
 }
 
 /**
- * Mint the ids and build the bootstrap call for `group.create`, so the
- * imperative namespace and the atomic draft emit the identical Action.
+ * Mint the ids and build the bootstrap call for the draft surface's
+ * `group.create`, which lands the group and its first member in one
+ * Action.
  */
 export const groupBootstrap = (
   registry: EntityRegistry,
@@ -441,6 +455,77 @@ export const deleteEntity: Operation<DeleteEntityInput> = (ctx, input) => ({
   groups: [...input.groups],
   subject: { id: input.id, type: input.entity },
 });
+
+/** Input for {@link duplicateEntity}. */
+export interface DuplicateEntityInput {
+  readonly entity: string;
+  /** The new row's id; the source row is never named on the wire. */
+  readonly subjectId: string;
+  /** The row to copy, already read from the current or pre-sync view. */
+  readonly source: Entity;
+  readonly groups: readonly string[];
+  readonly validate?: boolean;
+}
+
+/**
+ * Copy a source row onto a fresh id: one `put` Update carrying the field
+ * values verbatim — leaf and nested `update_id` / `hlc` stamps included,
+ * so a collaborative-text map survives as a reference snapshot rather
+ * than a re-stamped write — plus one `entityGroup` row per group. The
+ * copy is validated against the entity's shape like `create`.
+ */
+export const duplicateEntity: Operation<DuplicateEntityInput> = (ctx, input) => {
+  const fields = input.source.data?.fields ?? {};
+  const def = ctx.registry.get(input.entity);
+  if (input.validate !== false && def !== undefined) {
+    const violations = validatePayload(def.shape, projectFieldValues(fields), input.entity, false);
+    if (violations.length > 0) {
+      throw new EntityValidationError(violations);
+    }
+  }
+  return {
+    updates: [
+      {
+        id: ctx.ids.updateId(),
+        subject_id: input.subjectId,
+        subject_type: input.entity,
+        method: "put",
+        data: { fields: cloneFields(fields) },
+      },
+      ...buildEntityGroupUpdates(input.subjectId, input.groups, () => ctx.ids.updateId()),
+    ],
+    groups: [...input.groups],
+    subject: { id: input.subjectId, type: input.entity },
+  };
+};
+
+/** Project a wire field map to the plain values the schema validator checks. */
+const projectFieldValues = (fields: Record<string, FieldValue>): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const [key, field] of Object.entries(fields)) {
+    out[key] = projectFieldValue(field);
+  }
+  return out;
+};
+
+/** Deep-clone a wire field value so the copy never aliases the source's objects. */
+const cloneValue = (value: unknown): unknown => {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(cloneValue);
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) out[key] = cloneValue(entry);
+  return out;
+};
+
+const cloneFieldValue = (field: FieldValue): FieldValue =>
+  isFieldMap(field)
+    ? {
+        map: Object.fromEntries(Object.entries(field.map).map(([k, v]) => [k, cloneFieldValue(v)])),
+      }
+    : { ...field, value: cloneValue(field.value) };
+
+const cloneFields = (fields: Record<string, FieldValue>): Record<string, FieldValue> =>
+  Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, cloneFieldValue(v)]));
 
 /** One membership row to delete: its id and the group it scopes to. */
 export interface MembershipRemoval {
@@ -537,7 +622,7 @@ export const changeGroups: Operation<ChangeGroupsInput> = (ctx, input) => {
     removedGroups: removes.map((removal) => removal.groupId),
   });
   if (violation !== undefined) {
-    throw new AtomicActionError([
+    throw new ActionRejectedError([
       {
         id: input.entityId,
         subjectType: input.entity,
@@ -556,7 +641,7 @@ export const changeGroups: Operation<ChangeGroupsInput> = (ctx, input) => {
   };
   const groups = membershipScope(updates, view).filter((groupId) => groupId.length > 0);
   if (updates.length > 0 && groups.length === 0) {
-    throw new AtomicActionError([
+    throw new ActionRejectedError([
       {
         id: input.entityId,
         subjectType: input.entity,
@@ -586,9 +671,9 @@ export interface WriteRelationshipInput {
   readonly as: string;
   readonly pointer: RelationshipPointer;
   /**
-   * `subject_id` the one-cardinality delete must name. The namespace
-   * resolves the existing relationship row's id (a storage read) and
-   * passes it in.
+   * `subject_id` the one-cardinality delete must name. The draft
+   * planner resolves the existing relationship row's id (a storage
+   * read) and passes it in.
    */
   readonly relationshipSubjectId?: string;
   /** The source entity's live membership set. */
