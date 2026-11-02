@@ -215,4 +215,5 @@ that is what the overlay held when it resolved.
   half without reimplementing either, and the runtime body stops mixing a read
   with an effect.
 - **Migration / deprecation.** Out of scope: the old surface is deleted, not
-  aliased, and the changeset is a major for `@ebbjs/client` and `@ebbjs/react`.
+  aliased, and the changeset is a minor for `@ebbjs/client` and `@ebbjs/react`
+  (pre-1.0, no consumers to migrate).

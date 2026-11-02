@@ -1,9 +1,13 @@
 ---
-"@ebbjs/client": major
-"@ebbjs/react": major
+"@ebbjs/client": minor
+"@ebbjs/react": minor
 ---
 
 Converge on one write interface: every write is now an action.
+
+Ebb is pre-1.0 and has no consumers yet, so the removed surface ships as a
+minor (0.3.0 → 0.4.0) rather than a major. Nothing persisted changes — no wire
+format, no stored shape, no migration — so there is no upgrade path to protect.
 
 `defineAction(schema, (drafts, params) => ...)` is the only write surface.
 Mount it at `createClient({ schema, actions })` and call it as
