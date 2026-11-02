@@ -7,12 +7,11 @@
  * rows, and re-runs when the group id arrives.
  */
 
-import { useQuery, type QueryRoot } from "@ebbjs/react";
-import type { Schema } from "./schema";
+import { useQuery } from "./use-ebb";
 
 export function useWorkspaceProfiles(groupId: string | undefined) {
   const { data: profiles = [] } = useQuery(
-    (q: QueryRoot<Schema>) => q.profile.query().where("groups", groupId),
+    (q) => q.profile.query().where("groups", groupId),
     [groupId],
   );
   return profiles;

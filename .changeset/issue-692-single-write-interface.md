@@ -29,8 +29,12 @@ Removed:
 
 `useClient` now takes the **client type** rather than a schema-plus-actions
 pair: `useClient<AppClient>()` instead of `useClient<Schema, typeof actions>()`.
-Name the client once (`type AppClient = typeof client`) and wrap the hook in an
-app-local `useEbb()` if components should carry no generic at all.
+Name the client once (`type AppClient = typeof client`) and bind both hooks to it
+with `createEbbHooks<AppClient>()` — components then need no generic, and
+`useQuery((q) => …)` needs no `QueryRoot<Schema>` annotation (a schema type
+argument would drop the row types, since TypeScript does not partially infer
+type arguments). `QueryRootOf<C>` names the read root the bound `useQuery`
+types its `q` as.
 
 Renamed types: `AtomicActionError` → `ActionRejectedError`, `AtomicDrafts` →
 `ActionDrafts`, `AtomicDraftNamespace` → `DraftNamespace`, `AtomicCreateOptions` →

@@ -8,11 +8,10 @@
  */
 
 import { useState } from "react";
-import { useQuery, type QueryRoot } from "@ebbjs/react";
-import type { Schema } from "./schema";
+import { useQuery } from "./use-ebb";
 
 export function WorkspaceSwitcher() {
-  const { data: workspaces = [], loading } = useQuery((q: QueryRoot<Schema>) =>
+  const { data: workspaces = [], loading } = useQuery((q) =>
     q.workspace.query().with({ groups: true }),
   );
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);

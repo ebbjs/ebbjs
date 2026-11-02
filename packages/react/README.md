@@ -10,6 +10,8 @@ This package ships the client plumbing plus the data hooks:
   together. Reads go through `useQuery`.
 - `useConnection()` — `useSyncExternalStore` over `client.onStateChange`, returning the `ConnectionState`.
 - `useQuery()` — the reactive read root: build a query through the typed namespaces and subscribe to its cached result.
+- `createEbbHooks<C>()` — bind `useClient` and `useQuery` to your client type
+  once, so components need neither a generic nor a callback annotation.
 
 SSR / Suspense are out of scope for now.
 
@@ -197,19 +199,29 @@ function NewIssue({ groupId }: { groupId: string }) {
 
 Nothing above imports a type from the library: the client type is simply what
 `createClient` returned, so `defineAction`, `EntityValues` and `typeof client`
-are the whole vocabulary. Naming the client once also lets a component stop
-carrying a generic at all — one module owns the type, every call site reads the
-same:
+are the whole vocabulary.
+
+Naming the client once also lets a component stop carrying a generic — and
+gives `useQuery` a typed `q` without the `QueryRoot<Schema>` annotation
+(TypeScript does not partially infer type arguments, so a schema type argument
+would drop the row types; binding the client is the way out):
 
 ```tsx
-// use-ebb.ts — the only place that knows the client's shape.
+// use-ebb.ts — bind both hooks to the client type once, at module scope.
 export type AppClient = typeof client;
-export const useEbb = (): AppClient => useClient<AppClient>();
+export const { useClient: useEbb, useQuery } = createEbbHooks<AppClient>();
 
-// anywhere below the provider
+// anywhere below the provider: no generics, no annotations
 const client = useEbb();
 await client.actions.createIssue({ title: "Buy milk", groupId });
+
+const { data } = useQuery((q) => q.issue.query().with({ assignee: true }));
 ```
+
+`q` is the client's **read root** — every namespace narrowed to `query()` — so
+a write stays a compile error there. Call `createEbbHooks` at module scope:
+each call makes new hook functions, and a per-render call would hand React a new
+hook identity on every render.
 
 One call is one Action, and a rejection throws `ActionRejectedError`. The
 action callback is synchronous and cannot live inside a component, so a
@@ -226,16 +238,18 @@ await client.actions.leaveWorkspace({ profileId, groupId, memberId });
 
 ## API
 
-| Export                   | What                                                                           |
-| ------------------------ | ------------------------------------------------------------------------------ |
-| `EbbProvider`            | Makes the app's client available to hooks below it.                            |
-| `useClient<C>()`         | Returns the nearest provider's client typed as `C`; throws outside a provider. |
-| `useConnection()`        | Subscribes to connection state and re-renders on transitions.                  |
-| `useQuery(build, deps?)` | Subscribes to a cached query result; `{ data, status, loading, error }`.       |
-| `EbbProviderProps`       | The provider's prop type.                                                      |
-| `UseQueryResult`         | The `useQuery` result type.                                                    |
-| `QueryRows`              | The projected row-list type a `QueryBuilder` resolves to.                      |
-| `ConnectionState`        | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.     |
+| Export                   | What                                                                             |
+| ------------------------ | -------------------------------------------------------------------------------- |
+| `EbbProvider`            | Makes the app's client available to hooks below it.                              |
+| `useClient<C>()`         | Returns the nearest provider's client typed as `C`; throws outside a provider.   |
+| `useConnection()`        | Subscribes to connection state and re-renders on transitions.                    |
+| `useQuery(build, deps?)` | Subscribes to a cached query result; `{ data, status, loading, error }`.         |
+| `createEbbHooks<C>()`    | Binds `useClient` and `useQuery` to one client type; call once, at module scope. |
+| `QueryRootOf<C>`         | The read root of a client type — what a bound `useQuery`'s `q` is.               |
+| `EbbProviderProps`       | The provider's prop type.                                                        |
+| `UseQueryResult`         | The `useQuery` result type.                                                      |
+| `QueryRows`              | The projected row-list type a `QueryBuilder` resolves to.                        |
+| `ConnectionState`        | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.       |
 
 ## Peer dependencies
 

@@ -164,11 +164,11 @@ await server.kill();
 
 ### `@ebbjs/react`
 
-React bindings for `@ebbjs/client` — a provider, a connection hook, and the query hooks, plus `useClient` for actions. Ships `EbbProvider`, `useClient`, `useConnection`, and `useQuery`. `useQuery` is the read root; `useClient` exposes `client.actions`.
+React bindings for `@ebbjs/client` — a provider, a connection hook, and the query hooks, plus `useClient` for actions. Ships `EbbProvider`, `useClient`, `useConnection`, `useQuery`, and `createEbbHooks` (which binds `useClient` and `useQuery` to one client type). `useQuery` is the read root; `useClient` exposes `client.actions`.
 
 ```tsx
 import { createClient, defineAction } from "@ebbjs/client";
-import { EbbProvider, useClient, useQuery, type QueryRoot } from "@ebbjs/react";
+import { EbbProvider, createEbbHooks } from "@ebbjs/react";
 
 // Writes are actions: declared once at module scope, mounted on the client.
 const toggleTodo = defineAction(schema, ({ todo }, params: { id: string; completed: boolean }) =>
@@ -182,11 +182,13 @@ const todoActions = { toggleTodo, removeTodo };
 const client = createClient({ serverUrl, actorId, schema, actions: todoActions });
 
 // The client's own type, reads and actions together — no library types to
-// import. Wrap `useClient` in an app-local hook to drop the generic entirely.
+// import. Bind the hooks to it once: components then need no generic and no
+// callback annotation.
 type TodoClient = typeof client;
+export const { useClient: useEbb, useQuery } = createEbbHooks<TodoClient>();
 
 function OpenTodos() {
-  const { data, status, loading, error } = useQuery((q: QueryRoot<Schema>) =>
+  const { data, status, loading, error } = useQuery((q) =>
     q.todo.query().where("completed", false).limit(50),
   );
 
@@ -202,8 +204,8 @@ function OpenTodos() {
 }
 
 function TodoRow({ id }: { id: string }) {
-  const client = useClient<TodoClient>();
-  const { data: todos, status } = useQuery((q: QueryRoot<Schema>) => q.todo.query());
+  const client = useEbb();
+  const { data: todos, status } = useQuery((q) => q.todo.query());
   const todo = todos?.find((row) => row.id === id);
 
   if (status === "unloaded") return <span>loading…</span>;
@@ -219,18 +221,20 @@ function TodoRow({ id }: { id: string }) {
 }
 ```
 
-`useQuery` builds one chain and subscribes to its cached result. Annotate `q`
-with the schema (`(q: QueryRoot<Schema>)`) and omit the hook's type arguments so
-the query surface and the row types both infer. The grammar is the engine's:
-`where` / `or` / `orderBy(field, "asc" | "desc")` / `limit(n)`, plus one-level
-`with` joins typed by the schema's relationship map.
+`useQuery` builds one chain and subscribes to its cached result. The grammar is
+the engine's: `where` / `or` / `orderBy(field, "asc" | "desc")` / `limit(n)`,
+plus one-level `with` joins typed by the schema's relationship map.
 
 ```tsx
 // Joined rows: `issue.assignee` is typed from the relationship.
-useQuery((q: QueryRoot<Schema>) =>
-  q.issue.query().where("status", "open").with({ assignee: true }),
-);
+useQuery((q) => q.issue.query().where("status", "open").with({ assignee: true }));
 ```
+
+The bound hook types `q` for you. The free `useQuery` from `@ebbjs/react` is the
+same hook unbound: annotate its `q` with the schema
+(`(q: QueryRoot<Schema>) => …`) and omit the type arguments — a type argument
+instead of the annotation would pin the rows to their defaults, because
+TypeScript does not partially infer type arguments.
 
 `status` is `unloaded` (never run; `data` is `undefined`, never `[]`), `stale` (a
 usable result at an older revision while a re-run is in flight), `current`, or

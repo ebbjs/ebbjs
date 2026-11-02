@@ -43,6 +43,38 @@ export interface UseQueryResult<
 }
 
 /**
+ * The engine work behind every query hook: subscribe to the cached result
+ * `build` lowers to, against `root`. Internal — the public entry points are
+ * {@link useQuery} (schema-annotated) and the hook
+ * `createEbbHooks` returns (client-bound, no annotation).
+ */
+export function useQueryRoot<
+  TRoot,
+  TFields extends Record<string, TSchema>,
+  TJoins extends object,
+  TJoined extends object,
+  TRow extends ProjectedRow<TFields> = ProjectedRow<TFields>,
+>(
+  root: TRoot,
+  build: (q: TRoot) => QueryBuilder<TFields, TJoins, TJoined, TRow>,
+  deps: readonly unknown[],
+): UseQueryResult<TFields, TJoined, TRow> {
+  // oxlint-disable-next-line react-hooks/exhaustive-deps -- `build` is re-run only when the caller's `deps` or the client change; it is intentionally not itself a dependency.
+  const builder = useMemo(() => build(root), [root, ...deps]);
+  const store = useMemo(() => builder.result(), [builder]);
+  const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
+  const getSnapshot = useCallback(() => store.getSnapshot(), [store]);
+
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot);
+  return {
+    data: snapshot.data,
+    status: snapshot.status,
+    loading: snapshot.loading,
+    error: snapshot.error,
+  };
+}
+
+/**
  * Subscribe a component to the engine's cached query result.
  *
  * `build` receives `q` — the provider's client narrowed to each entity
@@ -52,7 +84,8 @@ export interface UseQueryResult<
  * infer: `q` is checked against the schema and `data` follows the chain,
  * joins included. Supplying a type argument instead would pin the row types
  * to their defaults, because TypeScript does not partially infer type
- * arguments.
+ * arguments — which is why `createEbbHooks` exists: it types `q` from the
+ * client, so its `useQuery` needs neither the annotation nor a type argument.
  *
  * `build` runs once per `deps` change and per client swap (keep `deps` a
  * stable-length list). The store is keyed by the lowered query, so two
@@ -81,17 +114,5 @@ export function useQuery<
   // SAFETY: the provider stores the same client these namespaces come from;
   // `QueryRoot` only narrows that surface to `query()`.
   const root = client as QueryRoot<S>;
-  // oxlint-disable-next-line react-hooks/exhaustive-deps -- `build` is re-run only when the caller's `deps` or the client change; it is intentionally not itself a dependency.
-  const builder = useMemo(() => build(root), [root, ...deps]);
-  const store = useMemo(() => builder.result(), [builder]);
-  const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
-  const getSnapshot = useCallback(() => store.getSnapshot(), [store]);
-
-  const snapshot = useSyncExternalStore(subscribe, getSnapshot);
-  return {
-    data: snapshot.data,
-    status: snapshot.status,
-    loading: snapshot.loading,
-    error: snapshot.error,
-  };
+  return useQueryRoot(root, build, deps);
 }

@@ -13,10 +13,9 @@
  */
 
 import { useState } from "react";
-import { useQuery, type QueryRoot } from "@ebbjs/react";
+import { useQuery } from "./use-ebb";
 import { PRIORITY_OPTIONS, STATUS_OPTIONS, assigneeOptions } from "./issue-options";
 import { SelectField } from "./SelectField";
-import type { Schema } from "./schema";
 import { useEbb } from "./use-ebb";
 import { useWorkspaceProfiles } from "./use-workspace-profiles";
 import { useWrite } from "./use-write";
@@ -35,7 +34,7 @@ export function IssueDetail({
     data: issues,
     status,
     error: queryError,
-  } = useQuery((q: QueryRoot<Schema>) => q.issue.query().with({ assignee: true, groups: true }));
+  } = useQuery((q) => q.issue.query().with({ assignee: true, groups: true }));
   const issue = issues?.find((row) => row.id === issueId) ?? null;
   const issueGroupId = issue?.groups[0]?.id;
   const profiles = useWorkspaceProfiles(issueGroupId);
