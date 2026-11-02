@@ -15,9 +15,10 @@ import { e, defineEntity, type EntityDef } from "../../schema/entity";
 import { defineSchema, type Schema } from "../../schema/schema";
 import { defineRelationship, type RelationshipDef } from "../../schema/relationship";
 import { generatedDocEntityName } from "../../fields/collaborative-text/schema";
-import { createClient, type NamespacedClient } from "../client";
+import { createClient } from "../client";
 import { readGeneratedParts } from "../generated-parts";
 import { jsonResponse } from "../test-utils";
+import { testActions } from "./test-actions";
 
 const author = defineEntity("author", { name: e.string() });
 const blogPost = defineEntity("blog_post", {
@@ -84,13 +85,10 @@ const relationshipIds = (updates: readonly SyncUpdate[]): Map<string, string> =>
       .map((update) => [String(fieldOf(update, "field")), update.subject_id]),
   );
 
-const mkClient = async <S extends AnySchema>(
-  activeSchema: S,
-): Promise<{
-  client: NamespacedClient<S>;
-  storage: Awaited<ReturnType<typeof import("@ebbjs/storage/memory").createMemoryAdapter>>;
-  actions: Action[][];
-}> => {
+/** A client mounted with the harness's actions, so `client.actions` is typed. */
+type MountedClient<S extends AnySchema> = Awaited<ReturnType<typeof mkClient<S>>>["client"];
+
+const mkClient = async <S extends AnySchema>(activeSchema: S) => {
   const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
   const storage = createMemoryAdapter();
   const actions: Action[][] = [];
@@ -115,6 +113,7 @@ const mkClient = async <S extends AnySchema>(
     actorId: "actor_1",
     storage,
     schema: activeSchema,
+    actions: testActions(activeSchema),
     fetchImpl,
   });
   await client.handshake();
@@ -127,14 +126,15 @@ const mkClient = async <S extends AnySchema>(
  * compared against it.
  */
 const createPost = async (
-  client: NamespacedClient<typeof schema>,
+  client: MountedClient<typeof schema>,
   groups: readonly string[] = ["g_1"],
 ): Promise<string> => {
-  const { id } = await client.blogPost.create(
-    { title: "Hello", body: "world", subtitle: "sub" },
-    { groups },
-  );
-  await client.blogPost.link(id, "author", "au_1");
+  const { id } = await client.actions.create({
+    entity: "blogPost",
+    input: { title: "Hello", body: "world", subtitle: "sub" },
+    groups,
+  });
+  await client.actions.link({ entity: "blogPost", id, as: "author", target: "au_1" });
   return id;
 };
 
@@ -152,7 +152,7 @@ describe("membership change carries generated parts (#474)", () => {
     const createdRels = relationshipIds(createUpdates);
     expect([...createdRels.keys()].sort()).toEqual(["body", "subtitle"]);
 
-    await client.blogPost.setGroups(id, ["g_2"]);
+    await client.actions.run(({ blogPost }) => blogPost.setGroups(id, ["g_2"]));
 
     const updates = updatesOf(actions[actions.length - 1]!);
 
@@ -184,7 +184,7 @@ describe("membership change carries generated parts (#474)", () => {
     const { client, actions } = await mkClient(schema);
     const id = await createPost(client);
 
-    await client.blogPost.addToGroup(id, "g_2");
+    await client.actions.run(({ blogPost }) => blogPost.addToGroup(id, "g_2"));
 
     const updates = updatesOf(actions[actions.length - 1]!);
     const groupPuts = updates.filter((update) => update.subject_type === "entityGroup");
@@ -198,7 +198,7 @@ describe("membership change carries generated parts (#474)", () => {
     const { client, actions } = await mkClient(schema);
     const id = await createPost(client, ["g_1", "g_2"]);
 
-    await client.blogPost.removeFromGroup(id, "g_1");
+    await client.actions.run(({ blogPost }) => blogPost.removeFromGroup(id, "g_1"));
 
     const updates = updatesOf(actions[actions.length - 1]!);
     const deletes = updates.filter((update) => update.method === "delete");
@@ -279,12 +279,12 @@ describe("membership change carries generated parts (#474)", () => {
   });
 });
 
-describe("draft membership verbs carry generated parts (#474)", () => {
+describe("membership verbs in a callback carry generated parts (#474)", () => {
   it("carries the documents and edges on a draft addToGroup", async () => {
     const { client, actions } = await mkClient(schema);
     const id = await createPost(client);
 
-    await client.atomic(({ blogPost: draft }) => {
+    await client.actions.run(({ blogPost: draft }) => {
       draft.addToGroup(id, "g_2");
     });
 
@@ -299,7 +299,7 @@ describe("draft membership verbs carry generated parts (#474)", () => {
     const { client, actions } = await mkClient(schema);
     const id = await createPost(client, ["g_1", "g_2"]);
 
-    await client.atomic(({ blogPost: draft }) => {
+    await client.actions.run(({ blogPost: draft }) => {
       draft.removeFromGroup(id, "g_1");
     });
 
@@ -314,7 +314,7 @@ describe("draft membership verbs carry generated parts (#474)", () => {
     const { client, actions } = await mkClient(schema);
     let createdId = "";
 
-    await client.atomic(({ blogPost: draft }) => {
+    await client.actions.run(({ blogPost: draft }) => {
       const created = draft.create(
         { title: "Hello", body: "world", subtitle: "sub" },
         { groups: ["g_1"] },

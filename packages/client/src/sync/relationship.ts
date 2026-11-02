@@ -381,8 +381,8 @@ export function buildEntityGroupDelete(args: {
 
 /**
  * Build one `entityGroup` `put` Update per group. Shared by the
- * entity namespace's `create` and the atomic resolver's `buildUpdates`
- * so membership emission has one definition.
+ * `createEntity` and `duplicateEntity` operations so membership
+ * emission has one definition.
  */
 export function buildEntityGroupUpdates(
   entityId: string,

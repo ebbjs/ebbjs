@@ -3,9 +3,8 @@
  * `createClient` builds from an `actions` map.
  *
  * The stub `fetch` records every request so the tests can decode the
- * submitted Action and compare the wrapper's composition against the
- * equivalent `client.atomic(...)` callback. Minted ids and HLCs differ
- * per run, so the comparison canonicalizes them away.
+ * submitted Action: one call is one Action, the drafts resolve in call
+ * order, and repeated runs differ only in minted ids and HLCs.
  */
 
 import { describe, expect, it } from "vitest";
@@ -205,16 +204,13 @@ describe("client.actions mounting", () => {
   });
 });
 
-describe("client.actions equivalence", () => {
-  it("composes the same Action as the equivalent client.atomic callback", async () => {
+describe("client.actions composition", () => {
+  it("composes structurally identical Actions on repeated calls, with fresh ids", async () => {
     const { client, seen } = mkClient({ createList });
     await client.handshake();
 
-    const viaActions = await client.actions.createList({ title: "Today" });
-    const viaAtomic = await client.atomic(({ todo: t, list: l }) => {
-      const today = l.create({ name: "Today" }, groups);
-      return { todo: t.create({ title: "Ship it", list: today }, groups), list: today };
-    });
+    const first = await client.actions.createList({ title: "Today" });
+    const second = await client.actions.createList({ title: "Today" });
 
     const calls = actionCalls(seen);
     expect(calls).toHaveLength(2);
@@ -224,26 +220,26 @@ describe("client.actions equivalence", () => {
       canonicalize(decodeActions(calls[1]!)[0]!),
     );
     // Ids differ per run, so the comparison above is not a tautology.
-    expect(viaActions.todo.id).not.toBe(viaAtomic.todo.id);
+    expect(first.list.id).not.toBe(second.list.id);
   });
-});
 
-describe("imperative create / atomic create equivalence", () => {
-  it("submits structurally identical single Actions, with different ids", async () => {
-    const { client, seen } = mkClient();
+  it("resolves the drafts in call order: the list put precedes the todo that points at it", async () => {
+    const { client, seen } = mkClient({ createList });
     await client.handshake();
 
-    const viaNamespace = await client.list.create({ name: "Today" }, groups);
-    const viaAtomic = await client.atomic(({ list: l }) => l.create({ name: "Today" }, groups));
+    const created = await client.actions.createList({ title: "Today" });
 
     const calls = actionCalls(seen);
-    expect(calls).toHaveLength(2);
-    expect(decodeActions(calls[0]!)).toHaveLength(1);
-    expect(decodeActions(calls[1]!)).toHaveLength(1);
-    expect(canonicalize(decodeActions(calls[0]!)[0]!)).toEqual(
-      canonicalize(decodeActions(calls[1]!)[0]!),
-    );
-    // Ids differ per run, so the comparison above is not a tautology.
-    expect(viaNamespace.id).not.toBe(viaAtomic.id);
+    expect(calls).toHaveLength(1);
+    const [action] = decodeActions(calls[0]!);
+    expect(action!.updates.map((update) => update.subject_type)).toEqual([
+      "list",
+      "entityGroup",
+      "todo",
+      "entityGroup",
+      "relationship",
+    ]);
+    const relationship = action!.updates.find((u) => u.subject_type === "relationship")!;
+    expect(relationship.data?.fields?.["target_id"]?.value).toBe(created.list.id);
   });
 });

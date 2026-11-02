@@ -26,11 +26,12 @@ still being designed.
 
 ## Reads and writes
 
-`client.<entity>` is the schema-bound public API; a schema-bound client also
-carries the `client.group` / `client.membership` system namespaces. Reads go
-through `query()`; writes go through the namespace's verbs. The engine's
-single-row read (`get(id)`), its async row accessors, and the collection
-`subscribe(filter, cb)` are internal — they are not public read paths.
+`client.<entity>` is the schema-bound read API; a schema-bound client also
+carries the `client.group` / `client.membership` system namespaces, read-only
+like the rest. Reads go through `query()`; every write is an Action mounted as
+`client.actions.<name>`. The engine's single-row read (`get(id)`), its async row
+accessors, and the collection `subscribe(filter, cb)` are internal — they are
+not public read paths.
 
 ### Reads — `client.<entity>.query()`
 
@@ -125,53 +126,106 @@ on-demand target: `with({ content: true })` opens the joined rows
 asynchronously, and a cached result reads `stale` while the load is in flight
 and `current` once it settles.
 
-### Writes — namespace verbs
+### Writes — actions
 
-Single-entity writes are the namespace verbs, validated against the schema
-before anything reaches the wire:
+`defineAction(schema, callback)` is the only way to write. A definition pairs
+the schema with a callback over that schema's draft namespaces; a client
+created with `actions` mounts it as `client.actions.<name>(params)`.
 
 ```typescript
-const { id } = await client.issue.create(
-  { title: "Buy milk", status: "todo" },
-  { groups: [groupId] },
+import {
+  createClient,
+  defineAction,
+  defineEntity,
+  defineSchema,
+  e,
+  type EntityValues,
+} from "@ebbjs/client";
+
+const issue = defineEntity("issue", { title: e.string(), status: e.string() });
+const schema = defineSchema({ entities: { issue }, version: 1 });
+
+// Module scope. A definition is pure — no ids, no writes, no I/O — so it
+// builds at module load and mounts once when the client is created.
+const createIssue = defineAction(schema, ({ issue }, params: { title: string; groupId: string }) =>
+  issue.create({ title: params.title, status: "todo" }, { groups: [params.groupId] }),
 );
-await client.issue.update(id, { status: "done" });
-await client.issue.link(id, "assignee", profileId);
-await client.issue.unlink(id, "assignee");
-await client.issue.delete(id);
+
+const client = createClient({ serverUrl, actorId, schema, actions: { createIssue } });
+
+// One call, one Action. The returned handle carries the minted id.
+const { id } = await client.actions.createIssue({ title: "Buy milk", groupId });
 ```
+
+A definition cannot be inlined in a component: the client is built against the
+definitions it mounts, so declare them at module scope. An update is the same
+shape — an action is a plain function of its params:
+
+```typescript
+// `EntityValues<typeof issue>` is the value shape of the entity's wire
+// fields, so a patch type follows the schema instead of restating it.
+const updateIssue = defineAction(
+  schema,
+  ({ issue: issues }, params: { id: string; patch: Partial<EntityValues<typeof issue>> }) =>
+    issues.update(params.id, params.patch),
+);
+```
+
+**One Action per call.** Every draft verb a callback calls — across any number
+of entities and groups — commits as a single Action when the callback returns,
+in call order, with field validation running during that commit. A rejection
+throws `ActionRejectedError` (carrying the rejections); there is no
+`rejected` result to inspect.
+
+Every verb is synchronous inside the callback. `create` and `duplicate` return
+a handle with `.id`, so a later verb in the same callback can point at a row the
+batch has not materialized yet:
+
+```typescript
+const commentOnIssue = defineAction(
+  schema,
+  ({ issue, comment }, params: { issueId: string; body: string; groupId: string }) => {
+    const created = comment.create(
+      { body: params.body, issue: params.issueId },
+      { groups: [params.groupId] },
+    );
+    issue.update(params.issueId, { status: "in_progress" });
+    return created;
+  },
+);
+
+const { id: commentId } = await client.actions.commentOnIssue({ issueId, body, groupId });
+```
+
+That is also how a relationship is set in the same Action: the draft `create`
+takes the pointer (`issue: params.issueId` above, or a handle from an earlier
+`create` in the same callback), and the planner resolves it during the commit.
+
+Draft verbs, per entity:
 
 - `create(input, { groups })` — `groups` is required and non-empty; the
-  membership rows ship in the same Action as the entity.
-- `update(id, patch)`, `delete(id)`, `duplicate(id, opts?)`.
-- `link` / `unlink` / `setLinks` for relationships.
-- `addToGroup` / `removeFromGroup` / `setGroups` for membership. A membership
-  row's id is derived from the `(entity, group)` pair, so a share is idempotent
-  across devices and an unshare removes the row every device is looking at.
+  membership rows ship in the same Action as the entity. Returns the handle.
+- `update(id, patch)` and `delete(id)`.
+- `duplicate(id, { at?, groups? })` — copies the live row (`at: "current"`, the
+  default) or the entity's earliest unresolved conflict's `before` row
+  (`at: "preSync"`), landing in the source's live groups unless `groups` says
+  otherwise. Returns the new handle.
+- `link(id, as, target)` / `unlink(id, as)` for a one-cardinality relationship;
+  `setLinks(id, as, { replace })` or `setLinks(id, as, { add, remove })` for a
+  many-cardinality one.
+- `addToGroup(id, groupId)`, `removeFromGroup(id, groupId)`, and
+  `setGroups(id, groupIds)` for membership. A membership row's id is derived
+  from the `(entity, group)` pair, so a share is idempotent across devices and
+  an unshare removes the row every device is looking at.
 
-`create` accepts the entity's wire fields. To set a relationship in the same
-Action, create the row through `client.atomic` (below) and pass the target to
-the draft's `create`.
-
-Multi-entity writes are one Action: `client.atomic` resolves handles created in
-one callback, and `defineAction(schema, callback)` mounts the same batch as
-`client.actions.<name>` so it can be reused.
-
-```typescript
-// Two writes, one Action: the new issue and an existing profile's
-// membership in the workspace.
-const issue = await client.atomic((drafts) => {
-  const created = drafts.issue.create(
-    { title: "Ship the docs", status: "todo" },
-    { groups: [groupId] },
-  );
-  drafts.profile.addToGroup(profileId, groupId);
-  return created;
-});
-```
-
-`defineAction(schema, callback)` declares the same batch once and mounts it as
-`client.actions.<name>` when the client is created with `actions`:
+The system entities get their own draft namespaces. `group.create` bootstraps a
+group — the group row plus the acting actor's membership, one Action.
+`membership.create` adds one `groupMember` row, and `membership.update` /
+`membership.delete` patch or remove one behind the local `last_group_member`
+guard, so leaving a workspace is one Action. Both namespaces also carry the
+plain entity verbs — `update`, `delete`, `duplicate`, `link`, `unlink`,
+`setLinks` — and omit only the membership verbs, since an `entityGroup` row for
+a group or a member has no meaning:
 
 ```typescript
 const inviteMember = defineAction(
@@ -193,17 +247,28 @@ await client.actions.inviteMember({ actorId: personId, groupId, permissions: [] 
 places in a group needs `<type>.update` in one of the entity's current groups as
 well as `<type>.create` in the target, so an invitation cannot file the invitee's
 profile: the inviter has no permission where that profile lives. The invitee's own
-client shares it, after observing the membership:
+client shares it, after observing the membership, through its own action:
 
 ```typescript
+const shareProfile = defineAction(
+  schema,
+  ({ profile }, params: { profileId: string; groupId: string }) =>
+    profile.addToGroup(params.profileId, params.groupId),
+);
+
 // run by a member of the group, through that member's client
 await memberClient.actions.inviteMember({ actorId: personId, groupId, permissions });
 await inviteeClient.handshake();
-await inviteeClient.profile.addToGroup(profileIdFor(personId), groupId); // the profile's owner
+// run by the invitee's client; `profileIdFor(personId)` belongs to its actor
+await inviteeClient.actions.shareProfile({ profileId: profileIdFor(personId), groupId });
 ```
 
 One Action carries one actor's authority, so the two cannot be batched. Between
 them the member exists and the profile does not — the `profile-pending` window.
+
+`client.write(actions)` and `client.seed(data)` stay as the schema-less
+transport and fixture path — pre-built wire Actions, not the application write
+surface.
 
 ### Not yet
 
@@ -212,9 +277,9 @@ The grammar has no `id` predicate: query the collection and select the row.
 
 ## Seeding fixtures
 
-`client.seed(data)` submits a `SeedData` fixture as one Action through the
-public write path, applying the shared rejection-tolerance policy. It is
-schema-less: rows carry their own ids and plain field values, so a client
+`client.seed(data)` submits a `SeedData` fixture as one Action through the same
+commit path an action takes, applying the shared rejection-tolerance policy. It
+is schema-less: rows carry their own ids and plain field values, so a client
 created without a `schema` can still seed fixture data.
 
 ```typescript

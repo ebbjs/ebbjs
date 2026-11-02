@@ -4,12 +4,9 @@
  * assigned to someone whose profile the actor can read.
  */
 
-import { useQuery, type QueryRoot } from "@ebbjs/react";
-import type { Schema } from "./schema";
+import { useQuery } from "./use-ebb";
 
 export function useVisibleProfiles() {
-  const { data: profiles = [] } = useQuery((q: QueryRoot<Schema>) =>
-    q.profile.query().orderBy("display_name", "asc"),
-  );
+  const { data: profiles = [] } = useQuery((q) => q.profile.query().orderBy("display_name", "asc"));
   return profiles;
 }

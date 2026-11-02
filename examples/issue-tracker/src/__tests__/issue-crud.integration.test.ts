@@ -5,8 +5,8 @@
  * green without a server and `pnpm test:integration` exercises it.
  *
  * Covers:
- * - create with an `assignee` relationship in one atomic Action and read
- *   it back through the `assignee` join;
+ * - create with an `assignee` relationship in one Action and read it back
+ *   through the `assignee` join;
  * - update, relationship filter, unlink, and soft delete;
  * - two actors in one shared group converge on the same issue state;
  * - an offline actor's queued field edit merges with the other actor's
@@ -14,9 +14,11 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createClient, type NamespacedClient } from "@ebbjs/client";
+import { createClient } from "@ebbjs/client";
 import type { SeedData } from "@ebbjs/core/seed";
-import { schema, type Schema } from "../schema";
+import { demoActions } from "../actions";
+import type { IssueTrackerClient } from "../bootstrap";
+import { schema } from "../schema";
 import { SEED_PERMISSIONS, SEEDER_ACTOR_ID, buildActorSeed, deriveActorSeedIds } from "../seed";
 import { catchUpGroup, syncAllGroups } from "../sync-groups";
 import { SERVER_URL, findRow, serverIsReachable } from "./integration-support";
@@ -27,7 +29,7 @@ const BOB = `crud_bob_${RUN_ID}`;
 const SHARED_GROUP_ID = `grp_crud_${RUN_ID}`;
 const ALICE_IDS = deriveActorSeedIds(ALICE);
 
-type Client = NamespacedClient<Schema>;
+type Client = IssueTrackerClient;
 
 /**
  * A shared group the two test actors both belong to. The seeder
@@ -107,13 +109,18 @@ beforeAll(async () => {
     return;
   }
 
-  alice = createClient({ serverUrl: SERVER_URL, actorId: ALICE, schema });
+  alice = createClient({ serverUrl: SERVER_URL, actorId: ALICE, schema, actions: demoActions });
   await alice.seed(buildActorSeed(ALICE));
 
-  bob = createClient({ serverUrl: SERVER_URL, actorId: BOB, schema });
+  bob = createClient({ serverUrl: SERVER_URL, actorId: BOB, schema, actions: demoActions });
   await bob.seed(buildActorSeed(BOB));
 
-  seeder = createClient({ serverUrl: SERVER_URL, actorId: SEEDER_ACTOR_ID, schema });
+  seeder = createClient({
+    serverUrl: SERVER_URL,
+    actorId: SEEDER_ACTOR_ID,
+    schema,
+    actions: demoActions,
+  });
   await seedSharedGroup(seeder);
 
   for (const client of [alice, bob]) {
@@ -131,12 +138,13 @@ describe("integration: issue CRUD", () => {
   it("creates with an assignee link and reads it back through the assignee join", async () => {
     if (!(await serverIsReachable())) return;
 
-    const created = await alice!.atomic((drafts) =>
-      drafts.issue.create(
-        { title: "First issue", status: "todo", priority: "medium", assignee: ALICE_IDS.profileId },
-        { groups: [ALICE_IDS.groupId] },
-      ),
-    );
+    const created = await alice!.actions.createIssue({
+      title: "First issue",
+      status: "todo",
+      priority: "medium",
+      assigneeId: ALICE_IDS.profileId,
+      groupId: ALICE_IDS.groupId,
+    });
     await catchUpGroup(alice!, ALICE_IDS.groupId);
 
     const row = findRow(await alice!.issue.query().with({ assignee: true }), created.id);
@@ -148,15 +156,19 @@ describe("integration: issue CRUD", () => {
   it("updates fields, filters by the relationship, unlinks, and deletes", async () => {
     if (!(await serverIsReachable())) return;
 
-    const created = await alice!.atomic((drafts) =>
-      drafts.issue.create(
-        { title: "Second issue", status: "todo", priority: "low", assignee: ALICE_IDS.profileId },
-        { groups: [ALICE_IDS.groupId] },
-      ),
-    );
+    const created = await alice!.actions.createIssue({
+      title: "Second issue",
+      status: "todo",
+      priority: "low",
+      assigneeId: ALICE_IDS.profileId,
+      groupId: ALICE_IDS.groupId,
+    });
     await catchUpGroup(alice!, ALICE_IDS.groupId);
 
-    await alice!.issue.update(created.id, { status: "in_progress", priority: "high" });
+    await alice!.actions.updateIssue({
+      id: created.id,
+      patch: { status: "in_progress", priority: "high" },
+    });
     await catchUpGroup(alice!, ALICE_IDS.groupId);
     const updated = findRow(await alice!.issue.query(), created.id);
     expect(updated?.status).toBe("in_progress");
@@ -165,12 +177,12 @@ describe("integration: issue CRUD", () => {
     const filtered = await alice!.issue.query().where("assignee", ALICE_IDS.profileId);
     expect(filtered.map((issue) => issue.id)).toContain(created.id);
 
-    await alice!.issue.unlink(created.id, "assignee");
+    await alice!.actions.setIssueAssignee({ id: created.id, assigneeId: null });
     await catchUpGroup(alice!, ALICE_IDS.groupId);
     const cleared = findRow(await alice!.issue.query().with({ assignee: true }), created.id);
     expect(cleared!.assignee).toBeNull();
 
-    await alice!.issue.delete(created.id);
+    await alice!.actions.deleteIssue({ id: created.id });
     await catchUpGroup(alice!, ALICE_IDS.groupId);
     const list = await alice!.issue.query();
     expect(list.map((issue) => issue.id)).not.toContain(created.id);
@@ -179,19 +191,20 @@ describe("integration: issue CRUD", () => {
   it("converges two actors on one issue state", async () => {
     if (!(await serverIsReachable())) return;
 
-    const created = await alice!.atomic((drafts) =>
-      drafts.issue.create(
-        { title: "Shared issue", status: "todo", priority: "medium" },
-        { groups: [SHARED_GROUP_ID] },
-      ),
-    );
+    const created = await alice!.actions.createIssue({
+      title: "Shared issue",
+      status: "todo",
+      priority: "medium",
+      assigneeId: null,
+      groupId: SHARED_GROUP_ID,
+    });
     await catchUpGroup(bob!, SHARED_GROUP_ID);
     const bobView = findRow(await bob!.issue.query(), created.id);
     expect(bobView?.title).toBe("Shared issue");
 
     // Different fields from each actor so the merge keeps both.
-    await bob!.issue.update(created.id, { status: "done" });
-    await alice!.issue.update(created.id, { priority: "urgent" });
+    await bob!.actions.updateIssue({ id: created.id, patch: { status: "done" } });
+    await alice!.actions.updateIssue({ id: created.id, patch: { priority: "urgent" } });
 
     await catchUpGroup(alice!, SHARED_GROUP_ID);
     await catchUpGroup(bob!, SHARED_GROUP_ID);
@@ -206,10 +219,13 @@ describe("integration: issue CRUD", () => {
   it("merges an offline actor's queued field edit with the other actor's live edit", async () => {
     if (!(await serverIsReachable())) return;
 
-    const created = await alice!.issue.create(
-      { title: `Offline merge ${Date.now().toString(36)}`, status: "todo", priority: "low" },
-      { groups: [SHARED_GROUP_ID] },
-    );
+    const created = await alice!.actions.createIssue({
+      title: `Offline merge ${Date.now().toString(36)}`,
+      status: "todo",
+      priority: "low",
+      assigneeId: null,
+      groupId: SHARED_GROUP_ID,
+    });
     await catchUpGroup(bob!, SHARED_GROUP_ID);
 
     const gate = gatedFetch();
@@ -217,6 +233,7 @@ describe("integration: issue CRUD", () => {
       serverUrl: SERVER_URL,
       actorId: ALICE,
       schema,
+      actions: demoActions,
       fetchImpl: gate.fetchImpl,
       reconnectInitialMs: 50,
       reconnectMaxMs: 200,
@@ -229,13 +246,15 @@ describe("integration: issue CRUD", () => {
       // Alice edits while her network is down: the write is applied to her
       // replica and held in the Outbox, but never reaches the server.
       gate.setOffline(true);
-      await expect(offlineAlice.issue.update(created.id, { priority: "urgent" })).rejects.toThrow();
+      await expect(
+        offlineAlice.actions.updateIssue({ id: created.id, patch: { priority: "urgent" } }),
+      ).rejects.toThrow();
       const offlineRow = findRow(await offlineAlice.issue.query(), created.id);
       expect(offlineRow?.priority).toBe("urgent");
       expect(offlineRow?.status).toBe("todo");
 
       // Bob changes a different field while she is away.
-      await bob!.issue.update(created.id, { status: "done" });
+      await bob!.actions.updateIssue({ id: created.id, patch: { status: "done" } });
       await catchUpGroup(bob!, SHARED_GROUP_ID);
 
       // Reconnect: the scheduler retries the queued Action, then both

@@ -12,7 +12,7 @@
  * resolution also feeds the `groups` union the committer returns.
  */
 
-import type { Update } from "@ebbjs/core";
+import type { Entity, Update } from "@ebbjs/core";
 
 /**
  * The local view the checker resolves a system write against. It is
@@ -186,4 +186,59 @@ export const lastGroupMemberViolation = (
   const capable = [...permissions.values()].some((list) => list.length > 0);
   if (capable) return undefined;
   return `removing this membership would leave the group with no member that can administer it`;
+};
+
+/**
+ * Reduce one `groupMember` row to the guard's inputs. A tombstoned or
+ * malformed row (missing / non-array permission list) is `null`, so the
+ * caller defers rather than reading it as "no permissions".
+ */
+export const liveGroupMember = (row: Entity): LiveGroupMember | null => {
+  if (row.deleted_hlc !== null) return null;
+  const groupId = row.data?.fields?.["group_id"]?.value;
+  const permissions = row.data?.fields?.["permissions"]?.value;
+  if (typeof groupId !== "string" || !isStringArray(permissions)) return null;
+  return { id: row.id, groupId, permissions };
+};
+
+const isStringArray = (value: unknown): value is readonly string[] =>
+  Array.isArray(value) && value.every((entry) => typeof entry === "string");
+
+/** The live `groupMember` rows of one group, ready for the guard. */
+export const groupMembersOf = (
+  rows: readonly Entity[],
+  groupId: string,
+): readonly LiveGroupMember[] =>
+  rows.flatMap((row) => {
+    const member = liveGroupMember(row);
+    return member === null || member.groupId !== groupId ? [] : [member];
+  });
+
+/**
+ * The local reads the `last_group_member` guard consults. The committer
+ * passes the storage-backed view; the draft planner passes the client's
+ * capability, so both write surfaces refuse identically.
+ */
+export interface GroupMemberView {
+  row(id: string): Promise<Entity | null>;
+  groupMembers(groupId: string): Promise<readonly LiveGroupMember[]>;
+}
+
+/**
+ * The `last_group_member` refusal for a `groupMember` delta, read from
+ * the local view. `undefined` when the target row is absent, not a
+ * `groupMember`, tombstoned, or malformed, or when the group's local
+ * member view is empty — the caller then defers to the server's
+ * authoritative check.
+ */
+export const lastGroupMemberRefusal = async (
+  view: GroupMemberView,
+  id: string,
+  delta: GroupMemberDelta,
+): Promise<string | undefined> => {
+  const row = await view.row(id);
+  if (row === null || row.type !== "groupMember" || row.deleted_hlc !== null) return undefined;
+  const groupId = row.data?.fields?.["group_id"]?.value;
+  if (typeof groupId !== "string") return undefined;
+  return lastGroupMemberViolation(await view.groupMembers(groupId), delta);
 };

@@ -135,7 +135,7 @@ export interface MethodUnsupportedViolation {
 
 /**
  * Aggregated refusal of a locally-authored batch. Mirrors
- * `EntityValidationError` / `AtomicActionError`: a named `Error`
+ * `EntityValidationError` / `ActionRejectedError`: a named `Error`
  * subclass with structured readonly reasons and a message formatted
  * from them. Thrown by `client.write()` before anything is enqueued.
  */

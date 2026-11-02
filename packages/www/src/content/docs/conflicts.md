@@ -193,7 +193,15 @@ There are no `accept` / `backup` / `merge` verbs.
 
 The pre-sync row is reachable as `Conflict.subjectStates[].before` ([#408](https://github.com/ebbjs/ebbjs/issues/408), [#409](https://github.com/ebbjs/ebbjs/issues/409)): the state the client had before the catch-up window, durable on the conflict payload. There is no standalone `client.snapshots` surface — a pre-merge row only has value when the sync clobbered something the user wrote, so backup is conflict-scoped, and nothing captures pre-sync rows outside detection.
 
-Duplicate an entity at that point in time with `client.<entity>.duplicate(id, { at: "preSync" })` ([#397](https://github.com/ebbjs/ebbjs/issues/397)). The copy resolves the entity's earliest unresolved conflict and copies its `before` row. With no unresolved conflict referencing the entity it throws `duplicate: no unresolved conflict for "<id>"`.
+Duplicate an entity at that point in time inside an action, with the draft `duplicate(id, { at: "preSync" })` verb ([#397](https://github.com/ebbjs/ebbjs/issues/397)). The copy resolves the entity's earliest unresolved conflict and copies its `before` row; it lands in the source's live groups unless the verb's `groups` option says otherwise. With no unresolved conflict referencing the entity it throws `duplicate: no unresolved conflict for "<id>"`.
+
+```ts
+const restoreIssue = defineAction(schema, ({ issue }, params: { id: string }) =>
+  issue.duplicate(params.id, { at: "preSync" }),
+);
+
+const copy = await client.actions.restoreIssue({ id: issueId });
+```
 
 ## Server merge rule
 

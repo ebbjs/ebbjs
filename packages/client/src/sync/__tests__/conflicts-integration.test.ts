@@ -17,6 +17,7 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { createClient } from "../client";
 import { callApplyAction } from "../test-utils";
+import { testActions } from "./test-actions";
 import { defineEntity, e } from "../../schema/entity";
 import { defineSchema } from "../../schema/schema";
 import type { Conflict, ConflictEntry } from "../conflicts";
@@ -59,6 +60,7 @@ const mkClient = (fetchImpl: typeof fetch, storage?: ReturnType<typeof createMem
     serverUrl: SERVER_URL,
     actorId: ACTOR_ID,
     schema,
+    actions: testActions(schema),
     fetchImpl,
     ...(storage === undefined ? {} : { storage }),
   });
@@ -485,7 +487,12 @@ describe("client.conflicts (#310)", () => {
     await callApplyAction(client, peer, "g_1");
     await client.outbox.detectConflicts([peer], "cu_1");
 
-    const { id } = await client.todo.duplicate("todo_1", { at: "preSync", groups: ["g_1"] });
+    const { id } = await client.actions.duplicate({
+      entity: "todo",
+      id: "todo_1",
+      at: "preSync",
+      groups: ["g_1"],
+    });
 
     const put = postedActions(stub.calls)
       .flatMap((action) => action.updates)

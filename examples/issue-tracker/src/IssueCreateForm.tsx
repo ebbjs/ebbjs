@@ -1,17 +1,16 @@
 /**
- * Create-issue form. Creates the row and, when an assignee is picked,
- * its `assignee` relationship in one atomic Action via `client.atomic`,
- * so the issue is never briefly visible without its link.
+ * Create-issue form. The `createIssue` Action (declared in `./actions`)
+ * drafts the row and, when an assignee is picked, its `assignee` link in
+ * one Action, so the issue is never briefly visible without its link.
  *
  * The Outbox applies the Action optimistically, so the issue appears in
  * the list before the server acknowledges it.
  */
 
 import { useState } from "react";
-import { useClient } from "@ebbjs/react";
 import { PRIORITY_OPTIONS, STATUS_OPTIONS, assigneeOptions } from "./issue-options";
 import { SelectField } from "./SelectField";
-import type { Schema } from "./schema";
+import { useEbb } from "./use-ebb";
 import { useWorkspaceProfiles } from "./use-workspace-profiles";
 import { useWrite } from "./use-write";
 
@@ -24,7 +23,7 @@ export function IssueCreateForm({
   onCreated: (id: string) => void;
   onCancel: () => void;
 }) {
-  const client = useClient<Schema>();
+  const client = useEbb();
   const profiles = useWorkspaceProfiles(groupId);
   const [title, setTitle] = useState("");
   const [status, setStatus] = useState<string>("todo");
@@ -38,17 +37,13 @@ export function IssueCreateForm({
     event.preventDefault();
     if (trimmedTitle === "" || submitting) return;
     void run(async () => {
-      const created = await client.atomic((drafts) =>
-        drafts.issue.create(
-          {
-            title: trimmedTitle,
-            status,
-            priority,
-            assignee: assigneeId === "" ? null : assigneeId,
-          },
-          { groups: [groupId] },
-        ),
-      );
+      const created = await client.actions.createIssue({
+        title: trimmedTitle,
+        status,
+        priority,
+        assigneeId: assigneeId === "" ? null : assigneeId,
+        groupId,
+      });
       onCreated(created.id);
     });
   };

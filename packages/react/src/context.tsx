@@ -1,45 +1,43 @@
 import { createContext, useContext, type ReactNode } from "react";
-import type { AnyActionDef, NamespacedClient, SyncClient } from "@ebbjs/client";
+import type { SyncClient } from "@ebbjs/client";
 
 /**
- * Holds the `SyncClient` for a subtree. `null` is the "no provider"
- * sentinel; {@link useClient} turns it into a loud error so a
- * mis-wired tree fails at the hook rather than later at a network call.
- *
- * Storage is deliberately erased to the base `SyncClient`: the
- * provider type carries the schema through its generics, and
- * {@link useClient} restores the precise `NamespacedClient<S, TActions>`
- * once. A single cast here keeps every call site cast-free.
+ * The app's client, erased to `SyncClient`: the caller's type re-enters at
+ * {@link useClient}, so one cast there keeps call sites cast-free. `null` is
+ * the "no provider" sentinel, turned into a loud error by the same hook.
  */
 const EbbClientContext = createContext<SyncClient | null>(null);
 
-export interface EbbProviderProps<
-  S = undefined,
-  TActions extends Record<string, AnyActionDef> = Record<string, never>,
-> {
+export interface EbbProviderProps<C extends SyncClient = SyncClient> {
   /** The sync client every hook below reads and subscribes to. */
-  readonly client: NamespacedClient<S, TActions>;
+  readonly client: C;
   readonly children: ReactNode;
 }
 
 /**
- * Makes a `NamespacedClient` available to the hooks below it.
- *
- * The caller owns the client, not the provider, so remounting the tree
- * (Fast Refresh, route transitions) doesn't tear down the connection.
+ * Makes the app's client available to the hooks below it. The caller owns the
+ * client, so remounting the tree doesn't tear down the connection.
  */
-export function EbbProvider<
-  S = undefined,
-  TActions extends Record<string, AnyActionDef> = Record<string, never>,
->({ client, children }: EbbProviderProps<S, TActions>) {
+export function EbbProvider<C extends SyncClient = SyncClient>({
+  client,
+  children,
+}: EbbProviderProps<C>) {
   return <EbbClientContext.Provider value={client}>{children}</EbbClientContext.Provider>;
 }
 
-/** Read the nearest `<EbbProvider>`'s client, typed by the caller's schema. */
-export function useClient<
-  S = undefined,
-  TActions extends Record<string, AnyActionDef> = Record<string, never>,
->(): NamespacedClient<S, TActions> {
+/**
+ * Read the nearest `<EbbProvider>`'s client, typed by the client type — reads
+ * and actions in one name:
+ *
+ * ```tsx
+ * type AppClient = typeof client;
+ * const bound = useClient<AppClient>();
+ * ```
+ *
+ * Throws outside a provider. {@link createEbbHooks} binds this and
+ * `useQuery` once so components need no generic at all.
+ */
+export function useClient<C extends SyncClient = SyncClient>(): C {
   const client = useContext(EbbClientContext);
   if (client === null) {
     throw new Error(
@@ -47,5 +45,5 @@ export function useClient<
         "Wrap the tree in <EbbProvider client={client}> at the app root.",
     );
   }
-  return client as NamespacedClient<S, TActions>;
+  return client as C;
 }

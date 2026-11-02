@@ -3,6 +3,9 @@
  * `addToGroup` / `removeFromGroup` verbs compose into the batch, and a
  * content write plus a membership delta into different groups compose
  * into one spanning Action (the server delivers per-Update scope, #473).
+ *
+ * Every test drives a mounted `run` action, so the drafts reach the
+ * planner and the committer through the one write path.
  */
 
 import { describe, expect, it } from "vitest";
@@ -10,9 +13,10 @@ import { decodeSync, type Action, type Entity } from "@ebbjs/core";
 
 import { defineEntity, e } from "../../schema/entity";
 import { defineSchema } from "../../schema/schema";
-import { AtomicActionError } from "../operations";
+import { ActionRejectedError } from "../operations";
 import { EntityValidationError } from "../../schema/entity-registry";
 import { createClient } from "../client";
+import { testActions } from "./test-actions";
 
 const todo = defineEntity("todo", { title: e.string() });
 const schema = defineSchema({ entities: { todo }, version: 1 });
@@ -64,6 +68,7 @@ const mkClient = async () => {
     actorId: "actor_1",
     storage,
     schema,
+    actions: testActions(schema),
     fetchImpl,
   });
   await client.handshake();
@@ -77,7 +82,7 @@ describe("drafts — membership verbs (#464)", () => {
   it("composes a draft addToGroup with a group-coherent create into one Action", async () => {
     const { client, actions } = await mkClient();
 
-    await client.atomic(({ todo: draft }) => {
+    await client.actions.run(({ todo: draft }) => {
       draft.create({ title: "Ship it" }, { groups: ["g_1"] });
       draft.addToGroup("todo_existing", "g_1");
     });
@@ -93,7 +98,7 @@ describe("drafts — membership verbs (#464)", () => {
   it("submits a content create in g_1 mixed with a membership delta into g_2 as one Action", async () => {
     const { client, actions } = await mkClient();
 
-    await client.atomic(({ todo: draft }) => {
+    await client.actions.run(({ todo: draft }) => {
       draft.create({ title: "Ship it" }, { groups: ["g_1"] });
       draft.addToGroup("todo_existing", "g_2");
     });
@@ -115,7 +120,7 @@ describe("drafts — membership verbs (#464)", () => {
   it("lets a membership batch span groups in one Action", async () => {
     const { client, actions } = await mkClient();
 
-    await client.atomic(({ todo: draft }) => {
+    await client.actions.run(({ todo: draft }) => {
       draft.addToGroup("todo_1", "g_1");
       draft.addToGroup("todo_2", "g_2");
     });
@@ -134,10 +139,10 @@ describe("drafts — membership verbs (#464)", () => {
     const first = await mkClient();
     const second = await mkClient();
 
-    await first.client.atomic(({ todo: draft }) => {
+    await first.client.actions.run(({ todo: draft }) => {
       draft.addToGroup("todo_1", "g_1");
     });
-    await second.client.atomic(({ todo: draft }) => {
+    await second.client.actions.run(({ todo: draft }) => {
       draft.addToGroup("todo_1", "g_1");
     });
 
@@ -150,7 +155,11 @@ describe("drafts — membership verbs (#464)", () => {
   it("gives a multi-group entity one distinct row per group", async () => {
     const { client, actions } = await mkClient();
 
-    await client.todo.create({ title: "both" }, { groups: ["g_1", "g_2"] });
+    await client.actions.create({
+      entity: "todo",
+      input: { title: "both" },
+      groups: ["g_1", "g_2"],
+    });
 
     const ids = updatesOf(actions)
       .filter((u) => u.subject_type === "entityGroup")
@@ -164,10 +173,10 @@ describe("drafts — membership verbs (#464)", () => {
     await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
     await storage.entities.set(mkEntityGroup("eg_2", "todo_1", "g_2"));
 
-    await client.atomic(({ todo: draft }) => {
+    await client.actions.run(({ todo: draft }) => {
       draft.removeFromGroup("todo_1", "g_1");
     });
-    await client.atomic(({ todo: draft }) => {
+    await client.actions.run(({ todo: draft }) => {
       draft.addToGroup("todo_1", "g_1");
     });
 
@@ -190,7 +199,7 @@ describe("drafts — membership verbs (#464)", () => {
     const { client, storage, actions } = await mkClient();
     await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
 
-    await client.atomic(({ todo: draft }) => {
+    await client.actions.run(({ todo: draft }) => {
       draft.addToGroup("todo_1", "g_1");
     });
 
@@ -202,7 +211,7 @@ describe("drafts — membership verbs (#464)", () => {
     await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
     await storage.entities.set(mkEntityGroup("eg_2", "todo_1", "g_2"));
 
-    await client.atomic(({ todo: draft }) => {
+    await client.actions.run(({ todo: draft }) => {
       draft.removeFromGroup("todo_1", "g_1");
     });
 
@@ -216,14 +225,14 @@ describe("drafts — membership verbs (#464)", () => {
     const { client, storage, actions } = await mkClient();
     await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
 
-    const error = await client
-      .atomic(({ todo: draft }) => {
+    const error = await client.actions
+      .run(({ todo: draft }) => {
         draft.removeFromGroup("todo_1", "g_1");
       })
       .catch((err: unknown) => err);
 
-    expect(error).toBeInstanceOf(AtomicActionError);
-    expect((error as AtomicActionError).rejections.map((r) => r.reason)).toEqual([
+    expect(error).toBeInstanceOf(ActionRejectedError);
+    expect((error as ActionRejectedError).rejections.map((r) => r.reason)).toEqual([
       "last_membership",
     ]);
     expect(actions).toHaveLength(0);
@@ -232,8 +241,8 @@ describe("drafts — membership verbs (#464)", () => {
   it("throws EntityValidationError when the removed row is not in the local view", async () => {
     const { client, actions } = await mkClient();
 
-    const error = await client
-      .atomic(({ todo: draft }) => {
+    const error = await client.actions
+      .run(({ todo: draft }) => {
         draft.removeFromGroup("todo_1", "g_1");
       })
       .catch((err: unknown) => err);
@@ -246,7 +255,7 @@ describe("drafts — membership verbs (#464)", () => {
     const { client, actions } = await mkClient();
 
     await expect(
-      client.atomic(({ todo: draft }) => {
+      client.actions.run(({ todo: draft }) => {
         draft.addToGroup("todo_1", 42 as never);
       }),
     ).rejects.toBeInstanceOf(EntityValidationError);

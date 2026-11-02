@@ -23,6 +23,7 @@ import { defineRelationship } from "../../schema/relationship";
 import { defineSchema } from "../../schema/schema";
 import { createClient } from "../client";
 import { callApplyAction } from "../test-utils";
+import { testActions } from "./test-actions";
 
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "actor_1";
@@ -113,6 +114,7 @@ const mkClient = (storage: ReturnType<typeof createMemoryAdapter>) =>
     actorId: ACTOR_ID,
     storage,
     schema,
+    actions: testActions(schema),
     fetchImpl: (async () =>
       new Response(JSON.stringify({ rejected: [] }), { status: 200 })) as unknown as typeof fetch,
   });
@@ -329,7 +331,7 @@ describe("replica adjacency accessors (#520)", () => {
       put("user_1", "user", { name: "Ada" }, { actionId: "a_2", gsn: 2, ms: 20 }),
     );
 
-    await client.todo.link("todo_1", "owner", "user_1");
+    await client.actions.link({ entity: "todo", id: "todo_1", as: "owner", target: "user_1" });
 
     const row = await client.todo.get("todo_1");
     if (row === null) throw new Error("expected row");
