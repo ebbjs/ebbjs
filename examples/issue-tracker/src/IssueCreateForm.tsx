@@ -8,11 +8,9 @@
  */
 
 import { useState } from "react";
-import { useClient } from "@ebbjs/react";
-import type { DemoActions } from "./actions";
 import { PRIORITY_OPTIONS, STATUS_OPTIONS, assigneeOptions } from "./issue-options";
 import { SelectField } from "./SelectField";
-import type { Schema } from "./schema";
+import { useAppClient } from "./use-app-client";
 import { useWorkspaceProfiles } from "./use-workspace-profiles";
 import { useWrite } from "./use-write";
 
@@ -25,7 +23,7 @@ export function IssueCreateForm({
   onCreated: (id: string) => void;
   onCancel: () => void;
 }) {
-  const client = useClient<Schema, DemoActions>();
+  const client = useAppClient();
   const profiles = useWorkspaceProfiles(groupId);
   const [title, setTitle] = useState("");
   const [status, setStatus] = useState<string>("todo");

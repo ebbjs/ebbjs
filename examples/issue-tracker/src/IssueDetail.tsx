@@ -13,11 +13,11 @@
  */
 
 import { useState } from "react";
-import { useClient, useQuery, type QueryRoot } from "@ebbjs/react";
-import type { DemoActions } from "./actions";
+import { useQuery, type QueryRoot } from "@ebbjs/react";
 import { PRIORITY_OPTIONS, STATUS_OPTIONS, assigneeOptions } from "./issue-options";
 import { SelectField } from "./SelectField";
 import type { Schema } from "./schema";
+import { useAppClient } from "./use-app-client";
 import { useWorkspaceProfiles } from "./use-workspace-profiles";
 import { useWrite } from "./use-write";
 
@@ -30,7 +30,7 @@ export function IssueDetail({
   onClose: () => void;
   onDeleted: () => void;
 }) {
-  const client = useClient<Schema, DemoActions>();
+  const client = useAppClient();
   const {
     data: issues,
     status,

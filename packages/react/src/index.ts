@@ -4,8 +4,8 @@
  * Ships the client plumbing plus the data hooks:
  *
  * - `EbbProvider` — context carrying a `NamespacedClient<S, TActions>`
- * - `useClient<S, TActions>()` — read the client typed by the caller's
- *   schema and action map
+ * - `useClient<C>()` — read the client typed by the caller's whole client
+ *   type (schema and action map together)
  * - `useConnection` — `useSyncExternalStore` over connection state
  * - `useQuery` — the reactive read root: build a query through the typed
  *   entity namespaces and subscribe to its cached result

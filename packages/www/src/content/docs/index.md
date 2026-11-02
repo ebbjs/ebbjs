@@ -167,7 +167,7 @@ await server.kill();
 React bindings for `@ebbjs/client` — a provider, a connection hook, and the query hooks, plus `useClient` for actions. Ships `EbbProvider`, `useClient`, `useConnection`, and `useQuery`. `useQuery` is the read root; `useClient` exposes `client.actions`.
 
 ```tsx
-import { defineAction } from "@ebbjs/client";
+import { defineAction, type NamespacedClient } from "@ebbjs/client";
 import { EbbProvider, useClient, useQuery, type QueryRoot } from "@ebbjs/react";
 
 // Writes are actions: declared once at module scope, mounted on the client.
@@ -178,6 +178,10 @@ const removeTodo = defineAction(schema, ({ todo }, params: { id: string }) =>
   todo.delete(params.id),
 );
 const todoActions = { toggleTodo, removeTodo };
+
+// The client type names reads and actions together, so `useClient` takes one
+// generic and adding an action does not touch a call site.
+type TodoClient = NamespacedClient<Schema, typeof todoActions>;
 
 function OpenTodos() {
   const { data, status, loading, error } = useQuery((q: QueryRoot<Schema>) =>
@@ -196,7 +200,7 @@ function OpenTodos() {
 }
 
 function TodoRow({ id }: { id: string }) {
-  const client = useClient<Schema, typeof todoActions>();
+  const client = useClient<TodoClient>();
   const { data: todos, status } = useQuery((q: QueryRoot<Schema>) => q.todo.query());
   const todo = todos?.find((row) => row.id === id);
 

@@ -27,6 +27,11 @@ Removed:
 - `useEntityMutations` from `@ebbjs/react` — call `client.actions.<name>` from
   `useClient` instead.
 
+`useClient` now takes the **client type** rather than a schema-plus-actions
+pair: `useClient<AppClient>()` instead of `useClient<Schema, typeof actions>()`.
+Name the client once (`type AppClient = typeof client`) and wrap the hook in an
+app-local `useAppClient()` if components should carry no generic at all.
+
 Renamed types: `AtomicActionError` → `ActionRejectedError`, `AtomicDrafts` →
 `ActionDrafts`, `AtomicDraftNamespace` → `DraftNamespace`, `AtomicCreateOptions` →
 `DraftCreateOptions`. The entity namespace's `CreateOptions` / `DuplicateOptions`

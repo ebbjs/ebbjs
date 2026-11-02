@@ -1,24 +1,21 @@
 import { createContext, useContext, type ReactNode } from "react";
-import type { AnyActionDef, NamespacedClient, SyncClient } from "@ebbjs/client";
+import type { SyncClient } from "@ebbjs/client";
 
 /**
  * Holds the `SyncClient` for a subtree. `null` is the "no provider"
  * sentinel; {@link useClient} turns it into a loud error so a
  * mis-wired tree fails at the hook rather than later at a network call.
  *
- * Storage is deliberately erased to the base `SyncClient`: the
- * provider type carries the schema through its generics, and
- * {@link useClient} restores the precise `NamespacedClient<S, TActions>`
- * once. A single cast here keeps every call site cast-free.
+ * Storage is deliberately erased to the base `SyncClient`: the caller's
+ * client type carries the schema and action map through one generic,
+ * and {@link useClient} restores it once. A single cast here keeps every
+ * call site cast-free.
  */
 const EbbClientContext = createContext<SyncClient | null>(null);
 
-export interface EbbProviderProps<
-  S = undefined,
-  TActions extends Record<string, AnyActionDef> = Record<string, never>,
-> {
+export interface EbbProviderProps<C extends SyncClient = SyncClient> {
   /** The sync client every hook below reads and subscribes to. */
-  readonly client: NamespacedClient<S, TActions>;
+  readonly client: C;
   readonly children: ReactNode;
 }
 
@@ -28,18 +25,28 @@ export interface EbbProviderProps<
  * The caller owns the client, not the provider, so remounting the tree
  * (Fast Refresh, route transitions) doesn't tear down the connection.
  */
-export function EbbProvider<
-  S = undefined,
-  TActions extends Record<string, AnyActionDef> = Record<string, never>,
->({ client, children }: EbbProviderProps<S, TActions>) {
+export function EbbProvider<C extends SyncClient = SyncClient>({
+  client,
+  children,
+}: EbbProviderProps<C>) {
   return <EbbClientContext.Provider value={client}>{children}</EbbClientContext.Provider>;
 }
 
-/** Read the nearest `<EbbProvider>`'s client, typed by the caller's schema. */
-export function useClient<
-  S = undefined,
-  TActions extends Record<string, AnyActionDef> = Record<string, never>,
->(): NamespacedClient<S, TActions> {
+/**
+ * Read the nearest `<EbbProvider>`'s client, typed by the whole client
+ * type — schema and action map together:
+ *
+ * ```tsx
+ * type AppClient = NamespacedClient<typeof schema, typeof appActions>;
+ * const client = useClient<AppClient>();
+ * ```
+ *
+ * Naming the client once (rather than a schema and an action map here)
+ * keeps the call site stable when a client grows: entities, actions, and
+ * anything added beside them stay in one type. An app can also wrap this
+ * in its own `useAppClient()` so components carry no generic at all.
+ */
+export function useClient<C extends SyncClient = SyncClient>(): C {
   const client = useContext(EbbClientContext);
   if (client === null) {
     throw new Error(
@@ -47,5 +54,5 @@ export function useClient<
         "Wrap the tree in <EbbProvider client={client}> at the app root.",
     );
   }
-  return client as NamespacedClient<S, TActions>;
+  return client as C;
 }

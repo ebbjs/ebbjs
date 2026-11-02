@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import type {
+  NamespacedClient,
   NoJoins,
   ProjectedRow,
   QueryBuilder,
@@ -76,7 +77,7 @@ export function useQuery<
   build: (q: QueryRoot<S>) => QueryBuilder<TFields, TJoins, TJoined, TRow>,
   deps: readonly unknown[] = [],
 ): UseQueryResult<TFields, TJoined, TRow> {
-  const client = useClient<S>();
+  const client = useClient<NamespacedClient<S>>();
   // SAFETY: the provider stores the same client these namespaces come from;
   // `QueryRoot` only narrows that surface to `query()`.
   const root = client as QueryRoot<S>;

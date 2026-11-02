@@ -16,12 +16,12 @@
  */
 
 import { useEffect, useState } from "react";
-import { useClient, useQuery, type QueryRoot } from "@ebbjs/react";
-import type { DemoActions } from "./actions";
+import { useQuery, type QueryRoot } from "@ebbjs/react";
 import { useWorkspaceProfiles } from "./use-workspace-profiles";
 import type { BootstrapResult } from "./bootstrap";
 import type { Schema } from "./schema";
 import { MEMBER_PERMISSIONS, SHARED_GROUP_ID } from "./seed";
+import { useAppClient } from "./use-app-client";
 import { useWrite } from "./use-write";
 import {
   inviteToWorkspace,
@@ -37,7 +37,7 @@ export function MembershipPanel({
   actorId: string;
   bootstrap: BootstrapResult;
 }) {
-  const client = useClient<Schema, DemoActions>();
+  const client = useAppClient();
   const { data: members = [] } = useQuery(
     (q: QueryRoot<Schema>) =>
       q.membership.query().where("group_id", SHARED_GROUP_ID).where("actor_id", actorId),

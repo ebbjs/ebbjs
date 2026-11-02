@@ -4,9 +4,10 @@ React bindings for [`@ebbjs/client`](https://github.com/ebbjs/ebbjs/tree/main/pa
 
 This package ships the client plumbing plus the data hooks:
 
-- `EbbProvider` — context carrying a `NamespacedClient<S, TActions>`.
-- `useClient<S>()` — read the client, typed by the caller's schema and action
-  map, for writes (`client.actions`). Reads go through `useQuery`.
+- `EbbProvider` — context carrying the app's client.
+- `useClient<C>()` — read that client, typed by the _client type_ rather than
+  a schema-plus-actions pair, so one generic covers reads and `client.actions`
+  together. Reads go through `useQuery`.
 - `useConnection()` — `useSyncExternalStore` over `client.onStateChange`, returning the `ConnectionState`.
 - `useQuery()` — the reactive read root: build a query through the typed namespaces and subscribe to its cached result.
 
@@ -62,7 +63,7 @@ function OpenTodos() {
 
 function ConnectionBadge() {
   const state = useConnection();
-  const { actorId } = useClient<Schema>();
+  const { actorId } = useClient<typeof client>();
   return <span>{`${actorId}: ${state}`}</span>;
 }
 
@@ -170,11 +171,12 @@ internal / undocumented; `useEntity` was removed in #501.
 
 ## `useClient` and writes
 
-`useClient<Schema, TActions>()` returns the provider's client typed by the
-caller's schema and action map. It is the write surface, not a read surface:
-reads go through `useQuery`. Every write is an Action: declare it once at
-module scope with `defineAction`, mount it on the client, and call it as
-`client.actions.<name>`.
+`useClient<C>()` returns the provider's client typed by the client type
+itself. One generic covers the schema (reads) and the action map
+(`client.actions`) together, so adding an action never changes a call site.
+It is the write surface, not a read surface: reads go through `useQuery`.
+Every write is an Action: declare it once at module scope with `defineAction`,
+mount it on the client, and call it as `client.actions.<name>`.
 
 ```tsx
 // Module scope, beside the client that mounts it.
@@ -184,11 +186,26 @@ const createIssue = defineAction(schema, ({ issue }, params: { title: string; gr
 
 const client = createClient({ serverUrl, actorId, schema, actions: { createIssue } });
 
+type AppClient = typeof client;
+
 function NewIssue({ groupId }: { groupId: string }) {
-  const client = useClient<Schema, { createIssue: typeof createIssue }>();
+  const client = useClient<AppClient>();
   const create = () => client.actions.createIssue({ title: "Buy milk", groupId });
   return <button onClick={() => void create()}>new issue</button>;
 }
+```
+
+Naming the client once also lets a component stop carrying a generic at all —
+one module owns the type, every call site reads the same:
+
+```tsx
+// app-client.ts — the only place that knows the client's shape.
+export type AppClient = typeof client;
+export const useAppClient = (): AppClient => useClient<AppClient>();
+
+// anywhere below the provider
+const client = useAppClient();
+await client.actions.createIssue({ title: "Buy milk", groupId });
 ```
 
 One call is one Action, and a rejection throws `ActionRejectedError`. The
@@ -196,25 +213,26 @@ action callback is synchronous and cannot live inside a component, so a
 component only calls the mounted action.
 
 A multi-entity action reads the same way — everything its callback drafts is
-one Action, or none of it commits:
+one Action, or none of it commits. The issue-tracker demo's `leaveWorkspace`
+drafts two writes (a profile leaving a group, its `groupMember` row going with
+it) and still costs one call:
 
 ```tsx
-const client = useClient<Schema, typeof workspaceActions>();
-await client.actions.addToWorkspace({ actorId, profileId, groupId, permissions });
+await client.actions.leaveWorkspace({ profileId, groupId, memberId });
 ```
 
 ## API
 
-| Export                     | What                                                                           |
-| -------------------------- | ------------------------------------------------------------------------------ |
-| `EbbProvider`              | Makes a `NamespacedClient<S, TActions>` available to hooks below it.           |
-| `useClient<S, TActions>()` | Returns the nearest provider's client typed by `S`; throws outside a provider. |
-| `useConnection()`          | Subscribes to connection state and re-renders on transitions.                  |
-| `useQuery(build, deps?)`   | Subscribes to a cached query result; `{ data, status, loading, error }`.       |
-| `EbbProviderProps`         | The provider's prop type.                                                      |
-| `UseQueryResult`           | The `useQuery` result type.                                                    |
-| `QueryRows`                | The projected row-list type a `QueryBuilder` resolves to.                      |
-| `ConnectionState`          | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.     |
+| Export                   | What                                                                           |
+| ------------------------ | ------------------------------------------------------------------------------ |
+| `EbbProvider`            | Makes the app's client available to hooks below it.                            |
+| `useClient<C>()`         | Returns the nearest provider's client typed as `C`; throws outside a provider. |
+| `useConnection()`        | Subscribes to connection state and re-renders on transitions.                  |
+| `useQuery(build, deps?)` | Subscribes to a cached query result; `{ data, status, loading, error }`.       |
+| `EbbProviderProps`       | The provider's prop type.                                                      |
+| `UseQueryResult`         | The `useQuery` result type.                                                    |
+| `QueryRows`              | The projected row-list type a `QueryBuilder` resolves to.                      |
+| `ConnectionState`        | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.     |
 
 ## Peer dependencies
 
