@@ -22,7 +22,7 @@ import { IssuesPanel } from "../IssuesPanel";
 import { schema } from "../schema";
 import { SEED_PERMISSIONS, SEEDER_ACTOR_ID, buildActorSeed, deriveActorSeedIds } from "../seed";
 import { catchUpGroup, syncAllGroups } from "../sync-groups";
-import { buildIssueQuery } from "../use-issues";
+import { issueQuery } from "../use-issues";
 import { ISSUE_PAGE_SIZE, NO_ISSUE_FILTERS, type IssueFilters } from "../issue-view";
 import { SERVER_URL, serverIsReachable } from "./integration-support";
 
@@ -138,28 +138,20 @@ describe("integration: issue list and board", () => {
     await alice!.actions.setIssueAssignee({ id: doing.id, assigneeId: ALICE_IDS.profileId });
     await catchUpGroup(alice!, SHARED_GROUP_ID);
 
-    const statusRows = await buildIssueQuery(alice!, filters({ status: "todo" }), 100);
+    const statusRows = await issueQuery(filters({ status: "todo" }), 100)(alice!);
     expect(statusRows.map((row) => row.id)).toContain(todo.id);
     expect(statusRows.map((row) => row.id)).not.toContain(doing.id);
 
-    const priorityRows = await buildIssueQuery(alice!, filters({ priority: "high" }), 100);
+    const priorityRows = await issueQuery(filters({ priority: "high" }), 100)(alice!);
     expect(priorityRows.map((row) => row.id)).toContain(doing.id);
     expect(priorityRows.map((row) => row.id)).not.toContain(todo.id);
 
-    const assigneeRows = await buildIssueQuery(
-      alice!,
-      filters({ assignee: ALICE_IDS.profileId }),
-      100,
-    );
+    const assigneeRows = await issueQuery(filters({ assignee: ALICE_IDS.profileId }), 100)(alice!);
     expect(assigneeRows.map((row) => row.id)).toContain(doing.id);
     expect(assigneeRows.map((row) => row.id)).not.toContain(todo.id);
     expect(assigneeRows.find((row) => row.id === doing.id)?.assignee?.id).toBe(ALICE_IDS.profileId);
 
-    const combined = await buildIssueQuery(
-      alice!,
-      filters({ status: "todo", priority: "low" }),
-      100,
-    );
+    const combined = await issueQuery(filters({ status: "todo", priority: "low" }), 100)(alice!);
     expect(combined.map((row) => row.id)).toContain(todo.id);
     expect(combined.map((row) => row.id)).not.toContain(doing.id);
   });
@@ -182,8 +174,8 @@ describe("integration: issue list and board", () => {
 
     // A unique filter keeps the fixture isolated from the other cases.
     const scoped = filters({ status: "todo", priority: "urgent" });
-    const firstPage = await buildIssueQuery(alice!, scoped, ISSUE_PAGE_SIZE);
-    const nextPage = await buildIssueQuery(alice!, scoped, ISSUE_PAGE_SIZE * 2);
+    const firstPage = await issueQuery(scoped, ISSUE_PAGE_SIZE)(alice!);
+    const nextPage = await issueQuery(scoped, ISSUE_PAGE_SIZE * 2)(alice!);
 
     expect(firstPage).toHaveLength(ISSUE_PAGE_SIZE);
     expect(nextPage).toHaveLength(created.length);
@@ -202,8 +194,8 @@ describe("integration: issue list and board", () => {
     });
     await catchUpGroup(alice!, SHARED_GROUP_ID);
 
-    const firstAfter = await buildIssueQuery(alice!, scoped, ISSUE_PAGE_SIZE);
-    const nextAfter = await buildIssueQuery(alice!, scoped, ISSUE_PAGE_SIZE * 2);
+    const firstAfter = await issueQuery(scoped, ISSUE_PAGE_SIZE)(alice!);
+    const nextAfter = await issueQuery(scoped, ISSUE_PAGE_SIZE * 2)(alice!);
     expect(nextAfter.slice(0, firstAfter.length).map((row) => row.id)).toEqual(
       firstAfter.map((row) => row.id),
     );

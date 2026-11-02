@@ -12,23 +12,29 @@ import { useQuery, type IssueReadRoot } from "./use-ebb";
 import type { IssueFilters } from "./issue-view";
 
 /**
- * Build the issue chain for one filter selection and window size. Exported
- * so the integration tests exercise the same chain the hook renders.
+ * The issues query for one filter selection and window size, as a function of
+ * a read root. The hook runs it against the provider's client; a test runs it
+ * against a client it built, so the query a test asserts and the query the UI
+ * renders are the same value rather than two copies.
  */
-export function buildIssueQuery(q: IssueReadRoot, filters: IssueFilters, limit: number) {
-  const base = q.issue.query().with({ assignee: true }).orderBy("title", "asc");
-  const byStatus = filters.status === "" ? base : base.where("status", filters.status);
-  const byPriority =
-    filters.priority === "" ? byStatus : byStatus.where("priority", filters.priority);
-  const byAssignee =
-    filters.assignee === "" ? byPriority : byPriority.where("assignee", filters.assignee);
-  return byAssignee.limit(limit);
+export function issueQuery(filters: IssueFilters, limit: number) {
+  return (q: IssueReadRoot) => {
+    const base = q.issue.query().with({ assignee: true }).orderBy("title", "asc");
+    const byStatus = filters.status === "" ? base : base.where("status", filters.status);
+    const byPriority =
+      filters.priority === "" ? byStatus : byStatus.where("priority", filters.priority);
+    const byAssignee =
+      filters.assignee === "" ? byPriority : byPriority.where("assignee", filters.assignee);
+    return byAssignee.limit(limit);
+  };
 }
 
 /** Subscribe a component to the filtered, paged issue rows. */
 export function useIssues(filters: IssueFilters, limit: number) {
-  return useQuery(
-    (q) => buildIssueQuery(q, filters, limit),
-    [filters.status, filters.priority, filters.assignee, limit],
-  );
+  return useQuery(issueQuery(filters, limit), [
+    filters.status,
+    filters.priority,
+    filters.assignee,
+    limit,
+  ]);
 }
