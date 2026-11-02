@@ -919,6 +919,8 @@ describe("integration: draft link / unlink", () => {
       const membership = await row.groups.toRaw();
       expect(membership.map((g) => g.id)).toContain(TEST_GROUP_ID);
 
+      // `link` records a Relationship put and returns nothing; the edge is
+      // proven by the materialized row below, not by the resolved value.
       await expect(
         client.actions.link({
           entity: "todo",
@@ -926,7 +928,7 @@ describe("integration: draft link / unlink", () => {
           as: "list",
           target: "list_target_1",
         }),
-      ).resolves.toBeDefined();
+      ).resolves.toBeUndefined();
 
       await catchUpUntilCurrent(client, TEST_GROUP_ID);
       const links = await client.storage.entities.query("relationship");
@@ -985,7 +987,7 @@ describe("integration: draft link / unlink", () => {
 
       await expect(
         client.actions.unlink({ entity: "todo", id: todoId, as: "list" }),
-      ).resolves.toBeDefined();
+      ).resolves.toBeUndefined();
 
       await catchUpUntilCurrent(client, TEST_GROUP_ID);
       links = await client.storage.entities.query("relationship");
