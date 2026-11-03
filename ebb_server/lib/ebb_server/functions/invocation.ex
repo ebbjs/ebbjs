@@ -20,7 +20,8 @@ defmodule EbbServer.Functions.Invocation do
   `{:error, status, code, details, meta}`. `commit` is `nil` when the
   invocation committed nothing, and `%{replayed: boolean}` once a commit
   reached the Writer: `true` means the Action was already durable or in flight
-  and no GSN was assigned. The last commit wins, because one invocation commits
+  and no GSN was assigned — not that the first copy is proven durable. The
+  last commit wins, because one invocation commits
   at most one Action — every commit in it derives the same `action_id`, so a
   second one is deduped.
 

@@ -57,8 +57,13 @@ across every Update — at handler return, or earlier on `ctx.commit()`:
   after it leaves that Action durable, and the invocation still reports
   `handler_error`. Only the automatic flush at return is skipped by a throw.
 - `ctx.commit()` submits immediately and resolves `{ replayed }`. A replay
-  (`replayed: true`) means the server already recorded this Action id and
-  dropped the submission — the retry added nothing.
+  (`replayed: true`) means no GSN was assigned to this caller: the Action id
+  was already durable, or a copy of it was still in flight, so the submission
+  was dropped. It is not proof that the first copy committed — an in-flight
+  owner can still fail and abandon its range.
+- A commit whose encoded frame exceeds the protocol's 1 MiB bound is refused
+  before it is sent (`FrameTooLargeError`). One invocation is one Action, so
+  the fix is a smaller batch, not a second commit.
 - After a commit the buffer is **sealed**: a later `ctx.*` write throws
   `WritesCommittedError`. One invocation is one Action; there is no second
   frame to put a late write in.

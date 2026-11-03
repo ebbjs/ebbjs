@@ -33,9 +33,11 @@ defmodule EbbServer.Functions.Router do
 
   The key is scoped to the actor and the function, because it is a value the
   caller chooses: two callers that happen to pick the same string are not
-  retrying the same request, and must not share a dedup key. Within that scope
-  a repeated key silently drops whatever content the retry carries, including
-  a retry whose handler produced different writes. The first commit under that
+  retrying the same request, and must not share a dedup key. A service
+  principal (M5) acts as one subject actor, so every caller behind one
+  credential shares this key space; those callers must use their own keys.
+  Within that scope a repeated key silently drops whatever content the retry
+  carries, including a retry whose handler produced different writes. The first commit under that
   `action_id` is the durable one and every later one is answered as a replay.
   Only send the header when the request is safe to repeat unchanged; a key is
   not a way to perform a second, different write. One invocation commits at

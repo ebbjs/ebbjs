@@ -89,7 +89,9 @@ defmodule EbbServer.Functions.Host do
   The id and the actor are both server-owned: the frame's `id` is replaced by
   the id derived from `context.invocation_id`, and its `actor_id` by
   `context.actor_id`. The reply is `{:ok, %{"replayed" => boolean}}`; `true`
-  means the Action was already durable or in flight and no GSN was assigned.
+  means no GSN was assigned to this caller because the Action was already
+  durable or a copy was in flight. It is not proof that the first copy
+  committed: an in-flight owner can still fail and abandon its range.
 
   The commit is fail-whole: a rejection returns `422` with the reason and the
   rejection list, and a Writer failure returns `500` with an explicitly unknown
