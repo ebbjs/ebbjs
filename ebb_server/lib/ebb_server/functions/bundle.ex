@@ -31,7 +31,7 @@ defmodule EbbServer.Functions.Bundle do
 
   ## Name
 
-  The name matches `^[A-Za-z][A-Za-z0-9_-]*$`, is at most 64 bytes, and is not
+  The name matches `^[A-Za-z_][A-Za-z0-9_]*$`, is at most 64 bytes, and is not
   `default`. It is the `:name` route segment and the `function.<name>` grant
   suffix (the exported binding is `entry`, which may differ) with no
   normalization and no case folding, so `.` stays out of the grammar and a
@@ -43,7 +43,7 @@ defmodule EbbServer.Functions.Bundle do
   # Plan §2.12 caps wall clock at 60 s. A bundle asking for longer is refused
   # rather than allowed to run past the limit the platform documents.
   @max_timeout_ms 60_000
-  @name_pattern ~r/\A[A-Za-z][A-Za-z0-9_-]*\z/
+  @name_pattern ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/
   @reserved_names ["default"]
   @access_values ["granted", "authenticated"]
   @digest_pattern ~r/\Asha256:[0-9a-f]{64}\z/

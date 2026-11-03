@@ -148,19 +148,19 @@ Shipped primitives:
 
 See [`packages/client/src/`](https://github.com/ebbjs/ebbjs/tree/main/packages/client/src).
 
-### `@ebbjs/server` (TS)
+### `@ebbjs/testing` (TS)
 
 E2E test harness — spawns the Elixir release and exposes a `seed()` helper. **Not a server runtime.**
 
 ```ts
-import { startServer, seed } from "@ebbjs/server";
+import { startServer, seed } from "@ebbjs/testing";
 
 const server = await startServer({ dataDir: "/tmp/ebb", port: 4000 });
 await seed(server.url, "actor_test", seedData);
 await server.kill();
 ```
 
-`packages/server/src/test/e2e/sync.test.ts` is the one e2e test (handshake after seed). The `@ebbjs/client` integration tests under `packages/client/src/__tests__/integration/` exercise the fuller round-trip — handshake, catch-up, write, presence, and collaborative-text edits — against a real server.
+`packages/testing/src/test/e2e/sync.test.ts` is the one e2e test (handshake after seed). The `@ebbjs/client` integration tests under `packages/client/src/__tests__/integration/` exercise the fuller round-trip — handshake, catch-up, write, presence, and collaborative-text edits — against a real server.
 
 ### `@ebbjs/react`
 

@@ -13,7 +13,7 @@ in `.github/workflows/release.yml`, `.changeset/config.json`, and
 | `@ebbjs/client`     | yes       |                                                               |
 | `@ebbjs/react`      | yes       | Peer: `react`.                                                |
 | `@ebbjs/codemirror` | yes       | Peers: `@codemirror/state`, `@codemirror/view`, `codemirror`. |
-| `@ebbjs/server`     | no        | Private E2E harness.                                          |
+| `@ebbjs/testing`    | no        | Private E2E harness.                                          |
 | `@ebbjs/www`        | no        | Private Astro docs site.                                      |
 
 All five published packages share **one version** (a changesets `fixed` group).
@@ -85,7 +85,7 @@ configured per package on npmjs.com by an owner:
    git add -A                # `commit -am` misses the new CHANGELOG.md files
    git commit -m "chore(release): 0.1.0"
    pnpm build:packages
-   pnpm -r --filter "@ebbjs/*" --filter "!@ebbjs/server" \
+   pnpm -r --filter "@ebbjs/*" --filter "!@ebbjs/testing" \
      --filter "!@ebbjs/www" publish --access public --no-git-checks
    git push                  # Release finds no changesets and does nothing
 

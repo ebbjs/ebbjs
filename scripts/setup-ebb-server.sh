@@ -45,5 +45,30 @@ else
   rm -rf /var/lib/apt/lists/*
 fi
 
+
+# Bun runs function bundles. It is only needed for the functions integration
+# tests and for local function authoring, so a missing Bun is a warning rather
+# than a setup failure: `mix test` must stay green without it. The version is
+# pinned in `.bun-version` at the repo root and installed by the CI Bun job.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PINNED_BUN="$(tr -d '[:space:]' < "$REPO_ROOT/.bun-version" 2>/dev/null || true)"
+
+if command -v bun >/dev/null 2>&1; then
+  INSTALLED_BUN="$(bun --version)"
+  if [ -n "$PINNED_BUN" ] && [ "$INSTALLED_BUN" != "$PINNED_BUN" ]; then
+    echo "Warning: Bun $INSTALLED_BUN is installed, but .bun-version pins $PINNED_BUN."
+    echo "         Function integration tests may not match CI."
+  else
+    echo "Bun $INSTALLED_BUN is installed."
+  fi
+else
+  echo "Warning: Bun is not installed; functions integration tests are skipped."
+  if [ -n "$PINNED_BUN" ]; then
+    echo "         Install Bun $PINNED_BUN from https://bun.sh to run them."
+  else
+    echo "         Install Bun from https://bun.sh to run them."
+  fi
+fi
+
 echo "ebb_server system dependencies installed."
 echo "Next: install Elixir 1.17 + OTP 27 (see ebb_server/.tool-versions)."

@@ -1,0 +1,35 @@
+{
+  "name": "@ebbjs/testing",
+  "version": "0.0.1",
+  "private": true,
+  "description": "E2E test harness — spawns the ebb_server release, seeds data, and provides test fixtures",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "bash scripts/build-release.sh && vite build",
+    "build:local": "bash scripts/build-release.sh",
+    "dev": "vite build --watch",
+    "pretest": "pnpm run build",
+    "test": "vitest --run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "pnpm --root ../../ lint",
+    "lint:fix": "pnpm --root ../../ lint:fix",
+    "fmt": "pnpm --root ../../ fmt",
+    "fmt:check": "pnpm --root ../../ fmt:check"
+  },
+  "dependencies": {
+    "@ebbjs/core": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.4",
+    "vitest": "^3.2.4"
+  }
+}

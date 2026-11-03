@@ -1,0 +1,22 @@
+{
+  "name": "@ebbjs/functions-protocol",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Frame codec for the ebb functions host/runner protocol",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest --run",
+    "typecheck": "tsc --noEmit",
+    "lint": "pnpm --root ../../ lint",
+    "lint:fix": "pnpm --root ../../ lint:fix",
+    "fmt": "pnpm --root ../../ fmt",
+    "fmt:check": "pnpm --root ../../ fmt:check"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "vitest": "^4.1.0"
+  }
+}

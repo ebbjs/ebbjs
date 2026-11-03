@@ -2,7 +2,7 @@
  * Seed helpers — bootstrap the demo group + member + document on first load.
  *
  * Rows are plain data submitted through the shared seed layer
- * (`@ebbjs/core/seed`), the same path `@ebbjs/server.seed()` uses: the
+ * (`@ebbjs/core/seed`), the same path `@ebbjs/testing.seed()` uses: the
  * client builds one Action and submits it through the public write path,
  * applying the shared rejection-tolerance policy.
  */

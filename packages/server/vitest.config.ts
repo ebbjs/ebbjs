@@ -2,13 +2,17 @@ import { defineConfig } from "vitest/config";
 import path from "path";
 
 export default defineConfig({
-  test: {
-    globals: true,
-    environment: "node",
-  },
   resolve: {
     alias: {
-      src: path.resolve(__dirname, "./src"),
+      "@ebbjs/client": path.resolve(__dirname, "../client/src/index.ts"),
+    },
+  },
+  test: {
+    environment: "node",
+    typecheck: {
+      // The workspace packages are not built in the local/dev loop, so the
+      // typecheck program reads their sources through `tsconfig.typecheck.json`.
+      tsconfig: "./tsconfig.typecheck.json",
     },
   },
 });

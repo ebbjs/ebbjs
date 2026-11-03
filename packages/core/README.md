@@ -62,7 +62,7 @@ const bytes = encodeSync({ actions: [action] });
 row types) and `buildSeedAction`, which stamps a fixture's plain field values
 into one wire `Action`, plus the shared seed rejection-tolerance policy
 (`assertSeedAccepted` / `SeedRejectedError`). `@ebbjs/client`'s
-`client.seed()` and `@ebbjs/server`'s raw-POST `seed()` both build through it,
+`client.seed()` and `@ebbjs/testing`'s raw-POST `seed()` both build through it,
 so browser demos and the server test harness share one builder and one policy.
 
 ## HLC

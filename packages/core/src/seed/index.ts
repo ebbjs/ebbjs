@@ -1,6 +1,6 @@
 /**
  * Browser-safe seed layer — one builder shared by `client.seed()` and the
- * `@ebbjs/server` test harness.
+ * `@ebbjs/testing` test harness.
  *
  * Seeds are schema-less plain data: rows carry explicit ids and plain
  * field values. {@link buildSeedAction} turns a {@link SeedData} into a

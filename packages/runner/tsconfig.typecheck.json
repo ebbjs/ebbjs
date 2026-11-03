@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "allowImportingTsExtensions": true,
+    "types": ["node"],
+    "composite": false,
+    "paths": {
+      "@ebbjs/client": ["../client/src/index.ts"],
+      "@ebbjs/core": ["../core/src/index.ts"],
+      "@ebbjs/core/*": ["../core/src/*/index.ts"],
+      "@ebbjs/storage": ["../storage/src/index.ts"],
+      "@ebbjs/storage/*": ["../storage/src/*/index.ts"],
+      "@ebbjs/functions-protocol": ["../functions-protocol/src/index.ts"],
+      "@ebbjs/functions-runtime": ["../functions-runtime/src/index.ts"],
+      "@ebbjs/server": ["../server/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["dist", "node_modules"]
+}

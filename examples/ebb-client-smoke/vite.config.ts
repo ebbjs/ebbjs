@@ -9,7 +9,7 @@ export default defineConfig({
     // Server-only deps: don't let vitest try to bundle them.
     server: {
       deps: {
-        external: ["@ebbjs/server"],
+        external: ["@ebbjs/testing"],
       },
     },
   },

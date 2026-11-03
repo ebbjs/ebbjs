@@ -40,7 +40,15 @@ const EXPECTED_PUBLISHED = [
   "@ebbjs/react",
   "@ebbjs/codemirror",
 ];
-const EXPECTED_PRIVATE = ["@ebbjs/server", "@ebbjs/www"];
+const EXPECTED_PRIVATE = [
+  "@ebbjs/testing",
+  "@ebbjs/www",
+  "@ebbjs/server",
+  "@ebbjs/functions-protocol",
+  "@ebbjs/functions-runtime",
+  "@ebbjs/runner",
+  "@ebbjs/cli",
+];
 
 /** Entry points exercised by the clean-project smoke test. */
 const RUNTIME_ENTRY_POINTS = [

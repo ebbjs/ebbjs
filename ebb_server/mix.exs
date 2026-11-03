@@ -38,7 +38,13 @@ defmodule EbbServer.MixProject do
         ~r/^Mix\.Tasks\./,
         ~r/^EbbServer\.(TestHelpers|SSEHelpers|Integration\.)/,
         EbbServer.Storage.PreparedAction,
-        EbbServer.ActionExport.Supervisor
+        EbbServer.ActionExport.Supervisor,
+        # The real Bun transport and its test support are tagged :bun and
+        # excluded unless a runner is installed; the dedicated Functions (Bun)
+        # CI job runs them.
+        EbbServer.Functions.Worker.Bun,
+        EbbServer.TestFunctions.Bun,
+        EbbServer.TestFunctions.LocalHttp
       ]
     ]
   end
