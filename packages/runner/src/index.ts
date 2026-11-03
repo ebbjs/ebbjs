@@ -2,7 +2,7 @@ import { createContext, type EntityRegistry } from "@ebbjs/functions-runtime";
 
 import { SocketHostTransport, type HostTransport } from "./transport.ts";
 
-export { SocketHostTransport, type HostTransport } from "./transport.ts";
+export { FrameTooLargeError, SocketHostTransport, type HostTransport } from "./transport.ts";
 
 export const RUNNER_VERSION = "0.0.0";
 

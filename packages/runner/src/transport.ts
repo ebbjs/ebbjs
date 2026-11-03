@@ -1,4 +1,11 @@
-import { call, type Frame, type FrameOp, type ReplyFrame } from "@ebbjs/functions-protocol";
+import {
+  call,
+  fits,
+  MAX_FRAME_BYTES,
+  type Frame,
+  type FrameOp,
+  type ReplyFrame,
+} from "@ebbjs/functions-protocol";
 
 /**
  * The runner side of the host-call channel.
@@ -9,6 +16,22 @@ import { call, type Frame, type FrameOp, type ReplyFrame } from "@ebbjs/function
  */
 export interface HostTransport {
   call(op: FrameOp, payload: unknown): Promise<unknown>;
+}
+
+/** A host call whose encoded frame would exceed the protocol's frame bound. */
+export class FrameTooLargeError extends Error {
+  readonly op: FrameOp;
+
+  constructor(op: FrameOp) {
+    super(
+      `${op} payload exceeds the ${MAX_FRAME_BYTES}-byte frame limit; ` +
+        (op === "commit"
+          ? "the invocation produced too many or too large Updates for one Action"
+          : "the request is too large"),
+    );
+    this.name = "FrameTooLargeError";
+    this.op = op;
+  }
 }
 
 export interface HostTransportOptions {
@@ -36,10 +59,16 @@ export class SocketHostTransport implements HostTransport {
     if (this.#closed) return Promise.reject(new Error("host socket is closed"));
 
     const callId = String(this.#nextCallId++);
+    const frame = call(callId, op, payload);
+
+    // The host refuses an oversize frame from its length prefix and ends the
+    // invocation. Refusing here keeps the failure at the call that caused it,
+    // with an error the handler can read, instead of a closed socket.
+    if (!fits(frame)) return Promise.reject(new FrameTooLargeError(op));
 
     return new Promise((resolve, reject) => {
       this.#pending.set(callId, { resolve, reject });
-      this.#send(call(callId, op, payload));
+      this.#send(frame);
     });
   }
 
