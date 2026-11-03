@@ -17,7 +17,8 @@ import type { EntityRegistry } from "../schema/entity-registry";
 import { EntityValidationError, validatePayload } from "../schema/entity-registry";
 import { GROUPS_ACCESSOR } from "../schema/system-entities";
 import { buildInitialContentField } from "../fields/collaborative-text/wire";
-import { DOC_CONTENT_FIELD, generatedDocEntityName } from "../fields/collaborative-text/schema";
+import { DOC_CONTENT_FIELD } from "../fields/collaborative-text/schema";
+import { derivedBodyIds } from "../fields/collaborative-text/derived-ids";
 import type { GeneratedParts } from "./generated-parts";
 import { projectFieldValue } from "./query-builder";
 import type { Rejection } from "./types";
@@ -86,10 +87,8 @@ const describeRejection = (rejection: ActionRejection): string => {
   return `${subject}: ${rejection.reason}${details}`;
 };
 
-/** Mints the ids and clock stamps an operation consumes. */
+/** Mints the Update ids and clock stamps an operation consumes. */
 export interface OperationIds {
-  /** Mint a fresh entity id (`e_…`). */
-  entityId(): string;
   /** Mint a fresh Update id (`u_…`). */
   updateId(): string;
   /** Advance the local clock and return a fresh HLC timestamp. */
@@ -167,15 +166,6 @@ export interface CreateEntityInput {
   readonly pointers?: readonly ResolvedPointer[];
   /** Derived collaborative-text bodies, keyed by field. */
   readonly bodies?: Readonly<Record<string, string>>;
-  /**
-   * Pre-minted ids for a derived field's document and edge, keyed by
-   * field. A caller that must reference the parts before this operation
-   * runs (the draft planner carrying them on a later membership verb)
-   * supplies them; otherwise the operation mints its own.
-   */
-  readonly generatedIds?: Readonly<
-    Record<string, { readonly documentId: string; readonly relationshipId: string }>
-  >;
   readonly groups: readonly string[];
   readonly validate?: boolean;
 }
@@ -186,6 +176,10 @@ export interface CreateEntityInput {
  * collaborative-text body, then one Relationship `put` per resolved
  * pointer. Field validation runs here (never partially) unless the
  * caller opted out.
+ *
+ * A derived body's document and relationship ids come from
+ * {@link derivedBodyIds}, never a mint: any client backfilling the same
+ * missing body has to address the same rows (#695).
  */
 export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
   const groups = [...input.groups];
@@ -210,15 +204,20 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
   });
   updates.push(...buildEntityGroupUpdates(input.id, groups, () => ctx.ids.updateId()));
 
-  // A derived body creates its own document entity, the edge from the
-  // parent, and the document's membership rows in the same batch, so
+  // A derived body creates its own document entity, the relationship from
+  // the parent, and the document's membership rows in the same batch, so
   // the body and the parent commit atomically.
   for (const [field, text] of Object.entries(input.bodies ?? {})) {
-    const docEntity =
-      ctx.registry.getRelationship(input.entity, field)?.target.name ??
-      generatedDocEntityName(input.entity, field);
-    const generatedId = input.generatedIds?.[field];
-    const docId = generatedId?.documentId ?? ctx.ids.entityId();
+    const {
+      documentType: docEntity,
+      documentId: docId,
+      relationshipId,
+    } = derivedBodyIds({
+      registry: ctx.registry,
+      entityName: input.entity,
+      parentId: input.id,
+      field,
+    });
     const docUpdateId = ctx.ids.updateId();
     const docHlc = ctx.ids.hlc();
     updates.push({
@@ -234,7 +233,7 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
     });
     updates.push(
       buildRelationshipUpdate({
-        relationshipId: generatedId?.relationshipId ?? generateId("rel"),
+        relationshipId,
         sourceId: input.id,
         targetId: docId,
         field,

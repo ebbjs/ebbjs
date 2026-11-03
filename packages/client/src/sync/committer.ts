@@ -15,7 +15,7 @@
  * {@link ActionRejectedError}.
  */
 
-import { generateId, type Update } from "@ebbjs/core";
+import type { Update } from "@ebbjs/core";
 
 import type { EntityRegistry } from "../schema/entity-registry";
 import { type OperationCall, type OpContext } from "./operations";
@@ -51,7 +51,6 @@ export async function commit(
   const ctx: OpContext = {
     registry: cap.registry,
     ids: {
-      entityId: () => generateId("e"),
       updateId: () => cap.generateUpdateId(),
       hlc: () => cap.freshHlc(),
     },

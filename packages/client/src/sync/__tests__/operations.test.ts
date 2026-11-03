@@ -13,7 +13,6 @@ import { commit, type CommitCapability } from "../committer";
 const mkCtx = (): OpContext => ({
   registry: new EntityRegistry(),
   ids: {
-    entityId: () => "e_1",
     updateId: () => "u_1",
     hlc: () => "hlc_1",
   },

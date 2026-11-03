@@ -19,6 +19,8 @@ import { defineRelationship, type RelationshipDef } from "../schema/relationship
 import { defineSchema, type Schema } from "../schema/schema";
 import { ConflictScopeMismatchError, DerivedDocNameCollisionError } from "../schema/schema";
 import { generatedDocEntityName, RunFieldValueSchema } from "../fields/collaborative-text/schema";
+import { derivedDocumentId, derivedRelationshipId } from "../fields/collaborative-text/derived-ids";
+import { entityGroupId } from "../sync/membership";
 import { createClient } from "../sync/client";
 import { callApplyAction, jsonResponse } from "../sync/test-utils";
 import { testActions } from "../sync/__tests__/test-actions";
@@ -29,28 +31,26 @@ import { testActions } from "../sync/__tests__/test-actions";
 
 const HANDSHAKE = {
   actor_id: "actor_1",
-  groups: [
-    {
-      id: "g_1",
-      permissions: [
-        "blog_post.*",
-        "text_document.*",
-        "text_document__blog_post__body.*",
-        "text_document__article__body.*",
-        "text_document__article__subtitle.*",
-        "article.*",
-        "post.*",
-        "article_body.*",
-        "note.*",
-        "shared_body.*",
-        "relationship.*",
-        "entityGroup.*",
-      ],
-      cursor_valid: true,
-      reason: null,
-      cursor: 0,
-    },
-  ],
+  groups: ["g_1", "g_2"].map((id) => ({
+    id,
+    permissions: [
+      "blog_post.*",
+      "text_document.*",
+      "text_document__blog_post__body.*",
+      "text_document__article__body.*",
+      "text_document__article__subtitle.*",
+      "article.*",
+      "post.*",
+      "article_body.*",
+      "note.*",
+      "shared_body.*",
+      "relationship.*",
+      "entityGroup.*",
+    ],
+    cursor_valid: true,
+    reason: null,
+    cursor: 0,
+  })),
 };
 
 type AnyEntityDef = EntityDef<Record<string, TSchema>>;
@@ -330,6 +330,44 @@ describe("drafts through a mounted action", () => {
 
     expect(written).toHaveLength(2);
     expect(canonicalize(written[0]!)).toEqual(canonicalize(written[1]!));
+  });
+
+  it("names the same derived ids in the batch overlay as on the wire", async () => {
+    // A membership verb later in the batch files the derived document into
+    // its new groups and re-emits the relationship, all from the overlay the
+    // planner built at `create` time. If the planner derived a different
+    // document id than the create operation, those rows would name a
+    // document that never exists.
+    const { client, written } = harness(schema);
+    await client.handshake();
+
+    const created = await client.actions.run(({ blogPost }) => {
+      const post = blogPost.create(
+        { title: "T", published: false, body: "x" },
+        { groups: ["g_1"] },
+      );
+      blogPost.addToGroup(post.id, "g_2");
+      return post;
+    });
+
+    const docName = generatedDocEntityName("blog_post", "body");
+    const docId = derivedDocumentId(created.id, "body", docName);
+    const relationshipId = derivedRelationshipId(created.id, "body");
+    const updates = written.flatMap((action) => action.updates);
+
+    expect(updates.filter((u) => u.subject_type === docName).map((u) => u.subject_id)).toEqual([
+      docId,
+    ]);
+    expect(
+      new Set(updates.filter((u) => u.subject_type === "relationship").map((u) => u.subject_id)),
+    ).toEqual(new Set([relationshipId]));
+    expect(
+      updates
+        .filter((u) => u.subject_type === "entityGroup")
+        .map((u) => u.subject_id)
+        .filter((id) => id.includes(docId))
+        .sort(),
+    ).toEqual([entityGroupId(docId, "g_1"), entityGroupId(docId, "g_2")].sort());
   });
 });
 
