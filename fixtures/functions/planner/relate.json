@@ -61,7 +61,7 @@
         "id": "u_grelate2",
         "subject_id": "e_gissue1",
         "subject_type": "issue",
-        "method": "put",
+        "method": "patch",
         "data": {
           "fields": {
             "labels": {

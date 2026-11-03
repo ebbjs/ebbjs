@@ -727,7 +727,7 @@ export const requireRelationship = (
  * Link, unlink, or set the links of one relationship. The built-in
  * membership accessor is refused (membership verbs own it), and an
  * undeclared relationship is refused before any wire Update exists.
- * Many-cardinality emits the source's canonical-FK `put` plus one
+ * Many-cardinality emits the source's canonical-FK `patch` plus one
  * Relationship `put` per target; one-cardinality emits a single
  * Relationship `put` (or `delete`).
  */

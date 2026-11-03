@@ -158,7 +158,7 @@
         "id": "u_gbatch5",
         "subject_id": "e_gbatch1",
         "subject_type": "issue",
-        "method": "put",
+        "method": "patch",
         "data": {
           "fields": {
             "labels": {
