@@ -270,7 +270,7 @@ Updates the client produces, buffered and committed as one Action.
 
 ### Subtasks
 
-1. S0, scoped to what writes need: move `operations.ts`, `atomic.ts`,
+1. S0, scoped to what writes need: move `operations.ts`, `committer.ts`,
    `relationship.ts`, `generated-parts.ts`, `membership.ts` and the schema
    registry into `@ebbjs/schema` / `@ebbjs/write`, with `@ebbjs/client`
    re-exporting for compatibility. A move plus re-exports, not a rewrite; the
@@ -283,7 +283,7 @@ Updates the client produces, buffered and committed as one Action.
    read-your-writes overlay, and the single `commit` frame at return.
 4. Pre-flight (decision 2) — each buffered write is checked against
    `Authorizer` at `ctx.create(...)`-time, the way the client planner does
-   (`operations.ts`, `atomic.ts`), so a membership or ownership error surfaces
+   (`operations.ts`, `committer.ts`), so a membership or ownership error surfaces
    at the offending call instead of at return. The fail-whole mapping stays as
    the backstop for anything that changed in between.
 5. `Functions.Host` `commit` hardening — rejection shapes matched against the

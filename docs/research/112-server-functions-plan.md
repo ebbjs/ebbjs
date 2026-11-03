@@ -587,7 +587,7 @@ off) until S7. (Superseded — see the note above; the flag is now
 `config :ebb_server, :functions, enabled:` and it flips at M5.)
 
 **S0 — Shared write planner.**
-Extract `operations.ts`, `atomic.ts`, `relationship.ts`, `membership.ts`,
+Extract `operations.ts`, `committer.ts`, `relationship.ts`, `membership.ts`,
 `generated-parts.ts`, and the schema registry into `@ebbjs/write` /
 `@ebbjs/schema`, consumed by `@ebbjs/client` and the runtime.
 _Acceptance:_ client tests unchanged; reference fixtures for create/update/
