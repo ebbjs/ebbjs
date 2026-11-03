@@ -1,5 +1,5 @@
 /**
- * Test support for the planner goldens.
+ * Test support for the planner reference fixtures.
  *
  * The fixtures under `fixtures/functions/planner/` pin the wire Action a batch
  * of semantic verbs must produce. Both surfaces that plan those verbs — the

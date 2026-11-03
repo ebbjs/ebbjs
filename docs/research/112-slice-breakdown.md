@@ -275,8 +275,8 @@ Updates the client produces, buffered and committed as one Action.
    registry into `@ebbjs/schema` / `@ebbjs/write`, with `@ebbjs/client`
    re-exporting for compatibility. A move plus re-exports, not a rewrite; the
    existing client suite is the regression gate.
-2. Goldens — create/update/delete/relate/unrelate and an atomic batch, shared
-   as fixtures between `@ebbjs/client` tests and the runtime tests. Add a
+2. Reference fixtures — create/update/delete/relate/unrelate and an atomic
+   batch, shared between `@ebbjs/client` tests and the runtime tests. Add a
    property test: a random operation batch produces identical Updates from both
    planners.
 3. `functions-runtime` write surface — buffered Updates, `ctx.commit()`, the
@@ -296,7 +296,7 @@ Updates the client produces, buffered and committed as one Action.
 
 ### Acceptance
 
-Byte-identical Actions from client and runtime for every golden operation; a
+Byte-identical Actions from client and runtime for every pinned operation; a
 handler that throws leaves no Action; a rejection surfaces the same reason
 string a client would see; created entity is visible to the caller mid-handler
 (overlay) and to an SSE subscriber after commit.

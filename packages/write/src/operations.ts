@@ -99,7 +99,7 @@ export interface OperationIds {
   /**
    * Mint an id of a non-Update row the batch addresses — a `relationship`
    * row, say. A seam rather than a direct `generateId` call so a caller
-   * that needs a deterministic batch (the function runtime's goldens) can
+   * that needs a deterministic batch (the function runtime's reference fixtures) can
    * control every id the planner emits.
    */
   newId(prefix: string): string;

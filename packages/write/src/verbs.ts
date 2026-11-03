@@ -3,7 +3,7 @@
  * `delete` / `relate` / `unrelate` mean, and the planner calls that build
  * their Updates.
  *
- * The functions runtime's `ctx` and the golden fixtures resolve through here,
+ * The functions runtime's `ctx` and the reference fixtures resolve through here,
  * so the same verb produces the same Updates on both paths by construction.
  * They differ only in where the resolution inputs come from: a materialized
  * local cache for the client, an invocation's write buffer and its overlay for

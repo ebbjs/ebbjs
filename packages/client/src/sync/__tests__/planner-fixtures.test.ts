@@ -1,12 +1,13 @@
 /**
- * The shared planner goldens, asserted from the client side of the extraction.
+ * The shared planner reference fixtures, asserted from the client side of the
+ * extraction.
  *
  * Each fixture pins a schema, an invocation id and actor, the id/HLC sequence
  * the planner consumes, a batch of semantic verb calls, and the core Action it
  * must produce. This suite resolves those calls the way the client does — one
  * `commit(calls, capability)` batch through `@ebbjs/write` — and compares the
  * result to the pin, so the runtime's `ctx` path and the client's draft path
- * cannot drift apart without a golden turning red.
+ * cannot drift apart without a reference fixture turning red.
  */
 
 import { createHash } from "node:crypto";
@@ -27,7 +28,7 @@ import { describe, expect, it } from "vitest";
 const actionId = (invocationId: string): string =>
   `a_${createHash("sha256").update(invocationId, "utf8").digest("hex").slice(0, 16)}`;
 
-describe("planner goldens — client planner path", () => {
+describe("planner reference fixtures — client planner path", () => {
   const names = fixtureNames();
 
   it("finds fixtures", () => {

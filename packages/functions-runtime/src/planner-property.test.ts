@@ -1,5 +1,5 @@
 /**
- * The property test the goldens cannot cover: a seeded PRNG generates random
+ * The property test the reference fixtures cannot cover: a seeded PRNG generates random
  * verb batches from the same vocabulary, and both planner paths — `commit()`
  * from `@ebbjs/write` (what the client runs) and the runtime's `ctx` — must
  * produce the same Updates and the same full Action.

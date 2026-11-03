@@ -134,7 +134,7 @@ than emit an Update that would fail or lose links:
 ## Tests
 
 - `src/*.test.ts` — verbs, overlay, pre-flight, commit framing.
-- `src/planner-goldens.test.ts` — the fixtures in
+- `src/planner-fixtures.test.ts` — the fixtures in
   `fixtures/functions/planner/`, applied through `ctx`. The same fixtures are
   asserted from `@ebbjs/client` through `commit()` in `@ebbjs/write`, so the
   two planner paths cannot drift.

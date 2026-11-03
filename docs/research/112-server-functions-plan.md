@@ -590,8 +590,8 @@ off) until S7. (Superseded — see the note above; the flag is now
 Extract `operations.ts`, `atomic.ts`, `relationship.ts`, `membership.ts`,
 `generated-parts.ts`, and the schema registry into `@ebbjs/write` /
 `@ebbjs/schema`, consumed by `@ebbjs/client` and the runtime.
-_Acceptance:_ client tests unchanged; golden fixtures for create/update/delete/
-relate/atomic; no new runtime deps.
+_Acceptance:_ client tests unchanged; reference fixtures for create/update/
+delete/relate/atomic; no new runtime deps.
 
 **S1 — Runner skeleton and protocol.**
 `packages/runner` (Bun), frame codec, per-worker Unix socket, Port lifecycle,
@@ -622,7 +622,7 @@ Schemas, esbuild, metadata extraction, deploy checks.
 _Acceptance:_ a fixture bundles and round-trips; `node:` imports rejected;
 name/access/limits/schemas extracted; RPC validation rejects bad params without
 a handler run; optional output schema yields `invalid_output`; `@ebbjs/write`
-goldens pass; npm and SSE-streaming fixtures work; `client.functions.foo` is
+reference fixtures pass; npm and SSE-streaming fixtures work; `client.functions.foo` is
 typed from the definition and maps errors; the generated map uses type-only
 imports.
 
@@ -667,8 +667,8 @@ Docker/release runner, README architecture.
   secrets, schema validation.
 - **Isolation**: sync CPU loop, memory bomb, `Bun.spawn` orphan check, worker
   crash, saturation, deadline races.
-- **Wire conformance**: shared golden fixtures between `@ebbjs/client` and the
-  runtime; property test that a random operation batch produces identical
+- **Wire conformance**: shared reference fixtures between `@ebbjs/client` and
+  the runtime; property test that a random operation batch produces identical
   Updates.
 - **Permission parity**: for a matrix of actors/entities, `ctx.get/query`
   matches the HTTP endpoints.
@@ -706,7 +706,7 @@ Docker/release runner, README architecture.
 | Protocol/lifecycle bugs                 | medium | fake-runner tests, crash/timeout matrix, pool invariants                           |
 | Schema drift between RPC and runner     | medium | one `FunctionSchema`, JSON Schema projection, conformance fixtures                 |
 | Generated contract map stale            | medium | regenerate on deploy; warn on name drift                                           |
-| Write-planner drift                     | high   | shared `@ebbjs/write` + golden/property tests                                      |
+| Write-planner drift                     | high   | shared `@ebbjs/write` + reference-fixture/property tests                           |
 | Secret leakage                          | high   | allowlist, scrubbed env, redaction, caps                                           |
 | No rollback of committed writes         | medium | buffer-until-return; document read→call→write                                      |
 | Multi-node version divergence           | medium | per-node store documented; replicate later                                         |

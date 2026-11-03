@@ -2,7 +2,7 @@
  * Test support: replay a planner fixture through the runtime's write surface.
  *
  * The fixture format and its loader live in `@ebbjs/functions-protocol/testing`, because
- * the client-side golden test reads the same files. This module adds the two
+ * the client-side fixture test reads the same files. This module adds the two
  * harnesses that are runtime-specific: the client planner path (a batch
  * commit) and the `ctx` path (the buffered verbs).
  */

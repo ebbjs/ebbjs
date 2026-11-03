@@ -1,12 +1,12 @@
 /**
- * The shared planner goldens, asserted from the runtime side.
+ * The shared planner reference fixtures, asserted from the runtime side.
  *
  * Each fixture pins a schema, an invocation id and actor, the id/HLC sequence
  * the planner consumes, a batch of semantic verb calls, and the core Action it
  * must produce. This suite applies the calls to a real `ctx` — through the
  * buffered write verbs and the one commit frame — and compares the submitted
  * Action to the pin. The client planner path asserts the same fixtures from
- * `@ebbjs/client`, so either path drifting turns a golden red.
+ * `@ebbjs/client`, so either path drifting turns a reference fixture red.
  */
 
 import { describe, expect, it } from "vitest";
@@ -23,7 +23,7 @@ import {
   stable,
 } from "./test-support/planner.ts";
 
-describe("planner goldens — ctx path", () => {
+describe("planner reference fixtures — ctx path", () => {
   const names = fixtureNames();
 
   it("finds fixtures", () => {
