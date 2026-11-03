@@ -1,5 +1,5 @@
-import { startServer } from "@ebbjs/server";
-import type { RunningServer } from "@ebbjs/server";
+import { startServer } from "@ebbjs/testing";
+import type { RunningServer } from "@ebbjs/testing";
 
 let server: RunningServer;
 

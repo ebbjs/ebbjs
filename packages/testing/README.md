@@ -1,4 +1,4 @@
-# @ebbjs/server
+# @ebbjs/testing
 
 > **TS package — e2e test harness only.** This is not a runtime. It
 > spawns the `ebb_server` Elixir release as a child process, waits until
@@ -33,7 +33,7 @@ seed builder and the `Seed*` types live in the
 [`@ebbjs/core/seed`](../core/src/seed/index.ts) module — the same code path
 browser demos use through `client.seed()`. [`src/seed-client.ts`](./src/seed-client.ts)
 re-exports those names unchanged and adds the raw-POST `seed()` harness, so
-`@ebbjs/server`'s public names and signatures are stable.
+`@ebbjs/testing`'s public names and signatures are stable.
 `SeedData.relationships` accepts a `RelationshipSeed`, also re-exported from
 [`@ebbjs/core/seed`](../core/src/seed/index.ts); it is not currently
 re-exported from `src/index.ts`.
@@ -44,7 +44,7 @@ re-exported from `src/index.ts`.
 and throws if the server rejects them.
 
 ```typescript
-import { startServer, seed } from "@ebbjs/server";
+import { startServer, seed } from "@ebbjs/testing";
 
 const server = await startServer({
   dataDir: "/tmp/ebb-data",
@@ -100,7 +100,7 @@ directly only when you manage the server process yourself.
 ```bash
 # Bundles the Elixir release, then builds the TypeScript (requires
 # Elixir 1.17+ and OTP 27 for `mix release`).
-pnpm --filter @ebbjs/server test
+pnpm --filter @ebbjs/testing test
 ```
 
 `test`'s `pretest` hook runs the build first; `scripts/build-release.sh`

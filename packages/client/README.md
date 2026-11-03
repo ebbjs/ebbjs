@@ -304,7 +304,7 @@ client.close();
 `@ebbjs/core/seed` is the browser-safe module behind it. It exports
 `SeedData` (and the row types), `buildSeedAction`, which stamps plain values
 into wire envelopes, and the rejection-tolerance policy (`assertSeedAccepted`
-/ `SeedRejectedError`). `@ebbjs/server.seed` re-exports the same builder and
+/ `SeedRejectedError`). `@ebbjs/testing.seed` re-exports the same builder and
 adds the raw-POST `seed(serverUrl, actorId, data)` harness, so browser demos
 and the server test harness share one builder and one tolerance policy,
 defined in one place.
@@ -326,13 +326,13 @@ Three scripts:
 1. Build the release once:
 
    ```bash
-   bash packages/server/scripts/build-release.sh
+   bash packages/testing/scripts/build-release.sh
    ```
 
 2. Start `ebb_server` on the default port (4000):
 
    ```bash
-   ./packages/server/dist/ebb_server/bin/ebb_server start
+   ./packages/testing/dist/ebb_server/bin/ebb_server start
    ```
 
    Or run from source: `cd ebb_server && MIX_ENV=dev mix run --no-halt`.

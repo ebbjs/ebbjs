@@ -98,7 +98,7 @@ defmodule EbbServer.Functions.BundleTest do
 
   describe "the name grammar" do
     test "accepts a function name up to 64 characters" do
-      for name <- ["a", "A1_b2", "proofreadDocument", "create-todo", String.duplicate("a", 64)] do
+      for name <- ["a", "A1_b2", "_internal", "proofreadDocument", String.duplicate("a", 64)] do
         assert {:ok, %Bundle{name: ^name}} =
                  Bundles.envelope(name, %{"entry" => name}) |> Bundle.new(@code)
       end
@@ -107,8 +107,8 @@ defmodule EbbServer.Functions.BundleTest do
     test "refuses anything outside the name grammar" do
       for name <- [
             "",
-            "_x",
             "1abc",
+            "create-todo",
             "a.b",
             "a b",
             "a/b",

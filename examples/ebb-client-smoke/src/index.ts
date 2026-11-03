@@ -16,17 +16,17 @@
  * The ebb server release must be built first:
  *
  *   cd ebb_server && MIX_ENV=prod mix release --overwrite
- *   mkdir -p ../packages/server/dist
- *   cp -r _build/prod/rel/ebb_server ../packages/server/dist/ebb_server
+ *   mkdir -p ../packages/testing/dist
+ *   cp -r _build/prod/rel/ebb_server ../packages/testing/dist/ebb_server
  *
- * Or use `pnpm --filter @ebbjs/server build:local`.
+ * Or use `pnpm --filter @ebbjs/testing build:local`.
  *
  * The script will print progress to stdout. On success it prints a final
  * "✓ smoke test passed" and exits with 0; on failure it prints a stack and
  * exits non-zero.
  */
 
-import { seed, startServer } from "@ebbjs/server";
+import { seed, startServer } from "@ebbjs/testing";
 import { createClient } from "@ebbjs/client";
 import { createAction, createClock, localEvent } from "@ebbjs/core";
 import { existsSync } from "fs";
@@ -42,7 +42,7 @@ const DATA_DIR = process.env.EBB_CLIENT_SMOKE_DATA_DIR ?? "/tmp/ebb-smoke-data";
 const PORT = Number(process.env.EBB_CLIENT_SMOKE_PORT ?? 4000);
 const SERVER_BIN = join(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../packages/server/dist/ebb_server/bin/ebb_server",
+  "../../../packages/testing/dist/ebb_server/bin/ebb_server",
 );
 
 const log = (...args: unknown[]): void => {
@@ -57,9 +57,9 @@ async function main(): Promise<void> {
     log(`error: ebb_server release not found at ${SERVER_BIN}`);
     log("build it first:");
     log("  cd ebb_server && MIX_ENV=prod mix release --overwrite");
-    log("  mkdir -p ../packages/server/dist");
-    log("  cp -r _build/prod/rel/ebb_server ../packages/server/dist/ebb_server");
-    log("or run: pnpm --filter @ebbjs/server build:local");
+    log("  mkdir -p ../packages/testing/dist");
+    log("  cp -r _build/prod/rel/ebb_server ../packages/testing/dist/ebb_server");
+    log("or run: pnpm --filter @ebbjs/testing build:local");
     process.exit(1);
   }
 

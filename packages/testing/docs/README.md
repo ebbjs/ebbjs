@@ -1,4 +1,4 @@
-# @ebbjs/server
+# @ebbjs/testing
 
 Server runtime tooling for TypeScript — spawns and manages `ebb_server` processes, seeds data via HTTP, and provides integration test infrastructure.
 
@@ -10,7 +10,7 @@ Server runtime tooling for TypeScript — spawns and manages `ebb_server` proces
 
 ## Why a separate package?
 
-Both integration tests and CLI commands need to run and interact with the `ebb_server`. By extracting the lifecycle management into `@ebbjs/server`, we avoid duplicating server spawning, seeding, and shutdown logic across:
+Both integration tests and CLI commands need to run and interact with the `ebb_server`. By extracting the lifecycle management into `@ebbjs/testing`, we avoid duplicating server spawning, seeding, and shutdown logic across:
 
 - Client integration tests
 - Server integration tests
@@ -35,7 +35,7 @@ See [Harness](components/harness.md#build-and-caching) for details on how the bu
 ### Start a server
 
 ```typescript
-import { startServer } from "@ebbjs/server";
+import { startServer } from "@ebbjs/testing";
 
 const server = await startServer({
   dataDir: "/tmp/ebb-data",
@@ -51,7 +51,7 @@ await server.kill();
 ### Seed data
 
 ```typescript
-import { seed } from "@ebbjs/server";
+import { seed } from "@ebbjs/testing";
 
 await seed(server.url, "actor_test", {
   groups: [{ id: "grp_001", name: "Test Group" }],
@@ -80,7 +80,7 @@ await seed(server.url, "actor_test", {
 
 ```
                     ┌─────────────────────────────────┐
-                    │         @ebbjs/server           │
+                    │         @ebbjs/testing           │
                     │                                 │
                     │  ┌─────────────────────────┐   │
                     │  │  Harness                │   │

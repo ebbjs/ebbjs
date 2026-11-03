@@ -50,7 +50,7 @@ jobs:
           npm --version
       - run: pnpm install --frozen-lockfile
       - name: Build the published packages
-        # `@ebbjs/server` builds an Elixir release and `@ebbjs/www` builds the
+        # `@ebbjs/testing` builds an Elixir release and `@ebbjs/www` builds the
         # docs site; neither is published. The version PR is opened with
         # GITHUB_TOKEN, so GitHub runs no CI on it — this job is the gate for
         # the five packages that do ship.

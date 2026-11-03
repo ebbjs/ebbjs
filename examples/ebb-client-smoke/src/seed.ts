@@ -6,7 +6,7 @@
  * a typed `title` field so the entity materializes with structured data.
  */
 
-import type { SeedData } from "@ebbjs/server";
+import type { SeedData } from "@ebbjs/testing";
 
 export const SMOKE_GROUP_ID = "grp_smoke";
 export const SMOKE_MEMBER_ID = "gm_smoke";

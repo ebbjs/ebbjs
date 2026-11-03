@@ -28,7 +28,6 @@
     "fmt:check": "oxfmt --check",
     "core:build": "pnpm --filter @ebbjs/core build",
     "client:build": "pnpm --filter @ebbjs/client build",
-    "server:build": "pnpm --filter @ebbjs/server build",
     "storage:build": "pnpm --filter @ebbjs/storage build",
     "codemirror:build": "pnpm --filter @ebbjs/codemirror build",
     "react:build": "pnpm --filter @ebbjs/react build",
@@ -41,7 +40,10 @@
     "codemirror:test": "pnpm --filter @ebbjs/codemirror test",
     "react:test": "pnpm --filter @ebbjs/react test",
     "setup:ebb-server": "bash scripts/setup-ebb-server.sh",
-    "prepare": "bash scripts/install-dev-tools.sh"
+    "prepare": "bash scripts/install-dev-tools.sh",
+    "testing": "pnpm --filter @ebbjs/testing",
+    "testing:build": "pnpm --filter @ebbjs/testing build",
+    "testing:test": "pnpm --filter @ebbjs/testing test"
   },
   "dependencies": {
     "nanoid": "^5.1.6",

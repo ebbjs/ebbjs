@@ -32,7 +32,7 @@ export default defineConfig({
       entry: {
         index: "./src/index.ts",
       },
-      name: "@ebbjs/server",
+      name: "@ebbjs/testing",
       formats: ["es"],
     },
     rollupOptions: {

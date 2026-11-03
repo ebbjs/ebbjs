@@ -1,4 +1,4 @@
-import type { SeedData } from "@ebbjs/server";
+import type { SeedData } from "@ebbjs/testing";
 
 export function buildSingleEntitySeed(): SeedData {
   return {

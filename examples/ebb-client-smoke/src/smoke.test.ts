@@ -3,8 +3,8 @@
  *
  * Runs the same flow as `index.ts` but inside vitest so it can be wired into
  * CI. Requires a pre-built `ebb_server` release at
- * `packages/server/dist/ebb_server/bin/ebb_server` (run
- * `pnpm --filter @ebbjs/server build:local` first).
+ * `packages/testing/dist/ebb_server/bin/ebb_server` (run
+ * `pnpm --filter @ebbjs/testing build:local` first).
  *
  * Each test starts its own ephemeral server on a random port to keep
  * parallel runs from clobbering each other.
@@ -23,10 +23,10 @@ import { createClient } from "@ebbjs/client";
 import { createAction, createClock, localEvent } from "@ebbjs/core";
 import { buildSmokeSeed, SMOKE_ACTOR_ID, SMOKE_GROUP_ID, SMOKE_ENTITY_ID } from "./seed";
 
-// Lazy-import `@ebbjs/server` so the module is only loaded when the test
+// Lazy-import `@ebbjs/testing` so the module is only loaded when the test
 // actually runs (avoids vite failing to resolve the package when the
 // server dist isn't built).
-type ServerModule = typeof import("@ebbjs/server");
+type ServerModule = typeof import("@ebbjs/testing");
 type ServerRuntime = {
   seed: ServerModule["seed"];
   startServer: ServerModule["startServer"];
@@ -50,7 +50,7 @@ const DATA_DIR = process.env.EBB_CLIENT_SMOKE_DATA_DIR ?? `/tmp/ebb-smoke-data-$
 const PORT = Number(process.env.EBB_CLIENT_SMOKE_PORT ?? 4000);
 const SERVER_BIN = join(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../../packages/server/dist/ebb_server/bin/ebb_server",
+  "../../../../packages/testing/dist/ebb_server/bin/ebb_server",
 );
 
 const skip = process.env.EBB_SKIP_SMOKE === "1" || !existsSync(SERVER_BIN);

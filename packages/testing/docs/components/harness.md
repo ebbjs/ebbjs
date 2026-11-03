@@ -6,10 +6,10 @@ Provides lifecycle management for the bundled `ebb_server` executable — start,
 
 ## Bundled Release
 
-The `ebb_server` release is built and bundled as part of `@ebbjs/server`'s build step. The harness always uses this bundled release — callers never specify a path to an external server binary.
+The `ebb_server` release is built and bundled as part of `@ebbjs/testing`'s build step. The harness always uses this bundled release — callers never specify a path to an external server binary.
 
 ```
-packages/server/
+packages/testing/
   dist/
     index.js           # TypeScript output
     ebb_server/        # Bundled Elixir release

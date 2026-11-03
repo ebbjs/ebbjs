@@ -1,16 +1,16 @@
 import { defineConfig, devices } from "@playwright/test";
-import { RELEASE_BIN_PATH } from "@ebbjs/server";
+import { RELEASE_BIN_PATH } from "@ebbjs/testing";
 
 /**
  * Playwright config for the collaborative-text demo's e2e suite.
  *
- * The `ebb_server` binary path comes from `@ebbjs/server`'s
+ * The `ebb_server` binary path comes from `@ebbjs/testing`'s
  * `RELEASE_BIN_PATH` export — the demo doesn't need to know about
  * the workspace layout to spawn it.
  *
  * The suite wires up two long-lived processes via `webServer`:
  *
- *   1. `ebb_server` — a release build from `@ebbjs/server`, started on
+ *   1. `ebb_server` — a release build from `@ebbjs/testing`, started on
  *      port 4000. Reuses the artifact already produced by the
  *      `elixir-release` job (see `ci.yml`). Each test run gets a
  *      fresh data dir so previous runs don't pollute the demo state.

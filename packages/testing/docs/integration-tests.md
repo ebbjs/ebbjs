@@ -4,12 +4,12 @@
 
 Integration tests run against a real `ebb_server` process (not mocked) to validate end-to-end behavior. The test harness starts the server, seeds it, runs tests, then tears down the server.
 
-The `ebb_server` release is bundled into `@ebbjs/server` during its build step — tests don't need to build or locate an external release.
+The `ebb_server` release is bundled into `@ebbjs/testing` during its build step — tests don't need to build or locate an external release.
 
 ## Architecture
 
 ```
-packages/server/
+packages/testing/
   docs/
     README.md              # This file
     components/
@@ -43,8 +43,8 @@ The seeded data dir can be produced once and reused across test runs (unless see
 
 ```typescript
 // test/e2e/setup.ts
-import { startServer } from "@ebbjs/server";
-import type { RunningServer } from "@ebbjs/server";
+import { startServer } from "@ebbjs/testing";
+import type { RunningServer } from "@ebbjs/testing";
 
 let server: RunningServer;
 
@@ -66,7 +66,7 @@ export { server };
 // test/e2e/sync.test.ts
 import { describe, test, expect, beforeAll } from "vitest";
 import { server } from "./setup";
-import { seed } from "@ebbjs/server";
+import { seed } from "@ebbjs/testing";
 import { buildSingleEntitySeed } from "./seeds";
 
 beforeAll(async () => {
@@ -93,7 +93,7 @@ test("handshake returns group membership", async () => {
 
 ```typescript
 // test/e2e/seeds/single-entity.ts
-import type { SeedData } from "@ebbjs/server";
+import type { SeedData } from "@ebbjs/testing";
 
 export const buildSingleEntitySeed = (): SeedData => ({
   groups: [{ id: "grp_001", name: "Test Group" }],
@@ -139,7 +139,7 @@ export const buildSingleEntitySeed = (): SeedData => ({
 
 ```bash
 # Build package (includes Elixir release)
-cd packages/server
+cd packages/testing
 pnpm build
 
 # Run integration tests (uses bundled release)
@@ -154,14 +154,14 @@ In CI, the build and test flow is:
 
 ```yaml
 # .github/workflows/e2e.yml
-- name: Build @ebbjs/server
+- name: Build @ebbjs/testing
   run: |
-    cd packages/server
+    cd packages/testing
     pnpm build
 
 - name: Run e2e tests
   run: |
-    cd packages/server
+    cd packages/testing
     EBB_SERVER_DATA_DIR=/tmp/ebb-test pnpm test:e2e
 ```
 
@@ -170,7 +170,7 @@ No separate `mix release` step — the release is built as part of `pnpm build`.
 ## Key Principles
 
 1. **Server is a black box** — tests interact only via HTTP. No accessing GenServers or internal state.
-2. **Bundled release** — the harness uses the release bundled in `node_modules/@ebbjs/server/dist/ebb_server/`. Callers don't pass a release path.
+2. **Bundled release** — the harness uses the release bundled in `node_modules/@ebbjs/testing/dist/ebb_server/`. Callers don't pass a release path.
 3. **One server per test suite** — `beforeAll` starts the server, `afterAll` kills it. All tests share the same server instance.
 4. **Tests are isolated from each other** — if tests modify server state, each test should reset via a clean seed copy or restart.
 5. **Port conflicts are avoided** — CI should use a dedicated port.

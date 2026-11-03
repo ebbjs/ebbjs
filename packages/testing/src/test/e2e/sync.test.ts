@@ -1,6 +1,6 @@
 import { test, expect, beforeAll } from "vitest";
 import { server } from "./setup";
-import { seed } from "@ebbjs/server";
+import { seed } from "@ebbjs/testing";
 import { buildSingleEntitySeed } from "./seeds/single-entity";
 
 beforeAll(async () => {

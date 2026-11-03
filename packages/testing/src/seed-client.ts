@@ -1,10 +1,10 @@
 /**
- * `@ebbjs/server`'s raw-POST seed harness.
+ * `@ebbjs/testing`'s raw-POST seed harness.
  *
  * The fixture builder and rejection policy are the browser-safe
  * `@ebbjs/core/seed` module; this file adds the HTTP submission the
  * server test harness needs and re-exports the core seed names so
- * `@ebbjs/server`'s public surface is unchanged.
+ * `@ebbjs/testing`'s public surface is unchanged.
  */
 
 import { encodeSync } from "@ebbjs/core";

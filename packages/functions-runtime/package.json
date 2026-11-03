@@ -1,0 +1,26 @@
+{
+  "name": "@ebbjs/functions-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Function context and host transport for the ebb functions runner",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest --run",
+    "typecheck": "tsc --noEmit",
+    "lint": "pnpm --root ../../ lint",
+    "lint:fix": "pnpm --root ../../ lint:fix",
+    "fmt": "pnpm --root ../../ fmt",
+    "fmt:check": "pnpm --root ../../ fmt:check"
+  },
+  "dependencies": {
+    "@ebbjs/client": "workspace:^",
+    "@ebbjs/functions-protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "vitest": "^4.1.0"
+  }
+}

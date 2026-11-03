@@ -76,7 +76,7 @@ What shipped differs from the old sketch in ways worth naming:
 
 ### Decision 5 — Persistence is deferred
 
-For the prototype: in-memory storage is fine. Refresh = empty doc, reconnect, server replays from start. The demo script re-seeds the group via `@ebbjs/server`'s `seed()` helper on load.
+For the prototype: in-memory storage is fine. Refresh = empty doc, reconnect, server replays from start. The demo script re-seeds the group via `@ebbjs/testing`'s `seed()` helper on load.
 
 Post-prototype (slice 6+):
 
@@ -234,7 +234,7 @@ New package. Vite + React 19 + CodeMirror 6 + Tailwind, matching the POC stack. 
 
 1. URL param `?actor=drew` (or `?actor=alice`) → actor ID
 2. Hardcoded `grp_demo` and `doc_demo` IDs
-3. If the group doesn't exist (first run), the demo calls `seed()` from `@ebbjs/server` to bootstrap it via HTTP `POST /sync/actions` with a PUT for the group, a PUT for the group member, and a PUT for the document
+3. If the group doesn't exist (first run), the demo calls `seed()` from `@ebbjs/testing` to bootstrap it via HTTP `POST /sync/actions` with a PUT for the group, a PUT for the group member, and a PUT for the document
 4. Open the document: `client.textDocument('doc_demo')`
 5. Wire CodeMirror to the causal tree
 
@@ -374,7 +374,7 @@ Five vertical slices, ordered by what unblocks what. Each slice ends with a runn
 4. Action receipt → `storage.actions.append(action)` → storage marks dirty
 5. `client.write(actions)` → `POST /sync/actions`
 6. Connection state machine (connecting → live → reconnecting → offline) with reconnect backoff
-7. Test: seed a group + entity via `@ebbjs/server`'s `seed()`, connect, assert materialized entity matches
+7. Test: seed a group + entity via `@ebbjs/testing`'s `seed()`, connect, assert materialized entity matches
 
 **Acceptance:** A small `examples/ebb-client-smoke` script connects to a running server, seeds a group, prints the materialized entity to stdout. No UI yet.
 
@@ -407,7 +407,7 @@ Five vertical slices, ordered by what unblocks what. Each slice ends with a runn
 1. ✅ New package `examples/collaborative-text-demo/` (Vite + React 19 + CodeMirror 6 + Tailwind)
 2. ✅ Wire CodeMirror to the new client. The bridge lives in a separate package, [`@ebbjs/codemirror`](../../../codemirror/) (peer dep on `@ebbjs/client` + CodeMirror), not inlined in the demo. The bridge translates CM transactions to `doc.localInsert` / `localExtend` / `localDelete` and applies remote updates from `doc.onUpdate` back to CM. A `StateField` mirrors `doc.docState.index.spans` for position ↔ run mapping.
 3. ✅ URL param `?actor=drew` → hardcoded actor ID → bypass auth
-4. ✅ Hardcoded group ID `grp_demo`; seed via `@ebbjs/server`'s `seed()` on first load (POST bootstrap group + member + document if they don't exist). Seed is inlined in the demo (`src/seed.ts`) because the `@ebbjs/server` package pulls in Node-only deps that can't ship to the browser.
+4. ✅ Hardcoded group ID `grp_demo`; seed via `@ebbjs/testing`'s `seed()` on first load (POST bootstrap group + member + document if they don't exist). Seed is inlined in the demo (`src/seed.ts`) because the `@ebbjs/testing` package pulls in Node-only deps that can't ship to the browser.
 5. ✅ Connection state indicator (connecting / live / offline badge) — `ConnectionBadge.tsx`
 6. ✅ Conflict panel (collapsible right sidebar showing last N conflicts) — `ConflictPanel.tsx`
 7. ✅ Presence (ephemeral cursors/selections) — `client.presence` + `createPresenceExtension`. Remote cursors render as colored bars with actor labels; selections as highlight marks. Round-trip is unit-tested (`packages/client/src/presence/presence.test.ts`) and integration-tested (`packages/client/src/__tests__/integration/presence.test.ts`).
@@ -425,7 +425,7 @@ Five vertical slices, ordered by what unblocks what. Each slice ends with a runn
 2. Two-page test: open the demo in two browser contexts, type in page A, assert page B sees the text
 3. Conflict test: two pages type in the same position, assert conflict panel surfaces on both
 4. Wire into `.github/workflows/` so it runs on PR
-5. Mock the Elixir server boot or use the `@ebbjs/server` test harness
+5. Mock the Elixir server boot or use the `@ebbjs/testing` test harness
 
 **Acceptance:** `pnpm --filter collaborative-text-demo test:e2e` passes locally and in CI.
 
@@ -468,8 +468,8 @@ packages/client/src/presence/cursor-widget.ts          # CM6 CursorWidget
 packages/storage/src/memory/                            # modify — add subscribe hook for live updates
 packages/storage/src/types/storage-adapter.ts           # modify — add subscribe(callback) for live updates
 
-packages/server/src/seed-client.ts                      # already exists; use as-is for demo bootstrap
-packages/server/src/test/e2e/                           # add an e2e test for the demo flow
+packages/testing/src/seed-client.ts                      # already exists; use as-is for demo bootstrap
+packages/testing/src/test/e2e/                           # add an e2e test for the demo flow
 
 examples/                                               # new — demo apps
 examples/collaborative-text-demo/                       # new — Vite + React 19 + CodeMirror 6
@@ -501,7 +501,7 @@ These came up during design but don't block the prototype. Resolve during or aft
    - Bundle the seed call into the demo's startup (synchronous on page load)
    - Have the demo auto-create on first load via bootstrap Actions
    - Pre-seed via a server-side script
-     The simplest is option 1 (call `@ebbjs/server`'s `seed()`). The demo is single-user on initial visit, multi-user on subsequent visits. **Resolve during slice 1** — confirm `seed()` works end-to-end from a browser. If it does, document the pattern. If it doesn't (e.g., CORS), pivot to option 3 (a one-time server-side seed script).
+     The simplest is option 1 (call `@ebbjs/testing`'s `seed()`). The demo is single-user on initial visit, multi-user on subsequent visits. **Resolve during slice 1** — confirm `seed()` works end-to-end from a browser. If it does, document the pattern. If it doesn't (e.g., CORS), pivot to option 3 (a one-time server-side seed script).
 
 4. ~~Presence~~ **RESOLVED by POC.** `experiment/collaborative-text/src/presence.ts` is a complete, working presence implementation (419 lines). Port it to `@ebbjs/client/src/presence/` during slice 3. Only change: BroadcastChannel → `POST /sync/presence`. See the Presence section above.
 

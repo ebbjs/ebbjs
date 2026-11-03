@@ -19,7 +19,7 @@
   "dependencies": {
     "@ebbjs/client": "workspace:*",
     "@ebbjs/core": "workspace:*",
-    "@ebbjs/server": "workspace:*",
+    "@ebbjs/testing": "workspace:*",
     "@ebbjs/storage": "workspace:*"
   },
   "devDependencies": {

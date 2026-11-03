@@ -1,10 +1,35 @@
 {
   "files": [],
   "references": [
-    { "path": "./packages/client" },
-    { "path": "./packages/server" },
-    { "path": "./packages/core" },
-    { "path": "./packages/react" },
-    { "path": "./packages/www" }
+    {
+      "path": "./packages/client"
+    },
+    {
+      "path": "./packages/testing"
+    },
+    {
+      "path": "./packages/core"
+    },
+    {
+      "path": "./packages/react"
+    },
+    {
+      "path": "./packages/www"
+    },
+    {
+      "path": "./packages/functions-protocol"
+    },
+    {
+      "path": "./packages/functions-runtime"
+    },
+    {
+      "path": "./packages/server"
+    },
+    {
+      "path": "./packages/cli"
+    },
+    {
+      "path": "./packages/runner"
+    }
   ]
 }
