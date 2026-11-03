@@ -1,6 +1,7 @@
 #!/bin/bash
 #
-# Install git hooks and configure local git settings.
+# Install git hooks, configure local git settings, and share one compiled
+# `ebb_server/deps` between worktrees.
 # Runs automatically as `pnpm install`'s prepare script.
 #
 set -e
@@ -18,3 +19,7 @@ lefthook install --reset-hooks-path
 if [ -d .git ]; then
   git config --local commit.template .gitmessage
 fi
+
+# A worktree without this link spends ~50 minutes compiling RocksDB on its first
+# `mix` command; see scripts/ebb-server-deps.sh.
+bash "$SCRIPT_DIR/ebb-server-deps.sh"

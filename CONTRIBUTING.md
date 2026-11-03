@@ -69,7 +69,7 @@ the npm trusted-publishing setup, and the artifact guardrails.
 ## Local setup
 
 ```bash
-pnpm install          # installs hooks + wires commit.template (via scripts/install-dev-tools.sh)
+pnpm install          # hooks, commit.template, and a shared ebb_server/deps (scripts/install-dev-tools.sh)
 pnpm setup:ebb-server # install Elixir system deps (see scripts/setup-ebb-server.sh)
 pnpm build            # build every package — required before pnpm test
 pnpm test             # run the test suite
