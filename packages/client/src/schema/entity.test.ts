@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { defineEntity, e, type EntityDef, type NullableSchema } from "./entity";
-import { ReservedNameError, RESERVED_ENTITY_NAMES } from "./reserved";
+import { defineEntity, e, type EntityDef, type NullableSchema } from "@ebbjs/schema";
+import { ReservedNameError, RESERVED_ENTITY_NAMES } from "@ebbjs/schema";
 
 describe("defineEntity", () => {
   it("returns a value with the given name and fields", () => {

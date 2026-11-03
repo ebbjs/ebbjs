@@ -9,8 +9,8 @@
 
 import type { TSchema } from "@sinclair/typebox/type";
 
-import type { EntityDef } from "../schema/entity";
-import type { RelationshipDef } from "../schema/relationship";
+import type { EntityDef } from "@ebbjs/schema";
+import type { RelationshipDef } from "@ebbjs/schema";
 
 /** An entity definition with its field map erased. */
 export type AnyEntityDef = EntityDef<Record<string, TSchema>>;

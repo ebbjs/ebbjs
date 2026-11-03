@@ -54,14 +54,14 @@
  * is untouched.
  */
 
-import type { Entity, FieldValue } from "@ebbjs/core";
-import { isFieldMap } from "@ebbjs/core";
+import type { Entity } from "@ebbjs/core";
 import type { Replica } from "@ebbjs/storage/replica";
 import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
-import type { ShapeFields, WireFields } from "../schema/entity";
-import { EntityValidationError, type EntityRegistry } from "../schema/entity-registry";
-import { GROUPS_ACCESSOR, groupSystemEntity, type GroupFields } from "../schema/system-entities";
+import type { ShapeFields, WireFields } from "@ebbjs/schema";
+import { EntityValidationError, type EntityRegistry } from "@ebbjs/schema";
+import { GROUPS_ACCESSOR, groupSystemEntity, type GroupFields } from "@ebbjs/schema";
+import { normalizePointer, projectFieldValue, type PointerValue } from "@ebbjs/write";
 import type {
   AccessorKeyOf,
   AnyEntityDef,
@@ -99,40 +99,7 @@ export class OnDemandQueryError extends Error {
   }
 }
 
-/**
- * A map field is immutable per version, so its projection is cached by the
- * field's identity. A merge or a new snapshot produces a new field object; a
- * no-op reuses the old one, which is exactly when the cached projection is
- * still valid. The projection is shared, so callers must treat it as
- * read-only, like the field it came from.
- */
-const projectedMaps = new WeakMap<FieldValue, Record<string, unknown>>();
-
-/**
- * Project one wire field value to its application-facing value.
- *
- * - leaf → its `.value`
- * - map → each entry projected, recursively, with tombstoned entries
- *   (`value: null`) omitted so a deleted key disappears from the
- *   projected object while its storage entry is retained.
- *
- * The rule is purely structural: no field-kind dispatch, mirroring the
- * merge rule. A map projection is cached per field version and shared.
- */
-export const projectFieldValue = (field: FieldValue): unknown => {
-  if (!isFieldMap(field)) return field.value;
-  const cached = projectedMaps.get(field);
-  if (cached !== undefined) return cached;
-
-  const out: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(field.map)) {
-    const projected = projectFieldValue(entry);
-    if (projected === null) continue;
-    out[key] = projected;
-  }
-  projectedMaps.set(field, out);
-  return out;
-};
+export { projectFieldValue } from "@ebbjs/write";
 
 /**
  * Map a single materialized entity onto the schema's TypeBox shape.
@@ -321,41 +288,9 @@ export type JoinedRow<
   TRow extends { readonly id: string } = ProjectedRow<TFields>,
 > = Omit<TRow, keyof TJoined> & TJoined;
 
-/**
- * A single pointer value accepted by a relationship predicate:
- * - a string id
- * - a handle with a string `.id` (a materialized entity, say)
- * - `null` / `undefined` — no live edge (see {@link resolveTargetIds})
- *
- * Defined here so this module need not import `./relationship`
- * (which imports this module) to name the type; `./relationship`
- * re-exports it for existing callers.
- */
-export type PointerValue = string | { readonly id: string } | null | undefined;
-
-/**
- * Normalize a pointer value to a string id. `null` / `undefined`
- * normalize to `null`; anything that is neither a string nor an
- * object with a non-empty string `.id` throws. Shared by the
- * relationship-write path and the relationship predicate.
- */
-export function normalizePointer(value: unknown, label: string): string | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value === "string") {
-    if (value.length === 0) {
-      throw new Error(`${label}: empty string is not a valid pointer id`);
-    }
-    return value;
-  }
-  if (typeof value === "object") {
-    const obj = value as { id?: unknown };
-    if (typeof obj.id === "string" && obj.id.length > 0) {
-      return obj.id;
-    }
-    throw new Error(`${label}: object pointer must have a non-empty string .id`);
-  }
-  throw new Error(`${label}: pointer must be a string id, an entity with .id, or null/undefined`);
-}
+/** Re-exported from `@ebbjs/write`, where the pointer vocabulary lives. */
+export type { PointerValue } from "@ebbjs/write";
+export { normalizePointer } from "@ebbjs/write";
 
 /**
  * Everything a replica-backed chain needs to infer and execute a

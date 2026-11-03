@@ -47,11 +47,11 @@ import {
   type UpdateInput,
 } from "@ebbjs/core";
 import { createClient, defineAction, type SyncClient } from "../..";
-import { defineEntity, e } from "../../schema/entity";
-import { defineRelationship } from "../../schema/relationship";
-import { EntityRegistry, EntityValidationError } from "../../schema/entity-registry";
-import { defineSchema } from "../../schema/schema";
-import { groupSystemEntity } from "../../schema/system-entities";
+import { defineEntity, e } from "@ebbjs/schema";
+import { defineRelationship } from "@ebbjs/schema";
+import { EntityRegistry, EntityValidationError } from "@ebbjs/schema";
+import { defineSchema } from "@ebbjs/schema";
+import { groupSystemEntity } from "@ebbjs/schema";
 import { testActions } from "../../sync/__tests__/test-actions";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";

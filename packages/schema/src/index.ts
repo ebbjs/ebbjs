@@ -1,0 +1,28 @@
+/**
+ * `@ebbjs/schema` — pure entity, relationship, and schema definitions.
+ *
+ * The registry and validation the write planner and the sync client both
+ * consume, plus the collaborative-text field type those definitions expand
+ * into. No storage, no network, no client.
+ */
+
+export * from "./entity";
+export * from "./entity-registry";
+export * from "./relationship";
+export * from "./reserved";
+export * from "./schema";
+export * from "./system-entities";
+export * from "./collaborative-text/schema";
+export * from "./collaborative-text/wire";
+export * from "./collaborative-text/derived-ids";
+export * from "./collaborative-text/tree";
+export {
+  TextDocument,
+  TextDocumentRegistry,
+  type AppliedUpdate,
+  type LocalDeleteOptions,
+  type LocalExtendOptions,
+  type LocalInsertOptions,
+  type TextDocumentSubmit,
+  type UpdateListener,
+} from "./collaborative-text/text-document";

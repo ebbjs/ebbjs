@@ -13,7 +13,7 @@
  * decision 12).
  */
 
-import { entityGroupSystemEntity, relationshipSystemEntity } from "../schema/system-entities";
+import { entityGroupSystemEntity, relationshipSystemEntity } from "@ebbjs/schema";
 
 import type { Join, Predicate, Query } from "./query";
 import { hasJoinKind, hasPredicateKind } from "./query";

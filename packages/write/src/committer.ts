@@ -16,10 +16,10 @@
  */
 
 import type { Update } from "@ebbjs/core";
+import type { EntityRegistry } from "@ebbjs/schema";
 
-import type { EntityRegistry } from "../schema/entity-registry";
 import { type OperationCall, type OpContext } from "./operations";
-import type { WriteResponse } from "./types";
+import type { WriteResponse } from "./rejection";
 
 /** What the committer needs from the client. */
 export interface CommitCapability {

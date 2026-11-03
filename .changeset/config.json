@@ -3,7 +3,15 @@
   "changelog": "@changesets/cli/changelog",
   "commit": false,
   "fixed": [
-    ["@ebbjs/core", "@ebbjs/storage", "@ebbjs/client", "@ebbjs/react", "@ebbjs/codemirror"]
+    [
+      "@ebbjs/core",
+      "@ebbjs/storage",
+      "@ebbjs/schema",
+      "@ebbjs/write",
+      "@ebbjs/client",
+      "@ebbjs/react",
+      "@ebbjs/codemirror"
+    ]
   ],
   "linked": [],
   "access": "public",

@@ -24,19 +24,15 @@ import type {
   DerivedKeys,
   ShapeFields,
   WireFields,
-} from "../schema/entity";
+} from "@ebbjs/schema";
 import type { AccessorKeyOf, AnyRelationshipDef, EntityNameOf, FieldsOf } from "./definition-types";
-import type { EntityRegistry } from "../schema/entity-registry";
-import type { RelationshipDef } from "../schema/relationship";
-import type { Schema } from "../schema/schema";
-import type { GroupFields, GroupMemberFields } from "../schema/system-entities";
-import {
-  groupMemberSystemEntity,
-  groupSystemEntity,
-  GROUPS_ACCESSOR,
-} from "../schema/system-entities";
-import { DOC_CONTENT_FIELD, isCollaborativeText } from "../fields/collaborative-text/schema";
-import type { TextDocument, TextDocumentSubmit } from "../fields/collaborative-text/text-document";
+import type { EntityRegistry } from "@ebbjs/schema";
+import type { RelationshipDef } from "@ebbjs/schema";
+import type { Schema } from "@ebbjs/schema";
+import type { GroupFields, GroupMemberFields } from "@ebbjs/schema";
+import { groupMemberSystemEntity, groupSystemEntity, GROUPS_ACCESSOR } from "@ebbjs/schema";
+import { DOC_CONTENT_FIELD, isCollaborativeText } from "@ebbjs/schema";
+import type { TextDocument, TextDocumentSubmit } from "@ebbjs/schema";
 import {
   buildReplicaQueryBuilder,
   projectEntity,

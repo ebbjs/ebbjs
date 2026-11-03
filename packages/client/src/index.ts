@@ -100,7 +100,7 @@ export {
 } from "./sync/query-cache";
 
 export type { ReplicaSignal } from "./sync/replica-signal";
-export type { ManyPointerValue } from "./sync/relationship";
+export type { ManyPointerValue } from "@ebbjs/write";
 export type { ReplicaStats } from "@ebbjs/storage/replica";
 
 export {
@@ -193,7 +193,7 @@ export {
   type LocalDeleteOptions,
   type LocalExtendOptions,
   type UpdateListener,
-} from "./fields/collaborative-text/text-document";
+} from "@ebbjs/schema";
 
 export {
   applyActions,
@@ -203,13 +203,9 @@ export {
   isDocSubjectUpdate,
   parseContentField,
   DEFAULT_DOC_SUBJECT_TYPE,
-} from "./fields/collaborative-text/wire";
+} from "@ebbjs/schema";
 
-export {
-  RunNodeSchema,
-  DOC_CONTENT_FIELD,
-  generatedDocEntityName,
-} from "./fields/collaborative-text/schema";
+export { RunNodeSchema, DOC_CONTENT_FIELD, generatedDocEntityName } from "@ebbjs/schema";
 
 export {
   createDocState,
@@ -233,7 +229,7 @@ export {
   type RunSpan,
   type PositionIndex,
   type PositionLookup,
-} from "./fields/collaborative-text/tree";
+} from "@ebbjs/schema";
 
 export type {
   GroupInfo,
@@ -279,7 +275,7 @@ export {
   type DerivedKeys,
   type WireFields,
   type TSchema,
-} from "./schema/entity";
+} from "@ebbjs/schema";
 
 export {
   defineRelationship,
@@ -287,13 +283,9 @@ export {
   type RelationshipKind,
   type SourceCardinality,
   type DefineRelationshipInput,
-} from "./schema/relationship";
+} from "@ebbjs/schema";
 
-export {
-  EntityRegistry,
-  EntityValidationError,
-  type ValidationViolation,
-} from "./schema/entity-registry";
+export { EntityRegistry, EntityValidationError, type ValidationViolation } from "@ebbjs/schema";
 
 export {
   defineSchema,
@@ -304,14 +296,14 @@ export {
   type DefineSchemaInput,
   type ExpandedEntities,
   type Schema,
-} from "./schema/schema";
+} from "@ebbjs/schema";
 
 export {
   ReservedNameError,
   RESERVED_ENTITY_NAMES,
   RESERVED_MEMBERSHIP_NAMES,
   DERIVED_DOC_ENTITY_PREFIX,
-} from "./schema/reserved";
+} from "@ebbjs/schema";
 
 export {
   relationshipSystemEntity,
@@ -322,4 +314,4 @@ export {
   type GroupFields,
   type GroupMemberFields,
   type EntityGroupFields,
-} from "./schema/system-entities";
+} from "@ebbjs/schema";

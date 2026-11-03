@@ -2,9 +2,9 @@ import { Type, Static } from "@sinclair/typebox";
 export type { Action } from "@ebbjs/core";
 // Bring `Action` into local scope so the interfaces below can use it.
 type Action = import("@ebbjs/core").Action;
-import type { EntityDef } from "../schema/entity";
-import type { RelationshipDef } from "../schema/relationship";
-import type { Schema } from "../schema/schema";
+import type { EntityDef } from "@ebbjs/schema";
+import type { RelationshipDef } from "@ebbjs/schema";
+import type { Schema } from "@ebbjs/schema";
 import type { AnyActionDef } from "../schema/action";
 import type { TSchema } from "@sinclair/typebox/type";
 
@@ -98,18 +98,7 @@ export interface CatchUpResponse {
   upToDate: boolean;
 }
 
-/** Per-action rejection from `POST /sync/actions`. */
-export const RejectionSchema = Type.Object({
-  id: Type.String(),
-  reason: Type.String(),
-  details: Type.Optional(Type.Union([Type.String(), Type.Null()])),
-});
-export type Rejection = Static<typeof RejectionSchema>;
-
-/** Response shape for `POST /sync/actions`. */
-export interface WriteResponse {
-  rejected: readonly Rejection[];
-}
+export { RejectionSchema, type Rejection, type WriteResponse } from "@ebbjs/write";
 
 /** Response shape for `GET /entities/:id`. */
 export const EntityResponseSchema = Type.Object({
@@ -188,7 +177,7 @@ export type RegistryViolationContext = { direction: "outbound" } | { direction: 
 
 /** Observer for schema-registry violations. */
 export type RegistryViolationListener = (
-  violations: readonly import("../schema/entity-registry").ValidationViolation[],
+  violations: readonly import("@ebbjs/schema").ValidationViolation[],
   context: RegistryViolationContext,
 ) => void;
 
@@ -243,7 +232,7 @@ export interface SyncClientOptions {
    * violations. When omitted, an empty registry is constructed and
    * validation is a no-op (matching how `storage?`, `fetchImpl?` work).
    */
-  registry?: import("../schema/entity-registry").EntityRegistry;
+  registry?: import("@ebbjs/schema").EntityRegistry;
   /**
    * Observer fired for every batch of registry violations, both
    * outbound (immediately before `client.write()` /

@@ -14,9 +14,9 @@
 
 import { format, pack, type FieldValue, type HLCTimestamp } from "@ebbjs/core";
 
-import { TextDocument } from "../fields/collaborative-text/text-document";
-import { parseContentField } from "../fields/collaborative-text/wire";
-import type { RunNode } from "../fields/collaborative-text/tree";
+import { TextDocument } from "@ebbjs/schema";
+import { parseContentField } from "@ebbjs/schema";
+import type { RunNode } from "@ebbjs/schema";
 import { projectFieldValue } from "../sync/query-builder";
 
 const SIZES = [500, 1000, 5000, 10000] as const;

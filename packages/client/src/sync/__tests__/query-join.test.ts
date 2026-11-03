@@ -13,10 +13,10 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { makeHlc, type Action, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
-import { defineEntity, e, type WireFields } from "../../schema/entity";
-import { defineRelationship } from "../../schema/relationship";
-import { defineSchema } from "../../schema/schema";
-import type { GroupFields } from "../../schema/system-entities";
+import { defineEntity, e, type WireFields } from "@ebbjs/schema";
+import { defineRelationship } from "@ebbjs/schema";
+import { defineSchema } from "@ebbjs/schema";
+import type { GroupFields } from "@ebbjs/schema";
 import { createClient } from "../client";
 import type { QueryRowOf } from "../../index";
 import type { EntityFields } from "../namespace";

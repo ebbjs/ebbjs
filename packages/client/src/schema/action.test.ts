@@ -6,8 +6,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { defineEntity, e } from "./entity";
-import { defineSchema } from "./schema";
+import { defineEntity, e } from "@ebbjs/schema";
+import { defineSchema } from "@ebbjs/schema";
 import { ActionDefinitionError, defineAction, RUN, type ActionDef } from "./action";
 import { createClient } from "../sync/client";
 

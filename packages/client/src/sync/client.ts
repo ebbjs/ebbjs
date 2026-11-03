@@ -65,13 +65,9 @@ import { createQueryCache, type QueryCache } from "./query-cache";
 import { evictableRowIds, scopeEvictedGroupIds } from "./scope-eviction";
 import { createReplicaSignal, type ReplicaSignal } from "./replica-signal";
 import { backoffDelayMs } from "./backoff";
-import { TextDocument, TextDocumentRegistry } from "../fields/collaborative-text/text-document";
-import {
-  EntityRegistry,
-  EntityValidationError,
-  type ValidationViolation,
-} from "../schema/entity-registry";
-import type { RelationshipDef } from "../schema/relationship";
+import { TextDocument, TextDocumentRegistry } from "@ebbjs/schema";
+import { EntityRegistry, EntityValidationError, type ValidationViolation } from "@ebbjs/schema";
+import type { RelationshipDef } from "@ebbjs/schema";
 import {
   buildRelationshipWrite as buildRelationshipWriteFree,
   type BuildRelationshipWriteOptions,
@@ -79,7 +75,7 @@ import {
 } from "./relationship";
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { readEntityMemberships } from "./entity-group";
-import { groupMembersOf } from "./membership";
+import { groupMembersOf } from "@ebbjs/write";
 import { readGeneratedParts } from "./generated-parts";
 import { createBackfill, type Backfill } from "./backfill";
 import { createGroupListing, LISTING_SEED_ACTOR_ID, type GroupListing } from "./group-listing";
@@ -102,8 +98,8 @@ import {
   type AnyActionDef,
 } from "../schema/action";
 import { generateId } from "@ebbjs/core";
-import type { EntityDef } from "../schema/entity";
-import { seedRegistry, type Schema } from "../schema/schema";
+import type { EntityDef } from "@ebbjs/schema";
+import { seedRegistry, type Schema } from "@ebbjs/schema";
 import { assertSeedAccepted, buildSeedAction, type SeedData } from "@ebbjs/core/seed";
 import type { TSchema } from "@sinclair/typebox/type";
 

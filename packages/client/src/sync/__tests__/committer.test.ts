@@ -12,17 +12,17 @@
 import { describe, expect, it } from "vitest";
 import type { Update } from "@ebbjs/core";
 
-import { defineEntity, e } from "../../schema/entity";
-import { EntityRegistry } from "../../schema/entity-registry";
-import { defineRelationship } from "../../schema/relationship";
+import { defineEntity, e } from "@ebbjs/schema";
+import { EntityRegistry } from "@ebbjs/schema";
+import { defineRelationship } from "@ebbjs/schema";
 import {
   ActionRejectedError,
   call,
   changeGroups,
   createEntity,
   writeRelationship,
-} from "../operations";
-import { commit, type CommitCapability } from "../committer";
+} from "@ebbjs/write";
+import { commit, type CommitCapability } from "@ebbjs/write";
 
 const todo = defineEntity("todo", { title: e.string() });
 const list = defineEntity("list", { name: e.string() });

@@ -36,6 +36,8 @@ const TSC = createRequire(import.meta.url).resolve("typescript/bin/tsc");
 const EXPECTED_PUBLISHED = [
   "@ebbjs/core",
   "@ebbjs/storage",
+  "@ebbjs/schema",
+  "@ebbjs/write",
   "@ebbjs/client",
   "@ebbjs/react",
   "@ebbjs/codemirror",
@@ -57,6 +59,8 @@ const RUNTIME_ENTRY_POINTS = [
   "@ebbjs/storage/memory",
   "@ebbjs/storage/indexeddb",
   "@ebbjs/storage/replica",
+  "@ebbjs/schema",
+  "@ebbjs/write",
   "@ebbjs/client",
   "@ebbjs/react",
   "@ebbjs/codemirror",
@@ -343,6 +347,8 @@ import { createIndexedDBAdapter } from "@ebbjs/storage/indexeddb";
 import { createReplica, holdAll } from "@ebbjs/storage/replica";
 import type { Replica } from "@ebbjs/storage/types";
 import type { Replica as ReplicaEntry } from "@ebbjs/storage/replica";
+import { defineEntity, defineSchema, e } from "@ebbjs/schema";
+import { commit } from "@ebbjs/write";
 import { createClient } from "@ebbjs/client";
 import { EbbProvider } from "@ebbjs/react";
 import { createBridgeExtension } from "@ebbjs/codemirror";
@@ -354,6 +360,10 @@ export const publicApi = {
   createIndexedDBAdapter,
   createReplica,
   holdAll,
+  defineEntity,
+  defineSchema,
+  e,
+  commit,
   createClient,
   EbbProvider,
   createBridgeExtension,

@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { EntityValidationError } from "../../schema/entity-registry";
+import { EntityValidationError } from "@ebbjs/schema";
 import { ActionRejectedError, type ActionRejection } from "../drafts";
 
 const membershipRejection: ActionRejection = {

@@ -11,9 +11,9 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { Replica } from "@ebbjs/storage/types";
 import { createClient } from "../client";
 import { seedReplicaRow } from "../test-utils";
-import { defineEntity, e } from "../../schema/entity";
-import { defineRelationship } from "../../schema/relationship";
-import { defineSchema } from "../../schema/schema";
+import { defineEntity, e } from "@ebbjs/schema";
+import { defineRelationship } from "@ebbjs/schema";
+import { defineSchema } from "@ebbjs/schema";
 
 const todo = defineEntity("todo", { title: e.string() });
 const user = defineEntity("user", { name: e.string() });

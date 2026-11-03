@@ -18,8 +18,8 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { createClient } from "../client";
 import { callApplyAction } from "../test-utils";
 import { testActions } from "./test-actions";
-import { defineEntity, e } from "../../schema/entity";
-import { defineSchema } from "../../schema/schema";
+import { defineEntity, e } from "@ebbjs/schema";
+import { defineSchema } from "@ebbjs/schema";
 import type { Conflict, ConflictEntry } from "../conflicts";
 
 const SERVER_URL = "http://localhost:4000";

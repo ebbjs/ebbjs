@@ -18,9 +18,9 @@ import { makeHlc, type Action, type Entity, type FieldValue, type Update } from 
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { createReplica } from "@ebbjs/storage/replica";
 
-import { defineEntity, e } from "../../schema/entity";
-import { defineRelationship } from "../../schema/relationship";
-import { defineSchema } from "../../schema/schema";
+import { defineEntity, e } from "@ebbjs/schema";
+import { defineRelationship } from "@ebbjs/schema";
+import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { callApplyAction } from "../test-utils";
 import { testActions } from "./test-actions";

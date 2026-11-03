@@ -11,10 +11,10 @@ import { describe, expect, it } from "vitest";
 import { decodeSync, type Action, type Entity } from "@ebbjs/core";
 import type { TSchema } from "@sinclair/typebox/type";
 
-import { e, defineEntity, type EntityDef } from "../../schema/entity";
-import { defineSchema, type Schema } from "../../schema/schema";
-import { defineRelationship, type RelationshipDef } from "../../schema/relationship";
-import { generatedDocEntityName } from "../../fields/collaborative-text/schema";
+import { e, defineEntity, type EntityDef } from "@ebbjs/schema";
+import { defineSchema, type Schema } from "@ebbjs/schema";
+import { defineRelationship, type RelationshipDef } from "@ebbjs/schema";
+import { generatedDocEntityName } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { readGeneratedParts } from "../generated-parts";
 import { jsonResponse } from "../test-utils";

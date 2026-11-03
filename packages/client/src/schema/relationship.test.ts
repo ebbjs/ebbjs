@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { defineEntity, e } from "./entity";
-import { defineRelationship, type RelationshipDef } from "./relationship";
-import { ReservedNameError } from "./reserved";
-import { EntityRegistry, EntityValidationError } from "./entity-registry";
+import { defineEntity, e } from "@ebbjs/schema";
+import { defineRelationship, type RelationshipDef } from "@ebbjs/schema";
+import { ReservedNameError } from "@ebbjs/schema";
+import { EntityRegistry, EntityValidationError } from "@ebbjs/schema";
 import {
   buildRelationshipUpdate,
   normalizeManyPointers,

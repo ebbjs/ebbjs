@@ -12,16 +12,21 @@
  */
 
 import { generateId, isFieldMap, type Entity, type FieldValue, type Update } from "@ebbjs/core";
+import {
+  buildInitialContentField,
+  DOC_CONTENT_FIELD,
+  derivedBodyIds,
+  EntityValidationError,
+  GROUPS_ACCESSOR,
+  validatePayload,
+  type EntityRegistry,
+} from "@ebbjs/schema";
 
-import type { EntityRegistry } from "../schema/entity-registry";
-import { EntityValidationError, validatePayload } from "../schema/entity-registry";
-import { GROUPS_ACCESSOR } from "../schema/system-entities";
-import { buildInitialContentField } from "../fields/collaborative-text/wire";
-import { DOC_CONTENT_FIELD } from "../fields/collaborative-text/schema";
-import { derivedBodyIds } from "../fields/collaborative-text/derived-ids";
+import { projectFieldValue } from "./field-projection";
 import type { GeneratedParts } from "./generated-parts";
-import { projectFieldValue } from "./query-builder";
-import type { Rejection } from "./types";
+import { lastMembershipViolation, membershipScope, type MembershipView } from "./membership";
+import type { PointerValue } from "./pointer";
+import type { Rejection } from "./rejection";
 import {
   buildEntityGroupDelete,
   buildEntityGroupUpdates,
@@ -30,9 +35,7 @@ import {
   buildRelationshipUpdate,
   buildRelationshipWrite,
   type ManyPointerValue,
-  type PointerValue,
 } from "./relationship";
-import { lastMembershipViolation, membershipScope, type MembershipView } from "./membership";
 
 /**
  * Refusal of an Action: a client-side membership failure

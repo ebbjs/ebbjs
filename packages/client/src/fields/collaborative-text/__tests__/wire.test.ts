@@ -20,7 +20,7 @@ import {
   docActionToUpdate,
   isDocSubjectUpdate,
   parseContentField,
-} from "../wire";
+} from "@ebbjs/schema";
 import {
   createDocState,
   docReducer,
@@ -28,7 +28,7 @@ import {
   type DocState,
   type RunFieldValue,
   type RunNode,
-} from "../tree";
+} from "@ebbjs/schema";
 
 // ---------------------------------------------------------------------------
 // Helpers

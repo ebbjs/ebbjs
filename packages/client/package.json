@@ -48,7 +48,9 @@
   },
   "dependencies": {
     "@ebbjs/core": "workspace:^",
+    "@ebbjs/schema": "workspace:^",
     "@ebbjs/storage": "workspace:^",
+    "@ebbjs/write": "workspace:^",
     "@sinclair/typebox": "^0.34.52",
     "eventsource-client": "^1.2.0"
   },

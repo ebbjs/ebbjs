@@ -10,13 +10,15 @@ in `.github/workflows/release.yml`, `.changeset/config.json`, and
 | ------------------- | --------- | ------------------------------------------------------------- |
 | `@ebbjs/core`       | yes       | Runtime dependency of `storage`, `client`, and `codemirror`.  |
 | `@ebbjs/storage`    | yes       | Root export is types-only; code imports the subpaths.         |
+| `@ebbjs/schema`     | yes       | Entity/relationship/schema definitions, registry, validation. |
+| `@ebbjs/write`      | yes       | Operation vocabulary and pure wire builders.                  |
 | `@ebbjs/client`     | yes       |                                                               |
 | `@ebbjs/react`      | yes       | Peer: `react`.                                                |
 | `@ebbjs/codemirror` | yes       | Peers: `@codemirror/state`, `@codemirror/view`, `codemirror`. |
 | `@ebbjs/testing`    | no        | Private E2E harness.                                          |
 | `@ebbjs/www`        | no        | Private Astro docs site.                                      |
 
-All five published packages share **one version** (a changesets `fixed` group).
+All seven published packages share **one version** (a changesets `fixed` group).
 They are ESM-only and support Node `>=22.8.0`.
 
 ## Adding a change

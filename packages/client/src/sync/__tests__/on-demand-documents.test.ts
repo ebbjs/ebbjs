@@ -14,10 +14,10 @@ import { decodeSync, makeHlc, type Action, type FieldValue, type Update } from "
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { TSchema } from "@sinclair/typebox/type";
 
-import { e, defineEntity, type EntityDef } from "../../schema/entity";
-import { defineRelationship, type RelationshipDef } from "../../schema/relationship";
-import { defineSchema, type Schema } from "../../schema/schema";
-import { generatedDocEntityName } from "../../fields/collaborative-text/schema";
+import { e, defineEntity, type EntityDef } from "@ebbjs/schema";
+import { defineRelationship, type RelationshipDef } from "@ebbjs/schema";
+import { defineSchema, type Schema } from "@ebbjs/schema";
+import { generatedDocEntityName } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { OnDemandQueryError } from "../query-builder";
 import type { SyncClientOptions } from "../types";

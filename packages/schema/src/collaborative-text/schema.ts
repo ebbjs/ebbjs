@@ -10,14 +10,8 @@
 
 import { Type } from "@sinclair/typebox";
 
-import {
-  buildEntityDef,
-  e,
-  type ConflictScope,
-  type EntityDef,
-  type MapSchema,
-} from "../../schema/entity";
-import { DERIVED_DOC_ENTITY_PREFIX } from "../../schema/reserved";
+import { buildEntityDef, e, type ConflictScope, type EntityDef } from "../entity";
+import { DERIVED_DOC_ENTITY_PREFIX } from "../reserved";
 
 /**
  * Generated document entity name for one derived field. Deterministic
@@ -84,5 +78,3 @@ export function buildTextDocumentEntity<N extends string>(
     { conflictScope, materialization: "on-demand" },
   ) as EntityDef<TextDocumentFields, N>;
 }
-
-export type { MapSchema };
