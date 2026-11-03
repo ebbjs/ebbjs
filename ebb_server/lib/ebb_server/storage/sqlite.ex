@@ -68,6 +68,12 @@ defmodule EbbServer.Storage.SQLite do
   PRAGMA foreign_keys = ON;
   """
 
+  # The suite rebuilds a throwaway database for every test, so the fsync and
+  # WAL bookkeeping these PRAGMAs buy has nothing to protect: `config/test.exs`
+  # overrides them with `journal_mode = MEMORY` and `synchronous = OFF`, which
+  # is ~35x faster per init. Production never sets the override.
+  defp pragmas, do: Application.get_env(:ebb_server, :sqlite_pragmas, @pragmas)
+
   # Generated columns extract field values from entity `data` JSON.
   # Field values live at `data.fields.X.value`.
   @create_entities_table """
@@ -342,7 +348,7 @@ defmodule EbbServer.Storage.SQLite do
     {:ok, db} = Sqlite3.open(path)
 
     # PRAGMAs
-    :ok = Sqlite3.execute(db, @pragmas)
+    :ok = Sqlite3.execute(db, pragmas())
 
     # DDL
     :ok = Sqlite3.execute(db, @create_entities_table)

@@ -12,6 +12,24 @@ config :ebb_server, auth_mode: :bypass
 # Writer keeps its inline commit path, which most storage tests pin. Watchdog
 # tests pass an explicit `:commit_timeout_ms` through `start_writer/1`.
 config :ebb_server, writer_commit_timeout_ms: 0
+# Tests open a throwaway database per test, so the fsync a committed batch
+# would do on the way to disk protects nothing here — and it dominates the
+# commit cost (measured at 1.85ms vs 0.02ms for an unsynced batch, which is
+# most of the suite's remaining wall time). Production keeps the shipped
+# `sync: true`; see `EbbServer.Storage.RocksDB.sync/0`.
+config :ebb_server, rocksdb_write_sync: false
+# Same trade for the materialization cache: its per-commit fsync is ~2.6x the
+# cost of the write, and a test database never needs to survive a power cut.
+# The journal mode stays WAL so crash-recovery behaviour is unchanged.
+config :ebb_server,
+  sqlite_pragmas: """
+  PRAGMA journal_mode = WAL;
+  PRAGMA synchronous = OFF;
+  PRAGMA cache_size = -64000;
+  PRAGMA busy_timeout = 5000;
+  PRAGMA foreign_keys = ON;
+  """
+
 # Tests assert a conn_deliver sample from one subscriber; keep every delivery.
 config :ebb_server, :fanout_conn_sample_rate, 1
 

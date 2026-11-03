@@ -412,11 +412,17 @@ defmodule EbbServer.Storage.RocksDB do
         :ok = :rocksdb.batch_put(batch, cf_ref, key, value)
       end)
 
-      :rocksdb.write_batch(db_ref(name), batch, sync: true)
+      :rocksdb.write_batch(db_ref(name), batch, sync: sync())
     after
       :rocksdb.release_batch(batch)
     end
   end
+
+  # A commit is fsynced before it is acknowledged; `sync: true` is the shipped
+  # default and the durability contract in the README depends on it.
+  # `config/test.exs` turns it off because a test database is thrown away, and
+  # the fsync is ~90x the cost of the write itself.
+  defp sync, do: Application.get_env(:ebb_server, :rocksdb_write_sync, true)
 
   @spec get(cf_ref(), binary(), keyword()) ::
           {:ok, binary()} | :not_found | {:error, term()}
