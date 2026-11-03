@@ -24,6 +24,23 @@ or `config/`.
 From the repo root, `pnpm dev:collab` runs `mix dev` plus the
 `collaborative-text-demo` Vite app in the same terminal pane.
 
+## Git worktrees
+
+A worktree has no `deps/`, and the `rocksdb` dependency compiles its vendored
+C++ sources on first use: ~50 minutes on four cores, for every new worktree.
+`scripts/ebb-server-deps.sh` links the new checkout's `deps/` at a worktree that
+already has that build, which turns the first `mix` command into a ~10 second
+no-op. `pnpm install` runs it automatically; run it by hand if you go straight
+to `mix`:
+
+```bash
+bash scripts/ebb-server-deps.sh
+```
+
+Because `deps/` is then a link into that other checkout, run `mix deps.clean`,
+`mix deps.update` and lockfile-following `mix deps.get` in the donor checkout.
+See [`docs/tooling/ebb-server-deps.md`](../docs/tooling/ebb-server-deps.md).
+
 ## Code Quality
 
 ```bash
