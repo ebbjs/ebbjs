@@ -227,7 +227,7 @@ defmodule EbbServer.Functions.BunIntegrationTest do
           "async (ctx) => Promise.all([ctx.get(\"e_slow\"), ctx.get(\"e_fast\")])"
         )
 
-      assert {:ok, [%{"id" => "e_slow"}, %{"id" => "e_fast"}]} =
+      assert {:ok, [%{"id" => "e_slow"}, %{"id" => "e_fast"}], nil} =
                Invocation.run(
                  transport: BunWorker,
                  invoke: invoke_frame(name, code, %{}),
@@ -256,7 +256,7 @@ defmodule EbbServer.Functions.BunIntegrationTest do
           "async (ctx) => Promise.all([ctx.get(\"e_slow\"), ctx.get(\"e_fast\")])"
         )
 
-      assert {:ok, [%{"id" => "e_slow"}, %{"id" => "e_fast"}]} =
+      assert {:ok, [%{"id" => "e_slow"}, %{"id" => "e_fast"}], nil} =
                Invocation.run(
                  transport: BunWorker,
                  invoke: invoke_frame(name, code, %{}),
@@ -282,7 +282,7 @@ defmodule EbbServer.Functions.BunIntegrationTest do
       name = "throwsInBun"
       code = deploy!(dir, name, ~s|async () => { throw new Error("boom"); }|)
 
-      assert {:error, 422, "handler_error", "boom"} =
+      assert {:error, 422, "handler_error", "boom", %{}} =
                Invocation.run(
                  transport: BunWorker,
                  invoke: invoke_frame(name, code, %{}),
@@ -295,7 +295,7 @@ defmodule EbbServer.Functions.BunIntegrationTest do
       name = "crashesInBun"
       code = deploy!(dir, name, "async () => { process.exit(2); }")
 
-      assert {:error, 503, "unavailable", message} =
+      assert {:error, 503, "unavailable", message, %{}} =
                Invocation.run(
                  transport: BunWorker,
                  invoke: invoke_frame(name, code, %{}),

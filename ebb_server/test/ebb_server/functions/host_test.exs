@@ -9,7 +9,15 @@ defmodule EbbServer.Functions.HostTest do
   alias EbbServer.Functions.Host
   alias EbbServer.Storage.{ActionLog, RocksDB, WatermarkTracker}
 
-  @context %{actor_id: "a_test"}
+  @invocation_id "inv_host_test"
+  @context %{actor_id: "a_test", invocation_id: @invocation_id}
+  # What `Host.commit/3` derives for `@invocation_id`: `"a_" <> first16(sha256)`.
+  @action_id "a_" <>
+               binary_part(
+                 Base.encode16(:crypto.hash(:sha256, @invocation_id), case: :lower),
+                 0,
+                 16
+               )
 
   def storage_writer_opts do
     [
@@ -65,29 +73,58 @@ defmodule EbbServer.Functions.HostTest do
   end
 
   describe "commit" do
-    test "submits one Action as the invocation actor, ignoring the frame's actor_id" do
+    test "submits one Action as the invocation actor, ignoring the frame's id and actor_id" do
       before = WatermarkTracker.committed_watermark()
       action = action("e_doc", "Revised", "a_impostor")
 
-      assert {:ok, nil} = Host.commit(action, @context)
+      refute action["id"] == @action_id
+
+      assert {:ok, %{"replayed" => false}} = Host.commit(action, @context)
       assert WatermarkTracker.committed_watermark() == before + 1
 
       assert [stored] = ActionLog.read(before + 1, before + 1)
-      assert stored["id"] == action["id"]
+      assert stored["id"] == @action_id
       assert stored["actor_id"] == "a_test"
 
       assert {:ok, view} = Host.get(%{"id" => "e_doc"}, @context)
       assert view["data"]["fields"]["title"]["value"] == "Revised"
     end
 
-    test "a rejection is 422 and writes nothing" do
+    test "a second commit under the same invocation id replays and drops its writes" do
+      before = WatermarkTracker.committed_watermark()
+
+      assert {:ok, %{"replayed" => false}} =
+               Host.commit(action("e_doc", "First", "a_test"), @context)
+
+      assert {:ok, %{"replayed" => true}} =
+               Host.commit(action("e_doc", "Second", "a_test"), @context)
+
+      # One invocation commits at most one Action: the second commit carries the
+      # first one's id, so the dedup index answers it without a GSN.
+      assert WatermarkTracker.committed_watermark() == before + 1
+      assert [stored] = ActionLog.read(before + 1, before + 1)
+      assert stored["id"] == @action_id
+
+      assert {:ok, view} = Host.get(%{"id" => "e_doc"}, @context)
+      assert view["data"]["fields"]["title"]["value"] == "First"
+    end
+
+    test "a rejection is 422 with the sync/actions rejection list and writes nothing" do
       before = WatermarkTracker.committed_watermark()
       action = action("e_other", "Rejected", "a_test")
 
-      assert {:error, %{"error" => "rejected", "status" => 422, "details" => details}} =
+      assert {:error, %{"error" => "rejected", "status" => 422, "details" => details} = error} =
                Host.commit(action, @context)
 
       assert details =~ "not_authorized"
+
+      # The same `%{"id", "reason", "details"?}` maps `POST /sync/actions`
+      # returns, because both run `ActionSubmission.submit/3`.
+      assert [%{"id" => @action_id, "reason" => "not_authorized"} = rejection] =
+               error["rejected"]
+
+      assert Map.keys(rejection) -- ["details", "id", "reason"] == []
+
       assert WatermarkTracker.committed_watermark() == before
       assert ActionLog.read(before + 1, before + 10) == []
     end
@@ -110,13 +147,20 @@ defmodule EbbServer.Functions.HostTest do
       assert {:error, %{"error" => "protocol_error", "status" => 500}} =
                Host.commit(["not", "an", "action"], @context)
     end
+
+    test "a context without an invocation id is a protocol error, not a crash" do
+      assert {:error, %{"error" => "protocol_error", "status" => 500, "details" => details}} =
+               Host.commit(action("e_doc", "NoContext", "a_test"), %{actor_id: "a_test"})
+
+      assert details =~ "invocation_id"
+    end
   end
 
   describe "dispatch/4" do
     test "routes the v1 ops" do
       assert {:ok, %{"id" => "e_doc"}} = Host.dispatch("get", %{"id" => "e_doc"}, @context)
 
-      assert {:ok, nil} =
+      assert {:ok, %{"replayed" => false}} =
                Host.dispatch("commit", action("e_doc", "Dispatched", "a_test"), @context)
     end
 

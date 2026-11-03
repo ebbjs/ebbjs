@@ -423,9 +423,16 @@ timeout races, killed-worker follow-up invocation. Only then does
 Zero coupling to the core risk; add when a consumer asks.
 
 `ctx.getMany`, `ctx.query`, `ctx.log`, `fetch_audit`, `cancel` frames, msgpack
-frames, `PROTOCOL_VERSION` negotiation (keep the field), `Idempotency-Key`,
-`ebb functions health`, schema-adapter matrix (zod/valibot/arktype), signing (if
-M5 says so), multi-definition file rejection, `413` per-field limits.
+frames, `PROTOCOL_VERSION` negotiation (keep the field), `ebb functions health`,
+schema-adapter matrix (zod/valibot/arktype), signing (if M5 says so),
+multi-definition file rejection, `413` per-field limits.
+
+`Idempotency-Key` was on this list and is not any more: #594 reinstated it as
+the request-level key the `invocation_id` — and therefore the `action_id` — is
+derived from, so a retry replays instead of writing again (settled decision 3).
+A repeated key silently drops whatever the retry carries, including a retry
+whose handler produced different writes, and one invocation commits at most one
+Action.
 
 ## Cross-cutting, easy to forget
 

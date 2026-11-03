@@ -8,11 +8,20 @@ defmodule EbbServer.Functions.Response do
   Jason-encodable map and `headers` is a list of `{name, value}` pairs ready
   for `Plug.Conn.put_resp_header/3`.
 
-  Success is `{"ok": true, "result": ..., "invocation_id": ..., "version": ...}`.
-  Failure is `{"error": "<code>", "invocation_id": ..., "version": ...}` plus
-  `"details"` when the caller has text for it and `"retryable": true` on
-  `408`/`429`/`503`. `error` is the code, as on every other endpoint: there is
-  no `message` field and no second vocabulary.
+  Success is `{"ok": true, "result": ..., "invocation_id": ..., "version": ...}`,
+  plus `"replayed"` when the invocation's commit reported one. Failure is
+  `{"error": "<code>", "invocation_id": ..., "version": ...}` plus
+  `"details"` when the caller has text for it, `"rejected"` when a commit was
+  rejected, and `"retryable": true` on `408`/`429`/`503`. `error` is the code,
+  as on every other endpoint: there is no `message` field and no second
+  vocabulary.
+
+  `"replayed": true` is not an error and not a new status: it means the
+  commit's Action was already durable or in flight, so no GSN was assigned to
+  this invocation and the retry's own writes were dropped. `"rejected"` is
+  `ActionSubmission`'s rejection list verbatim — the same `{"id", "reason",
+  "details"?}` maps `POST /sync/actions` returns — so a rejected function
+  commit and a rejected client batch read the same.
 
   `invocation_id` and the function `version` also travel as response headers,
   `x-ebb-invocation-id` and `x-ebb-function-version`. A header is omitted when
@@ -67,15 +76,18 @@ defmodule EbbServer.Functions.Response do
 
     * `:invocation_id` — required id of this invocation
     * `:version` — the invoked function's active version; `nil` when unknown
+    * `:replayed` — the commit's `replayed` flag; omitted when `nil`
   """
   @spec success(term(), keyword()) :: response()
   def success(result, opts) do
-    body = %{
-      "ok" => true,
-      "result" => result,
-      "invocation_id" => invocation_id(opts),
-      "version" => version(opts)
-    }
+    body =
+      %{
+        "ok" => true,
+        "result" => result,
+        "invocation_id" => invocation_id(opts),
+        "version" => version(opts)
+      }
+      |> put_replayed(Keyword.get(opts, :replayed))
 
     {200, body, headers(opts)}
   end
@@ -89,6 +101,8 @@ defmodule EbbServer.Functions.Response do
     * `:version` — the invoked function's active version; `nil` when unknown
     * `:code` — the error code, when the cause already named one
     * `:details` — optional human-readable reason; omitted when nil or empty
+    * `:rejected` — the rejection list from a rejected commit; omitted when
+      empty
   """
   @spec failure(pos_integer(), keyword()) :: response()
   def failure(status, opts) do
@@ -99,6 +113,7 @@ defmodule EbbServer.Functions.Response do
         "version" => version(opts)
       }
       |> put_details(Keyword.get(opts, :details))
+      |> put_rejected(Keyword.get(opts, :rejected))
       |> put_retryable(status)
 
     {status, body, headers(opts)}
@@ -133,6 +148,16 @@ defmodule EbbServer.Functions.Response do
   end
 
   defp put_details(body, _details), do: body
+
+  defp put_replayed(body, replayed) when is_boolean(replayed) do
+    Map.put(body, "replayed", replayed)
+  end
+
+  defp put_replayed(body, _replayed), do: body
+
+  defp put_rejected(body, [_ | _] = rejected), do: Map.put(body, "rejected", rejected)
+
+  defp put_rejected(body, _rejected), do: body
 
   defp scrub(details) do
     details

@@ -75,11 +75,16 @@ defmodule EbbServer.Functions.RouterTest do
     end)
   end
 
-  defp post_function(%{cache: cache, table: table}, name, body, actor_id \\ @actor) do
+  defp post_function(%{cache: cache, table: table}, name, body, actor_id \\ @actor, headers \\ []) do
     conn(:post, "/#{name}", body)
     |> put_req_header("content-type", "application/json")
+    |> put_headers(headers)
     |> assign(:actor_id, actor_id)
     |> Router.call(Router.init(cache: cache, group_members_table: table))
+  end
+
+  defp put_headers(conn, headers) do
+    Enum.reduce(headers, conn, fn {name, value}, conn -> put_req_header(conn, name, value) end)
   end
 
   defp post_through_sync(name, body, actor_id \\ @actor) do
@@ -180,6 +185,105 @@ defmodule EbbServer.Functions.RouterTest do
 
       assert conn.status == 200
       assert Jason.decode!(conn.resp_body)["result"] == %{"echo" => %{}}
+    end
+  end
+
+  describe "the Idempotency-Key header" do
+    setup ctx do
+      name = "idempotentEcho"
+      Bundles.write_bundle!(ctx.dir, Bundles.envelope(name))
+      grant(ctx.tables, @actor, ["function.*"])
+      %{name: name}
+    end
+
+    test "a key reproduces the same invocation id on a retry", ctx do
+      configure_boot(
+        bundle_dir: ctx.dir,
+        transport: Fake,
+        worker_opts: [script: scripted_fake(%{"ok" => true})]
+      )
+
+      key = "retry-me"
+      first = ctx |> post_function(ctx.name, "{}", @actor, [{"idempotency-key", key}])
+      second = ctx |> post_function(ctx.name, "{}", @actor, [{"idempotency-key", key}])
+
+      assert first.status == 200
+      assert second.status == 200
+
+      expected = derived_invocation_id(key)
+      assert Jason.decode!(first.resp_body)["invocation_id"] == expected
+      assert Jason.decode!(second.resp_body)["invocation_id"] == expected
+      assert get_resp_header(second, "x-ebb-invocation-id") == [expected]
+    end
+
+    test "a different key is a different invocation", ctx do
+      configure_boot(bundle_dir: ctx.dir, transport: InputScriptedWorker)
+
+      one = post_function(ctx, ctx.name, "{}", @actor, [{"idempotency-key", "one"}])
+      two = post_function(ctx, ctx.name, "{}", @actor, [{"idempotency-key", "two"}])
+
+      assert Jason.decode!(one.resp_body)["invocation_id"] == derived_invocation_id("one")
+      assert Jason.decode!(two.resp_body)["invocation_id"] == derived_invocation_id("two")
+    end
+
+    test "no key mints a fresh id per request", ctx do
+      configure_boot(bundle_dir: ctx.dir, transport: InputScriptedWorker)
+
+      first = Jason.decode!(post_function(ctx, ctx.name, "{}").resp_body)["invocation_id"]
+      second = Jason.decode!(post_function(ctx, ctx.name, "{}").resp_body)["invocation_id"]
+
+      refute first == second
+      assert "inv_" <> suffix = first
+      assert suffix =~ ~r/\A[0-9a-z]{16}\z/
+    end
+
+    test "a key at the 255-byte bound is accepted", ctx do
+      configure_boot(bundle_dir: ctx.dir, transport: InputScriptedWorker)
+
+      key = String.duplicate("k", 255)
+      conn = post_function(ctx, ctx.name, "{}", @actor, [{"idempotency-key", key}])
+
+      assert conn.status == 200
+      assert Jason.decode!(conn.resp_body)["invocation_id"] == derived_invocation_id(key)
+    end
+
+    test "an empty or over-long key is a 400 rather than a derived id", ctx do
+      configure_boot(
+        bundle_dir: ctx.dir,
+        transport: InputScriptedWorker,
+        worker_opts: [notify: self()]
+      )
+
+      for key <- ["", String.duplicate("k", 256)] do
+        conn = post_function(ctx, ctx.name, "{}", @actor, [{"idempotency-key", key}])
+
+        assert conn.status == 400
+        body = Jason.decode!(conn.resp_body)
+        assert body["error"] == "invalid_idempotency_key"
+        assert body["details"] =~ "Idempotency-Key"
+        assert "inv_" <> _fresh = body["invocation_id"]
+        assert get_resp_header(conn, "x-ebb-invocation-id") == [body["invocation_id"]]
+      end
+
+      refute_received :functions_worker_started
+    end
+
+    test "a repeated header is a 400 because the requests disagree", ctx do
+      configure_boot(bundle_dir: ctx.dir, transport: InputScriptedWorker)
+
+      # `put_req_header/3` replaces, so a repeated header needs the prepend form.
+      conn =
+        conn(:post, "/#{ctx.name}", "{}")
+        |> put_req_header("content-type", "application/json")
+        |> prepend_req_headers([
+          {"idempotency-key", "one"},
+          {"idempotency-key", "two"}
+        ])
+        |> assign(:actor_id, @actor)
+        |> Router.call(Router.init(cache: ctx.cache, group_members_table: ctx.table))
+
+      assert conn.status == 400
+      assert Jason.decode!(conn.resp_body)["error"] == "invalid_idempotency_key"
     end
   end
 
@@ -482,6 +586,11 @@ defmodule EbbServer.Functions.RouterTest do
       assert Jason.decode!(second.resp_body)["result"] == %{"echo" => %{"after" => "timeout"}}
       assert Jason.decode!(second.resp_body)["invocation_id"] != body["invocation_id"]
     end
+  end
+
+  defp derived_invocation_id(key) do
+    digest = Base.encode16(:crypto.hash(:sha256, key), case: :lower)
+    "inv_" <> binary_part(digest, 0, 16)
   end
 
   describe "methods the route does not have" do

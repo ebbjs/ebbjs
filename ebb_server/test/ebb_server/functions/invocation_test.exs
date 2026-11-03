@@ -33,24 +33,53 @@ defmodule EbbServer.Functions.InvocationTest do
   describe "a scripted invocation" do
     test "reads, commits, and answers every call with its own call_id" do
       before = WatermarkTracker.committed_watermark()
+      invoke = TestFunctions.invoke("proofreadDocument")
 
-      assert {:ok, %{"ok" => true}} = run_fixture("get-then-commit")
+      assert {:ok, %{"ok" => true}, %{replayed: false}} =
+               run_fixture("get-then-commit", invoke: invoke)
 
       assert WatermarkTracker.committed_watermark() == before + 1
       assert [stored] = ActionLog.read(before + 1, before + 1)
       assert stored["actor_id"] == "a_test"
+      # The frame names `act_fixture_commit`; the host derives its own id.
+      assert stored["id"] == action_id_for(invoke["invocation_id"])
 
       replies = replies_by_call_id(sent_frames())
       assert replies["1"]["ok"] == true
       assert replies["1"]["value"]["id"] == "e_doc"
       assert replies["2"]["ok"] == true
-      assert replies["2"]["value"] == nil
+      assert replies["2"]["value"] == %{"replayed" => false}
+    end
+
+    test "a retry under the same invocation id replays the commit and adds no Action" do
+      before = WatermarkTracker.committed_watermark()
+
+      invoke =
+        TestFunctions.invoke("proofreadDocument")
+        |> Map.put("invocation_id", "inv_replay_fixture")
+
+      assert {:ok, %{"ok" => true}, %{replayed: false}} =
+               run_fixture("get-then-commit", invoke: invoke)
+
+      assert {:ok, %{"ok" => true}, %{replayed: true}} =
+               run_fixture("get-then-commit", invoke: invoke)
+
+      # The second commit carries the first one's Action id, so the dedup index
+      # answers it without a GSN and without a second Action.
+      assert WatermarkTracker.committed_watermark() == before + 1
+      assert [stored] = ActionLog.read(before + 1, before + 1)
+      assert stored["id"] == action_id_for("inv_replay_fixture")
+
+      commit_replies =
+        for %{"type" => "reply", "call_id" => "2", "value" => value} <- sent_frames(), do: value
+
+      assert commit_replies == [%{"replayed" => false}, %{"replayed" => true}]
     end
 
     test "a handler that throws returns 422 and commits nothing" do
       before = WatermarkTracker.committed_watermark()
 
-      assert {:error, 422, "handler_error", "boom"} = run_fixture("handler-error")
+      assert {:error, 422, "handler_error", "boom", %{}} = run_fixture("handler-error")
 
       assert WatermarkTracker.committed_watermark() == before
       assert ActionLog.read(before + 1, before + 10) == []
@@ -59,20 +88,27 @@ defmodule EbbServer.Functions.InvocationTest do
     test "a rejected commit answers the call with 422 and writes nothing" do
       before = WatermarkTracker.committed_watermark()
 
-      assert {:error, 422, "rejected", details} = run_fixture("commit-rejected")
+      assert {:error, 422, "rejected", details, %{rejected: rejected}} =
+               run_fixture("commit-rejected")
+
       assert details =~ "not_authorized"
+      assert [%{"reason" => "not_authorized"}] = rejected
 
       assert WatermarkTracker.committed_watermark() == before
       assert ActionLog.read(before + 1, before + 10) == []
 
-      assert %{"1" => %{"ok" => false, "error" => %{"status" => 422, "error" => "rejected"}}} =
-               replies_by_call_id(sent_frames())
+      assert %{
+               "1" => %{
+                 "ok" => false,
+                 "error" => %{"status" => 422, "error" => "rejected", "rejected" => ^rejected}
+               }
+             } = replies_by_call_id(sent_frames())
     end
   end
 
   describe "out-of-order host calls" do
     test "replies are matched by call_id rather than arrival order" do
-      assert {:ok, %{"read" => 2}} =
+      assert {:ok, %{"read" => 2}, nil} =
                run_fixture("out-of-order-get",
                  host: DelayedHost,
                  host_opts: [delays: %{"e_slow" => 150, "e_fast" => 0}, notify: self()],
@@ -85,7 +121,7 @@ defmodule EbbServer.Functions.InvocationTest do
     end
 
     test "max_in_flight: 1 runs the same fixture serially" do
-      assert {:ok, %{"read" => 2}} =
+      assert {:ok, %{"read" => 2}, nil} =
                run_fixture("out-of-order-get",
                  host: DelayedHost,
                  host_opts: [delays: %{"e_slow" => 20, "e_fast" => 0}, notify: self()],
@@ -98,7 +134,7 @@ defmodule EbbServer.Functions.InvocationTest do
 
   describe "discarded work" do
     test "a call after result is never answered" do
-      assert {:ok, %{"done" => true}} =
+      assert {:ok, %{"done" => true}, nil} =
                run_fixture("call-after-result", host: DelayedHost, host_opts: [notify: self()])
 
       refute_received {:host_started, "e_doc"}
@@ -106,13 +142,13 @@ defmodule EbbServer.Functions.InvocationTest do
     end
 
     test "a worker that dies without a result ends the invocation" do
-      assert {:error, 503, "unavailable", message} = run_fixture("crash")
+      assert {:error, 503, "unavailable", message, %{}} = run_fixture("crash")
       assert message =~ "worker exited"
       assert_received :functions_worker_closed
     end
 
     test "a fake that never replies hits the deadline and is closed once" do
-      assert {:error, 408, "timeout", "deadline exceeded"} =
+      assert {:error, 408, "timeout", "deadline exceeded", %{}} =
                run_script([], deadline_ms: 50)
 
       assert_received :functions_worker_closed
@@ -124,7 +160,7 @@ defmodule EbbServer.Functions.InvocationTest do
     test "a mismatched protocol version fails the invocation" do
       ready = Protocol.ready(1, "9.9.9", 99)
 
-      assert {:error, 500, "protocol_error", message} = run_script([%{"send" => ready}])
+      assert {:error, 500, "protocol_error", message, %{}} = run_script([%{"send" => ready}])
       assert message =~ "protocol version"
       assert_received :functions_worker_closed
     end
@@ -146,11 +182,11 @@ defmodule EbbServer.Functions.InvocationTest do
         %{"send" => result}
       ]
 
-      assert {:ok, %{"ok" => true}} = run_script(script)
+      assert {:ok, %{"ok" => true}, nil} = run_script(script)
     end
 
     test "an unexpected frame type fails the invocation" do
-      assert {:error, 500, "protocol_error", message} =
+      assert {:error, 500, "protocol_error", message, %{}} =
                run_script([%{"send" => %{"type" => "mystery"}}])
 
       assert message =~ "unexpected frame"
@@ -159,7 +195,7 @@ defmodule EbbServer.Functions.InvocationTest do
     test "a malformed call frame fails the invocation" do
       script = [%{"send" => %{"type" => "call", "call_id" => "1"}}]
 
-      assert {:error, 500, "protocol_error", message} = run_script(script)
+      assert {:error, 500, "protocol_error", message, %{}} = run_script(script)
       assert message =~ "malformed call"
     end
 
@@ -176,7 +212,7 @@ defmodule EbbServer.Functions.InvocationTest do
         }
       ]
 
-      assert {:error, 500, "protocol_error", message} = run_script(script)
+      assert {:error, 500, "protocol_error", message, %{}} = run_script(script)
       assert message =~ "unsupported host op"
     end
 
@@ -184,7 +220,9 @@ defmodule EbbServer.Functions.InvocationTest do
       script = [%{"send" => Protocol.call("1", "get", %{"id" => "e_doc"})}]
 
       capture_log(fn ->
-        assert {:error, 500, "host_call_failed", message} = run_script(script, host: RaisingHost)
+        assert {:error, 500, "host_call_failed", message, %{}} =
+                 run_script(script, host: RaisingHost)
+
         assert message =~ "host call failed"
       end)
     end
@@ -192,26 +230,39 @@ defmodule EbbServer.Functions.InvocationTest do
     test "a host call that returns an invalid result fails the invocation" do
       script = [%{"send" => Protocol.call("1", "get", %{"id" => "e_doc"})}]
 
-      assert {:error, 500, "host_call_failed", message} = run_script(script, host: BadHost)
+      assert {:error, 500, "host_call_failed", message, %{}} =
+               run_script(script, host: BadHost)
+
       assert message =~ "invalid result"
     end
   end
 
   describe "worker start and send failures" do
     test "a transport that cannot start returns 503" do
-      assert {:error, 503, "unavailable", message} = run_script([], transport: FailingWorker)
+      assert {:error, 503, "unavailable", message, %{}} =
+               run_script([], transport: FailingWorker)
+
       assert message =~ "worker unavailable"
     end
 
     test "a transport that cannot accept invoke returns 503" do
-      assert {:error, 503, "unavailable", message} = run_script([], transport: ClosedWorker)
+      assert {:error, 503, "unavailable", message, %{}} =
+               run_script([], transport: ClosedWorker)
+
       assert message =~ "worker unavailable"
     end
 
     test "a transport without a monitor is polled for liveness" do
-      assert {:error, 503, "unavailable", message} = run_script([], transport: NoMonitorWorker)
+      assert {:error, 503, "unavailable", message, %{}} =
+               run_script([], transport: NoMonitorWorker)
+
       assert message =~ "worker exited"
     end
+  end
+
+  defp action_id_for(invocation_id) do
+    digest = Base.encode16(:crypto.hash(:sha256, invocation_id), case: :lower)
+    "a_" <> binary_part(digest, 0, 16)
   end
 
   defp fields do
