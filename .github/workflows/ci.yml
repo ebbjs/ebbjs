@@ -224,9 +224,17 @@ jobs:
         working-directory: ebb_server
       - name: Install workspace links for the runner packages
         run: pnpm install --frozen-lockfile
+      # The runner and a function bundle resolve @ebbjs/{core,schema,write}
+      # through their dist entries, exactly as a deployment does.
+      - name: Build the workspace packages
+        run: pnpm build:packages
       - name: Run the real-runner tests
-        run: mix test --include bun test/ebb_server/functions/worker_bun_test.exs test/ebb_server/functions/bun_integration_test.exs
         working-directory: ebb_server
+        run: |
+          mix test --include bun \
+            test/ebb_server/functions/worker_bun_test.exs \
+            test/ebb_server/functions/bun_integration_test.exs \
+            test/ebb_server/functions/write_bun_integration_test.exs
 
   # ─────────────────────────────────────────────────────────
   # Release builder — runs on every push/PR so typescript-test

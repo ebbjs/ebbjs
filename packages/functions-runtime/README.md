@@ -131,3 +131,12 @@ than emit an Update that would fail or lose links:
   `schema`, `invocation_id`, `actor_id`, the `ids`/`hlc` sequence the planner
   consumes (keyed by id prefix), the `calls` as semantic verbs, and the
   expected core `action`.
+- `fixtures/write-bun/` — TypeScript function files that export a handler and
+  the application `schema`, exactly as a deployed function does. The server's
+  real-Bun write acceptance suite
+  (`ebb_server/test/ebb_server/functions/write_bun_integration_test.exs`)
+  bundles each one with `@ebbjs/cli`'s esbuild configuration and runs it
+  against the real server, so `ctx.*` writes are proven on a real schema, not
+  a hand-written stub. That suite needs the workspace built (`pnpm build`),
+  because the runner resolves `@ebbjs/core`, `@ebbjs/schema`, and
+  `@ebbjs/write` through their `dist` entries.

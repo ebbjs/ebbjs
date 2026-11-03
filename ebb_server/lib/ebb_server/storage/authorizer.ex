@@ -287,7 +287,13 @@ defmodule EbbServer.Storage.Authorizer do
 
     authz = %{
       intra: intra,
-      intra_opts: Keyword.put(opts, :intra_action, intra),
+      intra_opts:
+        opts
+        |> Keyword.put(:intra_action, intra)
+        |> Keyword.put(
+          :intra_relationship_sources,
+          PermissionHelper.build_intra_relationship_sources(updates)
+        ),
       bootstrap: PermissionHelper.bootstrap_group_permissions(updates, actor_id, exists?),
       bootstrap_membership_ids:
         PermissionHelper.bootstrap_membership_row_ids(updates, actor_id, member_exists?),

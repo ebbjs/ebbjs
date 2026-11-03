@@ -224,6 +224,31 @@ defmodule EbbServer.Storage.PermissionHelper do
   end
 
   @doc """
+  Maps each `relationship` put's row id to its source entity id.
+
+  A relationship delete carries no `data`, so the server resolves the row's
+  groups from the stored row. Within one Action the row may not be stored yet:
+  a handler that links an edge and unlinks it again — or a client that creates
+  and then removes one — sends the put and the delete in the same Action. The
+  put's `source_id` is then the delete's only scope, and it is the same one the
+  put was authorized against.
+  """
+  @spec build_intra_relationship_sources([map()]) :: %{String.t() => String.t()}
+  def build_intra_relationship_sources(updates) do
+    updates
+    |> Enum.filter(&put_of?(&1, "relationship"))
+    |> Enum.reduce(%{}, fn update, acc ->
+      case {get_subject_id(update), get_data_field(update, "source_id")} do
+        {rel_id, source_id} when is_binary(rel_id) and is_binary(source_id) ->
+          Map.put(acc, rel_id, source_id)
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  @doc """
   Builds an intra-action context map for membership resolution.
 
   Maps `entity_id` to the list of group ids carried by `entityGroup`

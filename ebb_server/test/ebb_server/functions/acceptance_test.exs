@@ -17,6 +17,7 @@ defmodule EbbServer.Functions.AcceptanceTest do
   use EbbServer.Integration.StorageCase, with_auth_mode: true
 
   import EbbServer.Integration.ActionHelpers
+  import EbbServer.LiveStreamHelpers, only: [start_live_stream: 2]
   import EbbServer.SSEHelpers, only: [data_payloads: 1]
   import EbbServer.TestHelpers, only: [generate_hlc: 0]
   import Plug.Conn
@@ -25,30 +26,12 @@ defmodule EbbServer.Functions.AcceptanceTest do
   alias EbbServer.Functions.{Bundle, BundleCache, Protocol}
   alias EbbServer.Functions.Worker.Fake
   alias EbbServer.Storage.{ActionLog, WatermarkTracker}
-  alias EbbServer.Sync.{GroupRegistry, Router}
+  alias EbbServer.Sync.Router
 
   alias EbbServer.TestFunctions.{Bundles, InputScriptedWorker, RecordingWorker}
 
   @enabled_env "EBB_FUNCTIONS_ENABLED"
   @await_timeout_ms 5_000
-
-  # Stands in for the socket the SSE handler writes to. The route's bytes are
-  # forwarded to the test process, which is the only way to observe them
-  # without a real connection.
-  defmodule RecordingAdapter do
-    @moduledoc false
-
-    def send_chunked(%{test: test} = state, _status, _headers) do
-      send(test, :chunked_started)
-      {:ok, "", state}
-    end
-
-    def chunk(%{test: test} = state, body) do
-      bytes = IO.iodata_to_binary(body)
-      send(test, {:chunk_written, bytes})
-      {:ok, bytes, state}
-    end
-  end
 
   setup do
     # The flag reads the environment before app config, so a value left in the
@@ -592,77 +575,6 @@ defmodule EbbServer.Functions.AcceptanceTest do
   defp action_id_for(invocation_id) do
     digest = Base.encode16(:crypto.hash(:sha256, invocation_id), case: :lower)
     "a_" <> binary_part(digest, 0, 16)
-  end
-
-  # --- live subscriber -----------------------------------------------------
-
-  defp start_live_stream(group_id, actor_id) do
-    test_pid = self()
-
-    conn =
-      conn(:get, "/sync/live?groups=#{group_id}&cursor=0")
-      |> put_req_header("x-ebb-actor-id", actor_id)
-      |> Map.put(:adapter, {RecordingAdapter, %{test: test_pid}})
-
-    task = Task.async(fn -> Router.call(conn, []) end)
-    ref = Process.monitor(task.pid)
-
-    receive do
-      :chunked_started ->
-        :ok
-
-      {:DOWN, ^ref, :process, _pid, reason} ->
-        flunk("the /sync/live route ended before opening a stream: #{inspect(reason)}")
-    after
-      @await_timeout_ms -> flunk("the /sync/live route never opened a stream")
-    end
-
-    Process.demonitor(ref, [:flush])
-    await_subscriber(group_id)
-    task
-  end
-
-  # The route registers its subscriber inside `open_sse/4` *after* switching
-  # the response to chunked mode, so committing right after `:chunked_started`
-  # could race the subscription. Waiting for the group's server to hold the
-  # connection makes the delivery assertion about fan-out, not scheduling.
-  defp await_subscriber(group_id) do
-    await(
-      fn ->
-        case GroupRegistry.lookup(group_id) do
-          nil -> nil
-          pid -> if subscribed?(pid), do: pid
-        end
-      end,
-      "the SSE subscriber for #{group_id}"
-    )
-  end
-
-  defp subscribed?(pid) do
-    case :sys.get_state(pid) do
-      %{subscribers: subscribers} -> MapSet.size(subscribers) > 0
-    end
-  catch
-    :exit, _reason -> false
-  end
-
-  defp await(
-         fun,
-         description,
-         deadline \\ System.monotonic_time(:millisecond) + @await_timeout_ms
-       ) do
-    case fun.() do
-      nil ->
-        if System.monotonic_time(:millisecond) > deadline do
-          flunk("timed out waiting for #{description}")
-        else
-          Process.sleep(10)
-          await(fun, description, deadline)
-        end
-
-      found ->
-        found
-    end
   end
 
   # --- worker script -------------------------------------------------------

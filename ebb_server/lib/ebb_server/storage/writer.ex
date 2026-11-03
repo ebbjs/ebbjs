@@ -2042,7 +2042,12 @@ defmodule EbbServer.Storage.Writer do
     intra_action_context = PermissionHelper.build_intra_action_context(action.updates)
 
     resolve_opts =
-      Keyword.put(resolve_opts, :intra_action, intra_action_context)
+      resolve_opts
+      |> Keyword.put(:intra_action, intra_action_context)
+      |> Keyword.put(
+        :intra_relationship_sources,
+        PermissionHelper.build_intra_relationship_sources(action.updates)
+      )
 
     {_group_ids, {scopes, type_entity_keys, memo}} =
       Enum.map_reduce(action.updates, {[], [], memo}, fn update, {scopes, keys, memo} ->
