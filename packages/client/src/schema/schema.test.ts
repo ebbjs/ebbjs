@@ -5,16 +5,12 @@
 import { describe, it, expect } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
 
-import { defineEntity, e } from "./entity";
-import { EntityRegistry, EntityValidationError } from "./entity-registry";
-import { defineRelationship } from "./relationship";
-import { ReservedNameError } from "./reserved";
-import { defineSchema, UnregisteredRelationshipEndpointError, type Schema } from "./schema";
-import {
-  entityGroupSystemEntity,
-  groupMemberSystemEntity,
-  groupSystemEntity,
-} from "./system-entities";
+import { defineEntity, e } from "@ebbjs/schema";
+import { EntityRegistry, EntityValidationError } from "@ebbjs/schema";
+import { defineRelationship } from "@ebbjs/schema";
+import { ReservedNameError } from "@ebbjs/schema";
+import { defineSchema, UnregisteredRelationshipEndpointError, type Schema } from "@ebbjs/schema";
+import { entityGroupSystemEntity, groupMemberSystemEntity, groupSystemEntity } from "@ebbjs/schema";
 
 const todo = defineEntity("todo", {
   title: e.string(),

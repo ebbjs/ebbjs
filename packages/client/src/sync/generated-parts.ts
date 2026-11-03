@@ -6,48 +6,22 @@
  * A membership change must carry these parts into the entity's new
  * groups — the document needs its own `entityGroup` rows, and the edge
  * must be re-emitted so the server scopes it to the new group
- * (per-Update delivery, #473). Domain relationships do not travel:
- * walking them would drag the graph transitively, so only fields the
- * registry marks `derived` are considered.
+ * (per-Update delivery, #473). The types and pure values live in
+ * `@ebbjs/write`; this module owns the storage reads.
  */
 
 import type { StorageAdapter } from "@ebbjs/storage/types";
+import type { EntityRegistry } from "@ebbjs/schema";
+import {
+  NO_GENERATED_PARTS,
+  type GeneratedDocument,
+  type GeneratedEdge,
+  type GeneratedMembership,
+  type GeneratedParts,
+} from "@ebbjs/write";
 
-import type { EntityRegistry } from "../schema/entity-registry";
-
-/** A generated edge: the live `relationship` row linking parent to document. */
-export interface GeneratedEdge {
-  readonly relationshipId: string;
-  readonly sourceId: string;
-  readonly targetId: string;
-  readonly field: string;
-  readonly type: string;
-}
-
-/** One live `entityGroup` row of a generated document. */
-export interface GeneratedMembership {
-  readonly membershipId: string;
-  readonly groupId: string;
-}
-
-/** A generated document entity and the groups it is currently filed into. */
-export interface GeneratedDocument {
-  readonly id: string;
-  readonly type: string;
-  readonly memberships: readonly GeneratedMembership[];
-}
-
-/** The generated parts an entity's membership change must carry. */
-export interface GeneratedParts {
-  readonly documents: readonly GeneratedDocument[];
-  readonly edges: readonly GeneratedEdge[];
-}
-
-/** No derived fields, or none linked — a value that shares one frozen identity. */
-export const NO_GENERATED_PARTS: GeneratedParts = Object.freeze({
-  documents: [],
-  edges: [],
-});
+export type { GeneratedDocument, GeneratedEdge, GeneratedMembership, GeneratedParts };
+export { NO_GENERATED_PARTS };
 
 /**
  * Read the entity's live generated parts. Only the registry's `derived`

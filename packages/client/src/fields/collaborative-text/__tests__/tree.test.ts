@@ -29,7 +29,7 @@ import {
   runOffsetToPosition,
   type DocState,
   type RunNode,
-} from "../tree";
+} from "@ebbjs/schema";
 
 // ---------------------------------------------------------------------------
 // Helpers

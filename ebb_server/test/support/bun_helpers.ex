@@ -9,12 +9,20 @@ defmodule EbbServer.TestFunctions.Bun do
 
   Bundles here are hand-written IIFEs. The CLI's `bundle.ts` is covered by its
   own tests; these fixtures need only the shape the runner evaluates.
+
+  `deploy_fixture!/2` is different: it bundles a committed TypeScript fixture
+  with the esbuild configuration the CLI uses, so the runtime receives a real
+  application schema instead of a hand-written stub. See
+  `packages/functions-runtime/fixtures/write-bun/`.
   """
 
   alias EbbServer.Functions.Bundle
   alias EbbServer.TestFunctions.Bundles
 
-  @runner Path.expand("../../../packages/runner/src/main.ts", __DIR__)
+  @repo_root Path.expand("../../..", __DIR__)
+  @runner Path.join(@repo_root, "packages/runner/src/main.ts")
+  @write_fixtures Path.join(@repo_root, "packages/functions-runtime/fixtures/write-bun")
+  @esbuild Path.join(@repo_root, "packages/cli/node_modules/esbuild/package.json")
 
   @doc "The runner entrypoint, overridable for a packaged build."
   @spec runner_path() :: String.t()
@@ -29,6 +37,41 @@ defmodule EbbServer.TestFunctions.Bun do
   def available? do
     not is_nil(bun_path()) and File.exists?(runner_path())
   end
+
+  @doc "Whether esbuild, the bundler `@ebbjs/cli` depends on, is installed."
+  @spec esbuild_available?() :: boolean()
+  def esbuild_available?, do: File.exists?(@esbuild)
+
+  @doc """
+  Whether the bundling write-fixture tests can run here.
+
+  They need Bun (to execute the bundle), esbuild (to build it), the committed
+  fixtures, and built workspace packages: the runner resolves `@ebbjs/core`,
+  `@ebbjs/schema`, and `@ebbjs/write` through their `dist` entries, and a
+  deployed bundle resolves the schema the same way.
+  """
+  @spec write_fixtures_available?() :: boolean()
+  def write_fixtures_available? do
+    available?() and esbuild_available?() and File.dir?(write_fixtures_dir()) and
+      workspace_built?()
+  end
+
+  @doc "Whether the workspace packages the runner and the bundle resolve are built."
+  @spec workspace_built?() :: boolean()
+  def workspace_built? do
+    Enum.all?(
+      [
+        "packages/core/dist/index.js",
+        "packages/schema/dist/index.js",
+        "packages/write/dist/index.js"
+      ],
+      &File.exists?(Path.join(@repo_root, &1))
+    )
+  end
+
+  @doc "The committed TypeScript write fixtures' directory."
+  @spec write_fixtures_dir() :: String.t()
+  def write_fixtures_dir, do: @write_fixtures
 
   @doc """
   Adds the real runner and its socket directory to transport options.
@@ -70,6 +113,48 @@ defmodule EbbServer.TestFunctions.Bun do
       |> Map.merge(Keyword.get(opts, :envelope, %{}))
 
     Bundles.write_bundle!(dir, Bundles.envelope(name, overrides), code)
+  end
+
+  @doc """
+  Bundles the committed fixture `name.ts` and deploys it as function `name`.
+
+  The fixture exports the handler and the application `schema`, exactly as a
+  deployed function file does. The bundling runs through
+  `packages/functions-runtime/fixtures/write-bun/bundle.ts`, which calls the
+  CLI's own `bundleSource/3`, so the flags and resolution are the deploy's by
+  construction rather than a copy kept in step here.
+  """
+  @spec deploy_fixture!(String.t(), String.t(), keyword()) :: map()
+  def deploy_fixture!(dir, name, opts \\ []) do
+    entry = Path.join(write_fixtures_dir(), "#{name}.ts")
+
+    outfile =
+      Path.join(System.tmp_dir!(), "ebb_fixture_#{name}_#{System.unique_integer([:positive])}.js")
+
+    try do
+      build_fixture!(entry, outfile)
+      code = File.read!(outfile)
+
+      overrides =
+        %{"digest" => Bundle.digest_for(code)}
+        |> Map.merge(Keyword.get(opts, :envelope, %{}))
+
+      Bundles.write_bundle!(dir, Bundles.envelope(name, overrides), code)
+    after
+      File.rm(outfile)
+    end
+  end
+
+  defp build_fixture!(entry, outfile) do
+    script = Path.join(write_fixtures_dir(), "bundle.ts")
+
+    case System.cmd(bun_path(), [script, entry, outfile], stderr_to_stdout: true) do
+      {_output, 0} ->
+        :ok
+
+      {output, status} ->
+        raise "bun failed (#{status}) bundling #{entry}:\n#{output}"
+    end
   end
 end
 

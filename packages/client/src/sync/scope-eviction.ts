@@ -19,7 +19,7 @@ import {
   groupMemberSystemEntity,
   groupSystemEntity,
   relationshipSystemEntity,
-} from "../schema/system-entities";
+} from "@ebbjs/schema";
 
 const systemTypes = new Set<string>([
   entityGroupSystemEntity.name,

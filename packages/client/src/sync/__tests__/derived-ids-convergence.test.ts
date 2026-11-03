@@ -22,16 +22,13 @@ import { describe, expect, it } from "vitest";
 import { decodeSync, type Action } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
-import { defineEntity, e } from "../../schema/entity";
-import { defineSchema } from "../../schema/schema";
-import {
-  derivedDocumentId,
-  derivedRelationshipId,
-} from "../../fields/collaborative-text/derived-ids";
-import { generatedDocEntityName } from "../../fields/collaborative-text/schema";
-import { parseContentField } from "../../fields/collaborative-text/wire";
-import { commit, type CommitCapability } from "../committer";
-import { call, createEntity } from "../operations";
+import { defineEntity, e } from "@ebbjs/schema";
+import { defineSchema } from "@ebbjs/schema";
+import { derivedDocumentId, derivedRelationshipId } from "@ebbjs/schema";
+import { generatedDocEntityName } from "@ebbjs/schema";
+import { parseContentField } from "@ebbjs/schema";
+import { commit, type CommitCapability } from "@ebbjs/write";
+import { call, createEntity } from "@ebbjs/write";
 import { createClient } from "../client";
 import { jsonResponse } from "../test-utils";
 

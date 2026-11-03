@@ -17,9 +17,13 @@
   },
   "dependencies": {
     "@ebbjs/client": "workspace:^",
-    "@ebbjs/functions-protocol": "workspace:*"
+    "@ebbjs/core": "workspace:^",
+    "@ebbjs/functions-protocol": "workspace:*",
+    "@ebbjs/schema": "workspace:^",
+    "@ebbjs/write": "workspace:^"
   },
   "devDependencies": {
+    "@sinclair/typebox": "^0.34.52",
     "@types/node": "^25.2.3",
     "vitest": "^4.1.0"
   }

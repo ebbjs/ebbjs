@@ -9,10 +9,12 @@
       "@ebbjs/client": ["../client/src/index.ts"],
       "@ebbjs/core": ["../core/src/index.ts"],
       "@ebbjs/core/*": ["../core/src/*/index.ts"],
+      "@ebbjs/schema": ["../schema/src/index.ts"],
+      "@ebbjs/write": ["../write/src/index.ts"],
       "@ebbjs/storage": ["../storage/src/index.ts"],
       "@ebbjs/storage/*": ["../storage/src/*/index.ts"]
     }
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "fixtures/**/*"],
   "exclude": ["dist", "node_modules"]
 }

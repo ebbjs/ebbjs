@@ -9,9 +9,9 @@
 import { describe, expect, it } from "vitest";
 import { generateId } from "@ebbjs/core";
 
-import { e, defineEntity } from "../../../schema/entity";
-import { defineSchema } from "../../../schema/schema";
-import { derivedBodyIds, derivedDocumentId, derivedRelationshipId } from "../derived-ids";
+import { e, defineEntity } from "@ebbjs/schema";
+import { defineSchema } from "@ebbjs/schema";
+import { derivedBodyIds, derivedDocumentId, derivedRelationshipId } from "@ebbjs/schema";
 
 const DOC_TYPE = "text_document__blog_post__body";
 const RELATIONSHIP_NAMESPACE = "rel_derived_";

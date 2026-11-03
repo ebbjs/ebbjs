@@ -35,6 +35,29 @@ defmodule EbbServer.Functions.ResponseTest do
       assert Map.fetch!(body, "result") == nil
     end
 
+    test "replayed is added only when the invocation reported one" do
+      {200, body, _headers} =
+        Response.success(%{}, invocation_id: @invocation_id, version: @version, replayed: true)
+
+      assert body["replayed"] == true
+
+      {200, body, _headers} =
+        Response.success(%{}, invocation_id: @invocation_id, version: @version, replayed: false)
+
+      assert body["replayed"] == false
+
+      for replayed <- [nil] do
+        {200, body, _headers} =
+          Response.success(%{},
+            invocation_id: @invocation_id,
+            version: @version,
+            replayed: replayed
+          )
+
+        refute Map.has_key?(body, "replayed")
+      end
+    end
+
     test "carries no error vocabulary" do
       {200, body, _headers} =
         Response.success(%{}, invocation_id: @invocation_id, version: @version)
@@ -79,6 +102,46 @@ defmodule EbbServer.Functions.ResponseTest do
           ] do
         {500, body, _headers} = Response.failure(500, opts)
         refute Map.has_key?(body, "details")
+      end
+    end
+
+    test "rejected carries the rejection list when a commit was rejected" do
+      rejected = [
+        %{"id" => "a_1", "reason" => "not_authorized", "details" => "no membership"},
+        %{"id" => "a_2", "reason" => "missing_ownership"}
+      ]
+
+      {422, body, _headers} =
+        Response.failure(422,
+          invocation_id: @invocation_id,
+          version: @version,
+          code: "rejected",
+          details: "not_authorized: no membership",
+          rejected: rejected
+        )
+
+      assert body["rejected"] == rejected
+      refute Map.has_key?(body, "retryable")
+    end
+
+    test "rejected is omitted when absent or empty" do
+      for opts <- [
+            [invocation_id: @invocation_id, version: @version, code: "handler_error"],
+            [
+              invocation_id: @invocation_id,
+              version: @version,
+              code: "handler_error",
+              rejected: nil
+            ],
+            [
+              invocation_id: @invocation_id,
+              version: @version,
+              code: "handler_error",
+              rejected: []
+            ]
+          ] do
+        {422, body, _headers} = Response.failure(422, opts)
+        refute Map.has_key?(body, "rejected")
       end
     end
 

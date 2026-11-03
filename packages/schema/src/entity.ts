@@ -25,7 +25,7 @@ import type {
   TString,
 } from "@sinclair/typebox/type";
 
-import type { TextDocument } from "../fields/collaborative-text/text-document";
+import type { TextDocument } from "./collaborative-text/text-document";
 import { assertEntityNameAvailable, assertFieldNamesAvailable } from "./reserved";
 
 /** Merge-semantics marker. Marker and shape are independent axes. */

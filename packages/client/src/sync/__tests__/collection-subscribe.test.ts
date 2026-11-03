@@ -12,8 +12,8 @@
 
 import { describe, it, expect as globalExpect } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
-import { defineEntity, e } from "../../schema/entity";
-import { defineSchema } from "../../schema/schema";
+import { defineEntity, e } from "@ebbjs/schema";
+import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { callApplyAction } from "../test-utils";

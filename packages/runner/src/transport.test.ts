@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { reply, type Frame } from "@ebbjs/functions-protocol";
+import { MAX_FRAME_BYTES, reply, type Frame } from "@ebbjs/functions-protocol";
 
 import { evaluateBundle } from "./index.ts";
-import { SocketHostTransport } from "./transport.ts";
+import { FrameTooLargeError, SocketHostTransport } from "./transport.ts";
 
 const view = { id: "e_doc" };
 
@@ -39,6 +39,15 @@ describe("SocketHostTransport", () => {
     host.handleReply(reply("1", { ok: false, error: { error: "read_failed", status: 500 } }));
 
     await expect(call).rejects.toEqual({ error: "read_failed", status: 500 });
+  });
+
+  it("refuses a call whose encoded frame would exceed the protocol bound", async () => {
+    const { host, sent } = transport();
+
+    await expect(host.call("commit", { blob: "x".repeat(MAX_FRAME_BYTES) })).rejects.toBeInstanceOf(
+      FrameTooLargeError,
+    );
+    expect(sent).toEqual([]);
   });
 
   it("ignores a reply for an unknown call id and rejects on close", async () => {

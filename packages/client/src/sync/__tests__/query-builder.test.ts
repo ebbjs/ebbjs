@@ -10,8 +10,8 @@ import { Type, type Static } from "@sinclair/typebox";
 
 import type { Entity, FieldValue } from "@ebbjs/core";
 
-import { defineEntity, e } from "../../schema/entity";
-import { EntityValidationError } from "../../schema/entity-registry";
+import { defineEntity, e } from "@ebbjs/schema";
+import { EntityValidationError } from "@ebbjs/schema";
 import {
   buildQueryBuilder,
   buildLazyQueryBuilder,

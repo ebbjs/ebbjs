@@ -1,0 +1,57 @@
+{
+  "name": "@ebbjs/schema",
+  "version": "0.3.0",
+  "private": false,
+  "description": "Entity, relationship, and schema definitions for ebbjs: registry, validation, system entities, and the collaborative-text field type.",
+  "homepage": "https://ebbjs.com",
+  "bugs": {
+    "url": "https://github.com/ebbjs/ebbjs/issues"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ebbjs/ebbjs.git",
+    "directory": "packages/schema"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE.txt"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch",
+    "test": "vitest --run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "pnpm --root ../../ lint",
+    "lint:fix": "pnpm --root ../../ lint:fix",
+    "fmt": "pnpm --root ../../ fmt",
+    "fmt:check": "pnpm --root ../../ fmt:check",
+    "prepack": "node ../../scripts/copy-license.mjs"
+  },
+  "dependencies": {
+    "@ebbjs/core": "workspace:^",
+    "@sinclair/typebox": "^0.34.52"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.4",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22.8.0"
+  }
+}

@@ -11,7 +11,7 @@
 import type { Entity } from "@ebbjs/core";
 import type { Replica, ReplicaChange, Revision } from "@ebbjs/storage/replica";
 
-import { entityGroupSystemEntity, relationshipSystemEntity } from "../schema/system-entities";
+import { entityGroupSystemEntity, relationshipSystemEntity } from "@ebbjs/schema";
 
 /** One derived reader's view of the replica's change stream. */
 export interface ReplicaSignal {

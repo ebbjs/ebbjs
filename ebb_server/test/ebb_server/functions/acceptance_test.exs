@@ -16,38 +16,21 @@ defmodule EbbServer.Functions.AcceptanceTest do
   use ExUnit.Case, async: false
   use EbbServer.Integration.StorageCase, with_auth_mode: true
 
+  import EbbServer.FunctionsTestHelpers
   import EbbServer.Integration.ActionHelpers
+  import EbbServer.LiveStreamHelpers, only: [start_live_stream: 2]
   import EbbServer.SSEHelpers, only: [data_payloads: 1]
   import EbbServer.TestHelpers, only: [generate_hlc: 0]
   import Plug.Conn
-  import Plug.Test
 
   alias EbbServer.Functions.{Bundle, BundleCache, Protocol}
   alias EbbServer.Functions.Worker.Fake
-  alias EbbServer.Sync.{GroupRegistry, Router}
+  alias EbbServer.Storage.{ActionLog, WatermarkTracker}
 
   alias EbbServer.TestFunctions.{Bundles, InputScriptedWorker, RecordingWorker}
 
   @enabled_env "EBB_FUNCTIONS_ENABLED"
   @await_timeout_ms 5_000
-
-  # Stands in for the socket the SSE handler writes to. The route's bytes are
-  # forwarded to the test process, which is the only way to observe them
-  # without a real connection.
-  defmodule RecordingAdapter do
-    @moduledoc false
-
-    def send_chunked(%{test: test} = state, _status, _headers) do
-      send(test, :chunked_started)
-      {:ok, "", state}
-    end
-
-    def chunk(%{test: test} = state, body) do
-      bytes = IO.iodata_to_binary(body)
-      send(test, {:chunk_written, bytes})
-      {:ok, bytes, state}
-    end
-  end
 
   setup do
     # The flag reads the environment before app config, so a value left in the
@@ -114,6 +97,7 @@ defmodule EbbServer.Functions.AcceptanceTest do
       body = Jason.decode!(response.resp_body)
       assert body["ok"] == true
       assert body["result"] == %{"id" => created_id}
+      assert body["replayed"] == false
       assert body["version"] == "1.0.0"
       assert "inv_" <> id_suffix = body["invocation_id"]
       assert byte_size(id_suffix) == 16
@@ -139,7 +123,11 @@ defmodule EbbServer.Functions.AcceptanceTest do
       assert_receive {:chunk_written, bytes}, @await_timeout_ms
       assert [payload] = data_payloads(bytes)
       event = Jason.decode!(payload)
-      assert event["id"] == action["id"]
+
+      # The server owns the Action id: the one the handler put in the frame is
+      # replaced by the id derived from the invocation.
+      assert event["id"] == action_id_for(body["invocation_id"])
+      refute event["id"] == action["id"]
       assert Enum.any?(event["updates"], &(&1["subject_id"] == created_id))
 
       Task.shutdown(stream, :brutal_kill)
@@ -325,6 +313,13 @@ defmodule EbbServer.Functions.AcceptanceTest do
       assert body["details"] =~ "not_authorized"
       assert body["version"] == "1.0.0"
       refute Map.has_key?(body, "retryable")
+      refute Map.has_key?(body, "replayed")
+
+      # The same `%{"id", "reason", "details"?}` maps `POST /sync/actions`
+      # returns, so a client can read both the same way.
+      derived_id = action_id_for(body["invocation_id"])
+      assert [%{"id" => ^derived_id, "reason" => "not_authorized"} = rejection] = body["rejected"]
+      assert Map.keys(rejection) -- ["details", "id", "reason"] == []
 
       assert_receive {:functions_commit_reply, %{"ok" => false}}, @await_timeout_ms
 
@@ -332,6 +327,112 @@ defmodule EbbServer.Functions.AcceptanceTest do
       read = get_entity(foreign_id, owner_id)
       assert read.status == 200
       assert Jason.decode!(read.resp_body)["data"]["fields"]["title"]["value"] == "not yours"
+    end
+
+    test "a retry with the same Idempotency-Key replays and drops the new writes", %{dir: dir} do
+      name = "idempotentWrite"
+      actor_id = unique("a")
+      group_id = unique("g")
+      key = unique("idem")
+
+      seed_member(actor_id, group_id, [
+        "function." <> name,
+        "todo.create",
+        "todo.update",
+        "todo.read"
+      ])
+
+      deploy!(dir, name)
+
+      configure_boot(
+        bundle_dir: dir,
+        transport: Fake,
+        worker_opts: [
+          script: [
+            %{"send" => Protocol.ready(nil, "fake-1.0.0")},
+            %{"script" => "commit_title"}
+          ],
+          scripts: %{"commit_title" => fn api -> commit_title(api, group_id) end}
+        ]
+      )
+
+      before = WatermarkTracker.committed_watermark()
+
+      first = post_function(name, ~s({"title":"first"}), actor_id, [{"idempotency-key", key}])
+      assert first.status == 200
+      first_body = Jason.decode!(first.resp_body)
+      assert first_body["replayed"] == false
+
+      assert_receive {:functions_committed, %{"replayed" => false}, first_entity},
+                     @await_timeout_ms
+
+      # The retry says the same thing as far as the server is concerned — same
+      # key, same action id — but its handler produces different writes.
+      second = post_function(name, ~s({"title":"second"}), actor_id, [{"idempotency-key", key}])
+      assert second.status == 200
+      second_body = Jason.decode!(second.resp_body)
+      assert second_body["replayed"] == true
+      assert second_body["invocation_id"] == first_body["invocation_id"]
+
+      assert_receive {:functions_committed, %{"replayed" => true}, second_entity},
+                     @await_timeout_ms
+
+      # Exactly one Action, exactly one GSN, and one entity.
+      assert WatermarkTracker.committed_watermark() == before + 1
+      assert [_only] = ActionLog.read(before + 1, before + 1)
+
+      assert action_id_for(first_body["invocation_id"]) ==
+               action_id_for(second_body["invocation_id"])
+
+      first_read = get_entity(first_entity, actor_id)
+      assert first_read.status == 200
+      assert Jason.decode!(first_read.resp_body)["data"]["fields"]["title"]["value"] == "first"
+      assert get_entity(second_entity, actor_id).status == 404
+    end
+
+    test "a handler that throws after a read leaves the Action log empty", %{dir: dir} do
+      name = "throwsAfterRead"
+      actor_id = unique("a")
+      group_id = unique("g")
+      seeded_id = unique("todo_seed")
+
+      seed_member(actor_id, group_id, ["function." <> name, "todo.read"])
+
+      assert write_entity_in_group(actor_id, seeded_id, "todo", group_id, fields("seeded")).status ==
+               200
+
+      deploy!(dir, name)
+
+      configure_boot(
+        bundle_dir: dir,
+        transport: Fake,
+        worker_opts: [
+          script: [
+            %{"send" => Protocol.ready(nil, "fake-1.0.0")},
+            %{"script" => "read_then_throw"}
+          ],
+          scripts: %{
+            "read_then_throw" => fn api ->
+              api.expect.(%{"type" => "invoke"})
+              api.send.(Protocol.call("call_read", "get", %{"id" => seeded_id}))
+              api.expect.(%{"type" => "reply", "call_id" => "call_read"})
+              api.send.(Protocol.result({:error, "handler_error", "boom"}))
+            end
+          }
+        ]
+      )
+
+      before = WatermarkTracker.committed_watermark()
+      response = post_function(name, "{}", actor_id)
+
+      assert response.status == 422
+      body = Jason.decode!(response.resp_body)
+      assert body["error"] == "handler_error"
+      assert body["details"] == "boom"
+
+      # Throwing before the commit frame is sent submits nothing at all.
+      assert WatermarkTracker.committed_watermark() == before
+      assert ActionLog.read(before + 1, before + 10) == []
     end
 
     test "a digest mismatch is refused rather than served", %{dir: dir} do
@@ -368,17 +469,6 @@ defmodule EbbServer.Functions.AcceptanceTest do
 
   # --- setup helpers -------------------------------------------------------
 
-  defp unique(prefix), do: "#{prefix}_#{System.unique_integer([:positive])}"
-
-  defp seed_member(actor_id, group_id, permissions) do
-    assert bootstrap_group(actor_id, group_id, permissions).status == 200
-  end
-
-  defp fields(title) do
-    hlc = generate_hlc()
-    %{"title" => %{"type" => "lww", "value" => title, "hlc" => hlc}}
-  end
-
   # One Action, one entity plus its group membership row: the smallest write a
   # function can commit, and enough for fan-out to reach the group.
   defp create_todo_action(entity_id, group_id, title) do
@@ -400,6 +490,22 @@ defmodule EbbServer.Functions.AcceptanceTest do
     }
   end
 
+  # The handler builds an Action whose entity id is fresh per invocation, so a
+  # retry that is not deduped would visibly create a second entity.
+  defp commit_title(api, group_id) do
+    invoke = api.expect.(%{"type" => "invoke"})
+    entity_id = unique("todo_fn")
+    action = create_todo_action(entity_id, group_id, invoke["input"]["title"])
+
+    api.send.(Protocol.call("call_commit", "commit", action))
+
+    %{"ok" => true, "value" => reply_value} =
+      api.expect.(%{"type" => "reply", "call_id" => "call_commit"})
+
+    send(api.owner, {:functions_committed, reply_value, entity_id})
+    api.send.(Protocol.result({:ok, %{"id" => entity_id}}))
+  end
+
   defp commit_only_script(action) do
     fn api ->
       api.expect.(%{"type" => "invoke"})
@@ -418,106 +524,6 @@ defmodule EbbServer.Functions.AcceptanceTest do
       |> Map.merge(Keyword.get(opts, :envelope, %{}))
 
     Bundles.write_bundle!(dir, Bundles.envelope(name, overrides), code)
-  end
-
-  # The flag, the bundle directory, and the transport are node configuration,
-  # so tests write them through the one nested key an operator uses and put
-  # back whatever was there.
-  defp configure_boot(config) do
-    previous = Application.get_env(:ebb_server, :functions)
-
-    Application.put_env(:ebb_server, :functions, Keyword.merge([enabled: true], config))
-
-    on_exit(fn ->
-      case previous do
-        nil -> Application.delete_env(:ebb_server, :functions)
-        value -> Application.put_env(:ebb_server, :functions, value)
-      end
-    end)
-  end
-
-  # `Sync.Router` delegates to the route with no options, so it asks the
-  # registered cache exactly as a booted node does.
-  defp start_cache(dir) do
-    start_supervised!({BundleCache, loader_opts: [dir: dir]})
-  end
-
-  defp post_function(name, body, actor_id) do
-    conn(:post, "/functions/#{name}", body)
-    |> put_req_header("content-type", "application/json")
-    |> put_req_header("x-ebb-actor-id", actor_id)
-    |> Router.call([])
-  end
-
-  # --- live subscriber -----------------------------------------------------
-
-  defp start_live_stream(group_id, actor_id) do
-    test_pid = self()
-
-    conn =
-      conn(:get, "/sync/live?groups=#{group_id}&cursor=0")
-      |> put_req_header("x-ebb-actor-id", actor_id)
-      |> Map.put(:adapter, {RecordingAdapter, %{test: test_pid}})
-
-    task = Task.async(fn -> Router.call(conn, []) end)
-    ref = Process.monitor(task.pid)
-
-    receive do
-      :chunked_started ->
-        :ok
-
-      {:DOWN, ^ref, :process, _pid, reason} ->
-        flunk("the /sync/live route ended before opening a stream: #{inspect(reason)}")
-    after
-      @await_timeout_ms -> flunk("the /sync/live route never opened a stream")
-    end
-
-    Process.demonitor(ref, [:flush])
-    await_subscriber(group_id)
-    task
-  end
-
-  # The route registers its subscriber inside `open_sse/4` *after* switching
-  # the response to chunked mode, so committing right after `:chunked_started`
-  # could race the subscription. Waiting for the group's server to hold the
-  # connection makes the delivery assertion about fan-out, not scheduling.
-  defp await_subscriber(group_id) do
-    await(
-      fn ->
-        case GroupRegistry.lookup(group_id) do
-          nil -> nil
-          pid -> if subscribed?(pid), do: pid
-        end
-      end,
-      "the SSE subscriber for #{group_id}"
-    )
-  end
-
-  defp subscribed?(pid) do
-    case :sys.get_state(pid) do
-      %{subscribers: subscribers} -> MapSet.size(subscribers) > 0
-    end
-  catch
-    :exit, _reason -> false
-  end
-
-  defp await(
-         fun,
-         description,
-         deadline \\ System.monotonic_time(:millisecond) + @await_timeout_ms
-       ) do
-    case fun.() do
-      nil ->
-        if System.monotonic_time(:millisecond) > deadline do
-          flunk("timed out waiting for #{description}")
-        else
-          Process.sleep(10)
-          await(fun, description, deadline)
-        end
-
-      found ->
-        found
-    end
   end
 
   # --- worker script -------------------------------------------------------

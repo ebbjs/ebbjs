@@ -24,7 +24,7 @@
  * plus 16 chars of `[a-z0-9]`, so a minted id carries exactly one `_`.
  */
 
-import type { EntityRegistry } from "../../schema/entity-registry";
+import type { EntityRegistry } from "../entity-registry";
 
 import { generatedDocEntityName } from "./schema";
 

@@ -17,9 +17,36 @@ defmodule EbbServer.Functions.Router do
 
   An `invocation_id` is minted before anything is looked up, so every response
   — success, unknown function, denied, malformed body, timeout — carries one in
-  the body and in `x-ebb-invocation-id`. It is `"inv_" <> nanoid(16)` over the
-  same `[0-9a-z]` alphabet as `generateId("inv")`, so it belongs to the one id
-  space the storage layer indexes.
+  the body and in `x-ebb-invocation-id`. By default it is `"inv_" <> nanoid(16)`
+  over the same `[0-9a-z]` alphabet as `generateId("inv")`, so it belongs to the
+  one id space the storage layer indexes.
+
+  ## Idempotency-Key
+
+  A request may carry one `Idempotency-Key` header. With it, the invocation id
+  is derived from the key instead of minted:
+  `"inv_" <> first16(lowercase_hex(sha256(actor_id <> "\n" <> name <> "\n" <> key)))`,
+  still 16 characters of the same alphabet. `EbbServer.Functions.Host` derives
+  the Action id from the invocation id, so a retry of the same request
+  reproduces the same `action_id`; `cf_action_dedup` drops the second copy
+  before it claims a GSN, and the response carries `"replayed": true`.
+
+  The key is scoped to the actor and the function, because it is a value the
+  caller chooses: two callers that happen to pick the same string are not
+  retrying the same request, and must not share a dedup key. A service
+  principal (M5) acts as one subject actor, so every caller behind one
+  credential shares this key space; those callers must use their own keys.
+  Within that scope a repeated key silently drops whatever content the retry
+  carries, including a retry whose handler produced different writes. The first commit under that
+  `action_id` is the durable one and every later one is answered as a replay.
+  Only send the header when the request is safe to repeat unchanged; a key is
+  not a way to perform a second, different write. One invocation commits at
+  most one Action, so this also holds within a single request.
+
+  An empty key, a key longer than 255 bytes, or the header repeated is a `400`
+  rather than a derived id: requests that disagree about what was meant must
+  not end up sharing a dedup key. Such a response still carries a freshly
+  minted invocation id, because the body names the invocation that refused.
 
   ## Order of work
 
@@ -73,6 +100,8 @@ defmodule EbbServer.Functions.Router do
   # input; a request body can never usefully be larger than a whole frame.
   @max_body_bytes Protocol.max_frame_bytes()
   @read_chunk_bytes 64 * 1024
+  @idempotency_key_header "idempotency-key"
+  @max_idempotency_key_bytes 255
   # Handed to the runner in the invoke frame. The runner is what counts calls
   # (plan §2.12); v1's only ops are one pure read and one commit, so the server
   # has nothing to count here yet.
@@ -82,12 +111,18 @@ defmodule EbbServer.Functions.Router do
   plug(:dispatch)
 
   post "/:name" do
-    invocation_id = new_invocation_id()
     name = conn.path_params["name"]
+    actor_id = conn.assigns[:actor_id]
 
-    case conn.assigns[:actor_id] do
-      nil -> respond(conn, Response.failure(401, invocation_id: invocation_id))
-      actor_id -> invoke(conn, name, actor_id, invocation_id)
+    case idempotency_key(conn) do
+      {:ok, key} ->
+        case actor_id do
+          nil -> respond(conn, Response.failure(401, invocation_id: new_invocation_id()))
+          actor -> invoke(conn, name, actor, invocation_id_for(actor, name, key))
+        end
+
+      {:error, details} ->
+        respond(conn, invalid_key_response(details))
     end
   end
 
@@ -112,6 +147,48 @@ defmodule EbbServer.Functions.Router do
 
   defp new_invocation_id do
     "inv_" <> Nanoid.generate(16, "abcdefghijklmnopqrstuvwxyz0123456789")
+  end
+
+  # A header can only make the id stable, never choose it: the derived id is
+  # still `inv_` plus 16 characters of the id alphabet, so the storage layer's
+  # dedup keys stay in one space.
+  defp idempotency_key(conn) do
+    case Plug.Conn.get_req_header(conn, @idempotency_key_header) do
+      [] -> {:ok, nil}
+      [key] -> validate_key(key)
+      _repeated -> {:error, "Idempotency-Key must not be repeated"}
+    end
+  end
+
+  defp validate_key("") do
+    {:error, "Idempotency-Key must not be empty"}
+  end
+
+  defp validate_key(key) when byte_size(key) > @max_idempotency_key_bytes do
+    {:error, "Idempotency-Key must be at most #{@max_idempotency_key_bytes} bytes"}
+  end
+
+  defp validate_key(key), do: {:ok, key}
+
+  defp invocation_id_for(_actor_id, _name, nil), do: new_invocation_id()
+  defp invocation_id_for(actor_id, name, key), do: derived_invocation_id(actor_id, name, key)
+
+  # The actor and function scope the key: it is caller-chosen, so two callers
+  # that pick the same string are not retrying the same request.
+  defp derived_invocation_id(actor_id, name, key) do
+    digest =
+      :crypto.hash(:sha256, [actor_id, "\n", name, "\n", key])
+      |> Base.encode16(case: :lower)
+
+    "inv_" <> binary_part(digest, 0, 16)
+  end
+
+  defp invalid_key_response(details) do
+    Response.failure(400,
+      invocation_id: new_invocation_id(),
+      code: "invalid_idempotency_key",
+      details: details
+    )
   end
 
   defp invoke(conn, name, actor_id, invocation_id) do
@@ -251,18 +328,26 @@ defmodule EbbServer.Functions.Router do
     )
   end
 
-  defp to_response({:ok, value}, invocation_id, version) do
-    Response.success(value, invocation_id: invocation_id, version: version)
+  defp to_response({:ok, value, commit}, invocation_id, version) do
+    Response.success(value,
+      invocation_id: invocation_id,
+      version: version,
+      replayed: replayed(commit)
+    )
   end
 
-  defp to_response({:error, status, code, details}, invocation_id, version) do
+  defp to_response({:error, status, code, details, meta}, invocation_id, version) do
     Response.failure(status,
       invocation_id: invocation_id,
       version: version,
       code: code,
-      details: details
+      details: details,
+      rejected: Map.get(meta, :rejected)
     )
   end
+
+  defp replayed(nil), do: nil
+  defp replayed(%{replayed: replayed}), do: replayed
 
   # Loader failures are described for an operator without echoing internals or
   # a stack: the status is the classification, the detail is a reason a person

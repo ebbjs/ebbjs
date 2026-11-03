@@ -10,9 +10,9 @@
 import { describe, expect, it } from "vitest";
 import { decodeSync, type Action } from "@ebbjs/core";
 
-import { defineEntity, e } from "../../schema/entity";
-import { defineRelationship } from "../../schema/relationship";
-import { defineSchema } from "../../schema/schema";
+import { defineEntity, e } from "@ebbjs/schema";
+import { defineRelationship } from "@ebbjs/schema";
+import { defineSchema } from "@ebbjs/schema";
 import { defineAction, type AnyActionDef } from "../../schema/action";
 import { createClient } from "../client";
 

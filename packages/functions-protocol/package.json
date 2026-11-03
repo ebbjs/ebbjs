@@ -5,15 +5,22 @@
   "description": "Frame codec for the ebb functions host/runner protocol",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
   },
   "scripts": {
     "test": "vitest --run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "lint": "pnpm --root ../../ lint",
     "lint:fix": "pnpm --root ../../ lint:fix",
     "fmt": "pnpm --root ../../ fmt",
     "fmt:check": "pnpm --root ../../ fmt:check"
+  },
+  "dependencies": {
+    "@ebbjs/core": "workspace:*",
+    "@ebbjs/schema": "workspace:*",
+    "@ebbjs/write": "workspace:*",
+    "@sinclair/typebox": "^0.34.52"
   },
   "devDependencies": {
     "@types/node": "^25.2.3",

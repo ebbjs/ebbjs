@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "entities": {
+    "project": {
+      "fields": {
+        "name": "string"
+      }
+    },
+    "label": {
+      "fields": {
+        "name": "string"
+      }
+    },
+    "issue": {
+      "fields": {
+        "title": "string",
+        "done": "boolean",
+        "labels": "string[]"
+      }
+    }
+  },
+  "relationships": {
+    "issue_project": {
+      "source": "issue",
+      "target": "project",
+      "as": "project"
+    },
+    "issue_labels": {
+      "source": "issue",
+      "target": "label",
+      "as": "labels",
+      "sourceCardinality": "many"
+    }
+  }
+}

@@ -71,6 +71,8 @@ defmodule EbbServer.Storage.EntityIndex do
     - `:group_members_by_id`     — used for `"groupMember"` resolution
     - `:intra_action`            — optional membership from the
       current Action, keyed by entity id
+    - `:intra_relationship_sources` — optional `relationship` row id →
+      source entity id for a row put earlier in the same Action
     - `:overlay`                 — optional `CacheMutationPlanner.Overlay`
       of planned cache rows a predecessor batch has not applied yet
 
@@ -122,7 +124,13 @@ defmodule EbbServer.Storage.EntityIndex do
            RelationshipCache.get_relationship(rel_id, table)
          end) do
       nil ->
-        {[], nil}
+        # A row put earlier in the same Action has no stored row yet; the put's
+        # source is the only scope there is, and it is the one the put itself
+        # was authorized and fanned out against.
+        case Keyword.get(opts, :intra_relationship_sources, %{}) |> Map.get(rel_id) do
+          nil -> {[], nil}
+          source_id -> {source_groups_cached(source_id, opts), source_id}
+        end
 
       entry ->
         source_id = entry_source_id(entry)

@@ -13,8 +13,8 @@
 
 import { describe, it, expect } from "vitest";
 import { makeHlc, type Action, type Entity } from "@ebbjs/core";
-import { defineEntity, e } from "../../schema/entity";
-import { defineSchema } from "../../schema/schema";
+import { defineEntity, e } from "@ebbjs/schema";
+import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { buildQueryBuilder } from "../query-builder";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";

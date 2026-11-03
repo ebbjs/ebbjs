@@ -127,6 +127,14 @@ export async function bundleSource(
     format: "iife",
     globalName: BUNDLE_GLOBAL_NAME,
     target: "es2022",
+    // A function that exports its schema pulls in `@ebbjs/schema` and through
+    // it `@ebbjs/core`. `neutral` alone drops the CommonJS `main` field and
+    // the `browser` export condition, so `@msgpack/msgpack` (CJS `main` only)
+    // would not resolve and `nanoid` would resolve to its `node:crypto` entry
+    // — a builtin a portable bundle may not import. Bundles run in Bun, which
+    // provides the browser Web Crypto and fetch surfaces these entries use.
+    mainFields: ["module", "main"],
+    conditions: ["browser"],
     write: false,
     logLevel: "silent",
     plugins: [rejectNodeImports()],

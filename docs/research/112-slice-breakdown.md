@@ -275,8 +275,8 @@ Updates the client produces, buffered and committed as one Action.
    registry into `@ebbjs/schema` / `@ebbjs/write`, with `@ebbjs/client`
    re-exporting for compatibility. A move plus re-exports, not a rewrite; the
    existing client suite is the regression gate.
-2. Goldens — create/update/delete/relate/unrelate and an atomic batch, shared
-   as fixtures between `@ebbjs/client` tests and the runtime tests. Add a
+2. Reference fixtures — create/update/delete/relate/unrelate and an atomic
+   batch, shared between `@ebbjs/client` tests and the runtime tests. Add a
    property test: a random operation batch produces identical Updates from both
    planners.
 3. `functions-runtime` write surface — buffered Updates, `ctx.commit()`, the
@@ -296,7 +296,7 @@ Updates the client produces, buffered and committed as one Action.
 
 ### Acceptance
 
-Byte-identical Actions from client and runtime for every golden operation; a
+Byte-identical Actions from client and runtime for every pinned operation; a
 handler that throws leaves no Action; a rejection surfaces the same reason
 string a client would see; created entity is visible to the caller mid-handler
 (overlay) and to an SSE subscriber after commit.
@@ -423,9 +423,18 @@ timeout races, killed-worker follow-up invocation. Only then does
 Zero coupling to the core risk; add when a consumer asks.
 
 `ctx.getMany`, `ctx.query`, `ctx.log`, `fetch_audit`, `cancel` frames, msgpack
-frames, `PROTOCOL_VERSION` negotiation (keep the field), `Idempotency-Key`,
-`ebb functions health`, schema-adapter matrix (zod/valibot/arktype), signing (if
-M5 says so), multi-definition file rejection, `413` per-field limits.
+frames, `PROTOCOL_VERSION` negotiation (keep the field), `ebb functions health`,
+schema-adapter matrix (zod/valibot/arktype), signing (if M5 says so),
+multi-definition file rejection, `413` per-field limits.
+
+`Idempotency-Key` was on this list and is not any more: #594 reinstated it as
+the request-level key the `invocation_id` — and therefore the `action_id` — is
+derived from, so a retry replays instead of writing again (settled decision 3).
+The key is scoped to the actor and the function, because it is caller-chosen:
+two callers that happen to pick the same string are not retrying the same
+request. Within that scope a repeated key silently drops whatever the retry
+carries, including a retry whose handler produced different writes, and one
+invocation commits at most one Action.
 
 ## Cross-cutting, easy to forget
 

@@ -11,9 +11,9 @@ import { Type } from "@sinclair/typebox";
 import { decodeSync, makeHlc, type Action, type Entity } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
-import { defineEntity, e } from "../../schema/entity";
-import { defineSchema } from "../../schema/schema";
-import { EntityValidationError } from "../../schema/entity-registry";
+import { defineEntity, e } from "@ebbjs/schema";
+import { defineSchema } from "@ebbjs/schema";
+import { EntityValidationError } from "@ebbjs/schema";
 import { defineAction } from "../../schema/action";
 import type { DuplicateAt } from "../drafts";
 import { createClient } from "../client";

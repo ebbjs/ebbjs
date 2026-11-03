@@ -5,16 +5,17 @@
 
 import { describe, expect, it } from "vitest";
 
-import { EntityRegistry } from "../../schema/entity-registry";
+import { EntityRegistry } from "@ebbjs/schema";
 import type { GeneratedParts } from "../generated-parts";
-import { ActionRejectedError, call, changeGroups, type OpContext } from "../operations";
-import { commit, type CommitCapability } from "../committer";
+import { ActionRejectedError, call, changeGroups, type OpContext } from "@ebbjs/write";
+import { commit, type CommitCapability } from "@ebbjs/write";
 
 const mkCtx = (): OpContext => ({
   registry: new EntityRegistry(),
   ids: {
     updateId: () => "u_1",
     hlc: () => "hlc_1",
+    newId: (prefix: string) => `${prefix}_1`,
   },
   actorId: "actor_1",
 });

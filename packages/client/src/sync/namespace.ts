@@ -19,24 +19,27 @@ import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
 import type {
-  EntityDef,
   DerivedAccessors,
   DerivedKeys,
+  EntityDef,
+  EntityRegistry,
+  GroupFields,
+  GroupMemberFields,
+  RelationshipDef,
+  Schema,
   ShapeFields,
+  TextDocument,
+  TextDocumentSubmit,
   WireFields,
-} from "../schema/entity";
-import type { AccessorKeyOf, AnyRelationshipDef, EntityNameOf, FieldsOf } from "./definition-types";
-import type { EntityRegistry } from "../schema/entity-registry";
-import type { RelationshipDef } from "../schema/relationship";
-import type { Schema } from "../schema/schema";
-import type { GroupFields, GroupMemberFields } from "../schema/system-entities";
+} from "@ebbjs/schema";
 import {
+  DOC_CONTENT_FIELD,
+  GROUPS_ACCESSOR,
   groupMemberSystemEntity,
   groupSystemEntity,
-  GROUPS_ACCESSOR,
-} from "../schema/system-entities";
-import { DOC_CONTENT_FIELD, isCollaborativeText } from "../fields/collaborative-text/schema";
-import type { TextDocument, TextDocumentSubmit } from "../fields/collaborative-text/text-document";
+  isCollaborativeText,
+} from "@ebbjs/schema";
+import type { AccessorKeyOf, AnyRelationshipDef, EntityNameOf, FieldsOf } from "./definition-types";
 import {
   buildReplicaQueryBuilder,
   projectEntity,

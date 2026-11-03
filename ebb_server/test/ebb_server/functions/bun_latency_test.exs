@@ -49,7 +49,7 @@ defmodule EbbServer.Functions.BunLatencyTest do
       timings =
         for _ <- 1..@samples do
           started = System.monotonic_time(:microsecond)
-          assert {:ok, _} = run(dir, name, code, cap)
+          assert {:ok, _, _} = run(dir, name, code, cap)
           System.monotonic_time(:microsecond) - started
         end
 

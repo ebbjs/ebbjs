@@ -1,0 +1,155 @@
+{
+  "name": "create",
+  "description": "one create: the entity put, its membership row, and one relationship put per pointer",
+  "schema": "schema",
+  "invocation_id": "inv_goldenCreate",
+  "actor_id": "a_golden",
+  "ids": {
+    "u": ["u_gcreate1", "u_gcreate2", "u_gcreate3", "u_gcreate4", "u_gcreate5"],
+    "rel": ["rel_gcreate1", "rel_gcreate2", "rel_gcreate3"],
+    "hlc": ["111690000000000001", "111690000000000002"]
+  },
+  "calls": [
+    {
+      "verb": "create",
+      "entity": "issue",
+      "id": "e_gcreate1",
+      "fields": {
+        "title": "Ship it",
+        "done": false,
+        "project": "e_gproject1",
+        "labels": ["e_glabel1", "e_glabel2"]
+      },
+      "groups": ["g_gship"]
+    }
+  ],
+  "action": {
+    "id": "a_cd1ddadf5cc1e680",
+    "actor_id": "a_golden",
+    "hlc": "111690000000000002",
+    "gsn": 0,
+    "updates": [
+      {
+        "id": "u_gcreate1",
+        "subject_id": "e_gcreate1",
+        "subject_type": "issue",
+        "method": "put",
+        "data": {
+          "fields": {
+            "title": {
+              "value": "Ship it",
+              "update_id": "u_gcreate1",
+              "hlc": "111690000000000001"
+            },
+            "done": {
+              "value": false,
+              "update_id": "u_gcreate1",
+              "hlc": "111690000000000001"
+            },
+            "labels": {
+              "value": ["e_glabel1", "e_glabel2"],
+              "update_id": "u_gcreate1",
+              "hlc": "111690000000000001"
+            }
+          }
+        }
+      },
+      {
+        "id": "u_gcreate2",
+        "subject_id": "eg_10_e_gcreate1g_gship",
+        "subject_type": "entityGroup",
+        "method": "put",
+        "data": {
+          "fields": {
+            "entity_id": {
+              "value": "e_gcreate1",
+              "update_id": "u_gcreate2"
+            },
+            "group_id": {
+              "value": "g_gship",
+              "update_id": "u_gcreate2"
+            }
+          }
+        }
+      },
+      {
+        "id": "u_gcreate3",
+        "subject_id": "rel_gcreate1",
+        "subject_type": "relationship",
+        "method": "put",
+        "data": {
+          "fields": {
+            "source_id": {
+              "value": "e_gcreate1",
+              "update_id": "u_gcreate3"
+            },
+            "target_id": {
+              "value": "e_gproject1",
+              "update_id": "u_gcreate3"
+            },
+            "type": {
+              "value": "issue",
+              "update_id": "u_gcreate3"
+            },
+            "field": {
+              "value": "project",
+              "update_id": "u_gcreate3"
+            }
+          }
+        }
+      },
+      {
+        "id": "u_gcreate4",
+        "subject_id": "rel_gcreate2",
+        "subject_type": "relationship",
+        "method": "put",
+        "data": {
+          "fields": {
+            "source_id": {
+              "value": "e_gcreate1",
+              "update_id": "u_gcreate4"
+            },
+            "target_id": {
+              "value": "e_glabel1",
+              "update_id": "u_gcreate4"
+            },
+            "type": {
+              "value": "issue",
+              "update_id": "u_gcreate4"
+            },
+            "field": {
+              "value": "labels",
+              "update_id": "u_gcreate4"
+            }
+          }
+        }
+      },
+      {
+        "id": "u_gcreate5",
+        "subject_id": "rel_gcreate3",
+        "subject_type": "relationship",
+        "method": "put",
+        "data": {
+          "fields": {
+            "source_id": {
+              "value": "e_gcreate1",
+              "update_id": "u_gcreate5"
+            },
+            "target_id": {
+              "value": "e_glabel2",
+              "update_id": "u_gcreate5"
+            },
+            "type": {
+              "value": "issue",
+              "update_id": "u_gcreate5"
+            },
+            "field": {
+              "value": "labels",
+              "update_id": "u_gcreate5"
+            }
+          }
+        }
+      }
+    ]
+  }
+}

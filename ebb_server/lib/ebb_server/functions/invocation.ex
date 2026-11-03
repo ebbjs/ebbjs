@@ -16,7 +16,18 @@ defmodule EbbServer.Functions.Invocation do
   invocation: a read is v1's only pure op and a commit is fail-whole, so there
   is no state in which continuing could produce a correct result.
 
-  Results are `{:ok, value}` or `{:error, status, code, details}`. A
+  Results are `{:ok, value, commit}` or
+  `{:error, status, code, details, meta}`. `commit` is `nil` when the
+  invocation committed nothing, and `%{replayed: boolean}` once a commit
+  reached the Writer: `true` means the Action was already durable or in flight
+  and no GSN was assigned — not that the first copy is proven durable. The
+  last commit wins, because one invocation commits
+  at most one Action — every commit in it derives the same `action_id`, so a
+  second one is deduped.
+
+  `meta` is `%{}` except on a rejected commit, where it carries
+  `%{rejected: [...]}` — the rejection list `Host` received from
+  `ActionSubmission`, in the same shape `POST /sync/actions` returns. A
   `handler_error` result is `422 handler_error`; every other result kind is
   `500 runner_error`. A host call's own code survives the boundary — a rejected
   commit is `422 rejected`, a failed read `500 read_failed` — so the endpoint
@@ -31,7 +42,9 @@ defmodule EbbServer.Functions.Invocation do
   @default_deadline_ms 30_000
   @liveness_poll_ms 100
 
-  @type result :: {:ok, term()} | {:error, pos_integer(), String.t(), String.t()}
+  @type result ::
+          {:ok, term(), %{replayed: boolean()} | nil}
+          | {:error, pos_integer(), String.t(), String.t(), map()}
   @type context :: %{required(:actor_id) => term(), required(:invocation_id) => term()}
 
   @doc """
@@ -66,7 +79,10 @@ defmodule EbbServer.Functions.Invocation do
       context: context,
       max_in_flight: Keyword.get(opts, :max_in_flight, @default_max_in_flight),
       in_flight: %{},
-      queue: :queue.new()
+      queue: :queue.new(),
+      # `nil` until a commit succeeds, then the reply's `replayed` flag. An
+      # invocation commits at most one Action, so there is nothing to merge.
+      commit: nil
     }
 
     case Worker.start(transport, worker_opts) do
@@ -111,7 +127,7 @@ defmodule EbbServer.Functions.Invocation do
         if Worker.alive?(state.worker) do
           loop(state)
         else
-          finish(state, {:error, 503, "unavailable", "worker exited before result"})
+          finish(state, {:error, 503, "unavailable", "worker exited before result", %{}})
         end
     end
   end
@@ -139,7 +155,7 @@ defmodule EbbServer.Functions.Invocation do
   end
 
   defp handle_frame(%{"type" => "result", "ok" => true} = frame, state) do
-    finish(state, {:ok, frame["value"]})
+    finish(state, {:ok, frame["value"], state.commit})
   end
 
   defp handle_frame(%{"type" => "result", "ok" => false} = frame, state) do
@@ -184,7 +200,9 @@ defmodule EbbServer.Functions.Invocation do
         send(parent, {:functions_host_result, self(), call_id, result})
       end)
 
-    in_flight = Map.put(state.in_flight, pid, %{monitor: monitor, call_id: call_id})
+    in_flight =
+      Map.put(state.in_flight, pid, %{monitor: monitor, call_id: call_id, op: op})
+
     %{state | in_flight: in_flight}
   end
 
@@ -193,12 +211,26 @@ defmodule EbbServer.Functions.Invocation do
       {nil, _in_flight} ->
         loop(state)
 
-      {%{monitor: monitor, call_id: call_id}, in_flight} ->
+      {%{monitor: monitor, call_id: call_id, op: op}, in_flight} ->
         Process.demonitor(monitor, [:flush])
-        state = %{state | in_flight: in_flight}
+
+        state =
+          state
+          |> Map.put(:in_flight, in_flight)
+          |> record_commit(op, result)
+
         reply_and_continue(call_id, result, state)
     end
   end
+
+  # Only a successful commit says anything about the invocation's writes; a
+  # failing one ends the invocation with the host's own error.
+  defp record_commit(state, "commit", {:ok, %{"replayed" => replayed}})
+       when is_boolean(replayed) do
+    %{state | commit: %{replayed: replayed}}
+  end
+
+  defp record_commit(state, _op, _result), do: state
 
   defp reply_and_continue(call_id, {:ok, value}, state) do
     case Worker.send_frame(state.worker, Protocol.reply(call_id, {:ok, value})) do
@@ -220,7 +252,7 @@ defmodule EbbServer.Functions.Invocation do
     }
 
     _ = Worker.send_frame(state.worker, Protocol.reply(call_id, {:error, error}))
-    finish(state, {:error, 500, "host_call_failed", error["details"]})
+    finish(state, {:error, 500, "host_call_failed", error["details"], %{}})
   end
 
   defp fill_slots(state) do
@@ -235,7 +267,10 @@ defmodule EbbServer.Functions.Invocation do
   end
 
   defp handle_down(ref, reason, %{monitor: ref} = state) do
-    finish(state, {:error, 503, "unavailable", "worker exited before result: #{inspect(reason)}"})
+    finish(
+      state,
+      {:error, 503, "unavailable", "worker exited before result: #{inspect(reason)}", %{}}
+    )
   end
 
   defp handle_down(ref, _reason, state) do
@@ -254,7 +289,7 @@ defmodule EbbServer.Functions.Invocation do
 
         finish(
           %{state | in_flight: Map.delete(state.in_flight, pid)},
-          {:error, 500, "host_call_failed", error["details"]}
+          {:error, 500, "host_call_failed", error["details"], %{}}
         )
     end
   end
@@ -264,7 +299,7 @@ defmodule EbbServer.Functions.Invocation do
   end
 
   defp handle_deadline(ref, %{deadline_ref: ref} = state) do
-    finish(state, {:error, 408, "timeout", "deadline exceeded"})
+    finish(state, {:error, 408, "timeout", "deadline exceeded", %{}})
   end
 
   defp handle_deadline(_ref, state), do: loop(state)
@@ -294,13 +329,14 @@ defmodule EbbServer.Functions.Invocation do
     end
   end
 
-  defp result_error("handler_error", message), do: {:error, 422, "handler_error", message}
-  defp result_error(_kind, message), do: {:error, 500, "runner_error", message}
+  defp result_error("handler_error", message), do: {:error, 422, "handler_error", message, %{}}
+  defp result_error(_kind, message), do: {:error, 500, "runner_error", message, %{}}
 
   # A host call answers in the envelope's vocabulary already: `Host` builds
   # `%{"error" => code, "status" => status, "details" => text}`. Carrying that
   # code through keeps a rejected commit (`rejected`) distinct from a thrown
-  # handler (`handler_error`) instead of flattening both into one 422.
+  # handler (`handler_error`) instead of flattening both into one 422. A
+  # rejection's structured list rides along so the endpoint can publish it.
   defp host_error(%{"status" => status, "error" => code} = error)
        when is_integer(status) and is_binary(code) do
     details =
@@ -309,13 +345,17 @@ defmodule EbbServer.Functions.Invocation do
         _ -> code
       end
 
-    {:error, status, code, details}
+    {:error, status, code, details, error_meta(error)}
   end
 
-  defp host_error(_error), do: {:error, 500, "host_call_failed", "host call failed"}
+  defp host_error(_error),
+    do: {:error, 500, "host_call_failed", "host call failed", %{}}
 
-  defp protocol_error(message), do: {:error, 500, "protocol_error", message}
+  defp error_meta(%{"rejected" => [_ | _] = rejected}), do: %{rejected: rejected}
+  defp error_meta(_error), do: %{}
+
+  defp protocol_error(message), do: {:error, 500, "protocol_error", message, %{}}
 
   defp unavailable(reason),
-    do: {:error, 503, "unavailable", "worker unavailable: #{inspect(reason)}"}
+    do: {:error, 503, "unavailable", "worker unavailable: #{inspect(reason)}", %{}}
 end

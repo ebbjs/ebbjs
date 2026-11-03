@@ -12,9 +12,9 @@
 
 import { describe, expect, it } from "vitest";
 import { pack, format, type Action, type HLCTimestamp } from "@ebbjs/core";
-import { TextDocument, type AppliedUpdate } from "../text-document";
-import { DEFAULT_DOC_SUBJECT_TYPE } from "../wire";
-import type { RunNode } from "../tree";
+import { TextDocument, type AppliedUpdate } from "@ebbjs/schema";
+import { DEFAULT_DOC_SUBJECT_TYPE } from "@ebbjs/schema";
+import type { RunNode } from "@ebbjs/schema";
 
 // ---------------------------------------------------------------------------
 // Helpers

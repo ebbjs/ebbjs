@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createClient } from "./client";
 import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
-import { e } from "../schema/entity";
+import { e } from "@ebbjs/schema";
 import { makeFetchMock, callApplyAction } from "./test-utils";
-import { EntityRegistry, EntityValidationError } from "../schema/entity-registry";
-import { defineEntity } from "../schema/entity";
-import { defineSchema } from "../schema/schema";
+import { EntityRegistry, EntityValidationError } from "@ebbjs/schema";
+import { defineEntity } from "@ebbjs/schema";
+import { defineSchema } from "@ebbjs/schema";
 import type { OutboxSnapshot } from "./outbox-observer";
 
 describe("SyncClient.handshake", () => {

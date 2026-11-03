@@ -22,7 +22,7 @@ import {
   buildTextDocumentEntity,
   generatedDocEntityName,
   isCollaborativeText,
-} from "../fields/collaborative-text/schema";
+} from "./collaborative-text/schema";
 import {
   entityGroupSystemEntity,
   groupMemberSystemEntity,

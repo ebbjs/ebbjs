@@ -265,9 +265,15 @@ importers:
       '@ebbjs/core':
         specifier: workspace:^
         version: link:../core
+      '@ebbjs/schema':
+        specifier: workspace:^
+        version: link:../schema
       '@ebbjs/storage':
         specifier: workspace:^
         version: link:../storage
+      '@ebbjs/write':
+        specifier: workspace:^
+        version: link:../write
       '@sinclair/typebox':
         specifier: ^0.34.52
         version: 0.34.52
@@ -275,6 +281,9 @@ importers:
         specifier: ^1.2.0
         version: 1.2.0
     devDependencies:
+      '@ebbjs/functions-protocol':
+        specifier: workspace:*
+        version: link:../functions-protocol
       tsx:
         specifier: ^4.20.4
         version: 4.21.0
@@ -330,6 +339,19 @@ importers:
         version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/functions-protocol:
+    dependencies:
+      '@ebbjs/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ebbjs/schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@ebbjs/write':
+        specifier: workspace:*
+        version: link:../write
+      '@sinclair/typebox':
+        specifier: ^0.34.52
+        version: 0.34.52
     devDependencies:
       '@types/node':
         specifier: ^25.2.3
@@ -343,10 +365,22 @@ importers:
       '@ebbjs/client':
         specifier: workspace:^
         version: link:../client
+      '@ebbjs/core':
+        specifier: workspace:^
+        version: link:../core
       '@ebbjs/functions-protocol':
         specifier: workspace:*
         version: link:../functions-protocol
+      '@ebbjs/schema':
+        specifier: workspace:^
+        version: link:../schema
+      '@ebbjs/write':
+        specifier: workspace:^
+        version: link:../write
     devDependencies:
+      '@sinclair/typebox':
+        specifier: ^0.34.52
+        version: 0.34.52
       '@types/node':
         specifier: ^25.2.3
         version: 25.5.0
@@ -400,12 +434,34 @@ importers:
         specifier: workspace:*
         version: link:../server
     devDependencies:
+      '@ebbjs/schema':
+        specifier: workspace:^
+        version: link:../schema
+      '@sinclair/typebox':
+        specifier: ^0.34.52
+        version: 0.34.52
       '@types/node':
         specifier: ^25.2.3
         version: 25.5.0
       vitest:
         specifier: ^4.1.0
         version: 4.1.0(@opentelemetry/api@1.9.0)(@types/node@25.5.0)(happy-dom@17.6.3)(vite@7.3.1(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.9.1))
+
+  packages/schema:
+    dependencies:
+      '@ebbjs/core':
+        specifier: workspace:^
+        version: link:../core
+      '@sinclair/typebox':
+        specifier: ^0.34.52
+        version: 0.34.52
+    devDependencies:
+      tsx:
+        specifier: ^4.20.4
+        version: 4.21.0
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/server:
     dependencies:
@@ -453,6 +509,25 @@ importers:
       '@ebbjs/core':
         specifier: workspace:*
         version: link:../core
+    devDependencies:
+      tsx:
+        specifier: ^4.20.4
+        version: 4.21.0
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.9.1)
+
+  packages/write:
+    dependencies:
+      '@ebbjs/core':
+        specifier: workspace:^
+        version: link:../core
+      '@ebbjs/schema':
+        specifier: workspace:^
+        version: link:../schema
+      '@sinclair/typebox':
+        specifier: ^0.34.52
+        version: 0.34.52
     devDependencies:
       tsx:
         specifier: ^4.20.4

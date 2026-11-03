@@ -11,10 +11,10 @@
 import { describe, expect, it } from "vitest";
 import { decodeSync, type Action, type Entity } from "@ebbjs/core";
 
-import { defineEntity, e } from "../../schema/entity";
-import { defineSchema } from "../../schema/schema";
-import { ActionRejectedError } from "../operations";
-import { EntityValidationError } from "../../schema/entity-registry";
+import { defineEntity, e } from "@ebbjs/schema";
+import { defineSchema } from "@ebbjs/schema";
+import { ActionRejectedError } from "@ebbjs/write";
+import { EntityValidationError } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { testActions } from "./test-actions";
 
@@ -184,12 +184,12 @@ describe("drafts — membership verbs (#464)", () => {
     expect(puts).toHaveLength(1);
     // Same pair, so the same derived row id the first share used: an
     // unshare followed by a re-share cannot leave a second row behind.
-    const { entityGroupId } = await import("../membership");
+    const { entityGroupId } = await import("@ebbjs/write");
     expect(puts[0]!.subject_id).toBe(entityGroupId("todo_1", "g_1"));
   });
 
   it("keeps the derived id unambiguous when ids contain the separator", async () => {
-    const { entityGroupId } = await import("../membership");
+    const { entityGroupId } = await import("@ebbjs/write");
 
     // A readable `eg_<entity>_<group>` would collapse these two pairs.
     expect(entityGroupId("a_b", "c")).not.toBe(entityGroupId("a", "b_c"));

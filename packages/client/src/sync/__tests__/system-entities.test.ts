@@ -14,17 +14,13 @@ import { describe, expect, it } from "vitest";
 import { decodeSync, type Action, type Entity } from "@ebbjs/core";
 import type { TSchema } from "@sinclair/typebox/type";
 
-import { defineEntity, e } from "../../schema/entity";
-import { defineRelationship } from "../../schema/relationship";
-import { defineSchema } from "../../schema/schema";
-import {
-  groupSystemEntity,
-  type GroupFields,
-  type GroupMemberFields,
-} from "../../schema/system-entities";
-import { EntityValidationError } from "../../schema/entity-registry";
+import { defineEntity, e } from "@ebbjs/schema";
+import { defineRelationship } from "@ebbjs/schema";
+import { defineSchema } from "@ebbjs/schema";
+import { groupSystemEntity, type GroupFields, type GroupMemberFields } from "@ebbjs/schema";
+import { EntityValidationError } from "@ebbjs/schema";
 import { defineAction, type AnyActionDef } from "../../schema/action";
-import { ActionRejectedError } from "../operations";
+import { ActionRejectedError } from "@ebbjs/write";
 import type { ActionDrafts } from "../drafts";
 import type { WireStatic } from "../namespace";
 import { createClient } from "../client";
