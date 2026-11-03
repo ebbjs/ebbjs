@@ -221,10 +221,14 @@ export function buildEntityGroupUpdates(
 }
 
 /**
- * Build a `put` Update for the source entity carrying the canonical
+ * Build a `patch` Update for the source entity carrying the canonical
  * FK set on `data.fields[as]`. Used by the many-cardinality
  * relationship-write path: the entity Update is one half of the
  * wire shape, with N `Relationship` Updates being the other half.
+ *
+ * It is a patch, not a put: a put replaces the entity's whole field
+ * map, so setting a many-cardinality FK would drop every other field
+ * on the row.
  *
  * `hlc` is the freshly-minted local HLC; `updateId` is the Update's
  * id. Both surface in the field's `update_id` so the wire envelope
@@ -242,7 +246,7 @@ export function buildManyEntityUpdate(args: {
     id: args.updateId,
     subject_id: args.sourceId,
     subject_type: args.sourceEntityName,
-    method: "put",
+    method: "patch",
     data: {
       fields: {
         [args.as]: {

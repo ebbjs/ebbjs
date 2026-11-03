@@ -458,7 +458,16 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     assert [action] = ActionLog.read(before + 1, before + 1)
 
     [todo_update] = Enum.filter(action["updates"], &(&1["subject_id"] == todo_id))
+    assert todo_update["method"] == "patch"
     assert todo_update["data"]["fields"]["labels"]["value"] == ["e_l2"]
+
+    # The FK update must not replace the row's other fields: a partial put
+    # would drop the title entirely.
+    read = get_entity(todo_id, actor_id)
+    assert read.status == 200
+    read_fields = Jason.decode!(read.resp_body)["data"]["fields"]
+    assert read_fields["title"]["value"] == "linked"
+    assert read_fields["labels"]["value"] == ["e_l2"]
   end
 
   # --- setup helpers -------------------------------------------------------

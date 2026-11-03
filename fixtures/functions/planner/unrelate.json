@@ -42,7 +42,7 @@
         "id": "u_gunrelate2",
         "subject_id": "e_gissue1",
         "subject_type": "issue",
-        "method": "put",
+        "method": "patch",
         "data": {
           "fields": {
             "labels": {
