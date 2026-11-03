@@ -308,6 +308,13 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm tsc --noEmit
+      - name: Type check the functions packages
+        run: |
+          pnpm --filter @ebbjs/functions-protocol typecheck
+          pnpm --filter @ebbjs/functions-runtime typecheck
+          pnpm --filter @ebbjs/server typecheck
+          pnpm --filter @ebbjs/runner typecheck
+          pnpm --filter @ebbjs/cli typecheck
 
   typescript-lint:
     name: Lint
