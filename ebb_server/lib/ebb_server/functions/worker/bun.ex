@@ -43,7 +43,8 @@ defmodule EbbServer.Functions.Worker.Bun do
 
     * `:owner` — required pid that receives `{:functions_worker_frame, frame}`
     * `:runner_path` — required path to the Bun entrypoint (`.ts` or `.js`)
-    * `:socket_dir` — required parent directory for the worker's temp dir
+    * `:socket_dir` — parent directory for the worker's temp dir (default
+      `<data_dir>/function_sockets`, so the socket lives under the data dir)
     * `:bun_path` — Bun executable (default `System.find_executable("bun")`)
     * `:accept_timeout_ms` — how long the runner may take to connect (default 5000)
     * `:spawn_timeout_ms` — how long setup may take before `start/1` gives up (default 5000)
@@ -53,7 +54,7 @@ defmodule EbbServer.Functions.Worker.Bun do
   def start(opts) do
     owner = Keyword.fetch!(opts, :owner)
     runner_path = Keyword.fetch!(opts, :runner_path)
-    socket_dir = Keyword.fetch!(opts, :socket_dir)
+    socket_dir = Keyword.get_lazy(opts, :socket_dir, &default_socket_dir/0)
     bun_path = Keyword.get_lazy(opts, :bun_path, fn -> System.find_executable("bun") end)
     accept_timeout = Keyword.get(opts, :accept_timeout_ms, @default_accept_timeout_ms)
     spawn_timeout = Keyword.get(opts, :spawn_timeout_ms, @default_spawn_timeout_ms)
@@ -145,6 +146,15 @@ defmodule EbbServer.Functions.Worker.Bun do
   """
   @spec socket_path(handle()) :: String.t()
   def socket_path(%{socket_path: socket_path}), do: socket_path
+
+  defp default_socket_dir do
+    data_dir =
+      Application.get_env(:ebb_server, :data_dir) ||
+        System.get_env("EBB_DATA_DIR") ||
+        "./data"
+
+    Path.join(data_dir, "function_sockets")
+  end
 
   defp check_bun(nil), do: {:error, :bun_not_found}
 

@@ -156,7 +156,7 @@ export function definitionName(source: string): string {
     problems.push("`export default` is not supported; export one named binding instead");
   }
 
-  const count = (source.match(/\bdefineFunction\s*\(/g) ?? []).length;
+  const count = (source.match(/\bdefineFunction\s*(?:<[^>]*>)?\s*\(/g) ?? []).length;
   if (count === 0) {
     problems.push("no `defineFunction(...)` definition found");
   } else if (count > 1) {
@@ -164,7 +164,7 @@ export function definitionName(source: string): string {
   }
 
   const match = source.match(
-    /\bexport\s+const\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=\n]+)?=\s*defineFunction\s*\(/,
+    /\bexport\s+const\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=\n]+)?=\s*defineFunction\s*(?:<[^>]*>)?\s*\(/,
   );
 
   if (!match && count === 1) {
