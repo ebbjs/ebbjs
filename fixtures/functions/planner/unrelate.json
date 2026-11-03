@@ -1,0 +1,58 @@
+{
+  "name": "unrelate",
+  "description": "a one-cardinality unlink by row id and a many-cardinality set clear",
+  "notes": "ctx.get cannot read relationship rows, so a one-cardinality edge that predates the invocation is named by its relationshipId.",
+  "schema": "schema",
+  "invocation_id": "inv_goldenUnrelate",
+  "actor_id": "a_golden",
+  "ids": {
+    "u": ["u_gunrelate1", "u_gunrelate2"],
+    "rel": [],
+    "hlc": ["111690000000000041", "111690000000000042"]
+  },
+  "calls": [
+    {
+      "verb": "unrelate",
+      "entity": "issue",
+      "id": "e_gissue1",
+      "as": "project",
+      "relationshipId": "rel_gknown"
+    },
+    {
+      "verb": "unrelate",
+      "entity": "issue",
+      "id": "e_gissue1",
+      "as": "labels"
+    }
+  ],
+  "action": {
+    "id": "a_9d6d3fdc568b2ce8",
+    "actor_id": "a_golden",
+    "hlc": "111690000000000042",
+    "gsn": 0,
+    "updates": [
+      {
+        "id": "u_gunrelate1",
+        "subject_id": "rel_gknown",
+        "subject_type": "relationship",
+        "method": "delete",
+        "data": null
+      },
+      {
+        "id": "u_gunrelate2",
+        "subject_id": "e_gissue1",
+        "subject_type": "issue",
+        "method": "put",
+        "data": {
+          "fields": {
+            "labels": {
+              "value": [],
+              "update_id": "u_gunrelate2",
+              "hlc": "111690000000000041"
+            }
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "name": "update",
+  "description": "one patch: a single Update carrying the changed field's stamp",
+  "schema": "schema",
+  "invocation_id": "inv_goldenUpdate",
+  "actor_id": "a_golden",
+  "ids": {
+    "u": ["u_gupdate1"],
+    "rel": [],
+    "hlc": ["111690000000000011", "111690000000000012"]
+  },
+  "calls": [
+    {
+      "verb": "update",
+      "entity": "issue",
+      "id": "e_gissue1",
+      "patch": {
+        "title": "Revised"
+      }
+    }
+  ],
+  "action": {
+    "id": "a_3168a0d8b8d05c45",
+    "actor_id": "a_golden",
+    "hlc": "111690000000000012",
+    "gsn": 0,
+    "updates": [
+      {
+        "id": "u_gupdate1",
+        "subject_id": "e_gissue1",
+        "subject_type": "issue",
+        "method": "patch",
+        "data": {
+          "fields": {
+            "title": {
+              "value": "Revised",
+              "update_id": "u_gupdate1",
+              "hlc": "111690000000000011"
+            }
+          }
+        }
+      }
+    ]
+  }
+}

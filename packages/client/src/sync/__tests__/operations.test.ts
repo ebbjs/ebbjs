@@ -15,6 +15,7 @@ const mkCtx = (): OpContext => ({
   ids: {
     updateId: () => "u_1",
     hlc: () => "hlc_1",
+    newId: (prefix: string) => `${prefix}_1`,
   },
   actorId: "actor_1",
 });

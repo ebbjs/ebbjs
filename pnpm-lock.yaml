@@ -349,10 +349,22 @@ importers:
       '@ebbjs/client':
         specifier: workspace:^
         version: link:../client
+      '@ebbjs/core':
+        specifier: workspace:^
+        version: link:../core
       '@ebbjs/functions-protocol':
         specifier: workspace:*
         version: link:../functions-protocol
+      '@ebbjs/schema':
+        specifier: workspace:^
+        version: link:../schema
+      '@ebbjs/write':
+        specifier: workspace:^
+        version: link:../write
     devDependencies:
+      '@sinclair/typebox':
+        specifier: ^0.34.52
+        version: 0.34.52
       '@types/node':
         specifier: ^25.2.3
         version: 25.5.0
@@ -406,6 +418,12 @@ importers:
         specifier: workspace:*
         version: link:../server
     devDependencies:
+      '@ebbjs/schema':
+        specifier: workspace:^
+        version: link:../schema
+      '@sinclair/typebox':
+        specifier: ^0.34.52
+        version: 0.34.52
       '@types/node':
         specifier: ^25.2.3
         version: 25.5.0

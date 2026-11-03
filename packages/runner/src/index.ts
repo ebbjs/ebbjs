@@ -1,4 +1,4 @@
-import { createContext } from "@ebbjs/functions-runtime";
+import { createContext, type EntityRegistry } from "@ebbjs/functions-runtime";
 
 import { SocketHostTransport, type HostTransport } from "./transport.ts";
 
@@ -18,9 +18,13 @@ export interface RunInvocationOptions {
 }
 
 /**
- * Evaluates one bundle and runs its exported handler.
+ * Evaluates one bundle, runs its exported handler, and flushes its buffered
+ * writes as one Action before returning.
  *
- * The bundle is an IIFE built by `@ebbjs/cli`; it leaves its exports on the
+ * The flush is what makes "commit at return" true: the handler's writes go out
+ * as a single `commit` frame, and a handler that throws never reaches it, so
+ * nothing is submitted. The bundle is an IIFE built by `@ebbjs/cli`; it leaves
+ * its exports — the handler and, optionally, the application `schema` — on the
  * `__ebbFunction` global. The process boundary is for resilience, not a
  * security sandbox: functions are trusted authors and Bun globals stay
  * reachable, including native `fetch`.
@@ -38,9 +42,35 @@ export async function runInvocation(options: RunInvocationOptions): Promise<unkn
     invocationId: options.invocationId,
     actor: { id: options.subjectActorId },
     caller: { kind: "actor", id: options.subjectActorId },
+    registry: schemaRegistryOf(module),
   });
 
-  return (handler as Handler)(ctx, options.input);
+  const value = await (handler as Handler)(ctx, options.input);
+  // One invocation is one Action: pending writes flush before the result frame.
+  await ctx.commit();
+  return value;
+}
+
+/**
+ * The schema registry a bundle exports, when it exports one.
+ *
+ * The check is structural, not `instanceof`: a bundle carries its own copy of
+ * `@ebbjs/schema`, so the registry it built is an instance of the bundle's
+ * class, not this module's.
+ */
+export function schemaRegistryOf(module: Record<string, unknown>): EntityRegistry | undefined {
+  const schema = module["schema"];
+  if (typeof schema !== "object" || schema === null) return undefined;
+  const registry = (schema as { _registry?: unknown })._registry;
+  if (typeof registry !== "object" || registry === null) return undefined;
+  const candidate = registry as Record<string, unknown>;
+  if (
+    typeof candidate["get"] !== "function" ||
+    typeof candidate["getRelationship"] !== "function"
+  ) {
+    return undefined;
+  }
+  return registry as EntityRegistry;
 }
 
 export class HandlerError extends Error {

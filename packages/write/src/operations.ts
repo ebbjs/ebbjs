@@ -90,12 +90,19 @@ const describeRejection = (rejection: ActionRejection): string => {
   return `${subject}: ${rejection.reason}${details}`;
 };
 
-/** Mints the Update ids and clock stamps an operation consumes. */
+/** Mints the ids and clock stamps an operation consumes. */
 export interface OperationIds {
   /** Mint a fresh Update id (`u_…`). */
   updateId(): string;
   /** Advance the local clock and return a fresh HLC timestamp. */
   hlc(): string;
+  /**
+   * Mint an id of a non-Update row the batch addresses — a `relationship`
+   * row, say. A seam rather than a direct `generateId` call so a caller
+   * that needs a deterministic batch (the function runtime's goldens) can
+   * control every id the planner emits.
+   */
+  newId(prefix: string): string;
 }
 
 /**
@@ -250,7 +257,7 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
   for (const pointer of input.pointers ?? []) {
     updates.push(
       buildRelationshipUpdate({
-        relationshipId: generateId("rel"),
+        relationshipId: ctx.ids.newId("rel"),
         sourceId: input.id,
         targetId: pointer.targetId,
         field: pointer.as,
@@ -682,6 +689,40 @@ export interface WriteRelationshipInput {
   readonly groups: readonly string[];
 }
 
+/** A relationship definition resolved through the registry. */
+export type DeclaredRelationship = NonNullable<ReturnType<EntityRegistry["getRelationship"]>>;
+
+/**
+ * Resolve a declared relationship, refusing the built-in membership
+ * accessor (membership verbs own it) and an undeclared accessor before any
+ * wire Update exists. Shared by every relationship-writing path so the
+ * refusals and their messages have one definition.
+ */
+export const requireRelationship = (
+  registry: EntityRegistry,
+  entity: string,
+  as: string,
+): DeclaredRelationship => {
+  if (as === GROUPS_ACCESSOR) {
+    throw new EntityValidationError([
+      {
+        entityName: entity,
+        message: `link/unlink/setLinks: "${GROUPS_ACCESSOR}" is the built-in membership accessor; use addToGroup/removeFromGroup/setGroups instead`,
+      },
+    ]);
+  }
+  const rel = registry.getRelationship(entity, as);
+  if (rel === undefined) {
+    throw new EntityValidationError([
+      {
+        entityName: entity,
+        message: `submitRelationshipWrite: relationship "${as}" is not declared on entity "${entity}"`,
+      },
+    ]);
+  }
+  return rel;
+};
+
 /**
  * Link, unlink, or set the links of one relationship. The built-in
  * membership accessor is refused (membership verbs own it), and an
@@ -692,23 +733,7 @@ export interface WriteRelationshipInput {
  */
 export const writeRelationship: Operation<WriteRelationshipInput> = (ctx, input) => {
   const { entity, sourceId, as } = input;
-  if (as === GROUPS_ACCESSOR) {
-    throw new EntityValidationError([
-      {
-        entityName: entity,
-        message: `link/unlink/setLinks: "${GROUPS_ACCESSOR}" is the built-in membership accessor; use addToGroup/removeFromGroup/setGroups instead`,
-      },
-    ]);
-  }
-  const rel = ctx.registry.getRelationship(entity, as);
-  if (rel === undefined) {
-    throw new EntityValidationError([
-      {
-        entityName: entity,
-        message: `submitRelationshipWrite: relationship "${as}" is not declared on entity "${entity}"`,
-      },
-    ]);
-  }
+  const rel = requireRelationship(ctx.registry, entity, as);
 
   let entityUpdate: Update | undefined;
   if (rel.sourceCardinality === "many" && input.pointer.targetIds !== undefined) {
@@ -726,6 +751,7 @@ export const writeRelationship: Operation<WriteRelationshipInput> = (ctx, input)
   const result = buildRelationshipWrite(ctx.registry, {
     source: { name: entity },
     target: { name: rel.target.name },
+    newId: ctx.ids.newId,
     as,
     sourceId,
     entityUpdate,

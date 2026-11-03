@@ -15,7 +15,7 @@
  * {@link ActionRejectedError}.
  */
 
-import type { Update } from "@ebbjs/core";
+import { generateId, type Update } from "@ebbjs/core";
 import type { EntityRegistry } from "@ebbjs/schema";
 
 import { type OperationCall, type OpContext } from "./operations";
@@ -27,6 +27,11 @@ export interface CommitCapability {
   submitRelationshipUpdates(updates: readonly Update[]): Promise<WriteResponse>;
   freshHlc(): string;
   generateUpdateId(): string;
+  /**
+   * Mint an id of a non-Update row the batch addresses. Defaults to
+   * core's nanoid `generateId`, so the client keeps one id space.
+   */
+  generateId?(prefix: string): string;
   /** Local actor id; collaborative-text run ids embed it. */
   readonly actorId: string;
 }
@@ -53,6 +58,7 @@ export async function commit(
     ids: {
       updateId: () => cap.generateUpdateId(),
       hlc: () => cap.freshHlc(),
+      newId: cap.generateId ?? generateId,
     },
     actorId: cap.actorId,
   };

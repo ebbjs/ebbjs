@@ -12,6 +12,8 @@
       "@ebbjs/storage": ["../storage/src/index.ts"],
       "@ebbjs/storage/*": ["../storage/src/*/index.ts"],
       "@ebbjs/functions-protocol": ["../functions-protocol/src/index.ts"],
+      "@ebbjs/schema": ["../schema/src/index.ts"],
+      "@ebbjs/write": ["../write/src/index.ts"],
       "@ebbjs/functions-runtime": ["../functions-runtime/src/index.ts"],
       "@ebbjs/server": ["../server/src/index.ts"]
     }

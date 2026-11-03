@@ -1,0 +1,34 @@
+{
+  "name": "delete",
+  "description": "one soft delete: a single Update whose data is null",
+  "schema": "schema",
+  "invocation_id": "inv_goldenDelete",
+  "actor_id": "a_golden",
+  "ids": {
+    "u": ["u_gdelete1"],
+    "rel": [],
+    "hlc": ["111690000000000021"]
+  },
+  "calls": [
+    {
+      "verb": "delete",
+      "entity": "issue",
+      "id": "e_gissue1"
+    }
+  ],
+  "action": {
+    "id": "a_63f6f05d675bc652",
+    "actor_id": "a_golden",
+    "hlc": "111690000000000021",
+    "gsn": 0,
+    "updates": [
+      {
+        "id": "u_gdelete1",
+        "subject_id": "e_gissue1",
+        "subject_type": "issue",
+        "method": "delete",
+        "data": null
+      }
+    ]
+  }
+}

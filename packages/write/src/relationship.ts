@@ -54,6 +54,12 @@ export interface BuildRelationshipWriteOptions {
    * to recover the relationship's group).
    */
   relationshipSubjectId?: string;
+  /**
+   * Mints the Relationship row and Update ids. Defaults to core's
+   * nanoid `generateId`; a caller that needs a deterministic batch
+   * supplies its own seam.
+   */
+  newId?: (prefix: string) => string;
 }
 
 export interface BuildRelationshipWriteResult {
@@ -308,14 +314,15 @@ function makeManyRelationshipUpdate(
   as: string,
   wireType: string,
   targetId: string,
+  newId: (prefix: string) => string,
 ): Update {
   return buildRelationshipUpdate({
-    relationshipId: generateId("rel"),
+    relationshipId: newId("rel"),
     sourceId,
     targetId,
     field: as,
     type: wireType,
-    updateId: generateId("u"),
+    updateId: newId("u"),
   });
 }
 
@@ -369,6 +376,7 @@ export function buildRelationshipWrite(
 ): BuildRelationshipWriteResult {
   const { source, as } = opts;
   const sourceName = source.name;
+  const newId = opts.newId ?? generateId;
 
   checkEntityRegistered(registry, sourceName, "source");
   const cardinality = resolveCardinality(registry, sourceName, as, opts.sourceCardinality);
@@ -376,8 +384,8 @@ export function buildRelationshipWrite(
   if (cardinality === "one") {
     const sourceId = requireSourceId(opts, as);
     const targetId = normalizePointer(opts.targetId, `targetId for "${as}"`);
-    const updateId = generateId("u");
-    const relationshipId = opts.relationshipSubjectId ?? generateId("rel");
+    const updateId = newId("u");
+    const relationshipId = opts.relationshipSubjectId ?? newId("rel");
     const relUpdate = buildRelationshipUpdate({
       relationshipId,
       sourceId,
@@ -402,18 +410,18 @@ export function buildRelationshipWrite(
   if ("replace" in targetIds) {
     const normalized = normalizeManyPointers(targetIds, `targetIds for "${as}"`);
     for (const targetId of normalized) {
-      updates.push(makeManyRelationshipUpdate(sourceId, as, wireType, targetId));
+      updates.push(makeManyRelationshipUpdate(sourceId, as, wireType, targetId, newId));
     }
   } else {
     for (const targetId of targetIds.add) {
       const id = normalizePointer(targetId, `targetIds.add for "${as}"`);
       if (id === null) continue;
-      updates.push(makeManyRelationshipUpdate(sourceId, as, wireType, id));
+      updates.push(makeManyRelationshipUpdate(sourceId, as, wireType, id, newId));
     }
     for (const targetId of targetIds.remove) {
       const id = normalizePointer(targetId, `targetIds.remove for "${as}"`);
       if (id === null) continue;
-      updates.push(makeManyRelationshipUpdate(sourceId, as, wireType, id));
+      updates.push(makeManyRelationshipUpdate(sourceId, as, wireType, id, newId));
     }
   }
   return { entityUpdate, relationshipUpdate: updates };

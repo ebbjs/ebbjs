@@ -28,6 +28,7 @@ const ids = (prefix: string) => {
   return {
     updateId: () => `${prefix}${++next}`,
     hlc: () => `${prefix}hlc-${next}`,
+    newId: (kind: string) => `${prefix}${kind}-${++next}`,
   };
 };
 
