@@ -10,7 +10,7 @@
   "scripts": {
     "test": "vitest --run",
     "test:types": "vitest --run --typecheck",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "lint": "pnpm --root ../../ lint",
     "lint:fix": "pnpm --root ../../ lint:fix",
     "fmt": "pnpm --root ../../ fmt",
@@ -18,7 +18,8 @@
   },
   "dependencies": {
     "@ebbjs/client": "workspace:^",
-    "@sinclair/typebox": "^0.34.52"
+    "@sinclair/typebox": "^0.34.52",
+    "@standard-schema/spec": "^1.1.0"
   },
   "devDependencies": {
     "@types/node": "^25.2.3",

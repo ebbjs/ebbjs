@@ -19,6 +19,7 @@
   "dependencies": {
     "@ebbjs/functions-protocol": "workspace:*",
     "@ebbjs/server": "workspace:*",
+    "@standard-schema/spec": "^1.1.0",
     "esbuild": "^0.27.0"
   },
   "devDependencies": {

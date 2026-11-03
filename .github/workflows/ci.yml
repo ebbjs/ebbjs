@@ -174,6 +174,60 @@ jobs:
         run: mix test --cover
         working-directory: ebb_server
 
+  elixir-functions-bun:
+    name: Functions (Bun)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          # Pinned to match ebb_server/.tool-versions — see issue #62.
+          elixir-version: "1.17.3"
+          otp-version: "27"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - name: Install system dependencies
+        run: sudo bash scripts/setup-ebb-server.sh
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ebb_server/deps
+            ebb_server/_build
+            ~/.mix
+            ~/.hex
+          key: mix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}
+          restore-keys: |
+            mix-${{ runner.os }}-${{ runner.arch }}-
+      - name: Cache rocksdb build
+        uses: actions/cache@v4
+        with:
+          path: ebb_server/deps/rocksdb/_build
+          key: rocksdb-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock') }}-${{ hashFiles('ebb_server/deps/rocksdb/rebar.config') }}
+          restore-keys: |
+            rocksdb-${{ runner.os }}-${{ runner.arch }}-
+      - name: Fix CMake cache for architecture
+        run: rm -f ebb_server/deps/rocksdb/_build/cmake/CMakeCache.txt
+        working-directory: ebb_server
+      - name: Install Hex and Rebar
+        run: mix local.hex --force && mix local.rebar --force
+        working-directory: ebb_server
+      - name: Install dependencies
+        run: mix deps.get
+        working-directory: ebb_server
+      - name: Install workspace links for the runner packages
+        run: pnpm install --frozen-lockfile
+      - name: Run the real-runner tests
+        run: mix test --include bun test/ebb_server/functions/worker_bun_test.exs test/ebb_server/functions/bun_integration_test.exs
+        working-directory: ebb_server
+
   # ─────────────────────────────────────────────────────────
   # Release builder — runs on every push/PR so typescript-test
   # always has a release available

@@ -1,4 +1,10 @@
-ExUnit.start()
+# Tests that need a real Bun runtime are tagged `:bun` and excluded by
+# default: Bun is an optional local/CI dependency (see
+# `scripts/setup-ebb-server.sh`), so the suite must stay green without it.
+# Run them with `mix test --include bun`. Latency measurements are excluded
+# separately because they are reported, not asserted: run them with
+# `mix test --include bun --include latency`.
+ExUnit.start(exclude: [:bun, :latency])
 
 # Clean up the application-supervised storage directory at the end of the
 # test run. The directory is created by the `EbbServer.Application`

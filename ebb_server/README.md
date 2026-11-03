@@ -1123,7 +1123,9 @@ Published numbers, sweeps, and methodology:
 - **Single-node first.** Multi-master replication is designed but not
   built ([Epic #113](https://github.com/ebbjs/ebbjs/issues/113)).
 - **Bun Application Server is separate** ([Epic #112](https://github.com/ebbjs/ebbjs/issues/112)).
-  Bun is a stateless HTTP client of this server.
+  Bun is a stateless HTTP client of this server, and the functions runtime
+  spawns one Bun process per invocation (`EbbServer.Functions.Worker.Bun`).
+  Bun is optional for development; the runner tests are tagged `:bun`.
 - **Auth is external.** The server calls a developer-provided auth URL
   during handshake; it does not implement authentication itself.
 - **Schema-agnostic server.** The server reads per-field `type` tags

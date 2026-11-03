@@ -28,15 +28,18 @@ The denominator is the server's own modules minus the ignore list below.
 `test_coverage` in `ebb_server/mix.exs` drops the code that only exists to
 exercise or demonstrate the server:
 
-| Ignored                             | Why                                                      |
-| ----------------------------------- | -------------------------------------------------------- |
-| `EbbServer.Bench.*`                 | benchmark scaffolding, never shipped                     |
-| `Mix.Tasks.*`                       | dev/bench/openapi task entry points                      |
-| `EbbServer.TestHelpers`             | test support, compiled into `:test` by `elixirc_paths/1` |
-| `EbbServer.SSEHelpers`              | test support                                             |
-| `EbbServer.Integration.*`           | test support                                             |
-| `EbbServer.Storage.PreparedAction`  | `defstruct` only                                         |
-| `EbbServer.ActionExport.Supervisor` | opt-in feature no test starts                            |
+| Ignored                             | Why                                                                 |
+| ----------------------------------- | ------------------------------------------------------------------- |
+| `EbbServer.Bench.*`                 | benchmark scaffolding, never shipped                                |
+| `Mix.Tasks.*`                       | dev/bench/openapi task entry points                                 |
+| `EbbServer.TestHelpers`             | test support, compiled into `:test` by `elixirc_paths/1`            |
+| `EbbServer.SSEHelpers`              | test support                                                        |
+| `EbbServer.Integration.*`           | test support                                                        |
+| `EbbServer.Storage.PreparedAction`  | `defstruct` only                                                    |
+| `EbbServer.ActionExport.Supervisor` | opt-in feature no test starts                                       |
+| `EbbServer.Functions.Worker.Bun`    | real-runner tests are `:bun`-tagged; the dedicated CI job runs them |
+| `EbbServer.TestFunctions.Bun`       | support for the `:bun`-tagged runner tests                          |
+| `EbbServer.TestFunctions.LocalHttp` | support for the `:bun`-tagged `fetch` test                          |
 
 `lib/` alone is not the denominator: `test/support` is compiled into `:test`,
 so an unfiltered run charges the tests for their own helpers. The ignore list

@@ -9,5 +9,10 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    typecheck: {
+      // The workspace packages are not built in the local/dev loop, so the
+      // typecheck program reads their sources through `tsconfig.typecheck.json`.
+      tsconfig: "./tsconfig.typecheck.json",
+    },
   },
 });
