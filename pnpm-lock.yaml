@@ -281,6 +281,9 @@ importers:
         specifier: ^1.2.0
         version: 1.2.0
     devDependencies:
+      '@ebbjs/functions-protocol':
+        specifier: workspace:*
+        version: link:../functions-protocol
       tsx:
         specifier: ^4.20.4
         version: 4.21.0
@@ -336,6 +339,19 @@ importers:
         version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/functions-protocol:
+    dependencies:
+      '@ebbjs/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ebbjs/schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@ebbjs/write':
+        specifier: workspace:*
+        version: link:../write
+      '@sinclair/typebox':
+        specifier: ^0.34.52
+        version: 0.34.52
     devDependencies:
       '@types/node':
         specifier: ^25.2.3

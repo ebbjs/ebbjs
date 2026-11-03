@@ -122,7 +122,16 @@ defmodule EbbServer.Functions.Host do
     end
   end
 
-  defp action_id(invocation_id) do
+  @doc """
+  The Action id one invocation's commit carries.
+
+  Deriving it from the invocation id rather than reading the frame's `id` is
+  what makes a retry with the same `Idempotency-Key` dedupe: the retry
+  reproduces the id, and `cf_action_dedup` drops it before a GSN is claimed.
+  The 16-character suffix is the same `[0-9a-z]` id space `generateId/1` uses.
+  """
+  @spec action_id(String.t()) :: String.t()
+  def action_id(invocation_id) do
     digest = Base.encode16(:crypto.hash(:sha256, invocation_id), case: :lower)
     "a_" <> binary_part(digest, 0, 16)
   end

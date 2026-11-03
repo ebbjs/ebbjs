@@ -6,11 +6,14 @@
  * sees what its Action will store. A row this invocation created is visible
  * before it exists anywhere else; a row it deleted reads as `null`; an id it
  * never touched passes the host view through unchanged.
+ *
+ * The result is the same wire shape the host returns — `data.fields` holds
+ * `FieldValue` leaves and maps, never projected primitives — so a read does not
+ * change shape depending on whether the invocation wrote to the row.
  */
 
 import { compare, mergeFieldValue, type FieldValue, type Update } from "@ebbjs/core";
 import type { EntityResponse } from "@ebbjs/client";
-import { projectFieldValue } from "@ebbjs/write";
 
 /** What the overlay reads: this invocation's buffered Updates and the host's view. */
 export interface OverlaySource {
@@ -25,29 +28,6 @@ export interface OverlaySource {
 export interface Overlay {
   read(id: string): Promise<EntityResponse | null>;
 }
-
-/** A projected field value read back as a wire value that loses every merge. */
-const toWireField = (value: unknown): FieldValue => {
-  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-    return {
-      map: Object.fromEntries(
-        Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
-          key,
-          toWireField(entry),
-        ]),
-      ),
-    };
-  }
-  // An empty HLC parses as the zero stamp: every buffered write is newer, which
-  // is what lets a patch merge over a projected host value.
-  return { value, update_id: "", hlc: "" };
-};
-
-const toWireFields = (fields: Record<string, unknown>): Record<string, FieldValue> =>
-  Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, toWireField(value)]));
-
-const project = (fields: Record<string, FieldValue>): Record<string, unknown> =>
-  Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, projectFieldValue(value)]));
 
 /** The latest HLC carried by a field map's leaves, or `undefined` when it has none. */
 const latestHlc = (fields: Record<string, FieldValue>): string | undefined => {
@@ -79,8 +59,10 @@ const readOverlay = async (source: OverlaySource, id: string): Promise<EntityRes
   const host = firstPut === undefined ? await source.readHost(id) : null;
   if (firstPut === undefined && host === null) return null;
 
+  // The host's view is the wire shape the entity endpoints publish, so its
+  // fields are already `FieldValue`s.
   let fields: Record<string, FieldValue> | null =
-    firstPut === undefined ? toWireFields(host?.data.fields ?? {}) : {};
+    firstPut === undefined ? ((host?.data.fields ?? {}) as Record<string, FieldValue>) : {};
   let createdHlc = firstPut === undefined ? String(host?.created_hlc ?? "") : "";
   let updatedHlc = firstPut === undefined ? String(host?.updated_hlc ?? "") : "";
 
@@ -111,7 +93,7 @@ const readOverlay = async (source: OverlaySource, id: string): Promise<EntityRes
   return {
     id,
     type: source.typeOf(id) ?? host?.type ?? "",
-    data: { fields: project(fields) },
+    data: { fields },
     created_hlc: createdHlc,
     updated_hlc: updatedHlc,
     deleted_hlc: null,

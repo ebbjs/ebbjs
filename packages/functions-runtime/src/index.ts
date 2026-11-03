@@ -12,7 +12,7 @@
 import { createClock, type HLCState } from "@ebbjs/core";
 import type { EntityResponse } from "@ebbjs/client";
 import type { EntityRegistry } from "@ebbjs/schema";
-import type { CreateHandle, OperationIds } from "@ebbjs/write";
+import type { CreateHandle, OperationIds, PointerTarget } from "@ebbjs/write";
 
 import type { CommitOutcome } from "./commit.ts";
 import type { Caller, HostOp, HostTransport } from "./transport.ts";
@@ -36,7 +36,7 @@ export type { OperationIds } from "@ebbjs/write";
 export type { EntityRegistry } from "@ebbjs/schema";
 
 /** A reference to an existing row: its id, or anything carrying one. */
-export type RelationshipTarget = string | { readonly id: string };
+export type RelationshipTarget = PointerTarget;
 
 /**
  * The handler's view of one invocation.

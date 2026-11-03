@@ -53,6 +53,9 @@ across every Update — at handler return, or earlier on `ctx.commit()`:
 
 - The runner flushes a non-empty buffer after the handler resolves and before
   it sends the result frame. A handler that throws flushes nothing.
+- An explicit `ctx.commit()` is the point of no return: a handler that throws
+  after it leaves that Action durable, and the invocation still reports
+  `handler_error`. Only the automatic flush at return is skipped by a throw.
 - `ctx.commit()` submits immediately and resolves `{ replayed }`. A replay
   (`replayed: true`) means the server already recorded this Action id and
   dropped the submission — the retry added nothing.
@@ -62,7 +65,8 @@ across every Update — at handler return, or earlier on `ctx.commit()`:
 - The Action id is derived from the invocation id
   (`a_` + the first 16 hex characters of `sha256(invocation_id)`), the same
   derivation the server uses, so a retry carrying the same `Idempotency-Key`
-  reproduces the id and dedupes.
+  reproduces the id and dedupes. The server scopes that key to the actor and
+  the function, so two callers that choose the same string do not collide.
 
 A rejection rejects `ctx.commit()` (and the runner's flush) with an
 `ActionRejectedError` carrying the server's `rejected[]` — the same shape a
@@ -79,8 +83,13 @@ own merge rule (`mergeFieldValue`):
 - a row created and then deleted in the same invocation reads as `null`;
 - an id this invocation never wrote passes the host's view through untouched.
 
-The overlay also backs the relationship verbs' FK reads and the membership
-pre-flight, so a verb after a write sees the batch, not the stored state.
+Every read comes back in the same wire shape the entity endpoints publish:
+`data.fields` holds `FieldValue` leaves and maps (`.value`, `.update_id`,
+`.hlc`), whether or not the invocation wrote to the row. A `patch` merges with
+the wire's rule, so a field the batch did not touch keeps the stored leaf and
+its HLC. The overlay also backs the relationship verbs' FK reads and the
+membership pre-flight, so a verb after a write sees the batch, not the stored
+state.
 
 ## External effects are not rolled back
 

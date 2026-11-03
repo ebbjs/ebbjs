@@ -11,7 +11,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { actionIdForInvocation, createContext, type HostTransport } from "./index.ts";
+import { actionIdForInvocation, createContext } from "./index.ts";
+import { fakeHost } from "./test-support/host.ts";
 import {
   applyVerb,
   fixtureNames,
@@ -21,21 +22,6 @@ import {
   registryFrom,
   stable,
 } from "./test-support/planner.ts";
-
-/** A host that answers reads with nothing and records commit payloads. */
-const recordingTransport = (): { transport: HostTransport; commits: unknown[] } => {
-  const commits: unknown[] = [];
-  const transport: HostTransport = {
-    async call(op, payload) {
-      if (op === "commit") {
-        commits.push(payload);
-        return { replayed: false };
-      }
-      return null;
-    },
-  };
-  return { transport, commits };
-};
 
 describe("planner goldens — ctx path", () => {
   const names = fixtureNames();
@@ -47,9 +33,9 @@ describe("planner goldens — ctx path", () => {
   it.each(names)("%s submits the pinned Action through exactly one commit frame", async (name) => {
     const fixture = loadFixture(name);
     const ids = idsFrom(fixture.ids);
-    const { transport, commits } = recordingTransport();
+    const host = fakeHost();
     const ctx = createContext({
-      transport,
+      transport: host.transport,
       invocationId: fixture.invocation_id,
       actor: { id: fixture.actor_id },
       caller: { kind: "actor", id: fixture.actor_id },
@@ -60,8 +46,8 @@ describe("planner goldens — ctx path", () => {
     for (const verb of fixture.calls) await applyVerb(ctx, verb);
     await expect(ctx.commit()).resolves.toEqual({ replayed: false });
 
-    expect(commits).toHaveLength(1);
-    expect(stable(commits[0])).toBe(stable(fixture.action));
+    expect(host.commits).toHaveLength(1);
+    expect(stable(host.commits[0])).toBe(stable(fixture.action));
     expect(actionIdForInvocation(fixture.invocation_id)).toBe(fixture.action.id);
     expect(ids.exhausted()).toBe(true);
   });
@@ -71,9 +57,9 @@ describe("planner goldens — ctx path", () => {
     // Running out of a pinned id throws, so committing with nothing left
     // proves both paths consume the same sequence in the same order.
     const ids = idsFrom(fixture.ids);
-    const { transport } = recordingTransport();
+    const host = fakeHost();
     const ctx = createContext({
-      transport,
+      transport: host.transport,
       invocationId: fixture.invocation_id,
       actor: { id: fixture.actor_id },
       caller: { kind: "actor", id: fixture.actor_id },

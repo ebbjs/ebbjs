@@ -92,6 +92,29 @@ describe("runInvocation", () => {
     expect(commits).toEqual([]);
   });
 
+  it("keeps an explicit commit durable when the handler throws after it", async () => {
+    exposeSchema();
+    const { transport, commits } = journal();
+
+    await expect(
+      runInvocation({
+        transport,
+        invocationId: "inv_runner2b",
+        subjectActorId: "a_test",
+        bundle: bundle(`
+          ctx.create("issue", { title: "Committed" }, { groups: ["g_1"] });
+          await ctx.commit();
+          throw new Error("after commit");
+        `),
+        entry: "handler",
+        input: undefined,
+      }),
+    ).rejects.toThrow("after commit");
+
+    // `ctx.commit()` is the point of no return: the handler cannot un-send it.
+    expect(commits).toHaveLength(1);
+  });
+
   it("sends nothing when a returning handler buffered no writes", async () => {
     exposeSchema();
     const { transport, commits } = journal();

@@ -65,9 +65,17 @@ import { createQueryCache, type QueryCache } from "./query-cache";
 import { evictableRowIds, scopeEvictedGroupIds } from "./scope-eviction";
 import { createReplicaSignal, type ReplicaSignal } from "./replica-signal";
 import { backoffDelayMs } from "./backoff";
-import { TextDocument, TextDocumentRegistry } from "@ebbjs/schema";
-import { EntityRegistry, EntityValidationError, type ValidationViolation } from "@ebbjs/schema";
-import type { RelationshipDef } from "@ebbjs/schema";
+import {
+  EntityRegistry,
+  EntityValidationError,
+  TextDocument,
+  TextDocumentRegistry,
+  seedRegistry,
+  type EntityDef,
+  type RelationshipDef,
+  type Schema,
+  type ValidationViolation,
+} from "@ebbjs/schema";
 import {
   buildRelationshipWrite as buildRelationshipWriteFree,
   type BuildRelationshipWriteOptions,
@@ -98,8 +106,6 @@ import {
   type AnyActionDef,
 } from "../schema/action";
 import { generateId } from "@ebbjs/core";
-import type { EntityDef } from "@ebbjs/schema";
-import { seedRegistry, type Schema } from "@ebbjs/schema";
 import { assertSeedAccepted, buildSeedAction, type SeedData } from "@ebbjs/core/seed";
 import type { TSchema } from "@sinclair/typebox/type";
 

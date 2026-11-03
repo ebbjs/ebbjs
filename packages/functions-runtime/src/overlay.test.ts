@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { hostRow, fakeHost, testContext } from "./test-support/host.ts";
+import { hostRow, fakeHost, projectFields, testContext } from "./test-support/host.ts";
 
 const stored = (): ReturnType<typeof hostRow> =>
   hostRow("e_issue1", "issue", { title: "Stored", done: false, labels: [] });
@@ -33,7 +33,16 @@ describe("ctx.get overlay", () => {
     const view = await ctx.get(created.id);
 
     expect(view).toMatchObject({ id: "e_new", type: "issue", last_gsn: 0, deleted_hlc: null });
-    expect(view?.data.fields).toEqual({ title: "New", done: false, labels: [] });
+    expect(projectFields(view?.data.fields ?? {})).toEqual({
+      title: "New",
+      done: false,
+      labels: [],
+    });
+    expect(view?.data.fields["title"]).toEqual({
+      value: "New",
+      update_id: expect.any(String),
+      hlc: view?.created_hlc,
+    });
     expect(view?.created_hlc).toMatch(/^\d+$/);
     expect(view?.updated_hlc).toBe(view?.created_hlc);
     // The write is the only source: no host read was needed.
@@ -47,7 +56,19 @@ describe("ctx.get overlay", () => {
     ctx.update("issue", "e_issue1", { title: "Patched" });
     const view = await ctx.get("e_issue1");
 
-    expect(view?.data.fields).toEqual({ title: "Patched", done: false, labels: [] });
+    expect(projectFields(view?.data.fields ?? {})).toEqual({
+      title: "Patched",
+      done: false,
+      labels: [],
+    });
+    // The patched field is the write's leaf; the untouched siblings keep the
+    // host's stamps instead of being rewritten.
+    expect(view?.data.fields["title"]).toMatchObject({ value: "Patched" });
+    expect(view?.data.fields["done"]).toEqual({
+      value: false,
+      update_id: "u_host",
+      hlc: "111690000000000000",
+    });
     expect(view?.last_gsn).toBe(7);
     expect(view?.created_hlc).toBe("111690000000000000");
     expect(view?.updated_hlc).not.toBe("111690000000000000");
@@ -60,7 +81,7 @@ describe("ctx.get overlay", () => {
     ctx.update("issue", "e_issue1", { done: true });
     ctx.update("issue", "e_issue1", { title: "Second" });
 
-    expect((await ctx.get("e_issue1"))?.data.fields).toEqual({
+    expect(projectFields((await ctx.get("e_issue1"))?.data.fields ?? {})).toEqual({
       title: "Second",
       done: true,
       labels: [],
@@ -77,7 +98,7 @@ describe("ctx.get overlay", () => {
     );
     ctx.update("issue", created.id, { done: true });
 
-    expect((await ctx.get(created.id))?.data.fields).toEqual({
+    expect(projectFields((await ctx.get(created.id))?.data.fields ?? {})).toEqual({
       title: "Draft",
       done: true,
       labels: [],

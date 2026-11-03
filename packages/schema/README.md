@@ -24,10 +24,17 @@ const issue = defineEntity("issue", {
   body: e.collaborativeText(),
 });
 
+const project = defineEntity("project", { name: e.string() });
+
 const belongsTo = defineRelationship({ source: issue, target: project, as: "project" });
 
-const schema = defineSchema([issue, belongsTo]);
-schema.registry.get("issue");
+const schema = defineSchema({
+  entities: { issue, project },
+  relationships: { belongsTo },
+  version: 1,
+});
+
+schema._registry.get("issue");
 ```
 
 ## Module map

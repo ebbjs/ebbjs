@@ -127,9 +127,6 @@ const stringListField = (
 };
 
 /** Whatever value a projected list field carries, when it is a list of ids. */
-const idList = (value: unknown): readonly string[] | undefined =>
-  Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value : undefined;
-
 export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface => {
   const { transport, invocationId, actorId, ids, registry } = options;
 
@@ -450,7 +447,10 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
     let fkTargets: readonly string[] | undefined;
     if (rel.sourceCardinality === "many" && target !== undefined) {
       const view = await read(sourceId);
-      fkTargets = view === null ? undefined : idList(view.data.fields[as]);
+      fkTargets =
+        view === null
+          ? undefined
+          : stringListField(view.data.fields as Record<string, FieldValue>, as);
       if (fkTargets === undefined) {
         throw new EntityValidationError([
           {

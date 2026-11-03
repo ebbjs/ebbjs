@@ -21,17 +21,13 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
   use ExUnit.Case, async: false
   use EbbServer.Integration.StorageCase, with_auth_mode: true
 
+  import EbbServer.FunctionsTestHelpers
   import EbbServer.Integration.ActionHelpers
   import EbbServer.LiveStreamHelpers, only: [start_live_stream: 2]
   import EbbServer.SSEHelpers, only: [data_payloads: 1]
   import EbbServer.TestHelpers, only: [generate_hlc: 0]
-  import Plug.Conn
-  import Plug.Test
 
-  alias EbbServer.Functions.BundleCache
-  alias EbbServer.Functions.Worker.Bun, as: BunWorker
   alias EbbServer.Storage.{ActionLog, CacheTables, RelationshipCache, WatermarkTracker}
-  alias EbbServer.Sync.Router
   alias EbbServer.TestFunctions.Bundles
 
   alias EbbServer.TestFunctions.Bun, as: BunSupport
@@ -71,7 +67,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     seed_member(actor_id, group_id, ["function." <> name, "todo.create", "todo.read"])
 
     BunSupport.deploy_fixture!(dir, name)
-    configure_boot(dir)
+    configure_bun(dir)
 
     stream = start_live_stream(group_id, actor_id)
     before = WatermarkTracker.committed_watermark()
@@ -94,7 +90,10 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     assert overlay["last_gsn"] == 0
     assert is_binary(overlay["created_hlc"])
     assert overlay["created_hlc"] == overlay["updated_hlc"]
-    assert overlay["data"]["fields"]["title"] == title
+    # The overlay publishes the same wire shape the endpoint does: a field is
+    # its leaf, not a projected value.
+    assert overlay["data"]["fields"]["title"]["value"] == title
+    assert is_binary(overlay["data"]["fields"]["title"]["hlc"])
 
     # The same write is durable and readable through the ordinary endpoint.
     read = get_entity(created_id, actor_id)
@@ -137,7 +136,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     ])
 
     BunSupport.deploy_fixture!(dir, name)
-    configure_boot(dir)
+    configure_bun(dir)
 
     before = WatermarkTracker.committed_watermark()
 
@@ -181,7 +180,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     seed_member(actor_id, group_id, ["function." <> name, "todo.create", "todo.read"])
 
     BunSupport.deploy_fixture!(dir, name)
-    configure_boot(dir)
+    configure_bun(dir)
 
     before = WatermarkTracker.committed_watermark()
 
@@ -219,7 +218,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
              200
 
     BunSupport.deploy_fixture!(dir, name)
-    configure_boot(dir)
+    configure_bun(dir)
 
     before = WatermarkTracker.committed_watermark()
 
@@ -262,7 +261,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     seed_member(actor_id, group_id, ["function." <> name, "todo.create", "todo.read"])
 
     BunSupport.deploy_fixture!(dir, name)
-    configure_boot(dir)
+    configure_bun(dir)
 
     before = WatermarkTracker.committed_watermark()
 
@@ -322,7 +321,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
              200
 
     BunSupport.deploy_fixture!(dir, name)
-    configure_boot(dir)
+    configure_bun(dir)
 
     stream = start_live_stream(group_id, actor_id)
     before = WatermarkTracker.committed_watermark()
@@ -365,18 +364,104 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     Task.shutdown(stream, :brutal_kill)
   end
 
-  # --- setup helpers -------------------------------------------------------
+  test "a patch of a stored row reads back in the wire shape", %{dir: dir} do
+    name = "patchStoredTodo"
+    actor_id = unique("a")
+    group_id = unique("g")
+    todo_id = unique("todo")
 
-  defp unique(prefix), do: "#{prefix}_#{System.unique_integer([:positive])}"
+    seed_member(actor_id, group_id, [
+      "function." <> name,
+      "todo.create",
+      "todo.update",
+      "todo.read"
+    ])
 
-  defp seed_member(actor_id, group_id, permissions) do
-    assert bootstrap_group(actor_id, group_id, permissions).status == 200
-  end
-
-  defp fields(title) do
     hlc = generate_hlc()
-    %{"title" => %{"type" => "lww", "value" => title, "hlc" => hlc}}
+
+    stored_fields = %{
+      "title" => %{"type" => "lww", "value" => "stored", "hlc" => hlc},
+      "done" => %{"type" => "lww", "value" => false, "hlc" => hlc}
+    }
+
+    assert write_entity_in_group(actor_id, todo_id, "todo", group_id, stored_fields).status == 200
+
+    BunSupport.deploy_fixture!(dir, name)
+    configure_bun(dir)
+
+    response =
+      post_function(
+        name,
+        Jason.encode!(%{"todo_id" => todo_id, "title" => "patched"}),
+        actor_id
+      )
+
+    assert response.status == 200
+    view = Jason.decode!(response.resp_body)["result"]["view"]
+
+    # The patched field is the buffered write's wire leaf and the untouched
+    # sibling keeps the stored one, so a read does not change shape because the
+    # invocation wrote to the row.
+    assert view["data"]["fields"]["title"]["value"] == "patched"
+    assert is_binary(view["data"]["fields"]["title"]["hlc"])
+    assert view["data"]["fields"]["done"]["value"] == false
+
+    read = get_entity(todo_id, actor_id)
+    assert read.status == 200
+    read_body = Jason.decode!(read.resp_body)
+    assert read_body["data"]["fields"]["title"]["value"] == "patched"
+    # The untouched field keeps the stored leaf rather than being rewritten by
+    # the patch.
+    assert Map.take(view["data"]["fields"]["done"], ["type", "value", "update_id"]) == %{
+             "type" => "lww",
+             "value" => false,
+             "update_id" => read_body["data"]["fields"]["done"]["update_id"]
+           }
   end
+
+  test "drops one target from a stored FK set read through ctx.get", %{dir: dir} do
+    name = "unlinkStoredLabel"
+    actor_id = unique("a")
+    group_id = unique("g")
+    todo_id = unique("todo")
+
+    seed_member(actor_id, group_id, [
+      "function." <> name,
+      "todo.create",
+      "todo.update",
+      "relationship.delete"
+    ])
+
+    hlc = generate_hlc()
+
+    stored_fields = %{
+      "title" => %{"type" => "lww", "value" => "linked", "hlc" => hlc},
+      "labels" => %{"type" => "lww", "value" => ["e_l1", "e_l2"], "hlc" => hlc}
+    }
+
+    assert write_entity_in_group(actor_id, todo_id, "todo", group_id, stored_fields).status == 200
+
+    BunSupport.deploy_fixture!(dir, name)
+    configure_bun(dir)
+
+    before = WatermarkTracker.committed_watermark()
+
+    response =
+      post_function(
+        name,
+        Jason.encode!(%{"todo_id" => todo_id, "label_id" => "e_l1"}),
+        actor_id
+      )
+
+    assert response.status == 200
+    assert WatermarkTracker.committed_watermark() == before + 1
+    assert [action] = ActionLog.read(before + 1, before + 1)
+
+    [todo_update] = Enum.filter(action["updates"], &(&1["subject_id"] == todo_id))
+    assert todo_update["data"]["fields"]["labels"]["value"] == ["e_l2"]
+  end
+
+  # --- setup helpers -------------------------------------------------------
 
   defp params(group_id), do: Jason.encode!(%{"group_id" => group_id})
 
@@ -417,46 +502,5 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
         }
       ]
     }
-  end
-
-  defp configure_boot(dir) do
-    previous = Application.get_env(:ebb_server, :functions)
-
-    Application.put_env(
-      :ebb_server,
-      :functions,
-      Keyword.merge([enabled: true, bundle_dir: dir],
-        transport: BunWorker,
-        worker_opts: BunSupport.transport_opts(dir)
-      )
-    )
-
-    on_exit(fn ->
-      case previous do
-        nil -> Application.delete_env(:ebb_server, :functions)
-        value -> Application.put_env(:ebb_server, :functions, value)
-      end
-    end)
-  end
-
-  defp start_cache(dir) do
-    start_supervised!({BundleCache, loader_opts: [dir: dir]})
-  end
-
-  defp post_function(name, body, actor_id, headers \\ []) do
-    conn(:post, "/functions/#{name}", body)
-    |> put_req_header("content-type", "application/json")
-    |> put_req_header("x-ebb-actor-id", actor_id)
-    |> put_request_headers(headers)
-    |> Router.call([])
-  end
-
-  defp put_request_headers(conn, headers) do
-    Enum.reduce(headers, conn, fn {name, value}, conn -> put_req_header(conn, name, value) end)
-  end
-
-  defp action_id_for(invocation_id) do
-    digest = Base.encode16(:crypto.hash(:sha256, invocation_id), case: :lower)
-    "a_" <> binary_part(digest, 0, 16)
   end
 end

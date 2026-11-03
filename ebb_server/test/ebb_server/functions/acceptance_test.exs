@@ -16,17 +16,16 @@ defmodule EbbServer.Functions.AcceptanceTest do
   use ExUnit.Case, async: false
   use EbbServer.Integration.StorageCase, with_auth_mode: true
 
+  import EbbServer.FunctionsTestHelpers
   import EbbServer.Integration.ActionHelpers
   import EbbServer.LiveStreamHelpers, only: [start_live_stream: 2]
   import EbbServer.SSEHelpers, only: [data_payloads: 1]
   import EbbServer.TestHelpers, only: [generate_hlc: 0]
   import Plug.Conn
-  import Plug.Test
 
   alias EbbServer.Functions.{Bundle, BundleCache, Protocol}
   alias EbbServer.Functions.Worker.Fake
   alias EbbServer.Storage.{ActionLog, WatermarkTracker}
-  alias EbbServer.Sync.Router
 
   alias EbbServer.TestFunctions.{Bundles, InputScriptedWorker, RecordingWorker}
 
@@ -470,17 +469,6 @@ defmodule EbbServer.Functions.AcceptanceTest do
 
   # --- setup helpers -------------------------------------------------------
 
-  defp unique(prefix), do: "#{prefix}_#{System.unique_integer([:positive])}"
-
-  defp seed_member(actor_id, group_id, permissions) do
-    assert bootstrap_group(actor_id, group_id, permissions).status == 200
-  end
-
-  defp fields(title) do
-    hlc = generate_hlc()
-    %{"title" => %{"type" => "lww", "value" => title, "hlc" => hlc}}
-  end
-
   # One Action, one entity plus its group membership row: the smallest write a
   # function can commit, and enough for fan-out to reach the group.
   defp create_todo_action(entity_id, group_id, title) do
@@ -536,45 +524,6 @@ defmodule EbbServer.Functions.AcceptanceTest do
       |> Map.merge(Keyword.get(opts, :envelope, %{}))
 
     Bundles.write_bundle!(dir, Bundles.envelope(name, overrides), code)
-  end
-
-  # The flag, the bundle directory, and the transport are node configuration,
-  # so tests write them through the one nested key an operator uses and put
-  # back whatever was there.
-  defp configure_boot(config) do
-    previous = Application.get_env(:ebb_server, :functions)
-
-    Application.put_env(:ebb_server, :functions, Keyword.merge([enabled: true], config))
-
-    on_exit(fn ->
-      case previous do
-        nil -> Application.delete_env(:ebb_server, :functions)
-        value -> Application.put_env(:ebb_server, :functions, value)
-      end
-    end)
-  end
-
-  # `Sync.Router` delegates to the route with no options, so it asks the
-  # registered cache exactly as a booted node does.
-  defp start_cache(dir) do
-    start_supervised!({BundleCache, loader_opts: [dir: dir]})
-  end
-
-  defp post_function(name, body, actor_id, headers \\ []) do
-    conn(:post, "/functions/#{name}", body)
-    |> put_req_header("content-type", "application/json")
-    |> put_req_header("x-ebb-actor-id", actor_id)
-    |> put_request_headers(headers)
-    |> Router.call([])
-  end
-
-  defp put_request_headers(conn, headers) do
-    Enum.reduce(headers, conn, fn {name, value}, conn -> put_req_header(conn, name, value) end)
-  end
-
-  defp action_id_for(invocation_id) do
-    digest = Base.encode16(:crypto.hash(:sha256, invocation_id), case: :lower)
-    "a_" <> binary_part(digest, 0, 16)
   end
 
   # --- worker script -------------------------------------------------------

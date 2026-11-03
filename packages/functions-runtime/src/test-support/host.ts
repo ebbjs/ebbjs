@@ -3,8 +3,9 @@
  * a context wired to the planner fixture schema.
  */
 
+import type { FieldValue } from "@ebbjs/core";
 import type { EntityResponse } from "@ebbjs/client";
-import type { OperationIds } from "@ebbjs/write";
+import { projectFieldValue, type OperationIds } from "@ebbjs/write";
 
 import { createContext, type Context, type HostOp, type HostTransport } from "../index.ts";
 import { loadSpec, registryFrom } from "./planner.ts";
@@ -69,21 +70,48 @@ export const countingIds = (): OperationIds & { readonly minted: string[] } => {
 };
 
 /** A stored row as the host's `get` returns it. */
+/** A projected value as the wire leaf the host's view carries. */
+const wireField = (value: unknown, stamp: string): FieldValue =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? {
+        map: Object.fromEntries(
+          Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+            key,
+            wireField(entry, stamp),
+          ]),
+        ),
+      }
+    : { value, update_id: "u_host", hlc: stamp };
+
+/** A stored row as the host's `get` returns it: `data.fields` are wire leaves. */
 export const hostRow = (
   id: string,
   type: string,
   fields: Record<string, unknown>,
   extra: Partial<EntityResponse> = {},
-): EntityResponse => ({
-  id,
-  type,
-  data: { fields },
-  created_hlc: "111690000000000000",
-  updated_hlc: "111690000000000000",
-  deleted_hlc: null,
-  last_gsn: 7,
-  ...extra,
-});
+): EntityResponse => {
+  const stamp = "111690000000000000";
+  return {
+    id,
+    type,
+    data: {
+      fields: Object.fromEntries(
+        Object.entries(fields).map(([key, value]) => [key, wireField(value, stamp)]),
+      ),
+    },
+    created_hlc: stamp,
+    updated_hlc: stamp,
+    deleted_hlc: null,
+    last_gsn: 7,
+    ...extra,
+  };
+};
+
+/** Project a view's wire fields back to the plain values a handler reads. */
+export const projectFields = (fields: Record<string, unknown>): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [key, projectFieldValue(value as FieldValue)]),
+  );
 
 export interface TestContextOptions {
   readonly ids?: OperationIds;

@@ -210,7 +210,7 @@ defmodule EbbServer.Functions.RouterTest do
       assert first.status == 200
       assert second.status == 200
 
-      expected = derived_invocation_id(key)
+      expected = derived_invocation_id(ctx.name, @actor, key)
       assert Jason.decode!(first.resp_body)["invocation_id"] == expected
       assert Jason.decode!(second.resp_body)["invocation_id"] == expected
       assert get_resp_header(second, "x-ebb-invocation-id") == [expected]
@@ -222,8 +222,39 @@ defmodule EbbServer.Functions.RouterTest do
       one = post_function(ctx, ctx.name, "{}", @actor, [{"idempotency-key", "one"}])
       two = post_function(ctx, ctx.name, "{}", @actor, [{"idempotency-key", "two"}])
 
-      assert Jason.decode!(one.resp_body)["invocation_id"] == derived_invocation_id("one")
-      assert Jason.decode!(two.resp_body)["invocation_id"] == derived_invocation_id("two")
+      assert Jason.decode!(one.resp_body)["invocation_id"] ==
+               derived_invocation_id(ctx.name, @actor, "one")
+
+      assert Jason.decode!(two.resp_body)["invocation_id"] ==
+               derived_invocation_id(ctx.name, @actor, "two")
+    end
+
+    test "the same key from another actor or for another function is a different invocation",
+         ctx do
+      configure_boot(bundle_dir: ctx.dir, transport: InputScriptedWorker)
+
+      other_actor = @actor <> "_other"
+      other_name = "idempotentEchoOther"
+      Bundles.write_bundle!(ctx.dir, Bundles.envelope(other_name))
+      grant(ctx.tables, other_actor, ["function.*"])
+
+      first = post_function(ctx, ctx.name, "{}", @actor, [{"idempotency-key", "shared"}])
+
+      scoped_actor =
+        post_function(ctx, ctx.name, "{}", other_actor, [{"idempotency-key", "shared"}])
+
+      scoped_function =
+        post_function(ctx, other_name, "{}", @actor, [{"idempotency-key", "shared"}])
+
+      assert first.status == 200
+      assert scoped_actor.status == 200
+      assert scoped_function.status == 200
+
+      ids =
+        [first, scoped_actor, scoped_function]
+        |> Enum.map(&Jason.decode!(&1.resp_body)["invocation_id"])
+
+      assert ids == Enum.uniq(ids)
     end
 
     test "no key mints a fresh id per request", ctx do
@@ -244,7 +275,9 @@ defmodule EbbServer.Functions.RouterTest do
       conn = post_function(ctx, ctx.name, "{}", @actor, [{"idempotency-key", key}])
 
       assert conn.status == 200
-      assert Jason.decode!(conn.resp_body)["invocation_id"] == derived_invocation_id(key)
+
+      assert Jason.decode!(conn.resp_body)["invocation_id"] ==
+               derived_invocation_id(ctx.name, @actor, key)
     end
 
     test "an empty or over-long key is a 400 rather than a derived id", ctx do
@@ -588,8 +621,11 @@ defmodule EbbServer.Functions.RouterTest do
     end
   end
 
-  defp derived_invocation_id(key) do
-    digest = Base.encode16(:crypto.hash(:sha256, key), case: :lower)
+  defp derived_invocation_id(name, actor_id, key) do
+    digest =
+      :crypto.hash(:sha256, [actor_id, "\n", name, "\n", key])
+      |> Base.encode16(case: :lower)
+
     "inv_" <> binary_part(digest, 0, 16)
   end
 

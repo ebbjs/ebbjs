@@ -55,6 +55,7 @@
     "eventsource-client": "^1.2.0"
   },
   "devDependencies": {
+    "@ebbjs/functions-protocol": "workspace:*",
     "tsx": "^4.20.4",
     "vitest": "^3.2.4"
   },

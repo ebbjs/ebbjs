@@ -25,22 +25,21 @@ defmodule EbbServer.Functions.Router do
 
   A request may carry one `Idempotency-Key` header. With it, the invocation id
   is derived from the key instead of minted:
-  `"inv_" <> first16(lowercase_hex(sha256(key)))`, still 16 characters of the
-  same alphabet. `EbbServer.Functions.Host` derives the Action id from the
-  invocation id, so a retry of the same request reproduces the same
-  `action_id`; `cf_action_dedup` drops the second copy before it claims a GSN,
-  and the response carries `"replayed": true`.
+  `"inv_" <> first16(lowercase_hex(sha256(actor_id <> "\n" <> name <> "\n" <> key)))`,
+  still 16 characters of the same alphabet. `EbbServer.Functions.Host` derives
+  the Action id from the invocation id, so a retry of the same request
+  reproduces the same `action_id`; `cf_action_dedup` drops the second copy
+  before it claims a GSN, and the response carries `"replayed": true`.
 
-  A repeated key silently drops whatever content the retry carries, including
+  The key is scoped to the actor and the function, because it is a value the
+  caller chooses: two callers that happen to pick the same string are not
+  retrying the same request, and must not share a dedup key. Within that scope
+  a repeated key silently drops whatever content the retry carries, including
   a retry whose handler produced different writes. The first commit under that
   `action_id` is the durable one and every later one is answered as a replay.
   Only send the header when the request is safe to repeat unchanged; a key is
   not a way to perform a second, different write. One invocation commits at
   most one Action, so this also holds within a single request.
-
-  A key identifies the request, not the function: two different functions
-  invoked with the same key share an invocation id, so only the first one's
-  commit is durable.
 
   An empty key, a key longer than 255 bytes, or the header repeated is a `400`
   rather than a derived id: requests that disagree about what was meant must
@@ -111,12 +110,13 @@ defmodule EbbServer.Functions.Router do
 
   post "/:name" do
     name = conn.path_params["name"]
+    actor_id = conn.assigns[:actor_id]
 
-    case invocation_id(conn) do
-      {:ok, invocation_id} ->
-        case conn.assigns[:actor_id] do
-          nil -> respond(conn, Response.failure(401, invocation_id: invocation_id))
-          actor_id -> invoke(conn, name, actor_id, invocation_id)
+    case idempotency_key(conn) do
+      {:ok, key} ->
+        case actor_id do
+          nil -> respond(conn, Response.failure(401, invocation_id: new_invocation_id()))
+          actor -> invoke(conn, name, actor, invocation_id_for(actor, name, key))
         end
 
       {:error, details} ->
@@ -150,25 +150,35 @@ defmodule EbbServer.Functions.Router do
   # A header can only make the id stable, never choose it: the derived id is
   # still `inv_` plus 16 characters of the id alphabet, so the storage layer's
   # dedup keys stay in one space.
-  defp invocation_id(conn) do
+  defp idempotency_key(conn) do
     case Plug.Conn.get_req_header(conn, @idempotency_key_header) do
-      [] -> {:ok, new_invocation_id()}
-      [key] -> derive_invocation_id(key)
+      [] -> {:ok, nil}
+      [key] -> validate_key(key)
       _repeated -> {:error, "Idempotency-Key must not be repeated"}
     end
   end
 
-  defp derive_invocation_id("") do
+  defp validate_key("") do
     {:error, "Idempotency-Key must not be empty"}
   end
 
-  defp derive_invocation_id(key) when byte_size(key) > @max_idempotency_key_bytes do
+  defp validate_key(key) when byte_size(key) > @max_idempotency_key_bytes do
     {:error, "Idempotency-Key must be at most #{@max_idempotency_key_bytes} bytes"}
   end
 
-  defp derive_invocation_id(key) do
-    digest = Base.encode16(:crypto.hash(:sha256, key), case: :lower)
-    {:ok, "inv_" <> binary_part(digest, 0, 16)}
+  defp validate_key(key), do: {:ok, key}
+
+  defp invocation_id_for(_actor_id, _name, nil), do: new_invocation_id()
+  defp invocation_id_for(actor_id, name, key), do: derived_invocation_id(actor_id, name, key)
+
+  # The actor and function scope the key: it is caller-chosen, so two callers
+  # that pick the same string are not retrying the same request.
+  defp derived_invocation_id(actor_id, name, key) do
+    digest =
+      :crypto.hash(:sha256, [actor_id, "\n", name, "\n", key])
+      |> Base.encode16(case: :lower)
+
+    "inv_" <> binary_part(digest, 0, 16)
   end
 
   defp invalid_key_response(details) do

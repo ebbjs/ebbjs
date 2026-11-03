@@ -16,14 +16,12 @@ defmodule EbbServer.Functions.BunIntegrationTest do
   use ExUnit.Case, async: false
   use EbbServer.Integration.StorageCase, with_auth_mode: true
 
+  import EbbServer.FunctionsTestHelpers
   import EbbServer.Integration.ActionHelpers
-  import EbbServer.TestHelpers, only: [generate_hlc: 0]
   import Plug.Conn
-  import Plug.Test
 
-  alias EbbServer.Functions.{Bundle, BundleCache, Invocation, Protocol}
+  alias EbbServer.Functions.{Bundle, Invocation, Protocol}
   alias EbbServer.Functions.Worker.Bun, as: BunWorker
-  alias EbbServer.Sync.Router
   alias EbbServer.TestFunctions
   alias EbbServer.TestFunctions.{Bundles, DelayedHost, LocalHttp}
 
@@ -62,7 +60,7 @@ defmodule EbbServer.Functions.BunIntegrationTest do
       seed_member(actor_id, group_id, ["function." <> name])
 
       deploy!(dir, name, "async (ctx, params) => ({ echo: params, actor: ctx.actor.id })")
-      configure_boot(dir)
+      configure_bun(dir)
 
       response = post_function(name, ~s({"hello":"world"}), actor_id)
 
@@ -86,7 +84,7 @@ defmodule EbbServer.Functions.BunIntegrationTest do
                200
 
       deploy!(dir, name, "async (ctx) => ctx.get(#{inspect(entity_id)})")
-      configure_boot(dir)
+      configure_bun(dir)
 
       # Read through the HTTP endpoint first so the entity is materialized; the
       # parity asserted below is about the same view, not about which request
@@ -140,7 +138,7 @@ defmodule EbbServer.Functions.BunIntegrationTest do
       seed_member(outsider_id, outsider_group, ["function." <> name])
 
       deploy!(dir, name, "async (ctx) => ctx.get(#{inspect(entity_id)})")
-      configure_boot(dir)
+      configure_bun(dir)
 
       allowed = post_function(name, "{}", actor_id)
       assert allowed.status == 200
@@ -171,7 +169,7 @@ defmodule EbbServer.Functions.BunIntegrationTest do
         "async (ctx, params) => { const r = await fetch(params.url); return { status: r.status, body: await r.json() }; }"
       )
 
-      configure_boot(dir)
+      configure_bun(dir)
 
       response = post_function(name, Jason.encode!(%{"url" => server.url}), actor_id)
 
@@ -193,7 +191,7 @@ defmodule EbbServer.Functions.BunIntegrationTest do
 
       deploy!(dir, crashing, "async () => { process.exit(1); }")
       deploy!(dir, after_crash, "async () => ({ ok: true })")
-      configure_boot(dir)
+      configure_bun(dir)
 
       response = post_function(crashing, "{}", actor_id)
       assert response.status == 503
@@ -316,17 +314,6 @@ defmodule EbbServer.Functions.BunIntegrationTest do
     end
   end
 
-  defp unique(prefix), do: "#{prefix}_#{System.unique_integer([:positive])}"
-
-  defp seed_member(actor_id, group_id, permissions) do
-    assert bootstrap_group(actor_id, group_id, permissions).status == 200
-  end
-
-  defp fields(title) do
-    hlc = generate_hlc()
-    %{"title" => %{"type" => "lww", "value" => title, "hlc" => hlc}}
-  end
-
   # Returns the code so a direct-invocation test can put it in the frame.
   defp deploy!(dir, name, handler_js) do
     code = """
@@ -357,36 +344,5 @@ defmodule EbbServer.Functions.BunIntegrationTest do
       "env" => %{},
       "limits" => %{"timeout_ms" => @await_timeout_ms, "max_host_calls" => 1_000}
     })
-  end
-
-  defp configure_boot(dir) do
-    previous = Application.get_env(:ebb_server, :functions)
-
-    Application.put_env(
-      :ebb_server,
-      :functions,
-      Keyword.merge([enabled: true, bundle_dir: dir],
-        transport: BunWorker,
-        worker_opts: BunSupport.transport_opts(dir)
-      )
-    )
-
-    on_exit(fn ->
-      case previous do
-        nil -> Application.delete_env(:ebb_server, :functions)
-        value -> Application.put_env(:ebb_server, :functions, value)
-      end
-    end)
-  end
-
-  defp start_cache(dir) do
-    start_supervised!({BundleCache, loader_opts: [dir: dir]})
-  end
-
-  defp post_function(name, body, actor_id) do
-    conn(:post, "/functions/#{name}", body)
-    |> put_req_header("content-type", "application/json")
-    |> put_req_header("x-ebb-actor-id", actor_id)
-    |> Router.call([])
   end
 end
