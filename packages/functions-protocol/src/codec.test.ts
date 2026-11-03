@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { decodeFrames, encodeFrame } from "./codec.ts";
+import { decodeFrames, encodeFrame, fits } from "./codec.ts";
 import { MAX_FRAME_BYTES, type Frame } from "./frames.ts";
 import { call, ready, result } from "./constructors.ts";
 
@@ -219,5 +219,16 @@ describe("encodeFrame and decodeFrames", () => {
     if (!decoded.ok) throw new Error("expected a buffered frame");
     expect(decoded.rest).not.toBe(partial);
     expect(decoded.rest).toEqual(partial);
+  });
+});
+
+describe("fits", () => {
+  it("accepts a small frame and refuses one past the bound", () => {
+    const small = result({ ok: true, value: "x" });
+    expect(fits(small)).toBe(true);
+
+    // The length prefix counts toward the bound, matching Elixir's fits?/1.
+    const large = result({ ok: true, value: "a".repeat(MAX_FRAME_BYTES) });
+    expect(fits(large)).toBe(false);
   });
 });

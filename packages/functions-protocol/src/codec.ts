@@ -59,6 +59,16 @@ export function encodeFrame(frame: Frame): Uint8Array {
   return bytes;
 }
 
+/**
+ * Whether `frame` fits the frame bound once encoded, prefix included.
+ *
+ * The host measures an `invoke` before sending it; encoding to measure keeps
+ * the bound in one place instead of letting a call site guess.
+ */
+export function fits(frame: Frame): boolean {
+  return HEADER_BYTES + encoder.encode(JSON.stringify(frame)).length <= MAX_FRAME_BYTES;
+}
+
 /** Decodes every complete frame in `buffer`, plus the trailing partial bytes. */
 export function decodeFrames(buffer: Uint8Array): DecodeResult {
   const frames: Frame[] = [];

@@ -227,10 +227,19 @@ defmodule EbbServer.Functions.Worker.Bun do
   end
 
   defp setup(state) do
-    with {:ok, listener} <- listen(state.socket_path),
-         :ok <- File.chmod(state.socket_path, 0o600),
-         {:ok, port} <- spawn_runner(state) do
-      {:ok, listener, port}
+    case listen(state.socket_path) do
+      {:ok, listener} ->
+        with :ok <- File.chmod(state.socket_path, 0o600),
+             {:ok, port} <- spawn_runner(state) do
+          {:ok, listener, port}
+        else
+          {:error, reason} ->
+            _ = :gen_tcp.close(listener)
+            {:error, reason}
+        end
+
+      {:error, _reason} = error ->
+        error
     end
   end
 

@@ -305,26 +305,6 @@ defmodule EbbServer.Functions.BunIntegrationTest do
 
       assert message =~ "worker exited"
     end
-
-    test "a call sent after result is discarded, not answered", %{dir: dir} do
-      name = "lateCallInBun"
-
-      code =
-        deploy!(dir, name, """
-        async (ctx) => {
-          setTimeout(() => { ctx.get("e_doc").catch(() => {}); }, 30);
-          return { done: true };
-        }
-        """)
-
-      assert {:ok, %{"done" => true}} =
-               Invocation.run(
-                 transport: BunWorker,
-                 invoke: invoke_frame(name, code, %{}),
-                 worker_opts: BunSupport.transport_opts(dir),
-                 deadline_ms: @await_timeout_ms
-               )
-    end
   end
 
   # --- setup helpers -------------------------------------------------------

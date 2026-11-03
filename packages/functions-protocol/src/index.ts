@@ -19,7 +19,7 @@ export {
   type UnrecognizedFrame,
 } from "./frames.ts";
 
-export { decodeFrames, encodeFrame, type DecodeError, type DecodeResult } from "./codec.ts";
+export { decodeFrames, encodeFrame, fits, type DecodeError, type DecodeResult } from "./codec.ts";
 
 export {
   call,

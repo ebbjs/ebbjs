@@ -54,6 +54,16 @@ describe("buildEnvelope", () => {
     expect(envelope).not.toHaveProperty("outputSchema");
   });
 
+  it("refuses a version that would escape the bundle directory", () => {
+    for (const version of ["../other", "a/b", "a\\b", ".", ".."]) {
+      const envelope = buildEnvelope({ name: "echo", version, code: "code" });
+      expect(validateEnvelope(envelope)).toContainEqual({
+        field: "version",
+        message: "must not contain path separators",
+      });
+    }
+  });
+
   it("names files by name and version", () => {
     expect(codeFilename("echo", "1.0.0")).toBe("echo@1.0.0.js");
     expect(envelopeFilename("echo", "1.0.0")).toBe("echo@1.0.0.envelope.json");

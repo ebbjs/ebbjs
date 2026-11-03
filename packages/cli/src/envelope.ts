@@ -133,7 +133,16 @@ export function validateEnvelope(envelope: unknown): EnvelopeProblem[] {
   if (!isValidFunctionName(envelope.name))
     add("name", "must be a JavaScript identifier of at most 64 characters and not `default`");
 
-  if (!isNonEmptyString(envelope.version)) add("version", "must be a non-empty string");
+  if (!isNonEmptyString(envelope.version)) {
+    add("version", "must be a non-empty string");
+  } else if (
+    envelope.version.includes("/") ||
+    envelope.version.includes("\\") ||
+    envelope.version === "." ||
+    envelope.version === ".."
+  ) {
+    add("version", "must not contain path separators");
+  }
   if (!isNonEmptyString(envelope.digest) || !DIGEST_PATTERN.test(envelope.digest as string)) {
     add("digest", "must be `sha256:` followed by 64 lowercase hex characters");
   }
