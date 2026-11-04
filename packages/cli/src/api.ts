@@ -42,19 +42,6 @@ export interface ListFunctionsResponse {
   functions: FunctionSummary[];
 }
 
-export interface VersionSummary {
-  version: string;
-  status: string;
-  createdAt: string;
-  activatedAt?: string;
-  pinned: boolean;
-  createdBy: string;
-}
-
-export interface ListVersionsResponse {
-  versions: VersionSummary[];
-}
-
 /**
  * A request the server refused, or a response the CLI could not read.
  *
@@ -161,21 +148,6 @@ export async function listFunctions(
   options: ApiOptionsInput = {},
 ): Promise<ListFunctionsResponse> {
   return request<ListFunctionsResponse>(config, "actor", "GET", "/functions", undefined, options);
-}
-
-export async function listVersions(
-  config: ResolvedConfig,
-  name: string,
-  options: ApiOptionsInput = {},
-): Promise<ListVersionsResponse> {
-  return request<ListVersionsResponse>(
-    config,
-    "admin",
-    "GET",
-    `/functions/${encodeURIComponent(name)}/versions`,
-    undefined,
-    options,
-  );
 }
 
 type RequestKind = "admin" | "actor";

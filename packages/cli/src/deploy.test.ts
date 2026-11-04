@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -47,19 +47,13 @@ describe("deployEntries", () => {
     await Promise.all(projects.splice(0).map(removeProject));
   });
 
-  const uploadAwareFetch = () =>
+  const uploadAwareFetch = (name = functionName) =>
     recordingFetch((call) => {
       if (call.url.endsWith("/versions")) {
-        return jsonResponse(201, {
-          ok: true,
-          name: functionName,
-          version,
-          status: "retired",
-          pinned: false,
-        });
+        return jsonResponse(201, { ok: true, name, version, status: "retired", pinned: false });
       }
       if (call.url.endsWith("/activate")) {
-        return jsonResponse(200, { ok: true, name: functionName, version, status: "active" });
+        return jsonResponse(200, { ok: true, name, version, status: "active" });
       }
       if (call.url.endsWith("/functions")) {
         return jsonResponse(200, { functions: [] });
@@ -107,11 +101,56 @@ describe("deployEntries", () => {
       properties: { count: { type: "number" } },
     });
 
+    // The exact shape the runner evaluates: `{ <entry>: definition }`, with
+    // the schema and handler on the definition.
+    const exports = new Function(`${String(body.code)}\nreturn __ebbFunction;`)() as Record<
+      string,
+      { schema?: unknown; handler?: unknown }
+    >;
+    expect(exports[functionName]?.schema).toBeDefined();
+    expect(exports[functionName]?.handler).toBeTypeOf("function");
+
     expect(calls.some((call) => call.url.endsWith("/activate"))).toBe(true);
     expect(lines).toContain(`deployed ${functionName}@${version}`);
     expect(lines).toContain(`activated ${functionName}@${version}`);
     expect(lines).toContain(`grant function.${functionName}`);
     expect(lines).toContain("drift check skipped: no actor credential in ebb.config.ts");
+  });
+
+  it("keys the upload and contract map by the exported name, not the file name", async () => {
+    const cwd = await tempProject("deploy-renamed-");
+    projects.push(cwd);
+    await mkdir(join(cwd, "functions"), { recursive: true });
+    await writeFile(
+      join(cwd, "functions", "wrongFile.ts"),
+      `
+        import { defineFunction, p } from "@ebbjs/server";
+
+        export const realName = defineFunction(
+          {},
+          p.object({}),
+          async () => ({ ok: true }),
+        );
+      `,
+      "utf8",
+    );
+
+    const { fetchImpl, calls } = uploadAwareFetch("realName");
+
+    await deployEntries({
+      cwd,
+      token: "admin-token",
+      version,
+      fetchImpl,
+      print: () => {},
+    });
+
+    expect(calls.some((call) => call.url.endsWith("/functions/realName/versions"))).toBe(true);
+
+    const generated = await readFile(join(cwd, "src/ebb-functions.generated.ts"), "utf8");
+    expect(generated).toContain('import type { realName } from "../functions/wrongFile";');
+    expect(generated).toContain('realName: functionContract<typeof realName>("realName")');
+    expect(generated).not.toContain("wrongFile:");
   });
 
   it("leaves the active pointer alone with --no-activate", async () => {

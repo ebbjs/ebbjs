@@ -3,9 +3,19 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { watchFunctions } from "./commands.ts";
-import { removeProject, tempProject, waitFor } from "./test-utils.ts";
+import {
+  jsonBody,
+  jsonResponse,
+  recordingFetch,
+  removeProject,
+  tempProject,
+  waitFor,
+} from "./test-utils.ts";
 
 const emptyResult = { functions: [], drift: null, typesOut: "" };
+
+const uploads = (calls: readonly { url: string }[]) =>
+  calls.filter((call) => call.url.endsWith("/versions"));
 
 describe("watchFunctions", () => {
   const projects: string[] = [];
@@ -35,12 +45,76 @@ describe("watchFunctions", () => {
     close();
   });
 
+  it("uploads and activates a new version when an entry changes", async () => {
+    const cwd = await tempProject("dev-real-");
+    projects.push(cwd);
+    await mkdir(join(cwd, "functions"), { recursive: true });
+    const entry = join(cwd, "functions", "echo.ts");
+    const source = (value: number) =>
+      `import { defineFunction } from "@ebbjs/server";\n` +
+      `export const echo = defineFunction({}, async () => ${value});`;
+
+    await writeFile(entry, source(1), "utf8");
+
+    const { fetchImpl, calls } = recordingFetch((call) => {
+      if (call.url.endsWith("/versions")) {
+        const body = jsonBody(call);
+        return jsonResponse(201, {
+          ok: true,
+          name: "echo",
+          version: (body.envelope as { version: string }).version,
+          status: "retired",
+          pinned: false,
+        });
+      }
+      if (call.url.endsWith("/activate")) {
+        return jsonResponse(200, {
+          ok: true,
+          name: "echo",
+          version: jsonBody(call).version,
+          status: "active",
+        });
+      }
+      throw new Error(`unexpected request ${call.url}`);
+    });
+
+    const errors: string[] = [];
+    const close = await watchFunctions({
+      cwd,
+      debounceMs: 20,
+      fetchImpl,
+      config: {
+        cwd,
+        url: "http://localhost:4001",
+        token: "admin-token",
+        functions: {
+          dir: join(cwd, "functions"),
+          typesOut: join(cwd, "src/ebb-functions.generated.ts"),
+        },
+      },
+      print: () => {},
+      printError: (line) => errors.push(line),
+    });
+
+    try {
+      await waitFor(() => uploads(calls).length === 1);
+
+      await writeFile(entry, source(2), "utf8");
+      await waitFor(() => uploads(calls).length === 2);
+
+      expect(calls.filter((call) => call.url.endsWith("/activate"))).toHaveLength(2);
+      expect(errors).toEqual([]);
+    } finally {
+      close();
+    }
+  });
+
   it("deploys everything once, then only the changed entry after the debounce", async () => {
     const cwd = await tempProject("dev-");
     projects.push(cwd);
     await mkdir(join(cwd, "functions"), { recursive: true });
     const entry = join(cwd, "functions", "echo.ts");
-    await writeFile(entry, "export const echo = 1;", "utf8");
+    await writeFile(entry, "export const echo = defineFunction({}, () => 1);", "utf8");
 
     let allCalls = 0;
     const changedCalls: string[][] = [];
@@ -67,7 +141,7 @@ describe("watchFunctions", () => {
         'import type { echo } from "../functions/echo";',
       );
 
-      await writeFile(entry, "export const echo = 2;", "utf8");
+      await writeFile(entry, "export const echo = defineFunction({}, () => 2);", "utf8");
       await waitFor(() => changedCalls.length === 1);
 
       expect(changedCalls[0]).toEqual([entry]);

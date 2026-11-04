@@ -220,12 +220,12 @@ rows, unless the definition sets `access: "authenticated"`.
 
 ## Versioning, rollback, and disable
 
-| Command                                   | Effect                                                        |
-| ----------------------------------------- | ------------------------------------------------------------- |
-| `ebb functions list`                      | Names, active versions, access, and RPC schemas (never code). |
-| `ebb functions activate <name> <version>` | Move the name's active pointer.                               |
-| `ebb functions rollback <name>`           | Activate the version that was active before the current one.  |
-| `ebb functions disable <name>`            | Per-function kill switch: invocations return `404`.           |
+| Command                                   | Effect                                                                  |
+| ----------------------------------------- | ----------------------------------------------------------------------- |
+| `ebb functions list`                      | Names, active versions, access, and the permission string (never code). |
+| `ebb functions activate <name> <version>` | Move the name's active pointer.                                         |
+| `ebb functions rollback <name>`           | Activate the version that was active before the current one.            |
+| `ebb functions disable <name>`            | Per-function kill switch: invocations return `404`.                     |
 
 Versions are retained per name (default 20 unpinned, plus the active and pinned
 ones). Rollback follows the activation chain, not a two-row toggle. Disabling a

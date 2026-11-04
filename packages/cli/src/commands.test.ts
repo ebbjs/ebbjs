@@ -164,7 +164,11 @@ describe("commands", () => {
   it("generates the contract map without the network", async () => {
     const cwd = await project();
     await mkdir(join(cwd, "functions"), { recursive: true });
-    await writeFile(join(cwd, "functions", "echo.ts"), "export const echo = 1;", "utf8");
+    await writeFile(
+      join(cwd, "functions", "echo.ts"),
+      "export const echo = defineFunction({}, () => 1);",
+      "utf8",
+    );
 
     const code = await main(["functions", "types"], { cwd, print: () => {} });
     const written = await readFile(join(cwd, "src/ebb-functions.generated.ts"), "utf8");

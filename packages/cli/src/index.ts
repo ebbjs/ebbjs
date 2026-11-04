@@ -44,16 +44,13 @@ export {
   activateVersion,
   disable,
   listFunctions,
-  listVersions,
   rollback,
   uploadVersion,
   type ApiOptions,
   type ApiOptionsInput,
   type FunctionSummary,
   type ListFunctionsResponse,
-  type ListVersionsResponse,
   type UploadVersionInput,
-  type VersionSummary,
 } from "./api.ts";
 
 export {

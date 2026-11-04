@@ -19,7 +19,13 @@ import {
   type FunctionSummary,
 } from "./api.ts";
 import { loadConfig, type ResolvedConfig } from "./config.ts";
-import { checkDrift, hasDrift, writeContractMap, type ContractDrift } from "./contract-map.ts";
+import {
+  checkDrift,
+  hasDrift,
+  writeContractMap,
+  type ContractDrift,
+  type ContractEntry,
+} from "./contract-map.ts";
 import { displayPath, isEntryFile, isMissingFile, isRecord, messageOf } from "./util.ts";
 
 export interface DeployOptions {
@@ -94,10 +100,24 @@ export async function discoverEntries(dir: string): Promise<string[]> {
   return paths.sort();
 }
 
+/**
+ * Each file's declared name, read from its source. The contract map keys and
+ * type imports must match the deployed name, not the file name.
+ */
+export async function discoverEntrySpecs(dir: string): Promise<ContractEntry[]> {
+  const paths = await discoverEntries(dir);
+  return Promise.all(
+    paths.map(async (path) => ({
+      name: definitionName(await readFile(path, "utf8")),
+      path,
+    })),
+  );
+}
+
 export async function deployEntries(options: DeployOptions = {}): Promise<DeployResult> {
   const config = await configFor(options);
-  const paths = await discoverEntries(config.functions.dir);
-  return deployPaths(paths, options, config, paths);
+  const entries = await discoverEntrySpecs(config.functions.dir);
+  return deployEntriesFor(entries, options, config, entries);
 }
 
 /**
@@ -109,15 +129,15 @@ export async function deployFiles(
   options: DeployOptions = {},
 ): Promise<DeployResult> {
   const config = await configFor(options);
-  const discovered = await discoverEntries(config.functions.dir);
-  const selected = paths.map((path) => resolve(config.cwd, path)).sort();
-  const all = uniqueSorted([...discovered, ...selected]);
-  return deployPaths(selected, options, config, all);
+  const entries = await discoverEntrySpecs(config.functions.dir);
+  const selected = new Set(paths.map((path) => resolve(config.cwd, path)));
+  const changed = entries.filter((entry) => selected.has(resolve(entry.path)));
+  return deployEntriesFor(changed, options, config, entries);
 }
 
 /** Regenerates the contract map from the current entries on disk. */
 export async function writeTypes(config: ResolvedConfig): Promise<string> {
-  const entries = await discoverEntries(config.functions.dir);
+  const entries = await discoverEntrySpecs(config.functions.dir);
   return writeContractMap(entries, config.functions.typesOut, {
     cwd: config.cwd,
     displayPath: displayPath(config.cwd, config.functions.typesOut),
@@ -187,17 +207,17 @@ export function evaluateDefinition(code: string, name: string): FunctionDefiniti
   return definition as FunctionDefinition;
 }
 
-async function deployPaths(
-  paths: readonly string[],
+async function deployEntriesFor(
+  entries: readonly ContractEntry[],
   options: DeployOptions,
   config: ResolvedConfig,
-  mapEntries: readonly string[],
+  mapEntries: readonly ContractEntry[],
 ): Promise<DeployResult> {
   const print = options.print ?? console.log;
   const functions: DeployedFunction[] = [];
 
-  for (const path of paths) {
-    const prepared = await prepareDeployment(path, options);
+  for (const entry of entries) {
+    const prepared = await prepareDeployment(entry.path, options);
     const { envelope, code, name, version } = prepared;
 
     await uploadVersion(
@@ -235,7 +255,7 @@ async function deployPaths(
 
 async function reportDrift(
   config: ResolvedConfig,
-  entries: readonly string[],
+  entries: readonly ContractEntry[],
   fetchImpl: FetchLike | undefined,
   print: (line: string) => void,
 ): Promise<ContractDrift | null> {
@@ -274,8 +294,4 @@ async function configFor(options: DeployOptions): Promise<ResolvedConfig> {
     token: options.token,
     actor: options.actor,
   });
-}
-
-function uniqueSorted(paths: readonly string[]): string[] {
-  return [...new Set(paths)].sort();
 }
