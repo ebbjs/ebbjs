@@ -260,6 +260,25 @@ defmodule EbbServer.Functions.BundleCacheTest do
                BundleCache.active("proofreadDocument", cache)
     end
 
+    test "picks up a schema change that keeps the code and digest", %{dir: dir} do
+      envelope = Bundles.envelope("proofreadDocument")
+      Bundles.write_bundle!(dir, envelope)
+      cache = start_cache(dir)
+
+      assert {:ok, %Bundle{params_schema: nil, resolved_params_schema: nil, code: code}} =
+               BundleCache.active("proofreadDocument", cache)
+
+      params_schema = %{"type" => "object", "required" => ["documentId"]}
+      Bundles.write_bundle!(dir, Map.put(envelope, "paramsSchema", params_schema))
+
+      assert {:ok,
+              %Bundle{
+                params_schema: ^params_schema,
+                resolved_params_schema: %ExJsonSchema.Schema.Root{schema: ^params_schema},
+                code: ^code
+              }} = BundleCache.active("proofreadDocument", cache)
+    end
+
     test "keeps serving a good name after another name fails", %{dir: dir} do
       Bundles.write_bundle!(dir, Bundles.envelope("goodFunction"))
       Bundles.write_envelope!(dir, Bundles.envelope("badFunction"))

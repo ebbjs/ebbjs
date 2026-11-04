@@ -25,6 +25,8 @@ defmodule EbbServer.Functions.BundleTest do
                entry: "proofreadDocument",
                params_schema: nil,
                output_schema: nil,
+               resolved_params_schema: nil,
+               resolved_output_schema: nil,
                code: @code
              } = bundle
     end
@@ -42,6 +44,27 @@ defmodule EbbServer.Functions.BundleTest do
       assert bundle.output_schema == output_schema
     end
 
+    test "resolves each schema exactly once, keeping the raw map beside it" do
+      params_schema = %{
+        "type" => "object",
+        "properties" => %{"documentId" => %{"type" => "string"}},
+        "required" => ["documentId"]
+      }
+
+      output_schema = %{"type" => "object", "$defs" => %{"comment" => %{"type" => "string"}}}
+
+      assert {:ok, bundle} =
+               envelope(%{"paramsSchema" => params_schema, "outputSchema" => output_schema})
+               |> Bundle.new(@code)
+
+      assert bundle.params_schema == params_schema
+      assert bundle.output_schema == output_schema
+      assert %ExJsonSchema.Schema.Root{} = bundle.resolved_params_schema
+      assert %ExJsonSchema.Schema.Root{} = bundle.resolved_output_schema
+      assert bundle.resolved_params_schema.schema == params_schema
+      assert bundle.resolved_output_schema.schema == output_schema
+    end
+
     test "ignores fields it does not know, so a signature can arrive in #597" do
       assert {:ok, %Bundle{}} =
                envelope(%{"signature" => "ed25519:abc", "signerKeyId" => "k_1"})
@@ -51,6 +74,36 @@ defmodule EbbServer.Functions.BundleTest do
     test "refuses a non-map envelope and non-binary code" do
       assert {:error, {:invalid_field, "envelope"}} = Bundle.new("not a map", @code)
       assert {:error, {:invalid_field, "code"}} = Bundle.new(envelope(), :not_a_binary)
+    end
+  end
+
+  describe "schemas" do
+    test "refuses a params schema that cannot be resolved" do
+      for schema <- [%{"type" => "nonsense"}, %{"$ref" => "#/definitions/missing"}] do
+        assert {:error, {:invalid_schema, "paramsSchema", reason}} =
+                 Bundle.new(envelope(%{"paramsSchema" => schema}), @code)
+
+        assert is_binary(reason) and reason != ""
+      end
+    end
+
+    test "refuses an output schema that cannot be resolved" do
+      for schema <- [%{"type" => "nonsense"}, %{"$ref" => "#/definitions/missing"}] do
+        assert {:error, {:invalid_schema, "outputSchema", reason}} =
+                 Bundle.new(envelope(%{"outputSchema" => schema}), @code)
+
+        assert is_binary(reason) and reason != ""
+      end
+    end
+
+    test "refuses a schema that is not a JSON object" do
+      for schema <- ["object", true, 42, [%{"type" => "object"}]] do
+        assert {:error, {:invalid_schema, "paramsSchema", "schema must be a JSON object"}} =
+                 Bundle.new(envelope(%{"paramsSchema" => schema}), @code)
+
+        assert {:error, {:invalid_schema, "outputSchema", "schema must be a JSON object"}} =
+                 Bundle.new(envelope(%{"outputSchema" => schema}), @code)
+      end
     end
   end
 

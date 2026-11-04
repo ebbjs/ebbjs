@@ -1,13 +1,20 @@
 defmodule EbbServer.Functions.Bundle do
   @contract_version 1
 
+  alias ExJsonSchema.Schema, as: JsonSchema
+
   @moduledoc """
   One function version: its decoded envelope plus the code bytes.
 
   The envelope is camelCase because the TypeScript build writes it. `entry` is
   the exported binding name, never a path. `paramsSchema` and `outputSchema`
-  are carried through untouched: they are the runtime's contract, and
-  validating them is #595's, not this module's. Fields a future slice adds —
+  are the runtime's contract: the raw maps are kept as the envelope carried
+  them (they are what the API publishes), and each is resolved once here with
+  `ExJsonSchema.Schema.resolve/1` into `resolved_params_schema` /
+  `resolved_output_schema`. `BundleCache` builds a bundle once per fingerprint
+  and caches the struct, so the resolved form rides along and an invocation
+  never resolves a schema. A schema that cannot be resolved therefore fails
+  load or activation, never the first invocation. Fields a future slice adds —
   `signature`, `signer_key_id` — are ignored rather than refused, so an older
   server can still load a bundle before it learns to verify one.
 
@@ -73,6 +80,8 @@ defmodule EbbServer.Functions.Bundle do
     :entry,
     :params_schema,
     :output_schema,
+    :resolved_params_schema,
+    :resolved_output_schema,
     :code
   ]
 
@@ -88,12 +97,15 @@ defmodule EbbServer.Functions.Bundle do
           entry: String.t(),
           params_schema: map() | nil,
           output_schema: map() | nil,
+          resolved_params_schema: ExJsonSchema.Schema.Root.t() | nil,
+          resolved_output_schema: ExJsonSchema.Schema.Root.t() | nil,
           code: binary()
         }
   @type reason ::
           {:missing_field, String.t()}
           | {:invalid_field, String.t()}
           | {:invalid_name, term()}
+          | {:invalid_schema, String.t(), String.t()}
           | :digest_mismatch
           | {:unsupported_contract, term()}
 
@@ -141,7 +153,11 @@ defmodule EbbServer.Functions.Bundle do
          {:ok, contract} <- contract_field(envelope["contract"]),
          {:ok, timeout_ms} <- timeout_field(envelope),
          {:ok, memory_bytes} <- limit_field(envelope, "memoryBytes"),
-         {:ok, digest} <- verify_digest(envelope["digest"], code) do
+         {:ok, digest} <- verify_digest(envelope["digest"], code),
+         {:ok, params_schema, resolved_params_schema} <-
+           resolve_schema(envelope["paramsSchema"], "paramsSchema"),
+         {:ok, output_schema, resolved_output_schema} <-
+           resolve_schema(envelope["outputSchema"], "outputSchema") do
       {:ok,
        %__MODULE__{
          name: name,
@@ -153,8 +169,10 @@ defmodule EbbServer.Functions.Bundle do
          timeout_ms: timeout_ms,
          memory_bytes: memory_bytes,
          entry: entry,
-         params_schema: envelope["paramsSchema"],
-         output_schema: envelope["outputSchema"],
+         params_schema: params_schema,
+         output_schema: output_schema,
+         resolved_params_schema: resolved_params_schema,
+         resolved_output_schema: resolved_output_schema,
          code: code
        }}
     end
@@ -204,6 +222,19 @@ defmodule EbbServer.Functions.Bundle do
       _value -> {:error, {:invalid_field, field}}
     end
   end
+
+  defp resolve_schema(nil, _field), do: {:ok, nil, nil}
+
+  defp resolve_schema(schema, field) when is_map(schema) do
+    {:ok, schema, JsonSchema.resolve(schema)}
+  rescue
+    error -> {:error, {:invalid_schema, field, Exception.message(error)}}
+  catch
+    kind, reason -> {:error, {:invalid_schema, field, inspect({kind, reason})}}
+  end
+
+  defp resolve_schema(_schema, field),
+    do: {:error, {:invalid_schema, field, "schema must be a JSON object"}}
 
   defp verify_digest(digest, code) do
     with true <- is_binary(digest),
