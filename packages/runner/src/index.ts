@@ -1,21 +1,59 @@
-import { createContext, type EntityRegistry } from "@ebbjs/functions-runtime";
+import { createContext, type EntityRegistry, type LogEntry } from "@ebbjs/functions-runtime";
+import type { FetchAuditFields, FunctionLimits } from "@ebbjs/functions-protocol";
 import type { Context } from "@ebbjs/server";
 
-import { SocketHostTransport, type HostTransport } from "./transport.ts";
+import { captureConsole, createLogSink } from "./logging.ts";
+import { installFetchGuard } from "./fetch.ts";
+import { resolveLimits } from "./limits.ts";
+import { messageOf } from "./messages.ts";
+import { guardTransport, type RunnerTransport } from "./transport.ts";
 
 export { FrameTooLargeError, SocketHostTransport, type HostTransport } from "./transport.ts";
+export { guardTransport, type RunnerTransport } from "./transport.ts";
+export {
+  DEFAULT_MAX_HOST_CALLS,
+  DEFAULT_MAX_LOG_BYTES,
+  DEFAULT_MAX_LOG_LINES,
+  DEFAULT_TIMEOUT_MS,
+  HostCallLimitError,
+  resolveLimits,
+  type InvocationLimits,
+} from "./limits.ts";
+export {
+  captureConsole,
+  createLogSink,
+  formatArgs,
+  formatValue,
+  LOG_TRUNCATION_NOTICE,
+  type LogSink,
+} from "./logging.ts";
+export {
+  compileAllowlist,
+  createGuardedFetch,
+  DEFAULT_MAX_FETCH_RESPONSE_BYTES,
+  FetchBlockedError,
+  FetchResponseTooLargeError,
+  installFetchGuard,
+} from "./fetch.ts";
+export { boundedResultFrame, type ResultOutcome } from "./result.ts";
+export { messageOf } from "./messages.ts";
+export { createSession, type Session, type SessionOptions } from "./session.ts";
 
 export const RUNNER_VERSION = "0.0.0";
 
 type Handler = (ctx: unknown, params: unknown) => unknown;
 
 export interface RunInvocationOptions {
-  transport: HostTransport;
+  transport: RunnerTransport;
   invocationId: string;
   subjectActorId: string;
   bundle: string;
   entry: string;
   input: unknown;
+  /** The invocation's per-function secrets, from `invoke.env`. */
+  env?: Readonly<Record<string, string>>;
+  /** The invocation's budget, from `invoke.limits`; defaults apply per field. */
+  limits?: FunctionLimits;
 }
 
 /**
@@ -28,33 +66,88 @@ export interface RunInvocationOptions {
  * its exports on the `__ebbFunction` global. A deployed bundle exports one
  * `defineFunction` definition per entry name — `{ <entryName>: { schema,
  * handler } }` — while a test fixture may export the handler and the schema
- * side by side. The process boundary is for resilience, not a security
- * sandbox: functions are trusted authors and Bun globals stay reachable,
- * including native `fetch`.
+ * side by side.
+ *
+ * The process boundary is for resilience, not a security sandbox: functions
+ * are trusted authors and Bun globals stay reachable. The guardrails this
+ * function installs for the handler's lifetime are best-effort, not a sandbox:
+ *
+ * - host calls stop at `max_host_calls`, with a `HostCallLimitError` the
+ *   handler can catch; nothing is sent past the budget;
+ * - `ctx.log` and `console.debug/info/log/warn/error` share a line and byte
+ *   budget; lines past it are dropped after one truncation notice;
+ * - `globalThis.fetch` is replaced by an allowlist and response-cap shim that
+ *   emits one `fetch_audit` per request — and restored afterwards, as are the
+ *   `console` methods. One invocation runs per process at a time, so patching
+ *   the globals for its duration is safe here.
  */
 export async function runInvocation(options: RunInvocationOptions): Promise<unknown> {
-  const module = evaluateBundle(options.bundle);
-  const exported = module[options.entry];
-  const handler = typeof exported === "function" ? exported : handlerOf(exported);
-
-  if (handler === undefined) {
-    throw new HandlerError(`bundle does not export a function named ${options.entry}`);
-  }
-
-  // Annotated so the runtime context keeps satisfying the SDK's handler view.
-  const ctx: Context = createContext({
+  const limits = resolveLimits(options.limits);
+  // Log lines do not pass through the call budget and calls do not pass
+  // through the log budget, so both wrappers sit on the raw transport.
+  const sink = createLogSink({
+    send: (entry) => sendLog(options.transport, entry),
+    maxLines: limits.maxLogLines,
+    maxBytes: limits.maxLogBytes,
+  });
+  const transport = guardTransport({
     transport: options.transport,
-    invocationId: options.invocationId,
-    actor: { id: options.subjectActorId },
-    caller: { kind: "actor", id: options.subjectActorId },
-    registry: schemaRegistryOf(module, options.entry),
+    maxHostCalls: limits.maxHostCalls,
+    log: (entry) => sink.log(entry),
+  });
+  const restoreConsole = captureConsole((entry) => sink.log(entry));
+  const restoreFetch = installFetchGuard({
+    allowlist: limits.fetchAllowlist,
+    audit: (fields) => sendAudit(options.transport, fields),
   });
 
-  const value = await (handler as Handler)(ctx, options.input);
-  // One invocation is one Action: pending writes flush before the result frame.
-  await ctx.commit();
-  return value;
+  try {
+    const module = evaluateBundle(options.bundle);
+    const exported = module[options.entry];
+    const handler = typeof exported === "function" ? exported : handlerOf(exported);
+
+    if (handler === undefined) {
+      throw new HandlerError(`bundle does not export a function named ${options.entry}`);
+    }
+
+    // Annotated so the runtime context keeps satisfying the SDK's handler view.
+    const ctx: Context = createContext({
+      transport,
+      invocationId: options.invocationId,
+      actor: { id: options.subjectActorId },
+      caller: { kind: "actor", id: options.subjectActorId },
+      registry: schemaRegistryOf(module, options.entry),
+      env: options.env,
+    });
+
+    const value = await (handler as Handler)(ctx, options.input);
+    // One invocation is one Action: pending writes flush before the result frame.
+    await ctx.commit();
+    return value;
+  } finally {
+    restoreFetch();
+    restoreConsole();
+    sink.close();
+  }
 }
+
+/** Logging is fire-and-forget: a transport that throws must not fail the call. */
+const sendLog = (transport: RunnerTransport, entry: LogEntry): void => {
+  try {
+    transport.log?.(entry);
+  } catch {
+    // Dropped: the invocation does not fail over a log line.
+  }
+};
+
+/** Fetch telemetry is fire-and-forget too; it never fails the request it describes. */
+const sendAudit = (transport: RunnerTransport, fields: FetchAuditFields): void => {
+  try {
+    transport.audit?.(fields);
+  } catch {
+    // Dropped: telemetry never fails an invocation.
+  }
+};
 
 /** A `defineFunction` definition as it survives the bundle, or `undefined`. */
 const handlerOf = (exported: unknown): Handler | undefined => {
@@ -114,8 +207,4 @@ export function evaluateBundle(bundle: string): Record<string, unknown> {
   ) as () => Record<string, unknown>;
 
   return factory();
-}
-
-export function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
