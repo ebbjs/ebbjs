@@ -96,6 +96,33 @@ its HLC. The overlay also backs the relationship verbs' FK reads and the
 membership pre-flight, so a verb after a write sees the batch, not the stored
 state.
 
+## Secrets and logs
+
+`ctx.env` is the invocation's per-function secrets, copied from the invoke
+frame's `env` and frozen. It is empty when the function has none, and it is
+never written to a host call or a log line by the runtime.
+
+`ctx.log(message, level?)` sends one fire-and-forget `log` frame; `level`
+defaults to `"info"` and may be `"debug" | "info" | "log" | "warn" | "error"`.
+The runner also captures `console.debug/info/log/warn/error` for the
+invocation and sends each call as a `log` frame, so a handler that prints with
+either one lands in the same place.
+
+Logging never fails an invocation. The host budgets the lines: the runner
+enforces `max_log_lines` (default 200) and `max_log_bytes` (default 64 KiB)
+over the whole invocation, drops the first line that does not fit, then sends
+one truncation notice and drops the rest. A transport that cannot carry logs,
+or one that throws, loses the line rather than the result.
+
+The handler sees the process's globals, not a sandbox: the runner replaces
+`globalThis.fetch` for the invocation's duration with an allowlist and
+response-size shim that emits one `fetch_audit` frame per request, and restores
+it when the invocation ends. An empty `fetch_allowlist` is unrestricted; with
+an entry, only that hostname (and, when the entry names one, that port) is
+reachable and a blocked request rejects with an error the handler can catch.
+The shim's audit frame carries the method, URL, status, duration, and whether
+the request was blocked — never headers or bodies.
+
 ## External effects are not rolled back
 
 A rejected commit, a thrown handler, or a deadline leaves the database as it

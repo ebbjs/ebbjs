@@ -125,3 +125,102 @@ describe("createContext", () => {
     expect(transport.calls).toEqual([]);
   });
 });
+
+describe("context env and logging", () => {
+  const withLog = () => {
+    const entries: { level: string; message: string }[] = [];
+    const transport: HostTransport = {
+      call: async () => null,
+      log: (entry) => entries.push(entry),
+    };
+    return { transport, entries };
+  };
+
+  it("exposes env as a frozen copy of the option", () => {
+    const env = { API_TOKEN: "shh" };
+    const ctx = createContext({
+      transport: fakeTransport(async () => null),
+      invocationId: "inv_env",
+      actor: { id: "a_test" },
+      caller: { kind: "actor", id: "a_test" },
+      env,
+    });
+
+    expect(ctx.env).toEqual({ API_TOKEN: "shh" });
+    expect(Object.isFrozen(ctx.env)).toBe(true);
+    expect(ctx.env).not.toBe(env);
+  });
+
+  it("defaults env to an empty frozen record", () => {
+    const ctx = createContext({
+      transport: fakeTransport(async () => null),
+      invocationId: "inv_env",
+      actor: { id: "a_test" },
+      caller: { kind: "actor", id: "a_test" },
+    });
+
+    expect(ctx.env).toEqual({});
+    expect(Object.isFrozen(ctx.env)).toBe(true);
+  });
+
+  it("sends ctx.log to the transport, defaulting to info", () => {
+    const { transport, entries } = withLog();
+    const ctx = createContext({
+      transport,
+      invocationId: "inv_log",
+      actor: { id: "a_test" },
+      caller: { kind: "actor", id: "a_test" },
+    });
+
+    ctx.log("note");
+    ctx.log("careful", "warn");
+
+    expect(entries).toEqual([
+      { level: "info", message: "note" },
+      { level: "warn", message: "careful" },
+    ]);
+  });
+
+  it("drops a log line when the transport cannot carry one", () => {
+    const ctx = createContext({
+      transport: fakeTransport(async () => null),
+      invocationId: "inv_log",
+      actor: { id: "a_test" },
+      caller: { kind: "actor", id: "a_test" },
+    });
+
+    expect(() => ctx.log("hello")).not.toThrow();
+  });
+
+  it("never fails on a throwing transport or an unserializable message", () => {
+    const transport: HostTransport = {
+      call: async () => null,
+      log: () => {
+        throw new Error("socket gone");
+      },
+    };
+    const ctx = createContext({
+      transport,
+      invocationId: "inv_log",
+      actor: { id: "a_test" },
+      caller: { kind: "actor", id: "a_test" },
+    });
+
+    expect(() => ctx.log("hello")).not.toThrow();
+    expect(() => ctx.log({ toString: undefined } as never)).not.toThrow();
+  });
+
+  it("falls back to info for a level the wire does not define", () => {
+    const { transport, entries } = withLog();
+    const ctx = createContext({
+      transport,
+      invocationId: "inv_log",
+      actor: { id: "a_test" },
+      caller: { kind: "actor", id: "a_test" },
+    });
+
+    ctx.log("hello", "verbose" as never);
+
+    expect(entries).toEqual([{ level: "info", message: "hello" }]);
+  });
+});

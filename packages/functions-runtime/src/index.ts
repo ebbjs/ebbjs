@@ -11,11 +11,12 @@
 
 import { createClock, type HLCState } from "@ebbjs/core";
 import type { EntityResponse } from "@ebbjs/client";
+import type { LogLevel } from "@ebbjs/functions-protocol";
 import type { EntityRegistry } from "@ebbjs/schema";
 import type { CreateHandle, OperationIds, PointerTarget } from "@ebbjs/write";
 
 import type { CommitOutcome } from "./commit.ts";
-import type { Caller, HostOp, HostTransport } from "./transport.ts";
+import type { Caller, HostOp, HostTransport, LogEntry } from "./transport.ts";
 import {
   createWriteSurface,
   defaultOperationIds,
@@ -29,7 +30,7 @@ export { ActionRejectedError } from "@ebbjs/write";
 export { EntityValidationError } from "@ebbjs/schema";
 export { HostCallError, actionIdForInvocation, type CommitOutcome } from "./commit.ts";
 export { MissingSchemaError, WritesCommittedError } from "./errors.ts";
-export type { Caller, HostOp, HostTransport } from "./transport.ts";
+export type { Caller, HostOp, HostTransport, LogEntry } from "./transport.ts";
 export type { CreateOptions, UnrelateOptions, WriteOptions } from "./writes.ts";
 export type { CreateHandle } from "@ebbjs/write";
 export type { OperationIds } from "@ebbjs/write";
@@ -94,9 +95,28 @@ export interface Context {
    */
   commit(): Promise<CommitOutcome>;
 
+  /**
+   * Send one log line to the host, fire-and-forget. `level` defaults to
+   * `"info"`; `"log"` is the level `console.log` maps to.
+   *
+   * The host owns the budget: once the invocation's line or byte cap is
+   * reached the line is dropped, and at most one truncation notice follows.
+   * Logging therefore never fails an invocation — not a transport error, not
+   * an unserializable value. Messages are the handler's own; the runtime never
+   * logs `env` for it.
+   */
+  log(message: string, level?: LogLevel): void;
+
   readonly actor: { readonly id: string };
   readonly caller: Caller;
   readonly invocationId: string;
+
+  /**
+   * The invocation's per-function secrets, from the invoke frame. Frozen and
+   * copied at context creation, so a handler cannot widen or reassign them.
+   * Empty when the function has no secrets.
+   */
+  readonly env: Readonly<Record<string, string>>;
 }
 
 export interface CreateContextOptions {
@@ -110,6 +130,8 @@ export interface CreateContextOptions {
   readonly ids?: OperationIds;
   /** The invocation's clock; defaults to a fresh `createClock()`. */
   readonly clock?: HLCState;
+  /** The invocation's per-function secrets; copied and frozen onto `ctx.env`. */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -130,6 +152,14 @@ export function createContext(options: CreateContextOptions): Context {
     registry: options.registry,
   });
 
+  const log = (message: string, level?: LogLevel): void => {
+    try {
+      options.transport.log?.(logEntry(message, level));
+    } catch {
+      // A log line is best-effort: it must never fail the invocation.
+    }
+  };
+
   return Object.freeze({
     get: surface.read,
     create: surface.create,
@@ -138,8 +168,43 @@ export function createContext(options: CreateContextOptions): Context {
     relate: surface.relate,
     unrelate: surface.unrelate,
     commit: surface.commit,
+    log,
     actor: Object.freeze({ id: options.actor.id }),
     caller: Object.freeze({ kind: options.caller.kind, id: options.caller.id }),
     invocationId: options.invocationId,
+    env: freezeEnv(options.env),
   });
 }
+
+/** The levels a `log` frame may carry; a handler's level is validated against them. */
+const LOG_LEVELS: ReadonlySet<string> = new Set(["debug", "info", "log", "warn", "error"]);
+
+const isLogLevel = (value: unknown): value is LogLevel =>
+  typeof value === "string" && LOG_LEVELS.has(value);
+
+const logEntry = (message: unknown, level: unknown): LogEntry => ({
+  level: isLogLevel(level) ? level : "info",
+  message: messageOf(message),
+});
+
+/**
+ * A handler can pass anything to `ctx.log`, so stringifying must not throw:
+ * an object whose `toString` throws is a log line, not an invocation failure.
+ */
+const messageOf = (message: unknown): string => {
+  if (typeof message === "string") return message;
+
+  try {
+    return String(message);
+  } catch {
+    return "[unprintable]";
+  }
+};
+
+/** A frozen copy: `env` is per-invocation data, never a shared host object. */
+const freezeEnv = (
+  env: Readonly<Record<string, string>> | undefined,
+): Readonly<Record<string, string>> =>
+  Object.freeze(
+    Object.fromEntries(Object.entries(env ?? {}).map(([key, value]) => [key, String(value)])),
+  );

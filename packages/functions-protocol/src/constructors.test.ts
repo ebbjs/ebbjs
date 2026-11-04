@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { call, invoke, ready, reply, result } from "./constructors.ts";
+import { call, fetchAudit, invoke, logFrame, ready, reply, result } from "./constructors.ts";
 import { compatibleVersion, PROTOCOL_VERSION } from "./frames.ts";
 
 describe("constructors", () => {
@@ -53,6 +53,41 @@ describe("constructors", () => {
       kind: "handler_error",
       message: "boom",
     });
+  });
+
+  it("builds the log and fetch_audit frames", () => {
+    expect(logFrame("warn", "careful")).toEqual({
+      type: "log",
+      level: "warn",
+      message: "careful",
+    });
+
+    expect(
+      fetchAudit({
+        method: "GET",
+        url: "https://api.example.com/x",
+        status: 200,
+        duration_ms: 12,
+        blocked: false,
+      }),
+    ).toEqual({
+      type: "fetch_audit",
+      method: "GET",
+      url: "https://api.example.com/x",
+      status: 200,
+      duration_ms: 12,
+      blocked: false,
+    });
+
+    expect(
+      fetchAudit({
+        method: "POST",
+        url: "https://evil.example/x",
+        status: null,
+        duration_ms: 0,
+        blocked: true,
+      }).status,
+    ).toBeNull();
   });
 
   it("omits fields the caller leaves out", () => {
