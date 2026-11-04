@@ -2,8 +2,8 @@ defmodule EbbServer.FunctionsTest do
   use ExUnit.Case, async: false
 
   alias EbbServer.Functions
-  alias EbbServer.Functions.Bundle.DirLoader
-  alias EbbServer.Functions.BundleCache
+  alias EbbServer.Functions.Bundle.{DirLoader, StoreLoader}
+  alias EbbServer.Functions.{BundleCache, Store}
   alias EbbServer.Functions.Worker.Fake
 
   @env_key "EBB_FUNCTIONS_ENABLED"
@@ -124,17 +124,17 @@ defmodule EbbServer.FunctionsTest do
     end
   end
 
-  describe "children/0" do
+  describe "children/1" do
     test "is empty while functions are disabled" do
-      configure(enabled: false)
+      configure(enabled: false, bundle_dir: "/srv/functions/bundles")
 
-      assert Functions.children() == []
+      assert Functions.children(data_dir: "/tmp/functions") == []
     end
 
-    test "is a bundle cache over the directory loader when enabled" do
+    test "is a bundle cache over the directory loader when a bundle_dir is configured" do
       configure(enabled: true, bundle_dir: "/srv/functions/bundles")
 
-      assert [spec] = Functions.children()
+      assert [spec] = Functions.children(data_dir: "/tmp/functions")
 
       assert %{
                id: BundleCache,
@@ -145,11 +145,83 @@ defmodule EbbServer.FunctionsTest do
       assert opts[:loader_opts] == [dir: "/srv/functions/bundles"]
     end
 
-    test "refuses to enable functions without a bundle directory" do
+    test "is the store then the cache over the store loader without a bundle_dir" do
+      configure(enabled: true, retention: 5, admin_token: "deploy-secret")
+
+      assert [store_spec, cache_spec] = Functions.children(data_dir: "/srv/ebb/data")
+
+      assert %{
+               id: Store,
+               start: {Store, :start_link, [store_opts]}
+             } = Supervisor.child_spec(store_spec, [])
+
+      assert store_opts[:data_dir] == "/srv/ebb/data"
+      assert store_opts[:retention] == 5
+
+      assert %{
+               id: BundleCache,
+               start: {BundleCache, :start_link, [cache_opts]}
+             } = Supervisor.child_spec(cache_spec, [])
+
+      assert cache_opts[:loader] == StoreLoader
+      assert cache_opts[:loader_opts] == [store: Store]
+    end
+
+    test "falls back to the application data dir when no data_dir is passed" do
+      configure(enabled: true)
+      previous = Application.get_env(:ebb_server, :data_dir)
+      Application.put_env(:ebb_server, :data_dir, "/srv/ebb/configured")
+
+      on_exit(fn ->
+        case previous do
+          nil -> Application.delete_env(:ebb_server, :data_dir)
+          value -> Application.put_env(:ebb_server, :data_dir, value)
+        end
+      end)
+
+      assert [{Store, opts}, {BundleCache, _cache_opts}] = Functions.children()
+      assert opts[:data_dir] == "/srv/ebb/configured"
+    end
+
+    test "a blank bundle_dir is not configured" do
+      configure(enabled: true, bundle_dir: "")
+
+      assert [{Store, _store_opts}, {BundleCache, _cache_opts}] =
+               Functions.children(data_dir: "/srv/ebb/data")
+    end
+
+    test "bundle_dir!/0 still refuses when asked directly" do
       configure(enabled: true)
 
-      error = assert_raise(RuntimeError, fn -> Functions.children() end)
+      error = assert_raise(RuntimeError, fn -> Functions.bundle_dir!() end)
       assert error.message =~ ":bundle_dir is not set"
+    end
+  end
+
+  describe "retention/0 and admin_token/0" do
+    test "retention defaults to 20 and reads the configured value" do
+      configure(enabled: true)
+      assert Functions.retention() == 20
+
+      configure(enabled: true, retention: 3)
+      assert Functions.retention() == 3
+    end
+
+    test "admin_token is nil when unset or blank" do
+      configure(enabled: true)
+      assert Functions.admin_token() == nil
+
+      configure(enabled: true, admin_token: "")
+      assert Functions.admin_token() == nil
+
+      configure(enabled: true, admin_token: "   ")
+      assert Functions.admin_token() == nil
+    end
+
+    test "admin_token reads the configured deploy credential" do
+      configure(enabled: true, admin_token: "deploy-secret")
+
+      assert Functions.admin_token() == "deploy-secret"
     end
   end
 
