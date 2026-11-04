@@ -67,6 +67,14 @@ describe("client.functions types", () => {
     expectTypeOf(client.functions.noop()).toEqualTypeOf<Promise<{ readonly replayed: boolean }>>();
   });
 
+  it("leaves the functions map optional", () => {
+    const plain = createClient({ serverUrl: "http://localhost:4000", actorId: "a_test" });
+
+    expectTypeOf(plain).toMatchTypeOf<SyncClient>();
+    // @ts-expect-error no map was passed, so there is no functions surface
+    plain.functions;
+  });
+
   it("does not require a functions property when the map is erased", () => {
     // `ReturnType<typeof createClient>` instantiates the map generic to its
     // constraint, not to the empty default. A bare SyncClient must still be
