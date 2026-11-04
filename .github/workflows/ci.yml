@@ -303,7 +303,7 @@ jobs:
           # Key on sources (not just mix.lock) so .ex changes
           # invalidate; no restore-keys so a stale release can't
           # sneak in via prefix match. v2- busts the pre-fix cache.
-          key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
+          key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex', 'ebb_server/priv/**') }}
 
   # ─────────────────────────────────────────────────────────
   # TypeScript jobs
@@ -371,7 +371,7 @@ jobs:
         with:
           path: packages/testing/dist/ebb_server
           # Key must match elixir-release. v2- busts pre-fix cache.
-          key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
+          key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex', 'ebb_server/priv/**') }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Type check the client and the functions example
@@ -401,7 +401,7 @@ jobs:
         with:
           path: packages/testing/dist/ebb_server
           # Key must match elixir-release. v2- busts pre-fix cache.
-          key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
+          key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex', 'ebb_server/priv/**') }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Start ebb_server
@@ -473,7 +473,7 @@ jobs:
         with:
           path: packages/testing/dist/ebb_server
           # Key must match elixir-release. v2- busts pre-fix cache.
-          key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex') }}
+          key: v2-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ebb_server/mix.lock', 'ebb_server/config/*.exs', 'ebb_server/lib/**/*.ex', 'ebb_server/priv/**') }}
       - name: Install OS deps for Chromium
         run: sudo apt-get update && sudo apt-get install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2t64
       - run: pnpm install --frozen-lockfile

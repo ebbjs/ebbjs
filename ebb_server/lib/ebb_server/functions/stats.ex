@@ -78,7 +78,10 @@ defmodule EbbServer.Functions.Stats do
   end
 
   def handle_event([:ebb, :functions, :invoke, :exception], measurements, metadata, _config) do
-    record_invocation(%{metadata | outcome: :error}, measurements)
+    record_invocation(
+      %{metadata | outcome: :error},
+      Map.put(measurements, :worker_started, false)
+    )
   end
 
   def handle_event([:ebb, :functions, :fetch], _measurements, metadata, _config) do
@@ -164,21 +167,23 @@ defmodule EbbServer.Functions.Stats do
     end)
   end
 
-  defp record_invocation(metadata, _measurements) do
+  # A refusal that never leased a worker — saturation, a missing runner — is
+  # an error but not a kill: operators read `worker_kills` to decide whether
+  # processes are dying, and counting a checkout that never happened would
+  # point them at the wrong thing.
+  defp record_invocation(metadata, measurements) do
     increment_function(metadata, :invocations)
+    outcome = Map.get(metadata, :outcome)
 
-    case Map.get(metadata, :outcome) do
-      :ok ->
-        :ok
+    if outcome == :ok do
+      :ok
+    else
+      increment_function(metadata, :errors)
+      if outcome == :timeout, do: increment_function(metadata, :timeouts)
 
-      :timeout ->
-        increment_function(metadata, :errors)
-        increment_function(metadata, :timeouts)
+      if Map.get(measurements, :worker_started) do
         increment_function(metadata, :worker_kills)
-
-      _other ->
-        increment_function(metadata, :errors)
-        increment_function(metadata, :worker_kills)
+      end
     end
 
     :ok

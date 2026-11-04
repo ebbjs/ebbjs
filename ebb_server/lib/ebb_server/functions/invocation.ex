@@ -470,7 +470,8 @@ defmodule EbbServer.Functions.Invocation do
       log_lines: state.log_budget.lines,
       log_bytes: state.log_budget.bytes,
       input_bytes: state.input_bytes || 0,
-      output_bytes: output_bytes(result)
+      output_bytes: output_bytes(result),
+      worker_started: true
     }
   end
 
@@ -485,7 +486,8 @@ defmodule EbbServer.Functions.Invocation do
       log_lines: 0,
       log_bytes: 0,
       input_bytes: 0,
-      output_bytes: 0
+      output_bytes: 0,
+      worker_started: false
     }
   end
 
@@ -554,14 +556,11 @@ defmodule EbbServer.Functions.Invocation do
   defp outcome(_result), do: :error
 
   defp log_meta(state) do
-    Map.merge(
-      %{
-        name: Map.get(state.telemetry_meta, :name, "unknown"),
-        version: Map.get(state.telemetry_meta, :version, "unknown"),
-        invocation_id: state.context.invocation_id
-      },
-      %{}
-    )
+    %{
+      name: Map.get(state.telemetry_meta, :name, "unknown"),
+      version: Map.get(state.telemetry_meta, :version, "unknown"),
+      invocation_id: state.context.invocation_id
+    }
   end
 
   defp number(value) when is_number(value), do: value

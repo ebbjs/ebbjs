@@ -115,8 +115,10 @@ export const proofreadDocument = defineFunction(
   runner validates again with the full schema; the handler sees the inferred
   type.
 - `options.access` is `"granted"` (default) or `"authenticated"`;
-  `timeoutMs` and `memoryBytes` bound the worker; `output` optionally validates
-  the handler's result.
+  `timeoutMs` bounds the invocation; `output` optionally validates the
+  handler's result. `memoryBytes` is validated and carried in the envelope, but
+  v1 applies a node-wide memory cap (see Limits) rather than a per-function one,
+  because pooled workers are spawned before the bundle is known.
 - The handler returns JSON-serializable data. An object result is spread onto
   the client's resolved value, so `{ commentCount }` becomes
   `{ commentCount, replayed }`.
@@ -429,6 +431,12 @@ Some items in the milestone are deliberately decisions rather than code:
   `last_group_member`), and the server's `422 rejected` is the backstop for a
   full `Authorizer.authorize/3` check. One enforcement point, not two that can
   disagree.
+- **Memory is node-wide, not per-function.** A pooled worker is spawned before
+  an invocation knows which bundle it will run, so `memoryBytes` cannot set the
+  OS cap per function. The node config (`:memory_bytes`, default 256 MB) sets
+  the Linux `ulimit -v` for every worker, and the envelope's value is validated
+  and carried but unused. A per-function cap would need a pool partitioned by
+  memory class, which v1 does not have.
 - **macOS gets no memory cap.** There is no portable per-process
   address-space limit the server can set without privileges; the deadline and
   process-group kill remain the containment, and Linux applies `ulimit -v`.

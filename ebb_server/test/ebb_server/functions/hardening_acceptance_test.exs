@@ -218,9 +218,14 @@ defmodule EbbServer.Functions.HardeningAcceptanceTest do
       System.put_env(@secret_env, "s3cret")
       Functions.resolve!()
 
-      accepted = post_function(name, "{}", actor_id)
+      {accepted, log} = run_with_log(fn -> post_function(name, "{}", actor_id) end)
       assert accepted.status == 200
       assert_receive {:invocation_env, %{@secret_env => "s3cret"}}
+
+      # The value reaches the frame and nothing else: not the response, not a
+      # log line, not a telemetry metadata field.
+      refute accepted.resp_body =~ "s3cret"
+      refute log =~ "s3cret"
     end
   end
 
@@ -470,6 +475,60 @@ defmodule EbbServer.Functions.HardeningAcceptanceTest do
       assert row["invocations"] >= 1
       assert is_map(body["pool"])
       assert is_integer(body["pool"]["idle"])
+    end
+  end
+
+  describe "health counters after failures" do
+    test "count errors, timeouts, and worker kills per version", %{dir: dir} do
+      fails = "alwaysFails"
+      slow = "alwaysSlow"
+      actor_id = unique("a")
+
+      seed_member(actor_id, unique("g"), ["function.*"])
+      deploy!(dir, fails)
+      deploy!(dir, slow, envelope: %{"timeoutMs" => 50})
+
+      configure_boot(
+        bundle_dir: dir,
+        transport: Fake,
+        admin_token: "health-token",
+        worker_opts: [
+          script: [
+            %{"send" => Protocol.ready(nil, "fake-1.0.0")},
+            %{"script" => "branch"}
+          ],
+          scripts: %{
+            "branch" => fn api ->
+              invoke = api.expect.(%{"type" => "invoke"})
+
+              case invoke["name"] do
+                ^fails -> api.send.(Protocol.result({:error, "handler_error", "boom"}))
+                ^slow -> :ok
+              end
+            end
+          }
+        ]
+      )
+
+      assert post_function(fails, "{}", actor_id).status == 422
+      assert post_function(slow, "{}", actor_id).status == 408
+
+      response =
+        call_functions(:get, "/health", "",
+          actor_id: actor_id,
+          authorization: "Bearer health-token"
+        )
+
+      assert response.status == 200
+      rows = Jason.decode!(response.resp_body)["functions"]
+
+      failed = Enum.find(rows, &(&1["name"] == fails))
+      assert failed["errors"] >= 1
+      assert failed["worker_kills"] >= 1
+
+      timed_out = Enum.find(rows, &(&1["name"] == slow))
+      assert timed_out["errors"] >= 1
+      assert timed_out["timeouts"] >= 1
     end
   end
 

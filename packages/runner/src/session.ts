@@ -127,6 +127,7 @@ export function createSession(options: SessionOptions): Session {
           transport: active,
           invocationId: String(frame.invocation_id ?? ""),
           subjectActorId: String(frame.subject_actor_id ?? ""),
+          callerKind: frame.caller_kind === "service" ? "service" : "actor",
           bundle: String(frame.bundle ?? ""),
           entry: String(frame.entry ?? frame.name ?? ""),
           input: frame.input,

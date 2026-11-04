@@ -115,7 +115,7 @@ export async function runInvocation(options: RunInvocationOptions): Promise<unkn
       transport,
       invocationId: options.invocationId,
       actor: { id: options.subjectActorId },
-      caller: { kind: "actor", id: options.subjectActorId },
+      caller: { kind: options.callerKind ?? "actor", id: options.subjectActorId },
       registry: schemaRegistryOf(module, options.entry),
       env: options.env,
     });

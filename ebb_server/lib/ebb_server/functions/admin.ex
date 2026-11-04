@@ -16,10 +16,11 @@ defmodule EbbServer.Functions.Admin do
   secret is an operational mistake, and answering `403` is recoverable in a way
   that an unauthenticated deploy route is not.
 
-  Comparison is constant time (`Plug.Crypto.secure_compare/2`) and only
-  happens once both sides are known non-empty strings, so a request cannot
-  learn the token's length, nor which byte differs, from timing or from which
-  branch answered.
+  Comparison hashes both the configured token and the presented one, then
+  compares the digests with `Plug.Crypto.secure_compare/2`. `secure_compare/2`
+  returns early on a length mismatch, so comparing the tokens directly would
+  leak the configured token's length; fixed-width digests do not. Only the
+  digest is compared, and only once both sides are known non-empty.
   """
 
   alias EbbServer.Functions
@@ -37,11 +38,15 @@ defmodule EbbServer.Functions.Admin do
   """
   @spec authorize(Plug.Conn.t(), keyword()) :: :ok | error()
   def authorize(conn, opts \\ []) do
-    token = Keyword.get(opts, :admin_token) || Functions.admin_token()
+    token =
+      case Keyword.fetch(opts, :admin_token) do
+        {:ok, value} -> value
+        :error -> Functions.admin_token()
+      end
 
     with true <- configured?(token),
          {:ok, presented} <- bearer(Plug.Conn.get_req_header(conn, "authorization")),
-         true <- Plug.Crypto.secure_compare(presented, token) do
+         true <- Plug.Crypto.secure_compare(digest(presented), digest(token)) do
       :ok
     else
       _denied -> {:error, :denied}
@@ -49,6 +54,8 @@ defmodule EbbServer.Functions.Admin do
   end
 
   defp configured?(token), do: is_binary(token) and token != ""
+
+  defp digest(value), do: :crypto.hash(:sha256, value)
 
   # The scheme is case-insensitive per RFC 6750; the token is not, and is
   # compared verbatim.

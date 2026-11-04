@@ -25,6 +25,7 @@ defmodule EbbServer.Functions.Router do
     - `POST /:name/disable` — the operator kill switch: the name's active version
       becomes `disabled`, the name resolves `404`, and activating it again
       re-enables it.
+    - `GET /health` — admin-only per-version counters and pool gauges.
 
   Upload, activation, rollback, disable, and version history are admin
   operations and require the separate deploy credential
@@ -102,14 +103,14 @@ defmodule EbbServer.Functions.Router do
 
   ## Size limits
 
-  An invocation body is read with `#{EbbServer.Functions.Protocol.max_frame_bytes()}`
-  bytes — 1 MiB, i.e. the protocol frame bound — as its limit, in 64 KiB
-  chunks, so an oversize body is refused without being buffered whole. That is
-  this slice's derived limit rather than a separate number: the body becomes
-  the `input` field of the `invoke` frame, so a body bigger than the frame
-  bound can never fit, and a smaller one still might not once the bundle's code
-  is added. The assembled frame is therefore measured before it is sent, and
-  either case answers `413 payload_too_large`.
+  An invocation body is read with `EbbServer.Functions.max_invoke_body_bytes/0`
+  — 256 KiB by default — in 64 KiB chunks, so an oversize body is refused
+  without being buffered whole and before a worker is checked out. The body is
+  deliberately smaller than the 1 MiB frame bound: it becomes the `input` field
+  of the `invoke` frame, which also carries the bundle's code, and an input that
+  cannot fit alongside that code is a request to refuse rather than one to
+  buffer. The assembled frame is measured before it is sent, and either case
+  answers `413 payload_too_large`.
 
   Upload bodies carry code, which the frame bound does not describe, so they
   are read with their own limit: #{8 * 1024 * 1024} bytes, again in 64 KiB
@@ -296,8 +297,14 @@ defmodule EbbServer.Functions.Router do
   # actor assign, so the actor-only `with_actor/2` would deny it.
   defp with_principal(conn, fun) do
     case Principal.resolve(conn, principal_opts(conn)) do
-      {:ok, principal} -> fun.(conn, principal)
-      {:error, _reason} -> send_json(conn, 401, %{"error" => "unauthorized"})
+      {:ok, principal} ->
+        fun.(conn, principal)
+
+      {:error, :unauthenticated} ->
+        send_json(conn, 401, %{"error" => "unauthorized"})
+
+      {:error, :denied} ->
+        send_json(conn, 403, %{"error" => "denied", "details" => "unrecognized service token"})
     end
   end
 
@@ -1120,10 +1127,7 @@ defmodule EbbServer.Functions.Router do
       "subject_actor_id" => principal.actor_id,
       "caller_kind" => Atom.to_string(principal.kind),
       "env" => env,
-      "limits" =>
-        Functions.limits()
-        |> Map.put("timeout_ms", bundle.timeout_ms)
-        |> Map.put("memory_bytes", bundle.memory_bytes)
+      "limits" => Map.put(Functions.limits(), "timeout_ms", bundle.timeout_ms)
     })
   end
 

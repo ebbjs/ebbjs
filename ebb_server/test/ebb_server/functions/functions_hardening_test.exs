@@ -265,9 +265,11 @@ defmodule EbbServer.Functions.HardeningTest do
         worker_opts: [runner_path: runner, bun_path: "/definitely/missing/bun"]
       )
 
-      assert_raise RuntimeError, ~r/executable file is missing|bun was not found/, fn ->
-        Functions.children()
-      end
+      assert_raise RuntimeError,
+                   ~r/bun executable is missing or not runnable|bun was not found/,
+                   fn ->
+                     Functions.children()
+                   end
     end
   end
 end

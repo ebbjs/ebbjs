@@ -16,7 +16,7 @@ defmodule EbbServer.Functions.Worker.PoolTest.Stub do
 
     if notify, do: send(notify, {:stub_started, pid})
 
-    {:ok, %{pid: pid}}
+    {:ok, %{pid: pid, notify: notify}}
   end
 
   @impl true
@@ -49,6 +49,17 @@ defmodule EbbServer.Functions.Worker.PoolTest.Stub do
   @impl true
   def release(_handle), do: :ok
 
+  @impl true
+  def cleanup(%{pid: pid, notify: nil}) do
+    _ = pid
+    :ok
+  end
+
+  def cleanup(%{pid: pid, notify: notify}) do
+    send(notify, {:stub_cleanup, pid})
+    :ok
+  end
+
   defp loop(owner) do
     receive do
       {:set_owner, new_owner} -> loop(new_owner)
@@ -56,6 +67,29 @@ defmodule EbbServer.Functions.Worker.PoolTest.Stub do
       _other -> loop(owner)
     end
   end
+end
+
+defmodule EbbServer.Functions.Worker.PoolTest.NoOwnerStub do
+  @moduledoc false
+  @behaviour EbbServer.Functions.Worker
+
+  @impl true
+  def start(_opts), do: {:ok, %{}}
+
+  @impl true
+  def send_frame(_handle, _frame), do: :ok
+
+  @impl true
+  def close(_handle), do: :ok
+
+  @impl true
+  def alive?(_handle), do: true
+
+  @impl true
+  def monitor(_handle), do: make_ref()
+
+  @impl true
+  def os_pid(_handle), do: nil
 end
 
 defmodule EbbServer.Functions.Worker.PoolTest do
@@ -109,6 +143,7 @@ defmodule EbbServer.Functions.Worker.PoolTest do
 
     assert worker_pid(first) != worker_pid(second)
     assert %{busy: 2, idle: 0} = Pool.snapshot(pool)
+    assert %{"busy" => 2, "idle" => 0} = Stats.snapshot()["pool"] |> Map.take(["busy", "idle"])
 
     assert {:error, :saturated} = Pool.checkout(pool)
   end
@@ -166,14 +201,22 @@ defmodule EbbServer.Functions.Worker.PoolTest do
     refute Process.alive?(original)
   end
 
-  test "a worker that dies is replaced" do
-    pool = start_pool([])
+  test "a worker that dies is replaced and its leftovers are cleaned up" do
+    pool = start_pool(transport_opts: [notify: self()])
     idle(pool)
 
     {:ok, lease} = Pool.checkout(pool)
-    Process.exit(worker_pid(lease), :kill)
+    pid = worker_pid(lease)
+    Process.exit(pid, :kill)
 
+    assert_receive {:stub_cleanup, ^pid}, 1_000
     eventually(fn -> Pool.snapshot(pool).idle == 2 end)
+  end
+
+  test "refuses a transport that cannot change owner" do
+    assert_raise ArgumentError, ~r/set_owner\/2/, fn ->
+      Pool.init(size: 1, transport: NoOwnerStub, transport_opts: [])
+    end
   end
 
   test "a caller that dies while holding a worker does not leak it" do

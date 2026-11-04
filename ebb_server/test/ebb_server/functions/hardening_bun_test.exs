@@ -14,6 +14,7 @@ defmodule EbbServer.Functions.HardeningBunTest do
 
   import ExUnit.CaptureLog
   import EbbServer.FunctionsTestHelpers
+  import EbbServer.Integration.ActionHelpers, only: [get_entity: 2]
 
   alias EbbServer.Functions
   alias EbbServer.Functions.Worker.Bun, as: BunWorker
@@ -69,6 +70,9 @@ defmodule EbbServer.Functions.HardeningBunTest do
     served = post_function(after_slow, "{}", actor_id)
     assert served.status == 200
     assert Jason.decode!(served.resp_body)["result"] == %{"ok" => true}
+
+    # Sync traffic is untouched by the kill: an ordinary read still answers.
+    assert get_entity(unique("todo_missing"), actor_id).status == 404
 
     # The worker directory (socket included) is removed on the kill path; a
     # leftover would be an orphaned process or a leaked socket.

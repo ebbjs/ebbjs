@@ -12,10 +12,10 @@ defmodule EbbServer.Functions.Principal do
       are the credential's own `permissions` list, and the data identity is
       the credential's `subject_actor_id`, never a caller-supplied value.
 
-  The service token is compared by hashing the presented value and walking
-  every configured credential with `Plug.Crypto.secure_compare/2`, without an
-  early return: a request cannot learn which credential matched, how many
-  exist, or how long their tokens are from timing.
+  The service token is compared by hashing the presented value and comparing
+  it with every configured credential's `token_sha256` using
+  `Plug.Crypto.secure_compare/2`. Both sides are always 64 hex characters, so
+  length leaks nothing, and the walk does not stop at a match.
 
   A presented service token is authoritative. It never falls back to the
   actor header, so a request cannot be a service when its token is valid and a
@@ -75,9 +75,15 @@ defmodule EbbServer.Functions.Principal do
   defp service_principal(token, opts) do
     digest = Base.encode16(:crypto.hash(:sha256, token), case: :lower)
 
+    # `Enum.reduce/3` rather than `Enum.find/2`: every credential is compared,
+    # so the work does not stop at the first match.
     match =
-      Enum.find(services(opts), fn service ->
-        Plug.Crypto.secure_compare(digest, service.token_sha256)
+      Enum.reduce(services(opts), nil, fn service, found ->
+        if Plug.Crypto.secure_compare(digest, service.token_sha256) do
+          found || service
+        else
+          found
+        end
       end)
 
     case match do

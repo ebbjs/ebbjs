@@ -17,7 +17,9 @@ defmodule EbbServer.Functions.Worker do
   result; every failure path still calls `close/1`, because a worker that
   timed out, crashed, or failed a host call must not serve another caller.
   `set_owner/2` is optional and lets a pool hand a warm worker to the
-  process that will call it.
+  process that will call it. `cleanup/1` is optional and removes what an
+  abnormally dead worker left behind — its temp dir and process group — when
+  `close/1` can no longer run inside the worker.
   """
 
   alias EbbServer.Functions.Protocol
@@ -34,8 +36,9 @@ defmodule EbbServer.Functions.Worker do
   @callback monitor(handle()) :: reference()
   @callback release(handle()) :: :ok
   @callback set_owner(handle(), pid()) :: :ok
+  @callback cleanup(handle()) :: :ok
 
-  @optional_callbacks monitor: 1, release: 1, set_owner: 2
+  @optional_callbacks monitor: 1, release: 1, set_owner: 2, cleanup: 1
 
   @enforce_keys [:transport, :handle]
   defstruct [:transport, :handle]
@@ -92,13 +95,34 @@ defmodule EbbServer.Functions.Worker do
     end
   end
 
-  @doc "Hands a worker to the process that will own its frames."
+  @doc """
+  Hands a worker to the process that will own its frames.
+
+  A transport with no `set_owner/2` already delivers to the process that
+  started it, so there is nothing to do; closing it here would kill a worker
+  its pool just leased.
+  """
   @spec set_owner(t(), pid()) :: :ok
-  def set_owner(%__MODULE__{transport: transport, handle: handle} = worker, owner) do
+  def set_owner(%__MODULE__{transport: transport, handle: handle}, owner) do
     if function_exported?(transport, :set_owner, 2) do
       transport.set_owner(handle, owner)
     else
-      close(worker)
+      :ok
+    end
+  end
+
+  @doc """
+  Removes what a worker that died without `close/1` left behind.
+
+  Best effort and idempotent: the process group and temp dir may already be
+  gone. A transport without a cleanup seam has nothing the pool can reach.
+  """
+  @spec cleanup(t()) :: :ok
+  def cleanup(%__MODULE__{transport: transport, handle: handle}) do
+    if function_exported?(transport, :cleanup, 1) do
+      transport.cleanup(handle)
+    else
+      :ok
     end
   end
 end

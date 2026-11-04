@@ -37,6 +37,10 @@ RUN mix deps.compile
 
 COPY ebb_server/config ./config
 COPY ebb_server/lib ./lib
+# `Mix.Project.build_structure/2` symlinks `priv` rather than copying it, and
+# a release only copies an app dir that exists. The committed runner bundle
+# lives here, and the boot check refuses to start without it.
+COPY ebb_server/priv ./priv
 
 # `elixirc_paths(:prod)` is `["lib"]`, so `test/` and `bench/` never reach the
 # compiler and are not part of the build context.
@@ -44,7 +48,8 @@ RUN mix compile
 
 # `include_erts` defaults to true, so the release carries its own runtime and
 # the image needs no Erlang or Elixir install.
-RUN mix release
+RUN mix release && \
+    test -f _build/prod/rel/ebb_server/lib/ebb_server-*/priv/runner/main.js
 
 # Same Debian release as the builder: the bundled ERTS and the NIFs inside the
 # release are linked against bookworm's glibc 2.36 and OpenSSL 3.

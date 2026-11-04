@@ -87,6 +87,22 @@ describe("runInvocation", () => {
     });
   });
 
+  it("reports a service caller when the host resolved one", async () => {
+    const { transport } = journal();
+
+    const value = await runInvocation({
+      transport,
+      invocationId: "inv_runner1a",
+      subjectActorId: "svc_actor",
+      callerKind: "service",
+      bundle: bundle(`return { kind: ctx.caller.kind, id: ctx.caller.id };`),
+      entry: "handler",
+      input: undefined,
+    });
+
+    expect(value).toEqual({ kind: "service", id: "svc_actor" });
+  });
+
   it("runs a deployed definition and resolves the schema from it", async () => {
     exposeSchema();
     const { transport, commits } = journal();

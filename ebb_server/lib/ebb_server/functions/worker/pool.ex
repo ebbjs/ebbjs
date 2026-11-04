@@ -29,6 +29,13 @@ defmodule EbbServer.Functions.Worker.Pool do
 
   ## Gauges
 
+  A worker handed back after `result` may still have a `log` or `fetch_audit`
+  frame in flight. Those are delivered to whoever owns the worker when they
+  arrive: the pool drops them, or a worker leased again delivers them to the
+  next invocation. The server's log budget is per invocation, so a late line
+  is attributed to the run that emitted it in the runner, not to the caller
+  that happened to hold the socket.
+
   Every state change emits `[:ebb, :functions, :pool, :state]` with idle,
   busy, queued, workers, spawn_failures, kills, and respawning.
   `EbbServer.Functions.Stats` turns them into the numbers behind
@@ -154,6 +161,12 @@ defmodule EbbServer.Functions.Worker.Pool do
       spawn_failures: 0,
       kills: 0
     }
+
+    unless function_exported?(state.transport, :set_owner, 2) do
+      raise ArgumentError,
+            "the functions worker pool needs a transport that can change owner; " <>
+              "#{inspect(state.transport)} does not implement set_owner/2"
+    end
 
     state = Enum.reduce(1..max(state.size, 0)//1, state, fn _slot, acc -> spawn_slot(acc) end)
 
@@ -323,8 +336,17 @@ defmodule EbbServer.Functions.Worker.Pool do
 
   defp pop_idle(%{idle: [ref | rest]} = state) do
     case Map.fetch(state.rows, ref) do
-      {:ok, %{status: :idle} = row} -> {:ok, row, %{state | idle: rest}}
-      _missing -> pop_idle(%{state | idle: rest})
+      {:ok, %{status: :idle} = row} ->
+        if Worker.alive?(row.worker) do
+          {:ok, row, %{state | idle: rest}}
+        else
+          # The DOWN is still queued behind this call; skip the dead slot and
+          # let its handler replace it rather than leasing it.
+          pop_idle(%{state | idle: rest})
+        end
+
+      _missing ->
+        pop_idle(%{state | idle: rest})
     end
   end
 
@@ -384,8 +406,14 @@ defmodule EbbServer.Functions.Worker.Pool do
         demonitor(row.owner_mon)
         demonitor(row.monitor)
 
-        if close == :close and Worker.alive?(row.worker) do
-          Task.start(fn -> Worker.close(row.worker) end)
+        case close do
+          :close ->
+            if Worker.alive?(row.worker), do: Task.start(fn -> Worker.close(row.worker) end)
+
+          :already_down ->
+            # The worker process is gone, so its own cleanup never ran. Its
+            # recorded group id and temp dir are all that is left to reclaim.
+            Task.start(fn -> Worker.cleanup(row.worker) end)
         end
 
         kills = if row.status == :busy, do: state.kills + 1, else: state.kills

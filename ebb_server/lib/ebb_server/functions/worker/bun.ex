@@ -50,7 +50,8 @@ defmodule EbbServer.Functions.Worker.Bun do
           pid: pid(),
           port: port(),
           dir: String.t(),
-          socket_path: String.t()
+          socket_path: String.t(),
+          os_pid: non_neg_integer() | nil
         }
 
   @doc """
@@ -105,7 +106,14 @@ defmodule EbbServer.Functions.Worker.Bun do
   defp await_start(pid, dir, socket_path, timeout) do
     case await_started(pid, timeout) do
       {:ok, port} ->
-        {:ok, %{pid: pid, port: port, dir: dir, socket_path: socket_path}}
+        {:ok,
+         %{
+           pid: pid,
+           port: port,
+           dir: dir,
+           socket_path: socket_path,
+           os_pid: port_os_pid(port)
+         }}
 
       {:error, reason} ->
         if Process.alive?(pid), do: Process.exit(pid, :kill)
@@ -170,6 +178,21 @@ defmodule EbbServer.Functions.Worker.Bun do
   @spec set_owner(handle(), pid()) :: :ok
   def set_owner(%{pid: pid}, owner) do
     send(pid, {:functions_set_owner, owner})
+    :ok
+  end
+
+  @doc """
+  Removes a worker that died without running its own cleanup.
+
+  The process group id and temp dir are recorded at start because a dead
+  worker's Port no longer answers `Port.info/2`; without them a hard kill
+  would leave the socket file and any process the runner forked behind.
+  """
+  @impl true
+  @spec cleanup(handle()) :: :ok
+  def cleanup(%{dir: dir, os_pid: os_pid}) do
+    kill_group(os_pid)
+    File.rm_rf(dir)
     :ok
   end
 

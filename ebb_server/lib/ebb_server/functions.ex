@@ -170,7 +170,7 @@ defmodule EbbServer.Functions do
   @spec children(keyword()) :: [Supervisor.child_spec()]
   def children(opts \\ []) do
     if enabled?() do
-      boot_check!(opts)
+      boot_check!()
       stats_children() ++ bundle_children(opts) ++ pool_children(opts)
     else
       []
@@ -195,7 +195,7 @@ defmodule EbbServer.Functions do
     ]
   end
 
-  defp pool_children(opts) do
+  defp pool_children(_opts) do
     if pool?() do
       [
         {Pool,
@@ -204,7 +204,7 @@ defmodule EbbServer.Functions do
            queue_limit: queue_limit(),
            queue_timeout_ms: queue_timeout_ms(),
            transport: transport(),
-           transport_opts: worker_opts(opts)
+           transport_opts: worker_opts()
          ]}
       ]
     else
@@ -216,18 +216,18 @@ defmodule EbbServer.Functions do
   # broken now, not on the first invocation. The check runs before any child
   # starts so a container fails its boot instead of serving a route that can
   # only answer 503.
-  defp boot_check!(opts) do
+  defp boot_check! do
     if transport() == Bun or pool?() do
-      check_executable!(bun_path(), "bun")
-      check_file!(runner_path(opts), "runner")
+      check_executable!(bun_path())
+      check_file!(runner_path(), "runner")
     end
 
     :ok
   end
 
-  defp check_executable!(nil, name) do
+  defp check_executable!(nil) do
     raise """
-    functions are enabled but #{name} was not found on PATH.
+    functions are enabled but bun was not found on PATH.
 
     Install Bun #{bun_version()} (see .bun-version) or set
     `config :ebb_server, :functions, worker_opts: [bun_path: "/path/to/bun"]`.
@@ -235,8 +235,24 @@ defmodule EbbServer.Functions do
     """
   end
 
-  defp check_executable!(path, _name) do
-    unless File.regular?(path), do: check_file!(path, "executable")
+  defp check_executable!(path) do
+    executable? =
+      with true <- is_binary(path),
+           {:ok, %File.Stat{mode: mode}} <- File.stat(path) do
+        Bitwise.band(mode, 0o111) != 0
+      else
+        _error -> false
+      end
+
+    unless executable? do
+      raise """
+      functions are enabled but the bun executable is missing or not runnable: #{inspect(path)}.
+
+      Install Bun #{bun_version()} (see .bun-version) or set
+      `config :ebb_server, :functions, worker_opts: [bun_path: "/path/to/bun"]`.
+      Set EBB_FUNCTIONS_ENABLED=false to boot without functions.
+      """
+    end
   end
 
   defp check_file!(path, what) do
@@ -327,8 +343,7 @@ defmodule EbbServer.Functions do
       "max_log_lines" => Keyword.get(config(), :max_log_lines, @default_max_log_lines),
       "max_log_bytes" => Keyword.get(config(), :max_log_bytes, @default_max_log_bytes),
       "max_output_bytes" => max_output_bytes(),
-      "fetch_allowlist" => fetch_allowlist(),
-      "memory_bytes" => memory_limit_bytes()
+      "fetch_allowlist" => fetch_allowlist()
     }
   end
 
@@ -374,7 +389,10 @@ defmodule EbbServer.Functions do
   @doc """
   The address-space budget (bytes) applied to one Bun worker on Linux.
 
-  This is the function's memory budget plus the runtime's own reservation, so
+  This is a **node-wide** cap, not a per-function one: pooled workers are
+  spawned before an invocation knows which bundle it will run, so the
+  envelope's `memoryBytes` is validated and carried but does not set a v1
+  control. The cap is the node budget plus the runtime's own reservation, so
   the OS limit is not a byte-exact JS heap cap. macOS gets no limit: there is
   no portable per-process equivalent the server can set without privileges.
   """
@@ -409,17 +427,14 @@ defmodule EbbServer.Functions do
   point at another runner without a code change.
   """
   @spec worker_opts() :: keyword()
-  def worker_opts, do: worker_opts([])
-
-  @spec worker_opts(keyword()) :: keyword()
-  def worker_opts(opts) do
+  def worker_opts do
     configured = Keyword.get(config(), :worker_opts, [])
 
     case transport() do
       Bun ->
         Keyword.merge(
           [
-            runner_path: runner_path(opts),
+            runner_path: runner_path(),
             bun_path: bun_path(),
             memory_limit_bytes: memory_limit_bytes()
           ],
@@ -473,8 +488,8 @@ defmodule EbbServer.Functions do
   `priv/runner/main.js`, which `scripts/build-runner.sh` rebuilds from
   `packages/runner`.
   """
-  @spec runner_path(keyword()) :: String.t()
-  def runner_path(_opts \\ []) do
+  @spec runner_path() :: String.t()
+  def runner_path do
     Keyword.get(config(:worker_opts) || [], :runner_path) ||
       Application.app_dir(:ebb_server, "priv/runner/main.js")
   end
@@ -599,7 +614,7 @@ defmodule EbbServer.Functions do
 
     unless Regex.match?(~r/\A[0-9a-f]{64}\z/, token) do
       raise ":ebb_server, :functions, services[].token_sha256 must be 64 lowercase " <>
-              "hex characters (the sha256 of the presented token), got #{inspect(token)}"
+              "hex characters (the sha256 of the presented token, not the token itself)"
     end
 
     token

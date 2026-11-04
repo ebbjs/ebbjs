@@ -3,15 +3,16 @@ defmodule EbbServer.Functions.Log do
   Writes a function's log frames to the server's Logger, capped per invocation.
 
   The runner turns `ctx.log` and `console.*` into `log` frames. This module is
-  the one place they become Logger lines, tagged with `function`, `version`,
-  and `invocation_id`, so an operator can find every line an invocation
-  produced. The key is `function_name`, not `function`: Logger already owns
-  `:function` for the logging call site, and printing both would add a stack
-  frame to every line. and no line carries a value the server did not already have.
+  the one place they become Logger lines, tagged with `function_name`,
+  `version`, and `invocation_id`, so an operator can find every line an
+  invocation produced. The key is `function_name`, not `function`: Logger
+  already owns `:function` for the logging call site, and printing both would
+  add a stack frame to every line. The server adds no value of its own to a
+  line, so nothing here reveals a secret it was not handed.
 
   Caps are enforced by the caller (`EbbServer.Functions.Invocation`) because
   the budget is per invocation: 200 lines and 64 KiB by default. Once either is
-  spent, further lines are dropped and one `log_truncated` line is written.
+  spent, further lines are dropped and one truncation line is written.
   A flood can fill the log, but it cannot fail the invocation or grow the
   server's memory: the dropped frames are decoded and discarded one at a time.
 
