@@ -6,7 +6,7 @@
   "author": "Drew Lyton (drewlyton)",
   "scripts": {
     "build": "pnpm --recursive build",
-    "dev": "concurrently -n server,app -c blue,magenta 'cd ebb_server && mix dev' 'pnpm --filter issue-tracker dev'",
+    "dev": "concurrently -n server,app,functions -c blue,magenta,green 'cd ebb_server && mix dev' 'pnpm --filter issue-tracker dev' 'pnpm --filter @ebbjs/cli dev'",
     "dev:collab": "concurrently -n server,demo -c blue,magenta 'cd ebb_server && mix dev' 'pnpm --filter collaborative-text-demo dev'",
     "pretest": "node scripts/ensure-built.mjs",
     "test": "pnpm --recursive exec vitest --run --passWithNoTests",
