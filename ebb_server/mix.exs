@@ -59,6 +59,7 @@ defmodule EbbServer.MixProject do
     [
       {:rocksdb, "~> 2.5"},
       {:exqlite, "~> 0.27"},
+      {:ex_json_schema, "0.11.2"},
       {:msgpax, "~> 2.4"},
       {:bandit, "~> 1.5"},
       {:jason, "~> 1.4"},
