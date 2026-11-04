@@ -147,7 +147,7 @@ defmodule EbbServer.Functions.RouterStoreTest do
       end
 
       # Nothing was stored by any of them.
-      assert Store.list(ctx.store) == []
+      assert Store.list(ctx.store) == {:ok, []}
     end
 
     test "an unconfigured admin token denies rather than opens", ctx do
@@ -327,7 +327,7 @@ defmodule EbbServer.Functions.RouterStoreTest do
       assert details == "envelope paramsSchema is not a valid JSON Schema"
       refute details =~ "ExJsonSchema"
       refute details =~ "\n"
-      assert Store.list(ctx.store) == []
+      assert Store.list(ctx.store) == {:ok, []}
     end
 
     test "an envelope that is not an object or a code that is not a string is refused", ctx do

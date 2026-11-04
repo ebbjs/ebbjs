@@ -225,6 +225,10 @@ defmodule EbbServer.Functions.Bundle do
 
   defp resolve_schema(nil, _field), do: {:ok, nil, nil}
 
+  defp resolve_schema(schema, _field) when is_boolean(schema) do
+    {:ok, schema, JsonSchema.resolve(schema)}
+  end
+
   defp resolve_schema(schema, field) when is_map(schema) do
     {:ok, schema, JsonSchema.resolve(schema)}
   rescue
@@ -234,7 +238,7 @@ defmodule EbbServer.Functions.Bundle do
   end
 
   defp resolve_schema(_schema, field),
-    do: {:error, {:invalid_schema, field, "schema must be a JSON object"}}
+    do: {:error, {:invalid_schema, field, "schema must be a JSON object or boolean"}}
 
   defp verify_digest(digest, code) do
     with true <- is_binary(digest),

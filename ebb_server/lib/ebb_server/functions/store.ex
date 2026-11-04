@@ -245,12 +245,14 @@ defmodule EbbServer.Functions.Store do
   WHERE name = ? AND status = 'active'
   """
 
-  # The previous version is the most recently activated one that is not
-  # currently active. `rowid` breaks a same-millisecond tie by insertion order,
-  # the same way retention does.
+  # The previous version is the most recently activated one that is still
+  # servable. A `disabled` row is not a rollback candidate: switching it off was
+  # an operator decision, and re-enabling is an activation, not a rollback.
+  # `rowid` breaks a same-millisecond tie by insertion order, the same way
+  # retention does.
   @previous_sql """
   SELECT #{@columns} FROM function_versions
-  WHERE name = ? AND status <> 'active' AND activated_at IS NOT NULL
+  WHERE name = ? AND status = 'retired' AND activated_at IS NOT NULL
   ORDER BY activated_at DESC, rowid DESC LIMIT 1
   """
 
@@ -261,11 +263,14 @@ defmodule EbbServer.Functions.Store do
   WHERE name = ? ORDER BY created_at DESC, rowid DESC
   """
 
+  # The LIMIT counts only unpinned rows, so a pin is additional rather than a
+  # slot a normal version has to compete for. The delete below never touches a
+  # pinned or active row regardless.
   @prune_sql """
   DELETE FROM function_versions
   WHERE name = ? AND pinned = 0 AND status <> 'active'
     AND id NOT IN (
-      SELECT id FROM function_versions WHERE name = ?
+      SELECT id FROM function_versions WHERE name = ? AND pinned = 0
       ORDER BY created_at DESC, rowid DESC LIMIT ?
     )
   """
@@ -386,8 +391,11 @@ defmodule EbbServer.Functions.Store do
 
   @doc """
   Every active version, ordered by name. `GET /functions` lists these.
+
+  A read failure is an error rather than an empty list: an operator UI must not
+  show an unreadable catalogue as an empty one.
   """
-  @spec list(GenServer.server()) :: [Version.t()]
+  @spec list(GenServer.server()) :: {:ok, [Version.t()]} | {:error, term()}
   def list(server \\ __MODULE__) do
     GenServer.call(server, :list)
   end
@@ -463,7 +471,13 @@ defmodule EbbServer.Functions.Store do
 
   @impl true
   def handle_call({:versions, name}, _from, state) do
-    {:reply, fetch_many(state.db, state.stmts.versions, [name]), state}
+    versions =
+      case fetch_many(state.db, state.stmts.versions, [name]) do
+        {:ok, rows} -> rows
+        {:error, _reason} -> []
+      end
+
+    {:reply, versions, state}
   end
 
   @impl true
@@ -679,6 +693,11 @@ defmodule EbbServer.Functions.Store do
 
   defp verify_schema(nil, _field), do: :ok
 
+  # Draft-7 allows a schema to be a boolean: `true` accepts everything and
+  # `false` accepts nothing. The validator resolves both, so the store does not
+  # narrow the language the bundles are allowed to speak.
+  defp verify_schema(schema, _field) when is_boolean(schema), do: :ok
+
   defp verify_schema(schema, field) when is_map(schema) do
     JsonSchema.resolve(schema)
     :ok
@@ -689,7 +708,7 @@ defmodule EbbServer.Functions.Store do
   end
 
   defp verify_schema(_schema, field) do
-    {:error, {:invalid_schema, field, "schema must be a JSON object"}}
+    {:error, {:invalid_schema, field, "schema must be a JSON object or boolean"}}
   end
 
   # Activation reads the raw text rather than the decoded struct so a row whose
@@ -870,17 +889,17 @@ defmodule EbbServer.Functions.Store do
           _ = Sqlite3.reset(stmt)
         end
 
-      {:error, _reason} ->
-        []
+      {:error, reason} ->
+        {:error, {:sqlite, reason}}
     end
   end
 
   defp collect_rows(db, stmt, acc) do
     case Sqlite3.step(db, stmt) do
       {:row, row} -> collect_rows(db, stmt, [row_to_version(row) | acc])
-      :done -> Enum.reverse(acc)
-      :busy -> Enum.reverse(acc)
-      {:error, _reason} -> Enum.reverse(acc)
+      :done -> {:ok, Enum.reverse(acc)}
+      :busy -> {:error, :busy}
+      {:error, reason} -> {:error, {:sqlite, reason}}
     end
   end
 
@@ -971,7 +990,7 @@ defmodule EbbServer.Functions.Store do
   end
 
   defp encode_schema(nil), do: nil
-  defp encode_schema(schema) when is_map(schema), do: Jason.encode!(schema)
+  defp encode_schema(schema) when is_map(schema) or is_boolean(schema), do: Jason.encode!(schema)
 
   # A schema whose JSON does not decode did not come from `put_version`. It is
   # not servable — activation re-reads the raw text and refuses it — but a

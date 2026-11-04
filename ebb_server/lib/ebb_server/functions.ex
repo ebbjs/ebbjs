@@ -189,7 +189,8 @@ defmodule EbbServer.Functions do
   end
 
   @doc """
-  How many versions per name retention keeps, active and pinned excluded.
+  How many unpinned versions per name retention keeps. Pinned versions and the
+  active one are kept in addition to this count.
   """
   @spec retention() :: non_neg_integer()
   def retention, do: Keyword.get(config(), :retention, 20)

@@ -1,6 +1,4 @@
 defmodule EbbServer.Functions.Validate do
-  @max_issues 10
-
   @moduledoc """
   Runs a bundle's RPC schemas against decoded JSON.
 
@@ -19,11 +17,13 @@ defmodule EbbServer.Functions.Validate do
 
   Failures are structured: `{"path" => "items[0].name", "message" => "..."}`.
   The path is the validator's JSON pointer rewritten to dotted form, and only
-  the first #{@max_issues} issues are returned. `issues` is the only structured
+  the first ten issues are returned. `issues` is the only structured
   field on the error envelope; `details` stays a string for single-reason
   write-pipeline failures because `packages/write/src/rejection.ts` publishes
   it as `String | Null`.
   """
+
+  @max_issues 10
 
   alias EbbServer.Functions.Bundle
   alias ExJsonSchema.Validator

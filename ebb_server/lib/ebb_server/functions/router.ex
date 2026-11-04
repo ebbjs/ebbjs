@@ -303,9 +303,7 @@ defmodule EbbServer.Functions.Router do
   end
 
   defp list_versions(conn) do
-    {:ok, Store.list(store(conn))}
-  catch
-    :exit, reason -> {:error, reason}
+    with_store(fn -> Store.list(store(conn)) end)
   end
 
   defp function_summary(%Version{} = version) do
@@ -350,7 +348,7 @@ defmodule EbbServer.Functions.Router do
 
   defp put_version(conn, name, actor_id, payload) do
     with {:ok, envelope, code, pinned} <- upload_payload(payload, name),
-         {:ok, bundle} <- build_bundle(envelope, code) do
+         {:ok, bundle} <- Bundle.new(envelope, code) do
       record_version(conn, bundle, pinned, actor_id)
     else
       {:error, reason} ->
@@ -359,6 +357,16 @@ defmodule EbbServer.Functions.Router do
           plain(400, %{"error" => "invalid_bundle", "details" => invalid_bundle_details(reason)})
         )
     end
+  end
+
+  defp invalid_schema(conn, field, reason) do
+    respond(
+      conn,
+      plain(422, %{
+        "error" => "invalid_schema",
+        "details" => "#{field} is not a valid JSON Schema: #{reason}"
+      })
+    )
   end
 
   defp record_version(conn, %Bundle{} = bundle, pinned, actor_id) do
@@ -382,13 +390,7 @@ defmodule EbbServer.Functions.Router do
         )
 
       {:error, {:invalid_schema, field, reason}} ->
-        respond(
-          conn,
-          plain(422, %{
-            "error" => "invalid_schema",
-            "details" => "#{field} is not a valid JSON Schema: #{reason}"
-          })
-        )
+        invalid_schema(conn, field, reason)
 
       {:error, _reason} ->
         internal_error(conn)
@@ -396,7 +398,13 @@ defmodule EbbServer.Functions.Router do
   end
 
   defp store_put_version(conn, attrs) do
-    Store.put_version(attrs, store(conn))
+    with_store(fn -> Store.put_version(attrs, store(conn)) end)
+  end
+
+  # The store is another process: a node being torn down makes it exit, which
+  # is a read/write failure, never an empty catalogue or a successful write.
+  defp with_store(fun) do
+    fun.()
   catch
     :exit, reason -> {:error, {:store_unavailable, reason}}
   end
@@ -448,10 +456,6 @@ defmodule EbbServer.Functions.Router do
       true ->
         {:ok, envelope, code, pinned}
     end
-  end
-
-  defp build_bundle(envelope, code) do
-    Bundle.new(envelope, code)
   end
 
   # Every reason is a sentence for the uploader, never a stack or an internal
@@ -562,13 +566,7 @@ defmodule EbbServer.Functions.Router do
         )
 
       {:error, {:invalid_schema, field, reason}} ->
-        respond(
-          conn,
-          plain(422, %{
-            "error" => "invalid_schema",
-            "details" => "#{field} is not a valid JSON Schema: #{reason}"
-          })
-        )
+        invalid_schema(conn, field, reason)
 
       {:error, _reason} ->
         internal_error(conn)
@@ -576,9 +574,7 @@ defmodule EbbServer.Functions.Router do
   end
 
   defp store_activate(conn, name, version) do
-    Store.activate(name, version, store(conn))
-  catch
-    :exit, reason -> {:error, {:store_unavailable, reason}}
+    with_store(fn -> Store.activate(name, version, store(conn)) end)
   end
 
   defp read_activation(conn) do

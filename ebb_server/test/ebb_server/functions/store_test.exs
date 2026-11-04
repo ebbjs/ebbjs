@@ -117,6 +117,16 @@ defmodule EbbServer.Functions.StoreTest do
       assert Store.versions(@name, store) == []
     end
 
+    test "accepts a boolean draft-7 schema, which accepts everything or nothing", context do
+      store = start_store(context)
+
+      assert {:ok, version} =
+               Store.put_version(attrs(%{params_schema: true, output_schema: false}), store)
+
+      assert version.params_schema == true
+      assert version.output_schema == false
+    end
+
     test "a missing required attribute is a reply, not a crash", context do
       store = start_store(context)
 
@@ -151,7 +161,7 @@ defmodule EbbServer.Functions.StoreTest do
       assert is_integer(active.activated_at)
 
       assert {:ok, %{status: "active"}} = Store.active(@name, store)
-      assert [%{version: "1.0.0"}] = Store.list(store)
+      assert {:ok, [%{version: "1.0.0"}]} = Store.list(store)
     end
 
     test "activating a second version retires the first, and list shows only the active one",
@@ -165,7 +175,7 @@ defmodule EbbServer.Functions.StoreTest do
 
       assert {:ok, %{version: "2.0.0"}} = Store.active(@name, store)
       assert {:ok, %{status: "retired"}} = Store.get(@name, "1.0.0", store)
-      assert [%{version: "2.0.0"}] = Store.list(store)
+      assert {:ok, [%{version: "2.0.0"}]} = Store.list(store)
     end
 
     test "list orders active names and answers :not_found for unknown ones", context do
@@ -176,7 +186,8 @@ defmodule EbbServer.Functions.StoreTest do
       assert {:ok, _} = Store.activate("betaFunction", "1.0.0", store)
       assert {:ok, _} = Store.activate("alphaFunction", "1.0.0", store)
 
-      assert ["alphaFunction", "betaFunction"] = Enum.map(Store.list(store), & &1.name)
+      assert {:ok, versions} = Store.list(store)
+      assert ["alphaFunction", "betaFunction"] = Enum.map(versions, & &1.name)
       assert Store.active("gammaFunction", store) == :not_found
       assert Store.get("alphaFunction", "9.9.9", store) == :not_found
     end
@@ -191,7 +202,7 @@ defmodule EbbServer.Functions.StoreTest do
 
       assert second.status == "active"
       assert second.activated_at >= first.activated_at
-      assert [%{version: "1.0.0"}] = Store.list(store)
+      assert {:ok, [%{version: "1.0.0"}]} = Store.list(store)
     end
 
     test "an unknown version changes nothing", context do
@@ -237,6 +248,21 @@ defmodule EbbServer.Functions.StoreTest do
       assert {:ok, %{version: "2.0.0"}} = Store.active(@name, store)
     end
 
+    test "a disabled version is not a rollback candidate", context do
+      store = start_store(context)
+      put!(store)
+      put!(store, %{version: "2.0.0"})
+      put!(store, %{version: "3.0.0"})
+
+      assert {:ok, _} = Store.activate(@name, "1.0.0", store)
+      assert {:ok, _} = Store.activate(@name, "2.0.0", store)
+      assert {:ok, %{status: "disabled"}} = Store.disable(@name, store)
+
+      assert {:ok, _} = Store.activate(@name, "3.0.0", store)
+
+      assert {:ok, %{version: "1.0.0", status: "active"}} = Store.rollback(@name, store)
+    end
+
     test "a name with no active version has nothing to roll back from", context do
       store = start_store(context)
       put!(store)
@@ -264,12 +290,12 @@ defmodule EbbServer.Functions.StoreTest do
       assert disabled.status == "disabled"
 
       assert Store.active(@name, store) == :not_found
-      assert Store.list(store) == []
+      assert Store.list(store) == {:ok, []}
       assert {:ok, %{status: "disabled"}} = Store.get(@name, "1.0.0", store)
 
       assert {:ok, %{status: "active"}} = Store.activate(@name, "1.0.0", store)
       assert {:ok, %{version: "1.0.0"}} = Store.active(@name, store)
-      assert [%{version: "1.0.0"}] = Store.list(store)
+      assert {:ok, [%{version: "1.0.0"}]} = Store.list(store)
     end
 
     test "a name with no active version answers :not_found", context do
@@ -329,6 +355,16 @@ defmodule EbbServer.Functions.StoreTest do
       for version <- ~w(2.0.0 3.0.0 4.0.0 5.0.0), do: put!(store, %{version: version})
 
       assert ~w(5.0.0 4.0.0 3.0.0 1.0.0) = Enum.map(Store.versions(@name, store), & &1.version)
+    end
+
+    test "a pinned version does not consume a retention slot", context do
+      store = start_store(context, retention: 3)
+
+      put!(store, %{version: "2.0.0", pinned: true})
+      for version <- ~w(1.0.0 3.0.0 4.0.0), do: put!(store, %{version: version})
+
+      assert ~w(1.0.0 2.0.0 3.0.0 4.0.0) =
+               @name |> Store.versions(store) |> Enum.map(& &1.version) |> Enum.sort()
     end
 
     test "the active version is never pruned", context do

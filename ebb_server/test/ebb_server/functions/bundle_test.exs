@@ -96,14 +96,26 @@ defmodule EbbServer.Functions.BundleTest do
       end
     end
 
-    test "refuses a schema that is not a JSON object" do
-      for schema <- ["object", true, 42, [%{"type" => "object"}]] do
-        assert {:error, {:invalid_schema, "paramsSchema", "schema must be a JSON object"}} =
+    test "refuses a schema that is neither an object nor a boolean" do
+      for schema <- ["object", 42, [%{"type" => "object"}]] do
+        assert {:error,
+                {:invalid_schema, "paramsSchema", "schema must be a JSON object or boolean"}} =
                  Bundle.new(envelope(%{"paramsSchema" => schema}), @code)
 
-        assert {:error, {:invalid_schema, "outputSchema", "schema must be a JSON object"}} =
+        assert {:error,
+                {:invalid_schema, "outputSchema", "schema must be a JSON object or boolean"}} =
                  Bundle.new(envelope(%{"outputSchema" => schema}), @code)
       end
+    end
+
+    test "accepts a boolean schema, as draft-7 allows" do
+      assert {:ok, bundle} = Bundle.new(envelope(%{"paramsSchema" => true}), @code)
+      assert bundle.params_schema == true
+      assert %ExJsonSchema.Schema.Root{schema: true} = bundle.resolved_params_schema
+
+      assert {:ok, bundle} = Bundle.new(envelope(%{"outputSchema" => false}), @code)
+      assert bundle.output_schema == false
+      assert %ExJsonSchema.Schema.Root{schema: false} = bundle.resolved_output_schema
     end
   end
 
